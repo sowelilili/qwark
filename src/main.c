@@ -193,8 +193,19 @@ static void qwark_stop_thread(u64 arg)
  *
  * So nothing here may call into libnet, or into anything else that is not a
  * plain syscall: set the flags, hand the socket work and the joins to a thread
- * of our own, wait for it, then unload. `_sys_ppu_thread_exit` never returns;
+ * of our own, wait for it, then finalize. `_sys_ppu_thread_exit` never returns;
  * the `return` is for the compiler.
+ *
+ * Finalizing, not unloading. webMAN unloads a VSH plugin with cobra's
+ * prx_unload_vsh_plugin: prx_stop_module_with_thread runs this entry and,
+ * once it has completed, the KERNEL calls prx_unload_module itself. webMAN's
+ * own stop entry (and its vsh_menu template) therefore ends with
+ * finalize_module(), which is sys_prx_stop_module (syscall 482) with the
+ * 0x28/2 meminfo block, then _sys_ppu_thread_exit(0). Ratchetron and qwark
+ * called sys_prx_unload_module (483) on themselves here instead, which is not
+ * what the kernel is waiting for: the stop never completed from cobra's point
+ * of view, the slot stayed occupied and the console needed a reboot. That is
+ * the process.h stop_prx_module() below.
  */
 int qwark_stop(void)
 {
@@ -218,9 +229,9 @@ int qwark_stop(void)
 
 	plat_shutdown();
 
-	plat_trace("qwark: unloading module");
+	plat_trace("qwark: finalizing module (sys_prx_stop_module)");
 
-	unload_prx_module();
+	stop_prx_module();
 
 	_sys_ppu_thread_exit(0);
 
