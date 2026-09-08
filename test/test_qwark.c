@@ -2089,12 +2089,21 @@ static void test_net_stop_with_client(void)
 	}
 
 	net_stop();
+
+	/*
+	 * Close our end now, not after the wait: Winsock does not reliably wake a
+	 * recv() blocked in another thread on shutdown() alone, so without the
+	 * peer's FIN the connection thread could sit there past the drain timeout
+	 * and the check below would fail once in a few runs. lv2's sockets do wake
+	 * on shutdown(), and on hardware the drain force-closes after two seconds
+	 * regardless.
+	 */
+	if (client >= 0) plat_socket_close(client);
+
 	check(plat_thread_join(accept_thread) == 0,
 	      "the accept thread joins after net_stop");
 	check(net_wait_clients(2000000u) == 1,
 	      "and every connection thread gave its slot up");
-
-	if (client >= 0) plat_socket_close(client);
 
 	net_shutdown();
 	session_shutdown();

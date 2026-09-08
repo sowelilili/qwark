@@ -117,10 +117,13 @@ int qwark_start(size_t args, void *argp)
 	return SYS_PRX_RESIDENT;
 }
 
+/*
+ * Flags only. This runs on the loader's thread (see qwark_stop), which may
+ * not call into libnet, so the sockets are broken by the stop thread instead.
+ */
 void qwark_stop_server(void)
 {
 	qwark_working = 0;
-	net_stop();
 	session_stop();
 }
 
@@ -137,6 +140,13 @@ static void qwark_stop_thread(u64 arg)
 	(void)arg;
 
 	plat_trace("qwark: stop thread up");
+
+	/*
+	 * Break every socket from here, not from qwark_stop: this is a thread of
+	 * our own, with the thread-local storage libnet needs for sys_net_errno.
+	 * Closing the listener is what brings the accept loop back.
+	 */
+	net_stop();
 
 	/* Give the tick and client threads a moment before we join. */
 	sys_ppu_thread_sleep(2);
@@ -173,11 +183,18 @@ static void qwark_stop_thread(u64 arg)
 }
 
 /*
- * The unload sequence is Ratchetron's, which the user has been unloading from
- * webMAN for years: break the sockets, join through a stop thread that gives
- * the other threads time to wind down, sleep half a second, unload the PRX and
- * exit this thread. `_sys_ppu_thread_exit` never returns, so the `return` below
- * is there for the compiler; Ratchetron's stop has the same shape.
+ * The stop entry runs on a thread the loader made for it: a 4 KB stack,
+ * priority 0, no name, and no thread-local storage (r13 is 0). That last part
+ * is what crashed the unload on hardware: libnet keeps sys_net_errno in TLS, so
+ * the first shutdown() on a socket from this thread faulted at r13 - 0x7030
+ * inside vsh.self (lv2 "Data Segment" exception, DAR 0xffff8fd0). Ratchetron
+ * closes its sockets from the same thread and refuses to unload on the same
+ * console, so this is not a qwark-only problem.
+ *
+ * So nothing here may call into libnet, or into anything else that is not a
+ * plain syscall: set the flags, hand the socket work and the joins to a thread
+ * of our own, wait for it, then unload. `_sys_ppu_thread_exit` never returns;
+ * the `return` is for the compiler.
  */
 int qwark_stop(void)
 {
