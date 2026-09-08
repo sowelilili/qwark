@@ -7,7 +7,7 @@ PS3 VSH plugin (SPRX) that owns the RaCMAN trainer logic for the four original R
 PS3 (`qwark.sprx`): run `_Make.bat` from Windows, or in a Cygwin login shell:
 
 ```
-/c/cygwin64/bin/bash.exe --login -c "cd '/cygdrive/c/Users/atune/Documents/RaCMAN Development/qwark' && make"
+/c/cygwin64/bin/bash.exe --login -c "cd '/cygdrive/c/Users/atune/Documents/RaCMAN Development/rewrite/qwark' && make"
 ```
 
 Do not override `CELL_SDK`. Delete the `.prx` and `.sym` leftovers after a build. The compiler is ppu-lv2-gcc 4.1.1: gnu99 only, no C11, no `_Static_assert`, no anonymous unions, no floating-point printf (`printf2` from `printf.c` handles integers and strings only).
