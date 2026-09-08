@@ -46,6 +46,13 @@ void session_step_once(void);
 void session_stop(void);
 int  session_running(void);
 
+/*
+ * Destroys the mutexes and the ring semaphores session_init created. Call only
+ * after the tick thread has been joined; nothing may enter the session code
+ * afterwards.
+ */
+void session_shutdown(void);
+
 u8   session_state(void);
 u32  session_generation(void);
 u32  session_tick_count(void);

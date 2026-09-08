@@ -2,6 +2,7 @@
 
 Revision 1.1 (2026-09-07): SessionInfo grew to 164 bytes (16 readouts), Feature is 48 bytes with a `readout` field, LEVELFLAGS_SET added.
 Revision 1.2 (2026-09-08): Feature flags bit2 SAVE_ASIDE and bit3 LOAD_ASIDE mark the savefile-helper actions so a client can drive the save-file manager without matching labels.
+Revision 1.3 (2026-09-08): Feature flags bit4 LIVE marks a TOGGLE whose state qwark reads back out of game memory, and UNLOCK_LIST now carries four `UnlockFieldDesc` rows that name and type its four per-entry value slots.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -42,7 +43,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 2 (see below)
+u8   qwark_version      module build number, currently 3 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -60,8 +61,8 @@ f32  pos[3]             player x, y, z
 u32  pad_mask           controller buttons, OG layout (section 10)
 f32  analog[4]          rx, ry, lx, ly, each -1..1
 u32  readout[16]        game-defined live values; DESCRIBE names them. readout[0] is the bolt count when the game has one. VALUE, ENUM and COLOR features name the readout that mirrors their current value
-u64  toggle_state       bit i set = TOGGLE feature id i is on
-u64  toggle_auto        bit i set = feature id i re-applies itself on game boot
+u64  toggle_state       bit i set = TOGGLE feature id i is on. A LIVE toggle's bit is whatever game memory says, re-read at 10 Hz (section 5.3.1)
+u64  toggle_auto        bit i set = feature id i re-applies itself on game boot. Never set for a LIVE toggle
 u64  freeze_active      bit i set = freeze id i is active
 u32  mod_loaded         bit i set = console mod index i is loaded
 u32  mod_auto           bit i set = console mod index i auto-applies on game boot
@@ -96,7 +97,7 @@ GET_STATE returns exactly these bytes over TCP.
 When the game exits and the same title comes back:
 
 - Watches are kept and resume automatically; their ids do not change.
-- Every toggle that was on, every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
+- Every toggle that was on (LIVE toggles excepted: their state is a byte the game and its save file own, so there is nothing for qwark to re-apply), every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
 
 When a different title comes back, everything including watches is dropped and the record is empty. The client notices `game` changing in telemetry and re-issues DESCRIBE.
 
@@ -128,9 +129,9 @@ Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x0020 | DESCRIBE | none | `u8 game, u8 ngroups, char[24] group[ngroups], u8 nreadouts, char[24] readout[nreadouts], u8 nfeatures, Feature[nfeatures]`. At most 16 groups, 16 readouts, 64 features |
-| 0x0021 | FEATURE_SET | `u8 id, u32 value` (TOGGLE: 0 or 1) | none |
+| 0x0021 | FEATURE_SET | `u8 id, u32 value` (TOGGLE: 0 or 1) | none. Works on a LIVE toggle too: it writes the byte |
 | 0x0022 | FEATURE_TRIGGER | `u8 id` (ACTION only) | none |
-| 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config |
+| 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
 
 ```
@@ -139,7 +140,7 @@ u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
 u8   aux            ENUM: option count. 0 for every other kind
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION makes the game write its current save to /dev_hdd0/game/<TITLEID>/USRDIR/tempsave), bit3 LOAD_ASIDE (this ACTION makes the game load that tempsave)
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION makes the game write its current save to /dev_hdd0/game/<TITLEID>/USRDIR/tempsave), bit3 LOAD_ASIDE (this ACTION makes the game load that tempsave), bit4 LIVE (TOGGLE only, section 5.3.1)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. TOGGLE and ACTION: 0xFF
 u8   pad[2]
 u32  min
@@ -148,6 +149,26 @@ char label[32]
 ```
 
 Toggle state travels in `toggle_state`; every other kind that has state travels through its readout, so a second client or a restarted one sees the real value.
+
+#### 5.3.1 LIVE toggles (revision 1.3)
+
+Most toggles are qwark's: an instruction patch, a freeze entry, a piece of module state. A few are not — they are a plain byte the game owns, which lives in the save file and which the player, another tool or the game itself can change at any moment. Those are flagged `LIVE`.
+
+For a LIVE toggle:
+
+- qwark re-reads the byte out of game memory every twelfth tick (10 Hz) while INGAME and sets `toggle_state` bit *id* to match. The client's checkbox therefore shows what the game says, not what qwark last wrote, and a client that connects mid-session sees the truth immediately.
+- There is nothing for qwark to re-apply, so **FEATURE_SET_AUTO is answered UNSUPPORTED** and the bit never appears in `toggle_auto`. A client should draw no auto-apply control for a LIVE toggle.
+- It never joins the previous-session record (section 4.1): after a reboot the byte comes back from the save file on its own.
+- **FEATURE_SET still works** and still writes the byte, on and off. The next poll simply agrees with it.
+
+The LIVE toggles today:
+
+| Game | Feature id | Label | What it is |
+|---|---|---|---|
+| RaC1 | 6 | Goodies menu | one byte at 0x969CD3, part of the save |
+| RaC1 | 24, 25, 26 | Update Ratchet / mobys / particles | three bits of the debug update word at 0x95C5C8 |
+| RaC2 | 5 | Enable debug mode | one byte at 0x15B3070 |
+| RaC3 | 5 | Quick-select pause | one byte at 0xC1E652 |
 
 ### 5.4 Memory (0x003x)
 
@@ -191,7 +212,7 @@ POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the sele
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
-| 0x0050 | UNLOCK_LIST | none | `u8 ncat, char[24] category[ncat], u8 n, Unlock[n]`, values read live |
+| 0x0050 | UNLOCK_LIST | none | `u8 ncat, char[24] category[ncat], UnlockFieldDesc[4], u8 n, Unlock[n]`, values read live |
 | 0x0051 | UNLOCK_SET | `u8 id, u8 field, u16 pad, u32 value` | none. A field the entry does not declare is UNSUPPORTED |
 | 0x0052 | reserved | | |
 | 0x0053 | LEVELFLAGS_GET | `u8 planet` | `u16 len, bytes`, the game's flag regions for that planet concatenated |
@@ -199,16 +220,40 @@ POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the sele
 | 0x0055 | LEVELFLAGS_SET | `u8 planet, u8 value, u16 offset` | none. Writes one byte at `offset` into the concatenated region returned by LEVELFLAGS_GET; an offset past its end is BAD_ARG |
 
 ```
+UnlockFieldDesc (16 bytes), revision 1.3, one per value slot 0..3, always four:
+char name[12]        NUL-padded, e.g. "Owned", "Gold", "Level", "XP", "Ammo".
+                     Empty = the game never uses this slot; the client draws
+                     no column for it and no row declares it
+u8   kind            0 flag (draw a checkbox, write 0 or 1)
+                     1 number (draw a number box)
+u8   max             kind 1: the largest meaningful value, 0 = no limit
+u8   reserved[2]     zero
+
 Unlock (44 bytes):
 u8   id
 u8   category
-u8   fields          bit f set = field f is meaningful for this entry
+u8   fields          bit f set = value slot f is meaningful for this entry
 u8   pad
-u32  value[4]        field 0 owned, 1 gold or upgraded, 2 level or XP, 3 ammo
+u32  value[4]        one per slot, as the UnlockFieldDesc rows describe them
 char name[24]
 ```
 
+Before revision 1.3 the four slots were fixed as owned / gold / level / ammo, which was RaC1's reading of them and wrong everywhere else. The `UnlockFieldDesc` rows are now the authority; slot 0 is "Owned" in every game qwark knows, but nothing on the wire requires that.
+
+What the four games ship today:
+
+| Game | Slot 0 | Slot 1 | Slot 2 | Slot 3 |
+|---|---|---|---|---|
+| RaC1 | Owned, flag | Gold, flag | — | Ammo, number |
+| RaC2 | Owned, flag | — | — | — |
+| RaC3 | Owned, flag | **Level, number, max 8** | **XP, number** | Ammo, number |
+| Deadlocked | Owned, flag | — | — | — |
+
+RaC3's slot 1 is the weapon version UYAUnlocks drew as a v1..v8 combo box, not a gold flag: gold weapons are a RaC1 idea and RaC3 has none. `max` is the game-wide maximum, so a client may offer 8 for every weapon; UNLOCK_SET clamps to the entry's own level count, and the R3YNO — the one weapon that stops at v5 — lands on v5. Writing 1 is a real downgrade, not "unset".
+
 Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did.
+
+An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it.
 
 A game that does not offer level flags answers all three ops UNSUPPORTED, and a client that gets that is expected to hide its level-flag panel for that game. RaC2 and RaC3 return 0x10 bytes per planet. RaC1 and Deadlocked answer UNSUPPORTED: Deadlocked has no such region, and RaC1's is not laid out the way the old client's viewer assumed, so it is withheld until the format has been worked out. RaC1's PLANET_LOAD bit0 still resets the flags, which is the one thing racman actually did with them.
 

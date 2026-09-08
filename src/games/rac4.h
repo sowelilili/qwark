@@ -170,7 +170,8 @@ int rac4_die(void);
 int rac4_planet_load(u8 planet, u8 flags);
 
 int rac4_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories);
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields);
 int rac4_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac4_unlock_set(u8 id, u8 field, u32 value);
 

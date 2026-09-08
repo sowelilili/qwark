@@ -25,6 +25,12 @@
 
 /* ------------------------------------------------------------------ state */
 
+/*
+ * `used` is the slot's life, and the connection thread clears it as the last
+ * thing it does; net_wait_clients watches it on the way out. There is no thread
+ * handle here because a connection thread is detached: nobody ever joins one,
+ * so a client wedged in the network stack can never hold up a module unload.
+ */
 struct conn {
 	int   sock;
 	u8   *req;
@@ -32,7 +38,6 @@ struct conn {
 	void *block;
 	u32   remote_ip;      /* network byte order, as it came off the socket */
 	u8    used;
-	plat_thread_t thread;
 };
 
 struct sub {
@@ -501,6 +506,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		const struct game_api *g = session_game();
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
+		const struct unlock_field_desc *fields = NULL;
 		u8 n = 0, ncat = 0;
 		u32 off;
 		u8 i;
@@ -509,10 +515,12 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 			cmd->status = ST_UNSUPPORTED;
 			break;
 		}
-		cmd->status = (u16)g->unlock_list(&list, &n, &cats, &ncat);
+		cmd->status = (u16)g->unlock_list(&list, &n, &cats, &ncat, &fields);
 		if (cmd->status != ST_OK) break;
+		if (fields == NULL) { cmd->status = ST_UNSUPPORTED; break; }
 
-		if (1u + (u32)ncat * 24u + 1u + (u32)n * UNLOCK_WIRE_SIZE > cmd->replycap) {
+		if (1u + (u32)ncat * 24u + 4u * UNLOCK_FIELD_WIRE_SIZE
+		    + 1u + (u32)n * UNLOCK_WIRE_SIZE > cmd->replycap) {
 			cmd->status = ST_FULL;
 			break;
 		}
@@ -520,6 +528,21 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		off = 0;
 		reply[off++] = ncat;
 		for (i = 0; i < ncat; i++) { put_fixed(reply + off, 24, cats[i]); off += 24; }
+
+		/*
+		 * Protocol 1.3: four UnlockFieldDesc, always four, naming and typing
+		 * the four value slots so the client draws a checkbox or a number box
+		 * per game instead of guessing from RaC1's labels.
+		 */
+		for (i = 0; i < 4; i++) {
+			put_fixed(reply + off, UNLOCK_FIELD_NAME_LEN, fields[i].name);
+			reply[off + UNLOCK_FIELD_NAME_LEN + 0] = fields[i].kind;
+			reply[off + UNLOCK_FIELD_NAME_LEN + 1] = fields[i].max;
+			reply[off + UNLOCK_FIELD_NAME_LEN + 2] = 0;
+			reply[off + UNLOCK_FIELD_NAME_LEN + 3] = 0;
+			off += UNLOCK_FIELD_WIRE_SIZE;
+		}
+
 		reply[off++] = n;
 		for (i = 0; i < n; i++) {
 			u32 values[4];
@@ -1283,11 +1306,62 @@ void net_stop(void)
 {
 	int i;
 
+	plat_trace("qwark:   net_stop: breaking sockets");
 	g_working = 0;
 
-	for (i = 0; i < QWARK_MAX_CLIENTS; i++) close_tracked(&g_conns[i].sock);
+	/*
+	 * A client socket is only shut down here, never closed: that is enough to
+	 * bring its thread back out of recv(), and leaving the close to the thread
+	 * that owns the descriptor means two threads can never close the same fd
+	 * (and take out an unrelated descriptor that got the same number in
+	 * between). net_wait_clients closes anything still open at the end.
+	 */
+	for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
+		int fd = g_conns[i].sock;
+		if (fd >= 0) plat_socket_shutdown(fd);
+	}
+
+	/* The listener has to go, though: closing it is what wakes accept(). */
 	close_tracked(&g_listen);
 	close_tracked(&g_udp);
+	plat_trace("qwark:   net_stop: sockets broken");
+}
+
+int net_wait_clients(u32 timeout_us)
+{
+	u32 waited = 0;
+	int i;
+
+	for (;;) {
+		int busy = 0;
+
+		for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
+			if (g_conns[i].used) { busy = 1; break; }
+		}
+		if (!busy) {
+			plat_trace("qwark:   net_wait_clients: all clients gone");
+			return 1;
+		}
+		if (waited >= timeout_us) break;
+
+		plat_sleep_us(10000);
+		waited += 10000;
+	}
+
+	/*
+	 * A thread still in there is wedged in the network stack. The module is
+	 * going away regardless, so take its descriptor back and carry on.
+	 */
+	plat_trace("qwark:   net_wait_clients: TIMED OUT, forcing sockets closed");
+	for (i = 0; i < QWARK_MAX_CLIENTS; i++) close_tracked(&g_conns[i].sock);
+	return 0;
+}
+
+void net_shutdown(void)
+{
+	plat_mutex_destroy(&g_net_mutex);
+	plat_mutex_destroy(&g_file_mutex);
+	plat_trace("qwark:   net mutexes destroyed");
 }
 
 void net_accept_thread(void *arg)
@@ -1349,9 +1423,12 @@ void net_accept_thread(void *arg)
 			g_conns[slot].remote_ip = peer.sin_addr.s_addr;
 			g_conns[slot].sock = fd;
 
-			if (plat_thread_create(&g_conns[slot].thread, conn_thread,
-			                       (void *)(size_t)slot, CLIENT_STACK,
-			                       "qwark_cli") != 0) {
+			/*
+			 * Detached, like Ratchetron's client threads: nothing joins one,
+			 * so a client that never comes back cannot hold up the unload.
+			 */
+			if (plat_thread_create_detached(conn_thread, (void *)(size_t)slot,
+			                                CLIENT_STACK, "qwark_cli") != 0) {
 				close_tracked(&g_conns[slot].sock);
 				plat_free_pages(g_conns[slot].block);
 				g_conns[slot].block = NULL;
@@ -1369,5 +1446,6 @@ void net_accept_thread(void *arg)
 
 	close_tracked(&g_listen);
 	plat_log("qwark: accept thread down");
+	plat_trace("qwark:   accept loop returning");
 	plat_thread_exit();
 }

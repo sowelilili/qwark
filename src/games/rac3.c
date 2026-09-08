@@ -216,6 +216,8 @@ static const char * const rac3_readouts[] = {
 #define WC FEATURE_FLAG_WRITES_CODE
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
+/* Protocol 1.3: a toggle qwark reads back out of game memory. */
+#define LV FEATURE_FLAG_LIVE
 
 static const struct feature_desc rac3_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -223,7 +225,7 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ R3_OHKO,          FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "One-hit KO" },
 	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
-	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Quick-select pause" },
+	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
 
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R3_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_BOLTS,     0, 0, "Bolts" },
@@ -266,6 +268,7 @@ static const struct feature_desc rac3_features[] = {
 #undef WC
 #undef SA
 #undef LA
+#undef LV
 
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
@@ -314,6 +317,26 @@ static int rac3_set_toggle(u8 id, int on)
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);
 	default:               return ST_NOT_FOUND;
 	}
+}
+
+/*
+ * Protocol 1.3. The quick-select pause is one byte the game owns, so its
+ * checkbox follows memory rather than the last thing qwark wrote. It rides in
+ * the state hot block already, but the poll reads it straight so a client that
+ * connects mid-session does not have to wait for a decode. Tick thread only.
+ */
+static int rac3_toggle_read(u8 id, int *on)
+{
+	u8 b = 0;
+	int rc;
+
+	if (id != R3_QS_PAUSE) return ST_NOT_FOUND;
+
+	rc = mem_read_u8(RAC3_QUICK_SELECT, &b);
+	if (rc != ST_OK) return rc;
+
+	*on = (b != 0);
+	return ST_OK;
 }
 
 /* -------------------------------------------------------------- positions */
@@ -436,6 +459,7 @@ const struct game_api rac3_game = {
 	rac3_describe,
 
 	rac3_set_toggle,
+	rac3_toggle_read,
 	rac3_trigger,
 	rac3_set_value,
 	rac3_get_options,

@@ -208,7 +208,8 @@ int rac2_levelflags_reset(u8 planet);
 int rac2_levelflags_set(u8 planet, u16 offset, u8 value);
 
 int rac2_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories);
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields);
 int rac2_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac2_unlock_set(u8 id, u8 field, u32 value);
 

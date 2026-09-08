@@ -196,11 +196,17 @@ int main(int argc, char **argv)
 		handle_line(trimmed, &keep_running);
 	}
 
+	/* The same order the SPRX stops in, so the simulator exercises that path. */
 	net_stop();
 	session_stop();
 
 	plat_thread_join(g_net);
 	plat_thread_join(g_tick);
+
+	net_wait_clients(2000000u);
+
+	net_shutdown();
+	session_shutdown();
 
 	plat_shutdown();
 	return 0;

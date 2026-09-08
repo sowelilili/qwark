@@ -13,6 +13,14 @@
 #define TELEMETRY_EVERY  4         /* 30 Hz */
 
 /*
+ * Protocol 1.3. How often the FEATURE_FLAG_LIVE toggles are re-read out of game
+ * memory, in ticks: 12 is 10 Hz, which is three telemetry frames apart and
+ * costs one small read per live toggle. A checkbox that follows the save file
+ * does not need to be any quicker than the eye.
+ */
+#define LIVE_POLL_EVERY  12        /* 10 Hz */
+
+/*
  * The autosplitter waits a second after the PID shows up before it touches the
  * process; reading too early is how you crash a console. We do the same, and
  * then still wait for the fingerprint.
@@ -173,7 +181,12 @@ static void prev_build(void)
 
 	prev_clear();
 
-	g_prev.toggles = features_toggle_state();
+	/*
+	 * A LIVE toggle is a byte in the game and in the save file, not something
+	 * qwark applied, so there is nothing to offer back: it comes into the new
+	 * session already carrying whatever the save says.
+	 */
+	g_prev.toggles = features_toggle_state() & ~features_live_mask();
 	g_prev.mods    = mods_loaded_mask();
 
 	n = 0;
@@ -753,7 +766,25 @@ int session_init(void)
 
 void session_stop(void)
 {
+	plat_trace("qwark:   session_stop: tick loop asked to stop");
 	g_running = 0;
+}
+
+void session_shutdown(void)
+{
+	int i;
+
+	/*
+	 * Every kernel object session_init created. The tick thread has been joined
+	 * by the time this runs and the ring is closed, so nothing is parked on a
+	 * semaphore and nothing is holding the core lock.
+	 */
+	for (i = 0; i < QWARK_RING_SLOTS; i++) plat_sem_destroy(&g_ring[i].sem);
+	plat_trace("qwark:   ring semaphores destroyed");
+
+	plat_mutex_destroy(&g_ring_mutex);
+	plat_mutex_destroy(&g_core_mutex);
+	plat_trace("qwark:   session mutexes destroyed");
 }
 
 /* One iteration of the loop. Exposed as session_step_once() for the host tests. */
@@ -771,6 +802,12 @@ static void session_step(void)
 	core_lock();
 	if (g_state == SESSION_INGAME) {
 		read_hot();
+		/*
+		 * The LIVE toggles are game-owned bytes; make toggle_state agree with
+		 * what memory says rather than with the last thing qwark wrote. No
+		 * hook fires and nothing is written back.
+		 */
+		if ((g_tick % LIVE_POLL_EVERY) == 0) features_poll_live();
 		/*
 		 * Game-side watchers run on the decoded block, before the freeze and
 		 * watch passes, so anything they write this tick is already in place
@@ -833,5 +870,6 @@ void session_tick_thread(void *arg)
 	}
 
 	plat_log("qwark: tick thread down");
+	plat_trace("qwark:   tick thread returning");
 	plat_thread_exit();
 }

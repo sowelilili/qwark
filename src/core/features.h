@@ -34,4 +34,18 @@ void features_apply_mask(u64 mask);
 /* The mask of toggles flagged auto in config for the current game. */
 u64  features_auto_mask(void);
 
+/*
+ * Protocol 1.3. The mask of TOGGLEs the current game marks FEATURE_FLAG_LIVE:
+ * their state lives in game memory, so they are never re-applied and never go
+ * into the previous-session record.
+ */
+u64  features_live_mask(void);
+
+/*
+ * Re-reads every LIVE toggle through the game's toggle_read and makes
+ * toggle_state agree with what memory says. Reads game memory, so the tick
+ * thread is the only caller; it never writes and never fires a hook.
+ */
+void features_poll_live(void);
+
 #endif /* QWARK_FEATURES_H */

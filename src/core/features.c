@@ -42,6 +42,8 @@ u64 features_auto_mask(void)
 
 		if (f->kind != FEATURE_TOGGLE) continue;
 		if (f->id >= QWARK_MAX_FEATURES) continue;
+		/* A LIVE toggle is the game's byte, not ours: there is nothing to re-apply. */
+		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
 
 		/* A game may ship a toggle auto-flagged; config still overrides it. */
 		fallback = (d->auto_default & ((u64)1 << f->id)) != 0;
@@ -50,6 +52,57 @@ u64 features_auto_mask(void)
 	}
 
 	return mask;
+}
+
+u64 features_live_mask(void)
+{
+	const struct game_describe *d;
+	u64 mask = 0;
+	u8 i;
+
+	if (g_game == NULL || g_game->describe == NULL) return 0;
+
+	d = g_game->describe();
+	if (d == NULL) return 0;
+
+	for (i = 0; i < d->nfeatures; i++) {
+		const struct feature_desc *f = &d->features[i];
+
+		if (f->kind != FEATURE_TOGGLE) continue;
+		if (f->id >= QWARK_MAX_FEATURES) continue;
+		if ((f->flags & FEATURE_FLAG_LIVE) == 0) continue;
+
+		mask |= (u64)1 << f->id;
+	}
+
+	return mask;
+}
+
+void features_poll_live(void)
+{
+	const struct game_describe *d;
+	u8 i;
+
+	if (g_game == NULL || g_game->describe == NULL) return;
+	if (g_game->toggle_read == NULL) return;
+
+	d = g_game->describe();
+	if (d == NULL) return;
+
+	for (i = 0; i < d->nfeatures; i++) {
+		const struct feature_desc *f = &d->features[i];
+		int on = 0;
+
+		if (f->kind != FEATURE_TOGGLE) continue;
+		if (f->id >= QWARK_MAX_FEATURES) continue;
+		if ((f->flags & FEATURE_FLAG_LIVE) == 0) continue;
+
+		/* A read that fails leaves the bit where it was rather than lying. */
+		if (g_game->toggle_read(f->id, &on) != ST_OK) continue;
+
+		if (on) g_toggle_state |= (u64)1 << f->id;
+		else    g_toggle_state &= ~((u64)1 << f->id);
+	}
 }
 
 void features_set_game(const struct game_api *game, const char *title)
@@ -117,6 +170,11 @@ int features_set_auto(u8 id, int on)
 	if (g_game == NULL) return ST_UNSUPPORTED;
 	if (f == NULL) return ST_NOT_FOUND;
 	if (f->kind != FEATURE_TOGGLE) return ST_BAD_ARG;
+	/*
+	 * A LIVE toggle has no auto bit to set: qwark never re-applies it, so
+	 * saying yes here would promise something the module does not do.
+	 */
+	if ((f->flags & FEATURE_FLAG_LIVE) != 0) return ST_UNSUPPORTED;
 
 	config_set_feature_auto(g_title, f->label, on);
 
@@ -152,6 +210,8 @@ void features_apply_mask(u64 mask)
 		const struct feature_desc *f = &d->features[i];
 		if (f->kind != FEATURE_TOGGLE) continue;
 		if (f->id >= QWARK_MAX_FEATURES) continue;
+		/* Never write a LIVE toggle behind the user's back; the game owns it. */
+		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
 		if ((mask & ((u64)1 << f->id)) == 0) continue;
 		features_set(f->id, 1);
 	}

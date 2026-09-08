@@ -73,6 +73,19 @@ struct game_unlock {
 	const char *name;
 };
 
+/*
+ * Protocol 1.3. One of UNLOCK_LIST's four value slots, as this game uses it.
+ * Every game returns exactly four, in slot order; a slot the game never touches
+ * has a NULL or empty name and kind UNLOCK_KIND_FLAG. `max` bounds a number
+ * slot game-wide (RaC3's weapon level is 8, even though the R3YNO stops at 5),
+ * and 0 means the slot has no meaningful upper bound.
+ */
+struct unlock_field_desc {
+	const char *name;   /* at most UNLOCK_FIELD_NAME_LEN characters on the wire */
+	u8 kind;            /* UNLOCK_KIND_FLAG or UNLOCK_KIND_NUMBER */
+	u8 max;
+};
+
 struct game_api {
 	/* Up to four title ids, NULL-terminated. */
 	const char *title_ids[4];
@@ -113,6 +126,13 @@ struct game_api {
 	const struct game_describe *(*describe)(void);
 
 	int (*set_toggle)(u8 id, int on);
+	/*
+	 * Protocol 1.3, FEATURE_FLAG_LIVE. Reads the game byte behind TOGGLE `id`
+	 * and reports whether it is on, so the core can make toggle_state agree
+	 * with memory instead of with the last thing it wrote. NULL where a game
+	 * has no live toggle; an id that is not one is NOT_FOUND. Tick thread only.
+	 */
+	int (*toggle_read)(u8 id, int *on);
 	int (*trigger)(u8 id);
 	int (*set_value)(u8 id, u32 value);
 	int (*get_options)(u8 id, const char * const **options, u8 *count);
@@ -133,9 +153,12 @@ struct game_api {
 	 * unlock_list may snapshot the live values so that unlock_read can serve
 	 * every row from a couple of reads. The core calls the two together on the
 	 * tick thread under the core lock, so the snapshot is never stale.
+	 *
+	 * `fields` comes back pointing at four unlock_field_desc, in slot order.
 	 */
 	int (*unlock_list)(const struct game_unlock **list, u8 *count,
-	                   const char * const **categories, u8 *ncategories);
+	                   const char * const **categories, u8 *ncategories,
+	                   const struct unlock_field_desc **fields);
 	int (*unlock_read)(const struct game_unlock *entry, u32 values[4]);
 	int (*unlock_set)(u8 id, u8 field, u32 value);
 

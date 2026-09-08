@@ -193,6 +193,8 @@ static const char * const rac1_readouts[] = {
 #define WC FEATURE_FLAG_WRITES_CODE
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
+/* Protocol 1.3: a toggle qwark reads back out of game memory. */
+#define LV FEATURE_FLAG_LIVE
 
 static const struct feature_desc rac1_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -200,7 +202,7 @@ static const struct feature_desc rac1_features[] = {
 	{ F_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ F_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite health" },
 	{ F_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
-	{ F_GOODIES,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Goodies menu" },
+	{ F_GOODIES,         FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Goodies menu" },
 
 	{ F_DIE,             FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ F_BOLTS,           FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC1_RO_BOLTS, 0, 0, "Bolts" },
@@ -225,9 +227,9 @@ static const struct feature_desc rac1_features[] = {
 	{ F_JANK_TIMER,      FEATURE_VALUE,  G_JANKPOT,  0, 0,  RAC1_RO_JANK_TIMER, 0, 0, "Jankpot timer (frames)" },
 	{ F_JANK_ACTIVATE,   FEATURE_ACTION, G_JANKPOT,  0, 0,  NO, 0, 0, "Activate jankpot" },
 
-	{ F_DBG_RATCHET,     FEATURE_TOGGLE, G_DEBUG,    0, 0,  NO, 0, 0, "Update Ratchet" },
-	{ F_DBG_MOBYS,       FEATURE_TOGGLE, G_DEBUG,    0, 0,  NO, 0, 0, "Update mobys" },
-	{ F_DBG_PARTICLES,   FEATURE_TOGGLE, G_DEBUG,    0, 0,  NO, 0, 0, "Update particles" },
+	{ F_DBG_RATCHET,     FEATURE_TOGGLE, G_DEBUG,    0, LV, NO, 0, 0, "Update Ratchet" },
+	{ F_DBG_MOBYS,       FEATURE_TOGGLE, G_DEBUG,    0, LV, NO, 0, 0, "Update mobys" },
+	{ F_DBG_PARTICLES,   FEATURE_TOGGLE, G_DEBUG,    0, LV, NO, 0, 0, "Update particles" },
 	{ F_DBG_CAMERA,      FEATURE_ENUM,   G_DEBUG,    3, 0,  RAC1_RO_CAMERA, 0, 2, "Camera mode" }
 };
 
@@ -235,6 +237,7 @@ static const struct feature_desc rac1_features[] = {
 #undef WC
 #undef SA
 #undef LA
+#undef LV
 
 static const struct game_describe rac1_describe_table = {
 	rac1_groups,   (u8)(sizeof(rac1_groups) / sizeof(rac1_groups[0])),
@@ -284,6 +287,46 @@ static int rac1_set_toggle(u8 id, int on)
 	case F_DBG_PARTICLES:   return rac1_debug_bit(RAC1_DBG_PARTICLES, on);
 	default:                return ST_NOT_FOUND;
 	}
+}
+
+/*
+ * Protocol 1.3. The four RaC1 toggles whose state is a byte the game owns: the
+ * goodies menu flag, which lives in the save file, and the three debug update
+ * bits of one word. Read-only, and only ever from the tick thread.
+ */
+static u32 rac1_debug_bit_for(u8 id)
+{
+	switch (id) {
+	case F_DBG_RATCHET:   return RAC1_DBG_RATCHET;
+	case F_DBG_MOBYS:     return RAC1_DBG_MOBYS;
+	case F_DBG_PARTICLES: return RAC1_DBG_PARTICLES;
+	default:              return 0;
+	}
+}
+
+static int rac1_toggle_read(u8 id, int *on)
+{
+	u32 bit;
+	int rc;
+
+	if (id == F_GOODIES) {
+		u8 b = 0;
+		rc = mem_read_u8(RAC1_GOODIES_MENU, &b);
+		if (rc != ST_OK) return rc;
+		*on = (b != 0);
+		return ST_OK;
+	}
+
+	bit = rac1_debug_bit_for(id);
+	if (bit != 0) {
+		u32 word = 0;
+		rc = mem_read_u32(RAC1_DEBUG_UPDATE, &word);
+		if (rc != ST_OK) return rc;
+		*on = ((word & bit) != 0);
+		return ST_OK;
+	}
+
+	return ST_NOT_FOUND;
 }
 
 /* -------------------------------------------------------------- positions */
@@ -382,6 +425,7 @@ const struct game_api rac1_game = {
 	rac1_describe,
 
 	rac1_set_toggle,
+	rac1_toggle_read,
 	rac1_trigger,
 	rac1_set_value,
 	rac1_get_options,

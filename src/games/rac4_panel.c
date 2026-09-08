@@ -25,6 +25,18 @@
 
 static const char * const rac4_categories[] = { "Bot upgrades" };
 
+/*
+ * Protocol 1.3. A bot upgrade is one owned byte, so only slot 0 is named.
+ * Deadlocked's weapons are not in this table at all, so there is no level, no
+ * XP and no ammo column to describe.
+ */
+static const struct unlock_field_desc rac4_fields[4] = {
+	{ "Owned", UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 }
+};
+
 static const struct game_unlock rac4_unlocks[] = {
 	{  0, CAT_BOTS, UNLOCK_FIELD_OWNED, "Pistol Flux LX" },
 	{  1, CAT_BOTS, UNLOCK_FIELD_OWNED, "Range Warrior" },
@@ -51,7 +63,8 @@ static u8 g_snap[RAC4_BOTS_COUNT];
 static int g_snap_valid;
 
 int rac4_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories)
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields)
 {
 	int rc;
 
@@ -59,6 +72,7 @@ int rac4_unlock_list(const struct game_unlock **list, u8 *count,
 	*count       = RAC4_UNLOCK_COUNT;
 	*categories  = rac4_categories;
 	*ncategories = (u8)(sizeof(rac4_categories) / sizeof(rac4_categories[0]));
+	*fields      = rac4_fields;
 
 	g_snap_valid = 0;
 

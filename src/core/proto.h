@@ -5,6 +5,8 @@
  * Revision 1.1: SessionInfo carries sixteen readouts and is 164 bytes, Feature
  * gained a `readout` byte at offset 5, and LEVELFLAGS_SET was added.
  * Revision 1.2: Feature flags bit2 SAVE_ASIDE and bit3 LOAD_ASIDE.
+ * Revision 1.3: Feature flags bit4 LIVE, and UNLOCK_LIST carries four
+ * UnlockFieldDesc rows that name and type the four per-entry value slots.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -20,7 +22,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             2
+#define QWARK_BUILD             3
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -170,6 +172,17 @@
  */
 #define FEATURE_FLAG_SAVE_ASIDE  0x04
 #define FEATURE_FLAG_LOAD_ASIDE  0x08
+/*
+ * Revision 1.3. A TOGGLE whose truth is a plain byte the game owns, not a patch
+ * and not qwark-side state: its state is read back out of game memory by qwark
+ * (10 Hz while INGAME) and toggle_state reports what memory says, so a client's
+ * checkbox follows the save file and the running game rather than qwark's idea
+ * of what it last wrote. There is nothing for qwark to re-apply, so a client
+ * shows no auto-apply control for a LIVE toggle: FEATURE_SET_AUTO on one is
+ * answered UNSUPPORTED and it never joins the previous-session record.
+ * FEATURE_SET still writes the byte.
+ */
+#define FEATURE_FLAG_LIVE        0x10
 
 /*
  * Feature, 48 bytes: id, kind, group, aux, flags, readout, pad[2], u32 min,
@@ -182,11 +195,33 @@
 #define UNLOCK_WIRE_SIZE  44
 #define MOD_WIRE_SIZE     120
 
-/* Unlock.fields bits, one per Unlock.value[] slot. */
-#define UNLOCK_FIELD_OWNED 0x01
-#define UNLOCK_FIELD_GOLD  0x02
-#define UNLOCK_FIELD_LEVEL 0x04
-#define UNLOCK_FIELD_AMMO  0x08
+/*
+ * Revision 1.3. UNLOCK_LIST carries four of these between the categories and
+ * the rows, one per Unlock.value[] slot, always four. `name` is empty for a
+ * slot the game never uses; `kind` says whether the client draws a checkbox or
+ * a number box; `max` is the largest meaningful value of a number, 0 for none.
+ */
+#define UNLOCK_FIELD_WIRE_SIZE  16
+#define UNLOCK_FIELD_NAME_LEN   12
+
+#define UNLOCK_KIND_FLAG    0
+#define UNLOCK_KIND_NUMBER  1
+
+/*
+ * Unlock.fields bits, one per Unlock.value[] slot: bit f set = slot f is
+ * meaningful for that entry. What a slot means is per game and is spelled out
+ * by the UnlockFieldDesc rows, not by these names.
+ */
+#define UNLOCK_FIELD_0 0x01
+#define UNLOCK_FIELD_1 0x02
+#define UNLOCK_FIELD_2 0x04
+#define UNLOCK_FIELD_3 0x08
+
+/* RaC1's reading of the same four bits, kept because RaC1 still reads that way. */
+#define UNLOCK_FIELD_OWNED UNLOCK_FIELD_0
+#define UNLOCK_FIELD_GOLD  UNLOCK_FIELD_1
+#define UNLOCK_FIELD_LEVEL UNLOCK_FIELD_2
+#define UNLOCK_FIELD_AMMO  UNLOCK_FIELD_3
 
 /* Mod flags */
 #define MOD_FLAG_LOADED      0x01

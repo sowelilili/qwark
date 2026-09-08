@@ -444,26 +444,37 @@ struct host_thread {
 	plat_thread_fn fn;
 	void *arg;
 	int used;
+	int detached;
 };
 
 static struct host_thread g_threads[HOST_MAX_THREADS];
 static pthread_mutex_t g_thread_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/*
+ * A joinable slot belongs to whoever joins it; a detached one is released here,
+ * so a client connection thread does not hold a slot for ever the way it used
+ * to (HOST_MAX_THREADS connections and the simulator stopped accepting).
+ */
 static void *thread_trampoline(void *arg)
 {
 	struct host_thread *t = (struct host_thread *)arg;
+
 	t->fn(t->arg);
+
+	if (t->detached) {
+		pthread_mutex_lock(&g_thread_lock);
+		t->used = 0;
+		pthread_mutex_unlock(&g_thread_lock);
+	}
 	return NULL;
 }
 
-int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
-                       u32 stack_size, const char *name)
+static int thread_spawn(plat_thread_t *out, plat_thread_fn fn, void *arg,
+                        u32 stack_size, int detached)
 {
 	int slot = -1;
 	int i;
 	pthread_attr_t attr;
-
-	(void)name;
 
 	pthread_mutex_lock(&g_thread_lock);
 	for (i = 0; i < HOST_MAX_THREADS; i++) {
@@ -475,9 +486,11 @@ int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
 
 	g_threads[slot].fn = fn;
 	g_threads[slot].arg = arg;
+	g_threads[slot].detached = detached;
 
 	pthread_attr_init(&attr);
 	if (stack_size >= 65536) pthread_attr_setstacksize(&attr, stack_size);
+	if (detached) pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
 	if (pthread_create(&g_threads[slot].tid, &attr, thread_trampoline,
 	                   &g_threads[slot]) != 0) {
@@ -489,6 +502,20 @@ int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
 
 	if (out) *out = (plat_thread_t)(slot + 1);
 	return 0;
+}
+
+int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
+                       u32 stack_size, const char *name)
+{
+	(void)name;
+	return thread_spawn(out, fn, arg, stack_size, 0);
+}
+
+int plat_thread_create_detached(plat_thread_fn fn, void *arg,
+                                u32 stack_size, const char *name)
+{
+	(void)name;
+	return thread_spawn(NULL, fn, arg, stack_size, 1);
 }
 
 int plat_thread_join(plat_thread_t t)

@@ -12,8 +12,10 @@
 #include "../src/core/config.h"
 #include "../src/core/features.h"
 #include "../src/core/util.h"
+#include "../src/core/net.h"
 #include "../src/games/game.h"
 #include "../src/plat/plat.h"
+#include "../src/plat/plat_net.h"
 #include "../src/plat/host/plat_host.h"
 
 #include <stdio.h>
@@ -526,7 +528,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 2, "and this module is build 2");
+	check_eq_u64(packet[5], 3, "and this module is build 3");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -727,6 +729,7 @@ static void test_unlocks(void)
 	const struct game_unlock *list = NULL;
 	const char * const *cats = NULL;
 	u8 n = 0, ncat = 0;
+	const struct unlock_field_desc *fields = NULL;
 	u32 values[4];
 	u32 v = 0;
 	u8 b = 0;
@@ -736,7 +739,7 @@ static void test_unlocks(void)
 	check(g != NULL && g->unlock_list != NULL, "RaC1 offers an unlock table");
 	if (g == NULL || g->unlock_list == NULL) return;
 
-	check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST reads");
+	check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
 	check_eq_u64(n, 39, "the whole NewUnlocks table is there");
 	check_eq_u64(ncat, 3, "in three categories");
 	check(cats != NULL && qstreq(cats[0], "Weapons") && qstreq(cats[2], "Items"),
@@ -748,6 +751,17 @@ static void test_unlocks(void)
 	      "the Taunter, whose max ammo is 0, does not");
 	check(list != NULL && (list[34].fields == UNLOCK_FIELD_OWNED),
 	      "an index-less item owns nothing but its byte");
+
+	/* Protocol 1.3: the four slots are named and typed per game. */
+	check(fields != NULL && qstreq(fields[0].name, "Owned") &&
+	      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
+	check(fields != NULL && qstreq(fields[1].name, "Gold") &&
+	      fields[1].kind == UNLOCK_KIND_FLAG, "slot 1 is the Gold checkbox");
+	check(fields != NULL && (fields[2].name == NULL || fields[2].name[0] == 0),
+	      "RaC1 leaves slot 2 unnamed: it has no weapon levels");
+	check(fields != NULL && qstreq(fields[3].name, "Ammo") &&
+	      fields[3].kind == UNLOCK_KIND_NUMBER && fields[3].max == 0,
+	      "slot 3 is an unbounded Ammo number");
 
 	/* Owning a weapon hands it its full ammo, as NewUnlocks.Unlock does. */
 	host_poke(A_BOMB_UNLOCK, (const u8 *)"\x00", 1);
@@ -775,7 +789,7 @@ static void test_unlocks(void)
 	check(g->unlock_set(200, 0, 1) == ST_BAD_ARG, "an unknown id is BAD_ARG");
 
 	/* And the live values come back through the two-read snapshot. */
-	check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST reads again");
+	check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads again");
 	memset(values, 0, sizeof(values));
 	check(g->unlock_read(&list[0], values) == ST_OK, "UNLOCK_LIST reads entry 0 live");
 	check_eq_u64(values[0], 1, "owned reads back");
@@ -984,6 +998,81 @@ static void test_debug_options(void)
 	check_eq_u64(be32_get(info + 64 + 4 * 9), 0, "readout 9 mirrors update mobys");
 }
 
+/* ------------------------------------------- protocol 1.3, the LIVE toggles */
+
+#define A_GOODIES 0x969CD3u
+
+/* RaC1 feature ids, from rac1.h. */
+#define F1_FAST_LOADS    0
+#define F1_GOODIES       6
+#define F1_DBG_RATCHET   24
+#define F1_DBG_MOBYS     25
+#define F1_DBG_PARTICLES 26
+
+/*
+ * A LIVE toggle's truth is a byte the game owns, so toggle_state has to follow
+ * memory rather than the last thing qwark wrote. The poll runs every twelfth
+ * tick, so twenty-four ticks is always at least one pass.
+ */
+static void test_live_toggles(void)
+{
+	u64 live;
+	u8 b = 0;
+
+	group("protocol 1.3 live toggles");
+
+	live = features_live_mask();
+	check((live & ((u64)1 << F1_GOODIES)) != 0, "the goodies menu is a LIVE toggle");
+	check((live & ((u64)1 << F1_DBG_RATCHET)) != 0 && (live & ((u64)1 << F1_DBG_MOBYS)) != 0 &&
+	      (live & ((u64)1 << F1_DBG_PARTICLES)) != 0, "so are the three debug update bits");
+	check((live & ((u64)1 << F1_FAST_LOADS)) == 0,
+	      "a patch-backed toggle is not");
+
+	/* Somebody else turns the goodies menu on: the bit follows on its own. */
+	host_poke(A_GOODIES, (const u8 *)"\x01", 1);
+	pump(24);
+	check((features_toggle_state() & ((u64)1 << F1_GOODIES)) != 0,
+	      "a poke of the goodies byte turns the bit on");
+
+	host_poke(A_GOODIES, (const u8 *)"\x00", 1);
+	pump(24);
+	check((features_toggle_state() & ((u64)1 << F1_GOODIES)) == 0,
+	      "and clearing the byte turns it back off");
+
+	/* The same for a bit of the debug update word. */
+	host_poke(A_DBG_UPDATE, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(24);
+	check((features_toggle_state() & ((u64)1 << F1_DBG_MOBYS)) == 0, "update mobys reads off");
+	host_poke(A_DBG_UPDATE, (const u8 *)"\x00\x00\x00\x02", 4);
+	pump(24);
+	check((features_toggle_state() & ((u64)1 << F1_DBG_MOBYS)) != 0,
+	      "and setting its bit in the word turns it on");
+	check((features_toggle_state() & ((u64)1 << F1_DBG_RATCHET)) == 0,
+	      "while the neighbouring bit stays off");
+
+	/* FEATURE_SET still writes the byte, and the poll agrees with it. */
+	check(features_set(F1_GOODIES, 1) == ST_OK, "FEATURE_SET still writes it");
+	host_peek(A_GOODIES, &b, 1);
+	check_eq_u64(b, 1, "the byte was written");
+	pump(24);
+	check((features_toggle_state() & ((u64)1 << F1_GOODIES)) != 0,
+	      "and the poll agrees");
+
+	/* But there is no auto bit to set: qwark never re-applies a LIVE toggle. */
+	check(features_set_auto(F1_GOODIES, 1) == ST_UNSUPPORTED,
+	      "FEATURE_SET_AUTO on a LIVE toggle is UNSUPPORTED");
+	check((features_toggle_auto() & ((u64)1 << F1_GOODIES)) == 0,
+	      "and its auto bit stays clear");
+	check(features_set_auto(F1_FAST_LOADS, 1) == ST_OK,
+	      "an ordinary toggle still takes an auto flag");
+	features_set_auto(F1_FAST_LOADS, 0);
+
+	/* Leave the game as we found it. */
+	features_set(F1_GOODIES, 0);
+	host_poke(A_DBG_UPDATE, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(24);
+}
+
 /* ------------------------------------------------- protocol 1.2, all games */
 
 /*
@@ -1111,21 +1200,29 @@ static void test_rac2(void)
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
+		const struct unlock_field_desc *fields = NULL;
 		u32 values[4];
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST reads");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
 		check_eq_u64(n, 44, "the whole RC2Unlocks table is there");
 		check_eq_u64(ncat, 3, "in three categories");
 		check(list != NULL && qstreq(list[0].name, "Lancer"), "entry 0 is the Lancer");
 		check(list != NULL && list[0].fields == UNLOCK_FIELD_OWNED,
 		      "RaC2 entries own nothing but their byte");
+		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
+		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
+		check(fields != NULL &&
+		      (fields[1].name == NULL || fields[1].name[0] == 0) &&
+		      (fields[2].name == NULL || fields[2].name[0] == 0) &&
+		      (fields[3].name == NULL || fields[3].name[0] == 0),
+		      "and RaC2 names no other slot");
 
 		check(g->unlock_set(0, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
 		host_peek(R2_UNLOCK_LANCE, &b, 1);
 		check_eq_u64(b, 1, "the owned byte was written");
 		check(g->unlock_set(0, 3, 1) == ST_UNSUPPORTED, "RaC2 has no ammo field");
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST again");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
 		check(g->unlock_read(&list[0], values) == ST_OK, "and reads entry 0 live");
 		check_eq_u64(values[0], 1, "owned reads back");
@@ -1286,6 +1383,13 @@ static void test_rac2(void)
 #define BOUNCER_ROW  23
 #define BOUNCER_ITEM (R3_ITEM_ARRAY + 0x13u)
 
+/* R3YNO: item id 0x97, the one weapon that stops at v5 rather than v8. */
+#define RYNO_ROW  36
+#define RYNO_ITEM (R3_ITEM_ARRAY + 0x97u)
+
+/* Suck Cannon: item id 0x87, and no ammo the game actually counts. */
+#define SUCK_ROW  40
+
 static void test_rac3(void)
 {
 	const struct game_api *g;
@@ -1376,19 +1480,40 @@ static void test_rac3(void)
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
+		const struct unlock_field_desc *fields = NULL;
 		u32 values[4];
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST reads");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
 		check_eq_u64(n, 41, "the whole UYAUnlocks table is there");
 		check_eq_u64(ncat, 3, "in three categories");
 		check(list != NULL && qstreq(list[AOD_ROW].name, "Agents of Doom"),
 		      "row 21 is the Agents of Doom");
 		check(list != NULL && list[AOD_ROW].fields ==
-		      (UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD |
-		       UNLOCK_FIELD_LEVEL | UNLOCK_FIELD_AMMO),
+		      (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
+		       UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
 		      "a weapon declares all four fields");
-		check(list != NULL && list[16].fields == UNLOCK_FIELD_OWNED,
+		check(list != NULL && list[16].fields == UNLOCK_FIELD_0,
 		      "a vid comic is owned-only");
+		check(list != NULL && qstreq(list[SUCK_ROW].name, "Suck Cannon") &&
+		      (list[SUCK_ROW].fields & UNLOCK_FIELD_3) == 0,
+		      "the Suck Cannon carries no ammo in game, so it declares none");
+
+		/*
+		 * Protocol 1.3. Before this, slot 1 was called "Gold" and slot 2
+		 * "Level" on the wire, so a client drew UYA's weapon version as a
+		 * checkbox and could only ever write v1.
+		 */
+		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
+		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
+		check(fields != NULL && qstreq(fields[1].name, "Level") &&
+		      fields[1].kind == UNLOCK_KIND_NUMBER && fields[1].max == 8,
+		      "slot 1 is a Level number that stops at 8");
+		check(fields != NULL && qstreq(fields[2].name, "XP") &&
+		      fields[2].kind == UNLOCK_KIND_NUMBER && fields[2].max == 0,
+		      "slot 2 is an unbounded XP number");
+		check(fields != NULL && qstreq(fields[3].name, "Ammo") &&
+		      fields[3].kind == UNLOCK_KIND_NUMBER && fields[3].max == 0,
+		      "slot 3 is an unbounded Ammo number");
 
 		check(g->unlock_set(AOD_ROW, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
 		host_peek(AOD_UNLOCK, &b, 1);
@@ -1406,10 +1531,24 @@ static void test_rac3(void)
 		mem_read_u32(AOD_AMMO, &v);
 		check_eq_u64(v, 77, "the ammo word was written");
 
-		check(g->unlock_set(AOD_ROW, 1, 99) == ST_BAD_ARG,
-		      "a version past the weapon's level count is BAD_ARG");
+		/*
+		 * The level field advertises the game-wide maximum of 8, so a client
+		 * may well send 8 for the R3YNO. UNLOCK_SET clamps to the entry's own
+		 * level count rather than refusing.
+		 */
+		check(g->unlock_set(AOD_ROW, 1, 99) == ST_OK,
+		      "a version past the weapon's level count is clamped, not refused");
+		host_peek(AOD_ITEM, &b, 1);
+		check_eq_u64(b, 0x5Eu, "the Agents of Doom landed on v8");
+		check(g->unlock_set(RYNO_ROW, 1, 8) == ST_OK, "the R3YNO takes a level of 8");
+		host_peek(RYNO_ITEM, &b, 1);
+		check_eq_u64(b, 0x9Bu, "and stops at its own v5");
+		check(g->unlock_set(AOD_ROW, 1, 3) == ST_OK, "back down to v3");
+
 		check(g->unlock_set(16, 2, 1) == ST_UNSUPPORTED,
 		      "a vid comic has no exp word");
+		check(g->unlock_set(SUCK_ROW, 3, 5) == ST_UNSUPPORTED,
+		      "and the Suck Cannon refuses an ammo write");
 		check(g->unlock_set(200, 0, 1) == ST_BAD_ARG, "an unknown id is BAD_ARG");
 
 		check(g->unlock_set(BOUNCER_ROW, 1, 2) == ST_OK, "the Bouncer goes to v2");
@@ -1419,7 +1558,7 @@ static void test_rac3(void)
 		/* Vid comic 3 sits at 0x12CA - 0x4A8 past the unlock array, so +3 here. */
 		host_poke(R3_VID_COMICS + 3, (const u8 *)"\x01", 1);
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST again");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
 		check(g->unlock_read(&list[AOD_ROW], values) == ST_OK, "row 21 reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
@@ -1672,13 +1811,21 @@ static void test_rac4(void)
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
+		const struct unlock_field_desc *fields = NULL;
 		u32 values[4];
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST reads");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
 		check_eq_u64(n, 16, "sixteen bot upgrades");
 		check_eq_u64(ncat, 1, "in one category");
 		check(list != NULL && qstreq(list[0].name, "Pistol Flux LX"),
 		      "entry 0 is the Pistol Flux LX");
+		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
+		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
+		check(fields != NULL &&
+		      (fields[1].name == NULL || fields[1].name[0] == 0) &&
+		      (fields[2].name == NULL || fields[2].name[0] == 0) &&
+		      (fields[3].name == NULL || fields[3].name[0] == 0),
+		      "and Deadlocked names no other slot");
 
 		check(g->unlock_set(5, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
 		host_peek(R4_BOTS_LIVE + 5, &b, 1);
@@ -1688,7 +1835,7 @@ static void test_rac4(void)
 
 		check(g->unlock_set(5, 1, 1) == ST_UNSUPPORTED, "there is no second field");
 
-		check(g->unlock_list(&list, &n, &cats, &ncat) == ST_OK, "UNLOCK_LIST again");
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
 		check(g->unlock_read(&list[5], values) == ST_OK, "entry 5 reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
@@ -1883,6 +2030,77 @@ static void test_submit_after_stop(void)
 	check_eq_u64(cmd.status, ST_BUSY, "and the command is answered BUSY");
 }
 
+/*
+ * The unload path, as far as a PC can see it: a client is connected and parked
+ * in recv when net_stop() runs, so the accept thread must come back out of
+ * accept(), the connection thread must come back out of recv() and give its
+ * slot up, and the join must return rather than hang. On the console this is
+ * the difference between webMAN unloading the module and needing a reboot.
+ */
+static void test_net_stop_with_client(void)
+{
+	plat_thread_t accept_thread = PLAT_THREAD_NONE;
+	struct sockaddr_in sa;
+	int client;
+	u8 hello[QWARK_FRAME_HEADER + 1];
+	u8 header[QWARK_FRAME_HEADER];
+	int waited;
+
+	group("net_stop with a client connected");
+
+	if (net_init() != ST_OK) {
+		check(0, "net_init opens the UDP socket");
+		return;
+	}
+	check(plat_thread_create(&accept_thread, net_accept_thread, NULL,
+	                         16384, "qwark_net") == 0,
+	      "the accept thread starts");
+
+	/* Let the listener come up before we knock. */
+	client = -1;
+	for (waited = 0; waited < 2000; waited += 20) {
+		client = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (client < 0) break;
+
+		memset(&sa, 0, sizeof(sa));
+		sa.sin_family = AF_INET;
+		sa.sin_port = htons(QWARK_PORT);
+		sa.sin_addr.s_addr = htonl(0x7F000001u);   /* 127.0.0.1 */
+
+		if (connect(client, (struct sockaddr *)&sa, sizeof(sa)) == 0) break;
+
+		plat_socket_close(client);
+		client = -1;
+		plat_sleep_us(20000);
+	}
+	check(client >= 0, "a client connects to the listener");
+
+	if (client >= 0) {
+		/* HELLO, so we know the connection thread is up and back in recv(). */
+		be32_put(hello, 1);
+		be16_put(hello + 4, 1);
+		be16_put(hello + 6, OP_HELLO);
+		hello[QWARK_FRAME_HEADER] = QWARK_PROTOCOL_VERSION;
+
+		check(send(client, (const char *)hello, sizeof(hello), 0) ==
+		      (int)sizeof(hello), "HELLO goes out");
+		check(recv(client, (char *)header, QWARK_FRAME_HEADER, 0) ==
+		      (int)QWARK_FRAME_HEADER, "and the SessionInfo header comes back");
+	}
+
+	net_stop();
+	check(plat_thread_join(accept_thread) == 0,
+	      "the accept thread joins after net_stop");
+	check(net_wait_clients(2000000u) == 1,
+	      "and every connection thread gave its slot up");
+
+	if (client >= 0) plat_socket_close(client);
+
+	net_shutdown();
+	session_shutdown();
+	check(1, "net_shutdown and session_shutdown return");
+}
+
 /* ------------------------------------------------------------------- main */
 
 int main(void)
@@ -1911,6 +2129,7 @@ int main(void)
 	test_planet_load();
 	test_savefile_gate();
 	test_debug_options();
+	test_live_toggles();
 	test_savefile_flags();
 	test_rac2();
 	test_rac3();
@@ -1919,6 +2138,7 @@ int main(void)
 	test_config();
 	test_fingerprint();
 	test_submit_after_stop();
+	test_net_stop_with_client();
 
 	printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	printf("%s\n", g_failures == 0 ? "ALL PASS" : "FAILURES");

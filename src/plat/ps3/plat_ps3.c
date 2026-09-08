@@ -187,20 +187,36 @@ struct thread_desc {
 
 static struct thread_desc g_tdesc[PLAT_MAX_THREADS];
 
+/*
+ * The slot is a hand-off, nothing more: it carries fn and arg from the creator
+ * to the new thread and is free again the moment the new thread has read them.
+ *
+ * It has to be released here rather than after fn returns, because every thread
+ * body in qwark ends in plat_thread_exit() and so never comes back. Holding the
+ * slot for the life of the thread leaked one per client connection and, after
+ * PLAT_MAX_THREADS of them, no further client could be accepted.
+ */
 static void thread_entry(u64 arg)
 {
 	u32 i = (u32)arg;
+	plat_thread_fn fn = NULL;
+	void *fn_arg = NULL;
 
-	if (i < PLAT_MAX_THREADS && g_tdesc[i].fn != NULL) {
-		g_tdesc[i].fn(g_tdesc[i].arg);
+	if (i < PLAT_MAX_THREADS) {
+		fn = g_tdesc[i].fn;
+		fn_arg = g_tdesc[i].arg;
+		g_tdesc[i].fn = NULL;
+		g_tdesc[i].arg = NULL;
 		g_tdesc[i].used = 0;
 	}
+
+	if (fn != NULL) fn(fn_arg);
 
 	sys_ppu_thread_exit(0);
 }
 
-int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
-                       u32 stack_size, const char *name)
+static int thread_spawn(plat_thread_t *out, plat_thread_fn fn, void *arg,
+                        u32 stack_size, const char *name, u64 create_flags)
 {
 	sys_ppu_thread_t id = SYS_PPU_THREAD_NONE;
 	int slot = -1;
@@ -216,7 +232,7 @@ int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
 	g_tdesc[slot].used = 1;
 
 	if (sys_ppu_thread_create(&id, thread_entry, (u64)(u32)slot, THREAD_PRIO,
-	                          stack_size, SYS_PPU_THREAD_CREATE_JOINABLE,
+	                          stack_size, create_flags,
 	                          (char *)name) != CELL_OK) {
 		g_tdesc[slot].used = 0;
 		return -1;
@@ -224,6 +240,20 @@ int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
 
 	if (out) *out = (plat_thread_t)id;
 	return 0;
+}
+
+int plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
+                       u32 stack_size, const char *name)
+{
+	return thread_spawn(out, fn, arg, stack_size, name,
+	                    SYS_PPU_THREAD_CREATE_JOINABLE);
+}
+
+int plat_thread_create_detached(plat_thread_fn fn, void *arg,
+                                u32 stack_size, const char *name)
+{
+	return thread_spawn(NULL, fn, arg, stack_size, name,
+	                    SYS_PPU_THREAD_CREATE_NORMAL);
 }
 
 int plat_thread_join(plat_thread_t t)

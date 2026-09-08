@@ -124,23 +124,67 @@ void qwark_stop_server(void)
 	session_stop();
 }
 
+/*
+ * How long the stop thread waits for the detached client threads before it
+ * takes their descriptors back and carries on: two seconds is far longer than a
+ * recv() that has already been shut down needs, and the module is going away
+ * either way.
+ */
+#define QWARK_CLIENT_DRAIN_US 2000000u
+
 static void qwark_stop_thread(u64 arg)
 {
 	(void)arg;
 
+	plat_trace("qwark: stop thread up");
+
 	/* Give the tick and client threads a moment before we join. */
 	sys_ppu_thread_sleep(2);
 
-	if (g_boot != PLAT_THREAD_NONE) plat_thread_join(g_boot);
-	if (g_tick != PLAT_THREAD_NONE) plat_thread_join(g_tick);
+	/*
+	 * The boot thread is the accept loop, so joining it proves accept() came
+	 * back; the tick thread has released everything parked on the ring by the
+	 * time its join returns. Both were created joinable, so both must be
+	 * joined or their stacks are never given back.
+	 */
+	if (g_boot != PLAT_THREAD_NONE) {
+		plat_trace("qwark:   joining accept thread");
+		plat_thread_join(g_boot);
+		g_boot = PLAT_THREAD_NONE;
+		plat_trace("qwark:   accept thread joined");
+	}
 
+	if (g_tick != PLAT_THREAD_NONE) {
+		plat_trace("qwark:   joining tick thread");
+		plat_thread_join(g_tick);
+		g_tick = PLAT_THREAD_NONE;
+		plat_trace("qwark:   tick thread joined");
+	}
+
+	/* Nobody joins a connection thread, so wait for the slots to empty. */
+	net_wait_clients(QWARK_CLIENT_DRAIN_US);
+
+	/* Now that no thread is left in the core, the kernel objects can go. */
+	net_shutdown();
+	session_shutdown();
+
+	plat_trace("qwark: stop thread down");
 	sys_ppu_thread_exit(0);
 }
 
+/*
+ * The unload sequence is Ratchetron's, which the user has been unloading from
+ * webMAN for years: break the sockets, join through a stop thread that gives
+ * the other threads time to wind down, sleep half a second, unload the PRX and
+ * exit this thread. `_sys_ppu_thread_exit` never returns, so the `return` below
+ * is there for the compiler; Ratchetron's stop has the same shape.
+ */
 int qwark_stop(void)
 {
 	sys_ppu_thread_t t_id;
 	u64 exit_code;
+
+	plat_trace("qwark: module stop");
 
 	qwark_stop_server();
 
@@ -148,17 +192,20 @@ int qwark_stop(void)
 	                          QWARK_STACK_STOP, SYS_PPU_THREAD_CREATE_JOINABLE,
 	                          THREAD_NAME_STOP) == CELL_OK) {
 		sys_ppu_thread_join(t_id, &exit_code);
+		plat_trace("qwark:   stop thread joined");
+	} else {
+		plat_trace("qwark:   stop thread create FAILED");
 	}
 
 	sys_ppu_thread_usleep(500000);
 
 	plat_shutdown();
 
+	plat_trace("qwark: unloading module");
+
 	unload_prx_module();
 
 	_sys_ppu_thread_exit(0);
-
-	show_msg("qwark unloaded!");
 
 	return SYS_PRX_STOP_OK;
 }

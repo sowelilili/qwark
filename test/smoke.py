@@ -29,7 +29,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 2
+QWARK_BUILD = 3
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -40,6 +40,7 @@ OP_GET_STATE = 0x0012
 OP_DESCRIBE = 0x0020
 OP_FEATURE_SET = 0x0021
 OP_FEATURE_TRIGGER = 0x0022
+OP_FEATURE_SET_AUTO = 0x0023
 OP_FEATURE_OPTIONS = 0x0024
 OP_MEM_READ = 0x0030
 OP_MEM_WRITE = 0x0031
@@ -75,8 +76,21 @@ SESSION_XMB, SESSION_BOOTING, SESSION_INGAME, SESSION_QUITTING = 0, 1, 2, 3
 SESSION_INFO_SIZE = 164
 FEATURE_WIRE_SIZE = 48
 UNLOCK_WIRE_SIZE = 44
+UNLOCK_FIELD_WIRE_SIZE = 16
+
+# UnlockFieldDesc.kind
+UNLOCK_KIND_FLAG = 0
+UNLOCK_KIND_NUMBER = 1
 
 FEATURE_TOGGLE, FEATURE_ACTION, FEATURE_VALUE, FEATURE_ENUM, FEATURE_COLOR = 0, 1, 2, 3, 4
+
+# Feature.flags
+FEATURE_FLAG_AUTO = 0x01
+FEATURE_FLAG_WRITES_CODE = 0x02
+FEATURE_FLAG_SAVE_ASIDE = 0x04
+FEATURE_FLAG_LOAD_ASIDE = 0x08
+# Protocol 1.3: the toggle's state is read back out of game memory.
+FEATURE_FLAG_LIVE = 0x10
 
 COMBO_SAVE_POSITION = 0
 
@@ -92,11 +106,16 @@ RAC1_GOLD_BOLTS = 0xA0CA34
 RAC1_LOAD_PLANET = 0xA10700
 RAC1_DEBUG_MODE = 0x95C5D4
 RAC1_JANKPOT_BOLTS = 0xA0FD18
+RAC1_GOODIES_MENU = 0x969CD3
 
 # RaC1 feature ids, from src/games/rac1.h.
+F_INFINITE_AMMO = 1
 F_BOLTS = 5
 F_GOODIES = 6
 F_JANK_BOLTS = 21
+F_DBG_RATCHET = 24
+F_DBG_MOBYS = 25
+F_DBG_PARTICLES = 26
 F_DBG_CAMERA = 27
 
 # RaC1 readout slots, from src/games/rac1.h.
@@ -269,12 +288,23 @@ def parse_describe(b):
 
 
 def parse_unlocks(b):
+    """UNLOCK_LIST, protocol 1.3: categories, four field descriptors, then rows."""
     off = 0
     ncat = b[off]; off += 1
     cats = []
     for _ in range(ncat):
         cats.append(b[off:off + 24].split(b"\0")[0].decode("ascii", "replace"))
         off += 24
+    fields = []
+    for _ in range(4):
+        row = b[off:off + UNLOCK_FIELD_WIRE_SIZE]
+        fields.append({
+            "name": row[:12].split(b"\0")[0].decode("ascii", "replace"),
+            "kind": row[12],
+            "max": row[13],
+            "reserved": row[14:16],
+        })
+        off += UNLOCK_FIELD_WIRE_SIZE
     n = b[off]; off += 1
     rows = []
     for _ in range(n):
@@ -287,7 +317,7 @@ def parse_unlocks(b):
             "name": row[20:44].split(b"\0")[0].decode("ascii", "replace"),
         })
         off += UNLOCK_WIRE_SIZE
-    return cats, rows, off
+    return cats, fields, rows, off
 
 
 # --------------------------------------------------------------- helpers
@@ -358,6 +388,11 @@ OTHER_GAMES = [
         "unlocks": 44,
         "categories": 3,
         "unlock0": "Lancer",
+        # RC2Unlocks.cs is one owned byte per row and nothing else.
+        "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0)],
         "levelflags": 0x10,
         "coords": 0x147F260,
         # Bolts, a VALUE with readout 0.
@@ -385,6 +420,13 @@ OTHER_GAMES = [
         "unlocks": 41,
         "categories": 3,
         "unlock0": "Bomb Glove",
+        # Slot 1 is UYA's weapon version, not a gold flag, and slot 2 is its XP.
+        "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
+                   ("Level", UNLOCK_KIND_NUMBER, 8),
+                   ("XP", UNLOCK_KIND_NUMBER, 0),
+                   ("Ammo", UNLOCK_KIND_NUMBER, 0)],
+        # The Suck Cannon carries no ammo the game counts.
+        "no_field": [("Suck Cannon", 3)],
         "levelflags": 0x10,
         "coords": 0xDA2870,
         "value_id": 7,
@@ -408,6 +450,11 @@ OTHER_GAMES = [
         "unlocks": 16,
         "categories": 1,
         "unlock0": "Pistol Flux LX",
+        # A bot upgrade is one owned byte; Deadlocked's weapons are not listed.
+        "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0)],
         # Deadlocked has never had a level-flag region.
         "levelflags": None,
         "coords": 0x10D44D0,
@@ -493,7 +540,7 @@ def exercise_game(c, sim, spec):
     # -------------------------------------------------------- unlock list
     status, body = c.call(OP_UNLOCK_LIST)
     if check(status == ST_OK, "%s: UNLOCK_LIST answers OK" % name, status):
-        cats, rows, consumed = parse_unlocks(body)
+        cats, fields, rows, consumed = parse_unlocks(body)
         check(consumed == len(body), "%s: UNLOCK_LIST parses exactly" % name)
         check(len(rows) == spec["unlocks"],
               "%s: the unlock count matches" % name, len(rows))
@@ -503,12 +550,46 @@ def exercise_game(c, sim, spec):
               "%s: row 0 is the expected item" % name,
               rows[0]["name"] if rows else None)
 
+        # Protocol 1.3: four field descriptors, always four, naming the slots.
+        check(len(fields) == 4, "%s: four field descriptors" % name, len(fields))
+        check(all(f["reserved"] == b"\0\0" for f in fields),
+              "%s: their reserved bytes are zero" % name)
+        check(fields[0]["name"] == "Owned" and
+              fields[0]["kind"] == UNLOCK_KIND_FLAG,
+              "%s: slot 0 is the Owned checkbox" % name, fields[0])
+        for slot, want in enumerate(spec["fields"]):
+            got = (fields[slot]["name"], fields[slot]["kind"], fields[slot]["max"])
+            check(got == want,
+                  "%s: slot %d is %r" % (name, slot, want), got)
+
+        # A slot the game leaves unnamed must be declared by no row at all.
+        for slot in range(4):
+            if fields[slot]["name"]:
+                continue
+            check(all((r["fields"] & (1 << slot)) == 0 for r in rows),
+                  "%s: no row declares the unnamed slot %d" % (name, slot))
+
+        # Rows that must not offer a slot the rest of their category does, and
+        # whose UNLOCK_SET on it has to be refused rather than quietly written.
+        for row_name, slot in spec.get("no_field", []):
+            row = next((r for r in rows if r["name"] == row_name), None)
+            if not check(row is not None,
+                         "%s: %s is in the table" % (name, row_name)):
+                continue
+            check((row["fields"] & (1 << slot)) == 0,
+                  "%s: %s declares no slot %d" % (name, row_name, slot),
+                  hex(row["fields"]))
+            status, _ = c.call(OP_UNLOCK_SET,
+                               struct.pack(">BBHI", row["id"], slot, 0, 1))
+            check(status == ST_UNSUPPORTED,
+                  "%s: and UNLOCK_SET on it is UNSUPPORTED" % name, status)
+
         # And one round trip through UNLOCK_SET.
         status, _ = c.call(OP_UNLOCK_SET, struct.pack(">BBHI", 0, 0, 0, 1))
         check(status == ST_OK, "%s: UNLOCK_SET owned=1" % name, status)
         status, body = c.call(OP_UNLOCK_LIST)
         if status == ST_OK:
-            _cats, rows, _n = parse_unlocks(body)
+            _cats, _fields, rows, _n = parse_unlocks(body)
             check(rows and rows[0]["values"][0] == 1,
                   "%s: and it reads back live" % name,
                   rows[0]["values"] if rows else None)
@@ -744,7 +825,7 @@ def main():
         # ----------------------------------------------------------- unlocks
         status, body = c.call(OP_UNLOCK_LIST)
         if check(status == ST_OK, "UNLOCK_LIST answers OK", status):
-            cats, rows, consumed = parse_unlocks(body)
+            cats, fields, rows, consumed = parse_unlocks(body)
             check(consumed == len(body), "UNLOCK_LIST parses exactly",
                   (consumed, len(body)))
             check(cats == ["Weapons", "Gadgets", "Items"],
@@ -756,6 +837,15 @@ def main():
                   hex(rows[0]["fields"]))
             check(rows[34]["fields"] == 0x01,
                   "an index-less item declares only owned", hex(rows[34]["fields"]))
+
+            # Protocol 1.3: RaC1's four slots, named honestly. Gold really is a
+            # RaC1 idea, so this is the one game that has a Gold checkbox.
+            check([(f["name"], f["kind"], f["max"]) for f in fields] ==
+                  [("Owned", UNLOCK_KIND_FLAG, 0),
+                   ("Gold", UNLOCK_KIND_FLAG, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("Ammo", UNLOCK_KIND_NUMBER, 0)],
+                  "RaC1 names Owned, Gold, nothing and Ammo", fields)
 
         # Owning a weapon hands it its max ammo, as the old client did.
         c.call(OP_MEM_WRITE, struct.pack(">I", 0x96C0D4) + struct.pack(">I", 0))
@@ -771,7 +861,7 @@ def main():
 
         status, body = c.call(OP_UNLOCK_LIST)
         if status == ST_OK:
-            _cats, rows, _n = parse_unlocks(body)
+            _cats, _fields, rows, _n = parse_unlocks(body)
             check(rows[0]["values"][0] == 1 and rows[0]["values"][3] == 12,
                   "UNLOCK_LIST reads the live owned and ammo values",
                   rows[0]["values"])
@@ -899,6 +989,52 @@ def main():
               "the goodies readout follows the byte in memory",
               info["readout"][RO_GOODIES] if info else None)
         c.call(OP_FEATURE_SET, struct.pack(">BI", F_GOODIES, 0))
+
+        # ----------------------------------------- protocol 1.3, LIVE toggles
+        # A LIVE toggle's state is a byte the game owns, so writing that byte
+        # behind qwark's back still moves the bit in toggle_state: the client's
+        # checkbox follows the save file rather than what qwark last wrote.
+        describe_flags = {}
+        status, body = c.call(OP_DESCRIBE)
+        if status == ST_OK:
+            _g, _gr, _ro, feats, _off = parse_describe(body)
+            describe_flags = {f["id"]: f["flags"] for f in feats}
+
+        check(describe_flags.get(F_GOODIES, 0) & FEATURE_FLAG_LIVE,
+              "DESCRIBE marks the goodies menu LIVE",
+              hex(describe_flags.get(F_GOODIES, 0)))
+        for fid in (F_DBG_RATCHET, F_DBG_MOBYS, F_DBG_PARTICLES):
+            check(describe_flags.get(fid, 0) & FEATURE_FLAG_LIVE,
+                  "DESCRIBE marks debug update id %d LIVE" % fid,
+                  hex(describe_flags.get(fid, 0)))
+        check(not (describe_flags.get(1, 0) & FEATURE_FLAG_LIVE),
+              "and a patch-backed toggle is not LIVE",
+              hex(describe_flags.get(1, 0)))
+
+        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_GOODIES_MENU) + b"\x01")
+        info = fresh_state(c, settle=0.4)
+        check(info and (info["toggle_state"] & (1 << F_GOODIES)) != 0,
+              "a MEM_WRITE of the goodies byte turns the toggle bit on",
+              hex(info["toggle_state"]) if info else None)
+
+        # And FEATURE_SET 0 clears both the byte and the bit.
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", F_GOODIES, 0))
+        check(status == ST_OK, "FEATURE_SET 0 on a LIVE toggle still writes", status)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_GOODIES_MENU, 1))
+        check(body == b"\x00", "the byte went to zero", body)
+        info = fresh_state(c, settle=0.4)
+        check(info and (info["toggle_state"] & (1 << F_GOODIES)) == 0,
+              "and the toggle bit followed it back off",
+              hex(info["toggle_state"]) if info else None)
+
+        # There is nothing for qwark to re-apply, so there is no auto bit.
+        status, _ = c.call(OP_FEATURE_SET_AUTO, bytes([F_GOODIES, 1]))
+        check(status == ST_UNSUPPORTED,
+              "FEATURE_SET_AUTO on a LIVE toggle is UNSUPPORTED", status)
+        info = fresh_state(c)
+        check(info and (info["toggle_auto"] & (1 << F_GOODIES)) == 0,
+              "and its auto bit stays clear",
+              hex(info["toggle_auto"]) if info else None)
 
         # --------------------------------------------------- position slots
         coords = struct.pack(">fff", 1.5, 2.5, 3.5) + b"\x00" * 18

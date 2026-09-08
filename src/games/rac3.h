@@ -182,6 +182,13 @@ extern const u8 rac3_fp_patched[4];
 #define RAC3_ARMOUR_COUNT 8
 #define RAC3_SHIP_COUNT   32
 
+/*
+ * The highest weapon version any RaC3 item has, and so the maximum the level
+ * field advertises in UNLOCK_LIST. The R3YNO stops at 5 and every other
+ * levelled weapon goes to 8; UNLOCK_SET clamps to the entry's own `levels`.
+ */
+#define RAC3_MAX_LEVELS 8
+
 /* ------------------------------------------------------ rac3_panel.c exports */
 
 int rac3_trigger(u8 id);
@@ -196,7 +203,8 @@ int rac3_levelflags_reset(u8 planet);
 int rac3_levelflags_set(u8 planet, u16 offset, u8 value);
 
 int rac3_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories);
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields);
 int rac3_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac3_unlock_set(u8 id, u8 field, u32 value);
 

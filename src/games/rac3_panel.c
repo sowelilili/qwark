@@ -51,15 +51,29 @@ struct rac3_item {
 
 static const char * const rac3_categories[] = { "Weapons", "Gadgets and items", "Vid comics" };
 
-#define OWNED UNLOCK_FIELD_OWNED
 /*
- * The wire's four Unlock fields are, in order, owned / gold / level / ammo. RaC3
- * has no gold, so the "gold" slot carries the weapon version and the "level"
- * slot carries its experience; the labels in PROTOCOL.md are RaC1's.
+ * Protocol 1.3, the four value slots as RaC3 uses them. Gold weapons are a RaC1
+ * idea and RaC3 has none, so slot 1 is the weapon VERSION that UYAUnlocks drew
+ * as a v1..v8 combo box, and slot 2 is the experience its xBox edited. Before
+ * 1.3 those two slots were called "Gold" and "Level" on the wire, so a client
+ * drew the version as a checkbox and could only ever write v1; the field
+ * descriptors are what stop that.
+ *
+ * The version maximum is game-wide: every levelled weapon goes to 8 except the
+ * R3YNO, which stops at 5. UNLOCK_SET clamps per entry, so a client that offers
+ * 8 everywhere still cannot push the R3YNO past v5.
  */
-#define LEVEL UNLOCK_FIELD_GOLD
-#define XP    UNLOCK_FIELD_LEVEL
-#define AMMO  UNLOCK_FIELD_AMMO
+static const struct unlock_field_desc rac3_fields[4] = {
+	{ "Owned", UNLOCK_KIND_FLAG,   0 },
+	{ "Level", UNLOCK_KIND_NUMBER, RAC3_MAX_LEVELS },
+	{ "XP",    UNLOCK_KIND_NUMBER, 0 },
+	{ "Ammo",  UNLOCK_KIND_NUMBER, 0 }
+};
+
+#define OWNED UNLOCK_FIELD_0
+#define LEVEL UNLOCK_FIELD_1
+#define XP    UNLOCK_FIELD_2
+#define AMMO  UNLOCK_FIELD_3
 
 static const struct game_unlock rac3_unlocks[] = {
 	/* levels 0: the bomb glove is deliberately kept out of both menus. */
@@ -106,13 +120,15 @@ static const struct game_unlock rac3_unlocks[] = {
 	{ 37, CAT_WEAPONS, OWNED | LEVEL | XP | AMMO, "Shield Charger" },
 	{ 38, CAT_WEAPONS, OWNED | LEVEL | XP | AMMO, "Shock Blaster" },
 	{ 39, CAT_WEAPONS, OWNED | LEVEL | XP | AMMO, "Spitting Hydra" },
-	{ 40, CAT_WEAPONS, OWNED | LEVEL | XP | AMMO, "Suck Cannon" }
+	/* The Suck Cannon carries no ammo in game; its ammo word is not the count. */
+	{ 40, CAT_WEAPONS, OWNED | LEVEL | XP,        "Suck Cannon" }
 };
 
-#undef OWNED
-#undef LEVEL
-#undef XP
-#undef AMMO
+/*
+ * OWNED, LEVEL, XP and AMMO stay defined for the rest of the file: unlock_read
+ * and unlock_set test the same four slot bits, and spelling them out there is
+ * what keeps the read and the descriptor table honest with each other.
+ */
 
 /* Parallel to rac3_unlocks, id by id. */
 static const struct rac3_item rac3_items[] = {
@@ -193,7 +209,14 @@ static u8 item_version_byte(const struct rac3_item *it, u32 version)
 static int item_set_version(const struct rac3_item *it, u32 version)
 {
 	if (it->levels <= 1) return ST_UNSUPPORTED;
-	if (version < 1 || version > it->levels) return ST_BAD_ARG;
+
+	/*
+	 * Clamp rather than refuse. The level field's advertised maximum is the
+	 * game-wide 8, because UnlockFieldDesc.max is one number for the whole
+	 * table; the R3YNO stops at v5 and its own `levels` is what decides here.
+	 */
+	if (version < 1) version = 1;
+	if (version > it->levels) version = it->levels;
 
 	return mem_write_u8(RAC3_ITEM_ARRAY + it->id, item_version_byte(it, version));
 }
@@ -247,7 +270,8 @@ static int snap_word(u32 addr, u32 *out)
 }
 
 int rac3_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories)
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields)
 {
 	int rc;
 
@@ -255,6 +279,7 @@ int rac3_unlock_list(const struct game_unlock **list, u8 *count,
 	*count       = RAC3_UNLOCK_COUNT;
 	*categories  = rac3_categories;
 	*ncategories = (u8)(sizeof(rac3_categories) / sizeof(rac3_categories[0]));
+	*fields      = rac3_fields;
 
 	g_snap_valid = 0;
 
@@ -286,16 +311,23 @@ int rac3_unlock_read(const struct game_unlock *entry, u32 values[4])
 	 * UYAItem.GetVersionHeuristic: the item array byte minus the item id plus
 	 * one. It cannot work for the five GC weapons, whose versions 2 and up live
 	 * in a table of their own, so those report 0 exactly as the old form did.
+	 *
+	 * The old form did that subtraction in unsigned arithmetic, so a byte below
+	 * the item id (an unowned weapon, or a stray GC table offset) came back as
+	 * a four-billion "level" that its combo box then ignored. A number box on
+	 * the client would show it, so anything outside 1..levels reports 0 here,
+	 * which is already the GC weapons' way of saying "not known".
 	 */
-	if ((entry->fields & UNLOCK_FIELD_GOLD) != 0 && !it->gc &&
+	if ((entry->fields & LEVEL) != 0 && !it->gc &&
 	    snap_byte(RAC3_ITEM_ARRAY + it->id, &b)) {
-		values[1] = (u32)(b - it->id + 1);
+		int v = (int)b - (int)it->id + 1;
+		if (v >= 1 && v <= (int)it->levels) values[1] = (u32)v;
 	}
 
-	if ((entry->fields & UNLOCK_FIELD_LEVEL) != 0 && snap_word(item_exp_addr(it), &w))
+	if ((entry->fields & XP) != 0 && snap_word(item_exp_addr(it), &w))
 		values[2] = w;
 
-	if ((entry->fields & UNLOCK_FIELD_AMMO) != 0 && snap_word(item_ammo_addr(it), &w))
+	if ((entry->fields & AMMO) != 0 && snap_word(item_ammo_addr(it), &w))
 		values[3] = w;
 
 	return ST_OK;
@@ -306,6 +338,15 @@ int rac3_unlock_set(u8 id, u8 field, u32 value)
 	const struct rac3_item *it;
 
 	if (id >= RAC3_UNLOCK_COUNT) return ST_BAD_ARG;
+	if (field > 3) return ST_UNSUPPORTED;
+
+	/*
+	 * The row's declared fields are the contract, so a slot it does not offer
+	 * is refused even where the address behind it happens to exist: the Suck
+	 * Cannon's ammo word is not the count the game uses.
+	 */
+	if ((rac3_unlocks[id].fields & (u8)(1u << field)) == 0) return ST_UNSUPPORTED;
+
 	it = &rac3_items[id];
 
 	switch (field) {
@@ -319,12 +360,9 @@ int rac3_unlock_set(u8 id, u8 field, u32 value)
 		if (item_exp_addr(it) == 0) return ST_UNSUPPORTED;
 		return mem_write_u32(item_exp_addr(it), value);
 
-	case 3:
+	default:
 		if (item_ammo_addr(it) == 0) return ST_UNSUPPORTED;
 		return mem_write_u32(item_ammo_addr(it), value);
-
-	default:
-		return ST_UNSUPPORTED;
 	}
 }
 

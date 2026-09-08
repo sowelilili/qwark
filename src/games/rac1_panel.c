@@ -38,6 +38,20 @@ struct rac1_item {
 
 static const char * const rac1_categories[] = { "Weapons", "Gadgets", "Items" };
 
+/*
+ * Protocol 1.3, the four value slots as RaC1 uses them. Owned and gold are the
+ * two checkboxes NewUnlocks.cs drew; the ammo word is a plain count with no
+ * ceiling the old client enforced (its "give 1337 ammo" button wrote past every
+ * weapon's maximum quite happily). RaC1 has no weapon levels, so slot 2 is
+ * empty and a client draws nothing for it.
+ */
+static const struct unlock_field_desc rac1_fields[4] = {
+	{ "Owned", UNLOCK_KIND_FLAG,   0 },
+	{ "Gold",  UNLOCK_KIND_FLAG,   0 },
+	{ NULL,    UNLOCK_KIND_FLAG,   0 },
+	{ "Ammo",  UNLOCK_KIND_NUMBER, 0 }
+};
+
 static const struct game_unlock rac1_unlocks[] = {
 	/* Weapons */
 	{  0, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Bomb Glove" },
@@ -182,7 +196,8 @@ static int snap_word(u32 addr, u32 *out)
 }
 
 int rac1_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories)
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields)
 {
 	int rc;
 
@@ -190,6 +205,7 @@ int rac1_unlock_list(const struct game_unlock **list, u8 *count,
 	*count       = RAC1_UNLOCK_COUNT;
 	*categories  = rac1_categories;
 	*ncategories = (u8)(sizeof(rac1_categories) / sizeof(rac1_categories[0]));
+	*fields      = rac1_fields;
 
 	g_snap_valid = 0;
 

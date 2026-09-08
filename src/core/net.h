@@ -22,6 +22,17 @@ void net_accept_thread(void *arg);
  */
 void net_stop(void);
 
+/*
+ * Waits for the connection threads to leave their slots, at most `timeout_us`.
+ * Returns 1 when every slot is free, 0 on timeout, in which case any socket
+ * still open is closed outright. Call after net_stop and before the module is
+ * unloaded, so a detached client thread is not still inside module code.
+ */
+int  net_wait_clients(u32 timeout_us);
+
+/* Destroys what net_init created. Nothing may be in the network code after this. */
+void net_shutdown(void);
+
 /* Called from the tick thread every fourth tick. */
 void net_send_telemetry(const u8 *packet, u32 len);
 

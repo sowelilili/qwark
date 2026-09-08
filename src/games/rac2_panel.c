@@ -31,6 +31,18 @@
 
 static const char * const rac2_categories[] = { "Weapons", "Gadgets", "Items" };
 
+/*
+ * Protocol 1.3. RC2Unlocks.cs is one owned byte per row and nothing else, so
+ * only slot 0 is named; the other three stay empty and a client draws no
+ * column for them.
+ */
+static const struct unlock_field_desc rac2_fields[4] = {
+	{ "Owned", UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG, 0 }
+};
+
 #define OWNED UNLOCK_FIELD_OWNED
 
 static const struct game_unlock rac2_unlocks[] = {
@@ -115,7 +127,8 @@ static u8 g_snap[SNAP_LEN];
 static int g_snap_valid;
 
 int rac2_unlock_list(const struct game_unlock **list, u8 *count,
-                     const char * const **categories, u8 *ncategories)
+                     const char * const **categories, u8 *ncategories,
+                     const struct unlock_field_desc **fields)
 {
 	int rc;
 
@@ -123,6 +136,7 @@ int rac2_unlock_list(const struct game_unlock **list, u8 *count,
 	*count       = RAC2_UNLOCK_COUNT;
 	*categories  = rac2_categories;
 	*ncategories = (u8)(sizeof(rac2_categories) / sizeof(rac2_categories[0]));
+	*fields      = rac2_fields;
 
 	g_snap_valid = 0;
 

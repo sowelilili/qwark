@@ -96,6 +96,16 @@ typedef void (*plat_thread_fn)(void *arg);
 
 int  plat_thread_create(plat_thread_t *out, plat_thread_fn fn, void *arg,
                         u32 stack_size, const char *name);
+
+/*
+ * A thread nobody will ever join: the platform releases it the moment it
+ * returns, so it can never hold up a module unload and its stack is not kept
+ * waiting for a join that is not coming. Client connection threads are created
+ * this way, exactly as Ratchetron creates its (SYS_PPU_THREAD_CREATE_NORMAL).
+ */
+int  plat_thread_create_detached(plat_thread_fn fn, void *arg,
+                                 u32 stack_size, const char *name);
+
 int  plat_thread_join(plat_thread_t t);
 void plat_thread_exit(void);
 

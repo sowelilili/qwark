@@ -472,6 +472,7 @@ const struct game_api rac4_game = {
 	rac4_describe,
 
 	rac4_set_toggle,
+	NULL,                 /* toggle_read: Deadlocked has no live toggle */
 	rac4_trigger,
 	rac4_set_value,
 	rac4_get_options,

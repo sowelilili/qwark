@@ -251,6 +251,8 @@ static const char * const rac2_readouts[] = {
 #define WC FEATURE_FLAG_WRITES_CODE
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
+/* Protocol 1.3: a toggle qwark reads back out of game memory. */
+#define LV FEATURE_FLAG_LIVE
 
 static const struct feature_desc rac2_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -259,7 +261,7 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ R2_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R2_INSTA_UPGRADE,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Weapon insta-upgrades" },
-	{ R2_DEBUG_MODE,      FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Enable debug mode" },
+	{ R2_DEBUG_MODE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Enable debug mode" },
 
 	{ R2_DIE,             FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R2_BOLTS,           FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC2_RO_BOLTS,      0, 0, "Bolts" },
@@ -307,6 +309,7 @@ static const struct feature_desc rac2_features[] = {
 #undef WC
 #undef SA
 #undef LA
+#undef LV
 
 static const struct game_describe rac2_describe_table = {
 	rac2_groups,   (u8)(sizeof(rac2_groups) / sizeof(rac2_groups[0])),
@@ -396,6 +399,24 @@ static int rac2_set_toggle(u8 id, int on)
 
 	default:                return ST_NOT_FOUND;
 	}
+}
+
+/*
+ * Protocol 1.3. Debug mode is one byte the game owns, so its checkbox follows
+ * memory rather than the last thing qwark wrote. Tick thread only.
+ */
+static int rac2_toggle_read(u8 id, int *on)
+{
+	u8 b = 0;
+	int rc;
+
+	if (id != R2_DEBUG_MODE) return ST_NOT_FOUND;
+
+	rc = mem_read_u8(RAC2_DEBUG_FEATURES, &b);
+	if (rc != ST_OK) return rc;
+
+	*on = (b != 0);
+	return ST_OK;
 }
 
 /* -------------------------------------------------------------- positions */
@@ -498,6 +519,7 @@ const struct game_api rac2_game = {
 	rac2_describe,
 
 	rac2_set_toggle,
+	rac2_toggle_read,
 	rac2_trigger,
 	rac2_set_value,
 	NULL,                 /* no ENUM features */
