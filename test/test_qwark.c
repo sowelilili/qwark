@@ -354,6 +354,31 @@ static void test_mods(void)
 		check(mods_unload("hardcore") == ST_NOT_FOUND, "unloading it twice is NOT_FOUND");
 	}
 
+	/*
+	 * Unloading reverts the patch words and deliberately leaves the code cave in
+	 * memory: restoring the cave bytes crashed the game, so the branches go and
+	 * the cave stays. rc1-hoven-health has both, a 1096-byte cave at 0x4F6400 and
+	 * nine words.
+	 */
+	if (found_hoven >= 0) {
+		u32 cave = 0;
+
+		host_poke(0x4F6400u, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(0x4EDFD8u, (const u8 *)"\x11\x22\x33\x44", 4);
+
+		check(mods_load("rc1-hoven-health") == ST_OK, "a mod with a cave loads");
+		mem_read_u32(0x4EDFD8u, &v);
+		check_eq_u64(v, 0x480087F5u, "its hook word was written");
+		mem_read_u32(0x4F6400u, &cave);
+		check(cave != 0, "and the cave file landed at 0x4F6400");
+
+		check(mods_unload("rc1-hoven-health") == ST_OK, "and it unloads");
+		mem_read_u32(0x4EDFD8u, &v);
+		check_eq_u64(v, 0x11223344u, "the hook word went back to the original");
+		mem_read_u32(0x4F6400u, &v);
+		check_eq_u64(v, cave, "but the cave bytes are still there");
+	}
+
 	check(mods_load("does-not-exist") == ST_NOT_FOUND, "an unknown dirname is NOT_FOUND");
 
 	group("patch.txt parser, dependencies");
@@ -741,48 +766,43 @@ static void test_unlocks(void)
 #define A_GOLD_BOLTS  0xA0CA34u
 #define A_LOAD_PLANET 0xA10700u
 
+/*
+ * RaC1's flag region is not laid out the way rac1_levelflags_get assumes, so the
+ * three vtable entries are NULL until it has been reverse-engineered. net.c
+ * answers UNSUPPORTED for a NULL entry, which is what makes the client hide the
+ * panel; smoke.py checks that end of it over the wire.
+ *
+ * The reset itself is a separate path that PLANET_LOAD's bit0 still drives, so
+ * what used to be checked through levelflags_reset is checked through a planet
+ * load here instead.
+ */
 static void test_levelflags(void)
 {
 	const struct game_api *g = session_game();
-	u8 buf[0x200];
-	u16 len = 0;
 	u8 b = 0;
 
-	group("RaC1 level flags");
+	group("RaC1 level flags are withheld");
 
-	check(g != NULL && g->levelflags_get != NULL, "RaC1 offers level flags");
-	if (g == NULL || g->levelflags_get == NULL) return;
+	check(g != NULL, "the session has a game");
+	if (g == NULL) return;
 
+	check(g->levelflags_get == NULL, "RaC1 declares no levelflags_get");
+	check(g->levelflags_reset == NULL, "nor a levelflags_reset");
+	check(g->levelflags_set == NULL, "nor a levelflags_set");
+
+	/* But the planet-load reset still clears every region racman cleared. */
 	host_poke(A_LEVEL_FLAGS + 5 * 0x10 + 3, (const u8 *)"\xAA", 1);
 	host_poke(A_MISC_FLAGS + 5 * 0x100 + 0x20, (const u8 *)"\xBB", 1);
+	host_poke(0x96C498u, (const u8 *)"\xEE", 1);   /* Rilgar's own block */
 
-	check(g->levelflags_get(5, buf, sizeof(buf), &len) == ST_OK, "LEVELFLAGS_GET reads");
-	check_eq_u64(len, 0x110, "the two regions concatenate to 0x110 bytes");
-	check_eq_u64(buf[3], 0xAA, "the main region leads");
-	check_eq_u64(buf[0x10 + 0x20], 0xBB, "the misc region follows it");
-
-	check(g->levelflags_get(99, buf, sizeof(buf), &len) == ST_BAD_ARG,
-	      "an out-of-range planet is BAD_ARG");
-	check(g->levelflags_get(5, buf, 4, &len) == ST_FULL, "a short buffer is FULL");
-
-	check(g->levelflags_set(5, 3, 0xCC) == ST_OK, "LEVELFLAGS_SET into the main region");
+	check(session_planet_load(5, PLANET_FLAG_RESET_LEVELFLAGS) == ST_OK,
+	      "a Rilgar load with bit0 runs the reset");
 	host_peek(A_LEVEL_FLAGS + 5 * 0x10 + 3, &b, 1);
-	check_eq_u64(b, 0xCC, "it landed in the main region");
-
-	check(g->levelflags_set(5, 0x10 + 0x20, 0xDD) == ST_OK,
-	      "LEVELFLAGS_SET past the main region");
+	check_eq_u64(b, 0, "the main region was zeroed");
 	host_peek(A_MISC_FLAGS + 5 * 0x100 + 0x20, &b, 1);
-	check_eq_u64(b, 0xDD, "it landed in the misc region");
-
-	check(g->levelflags_set(5, 0x110, 1) == ST_BAD_ARG, "one past the end is BAD_ARG");
-
-	/* Rilgar also clears its own block. */
-	host_poke(0x96C498u, (const u8 *)"\xEE", 1);
-	check(g->levelflags_reset(5) == ST_OK, "LEVELFLAGS_RESET runs");
-	check(g->levelflags_get(5, buf, sizeof(buf), &len) == ST_OK, "and reads back");
-	check(buf[3] == 0 && buf[0x10 + 0x20] == 0, "both regions are zero");
+	check_eq_u64(b, 0, "and the misc region with it");
 	host_peek(0x96C498u, &b, 1);
-	check_eq_u64(b, 0, "Rilgar's own block went with it");
+	check_eq_u64(b, 0, "and Rilgar's own block went too");
 }
 
 static void test_planet_load(void)
@@ -1255,7 +1275,7 @@ static void test_rac3(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 37, "RaC3 declares thirty-seven features");
+		check_eq_u64(d->nfeatures, 33, "RaC3 declares thirty-three features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 5, "and five groups");
 	}

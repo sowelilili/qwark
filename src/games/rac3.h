@@ -45,9 +45,6 @@
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
-#define RAC3_HELD_ITEM_FOO     0x00DA27CBu
-#define RAC3_HELD_ITEM_BAR     0x00DA3A1Bu
-#define RAC3_HELD_ITEM_BAZ     0x00DA4E07u
 #define RAC3_PLAYER_STATE      0x00DA4DB4u
 #define RAC3_PLAYER_HEALTH     0x00DA5040u
 #define RAC3_SKILL_POINTS      0x00DA521Du  /* 30 bytes */
@@ -134,12 +131,16 @@ extern const u8 rac3_fp_patched[4];
 
 /* ------------------------------------------------------------- feature ids */
 
-/* Stable: new features go on the end, a retired one leaves its number behind. */
+/*
+ * Stable: new features go on the end, a retired one leaves its number behind.
+ * Retired, never to be reused: 4 (freeze Klunk tuning), 28 (give 1337 ammo),
+ * 29 (setup NG+ weapons) and 30 (equip the bomb glove).
+ */
 #define R3_FREEZE_AMMO       0
 #define R3_FREEZE_HEALTH     1
 #define R3_OHKO              2
 #define R3_GHOST             3
-#define R3_KLUNK_TUNE        4
+/* 4 retired */
 #define R3_QS_PAUSE          5
 
 #define R3_DIE               6
@@ -165,9 +166,7 @@ extern const u8 rac3_fp_patched[4];
 #define R3_RESET_TITANIUM    25
 #define R3_UPGRADE_ALL       26
 #define R3_DOWNGRADE_ALL     27
-#define R3_AMMO_1337         28
-#define R3_NGPLUS_WEAPONS    29
-#define R3_EQUIP_BOMB        30
+/* 28, 29 and 30 retired */
 
 #define R3_SET_ASIDE         31
 #define R3_LOAD_ASIDE        32

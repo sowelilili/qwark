@@ -223,7 +223,6 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ R3_OHKO,          FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "One-hit KO" },
 	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
-	{ R3_KLUNK_TUNE,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze Klunk tuning" },
 	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Quick-select pause" },
 
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
@@ -249,9 +248,6 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_RESET_TITANIUM, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all titanium bolts" },
 	{ R3_UPGRADE_ALL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon levels" },
 	{ R3_DOWNGRADE_ALL,  FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all weapon levels" },
-	{ R3_AMMO_1337,      FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Give 1337 ammo" },
-	{ R3_NGPLUS_WEAPONS, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Setup NG+ weapons" },
-	{ R3_EQUIP_BOMB,     FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Equip the bomb glove" },
 
 	/*
 	 * Protocol 1.2: the two the save-file manager drives. The set-aside byte is
@@ -309,24 +305,6 @@ static int rac3_health_freeze(u64 value, int on)
 	return freeze_remove((u8)id);
 }
 
-static int rac3_klunk_tune(int on)
-{
-	int id;
-	int rc;
-
-	if (on) {
-		rc = freeze_add(RAC3_KLUNK_TUNING_1, 4, 0, NULL);
-		if (rc != ST_OK) return rc;
-		return freeze_add(RAC3_KLUNK_TUNING_2, 4, 0, NULL);
-	}
-
-	id = freeze_find(RAC3_KLUNK_TUNING_1, 4);
-	if (id >= 0) freeze_remove((u8)id);
-	id = freeze_find(RAC3_KLUNK_TUNING_2, 4);
-	if (id >= 0) freeze_remove((u8)id);
-	return ST_OK;
-}
-
 static int rac3_set_toggle(u8 id, int on)
 {
 	switch (id) {
@@ -334,7 +312,6 @@ static int rac3_set_toggle(u8 id, int on)
 	case R3_FREEZE_HEALTH: return rac3_health_freeze(200, on);
 	case R3_OHKO:          return rac3_health_freeze(1, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
-	case R3_KLUNK_TUNE:    return rac3_klunk_tune(on);
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);
 	default:               return ST_NOT_FOUND;
 	}

@@ -353,6 +353,7 @@ OTHER_GAMES = [
         "unlocks": 44,
         "categories": 3,
         "unlock0": "Lancer",
+        "levelflags": 0x10,
         "coords": 0x147F260,
         # Bolts, a VALUE with readout 0.
         "value_id": 7,
@@ -370,13 +371,14 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 37,
+        "features": 33,
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
         "unlocks": 41,
         "categories": 3,
         "unlock0": "Bomb Glove",
+        "levelflags": 0x10,
         "coords": 0xDA2870,
         "value_id": 7,
         "value_addr": 0xC1E4DC,
@@ -399,6 +401,8 @@ OTHER_GAMES = [
         "unlocks": 16,
         "categories": 1,
         "unlock0": "Pistol Flux LX",
+        # Deadlocked has never had a level-flag region.
+        "levelflags": None,
         "coords": 0x10D44D0,
         "value_id": 7,
         "value_addr": 0x9C32E8,
@@ -497,6 +501,35 @@ def exercise_game(c, sim, spec):
             check(rows and rows[0]["values"][0] == 1,
                   "%s: and it reads back live" % name,
                   rows[0]["values"] if rows else None)
+
+    # -------------------------------------------------------- level flags
+    # A game with no level-flag hooks answers UNSUPPORTED, which is what tells
+    # the client to hide the panel; one that has them round-trips a byte.
+    want = spec["levelflags"]
+    status, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
+    if want is None:
+        check(status == ST_UNSUPPORTED and len(body) == 0,
+              "%s: LEVELFLAGS_GET is UNSUPPORTED" % name, (status, len(body)))
+    elif check(status == ST_OK, "%s: LEVELFLAGS_GET answers OK" % name, status):
+        flen = struct.unpack(">H", body[0:2])[0]
+        check(flen == want, "%s: it returns 0x%X bytes of flags" % (name, want),
+              hex(flen))
+
+        status, _ = c.call(OP_LEVELFLAGS_SET, struct.pack(">BBH", 5, 0xCC, 2))
+        check(status == ST_OK, "%s: LEVELFLAGS_SET accepted" % name, status)
+        status, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
+        check(status == ST_OK and body[2 + 2] == 0xCC,
+              "%s: and the byte reads back" % name, body[2:2 + 4])
+
+        status, _ = c.call(OP_LEVELFLAGS_SET, struct.pack(">BBH", 5, 1, want))
+        check(status == ST_BAD_ARG,
+              "%s: one past the end is BAD_ARG" % name, status)
+
+        status, _ = c.call(OP_LEVELFLAGS_RESET, bytes([5]))
+        check(status == ST_OK, "%s: LEVELFLAGS_RESET accepted" % name, status)
+        status, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
+        check(status == ST_OK and set(body[2:]) == {0},
+              "%s: and every flag byte is zero" % name, status)
 
     # -------------------------------------------------------- FEATURE_SET
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", spec["value_id"], 4242))
@@ -731,36 +764,23 @@ def main():
               "gold on an entry with no gold byte is UNSUPPORTED", status)
 
         # ------------------------------------------------------- level flags
-        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_LEVEL_FLAGS + 5 * 0x10 + 3) + b"\xAA")
-        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_MISC_FLAGS + 5 * 0x100 + 0x20) + b"\xBB")
-
+        # RaC1's flag region has a format nobody has worked out yet, so the game
+        # declares no level-flag hooks and every op comes back UNSUPPORTED. That
+        # is the client's cue to hide the panel. RaC2 and RaC3 still answer, and
+        # exercise_game checks them.
         status, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
-        if check(status == ST_OK, "LEVELFLAGS_GET answers OK", status):
-            flen = struct.unpack(">H", body[0:2])[0]
-            flags = body[2:2 + flen]
-            check(flen == 0x110, "RaC1 returns 0x110 bytes of flags", hex(flen))
-            check(flags[3] == 0xAA, "the main region leads", flags[3])
-            check(flags[0x10 + 0x20] == 0xBB, "the misc region follows",
-                  flags[0x10 + 0x20])
+        check(status == ST_UNSUPPORTED and len(body) == 0,
+              "RaC1 LEVELFLAGS_GET is UNSUPPORTED", (status, len(body)))
 
-        status, _ = c.call(OP_LEVELFLAGS_SET, struct.pack(">BBH", 5, 0xCC, 0x10 + 0x20))
-        check(status == ST_OK, "LEVELFLAGS_SET accepted", status)
-        status, body = c.call(OP_MEM_READ,
-                              struct.pack(">II", RAC1_MISC_FLAGS + 5 * 0x100 + 0x20, 1))
-        check(body == b"\xCC", "it wrote into the misc region", body)
-
-        status, _ = c.call(OP_LEVELFLAGS_SET, struct.pack(">BBH", 5, 1, 0x110))
-        check(status == ST_BAD_ARG, "one past the end is BAD_ARG", status)
+        status, _ = c.call(OP_LEVELFLAGS_SET, struct.pack(">BBH", 5, 0xCC, 0))
+        check(status == ST_UNSUPPORTED, "so is LEVELFLAGS_SET", status)
 
         status, _ = c.call(OP_LEVELFLAGS_RESET, bytes([5]))
-        check(status == ST_OK, "LEVELFLAGS_RESET accepted", status)
-        status, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
-        flags = body[2:]
-        check(status == ST_OK and set(flags) == {0},
-              "and every flag byte for that planet is zero")
+        check(status == ST_UNSUPPORTED, "and so is LEVELFLAGS_RESET", status)
 
         # -------------------------------------------------- planet load flags
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_LEVEL_FLAGS + 3 * 0x10) + b"\x11")
+        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_MISC_FLAGS + 3 * 0x100 + 0x20) + b"\xBB")
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_GOLD_BOLTS + 3 * 4)
                + struct.pack(">I", 0xFFFFFFFF))
         c.call(OP_MEM_WRITE, struct.pack(">I", 0x96C142) + b"\x01")   # Heli-Pack
@@ -778,6 +798,9 @@ def main():
         check(status == ST_OK, "PLANET_LOAD with both flags", status)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_LEVEL_FLAGS + 3 * 0x10, 1))
         check(body == b"\x00", "bit0 reset the level flags", body)
+        status, body = c.call(OP_MEM_READ,
+                              struct.pack(">II", RAC1_MISC_FLAGS + 3 * 0x100 + 0x20, 1))
+        check(body == b"\x00", "and the misc region with them", body)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_GOLD_BOLTS + 3 * 4, 4))
         check(body == struct.pack(">I", 0), "bit1 reset that planet's gold bolts", body)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", 0x96C142, 1))
@@ -1003,7 +1026,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 37, "with RaC3's thirty-seven features",
+            check(len(features) == 33, "with RaC3's thirty-three features",
                   len(features))
 
         # -------------------------------------------- unregistered title

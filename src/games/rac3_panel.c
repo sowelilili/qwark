@@ -164,8 +164,7 @@ static const struct rac3_item rac3_items[] = {
 
 #define RAC3_UNLOCK_COUNT ((u8)(sizeof(rac3_unlocks) / sizeof(rac3_unlocks[0])))
 
-/* Ids into rac3_items for the two setups that name individual weapons. */
-#define IT_BOMB_GLOVE   0
+/* Ids into rac3_items for the NG+ setup, the one place that names weapons. */
 #define IT_HELI_PACK    1
 #define IT_THRUSTER     2
 #define IT_CHARGE_BOOTS 3
@@ -518,7 +517,10 @@ static int rac3_untune_bosses(void)
 	return ST_OK;
 }
 
-/* UYAUnlocks.SetupNGPWeapons. */
+/*
+ * UYAUnlocks.SetupNGPWeapons. It has no button of its own any more; the no-QE
+ * file setup below is the only thing that runs it.
+ */
 static int rac3_setup_ngplus_weapons(void)
 {
 	static const u8 needed[] = {
@@ -600,19 +602,7 @@ static int rac3_cc_early(void)
 	return ST_OK;
 }
 
-/* UYAUnlocks.buttonBomb_Click. */
-static int rac3_equip_bomb_glove(void)
-{
-	const struct rac3_item *bomb = &rac3_items[IT_BOMB_GLOVE];
-
-	mem_write_u8(RAC3_HELD_ITEM_FOO, (u8)bomb->id);
-	mem_write_u8(RAC3_HELD_ITEM_BAR, (u8)bomb->id);
-	mem_write_u8(RAC3_HELD_ITEM_BAZ, (u8)bomb->id);
-
-	return mem_write_u32(item_ammo_addr(bomb), 40);
-}
-
-/* UYAUnlocks buttonUpgrade / buttonDowngrade / infiniteAmmoButton. */
+/* UYAUnlocks buttonUpgrade / buttonDowngrade. */
 static int rac3_all_versions(int max)
 {
 	u8 i;
@@ -629,18 +619,6 @@ static int rac3_all_versions(int max)
 			/* Or it upgrades again on the next kill. */
 			if (item_exp_addr(it) != 0) mem_write_u32(item_exp_addr(it), 0);
 		}
-	}
-
-	return ST_OK;
-}
-
-static int rac3_all_ammo(u32 value)
-{
-	u8 i;
-
-	for (i = 0; i < RAC3_UNLOCK_COUNT; i++) {
-		u32 addr = item_ammo_addr(&rac3_items[i]);
-		if (addr != 0) mem_write_u32(addr, value);
 	}
 
 	return ST_OK;
@@ -724,9 +702,6 @@ int rac3_trigger(u8 id)
 
 	case R3_UPGRADE_ALL:     return rac3_all_versions(1);
 	case R3_DOWNGRADE_ALL:   return rac3_all_versions(0);
-	case R3_AMMO_1337:       return rac3_all_ammo(1337);
-	case R3_NGPLUS_WEAPONS:  return rac3_setup_ngplus_weapons();
-	case R3_EQUIP_BOMB:      return rac3_equip_bomb_glove();
 
 	case R3_SET_ASIDE:       return savefile_request(RAC3_SF_MGR_SAVE, 1);
 	case R3_LOAD_ASIDE:      return savefile_request(RAC3_SF_LOAD_ASIDE, 1);

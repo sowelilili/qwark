@@ -213,8 +213,8 @@ static const struct feature_desc rac1_features[] = {
 	{ F_SETUP_SHOOT_SP,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Setup shooting skill points" },
 	{ F_RESET_GOLDBOLTS, FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all gold bolts" },
 	{ F_UNLOCK_GOLDBOLTS,FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
-	{ F_RESET_STYLE,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset style points" },
-	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all style points" },
+	{ F_RESET_STYLE,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
+	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
 	{ F_ANYPCT_RESET,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Any% all-missions reset" },
 
 	/* Protocol 1.2: the pair a client's save-file manager drives. */
@@ -400,9 +400,18 @@ const struct game_api rac1_game = {
 	rac1_unlock_read,
 	rac1_unlock_set,
 
-	rac1_levelflags_get,
-	rac1_levelflags_reset,
-	rac1_levelflags_set,
+	/*
+	 * Level flags are withheld for RaC1: the region racman read is not laid out
+	 * the way rac1_levelflags_get assumes, so what it hands back is not the flag
+	 * set the client would be editing. A NULL entry makes net.c answer
+	 * UNSUPPORTED, which is the client's cue to hide the Level flags panel until
+	 * the real format has been reverse-engineered. The handlers stay in
+	 * rac1_panel.c; rac1_planet_load still calls rac1_levelflags_reset for
+	 * PLANET_FLAG_RESET_LEVELFLAGS, which is the zeroing racman itself did.
+	 */
+	NULL,                 /* levelflags_get */
+	NULL,                 /* levelflags_reset */
+	NULL,                 /* levelflags_set */
 
 	rac1_moby_table,
 

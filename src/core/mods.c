@@ -419,8 +419,13 @@ static int mods_load_index(int index, int depth)
 
 	/*
 	 * Caves first, then the words: the words are usually branches into the cave,
-	 * so the target exists before anything jumps to it. Caves are never restored,
-	 * matching racman (see BUGS.md).
+	 * so the target exists before anything jumps to it.
+	 *
+	 * Unloading only puts the patch words back. The cave bytes are left in
+	 * memory on purpose: restoring them crashed the game, because the branches
+	 * into a cave go away a moment before its bytes would, and anything still
+	 * executing there falls off the end. Reverting the branches first and
+	 * leaving the cave bytes where they are is safe and is what racman does too.
 	 */
 	plat_rsx_pause(1);
 	for (c = 0; c < m->ncaves; c++) {
@@ -453,6 +458,11 @@ int mods_unload(const char *dirname)
 	m = &g_mods[index];
 	if (!(m->flags & MOD_FLAG_LOADED)) return ST_NOT_FOUND;
 
+	/*
+	 * The patch words only; the cave bytes stay where they are, because putting
+	 * them back crashed the game. patch_revert pauses RSX around its writes
+	 * itself, so nothing here needs to.
+	 */
 	if (m->def.count > 0) patch_revert(&m->def);
 
 	m->flags &= (u8)~MOD_FLAG_LOADED;

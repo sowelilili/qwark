@@ -312,3 +312,4 @@ objs/
 # Python cache from the smoke test
 __pycache__/
 *.pyc
+.claude/

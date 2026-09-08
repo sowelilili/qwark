@@ -200,7 +200,7 @@ char name[24]
 
 Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did.
 
-RaC1 concatenates 0x10 bytes of main flags and 0x100 bytes of misc flags, 0x110 in all, so offsets 0x00 to 0x0F are the main region and 0x10 to 0x10F the misc one.
+A game that does not offer level flags answers all three ops UNSUPPORTED, and a client that gets that is expected to hide its level-flag panel for that game. RaC2 and RaC3 return 0x10 bytes per planet. RaC1 and Deadlocked answer UNSUPPORTED: Deadlocked has no such region, and RaC1's is not laid out the way the old client's viewer assumed, so it is withheld until the format has been worked out. RaC1's PLANET_LOAD bit0 still resets the flags, which is the one thing racman actually did with them.
 
 ### 5.7 Mods (0x006x)
 
