@@ -13,9 +13,9 @@
  * step, so a fault in bring-up names the step it died on. plat_trace is a bare
  * sys_tty_write with no file, mutex or allocation, so it is safe this early.
  *
- * Stop follows Ratchetron's pattern: break every socket first so the threads
- * come back out of accept()/recv() on their own, then join through a stop
- * thread that gives them time to wind down, then unload.
+ * Stop runs almost entirely on a thread of our own: the loader's thread has no
+ * TLS and a 4 KB stack, so it only sets flags, joins the stop thread and then
+ * finalizes the module for the kernel to unload (see qwark_stop).
  */
 #include "plat/ps3/types.h"
 #define QWARK_PLAT_TYPES_PROVIDED
