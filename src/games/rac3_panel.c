@@ -164,23 +164,6 @@ static const struct rac3_item rac3_items[] = {
 
 #define RAC3_UNLOCK_COUNT ((u8)(sizeof(rac3_unlocks) / sizeof(rac3_unlocks[0])))
 
-/* Ids into rac3_items for the NG+ setup, the one place that names weapons. */
-#define IT_HELI_PACK    1
-#define IT_THRUSTER     2
-#define IT_CHARGE_BOOTS 3
-#define IT_NANO_PAK     8
-#define IT_PDA          9
-#define IT_MINITURRET   29
-#define IT_N60_STORM    31
-#define IT_PLASMA_COIL  32
-#define IT_NITRO        30
-#define IT_PLASMA_WHIP  33
-#define IT_RIFT         35
-#define IT_SHIELD_CHG   37
-#define IT_SHOCK        38
-#define IT_FLUX         25
-#define IT_SUCK_CANNON  40
-
 static u32 item_unlock_addr(const struct rac3_item *it)
 {
 	return RAC3_UNLOCK_ARRAY + ((u32)it->unlock - 0x4A8u);
@@ -517,82 +500,6 @@ static int rac3_untune_bosses(void)
 	return ST_OK;
 }
 
-/*
- * UYAUnlocks.SetupNGPWeapons. It has no button of its own any more; the no-QE
- * file setup below is the only thing that runs it.
- */
-static int rac3_setup_ngplus_weapons(void)
-{
-	static const u8 needed[] = {
-		IT_MINITURRET, IT_SHIELD_CHG, IT_N60_STORM, IT_SHOCK, IT_RIFT,
-		IT_FLUX, IT_PLASMA_COIL, IT_NITRO, IT_PLASMA_WHIP, IT_PDA,
-		IT_CHARGE_BOOTS, IT_NANO_PAK, IT_HELI_PACK, IT_THRUSTER
-	};
-	u32 i;
-
-	for (i = 0; i < sizeof(needed); i++) {
-		const struct rac3_item *it = &rac3_items[needed[i]];
-		mem_write_u8(item_unlock_addr(it), 1);
-		if (it->levels > 1) item_set_version(it, it->levels);
-	}
-
-	/* Two weapons go back to v1 with no experience, so they cannot re-upgrade. */
-	{
-		const struct rac3_item *suck = &rac3_items[IT_SUCK_CANNON];
-		const struct rac3_item *n60  = &rac3_items[IT_N60_STORM];
-
-		mem_write_u8(item_unlock_addr(suck), 1);
-		item_set_version(suck, 1);
-		mem_write_u32(item_exp_addr(suck), 0);
-
-		mem_write_u8(item_unlock_addr(n60), 1);
-		item_set_version(n60, 1);
-		mem_write_u32(item_exp_addr(n60), 0);
-	}
-
-	return ST_OK;
-}
-
-/*
- * RAC3Form.buttonSetup_Click, the "Make NG+ No QE File" button, minus its
- * message box: the old handler offered to load the Launch Site when challenge
- * mode was still 0. qwark has no dialog, so it notifies instead and leaves the
- * planet where it is; the client can load the Launch Site itself and press this
- * again, which is exactly what the message box asked the user to do.
- */
-static int rac3_setup_no_qe_file(void)
-{
-	u8 challenge = 0;
-
-	rac3_setup_ngplus_weapons();
-
-	mem_write_u32(RAC3_BOLTS, 1561120);
-	mem_write_u8(RAC3_QUICK_SELECT, 0);
-	mem_write_u32(RAC3_HEALTH_XP, 50000000);
-	mem_write_u32(RAC3_PLAYER_HEALTH, 200);
-	mem_write_u32(RAC3_FILE_TIME, 2228300);
-
-	/* Infernox. */
-	{
-		u8 armour[2];
-		be16_put(armour, 4);
-		mem_write(RAC3_CURRENT_ARMOR, armour, 2);
-	}
-
-	if (mem_read_u8(RAC3_CHALLENGE_MODE, &challenge) != ST_OK) return ST_IO_ERROR;
-
-	if (challenge == 0) {
-		plat_notify("Weapons and armor set up, but challenge mode is 0. "
-		            "Enter challenge mode yourself, then run this again.");
-		return ST_OK;
-	}
-
-	mem_write_u8(RAC3_CHALLENGE_MODE, 13);
-	plat_notify("Set up weapons, armor and health for NG+ categories. "
-	            "Bolts, IGT and challenge mode set for QE!");
-	return ST_OK;
-}
-
 /* RAC3Form.ccEarlyButton_Click. */
 static int rac3_cc_early(void)
 {
@@ -682,7 +589,6 @@ int rac3_trigger(u8 id)
 	}
 
 	case R3_SETUP_NGPLUS:   return rac3_setup_file();
-	case R3_SETUP_NO_QE:    return rac3_setup_no_qe_file();
 	case R3_CC_EARLY:       return rac3_cc_early();
 	case R3_UNTUNE_BOSSES:  return rac3_untune_bosses();
 	case R3_RESET_DROPSHIP: return mem_write_u32(RAC3_DROPSHIP_HEALTH, 100);

@@ -208,7 +208,6 @@ static const struct feature_desc rac1_features[] = {
 
 	{ F_DREK_SKIP,       FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Drek skip" },
 	{ F_DREK_CUTSCENE,   FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Drek cutscene" },
-	{ F_FORCE_OKAY_LOAD, FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Force okay load" },
 	{ F_RESET_SHOOT_SP,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset shooting skill points" },
 	{ F_SETUP_SHOOT_SP,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Setup shooting skill points" },
 	{ F_RESET_GOLDBOLTS, FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all gold bolts" },

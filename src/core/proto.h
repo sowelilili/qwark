@@ -12,7 +12,15 @@
 #include "../plat/plat.h"
 
 #define QWARK_PROTOCOL_VERSION  1
-#define QWARK_BUILD_VERSION     1
+
+/*
+ * The module build number, reported as SessionInfo.qwark_version. It is not the
+ * protocol version: the wire contract can stay put while the feature tables or
+ * some user-visible behaviour move under it. Bump it whenever they do, so a
+ * client that ships its own copy of the tables can tell that the SPRX on the
+ * console is older than the one it was built against and say so.
+ */
+#define QWARK_BUILD             2
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u

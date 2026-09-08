@@ -133,8 +133,9 @@ extern const u8 rac3_fp_patched[4];
 
 /*
  * Stable: new features go on the end, a retired one leaves its number behind.
- * Retired, never to be reused: 4 (freeze Klunk tuning), 28 (give 1337 ammo),
- * 29 (setup NG+ weapons) and 30 (equip the bomb glove).
+ * Retired, never to be reused: 4 (freeze Klunk tuning), 17 (make NG+ no-QE
+ * file), 28 (give 1337 ammo), 29 (setup NG+ weapons) and 30 (equip the bomb
+ * glove).
  */
 #define R3_FREEZE_AMMO       0
 #define R3_FREEZE_HEALTH     1
@@ -155,7 +156,7 @@ extern const u8 rac3_fp_patched[4];
 #define R3_VENDOR_QE         15
 
 #define R3_SETUP_NGPLUS      16
-#define R3_SETUP_NO_QE       17
+/* 17 retired */
 #define R3_CC_EARLY          18
 #define R3_UNTUNE_BOSSES     19
 #define R3_RESET_DROPSHIP    20

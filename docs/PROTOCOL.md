@@ -42,7 +42,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      build number, informational
+u8   qwark_version      module build number, currently 2 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -67,6 +67,14 @@ u32  mod_loaded         bit i set = console mod index i is loaded
 u32  mod_auto           bit i set = console mod index i auto-applies on game boot
 u32  mod_previous       bit i set = mod i was loaded before the last same-game reboot and is neither re-applied nor dismissed
 ```
+
+### 3.1 `qwark_version`, the build number
+
+`qwark_version` is the build number of the module itself (`QWARK_BUILD` in `src/core/proto.h`), and is independent of `protocol_version`. The wire contract can hold still while what sits behind it moves, so the build number increments whenever the feature tables change — a feature added, retired or relabelled — or whenever any other user-visible behaviour changes. It never decrements and is never reused.
+
+Retiring a feature leaves its id behind for good: ids are the wire contract for the toggle bitmaps, nothing is renumbered, and a client that still knows a retired id simply never sees it in DESCRIBE again.
+
+A client ships knowing the build it was developed against. When the console reports a *lower* `qwark_version` than that, the client warns the user that the SPRX on the console is out of date and should be re-uploaded; DESCRIBE still answers, so the client keeps working against whatever tables the older module actually has. A *higher* number is not an error: the console is newer than the client, and DESCRIBE remains the authority on what exists.
 
 ## 4. Telemetry packet (UDP)
 
@@ -163,6 +171,8 @@ All of these except the LIST ops return NOT_INGAME outside INGAME. Watches and f
 ### 5.5 Positions and planets (0x004x)
 
 Eight slots per planet per game. Slot contents are opaque game-defined blobs of at most 64 bytes.
+
+POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the selection is remembered across a client restart and across a console reboot; no CONFIG_SAVE is needed. It comes back in `SessionInfo.selected_slot`.
 
 | Op | Name | Request | Reply |
 |---|---|---|---|

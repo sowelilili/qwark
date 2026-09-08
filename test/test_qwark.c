@@ -525,6 +525,8 @@ static void test_telemetry(void)
 	check(len >= 4u + SESSION_INFO_SIZE + 1u, "the packet has a header and a watch count");
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
+	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
+	check_eq_u64(packet[5], 2, "and this module is build 2");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -557,6 +559,28 @@ static void test_config(void)
 	check(config_load() == ST_OK, "config.txt reloads from disk");
 	check_eq_u64(config_combo(COMBO_SAVE_POSITION), 0x1005, "the combo survived the reload");
 	check_eq_u64(config_selected_slot(), 3, "the slot survived the reload");
+
+	/*
+	 * What POS_SELECT does. The setter writes config.txt on the spot, the way
+	 * config_set_mod_auto does, so no CONFIG_SAVE is needed for the selection to
+	 * be there after the console is power-cycled: config_load with nothing in
+	 * between is that reboot.
+	 */
+	config_set_selected_slot(6);
+	check(config_load() == ST_OK, "config.txt reloads after a second selection");
+	check_eq_u64(config_selected_slot(), 6,
+	             "a POS_SELECT reaches the file with no CONFIG_SAVE");
+
+	config_set_selected_slot(0);
+	check(config_load() == ST_OK, "config.txt reloads once more");
+	check_eq_u64(config_selected_slot(), 0,
+	             "and slot 0 persists too, not just a non-zero slot");
+
+	config_set_mod_auto("NPEA00385", "flight", 1);
+	check(config_load() == ST_OK, "config.txt reloads after a mod auto flag");
+	check(config_mod_auto("NPEA00385", "flight"),
+	      "the mod auto flag persists the same way");
+	config_set_mod_auto("NPEA00385", "flight", 0);
 
 	{
 		u8 blob[16];
@@ -641,7 +665,7 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 28, "and twenty-eight features");
+	check_eq_u64(nfeatures, 27, "and twenty-seven features");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
@@ -681,6 +705,12 @@ static void test_describe(void)
 	row = desc_feature(out, len, 22);
 	check(row != NULL && row[1] == FEATURE_VALUE && row[5] == 4,
 	      "the jankpot timer VALUE mirrors readout 4");
+
+	/* Id 9, force okay load, is retired: gone from the table, never renumbered. */
+	check(desc_feature(out, len, 9) == NULL, "the retired id 9 is not described");
+	check(features_trigger(9) == ST_NOT_FOUND, "and triggering it is NOT_FOUND");
+	check(desc_feature(out, len, 8) != NULL && desc_feature(out, len, 10) != NULL,
+	      "the ids either side of it kept their numbers");
 }
 
 /* ---------------------------------------------------- RaC1: the unlock table */
@@ -1275,9 +1305,25 @@ static void test_rac3(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 33, "RaC3 declares thirty-three features");
+		u8 i;
+		int retired = 0;
+		int neighbours = 0;
+
+		check_eq_u64(d->nfeatures, 32, "RaC3 declares thirty-two features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 5, "and five groups");
+
+		/* 4, 17, 28, 29 and 30 are retired: gone, but nothing is renumbered. */
+		for (i = 0; i < d->nfeatures; i++) {
+			u8 id = d->features[i].id;
+			if (id == 4 || id == 17 || id == 28 || id == 29 || id == 30)
+				retired++;
+			if (id == 16 || id == 18) neighbours++;
+		}
+		check_eq_u64(retired, 0, "and none of the retired ids");
+		check_eq_u64(neighbours, 2, "while 16 and 18 kept their numbers");
+		check(features_trigger(17) == ST_NOT_FOUND,
+		      "the retired no-QE action is NOT_FOUND");
 	}
 
 	{

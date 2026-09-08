@@ -15,7 +15,6 @@
 
 #define RAC1_INPUTS           0x964AF0u   /* u32 pad mask, OG layout */
 #define RAC1_ANALOGS          0x964A40u   /* f32 rx, ry, lx, ly */
-#define RAC1_LOADING_SCREEN   0x9645C4u   /* the force-okay-load block, 12 bytes */
 #define RAC1_CURRENT_PLANET   0x969C70u
 #define RAC1_BOLTS            0x969CA0u
 #define RAC1_GOLD_ITEMS       0x969CA8u   /* one byte per unlock index */
@@ -118,6 +117,7 @@ extern const u8 rac1_fp_patched[4];
 /*
  * Stable: a client may hold on to an id across sessions and versions, so new
  * features go on the end and a retired one leaves its number behind.
+ * Retired, never to be reused: 9 (force okay load).
  */
 #define F_FAST_LOADS        0
 #define F_INFINITE_AMMO     1
@@ -128,7 +128,7 @@ extern const u8 rac1_fp_patched[4];
 #define F_GOODIES           6
 #define F_DREK_SKIP         7
 #define F_DREK_CUTSCENE     8
-#define F_FORCE_OKAY_LOAD   9
+/* 9 retired */
 #define F_RESET_SHOOT_SP    10
 #define F_SETUP_SHOOT_SP    11
 #define F_RESET_GOLDBOLTS   12

@@ -237,7 +237,6 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_VENDOR_QE,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Enable vendor QE" },
 
 	{ R3_SETUP_NGPLUS,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Setup NG+ manips" },
-	{ R3_SETUP_NO_QE,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Make NG+ no-QE file" },
 	{ R3_CC_EARLY,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "CC early setup" },
 	{ R3_UNTUNE_BOSSES,  FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Untune bosses" },
 	{ R3_RESET_DROPSHIP, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset dropship health" },

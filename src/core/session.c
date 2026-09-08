@@ -624,7 +624,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	if (g_prev.pending) flags |= SESSION_FLAG_PREVIOUS_PENDING;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
-	out[1] = QWARK_BUILD_VERSION;
+	out[1] = QWARK_BUILD;
 	out[2] = g_state;
 	out[3] = (g_game != NULL) ? g_game->game_id : GAME_NONE;
 	be32_put(out + 4, g_generation);

@@ -27,6 +27,10 @@ HOST = "127.0.0.1"
 
 # ---------------------------------------------------------------- protocol
 
+# QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
+# feature tables or any user-visible behaviour change.
+QWARK_BUILD = 2
+
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
 OP_PREVIOUS_REAPPLY = 0x0005
@@ -57,6 +61,7 @@ OP_LEVELFLAGS_SET = 0x0055
 OP_MOD_LIST = 0x0060
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
+OP_CONFIG_RELOAD = 0x0090
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
@@ -371,7 +376,9 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 33,
+        "features": 32,
+        # Retired, never renumbered: 4, 17, 28, 29 and 30.
+        "retired": [4, 17, 28, 29, 30],
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
@@ -442,6 +449,10 @@ def exercise_game(c, sim, spec):
         check(game == spec["game"], "%s: DESCRIBE names the game" % name, game)
         check(len(features) == spec["features"],
               "%s: the feature count matches" % name, len(features))
+        if spec.get("retired"):
+            still_there = [i for i in spec["retired"] if i in by_id]
+            check(not still_there,
+                  "%s: no retired feature id is described" % name, still_there)
         check(len(readouts) == spec["readouts"],
               "%s: the readout count matches" % name, len(readouts))
         check(readouts and readouts[0] == "Bolts",
@@ -610,6 +621,9 @@ def main():
         check(status == ST_OK and len(body) == SESSION_INFO_SIZE,
               "HELLO returns a 164-byte SessionInfo", (status, len(body)))
         check(info and info["protocol"] == 1, "protocol version is 1")
+        check(info and info["build"] == QWARK_BUILD,
+              "HELLO reports build %d" % QWARK_BUILD,
+              info["build"] if info else None)
 
         # ------------------------------------------------------- subscribe
         status, _ = c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))
@@ -655,7 +669,10 @@ def main():
             by_id = {f["id"]: f for f in features}
             check(consumed == len(body), "DESCRIBE parses exactly", (consumed, len(body)))
             check(game == 1, "DESCRIBE names RaC1")
-            check(len(features) == 28, "twenty-eight features", len(features))
+            check(len(features) == 27, "twenty-seven features", len(features))
+            check(9 not in by_id, "the retired id 9 is not described", sorted(by_id))
+            check(8 in by_id and 10 in by_id,
+                  "and the ids either side of it kept their numbers")
             check(len(groups) <= 16 and len(readouts) <= 16 and len(features) <= 64,
                   "DESCRIBE stays inside its caps", (len(groups), len(readouts)))
             labels = [f["label"] for f in features]
@@ -904,8 +921,25 @@ def main():
             check(abs(slots[1][1] - 1.5) < 0.001 and abs(slots[1][3] - 3.5) < 0.001,
                   "the saved coordinates come back", slots[1])
 
+        # ------------------------------------------- the selected slot persists
+        # POS_SELECT writes config.txt on the spot, so a reload with no
+        # CONFIG_SAVE in between - the same thing a console reboot does - still
+        # comes back with the slot the client picked.
+        status, _ = c.call(OP_POS_SELECT, bytes([4]))
+        check(status == ST_OK, "POS_SELECT picks slot 4", status)
+        sel = fresh_state(c)
+        check(sel and sel["slot"] == 4,
+              "GET_STATE reports the selected slot",
+              sel["slot"] if sel else None)
+
+        status, _ = c.call(OP_CONFIG_RELOAD)
+        check(status == ST_OK, "CONFIG_RELOAD re-reads config.txt", status)
+        sel = fresh_state(c)
+        check(sel and sel["slot"] == 4,
+              "the selected slot survived the reload with no CONFIG_SAVE",
+              sel["slot"] if sel else None)
+
         # ------------------------------------------------------------ combo
-        c.call(OP_POS_SELECT, bytes([4]))
         status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_SAVE_POSITION, 0x1005))
         check(status == ST_OK, "COMBO_SET stores a save-position combo", status)
 
@@ -1026,7 +1060,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 33, "with RaC3's thirty-three features",
+            check(len(features) == 32, "with RaC3's thirty-two features",
                   len(features))
 
         # -------------------------------------------- unregistered title

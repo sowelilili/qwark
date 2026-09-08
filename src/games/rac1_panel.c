@@ -562,18 +562,6 @@ static int rac1_anypct_reset(void)
 	return ST_OK;
 }
 
-/* ForceOkayLoad: the twelve bytes RAC1Form writes over the loading screen block. */
-static int rac1_force_okay_load(void)
-{
-	static const u8 okay[12] = {
-		0x00, 0x00, 0x00, 0x1A,
-		0x00, 0x00, 0x00, 0x04,
-		0x00, 0x00, 0x00, 0x02
-	};
-
-	return mem_write(RAC1_LOADING_SCREEN, okay, sizeof(okay));
-}
-
 int rac1_trigger(u8 id)
 {
 	switch (id) {
@@ -587,9 +575,6 @@ int rac1_trigger(u8 id)
 	case F_DREK_CUTSCENE:
 		plat_notify("Drek cutscene done for NG+ poki skip runs :)");
 		return mem_write_u8(RAC1_DREK_CUTSCENE, 1);
-
-	case F_FORCE_OKAY_LOAD:
-		return rac1_force_okay_load();
 
 	case F_RESET_SHOOT_SP:
 		return rac1_shoot_skill_points(0);
