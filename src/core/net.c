@@ -713,11 +713,12 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	case OP_DESCRIBE: {
 		u16 rc;
 		/*
-		 * The descriptor registry keeps the last game's table across a same-title
-		 * reboot so the previous record can re-apply, but a client must never see
-		 * a table for a game that is not running: telemetry says game 0 there.
+		 * The descriptor registry only becomes the running game's table at INGAME
+		 * (features_set_game runs in enter_ingame). During BOOTING it still holds
+		 * the previous game's table, so answer UNSUPPORTED until INGAME rather than
+		 * hand a client a table for a game that is not the one now starting.
 		 */
-		if (session_game() == NULL) return ST_UNSUPPORTED;
+		if (session_game() == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
 		core_lock();
 		rc = (u16)features_describe(reply, replycap, replylen);
 		core_unlock();
