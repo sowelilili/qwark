@@ -1,0 +1,3 @@
+# Keep the shell build scripts usable on POSIX systems, and the batch ones on Windows.
+*.sh text eol=lf
+*.bat text eol=crlf
