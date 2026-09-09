@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 6
+QWARK_BUILD = 7
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -104,6 +104,8 @@ FEATURE_FLAG_SAVE_ASIDE = 0x04
 FEATURE_FLAG_LOAD_ASIDE = 0x08
 # Protocol 1.3: the toggle's state is read back out of game memory.
 FEATURE_FLAG_LIVE = 0x10
+# Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide.
+FEATURE_FLAG_SIGNED = 0x20
 
 # Protocol 1.4: the autosplit event stream. 1.5 added the two load kinds, the
 # two timing flags and the param_us that goes with them, and grew EventDesc.
@@ -309,6 +311,9 @@ def parse_describe(b):
             "aux": row[3],
             "flags": row[4],
             "readout": row[5],
+            # Protocol 1.7: the field width of a VALUE, 0 standing for 32.
+            "bits": row[6] or 32,
+            "raw_bits": row[6],
             "min": struct.unpack(">I", row[8:12])[0],
             "max": struct.unpack(">I", row[12:16])[0],
             "label": row[16:48].split(b"\0")[0].decode("ascii", "replace"),
@@ -665,6 +670,10 @@ OTHER_GAMES = [
         # Bolts, a VALUE with readout 0.
         "value_id": 7,
         "value_addr": 0x1329A90,
+        # Protocol 1.7: the VALUEs whose field the game reads as two's complement.
+        "signed": [("QE save write-offset", 16), ("Health XP", 32)],
+        # The QE feature id, the halfword it writes, and the readout mirroring it.
+        "signed_qe": (23, 0x13298CC, 5),
         # "Reset platinum bolts", an ACTION with no helper gate.
         "action_id": 24,
         "action_addr": 0x1562540,
@@ -736,6 +745,8 @@ OTHER_GAMES = [
         "coords": 0xDA2870,
         "value_id": 7,
         "value_addr": 0xC1E4DC,
+        "signed": [("QE offset", 16), ("Health XP", 32)],
+        "signed_qe": (14, 0xC1E2C0, 6),
         # "Reset all titanium bolts".
         "action_id": 25,
         "action_addr": 0xECE53D,
@@ -877,6 +888,23 @@ def exercise_game(c, sim, spec, udp=None):
         check(len(load_aside) == 1 and load_aside[0]["kind"] == FEATURE_ACTION,
               "%s: one LOAD_ASIDE action" % name, load_aside)
 
+        # Protocol 1.7: only a VALUE carries a field width, and a SIGNED row
+        # leaves min and max at 0 because the width is already the range.
+        check(all(f["raw_bits"] == 0 for f in features if f["kind"] != FEATURE_VALUE),
+              "%s: only a VALUE names a field width" % name)
+        for f in features:
+            if not f["flags"] & FEATURE_FLAG_SIGNED:
+                continue
+            check(f["kind"] == FEATURE_VALUE and f["raw_bits"] in (8, 16, 32)
+                  and f["min"] == 0 and f["max"] == 0,
+                  "%s: the signed '%s' is a VALUE, %d bits, unbounded"
+                  % (name, f["label"], f["bits"]), f)
+        for label, bits in spec.get("signed", []):
+            row = next((f for f in features if f["label"] == label), None)
+            check(row is not None and row["flags"] & FEATURE_FLAG_SIGNED
+                  and row["raw_bits"] == bits,
+                  "%s: '%s' is SIGNED and %d bits wide" % (name, label, bits), row)
+
         # Every ENUM must answer FEATURE_OPTIONS with the count it advertised.
         for f in features:
             if f["kind"] != FEATURE_ENUM:
@@ -991,6 +1019,28 @@ def exercise_game(c, sim, spec, udp=None):
         check(info and info["readout"][0] == 4242,
               "%s: readout 0 mirrors it" % name,
               info["readout"][0] if info else None)
+
+    # ------------------------------------ FEATURE_SET on a signed VALUE, 1.7
+    if spec.get("signed_qe"):
+        qe_id, qe_addr, qe_readout = spec["signed_qe"]
+
+        # -1 travels as the low sixteen bits of the u32, and has to reach the
+        # game as a halfword or a negative offset never lands.
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", qe_id, 0xFFFF))
+        if check(status == ST_OK, "%s: FEATURE_SET sends the QE offset -1" % name, status):
+            status, body = c.call(OP_MEM_READ, struct.pack(">II", qe_addr, 2))
+            check(status == ST_OK and body == b"\xFF\xFF",
+                  "%s: and both bytes of the halfword are 0xFF" % name, body)
+            info = fresh_state(c)
+            check(info and info["readout"][qe_readout] == 0xFFFF,
+                  "%s: the readout carries the raw halfword, not a sign-extended word" % name,
+                  info["readout"][qe_readout] if info else None)
+
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", qe_id, 0x8000))
+        if check(status == ST_OK, "%s: and the most negative offset too" % name, status):
+            status, body = c.call(OP_MEM_READ, struct.pack(">II", qe_addr, 2))
+            check(status == ST_OK and body == b"\x80\x00",
+                  "%s: which lands as 0x8000" % name, body)
 
     # ---------------------------------------------------- FEATURE_TRIGGER
     mem_write(c, spec["action_addr"], b"\xAA")

@@ -530,7 +530,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 6, "and this module is build 6");
+	check_eq_u64(packet[5], 7, "and this module is build 7");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1121,6 +1121,115 @@ static void test_savefile_flags(void)
 
 	check(FEATURE_FLAG_SAVE_ASIDE == 0x04 && FEATURE_FLAG_LOAD_ASIDE == 0x08,
 	      "the two flags are bit2 and bit3");
+}
+
+/*
+ * Protocol 1.7. A VALUE whose field the game reads as two's complement is
+ * flagged SIGNED and says how wide that field is, so a client can sign-extend
+ * the readout instead of showing 65535 where the game means -1. The width goes
+ * out in the `bits` byte the revision took from Feature's padding; the games'
+ * tables keep it in the kind-dependent `aux`, which a VALUE has no other use for.
+ */
+#define SIGNED_QE_R2   23
+#define SIGNED_XP_R2   10
+#define SIGNED_QE_R3   14
+#define SIGNED_XP_R3    9
+#define UNSIGNED_R2     7   /* the bolt count, the control in this group */
+#define R2_QE_ADDR     0x013298CCu
+#define R3_QE_ADDR     0x00C1E2C0u
+
+/* One encoded row: the flag, the width byte and the range the width implies. */
+static void check_signed_row(const u8 *out, u32 len, u8 id, u8 want_bits,
+                             const char *what)
+{
+	const u8 *row = desc_feature(out, len, id);
+
+	check(row != NULL, what);
+	if (row == NULL) return;
+
+	check(row[1] == FEATURE_VALUE, "it is a VALUE");
+	check((row[4] & FEATURE_FLAG_SIGNED) != 0, "it is flagged SIGNED");
+	check_eq_u64(row[6], want_bits, "and carries its field width in `bits`");
+	check(row[3] == 0, "the wire's aux byte stays 0 for a VALUE");
+	check(row[7] == 0, "the second pad byte is still zero");
+	check(be32_get(row + 8) == 0 && be32_get(row + 12) == 0,
+	      "min and max stay 0: the width is the range");
+}
+
+static void test_signed_values(void)
+{
+	u8 out[4096];
+	u32 len = 0;
+	const u8 *row;
+	u8 halfword[2];
+	u32 g;
+
+	group("protocol 1.7 signed VALUEs");
+
+	check(FEATURE_FLAG_SIGNED == 0x20, "SIGNED is flags bit5");
+	check(FEATURE_BITS_DEFAULT == 32, "and a `bits` of 0 stands for 32");
+
+	/* Whatever a game marks SIGNED has to be a VALUE that says how wide it is. */
+	for (g = 0; ; g++) {
+		const struct game_api *api = game_at(g);
+		const struct game_describe *d;
+		u8 i;
+
+		if (api == NULL) break;
+		if (api->game_id == GAME_NONE || api->describe == NULL) continue;
+
+		d = api->describe();
+		for (i = 0; i < d->nfeatures; i++) {
+			const struct feature_desc *f = &d->features[i];
+
+			if ((f->flags & FEATURE_FLAG_SIGNED) == 0) continue;
+
+			check(f->kind == FEATURE_VALUE, "SIGNED sits on a VALUE");
+			check(f->aux == 8 || f->aux == 16 || f->aux == 32,
+			      "and the row names a field width of 8, 16 or 32");
+			check(f->min == 0 && f->max == 0,
+			      "and leaves min and max unbounded");
+		}
+	}
+
+	/* RaC2: the QE write-offset halfword and the health XP word. */
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00386"), "NPEA00386 reaches INGAME");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "RaC2 DESCRIBE encodes");
+
+	check_signed_row(out, len, SIGNED_QE_R2, 16, "RaC2 describes the QE write-offset");
+	check_signed_row(out, len, SIGNED_XP_R2, 32, "RaC2 describes health XP");
+
+	row = desc_feature(out, len, UNSIGNED_R2);
+	check(row != NULL && (row[4] & FEATURE_FLAG_SIGNED) == 0 && row[6] == 0,
+	      "the bolt count is neither signed nor width-tagged");
+
+	/*
+	 * The whole point: -1 travels as its low sixteen bits and has to reach the
+	 * game as a halfword, or a negative offset never lands.
+	 */
+	check(features_set(SIGNED_QE_R2, 0xFFFFu) == ST_OK, "FEATURE_SET sends -1 as 0xFFFF");
+	host_peek(R2_QE_ADDR, halfword, 2);
+	check(halfword[0] == 0xFF && halfword[1] == 0xFF,
+	      "and RaC2 wrote both bytes of the halfword");
+	check(features_set(SIGNED_QE_R2, 0x8000u) == ST_OK, "the most negative offset is in range");
+	host_peek(R2_QE_ADDR, halfword, 2);
+	check(halfword[0] == 0x80 && halfword[1] == 0x00, "and lands as 0x8000");
+
+	/* RaC3: the same pair, and the same halfword write behind its QE offset. */
+	check(quit_and_wait(), "quit RaC2");
+	check(boot_and_wait("NPEA00387"), "NPEA00387 reaches INGAME");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "RaC3 DESCRIBE encodes");
+
+	check_signed_row(out, len, SIGNED_QE_R3, 16, "RaC3 describes the QE offset");
+	check_signed_row(out, len, SIGNED_XP_R3, 32, "RaC3 describes health XP");
+
+	check(features_set(SIGNED_QE_R3, 0xFFFFu) == ST_OK, "RaC3 takes -1 as 0xFFFF");
+	host_peek(R3_QE_ADDR, halfword, 2);
+	check(halfword[0] == 0xFF && halfword[1] == 0xFF,
+	      "and wrote both bytes of the halfword");
+
+	check(quit_and_wait(), "quit RaC3");
 }
 
 /* ------------------------------------------------------------------ RaC2 */
@@ -3219,6 +3328,7 @@ int main(void)
 	test_debug_options();
 	test_live_toggles();
 	test_savefile_flags();
+	test_signed_values();
 	test_rac2();
 	test_rac3();
 	test_rac4();

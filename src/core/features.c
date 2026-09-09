@@ -296,6 +296,7 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		const struct feature_desc *f = &d->features[i];
 		u8 flags = f->flags;
 		u8 readout = f->readout;
+		u8 bits = 0;
 
 		if (f->kind == FEATURE_TOGGLE && f->id < QWARK_MAX_FEATURES &&
 		    (g_toggle_auto & ((u64)1 << f->id)) != 0)
@@ -307,13 +308,23 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		else if (readout >= QWARK_MAX_READOUTS)
 			readout = FEATURE_NO_READOUT;
 
+		/*
+		 * Protocol 1.7. A VALUE's `aux` is the width of the field behind it, and
+		 * only 8, 16 and 32 mean anything. A row that names no width sends 0,
+		 * which is what every row sent before this revision and what a client is
+		 * to read as 32, so the old rows and the new ones read the same way.
+		 */
+		if (f->kind == FEATURE_VALUE &&
+		    (f->aux == 8 || f->aux == 16 || f->aux == 32))
+			bits = f->aux;
+
 		out[off + 0] = f->id;
 		out[off + 1] = f->kind;
 		out[off + 2] = f->group;
 		out[off + 3] = (f->kind == FEATURE_ENUM) ? f->aux : 0;
 		out[off + 4] = flags;
 		out[off + 5] = readout;
-		out[off + 6] = 0;
+		out[off + 6] = bits;
 		out[off + 7] = 0;
 		be32_put(out + off + 8, f->min);
 		be32_put(out + off + 12, f->max);

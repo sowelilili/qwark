@@ -36,13 +36,27 @@ struct game_hot {
 	u32 readout[QWARK_MAX_READOUTS];
 };
 
-/* One row of the DESCRIBE table. */
+/*
+ * One row of the DESCRIBE table.
+ *
+ * `aux` is the kind-dependent extra, and the two kinds that use it never share a
+ * row: an ENUM's option count goes out in the wire's `aux` byte, a VALUE's field
+ * width in the `bits` byte revision 1.7 took from the padding. The core sorts
+ * that out in features_describe; a row only ever writes the one number its kind
+ * has a use for.
+ */
 struct feature_desc {
 	u8  id;
 	u8  kind;       /* FEATURE_TOGGLE, ACTION, VALUE, ENUM, COLOR */
 	u8  group;      /* index into the group name table */
-	u8  aux;        /* ENUM: option count. 0 for every other kind */
-	u8  flags;      /* FEATURE_FLAG_WRITES_CODE; AUTO is added by the core */
+	/*
+	 * ENUM: the option count. VALUE: the width in bits of the field behind it,
+	 * 8, 16 or 32, and 0 for the default 32 (protocol 1.7). A row flagged
+	 * FEATURE_FLAG_SIGNED says the width here, because that is what a client
+	 * needs in order to read the value back. 0 for every other kind.
+	 */
+	u8  aux;
+	u8  flags;      /* FEATURE_FLAG_WRITES_CODE, SIGNED; AUTO is added by the core */
 	u8  readout;    /* VALUE, ENUM, COLOR: mirroring readout index, else 0xFF */
 	u32 min;
 	u32 max;

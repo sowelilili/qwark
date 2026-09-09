@@ -14,6 +14,9 @@
  * the kinds gained LOAD_START and LOAD_END, and EventDesc grew to 32 bytes with
  * a `param_us` that carries the game-time adjustment the old ASL scripts made.
  * Revision 1.6: SessionInfo flags bit1 EMULATOR and bit2 NO_CODE_PATCHES.
+ * Revision 1.7: the first of Feature's two pad bytes is now `bits`, the width of
+ * the field behind a VALUE, and Feature flags bit5 SIGNED says that field is
+ * two's complement in that width.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -29,7 +32,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             6
+#define QWARK_BUILD             7
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -265,15 +268,29 @@
  * FEATURE_SET still writes the byte.
  */
 #define FEATURE_FLAG_LIVE        0x10
+/*
+ * Revision 1.7. The field behind this VALUE is two's complement in `bits` bits,
+ * so the readout that mirrors it carries the raw field and a client sign-extends
+ * it before showing it. FEATURE_SET still carries a u32: the client sends the
+ * low `bits` bits of the value it wants (0xFFFF for -1 on a 16-bit field) and
+ * qwark writes the field exactly as it always did. A signed feature leaves min
+ * and max at 0, because the width already says what the range is.
+ */
+#define FEATURE_FLAG_SIGNED      0x20
 
 /*
- * Feature, 48 bytes: id, kind, group, aux, flags, readout, pad[2], u32 min,
+ * Feature, 48 bytes: id, kind, group, aux, flags, readout, bits, pad, u32 min,
  * u32 max, char label[32]. `readout` is the SessionInfo.readout[] index that
  * mirrors a VALUE, ENUM or COLOR feature's current value, 0xFF when there is
  * none and always 0xFF for TOGGLE and ACTION.
+ *
+ * Revision 1.7: `bits` is the width in bits of the field behind a VALUE, 8, 16
+ * or 32. Zero means 32, so every row written before this revision reads the same
+ * way it always did; every other kind sends 0.
  */
 #define FEATURE_WIRE_SIZE 48
 #define FEATURE_NO_READOUT 0xFF
+#define FEATURE_BITS_DEFAULT 32
 #define UNLOCK_WIRE_SIZE  44
 #define MOD_WIRE_SIZE     120
 

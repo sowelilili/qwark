@@ -128,7 +128,11 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC2_RO_RARITANIUM] = be32_get(state + OFF_RARITANIUM);
 		out->readout[RAC2_RO_CHALLENGE]  = state[OFF_CHALLENGE];
 		out->readout[RAC2_RO_HEALTH_XP]  = be32_get(state + OFF_HEALTH_XP);
-		/* The QE offset is a signed 16-bit field; report the raw halfword. */
+		/*
+		 * The QE offset is a signed 16-bit field. The readout carries the raw
+		 * halfword and the feature row says SIGNED, 16 bits, so the client is
+		 * the one that sign-extends it (protocol 1.7).
+		 */
 		out->readout[RAC2_RO_QE_OFFSET]  = be16_get(state);
 	}
 
@@ -454,9 +458,11 @@ static const char * const rac2_readouts[] = {
 #define LA FEATURE_FLAG_LOAD_ASIDE
 /* Protocol 1.3: a toggle qwark reads back out of game memory. */
 #define LV FEATURE_FLAG_LIVE
+/* Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide. */
+#define SG FEATURE_FLAG_SIGNED
 
 static const struct feature_desc rac2_features[] = {
-	/* id, kind, group, aux, flags, readout, min, max, label */
+	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
 	{ R2_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
 	{ R2_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ R2_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
@@ -468,7 +474,8 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_BOLTS,           FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC2_RO_BOLTS,      0, 0, "Bolts" },
 	{ R2_RARITANIUM,      FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC2_RO_RARITANIUM, 0, 0, "Raritanium" },
 	{ R2_CHALLENGE,       FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC2_RO_CHALLENGE,  0, 255, "Challenge mode" },
-	{ R2_HEALTH_XP,       FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC2_RO_HEALTH_XP,  0, 0, "Health XP" },
+	/* Health XP is a signed 32-bit field, so the row says so and stays unbounded. */
+	{ R2_HEALTH_XP,       FEATURE_VALUE,  G_PLAYER,  32, SG, RAC2_RO_HEALTH_XP,  0, 0, "Health XP" },
 	{ R2_SET_RESPAWN,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Set respawn point" },
 	{ R2_STORE_SWINGSHOT, FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Store Swingshot" },
 	{ R2_DEATH_BOSSES,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset bosses on death" },
@@ -482,7 +489,11 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_MAKTAR_SLOTS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Maktar slots" },
 	{ R2_AUTO_ANYPCT,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (any%)" },
 	{ R2_AUTO_NGPLUS,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (NG+)" },
-	{ R2_QE_OFFSET,       FEATURE_VALUE,  G_PROGRESS, 0, 0,  RAC2_RO_QE_OFFSET, 0, 0xFFFF, "QE save write-offset" },
+	/*
+	 * The QE offset is the signed halfword at selectedSaveSlot, and the old
+	 * dialog's default was -1. min and max stay 0: the width is the range.
+	 */
+	{ R2_QE_OFFSET,       FEATURE_VALUE,  G_PROGRESS, 16, SG, RAC2_RO_QE_OFFSET, 0, 0, "QE save write-offset" },
 
 	{ R2_RESET_PBOLTS,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset platinum bolts" },
 	{ R2_UNLOCK_PBOLTS,   FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all platinum bolts" },
@@ -511,6 +522,7 @@ static const struct feature_desc rac2_features[] = {
 #undef SA
 #undef LA
 #undef LV
+#undef SG
 
 static const struct game_describe rac2_describe_table = {
 	rac2_groups,   (u8)(sizeof(rac2_groups) / sizeof(rac2_groups[0])),

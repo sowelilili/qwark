@@ -6,6 +6,7 @@ Revision 1.3 (2026-09-08): Feature flags bit4 LIVE marks a TOGGLE whose state qw
 Revision 1.4 (2026-09-09): the autosplit event stream. AUTOSPLIT_EVENTS and AUTOSPLIT_DESCRIBE in the 0x00A0 block, and a 20-byte `QE` datagram pushed to every telemetry subscriber the moment a run event happens. See section 8.
 Revision 1.5 (2026-09-09): autosplit timing. The Event's second word is `time_ms` rather than a tick count, the kinds gained 6 LOAD_START and 7 LOAD_END, and EventDesc is 32 bytes with a `param_us` and two new flags, FLAT and NORMALISE, that carry the game-time adjustments the old ASL scripts made. See section 8.
 Revision 1.6 (2026-09-09): SessionInfo `flags` gained bit1 EMULATOR and bit2 NO_CODE_PATCHES, so a client can tell that qwark is driving RPCS3 through PINE rather than a console and that every WRITES_CODE feature is refused there. See section 3.2.
+Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes is now `bits`, the width in bits of the field behind a VALUE, and Feature flags bit5 SIGNED says that field is two's complement in that width. See section 5.3.2.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -46,7 +47,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 6 (see below)
+u8   qwark_version      module build number, currently 7 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -154,12 +155,12 @@ When a different title comes back, everything including watches is dropped and t
 
 ### 5.3 Features (0x002x)
 
-Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 2 VALUE (u32), 3 ENUM, 4 COLOR (`0x00RRGGBB`).
+Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 2 VALUE (u32, or two's complement when the row is flagged SIGNED, section 5.3.2), 3 ENUM, 4 COLOR (`0x00RRGGBB`).
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x0020 | DESCRIBE | none | `u8 game, u8 ngroups, char[24] group[ngroups], u8 nreadouts, char[24] readout[nreadouts], u8 nfeatures, Feature[nfeatures]`. At most 16 groups, 16 readouts, 64 features |
-| 0x0021 | FEATURE_SET | `u8 id, u32 value` (TOGGLE: 0 or 1) | none. Works on a LIVE toggle too: it writes the byte |
+| 0x0021 | FEATURE_SET | `u8 id, u32 value` (TOGGLE: 0 or 1; SIGNED VALUE: the low `bits` bits, section 5.3.2) | none. Works on a LIVE toggle too: it writes the byte |
 | 0x0022 | FEATURE_TRIGGER | `u8 id` (ACTION only) | none |
 | 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
@@ -170,11 +171,12 @@ u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
 u8   aux            ENUM: option count. 0 for every other kind
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION makes the game write its current save to /dev_hdd0/game/<TITLEID>/USRDIR/tempsave), bit3 LOAD_ASIDE (this ACTION makes the game load that tempsave), bit4 LIVE (TOGGLE only, section 5.3.1)
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION makes the game write its current save to /dev_hdd0/game/<TITLEID>/USRDIR/tempsave), bit3 LOAD_ASIDE (this ACTION makes the game load that tempsave), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. TOGGLE and ACTION: 0xFF
-u8   pad[2]
+u8   bits           VALUE: the width in bits of the field behind it, 8, 16 or 32. 0 means 32, so a row that names no width reads as it always did. 0 for every other kind (revision 1.7)
+u8   pad
 u32  min
-u32  max            VALUE and ENUM range, inclusive; both 0 when unbounded
+u32  max            VALUE and ENUM range, inclusive; both 0 when unbounded. A SIGNED VALUE leaves both 0: `bits` already says what the range is
 char label[32]
 ```
 
@@ -199,6 +201,32 @@ The LIVE toggles today:
 | RaC1 | 24, 25, 26 | Update Ratchet / mobys / particles | three bits of the debug update word at 0x95C5C8 |
 | RaC2 | 5 | Enable debug mode | one byte at 0x15B3070 |
 | RaC3 | 5 | Quick-select pause | one byte at 0xC1E652 |
+
+#### 5.3.2 Signed VALUEs (revision 1.7)
+
+A VALUE is a `u32` on the wire, which is right for a bolt count and wrong for a field the game itself reads as signed: the QE offsets are halfwords whose useful value is -1, and a client that shows 65535 there is showing the bits rather than the number.
+
+Two fields carry the width and the signedness:
+
+- **`bits`**, the first of what used to be Feature's two pad bytes, is the width in bits of the field behind a VALUE: 8, 16 or 32. **0 means 32**, so every row written before this revision, and every row that has no reason to say, is read exactly as it was. Every other kind sends 0.
+- **flags bit5 SIGNED** says that field is two's complement in `bits` bits. It only ever appears on a VALUE.
+
+What each side does:
+
+- The **readout** that mirrors the feature keeps carrying the **raw field**, zero-extended into the u32 as it always was: a QE offset of -1 arrives as 0x0000FFFF. The client sign-extends it from `bits` before showing it.
+- **FEATURE_SET still carries `u32 value`**. For a signed feature the client sends the low `bits` bits of the number it wants, so -1 on a 16-bit field is 0xFFFF, and qwark writes the field exactly as it does for an unsigned one. Nothing about the write path changed.
+- A signed row leaves **`min` and `max` both 0**, which already means unbounded. The width is the range: a client offers -32768..32767 on a 16-bit field and -2147483648..2147483647 on a 32-bit one, and clamps what the user types to it.
+
+A client that predates this revision reads `bits` as padding and the flag as a bit it does not know, so it goes on showing the raw field: the same behaviour it had before, not a new failure.
+
+The signed VALUEs today:
+
+| Game | Feature id | Label | Field |
+|---|---|---|---|
+| RaC2 | 10 | Health XP | signed 32-bit |
+| RaC2 | 23 | QE save write-offset | signed 16-bit halfword |
+| RaC3 | 9 | Health XP | signed 32-bit |
+| RaC3 | 14 | QE offset | signed 16-bit halfword |
 
 ### 5.4 Memory (0x003x)
 

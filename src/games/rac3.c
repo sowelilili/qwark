@@ -129,6 +129,11 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC3_RO_CHALLENGE] = state[OFF_CHALLENGE];
 		out->readout[RAC3_RO_HEALTH_XP] = be32_get(state + OFF_HEALTH_XP);
 		out->readout[RAC3_RO_ARMOUR]    = be16_get(state + OFF_ARMOUR);
+		/*
+		 * The QE offset is a signed 16-bit field. The readout carries the raw
+		 * halfword and the feature row says SIGNED, 16 bits, so the client is
+		 * the one that sign-extends it (protocol 1.7).
+		 */
 		out->readout[RAC3_RO_QE_OFFSET] = be16_get(state);
 	}
 
@@ -439,9 +444,11 @@ static const char * const rac3_readouts[] = {
 #define LA FEATURE_FLAG_LOAD_ASIDE
 /* Protocol 1.3: a toggle qwark reads back out of game memory. */
 #define LV FEATURE_FLAG_LIVE
+/* Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide. */
+#define SG FEATURE_FLAG_SIGNED
 
 static const struct feature_desc rac3_features[] = {
-	/* id, kind, group, aux, flags, readout, min, max, label */
+	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
 	{ R3_FREEZE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Freeze ammo" },
 	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ R3_OHKO,          FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "One-hit KO" },
@@ -451,12 +458,17 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R3_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_BOLTS,     0, 0, "Bolts" },
 	{ R3_CHALLENGE,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_CHALLENGE, 0, 255, "Challenge mode" },
-	{ R3_HEALTH_XP,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_HEALTH_XP, 0, 0, "Health XP" },
+	/* Health XP is a signed 32-bit field, so the row says so and stays unbounded. */
+	{ R3_HEALTH_XP,     FEATURE_VALUE,  G_PLAYER,  32, SG, RAC3_RO_HEALTH_XP, 0, 0, "Health XP" },
 	{ R3_HEALTH,        FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_HEALTH,    0, 0, "Health" },
 	{ R3_ARMOUR,        FEATURE_ENUM,   G_PLAYER,   RAC3_ARMOUR_COUNT, 0, RAC3_RO_ARMOUR, 0, RAC3_ARMOUR_COUNT - 1, "Armour" },
 	{ R3_SHIP_COLOUR,   FEATURE_ENUM,   G_PLAYER,   RAC3_SHIP_COUNT,   0, RAC3_RO_SHIP,   0, RAC3_SHIP_COUNT - 1, "Ship colour" },
 	{ R3_FILE_TIME,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_FILE_TIME, 0, 0, "File time" },
-	{ R3_QE_OFFSET,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_QE_OFFSET, 0, 0xFFFF, "QE offset" },
+	/*
+	 * The QE offset is the signed halfword at RAC3_QE_OFFSET, the one qeTextBox
+	 * edited. min and max stay 0: the width is the range.
+	 */
+	{ R3_QE_OFFSET,     FEATURE_VALUE,  G_PLAYER,  16, SG, RAC3_RO_QE_OFFSET, 0, 0, "QE offset" },
 	{ R3_VENDOR_QE,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Enable vendor QE" },
 
 	{ R3_SETUP_NGPLUS,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Setup NG+ manips" },
@@ -490,6 +502,7 @@ static const struct feature_desc rac3_features[] = {
 #undef SA
 #undef LA
 #undef LV
+#undef SG
 
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
