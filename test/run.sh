@@ -25,7 +25,11 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
 # built without its own set and the PINE tests drive its pine_* half directly.
 CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
         -DQWARK_HOST -DQWARK_TEST -DQWARK_PINE_NO_PLAT"
-LDFLAGS="-lws2_32 -lwinmm -lpthread"
+# -static folds winpthreads into the executable. Without it both programs import
+# libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
+# on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at
+# once with STATUS_DLL_NOT_FOUND (0xC0000135) and the client reconnected for ever.
+LDFLAGS="-static -lws2_32 -lwinmm -lpthread"
 
 echo "compiling $OUT"
 "$CLANG" $CFLAGS $SRC -o "$OUT" $LDFLAGS
