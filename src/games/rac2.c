@@ -495,12 +495,12 @@ static const struct feature_desc rac2_features[] = {
 	 */
 	{ R2_QE_OFFSET,       FEATURE_VALUE,  G_PROGRESS, 16, SG, RAC2_RO_QE_OFFSET, 0, 0, "QE save write-offset" },
 
-	{ R2_RESET_PBOLTS,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset platinum bolts" },
 	{ R2_UNLOCK_PBOLTS,   FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all platinum bolts" },
-	{ R2_RESET_NANOTECH,  FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset nanotech boosts" },
+	{ R2_RESET_PBOLTS,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset platinum bolts" },
 	{ R2_UNLOCK_NANOTECH, FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all nanotech boosts" },
-	{ R2_RESET_SKILL,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset skill points" },
+	{ R2_RESET_NANOTECH,  FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset nanotech boosts" },
 	{ R2_UNLOCK_SKILL,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all skill points" },
+	{ R2_RESET_SKILL,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset skill points" },
 
 	/*
 	 * Four savefile requests, named after the four old buttons. The save
