@@ -32,7 +32,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             7
+#define QWARK_BUILD             8
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -135,6 +135,7 @@
 
 #define OP_COMBO_SET         0x0080
 #define OP_COMBO_LIST        0x0081
+#define OP_COMBO_SUSPEND     0x0082
 
 #define OP_CONFIG_RELOAD     0x0090
 #define OP_CONFIG_SAVE       0x0091

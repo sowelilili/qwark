@@ -110,4 +110,25 @@ int  session_die(void);
 int  session_load_setaside(void);
 u8   session_current_planet(void);
 
+/* ----------------------------------------------------------------- combos */
+
+/*
+ * Protocol 1.8. COMBO_SUSPEND: holds every stored combo off (`on` non-zero) or
+ * lets them go again (0). A client capturing a new combo reads the pad out of
+ * telemetry while the console is watching the same pad, so without this the
+ * buttons being recorded also fire whatever is already stored.
+ *
+ * The hold carries a deadline rather than lasting until a client says otherwise,
+ * so a client that dies mid-capture cannot leave the combos off for good, and it
+ * is dropped when the session leaves the game. Tick thread only: the net layer
+ * posts it through the ring.
+ */
+void session_combo_suspend(u8 on);
+
+/* How long a hold lasts before the console takes the combos back, microseconds. */
+u64  session_combo_suspend_window_us(void);
+
+/* Test hook: shortens that window so the expiry is reachable in a unit test. */
+void session_set_combo_suspend_window_us(u64 us);
+
 #endif /* QWARK_SESSION_H */

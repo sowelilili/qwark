@@ -7,6 +7,7 @@ Revision 1.4 (2026-09-09): the autosplit event stream. AUTOSPLIT_EVENTS and AUTO
 Revision 1.5 (2026-09-09): autosplit timing. The Event's second word is `time_ms` rather than a tick count, the kinds gained 6 LOAD_START and 7 LOAD_END, and EventDesc is 32 bytes with a `param_us` and two new flags, FLAT and NORMALISE, that carry the game-time adjustments the old ASL scripts made. See section 8.
 Revision 1.6 (2026-09-09): SessionInfo `flags` gained bit1 EMULATOR and bit2 NO_CODE_PATCHES, so a client can tell that qwark is driving RPCS3 through PINE rather than a console and that every WRITES_CODE feature is refused there. See section 3.2.
 Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes is now `bits`, the width in bits of the field behind a VALUE, and Feature flags bit5 SIGNED says that field is two's complement in that width. See section 5.3.2.
+Revision 1.8 (2026-09-09): COMBO_SUSPEND, which holds every stored combo off while a client captures a new one, so the buttons being recorded do not also fire the combos already there. See section 5.9.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -47,7 +48,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 7 (see below)
+u8   qwark_version      module build number, currently 8 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -366,6 +367,11 @@ Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE
 |---|---|---|---|
 | 0x0080 | COMBO_SET | `u8 action, u8 pad[3], u32 mask` | none |
 | 0x0081 | COMBO_LIST | none | `u8 n, { u8 action, u8 pad[3], u32 mask }[n]` |
+| 0x0082 | COMBO_SUSPEND | `u8 suspend` (1 hold every combo off, 0 resume) | none |
+
+COMBO_SUSPEND (revision 1.8) exists for capture. A client that records a combo reads the buttons out of telemetry's `pad_mask`, which is the same pad the console is watching, so without the hold the press that records "load position" also loads a position. Send 1 when the capture starts and 0 when it commits, is cancelled or is dropped; it is not a game write, so it answers in any session state.
+
+The hold expires by itself two minutes after the COMBO_SUSPEND that set it, and is dropped when the session leaves the game. A client that dies mid-capture therefore cannot leave the combos off for good, and a client that resumes at the two-minute mark just sends 1 again. Lifting a hold does not re-arm anything: a combo still held when the hold ends fires only after the pad has returned to 0, which is the ordinary arming rule.
 
 ### 5.10 Config (0x009x)
 

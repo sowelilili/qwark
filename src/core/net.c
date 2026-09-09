@@ -608,6 +608,16 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		break;
 	}
 
+	/*
+	 * Protocol 1.8. The hold is tick-thread state that step_combos reads every
+	 * tick, so it is set here rather than inline on a network thread. It is not
+	 * a game write and answers whatever the session state is.
+	 */
+	case OP_COMBO_SUSPEND:
+		if (reqlen < 1) { cmd->status = ST_BAD_ARG; break; }
+		session_combo_suspend(req[0]);
+		break;
+
 	default:
 		cmd->status = ST_UNKNOWN_OP;
 		break;
@@ -649,6 +659,7 @@ static int op_needs_ring(u16 op)
 	case OP_LEVELFLAGS_GET:
 	case OP_LEVELFLAGS_RESET:
 	case OP_LEVELFLAGS_SET:
+	case OP_COMBO_SUSPEND:
 		return 1;
 	default:
 		return 0;

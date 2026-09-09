@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 7
+QWARK_BUILD = 8
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -66,6 +66,7 @@ OP_LEVELFLAGS_SET = 0x0055
 OP_MOD_LIST = 0x0060
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
+OP_COMBO_SUSPEND = 0x0082
 OP_CONFIG_RELOAD = 0x0090
 OP_AUTOSPLIT_EVENTS = 0x00A0
 OP_AUTOSPLIT_DESCRIBE = 0x00A1
@@ -1741,6 +1742,50 @@ def main():
             x, y, z = struct.unpack(">3f", body[off + 4:off + 16])
             fired = filled == 1 and abs(x - 9.0) < 0.001 and abs(z - 7.0) < 0.001
         check(fired, "the controller combo saved a position into slot 4")
+
+        # ------------------------------------------- the combo hold, revision 1.8
+        # What the client does while it captures a combo: the buttons being
+        # recorded reach the console too, so it holds every stored combo off
+        # rather than saving a position under the user's fingers.
+
+        def saved_position():
+            status, body = c.call(OP_POS_LIST)
+            if status != ST_OK:
+                return None
+            off = 2 + 4 * 16
+            if body[off] != 1:
+                return None
+            return struct.unpack(">3f", body[off + 4:off + 16])
+
+        status, _ = c.call(OP_COMBO_SUSPEND, b"")
+        check(status == ST_BAD_ARG, "COMBO_SUSPEND with no payload is BAD_ARG", status)
+
+        status, _ = c.call(OP_COMBO_SUSPEND, bytes([1]))
+        check(status == ST_OK, "COMBO_SUSPEND 1 holds the combos off", status)
+
+        coords3 = struct.pack(">fff", 1.0, 2.0, 3.0) + b"\x00" * 18
+        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords3)
+
+        sim.send("pad 0x1005")
+        time.sleep(0.4)
+        sim.send("pad 0x0")
+        time.sleep(0.2)
+
+        held = saved_position()
+        check(held is not None and abs(held[0] - 9.0) < 0.001,
+              "the same combo pressed under the hold saved nothing", held)
+
+        status, _ = c.call(OP_COMBO_SUSPEND, bytes([0]))
+        check(status == ST_OK, "COMBO_SUSPEND 0 hands them back", status)
+
+        sim.send("pad 0x1005")
+        time.sleep(0.4)
+        sim.send("pad 0x0")
+        time.sleep(0.2)
+
+        resumed = saved_position()
+        check(resumed is not None and abs(resumed[0] - 1.0) < 0.001,
+              "and the next press saves a position again", resumed)
 
         # ------------------------------------------------------ mod listing
         status, body = c.call(OP_MOD_LIST)

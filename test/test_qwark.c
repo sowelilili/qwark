@@ -530,7 +530,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 7, "and this module is build 7");
+	check_eq_u64(packet[5], 8, "and this module is build 8");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1230,6 +1230,110 @@ static void test_signed_values(void)
 	      "and wrote both bytes of the halfword");
 
 	check(quit_and_wait(), "quit RaC3");
+}
+
+/* --------------------------------------------- combos and COMBO_SUSPEND (1.8) */
+
+/*
+ * The save-position combo is the one the capture problem was reported against:
+ * recording L2+R2+Right over it also saved a position. Firing is observed
+ * through the position slot the action writes, which is empty until it fires.
+ */
+#define COMBO_TEST_MASK 0x1005u   /* l2 + l1 + up */
+#define COMBO_TEST_SLOT 2
+
+static void test_combo_suspend(void)
+{
+	u8 blob[QWARK_MAX_BLOB];
+	u8 len = 0;
+	u8 planet;
+	u64 window;
+
+	group("combo suspend");
+
+	check(boot_and_wait("NPEA00385"), "RaC1 boots for the combo checks");
+
+	window = session_combo_suspend_window_us();
+	check_eq_u64(window, 120000000ull, "a hold lasts two minutes by default");
+
+	config_set_selected_slot(COMBO_TEST_SLOT);
+	check(config_set_combo(COMBO_SAVE_POSITION, COMBO_TEST_MASK) == ST_OK,
+	      "the save-position combo is stored");
+
+	planet = session_current_planet();
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	/* The plain case first: held mask equals the stored mask, the combo fires. */
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "the matching pad mask fires the combo");
+
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	/* What the client does while it captures. */
+	session_combo_suspend(1);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "with the hold on the same mask does nothing");
+
+	/*
+	 * Lifting the hold must not fire the combo the user is still pressing: the
+	 * pad has to come back to empty first, exactly as it does after any combo.
+	 */
+	session_combo_suspend(0);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "resuming does not fire the combo under the buttons still held");
+
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "and once the pad is released the combo fires again");
+
+	/*
+	 * The deadline is the whole point of a hold that expires: a client that dies
+	 * mid-capture never sends the 0, and the console has to hand the combos back
+	 * on its own. Shortened here so the test does not wait two minutes for it.
+	 */
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	session_set_combo_suspend_window_us(30000);   /* 30 ms */
+	session_combo_suspend(1);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "the hold holds inside its window");
+
+	host_set_pad(0);
+	pump(2);
+	plat_sleep_us(60000);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "and the window expiring hands the combos back with no client");
+
+	session_set_combo_suspend_window_us(window);
+	check_eq_u64(session_combo_suspend_window_us(), 120000000ull,
+	             "the window is back to two minutes");
+
+	/* Leave nothing behind for the tests that follow. */
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+	config_set_combo(COMBO_SAVE_POSITION, 0);
+	config_set_selected_slot(0);
+
+	check(quit_and_wait(), "quit RaC1");
 }
 
 /* ------------------------------------------------------------------ RaC2 */
@@ -3329,6 +3433,7 @@ int main(void)
 	test_live_toggles();
 	test_savefile_flags();
 	test_signed_values();
+	test_combo_suspend();
 	test_rac2();
 	test_rac3();
 	test_rac4();

@@ -68,6 +68,18 @@ static struct previous_record g_prev;
 
 static int  g_combo_armed = 1;
 
+/*
+ * Protocol 1.8. While the client captures a combo it holds the console's own
+ * combos off, because the buttons the user is recording are the same pad the
+ * tick thread watches. The hold is a deadline, not a flag: a client that
+ * crashes with the hold on is gone, and nobody would be left to lift it.
+ * Two minutes is far longer than a capture and far shorter than a session.
+ */
+#define COMBO_SUSPEND_WINDOW_US 120000000ull   /* 120 seconds */
+
+static u64 g_combo_suspend_until;
+static u64 g_combo_suspend_window = COMBO_SUSPEND_WINDOW_US;
+
 static plat_mutex_t g_core_mutex;
 static plat_mutex_t g_ring_mutex;
 
@@ -305,6 +317,13 @@ static void enter_quitting(void)
 	 * still apply: remember which game it actually was.
 	 */
 	g_last_game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+
+	/*
+	 * A combo hold belongs to the client's capture, and the game it was holding
+	 * combos off in has gone. Whatever the client does next starts a new one.
+	 */
+	g_combo_suspend_until = 0;
+
 	g_state = SESSION_QUITTING;
 	plat_log("qwark: session QUITTING (%s)", g_title);
 }
@@ -600,6 +619,26 @@ static void refresh_combos(void)
 	for (a = 0; a < COMBO_COUNT; a++) g_combo_mask[a] = config_combo(a);
 }
 
+void session_combo_suspend(u8 on)
+{
+	g_combo_suspend_until = on ? plat_time_us() + g_combo_suspend_window : 0;
+}
+
+u64 session_combo_suspend_window_us(void)
+{
+	return g_combo_suspend_window;
+}
+
+void session_set_combo_suspend_window_us(u64 us)
+{
+	g_combo_suspend_window = us;
+}
+
+static int combos_suspended(void)
+{
+	return g_combo_suspend_until != 0 && plat_time_us() < g_combo_suspend_until;
+}
+
 static void step_combos(void)
 {
 	u8 a;
@@ -610,6 +649,17 @@ static void step_combos(void)
 
 	if (g_hot.pad_mask == 0) {
 		g_combo_armed = 1;
+		return;
+	}
+
+	/*
+	 * Held off while the client captures. The arming rule above is untouched, so
+	 * a pad still full when the hold ends stays disarmed: the buttons the user
+	 * pressed to record a combo do not fire one the instant the combos come
+	 * back, they wait for the pad to return to empty like any other press.
+	 */
+	if (combos_suspended()) {
+		g_combo_armed = 0;
 		return;
 	}
 
