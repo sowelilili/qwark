@@ -5,6 +5,7 @@
 #include "mods.h"
 #include "config.h"
 #include "util.h"
+#include "autosplit.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
@@ -777,6 +778,58 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		off = 1;
 		for (i = 0; i < count; i++) { put_fixed(reply + off, 24, options[i]); off += 24; }
 		core_unlock();
+
+		*replylen = off;
+		return ST_OK;
+	}
+
+	/*
+	 * Protocol 1.4. The catch-up read for the UDP push: everything the 64-entry
+	 * ring still holds past `since_seq`. It answers whatever the session state
+	 * is, because a client that reconnects after a crash still wants the splits
+	 * that happened while it was away.
+	 */
+	case OP_AUTOSPLIT_EVENTS: {
+		u32 n;
+
+		if (reqlen < 4) return ST_BAD_ARG;
+
+		n = autosplit_encode_events(be32_get(req), reply, replycap);
+		if (n == 0) return ST_FULL;
+
+		*replylen = n;
+		return ST_OK;
+	}
+
+	case OP_AUTOSPLIT_DESCRIBE: {
+		const struct game_api *g = session_game();
+		const struct autosplit_desc *rows = NULL;
+		u8 count = 0;
+		u8 i;
+		u32 off;
+
+		/*
+		 * Same gate as DESCRIBE: during BOOTING under BCES01503 session_game()
+		 * is still only a guess, and handing a client the wrong game's split
+		 * list is worse than making it wait.
+		 */
+		if (g == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
+		if (g->autosplit_describe == NULL) return ST_UNSUPPORTED;
+
+		rows = g->autosplit_describe(&count);
+		if (rows == NULL || count == 0) return ST_UNSUPPORTED;
+		if (1u + (u32)count * AUTOSPLIT_DESC_SIZE > replycap) return ST_FULL;
+
+		reply[0] = count;
+		off = 1;
+		for (i = 0; i < count; i++) {
+			reply[off + 0] = rows[i].code;
+			reply[off + 1] = rows[i].kind;
+			reply[off + 2] = rows[i].flags;
+			reply[off + 3] = 0;
+			put_fixed(reply + off + 4, AUTOSPLIT_LABEL_LEN, rows[i].label);
+			off += AUTOSPLIT_DESC_SIZE;
+		}
 
 		*replylen = off;
 		return ST_OK;

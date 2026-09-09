@@ -82,6 +82,31 @@
 #define RAC4_QUIT_HOOK_ADDR    0x00013780u
 #define RAC4_QUIT_FLAG         0x01700000u
 
+/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+
+/*
+ * Deadlocked is the one game whose detection already ran on the console: the old
+ * SPRX (rac4-autosplitter-src/ratchetron.c) polled these words itself and sent
+ * commands to the PC, and rac4-LC-autosplitter.asl consumed them. The addresses
+ * are that SPRX's ADDR_* constants, and where the two disagree the LC script
+ * wins, so the watcher below reproduces its `command` stream.
+ *
+ * The current planet is the SPRX's ADDR_CURRENT_PLANET, which is not the same
+ * word as RAC4_CURRENT_PLANET: it reads 0 when the box is beaten, and both it
+ * and the destination are taken modulo 0x14 for co-op.
+ */
+#define RAC4_AS_PLANET       RAC4_LOAD_PLANET_OLD  /* 0x009C3240 */
+#define RAC4_AS_PLANET_MOD   0x14u
+#define RAC4_VOX_HP          0x449BEAD0u  /* f32, negative once Vox is beaten */
+
+#define RAC4_PLANET_MAINMENU 0
+#define RAC4_PLANET_DREADZONE 1
+#define RAC4_PLANET_INTERIOR 15
+
+/* Split reason codes. Code 1 is "planet entered" in every game. */
+#define R4_AS_PLANET 1
+#define R4_AS_VOX    2
+
 /* The savefile helper mod's three bytes. */
 #define RAC4_SF_HELPER         0x015CD71Du
 #define RAC4_SF_LOAD_ASIDE     0x015CD71Eu
@@ -125,6 +150,9 @@ extern const u8 rac4_fp_patched[4];
 #define RAC4_HOT_INPUTS_LEN  0x1EC
 #define RAC4_HOT_STATS_LEN   0x40      /* bolts through the saved bot unlocks */
 #define RAC4_HOT_FLAGS_LEN   0x10      /* in-game byte through the tutorial flags */
+/* autosplit: load request +0x00, target planet +0x04, cutscene pointer +0x1C */
+#define RAC4_HOT_LOAD_ADDR   RAC4_LOAD_PLANET2
+#define RAC4_HOT_LOAD_LEN    0x20
 
 /* ----------------------------------------------------------- readout slots */
 

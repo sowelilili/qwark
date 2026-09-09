@@ -113,6 +113,45 @@
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
 
+/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+
+/*
+ * rac2.cs AutosplitterAddresses, in the order rac2-autosplitter.asl reads them.
+ * The game state word (0x156B064), the destination planet (0x156B054), the
+ * Protopet health bar (0x133EE7C), the load-screen type and the Endako *entry*
+ * flag (0x15625E3) are all read by the old client and used by none of the
+ * script's start, reset or split conditions, so they are not read here: the
+ * Endako entry split is decided by the hero type instead.
+ */
+#define RAC2_CHUNK             0x157CE03u  /* rac2.cs currentChunk */
+#define RAC2_YEEDIL_SCENE      0x1478991u  /* 6 once the Protopet cutscene starts */
+
+/* Three bytes inside RAC2_LEVEL_FLAGS, named after what the script calls them. */
+#define RAC2_LF_ENDAKO_EXIT    0x15625E1u  /* Endako (planet 3) + 0x01 */
+#define RAC2_LF_ENDAKO_ENTER   0x15625E3u  /* Endako + 0x03, read but never used */
+#define RAC2_LF_BARLOW_RACE    0x15625F7u  /* Barlow (planet 4) + 0x07 */
+#define RAC2_LF_ARANOS2_CLANK  0x1562699u  /* Aranos 2 (planet 14) + 0x09 */
+
+/* Planet ids the split conditions name. PLANET_LIST index == game planet id. */
+#define RAC2_PLANET_ARANOS   0
+#define RAC2_PLANET_MAKTAR   2
+#define RAC2_PLANET_ENDAKO   3
+#define RAC2_PLANET_BARLOW   4
+#define RAC2_PLANET_TABORA   8
+#define RAC2_PLANET_ARANOS2  14
+#define RAC2_PLANET_YEEDIL   20
+#define RAC2_PLANET_MUSEUM   21   /* never split on entering the Insomniac Museum */
+
+/* Split reason codes. Code 1 is "planet entered" in every game. */
+#define R2_AS_PLANET        1
+#define R2_AS_PROTOPET      2
+#define R2_AS_A2_CLANK      3
+#define R2_AS_MAKTAR_ARENA  4
+#define R2_AS_BARLOW_RACE   5
+#define R2_AS_ENDAKO_ENTER  6
+#define R2_AS_ENDAKO_EXIT   7
+#define R2_AS_TABORA_CAVES  8
+
 /*
  * Fingerprint: the original instruction at the fast-load patch site, 0x4BFFEA69
  * ("b -5527"), which racman restores when fast loads are turned off. qwark's own
@@ -134,6 +173,13 @@ extern const u8 rac2_fp_patched[4];
 /* player: the coordinate Vec4 plus the rotation that follows it */
 #define RAC2_HOT_PLAYER_ADDR  RAC2_COORDS
 #define RAC2_HOT_PLAYER_LEN   0x20
+
+/* autosplit: player state at +0x00, hero type at +0x20 */
+#define RAC2_HOT_PSTATE_ADDR  RAC2_PLAYER_STATE
+#define RAC2_HOT_PSTATE_LEN   0x24
+/* autosplit: the level-flag window the three split flags live in */
+#define RAC2_HOT_FLAGS_ADDR   RAC2_LEVEL_FLAGS
+#define RAC2_HOT_FLAGS_LEN    0xEA
 
 /* ----------------------------------------------------------- readout slots */
 

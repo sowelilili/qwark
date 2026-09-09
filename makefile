@@ -19,6 +19,7 @@ PPU_SRCS  = src/plat/ps3/libc.c src/plat/ps3/printf.c src/plat/ps3/plat_ps3.c
 PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
 PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
+PPU_SRCS += src/core/autosplit.c
 PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
 PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
 PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c

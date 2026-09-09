@@ -5,6 +5,7 @@
 #include "config.h"
 #include "net.h"
 #include "util.h"
+#include "autosplit.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -28,12 +29,13 @@
 #define BOOT_SETTLE_US   1000000u
 
 /*
- * Eight blocks, which is what RaC3 needs: three per-tick reads plus five slow
- * ones for health, ship colour, file time, the savefile helper and the
- * chargeboot colours. The slow blocks carry a period and a phase, so a tick pays
- * for the per-tick reads plus at most one of them.
+ * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
+ * them per-tick reads once its autosplit watcher is counted, and four slow ones
+ * for ship colour, file time, the savefile helper and the chargeboot colours.
+ * The slow blocks carry a period and a phase, so a tick pays for the per-tick
+ * reads plus at most one of them.
  */
-#define HOT_MAX_BLOCKS   8
+#define HOT_MAX_BLOCKS   16
 #define HOT_MAX_LEN      1024
 
 /* ------------------------------------------------------------------- state */
@@ -755,6 +757,12 @@ int session_init(void)
 	}
 	plat_trace("qwark:   ring semaphores ok");
 
+	if (autosplit_init() != ST_OK) {
+		plat_trace("qwark:   autosplit mutex create FAILED");
+		return ST_IO_ERROR;
+	}
+	plat_trace("qwark:   autosplit ring ok");
+
 	config_init();
 	plat_trace("qwark:   config_init ok");
 	prev_clear();
@@ -782,6 +790,7 @@ void session_shutdown(void)
 	for (i = 0; i < QWARK_RING_SLOTS; i++) plat_sem_destroy(&g_ring[i].sem);
 	plat_trace("qwark:   ring semaphores destroyed");
 
+	autosplit_shutdown();
 	plat_mutex_destroy(&g_ring_mutex);
 	plat_mutex_destroy(&g_core_mutex);
 	plat_trace("qwark:   session mutexes destroyed");
@@ -821,6 +830,13 @@ static void session_step(void)
 		watch_invalidate();
 	}
 	core_unlock();
+
+	/*
+	 * Protocol 1.4. Autosplit datagrams go out every tick, not every fourth:
+	 * a split has to reach the PC in single-digit milliseconds, and each event
+	 * repeats for three ticks so one lost datagram costs nothing.
+	 */
+	autosplit_push();
 
 	g_tick++;
 

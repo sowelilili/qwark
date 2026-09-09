@@ -3,6 +3,7 @@
 Revision 1.1 (2026-09-07): SessionInfo grew to 164 bytes (16 readouts), Feature is 48 bytes with a `readout` field, LEVELFLAGS_SET added.
 Revision 1.2 (2026-09-08): Feature flags bit2 SAVE_ASIDE and bit3 LOAD_ASIDE mark the savefile-helper actions so a client can drive the save-file manager without matching labels.
 Revision 1.3 (2026-09-08): Feature flags bit4 LIVE marks a TOGGLE whose state qwark reads back out of game memory, and UNLOCK_LIST now carries four `UnlockFieldDesc` rows that name and type its four per-entry value slots.
+Revision 1.4 (2026-09-09): the autosplit event stream. AUTOSPLIT_EVENTS and AUTOSPLIT_DESCRIBE in the 0x00A0 block, and a 20-byte `QE` datagram pushed to every telemetry subscriber the moment a run event happens. See section 8.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -43,7 +44,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 3 (see below)
+u8   qwark_version      module build number, currently 4 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -91,6 +92,8 @@ u8   nwatch
 `valid` is 0 when the watch could not be read this tick (not in game). Maximum 64 watches, so the packet never exceeds 937 bytes.
 
 GET_STATE returns exactly these bytes over TCP.
+
+The same UDP port also receives 20-byte autosplit datagrams, which start `QE` rather than `QWRK` (section 8.3). Tell them apart by the magic and the length.
 
 ### 4.1 Same-game reboot and the previous-session record
 
@@ -318,6 +321,15 @@ Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE
 
 Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console.
 
+### 5.11 Autosplitting (0x00Ax)
+
+| Op | Name | Request | Reply |
+|---|---|---|---|
+| 0x00A0 | AUTOSPLIT_EVENTS | `u32 since_seq` | `u32 latest_seq, u8 n, Event[n]`: every event with `seq > since_seq` that the 64-entry ring still holds, oldest first (`since_seq` 0 = all of it); `latest_seq` is 0 before the first event |
+| 0x00A1 | AUTOSPLIT_DESCRIBE | none | `u8 n, EventDesc[n]` for the running game. UNSUPPORTED when no game is running or the game has no watcher |
+
+AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects after a crash still wants the splits that happened while it was away. AUTOSPLIT_DESCRIBE is gated on INGAME the same way DESCRIBE is, because under BCES01503 the running game is not known until the fingerprint answers.
+
 ## 6. Pad mask layout
 
 OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000.
@@ -325,6 +337,110 @@ OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x
 ## 7. Connection lifecycle from the client side
 
 1. Connect, send HELLO, read SessionInfo.
-2. SUBSCRIBE with a bound UDP port, then DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST.
+2. SUBSCRIBE with a bound UDP port, then DESCRIBE, AUTOSPLIT_DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST.
 3. Render from telemetry. When `game` changes, repeat step 2 from DESCRIBE. When `PREVIOUS_PENDING` appears, PREVIOUS_LIST and prompt.
 4. On any socket error: drop everything, reconnect with backoff, start again at step 1. There is no client state to restore.
+
+## 8. Autosplitting (revision 1.4)
+
+**qwark detects, the client decides.** qwark watches game memory on the tick thread and emits run events. It keeps **no timer**, applies **no user setting**, and knows nothing about LiveSplit: every split candidate goes out unconditionally with a reason code, and the PC decides which ones to act on. Anything the old ASL scripts gated on a *setting* is still emitted here; only what they gated on *game state* is a condition qwark evaluates.
+
+Only Deadlocked emits PAUSE and RESUME. RaC1, RaC2 and RaC3 never do.
+
+Events are emitted only while the session is INGAME.
+
+### 8.1 Event, 16 bytes
+
+```
+u32 seq        1, 2, 3 ... per qwark load; never reset while the module runs
+               (a game reboot does not reset it)
+u32 tick       session tick count when the event was detected
+u8  kind       1 START, 2 SPLIT, 3 RESET, 4 PAUSE, 5 RESUME
+u8  code       per-game reason (see AUTOSPLIT_DESCRIBE); 0 for START/RESET/PAUSE/RESUME
+u16 reserved   0
+u32 arg        code-specific; for the planet-enter code it is the planet index in
+               PLANET_LIST order
+```
+
+In every game the old script's `start` and `reset` blocks are the same expression, so qwark emits **RESET immediately followed by START** on that condition and the client applies whichever suits its timer, exactly as LiveSplit does with the two blocks.
+
+### 8.2 EventDesc, 28 bytes
+
+```
+u8  code      1..255; code 1 is RESERVED for "planet entered" in every game
+              (arg = planet index in PLANET_LIST order)
+u8  kind      the kind this code is emitted with (2 SPLIT for all of them today)
+u8  flags     bit0 = a client should enable it by default
+              bit1 = "planet route" applies (only code 1 sets it)
+u8  reserved  0
+char label[24]  NUL-padded, what the client shows as a checkbox
+```
+
+The list is static per game and never changes within a session.
+
+### 8.3 The UDP push
+
+On the tick an event is emitted, and again on each of the next two ticks, qwark sends a 20-byte datagram to every telemetry subscriber — the same UDP socket and subscriber list telemetry uses. Three sends cover a lost datagram without anyone keeping a timer; a client that sees the same `seq` three times ignores the repeats.
+
+```
+char magic[2]  'Q','E'
+u8   version   1
+u8   reserved  0
+Event          16 bytes, section 8.1
+```
+
+The magic and the length tell it apart from a telemetry packet, which always starts `QWRK` and is never 20 bytes. An event is **never** carried inside the telemetry packet. Datagrams go out every tick rather than every fourth, because a split has to reach the PC in single-digit milliseconds. AUTOSPLIT_EVENTS over TCP is the catch-up read for anything that was dropped.
+
+### 8.4 Reason codes per game
+
+Ported from racman's `rac1-autosplitter.asl`, `rac2-autosplitter.asl`, `rac3-autosplitter.asl` and `rac4-LC-autosplitter.asl`. "Default" is bit0 of `flags`, and matches whether the script's setting defaulted to true.
+
+**RaC1** — START/RESET when the game state goes 6 to 0 while on Veldin (planet 0).
+
+| Code | Label | Default | `arg` |
+|---|---|---|---|
+| 1 | Planet entered | yes (route) | the destination planet |
+| 2 | Veldin | yes | 0. Fires once per run; a latch stops the double split |
+| 3 | Drek button | yes | 0. The player state reaching 34 within 1.7 of one of the four buttons |
+| 4 | Gold bolt collected | no | the helper mod's counter |
+| 5 | Skill point | no | the helper mod's counter |
+| 6 | Item collected | no | the helper mod's counter |
+| 7 | Infobot | no | the helper mod's counter |
+
+Codes 4 to 7 count changes in four words the `gb_sp_as_helper` mod keeps; without that mod loaded they never change, which is what the old autosplitter did too. Code 4 also fires for the Kalebo3 gold bolt, code 6 also for the codebot and the raritanium, exactly as the script had them.
+
+**RaC2** — START/RESET when the player state goes 0 to 98 while on Aranos (planet 0).
+
+| Code | Label | Default | `arg` |
+|---|---|---|---|
+| 1 | Planet entered | yes (route) | the planet just entered; never the Insomniac Museum (21) |
+| 2 | Protopet defeated | yes | 0 |
+| 3 | Aranos 2 Clank swap | yes | 0 |
+| 4 | Maktar arena entry | no | 0 |
+| 5 | Barlow race entry | no | 0 |
+| 6 | Endako Clank entry | no | 0 |
+| 7 | Endako Clank exit | no | 0 |
+| 8 | Tabora caves | no | 0 |
+
+**RaC3** — START/RESET when the game state goes 6 to 0 while on Veldin (planet 1).
+
+| Code | Label | Default | `arg` |
+|---|---|---|---|
+| 1 | Planet entered | yes (route) | the destination planet |
+| 2 | LDF entered | no | 0 |
+| 3 | Tyhrraguise obtained | no | 0 |
+| 4 | Koros bolt 2 | no | 0. The second titanium bolt of the run on Koros |
+| 5 | Biobliterator defeated | yes | 0. Armed by an odd Neffyrious phase at full health |
+
+The script's split route and its strict-order mode are the client's business: qwark emits code 1 for every planet change and the PC filters.
+
+**Deadlocked** — START/RESET when a load starts for Dread Zone (planet 1) with the tutorial flag clear.
+
+| Code | Label | Default | `arg` |
+|---|---|---|---|
+| 1 | Planet entered | yes (route) | the destination planet |
+| 2 | Vox defeated | yes | the destination planet, which is 0 by then |
+
+Deadlocked is the only game whose detection already ran on the console; the two codes replace the old command stream's single "split" whose packet byte the LC script had to read as "0 means Vox". The script's AEC setting, which disables resetting, is the client's business: qwark still emits every RESET.
+
+PAUSE goes out when the game leaves the running state — the quit hook fires, or the process disappears underneath qwark — and RESUME on the first tick after Deadlocked is INGAME again. Some categories quit to the VSH as a strategy, and the client stops its timer for as long as that lasts.

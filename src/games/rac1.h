@@ -49,6 +49,45 @@
 #define RAC1_MOBY_TABLE_END   0x0A390A8u
 #define RAC1_MOBY_STRIDE      0x100u      /* sizeof(Moby) from rac1.cs */
 
+/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+
+/*
+ * rac1.cs AutosplitterAddresses, in the order rac1-autosplitter.asl reads them
+ * back. The x and y floats are the first two words of RAC1_COORDS, which the hot
+ * block already decodes, and the loading-screen id is only ever used by the
+ * script's isLoading block, so it is not read here.
+ */
+#define RAC1_DEST_PLANET      (RAC1_LOAD_PLANET + 4)  /* 0xA10704, low byte at +3 */
+#define RAC1_GAME_STATE       0xA10708u
+#define RAC1_PLANET_FRAMES    0xA10710u
+#define RAC1_PLAYER_STATE     0x96BD64u   /* the script reads the halfword at +2 */
+#define RAC1_KALEBO_BOLT      0xA0CA75u   /* inside RAC1_GOLD_BOLTS, Kalebo3 +1 */
+
+/*
+ * The gold-bolt / skill-point / item / infobot counters are not the game's: the
+ * "gb_sp_as_helper" mod keeps them, one word each, and the old client read the
+ * low byte of every word. Without that mod loaded they simply never change,
+ * which is exactly what the old autosplitter did too.
+ */
+#define RAC1_AS_COUNTERS      0xAFF000u
+#define RAC1_AS_GOLDBOLTS     0xAFF000u
+#define RAC1_AS_SKILLPOINTS   0xAFF010u
+#define RAC1_AS_ITEMS         0xAFF020u
+#define RAC1_AS_INFOBOTS      0xAFF030u
+
+/* The two index-less items the script watches beside the item counter. */
+#define RAC1_ITEM_CODEBOT     (RAC1_MOVIE_FLAGS + 1)   /* 0x96BFF1 */
+#define RAC1_ITEM_RARI        (RAC1_MOVIE_FLAGS + 2)   /* 0x96BFF2 */
+
+/* Split reason codes. Code 1 is "planet entered" in every game. */
+#define R1_AS_PLANET      1
+#define R1_AS_VELDIN      2
+#define R1_AS_DREK_BUTTON 3
+#define R1_AS_GOLD_BOLT   4
+#define R1_AS_SKILL_POINT 5
+#define R1_AS_ITEM        6
+#define R1_AS_INFOBOT     7
+
 /* Jankpot, from JankpotForm.cs. */
 #define RAC1_JANKPOT_STATE    0xA15F2Cu   /* non-zero while bolt mining is on */
 #define RAC1_JANKPOT_TIMER    0xA0FD14u   /* frames spent in the state */
@@ -96,6 +135,15 @@ extern const u8 rac1_fp_patched[4];
 #define RAC1_HOT_INPUTS_LEN  0xB4
 #define RAC1_HOT_PLAYER_ADDR RAC1_CURRENT_PLANET  /* 0x969C70 .. 0x969D80 */
 #define RAC1_HOT_PLAYER_LEN  0x110
+
+/* state: player state at +0x00 through the two index-less items at +0x28E */
+#define RAC1_HOT_STATE_ADDR  RAC1_PLAYER_STATE
+#define RAC1_HOT_STATE_LEN   0x290
+/* load: the load request at +0x00, game state at +0x08, planet frames at +0x10 */
+#define RAC1_HOT_LOAD_ADDR   RAC1_LOAD_PLANET
+#define RAC1_HOT_LOAD_LEN    0x14
+/* the helper mod's four counters, 0x10 apart */
+#define RAC1_HOT_AS_LEN      0x34
 
 /* ----------------------------------------------------------- readout slots */
 

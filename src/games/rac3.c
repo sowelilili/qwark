@@ -10,6 +10,7 @@
 #include "rac3.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/autosplit.h"
 
 #include <string.h>
 
@@ -20,40 +21,54 @@ const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Three reads every tick and five staggered slow ones:
+ * Eight reads every tick and four staggered slow ones:
  *
  *   0  inputs   pad +0x00, analogs +0x1DC                             every tick
  *   1  state    QE offset +0x000, planet +0x178, bolts +0x21C,        every tick
  *               challenge +0x24E, health XP +0x250, armour +0x25C
  *   2  player   the coordinate Vec4 and the rotation behind it        every tick
- *   3  health                                                        every 8th
- *   4  ship colour                                                   every 8th
- *   5  file time                                                     every 8th
- *   6  savefile helper byte and its request bytes                     every 8th
- *   7  chargeboot colour words                                       every 8th
+ *   3  pstate   player state +0x002, health +0x28C, Neffy phase +0x348 every tick
+ *   4  load     destination planet +0x03, game state +0x20            every tick
+ *   5  neffy    the Biobliterator's health bar                        every tick
+ *   6  chunk    the loaded chunk                                      every tick
+ *   7  guise    the Tyhrraguise unlock byte                           every tick
+ *   8  ship colour                                                   every 8th
+ *   9  file time                                                     every 8th
+ *  10  savefile helper byte and its request bytes                     every 8th
+ *  11  chargeboot colour words                                       every 8th
  *
- * The five slow blocks sit on phases 0..4, so a tick costs three reads plus at
- * most one: 3.625 reads per tick on average, four at worst.
+ * Blocks 3 to 7 belong to the autosplit watcher and are per-tick because a split
+ * has to reach the PC in milliseconds; block 3 also carries the health readout
+ * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
+ * so a tick costs eight reads plus at most one: 8.5 on average, nine at worst.
  */
 static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_HOT_INPUTS_ADDR, RAC3_HOT_INPUTS_LEN, 1, 0 },
 	{ RAC3_HOT_STATE_ADDR,  RAC3_HOT_STATE_LEN,  1, 0 },
 	{ RAC3_HOT_PLAYER_ADDR, RAC3_HOT_PLAYER_LEN, 1, 0 },
-	{ RAC3_PLAYER_HEALTH,   4,                   8, 0 },
-	{ RAC3_SHIP_COLOUR,     4,                   8, 1 },
-	{ RAC3_FILE_TIME,       4,                   8, 2 },
-	{ RAC3_SF_HELPER,       8,                   8, 3 },
-	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 4 }
+	{ RAC3_HOT_PSTATE_ADDR, RAC3_HOT_PSTATE_LEN, 1, 0 },
+	{ RAC3_HOT_LOAD_ADDR,   RAC3_HOT_LOAD_LEN,   1, 0 },
+	{ RAC3_NEFFY_HEALTH,    4,                   1, 0 },
+	{ RAC3_LOADED_CHUNK,    4,                   1, 0 },
+	{ RAC3_TYHRRAGUISE,     1,                   1, 0 },
+	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
+	{ RAC3_FILE_TIME,       4,                   8, 1 },
+	{ RAC3_SF_HELPER,       8,                   8, 2 },
+	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 }
 };
 
 #define HOT_INPUTS   0
 #define HOT_STATE    1
 #define HOT_PLAYER   2
-#define HOT_HEALTH   3
-#define HOT_SHIP     4
-#define HOT_TIME     5
-#define HOT_SAVEFILE 6
-#define HOT_COLOURS  7
+#define HOT_PSTATE   3
+#define HOT_LOAD     4
+#define HOT_NEFFY    5
+#define HOT_CHUNK    6
+#define HOT_GUISE    7
+#define HOT_SHIP     8
+#define HOT_TIME     9
+#define HOT_SAVEFILE 10
+#define HOT_COLOURS  11
 
 #define OFF_ANALOGS   (RAC3_ANALOGS        - RAC3_HOT_INPUTS_ADDR)   /* 0x1DC */
 
@@ -66,6 +81,24 @@ static const struct game_hot_block rac3_hot[] = {
 #define OFF_CB_BACK   (RAC3_CB_PRIMARY_BACK - RAC3_CB_PRIMARY_FRONT) /* 0x04 */
 #define OFF_CB_TINT_F (RAC3_CB_TINT_FRONT   - RAC3_CB_PRIMARY_FRONT) /* 0x10 */
 #define OFF_CB_TINT_B (RAC3_CB_TINT_BACK    - RAC3_CB_PRIMARY_FRONT) /* 0x14 */
+
+#define OFF_HEALTH     (RAC3_PLAYER_HEALTH - RAC3_HOT_PSTATE_ADDR)   /* 0x28C */
+#define OFF_NEFFY_PH   (RAC3_NEFFY_PHASE   - RAC3_HOT_PSTATE_ADDR)   /* 0x348 */
+#define OFF_GAMESTATE  (RAC3_GAME_STATE    - RAC3_HOT_LOAD_ADDR)     /* 0x20 */
+
+/* What the autosplit watcher reads, named the way rac3-autosplitter.asl names it. */
+struct rac3_as_state {
+	u8  dest_planet;
+	u8  planet;
+	u16 player_state;
+	u32 game_state;
+	f32 neffy_health;
+	u32 neffy_phase;
+	u32 chunk;
+	u8  guise;
+};
+
+static struct rac3_as_state g_as;
 
 static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -99,8 +132,8 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		for (i = 0; i < 3; i++) out->pos[i] = bef32_get(player + i * 4);
 	}
 
-	if (blocks[HOT_HEALTH] != NULL)
-		out->readout[RAC3_RO_HEALTH] = be32_get(blocks[HOT_HEALTH]);
+	if (blocks[HOT_PSTATE] != NULL)
+		out->readout[RAC3_RO_HEALTH] = be32_get(blocks[HOT_PSTATE] + OFF_HEALTH);
 
 	if (blocks[HOT_SHIP] != NULL)
 		out->readout[RAC3_RO_SHIP] = blocks[HOT_SHIP][0];
@@ -118,6 +151,24 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC3_RO_CB_BACK]  = classic_cb_to_rgb(be32_get(c + OFF_CB_BACK));
 		out->readout[RAC3_RO_CB_TINT]  = classic_cb_to_rgb(be32_get(c + OFF_CB_TINT_F));
 	}
+
+	/* --------------------------------------------- the autosplit watcher's view */
+
+	g_as.planet = out->current_planet;
+
+	if (blocks[HOT_PSTATE] != NULL) {
+		g_as.player_state = be16_get(blocks[HOT_PSTATE] + 2);
+		g_as.neffy_phase  = be32_get(blocks[HOT_PSTATE] + OFF_NEFFY_PH);
+	}
+
+	if (blocks[HOT_LOAD] != NULL) {
+		g_as.dest_planet = blocks[HOT_LOAD][3];
+		g_as.game_state  = be32_get(blocks[HOT_LOAD] + OFF_GAMESTATE);
+	}
+
+	if (blocks[HOT_NEFFY] != NULL) g_as.neffy_health = bef32_get(blocks[HOT_NEFFY]);
+	if (blocks[HOT_CHUNK] != NULL) g_as.chunk        = be32_get(blocks[HOT_CHUNK]);
+	if (blocks[HOT_GUISE] != NULL) g_as.guise        = blocks[HOT_GUISE][0];
 }
 
 /* --------------------------------------------------------------- patches */
@@ -162,9 +213,117 @@ int rac3_arm_fast_loads(void)
 	return ST_OK;
 }
 
+/* ------------------------------------------------- the autosplit watcher */
+
+/*
+ * rac3-autosplitter.asl, condition for condition. Everything it gates on a
+ * *setting* is emitted anyway with its own reason code, because the client owns
+ * the settings; everything it gates on game state is a condition below. The
+ * split-route bookkeeping (vars.SplitRoute, vars.SplitCount, STRICT_ORDER) is
+ * the client's business, and the long-load game-time adjustment is not ported:
+ * qwark keeps no timer.
+ */
+static struct rac3_as_state g_as_prev;
+static int g_as_primed;
+
+/* vars.biobliterator and vars.korosTBs. */
+static int g_biobliterator;
+static int g_koros_bolts;
+
+static void rac3_autosplit_tick(void)
+{
+	const struct rac3_as_state *p = &g_as_prev;
+
+	/* LiveSplit's first update has old == current; prime and wait a tick. */
+	if (!g_as_primed) {
+		g_as_prev = g_as;
+		g_as_primed = 1;
+		return;
+	}
+
+	/* The script's update block, which runs before start/split/reset. */
+	if (!g_biobliterator && g_as.game_state == 0 &&
+	    g_as.planet == RAC3_PLANET_LAUNCHSITE &&
+	    (g_as.neffy_phase % 2) == 1 && g_as.neffy_health == 1.0f) {
+		g_biobliterator = 1;
+	}
+
+	if (g_as.player_state == RAC3_KOROS_BOLT_STATE &&
+	    p->player_state != RAC3_KOROS_BOLT_STATE &&
+	    g_as.planet == RAC3_PLANET_KOROS) {
+		g_koros_bolts++;
+	}
+
+	/*
+	 * start and reset are the same expression in this script. Emit both and let
+	 * the client apply whichever suits its timer.
+	 */
+	if (g_as.planet == RAC3_PLANET_VELDIN &&
+	    p->game_state == RAC3_GAME_STATE_LOAD && g_as.game_state == 0) {
+		autosplit_emit(AUTOSPLIT_RESET, 0, 0);
+		g_biobliterator = 0;
+		g_koros_bolts = 0;
+		autosplit_emit(AUTOSPLIT_START, 0, 0);
+	}
+
+	if (g_as.planet == RAC3_PLANET_MARCADIA && g_as.chunk == 1 && p->chunk != 1)
+		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_LDF, 0);
+
+	if (g_as.guise == 1 && p->guise == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_TYHRRAGUISE, 0);
+
+	if (g_as.planet == RAC3_PLANET_KOROS && g_koros_bolts >= 2) {
+		g_koros_bolts = 0;
+		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_KOROS_BOLT, 0);
+	}
+
+	/*
+	 * The script writes these two as if/else, so a Biobliterator split takes the
+	 * tick and the planet split does not also fire on it.
+	 */
+	if (g_as.neffy_health == 0.0f && g_biobliterator &&
+	    g_as.planet == RAC3_PLANET_LAUNCHSITE) {
+		g_biobliterator = 0;
+		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_BIOBLITERATOR, 0);
+	} else if (g_as.dest_planet != p->dest_planet &&
+	           g_as.planet != g_as.dest_planet &&
+	           g_as.dest_planet != 0 && g_as.planet != 0) {
+		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_PLANET, g_as.dest_planet);
+	}
+
+	g_as_prev = g_as;
+}
+
+#define DF AUTOSPLIT_FLAG_DEFAULT
+#define RT AUTOSPLIT_FLAG_ROUTE
+
+/* The script's settings.Add list, in its order; DF is what it defaults to true. */
+static const struct autosplit_desc rac3_autosplits[] = {
+	{ R3_AS_PLANET,        AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
+	{ R3_AS_BIOBLITERATOR, AUTOSPLIT_SPLIT, DF,      "Biobliterator defeated" },
+	{ R3_AS_LDF,           AUTOSPLIT_SPLIT, 0,       "LDF entered" },
+	{ R3_AS_KOROS_BOLT,    AUTOSPLIT_SPLIT, 0,       "Koros bolt 2" },
+	{ R3_AS_TYHRRAGUISE,   AUTOSPLIT_SPLIT, 0,       "Tyhrraguise obtained" }
+};
+
+#undef DF
+#undef RT
+
+static const struct autosplit_desc *rac3_autosplit_describe(u8 *count)
+{
+	*count = (u8)(sizeof(rac3_autosplits) / sizeof(rac3_autosplits[0]));
+	return rac3_autosplits;
+}
+
 static void rac3_on_enter(void)
 {
 	g_fastload_arm = 0;
+
+	memset(&g_as, 0, sizeof(g_as));
+	memset(&g_as_prev, 0, sizeof(g_as_prev));
+	g_as_primed = 0;
+	g_biobliterator = 0;
+	g_koros_bolts = 0;
 }
 
 static void rac3_on_tick(const struct game_hot *hot)
@@ -172,6 +331,8 @@ static void rac3_on_tick(const struct game_hot *hot)
 	static const u8 force[2] = { 0x01, 0x01 };
 
 	(void)hot;
+
+	rac3_autosplit_tick();
 
 	if (g_fastload_arm == 0) return;
 	if (--g_fastload_arm != 0) return;
@@ -485,5 +646,7 @@ const struct game_api rac3_game = {
 
 	rac3_on_enter,
 	NULL,                 /* on_quit */
-	rac3_on_tick
+	rac3_on_tick,
+
+	rac3_autosplit_describe
 };

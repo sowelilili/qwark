@@ -86,6 +86,19 @@ struct unlock_field_desc {
 	u8 max;
 };
 
+/*
+ * Protocol 1.4. One row of AUTOSPLIT_DESCRIBE: a reason code the game's watcher
+ * can emit, and what a client shows beside its checkbox. The table is static per
+ * game and never depends on the session. Code 1 is "planet entered" in every
+ * game and is the only row that carries AUTOSPLIT_FLAG_ROUTE.
+ */
+struct autosplit_desc {
+	u8 code;            /* 1..255, the Event.code this row describes */
+	u8 kind;            /* the Event.kind it is emitted with; SPLIT for all of them today */
+	u8 flags;           /* AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_ROUTE */
+	const char *label;  /* at most AUTOSPLIT_LABEL_LEN characters on the wire */
+};
+
 struct game_api {
 	/* Up to four title ids, NULL-terminated. */
 	const char *title_ids[4];
@@ -178,8 +191,20 @@ struct game_api {
 	 * fast-load arm, Deadlocked's softlock fix and fast-load restore. They read
 	 * the decoded hot block rather than memory; a write only goes out on the
 	 * tick the watcher actually fires.
+	 *
+	 * Protocol 1.4: the autosplit watchers live here too, and call
+	 * autosplit_emit() for every run event they see.
 	 */
 	void (*on_tick)(const struct game_hot *hot);
+
+	/*
+	 * Protocol 1.4. The SPLIT reason codes this game's watcher can emit, in the
+	 * order a client should list them. NULL where the game has no watcher, which
+	 * is what makes AUTOSPLIT_DESCRIBE answer UNSUPPORTED. Static: it never
+	 * depends on the session, so a network thread may call it under the core
+	 * lock without going through the ring.
+	 */
+	const struct autosplit_desc *(*autosplit_describe)(u8 *count);
 };
 
 /*

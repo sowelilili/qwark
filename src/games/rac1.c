@@ -14,6 +14,7 @@
 #include "rac1.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/autosplit.h"
 
 #include <string.h>
 
@@ -24,24 +25,34 @@ const u8 rac1_fp_patched[4] = { 0x30, 0x64, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Two reads every tick and five staggered slow ones:
+ * Six reads every tick and five staggered slow ones:
  *
  *   0  inputs   analogs at +0x00, pad mask at +0xB0                every tick
  *   1  player   planet +0x00, bolts +0x30, NG+ goodies +0x60,      every tick
  *               goodies menu +0x63, coords +0xF0. The gold-item bytes
  *               at +0x38 ride along but the unlock snapshot owns those
- *   2  debug    update options +0x00, mode control +0x0C           every 8th
- *   3  ngplus   challenge mode                                     every 8th
- *   4  jankpot  timer +0x00, bolts +0x04                           every 8th
- *   5  jankpot  state                                              every 8th
- *   6  savefile helper byte, then its three request bytes          every 8th
+ *   2  state    player state +0x02, codebot +0x28D, rari +0x28E    every tick
+ *   3  load     load request +0x00, destination planet +0x07,      every tick
+ *               game state +0x08, planet frame count +0x10
+ *   4  helper   the four autosplit counters, low byte of each      every tick
+ *   5  kalebo   the Kalebo3 gold bolt byte                         every tick
+ *   6  debug    update options +0x00, mode control +0x0C           every 8th
+ *   7  ngplus   challenge mode                                     every 8th
+ *   8  jankpot  timer +0x00, bolts +0x04                           every 8th
+ *   9  jankpot  state                                              every 8th
+ *  10  savefile helper byte, then its three request bytes          every 8th
  *
- * The phases are 0..4, so a tick costs two reads plus at most one: 2.625 reads
- * per tick on average, three at worst.
+ * Blocks 2 to 5 are the autosplit watcher's, and are per-tick because a split
+ * has to reach the PC in milliseconds. The phases are 0..4, so a tick costs six
+ * reads plus at most one: 6.625 reads per tick on average, seven at worst.
  */
 static const struct game_hot_block rac1_hot[] = {
 	{ RAC1_HOT_INPUTS_ADDR,   RAC1_HOT_INPUTS_LEN,   1, 0 },
 	{ RAC1_HOT_PLAYER_ADDR,   RAC1_HOT_PLAYER_LEN,   1, 0 },
+	{ RAC1_HOT_STATE_ADDR,    RAC1_HOT_STATE_LEN,    1, 0 },
+	{ RAC1_HOT_LOAD_ADDR,     RAC1_HOT_LOAD_LEN,     1, 0 },
+	{ RAC1_AS_COUNTERS,       RAC1_HOT_AS_LEN,       1, 0 },
+	{ RAC1_KALEBO_BOLT,       1,                     1, 0 },
 	{ RAC1_DEBUG_UPDATE,      0x10,                  8, 0 },
 	{ RAC1_NGPLUS_STATE,      4,                     8, 1 },
 	{ RAC1_JANKPOT_TIMER,     8,                     8, 2 },
@@ -51,11 +62,15 @@ static const struct game_hot_block rac1_hot[] = {
 
 #define HOT_INPUTS   0
 #define HOT_PLAYER   1
-#define HOT_DEBUG    2
-#define HOT_NGPLUS   3
-#define HOT_JANKPOT  4
-#define HOT_JKSTATE  5
-#define HOT_SAVEFILE 6
+#define HOT_STATE    2
+#define HOT_LOAD     3
+#define HOT_ASCOUNT  4
+#define HOT_KALEBO   5
+#define HOT_DEBUG    6
+#define HOT_NGPLUS   7
+#define HOT_JANKPOT  8
+#define HOT_JKSTATE  9
+#define HOT_SAVEFILE 10
 
 #define OFF_INPUTS      (RAC1_INPUTS - RAC1_ANALOGS)                  /* 0xB0 */
 #define OFF_BOLTS       (RAC1_BOLTS - RAC1_CURRENT_PLANET)            /* 0x30 */
@@ -63,6 +78,37 @@ static const struct game_hot_block rac1_hot[] = {
 #define OFF_GOODIES     (RAC1_GOODIES_MENU - RAC1_CURRENT_PLANET)     /* 0x63 */
 #define OFF_COORDS      (RAC1_COORDS - RAC1_CURRENT_PLANET)           /* 0xF0 */
 #define OFF_MODECONTROL (RAC1_DEBUG_MODE - RAC1_DEBUG_UPDATE)         /* 0x0C */
+
+#define OFF_CODEBOT     (RAC1_ITEM_CODEBOT - RAC1_HOT_STATE_ADDR)     /* 0x28D */
+#define OFF_RARI        (RAC1_ITEM_RARI    - RAC1_HOT_STATE_ADDR)     /* 0x28E */
+#define OFF_DESTPLANET  (RAC1_DEST_PLANET  - RAC1_HOT_LOAD_ADDR)      /* 0x04 */
+#define OFF_GAMESTATE   (RAC1_GAME_STATE   - RAC1_HOT_LOAD_ADDR)      /* 0x08 */
+#define OFF_FRAMES      (RAC1_PLANET_FRAMES - RAC1_HOT_LOAD_ADDR)     /* 0x10 */
+#define OFF_AS_SP       (RAC1_AS_SKILLPOINTS - RAC1_AS_COUNTERS)      /* 0x10 */
+#define OFF_AS_ITEMS    (RAC1_AS_ITEMS       - RAC1_AS_COUNTERS)      /* 0x20 */
+#define OFF_AS_INFOBOTS (RAC1_AS_INFOBOTS    - RAC1_AS_COUNTERS)      /* 0x30 */
+
+/*
+ * What the autosplit watcher reads, filled by the decode so the watcher itself
+ * costs no read of its own. The names are the ASL's, in its own order.
+ */
+struct rac1_as_state {
+	f32 x, y;
+	u8  dest_planet;
+	u8  planet;
+	u16 player_state;
+	u32 planet_frames;
+	u32 game_state;
+	u8  gold_bolts;
+	u8  skill_points;
+	u8  items;
+	u8  kalebo_bolt;
+	u8  infobots;
+	u8  codebot;
+	u8  rari;
+};
+
+static struct rac1_as_state g_as;
 
 static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -114,6 +160,183 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	/* The client greys the three savefile actions on this one. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC1_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
+
+	/* --------------------------------------------- the autosplit watcher's view */
+
+	g_as.x = out->pos[0];
+	g_as.y = out->pos[1];
+	g_as.planet = out->current_planet;
+
+	if (blocks[HOT_STATE] != NULL) {
+		const u8 *s = blocks[HOT_STATE];
+		g_as.player_state = be16_get(s + 2);
+		g_as.codebot = s[OFF_CODEBOT];
+		g_as.rari    = s[OFF_RARI];
+	}
+
+	if (blocks[HOT_LOAD] != NULL) {
+		const u8 *l = blocks[HOT_LOAD];
+		g_as.dest_planet   = l[OFF_DESTPLANET + 3];
+		g_as.game_state    = be32_get(l + OFF_GAMESTATE);
+		g_as.planet_frames = be32_get(l + OFF_FRAMES);
+	}
+
+	if (blocks[HOT_ASCOUNT] != NULL) {
+		const u8 *a = blocks[HOT_ASCOUNT];
+		g_as.gold_bolts   = a[3];
+		g_as.skill_points = a[OFF_AS_SP + 3];
+		g_as.items        = a[OFF_AS_ITEMS + 3];
+		g_as.infobots     = a[OFF_AS_INFOBOTS + 3];
+	}
+
+	if (blocks[HOT_KALEBO] != NULL)
+		g_as.kalebo_bolt = blocks[HOT_KALEBO][0];
+}
+
+/* ------------------------------------------------- the autosplit watcher */
+
+/*
+ * rac1-autosplitter.asl, condition for condition. Everything the script gates on
+ * a *setting* is emitted anyway with its own reason code, because the client owns
+ * the settings; everything it gates on game state is a condition below. The
+ * script's isLoading block is not ported: qwark keeps no timer.
+ */
+static struct rac1_as_state g_as_prev;
+static int g_as_primed;
+
+/* vars.veldinFix: the Veldin split can otherwise fire twice. */
+static int g_veldin_fix;
+
+/* The four Drek buttons, from vars.buttons. */
+static const f32 rac1_drek_buttons[4][2] = {
+	{ 477.9081f, 601.4653f },
+	{ 453.7222f, 643.2076f },
+	{ 436.0573f, 577.0817f },
+	{ 411.8376f, 619.1204f }
+};
+
+#define RAC1_DREK_PLANET      18
+#define RAC1_DREK_STATE       34
+#define RAC1_DREK_RADIUS_SQ   1.7f
+
+static int rac1_on_a_drek_button(void)
+{
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		f32 dx = g_as.x - rac1_drek_buttons[i][0];
+		f32 dy = g_as.y - rac1_drek_buttons[i][1];
+
+		if (dx * dx + dy * dy < RAC1_DREK_RADIUS_SQ) return 1;
+	}
+	return 0;
+}
+
+static void rac1_on_tick(const struct game_hot *hot)
+{
+	const struct rac1_as_state *p = &g_as_prev;
+
+	(void)hot;
+
+	/*
+	 * LiveSplit's first update after init has old == current, so no edge fires
+	 * on the frame the script attaches. Same here: prime and wait a tick.
+	 */
+	if (!g_as_primed) {
+		g_as_prev = g_as;
+		g_as_primed = 1;
+		return;
+	}
+
+	/*
+	 * start and reset are the same expression in this script, as they are in all
+	 * four. Emit both and let the client apply whichever suits its timer: that is
+	 * exactly what LiveSplit does with the two blocks.
+	 */
+	if (g_as.planet == 0 && p->game_state == 6 && g_as.game_state == 0) {
+		autosplit_emit(AUTOSPLIT_RESET, 0, 0);
+		g_veldin_fix = 0;
+		autosplit_emit(AUTOSPLIT_START, 0, 0);
+	}
+
+	/* Split everything: any change of destination that is a real planet change. */
+	if (g_as.dest_planet != p->dest_planet && g_as.planet != g_as.dest_planet &&
+	    g_as.dest_planet != 0 && g_as.planet != 0) {
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_PLANET, g_as.dest_planet);
+	}
+
+	/* Veldin split. */
+	if (!g_veldin_fix && g_as.game_state == 2 && p->game_state == 0 &&
+	    g_as.planet == 0 && g_as.planet_frames > 5) {
+		g_veldin_fix = 1;
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_VELDIN, 0);
+	}
+
+	/* Drek button split. */
+	if (g_as.planet == RAC1_DREK_PLANET && g_as.player_state == RAC1_DREK_STATE &&
+	    p->player_state != RAC1_DREK_STATE && rac1_on_a_drek_button()) {
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_DREK_BUTTON, 0);
+	}
+
+	/* Gold bolt split, including the Kalebo3 bolt the counter misses. */
+	if (g_as.gold_bolts != p->gold_bolts)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, g_as.gold_bolts);
+	if (g_as.kalebo_bolt != p->kalebo_bolt && g_as.kalebo_bolt != 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, g_as.gold_bolts);
+
+	/* Skill point split. */
+	if (g_as.skill_points != p->skill_points)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_SKILL_POINT, g_as.skill_points);
+
+	/* Item split, plus the two items with no index of their own. */
+	if (g_as.items != p->items)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
+	if (g_as.codebot != p->codebot && g_as.codebot != 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
+	if (g_as.rari != p->rari && g_as.rari != 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
+
+	/* Infobot split. */
+	if (g_as.infobots != p->infobots)
+		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_INFOBOT, g_as.infobots);
+
+	g_as_prev = g_as;
+}
+
+static void rac1_on_enter(void)
+{
+	/* A fresh process: the script's vars start over and nothing has been seen. */
+	memset(&g_as, 0, sizeof(g_as));
+	memset(&g_as_prev, 0, sizeof(g_as_prev));
+	g_as_primed = 0;
+	g_veldin_fix = 0;
+}
+
+#define DF AUTOSPLIT_FLAG_DEFAULT
+#define RT AUTOSPLIT_FLAG_ROUTE
+
+/*
+ * The script's settings.Add list, in its order, with the three unconditional
+ * splits in front. A setting that defaults to true is DF here; the four
+ * collectable splits default to false and a client leaves them unticked.
+ */
+static const struct autosplit_desc rac1_autosplits[] = {
+	{ R1_AS_PLANET,      AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
+	{ R1_AS_VELDIN,      AUTOSPLIT_SPLIT, DF,      "Veldin" },
+	{ R1_AS_DREK_BUTTON, AUTOSPLIT_SPLIT, DF,      "Drek button" },
+	{ R1_AS_GOLD_BOLT,   AUTOSPLIT_SPLIT, 0,       "Gold bolt collected" },
+	{ R1_AS_SKILL_POINT, AUTOSPLIT_SPLIT, 0,       "Skill point" },
+	{ R1_AS_ITEM,        AUTOSPLIT_SPLIT, 0,       "Item collected" },
+	{ R1_AS_INFOBOT,     AUTOSPLIT_SPLIT, 0,       "Infobot" }
+};
+
+#undef DF
+#undef RT
+
+static const struct autosplit_desc *rac1_autosplit_describe(u8 *count)
+{
+	*count = (u8)(sizeof(rac1_autosplits) / sizeof(rac1_autosplits[0]));
+	return rac1_autosplits;
 }
 
 /* --------------------------------------------------------------- patches */
@@ -458,7 +681,9 @@ const struct game_api rac1_game = {
 
 	rac1_moby_table,
 
-	NULL,                 /* on_enter */
+	rac1_on_enter,
 	NULL,                 /* on_quit */
-	NULL                  /* on_tick: RaC1 has no game-side watcher */
+	rac1_on_tick,         /* the autosplit watcher */
+
+	rac1_autosplit_describe
 };

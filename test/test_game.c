@@ -100,11 +100,12 @@ const struct game_api testgame_game = {
 	tg_describe,
 
 	tg_set_toggle,
-	NULL,
-	NULL,
-	NULL,
+	NULL,                 /* toggle_read */
+	NULL,                 /* trigger */
+	NULL,                 /* set_value */
+	NULL,                 /* get_options */
 
-	NULL, NULL, NULL,
+	NULL, NULL, NULL,     /* positions */
 
 	tg_planet_names,
 	NULL,                 /* planet_load */
@@ -118,5 +119,7 @@ const struct game_api testgame_game = {
 
 	NULL,                 /* on_enter */
 	NULL,                 /* on_quit */
-	NULL                  /* on_tick */
+	NULL,                 /* on_tick */
+
+	NULL                  /* autosplit_describe: this stub has no watcher */
 };

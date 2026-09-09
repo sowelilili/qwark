@@ -11,6 +11,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/features.h"
+#include "../core/autosplit.h"
 
 #include <string.h>
 
@@ -21,23 +22,32 @@ const u8 rac2_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Three reads every tick and two staggered slow ones:
+ * Seven reads every tick and two staggered slow ones:
  *
  *   0  inputs   load screen type +0x07, count +0x0B, pad +0x1E0,       every tick
  *               analogs +0x3BC
  *   1  state    QE offset +0x00, planet +0x170, bolts +0x1C4,          every tick
  *               raritanium +0x1C8, challenge +0x1D6, health XP +0x1D8
  *   2  player   the coordinate Vec4 and the rotation behind it         every tick
- *   3  savefile helper byte and its four request bytes                 every 8th
- *   4  chargeboot colour words                                        every 8th
+ *   3  pstate   player state +0x00, hero type +0x20                    every tick
+ *   4  lflags   Endako exit +0x31, Barlow race +0x47, A2 Clank +0xE9   every tick
+ *   5  chunk    the current chunk byte                                 every tick
+ *   6  yeedil   the Yeedil scene byte                                  every tick
+ *   7  savefile helper byte and its four request bytes                 every 8th
+ *   8  chargeboot colour words                                        every 8th
  *
- * The two slow blocks sit on phases 0 and 4, so a tick costs three reads plus at
- * most one: 3.25 reads per tick on average, four at worst.
+ * Blocks 3 to 6 are the autosplit watcher's, and are per-tick because a split has
+ * to reach the PC in milliseconds. The two slow blocks sit on phases 0 and 4, so
+ * a tick costs seven reads plus at most one: 7.25 on average, eight at worst.
  */
 static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_HOT_INPUTS_ADDR, RAC2_HOT_INPUTS_LEN, 1, 0 },
 	{ RAC2_HOT_STATE_ADDR,  RAC2_HOT_STATE_LEN,  1, 0 },
 	{ RAC2_HOT_PLAYER_ADDR, RAC2_HOT_PLAYER_LEN, 1, 0 },
+	{ RAC2_HOT_PSTATE_ADDR, RAC2_HOT_PSTATE_LEN, 1, 0 },
+	{ RAC2_HOT_FLAGS_ADDR,  RAC2_HOT_FLAGS_LEN,  1, 0 },
+	{ RAC2_CHUNK,           1,                   1, 0 },
+	{ RAC2_YEEDIL_SCENE,    1,                   1, 0 },
 	{ RAC2_SF_LOAD_ASIDE,   8,                   8, 0 },
 	{ RAC2_CB_PRIMARY_FRONT, 0x14,               8, 4 }
 };
@@ -45,8 +55,12 @@ static const struct game_hot_block rac2_hot[] = {
 #define HOT_INPUTS   0
 #define HOT_STATE    1
 #define HOT_PLAYER   2
-#define HOT_SAVEFILE 3
-#define HOT_COLOURS  4
+#define HOT_PSTATE   3
+#define HOT_LFLAGS   4
+#define HOT_CHUNK    5
+#define HOT_YEEDIL   6
+#define HOT_SAVEFILE 7
+#define HOT_COLOURS  8
 
 #define OFF_LOADTYPE  (RAC2_LOADSCREEN_TYPE  - RAC2_HOT_INPUTS_ADDR)   /* 0x007 */
 #define OFF_LOADCOUNT (RAC2_LOADSCREEN_COUNT - RAC2_HOT_INPUTS_ADDR)   /* 0x00B */
@@ -64,11 +78,31 @@ static const struct game_hot_block rac2_hot[] = {
 #define OFF_CB_BACK    (RAC2_CB_PRIMARY_BACK - RAC2_CB_PRIMARY_FRONT)  /* 0x04 */
 #define OFF_CB_TINT    (RAC2_CB_TINT_FRONT   - RAC2_CB_PRIMARY_FRONT)  /* 0x10 */
 
+#define OFF_HERO_TYPE  (RAC2_HERO_TYPE - RAC2_HOT_PSTATE_ADDR)         /* 0x20 */
+
+#define OFF_LF_ENDAKO_EXIT   (RAC2_LF_ENDAKO_EXIT   - RAC2_HOT_FLAGS_ADDR)  /* 0x31 */
+#define OFF_LF_BARLOW_RACE   (RAC2_LF_BARLOW_RACE   - RAC2_HOT_FLAGS_ADDR)  /* 0x47 */
+#define OFF_LF_ARANOS2_CLANK (RAC2_LF_ARANOS2_CLANK - RAC2_HOT_FLAGS_ADDR)  /* 0xE9 */
+
 /*
  * What the watcher needs and struct game_hot has no room for. Filled by the
  * decode, read by on_tick, so the watcher costs no syscall of its own.
  */
 static u8 g_load_count;
+
+/* What the autosplit watcher reads, named the way rac2-autosplitter.asl names it. */
+struct rac2_as_state {
+	u32 player_state;
+	u8  planet;
+	u8  chunk;
+	u8  clank;
+	u8  yeedil_scene;
+	u8  endako_exit;
+	u8  barlow_entry;
+	u8  hero_type;
+};
+
+static struct rac2_as_state g_as;
 
 static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -109,6 +143,25 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC2_RO_CB_BACK]  = classic_cb_to_rgb(be32_get(c + OFF_CB_BACK));
 		out->readout[RAC2_RO_CB_TINT]  = classic_cb_to_rgb(be32_get(c + OFF_CB_TINT));
 	}
+
+	/* --------------------------------------------- the autosplit watcher's view */
+
+	g_as.planet = out->current_planet;
+
+	if (blocks[HOT_PSTATE] != NULL) {
+		g_as.player_state = be32_get(blocks[HOT_PSTATE]);
+		g_as.hero_type    = blocks[HOT_PSTATE][OFF_HERO_TYPE];
+	}
+
+	if (blocks[HOT_LFLAGS] != NULL) {
+		const u8 *f = blocks[HOT_LFLAGS];
+		g_as.endako_exit  = f[OFF_LF_ENDAKO_EXIT];
+		g_as.barlow_entry = f[OFF_LF_BARLOW_RACE];
+		g_as.clank        = f[OFF_LF_ARANOS2_CLANK];
+	}
+
+	if (blocks[HOT_CHUNK] != NULL)  g_as.chunk        = blocks[HOT_CHUNK][0];
+	if (blocks[HOT_YEEDIL] != NULL) g_as.yeedil_scene = blocks[HOT_YEEDIL][0];
 }
 
 /* --------------------------------------------------------------- patches */
@@ -177,22 +230,124 @@ static void rac2_init(void)
 	rac2_ammo.originals     = patch_pool_alloc(rac2_ammo.count);
 }
 
+/* ------------------------------------------------- the autosplit watcher */
+
+/*
+ * rac2-autosplitter.asl, condition for condition. Everything it gates on a
+ * *setting* is emitted anyway with its own reason code, because the client owns
+ * the settings; everything it gates on game state is a condition below. The load
+ * screen's game-time adjustments are not ported: qwark keeps no timer.
+ */
+static struct rac2_as_state g_as_prev;
+static int g_as_primed;
+
+#define RAC2_START_STATE 98   /* playerState when the file starts on Aranos */
+#define RAC2_FLAG_SET    128  /* what the three level-flag bytes read once set */
+#define RAC2_YEEDIL_PROTO 6   /* the Protopet cutscene's scene id */
+
+static void rac2_autosplit_tick(void)
+{
+	const struct rac2_as_state *p = &g_as_prev;
+
+	/* LiveSplit's first update has old == current; prime and wait a tick. */
+	if (!g_as_primed) {
+		g_as_prev = g_as;
+		g_as_primed = 1;
+		return;
+	}
+
+	/*
+	 * start and reset are the same expression in this script. Emit both and let
+	 * the client apply whichever suits its timer.
+	 */
+	if (g_as.planet == RAC2_PLANET_ARANOS &&
+	    g_as.player_state == RAC2_START_STATE && p->player_state == 0) {
+		autosplit_emit(AUTOSPLIT_RESET, 0, 0);
+		autosplit_emit(AUTOSPLIT_START, 0, 0);
+	}
+
+	/* Never split entering the Insomniac Museum. */
+	if (g_as.planet != p->planet && g_as.planet != RAC2_PLANET_MUSEUM)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_PLANET, g_as.planet);
+
+	if (g_as.planet == RAC2_PLANET_MAKTAR && g_as.chunk == 1 && p->chunk == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_MAKTAR_ARENA, 0);
+
+	if (g_as.planet == RAC2_PLANET_ARANOS2 &&
+	    g_as.clank == RAC2_FLAG_SET && p->clank == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_A2_CLANK, 0);
+
+	if (g_as.planet == RAC2_PLANET_BARLOW &&
+	    g_as.barlow_entry == RAC2_FLAG_SET && p->barlow_entry == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_BARLOW_RACE, 0);
+
+	/* The entry split is the hero type, not the flag byte the old client read. */
+	if (g_as.planet == RAC2_PLANET_ENDAKO &&
+	    g_as.hero_type == 1 && p->hero_type == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_ENDAKO_ENTER, 0);
+
+	if (g_as.planet == RAC2_PLANET_ENDAKO &&
+	    g_as.endako_exit == RAC2_FLAG_SET && p->endako_exit == 0)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_ENDAKO_EXIT, 0);
+
+	if (g_as.planet == RAC2_PLANET_TABORA && g_as.chunk == 0 && p->chunk == 1)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_TABORA_CAVES, 0);
+
+	if (g_as.planet == RAC2_PLANET_YEEDIL &&
+	    g_as.yeedil_scene == RAC2_YEEDIL_PROTO &&
+	    p->yeedil_scene != RAC2_YEEDIL_PROTO)
+		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_PROTOPET, 0);
+
+	g_as_prev = g_as;
+}
+
+#define DF AUTOSPLIT_FLAG_DEFAULT
+#define RT AUTOSPLIT_FLAG_ROUTE
+
+/* The script's settings.Add list, in its order; DF is what it defaults to true. */
+static const struct autosplit_desc rac2_autosplits[] = {
+	{ R2_AS_PLANET,       AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
+	{ R2_AS_PROTOPET,     AUTOSPLIT_SPLIT, DF,      "Protopet defeated" },
+	{ R2_AS_A2_CLANK,     AUTOSPLIT_SPLIT, DF,      "Aranos 2 Clank swap" },
+	{ R2_AS_MAKTAR_ARENA, AUTOSPLIT_SPLIT, 0,       "Maktar arena entry" },
+	{ R2_AS_BARLOW_RACE,  AUTOSPLIT_SPLIT, 0,       "Barlow race entry" },
+	{ R2_AS_ENDAKO_ENTER, AUTOSPLIT_SPLIT, 0,       "Endako Clank entry" },
+	{ R2_AS_ENDAKO_EXIT,  AUTOSPLIT_SPLIT, 0,       "Endako Clank exit" },
+	{ R2_AS_TABORA_CAVES, AUTOSPLIT_SPLIT, 0,       "Tabora caves" }
+};
+
+#undef DF
+#undef RT
+
+static const struct autosplit_desc *rac2_autosplit_describe(u8 *count)
+{
+	*count = (u8)(sizeof(rac2_autosplits) / sizeof(rac2_autosplits[0]));
+	return rac2_autosplits;
+}
+
 static void rac2_on_enter(void)
 {
 	/* A fresh process: nothing is forced, nothing has been seen yet. */
 	g_fastload_on     = 0;
 	g_prev_load_count = 0xFF;
 	g_shortcut_index  = 0xFFFFFFFFu;
+
+	memset(&g_as, 0, sizeof(g_as));
+	memset(&g_as_prev, 0, sizeof(g_as_prev));
+	g_as_primed = 0;
 }
 
 /*
- * RAC2Form_Load's loading-screen watcher. It fires once per change of the load
- * counter, acts only on the final load screen, and only the A1 (planet 0) part
- * of it is conditional on the planet.
+ * RAC2Form_Load's loading-screen watcher, plus the autosplit watcher. The
+ * loading-screen half fires once per change of the load counter, acts only on
+ * the final load screen, and only the A1 (planet 0) part of it is conditional
+ * on the planet.
  */
 static void rac2_on_tick(const struct game_hot *hot)
 {
 	u8 count = g_load_count;
+
+	rac2_autosplit_tick();
 
 	if (count == g_prev_load_count) return;
 	g_prev_load_count = count;
@@ -545,5 +700,7 @@ const struct game_api rac2_game = {
 
 	rac2_on_enter,
 	NULL,                 /* on_quit */
-	rac2_on_tick
+	rac2_on_tick,
+
+	rac2_autosplit_describe
 };

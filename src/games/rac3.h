@@ -86,6 +86,37 @@
 #define RAC3_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC3_LF_LEN        0x10        /* level flag bytes per planet */
 
+/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+
+/*
+ * rac3.cs AutosplitterAddresses, in the order rac3-autosplitter.asl reads them.
+ * The Marcadia mission byte is in that list only "for backwards compatibility"
+ * and nothing reads it; the planet frame count and the loading-screen id are
+ * read by the old client but used by none of the script's start, reset or split
+ * conditions, so neither is read here.
+ */
+#define RAC3_NEFFY_HEALTH  0x00C4DF80u  /* f32, 1.0 full and 0.0 dead */
+#define RAC3_NEFFY_PHASE   0x00DA50FCu  /* u32, odd during a Biobliterator phase */
+#define RAC3_LOADED_CHUNK  0x00F08100u  /* rac3.cs loadedChunk, s32 */
+/* Tyhrraguise: RAC3_UNLOCK_ARRAY + (0x4C6 - 0x4A8), the way the old list wrote it. */
+#define RAC3_TYHRRAGUISE   0x00DA570Au
+
+/* Planet ids the split conditions name. PLANET_LIST index == game planet id. */
+#define RAC3_PLANET_VELDIN     1
+#define RAC3_PLANET_MARCADIA   4
+#define RAC3_PLANET_KOROS      14
+#define RAC3_PLANET_LAUNCHSITE 20
+
+#define RAC3_KOROS_BOLT_STATE  0x74   /* playerState while a titanium bolt is taken */
+#define RAC3_GAME_STATE_LOAD   6      /* the frame before gameplay resumes */
+
+/* Split reason codes. Code 1 is "planet entered" in every game. */
+#define R3_AS_PLANET        1
+#define R3_AS_LDF           2
+#define R3_AS_TYHRRAGUISE   3
+#define R3_AS_KOROS_BOLT    4
+#define R3_AS_BIOBLITERATOR 5
+
 /* Aquatos: LoadPlanetSafe skips the fast-load arm for this planet id alone. */
 #define RAC3_PLANET_AQUATOS 8
 
@@ -112,6 +143,16 @@ extern const u8 rac3_fp_patched[4];
 /* player: the coordinate Vec4 plus the rotation behind it */
 #define RAC3_HOT_PLAYER_ADDR  RAC3_COORDS
 #define RAC3_HOT_PLAYER_LEN   0x20
+/*
+ * pstate: player state at +0x02, the health word at +0x28C and the Neffyrious
+ * phase at +0x348. Health used to have a slow block of its own; the autosplit
+ * watcher needs the other two every tick and they all sit inside one read.
+ */
+#define RAC3_HOT_PSTATE_ADDR  RAC3_PLAYER_STATE
+#define RAC3_HOT_PSTATE_LEN   0x34C
+/* load: destination planet at +0x03, game state at +0x20 */
+#define RAC3_HOT_LOAD_ADDR    RAC3_DEST_PLANET
+#define RAC3_HOT_LOAD_LEN     0x24
 
 /* ----------------------------------------------------------- readout slots */
 

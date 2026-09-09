@@ -11,6 +11,7 @@
 #include "rac4.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/autosplit.h"
 
 #include <string.h>
 
@@ -21,39 +22,50 @@ const u8 rac4_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Three reads every tick, one every other tick and four staggered slow ones:
+ * Seven reads every tick, one every other tick and three staggered slow ones:
  *
  *   0  inputs     pad +0x00, analogs +0x1DC                          every tick
  *   1  coords     the position Vec4 and the rotation behind it       every tick
  *   2  planet     current planet, 0 in the main menu                 every tick
- *   3  timing     frame counter +0x00, game state +0x04              every 2nd
- *   4  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
- *   5  flags      in game +0x00, tutorial flags +0x0C                every 8th
- *   6  challenge  the challenge currently being run                  every 8th
- *   7  savefile   helper byte and its two request bytes              every 8th
+ *   3  flags      in game +0x00, tutorial flags +0x0C                every tick
+ *   4  load       load request +0x00, target +0x04, cutscene +0x1C   every tick
+ *   5  asplanet   the autosplitter's own current-planet word         every tick
+ *   6  voxhp      Vox's health bar                                   every tick
+ *   7  timing     frame counter +0x00, game state +0x04              every 2nd
+ *   8  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
+ *   9  challenge  the challenge currently being run                  every 8th
+ *  10  savefile   helper byte and its two request bytes              every 8th
  *
- * Block 3 takes the even ticks and blocks 4 to 7 the odd ones, so every tick
- * costs exactly four reads: no tick pays for two slow blocks at once.
+ * Blocks 4 to 6 are the autosplit watcher's, and the flags block moved from
+ * every eighth tick to every tick because the watcher and the softlock fix both
+ * read it. Block 7 takes the even ticks and blocks 8 to 10 the odd ones, so a
+ * tick costs exactly eight reads and never pays for two slow blocks at once.
  */
 static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_HOT_INPUTS_ADDR, RAC4_HOT_INPUTS_LEN, 1, 0 },
 	{ RAC4_COORDS,          RAC4_POS_MAIN_LEN,   1, 0 },
 	{ RAC4_CURRENT_PLANET,  4,                   1, 0 },
+	{ RAC4_IN_GAME,         RAC4_HOT_FLAGS_LEN,  1, 0 },
+	{ RAC4_HOT_LOAD_ADDR,   RAC4_HOT_LOAD_LEN,   1, 0 },
+	{ RAC4_AS_PLANET,       4,                   1, 0 },
+	{ RAC4_VOX_HP,          4,                   1, 0 },
 	{ RAC4_FRAME_COUNTER,   8,                   2, 0 },
 	{ RAC4_BOLTS,           RAC4_HOT_STATS_LEN,  8, 1 },
-	{ RAC4_IN_GAME,         RAC4_HOT_FLAGS_LEN,  8, 3 },
-	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 5 },
-	{ RAC4_SF_HELPER,       4,                   8, 7 }
+	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 3 },
+	{ RAC4_SF_HELPER,       4,                   8, 5 }
 };
 
 #define HOT_INPUTS    0
 #define HOT_COORDS    1
 #define HOT_PLANET    2
-#define HOT_TIMING    3
-#define HOT_STATS     4
-#define HOT_FLAGS     5
-#define HOT_CHALLENGE 6
-#define HOT_SAVEFILE  7
+#define HOT_FLAGS     3
+#define HOT_LOAD      4
+#define HOT_ASPLANET  5
+#define HOT_VOXHP     6
+#define HOT_TIMING    7
+#define HOT_STATS     8
+#define HOT_CHALLENGE 9
+#define HOT_SAVEFILE  10
 
 #define OFF_ANALOGS   (RAC4_ANALOGS         - RAC4_INPUTS)        /* 0x1DC */
 #define OFF_GAMESTATE (RAC4_GAME_STATE      - RAC4_FRAME_COUNTER) /* 0x04 */
@@ -61,10 +73,29 @@ static const struct game_hot_block rac4_hot[] = {
 #define OFF_SKIN      (RAC4_SKIN            - RAC4_BOLTS)         /* 0x13 */
 #define OFF_CM        (RAC4_CHALLENGE_MODE  - RAC4_BOLTS)         /* 0x26 */
 #define OFF_TUTORIAL  (RAC4_TUTORIAL_FLAGS  - RAC4_IN_GAME)       /* 0x0C */
+#define OFF_TARGET    (RAC4_TARGET_PLANET   - RAC4_HOT_LOAD_ADDR) /* 0x04 */
+#define OFF_CUTSCENE  (RAC4_CUTSCENE_PTR    - RAC4_HOT_LOAD_ADDR) /* 0x1C */
 
 /* What the two watchers need and struct game_hot has no room for. */
 static u8 g_game_mode;      /* game state, low byte */
 static u8 g_tutorial;       /* tutorial flags, low byte */
+
+/*
+ * The Deadlocked autosplitter SPRX's GameState, field for field. The names are
+ * its own; `planet` and `dest_planet` carry its modulo, and `tutorial` is the
+ * whole word because that is what its `!curr.tutorialFlag` tested.
+ */
+struct rac4_as_state {
+	u32 planet;
+	u32 dest_planet;
+	u32 request_load;
+	u32 in_game;
+	u32 cutscene_ptr;
+	u32 tutorial;
+	f32 vox_hp;
+};
+
+static struct rac4_as_state g_as;
 
 static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -102,6 +133,9 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_FLAGS] != NULL) {
 		out->readout[RAC4_RO_IN_GAME] = be32_get(blocks[HOT_FLAGS]);
 		g_tutorial = blocks[HOT_FLAGS][OFF_TUTORIAL + 3];
+
+		g_as.in_game  = be32_get(blocks[HOT_FLAGS]);
+		g_as.tutorial = be32_get(blocks[HOT_FLAGS] + OFF_TUTORIAL);
 	}
 
 	if (blocks[HOT_CHALLENGE] != NULL)
@@ -110,6 +144,21 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	/* The client greys the two savefile actions on this one. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC4_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
+
+	/* --------------------------------------------- the autosplit watcher's view */
+
+	if (blocks[HOT_LOAD] != NULL) {
+		const u8 *l = blocks[HOT_LOAD];
+		g_as.request_load = be32_get(l);
+		g_as.dest_planet  = be32_get(l + OFF_TARGET) % RAC4_AS_PLANET_MOD;
+		g_as.cutscene_ptr = be32_get(l + OFF_CUTSCENE);
+	}
+
+	if (blocks[HOT_ASPLANET] != NULL)
+		g_as.planet = be32_get(blocks[HOT_ASPLANET]) % RAC4_AS_PLANET_MOD;
+
+	if (blocks[HOT_VOXHP] != NULL)
+		g_as.vox_hp = bef32_get(blocks[HOT_VOXHP]);
 }
 
 /* --------------------------------------------------------------- patches */
@@ -195,6 +244,125 @@ static void rac4_init(void)
 	rac4_ammo.originals      = patch_pool_alloc(rac4_ammo.count);
 }
 
+/* ------------------------------------------------- the autosplit watcher */
+
+/*
+ * The Deadlocked autosplitter SPRX's detection, moved inside qwark's tick, with
+ * rac4-LC-autosplitter.asl as the tie-breaker wherever the two disagreed:
+ *
+ *   its CMD_RESET  -> RESET, and START, because the LC script's `start` and
+ *                     `reset` blocks are the same expression
+ *   its CMD_SPLIT  -> SPLIT, split into two reason codes rather than one command
+ *                     whose packet byte the script had to read as "0 means Vox"
+ *   its CMD_PAUSE  -> PAUSE, when the game quits to the XMB
+ *   its CMD_UNPAUSE-> RESUME, when it comes back
+ *
+ * Deadlocked is the only game that pauses: some categories quit to the VSH on
+ * purpose, and the client stops its timer for as long as that lasts.
+ */
+static struct rac4_as_state g_as_prev;
+static int g_as_primed;
+
+/*
+ * Survives the reboot on purpose: a PAUSE emitted on the way out has to be
+ * answered by a RESUME on the way back in, and on_enter runs in between.
+ */
+static int g_as_paused;
+static int g_as_resume_due;
+
+static void rac4_autosplit_tick(void)
+{
+	const struct rac4_as_state *p = &g_as_prev;
+	int started_loading;
+	int planet_split;
+	int vox_split;
+
+	/*
+	 * The pause was emitted from on_quit, before the session left INGAME; the
+	 * RESUME belongs to the first tick of the process that came back.
+	 */
+	if (g_as_resume_due) {
+		g_as_resume_due = 0;
+		g_as_paused = 0;
+		autosplit_emit(AUTOSPLIT_RESUME, 0, 0);
+	}
+
+	/* A fresh process: prime, so no edge fires against the dead one's values. */
+	if (!g_as_primed) {
+		g_as_prev = g_as;
+		g_as_primed = 1;
+		return;
+	}
+
+	started_loading = (p->request_load == 0 && g_as.request_load != 0);
+
+	if (started_loading && g_as.tutorial == 0 &&
+	    g_as.dest_planet == RAC4_PLANET_DREADZONE) {
+		/*
+		 * The SPRX writes the softlock byte here as well; qwark's own softlock
+		 * fix is a toggle that watches the same tutorial flag, so this stays
+		 * detection only.
+		 */
+		autosplit_emit(AUTOSPLIT_RESET, 0, 0);
+		autosplit_emit(AUTOSPLIT_START, 0, 0);
+		g_as_prev = g_as;
+		return;
+	}
+
+	/* Planet values go to 0 when the box is beaten, which is not a planet change. */
+	planet_split = started_loading && g_as.in_game != 0 &&
+	               g_as.dest_planet != RAC4_PLANET_INTERIOR &&
+	               g_as.planet != RAC4_PLANET_MAINMENU &&
+	               g_as.dest_planet != RAC4_PLANET_MAINMENU;
+
+	vox_split = (g_as.planet == RAC4_PLANET_INTERIOR) && g_as.vox_hp < 0.0f &&
+	            p->cutscene_ptr == 0 && g_as.cutscene_ptr == 1;
+
+	if (planet_split)
+		autosplit_emit(AUTOSPLIT_SPLIT, R4_AS_PLANET, g_as.dest_planet);
+	if (vox_split)
+		autosplit_emit(AUTOSPLIT_SPLIT, R4_AS_VOX, g_as.dest_planet);
+
+	g_as_prev = g_as;
+}
+
+/*
+ * The SPRX sent CMD_PAUSE the moment it saw the quit flag, or the process go
+ * away underneath it. qwark's session watches the same flag and calls this on
+ * its way out of INGAME, before the state moves, so the event still counts.
+ */
+static void rac4_on_quit(void)
+{
+	if (g_as_paused) return;
+
+	g_as_paused = 1;
+	g_as_resume_due = 1;
+	autosplit_emit(AUTOSPLIT_PAUSE, 0, 0);
+}
+
+#define DF AUTOSPLIT_FLAG_DEFAULT
+#define RT AUTOSPLIT_FLAG_ROUTE
+
+/*
+ * The LC script has one setting that picks splits, SPLIT_ROUTE, and treats
+ * "planet 0" as the Vox split; both codes are on by default because both are
+ * splits the script always takes. AEC, which disables resetting, is the client's
+ * business: qwark still emits every RESET.
+ */
+static const struct autosplit_desc rac4_autosplits[] = {
+	{ R4_AS_PLANET, AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
+	{ R4_AS_VOX,    AUTOSPLIT_SPLIT, DF,      "Vox defeated" }
+};
+
+#undef DF
+#undef RT
+
+static const struct autosplit_desc *rac4_autosplit_describe(u8 *count)
+{
+	*count = (u8)(sizeof(rac4_autosplits) / sizeof(rac4_autosplits[0]));
+	return rac4_autosplits;
+}
+
 static void rac4_on_enter(void)
 {
 	g_fastload_on   = 0;
@@ -203,6 +371,11 @@ static void rac4_on_enter(void)
 	g_prev_game_mode = 0;
 	g_game_mode     = 0;
 	g_tutorial      = 0xFF;
+
+	/* The watcher starts over; the pause state deliberately does not. */
+	memset(&g_as, 0, sizeof(g_as));
+	memset(&g_as_prev, 0, sizeof(g_as_prev));
+	g_as_primed = 0;
 
 	/*
 	 * The quit hook goes in permanently and is never reverted: it is what tells
@@ -225,6 +398,8 @@ static void rac4_on_enter(void)
 static void rac4_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
+
+	rac4_autosplit_tick();
 
 	if (g_tutorial != g_prev_tutorial) {
 		g_prev_tutorial = g_tutorial;
@@ -495,6 +670,8 @@ const struct game_api rac4_game = {
 	rac4_moby_table,
 
 	rac4_on_enter,
-	NULL,                 /* on_quit */
-	rac4_on_tick
+	rac4_on_quit,         /* the autosplit PAUSE, on the way out of INGAME */
+	rac4_on_tick,
+
+	rac4_autosplit_describe
 };

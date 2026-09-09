@@ -7,6 +7,9 @@
  * Revision 1.2: Feature flags bit2 SAVE_ASIDE and bit3 LOAD_ASIDE.
  * Revision 1.3: Feature flags bit4 LIVE, and UNLOCK_LIST carries four
  * UnlockFieldDesc rows that name and type the four per-entry value slots.
+ * Revision 1.4: the autosplit event stream. AUTOSPLIT_EVENTS and
+ * AUTOSPLIT_DESCRIBE in the 0x00A0 block, plus a 20-byte 'QE' datagram pushed
+ * to every telemetry subscriber the moment an event happens.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -22,7 +25,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             3
+#define QWARK_BUILD             4
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -129,6 +132,9 @@
 #define OP_CONFIG_RELOAD     0x0090
 #define OP_CONFIG_SAVE       0x0091
 
+#define OP_AUTOSPLIT_EVENTS   0x00A0
+#define OP_AUTOSPLIT_DESCRIBE 0x00A1
+
 /* ------------------------------------------------------------- table sizes */
 
 #define QWARK_MAX_WATCHES    64
@@ -144,6 +150,48 @@
 #define QWARK_POS_SLOTS      8
 #define QWARK_MAX_BLOB       64
 #define QWARK_MAX_PLANETS    64
+
+/* ------------------------------------------------------- autosplit, rev 1.4 */
+
+/*
+ * qwark detects, the client decides. The tick thread watches game memory and
+ * emits run events unconditionally: it keeps no timer, applies no user setting
+ * and knows nothing about LiveSplit. Every candidate goes out and the PC picks.
+ */
+
+/* Event.kind */
+#define AUTOSPLIT_START   1
+#define AUTOSPLIT_SPLIT   2
+#define AUTOSPLIT_RESET   3
+#define AUTOSPLIT_PAUSE   4
+#define AUTOSPLIT_RESUME  5
+
+/*
+ * Event.code is per game and only ever set on a SPLIT; every other kind carries
+ * 0. Code 1 is reserved in every game for "planet entered", whose arg is the
+ * planet index in that game's PLANET_LIST order.
+ */
+#define AUTOSPLIT_CODE_PLANET 1
+
+/* EventDesc.flags */
+#define AUTOSPLIT_FLAG_DEFAULT 0x01   /* a client enables this one out of the box */
+#define AUTOSPLIT_FLAG_ROUTE   0x02   /* a planet route applies; only code 1 sets it */
+
+#define AUTOSPLIT_EVENT_SIZE   16
+#define AUTOSPLIT_DESC_SIZE    28
+#define AUTOSPLIT_LABEL_LEN    24
+#define AUTOSPLIT_RING_SLOTS   64
+
+/* The UDP push: 'Q','E', version, reserved, then the 16-byte Event. */
+#define AUTOSPLIT_MAGIC        "QE"
+#define AUTOSPLIT_DGRAM_VERSION 1
+#define AUTOSPLIT_DGRAM_SIZE   (4 + AUTOSPLIT_EVENT_SIZE)
+
+/*
+ * How many ticks in a row one event's datagram is repeated, counting the tick it
+ * was emitted on. Three covers a lost datagram without anyone keeping a timer.
+ */
+#define AUTOSPLIT_REPEATS      3
 
 /* -------------------------------------------------------------- structures */
 

@@ -88,7 +88,7 @@ static void qwark_boot_thread(void *arg)
 	}
 
 	plat_trace("qwark: entering accept loop");
-	show_msg("qwark loaded and listening.");
+	// show_msg("qwark loaded and listening."); // duplicated inside net_accept_thread
 
 	/* Runs until net_stop() closes the listener; then we fall through. */
 	net_accept_thread(NULL);

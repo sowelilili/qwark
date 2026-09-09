@@ -13,6 +13,7 @@
 #include "../src/core/features.h"
 #include "../src/core/util.h"
 #include "../src/core/net.h"
+#include "../src/core/autosplit.h"
 #include "../src/games/game.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/plat_net.h"
@@ -528,7 +529,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 3, "and this module is build 3");
+	check_eq_u64(packet[5], 4, "and this module is build 4");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2005,6 +2006,537 @@ static void test_fingerprint(void)
 	check(pump_until(SESSION_INGAME, 2000), "the original word lets it through");
 }
 
+/* ----------------------------------------------------------- autosplitting */
+
+/*
+ * Protocol 1.4. Every check here drives the real watchers: it pokes the words a
+ * game's ASL script read, steps the tick, and reads the events back through the
+ * same bytes AUTOSPLIT_EVENTS puts on the wire.
+ */
+
+static void poke8(u32 addr, u8 v)   { host_poke(addr, &v, 1); }
+static void poke16(u32 addr, u16 v) { u8 b[2]; be16_put(b, v); host_poke(addr, b, 2); }
+static void poke32(u32 addr, u32 v) { u8 b[4]; be32_put(b, v); host_poke(addr, b, 4); }
+static void pokef32(u32 addr, f32 v) { u8 b[4]; bef32_put(b, v); host_poke(addr, b, 4); }
+
+struct as_event {
+	u32 seq;
+	u32 tick;
+	u8  kind;
+	u8  code;
+	u16 reserved;
+	u32 arg;
+};
+
+static u32 g_as_latest;
+static u8  g_as_count;
+static struct as_event g_as_list[AUTOSPLIT_RING_SLOTS];
+
+/* The AUTOSPLIT_EVENTS reply body, decoded the way a client decodes it. */
+static u32 as_fetch(u32 since)
+{
+	static u8 buf[5 + AUTOSPLIT_RING_SLOTS * AUTOSPLIT_EVENT_SIZE];
+	u32 len;
+	u8 i;
+
+	g_as_latest = 0;
+	g_as_count = 0;
+
+	len = autosplit_encode_events(since, buf, sizeof(buf));
+	if (len < 5) return len;
+
+	g_as_latest = be32_get(buf);
+	g_as_count = buf[4];
+
+	for (i = 0; i < g_as_count; i++) {
+		const u8 *e = buf + 5 + (u32)i * AUTOSPLIT_EVENT_SIZE;
+		g_as_list[i].seq      = be32_get(e);
+		g_as_list[i].tick     = be32_get(e + 4);
+		g_as_list[i].kind     = e[8];
+		g_as_list[i].code     = e[9];
+		g_as_list[i].reserved = be16_get(e + 10);
+		g_as_list[i].arg      = be32_get(e + 12);
+	}
+
+	return len;
+}
+
+/* The first event past `since` with this kind and code, or NULL. */
+static const struct as_event *as_find(u32 since, u8 kind, u8 code)
+{
+	u8 i;
+
+	as_fetch(since);
+	for (i = 0; i < g_as_count; i++) {
+		if (g_as_list[i].kind == kind && g_as_list[i].code == code)
+			return &g_as_list[i];
+	}
+	return NULL;
+}
+
+/* Asserts one event of this kind and code showed up, and that its arg matches. */
+static void as_expect(u32 since, u8 kind, u8 code, u32 arg, const char *what)
+{
+	const struct as_event *e = as_find(since, kind, code);
+
+	if (e == NULL) {
+		check(0, what);
+		return;
+	}
+	check_eq_u64(e->arg, arg, what);
+}
+
+static void as_expect_kind(u32 since, u8 kind, const char *what)
+{
+	check(as_find(since, kind, 0) != NULL, what);
+}
+
+/*
+ * The split reason codes, spelled out here rather than pulled in from the game
+ * headers: these are the wire contract, so the test holds its own copy the way a
+ * client does and would notice a renumber.
+ */
+#define R1_AS_PLANET      1
+#define R1_AS_VELDIN      2
+#define R1_AS_DREK_BUTTON 3
+#define R1_AS_GOLD_BOLT   4
+#define R1_AS_SKILL_POINT 5
+#define R1_AS_ITEM        6
+#define R1_AS_INFOBOT     7
+
+#define R2_AS_PLANET       1
+#define R2_AS_PROTOPET     2
+#define R2_AS_A2_CLANK     3
+#define R2_AS_MAKTAR_ARENA 4
+#define R2_AS_BARLOW_RACE  5
+#define R2_AS_ENDAKO_ENTER 6
+#define R2_AS_ENDAKO_EXIT  7
+#define R2_AS_TABORA_CAVES 8
+
+#define R3_AS_PLANET        1
+#define R3_AS_LDF           2
+#define R3_AS_TYHRRAGUISE   3
+#define R3_AS_KOROS_BOLT    4
+#define R3_AS_BIOBLITERATOR 5
+
+#define R4_AS_PLANET 1
+#define R4_AS_VOX    2
+
+/* Everything the four watchers read, by the names their scripts use. */
+#define A1_GAME_STATE   0xA10708u
+#define A1_DEST_PLANET  0xA10704u
+#define A1_PLANET       0x969C70u
+#define A1_FRAMES       0xA10710u
+#define A1_PLAYER_STATE 0x96BD66u
+#define A1_X            0x969D60u
+#define A1_Y            0x969D64u
+#define A1_GB           0xAFF000u
+#define A1_SP           0xAFF010u
+#define A1_ITEMS        0xAFF020u
+#define A1_INFOBOTS     0xAFF030u
+#define A1_KALEBO       0xA0CA75u
+#define A1_CODEBOT      0x96BFF1u
+
+#define A2_PLANET       0x1329A3Cu
+#define A2_PLAYER_STATE 0x1481474u
+#define A2_HERO_TYPE    0x1481494u
+#define A2_CHUNK        0x157CE03u
+#define A2_CLANK        0x1562699u
+#define A2_ENDAKO_EXIT  0x15625E1u
+#define A2_BARLOW       0x15625F7u
+#define A2_YEEDIL       0x1478991u
+
+#define A3_PLANET       0x00C1E438u
+#define A3_DEST_PLANET  0x00EE9314u
+#define A3_GAME_STATE   0x00EE9334u
+#define A3_PLAYER_STATE 0x00DA4DB6u
+#define A3_NEFFY_HP     0x00C4DF80u
+#define A3_NEFFY_PHASE  0x00DA50FCu
+#define A3_CHUNK        0x00F08100u
+#define A3_GUISE        0x00DA570Au
+
+#define A4_PLANET       0x009C3240u
+#define A4_REQUEST_LOAD 0x00B36DCCu
+#define A4_TARGET       0x00B36DD0u
+#define A4_CUTSCENE     0x00B36DE8u
+#define A4_IN_GAME      0x00B1F460u
+#define A4_TUTORIAL     0x00B1F46Cu
+#define A4_VOX_HP       0x449BEAD0u
+
+/* One row of AUTOSPLIT_DESCRIBE, checked against what the game declares. */
+static void as_check_describe(const struct game_api *g, u8 want_rows,
+                              const char *first_label, const char *name)
+{
+	const struct autosplit_desc *rows;
+	u8 n = 0;
+	u8 i;
+	int codes_ok = 1;
+	int route_ok = 1;
+
+	if (g == NULL || g->autosplit_describe == NULL) {
+		check(0, "the game declares an autosplit table");
+		return;
+	}
+
+	rows = g->autosplit_describe(&n);
+	check_eq_u64(n, want_rows, name);
+
+	if (rows == NULL || n == 0) return;
+
+	check_eq_u64(rows[0].code, AUTOSPLIT_CODE_PLANET, "code 1 comes first");
+	check(qstreq(rows[0].label, first_label), "and is the planet row");
+	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_ROUTE, AUTOSPLIT_FLAG_ROUTE,
+	             "code 1 carries the route flag");
+	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_DEFAULT,
+	             "and is on by default");
+
+	for (i = 0; i < n; i++) {
+		if (rows[i].code == 0 || rows[i].kind != AUTOSPLIT_SPLIT) codes_ok = 0;
+		if (qstrlen(rows[i].label) > AUTOSPLIT_LABEL_LEN) codes_ok = 0;
+		if (i > 0 && (rows[i].flags & AUTOSPLIT_FLAG_ROUTE) != 0) route_ok = 0;
+	}
+	check(codes_ok, "every row is a SPLIT with a non-zero code and a label that fits");
+	check(route_ok, "and only code 1 carries the route flag");
+}
+
+static void test_autosplit(void)
+{
+	u32 mark;
+
+	group("autosplitting: RaC1");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+
+	as_check_describe(session_game(), 7, "Planet entered",
+	                  "RaC1 declares seven split codes");
+
+	/* start and reset are one expression: game state 6 -> 0 while on Veldin. */
+	mark = autosplit_latest_seq();
+	poke32(A1_GAME_STATE, 6);
+	pump(2);
+	poke32(A1_GAME_STATE, 0);
+	pump(1);
+	as_expect_kind(mark, AUTOSPLIT_RESET, "the game-state edge emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START on the same tick");
+	check(g_as_latest > mark, "the sequence number moved");
+
+	/* Veldin: 0 -> 2 with a planet frame count past five. */
+	mark = autosplit_latest_seq();
+	poke32(A1_FRAMES, 40);
+	pump(1);
+	poke32(A1_GAME_STATE, 2);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_VELDIN, 0, "the Veldin split fires");
+
+	/* And only once: veldinFix latches until the next start. */
+	mark = autosplit_latest_seq();
+	poke32(A1_GAME_STATE, 0);
+	pump(1);
+	poke32(A1_GAME_STATE, 2);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R1_AS_VELDIN) == NULL,
+	      "and does not fire a second time");
+
+	/* Planet split: the destination changes to another real planet. */
+	mark = autosplit_latest_seq();
+	poke32(A1_PLANET, 3);
+	pump(1);
+	poke32(A1_DEST_PLANET, 5);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_PLANET, 5,
+	          "the planet split carries the destination planet");
+
+	/* The four collectable counters the helper mod keeps. */
+	mark = autosplit_latest_seq();
+	poke32(A1_GB, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, 1, "a gold bolt splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A1_SP, 2);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_SKILL_POINT, 2, "a skill point splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A1_INFOBOTS, 3);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_INFOBOT, 3, "an infobot splits");
+
+	mark = autosplit_latest_seq();
+	poke8(A1_CODEBOT, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_ITEM, 0,
+	          "the codebot splits as an item");
+
+	mark = autosplit_latest_seq();
+	poke8(A1_KALEBO, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, 1,
+	          "and the Kalebo3 bolt as a gold bolt");
+
+	/* The Drek buttons: the player state edge only counts inside 1.7 of one. */
+	mark = autosplit_latest_seq();
+	poke32(A1_PLANET, 18);
+	pokef32(A1_X, 100.0f);
+	pokef32(A1_Y, 100.0f);
+	pump(1);
+	poke16(A1_PLAYER_STATE, 34);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R1_AS_DREK_BUTTON) == NULL,
+	      "the Drek split ignores a state change away from a button");
+
+	mark = autosplit_latest_seq();
+	poke16(A1_PLAYER_STATE, 0);
+	pokef32(A1_X, 477.9081f);
+	pokef32(A1_Y, 601.4653f);
+	pump(1);
+	poke16(A1_PLAYER_STATE, 34);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_DREK_BUTTON, 0,
+	          "and fires standing on the first one");
+
+	/* since_seq filtering, and the reserved halfword. */
+	{
+		u32 latest = autosplit_latest_seq();
+
+		as_fetch(latest);
+		check_eq_u64(g_as_count, 0, "since_seq = the latest returns nothing");
+		check_eq_u64(g_as_latest, latest, "but still reports the latest seq");
+
+		as_fetch(latest - 1);
+		check_eq_u64(g_as_count, 1, "since_seq one back returns exactly one event");
+		check_eq_u64(g_as_list[0].seq, latest, "and it is the newest one");
+		check_eq_u64(g_as_list[0].reserved, 0, "its reserved halfword is zero");
+
+		as_fetch(0);
+		check(g_as_count > 1 && g_as_count <= AUTOSPLIT_RING_SLOTS,
+		      "since_seq 0 returns the ring, capped at 64");
+
+		{
+			int rising = 1;
+			u8 i;
+			for (i = 1; i < g_as_count; i++) {
+				if (g_as_list[i].seq <= g_as_list[i - 1].seq) rising = 0;
+			}
+			check(rising, "the events come back oldest first with rising seq");
+		}
+	}
+
+	/* ------------------------------------------------------------- RaC2 */
+
+	group("autosplitting: RaC2");
+
+	check(quit_and_wait(), "quit RaC1");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+
+	as_check_describe(session_game(), 8, "Planet entered",
+	                  "RaC2 declares eight split codes");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLAYER_STATE, 98);
+	pump(1);
+	as_expect_kind(mark, AUTOSPLIT_RESET, "the Aranos player state emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 5);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_PLANET, 5,
+	          "the planet split carries the planet just entered");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 21);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R2_AS_PLANET) == NULL,
+	      "and never fires for the Insomniac Museum");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 2);
+	pump(1);
+	poke8(A2_CHUNK, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_MAKTAR_ARENA, 0,
+	          "the Maktar arena entry splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 3);
+	pump(1);
+	poke8(A2_HERO_TYPE, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_ENDAKO_ENTER, 0,
+	          "the Endako Clank entry splits on the hero type");
+
+	mark = autosplit_latest_seq();
+	poke8(A2_ENDAKO_EXIT, 128);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_ENDAKO_EXIT, 0,
+	          "and the Clank exit on its level flag");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 4);
+	pump(1);
+	poke8(A2_BARLOW, 128);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_BARLOW_RACE, 0,
+	          "the Barlow race entry splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 8);
+	pump(1);
+	poke8(A2_CHUNK, 0);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_TABORA_CAVES, 0,
+	          "leaving the Tabora caves splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 14);
+	pump(1);
+	poke8(A2_CLANK, 128);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_A2_CLANK, 0,
+	          "the Aranos 2 Clank swap splits");
+
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 20);
+	pump(1);
+	poke8(A2_YEEDIL, 6);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_PROTOPET, 0,
+	          "and the Protopet cutscene splits");
+
+	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "RaC2 never pauses");
+
+	/* ------------------------------------------------------------- RaC3 */
+
+	group("autosplitting: RaC3");
+
+	check(quit_and_wait(), "quit RaC2");
+	check(boot_and_wait("NPEA00387"), "RaC3 boots");
+
+	as_check_describe(session_game(), 5, "Planet entered",
+	                  "RaC3 declares five split codes");
+
+	mark = autosplit_latest_seq();
+	poke32(A3_PLANET, 1);
+	poke32(A3_GAME_STATE, 6);
+	pump(2);
+	poke32(A3_GAME_STATE, 0);
+	pump(1);
+	as_expect_kind(mark, AUTOSPLIT_RESET, "Veldin coming out of a load emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	mark = autosplit_latest_seq();
+	poke32(A3_PLANET, 4);
+	pump(1);
+	poke32(A3_DEST_PLANET, 7);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_PLANET, 7,
+	          "the planet split carries the destination planet");
+
+	mark = autosplit_latest_seq();
+	poke32(A3_CHUNK, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_LDF, 0,
+	          "entering the Marcadia LDF splits");
+
+	mark = autosplit_latest_seq();
+	poke8(A3_GUISE, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_TYHRRAGUISE, 0,
+	          "obtaining the Tyhrraguise splits");
+
+	/* Two titanium bolts on Koros, counted the way vars.korosTBs counted them. */
+	mark = autosplit_latest_seq();
+	poke32(A3_PLANET, 14);
+	pump(1);
+	poke16(A3_PLAYER_STATE, 0x74);
+	pump(1);
+	poke16(A3_PLAYER_STATE, 0);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R3_AS_KOROS_BOLT) == NULL,
+	      "one Koros bolt is not a split");
+	poke16(A3_PLAYER_STATE, 0x74);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_KOROS_BOLT, 0, "the second one is");
+
+	/* The Biobliterator: armed by an odd phase at full health, split at zero. */
+	mark = autosplit_latest_seq();
+	poke32(A3_PLANET, 20);
+	poke32(A3_NEFFY_PHASE, 1);
+	pokef32(A3_NEFFY_HP, 1.0f);
+	pump(2);
+	pokef32(A3_NEFFY_HP, 0.0f);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_BIOBLITERATOR, 0,
+	          "the Biobliterator split fires once armed");
+
+	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "RaC3 never pauses");
+
+	/* ------------------------------------------------------ Deadlocked */
+
+	group("autosplitting: Deadlocked");
+
+	check(quit_and_wait(), "quit RaC3");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+
+	as_check_describe(session_game(), 2, "Planet entered",
+	                  "Deadlocked declares two split codes");
+
+	/* The SPRX's reset_needed: a load starts for Dread Zone with no tutorial flag. */
+	mark = autosplit_latest_seq();
+	poke32(A4_TARGET, 1);
+	poke32(A4_TUTORIAL, 0);
+	poke32(A4_REQUEST_LOAD, 0);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	as_expect_kind(mark, AUTOSPLIT_RESET, "a Dread Zone load emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	/* planet_change_split: in game, a real destination that is not the Interior. */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_IN_GAME, 1);
+	poke32(A4_PLANET, 4);
+	poke32(A4_TARGET, 6);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET, 6,
+	          "the planet split carries the destination planet");
+
+	/* vox_split: on the Interior, Vox past zero, the cutscene pointer flipping. */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_PLANET, 15);
+	poke32(A4_TARGET, 0);
+	pokef32(A4_VOX_HP, -1.0f);
+	poke32(A4_CUTSCENE, 0);
+	pump(2);
+	poke32(A4_CUTSCENE, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R4_AS_VOX, 0, "the Vox split fires");
+
+	/* PAUSE on the way out to the XMB, RESUME when the game comes back. */
+	mark = autosplit_latest_seq();
+	check(quit_and_wait(), "Deadlocked quits to the XMB");
+	as_expect_kind(mark, AUTOSPLIT_PAUSE, "and that emits PAUSE");
+	check(as_find(mark, AUTOSPLIT_RESUME, 0) == NULL, "with no RESUME yet");
+
+	mark = autosplit_latest_seq();
+	check(boot_and_wait("NPEA00423"), "Deadlocked comes back");
+	as_expect_kind(mark, AUTOSPLIT_RESUME, "and that emits RESUME");
+	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "and only the one RESUME");
+
+	/* The sequence survives the reboot: it counts for the life of the module. */
+	check(autosplit_latest_seq() > mark, "the sequence carried on across the boot");
+
+	/* Back to RaC1 for anything that follows. */
+	check(quit_and_wait(), "quit Deadlocked");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
+}
+
 /* ---------------------------------------------------------------- shutdown */
 
 /*
@@ -2028,6 +2560,102 @@ static void test_submit_after_stop(void)
 
 	check(session_submit(&cmd) == ST_BUSY, "session_submit returns instead of blocking");
 	check_eq_u64(cmd.status, ST_BUSY, "and the command is answered BUSY");
+}
+
+/*
+ * Protocol 1.4: the UDP push. `client` is an open connection whose HELLO has
+ * already been answered; SUBSCRIBE puts a UDP port on the telemetry list, and
+ * the next autosplit event has to land on it as a 20-byte 'QE' datagram, not
+ * inside the telemetry packet.
+ */
+static void test_autosplit_udp(int client)
+{
+	struct sockaddr_in sa;
+	socklen_t_compat salen;
+	u8 frame[QWARK_FRAME_HEADER + 2];
+	u8 header[QWARK_FRAME_HEADER];
+	/* Big enough for a whole telemetry packet: a short recv on Windows drops it. */
+	u8 dgram[TELEMETRY_MAX];
+	int udp;
+	u16 port = 0;
+	int got = 0;
+	int tries;
+	u32 mark;
+
+	group("autosplit UDP push");
+
+	udp = (int)socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	check(udp >= 0, "a UDP socket binds for the datagrams");
+	if (udp < 0) return;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = 0;
+	sa.sin_addr.s_addr = htonl(0x7F000001u);
+	bind(udp, (struct sockaddr *)&sa, sizeof(sa));
+
+	salen = (socklen_t_compat)sizeof(sa);
+	if (getsockname(udp, (struct sockaddr *)&sa, &salen) == 0)
+		port = ntohs(sa.sin_port);
+	check(port != 0, "and reports the port it got");
+
+#ifdef _WIN32
+	{
+		int ms = 500;
+		setsockopt(udp, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof(ms));
+	}
+#else
+	{
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 500000;
+		setsockopt(udp, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+	}
+#endif
+
+	be32_put(frame, 2);
+	be16_put(frame + 4, 2);
+	be16_put(frame + 6, OP_SUBSCRIBE);
+	be16_put(frame + QWARK_FRAME_HEADER, port);
+	check(send(client, (const char *)frame, sizeof(frame), 0) == (int)sizeof(frame),
+	      "SUBSCRIBE goes out");
+	check(recv(client, (char *)header, QWARK_FRAME_HEADER, 0) ==
+	      (int)QWARK_FRAME_HEADER, "and comes back");
+	check_eq_u64(be16_get(header + 6), ST_OK, "with OK");
+
+	/* RaC1 is INGAME: a gold-bolt counter change is one event. */
+	mark = autosplit_latest_seq();
+	poke32(A1_GB, 0x40);
+	pump(1);
+	check(autosplit_latest_seq() > mark, "the poke emitted an event");
+
+	/*
+	 * The event repeats for three ticks, and a telemetry packet may be queued in
+	 * front of it, so read past anything that is not the 'QE' magic.
+	 */
+	pump(3);
+	for (tries = 0; tries < 16 && !got; tries++) {
+		int n = (int)recv(udp, (char *)dgram, (int)sizeof(dgram), 0);
+
+		if (n <= 0) break;
+		if (n != AUTOSPLIT_DGRAM_SIZE) continue;
+		if (dgram[0] != 'Q' || dgram[1] != 'E') continue;
+		got = 1;
+	}
+
+	check(got, "a 20-byte QE datagram reached the subscriber");
+	if (got) {
+		check_eq_u64(dgram[2], AUTOSPLIT_DGRAM_VERSION, "its version byte is 1");
+		check_eq_u64(dgram[3], 0, "its reserved byte is 0");
+		check_eq_u64(be32_get(dgram + 4), autosplit_latest_seq(),
+		             "it carries the newest sequence number");
+		check_eq_u64(dgram[4 + 8], AUTOSPLIT_SPLIT, "the kind is SPLIT");
+		check_eq_u64(dgram[4 + 9], R1_AS_GOLD_BOLT, "with the gold-bolt code");
+		check_eq_u64(be32_get(dgram + 4 + 12), 0x40, "and the counter as its arg");
+	}
+
+	plat_socket_close(udp);
+	group("net_stop with a client connected");
 }
 
 /*
@@ -2086,6 +2714,15 @@ static void test_net_stop_with_client(void)
 		      (int)sizeof(hello), "HELLO goes out");
 		check(recv(client, (char *)header, QWARK_FRAME_HEADER, 0) ==
 		      (int)QWARK_FRAME_HEADER, "and the SessionInfo header comes back");
+
+		/* Drain the SessionInfo payload so the next reply lines up. */
+		{
+			u8 sink[SESSION_INFO_SIZE];
+			u32 n = be32_get(header);
+			if (n == SESSION_INFO_SIZE) recv(client, (char *)sink, (int)n, 0);
+		}
+
+		test_autosplit_udp(client);
 	}
 
 	net_stop();
@@ -2144,6 +2781,7 @@ int main(void)
 	test_rac3();
 	test_rac4();
 	test_trilogy();
+	test_autosplit();
 	test_config();
 	test_fingerprint();
 	test_submit_after_stop();

@@ -29,7 +29,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 3
+QWARK_BUILD = 4
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -63,6 +63,8 @@ OP_MOD_LIST = 0x0060
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
 OP_CONFIG_RELOAD = 0x0090
+OP_AUTOSPLIT_EVENTS = 0x00A0
+OP_AUTOSPLIT_DESCRIBE = 0x00A1
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
@@ -91,6 +93,15 @@ FEATURE_FLAG_SAVE_ASIDE = 0x04
 FEATURE_FLAG_LOAD_ASIDE = 0x08
 # Protocol 1.3: the toggle's state is read back out of game memory.
 FEATURE_FLAG_LIVE = 0x10
+
+# Protocol 1.4: the autosplit event stream.
+AUTOSPLIT_START, AUTOSPLIT_SPLIT = 1, 2
+AUTOSPLIT_RESET, AUTOSPLIT_PAUSE, AUTOSPLIT_RESUME = 3, 4, 5
+AUTOSPLIT_EVENT_SIZE = 16
+AUTOSPLIT_DESC_SIZE = 28
+AUTOSPLIT_DGRAM_SIZE = 20
+AUTOSPLIT_FLAG_DEFAULT = 0x01
+AUTOSPLIT_FLAG_ROUTE = 0x02
 
 COMBO_SAVE_POSITION = 0
 
@@ -320,6 +331,49 @@ def parse_unlocks(b):
     return cats, fields, rows, off
 
 
+def parse_autosplit_event(b):
+    """The 16-byte Event, the same bytes in the reply and in the datagram."""
+    seq, tick = struct.unpack(">II", b[0:8])
+    return {
+        "seq": seq,
+        "tick": tick,
+        "kind": b[8],
+        "code": b[9],
+        "reserved": struct.unpack(">H", b[10:12])[0],
+        "arg": struct.unpack(">I", b[12:16])[0],
+    }
+
+
+def parse_autosplit_events(b):
+    """AUTOSPLIT_EVENTS: u32 latest_seq, u8 n, Event[n]."""
+    latest = struct.unpack(">I", b[0:4])[0]
+    n = b[4]
+    off = 5
+    events = []
+    for _ in range(n):
+        events.append(parse_autosplit_event(b[off:off + AUTOSPLIT_EVENT_SIZE]))
+        off += AUTOSPLIT_EVENT_SIZE
+    return latest, events, off
+
+
+def parse_autosplit_describe(b):
+    """AUTOSPLIT_DESCRIBE: u8 n, EventDesc[n]."""
+    n = b[0]
+    off = 1
+    rows = []
+    for _ in range(n):
+        row = b[off:off + AUTOSPLIT_DESC_SIZE]
+        rows.append({
+            "code": row[0],
+            "kind": row[1],
+            "flags": row[2],
+            "reserved": row[3],
+            "label": row[4:28].split(b"\0")[0].decode("ascii", "replace"),
+        })
+        off += AUTOSPLIT_DESC_SIZE
+    return rows, off
+
+
 # --------------------------------------------------------------- helpers
 
 def fresh_state(client, settle=0.2):
@@ -374,6 +428,126 @@ def mem_read_u32(c, addr):
     return struct.unpack(">I", body)[0]
 
 
+# ------------------------------------------------------------- autosplitting
+
+def autosplit_events(c, since=0):
+    status, body = c.call(OP_AUTOSPLIT_EVENTS, struct.pack(">I", since))
+    if status != ST_OK:
+        return None, [], 0
+    latest, events, consumed = parse_autosplit_events(body)
+    return latest, events, consumed if consumed == len(body) else -1
+
+
+def drain_udp(udp):
+    """Throws away whatever telemetry has piled up, so a QE push stands alone."""
+    udp.setblocking(False)
+    try:
+        while True:
+            try:
+                udp.recvfrom(4096)
+            except (BlockingIOError, OSError):
+                break
+    finally:
+        udp.settimeout(2.0)
+
+
+def wait_qe(udp, seq, timeout=2.0):
+    """The 20-byte 'QE' datagram carrying this sequence number, or None."""
+    deadline = time.time() + timeout
+    udp.settimeout(0.25)
+    while time.time() < deadline:
+        try:
+            data, _addr = udp.recvfrom(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(data) != AUTOSPLIT_DGRAM_SIZE or data[:2] != b"QE":
+            continue
+        if data[2] != 1 or data[3] != 0:
+            continue
+        ev = parse_autosplit_event(data[4:])
+        if ev["seq"] == seq:
+            return ev
+    return None
+
+
+def exercise_autosplit(c, udp, name, spec):
+    """AUTOSPLIT_DESCRIBE, one real split, and the UDP push that carries it."""
+    status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
+    if check(status == ST_OK, "%s: AUTOSPLIT_DESCRIBE answers OK" % name, status):
+        rows, consumed = parse_autosplit_describe(body)
+        check(consumed == len(body), "%s: AUTOSPLIT_DESCRIBE parses exactly" % name,
+              (consumed, len(body)))
+        check(len(rows) == spec["rows"],
+              "%s: it lists %d split codes" % (name, spec["rows"]), len(rows))
+        if rows:
+            check(rows[0]["code"] == 1 and rows[0]["label"] == "Planet entered",
+                  "%s: code 1 is the planet split" % name, rows[0])
+            check(rows[0]["flags"] & AUTOSPLIT_FLAG_ROUTE,
+                  "%s: and carries the route flag" % name, rows[0]["flags"])
+            check(rows[0]["flags"] & AUTOSPLIT_FLAG_DEFAULT,
+                  "%s: and is enabled by default" % name, rows[0]["flags"])
+            check(all(r["kind"] == AUTOSPLIT_SPLIT and r["code"] != 0 for r in rows),
+                  "%s: every row is a SPLIT with a real code" % name)
+            check(all((r["flags"] & AUTOSPLIT_FLAG_ROUTE) == 0 for r in rows[1:]),
+                  "%s: and only code 1 claims a planet route" % name)
+
+    # Put the watcher's world where the split condition can be reached from.
+    for addr, value in spec["setup"]:
+        mem_write(c, addr, value)
+    time.sleep(0.1)
+
+    drain_udp(udp)
+    mark, _events, _n = autosplit_events(c, 0)
+    if mark is None:
+        check(False, "%s: AUTOSPLIT_EVENTS answers before the split" % name)
+        return
+
+    for addr, value in spec["trigger"]:
+        mem_write(c, addr, value)
+
+    got = None
+    check_parse = -1
+    deadline = time.time() + 3.0
+    while time.time() < deadline and got is None:
+        _latest, events, consumed = autosplit_events(c, mark)
+        check_parse = consumed
+        for e in events:
+            if e["kind"] == AUTOSPLIT_SPLIT and e["code"] == spec["code"]:
+                got = e
+                break
+        if got is None:
+            time.sleep(0.05)
+
+    if not check(got is not None, "%s: the split reaches AUTOSPLIT_EVENTS" % name):
+        return
+
+    check(check_parse >= 0, "%s: AUTOSPLIT_EVENTS parses exactly" % name)
+    check(got["arg"] == spec["arg"],
+          "%s: the split carries planet %d" % (name, spec["arg"]), got["arg"])
+    check(got["seq"] > mark, "%s: with a sequence number past the mark" % name,
+          (got["seq"], mark))
+    check(got["reserved"] == 0, "%s: and a zero reserved halfword" % name)
+
+    ev = wait_qe(udp, got["seq"])
+    if check(ev is not None, "%s: the QE datagram arrives over UDP" % name):
+        check(ev["kind"] == AUTOSPLIT_SPLIT and ev["code"] == spec["code"] and
+              ev["arg"] == spec["arg"] and ev["tick"] == got["tick"],
+              "%s: and carries the same event as the TCP read" % name, ev)
+
+    # since_seq filtering, both sides of the boundary.
+    latest, events, _n = autosplit_events(c, got["seq"])
+    check(latest == got["seq"] or latest > got["seq"],
+          "%s: latest_seq is at least the split" % name, latest)
+    check(all(e["seq"] > got["seq"] for e in events),
+          "%s: since_seq drops everything up to and including it" % name)
+
+    _latest, events, _n = autosplit_events(c, got["seq"] - 1)
+    check(any(e["seq"] == got["seq"] for e in events),
+          "%s: and one back still returns it" % name)
+
+
 # One row per game: what to boot, what DESCRIBE must say, and one of each kind of
 # request, so every game gets the same end-to-end pass the RaC1 steps give.
 OTHER_GAMES = [
@@ -406,6 +580,14 @@ OTHER_GAMES = [
         # The classic two-word request: 00000001 000000XX.
         "load_addr": 0x156B050,
         "load_expect": [(0x156B050, 1), (0x156B054, 5)],
+        # RaC2 splits on the planet it just arrived at, not on a destination.
+        "autosplit": {
+            "rows": 8,
+            "setup": [(0x1329A3C, struct.pack(">I", 0))],
+            "trigger": [(0x1329A3C, struct.pack(">I", 5))],
+            "code": 1,
+            "arg": 5,
+        },
     },
     {
         "title": "NPEA00387",
@@ -438,6 +620,15 @@ OTHER_GAMES = [
         "planet": 5,
         "load_addr": 0xEE9310,
         "load_expect": [(0xEE9310, 1), (0xEE9314, 5), (0x134EBD4, 3)],
+        # RaC3 splits when the destination planet changes to another real planet.
+        "autosplit": {
+            "rows": 5,
+            "setup": [(0x00C1E438, struct.pack(">I", 4)),
+                      (0x00EE9314, struct.pack(">I", 0))],
+            "trigger": [(0x00EE9314, struct.pack(">I", 7))],
+            "code": 1,
+            "arg": 7,
+        },
     },
     {
         "title": "NPEA00423",
@@ -468,11 +659,23 @@ OTHER_GAMES = [
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
+        # Deadlocked splits when a load starts for a real planet while in game.
+        "autosplit": {
+            "rows": 2,
+            "setup": [(0x00B36DCC, struct.pack(">I", 0)),
+                      (0x00B1F460, struct.pack(">I", 1)),
+                      (0x00B1F46C, struct.pack(">I", 1)),
+                      (0x009C3240, struct.pack(">I", 4)),
+                      (0x00B36DD0, struct.pack(">I", 6))],
+            "trigger": [(0x00B36DCC, struct.pack(">I", 1))],
+            "code": 1,
+            "arg": 6,
+        },
     },
 ]
 
 
-def exercise_game(c, sim, spec):
+def exercise_game(c, sim, spec, udp=None):
     name = spec["name"]
 
     sim.send("quit")
@@ -668,6 +871,10 @@ def exercise_game(c, sim, spec):
             check(mem_read_u32(c, addr) == want,
                   "%s: the load request word at 0x%X is %d" % (name, addr, want),
                   mem_read_u32(c, addr))
+
+    # ------------------------------------------------------ autosplitting
+    if udp is not None and spec.get("autosplit"):
+        exercise_autosplit(c, udp, name, spec["autosplit"])
 
 
 def main():
@@ -1174,9 +1381,37 @@ def main():
         check(body == struct.pack(">I", 0x60000000),
               "and the instruction is patched again in the new process", body)
 
+        # ------------------------------------------------- autosplitting
+        # RaC1 splits when the destination planet changes to another real one.
+        exercise_autosplit(c, udp, "RaC1", {
+            "rows": 7,
+            "setup": [(0x969C70, struct.pack(">I", 3)),
+                      (0xA10704, struct.pack(">I", 0))],
+            "trigger": [(0xA10704, struct.pack(">I", 5))],
+            "code": 1,
+            "arg": 5,
+        })
+
+        # And a collectable split, which is a different reason code entirely.
+        drain_udp(udp)
+        mark, _events, _n = autosplit_events(c, 0)
+        mem_write(c, 0xAFF000, struct.pack(">I", 0x21))
+        gold = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline and gold is None:
+            _latest, events, _n = autosplit_events(c, mark)
+            gold = next((e for e in events
+                         if e["kind"] == AUTOSPLIT_SPLIT and e["code"] == 4), None)
+            if gold is None:
+                time.sleep(0.05)
+        if check(gold is not None, "RaC1: a gold bolt splits with its own code"):
+            check(gold["arg"] == 0x21, "RaC1: and reports the counter", gold["arg"])
+            check(wait_qe(udp, gold["seq"]) is not None,
+                  "RaC1: its datagram arrives too")
+
         # -------------------------------------- RaC2, RaC3 and Deadlocked
         for spec in OTHER_GAMES:
-            exercise_game(c, sim, spec)
+            exercise_game(c, sim, spec, udp)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")
@@ -1216,6 +1451,24 @@ def main():
         status, body = c.call(OP_DESCRIBE)
         check(status == ST_UNSUPPORTED,
               "DESCRIBE is UNSUPPORTED with no game running", status)
+
+        status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
+        check(status == ST_UNSUPPORTED and len(body) == 0,
+              "AUTOSPLIT_DESCRIBE is UNSUPPORTED with no game running",
+              (status, len(body)))
+
+        # The ring outlives the game: a client reconnecting still gets the run.
+        latest, events, consumed = autosplit_events(c, 0)
+        check(latest is not None and latest > 0,
+              "AUTOSPLIT_EVENTS still answers with no game running", latest)
+        check(consumed >= 0, "and its reply parses exactly", consumed)
+        check(len(events) > 0 and events[-1]["seq"] == latest,
+              "with the ring's newest event last", len(events))
+        check(len(events) <= 64, "and at most 64 entries", len(events))
+
+        status, _ = c.call(OP_AUTOSPLIT_EVENTS, b"\x00\x00")
+        check(status == ST_BAD_ARG,
+              "a short AUTOSPLIT_EVENTS payload is BAD_ARG", status)
 
         sock.close()
 
