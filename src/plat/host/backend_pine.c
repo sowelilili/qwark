@@ -153,6 +153,65 @@ void pine_close(void)
 	pine_forget_cache();
 }
 
+#define PINE_CONNECT_MS 40
+
+/*
+ * connect() with a deadline: non-blocking connect, wait up to `ms` for it to
+ * complete, then put the socket back into blocking mode for the transactions.
+ * Returns 1 when connected.
+ */
+static int pine_connect_bounded(int s, const struct sockaddr *addr, int addrlen, int ms)
+{
+	fd_set wfds, efds;
+	struct timeval tv;
+	int rc;
+#ifdef _WIN32
+	u_long on = 1, off = 0;
+	int err = 0;
+	int errlen = (int)sizeof(err);
+
+	ioctlsocket(s, FIONBIO, &on);
+	rc = connect(s, addr, addrlen);
+	if (rc != 0 && WSAGetLastError() != WSAEWOULDBLOCK) {
+		ioctlsocket(s, FIONBIO, &off);
+		return 0;
+	}
+#else
+	int flags = fcntl(s, F_GETFL, 0);
+	int err = 0;
+	socklen_t errlen = sizeof(err);
+
+	fcntl(s, F_SETFL, flags | O_NONBLOCK);
+	rc = connect(s, addr, (socklen_t)addrlen);
+	if (rc != 0 && errno != EINPROGRESS) {
+		fcntl(s, F_SETFL, flags);
+		return 0;
+	}
+#endif
+
+	if (rc != 0) {
+		FD_ZERO(&wfds);
+		FD_ZERO(&efds);
+		FD_SET(s, &wfds);
+		FD_SET(s, &efds);
+		tv.tv_sec = ms / 1000;
+		tv.tv_usec = (ms % 1000) * 1000;
+		rc = select(s + 1, NULL, &wfds, &efds, &tv);
+		if (rc <= 0 || FD_ISSET(s, &efds)) rc = -1;
+		else {
+			getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen);
+			rc = err == 0 ? 0 : -1;
+		}
+	}
+
+#ifdef _WIN32
+	ioctlsocket(s, FIONBIO, &off);
+#else
+	fcntl(s, F_SETFL, flags);
+#endif
+	return rc == 0;
+}
+
 /*
  * The one place that knows what kind of socket PINE is. Windows: TCP to
  * 127.0.0.1:<port>. Linux and macOS: an AF_UNIX stream socket at the path in
@@ -172,7 +231,14 @@ static int pine_open_socket(void)
 	addr.sin_port = htons((unsigned short)g_port);
 	addr.sin_addr.s_addr = htonl(0x7F000001u);   /* 127.0.0.1 */
 
-	if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+	/*
+	 * The tick thread is the caller, once a second while RPCS3 is not up. A
+	 * blocking connect() to a closed local port takes Windows a second or two
+	 * of SYN retries, which starved the tick loop down to a few ticks a second
+	 * and made the client fall back to TCP polling. So: non-blocking connect
+	 * with a short cap. A live RPCS3 on loopback accepts within a millisecond.
+	 */
+	if (!pine_connect_bounded(s, (struct sockaddr *)&addr, sizeof(addr), PINE_CONNECT_MS)) {
 		plat_socket_close(s);
 		return -1;
 	}
