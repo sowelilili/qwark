@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 sys.path.insert(0, HERE)
-from fake_pine import FakePine  # noqa: E402  the fake RPCS3 IPC server
+from fake_pine import FakePine, STATUS_PAUSED, STATUS_RUNNING  # noqa: E402  the fake RPCS3 IPC server
 
 PORT = 9673
 HOST = "127.0.0.1"
@@ -209,8 +209,9 @@ class Sim:
             text=True,
             bufsize=1,
         )
+        # Both streams, in one list: the log lines ("pine: ...") are stderr.
         self.lines = []
-        self._drain(self.proc.stderr)
+        self._drain(self.proc.stderr, self.lines)
         self._drain(self.proc.stdout, self.lines)
 
     def _drain(self, stream, sink=None):
@@ -1145,6 +1146,15 @@ def smoke_rpcs3(exe):
               "rpcs3: the RaC1 fingerprint reads back as 30 64 9c e0",
               body.hex() if body else None)
 
+        # ---------------------------------------------------------- paused
+        # Pausing the emulator leaves the game, its memory and its title id
+        # exactly where they were, so the session must not end.
+        pine.status = STATUS_PAUSED
+        info = fresh_state(c, settle=0.6)
+        check(info is not None and info["state"] == SESSION_INGAME,
+              "rpcs3: pausing the emulator does not end the session", info)
+        pine.status = STATUS_RUNNING
+
         # ------------------------------------------------------ the game goes
         pine.shutdown_game()
         ok, info = wait_state(c, SESSION_XMB)
@@ -1160,6 +1170,86 @@ def smoke_rpcs3(exe):
     finally:
         if sock is not None:
             sock.close()
+        sim.stop()
+        pine.stop()
+
+
+def smoke_rpcs3_held(exe):
+    """Another program already in RPCS3's one IPC seat (pine_server.h serves
+    one client at a time): the helper must stay responsive to the PC client,
+    say what is wrong, and recover on its own once the seat is free."""
+    if not os.path.exists(exe):
+        return
+
+    root = os.path.join(HERE, "qwark-rpcs3-root")
+    shutil.rmtree(root, ignore_errors=True)
+
+    pine = FakePine()
+    pine.poke(RAC1_FP_ADDR, RAC1_FP)
+    pine.boot("NPEA00385", "Ratchet & Clank")
+
+    # The other client: connected, served, silent.
+    holder = socket.create_connection(("127.0.0.1", pine.port), timeout=5)
+    time.sleep(0.1)
+
+    # The test's clocks: callers wait 50 ms, a silent link dies after 500 ms,
+    # a silent RPCS3 is left alone for 600 ms.
+    sim = Sim(exe, ["--pine-port", str(pine.port),
+                    "--port", str(RPCS3_PORT),
+                    "--root", root,
+                    "--pine-timeouts", "50,500,600"])
+    sock = None
+
+    try:
+        sock = connect(port=RPCS3_PORT)
+        c = Client(sock)
+
+        t0 = time.time()
+        status, body = c.call(OP_HELLO, bytes([1]))
+        took = time.time() - t0
+        check(status == ST_OK and took < 1.0,
+              "rpcs3 held: HELLO is answered at once while PINE is silent",
+              (status, round(took, 3)))
+        info = parse_session_info(body) if status == ST_OK else None
+        check(info is not None and info["state"] == SESSION_XMB,
+              "rpcs3 held: and no game is claimed", info)
+
+        # The tick thread is the one that talks to PINE; if it were parked in
+        # a blocking recv these would take seconds each.
+        t0 = time.time()
+        for _ in range(20):
+            c.call(OP_GET_STATE)
+        took = time.time() - t0
+        check(took < 1.0, "rpcs3 held: twenty requests in under a second",
+              round(took, 3))
+
+        time.sleep(1.0)              # past the 500 ms link timeout
+        said = [l for l in sim.lines if "has not answered" in l]
+        check(len(said) > 0,
+              "rpcs3 held: the helper says another program holds the IPC server",
+              sim.lines[-3:])
+        check(not any("pine: connected" in l for l in sim.lines),
+              "rpcs3 held: and never claimed to be connected on the strength of a handshake")
+
+        holder.close()
+        ok, info = wait_state(c, SESSION_INGAME, timeout=8.0)
+        check(ok, "rpcs3 held: once the other client leaves, the session comes up", info)
+        check(any("pine: connected" in l for l in sim.lines),
+              "rpcs3 held: and the helper reports the connection then")
+
+        sock.close()
+        sock = None
+
+    except Exception as exc:  # noqa: BLE001
+        check(False, "rpcs3 held: the smoke run completed without an exception",
+              repr(exc))
+    finally:
+        if sock is not None:
+            sock.close()
+        try:
+            holder.close()
+        except OSError:
+            pass
         sim.stop()
         pine.stop()
 
@@ -1835,6 +1925,7 @@ def main():
     # The RPCS3 half: the same core over PINE, against a fake RPCS3.
     print()
     smoke_rpcs3(os.path.join(os.path.dirname(exe) or ROOT, "qwark-rpcs3.exe"))
+    smoke_rpcs3_held(os.path.join(os.path.dirname(exe) or ROOT, "qwark-rpcs3.exe"))
 
     print()
     print("%d passed, %d failed" % (passed, failed))

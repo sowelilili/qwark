@@ -10,6 +10,7 @@
  *   exit     shut down
  *
  * Usage: qwark-rpcs3.exe [--pine-port N] [--port 9673] [--root DIR]
+ *                        [--pine-timeouts WAIT,LINK,RETRY]
  *
  *   --pine-port  RPCS3's IPC port, 28012 unless it was changed in
  *                Settings -> I/O -> IPC
@@ -17,6 +18,10 @@
  *   --root       where /dev_hdd0 is mapped; by default a qwark-rpcs3-root
  *                folder beside the executable, with the same layout the
  *                console uses (dev_hdd0/qwark/config.txt, positions, mods)
+ *   --pine-timeouts  the PINE clocks in milliseconds, for the tests: how
+ *                long a caller waits for a reply, how long a silent link
+ *                lives, how long a silent RPCS3 is left alone (see
+ *                backend_pine.c). Never needed by hand.
  *
  * Code patches do not work under RPCS3 - the PPU code is recompiled, so writing
  * an instruction word changes memory and nothing else - so everything that
@@ -158,7 +163,8 @@ static int parse_int(const char *s, int *out)
 
 static void usage(void)
 {
-	printf("usage: qwark-rpcs3 [--pine-port N] [--port N] [--root DIR]\n");
+	printf("usage: qwark-rpcs3 [--pine-port N] [--port N] [--root DIR] "
+	       "[--pine-timeouts WAIT,LINK,RETRY]\n");
 	fflush(stdout);
 }
 
@@ -179,6 +185,13 @@ int main(int argc, char **argv)
 			if (!parse_int(argv[++i], &qwark_port)) { usage(); return 2; }
 		} else if (qstreq(argv[i], "--root") && i + 1 < argc) {
 			root = argv[++i];
+		} else if (qstreq(argv[i], "--pine-timeouts") && i + 1 < argc) {
+			int wait_ms = 0, link_ms = 0, retry_ms = 0;
+			if (sscanf(argv[++i], "%d,%d,%d", &wait_ms, &link_ms, &retry_ms) != 3) {
+				usage();
+				return 2;
+			}
+			pine_set_timeouts(wait_ms, link_ms, retry_ms);
 		} else {
 			usage();
 			return 2;

@@ -38,6 +38,7 @@ static plat_thread_t g_thread;
 static volatile int g_srv_running;
 static volatile int g_srv_stop;
 static volatile int g_srv_drop;      /* drop the live connection at the next poll */
+static volatile int g_srv_delay_ms;  /* sit on every reply this long first */
 static volatile int g_conns;         /* connections accepted so far */
 static volatile int g_packets;       /* request packets answered so far */
 
@@ -249,6 +250,9 @@ static void fake_serve(int fd)
 		replylen = fake_parse(g_req, size);
 		g_packets++;
 
+		/* A stalled emulator: the answer is right, it is just late. */
+		if (g_srv_delay_ms > 0) plat_sleep_us((u32)g_srv_delay_ms * 1000u);
+
 		if (send(fd, (const char *)g_rep, (int)replylen, 0) != (int)replylen) return;
 	}
 }
@@ -311,6 +315,27 @@ static void fake_stop(void)
 	if (g_listen >= 0) { plat_socket_close(g_listen); g_listen = -1; }
 }
 
+/*
+ * Another PINE client: a plain socket that connects and then says nothing,
+ * which is exactly what RPCS3 sees from a second program on its IPC port.
+ */
+static int holder_connect(void)
+{
+	struct sockaddr_in sa;
+	int s = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+	if (s < 0) return -1;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons((unsigned short)g_port);
+	sa.sin_addr.s_addr = htonl(0x7F000001u);
+	if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+		plat_socket_close(s);
+		return -1;
+	}
+	return s;
+}
+
 /* ------------------------------------------------------------------ tests */
 
 /*
@@ -338,6 +363,8 @@ void test_pine(void)
 	char version[64];
 	int before;
 	u32 i;
+	u64 t0;
+	int holder;
 
 	group("PINE backend");
 
@@ -453,8 +480,9 @@ void test_pine(void)
 
 	g_status = PINE_STATUS_PAUSED;
 	pine_forget_cache();
-	check(pine_game_running() == 0, "Paused is not running");
-	check(pine_game_pid() == 0, "and the pid goes to 0");
+	check(pine_game_running() == 1, "Paused still counts as a game being up");
+	check(pine_game_pid() == 1,
+	      "with the same pid, so pausing the emulator is not a quit");
 
 	g_status = PINE_STATUS_RUNNING;
 	g_id[0] = 0;
@@ -500,6 +528,72 @@ void test_pine(void)
 
 	pine_forget_cache();
 	check(pine_game_running() == 1, "the game is reported running again");
+
+	/* ------------------------------------------------- a stalled RPCS3 */
+
+	/* The test's clocks: callers wait 50 ms, the link is dead after 400 ms of
+	 * silence, a silent server is left alone for 600 ms. */
+	pine_set_timeouts(50, 400, 600);
+
+	pine_forget_cache();
+	check(pine_game_running() == 1, "with a prompt server the game is up");
+
+	g_srv_delay_ms = 150;                  /* every reply now takes 150 ms */
+	plat_sleep_us(60000);                  /* past the 50 ms poll window */
+	t0 = plat_time_us();
+	check(pine_read(FAKE_BASE + 0x200, out, 8) < 0,
+	      "a read the server sits on is reported failed");
+	check(plat_time_us() - t0 < 120000u,
+	      "after the caller's wait, not after the server's delay");
+	check(pine_connected() == 1, "and the link is kept while the worker waits on");
+	check(pine_game_running() == 1,
+	      "a stall keeps the last answer: the game is still up");
+
+	plat_sleep_us(250000);                 /* the late reply has come and gone */
+	g_srv_delay_ms = 0;
+	memset(out, 0, sizeof(out));
+	check(pine_read(FAKE_BASE + 0x100, out, 4) == 0 && memcmp(out, WORD_BE, 4) == 0,
+	      "the next read gets its own reply, not the stale one");
+
+	/* ------------------------------------------- one client at a time */
+
+	pine_close();
+	pine_set_timeouts(50, 400, 600);
+
+	holder = holder_connect();
+	check(holder >= 0, "another client takes the server's one seat");
+	plat_sleep_us(50000);                  /* it is being served, and says nothing */
+
+	before = g_conns;
+	check(pine_ensure() == 1, "behind it the backend's connect still completes");
+	t0 = plat_time_us();
+	check(pine_read(FAKE_BASE + 0x100, out, 4) < 0, "but a read is never answered");
+	check(plat_time_us() - t0 < 200000u, "and fails within the caller's wait");
+	t0 = plat_time_us();
+	for (i = 0; i < 20; i++) (void)pine_read(FAKE_BASE + 0x100, out, 4);
+	check(plat_time_us() - t0 < 100000u,
+	      "twenty more calls return at once: nothing waits twice");
+	check(pine_connected() == 1,
+	      "the link is held open while the worker waits for the answer");
+	check(pine_game_running() == 0, "and no game is reported");
+	check(g_conns - before == 0, "the server has not even accepted it");
+
+	plat_sleep_us(500000);                 /* past the 400 ms link timeout */
+	check(pine_connected() == 0,
+	      "when the link timeout passes the connection is given up");
+	check(pine_ensure() == 0,
+	      "and not queued up behind the other client again at once");
+
+	plat_socket_close(holder);             /* the other client leaves */
+	plat_sleep_us(700000);                 /* past the 600 ms silent retry */
+	check(pine_ensure() == 1, "once it has gone, the backend reconnects");
+	memset(out, 0, sizeof(out));
+	check(pine_read(FAKE_BASE + 0x100, out, 4) == 0 && memcmp(out, WORD_BE, 4) == 0,
+	      "and is answered again");
+	pine_forget_cache();
+	check(pine_game_running() == 1, "with the game reported up");
+
+	pine_set_timeouts(0, 0, 0);
 
 	pine_close();
 	fake_stop();

@@ -41,14 +41,34 @@ void pine_set_port(int port);
 int  pine_port(void);
 
 /*
- * Opens the socket if it is not already open, at most once a second. Returns 1
- * when there is a live connection. Everything below calls it first, so nothing
- * outside this file has to.
+ * The clocks, in milliseconds; 0 keeps a default. wait_ms is how long a caller
+ * waits for its reply before it gets PINE_BUSY, link_ms how long the worker
+ * waits before a silent link is a dead one, silent_retry_ms how long RPCS3 is
+ * left alone after it accepted a connection and never answered on it. For
+ * the tests and the helper's --pine-timeouts; the defaults are the product.
+ */
+void pine_set_timeouts(int wait_ms, int link_ms, int silent_retry_ms);
+
+/*
+ * What a transaction returns when RPCS3 has not answered yet: the caller got
+ * tired of waiting, the worker has not. Callers treat it as a failed call;
+ * the cached console state treats it as "no news".
+ */
+#define PINE_BUSY (-2)
+
+/*
+ * Asks the worker to open the socket if it is not already open (at most once
+ * a second, or once per silent_retry_ms after a silent one) and returns 1
+ * when there is a live connection. Everything below connects on its own, so
+ * nothing outside this file has to call it.
  */
 int  pine_ensure(void);
 
-/* Drops the connection; the next pine_ensure() opens a new one. */
+/* Drops the connection and stops the worker; the next call starts both again. */
 void pine_close(void);
+
+/* A socket is open. That is not the same as RPCS3 answering on it: see the
+ * one-client-at-a-time note at the top of backend_pine.c. */
 int  pine_connected(void);
 
 /* First connect attempt plus the log line. Safe to call more than once. */
@@ -65,7 +85,8 @@ void pine_startup(void);
 int  pine_read(u32 addr, void *buf, u32 len);
 int  pine_write(u32 addr, const void *buf, u32 len);
 
-/* MsgStatus and MsgID in one packet. Either pointer may be NULL. */
+/* MsgStatus and MsgID in one packet. Either pointer may be NULL. The one
+ * call that also reports PINE_BUSY, for the poll. */
 int  pine_status_and_id(u32 *status, char id[16]);
 
 int  pine_status(u32 *status);

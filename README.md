@@ -49,10 +49,13 @@ qwark-rpcs3.exe [--pine-port 28012] [--port 9673] [--root DIR]
 | `--pine-port N` | RPCS3's IPC port, if it is not 28012 |
 | `--port N` | the port qwark listens on for the client, 9673 by default |
 | `--root DIR` | where `/dev_hdd0` is mapped. By default a `qwark-rpcs3-root` folder beside the executable, holding the same `dev_hdd0/qwark/` layout the console uses: `config.txt`, `positions/`, `mods/` |
+| `--pine-timeouts W,L,R` | the PINE clocks in milliseconds, for the tests only: how long a caller waits for a reply (100), how long a silent link lives (5000), how long a silent RPCS3 is left alone (5000) |
 
 It prints one banner line with the versions and both ports, then waits. `status` and `version` on standard input print a line each; `exit` or Ctrl-C shuts it down. If RPCS3 is not running, or has no game booted, qwark reports XMB and retries the socket once a second, so the two can be started in either order.
 
-qwark follows RPCS3's own status: a game counts as running only while the emulator reports **Running** and a title id. Pausing the emulator therefore looks like the game quitting and un-pausing like it booting again — the session bumps its generation and offers the previous-session record back, exactly as a real reboot would.
+qwark follows RPCS3's own status: a game counts as up while the emulator reports **Running** or **Paused** and a title id. Pausing the emulator changes nothing (the game, its memory and its title id are all still there); stopping the game, or closing RPCS3, ends the session, and booting again starts a new one that offers the previous-session record back, exactly as a real reboot would.
+
+**One client at a time.** RPCS3's IPC server accepts a connection and serves it until it goes away; anyone else who connects meanwhile completes the TCP handshake and then hears nothing until the first client leaves. So if another program is on the port (a second copy of `qwark-rpcs3.exe`, say, or any other PINE tool), qwark connects, gets no answer, and after five seconds says so: `pine: RPCS3 accepted the connection but has not answered in 5 s; another program is probably connected to its IPC server`. It then stays out of the queue for five seconds at a time and picks the game up on its own once the port is free. The PC client stays fully served meanwhile: PINE traffic lives on a worker thread, and the tick thread never waits more than a tenth of a second for it. The same holds for an emulator that stalls: the last known state stands until a reply comes or the link has been silent for five seconds.
 
 **What does not work.** RPCS3 recompiles PPU code ahead of executing it, so writing an instruction word into memory changes the word and nothing else: the game carries on running the translated block. qwark refuses everything that depends on a code patch rather than pretending it worked, and tells the client so in the session flags, which greys those rows:
 
