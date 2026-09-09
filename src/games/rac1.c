@@ -25,7 +25,7 @@ const u8 rac1_fp_patched[4] = { 0x30, 0x64, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Six reads every tick and five staggered slow ones:
+ * Seven reads every tick and five staggered slow ones:
  *
  *   0  inputs   analogs at +0x00, pad mask at +0xB0                every tick
  *   1  player   planet +0x00, bolts +0x30, NG+ goodies +0x60,      every tick
@@ -36,15 +36,17 @@ const u8 rac1_fp_patched[4] = { 0x30, 0x64, 0x00, 0x00 };
  *               game state +0x08, planet frame count +0x10
  *   4  helper   the four autosplit counters, low byte of each      every tick
  *   5  kalebo   the Kalebo3 gold bolt byte                         every tick
- *   6  debug    update options +0x00, mode control +0x0C           every 8th
- *   7  ngplus   challenge mode                                     every 8th
- *   8  jankpot  timer +0x00, bolts +0x04                           every 8th
- *   9  jankpot  state                                              every 8th
- *  10  savefile helper byte, then its three request bytes          every 8th
+ *   6  loadscr  the loading-screen id, low byte                    every tick
+ *   7  debug    update options +0x00, mode control +0x0C           every 8th
+ *   8  ngplus   challenge mode                                     every 8th
+ *   9  jankpot  timer +0x00, bolts +0x04                           every 8th
+ *  10  jankpot  state                                              every 8th
+ *  11  savefile helper byte, then its three request bytes          every 8th
  *
- * Blocks 2 to 5 are the autosplit watcher's, and are per-tick because a split
- * has to reach the PC in milliseconds. The phases are 0..4, so a tick costs six
- * reads plus at most one: 6.625 reads per tick on average, seven at worst.
+ * Blocks 2 to 6 are the autosplit watcher's, and are per-tick because a split
+ * has to reach the PC in milliseconds and the loading screen bounds the time
+ * the client subtracts. The phases are 0..4, so a tick costs seven reads plus at
+ * most one: 7.625 reads per tick on average, eight at worst.
  */
 static const struct game_hot_block rac1_hot[] = {
 	{ RAC1_HOT_INPUTS_ADDR,   RAC1_HOT_INPUTS_LEN,   1, 0 },
@@ -53,6 +55,7 @@ static const struct game_hot_block rac1_hot[] = {
 	{ RAC1_HOT_LOAD_ADDR,     RAC1_HOT_LOAD_LEN,     1, 0 },
 	{ RAC1_AS_COUNTERS,       RAC1_HOT_AS_LEN,       1, 0 },
 	{ RAC1_KALEBO_BOLT,       1,                     1, 0 },
+	{ RAC1_LOADING_SCREEN,    1,                     1, 0 },
 	{ RAC1_DEBUG_UPDATE,      0x10,                  8, 0 },
 	{ RAC1_NGPLUS_STATE,      4,                     8, 1 },
 	{ RAC1_JANKPOT_TIMER,     8,                     8, 2 },
@@ -66,11 +69,12 @@ static const struct game_hot_block rac1_hot[] = {
 #define HOT_LOAD     3
 #define HOT_ASCOUNT  4
 #define HOT_KALEBO   5
-#define HOT_DEBUG    6
-#define HOT_NGPLUS   7
-#define HOT_JANKPOT  8
-#define HOT_JKSTATE  9
-#define HOT_SAVEFILE 10
+#define HOT_LOADSCR  6
+#define HOT_DEBUG    7
+#define HOT_NGPLUS   8
+#define HOT_JANKPOT  9
+#define HOT_JKSTATE  10
+#define HOT_SAVEFILE 11
 
 #define OFF_INPUTS      (RAC1_INPUTS - RAC1_ANALOGS)                  /* 0xB0 */
 #define OFF_BOLTS       (RAC1_BOLTS - RAC1_CURRENT_PLANET)            /* 0x30 */
@@ -106,6 +110,7 @@ struct rac1_as_state {
 	u8  infobots;
 	u8  codebot;
 	u8  rari;
+	u8  loading_screen;
 };
 
 static struct rac1_as_state g_as;
@@ -191,6 +196,9 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_KALEBO] != NULL)
 		g_as.kalebo_bolt = blocks[HOT_KALEBO][0];
+
+	if (blocks[HOT_LOADSCR] != NULL)
+		g_as.loading_screen = blocks[HOT_LOADSCR][0];
 }
 
 /* ------------------------------------------------- the autosplit watcher */
@@ -198,8 +206,13 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 /*
  * rac1-autosplitter.asl, condition for condition. Everything the script gates on
  * a *setting* is emitted anyway with its own reason code, because the client owns
- * the settings; everything it gates on game state is a condition below. The
- * script's isLoading block is not ported: qwark keeps no timer.
+ * the settings; everything it gates on game state is a condition below.
+ *
+ * The script's isLoading block is ported as a LOAD_START / LOAD_END pair with
+ * NORMALISE: it started a 7.56 s WinForms timer when the loading-screen id left
+ * 4 and only reported "loading" once that timer had run out, so the first 7.56 s
+ * of every load counted towards game time and the rest did not. The client sees
+ * the pair, subtracts max(0, duration - 7.56 s), and lands on the same total.
  */
 static struct rac1_as_state g_as_prev;
 static int g_as_primed;
@@ -300,7 +313,124 @@ static void rac1_on_tick(const struct game_hot *hot)
 	if (g_as.infobots != p->infobots)
 		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_INFOBOT, g_as.infobots);
 
+	/*
+	 * The loading screen, as an interval rather than a split. `arg` carries the
+	 * screen id the game moved to, which is 4 on the LOAD_END by definition.
+	 */
+	if (p->loading_screen == RAC1_LOADING_IDLE &&
+	    g_as.loading_screen != RAC1_LOADING_IDLE) {
+		autosplit_emit(AUTOSPLIT_LOAD_START, R1_AS_LOADING, g_as.loading_screen);
+	} else if (p->loading_screen != RAC1_LOADING_IDLE &&
+	           g_as.loading_screen == RAC1_LOADING_IDLE) {
+		autosplit_emit(AUTOSPLIT_LOAD_END, R1_AS_LOADING, g_as.loading_screen);
+	}
+
 	g_as_prev = g_as;
+}
+
+/* ------------------------------------------------ the embedded helper mod */
+
+/*
+ * racman's mods/NPEA00385/gb_sp_as_helper, byte for byte: four code caves and
+ * the four words that branch into them. It is what keeps the counters at
+ * 0xAFF000 / 10 / 20 / 30 that codes 4 to 7 read, and the old autosplitter was
+ * useless for collectables unless the runner remembered to load it.
+ *
+ * qwark writes it on every entry instead. Nothing reverts it: without a run in
+ * progress it is four counters nobody reads, and taking a branch back out from
+ * under code that may be executing in the cave is the crash mods.c documents.
+ */
+
+/* gold_bolt.bin, 156 bytes */
+static const u8 rac1_helper_gold_bolt[] = {
+	0x89, 0x23, 0x00, 0x20, 0x81, 0x43, 0x00, 0x78, 0x2C, 0x09, 0x00, 0x00,
+	0x40, 0x82, 0x00, 0x24, 0x81, 0x4A, 0x00, 0x00, 0x3D, 0x4A, 0x00, 0xB0,
+	0x99, 0x2A, 0xF0, 0x04, 0x3D, 0x20, 0x00, 0x1D, 0x61, 0x29, 0x9D, 0x48,
+	0x7D, 0x29, 0x03, 0xA6, 0x4E, 0x80, 0x04, 0x20, 0x60, 0x00, 0x00, 0x00,
+	0x28, 0x09, 0x00, 0x02, 0x40, 0x82, 0xFF, 0xE8, 0x81, 0x2A, 0x00, 0x00,
+	0x3D, 0x29, 0x00, 0xB0, 0x89, 0x29, 0xF0, 0x04, 0x2C, 0x09, 0x00, 0x00,
+	0x40, 0x82, 0xFF, 0xD4, 0x3D, 0x20, 0x00, 0xAF, 0x38, 0xE0, 0x00, 0x01,
+	0x61, 0x29, 0xF0, 0x00, 0x81, 0x09, 0x00, 0x00, 0x39, 0x08, 0x00, 0x01,
+	0x91, 0x09, 0x00, 0x00, 0x81, 0x2A, 0x00, 0x00, 0x3D, 0x29, 0x00, 0xB0,
+	0x98, 0xE9, 0xF0, 0x04, 0x4B, 0xFF, 0xFF, 0xAC, 0x00, 0x00, 0x00, 0x10,
+	0x00, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01,
+	0x1B, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18,
+	0xFF, 0xFF, 0xFF, 0x70, 0x00, 0x00, 0x00, 0x74, 0x00, 0x00, 0x00, 0x00
+};
+
+/* skillpoint.bin, 68 bytes */
+static const u8 rac1_helper_skillpoint[] = {
+	0x60, 0x00, 0x00, 0x00, 0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x10,
+	0x81, 0x49, 0x00, 0x00, 0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00,
+	0x4E, 0x80, 0x00, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
+	0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00,
+	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC,
+	0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00
+};
+
+/* item.bin, 64 bytes */
+static const u8 rac1_helper_item[] = {
+	0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x20, 0x81, 0x49, 0x00, 0x00,
+	0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00, 0x4E, 0x80, 0x00, 0x20,
+	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x52, 0x00,
+	0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x10,
+	0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC, 0x00, 0x00, 0x00, 0x18,
+	0x00, 0x00, 0x00, 0x00
+};
+
+/* infobots.bin, 68 bytes */
+static const u8 rac1_helper_infobots[] = {
+	0x60, 0x00, 0x00, 0x00, 0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x30,
+	0x81, 0x49, 0x00, 0x00, 0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00,
+	0x4E, 0x80, 0x00, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
+	0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00,
+	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC,
+	0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00
+};
+
+struct rac1_helper_cave {
+	u32 addr;
+	const u8 *bytes;
+	u32 len;
+};
+
+static const struct rac1_helper_cave rac1_helper_caves[] = {
+	{ RAC1_HELPER_CAVE_GB,   rac1_helper_gold_bolt,  (u32)sizeof(rac1_helper_gold_bolt) },
+	{ RAC1_HELPER_CAVE_SP,   rac1_helper_skillpoint, (u32)sizeof(rac1_helper_skillpoint) },
+	{ RAC1_HELPER_CAVE_ITEM, rac1_helper_item,       (u32)sizeof(rac1_helper_item) },
+	{ RAC1_HELPER_CAVE_IB,   rac1_helper_infobots,   (u32)sizeof(rac1_helper_infobots) }
+};
+
+/* patch.txt's four hook words, in its order. */
+static const struct patch_word rac1_helper_hooks[] = {
+	{ RAC1_HELPER_HOOK_GB,   0x004F5BE4u },
+	{ RAC1_HELPER_HOOK_SP,   0x483DA4EDu },
+	{ RAC1_HELPER_HOOK_ITEM, 0x483E2E09u },
+	{ RAC1_HELPER_HOOK_IB,   0x484F5D77u }
+};
+
+static void rac1_install_helper(void)
+{
+	unsigned i;
+
+	/*
+	 * Caves first, then the words, the way mods.c orders them: the words branch
+	 * into the caves, so the target exists before anything can jump to it.
+	 */
+	plat_rsx_pause(1);
+	for (i = 0; i < sizeof(rac1_helper_caves) / sizeof(rac1_helper_caves[0]); i++) {
+		mem_write(rac1_helper_caves[i].addr, rac1_helper_caves[i].bytes,
+		          rac1_helper_caves[i].len);
+	}
+	plat_rsx_pause(0);
+
+	for (i = 0; i < sizeof(rac1_helper_hooks) / sizeof(rac1_helper_hooks[0]); i++)
+		mem_write_u32(rac1_helper_hooks[i].addr, rac1_helper_hooks[i].value);
+
+	/* The three counter words patch.txt zeroes, in its order. */
+	mem_write_u32(RAC1_HELPER_ZERO_1, 0);
+	mem_write_u32(RAC1_HELPER_ZERO_2, 0);
+	mem_write_u32(RAC1_HELPER_ZERO_3, 0);
 }
 
 static void rac1_on_enter(void)
@@ -310,28 +440,38 @@ static void rac1_on_enter(void)
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
 	g_as_primed = 0;
 	g_veldin_fix = 0;
+
+	/* Codes 4 to 7 read counters only this mod maintains, so it goes in first. */
+	rac1_install_helper();
 }
 
 #define DF AUTOSPLIT_FLAG_DEFAULT
 #define RT AUTOSPLIT_FLAG_ROUTE
+#define NM AUTOSPLIT_FLAG_NORMALISE
 
 /*
  * The script's settings.Add list, in its order, with the three unconditional
  * splits in front. A setting that defaults to true is DF here; the four
  * collectable splits default to false and a client leaves them unticked.
+ *
+ * The loading row is last and is not a split: DF because the time adjustment is
+ * not a user option, and NORMALISE with the 7.56 s the script's WinForms timer
+ * let through before it started calling the game paused.
  */
 static const struct autosplit_desc rac1_autosplits[] = {
-	{ R1_AS_PLANET,      AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
-	{ R1_AS_VELDIN,      AUTOSPLIT_SPLIT, DF,      "Veldin" },
-	{ R1_AS_DREK_BUTTON, AUTOSPLIT_SPLIT, DF,      "Drek button" },
-	{ R1_AS_GOLD_BOLT,   AUTOSPLIT_SPLIT, 0,       "Gold bolt collected" },
-	{ R1_AS_SKILL_POINT, AUTOSPLIT_SPLIT, 0,       "Skill point" },
-	{ R1_AS_ITEM,        AUTOSPLIT_SPLIT, 0,       "Item collected" },
-	{ R1_AS_INFOBOT,     AUTOSPLIT_SPLIT, 0,       "Infobot" }
+	{ R1_AS_PLANET,      AUTOSPLIT_SPLIT,      DF | RT, 0,       "Planet entered" },
+	{ R1_AS_VELDIN,      AUTOSPLIT_SPLIT,      DF,      0,       "Veldin" },
+	{ R1_AS_DREK_BUTTON, AUTOSPLIT_SPLIT,      DF,      0,       "Drek button" },
+	{ R1_AS_GOLD_BOLT,   AUTOSPLIT_SPLIT,      0,       0,       "Gold bolt collected" },
+	{ R1_AS_SKILL_POINT, AUTOSPLIT_SPLIT,      0,       0,       "Skill point" },
+	{ R1_AS_ITEM,        AUTOSPLIT_SPLIT,      0,       0,       "Item collected" },
+	{ R1_AS_INFOBOT,     AUTOSPLIT_SPLIT,      0,       0,       "Infobot" },
+	{ R1_AS_LOADING,     AUTOSPLIT_LOAD_START, DF | NM, 7560000, "Loading screen" }
 };
 
 #undef DF
 #undef RT
+#undef NM
 
 static const struct autosplit_desc *rac1_autosplit_describe(u8 *count)
 {

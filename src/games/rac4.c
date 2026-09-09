@@ -6,7 +6,8 @@
  *
  * Deadlocked is the only one of the four with a quit hook, because the
  * Deadlocked autosplitter SPRX already patches one in: three words that make the
- * game store 0xFF where qwark can see it the moment the player asks to quit.
+ * game store 0xFF where qwark can see it the moment the player asks to quit. Its
+ * loading hook comes across too, and marks the other end of the same interval.
  */
 #include "rac4.h"
 #include "classic.h"
@@ -177,6 +178,31 @@ static const struct patch_word rac4_quit_hook_words[] = {
 };
 
 /*
+ * The autosplitter's loading hook, verbatim: ten words of trampoline that save
+ * r3 and r4, store 0xFF at RAC4_LOADING_VAL, put them back and branch home,
+ *
+ *   stwu r1, -16(r1) / stw r3, 8(r1) / stw r4, 12(r1)
+ *   li   r3, 0xFF    / lis r4, 0x0171 / stb r3, 0(r4)
+ *   lwz  r3, 8(r1)   / lwz r4, 12(r1) / addi r1, r1, 16 / b -160
+ *
+ * followed by the branch into it at RAC4_LOADING_HOOK_1. The words go in as one
+ * patch, trampoline first, so nothing can branch to a half-written cave.
+ */
+static const struct patch_word rac4_loading_hook_words[] = {
+	{ RAC4_LOADING_HOOK_2 + 0x00, 0x9421FFF0u },
+	{ RAC4_LOADING_HOOK_2 + 0x04, 0x90610008u },
+	{ RAC4_LOADING_HOOK_2 + 0x08, 0x9081000Cu },
+	{ RAC4_LOADING_HOOK_2 + 0x0C, 0x386000FFu },
+	{ RAC4_LOADING_HOOK_2 + 0x10, 0x3C800171u },
+	{ RAC4_LOADING_HOOK_2 + 0x14, 0x98640000u },
+	{ RAC4_LOADING_HOOK_2 + 0x18, 0x80610008u },
+	{ RAC4_LOADING_HOOK_2 + 0x1C, 0x8081000Cu },
+	{ RAC4_LOADING_HOOK_2 + 0x20, 0x38210010u },
+	{ RAC4_LOADING_HOOK_2 + 0x24, 0x4BFFFF60u },
+	{ RAC4_LOADING_HOOK_1,        0x48000080u }
+};
+
+/*
  * robo's "DL Crash Patches" mod, the same eleven words the Deadlocked
  * autosplitter SPRX writes every time it finds the process. The toggle ships
  * auto-flagged so qwark behaves the same way without anyone remembering to load
@@ -211,6 +237,9 @@ static const struct patch_word rac4_ammo_words[] = {
 static struct patch_def rac4_quit_hook = {
 	"Quit hook", PATCH_KIND_FEATURE, rac4_quit_hook_words, 3, NULL
 };
+static struct patch_def rac4_loading_hook = {
+	"Loading hook", PATCH_KIND_FEATURE, rac4_loading_hook_words, 11, NULL
+};
 static struct patch_def rac4_crash = {
 	"Crash patches", PATCH_KIND_FEATURE, rac4_crash_words, 11, NULL
 };
@@ -238,7 +267,8 @@ static void rac4_init(void)
 	if (done) return;
 	done = 1;
 
-	rac4_quit_hook.originals = patch_pool_alloc(rac4_quit_hook.count);
+	rac4_quit_hook.originals    = patch_pool_alloc(rac4_quit_hook.count);
+	rac4_loading_hook.originals = patch_pool_alloc(rac4_loading_hook.count);
 	rac4_crash.originals     = patch_pool_alloc(rac4_crash.count);
 	rac4_fastload.originals  = patch_pool_alloc(rac4_fastload.count);
 	rac4_ammo.originals      = patch_pool_alloc(rac4_ammo.count);
@@ -255,7 +285,9 @@ static void rac4_init(void)
  *   its CMD_SPLIT  -> SPLIT, split into two reason codes rather than one command
  *                     whose packet byte the script had to read as "0 means Vox"
  *   its CMD_PAUSE  -> PAUSE, when the game quits to the XMB
- *   its CMD_UNPAUSE-> RESUME, when it comes back
+ *   its CMD_UNPAUSE-> RESUME, on the same loading hook it used: the tick the
+ *                     game says it has the SCE logo up, not the tick the process
+ *                     reappears
  *
  * Deadlocked is the only game that pauses: some categories quit to the VSH on
  * purpose, and the client stops its timer for as long as that lasts.
@@ -278,13 +310,23 @@ static void rac4_autosplit_tick(void)
 	int vox_split;
 
 	/*
-	 * The pause was emitted from on_quit, before the session left INGAME; the
-	 * RESUME belongs to the first tick of the process that came back.
+	 * The pause was emitted from on_quit, before the session left INGAME. The
+	 * RESUME is not the first tick of the new process: qwark reaches INGAME while
+	 * the game is still sitting behind its loading and warning screens, and
+	 * resuming there would hand the runner several free seconds. The old SPRX
+	 * waited for its loading hook to write 0xFF — the SCE logo, the point it
+	 * called STATUS_INGAME and sent CMD_UNPAUSE — so this waits for the same byte
+	 * and then clears it again for the next quit.
 	 */
 	if (g_as_resume_due) {
-		g_as_resume_due = 0;
-		g_as_paused = 0;
-		autosplit_emit(AUTOSPLIT_RESUME, 0, 0);
+		u8 logo = 0;
+
+		if (mem_read_u8(RAC4_LOADING_VAL, &logo) == ST_OK && logo == 0xFF) {
+			mem_write_u8(RAC4_LOADING_VAL, 0);
+			g_as_resume_due = 0;
+			g_as_paused = 0;
+			autosplit_emit(AUTOSPLIT_RESUME, R4_AS_QUIT, 0);
+		}
 	}
 
 	/* A fresh process: prime, so no edge fires against the dead one's values. */
@@ -337,25 +379,33 @@ static void rac4_on_quit(void)
 
 	g_as_paused = 1;
 	g_as_resume_due = 1;
-	autosplit_emit(AUTOSPLIT_PAUSE, 0, 0);
+	autosplit_emit(AUTOSPLIT_PAUSE, R4_AS_QUIT, 0);
 }
 
 #define DF AUTOSPLIT_FLAG_DEFAULT
 #define RT AUTOSPLIT_FLAG_ROUTE
+#define NM AUTOSPLIT_FLAG_NORMALISE
 
 /*
  * The LC script has one setting that picks splits, SPLIT_ROUTE, and treats
  * "planet 0" as the Vox split; both codes are on by default because both are
  * splits the script always takes. AEC, which disables resetting, is the client's
  * business: qwark still emits every RESET.
+ *
+ * The third row is the quit to the XMB, which is not a split at all. The script
+ * held game time still for the whole quit and reload and then added 14.8 s back,
+ * so a quit always cost exactly 14.8 s however slow the console was; NORMALISE
+ * with that parameter is the same sum from the other direction.
  */
 static const struct autosplit_desc rac4_autosplits[] = {
-	{ R4_AS_PLANET, AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
-	{ R4_AS_VOX,    AUTOSPLIT_SPLIT, DF,      "Vox defeated" }
+	{ R4_AS_PLANET, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered" },
+	{ R4_AS_VOX,    AUTOSPLIT_SPLIT, DF,      0, "Vox defeated" },
+	{ R4_AS_QUIT,   AUTOSPLIT_PAUSE, DF | NM, RAC4_QUIT_PAUSE_US, "Quit to XMB" }
 };
 
 #undef DF
 #undef RT
+#undef NM
 
 static const struct autosplit_desc *rac4_autosplit_describe(u8 *count)
 {
@@ -382,9 +432,16 @@ static void rac4_on_enter(void)
 	 * the session a quit is coming, and a game that is quitting is not a good
 	 * time to write four bytes back. Clear the flag byte right after, or a fresh
 	 * boot reads whatever was left in that page and the session quits instantly.
+	 *
+	 * The loading hook is the same deal and goes in beside it: it is what tells
+	 * the watcher the game is past the SCE logo and really playable again, which
+	 * is where a RESUME belongs. Its byte is cleared for the same reason.
 	 */
 	patch_apply(&rac4_quit_hook);
 	mem_write_u8(RAC4_QUIT_FLAG, 0);
+
+	patch_apply(&rac4_loading_hook);
+	mem_write_u8(RAC4_LOADING_VAL, 0);
 }
 
 /*

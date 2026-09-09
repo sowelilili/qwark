@@ -86,15 +86,20 @@
 #define RAC3_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC3_LF_LEN        0x10        /* level flag bytes per planet */
 
-/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+/* ------------------------------------------------- autosplit watcher, rev 1.5 */
 
 /*
  * rac3.cs AutosplitterAddresses, in the order rac3-autosplitter.asl reads them.
  * The Marcadia mission byte is in that list only "for backwards compatibility"
- * and nothing reads it; the planet frame count and the loading-screen id are
- * read by the old client but used by none of the script's start, reset or split
- * conditions, so neither is read here.
+ * and nothing reads it; the planet frame count is read by the old client but
+ * used by none of the script's conditions, so it is not read here. The
+ * loading-screen id is: the script's `update` block subtracted a second of game
+ * time whenever it became 1 on a load that was not to or from one of the five
+ * planets whose loading screen is a different one that is not actually longer.
  */
+#define RAC3_LOADING_SCREEN (RAC3_LOADING_SCREEN_ID + 3)  /* the low byte */
+#define RAC3_LOADING_LONG   1        /* the id the script watched for */
+#define RAC3_LONG_LOAD_US   1000000u /* the second it took off */
 #define RAC3_NEFFY_HEALTH  0x00C4DF80u  /* f32, 1.0 full and 0.0 dead */
 #define RAC3_NEFFY_PHASE   0x00DA50FCu  /* u32, odd during a Biobliterator phase */
 #define RAC3_LOADED_CHUNK  0x00F08100u  /* rac3.cs loadedChunk, s32 */
@@ -110,12 +115,24 @@
 #define RAC3_KOROS_BOLT_STATE  0x74   /* playerState while a titanium bolt is taken */
 #define RAC3_GAME_STATE_LOAD   6      /* the frame before gameplay resumes */
 
-/* Split reason codes. Code 1 is "planet entered" in every game. */
+/* Reason codes. Code 1 is "planet entered" in every game. */
 #define R3_AS_PLANET        1
 #define R3_AS_LDF           2
 #define R3_AS_TYHRRAGUISE   3
 #define R3_AS_KOROS_BOLT    4
 #define R3_AS_BIOBLITERATOR 5
+#define R3_AS_LONG_LOAD     6   /* LOAD_START / LOAD_END, not a split */
+
+/*
+ * vars.llIgnorePlanets: the loading screen on these five is a different one, and
+ * its "long load" is not actually longer, so the script left those alone. The
+ * check is on both ends of the trip, the destination and the origin.
+ */
+#define RAC3_LL_IGNORE_LAUNCHSITE 20  /* Launch site (ranger ship) */
+#define RAC3_LL_IGNORE_METRO      26  /* Metro rangers (ranger ship) */
+#define RAC3_LL_IGNORE_AQ_CLANK   27  /* Aquatos Clank (submarine / down the pipe) */
+#define RAC3_LL_IGNORE_AQ_SEWERS  28  /* Aquatos sewers (down the pipe / submarine) */
+#define RAC3_LL_IGNORE_TYHRRA     29  /* Tyhrranosis rangers (ranger ship) */
 
 /* Aquatos: LoadPlanetSafe skips the fast-load arm for this planet id alone. */
 #define RAC3_PLANET_AQUATOS 8

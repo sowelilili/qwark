@@ -529,7 +529,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 4, "and this module is build 4");
+	check_eq_u64(packet[5], 5, "and this module is build 5");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2009,7 +2009,7 @@ static void test_fingerprint(void)
 /* ----------------------------------------------------------- autosplitting */
 
 /*
- * Protocol 1.4. Every check here drives the real watchers: it pokes the words a
+ * Protocol 1.5. Every check here drives the real watchers: it pokes the words a
  * game's ASL script read, steps the tick, and reads the events back through the
  * same bytes AUTOSPLIT_EVENTS puts on the wire.
  */
@@ -2021,7 +2021,7 @@ static void pokef32(u32 addr, f32 v) { u8 b[4]; bef32_put(b, v); host_poke(addr,
 
 struct as_event {
 	u32 seq;
-	u32 tick;
+	u32 time_ms;    /* revision 1.5: milliseconds, not the tick count */
 	u8  kind;
 	u8  code;
 	u16 reserved;
@@ -2051,7 +2051,7 @@ static u32 as_fetch(u32 since)
 	for (i = 0; i < g_as_count; i++) {
 		const u8 *e = buf + 5 + (u32)i * AUTOSPLIT_EVENT_SIZE;
 		g_as_list[i].seq      = be32_get(e);
-		g_as_list[i].tick     = be32_get(e + 4);
+		g_as_list[i].time_ms  = be32_get(e + 4);
 		g_as_list[i].kind     = e[8];
 		g_as_list[i].code     = e[9];
 		g_as_list[i].reserved = be16_get(e + 10);
@@ -2091,6 +2091,12 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 	check(as_find(since, kind, 0) != NULL, what);
 }
 
+/* The same, for the kinds that carry a reason code of their own. */
+static void as_expect_coded(u32 since, u8 kind, u8 code, const char *what)
+{
+	check(as_find(since, kind, code) != NULL, what);
+}
+
 /*
  * The split reason codes, spelled out here rather than pulled in from the game
  * headers: these are the wire contract, so the test holds its own copy the way a
@@ -2103,6 +2109,7 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define R1_AS_SKILL_POINT 5
 #define R1_AS_ITEM        6
 #define R1_AS_INFOBOT     7
+#define R1_AS_LOADING     8
 
 #define R2_AS_PLANET       1
 #define R2_AS_PROTOPET     2
@@ -2112,15 +2119,20 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define R2_AS_ENDAKO_ENTER 6
 #define R2_AS_ENDAKO_EXIT  7
 #define R2_AS_TABORA_CAVES 8
+#define R2_AS_LOAD_SLIDE   9
+#define R2_AS_LOAD_CURVED  10
+#define R2_AS_LOAD_WIPE    11
 
 #define R3_AS_PLANET        1
 #define R3_AS_LDF           2
 #define R3_AS_TYHRRAGUISE   3
 #define R3_AS_KOROS_BOLT    4
 #define R3_AS_BIOBLITERATOR 5
+#define R3_AS_LONG_LOAD     6
 
 #define R4_AS_PLANET 1
 #define R4_AS_VOX    2
+#define R4_AS_QUIT   3
 
 /* Everything the four watchers read, by the names their scripts use. */
 #define A1_GAME_STATE   0xA10708u
@@ -2136,6 +2148,17 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define A1_INFOBOTS     0xAFF030u
 #define A1_KALEBO       0xA0CA75u
 #define A1_CODEBOT      0x96BFF1u
+#define A1_LOADSCR      0x9645CBu   /* low byte of the loading-screen word */
+
+/* The four gb_sp_as_helper caves and the four words that branch into them. */
+#define A1_CAVE_GB      0x4F5BE4u
+#define A1_CAVE_SP      0x4F5CACu
+#define A1_CAVE_ITEM    0x4F5D10u
+#define A1_CAVE_IB      0x4F5D74u
+#define A1_HOOK_GB      0x708EC8u
+#define A1_HOOK_SP      0x11B7C0u
+#define A1_HOOK_ITEM    0x112F08u
+#define A1_HOOK_IB      0x112CD0u
 
 #define A2_PLANET       0x1329A3Cu
 #define A2_PLAYER_STATE 0x1481474u
@@ -2145,6 +2168,7 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define A2_ENDAKO_EXIT  0x15625E1u
 #define A2_BARLOW       0x15625F7u
 #define A2_YEEDIL       0x1478991u
+#define A2_LOADSCR      0x147A257u
 
 #define A3_PLANET       0x00C1E438u
 #define A3_DEST_PLANET  0x00EE9314u
@@ -2154,6 +2178,7 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define A3_NEFFY_PHASE  0x00DA50FCu
 #define A3_CHUNK        0x00F08100u
 #define A3_GUISE        0x00DA570Au
+#define A3_LOADSCR      0x00D99117u   /* low byte of the loading-screen word */
 
 #define A4_PLANET       0x009C3240u
 #define A4_REQUEST_LOAD 0x00B36DCCu
@@ -2162,16 +2187,40 @@ static void as_expect_kind(u32 since, u8 kind, const char *what)
 #define A4_IN_GAME      0x00B1F460u
 #define A4_TUTORIAL     0x00B1F46Cu
 #define A4_VOX_HP       0x449BEAD0u
+#define A4_LOADING_VAL  0x01710000u   /* the loading hook's byte */
+#define A4_LOADING_H1   0x00011884u   /* the branch into the trampoline */
+#define A4_LOADING_H2   0x00011904u   /* the trampoline */
 
-/* One row of AUTOSPLIT_DESCRIBE, checked against what the game declares. */
-static void as_check_describe(const struct game_api *g, u8 want_rows,
-                              const char *first_label, const char *name)
+/*
+ * What a game's AUTOSPLIT_DESCRIBE table has to say, row for row. Held here
+ * rather than pulled in from the game headers: this is the wire contract, so the
+ * test keeps its own copy the way a client does and notices a renumber, a
+ * relabel or a timing parameter that moved.
+ */
+struct as_want {
+	u8  code;
+	u8  kind;
+	u8  flags;
+	u32 param_us;
+	const char *label;
+};
+
+#define WANT_DF AUTOSPLIT_FLAG_DEFAULT
+#define WANT_RT AUTOSPLIT_FLAG_ROUTE
+#define WANT_FL AUTOSPLIT_FLAG_FLAT
+#define WANT_NM AUTOSPLIT_FLAG_NORMALISE
+
+static void as_check_describe(const struct game_api *g,
+                              const struct as_want *want, u8 want_rows,
+                              const char *name)
 {
 	const struct autosplit_desc *rows;
 	u8 n = 0;
 	u8 i;
-	int codes_ok = 1;
+	int rows_ok = 1;
 	int route_ok = 1;
+	int labels_ok = 1;
+	int timing_ok = 1;
 
 	if (g == NULL || g->autosplit_describe == NULL) {
 		check(0, "the game declares an autosplit table");
@@ -2184,20 +2233,79 @@ static void as_check_describe(const struct game_api *g, u8 want_rows,
 	if (rows == NULL || n == 0) return;
 
 	check_eq_u64(rows[0].code, AUTOSPLIT_CODE_PLANET, "code 1 comes first");
-	check(qstreq(rows[0].label, first_label), "and is the planet row");
 	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_ROUTE, AUTOSPLIT_FLAG_ROUTE,
 	             "code 1 carries the route flag");
 	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_DEFAULT,
 	             "and is on by default");
 
-	for (i = 0; i < n; i++) {
-		if (rows[i].code == 0 || rows[i].kind != AUTOSPLIT_SPLIT) codes_ok = 0;
-		if (qstrlen(rows[i].label) > AUTOSPLIT_LABEL_LEN) codes_ok = 0;
-		if (i > 0 && (rows[i].flags & AUTOSPLIT_FLAG_ROUTE) != 0) route_ok = 0;
+	for (i = 0; i < n && i < want_rows; i++) {
+		if (rows[i].code != want[i].code) rows_ok = 0;
+		if (rows[i].kind != want[i].kind) rows_ok = 0;
+		if (rows[i].flags != want[i].flags) rows_ok = 0;
+		if (rows[i].param_us != want[i].param_us) rows_ok = 0;
+		if (!qstreq(rows[i].label, want[i].label)) rows_ok = 0;
 	}
-	check(codes_ok, "every row is a SPLIT with a non-zero code and a label that fits");
+	check(rows_ok, "every row matches the code, kind, flags, param and label");
+
+	for (i = 0; i < n; i++) {
+		u8 timing = rows[i].flags & (AUTOSPLIT_FLAG_FLAT | AUTOSPLIT_FLAG_NORMALISE);
+
+		if (rows[i].code == 0) rows_ok = 0;
+		if (qstrlen(rows[i].label) > AUTOSPLIT_LABEL_LEN) labels_ok = 0;
+		if (i > 0 && (rows[i].flags & AUTOSPLIT_FLAG_ROUTE) != 0) route_ok = 0;
+
+		/* At most one timing flag, and a timing flag always names a parameter. */
+		if (timing == (AUTOSPLIT_FLAG_FLAT | AUTOSPLIT_FLAG_NORMALISE)) timing_ok = 0;
+		if (timing != 0 && rows[i].param_us == 0) timing_ok = 0;
+		if (timing == 0 && rows[i].param_us != 0) timing_ok = 0;
+	}
+	check(labels_ok, "every label fits the wire field");
 	check(route_ok, "and only code 1 carries the route flag");
+	check(timing_ok, "a row carries at most one timing flag, with a parameter");
 }
+
+/* The four tables, exactly as a client would ship them. */
+static const struct as_want rac1_want[] = {
+	{ 1, AUTOSPLIT_SPLIT,      WANT_DF | WANT_RT, 0,       "Planet entered" },
+	{ 2, AUTOSPLIT_SPLIT,      WANT_DF,           0,       "Veldin" },
+	{ 3, AUTOSPLIT_SPLIT,      WANT_DF,           0,       "Drek button" },
+	{ 4, AUTOSPLIT_SPLIT,      0,                 0,       "Gold bolt collected" },
+	{ 5, AUTOSPLIT_SPLIT,      0,                 0,       "Skill point" },
+	{ 6, AUTOSPLIT_SPLIT,      0,                 0,       "Item collected" },
+	{ 7, AUTOSPLIT_SPLIT,      0,                 0,       "Infobot" },
+	{ 8, AUTOSPLIT_LOAD_START, WANT_DF | WANT_NM, 7560000, "Loading screen" }
+};
+
+static const struct as_want rac2_want[] = {
+	{ 1,  AUTOSPLIT_SPLIT,      WANT_DF | WANT_RT, 0,      "Planet entered" },
+	{ 2,  AUTOSPLIT_SPLIT,      WANT_DF | WANT_FL, 116667, "Protopet defeated" },
+	{ 3,  AUTOSPLIT_SPLIT,      WANT_DF,           0,      "Aranos 2 Clank swap" },
+	{ 4,  AUTOSPLIT_SPLIT,      0,                 0,      "Maktar arena entry" },
+	{ 5,  AUTOSPLIT_SPLIT,      0,                 0,      "Barlow race entry" },
+	{ 6,  AUTOSPLIT_SPLIT,      0,                 0,      "Endako Clank entry" },
+	{ 7,  AUTOSPLIT_SPLIT,      0,                 0,      "Endako Clank exit" },
+	{ 8,  AUTOSPLIT_SPLIT,      0,                 0,      "Tabora caves" },
+	{ 9,  AUTOSPLIT_LOAD_START, WANT_DF | WANT_FL, 16667,  "Load transition: slide" },
+	{ 10, AUTOSPLIT_LOAD_START, WANT_DF | WANT_FL, 150000, "Load transition: curved" },
+	{ 11, AUTOSPLIT_LOAD_START, WANT_DF | WANT_FL, 350000, "Load transition: wipe" }
+};
+
+static const struct as_want rac3_want[] = {
+	{ 1, AUTOSPLIT_SPLIT,      WANT_DF | WANT_RT, 0,       "Planet entered" },
+	{ 5, AUTOSPLIT_SPLIT,      WANT_DF,           0,       "Biobliterator defeated" },
+	{ 2, AUTOSPLIT_SPLIT,      0,                 0,       "LDF entered" },
+	{ 4, AUTOSPLIT_SPLIT,      0,                 0,       "Koros bolt 2" },
+	{ 3, AUTOSPLIT_SPLIT,      0,                 0,       "Tyhrraguise obtained" },
+	{ 6, AUTOSPLIT_LOAD_START, WANT_DF | WANT_FL, 1000000, "Long load" }
+};
+
+static const struct as_want rac4_want[] = {
+	{ 1, AUTOSPLIT_SPLIT, WANT_DF | WANT_RT, 0,        "Planet entered" },
+	{ 2, AUTOSPLIT_SPLIT, WANT_DF,           0,        "Vox defeated" },
+	{ 3, AUTOSPLIT_PAUSE, WANT_DF | WANT_NM, 14800000, "Quit to XMB" }
+};
+
+#define WANT_ROWS(t) (u8)(sizeof(t) / sizeof((t)[0]))
 
 static void test_autosplit(void)
 {
@@ -2208,8 +2316,41 @@ static void test_autosplit(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00385"), "RaC1 boots");
 
-	as_check_describe(session_game(), 7, "Planet entered",
-	                  "RaC1 declares seven split codes");
+	as_check_describe(session_game(), rac1_want, WANT_ROWS(rac1_want),
+	                  "RaC1 declares eight reason codes");
+
+	/*
+	 * The embedded gb_sp_as_helper: on_enter writes the four caves and the four
+	 * words that branch into them, because codes 4 to 7 read counters nothing
+	 * else maintains.
+	 */
+	{
+		u8 cave[4];
+		u32 word = 0;
+
+		host_peek(A1_CAVE_GB, cave, 4);
+		check(cave[0] == 0x89 && cave[1] == 0x23 && cave[2] == 0x00 &&
+		      cave[3] == 0x20, "the gold-bolt cave landed in memory");
+		/* Its 148th byte, so the whole 156 went in and not just the head. */
+		host_peek(A1_CAVE_GB + 148, cave, 4);
+		check_eq_u64(be32_get(cave), 0x00000074u, "all 156 bytes of it");
+		host_peek(A1_CAVE_SP, cave, 4);
+		check(be32_get(cave) == 0x60000000u, "the skill-point cave landed");
+		host_peek(A1_CAVE_ITEM, cave, 4);
+		check(be32_get(cave) == 0x3D2000AFu, "the item cave landed");
+		host_peek(A1_CAVE_IB, cave, 4);
+		check(be32_get(cave) == 0x60000000u, "the infobot cave landed");
+
+		host_peek(A1_HOOK_GB, cave, 4);
+		word = be32_get(cave);
+		check_eq_u64(word, 0x004F5BE4u, "and the gold-bolt hook word");
+		host_peek(A1_HOOK_SP, cave, 4);
+		check_eq_u64(be32_get(cave), 0x483DA4EDu, "the skill-point hook word");
+		host_peek(A1_HOOK_ITEM, cave, 4);
+		check_eq_u64(be32_get(cave), 0x483E2E09u, "the item hook word");
+		host_peek(A1_HOOK_IB, cave, 4);
+		check_eq_u64(be32_get(cave), 0x484F5D77u, "the infobot hook word");
+	}
 
 	/* start and reset are one expression: game state 6 -> 0 while on Veldin. */
 	mark = autosplit_latest_seq();
@@ -2296,6 +2437,38 @@ static void test_autosplit(void)
 	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_DREK_BUTTON, 0,
 	          "and fires standing on the first one");
 
+	/*
+	 * The loading screen, revision 1.5: anything but 4 is a load. The pair is
+	 * what the client normalises to 7.56 s, so both ends have to show up and
+	 * neither may fire on a change that stays on the same side of 4.
+	 */
+	mark = autosplit_latest_seq();
+	poke8(A1_LOADSCR, 4);
+	pump(2);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R1_AS_LOADING) == NULL,
+	      "settling on the idle loading-screen id starts no load");
+
+	mark = autosplit_latest_seq();
+	poke8(A1_LOADSCR, 0);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_LOAD_START, R1_AS_LOADING, 0,
+	          "leaving id 4 emits LOAD_START");
+	check(as_find(mark, AUTOSPLIT_LOAD_END, R1_AS_LOADING) == NULL,
+	      "and nothing closes it yet");
+
+	mark = autosplit_latest_seq();
+	poke8(A1_LOADSCR, 2);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R1_AS_LOADING) == NULL &&
+	      as_find(mark, AUTOSPLIT_LOAD_END, R1_AS_LOADING) == NULL,
+	      "a change between two loading ids emits nothing");
+
+	mark = autosplit_latest_seq();
+	poke8(A1_LOADSCR, 4);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_LOAD_END, R1_AS_LOADING, 4,
+	          "and coming back to 4 emits LOAD_END");
+
 	/* since_seq filtering, and the reserved halfword. */
 	{
 		u32 latest = autosplit_latest_seq();
@@ -2330,8 +2503,8 @@ static void test_autosplit(void)
 	check(quit_and_wait(), "quit RaC1");
 	check(boot_and_wait("NPEA00386"), "RaC2 boots");
 
-	as_check_describe(session_game(), 8, "Planet entered",
-	                  "RaC2 declares eight split codes");
+	as_check_describe(session_game(), rac2_want, WANT_ROWS(rac2_want),
+	                  "RaC2 declares eleven reason codes");
 
 	mark = autosplit_latest_seq();
 	poke32(A2_PLAYER_STATE, 98);
@@ -2405,6 +2578,42 @@ static void test_autosplit(void)
 	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_PROTOPET, 0,
 	          "and the Protopet cutscene splits");
 
+	/*
+	 * The three load transitions the script paid a fixed toll for, keyed on the
+	 * value the byte changed *to*. Every other value costs nothing, exactly as
+	 * its `norm == 0.0` case did.
+	 */
+	mark = autosplit_latest_seq();
+	poke8(A2_LOADSCR, 2);
+	pump(2);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_SLIDE) == NULL &&
+	      as_find(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_CURVED) == NULL &&
+	      as_find(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_WIPE) == NULL,
+	      "a change to an unpriced load screen costs nothing");
+
+	mark = autosplit_latest_seq();
+	poke8(A2_LOADSCR, 0);
+	pump(1);
+	as_expect_coded(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_SLIDE,
+	                "load screen 0 emits the slide transition");
+
+	mark = autosplit_latest_seq();
+	poke8(A2_LOADSCR, 1);
+	pump(1);
+	as_expect_coded(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_CURVED,
+	                "load screen 1 emits the curved transition");
+
+	mark = autosplit_latest_seq();
+	poke8(A2_LOADSCR, 3);
+	pump(1);
+	as_expect_coded(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_WIPE,
+	                "load screen 3 emits the wipe transition");
+
+	mark = autosplit_latest_seq();
+	pump(2);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R2_AS_LOAD_WIPE) == NULL,
+	      "and a load screen that holds still emits nothing");
+
 	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "RaC2 never pauses");
 
 	/* ------------------------------------------------------------- RaC3 */
@@ -2414,8 +2623,8 @@ static void test_autosplit(void)
 	check(quit_and_wait(), "quit RaC2");
 	check(boot_and_wait("NPEA00387"), "RaC3 boots");
 
-	as_check_describe(session_game(), 5, "Planet entered",
-	                  "RaC3 declares five split codes");
+	as_check_describe(session_game(), rac3_want, WANT_ROWS(rac3_want),
+	                  "RaC3 declares six reason codes");
 
 	mark = autosplit_latest_seq();
 	poke32(A3_PLANET, 1);
@@ -2471,6 +2680,62 @@ static void test_autosplit(void)
 	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_BIOBLITERATOR, 0,
 	          "the Biobliterator split fires once armed");
 
+	/*
+	 * The long load: a second off whenever the loading screen becomes 1, unless
+	 * either end of the trip is one of the five planets whose screen only looks
+	 * long. Park somewhere ordinary first, so vars.originPlanet is not one of
+	 * them, then run one that counts and one that must not.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A3_PLANET, 4);
+	poke32(A3_DEST_PLANET, 0);
+	poke8(A3_LOADSCR, 0);
+	pump(3);
+
+	mark = autosplit_latest_seq();
+	poke32(A3_DEST_PLANET, 7);
+	pump(1);
+	poke8(A3_LOADSCR, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_LOAD_START, R3_AS_LONG_LOAD, 7,
+	          "a long load between two ordinary planets counts");
+
+	mark = autosplit_latest_seq();
+	poke8(A3_LOADSCR, 0);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_LOAD_END, R3_AS_LONG_LOAD, 7,
+	          "and leaving the loading screen closes it");
+
+	/* Now one bound for the Launch site, which vars.llIgnorePlanets excludes. */
+	mark = autosplit_latest_seq();
+	poke32(A3_DEST_PLANET, 20);
+	pump(1);
+	poke8(A3_LOADSCR, 1);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R3_AS_LONG_LOAD) == NULL,
+	      "a load to an ignored planet does not");
+
+	mark = autosplit_latest_seq();
+	poke8(A3_LOADSCR, 0);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_LOAD_END, R3_AS_LONG_LOAD) == NULL,
+	      "and it is not closed either, because it never opened");
+
+	/* The origin end of the same test: leaving an ignored planet is ignored. */
+	mark = autosplit_latest_seq();
+	poke32(A3_DEST_PLANET, 0);
+	poke32(A3_PLANET, 26);
+	pump(2);
+	poke32(A3_PLANET, 5);
+	poke32(A3_DEST_PLANET, 5);
+	pump(1);
+	poke8(A3_LOADSCR, 1);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_LOAD_START, R3_AS_LONG_LOAD) == NULL,
+	      "nor does one leaving an ignored planet");
+	poke8(A3_LOADSCR, 0);
+	pump(1);
+
 	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "RaC3 never pauses");
 
 	/* ------------------------------------------------------ Deadlocked */
@@ -2480,8 +2745,35 @@ static void test_autosplit(void)
 	check(quit_and_wait(), "quit RaC3");
 	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
 
-	as_check_describe(session_game(), 2, "Planet entered",
-	                  "Deadlocked declares two split codes");
+	as_check_describe(session_game(), rac4_want, WANT_ROWS(rac4_want),
+	                  "Deadlocked declares three reason codes");
+
+	/* The loading hook goes in on entry, beside the quit hook. */
+	{
+		u8 word[4];
+
+		host_peek(A4_LOADING_H1, word, 4);
+		check_eq_u64(be32_get(word), 0x48000080u,
+		             "the branch into the loading trampoline is written");
+		host_peek(A4_LOADING_H2, word, 4);
+		check_eq_u64(be32_get(word), 0x9421FFF0u, "the trampoline's first word");
+		host_peek(A4_LOADING_H2 + 0x24, word, 4);
+		check_eq_u64(be32_get(word), 0x4BFFFF60u, "and its branch home");
+		host_peek(A4_LOADING_VAL, word, 1);
+		check_eq_u64(word[0], 0, "and its byte starts clear");
+	}
+
+	/*
+	 * The quit-hook group quit Deadlocked earlier in this run, so a RESUME is
+	 * still outstanding and revision 1.5 will not answer it until the game says
+	 * the logo is up. Say so, the way the console would, before the PAUSE and
+	 * RESUME pair is tested for real below.
+	 */
+	mark = autosplit_latest_seq();
+	poke8(A4_LOADING_VAL, 0xFF);
+	pump(2);
+	as_expect_coded(mark, AUTOSPLIT_RESUME, R4_AS_QUIT,
+	                "the outstanding RESUME from the earlier quit lands");
 
 	/* The SPRX's reset_needed: a load starts for Dread Zone with no tutorial flag. */
 	mark = autosplit_latest_seq();
@@ -2518,16 +2810,36 @@ static void test_autosplit(void)
 	pump(1);
 	as_expect(mark, AUTOSPLIT_SPLIT, R4_AS_VOX, 0, "the Vox split fires");
 
-	/* PAUSE on the way out to the XMB, RESUME when the game comes back. */
+	/*
+	 * PAUSE on the way out to the XMB, and RESUME only once the game says it is
+	 * past the SCE logo. Revision 1.5 moved the RESUME onto the old SPRX's
+	 * loading hook: qwark reaches INGAME while Deadlocked is still behind its
+	 * loading and warning screens, so resuming there hands the runner seconds
+	 * the old autosplitter never gave away. Both carry code 3.
+	 */
 	mark = autosplit_latest_seq();
 	check(quit_and_wait(), "Deadlocked quits to the XMB");
-	as_expect_kind(mark, AUTOSPLIT_PAUSE, "and that emits PAUSE");
-	check(as_find(mark, AUTOSPLIT_RESUME, 0) == NULL, "with no RESUME yet");
+	as_expect_coded(mark, AUTOSPLIT_PAUSE, R4_AS_QUIT, "and that emits PAUSE");
+	check(as_find(mark, AUTOSPLIT_RESUME, R4_AS_QUIT) == NULL, "with no RESUME yet");
 
 	mark = autosplit_latest_seq();
 	check(boot_and_wait("NPEA00423"), "Deadlocked comes back");
-	as_expect_kind(mark, AUTOSPLIT_RESUME, "and that emits RESUME");
-	check(as_find(mark, AUTOSPLIT_PAUSE, 0) == NULL, "and only the one RESUME");
+	pump(4);
+	check(as_find(mark, AUTOSPLIT_RESUME, R4_AS_QUIT) == NULL,
+	      "the process coming back is not yet a RESUME");
+
+	poke8(A4_LOADING_VAL, 0xFF);
+	pump(1);
+	as_expect_coded(mark, AUTOSPLIT_RESUME, R4_AS_QUIT,
+	                "the loading hook's 0xFF emits RESUME");
+	check(as_find(mark, AUTOSPLIT_PAUSE, R4_AS_QUIT) == NULL,
+	      "and only the one RESUME");
+
+	{
+		u8 b = 0xFF;
+		host_peek(A4_LOADING_VAL, &b, 1);
+		check_eq_u64(b, 0, "and the byte is cleared for the next quit");
+	}
 
 	/* The sequence survives the reboot: it counts for the life of the module. */
 	check(autosplit_latest_seq() > mark, "the sequence carried on across the boot");

@@ -100,6 +100,7 @@ struct rac2_as_state {
 	u8  endako_exit;
 	u8  barlow_entry;
 	u8  hero_type;
+	u8  load_screen;
 };
 
 static struct rac2_as_state g_as;
@@ -117,6 +118,8 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		g_load_count  = inputs[OFF_LOADCOUNT];
 		out->pad_mask = be32_get(inputs + OFF_PAD);
 		classic_decode_analogs(inputs + OFF_ANALOGS, out->analog);
+		/* The watcher's, but the block is already read: see below. */
+		g_as.load_screen = inputs[OFF_LOADTYPE];
 	}
 
 	if (state != NULL) {
@@ -235,8 +238,14 @@ static void rac2_init(void)
 /*
  * rac2-autosplitter.asl, condition for condition. Everything it gates on a
  * *setting* is emitted anyway with its own reason code, because the client owns
- * the settings; everything it gates on game state is a condition below. The load
- * screen's game-time adjustments are not ported: qwark keeps no timer.
+ * the settings; everything it gates on game state is a condition below.
+ *
+ * The script's `update` block subtracted a fixed slice of game time every time
+ * the load-screen byte changed, keyed on the value it changed *to*: 1 frame for
+ * 0, 9 for 1, 21 for 3, nothing for anything else. Those are three LOAD_START
+ * codes with the FLAT flag, so the client applies the same three subtractions at
+ * the same three moments. Nothing closes them: the script never timed the load,
+ * it only paid a toll on entering one.
  */
 static struct rac2_as_state g_as_prev;
 static int g_as_primed;
@@ -254,6 +263,28 @@ static void rac2_autosplit_tick(void)
 		g_as_prev = g_as;
 		g_as_primed = 1;
 		return;
+	}
+
+	/*
+	 * The script's `update` block runs before start, reset and split, so the load
+	 * transition is emitted first and the client's subtraction lands before
+	 * anything else this tick can take a split.
+	 */
+	if (g_as.load_screen != p->load_screen) {
+		switch (g_as.load_screen) {
+		case RAC2_LOADSCREEN_SLIDE:
+			autosplit_emit(AUTOSPLIT_LOAD_START, R2_AS_LOAD_SLIDE, 0);
+			break;
+		case RAC2_LOADSCREEN_CURVED:
+			autosplit_emit(AUTOSPLIT_LOAD_START, R2_AS_LOAD_CURVED, 0);
+			break;
+		case RAC2_LOADSCREEN_WIPE:
+			autosplit_emit(AUTOSPLIT_LOAD_START, R2_AS_LOAD_WIPE, 0);
+			break;
+		default:
+			/* The script's `norm == 0.0` case: a change that costs nothing. */
+			break;
+		}
 	}
 
 	/*
@@ -303,21 +334,36 @@ static void rac2_autosplit_tick(void)
 
 #define DF AUTOSPLIT_FLAG_DEFAULT
 #define RT AUTOSPLIT_FLAG_ROUTE
+#define FL AUTOSPLIT_FLAG_FLAT
 
-/* The script's settings.Add list, in its order; DF is what it defaults to true. */
+/*
+ * The script's settings.Add list, in its order; DF is what it defaults to true.
+ * Then the three load transitions, which are not splits and not optional: the
+ * script subtracted their frames whatever the settings said, and so does the
+ * client. The Protopet row carries the seven frames the script took off just
+ * before it returned true for that split.
+ */
 static const struct autosplit_desc rac2_autosplits[] = {
-	{ R2_AS_PLANET,       AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
-	{ R2_AS_PROTOPET,     AUTOSPLIT_SPLIT, DF,      "Protopet defeated" },
-	{ R2_AS_A2_CLANK,     AUTOSPLIT_SPLIT, DF,      "Aranos 2 Clank swap" },
-	{ R2_AS_MAKTAR_ARENA, AUTOSPLIT_SPLIT, 0,       "Maktar arena entry" },
-	{ R2_AS_BARLOW_RACE,  AUTOSPLIT_SPLIT, 0,       "Barlow race entry" },
-	{ R2_AS_ENDAKO_ENTER, AUTOSPLIT_SPLIT, 0,       "Endako Clank entry" },
-	{ R2_AS_ENDAKO_EXIT,  AUTOSPLIT_SPLIT, 0,       "Endako Clank exit" },
-	{ R2_AS_TABORA_CAVES, AUTOSPLIT_SPLIT, 0,       "Tabora caves" }
+	{ R2_AS_PLANET,       AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
+	{ R2_AS_PROTOPET,     AUTOSPLIT_SPLIT,      DF | FL, RAC2_PROTOPET_US,
+	  "Protopet defeated" },
+	{ R2_AS_A2_CLANK,     AUTOSPLIT_SPLIT,      DF,      0, "Aranos 2 Clank swap" },
+	{ R2_AS_MAKTAR_ARENA, AUTOSPLIT_SPLIT,      0,       0, "Maktar arena entry" },
+	{ R2_AS_BARLOW_RACE,  AUTOSPLIT_SPLIT,      0,       0, "Barlow race entry" },
+	{ R2_AS_ENDAKO_ENTER, AUTOSPLIT_SPLIT,      0,       0, "Endako Clank entry" },
+	{ R2_AS_ENDAKO_EXIT,  AUTOSPLIT_SPLIT,      0,       0, "Endako Clank exit" },
+	{ R2_AS_TABORA_CAVES, AUTOSPLIT_SPLIT,      0,       0, "Tabora caves" },
+	{ R2_AS_LOAD_SLIDE,   AUTOSPLIT_LOAD_START, DF | FL, RAC2_LOAD_SLIDE_US,
+	  "Load transition: slide" },
+	{ R2_AS_LOAD_CURVED,  AUTOSPLIT_LOAD_START, DF | FL, RAC2_LOAD_CURVED_US,
+	  "Load transition: curved" },
+	{ R2_AS_LOAD_WIPE,    AUTOSPLIT_LOAD_START, DF | FL, RAC2_LOAD_WIPE_US,
+	  "Load transition: wipe" }
 };
 
 #undef DF
 #undef RT
+#undef FL
 
 static const struct autosplit_desc *rac2_autosplit_describe(u8 *count)
 {

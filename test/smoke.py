@@ -29,7 +29,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 4
+QWARK_BUILD = 5
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -94,14 +94,21 @@ FEATURE_FLAG_LOAD_ASIDE = 0x08
 # Protocol 1.3: the toggle's state is read back out of game memory.
 FEATURE_FLAG_LIVE = 0x10
 
-# Protocol 1.4: the autosplit event stream.
+# Protocol 1.4: the autosplit event stream. 1.5 added the two load kinds, the
+# two timing flags and the param_us that goes with them, and grew EventDesc.
 AUTOSPLIT_START, AUTOSPLIT_SPLIT = 1, 2
 AUTOSPLIT_RESET, AUTOSPLIT_PAUSE, AUTOSPLIT_RESUME = 3, 4, 5
+AUTOSPLIT_LOAD_START, AUTOSPLIT_LOAD_END = 6, 7
 AUTOSPLIT_EVENT_SIZE = 16
-AUTOSPLIT_DESC_SIZE = 28
+AUTOSPLIT_DESC_SIZE = 32
 AUTOSPLIT_DGRAM_SIZE = 20
 AUTOSPLIT_FLAG_DEFAULT = 0x01
 AUTOSPLIT_FLAG_ROUTE = 0x02
+AUTOSPLIT_FLAG_FLAT = 0x04
+AUTOSPLIT_FLAG_NORMALISE = 0x08
+
+DF, RT, FL, NM = (AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_ROUTE,
+                  AUTOSPLIT_FLAG_FLAT, AUTOSPLIT_FLAG_NORMALISE)
 
 COMBO_SAVE_POSITION = 0
 
@@ -333,10 +340,11 @@ def parse_unlocks(b):
 
 def parse_autosplit_event(b):
     """The 16-byte Event, the same bytes in the reply and in the datagram."""
-    seq, tick = struct.unpack(">II", b[0:8])
+    seq, time_ms = struct.unpack(">II", b[0:8])
     return {
         "seq": seq,
-        "tick": tick,
+        # Revision 1.5: milliseconds since the module started, not a tick count.
+        "time_ms": time_ms,
         "kind": b[8],
         "code": b[9],
         "reserved": struct.unpack(">H", b[10:12])[0],
@@ -357,7 +365,7 @@ def parse_autosplit_events(b):
 
 
 def parse_autosplit_describe(b):
-    """AUTOSPLIT_DESCRIBE: u8 n, EventDesc[n]."""
+    """AUTOSPLIT_DESCRIBE: u8 n, EventDesc[n]. 32 bytes a row since 1.5."""
     n = b[0]
     off = 1
     rows = []
@@ -368,7 +376,8 @@ def parse_autosplit_describe(b):
             "kind": row[1],
             "flags": row[2],
             "reserved": row[3],
-            "label": row[4:28].split(b"\0")[0].decode("ascii", "replace"),
+            "param_us": struct.unpack(">I", row[4:8])[0],
+            "label": row[8:32].split(b"\0")[0].decode("ascii", "replace"),
         })
         off += AUTOSPLIT_DESC_SIZE
     return rows, off
@@ -472,15 +481,71 @@ def wait_qe(udp, seq, timeout=2.0):
     return None
 
 
+def as_wait(c, mark, kind, code, timeout=3.0):
+    """The first event past `mark` with this kind and code, or None."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _latest, events, _n = autosplit_events(c, mark)
+        for e in events:
+            if e["kind"] == kind and e["code"] == code:
+                return e
+        time.sleep(0.05)
+    return None
+
+
+def as_absent(c, mark, kind, code, settle=0.5):
+    """True when nothing of this kind and code shows up past `mark`."""
+    time.sleep(settle)
+    _latest, events, _n = autosplit_events(c, mark)
+    return not any(e["kind"] == kind and e["code"] == code for e in events)
+
+
+def exercise_autosplit_timing(c, name, spec):
+    """
+    Drives the rows revision 1.5 added: the loads and pauses whose param_us the
+    client turns into a game-time adjustment. Each step pokes some memory, then
+    says which event must arrive or must not.
+    """
+    for step in spec.get("timing", []):
+        for addr, value in step.get("poke", []):
+            mem_write(c, addr, value)
+
+        # Let the tick thread take the setup in before anything is measured.
+        if step.get("poke"):
+            time.sleep(0.15)
+
+        mark, _events, _n = autosplit_events(c, 0)
+
+        for addr, value in step.get("then", []):
+            mem_write(c, addr, value)
+
+        if step.get("expect") is not None:
+            kind, code = step["expect"]
+            got = as_wait(c, mark, kind, code)
+            if check(got is not None, "%s: %s" % (name, step["what"])):
+                if step.get("arg") is not None:
+                    check(got["arg"] == step["arg"],
+                          "%s: %s carries arg %d" % (name, step["what"], step["arg"]),
+                          got["arg"])
+        else:
+            wanted_gone = step["absent"]
+            if isinstance(wanted_gone, tuple):
+                wanted_gone = [wanted_gone]
+            check(all(as_absent(c, mark, k, code, settle=0.0 if i else 0.5)
+                      for i, (k, code) in enumerate(wanted_gone)),
+                  "%s: %s" % (name, step["what"]))
+
+
 def exercise_autosplit(c, udp, name, spec):
     """AUTOSPLIT_DESCRIBE, one real split, and the UDP push that carries it."""
     status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
     if check(status == ST_OK, "%s: AUTOSPLIT_DESCRIBE answers OK" % name, status):
         rows, consumed = parse_autosplit_describe(body)
+        want = spec["rows"]
         check(consumed == len(body), "%s: AUTOSPLIT_DESCRIBE parses exactly" % name,
               (consumed, len(body)))
-        check(len(rows) == spec["rows"],
-              "%s: it lists %d split codes" % (name, spec["rows"]), len(rows))
+        check(len(rows) == len(want),
+              "%s: it lists %d reason codes" % (name, len(want)), len(rows))
         if rows:
             check(rows[0]["code"] == 1 and rows[0]["label"] == "Planet entered",
                   "%s: code 1 is the planet split" % name, rows[0])
@@ -488,10 +553,23 @@ def exercise_autosplit(c, udp, name, spec):
                   "%s: and carries the route flag" % name, rows[0]["flags"])
             check(rows[0]["flags"] & AUTOSPLIT_FLAG_DEFAULT,
                   "%s: and is enabled by default" % name, rows[0]["flags"])
-            check(all(r["kind"] == AUTOSPLIT_SPLIT and r["code"] != 0 for r in rows),
-                  "%s: every row is a SPLIT with a real code" % name)
+            check(all(r["code"] != 0 and r["reserved"] == 0 for r in rows),
+                  "%s: every row has a real code and a zero reserved byte" % name)
             check(all((r["flags"] & AUTOSPLIT_FLAG_ROUTE) == 0 for r in rows[1:]),
                   "%s: and only code 1 claims a planet route" % name)
+
+            got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"])
+                   for r in rows]
+            check(got == want,
+                  "%s: every row matches code, kind, flags, param and label" % name,
+                  [g for g, w in zip(got, want) if g != w])
+
+            # A timing flag always names a parameter, and never both flags.
+            bad = [r for r in rows
+                   if bool(r["flags"] & (FL | NM)) != bool(r["param_us"]) or
+                   (r["flags"] & (FL | NM)) == (FL | NM)]
+            check(not bad,
+                  "%s: a timing flag comes with exactly one parameter" % name, bad)
 
     # Put the watcher's world where the split condition can be reached from.
     for addr, value in spec["setup"]:
@@ -533,7 +611,7 @@ def exercise_autosplit(c, udp, name, spec):
     ev = wait_qe(udp, got["seq"])
     if check(ev is not None, "%s: the QE datagram arrives over UDP" % name):
         check(ev["kind"] == AUTOSPLIT_SPLIT and ev["code"] == spec["code"] and
-              ev["arg"] == spec["arg"] and ev["tick"] == got["tick"],
+              ev["arg"] == spec["arg"] and ev["time_ms"] == got["time_ms"],
               "%s: and carries the same event as the TCP read" % name, ev)
 
     # since_seq filtering, both sides of the boundary.
@@ -546,6 +624,9 @@ def exercise_autosplit(c, udp, name, spec):
     _latest, events, _n = autosplit_events(c, got["seq"] - 1)
     check(any(e["seq"] == got["seq"] for e in events),
           "%s: and one back still returns it" % name)
+
+    # Revision 1.5: the loads and pauses whose timing the old scripts adjusted.
+    exercise_autosplit_timing(c, name, spec)
 
 
 # One row per game: what to boot, what DESCRIBE must say, and one of each kind of
@@ -582,11 +663,41 @@ OTHER_GAMES = [
         "load_expect": [(0x156B050, 1), (0x156B054, 5)],
         # RaC2 splits on the planet it just arrived at, not on a destination.
         "autosplit": {
-            "rows": 8,
+            "rows": [
+                (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+                (2, AUTOSPLIT_SPLIT, DF | FL, 116667, "Protopet defeated"),
+                (3, AUTOSPLIT_SPLIT, DF, 0, "Aranos 2 Clank swap"),
+                (4, AUTOSPLIT_SPLIT, 0, 0, "Maktar arena entry"),
+                (5, AUTOSPLIT_SPLIT, 0, 0, "Barlow race entry"),
+                (6, AUTOSPLIT_SPLIT, 0, 0, "Endako Clank entry"),
+                (7, AUTOSPLIT_SPLIT, 0, 0, "Endako Clank exit"),
+                (8, AUTOSPLIT_SPLIT, 0, 0, "Tabora caves"),
+                (9, AUTOSPLIT_LOAD_START, DF | FL, 16667, "Load transition: slide"),
+                (10, AUTOSPLIT_LOAD_START, DF | FL, 150000, "Load transition: curved"),
+                (11, AUTOSPLIT_LOAD_START, DF | FL, 350000, "Load transition: wipe"),
+            ],
             "setup": [(0x1329A3C, struct.pack(">I", 0))],
             "trigger": [(0x1329A3C, struct.pack(">I", 5))],
             "code": 1,
             "arg": 5,
+            # The load-screen byte, and the three values that cost frames.
+            "timing": [
+                {"poke": [(0x147A257, b"\x02")],
+                 "then": [(0x147A257, b"\x00")],
+                 "expect": (AUTOSPLIT_LOAD_START, 9),
+                 "what": "load screen 0 emits the slide transition"},
+                {"then": [(0x147A257, b"\x01")],
+                 "expect": (AUTOSPLIT_LOAD_START, 10),
+                 "what": "load screen 1 emits the curved transition"},
+                {"then": [(0x147A257, b"\x03")],
+                 "expect": (AUTOSPLIT_LOAD_START, 11),
+                 "what": "load screen 3 emits the wipe transition"},
+                {"then": [(0x147A257, b"\x04")],
+                 "absent": [(AUTOSPLIT_LOAD_START, 9),
+                            (AUTOSPLIT_LOAD_START, 10),
+                            (AUTOSPLIT_LOAD_START, 11)],
+                 "what": "an unpriced load screen costs nothing"},
+            ],
         },
     },
     {
@@ -622,12 +733,41 @@ OTHER_GAMES = [
         "load_expect": [(0xEE9310, 1), (0xEE9314, 5), (0x134EBD4, 3)],
         # RaC3 splits when the destination planet changes to another real planet.
         "autosplit": {
-            "rows": 5,
+            "rows": [
+                (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+                (5, AUTOSPLIT_SPLIT, DF, 0, "Biobliterator defeated"),
+                (2, AUTOSPLIT_SPLIT, 0, 0, "LDF entered"),
+                (4, AUTOSPLIT_SPLIT, 0, 0, "Koros bolt 2"),
+                (3, AUTOSPLIT_SPLIT, 0, 0, "Tyhrraguise obtained"),
+                (6, AUTOSPLIT_LOAD_START, DF | FL, 1000000, "Long load"),
+            ],
             "setup": [(0x00C1E438, struct.pack(">I", 4)),
                       (0x00EE9314, struct.pack(">I", 0))],
             "trigger": [(0x00EE9314, struct.pack(">I", 7))],
             "code": 1,
             "arg": 7,
+            # The long load, and the ignore list on both ends of the trip.
+            "timing": [
+                {"poke": [(0x00C1E438, struct.pack(">I", 4)),
+                          (0x00EE9314, struct.pack(">I", 0)),
+                          (0x00D99117, b"\x00")],
+                 "then": [(0x00EE9314, struct.pack(">I", 7)),
+                          (0x00D99117, b"\x01")],
+                 "expect": (AUTOSPLIT_LOAD_START, 6),
+                 "arg": 7,
+                 "what": "a long load between ordinary planets counts"},
+                {"then": [(0x00D99117, b"\x00")],
+                 "expect": (AUTOSPLIT_LOAD_END, 6),
+                 "arg": 7,
+                 "what": "and leaving the loading screen closes it"},
+                {"poke": [(0x00EE9314, struct.pack(">I", 20))],
+                 "then": [(0x00D99117, b"\x01")],
+                 "absent": (AUTOSPLIT_LOAD_START, 6),
+                 "what": "a long load to an ignored planet does not"},
+                {"then": [(0x00D99117, b"\x00")],
+                 "absent": (AUTOSPLIT_LOAD_END, 6),
+                 "what": "and nothing closes a load that never opened"},
+            ],
         },
     },
     {
@@ -661,7 +801,11 @@ OTHER_GAMES = [
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
         # Deadlocked splits when a load starts for a real planet while in game.
         "autosplit": {
-            "rows": 2,
+            "rows": [
+                (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+                (2, AUTOSPLIT_SPLIT, DF, 0, "Vox defeated"),
+                (3, AUTOSPLIT_PAUSE, DF | NM, 14800000, "Quit to XMB"),
+            ],
             "setup": [(0x00B36DCC, struct.pack(">I", 0)),
                       (0x00B1F460, struct.pack(">I", 1)),
                       (0x00B1F46C, struct.pack(">I", 1)),
@@ -1384,13 +1528,49 @@ def main():
         # ------------------------------------------------- autosplitting
         # RaC1 splits when the destination planet changes to another real one.
         exercise_autosplit(c, udp, "RaC1", {
-            "rows": 7,
+            "rows": [
+                (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+                (2, AUTOSPLIT_SPLIT, DF, 0, "Veldin"),
+                (3, AUTOSPLIT_SPLIT, DF, 0, "Drek button"),
+                (4, AUTOSPLIT_SPLIT, 0, 0, "Gold bolt collected"),
+                (5, AUTOSPLIT_SPLIT, 0, 0, "Skill point"),
+                (6, AUTOSPLIT_SPLIT, 0, 0, "Item collected"),
+                (7, AUTOSPLIT_SPLIT, 0, 0, "Infobot"),
+                (8, AUTOSPLIT_LOAD_START, DF | NM, 7560000, "Loading screen"),
+            ],
             "setup": [(0x969C70, struct.pack(">I", 3)),
                       (0xA10704, struct.pack(">I", 0))],
             "trigger": [(0xA10704, struct.pack(">I", 5))],
             "code": 1,
             "arg": 5,
+            # The loading screen: anything but 4 is a load, and the pair bounds
+            # the interval the client normalises to 7.56 s.
+            "timing": [
+                {"poke": [(0x9645CB, b"\x04")],
+                 "then": [(0x9645CB, b"\x00")],
+                 "expect": (AUTOSPLIT_LOAD_START, 8),
+                 "arg": 0,
+                 "what": "leaving loading-screen id 4 emits LOAD_START"},
+                {"then": [(0x9645CB, b"\x02")],
+                 "absent": [(AUTOSPLIT_LOAD_START, 8), (AUTOSPLIT_LOAD_END, 8)],
+                 "what": "a change between two loading ids emits nothing"},
+                {"then": [(0x9645CB, b"\x04")],
+                 "expect": (AUTOSPLIT_LOAD_END, 8),
+                 "arg": 4,
+                 "what": "and coming back to 4 emits LOAD_END"},
+            ],
         })
+
+        # The gb_sp_as_helper mod is embedded and written on entry, so the four
+        # collectable codes work with nothing loaded.
+        check(mem_read_u32(c, 0x708EC8) == 0x004F5BE4,
+              "RaC1: the helper mod's gold-bolt hook word is in memory")
+        check(mem_read_u32(c, 0x11B7C0) == 0x483DA4ED,
+              "RaC1: and its skill-point hook word")
+        check(mem_read_u32(c, 0x4F5BE4) == 0x89230020,
+              "RaC1: the gold-bolt cave landed")
+        check(mem_read_u32(c, 0x4F5BE4 + 148) == 0x00000074,
+              "RaC1: all 156 bytes of it")
 
         # And a collectable split, which is a different reason code entirely.
         drain_udp(udp)
@@ -1412,6 +1592,37 @@ def main():
         # -------------------------------------- RaC2, RaC3 and Deadlocked
         for spec in OTHER_GAMES:
             exercise_game(c, sim, spec, udp)
+
+        # --------------------- Deadlocked's quit to the XMB, revision 1.5
+        # PAUSE on the way out, and RESUME only once the game's own loading
+        # hook says the SCE logo is up: the process comes back seconds before
+        # the game is playable, and the old script never gave those away.
+        mark, _events, _n = autosplit_events(c, 0)
+        sim.send("quit")
+        ok, _ = wait_state(c, SESSION_XMB)
+        check(ok, "Deadlocked: it quits to the XMB")
+        paused = as_wait(c, mark, AUTOSPLIT_PAUSE, 3)
+        check(paused is not None, "Deadlocked: and that emits PAUSE with code 3")
+        check(as_absent(c, mark, AUTOSPLIT_RESUME, 3),
+              "Deadlocked: with no RESUME yet")
+
+        mark, _events, _n = autosplit_events(c, 0)
+        sim.send("boot NPEA00423")
+        ok, _ = wait_state(c, SESSION_INGAME)
+        check(ok, "Deadlocked: it comes back")
+        check(as_absent(c, mark, AUTOSPLIT_RESUME, 3),
+              "Deadlocked: the process coming back is not yet a RESUME")
+        check(mem_read_u32(c, 0x11884) == 0x48000080,
+              "Deadlocked: the loading hook is patched in on entry")
+        check(mem_read_u32(c, 0x11904) == 0x9421FFF0,
+              "Deadlocked: and its trampoline with it")
+
+        mem_write(c, 0x1710000, b"\xFF")
+        resumed = as_wait(c, mark, AUTOSPLIT_RESUME, 3)
+        if check(resumed is not None,
+                 "Deadlocked: the loading hook's 0xFF emits RESUME with code 3"):
+            check(mem_read_u32(c, 0x1710000) >> 24 == 0,
+                  "Deadlocked: and the byte is cleared for the next quit")
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

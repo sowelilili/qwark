@@ -23,7 +23,7 @@
 
 struct autosplit_slot {
 	u32 seq;
-	u32 tick;
+	u32 time_ms;
 	u8  kind;
 	u8  code;
 	u32 arg;
@@ -70,7 +70,7 @@ void autosplit_shutdown(void)
 static void encode_event(u8 *out, const struct autosplit_slot *e)
 {
 	be32_put(out + 0, e->seq);
-	be32_put(out + 4, e->tick);
+	be32_put(out + 4, e->time_ms);
 	out[8]  = e->kind;
 	out[9]  = e->code;
 	be16_put(out + 10, 0);
@@ -116,13 +116,24 @@ void autosplit_emit(u8 kind, u8 code, u32 arg)
 	 */
 	if (session_state() != SESSION_INGAME) return;
 
-	if (kind != AUTOSPLIT_SPLIT) { code = 0; arg = 0; }
+	/*
+	 * Revision 1.5: only the two kinds that describe the run as a whole are
+	 * codeless. A pause, a resume and either end of a load all name the row they
+	 * belong to, so the client knows which timing rule to apply.
+	 */
+	if (kind == AUTOSPLIT_START || kind == AUTOSPLIT_RESET) { code = 0; arg = 0; }
 
 	plat_mutex_lock(&g_mutex);
 
 	g_seq++;
 	e.seq  = g_seq;
-	e.tick = session_tick_count();
+	/*
+	 * Milliseconds since the module started rather than a tick count: the client
+	 * measures a load or a pause from these, and must not have to know the tick
+	 * rate to do it. It wraps every 49 days, and a client subtracting two of them
+	 * in u32 arithmetic gets the right answer across the wrap.
+	 */
+	e.time_ms = (u32)(plat_time_us() / 1000u);
 	e.kind = kind;
 	e.code = code;
 	e.arg  = arg;

@@ -82,7 +82,19 @@
 #define RAC4_QUIT_HOOK_ADDR    0x00013780u
 #define RAC4_QUIT_FLAG         0x01700000u
 
-/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+/*
+ * The autosplitter's other hook, ADDR_LOADING_HOOK_1 / _2 and ADDR_LOADING_VAL:
+ * ten words of trampoline at 0x11904 and a branch to them at 0x11884, so the
+ * game stores 0xFF at RAC4_LOADING_VAL the moment it has put the SCE logo up.
+ * That is the SPRX's STATUS_INGAME_PENDING gate — the point at which it decided
+ * the game was really back and sent CMD_UNPAUSE — and it is where qwark's RESUME
+ * belongs too, because the process reappears well before the game is playable.
+ */
+#define RAC4_LOADING_HOOK_1    0x00011884u  /* the branch into the trampoline */
+#define RAC4_LOADING_HOOK_2    0x00011904u  /* the trampoline itself, ten words */
+#define RAC4_LOADING_VAL       0x01710000u  /* reads 0xFF once the logo is up */
+
+/* ------------------------------------------------- autosplit watcher, rev 1.5 */
 
 /*
  * Deadlocked is the one game whose detection already ran on the console: the old
@@ -103,9 +115,17 @@
 #define RAC4_PLANET_DREADZONE 1
 #define RAC4_PLANET_INTERIOR 15
 
-/* Split reason codes. Code 1 is "planet entered" in every game. */
+/* Reason codes. Code 1 is "planet entered" in every game. */
 #define R4_AS_PLANET 1
 #define R4_AS_VOX    2
+#define R4_AS_QUIT   3   /* PAUSE / RESUME around a quit to the XMB, not a split */
+
+/*
+ * What the LC script added back on the way in: it stopped game time for the
+ * whole quit and reload and then added 14.8 s, so a quit always costs exactly
+ * that. NORMALISE with this parameter is the same arithmetic.
+ */
+#define RAC4_QUIT_PAUSE_US   14800000u
 
 /* The savefile helper mod's three bytes. */
 #define RAC4_SF_HELPER         0x015CD71Du

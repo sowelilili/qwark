@@ -1,10 +1,13 @@
 /*
- * The autosplit event stream, protocol 1.4.
+ * The autosplit event stream, protocol 1.5.
  *
  * A game's watcher runs inside its on_tick and calls autosplit_emit() whenever
- * it sees a run start, a split candidate, a reset, or (Deadlocked only) a pause
- * around a quit to the XMB. qwark keeps no timer and applies no user setting:
- * every candidate is emitted and the PC decides what reaches LiveSplit.
+ * it sees a run start, a split candidate, a reset, a loading screen coming or
+ * going, or (Deadlocked only) a pause around a quit to the XMB. qwark keeps no
+ * timer and applies no user setting: every candidate is emitted and the PC
+ * decides what reaches LiveSplit. Each event is stamped with the module's
+ * millisecond clock, so the client can measure a load or a pause without knowing
+ * anything about the tick rate.
  *
  * Each event is stamped with a sequence number that counts from 1 for the life
  * of the module and never resets, not even when the game reboots, so a client
@@ -23,7 +26,8 @@ void autosplit_shutdown(void);
 
 /*
  * Tick thread only, and only while the session is INGAME: anything emitted from
- * another state is dropped. `code` and `arg` are 0 for every kind but SPLIT.
+ * another state is dropped. `code` and `arg` are forced to 0 for START and
+ * RESET; every other kind carries the reason code of the row it belongs to.
  * Records the event and queues its datagram; the sends happen in autosplit_push.
  */
 void autosplit_emit(u8 kind, u8 code, u32 arg);

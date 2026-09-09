@@ -87,15 +87,20 @@ struct unlock_field_desc {
 };
 
 /*
- * Protocol 1.4. One row of AUTOSPLIT_DESCRIBE: a reason code the game's watcher
- * can emit, and what a client shows beside its checkbox. The table is static per
- * game and never depends on the session. Code 1 is "planet entered" in every
- * game and is the only row that carries AUTOSPLIT_FLAG_ROUTE.
+ * Protocol 1.5. One row of AUTOSPLIT_DESCRIBE: a reason code the game's watcher
+ * can emit, what a client shows beside its checkbox, and the game-time
+ * adjustment the old ASL script made at that point. The table is static per game
+ * and never depends on the session. Code 1 is "planet entered" in every game and
+ * is the only row that carries AUTOSPLIT_FLAG_ROUTE.
+ *
+ * A load row's `kind` is LOAD_START and its LOAD_END carries the same code; a
+ * pause row's `kind` is PAUSE and its RESUME carries the same code.
  */
 struct autosplit_desc {
-	u8 code;            /* 1..255, the Event.code this row describes */
-	u8 kind;            /* the Event.kind it is emitted with; SPLIT for all of them today */
-	u8 flags;           /* AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_ROUTE */
+	u8  code;           /* 1..255, the Event.code this row describes */
+	u8  kind;           /* the Event.kind it is emitted with */
+	u8  flags;          /* AUTOSPLIT_FLAG_DEFAULT, ROUTE, FLAT, NORMALISE */
+	u32 param_us;       /* the FLAT subtraction, or the NORMALISE target */
 	const char *label;  /* at most AUTOSPLIT_LABEL_LEN characters on the wire */
 };
 
@@ -198,7 +203,7 @@ struct game_api {
 	void (*on_tick)(const struct game_hot *hot);
 
 	/*
-	 * Protocol 1.4. The SPLIT reason codes this game's watcher can emit, in the
+	 * Protocol 1.5. The reason codes this game's watcher can emit, in the
 	 * order a client should list them. NULL where the game has no watcher, which
 	 * is what makes AUTOSPLIT_DESCRIBE answer UNSUPPORTED. Static: it never
 	 * depends on the session, so a network thread may call it under the core

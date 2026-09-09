@@ -21,7 +21,7 @@ const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Eight reads every tick and four staggered slow ones:
+ * Nine reads every tick and four staggered slow ones:
  *
  *   0  inputs   pad +0x00, analogs +0x1DC                             every tick
  *   1  state    QE offset +0x000, planet +0x178, bolts +0x21C,        every tick
@@ -32,15 +32,16 @@ const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
  *   5  neffy    the Biobliterator's health bar                        every tick
  *   6  chunk    the loaded chunk                                      every tick
  *   7  guise    the Tyhrraguise unlock byte                           every tick
- *   8  ship colour                                                   every 8th
- *   9  file time                                                     every 8th
- *  10  savefile helper byte and its request bytes                     every 8th
- *  11  chargeboot colour words                                       every 8th
+ *   8  loadscr  the loading-screen id, low byte                       every tick
+ *   9  ship colour                                                   every 8th
+ *  10  file time                                                     every 8th
+ *  11  savefile helper byte and its request bytes                     every 8th
+ *  12  chargeboot colour words                                       every 8th
  *
- * Blocks 3 to 7 belong to the autosplit watcher and are per-tick because a split
+ * Blocks 3 to 8 belong to the autosplit watcher and are per-tick because a split
  * has to reach the PC in milliseconds; block 3 also carries the health readout
  * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
- * so a tick costs eight reads plus at most one: 8.5 on average, nine at worst.
+ * so a tick costs nine reads plus at most one: 9.5 on average, ten at worst.
  */
 static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_HOT_INPUTS_ADDR, RAC3_HOT_INPUTS_LEN, 1, 0 },
@@ -51,6 +52,7 @@ static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_NEFFY_HEALTH,    4,                   1, 0 },
 	{ RAC3_LOADED_CHUNK,    4,                   1, 0 },
 	{ RAC3_TYHRRAGUISE,     1,                   1, 0 },
+	{ RAC3_LOADING_SCREEN,  1,                   1, 0 },
 	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
 	{ RAC3_FILE_TIME,       4,                   8, 1 },
 	{ RAC3_SF_HELPER,       8,                   8, 2 },
@@ -65,10 +67,11 @@ static const struct game_hot_block rac3_hot[] = {
 #define HOT_NEFFY    5
 #define HOT_CHUNK    6
 #define HOT_GUISE    7
-#define HOT_SHIP     8
-#define HOT_TIME     9
-#define HOT_SAVEFILE 10
-#define HOT_COLOURS  11
+#define HOT_LOADSCR  8
+#define HOT_SHIP     9
+#define HOT_TIME     10
+#define HOT_SAVEFILE 11
+#define HOT_COLOURS  12
 
 #define OFF_ANALOGS   (RAC3_ANALOGS        - RAC3_HOT_INPUTS_ADDR)   /* 0x1DC */
 
@@ -96,6 +99,7 @@ struct rac3_as_state {
 	u32 neffy_phase;
 	u32 chunk;
 	u8  guise;
+	u8  loading_screen;
 };
 
 static struct rac3_as_state g_as;
@@ -169,6 +173,9 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_NEFFY] != NULL) g_as.neffy_health = bef32_get(blocks[HOT_NEFFY]);
 	if (blocks[HOT_CHUNK] != NULL) g_as.chunk        = be32_get(blocks[HOT_CHUNK]);
 	if (blocks[HOT_GUISE] != NULL) g_as.guise        = blocks[HOT_GUISE][0];
+
+	if (blocks[HOT_LOADSCR] != NULL)
+		g_as.loading_screen = blocks[HOT_LOADSCR][0];
 }
 
 /* --------------------------------------------------------------- patches */
@@ -220,8 +227,13 @@ int rac3_arm_fast_loads(void)
  * *setting* is emitted anyway with its own reason code, because the client owns
  * the settings; everything it gates on game state is a condition below. The
  * split-route bookkeeping (vars.SplitRoute, vars.SplitCount, STRICT_ORDER) is
- * the client's business, and the long-load game-time adjustment is not ported:
- * qwark keeps no timer.
+ * the client's business.
+ *
+ * The long load is not: the script took a second off game time whenever the
+ * loading screen became 1, unless either end of the trip was one of the five
+ * planets whose loading screen is a different one that only looks long. That is
+ * code 6, a LOAD_START with FLAT, emitted under exactly that condition, and a
+ * LOAD_END when the screen leaves 1 so a client can draw the interval.
  */
 static struct rac3_as_state g_as_prev;
 static int g_as_primed;
@@ -229,6 +241,20 @@ static int g_as_primed;
 /* vars.biobliterator and vars.korosTBs. */
 static int g_biobliterator;
 static int g_koros_bolts;
+
+/* vars.originPlanet, and whether the load in progress was counted as long. */
+static u8  g_origin_planet;
+static int g_long_load_open;
+
+/* vars.llIgnorePlanets, as a test rather than a 37-entry table. */
+static int rac3_ll_ignored(u8 planet)
+{
+	return planet == RAC3_LL_IGNORE_LAUNCHSITE ||
+	       planet == RAC3_LL_IGNORE_METRO ||
+	       planet == RAC3_LL_IGNORE_AQ_CLANK ||
+	       planet == RAC3_LL_IGNORE_AQ_SEWERS ||
+	       planet == RAC3_LL_IGNORE_TYHRRA;
+}
 
 static void rac3_autosplit_tick(void)
 {
@@ -239,6 +265,30 @@ static void rac3_autosplit_tick(void)
 		g_as_prev = g_as;
 		g_as_primed = 1;
 		return;
+	}
+
+	/*
+	 * The script's origin tracking, verbatim: the planet you left when a planet
+	 * change is under way, and the planet you are standing on when one is not.
+	 */
+	if (g_as.planet != p->planet && g_as.dest_planet != 0)
+		g_origin_planet = p->planet;
+	else if (g_as.planet == p->planet && g_as.dest_planet == 0)
+		g_origin_planet = g_as.planet;
+
+	/* The long load, both ends of it. */
+	if (g_as.loading_screen == RAC3_LOADING_LONG &&
+	    p->loading_screen != RAC3_LOADING_LONG) {
+		if (!rac3_ll_ignored(g_as.dest_planet) &&
+		    !rac3_ll_ignored(g_origin_planet)) {
+			g_long_load_open = 1;
+			autosplit_emit(AUTOSPLIT_LOAD_START, R3_AS_LONG_LOAD,
+			               g_as.dest_planet);
+		}
+	} else if (g_as.loading_screen != RAC3_LOADING_LONG &&
+	           p->loading_screen == RAC3_LOADING_LONG && g_long_load_open) {
+		g_long_load_open = 0;
+		autosplit_emit(AUTOSPLIT_LOAD_END, R3_AS_LONG_LOAD, g_as.dest_planet);
 	}
 
 	/* The script's update block, which runs before start/split/reset. */
@@ -296,18 +346,26 @@ static void rac3_autosplit_tick(void)
 
 #define DF AUTOSPLIT_FLAG_DEFAULT
 #define RT AUTOSPLIT_FLAG_ROUTE
+#define FL AUTOSPLIT_FLAG_FLAT
 
-/* The script's settings.Add list, in its order; DF is what it defaults to true. */
+/*
+ * The script's settings.Add list, in its order; DF is what it defaults to true.
+ * The long-load row is last and is not a split: DF because the second the script
+ * took off was not a setting either.
+ */
 static const struct autosplit_desc rac3_autosplits[] = {
-	{ R3_AS_PLANET,        AUTOSPLIT_SPLIT, DF | RT, "Planet entered" },
-	{ R3_AS_BIOBLITERATOR, AUTOSPLIT_SPLIT, DF,      "Biobliterator defeated" },
-	{ R3_AS_LDF,           AUTOSPLIT_SPLIT, 0,       "LDF entered" },
-	{ R3_AS_KOROS_BOLT,    AUTOSPLIT_SPLIT, 0,       "Koros bolt 2" },
-	{ R3_AS_TYHRRAGUISE,   AUTOSPLIT_SPLIT, 0,       "Tyhrraguise obtained" }
+	{ R3_AS_PLANET,        AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
+	{ R3_AS_BIOBLITERATOR, AUTOSPLIT_SPLIT,      DF,      0, "Biobliterator defeated" },
+	{ R3_AS_LDF,           AUTOSPLIT_SPLIT,      0,       0, "LDF entered" },
+	{ R3_AS_KOROS_BOLT,    AUTOSPLIT_SPLIT,      0,       0, "Koros bolt 2" },
+	{ R3_AS_TYHRRAGUISE,   AUTOSPLIT_SPLIT,      0,       0, "Tyhrraguise obtained" },
+	{ R3_AS_LONG_LOAD,     AUTOSPLIT_LOAD_START, DF | FL, RAC3_LONG_LOAD_US,
+	  "Long load" }
 };
 
 #undef DF
 #undef RT
+#undef FL
 
 static const struct autosplit_desc *rac3_autosplit_describe(u8 *count)
 {
@@ -324,6 +382,8 @@ static void rac3_on_enter(void)
 	g_as_primed = 0;
 	g_biobliterator = 0;
 	g_koros_bolts = 0;
+	g_origin_planet = 0;
+	g_long_load_open = 0;
 }
 
 static void rac3_on_tick(const struct game_hot *hot)

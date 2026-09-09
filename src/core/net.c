@@ -827,7 +827,8 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			reply[off + 1] = rows[i].kind;
 			reply[off + 2] = rows[i].flags;
 			reply[off + 3] = 0;
-			put_fixed(reply + off + 4, AUTOSPLIT_LABEL_LEN, rows[i].label);
+			be32_put(reply + off + 4, rows[i].param_us);
+			put_fixed(reply + off + 8, AUTOSPLIT_LABEL_LEN, rows[i].label);
 			off += AUTOSPLIT_DESC_SIZE;
 		}
 

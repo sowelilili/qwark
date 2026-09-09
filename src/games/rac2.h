@@ -113,15 +113,17 @@
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
 
-/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+/* ------------------------------------------------- autosplit watcher, rev 1.5 */
 
 /*
  * rac2.cs AutosplitterAddresses, in the order rac2-autosplitter.asl reads them.
  * The game state word (0x156B064), the destination planet (0x156B054), the
- * Protopet health bar (0x133EE7C), the load-screen type and the Endako *entry*
- * flag (0x15625E3) are all read by the old client and used by none of the
- * script's start, reset or split conditions, so they are not read here: the
- * Endako entry split is decided by the hero type instead.
+ * Protopet health bar (0x133EE7C) and the Endako *entry* flag (0x15625E3) are
+ * all read by the old client and used by none of the script's start, reset or
+ * split conditions, so they are not read here: the Endako entry split is decided
+ * by the hero type instead. The load-screen type (RAC2_LOADSCREEN_TYPE, already
+ * in the inputs hot block) is read, because the script's `update` block subtracts
+ * a fixed amount of game time every time it changes.
  */
 #define RAC2_CHUNK             0x157CE03u  /* rac2.cs currentChunk */
 #define RAC2_YEEDIL_SCENE      0x1478991u  /* 6 once the Protopet cutscene starts */
@@ -142,7 +144,7 @@
 #define RAC2_PLANET_YEEDIL   20
 #define RAC2_PLANET_MUSEUM   21   /* never split on entering the Insomniac Museum */
 
-/* Split reason codes. Code 1 is "planet entered" in every game. */
+/* Reason codes. Code 1 is "planet entered" in every game. */
 #define R2_AS_PLANET        1
 #define R2_AS_PROTOPET      2
 #define R2_AS_A2_CLANK      3
@@ -151,6 +153,26 @@
 #define R2_AS_ENDAKO_ENTER  6
 #define R2_AS_ENDAKO_EXIT   7
 #define R2_AS_TABORA_CAVES  8
+
+/*
+ * The three load transitions the script's `update` block subtracted for, one
+ * code each because each is worth a different number of frames. They are
+ * LOAD_START events, not splits.
+ */
+#define R2_AS_LOAD_SLIDE    9    /* loadScreen becomes 0: right to left, 1 frame */
+#define R2_AS_LOAD_CURVED   10   /* becomes 1: the curved wipe, 9 frames */
+#define R2_AS_LOAD_WIPE     11   /* becomes 3: top to bottom, 21 frames */
+
+/* What the script subtracted, in microseconds, at 60 frames per second. */
+#define RAC2_LOAD_SLIDE_US    16667u    /* 1/60 s */
+#define RAC2_LOAD_CURVED_US   150000u   /* 9/60 s */
+#define RAC2_LOAD_WIPE_US     350000u   /* 21/60 s */
+#define RAC2_PROTOPET_US      116667u   /* 7/60 s, taken at the Protopet split */
+
+/* The three load-screen ids the script named; every other value costs nothing. */
+#define RAC2_LOADSCREEN_SLIDE  0
+#define RAC2_LOADSCREEN_CURVED 1
+#define RAC2_LOADSCREEN_WIPE   3
 
 /*
  * Fingerprint: the original instruction at the fast-load patch site, 0x4BFFEA69

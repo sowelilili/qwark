@@ -10,6 +10,9 @@
  * Revision 1.4: the autosplit event stream. AUTOSPLIT_EVENTS and
  * AUTOSPLIT_DESCRIBE in the 0x00A0 block, plus a 20-byte 'QE' datagram pushed
  * to every telemetry subscriber the moment an event happens.
+ * Revision 1.5: the Event's second word is `time_ms` rather than a tick count,
+ * the kinds gained LOAD_START and LOAD_END, and EventDesc grew to 32 bytes with
+ * a `param_us` that carries the game-time adjustment the old ASL scripts made.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -25,7 +28,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             4
+#define QWARK_BUILD             5
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -151,34 +154,56 @@
 #define QWARK_MAX_BLOB       64
 #define QWARK_MAX_PLANETS    64
 
-/* ------------------------------------------------------- autosplit, rev 1.4 */
+/* ------------------------------------------------------- autosplit, rev 1.5 */
 
 /*
  * qwark detects, the client decides. The tick thread watches game memory and
  * emits run events unconditionally: it keeps no timer, applies no user setting
  * and knows nothing about LiveSplit. Every candidate goes out and the PC picks.
+ *
+ * The one thing qwark does not leave to taste is *timing*: the old ASL scripts
+ * adjusted game time at fixed places, and a run that does not reproduce those
+ * adjustments to the microsecond is a different time. Those adjustments travel
+ * as the FLAT and NORMALISE flags on an EventDesc row, and a client applies them
+ * whenever the autosplitter is on, setting or no setting.
  */
 
 /* Event.kind */
-#define AUTOSPLIT_START   1
-#define AUTOSPLIT_SPLIT   2
-#define AUTOSPLIT_RESET   3
-#define AUTOSPLIT_PAUSE   4
-#define AUTOSPLIT_RESUME  5
+#define AUTOSPLIT_START      1
+#define AUTOSPLIT_SPLIT      2
+#define AUTOSPLIT_RESET      3
+#define AUTOSPLIT_PAUSE      4
+#define AUTOSPLIT_RESUME     5
+#define AUTOSPLIT_LOAD_START 6
+#define AUTOSPLIT_LOAD_END   7
 
 /*
- * Event.code is per game and only ever set on a SPLIT; every other kind carries
- * 0. Code 1 is reserved in every game for "planet entered", whose arg is the
- * planet index in that game's PLANET_LIST order.
+ * Event.code is per game and carried by every kind but START and RESET, which
+ * are always code 0. A LOAD_END carries the same code as the LOAD_START it
+ * closes, and a RESUME the same code as its PAUSE. Code 1 is reserved in every
+ * game for "planet entered", whose arg is the planet index in that game's
+ * PLANET_LIST order.
  */
 #define AUTOSPLIT_CODE_PLANET 1
 
 /* EventDesc.flags */
-#define AUTOSPLIT_FLAG_DEFAULT 0x01   /* a client enables this one out of the box */
-#define AUTOSPLIT_FLAG_ROUTE   0x02   /* a planet route applies; only code 1 sets it */
+#define AUTOSPLIT_FLAG_DEFAULT   0x01 /* a client enables this one out of the box */
+#define AUTOSPLIT_FLAG_ROUTE     0x02 /* a planet route applies; only code 1 sets it */
+/*
+ * The two timing flags, revision 1.5. At most one of them is set on a row.
+ *
+ *   FLAT       subtract param_us of game time when the described event fires;
+ *              on a SPLIT row, before the split is taken.
+ *   NORMALISE  time the gap from this event to the one that closes it (the
+ *              matching LOAD_END, or the RESUME after a PAUSE) and subtract
+ *              max(0, duration - param_us), so the interval always costs
+ *              exactly param_us however long it really took.
+ */
+#define AUTOSPLIT_FLAG_FLAT      0x04
+#define AUTOSPLIT_FLAG_NORMALISE 0x08
 
 #define AUTOSPLIT_EVENT_SIZE   16
-#define AUTOSPLIT_DESC_SIZE    28
+#define AUTOSPLIT_DESC_SIZE    32
 #define AUTOSPLIT_LABEL_LEN    24
 #define AUTOSPLIT_RING_SLOTS   64
 

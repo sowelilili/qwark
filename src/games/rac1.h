@@ -49,13 +49,12 @@
 #define RAC1_MOBY_TABLE_END   0x0A390A8u
 #define RAC1_MOBY_STRIDE      0x100u      /* sizeof(Moby) from rac1.cs */
 
-/* ------------------------------------------------- autosplit watcher, rev 1.4 */
+/* ------------------------------------------------- autosplit watcher, rev 1.5 */
 
 /*
  * rac1.cs AutosplitterAddresses, in the order rac1-autosplitter.asl reads them
  * back. The x and y floats are the first two words of RAC1_COORDS, which the hot
- * block already decodes, and the loading-screen id is only ever used by the
- * script's isLoading block, so it is not read here.
+ * block already decodes.
  */
 #define RAC1_DEST_PLANET      (RAC1_LOAD_PLANET + 4)  /* 0xA10704, low byte at +3 */
 #define RAC1_GAME_STATE       0xA10708u
@@ -64,10 +63,18 @@
 #define RAC1_KALEBO_BOLT      0xA0CA75u   /* inside RAC1_GOLD_BOLTS, Kalebo3 +1 */
 
 /*
+ * rac1.cs loadingScreenID, whose low byte the script's isLoading block read: the
+ * game is on a loading screen whenever this is anything but 4. Protocol 1.5
+ * turns that into a LOAD_START / LOAD_END pair the client normalises.
+ */
+#define RAC1_LOADING_SCREEN   0x9645CBu   /* low byte of the word at 0x9645C8 */
+#define RAC1_LOADING_IDLE     4           /* what it reads when nothing is loading */
+
+/*
  * The gold-bolt / skill-point / item / infobot counters are not the game's: the
  * "gb_sp_as_helper" mod keeps them, one word each, and the old client read the
- * low byte of every word. Without that mod loaded they simply never change,
- * which is exactly what the old autosplitter did too.
+ * low byte of every word. qwark embeds that mod (see rac1.c) and writes it on
+ * every entry, so codes 4 to 7 work without anyone loading anything.
  */
 #define RAC1_AS_COUNTERS      0xAFF000u
 #define RAC1_AS_GOLDBOLTS     0xAFF000u
@@ -75,11 +82,30 @@
 #define RAC1_AS_ITEMS         0xAFF020u
 #define RAC1_AS_INFOBOTS      0xAFF030u
 
+/*
+ * gb_sp_as_helper, from racman's mods/NPEA00385/gb_sp_as_helper/patch.txt: four
+ * code caves and the four words that branch into them, plus the three counter
+ * words its patch.txt zeroes. The caves are the .bin files, embedded in rac1.c.
+ */
+#define RAC1_HELPER_CAVE_GB   0x4F5BE4u   /* gold_bolt.bin, 156 bytes */
+#define RAC1_HELPER_CAVE_SP   0x4F5CACu   /* skillpoint.bin, 68 bytes */
+#define RAC1_HELPER_CAVE_ITEM 0x4F5D10u   /* item.bin, 64 bytes */
+#define RAC1_HELPER_CAVE_IB   0x4F5D74u   /* infobots.bin, 68 bytes */
+
+#define RAC1_HELPER_HOOK_GB   0x708EC8u   /* -> 0x004F5BE4 */
+#define RAC1_HELPER_HOOK_SP   0x11B7C0u   /* -> 0x483DA4ED */
+#define RAC1_HELPER_HOOK_ITEM 0x112F08u   /* -> 0x483E2E09 */
+#define RAC1_HELPER_HOOK_IB   0x112CD0u   /* -> 0x484F5D77 */
+
+#define RAC1_HELPER_ZERO_1    0xAFF000u
+#define RAC1_HELPER_ZERO_2    0xAFF004u
+#define RAC1_HELPER_ZERO_3    0xAFF010u
+
 /* The two index-less items the script watches beside the item counter. */
 #define RAC1_ITEM_CODEBOT     (RAC1_MOVIE_FLAGS + 1)   /* 0x96BFF1 */
 #define RAC1_ITEM_RARI        (RAC1_MOVIE_FLAGS + 2)   /* 0x96BFF2 */
 
-/* Split reason codes. Code 1 is "planet entered" in every game. */
+/* Reason codes. Code 1 is "planet entered" in every game. */
 #define R1_AS_PLANET      1
 #define R1_AS_VELDIN      2
 #define R1_AS_DREK_BUTTON 3
@@ -87,6 +113,7 @@
 #define R1_AS_SKILL_POINT 5
 #define R1_AS_ITEM        6
 #define R1_AS_INFOBOT     7
+#define R1_AS_LOADING     8   /* LOAD_START / LOAD_END, not a split */
 
 /* Jankpot, from JankpotForm.cs. */
 #define RAC1_JANKPOT_STATE    0xA15F2Cu   /* non-zero while bolt mining is on */
