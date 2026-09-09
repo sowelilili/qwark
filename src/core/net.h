@@ -13,6 +13,14 @@
 
 int  net_init(void);
 
+/*
+ * Moves the command port off QWARK_PORT. Call before net_accept_thread starts.
+ * The SPRX never does: the console always listens on 9673. qwark-rpcs3.exe
+ * offers --port so two emulator sessions can run side by side on one PC.
+ */
+void net_set_port(u16 port);
+u16  net_port(void);
+
 /* The accept loop. Runs until net_stop(). */
 void net_accept_thread(void *arg);
 

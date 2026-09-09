@@ -46,6 +46,26 @@ u32  plat_game_pid(void);
 /* NUL-terminated title id ("NPEA00385") into out. Returns 1 on success. */
 int  plat_game_title(char out[16]);
 
+/*
+ * Whether writing an instruction word into the running game actually changes
+ * what the game executes.
+ *
+ * 1 on the PS3 and in the host simulator. 0 under RPCS3: the emulator recompiles
+ * PPU code and keeps running the translated block, so the word changes in memory
+ * and the game carries on executing the old instruction. Rather than pretend a
+ * patch worked, the core refuses everything that depends on one - patch_apply,
+ * FEATURE_SET on a WRITES_CODE feature, a mod with patch words or caves - and
+ * the games skip their embedded helpers. See PROTOCOL.md, SessionInfo flags
+ * bit2 NO_CODE_PATCHES.
+ */
+int  plat_can_patch_code(void);
+
+/*
+ * Non-zero when the "console" is an emulator rather than real hardware, so a
+ * client can say so and soften what it expects. SessionInfo flags bit1.
+ */
+int  plat_is_emulator(void);
+
 /* --------------------------------------------------------------- game memory */
 
 #define PLAT_MEM_MAX 65536u

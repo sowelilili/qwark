@@ -297,8 +297,11 @@ qwark.prx
 qwark.sym
 qwark-host.exe
 qwark-host-root/
+qwark-rpcs3.exe
+qwark-rpcs3-root/
 test/qwark-test.exe
 test/qwark-host-root/
+test/qwark-rpcs3-root/
 
 # qwark build and simulator output
 qwark-host.exe

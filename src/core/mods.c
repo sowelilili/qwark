@@ -412,6 +412,14 @@ static int mods_load_index(int index, int depth)
 	if (!m->used) return ST_NOT_FOUND;
 	if (m->flags & MOD_FLAG_LOADED) return ST_OK;
 	if (m->flags & MOD_FLAG_PARSE_ERROR) return ST_IO_ERROR;
+	/*
+	 * Every mod is patch words, code caves, or both, and neither survives a
+	 * platform that cannot patch code: the caves would land in memory nothing
+	 * ever branches to and the words would change instructions nobody executes.
+	 * Refuse the whole mod rather than write half of it.
+	 */
+	if (!plat_can_patch_code() && (m->def.count > 0 || m->ncaves > 0))
+		return ST_UNSUPPORTED;
 	if (!mem_is_ingame()) return ST_NOT_INGAME;
 
 	rc = load_dependencies(m, depth);

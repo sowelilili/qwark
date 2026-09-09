@@ -1,6 +1,7 @@
 #include "features.h"
 #include "config.h"
 #include "util.h"
+#include "../plat/plat.h"
 
 #include <string.h>
 
@@ -129,6 +130,14 @@ int features_set(u8 id, u32 value)
 	if (g_game == NULL) return ST_UNSUPPORTED;
 	if (f == NULL) return ST_NOT_FOUND;
 
+	/*
+	 * A WRITES_CODE feature is an instruction patch wearing a checkbox, so on a
+	 * platform that cannot patch code it is refused rather than half-applied.
+	 * The client already knows: SessionInfo flags bit2 greys the row.
+	 */
+	if ((f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && !plat_can_patch_code())
+		return ST_UNSUPPORTED;
+
 	if (f->kind == FEATURE_TOGGLE) {
 		if (g_game->set_toggle == NULL) return ST_UNSUPPORTED;
 		rc = g_game->set_toggle(id, value != 0);
@@ -159,6 +168,9 @@ int features_trigger(u8 id)
 	if (f == NULL) return ST_NOT_FOUND;
 	if (f->kind != FEATURE_ACTION) return ST_BAD_ARG;
 	if (g_game->trigger == NULL) return ST_UNSUPPORTED;
+	/* Same rule as features_set: an ACTION that patches code cannot work here. */
+	if ((f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && !plat_can_patch_code())
+		return ST_UNSUPPORTED;
 
 	return g_game->trigger(id);
 }
@@ -199,6 +211,8 @@ int features_options(u8 id, const char * const **options, u8 *count)
 void features_apply_mask(u64 mask)
 {
 	const struct game_describe *d;
+	int can_patch = plat_can_patch_code();
+	u8 skipped = 0;
 	u8 i;
 
 	if (g_game == NULL || g_game->describe == NULL) return;
@@ -213,8 +227,21 @@ void features_apply_mask(u64 mask)
 		/* Never write a LIVE toggle behind the user's back; the game owns it. */
 		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
 		if ((mask & ((u64)1 << f->id)) == 0) continue;
+		/*
+		 * An auto-flagged WRITES_CODE toggle would answer UNSUPPORTED anyway;
+		 * skipping it quietly here keeps the boot path free of noise, and the
+		 * one line below says how many went by.
+		 */
+		if (!can_patch && (f->flags & FEATURE_FLAG_WRITES_CODE) != 0) {
+			skipped++;
+			continue;
+		}
 		features_set(f->id, 1);
 	}
+
+	if (skipped != 0)
+		plat_log("qwark: %d code-patch toggle(s) skipped, this platform cannot patch code",
+		         (int)skipped);
 }
 
 /* -------------------------------------------------------------- DESCRIBE */

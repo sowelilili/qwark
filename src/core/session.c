@@ -637,6 +637,13 @@ static u32 encode_info(u8 *out, u32 cap)
 	memset(out, 0, SESSION_INFO_SIZE);
 
 	if (g_prev.pending) flags |= SESSION_FLAG_PREVIOUS_PENDING;
+	/*
+	 * Revision 1.6. The platform, not the session, decides these two: a client
+	 * greys every WRITES_CODE row from bit2 rather than discovering one refusal
+	 * at a time, and says "RPCS3" rather than "console" from bit1.
+	 */
+	if (plat_is_emulator())      flags |= SESSION_FLAG_EMULATOR;
+	if (!plat_can_patch_code())  flags |= SESSION_FLAG_NO_CODE_PATCHES;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;

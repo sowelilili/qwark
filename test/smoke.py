@@ -22,6 +22,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+sys.path.insert(0, HERE)
+from fake_pine import FakePine  # noqa: E402  the fake RPCS3 IPC server
+
 PORT = 9673
 HOST = "127.0.0.1"
 
@@ -29,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 5
+QWARK_BUILD = 6
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -48,6 +51,7 @@ OP_WATCH_ADD = 0x0032
 OP_WATCH_LIST = 0x0034
 OP_FREEZE_ADD = 0x0035
 OP_FREEZE_LIST = 0x0037
+OP_PATCH_APPLY = 0x0038
 OP_POS_SELECT = 0x0040
 OP_POS_SAVE = 0x0041
 OP_POS_LIST = 0x0043
@@ -73,6 +77,13 @@ ST_BAD_ARG = 3
 ST_UNKNOWN_OP = 6
 
 SESSION_XMB, SESSION_BOOTING, SESSION_INGAME, SESSION_QUITTING = 0, 1, 2, 3
+
+# SessionInfo.flags. Revision 1.6 added the two platform bits: EMULATOR says
+# qwark is driving RPCS3 rather than a console, NO_CODE_PATCHES says every
+# WRITES_CODE feature is refused here and a client should grey those rows.
+SESSION_FLAG_PREVIOUS_PENDING = 0x01
+SESSION_FLAG_EMULATOR = 0x02
+SESSION_FLAG_NO_CODE_PATCHES = 0x04
 
 # Protocol 1.1: sixteen readouts, so SessionInfo is 164 bytes.
 SESSION_INFO_SIZE = 164
@@ -188,9 +199,9 @@ class Client:
 
 
 class Sim:
-    def __init__(self, exe):
+    def __init__(self, exe, args=None):
         self.proc = subprocess.Popen(
-            [exe],
+            [exe] + list(args or []),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -411,16 +422,16 @@ def wait_state(client, want, timeout=6.0, forbid=None):
     return False, info
 
 
-def connect(timeout=10.0):
+def connect(timeout=10.0, port=PORT):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            s = socket.create_connection((HOST, PORT), timeout=5)
+            s = socket.create_connection((HOST, port), timeout=5)
             s.settimeout(10)
             return s
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError("could not connect to qwark-host on %d" % PORT)
+    raise RuntimeError("could not connect to qwark on %d" % port)
 
 
 # ------------------------------------------- the other three games, end to end
@@ -1019,6 +1030,138 @@ def exercise_game(c, sim, spec, udp=None):
     # ------------------------------------------------------ autosplitting
     if udp is not None and spec.get("autosplit"):
         exercise_autosplit(c, udp, name, spec["autosplit"])
+
+
+# ------------------------------------------------------------------- RPCS3
+
+# The RaC1 fingerprint from src/games/rac1.h and rac1.c, in PS3 byte order: the
+# session will not leave BOOTING until it reads these four bytes back.
+RAC1_FP_ADDR = 0x0007F558
+RAC1_FP = bytes([0x30, 0x64, 0x9C, 0xE0])
+
+# A port of its own, so this can run beside the host smoke above.
+RPCS3_PORT = 9674
+
+
+def smoke_rpcs3(exe):
+    """qwark-rpcs3.exe against the fake PINE server: flags, boot, DESCRIBE."""
+    if not os.path.exists(exe):
+        check(False, "%s exists, run build-host.sh first" % os.path.basename(exe))
+        return
+
+    root = os.path.join(HERE, "qwark-rpcs3-root")
+    shutil.rmtree(root, ignore_errors=True)
+
+    pine = FakePine()
+    pine.poke(RAC1_FP_ADDR, RAC1_FP)
+
+    sim = Sim(exe, ["--pine-port", str(pine.port),
+                    "--port", str(RPCS3_PORT),
+                    "--root", root])
+    sock = None
+
+    try:
+        sock = connect(port=RPCS3_PORT)
+        c = Client(sock)
+
+        # ------------------------------------------------------------ hello
+        status, body = c.call(OP_HELLO, bytes([1]))
+        info = parse_session_info(body) if status == ST_OK else None
+        check(status == ST_OK and len(body) == SESSION_INFO_SIZE,
+              "rpcs3: HELLO returns a 164-byte SessionInfo", (status, len(body)))
+        check(info and info["build"] == QWARK_BUILD,
+              "rpcs3: it reports build %d" % QWARK_BUILD,
+              info["build"] if info else None)
+        check(info and (info["flags"] & SESSION_FLAG_EMULATOR) != 0,
+              "rpcs3: flags bit1 EMULATOR is set",
+              hex(info["flags"]) if info else None)
+        check(info and (info["flags"] & SESSION_FLAG_NO_CODE_PATCHES) != 0,
+              "rpcs3: flags bit2 NO_CODE_PATCHES is set",
+              hex(info["flags"]) if info else None)
+        check(info and info["state"] == SESSION_XMB,
+              "rpcs3: with no game up the session is in XMB",
+              info["state"] if info else None)
+
+        # ------------------------------------------------------------- boot
+        # The fake emulator answers Running with a title id, and serves the
+        # fingerprint, which is everything the session machine needs.
+        pine.boot("NPEA00385", "Ratchet & Clank")
+        ok, info = wait_state(c, SESSION_INGAME)
+        check(ok, "rpcs3: the session reaches INGAME once PINE says Running", info)
+        check(info and info["title"] == "NPEA00385",
+              "rpcs3: the title id came from MsgID", info)
+        check(info and info["game"] == 1,
+              "rpcs3: the fingerprint identified RaC1", info)
+        check(info and (info["flags"] & SESSION_FLAG_NO_CODE_PATCHES) != 0,
+              "rpcs3: the platform flags survive into the game session")
+
+        # --------------------------------------------------------- describe
+        status, body = c.call(OP_DESCRIBE)
+        code_rows = []
+        if check(status == ST_OK, "rpcs3: DESCRIBE answers OK", status):
+            game, groups, readouts, features, consumed = parse_describe(body)
+            check(consumed == len(body), "rpcs3: DESCRIBE parses exactly",
+                  (consumed, len(body)))
+            check(game == 1, "rpcs3: DESCRIBE says RaC1", game)
+            check(len(features) > 10, "rpcs3: it lists the RaC1 features",
+                  len(features))
+            code_rows = [f for f in features
+                         if f["flags"] & FEATURE_FLAG_WRITES_CODE]
+            check(len(code_rows) > 0,
+                  "rpcs3: DESCRIBE still lists the WRITES_CODE rows, unchanged",
+                  len(code_rows))
+
+        # ------------------------------------------------ what is refused
+        if code_rows:
+            row = code_rows[0]
+            status, _ = c.call(OP_FEATURE_SET,
+                               struct.pack(">BI", row["id"], 1))
+            check(status == ST_UNSUPPORTED,
+                  "rpcs3: FEATURE_SET on '%s' is UNSUPPORTED" % row["label"],
+                  status)
+
+        status, _ = c.call(OP_PATCH_APPLY,
+                           struct.pack(">HH", 1, 0) +
+                           struct.pack(">II", 0x00500000, 0x60000000))
+        check(status == ST_UNSUPPORTED, "rpcs3: PATCH_APPLY is UNSUPPORTED", status)
+
+        # --------------------------------------------- what still works
+        status, _ = c.call(OP_MEM_WRITE,
+                           struct.pack(">I", 0x00800000) + b"\xDE\xAD\xBE\xEF")
+        check(status == ST_OK, "rpcs3: MEM_WRITE still works", status)
+        check(pine.peek(0x00800000, 4) == b"\xDE\xAD\xBE\xEF",
+              "rpcs3: and the bytes reached the emulator in PS3 order",
+              pine.peek(0x00800000, 4).hex())
+
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", 0x00800000, 4))
+        check(status == ST_OK and body == b"\xDE\xAD\xBE\xEF",
+              "rpcs3: MEM_READ hands the same bytes back",
+              (status, body.hex() if body else None))
+
+        # A read of the fingerprint proves the byte order end to end: the
+        # client sees the instruction word, not its reverse.
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_FP_ADDR, 4))
+        check(status == ST_OK and body == RAC1_FP,
+              "rpcs3: the RaC1 fingerprint reads back as 30 64 9c e0",
+              body.hex() if body else None)
+
+        # ------------------------------------------------------ the game goes
+        pine.shutdown_game()
+        ok, info = wait_state(c, SESSION_XMB)
+        check(ok, "rpcs3: stopping the emulated game returns the session to XMB",
+              info)
+
+        sock.close()
+        sock = None
+
+    except Exception as exc:  # noqa: BLE001
+        check(False, "rpcs3: the smoke run completed without an exception",
+              repr(exc))
+    finally:
+        if sock is not None:
+            sock.close()
+        sim.stop()
+        pine.stop()
 
 
 def main():
@@ -1688,6 +1831,10 @@ def main():
     finally:
         udp.close()
         sim.stop()
+
+    # The RPCS3 half: the same core over PINE, against a fake RPCS3.
+    print()
+    smoke_rpcs3(os.path.join(os.path.dirname(exe) or ROOT, "qwark-rpcs3.exe"))
 
     print()
     print("%d passed, %d failed" % (passed, failed))

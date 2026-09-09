@@ -291,6 +291,14 @@ int patch_apply(const struct patch_def *def)
 	/* A second apply is a no-op. It must never re-capture the originals. */
 	if (patch_is_applied(def)) return ST_OK;
 
+	/*
+	 * Under RPCS3 the PPU code is already recompiled, so writing an instruction
+	 * word changes memory and nothing else. Refusing here is what makes every
+	 * caller refuse: FEATURE_SET on a WRITES_CODE toggle, MOD_LOAD of a mod with
+	 * patch words, PATCH_APPLY from a client and the games' own helpers.
+	 */
+	if (!plat_can_patch_code()) return ST_UNSUPPORTED;
+
 	if (!g_ingame || g_pid == 0) return ST_NOT_INGAME;
 
 	for (i = 0; i < QWARK_MAX_PATCHES; i++) {

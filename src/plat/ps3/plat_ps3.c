@@ -62,6 +62,20 @@ int plat_game_title(char out[16])
 	return out[0] != 0;
 }
 
+/*
+ * Real hardware executes what is in memory, so an instruction patch is a plain
+ * write and everything that depends on one works.
+ */
+int plat_can_patch_code(void)
+{
+	return 1;
+}
+
+int plat_is_emulator(void)
+{
+	return 0;
+}
+
 /* ------------------------------------------------------------ game memory */
 
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)

@@ -414,6 +414,18 @@ static void rac1_install_helper(void)
 	unsigned i;
 
 	/*
+	 * The helper is four code caves and four branches into them, so it does
+	 * nothing at all on a platform that cannot patch code (RPCS3). Autosplit
+	 * codes 4 to 7 - gold bolt, skill point, item, infobot - read counters only
+	 * this mod maintains, so they simply never fire there; every other RaC1
+	 * split is a plain memory read and is unaffected.
+	 */
+	if (!plat_can_patch_code()) {
+		plat_log("rac1: autosplit helper skipped, this platform cannot patch code");
+		return;
+	}
+
+	/*
 	 * Caves first, then the words, the way mods.c orders them: the words branch
 	 * into the caves, so the target exists before anything can jump to it.
 	 */

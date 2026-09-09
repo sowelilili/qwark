@@ -13,6 +13,7 @@
  * Revision 1.5: the Event's second word is `time_ms` rather than a tick count,
  * the kinds gained LOAD_START and LOAD_END, and EventDesc grew to 32 bytes with
  * a `param_us` that carries the game-time adjustment the old ASL scripts made.
+ * Revision 1.6: SessionInfo flags bit1 EMULATOR and bit2 NO_CODE_PATCHES.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -28,7 +29,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             5
+#define QWARK_BUILD             6
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -226,6 +227,14 @@
 
 /* SessionInfo.flags */
 #define SESSION_FLAG_PREVIOUS_PENDING 0x01
+/*
+ * Revision 1.6. bit1 says qwark is driving an emulator rather than a console;
+ * bit2 says this platform refuses code patches, so a client greys every
+ * WRITES_CODE row instead of offering a toggle that would answer UNSUPPORTED.
+ * Both are set by the PINE (RPCS3) backend and by nothing else.
+ */
+#define SESSION_FLAG_EMULATOR         0x02
+#define SESSION_FLAG_NO_CODE_PATCHES  0x04
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

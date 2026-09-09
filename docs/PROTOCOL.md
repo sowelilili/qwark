@@ -5,6 +5,7 @@ Revision 1.2 (2026-09-08): Feature flags bit2 SAVE_ASIDE and bit3 LOAD_ASIDE mar
 Revision 1.3 (2026-09-08): Feature flags bit4 LIVE marks a TOGGLE whose state qwark reads back out of game memory, and UNLOCK_LIST now carries four `UnlockFieldDesc` rows that name and type its four per-entry value slots.
 Revision 1.4 (2026-09-09): the autosplit event stream. AUTOSPLIT_EVENTS and AUTOSPLIT_DESCRIBE in the 0x00A0 block, and a 20-byte `QE` datagram pushed to every telemetry subscriber the moment a run event happens. See section 8.
 Revision 1.5 (2026-09-09): autosplit timing. The Event's second word is `time_ms` rather than a tick count, the kinds gained 6 LOAD_START and 7 LOAD_END, and EventDesc is 32 bytes with a `param_us` and two new flags, FLAT and NORMALISE, that carry the game-time adjustments the old ASL scripts made. See section 8.
+Revision 1.6 (2026-09-09): SessionInfo `flags` gained bit1 EMULATOR and bit2 NO_CODE_PATCHES, so a client can tell that qwark is driving RPCS3 through PINE rather than a console and that every WRITES_CODE feature is refused there. See section 3.2.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -45,7 +46,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 4 (see below)
+u8   qwark_version      module build number, currently 6 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -54,6 +55,8 @@ u32  generation         incremented every time a game enters BOOTING
 u32  tick               tick-thread counter, 120 Hz
 char title_id[12]       e.g. "NPEA00385"
 u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is waiting (section 4.1)
+                        bit1 EMULATOR: qwark is driving an emulator, not a console (section 3.2)
+                        bit2 NO_CODE_PATCHES: this platform refuses code patches (section 3.2)
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo
@@ -78,6 +81,29 @@ u32  mod_previous       bit i set = mod i was loaded before the last same-game r
 Retiring a feature leaves its id behind for good: ids are the wire contract for the toggle bitmaps, nothing is renumbered, and a client that still knows a retired id simply never sees it in DESCRIBE again.
 
 A client ships knowing the build it was developed against. When the console reports a *lower* `qwark_version` than that, the client warns the user that the SPRX on the console is out of date and should be re-uploaded; DESCRIBE still answers, so the client keeps working against whatever tables the older module actually has. A *higher* number is not an error: the console is newer than the client, and DESCRIBE remains the authority on what exists.
+
+### 3.2 `flags` bit1 EMULATOR and bit2 NO_CODE_PATCHES (revision 1.6)
+
+qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC server instead of a console through PS3MAPI. The core, the game tables and every opcode in this document are the same; two things about the platform are not, and both travel in `flags`.
+
+**bit1 EMULATOR** is set when the thing on the other side is an emulator. It is cosmetic: say "RPCS3" rather than "console" and do not offer to upload an SPRX.
+
+**bit2 NO_CODE_PATCHES** is not cosmetic. RPCS3 recompiles PPU code ahead of execution, so writing an instruction word changes memory and the game carries on running the old instruction. Rather than let a checkbox lie, qwark refuses everything that depends on a code patch:
+
+| Request | Answer when bit2 is set |
+|---|---|
+| FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED` |
+| PATCH_APPLY | `UNSUPPORTED` |
+| MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED` |
+
+Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction.
+
+DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same ids, labels, groups and flags. A client greys them itself from bit2 rather than discovering one refusal at a time, so the same DESCRIBE parsing works against both platforms and a client built before this revision still functions, it simply sees the refusals instead of predicting them.
+
+Two side effects a client should know about, both inside qwark rather than on the wire:
+
+- Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
+- The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo.
 
 ## 4. Telemetry packet (UDP)
 

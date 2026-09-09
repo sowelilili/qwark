@@ -302,6 +302,14 @@ static int g_as_primed;
 static int g_as_paused;
 static int g_as_resume_due;
 
+/*
+ * Whether on_enter got the loading hook in. It is a code patch, so on RPCS3 it
+ * is not there and RAC4_LOADING_VAL never turns 0xFF; without it the RESUME
+ * fires on the first tick back INGAME instead of on the SCE logo. That is a few
+ * seconds early against a real console, which is why it is only the fallback.
+ */
+static int g_loading_hook_on;
+
 static void rac4_autosplit_tick(void)
 {
 	const struct rac4_as_state *p = &g_as_prev;
@@ -321,7 +329,15 @@ static void rac4_autosplit_tick(void)
 	if (g_as_resume_due) {
 		u8 logo = 0;
 
-		if (mem_read_u8(RAC4_LOADING_VAL, &logo) == ST_OK && logo == 0xFF) {
+		if (!g_loading_hook_on) {
+			/*
+			 * No hook, no 0xFF to wait for: resume as soon as the session is
+			 * back INGAME, or the client's timer stays stopped for ever.
+			 */
+			g_as_resume_due = 0;
+			g_as_paused = 0;
+			autosplit_emit(AUTOSPLIT_RESUME, R4_AS_QUIT, 0);
+		} else if (mem_read_u8(RAC4_LOADING_VAL, &logo) == ST_OK && logo == 0xFF) {
 			mem_write_u8(RAC4_LOADING_VAL, 0);
 			g_as_resume_due = 0;
 			g_as_paused = 0;
@@ -436,12 +452,25 @@ static void rac4_on_enter(void)
 	 * The loading hook is the same deal and goes in beside it: it is what tells
 	 * the watcher the game is past the SCE logo and really playable again, which
 	 * is where a RESUME belongs. Its byte is cleared for the same reason.
+	 *
+	 * Neither goes in on a platform that cannot patch code. The session then
+	 * falls back to the process-vanished path for the quit, which still reaches
+	 * on_quit and still emits the PAUSE, and the RESUME above fires on the way
+	 * back in rather than on the logo.
 	 */
+	g_loading_hook_on = 0;
+
+	if (!plat_can_patch_code()) {
+		plat_log("rac4: quit and loading hooks skipped, this platform cannot patch code");
+		return;
+	}
+
 	patch_apply(&rac4_quit_hook);
 	mem_write_u8(RAC4_QUIT_FLAG, 0);
 
 	patch_apply(&rac4_loading_hook);
 	mem_write_u8(RAC4_LOADING_VAL, 0);
+	g_loading_hook_on = 1;
 }
 
 /*

@@ -32,11 +32,43 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `qwark.log` | state transitions, when `log = 1` |
 
+## RPCS3
+
+The same core also runs on the PC as `qwark-rpcs3.exe`, driving [RPCS3](https://rpcs3.net/) through its PINE IPC server instead of a console through PS3MAPI. There is no SPRX to load and no console on the network: the client connects to `127.0.0.1:9673` exactly as it connects to a PS3.
+
+**Turn RPCS3's IPC server on.** Settings, I/O tab, tick **Enable IPC server**; the port beside it is 28012 unless you change it. RPCS3 binds it to 127.0.0.1 only, so nothing outside the machine can reach it.
+
+**Run it.**
+
+```
+qwark-rpcs3.exe [--pine-port 28012] [--port 9673] [--root DIR]
+```
+
+| Option | Meaning |
+|---|---|
+| `--pine-port N` | RPCS3's IPC port, if it is not 28012 |
+| `--port N` | the port qwark listens on for the client, 9673 by default |
+| `--root DIR` | where `/dev_hdd0` is mapped. By default a `qwark-rpcs3-root` folder beside the executable, holding the same `dev_hdd0/qwark/` layout the console uses: `config.txt`, `positions/`, `mods/` |
+
+It prints one banner line with the versions and both ports, then waits. `status` and `version` on standard input print a line each; `exit` or Ctrl-C shuts it down. If RPCS3 is not running, or has no game booted, qwark reports XMB and retries the socket once a second, so the two can be started in either order.
+
+qwark follows RPCS3's own status: a game counts as running only while the emulator reports **Running** and a title id. Pausing the emulator therefore looks like the game quitting and un-pausing like it booting again — the session bumps its generation and offers the previous-session record back, exactly as a real reboot would.
+
+**What does not work.** RPCS3 recompiles PPU code ahead of executing it, so writing an instruction word into memory changes the word and nothing else: the game carries on running the translated block. qwark refuses everything that depends on a code patch rather than pretending it worked, and tells the client so in the session flags, which greys those rows:
+
+- toggles marked "writes code" — fast loads, infinite ammo and infinite health in RaC1, Deadlocked's crash patches and refill ammo, and their equivalents in RaC2 and RaC3
+- mods, all of them: a mod is patch words, code caves, or both
+- PATCH_APPLY from the client's own patch panel
+
+Everything that is a plain data write or a freeze works exactly as it does on a console: health, bolts, unlocks, level flags, positions, colours, planet loads, combos, watches, freezes, the live toggles, and the autosplitter. Two autosplit details differ, because the helpers behind them are code patches: RaC1's four collectable splits (gold bolt, skill point, item, infobot) never fire, and Deadlocked's quit still pauses the timer — the session notices the game vanish on its own — but resumes on the way back into the game rather than on the SCE logo.
+
 ## Building
 
 PS3 module: the PS3 toolchain with `CELL_SDK` set and Cygwin, as for Ratchetron. Run `_Make.bat`, or `make` from a Cygwin login shell in this directory. The output is `qwark.sprx`.
 
-Host simulator and tests, which need no console: `build-host.sh` builds `qwark-host.exe` with the clang listed in `CLAUDE.md`; `test/run.sh` runs the unit tests; `python test/smoke.py` drives the simulator through the full wire protocol. The simulator takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it.
+Host builds, which need no console: `build-host.sh` builds both `qwark-host.exe` and `qwark-rpcs3.exe` with the clang listed in `CLAUDE.md` (`build-host.sh host` or `build-host.sh rpcs3` for one of them). `test/run.sh` runs the unit tests; `python test/smoke.py` drives both executables through the full wire protocol, the second against the fake PINE server in `test/fake_pine.py`.
+
+`qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 
 ## Status
 

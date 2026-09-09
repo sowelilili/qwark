@@ -18,6 +18,7 @@
 #include "../src/plat/plat.h"
 #include "../src/plat/plat_net.h"
 #include "../src/plat/host/plat_host.h"
+#include "test_common.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -26,13 +27,13 @@ static int g_checks;
 static int g_failures;
 static const char *g_group = "";
 
-static void group(const char *name)
+void group(const char *name)
 {
 	g_group = name;
 	printf("--- %s\n", name);
 }
 
-static void check(int ok, const char *what)
+void check(int ok, const char *what)
 {
 	g_checks++;
 	if (ok) {
@@ -43,7 +44,7 @@ static void check(int ok, const char *what)
 	}
 }
 
-static void check_eq_u64(u64 got, u64 want, const char *what)
+void check_eq_u64(u64 got, u64 want, const char *what)
 {
 	g_checks++;
 	if (got == want) {
@@ -529,7 +530,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 5, "and this module is build 5");
+	check_eq_u64(packet[5], 6, "and this module is build 6");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2849,6 +2850,135 @@ static void test_autosplit(void)
 	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
 }
 
+/* ------------------------------------------- the platform that cannot patch */
+
+/* Feature ids and one address, held here the way a client holds them. */
+#define F_INFINITE_AMMO   1
+#define F_GHOST           3
+#define F_BOLTS           5
+#define RAC1_BOLTS_ADDR   0x969CA0u
+#define R4_CRASH_PATCHES  0
+#define R4_SOFTLOCK_FIX   1
+
+/*
+ * Everything the core refuses when plat_can_patch_code() says no, which is what
+ * qwark-rpcs3.exe answers because RPCS3 recompiles PPU code. The fake backend
+ * lets the tests force that answer, so the whole gate is exercised here rather
+ * than only against a running emulator.
+ */
+static void test_no_code_patches(void)
+{
+	u8 info[SESSION_INFO_SIZE];
+	u32 mark;
+	u32 v = 0;
+	u8 word[4];
+
+	group("no code patches: the platform gate");
+
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+
+	/* A fresh entry, so on_enter runs with the gate closed. */
+	check(quit_and_wait(), "quit RaC1");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots with the gate closed");
+
+	/* ------------------------------------------------- SessionInfo flags */
+
+	pump(8);   /* telemetry is published every fourth tick */
+	check_eq_u64(session_info_copy(info, sizeof(info)), SESSION_INFO_SIZE,
+	             "a SessionInfo snapshot is published");
+	check((info[24] & SESSION_FLAG_EMULATOR) != 0,
+	      "SessionInfo flags bit1 EMULATOR is set");
+	check((info[24] & SESSION_FLAG_NO_CODE_PATCHES) != 0,
+	      "SessionInfo flags bit2 NO_CODE_PATCHES is set");
+
+	/* ------------------------------------------------------ the helpers */
+
+	host_peek(A1_HOOK_GB, word, 4);
+	check(be32_get(word) != 0x004F5BE4u,
+	      "RaC1's autosplit helper was not installed");
+
+	/* -------------------------------------------------------- FEATURE_SET */
+
+	check(features_set(F_INFINITE_AMMO, 1) == ST_UNSUPPORTED,
+	      "FEATURE_SET on a WRITES_CODE toggle is UNSUPPORTED");
+	check((features_toggle_state() & ((u64)1 << F_INFINITE_AMMO)) == 0,
+	      "and its bit stays clear");
+
+	check(features_set(F_GHOST, 1) == ST_OK,
+	      "a plain data toggle still works");
+	check((features_toggle_state() & ((u64)1 << F_GHOST)) != 0,
+	      "and its bit is set");
+	features_set(F_GHOST, 0);
+
+	check(features_set(F_BOLTS, 1234) == ST_OK, "a VALUE feature still writes");
+	check(mem_read_u32(RAC1_BOLTS_ADDR, &v) == ST_OK && v == 1234,
+	      "and the bolt count landed in memory");
+
+	check(freeze_add(0x00700100u, 4, 99, NULL) == ST_OK, "a freeze still registers");
+	freeze_clear();
+
+	/* ---------------------------------------------------------- PATCH_ADD */
+
+	check(patch_apply(&test_patch) == ST_UNSUPPORTED,
+	      "patch_apply is UNSUPPORTED");
+	check(client_patch_apply(test_words, 2) == ST_UNSUPPORTED,
+	      "and so is a client PATCH_APPLY");
+	client_patch_drop_all();
+
+	/* ----------------------------------------------------------- MOD_LOAD */
+
+	check(mods_load("incremental_rng") == ST_UNSUPPORTED,
+	      "MOD_LOAD of a mod with a code cave is UNSUPPORTED");
+	check(mods_load("hardcore") == ST_UNSUPPORTED,
+	      "MOD_LOAD of a mod with patch words is UNSUPPORTED");
+	check_eq_u64(mods_loaded_mask(), 0, "and nothing is marked loaded");
+
+	/* ------------------------------------ auto-flagged toggles at boot */
+
+	check(quit_and_wait(), "quit RaC1");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots with the gate closed");
+
+	check((features_toggle_state() & ((u64)1 << R4_CRASH_PATCHES)) == 0,
+	      "the auto-flagged crash patches were skipped at boot");
+	check((features_toggle_state() & ((u64)1 << R4_SOFTLOCK_FIX)) != 0,
+	      "while the auto-flagged data toggle came back as usual");
+
+	host_peek(A4_LOADING_H1, word, 4);
+	check(be32_get(word) != 0x48000080u,
+	      "Deadlocked's loading hook was not installed");
+
+	/* ----------------------------- the process-vanished PAUSE and RESUME */
+
+	mark = autosplit_latest_seq();
+	check(quit_and_wait(), "the game goes away");
+	as_expect_coded(mark, AUTOSPLIT_PAUSE, R4_AS_QUIT,
+	                "PAUSE still fires on the process-vanished path");
+
+	mark = autosplit_latest_seq();
+	check(boot_and_wait("NPEA00423"), "Deadlocked comes back");
+	pump(4);
+	as_expect_coded(mark, AUTOSPLIT_RESUME, R4_AS_QUIT,
+	                "and RESUME fires on entry, with no loading hook to wait for");
+
+	/* ------------------------------------------------- put it all back */
+
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+
+	check(quit_and_wait(), "quit Deadlocked");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
+
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & (SESSION_FLAG_EMULATOR | SESSION_FLAG_NO_CODE_PATCHES)) == 0,
+	      "and neither flag is set any more");
+	check(features_set(F_INFINITE_AMMO, 1) == ST_OK,
+	      "a WRITES_CODE toggle works again");
+	features_set(F_INFINITE_AMMO, 0);
+	features_forget_state();
+}
+
 /* ---------------------------------------------------------------- shutdown */
 
 /*
@@ -3094,10 +3224,12 @@ int main(void)
 	test_rac4();
 	test_trilogy();
 	test_autosplit();
+	test_no_code_patches();
 	test_config();
 	test_fingerprint();
 	test_submit_after_stop();
 	test_net_stop_with_client();
+	test_pine();
 
 	printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	printf("%s\n", g_failures == 0 ? "ALL PASS" : "FAILURES");

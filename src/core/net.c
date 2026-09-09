@@ -1302,6 +1302,23 @@ static void conn_thread(void *arg)
 
 /* -------------------------------------------------------------- the server */
 
+/*
+ * The command port. QWARK_PORT on the console and in the simulator, and only
+ * qwark-rpcs3.exe ever moves it: two emulator sessions on one PC need two
+ * ports, and 9673 is the one the client looks for first.
+ */
+static u16 g_port = QWARK_PORT;
+
+void net_set_port(u16 port)
+{
+	if (port != 0) g_port = port;
+}
+
+u16 net_port(void)
+{
+	return g_port;
+}
+
 static int open_listener(void)
 {
 	int s;
@@ -1315,7 +1332,7 @@ static int open_listener(void)
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
-	sa.sin_port = htons(QWARK_PORT);
+	sa.sin_port = htons(g_port);
 	sa.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
@@ -1432,7 +1449,7 @@ void net_accept_thread(void *arg)
 		}
 
 		g_listen = listener;
-		plat_log("qwark: listening on %d", QWARK_PORT);
+		plat_log("qwark: listening on %d", (int)g_port);
 		plat_notify("qwark loaded and listening");
 
 		while (g_working) {
