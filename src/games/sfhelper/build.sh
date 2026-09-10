@@ -70,9 +70,13 @@ command -v $CC >/dev/null 2>&1 || {
 
 # --------------------------------------------------------------- little tools
 
-# A plain `#define NAME 0x...` or `#define NAME <digits>` out of a header.
+# A plain `#define NAME 0x...` or `#define NAME <digits>` out of a header. The
+# carriage returns come off first, as they do for the objdump and nm output
+# below: a checkout with CRLF endings would otherwise leave one on the end of
+# every address and match nothing at all.
 getdef() {
-	value=$(sed -n "s/^#define[ \t][ \t]*$2[ \t][ \t]*\(0x[0-9A-Fa-f][0-9A-Fa-f]*\|[0-9][0-9]*\)[ \t]*\$/\1/p" "$1")
+	value=$(tr -d '\r' < "$1" |
+		sed -n "s/^#define[ \t][ \t]*$2[ \t][ \t]*\(0x[0-9A-Fa-f][0-9A-Fa-f]*\|[0-9][0-9]*\)[ \t]*\$/\1/p")
 	echo "$value"
 }
 
@@ -139,7 +143,8 @@ for g in $GAMES; do
 
 	# Every SF_FN_<NAME> becomes an undefined symbol the link binds to a hard
 	# address, so the header is the only place a game function's address appears.
-	defsyms=$(sed -n 's/^#define[ \t][ \t]*SF_FN_\([A-Z0-9_]*\)[ \t][ \t]*\(0x[0-9A-Fa-f]*\)[ \t]*$/\1 \2/p' "$hdr" |
+	defsyms=$(tr -d '\r' < "$hdr" |
+		sed -n 's/^#define[ \t][ \t]*SF_FN_\([A-Z0-9_]*\)[ \t][ \t]*\(0x[0-9A-Fa-f]*\)[ \t]*$/\1 \2/p' |
 		awk '{ printf "--defsym .sf_%s=%s ", tolower($1), $2 }')
 	[ -n "$defsyms" ] || { echo "sfhelper: $hdr names no SF_FN_ function" >&2; exit 1; }
 

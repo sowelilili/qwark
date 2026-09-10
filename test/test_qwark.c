@@ -532,7 +532,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 10, "and this module is build 10");
+	check_eq_u64(packet[5], 11, "and this module is build 11");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1192,7 +1192,11 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	savefile_info(&supported, &installed, &running, &pending, &size);
 	check_eq_u64(running, 1, "api_mod reading 1 is reported as running");
 
-	/* The two requests, and the pending bits that follow them. */
+	/*
+	 * The two requests, the pending bits that follow them, and the settle window
+	 * that keeps a bit set for a quarter of a second after the byte goes to zero.
+	 * The window is counted on the tick, so the pumps below are what moves it.
+	 */
 	check(savefile_set_aside() == ST_OK, "the set-aside request goes out");
 	host_peek(d->api_setaside, &b, 1);
 	check_eq_u64(b, 1, "as a 1 in the set-aside byte");
@@ -1201,7 +1205,32 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 
 	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
 	savefile_info(&supported, &installed, &running, &pending, &size);
-	check_eq_u64(pending, 0, "and the bit clears when the helper clears the byte");
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE,
+	             "a byte that has just read zero is not the work being done");
+
+	pump(SAVEFILE_SETTLE_TICKS - 1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE,
+	             "and neither is one tick short of the settle window");
+
+	pump(1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "the whole window of zeroes is what clears the bit");
+
+	/* A byte that goes back to 1 inside the window starts the count again. */
+	check(savefile_set_aside() == ST_OK, "another set-aside request");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS - 2);
+	host_poke(d->api_setaside, (const u8 *)"\x01", 1);
+	pump(1);
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS - 1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE,
+	             "a byte that comes back inside the window restarts it");
+	pump(1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "and the new window is what clears the bit");
 
 	check(savefile_load_aside() == ST_OK, "the load request goes out");
 	host_peek(d->api_load, &b, 1);
@@ -1209,6 +1238,9 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	savefile_info(&supported, &installed, &running, &pending, &size);
 	check_eq_u64(pending, SAVEFILE_PENDING_LOAD, "INFO says the load is outstanding");
 	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "and it settles the same way");
 
 	/* The flagged ACTION is the same request by another road. */
 	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
@@ -1216,7 +1248,11 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	      "the SAVE_ASIDE action fires");
 	host_peek(d->api_setaside, &b, 1);
 	check_eq_u64(b, 1, "and writes the same byte");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE,
+	             "and is outstanding from the moment it is issued");
 	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
 
 	/* WRITE then READ, through the buffer the helper parks a save in. */
 	for (i = 0; i < (u8)sizeof(pattern); i++) pattern[i] = (u8)(i * 7 + 1);
@@ -1748,6 +1784,7 @@ static void test_rac2(void)
 #define R3_VID_COMICS   0x00DA650Bu
 #define R3_LEVELFLAGS   0x00ECE675u
 #define R3_LOADPLANET   0x00EE9310u
+#define R3_DEST_PLANET  0x00EE9314u
 #define R3_FASTLOAD1    0x0134EBD4u
 #define R3_FASTLOAD2    0x0134EE70u
 
@@ -1760,6 +1797,7 @@ static void test_rac2(void)
 #define F3_SHIP_COLOUR   12
 #define F3_SET_ASIDE     31
 #define F3_LOAD_ASIDE    32
+#define F3_FAST_LOADS    38
 
 /* Agents of Doom: item id 0x57, unlock 0x4FF, exp 0x74C, ammo 0x39F, 8 levels. */
 #define AOD_ROW    21
@@ -1802,7 +1840,7 @@ static void test_rac3(void)
 		int retired = 0;
 		int neighbours = 0;
 
-		check_eq_u64(d->nfeatures, 31, "RaC3 declares thirty-one features");
+		check_eq_u64(d->nfeatures, 32, "RaC3 declares thirty-two features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 5, "and five groups");
 
@@ -2012,6 +2050,65 @@ static void test_rac3(void)
 	check(session_planet_load(8, 0) == ST_OK, "PLANET_LOAD to Aquatos runs");
 	mem_read_u32(R3_FASTLOAD1, &v);
 	check_eq_u64(v, 0, "and skipped the fast-load arm");
+
+	/*
+	 * Build 11. The two fast-load values are game data and the game writes over
+	 * them every time it loads a planet, so the toggle has to arm them again on
+	 * every load. A load the client asks for is the case above; this is the game
+	 * starting one on its own, which qwark sees only as the destination planet
+	 * and then the current planet moving in the hot block.
+	 */
+	group("RaC3: the Fast loads toggle survives a planet load");
+
+	host_poke(R3_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x05", 4);
+	host_poke(R3_DEST_PLANET, (const u8 *)"\x00\x00\x00\x05", 4);
+	pump(3);
+
+	host_poke(R3_FASTLOAD1, (const u8 *)"\x00\x00\x00\x00", 4);
+	check(features_set(F3_FAST_LOADS, 1) == ST_OK, "the toggle turns on");
+	mem_read_u32(R3_FASTLOAD1, &v);
+	check_eq_u64(v, 3, "and arms the values there and then");
+
+	/* The game is off to Tyhrranosis, and clears them on the way. */
+	host_poke(R3_FASTLOAD1, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(R3_FASTLOAD2, (const u8 *)"\x00\x00", 2);
+	host_poke(R3_DEST_PLANET, (const u8 *)"\x00\x00\x00\x09", 4);
+	pump(1);
+	mem_read_u32(R3_FASTLOAD1, &v);
+	check_eq_u64(v, 3, "a load the game started of its own accord re-arms them");
+
+	pump(30);   /* the same fifth of a second the arm above waits */
+	{
+		u8 pair[2];
+		host_peek(R3_FASTLOAD2, pair, 2);
+		check(pair[0] == 1 && pair[1] == 1, "second value and all");
+	}
+
+	/* And again when it arrives, whatever the load wrote over them on its way. */
+	host_poke(R3_FASTLOAD1, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(R3_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x09", 4);
+	pump(1);
+	mem_read_u32(R3_FASTLOAD1, &v);
+	check_eq_u64(v, 3, "and so does arriving there");
+
+	/* Aquatos is left alone here too. */
+	host_poke(R3_FASTLOAD1, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(R3_DEST_PLANET, (const u8 *)"\x00\x00\x00\x08", 4);
+	pump(2);
+	mem_read_u32(R3_FASTLOAD1, &v);
+	check_eq_u64(v, 0, "a load to Aquatos is not armed");
+
+	/* Off, and a planet load is a planet load again. */
+	host_poke(R3_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x08", 4);
+	pump(2);
+	check(features_set(F3_FAST_LOADS, 0) == ST_OK, "the toggle turns off");
+	host_poke(R3_FASTLOAD1, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(R3_DEST_PLANET, (const u8 *)"\x00\x00\x00\x05", 4);
+	pump(1);
+	host_poke(R3_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x05", 4);
+	pump(1);
+	mem_read_u32(R3_FASTLOAD1, &v);
+	check_eq_u64(v, 0, "and nothing arms them any more");
 
 	group("RaC3: positions and values");
 

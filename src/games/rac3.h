@@ -240,6 +240,13 @@ extern const u8 rac3_fp_patched[4];
 #define R3_CB_TINT_FRONT     36
 #define R3_CB_TINT_BACK      37
 
+/*
+ * Build 11. RaC1 and RaC2 have had a Fast loads checkbox all along; this game's
+ * was the one thing rac3.cs only ever did as a side effect of its own Load
+ * planet button.
+ */
+#define R3_FAST_LOADS        38
+
 /* ENUM option counts, from RAC3Form.Designer.cs. */
 #define RAC3_ARMOUR_COUNT 8
 #define RAC3_SHIP_COUNT   32
@@ -274,7 +281,11 @@ int rac3_unlock_set(u8 id, u8 field, u32 value);
 
 u8  rac3_planet_count(void);
 
-/* rac3.cs SetFastLoads: writes fastLoad1 now and arms fastLoad2 for on_tick. */
+/*
+ * rac3.cs SetFastLoads: writes fastLoad1 now and arms fastLoad2 for on_tick.
+ * The planet load calls it as LoadPlanetSafe did, and while the Fast loads
+ * toggle is on rac3.c calls it again around every planet load of the game's own.
+ */
 int rac3_arm_fast_loads(void);
 
 #endif /* QWARK_RAC3_H */

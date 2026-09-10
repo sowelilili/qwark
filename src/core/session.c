@@ -886,6 +886,13 @@ static void session_step(void)
 		freeze_tick();
 		watch_tick();
 		step_combos();
+		/*
+		 * Protocol 1.9. An outstanding savefile request has its byte watched here
+		 * rather than when SAVEFILE_INFO is asked, because the settle window is
+		 * counted in ticks: a client that polls slowly must not shorten it, and
+		 * one that polls in a tight loop must not lengthen it either.
+		 */
+		savefile_tick();
 	} else {
 		watch_invalidate();
 	}

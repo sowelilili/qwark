@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 10
+QWARK_BUILD = 11
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -663,6 +663,8 @@ OTHER_GAMES = [
         "name": "RaC2",
         "game": 2,
         "features": 35,
+        # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h.
+        "sf_setaside": 0x010CD71F,
         # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
         "retired": [32, 33],
         "readouts": 9,
@@ -736,7 +738,9 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 31,
+        "features": 32,
+        # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
+        "sf_setaside": 0x00D9FF02,
         # Retired, never renumbered: 4, 17, 28, 29, 30 and 33.
         "retired": [4, 17, 28, 29, 30, 33],
         "readouts": 12,
@@ -765,6 +769,17 @@ OTHER_GAMES = [
         "planet": 5,
         "load_addr": 0xEE9310,
         "load_expect": [(0xEE9310, 1), (0xEE9314, 5), (0x134EBD4, 3)],
+        # Build 11: the Fast loads toggle, and the two words it keeps written.
+        # `from` and `to` are Veldin and Tyhrranosis, neither of them Aquatos.
+        "fastload": {
+            "toggle": 38,
+            "value1": 0x134EBD4,
+            "value2": 0x134EE70,
+            "planet_addr": 0xC1E438,
+            "dest_addr": 0xEE9314,
+            "from": 5,
+            "to": 9,
+        },
         # RaC3 splits when the destination planet changes to another real planet.
         "autosplit": {
             "rows": [
@@ -809,6 +824,8 @@ OTHER_GAMES = [
         "name": "Deadlocked",
         "game": 4,
         "features": 15,
+        # SF_API_SETASIDE from src/games/sfhelper/sf_rac4.h.
+        "sf_setaside": 0x015CD71F,
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
@@ -873,7 +890,7 @@ OTHER_GAMES = [
 ]
 
 
-def exercise_savefile(c, name, save_aside_id):
+def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     """
     Protocol 1.9: the savefile block, against whichever game is up.
 
@@ -882,6 +899,10 @@ def exercise_savefile(c, name, save_aside_id):
     game as supported and the helper as installed, that the buffer round-trips
     through WRITE and READ in chunks, that the SAVE_ASIDE action raises the
     pending bit, and that the bounds are the documented ones.
+
+    `setaside_addr` is the game's own request byte. Given one, this also plays
+    the helper's part in clearing it, which is the only way to see the settle
+    window from the wire.
     """
     status, body = c.call(OP_SAVEFILE_INFO)
     if not check(status == ST_OK and len(body) == 8,
@@ -934,6 +955,24 @@ def exercise_savefile(c, name, save_aside_id):
               "%s: and INFO's pending bit0 says the set-aside is outstanding" % name,
               body[3] if body else None)
 
+    if setaside_addr is None:
+        return
+
+    # Build 11: the helper clears its request byte only after the copy is over,
+    # and qwark then holds the bit for a settle window of ticks, so a client that
+    # sees the bit clear knows the whole buffer is there to read.
+    mem_write(c, setaside_addr, b"\x00")
+    status, body = c.call(OP_SAVEFILE_INFO)
+    check(status == ST_OK and body[3] == 0x01,
+          "%s: a request byte that has just read zero is still outstanding" % name,
+          body[3] if body else None)
+
+    time.sleep(0.5)
+    status, body = c.call(OP_SAVEFILE_INFO)
+    check(status == ST_OK and body[3] == 0,
+          "%s: and a whole settle window of zeroes is what clears it" % name,
+          body[3] if body else None)
+
 
 def exercise_game(c, sim, spec, udp=None):
     name = spec["name"]
@@ -983,7 +1022,7 @@ def exercise_game(c, sim, spec, udp=None):
 
         # Protocol 1.9: that pair, and the block that moves the bytes.
         if save_aside:
-            exercise_savefile(c, name, save_aside[0]["id"])
+            exercise_savefile(c, name, save_aside[0]["id"], spec.get("sf_setaside"))
 
         # Protocol 1.7: only a VALUE carries a field width, and a SIGNED row
         # leaves min and max at 0 because the width is already the range.
@@ -1174,6 +1213,45 @@ def exercise_game(c, sim, spec, udp=None):
             check(mem_read_u32(c, addr) == want,
                   "%s: the load request word at 0x%X is %d" % (name, addr, want),
                   mem_read_u32(c, addr))
+
+    # --------------------------------------------------- fast loads (1.9, build 11)
+    #
+    # UYA's two fast-load values are game data rather than patched code, and the
+    # game writes its own over them every time it loads a planet. The toggle
+    # therefore has to arm them again around every load, including one the game
+    # starts on its own: qwark sees that only as the destination planet moving in
+    # the hot block, which is what this pokes.
+    if spec.get("fastload"):
+        fl = spec["fastload"]
+
+        mem_write(c, fl["planet_addr"], struct.pack(">I", fl["from"]))
+        mem_write(c, fl["dest_addr"], struct.pack(">I", fl["from"]))
+        time.sleep(0.15)
+        mem_write(c, fl["value1"], struct.pack(">I", 0))
+
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fl["toggle"], 1))
+        if check(status == ST_OK, "%s: the Fast loads toggle turns on" % name, status):
+            check(mem_read_u32(c, fl["value1"]) == 3,
+                  "%s: and arms the fast-load values there and then" % name,
+                  mem_read_u32(c, fl["value1"]))
+
+        # The game goes somewhere nobody asked qwark for, clearing them on the way.
+        mem_write(c, fl["value1"], struct.pack(">I", 0))
+        mem_write(c, fl["value2"], b"\x00\x00")
+        mem_write(c, fl["dest_addr"], struct.pack(">I", fl["to"]))
+        time.sleep(0.4)
+
+        check(mem_read_u32(c, fl["value1"]) == 3,
+              "%s: a planet load the game started re-arms them" % name,
+              mem_read_u32(c, fl["value1"]))
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", fl["value2"], 2))
+        check(status == ST_OK and body == b"\x01\x01",
+              "%s: second value and all, a fifth of a second later" % name, body)
+
+        # Off again, so the autosplit steps below poke the same words in peace.
+        c.call(OP_FEATURE_SET, struct.pack(">BI", fl["toggle"], 0))
+        mem_write(c, fl["planet_addr"], struct.pack(">I", fl["to"]))
+        time.sleep(0.15)
 
     # ------------------------------------------------------ autosplitting
     if udp is not None and spec.get("autosplit"):
@@ -1538,7 +1616,8 @@ def main():
         save_aside = [f for f in by_id.values()
                       if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
         if check(len(save_aside) == 1, "RaC1 names one SAVE_ASIDE action", save_aside):
-            exercise_savefile(c, "RaC1", save_aside[0]["id"])
+            # SF_API_SETASIDE from src/games/sfhelper/sf_rac1.h.
+            exercise_savefile(c, "RaC1", save_aside[0]["id"], 0x00B00072)
 
         # --------------------------------------------- a VALUE readout round trip
         c.call(OP_FEATURE_SET, struct.pack(">BI", F_DBG_CAMERA, 2))
@@ -2087,7 +2166,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 31, "with RaC3's thirty-one features",
+            check(len(features) == 32, "with RaC3's thirty-two features",
                   len(features))
 
         # -------------------------------------------- unregistered title

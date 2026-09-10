@@ -26,6 +26,21 @@
 #define SAVEFILE_PENDING_LOAD      0x02
 
 /*
+ * How many consecutive ticks a request byte has to read 0 before qwark calls the
+ * request answered. 30 ticks of the 120 Hz loop is a quarter of a second.
+ *
+ * A save is the reason this exists. The helper copies the game's save buffer
+ * into the aside buffer and clears the byte afterwards, so a byte that reads 0
+ * says the copy is over - but it says it across a running game, with no barrier
+ * between the copy's stores and the clearing store, and one unlucky or failed
+ * read would otherwise be enough to tell a client the save is ready. The window
+ * costs a quarter of a second on an operation a user waits seconds for, and it
+ * is the belt to the helper's braces: neither on its own can hand out a
+ * half-copied buffer.
+ */
+#define SAVEFILE_SETTLE_TICKS 30
+
+/*
  * Forget that the helper was installed. The session calls this on the way into
  * INGAME: a new process has none of it, so the next request writes it again.
  */
@@ -43,7 +58,10 @@ int savefile_install(void);
  * SAVEFILE_INFO. `supported` is 0 for a game qwark has no helper for, and that
  * is an ST_OK answer, not an error: it is how a client knows to hide the panel.
  * `running` is the helper's own byte, which it writes on every call, so it says
- * the code is installed *and* the hook is being reached.
+ * the code is installed *and* the hook is being reached. `pending` stays set
+ * from the moment a request goes out until its byte has read 0 for a whole
+ * settle window, so a client that polls it can treat a clear bit as the work
+ * being over rather than as the request not having landed yet.
  */
 int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *size);
 
@@ -54,5 +72,11 @@ int savefile_write(u32 offset, const u8 *data, u32 len);
 /* The two requests the flagged ACTIONs make. */
 int savefile_set_aside(void);
 int savefile_load_aside(void);
+
+/*
+ * The settle window, one tick's worth. The session calls it every INGAME tick;
+ * it reads nothing at all while no request is outstanding.
+ */
+void savefile_tick(void);
 
 #endif /* QWARK_SAVEFILE_H */

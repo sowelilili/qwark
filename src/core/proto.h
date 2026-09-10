@@ -36,7 +36,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             10
+#define QWARK_BUILD             11
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u

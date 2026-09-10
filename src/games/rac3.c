@@ -210,6 +210,23 @@ static void rac3_init(void)
  */
 static int g_fastload_arm;
 
+/*
+ * The Fast loads toggle, and the planet load it has to survive.
+ *
+ * The two fast-load values are game data rather than patched code, and the game
+ * writes its own over them every time it loads a planet. One arm is therefore
+ * good for one trip: rac3.cs never noticed, because the only thing that ever
+ * armed them was its own Load planet button and the next click armed them
+ * again. A toggle that stays on until the user turns it off cannot work that
+ * way, so g_fastload_on is what the checkbox holds and the watcher below puts
+ * the values back on every planet load, the ones the client asks for and the
+ * ones the game does on its own.
+ */
+static int g_fastload_on;
+
+/* Whether the last tick saw a planet load in progress; see rac3_fastload_watch. */
+static int g_fastload_loading;
+
 int rac3_arm_fast_loads(void)
 {
 	int rc = mem_write_u32(RAC3_FAST_LOAD_1, 3);
@@ -381,6 +398,8 @@ static const struct autosplit_desc *rac3_autosplit_describe(u8 *count)
 static void rac3_on_enter(void)
 {
 	g_fastload_arm = 0;
+	g_fastload_on = 0;
+	g_fastload_loading = 0;
 
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
@@ -391,12 +410,45 @@ static void rac3_on_enter(void)
 	g_long_load_open = 0;
 }
 
+/*
+ * Fast loads, re-armed around every planet load while the toggle is on.
+ *
+ * Two edges of the same trip are watched, and both are worth having. The start
+ * is the game's destination planet becoming one other than the planet underfoot,
+ * which is where rac3.cs re-applied the values and is what makes *this* load
+ * fast. The arrival is the planet underfoot changing, which is what makes the
+ * *next* load fast whatever the game wrote over the values on its way out of
+ * this one. Aquatos is left alone at both ends, as rac3.cs LoadPlanetSafe left
+ * it alone.
+ *
+ * Runs before rac3_autosplit_tick, because that is what moves g_as_prev on.
+ */
+static void rac3_fastload_watch(void)
+{
+	int loading = g_as.dest_planet != 0 && g_as.dest_planet != g_as.planet;
+	int started = loading && !g_fastload_loading;
+	int arrived = g_as.planet != g_as_prev.planet;
+	u8  planet;
+
+	g_fastload_loading = loading;
+
+	/* g_as_prev is a previous state only once the watcher has primed it. */
+	if (!g_fastload_on || !g_as_primed) return;
+	if (!started && !arrived) return;
+
+	planet = started ? g_as.dest_planet : g_as.planet;
+	if (planet == RAC3_PLANET_AQUATOS) return;
+
+	rac3_arm_fast_loads();
+}
+
 static void rac3_on_tick(const struct game_hot *hot)
 {
 	static const u8 force[2] = { 0x01, 0x01 };
 
 	(void)hot;
 
+	rac3_fastload_watch();
 	rac3_autosplit_tick();
 
 	if (g_fastload_arm == 0) return;
@@ -454,6 +506,11 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_OHKO,          FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "One-hit KO" },
 	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
+	/*
+	 * Two game words rather than a patch, which is why this one has no
+	 * WRITES_CODE: see rac3_fastload_watch for what keeps them written.
+	 */
+	{ R3_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Fast loads" },
 
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R3_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_BOLTS,     0, 0, "Bolts" },
@@ -552,6 +609,15 @@ static int rac3_set_toggle(u8 id, int on)
 	case R3_OHKO:          return rac3_health_freeze(1, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);
+	/*
+	 * On arms the values now and leaves the watcher to put them back around
+	 * every planet load. Off only stops the re-arming: the two values are the
+	 * game's own and the next load writes over them, so there is nothing to
+	 * restore and nothing that would take effect before then anyway.
+	 */
+	case R3_FAST_LOADS:
+		g_fastload_on = (on != 0);
+		return on ? rac3_arm_fast_loads() : ST_OK;
 	default:               return ST_NOT_FOUND;
 	}
 }

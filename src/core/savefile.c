@@ -13,9 +13,39 @@
  */
 static int g_installed;
 
+/*
+ * One outstanding request, watched from the tick thread.
+ *
+ * `armed` is set the moment qwark writes the request byte and is what
+ * SAVEFILE_INFO reports; `settle` counts the ticks the byte has read 0 in a row
+ * since. One zero on its own is thinner evidence than it looks. The helper
+ * clears the byte with a plain store after a plain memcpy, with no barrier
+ * between the two, so nothing promises that a reader sees the last bytes of the
+ * copy before it sees the cleared byte; qwark's read is a single unsynchronised
+ * sample of one byte of a running game; and before `armed` existed, a memory
+ * read that simply failed also left the bit clear, which read as "the save is
+ * ready". A quarter of a second of zeroes, on every tick of it, is proof enough
+ * of all three, and the client is not told the save is ready until then.
+ */
+struct sf_request {
+	u8  armed;
+	u16 settle;
+};
+
+static struct sf_request g_set_aside;
+static struct sf_request g_load;
+
+static void request_clear(struct sf_request *r)
+{
+	r->armed = 0;
+	r->settle = 0;
+}
+
 void savefile_forget(void)
 {
 	g_installed = 0;
+	request_clear(&g_set_aside);
+	request_clear(&g_load);
 }
 
 static const struct sf_desc *desc_now(void)
@@ -125,12 +155,63 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 
 	if (mem_read_u8(d->api_mod, &byte) == ST_OK && byte == 1) *running = 1;
 
-	if (mem_read_u8(d->api_setaside, &byte) == ST_OK && byte != 0)
+	/*
+	 * The bytes are read here as well as on the tick, so a request something
+	 * other than qwark started - RaC1's Force autosave drives a byte of its own,
+	 * and Deadlocked's load parks a 2 in api_load for the length of its menu - is
+	 * reported outstanding too. What the settle window adds is the other
+	 * direction: a byte that reads 0 is not enough to say the work is done.
+	 */
+	if (g_set_aside.armed) {
 		*pending |= SAVEFILE_PENDING_SET_ASIDE;
-	if (mem_read_u8(d->api_load, &byte) == ST_OK && byte != 0)
+	} else if (mem_read_u8(d->api_setaside, &byte) == ST_OK && byte != 0) {
+		*pending |= SAVEFILE_PENDING_SET_ASIDE;
+	}
+
+	if (g_load.armed) {
 		*pending |= SAVEFILE_PENDING_LOAD;
+	} else if (mem_read_u8(d->api_load, &byte) == ST_OK && byte != 0) {
+		*pending |= SAVEFILE_PENDING_LOAD;
+	}
 
 	return ST_OK;
+}
+
+/*
+ * One request's settle window, a tick's worth. The byte reading anything but 0
+ * puts the count back to the start, so the window is the *last* stretch of
+ * zeroes rather than any stretch of them.
+ */
+static void request_tick(struct sf_request *r, u32 addr)
+{
+	u8 byte = 0;
+
+	if (!r->armed) return;
+
+	if (mem_read_u8(addr, &byte) != ST_OK) return;
+
+	if (byte != 0) {
+		r->settle = 0;
+		return;
+	}
+
+	r->settle++;
+	if (r->settle >= SAVEFILE_SETTLE_TICKS) request_clear(r);
+}
+
+void savefile_tick(void)
+{
+	const struct sf_desc *d;
+
+	if (!g_set_aside.armed && !g_load.armed) return;
+
+	if (!plat_can_patch_code() || !mem_is_ingame()) return;
+
+	d = desc_now();
+	if (d == NULL) return;
+
+	request_tick(&g_set_aside, d->api_setaside);
+	request_tick(&g_load, d->api_load);
 }
 
 int savefile_read(u32 offset, u32 len, u8 *out, u32 *outlen)
@@ -179,6 +260,7 @@ int savefile_write(u32 offset, const u8 *data, u32 len)
 static int request(int load)
 {
 	const struct sf_desc *d;
+	struct sf_request *r;
 	int rc = gate(&d);
 
 	if (rc != ST_OK) return rc;
@@ -186,7 +268,18 @@ static int request(int load)
 	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
-	return mem_write_u8(load ? d->api_load : d->api_setaside, 1);
+	rc = mem_write_u8(load ? d->api_load : d->api_setaside, 1);
+	if (rc != ST_OK) return rc;
+
+	/*
+	 * Pending from here, not from the first tick that reads the byte back. The
+	 * bit is then qwark's own knowledge that it asked for something, which no
+	 * bad read of the game's memory can talk it out of.
+	 */
+	r = load ? &g_load : &g_set_aside;
+	r->armed = 1;
+	r->settle = 0;
+	return ST_OK;
 }
 
 int savefile_set_aside(void) { return request(0); }
