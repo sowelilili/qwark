@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 9
+QWARK_BUILD = 10
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -70,6 +70,9 @@ OP_COMBO_SUSPEND = 0x0082
 OP_CONFIG_RELOAD = 0x0090
 OP_AUTOSPLIT_EVENTS = 0x00A0
 OP_AUTOSPLIT_DESCRIBE = 0x00A1
+OP_SAVEFILE_INFO = 0x00B0
+OP_SAVEFILE_READ = 0x00B1
+OP_SAVEFILE_WRITE = 0x00B2
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
@@ -659,7 +662,9 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        "features": 37,
+        "features": 35,
+        # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
+        "retired": [32, 33],
         "readouts": 9,
         "planets": 27,
         "planet0": "Aranos",
@@ -731,9 +736,9 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 32,
-        # Retired, never renumbered: 4, 17, 28, 29 and 30.
-        "retired": [4, 17, 28, 29, 30],
+        "features": 31,
+        # Retired, never renumbered: 4, 17, 28, 29, 30 and 33.
+        "retired": [4, 17, 28, 29, 30, 33],
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
@@ -868,6 +873,68 @@ OTHER_GAMES = [
 ]
 
 
+def exercise_savefile(c, name, save_aside_id):
+    """
+    Protocol 1.9: the savefile block, against whichever game is up.
+
+    The helper's own code never runs here - the simulator is a fake console with
+    no PowerPC in it - so what this checks is the wire: that INFO reports the
+    game as supported and the helper as installed, that the buffer round-trips
+    through WRITE and READ in chunks, that the SAVE_ASIDE action raises the
+    pending bit, and that the bounds are the documented ones.
+    """
+    status, body = c.call(OP_SAVEFILE_INFO)
+    if not check(status == ST_OK and len(body) == 8,
+                 "%s: SAVEFILE_INFO answers with eight bytes" % name,
+                 (status, len(body))):
+        return
+
+    supported, installed, running, pending = body[0], body[1], body[2], body[3]
+    size = struct.unpack(">I", body[4:8])[0]
+
+    check(supported == 1, "%s: the game is supported" % name, supported)
+    check(installed == 1, "%s: and asking installed the helper" % name, installed)
+    check(running == 0, "%s: the fake console runs no PowerPC, so it is idle" % name,
+          running)
+    check(pending == 0, "%s: and no request is outstanding" % name, pending)
+    check(size > 0, "%s: the aside buffer has a size" % name, size)
+
+    # A chunk at the front and a chunk that runs off the end.
+    pattern = bytes((i * 7 + 3) & 0xFF for i in range(4096))
+    status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + pattern)
+    check(status == ST_OK, "%s: SAVEFILE_WRITE takes a chunk" % name, status)
+
+    status, body = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, len(pattern)))
+    check(status == ST_OK and body == pattern,
+          "%s: SAVEFILE_READ hands the same bytes back" % name,
+          (status, len(body)))
+
+    status, body = c.call(OP_SAVEFILE_READ, struct.pack(">II", size - 16, 4096))
+    check(status == ST_OK and len(body) == 16,
+          "%s: a read past the end is trimmed to what is left" % name,
+          (status, len(body)))
+
+    status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", size, 4))
+    check(status == ST_BAD_ARG,
+          "%s: an offset at the end of the buffer is BAD_ARG" % name, status)
+
+    status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", size - 2) + b"\x01\x02\x03")
+    check(status == ST_BAD_ARG,
+          "%s: a write that runs past the end is BAD_ARG" % name, status)
+
+    status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, 65537))
+    check(status == ST_BAD_ARG,
+          "%s: a read longer than one chunk is BAD_ARG" % name, status)
+
+    # The SAVE_ASIDE action, and the bit a client polls until the helper clears.
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
+    if check(status == ST_OK, "%s: the SAVE_ASIDE action fires" % name, status):
+        status, body = c.call(OP_SAVEFILE_INFO)
+        check(status == ST_OK and body[3] == 0x01,
+              "%s: and INFO's pending bit0 says the set-aside is outstanding" % name,
+              body[3] if body else None)
+
+
 def exercise_game(c, sim, spec, udp=None):
     name = spec["name"]
 
@@ -913,6 +980,10 @@ def exercise_game(c, sim, spec, udp=None):
               "%s: one SAVE_ASIDE action" % name, save_aside)
         check(len(load_aside) == 1 and load_aside[0]["kind"] == FEATURE_ACTION,
               "%s: one LOAD_ASIDE action" % name, load_aside)
+
+        # Protocol 1.9: that pair, and the block that moves the bytes.
+        if save_aside:
+            exercise_savefile(c, name, save_aside[0]["id"])
 
         # Protocol 1.7: only a VALUE carries a field width, and a SIGNED row
         # leaves min and max at 0 because the width is already the range.
@@ -1202,6 +1273,21 @@ def smoke_rpcs3(exe):
                            struct.pack(">II", 0x00500000, 0x60000000))
         check(status == ST_UNSUPPORTED, "rpcs3: PATCH_APPLY is UNSUPPORTED", status)
 
+        # The savefile helper is a code cave and a branch into it, so there is
+        # nothing here to install and nothing to talk to (protocol 1.9).
+        status, _ = c.call(OP_SAVEFILE_INFO)
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_INFO is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, 16))
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_READ is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + b"\x01\x02\x03\x04")
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_WRITE is UNSUPPORTED", status)
+
+        aside = [f for f in features if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
+        if aside:
+            status, _ = c.call(OP_FEATURE_TRIGGER, bytes([aside[0]["id"]]))
+            check(status == ST_UNSUPPORTED,
+                  "rpcs3: and so is the SAVE_ASIDE action", status)
+
         # --------------------------------------------- what still works
         status, _ = c.call(OP_MEM_WRITE,
                            struct.pack(">I", 0x00800000) + b"\xDE\xAD\xBE\xEF")
@@ -1447,6 +1533,12 @@ def main():
         status, _ = c.call(OP_FEATURE_OPTIONS, bytes([0]))
         check(status == ST_BAD_ARG,
               "asking a TOGGLE for options is BAD_ARG", status)
+
+        # ------------------------------------------- the savefile block, 1.9
+        save_aside = [f for f in by_id.values()
+                      if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
+        if check(len(save_aside) == 1, "RaC1 names one SAVE_ASIDE action", save_aside):
+            exercise_savefile(c, "RaC1", save_aside[0]["id"])
 
         # --------------------------------------------- a VALUE readout round trip
         c.call(OP_FEATURE_SET, struct.pack(">BI", F_DBG_CAMERA, 2))
@@ -1995,7 +2087,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 32, "with RaC3's thirty-two features",
+            check(len(features) == 31, "with RaC3's thirty-one features",
                   len(features))
 
         # -------------------------------------------- unregistered title

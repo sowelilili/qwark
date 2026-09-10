@@ -17,6 +17,14 @@ Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NP
 
 qwark listens on TCP port 9673 and streams telemetry over UDP to connected clients. It can coexist with Ratchetron (9671) and the old autosplitter modules (9672).
 
+## Save files
+
+qwark carries a small savefile helper for each of the four games: a few hundred bytes of PowerPC code, built from one source in `src/games/sfhelper/` and embedded in the module. The first time a client asks anything about save files, qwark writes that code into a code cave in the running game and branches the game into it; from then on the game calls it once a frame and it does nothing until asked. The user never loads a mod for it and never sees it happen.
+
+Asked to set a save aside, the helper copies the game's live save buffer into a spare region of the game's own memory, and qwark streams that region to the PC. Loading is the reverse: the PC writes the bytes back into the region and the helper hands them to the game's own loader. **Nothing is written to the console's filesystem** — there is no `tempsave` any more, and the old `sfhelper`, `rc2-save`, `rc3-save` and `rc4-save` mods are not needed and should not be loaded alongside it.
+
+The code and the addresses are ported from those mods and from their upstream sources, which are credited in the per-game headers under `src/games/sfhelper/`. Because it is code, it does not work under RPCS3 (see below).
+
 ## What it does without a PC
 
 Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots. The console is the single source of truth; the client only displays and requests.
@@ -62,6 +70,7 @@ qwark follows RPCS3's own status: a game counts as up while the emulator reports
 - toggles marked "writes code" — fast loads, infinite ammo and infinite health in RaC1, Deadlocked's crash patches and refill ammo, and their equivalents in RaC2 and RaC3
 - mods, all of them: a mod is patch words, code caves, or both
 - PATCH_APPLY from the client's own patch panel
+- the save-file manager: the helper behind it is a code cave and a branch into it, so the client hides its Save files panel here
 
 Everything that is a plain data write or a freeze works exactly as it does on a console: health, bolts, unlocks, level flags, positions, colours, planet loads, combos, watches, freezes, the live toggles, and the autosplitter. Two autosplit details differ, because the helpers behind them are code patches: RaC1's four collectable splits (gold bolt, skill point, item, infobot) never fire, and Deadlocked's quit still pauses the timer — the session notices the game vanish on its own — but resumes on the way back into the game rather than on the SCE logo.
 
@@ -70,6 +79,10 @@ Everything that is a plain data write or a freeze works exactly as it does on a 
 PS3 module: the PS3 toolchain with `CELL_SDK` set and Cygwin, as for Ratchetron. Run `_Make.bat`, or `make` from a Cygwin login shell in this directory. The output is `qwark.sprx`.
 
 Host builds, which need no console: `build-host.sh` builds both `qwark-host.exe` and `qwark-rpcs3.exe` with the clang listed in `CLAUDE.md` (`build-host.sh host` or `build-host.sh rpcs3` for one of them). `test/run.sh` runs the unit tests; `python test/smoke.py` drives both executables through the full wire protocol, the second against the fake PINE server in `test/fake_pine.py`.
+
+The savefile helper is built separately, because it is PowerPC code that runs inside the *game* rather than inside qwark: `make sfhelper` compiles `src/games/sfhelper/sfhelper.c` once per game at that game's cave address and regenerates `src/games/sfhelper_bins.c`, which is committed. A plain `make` never needs to do that, but it does rebuild it when one of the helper's sources is newer, so an edit cannot be left out of a module by accident. The host builds and the tests compile the committed file and need no SDK.
+
+`make dist` copies the built `qwark.sprx` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes both from there rather than from a working tree that may or may not have been built.
 
 `qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 

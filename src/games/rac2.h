@@ -100,15 +100,17 @@
 #define RAC2_PYRAMID_BOLT      0x1AAC767u
 
 /*
- * The savefile helper is a mod, not part of the game. RAC2Form used two pairs of
- * request bytes: the two buttons on the main form (set aside, load) and the save
- * manager's own pair. All five bytes are gated on the helper byte reading 1.
+ * The savefile helper's byte. qwark embeds the helper and installs it on the
+ * first request of a session (src/core/savefile.c), and it writes 1 here on
+ * every call, so this reads 1 as soon as the game has reached the hook once.
+ *
+ * These are the helper's own addresses, from king_dedede's rc2-save, and not the
+ * ones RAC2Form used: that form drove a different mod whose five bytes sat at
+ * 0x1BF0000..4 and whose save manager wrote a tempsave file. Nothing writes a
+ * file any more, so the two "Save manager" rows are retired and the set-aside
+ * and load bytes are driven through src/games/sfhelper_bins.c.
  */
-#define RAC2_SF_LOAD_ASIDE     0x1BF0000u  /* loadFileButton */
-#define RAC2_SF_MGR_LOAD       0x1BF0001u  /* SavefileLoader api_loadfile */
-#define RAC2_SF_HELPER         0x1BF0002u  /* 1 when the mod is loaded */
-#define RAC2_SF_MGR_SAVE       0x1BF0003u  /* SavefileLoader api_savefile */
-#define RAC2_SF_SET_ASIDE      0x1BF0004u  /* setAsideFileButton */
+#define RAC2_SF_HELPER         0x10CD71Du
 
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
@@ -254,8 +256,11 @@ extern const u8 rac2_fp_patched[4];
 
 #define R2_LOAD_ASIDE        30
 #define R2_SET_ASIDE         31
-#define R2_MGR_SAVE          32
-#define R2_MGR_LOAD          33
+/*
+ * 32 and 33 retired: "Save manager: save file" and "Save manager: load file"
+ * drove the old mod's tempsave file, which protocol 1.9 does away with. The two
+ * rows above carry the SAVE_ASIDE and LOAD_ASIDE flags now.
+ */
 
 #define R2_CB_PRIMARY_FRONT  34
 #define R2_CB_PRIMARY_BACK   35

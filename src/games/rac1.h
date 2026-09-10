@@ -124,14 +124,15 @@
 #define RAC1_SONIC_SP         0xA15F3Cu   /* 8 bytes, Batalia Sonic Summoner */
 
 /*
- * The savefile helper is a mod, not part of the game: it polls these bytes and
- * does the file work. 0xB00070 reads 1 only when the mod is loaded, so the
- * three requests are refused as UNSUPPORTED without it.
+ * The savefile helper's request bytes. qwark embeds the helper and installs it
+ * on the first request of a session (src/core/savefile.c), so 0xB00070 reads 1
+ * as soon as the game has reached the hook once. The set-aside and load bytes
+ * beside it are driven through the shared table in src/games/sfhelper_bins.c;
+ * the two named here are the ones this game reads for itself - the helper byte
+ * feeds the readout, and 0xB00073 is RaC1's alone.
  */
 #define RAC1_SAVEFILE_HELPER  0xB00070u
-#define RAC1_SAVEFILE_LOAD    0xB00071u   /* write 1 */
-#define RAC1_SAVEFILE_ASIDE   0xB00072u   /* write 1 */
-#define RAC1_SAVEFILE_AUTO    0xB00073u   /* write 3, not 1 */
+#define RAC1_SAVEFILE_AUTO    0xB00073u   /* write 3, not 1: the autosave mode */
 
 /* Bits of RAC1_DEBUG_UPDATE, from rac1.cs SetDebugOption. */
 #define RAC1_DBG_RATCHET   0x1u

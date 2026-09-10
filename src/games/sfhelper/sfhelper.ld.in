@@ -1,0 +1,40 @@
+/*
+ * The savefile helper's link map. build.sh substitutes the two placeholders
+ * below with the game's cave addresses and hands the result to ppu-lv2-ld.
+ *
+ * Two output sections, because RaC1 needs its input hook at one cave and the
+ * compiled helper at another; a game with no stub gets the same address for both
+ * and the empty section falls away.
+ *
+ * Everything the compiler would normally put beside the code is discarded rather
+ * than placed. .opd and .toc are the 64-bit ABI's function descriptors and TOC,
+ * which nothing here uses: the helper reaches the game only through symbols the
+ * link binds to hard addresses, and it has no global of its own to describe.
+ * A section turning up here that is not in this list is a mistake in the helper,
+ * not something to make room for, so the build fails on it.
+ */
+OUTPUT_FORMAT("elf64-powerpc-celloslv2")
+
+SECTIONS
+{
+	. = @STUB_ORG@;
+	.text.stub : { *(.text.stub) }
+
+	/*
+	 * sf_entry goes first, so a game whose hook branches straight into the
+	 * helper branches to the cave address itself. Nothing depends on that - the
+	 * hook word is computed from what the link produced - but it makes the word
+	 * comparable with the one the mod this came from shipped.
+	 */
+	. = @TEXT_ORG@;
+	.text : { *(.text.entry) *(.text) *(.text.*) }
+
+	/DISCARD/ : {
+		*(.opd)
+		*(.toc)
+		*(.toc1)
+		*(.eh_frame)
+		*(.comment)
+		*(.note*)
+	}
+}

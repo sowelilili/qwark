@@ -17,6 +17,10 @@
  * Revision 1.7: the first of Feature's two pad bytes is now `bits`, the width of
  * the field behind a VALUE, and Feature flags bit5 SIGNED says that field is
  * two's complement in that width.
+ * Revision 1.8: COMBO_SUSPEND.
+ * Revision 1.9: the savefile block, SAVEFILE_INFO / READ / WRITE at 0x00B0. The
+ * save no longer travels as a file: qwark installs one helper per game, the
+ * helper parks the save in a RAM buffer, and these three ops stream that buffer.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -32,7 +36,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             9
+#define QWARK_BUILD             10
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -143,6 +147,19 @@
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
 
+/*
+ * Revision 1.9, the savefile block. See src/core/savefile.h and PROTOCOL.md 5.12.
+ * All three install the game's helper on demand, answer UNSUPPORTED where code
+ * cannot be patched and NOT_INGAME outside INGAME.
+ */
+#define OP_SAVEFILE_INFO      0x00B0
+#define OP_SAVEFILE_READ      0x00B1
+#define OP_SAVEFILE_WRITE     0x00B2
+
+/* SAVEFILE_INFO's reply is eight bytes, and SAVEFILE_READ caps at one chunk. */
+#define SAVEFILE_INFO_SIZE    8
+#define SAVEFILE_CHUNK_MAX    65536u
+
 /* ------------------------------------------------------------- table sizes */
 
 #define QWARK_MAX_WATCHES    64
@@ -251,10 +268,12 @@
 #define FEATURE_FLAG_AUTO        0x01
 #define FEATURE_FLAG_WRITES_CODE 0x02
 /*
- * Revision 1.2. The two savefile-helper ACTIONs a client's save-file manager
- * drives: SAVE_ASIDE makes the game write its save to
- * /dev_hdd0/game/<TITLEID>/USRDIR/tempsave, LOAD_ASIDE makes it load that file.
- * A game may expose further savefile actions; only the manager's pair is flagged.
+ * Revision 1.2, retargeted by 1.9. The two savefile-helper ACTIONs a client's
+ * save-file manager drives. SAVE_ASIDE asks the game to copy its live save into
+ * the helper's aside buffer and LOAD_ASIDE asks it to load what is in that
+ * buffer; the bytes travel over SAVEFILE_READ and SAVEFILE_WRITE. Until 1.9 the
+ * pair moved a tempsave file under /dev_hdd0/game/<TITLEID>/USRDIR instead.
+ * Every game names exactly one of each.
  */
 #define FEATURE_FLAG_SAVE_ASIDE  0x04
 #define FEATURE_FLAG_LOAD_ASIDE  0x08

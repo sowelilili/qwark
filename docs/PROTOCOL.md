@@ -8,6 +8,7 @@ Revision 1.5 (2026-09-09): autosplit timing. The Event's second word is `time_ms
 Revision 1.6 (2026-09-09): SessionInfo `flags` gained bit1 EMULATOR and bit2 NO_CODE_PATCHES, so a client can tell that qwark is driving RPCS3 through PINE rather than a console and that every WRITES_CODE feature is refused there. See section 3.2.
 Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes is now `bits`, the width in bits of the field behind a VALUE, and Feature flags bit5 SIGNED says that field is two's complement in that width. See section 5.3.2.
 Revision 1.8 (2026-09-09): COMBO_SUSPEND, which holds every stored combo off while a client captures a new one, so the buttons being recorded do not also fire the combos already there. See section 5.9.
+Revision 1.9 (2026-09-10): the savefile block. SAVEFILE_INFO, SAVEFILE_READ and SAVEFILE_WRITE in the 0x00B0 block. A save no longer travels as a file: qwark embeds one helper per game, installs it invisibly on first use, and the helper parks the save in a RAM buffer these three ops stream. See section 5.12.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -48,7 +49,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 8 (see below)
+u8   qwark_version      module build number, currently 10 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -97,6 +98,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED` |
 | PATCH_APPLY | `UNSUPPORTED` |
 | MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED` |
+| SAVEFILE_INFO, SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` (section 5.12) |
 
 Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction.
 
@@ -105,7 +107,7 @@ DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same 
 Two side effects a client should know about, both inside qwark rather than on the wire:
 
 - Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
-- The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo.
+- The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, which is why the whole of section 5.12 is refused here.
 
 ## 4. Telemetry packet (UDP)
 
@@ -172,7 +174,7 @@ u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
 u8   aux            ENUM: option count. 0 for every other kind
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION makes the game write its current save to /dev_hdd0/game/<TITLEID>/USRDIR/tempsave), bit3 LOAD_ASIDE (this ACTION makes the game load that tempsave), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2)
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. TOGGLE and ACTION: 0xFF
 u8   bits           VALUE: the width in bits of the field behind it, 8, 16 or 32. 0 means 32, so a row that names no width reads as it always did. 0 for every other kind (revision 1.7)
 u8   pad
@@ -345,6 +347,8 @@ char author[32]
 
 Paths are absolute, at most 511 bytes, sent as the remainder of the payload with no terminator. Only paths under `/dev_hdd0/` and `/dev_usb` are accepted. These run on the network thread and never touch game memory.
 
+These are the mod library's transport: the client uploads a mod's files with them (section 5.7). Save files no longer travel this way; see section 5.12.
+
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x0070 | FILE_OPEN | `u8 mode` (0 read, 1 write and truncate), `path` | `u32 handle` |
@@ -361,7 +365,7 @@ Paths are absolute, at most 511 bytes, sent as the remainder of the payload with
 
 A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config.
 
-Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE. LOAD_SETASIDE_FILE does nothing in a game that has no savefile helper.
+Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE. LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper or where code cannot be patched.
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
@@ -391,6 +395,30 @@ Config keys the module reads for itself: `log` (1 by default) writes a line per 
 
 AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects after a crash still wants the splits that happened while it was away. AUTOSPLIT_DESCRIBE is gated on INGAME the same way DESCRIBE is, because under BCES01503 the running game is not known until the fingerprint answers.
 
+### 5.12 Save files (0x00Bx), revision 1.9
+
+| Op | Name | Request | Reply |
+|---|---|---|---|
+| 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size` |
+| 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 65536) | the bytes of the aside buffer at that offset; short at the end |
+| 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 65536) | none |
+
+All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) and **NOT_INGAME** outside INGAME, and all three install the game's helper on demand: a client never asks for that and never sees it happen.
+
+- **supported** — 1 when qwark has a helper for the running game. 0 is an OK answer, not an error: it is how a client knows to hide its save-file panel. All four games are 1 today.
+- **installed** — 1 when qwark has written the helper into this process. Since asking is what installs it, this is 1 whenever `supported` is.
+- **running** — 1 when the helper's own byte reads 1. The helper writes it on every call, so this says the code is installed *and* that the game is reaching the hook. It is 0 for the first frame or two after an install, and it stays 0 for as long as the game is on a screen that does not run the hooked routine.
+- **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
+- **size** — how many bytes the aside buffer holds, which is the size of a save file for that game. It is fixed per game and does not depend on the save.
+
+**A save, end to end.** FEATURE_TRIGGER the game's SAVE_ASIDE action; poll SAVEFILE_INFO until `pending` bit0 clears; SAVEFILE_READ the whole buffer in 64 KB chunks. **A load** is the reverse: SAVEFILE_WRITE the file into the buffer in chunks from offset 0, then FEATURE_TRIGGER the LOAD_ASIDE action. The bytes are opaque; nothing on the PC knows the save format.
+
+Bounds: a READ whose `offset` is past the end is BAD_ARG and one that runs off the end comes back short, so a client can ask for a round chunk at every offset. A WRITE that would run off the end is BAD_ARG rather than trimmed, because a client sending more than the buffer holds has the wrong file.
+
+**Where the buffer comes from.** qwark carries a small piece of PowerPC code per game, compiled from one source in `src/games/sfhelper/` and embedded as bytes. Installing it writes one or two code caves and a branch word into the running game; from then on the game calls it once a frame, and it does nothing until a request byte changes. It is never reverted: taking a branch back out from under code that may be executing it is a crash, and with no request outstanding it costs a byte write and three comparisons a frame. Nothing is written to the console's filesystem at any point.
+
+Before this revision the same two ACTIONs moved a `tempsave` file under `/dev_hdd0/game/<TITLEID>/USRDIR`, which the client then pulled over the FILE ops, and the helper was a mod the user had to load first. Both are gone. The FILE ops stay, for the mod library.
+
 ## 6. Pad mask layout
 
 OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000.
@@ -398,7 +426,7 @@ OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x
 ## 7. Connection lifecycle from the client side
 
 1. Connect, send HELLO, read SessionInfo.
-2. SUBSCRIBE with a bound UDP port, then DESCRIBE, AUTOSPLIT_DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST.
+2. SUBSCRIBE with a bound UDP port, then DESCRIBE, AUTOSPLIT_DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST, SAVEFILE_INFO.
 3. Render from telemetry. When `game` changes, repeat step 2 from DESCRIBE. When `PREVIOUS_PENDING` appears, PREVIOUS_LIST and prompt.
 4. On any socket error: drop everything, reconnect with backoff, start again at step 1. There is no client state to restore.
 

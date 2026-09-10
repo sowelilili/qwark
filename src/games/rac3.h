@@ -73,15 +73,16 @@
 #define RAC3_AMMO_INSTR        0x00182A88u  /* the ammo decrement; the fingerprint */
 
 /*
- * The savefile helper is a mod. RAC3Form's own Load File button and the save
- * manager's pair are separate request bytes; all of them are gated on the helper
- * byte reading 1. 0xD9FF02 was the set-aside byte in a commented-out line of the
- * old form and is not exposed, because nothing ever drove it.
+ * The savefile helper's byte. qwark embeds the helper and installs it on the
+ * first request of a session (src/core/savefile.c), and it writes 1 here on
+ * every call, so this reads 1 as soon as the game has reached the hook once.
+ *
+ * 0xD9FF01 and 0xD9FF02 beside it are the load and set-aside requests, driven
+ * through the shared table in src/games/sfhelper_bins.c. 0xD9FF03 and 0xD9FF04
+ * were Gigahelper's tempsave writer and reader; nothing writes a file any more,
+ * so the "Save manager: load file" row that drove one of them is retired.
  */
 #define RAC3_SF_HELPER         0x00D9FF00u
-#define RAC3_SF_LOAD_ASIDE     0x00D9FF01u  /* loadFileButton */
-#define RAC3_SF_MGR_SAVE       0x00D9FF03u  /* SavefileLoader api_savefile */
-#define RAC3_SF_MGR_LOAD       0x00D9FF04u  /* SavefileLoader api_loadfile */
 
 #define RAC3_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC3_LF_LEN        0x10        /* level flag bytes per planet */
@@ -229,7 +230,10 @@ extern const u8 rac3_fp_patched[4];
 
 #define R3_SET_ASIDE         31
 #define R3_LOAD_ASIDE        32
-#define R3_MGR_LOAD          33
+/*
+ * 33 retired: "Save manager: load file" drove Gigahelper's tempsave reader,
+ * which protocol 1.9 does away with.
+ */
 
 #define R3_CB_PRIMARY_FRONT  34
 #define R3_CB_PRIMARY_BACK   35

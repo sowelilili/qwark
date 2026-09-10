@@ -129,10 +129,14 @@
  */
 #define RAC4_QUIT_PAUSE_US   14800000u
 
-/* The savefile helper mod's three bytes. */
+/*
+ * The savefile helper's byte. qwark embeds the helper and installs it on the
+ * first request of a session (src/core/savefile.c), and it writes 1 here on
+ * every call, so this reads 1 as soon as the game has reached the hook once.
+ * The load and set-aside requests at 0x15CD71E and 0x15CD71F are driven through
+ * the shared table in src/games/sfhelper_bins.c.
+ */
 #define RAC4_SF_HELPER         0x015CD71Du
-#define RAC4_SF_LOAD_ASIDE     0x015CD71Eu
-#define RAC4_SF_SET_ASIDE      0x015CD71Fu
 
 /* MF_LevelSave / MF_MissionSave, from rac4.cs. */
 #define RAC4_LEVEL_SIZE        0x304u

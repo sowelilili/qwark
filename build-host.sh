@@ -23,6 +23,7 @@ CLANG="${QWARK_CLANG:-C:/ghcup/ghc/9.4.7/mingw/bin/clang.exe}"
 
 CORE="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
       src/core/mods.c src/core/session.c src/core/net.c src/core/autosplit.c \
+      src/core/savefile.c src/games/sfhelper_bins.c \
       src/games/classic.c src/games/rac1.c src/games/rac1_panel.c \
       src/games/rac2.c src/games/rac2_panel.c \
       src/games/rac3.c src/games/rac3_panel.c \

@@ -35,7 +35,7 @@ const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
  *   8  loadscr  the loading-screen id, low byte                       every tick
  *   9  ship colour                                                   every 8th
  *  10  file time                                                     every 8th
- *  11  savefile helper byte and its request bytes                     every 8th
+ *  11  savefile the helper's own byte                                  every 8th
  *  12  chargeboot colour words                                       every 8th
  *
  * Blocks 3 to 8 belong to the autosplit watcher and are per-tick because a split
@@ -55,7 +55,7 @@ static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_LOADING_SCREEN,  1,                   1, 0 },
 	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
 	{ RAC3_FILE_TIME,       4,                   8, 1 },
-	{ RAC3_SF_HELPER,       8,                   8, 2 },
+	{ RAC3_SF_HELPER,       1,                   8, 2 },
 	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 }
 };
 
@@ -150,7 +150,7 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_TIME] != NULL)
 		out->readout[RAC3_RO_FILE_TIME] = be32_get(blocks[HOT_TIME]);
 
-	/* The client greys the savefile actions on this one. */
+	/* 1 once the helper has run a frame; SAVEFILE_INFO reports the same byte. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC3_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
@@ -488,9 +488,12 @@ static const struct feature_desc rac3_features[] = {
 	 * the save manager's own, because RAC3Form's dedicated set-aside byte
 	 * (0xD9FF02) only ever existed in a commented-out line.
 	 */
+	/*
+	 * Protocol 1.9: one pair. "Save manager: load file" drove Gigahelper's
+	 * tempsave reader and is retired with its id.
+	 */
 	{ R3_SET_ASIDE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ R3_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
-	{ R3_MGR_LOAD,   FEATURE_ACTION, G_SAVEFILE, 0, 0,  NO, 0, 0, "Save manager: load file" },
 
 	{ R3_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_FRONT,  0, 0, "Chargeboots primary front" },
 	{ R3_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_BACK,   0, 0, "Chargeboots primary back" },

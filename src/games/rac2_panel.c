@@ -11,6 +11,7 @@
 #include "rac2.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -260,38 +261,21 @@ int rac2_die(void)
 /* --------------------------------------------------------------- savefile */
 
 /*
- * The five savefile bytes only mean anything while the savefile helper mod is
- * loaded; without it they are somebody else's memory. The helper byte is read
- * live rather than taken from the readout, because an action is rare and a stale
- * answer here writes into a game that is not listening.
- */
-static int savefile_request(u32 addr, u8 value)
-{
-	u8 present = 0;
-	int rc = mem_read_u8(RAC2_SF_HELPER, &present);
-
-	if (rc != ST_OK) return rc;
-	if (present != 1) return ST_UNSUPPORTED;
-
-	return mem_write_u8(addr, value);
-}
-
-/*
  * rac2.cs loadSetAsideFile forces fast loads on first, exactly as the planet
- * load does, and the loading-screen watcher puts them back afterwards.
+ * load does, and the loading-screen watcher puts them back afterwards. The
+ * request itself goes through src/core/savefile.c, which installs the helper if
+ * this process has not had it yet.
  */
 int rac2_load_setaside(void)
 {
-	u8 present = 0;
-	int rc = mem_read_u8(RAC2_SF_HELPER, &present);
+	int rc = savefile_install();
 
 	if (rc != ST_OK) return rc;
-	if (present != 1) return ST_UNSUPPORTED;
 
 	rc = rac2_fastload_force();
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
-	return mem_write_u8(RAC2_SF_LOAD_ASIDE, 1);
+	return savefile_load_aside();
 }
 
 /* -------------------------------------------------------------- the setups */
@@ -474,9 +458,7 @@ int rac2_trigger(u8 id)
 	case R2_UNLOCK_SKILL:    return mem_write_fill(RAC2_SKILL_POINTS, 1, 30);
 
 	case R2_LOAD_ASIDE:      return rac2_load_setaside();
-	case R2_SET_ASIDE:       return savefile_request(RAC2_SF_SET_ASIDE, 1);
-	case R2_MGR_SAVE:        return savefile_request(RAC2_SF_MGR_SAVE, 1);
-	case R2_MGR_LOAD:        return savefile_request(RAC2_SF_MGR_LOAD, 1);
+	case R2_SET_ASIDE:       return savefile_set_aside();
 
 	default:                 return ST_NOT_FOUND;
 	}

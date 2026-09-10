@@ -142,7 +142,7 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_CHALLENGE] != NULL)
 		out->readout[RAC4_RO_CUR_CHAL] = be32_get(blocks[HOT_CHALLENGE]);
 
-	/* The client greys the two savefile actions on this one. */
+	/* 1 once the helper has run a frame; SAVEFILE_INFO reports the same byte. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC4_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 

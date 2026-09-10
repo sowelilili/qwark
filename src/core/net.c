@@ -6,6 +6,7 @@
 #include "config.h"
 #include "util.h"
 #include "autosplit.h"
+#include "savefile.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
@@ -618,6 +619,58 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		session_combo_suspend(req[0]);
 		break;
 
+	/*
+	 * Protocol 1.9. The savefile block. All three run here rather than on the
+	 * network thread because all three touch game memory, and all three install
+	 * the game's helper the first time they are asked.
+	 */
+	case OP_SAVEFILE_INFO: {
+		u8 supported = 0, installed = 0, running = 0, pending = 0;
+		u32 size = 0;
+
+		if (cmd->replycap < SAVEFILE_INFO_SIZE) { cmd->status = ST_FULL; break; }
+
+		cmd->status = (u16)savefile_info(&supported, &installed, &running,
+		                                 &pending, &size);
+		if (cmd->status != ST_OK) break;
+
+		reply[0] = supported;
+		reply[1] = installed;
+		reply[2] = running;
+		reply[3] = pending;
+		be32_put(reply + 4, size);
+		cmd->replylen = SAVEFILE_INFO_SIZE;
+		break;
+	}
+
+	case OP_SAVEFILE_READ: {
+		u32 offset, len, got = 0;
+
+		if (reqlen < 8) { cmd->status = ST_BAD_ARG; break; }
+		offset = be32_get(req);
+		len    = be32_get(req + 4);
+		if (len == 0 || len > SAVEFILE_CHUNK_MAX || len > cmd->replycap) {
+			cmd->status = ST_BAD_ARG;
+			break;
+		}
+
+		cmd->status = (u16)savefile_read(offset, len, reply, &got);
+		if (cmd->status == ST_OK) cmd->replylen = got;
+		break;
+	}
+
+	case OP_SAVEFILE_WRITE: {
+		u32 offset, len;
+
+		if (reqlen < 5) { cmd->status = ST_BAD_ARG; break; }
+		offset = be32_get(req);
+		len = reqlen - 4;
+		if (len > SAVEFILE_CHUNK_MAX) { cmd->status = ST_BAD_ARG; break; }
+
+		cmd->status = (u16)savefile_write(offset, req + 4, len);
+		break;
+	}
+
 	default:
 		cmd->status = ST_UNKNOWN_OP;
 		break;
@@ -660,6 +713,9 @@ static int op_needs_ring(u16 op)
 	case OP_LEVELFLAGS_RESET:
 	case OP_LEVELFLAGS_SET:
 	case OP_COMBO_SUSPEND:
+	case OP_SAVEFILE_INFO:
+	case OP_SAVEFILE_READ:
+	case OP_SAVEFILE_WRITE:
 		return 1;
 	default:
 		return 0;

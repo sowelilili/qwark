@@ -11,6 +11,7 @@
 #include "rac3.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -432,20 +433,13 @@ int rac3_planet_load(u8 planet, u8 flags)
 
 /* --------------------------------------------------------------- savefile */
 
-static int savefile_request(u32 addr, u8 value)
-{
-	u8 present = 0;
-	int rc = mem_read_u8(RAC3_SF_HELPER, &present);
-
-	if (rc != ST_OK) return rc;
-	if (present != 1) return ST_UNSUPPORTED;
-
-	return mem_write_u8(addr, value);
-}
-
+/*
+ * Both requests go through src/core/savefile.c, which installs the helper if
+ * this process has not had it yet.
+ */
 int rac3_load_setaside(void)
 {
-	return savefile_request(RAC3_SF_LOAD_ASIDE, 1);
+	return savefile_load_aside();
 }
 
 /* ----------------------------------------------------------------- enums */
@@ -647,9 +641,8 @@ int rac3_trigger(u8 id)
 	case R3_UPGRADE_ALL:     return rac3_all_versions(1);
 	case R3_DOWNGRADE_ALL:   return rac3_all_versions(0);
 
-	case R3_SET_ASIDE:       return savefile_request(RAC3_SF_MGR_SAVE, 1);
-	case R3_LOAD_ASIDE:      return savefile_request(RAC3_SF_LOAD_ASIDE, 1);
-	case R3_MGR_LOAD:        return savefile_request(RAC3_SF_MGR_LOAD, 1);
+	case R3_SET_ASIDE:       return savefile_set_aside();
+	case R3_LOAD_ASIDE:      return rac3_load_setaside();
 
 	default:                 return ST_NOT_FOUND;
 	}

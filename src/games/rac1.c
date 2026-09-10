@@ -162,7 +162,7 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_JKSTATE] != NULL)
 		out->readout[RAC1_RO_JANK_STATE] = be32_get(blocks[HOT_JKSTATE]);
 
-	/* The client greys the three savefile actions on this one. */
+	/* 1 once the helper has run a frame; SAVEFILE_INFO reports the same byte. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC1_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 

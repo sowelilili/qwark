@@ -27,6 +27,8 @@ The build uses
 C:\ghcup\ghc\9.4.7\mingw\bin\clang.exe   (x86_64-w64-windows-gnu; link -lws2_32 -lwinmm -lpthread)
 ```
 
+The savefile helper (`src/games/sfhelper/`) is PowerPC code that runs inside the *game*, built by `make sfhelper` into the committed `src/games/sfhelper_bins.c`. It needs the SDK; a plain `make` rebuilds it only when a source is newer, and the host builds compile the committed file. `make dist` copies `qwark.sprx` and `qwark-rpcs3.exe` into the committed `dist/`, which is where the client's release packaging takes them from.
+
 Host tests: `./test/run.sh` builds and runs the unit tests against the host platform.
 Integration: `python test/smoke.py` starts `qwark-host.exe`, drives its fake console over
 stdin, talks the real wire protocol to it and prints PASS/FAIL per step; it then does the

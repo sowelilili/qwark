@@ -11,6 +11,7 @@
 #include "rac1.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -464,25 +465,29 @@ int rac1_planet_load(u8 planet, u8 flags)
 /* --------------------------------------------------------------- savefile */
 
 /*
- * The three savefile requests only mean anything while the savefile helper mod
- * is loaded; without it the bytes are somebody else's memory. The helper byte
- * is read live rather than taken from the readout, because an action is rare
- * and a stale answer here writes into a game that is not listening.
+ * The set-aside and load requests go through src/core/savefile.c, which installs
+ * the helper if this process has not had it yet. Nobody loads a mod for it any
+ * more, so there is nothing left to refuse: what used to be UNSUPPORTED without
+ * the helper is now UNSUPPORTED only where code cannot be patched at all.
  */
-static int savefile_request(u32 addr, u8 value)
-{
-	u8 present = 0;
-	int rc = mem_read_u8(RAC1_SAVEFILE_HELPER, &present);
-
-	if (rc != ST_OK) return rc;
-	if (present != 1) return ST_UNSUPPORTED;
-
-	return mem_write_u8(addr, value);
-}
-
 int rac1_load_setaside(void)
 {
-	return savefile_request(RAC1_SAVEFILE_LOAD, 1);
+	return savefile_load_aside();
+}
+
+/*
+ * Force autosave is RaC1's alone: a fourth request byte the helper reads as a
+ * save_handler mode. It still needs the helper installed, so it asks for that
+ * first and then writes the byte itself.
+ */
+static int rac1_force_autosave(void)
+{
+	int rc = savefile_install();
+
+	if (rc != ST_OK) return rc;
+
+	/* Three, not one: RAC1Form's forceAutosave writes a 3, the autosave mode. */
+	return mem_write_u8(RAC1_SAVEFILE_AUTO, 3);
 }
 
 /* ---------------------------------------------------------------- jankpot */
@@ -618,14 +623,13 @@ int rac1_trigger(u8 id)
 		return rac1_max_ammo_all();
 
 	case F_LOAD_SETASIDE:
-		return savefile_request(RAC1_SAVEFILE_LOAD, 1);
+		return savefile_load_aside();
 
 	case F_SET_ASIDE_FILE:
-		return savefile_request(RAC1_SAVEFILE_ASIDE, 1);
+		return savefile_set_aside();
 
 	case F_FORCE_AUTOSAVE:
-		/* Three, not one: RAC1Form's forceAutosave writes a 3. */
-		return savefile_request(RAC1_SAVEFILE_AUTO, 3);
+		return rac1_force_autosave();
 
 	case F_JANK_ACTIVATE:
 		return mem_write(RAC1_JANKPOT_STATE, rac1_jankpot_on,

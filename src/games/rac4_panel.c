@@ -11,6 +11,7 @@
 #include "rac4.h"
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -146,20 +147,13 @@ int rac4_die(void)
 
 /* --------------------------------------------------------------- savefile */
 
-static int savefile_request(u32 addr, u8 value)
-{
-	u8 present = 0;
-	int rc = mem_read_u8(RAC4_SF_HELPER, &present);
-
-	if (rc != ST_OK) return rc;
-	if (present != 1) return ST_UNSUPPORTED;
-
-	return mem_write_u8(addr, value);
-}
-
+/*
+ * Both requests go through src/core/savefile.c, which installs the helper if
+ * this process has not had it yet.
+ */
 int rac4_load_setaside(void)
 {
-	return savefile_request(RAC4_SF_LOAD_ASIDE, 1);
+	return savefile_load_aside();
 }
 
 /* ----------------------------------------------------------------- skins */
@@ -290,8 +284,8 @@ int rac4_trigger(u8 id)
 	case R4_DIE:            return rac4_die();
 	case R4_UNLOCK_PLANETS: return rac4_unlock_all_planets();
 	case R4_ACT_TUNE:       return rac4_act_tune();
-	case R4_SET_ASIDE:      return savefile_request(RAC4_SF_SET_ASIDE, 1);
-	case R4_LOAD_ASIDE:     return savefile_request(RAC4_SF_LOAD_ASIDE, 1);
+	case R4_SET_ASIDE:      return savefile_set_aside();
+	case R4_LOAD_ASIDE:     return savefile_load_aside();
 	default:                return ST_NOT_FOUND;
 	}
 }

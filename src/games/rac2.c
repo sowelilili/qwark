@@ -33,7 +33,7 @@ const u8 rac2_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
  *   4  lflags   Endako exit +0x31, Barlow race +0x47, A2 Clank +0xE9   every tick
  *   5  chunk    the current chunk byte                                 every tick
  *   6  yeedil   the Yeedil scene byte                                  every tick
- *   7  savefile helper byte and its four request bytes                 every 8th
+ *   7  savefile the helper's own byte                                   every 8th
  *   8  chargeboot colour words                                        every 8th
  *
  * Blocks 3 to 6 are the autosplit watcher's, and are per-tick because a split has
@@ -48,7 +48,7 @@ static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_HOT_FLAGS_ADDR,  RAC2_HOT_FLAGS_LEN,  1, 0 },
 	{ RAC2_CHUNK,           1,                   1, 0 },
 	{ RAC2_YEEDIL_SCENE,    1,                   1, 0 },
-	{ RAC2_SF_LOAD_ASIDE,   8,                   8, 0 },
+	{ RAC2_SF_HELPER,       1,                   8, 0 },
 	{ RAC2_CB_PRIMARY_FRONT, 0x14,               8, 4 }
 };
 
@@ -72,8 +72,6 @@ static const struct game_hot_block rac2_hot[] = {
 #define OFF_RARITANIUM (RAC2_RARITANIUM     - RAC2_HOT_STATE_ADDR)     /* 0x1C8 */
 #define OFF_CHALLENGE  (RAC2_CHALLENGE_MODE - RAC2_HOT_STATE_ADDR)     /* 0x1D6 */
 #define OFF_HEALTH_XP  (RAC2_HEALTH_XP      - RAC2_HOT_STATE_ADDR)     /* 0x1D8 */
-
-#define OFF_SF_HELPER  (RAC2_SF_HELPER      - RAC2_SF_LOAD_ASIDE)      /* 2 */
 
 #define OFF_CB_BACK    (RAC2_CB_PRIMARY_BACK - RAC2_CB_PRIMARY_FRONT)  /* 0x04 */
 #define OFF_CB_TINT    (RAC2_CB_TINT_FRONT   - RAC2_CB_PRIMARY_FRONT)  /* 0x10 */
@@ -140,9 +138,9 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		for (i = 0; i < 3; i++) out->pos[i] = bef32_get(player + i * 4);
 	}
 
-	/* The client greys the savefile actions on this one. */
+	/* 1 once the helper has run a frame; SAVEFILE_INFO reports the same byte. */
 	if (blocks[HOT_SAVEFILE] != NULL)
-		out->readout[RAC2_RO_SAVEFILE] = blocks[HOT_SAVEFILE][OFF_SF_HELPER];
+		out->readout[RAC2_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
 	if (blocks[HOT_COLOURS] != NULL) {
 		const u8 *c = blocks[HOT_COLOURS];
@@ -503,14 +501,12 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_RESET_SKILL,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset skill points" },
 
 	/*
-	 * Four savefile requests, named after the four old buttons. The save
-	 * manager's pair carries the 1.2 flags because those are the two the file
-	 * manager on the PC drives; the other two are the main form's own buttons.
+	 * Protocol 1.9: one pair, and it is the same pair the PC's save-file manager
+	 * drives. The two "Save manager" rows that used to carry the flags wrote a
+	 * tempsave file and are retired with their ids.
 	 */
-	{ R2_LOAD_ASIDE,      FEATURE_ACTION, G_SAVEFILE, 0, 0,  NO, 0, 0, "Load file" },
-	{ R2_SET_ASIDE,       FEATURE_ACTION, G_SAVEFILE, 0, 0,  NO, 0, 0, "Set aside file" },
-	{ R2_MGR_SAVE,        FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Save manager: save file" },
-	{ R2_MGR_LOAD,        FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Save manager: load file" },
+	{ R2_SET_ASIDE,       FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
+	{ R2_LOAD_ASIDE,      FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
 	{ R2_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, 0, RAC2_RO_CB_FRONT, 0, 0, "Chargeboots primary front" },
 	{ R2_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, 0, RAC2_RO_CB_BACK,  0, 0, "Chargeboots primary back" },

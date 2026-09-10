@@ -6,6 +6,7 @@
 #include "net.h"
 #include "util.h"
 #include "autosplit.h"
+#include "savefile.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -369,6 +370,8 @@ static void enter_ingame(void)
 	freeze_clear();
 	patch_forget_all();
 	mods_forget_loaded();
+	/* A fresh process has none of the savefile helper in it. */
+	savefile_forget();
 
 	if (!same) {
 		features_set_game(g_game, g_title);

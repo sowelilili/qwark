@@ -1,3 +1,8 @@
 # Keep the shell build scripts usable on POSIX systems, and the batch ones on Windows.
 *.sh text eol=lf
 *.bat text eol=crlf
+
+# dist/ carries a signed module and an executable. Say so rather than leave it to
+# git's guess: one converted byte in either of them is a file that will not load.
+*.sprx binary
+*.exe binary

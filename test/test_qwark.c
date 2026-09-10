@@ -14,7 +14,9 @@
 #include "../src/core/util.h"
 #include "../src/core/net.h"
 #include "../src/core/autosplit.h"
+#include "../src/core/savefile.h"
 #include "../src/games/game.h"
+#include "../src/games/sfhelper_bins.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/plat_net.h"
 #include "../src/plat/host/plat_host.h"
@@ -530,7 +532,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 9, "and this module is build 9");
+	check_eq_u64(packet[5], 10, "and this module is build 10");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -897,31 +899,28 @@ static void test_planet_load(void)
 	check_eq_u64(v, 0, "and the last of the eighty bytes is zero again");
 }
 
-/* ------------------------------------------------- RaC1: the savefile gate */
+/* ------------------------------------------- RaC1: the savefile requests */
 
 #define A_HELPER   0xB00070u
 #define A_SF_LOAD  0xB00071u
 #define A_SF_ASIDE 0xB00072u
 #define A_SF_AUTO  0xB00073u
 
-static void test_savefile_gate(void)
+/*
+ * Protocol 1.9. Nobody loads a mod for the helper any more: the first request of
+ * a session installs it, so the actions work from a cold process and the helper
+ * byte is qwark's own write rather than a gate.
+ */
+static void test_savefile_requests(void)
 {
 	u8 b = 0;
 
-	group("RaC1 savefile helper gate");
+	group("RaC1 savefile requests");
 
 	host_poke(A_HELPER, (const u8 *)"\x00\x00\x00\x00", 4);
 
-	check(features_trigger(18) == ST_UNSUPPORTED,
-	      "load set-aside file is UNSUPPORTED without the helper");
-	check(features_trigger(19) == ST_UNSUPPORTED, "so is set aside file");
-	check(features_trigger(20) == ST_UNSUPPORTED, "so is force autosave");
-	check(session_load_setaside() == ST_UNSUPPORTED,
-	      "and so is the combo action behind them");
-
-	host_poke(A_HELPER, (const u8 *)"\x01", 1);
-
-	check(features_trigger(18) == ST_OK, "with the helper loaded it goes through");
+	check(features_trigger(18) == ST_OK,
+	      "load set-aside file works with nothing loaded first");
 	host_peek(A_SF_LOAD, &b, 1);
 	check_eq_u64(b, 1, "load writes a 1");
 
@@ -933,13 +932,20 @@ static void test_savefile_gate(void)
 	host_peek(A_SF_AUTO, &b, 1);
 	check_eq_u64(b, 3, "force autosave writes a 3, not a 1");
 
-	/* The readout mirrors the helper byte once the slow block comes round. */
+	check(session_load_setaside() == ST_OK, "and so does the combo action");
+
+	/*
+	 * The readout mirrors the helper's own byte, which only the helper writes.
+	 * The fake console runs no PowerPC, so the byte is poked here instead: what
+	 * is being checked is that the readout follows it.
+	 */
+	host_poke(A_HELPER, (const u8 *)"\x01", 1);
 	pump(20);
 	{
 		u8 info[SESSION_INFO_SIZE];
 		session_info_copy(info, sizeof(info));
 		check_eq_u64(be32_get(info + 64 + 4 * 1), 1,
-		             "readout 1 reports the helper as present");
+		             "readout 1 reports the helper as running");
 	}
 }
 
@@ -1121,6 +1127,172 @@ static void test_savefile_flags(void)
 
 	check(FEATURE_FLAG_SAVE_ASIDE == 0x04 && FEATURE_FLAG_LOAD_ASIDE == 0x08,
 	      "the two flags are bit2 and bit3");
+}
+
+/* ------------------------------------- protocol 1.9, the savefile helper */
+
+/*
+ * What can and cannot be checked here.
+ *
+ * The helper is PowerPC code that runs inside the game, and the fake console
+ * runs no PowerPC: nothing in this file executes a single instruction of it, so
+ * whether it copies the right save buffer, and whether the hook site is the
+ * right one, are questions only a console can answer. What is checked is
+ * everything on qwark's side of that line - that installing writes the cave
+ * bytes and the hook words at the addresses the generated table names, that the
+ * three ops answer the way the protocol says, that a request writes the request
+ * byte the helper would read, and that the aside buffer round-trips.
+ */
+static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
+{
+	const struct sf_desc *d = sf_desc_for_game(game_id);
+	u8 supported = 0, installed = 0, running = 0, pending = 0;
+	u32 size = 0;
+	u8 pattern[64];
+	u8 buf[64];
+	u32 got = 0;
+	u8 b = 0;
+	u8 i;
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait(title), "the game reaches INGAME");
+
+	check(d != NULL, "the game has an entry in the generated helper table");
+	if (d == NULL) return;
+	check(d->ncaves >= 1 && d->nhooks >= 1, "which names a cave and a hook word");
+
+	/* Nothing has asked for the helper yet, and asking is what installs it. */
+	check(savefile_info(&supported, &installed, &running, &pending, &size) == ST_OK,
+	      "SAVEFILE_INFO answers");
+	check_eq_u64(supported, 1, "the game is supported");
+	check_eq_u64(installed, 1, "and asking is what put the helper in");
+	check_eq_u64(size, d->aside_size, "the size is the aside buffer's");
+	check_eq_u64(running, 0, "nothing has executed it, so it is not running");
+	check_eq_u64(pending, 0, "and no request is outstanding");
+
+	for (i = 0; i < d->ncaves; i++) {
+		u8 head[16];
+		host_peek(d->caves[i].addr, head, sizeof(head));
+		check(memcmp(head, d->caves[i].bytes, sizeof(head)) == 0,
+		      "the cave's bytes are at the cave address");
+	}
+
+	for (i = 0; i < d->nhooks; i++) {
+		u8 word[4];
+		host_peek(d->hooks[i].addr, word, sizeof(word));
+		check_eq_u64(be32_get(word), d->hooks[i].value,
+		             "and the hook word is at the hook site");
+	}
+
+	/*
+	 * api_mod is the helper's own write, once a frame. Poking it here stands in
+	 * for the game having reached the hook.
+	 */
+	host_poke(d->api_mod, (const u8 *)"\x01", 1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(running, 1, "api_mod reading 1 is reported as running");
+
+	/* The two requests, and the pending bits that follow them. */
+	check(savefile_set_aside() == ST_OK, "the set-aside request goes out");
+	host_peek(d->api_setaside, &b, 1);
+	check_eq_u64(b, 1, "as a 1 in the set-aside byte");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE, "INFO says it is outstanding");
+
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "and the bit clears when the helper clears the byte");
+
+	check(savefile_load_aside() == ST_OK, "the load request goes out");
+	host_peek(d->api_load, &b, 1);
+	check_eq_u64(b, 1, "as a 1 in the load byte");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_LOAD, "INFO says the load is outstanding");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+
+	/* The flagged ACTION is the same request by another road. */
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	check(features_trigger((u8)set_aside_id) == ST_OK,
+	      "the SAVE_ASIDE action fires");
+	host_peek(d->api_setaside, &b, 1);
+	check_eq_u64(b, 1, "and writes the same byte");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+
+	/* WRITE then READ, through the buffer the helper parks a save in. */
+	for (i = 0; i < (u8)sizeof(pattern); i++) pattern[i] = (u8)(i * 7 + 1);
+
+	check(savefile_write(0, pattern, sizeof(pattern)) == ST_OK, "a write at offset 0");
+	check(savefile_read(0, sizeof(buf), buf, &got) == ST_OK, "and a read back");
+	check_eq_u64(got, sizeof(buf), "of the length that was asked for");
+	check(memcmp(buf, pattern, sizeof(pattern)) == 0, "the bytes round-tripped");
+
+	host_peek(d->aside_addr, buf, sizeof(buf));
+	check(memcmp(buf, pattern, sizeof(pattern)) == 0,
+	      "and they are in the aside buffer, at the address the helper reads");
+
+	check(savefile_write(d->aside_size - 4, pattern, 4) == ST_OK,
+	      "a write that ends exactly at the end of the buffer is fine");
+	check(savefile_write(d->aside_size - 4, pattern, 8) == ST_BAD_ARG,
+	      "one that would run past it is BAD_ARG");
+	check(savefile_write(d->aside_size, pattern, 4) == ST_BAD_ARG,
+	      "and so is an offset at the end");
+	check(savefile_write(0, pattern, 0) == ST_BAD_ARG, "an empty write is BAD_ARG");
+
+	check(savefile_read(d->aside_size - 4, sizeof(buf), buf, &got) == ST_OK,
+	      "a read that runs past the end is trimmed rather than refused");
+	check_eq_u64(got, 4, "to what is left of the buffer");
+	check(memcmp(buf, pattern, 4) == 0, "and it is the tail that was written");
+	check(savefile_read(d->aside_size, 4, buf, &got) == ST_BAD_ARG,
+	      "an offset at the end is BAD_ARG");
+}
+
+static void test_savefile_helper(void)
+{
+	u8 supported = 9, installed = 9, running = 9, pending = 9;
+	u32 size = 9;
+	u8 buf[4] = { 0 };
+	u32 got = 0;
+
+	group("protocol 1.9: RaC1's savefile helper");
+	savefile_one_game("NPEA00385", GAME_RAC1, 19);
+
+	group("protocol 1.9: RaC2's savefile helper");
+	savefile_one_game("NPEA00386", GAME_RAC2, 31);
+
+	group("protocol 1.9: RaC3's savefile helper");
+	savefile_one_game("NPEA00387", GAME_RAC3, 31);
+
+	group("protocol 1.9: Deadlocked's savefile helper");
+	savefile_one_game("NPEA00423", GAME_RAC4, 13);
+
+	group("protocol 1.9: the savefile ops outside INGAME");
+
+	check(sf_desc_for_game(GAME_NONE) == NULL,
+	      "no game means no helper table entry");
+
+	check(quit_and_wait(), "the game goes away");
+	check(savefile_info(&supported, &installed, &running, &pending, &size)
+	      == ST_NOT_INGAME, "SAVEFILE_INFO is NOT_INGAME");
+	check(savefile_read(0, 4, buf, &got) == ST_NOT_INGAME,
+	      "and so is SAVEFILE_READ");
+	check(savefile_write(0, buf, 4) == ST_NOT_INGAME, "and SAVEFILE_WRITE");
+	check(savefile_install() == ST_NOT_INGAME, "and installing the helper");
+
+	/*
+	 * The helper is not carried across a reboot: a new process has none of it,
+	 * so the next request writes it again.
+	 */
+	check(boot_and_wait("NPEA00385"), "RaC1 comes back");
+	{
+		u8 word[4];
+		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
+		check(be32_get(word) != sf_desc_for_game(GAME_RAC1)->hooks[0].value,
+		      "the fresh process has no hook word in it");
+		check(savefile_install() == ST_OK, "installing again");
+		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
+		check_eq_u64(be32_get(word), sf_desc_for_game(GAME_RAC1)->hooks[0].value,
+		             "and the hook word is back");
+	}
 }
 
 /*
@@ -1351,8 +1523,9 @@ static void test_combo_suspend(void)
 #define R2_PBOLT_ARRAY  0x01562540u
 #define R2_LEVELFLAGS   0x015625B0u
 #define R2_LOADPLANET   0x0156B050u
-#define R2_SF_HELPER    0x01BF0002u
-#define R2_SF_MGR_SAVE  0x01BF0003u
+#define R2_SF_HELPER    0x010CD71Du
+#define R2_SF_LOAD      0x010CD71Eu
+#define R2_SF_SET_ASIDE 0x010CD71Fu
 
 #define F2_FAST_LOADS   0
 #define F2_INFINITE_AMMO 1
@@ -1362,7 +1535,7 @@ static void test_combo_suspend(void)
 #define F2_DEATH_PBOLTS 14
 #define F2_AUTO_ANYPCT  21
 #define F2_LOAD_ASIDE   30
-#define F2_MGR_SAVE     32
+#define F2_SET_ASIDE    31
 
 static void test_rac2(void)
 {
@@ -1383,7 +1556,7 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 37, "RaC2 declares thirty-seven features");
+		check_eq_u64(d->nfeatures, 35, "RaC2 declares thirty-five features");
 		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 		check(qstreq(d->readouts[0], "Bolts"), "readout 0 is Bolts");
@@ -1508,17 +1681,17 @@ static void test_rac2(void)
 	mem_read_u32(R2_PBOLT_ARRAY, &v);
 	check_eq_u64(v, 0, "and the platinum bolts went with it");
 
-	group("RaC2: savefile gate");
+	group("RaC2: savefile requests");
 
-	host_poke(R2_SF_HELPER, (const u8 *)"\x00", 1);
-	check(features_trigger(F2_MGR_SAVE) == ST_UNSUPPORTED,
-	      "a savefile action without the helper is UNSUPPORTED");
-	check(session_load_setaside() == ST_UNSUPPORTED, "and so is the combo action");
-	host_poke(R2_SF_HELPER, (const u8 *)"\x01", 1);
-	check(features_trigger(F2_MGR_SAVE) == ST_OK, "with the helper it goes through");
-	host_peek(R2_SF_MGR_SAVE, &b, 1);
-	check_eq_u64(b, 1, "the save-manager byte was written");
-	check(features_trigger(F2_LOAD_ASIDE) == ST_OK, "so does the load-file action");
+	host_poke(R2_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	check(features_trigger(F2_SET_ASIDE) == ST_OK,
+	      "set aside works from a cold process: the helper goes in first");
+	host_peek(R2_SF_SET_ASIDE, &b, 1);
+	check_eq_u64(b, 1, "the set-aside byte was written");
+	check(features_trigger(F2_LOAD_ASIDE) == ST_OK, "so does the load action");
+	host_peek(R2_SF_LOAD, &b, 1);
+	check_eq_u64(b, 1, "and it wrote the load byte");
+	check(session_load_setaside() == ST_OK, "and so does the combo action");
 
 	group("RaC2: the loading-screen watcher");
 
@@ -1565,7 +1738,8 @@ static void test_rac2(void)
 #define R3_BOLTS_ADDR   0x00C1E4DCu
 #define R3_ARMOUR_ADDR  0x00C1E51Cu
 #define R3_SF_HELPER    0x00D9FF00u
-#define R3_SF_MGR_SAVE  0x00D9FF03u
+#define R3_SF_LOAD      0x00D9FF01u
+#define R3_SF_SET_ASIDE 0x00D9FF02u
 #define R3_COORDS       0x00DA2870u
 #define R3_HEALTH_ADDR  0x00DA5040u
 #define R3_UNLOCK_ARRAY 0x00DA56ECu
@@ -1628,7 +1802,7 @@ static void test_rac3(void)
 		int retired = 0;
 		int neighbours = 0;
 
-		check_eq_u64(d->nfeatures, 32, "RaC3 declares thirty-two features");
+		check_eq_u64(d->nfeatures, 31, "RaC3 declares thirty-one features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 5, "and five groups");
 
@@ -1867,16 +2041,16 @@ static void test_rac3(void)
 	}
 	check(features_set(F3_ARMOUR, 8) == ST_BAD_ARG, "an armour past the end is BAD_ARG");
 
-	group("RaC3: savefile gate");
+	group("RaC3: savefile requests");
 
-	host_poke(R3_SF_HELPER, (const u8 *)"\x00", 1);
-	check(features_trigger(F3_SET_ASIDE) == ST_UNSUPPORTED,
-	      "set aside without the helper is UNSUPPORTED");
-	host_poke(R3_SF_HELPER, (const u8 *)"\x01", 1);
-	check(features_trigger(F3_SET_ASIDE) == ST_OK, "and goes through with it");
-	host_peek(R3_SF_MGR_SAVE, &b, 1);
-	check_eq_u64(b, 1, "writing the save-manager byte");
+	host_poke(R3_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	check(features_trigger(F3_SET_ASIDE) == ST_OK,
+	      "set aside works from a cold process");
+	host_peek(R3_SF_SET_ASIDE, &b, 1);
+	check_eq_u64(b, 1, "writing the set-aside byte");
 	check(session_load_setaside() == ST_OK, "the combo action works too");
+	host_peek(R3_SF_LOAD, &b, 1);
+	check_eq_u64(b, 1, "and it wrote the load byte");
 }
 
 /* ------------------------------------------------------------ Deadlocked */
@@ -2093,13 +2267,11 @@ static void test_rac4(void)
 	mem_read_u32(R4_COORDS2 + 8, &v);
 	check_eq_u64(v, 0, "and at the second one");
 
-	group("Deadlocked: savefile gate");
+	group("Deadlocked: savefile requests");
 
-	host_poke(R4_SF_HELPER, (const u8 *)"\x00", 1);
-	check(features_trigger(F4_SET_ASIDE) == ST_UNSUPPORTED,
-	      "set aside without the helper is UNSUPPORTED");
-	host_poke(R4_SF_HELPER, (const u8 *)"\x01", 1);
-	check(features_trigger(F4_SET_ASIDE) == ST_OK, "and goes through with it");
+	host_poke(R4_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	check(features_trigger(F4_SET_ASIDE) == ST_OK,
+	      "set aside works from a cold process");
 	host_peek(R4_SF_SET_ASIDE, &b, 1);
 	check_eq_u64(b, 1, "writing the set-aside byte");
 
@@ -2131,7 +2303,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 37, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 35, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -3158,6 +3330,34 @@ static void test_no_code_patches(void)
 	check(be32_get(word) != 0x004F5BE4u,
 	      "RaC1's autosplit helper was not installed");
 
+	/* ------------------------------------------------- the savefile helper */
+
+	/*
+	 * The savefile helper is a code cave and a branch into it, so on a platform
+	 * that cannot patch code there is nothing to install and nothing to talk to:
+	 * all three ops and both request actions say so rather than half-working.
+	 */
+	{
+		u8 sup = 9, ins = 9, run = 9, pend = 9;
+		u32 sz = 9;
+		u32 got = 0;
+
+		check(savefile_info(&sup, &ins, &run, &pend, &sz) == ST_UNSUPPORTED,
+		      "SAVEFILE_INFO is UNSUPPORTED");
+		check(savefile_read(0, 4, word, &got) == ST_UNSUPPORTED,
+		      "and so is SAVEFILE_READ");
+		check(savefile_write(0, word, 4) == ST_UNSUPPORTED, "and SAVEFILE_WRITE");
+		check(savefile_install() == ST_UNSUPPORTED, "and installing the helper");
+		check(features_trigger(19) == ST_UNSUPPORTED,
+		      "the SAVE_ASIDE action is UNSUPPORTED");
+		check(features_trigger(18) == ST_UNSUPPORTED, "and the LOAD_ASIDE one");
+		check(session_load_setaside() == ST_UNSUPPORTED, "and the combo action");
+
+		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
+		check(be32_get(word) != sf_desc_for_game(GAME_RAC1)->hooks[0].value,
+		      "and no hook word was written");
+	}
+
 	/* -------------------------------------------------------- FEATURE_SET */
 
 	check(features_set(F_INFINITE_AMMO, 1) == ST_UNSUPPORTED,
@@ -3475,10 +3675,11 @@ int main(void)
 	test_unlocks();
 	test_levelflags();
 	test_planet_load();
-	test_savefile_gate();
+	test_savefile_requests();
 	test_debug_options();
 	test_live_toggles();
 	test_savefile_flags();
+	test_savefile_helper();
 	test_signed_values();
 	test_combo_suspend();
 	test_rac2();

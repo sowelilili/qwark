@@ -312,6 +312,15 @@ objs/
 *.prx
 *.sym
 
+# The savefile helper's cross-build working directory. What is committed is the
+# generated src/games/sfhelper_bins.c, not the objects it came from.
+src/games/sfhelper/out/
+
+# dist/ carries the built module and the RPCS3 helper for the PC client's release
+# workflow, so the blanket ignores above do not apply to those two files.
+!dist/qwark.sprx
+!dist/qwark-rpcs3.exe
+
 # Python cache from the smoke test
 __pycache__/
 *.pyc
