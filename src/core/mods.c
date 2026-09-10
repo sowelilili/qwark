@@ -311,6 +311,12 @@ int mods_rescan(void)
 		parse_mod(&tmp, ent.name);
 		tmp.index = (u8)g_nmods;
 		g_mods[g_nmods] = tmp;
+		/*
+		 * parse_mod pointed def.name at the temporary's own name buffer, which
+		 * dies with this loop iteration; the copy in the table has to point at
+		 * its own. Without this PATCH_LIST read a dead stack frame for the name.
+		 */
+		g_mods[g_nmods].def.name = g_mods[g_nmods].name;
 		g_nmods++;
 	}
 
