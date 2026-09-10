@@ -32,7 +32,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 8
+QWARK_BUILD = 9
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -518,13 +518,14 @@ def as_absent(c, mark, kind, code, settle=0.5):
     return not any(e["kind"] == kind and e["code"] == code for e in events)
 
 
-def exercise_autosplit_timing(c, name, spec):
+def exercise_autosplit_steps(c, name, steps):
     """
-    Drives the rows revision 1.5 added: the loads and pauses whose param_us the
-    client turns into a game-time adjustment. Each step pokes some memory, then
-    says which event must arrive or must not.
+    Drives a list of watcher steps: each pokes some memory to set the world up,
+    pokes some more to make the edge, and says which event must arrive or must
+    not. The "timing" rows revision 1.5 added are written this way, and so is
+    anything a watcher has to be walked into rather than dropped into.
     """
-    for step in spec.get("timing", []):
+    for step in steps:
         for addr, value in step.get("poke", []):
             mem_write(c, addr, value)
 
@@ -589,6 +590,10 @@ def exercise_autosplit(c, udp, name, spec):
             check(not bad,
                   "%s: a timing flag comes with exactly one parameter" % name, bad)
 
+    # Some watchers hold state of their own that a poke cannot reach, so a spec
+    # may name steps that walk the session into the shape the split needs.
+    exercise_autosplit_steps(c, name, spec.get("prime", []))
+
     # Put the watcher's world where the split condition can be reached from.
     for addr, value in spec["setup"]:
         mem_write(c, addr, value)
@@ -644,7 +649,7 @@ def exercise_autosplit(c, udp, name, spec):
           "%s: and one back still returns it" % name)
 
     # Revision 1.5: the loads and pauses whose timing the old scripts adjusted.
-    exercise_autosplit_timing(c, name, spec)
+    exercise_autosplit_steps(c, name, spec.get("timing", []))
 
 
 # One row per game: what to boot, what DESCRIBE must say, and one of each kind of
@@ -823,12 +828,32 @@ OTHER_GAMES = [
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
-        # Deadlocked splits when a load starts for a real planet while in game.
+        # Deadlocked splits when a load starts for a real planet while in game,
+        # and only once the session has left the main menu: the watcher keeps its
+        # own origin planet because the game's word still holds the save's one
+        # after a boot. The prime step is that first load, which must not split.
         "autosplit": {
             "rows": [
                 (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
                 (2, AUTOSPLIT_SPLIT, DF, 0, "Vox defeated"),
                 (3, AUTOSPLIT_PAUSE, DF | NM, 14800000, "Quit to XMB"),
+            ],
+            # The game's own planet word stays 4 throughout, which is the save
+            # leftover that used to make the load out of the menu a split.
+            "prime": [
+                {"poke": [(0x00B36DCC, struct.pack(">I", 0)),
+                          (0x00B1F460, struct.pack(">I", 1)),
+                          (0x00B1F46C, struct.pack(">I", 1)),
+                          (0x009C3240, struct.pack(">I", 4)),
+                          (0x00B36DD0, struct.pack(">I", 0))],
+                 "then": [(0x00B36DCC, struct.pack(">I", 1))],
+                 "absent": (AUTOSPLIT_SPLIT, 1),
+                 "what": "a load back to the main menu does not split"},
+                {"poke": [(0x00B36DCC, struct.pack(">I", 0)),
+                          (0x00B36DD0, struct.pack(">I", 4))],
+                 "then": [(0x00B36DCC, struct.pack(">I", 1))],
+                 "absent": (AUTOSPLIT_SPLIT, 1),
+                 "what": "and the first load out of the menu does not either"},
             ],
             "setup": [(0x00B36DCC, struct.pack(">I", 0)),
                       (0x00B1F460, struct.pack(">I", 1)),

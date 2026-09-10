@@ -105,7 +105,9 @@
  *
  * The current planet is the SPRX's ADDR_CURRENT_PLANET, which is not the same
  * word as RAC4_CURRENT_PLANET: it reads 0 when the box is beaten, and both it
- * and the destination are taken modulo 0x14 for co-op.
+ * and the destination are taken modulo 0x14 for co-op. It is saved with the
+ * file, so it is not the origin of a planet change: rac4.c keeps its own origin
+ * planet for that, and this word is only read for the Vox split and the readout.
  */
 #define RAC4_AS_PLANET       RAC4_LOAD_PLANET_OLD  /* 0x009C3240 */
 #define RAC4_AS_PLANET_MOD   0x14u

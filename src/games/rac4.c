@@ -296,6 +296,23 @@ static struct rac4_as_state g_as_prev;
 static int g_as_primed;
 
 /*
+ * The planet the player is coming from, kept here rather than read out of the
+ * game. RAC4_AS_PLANET is a saved word: after a quit to the XMB and a boot it
+ * still holds whatever planet the save file was on, so the first load out of the
+ * main menu read as a planet change and split. The old SPRX never saw that,
+ * because its own copy of the state was zeroed on the way out and it was only
+ * ever looking at a process it had watched from the start.
+ *
+ * So the watcher keeps its own: RAC4_PLANET_MAINMENU while the session is fresh,
+ * and the destination of every load that starts after that. A load back to the
+ * main menu therefore puts it back to RAC4_PLANET_MAINMENU on its own, because
+ * the main menu is destination 0 in RAC4_TARGET_PLANET like any other, and the
+ * load out of the menu after it is not a split either. g_as.planet is still read
+ * from the game for the Vox split and the readout.
+ */
+static u32 g_as_origin;
+
+/*
  * Survives the reboot on purpose: a PAUSE emitted on the way out has to be
  * answered by a RESUME on the way back in, and on_enter runs in between.
  */
@@ -316,6 +333,7 @@ static void rac4_autosplit_tick(void)
 	int started_loading;
 	int planet_split;
 	int vox_split;
+	u32 origin;
 
 	/*
 	 * The pause was emitted from on_quit, before the session left INGAME. The
@@ -349,10 +367,21 @@ static void rac4_autosplit_tick(void)
 	if (!g_as_primed) {
 		g_as_prev = g_as;
 		g_as_primed = 1;
+
+		/* A session starts in the main menu, whatever the save's planet word says. */
+		g_as_origin = RAC4_PLANET_MAINMENU;
 		return;
 	}
 
 	started_loading = (p->request_load == 0 && g_as.request_load != 0);
+
+	/*
+	 * The guards below want the origin as it was before this load, so take a copy
+	 * of it and move the real one on straight away: every branch below returns,
+	 * and the reset branch has to move it too.
+	 */
+	origin = g_as_origin;
+	if (started_loading) g_as_origin = g_as.dest_planet;
 
 	if (started_loading && g_as.tutorial == 0 &&
 	    g_as.dest_planet == RAC4_PLANET_DREADZONE) {
@@ -367,10 +396,14 @@ static void rac4_autosplit_tick(void)
 		return;
 	}
 
-	/* Planet values go to 0 when the box is beaten, which is not a planet change. */
+	/*
+	 * Planet values go to 0 when the box is beaten, which is not a planet change,
+	 * and the origin is the watcher's own: a load out of the main menu is where a
+	 * run starts, not a split.
+	 */
 	planet_split = started_loading && g_as.in_game != 0 &&
 	               g_as.dest_planet != RAC4_PLANET_INTERIOR &&
-	               g_as.planet != RAC4_PLANET_MAINMENU &&
+	               origin != RAC4_PLANET_MAINMENU &&
 	               g_as.dest_planet != RAC4_PLANET_MAINMENU;
 
 	vox_split = (g_as.planet == RAC4_PLANET_INTERIOR) && g_as.vox_hp < 0.0f &&
@@ -442,6 +475,7 @@ static void rac4_on_enter(void)
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
 	g_as_primed = 0;
+	g_as_origin = RAC4_PLANET_MAINMENU;
 
 	/*
 	 * The quit hook goes in permanently and is never reverted: it is what tells

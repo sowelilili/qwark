@@ -530,7 +530,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 8, "and this module is build 8");
+	check_eq_u64(packet[5], 9, "and this module is build 9");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2404,6 +2404,7 @@ static void as_expect_coded(u32 since, u8 kind, u8 code, const char *what)
 #define A4_LOADING_VAL  0x01710000u   /* the loading hook's byte */
 #define A4_LOADING_H1   0x00011884u   /* the branch into the trampoline */
 #define A4_LOADING_H2   0x00011904u   /* the trampoline */
+#define A4_MAINMENU     0u            /* planet 0, which is the main menu */
 
 /*
  * What a game's AUTOSPLIT_DESCRIBE table has to say, row for row. Held here
@@ -2988,6 +2989,52 @@ static void test_autosplit(void)
 	pump(2);
 	as_expect_coded(mark, AUTOSPLIT_RESUME, R4_AS_QUIT,
 	                "the outstanding RESUME from the earlier quit lands");
+
+	/*
+	 * The origin rule. RAC4_AS_PLANET is a saved word and still holds the save's
+	 * planet after a boot, so the watcher keeps its own origin instead: a fresh
+	 * session starts in the main menu, and the first load out of it is where the
+	 * run starts rather than a planet change.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_IN_GAME, 1);
+	poke32(A4_TUTORIAL, 1);
+	poke32(A4_PLANET, 5);      /* what the save left in the word */
+	poke32(A4_TARGET, 5);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET) == NULL,
+	      "the first load out of the main menu does not split");
+
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_TARGET, 6);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	as_expect(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET, 6,
+	          "and the load after it does, because the origin is a real planet now");
+
+	/* A load to the main menu is not a split, and it puts the origin back to 0. */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_TARGET, A4_MAINMENU);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET) == NULL,
+	      "a load to the main menu is not a split");
+
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_TARGET, 4);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(1);
+	check(as_find(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET) == NULL,
+	      "and the load out of the menu after it is not either");
 
 	/* The SPRX's reset_needed: a load starts for Dread Zone with no tutorial flag. */
 	mark = autosplit_latest_seq();
