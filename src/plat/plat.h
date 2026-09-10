@@ -160,6 +160,14 @@ int  plat_file_write(plat_file_t f, const void *buf, u32 len);
 int  plat_file_close(plat_file_t f);
 int  plat_file_unlink(const char *path);
 
+/*
+ * Moves a file within the same filesystem. cellFsRename on the console, rename()
+ * on the host, and both of those differ about a destination that already exists:
+ * POSIX replaces it silently, Windows and cellFs refuse. Nothing here settles
+ * that, so a caller that cares checks first, which is what FILE_RENAME does.
+ */
+int  plat_file_rename(const char *from, const char *to);
+
 int  plat_dir_create(const char *path);   /* one level; parents must exist */
 int  plat_dir_remove(const char *path);   /* must be empty */
 

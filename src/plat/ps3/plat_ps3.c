@@ -406,6 +406,11 @@ int plat_file_unlink(const char *path)
 	return cellFsUnlink(path) == CELL_OK ? 0 : -1;
 }
 
+int plat_file_rename(const char *from, const char *to)
+{
+	return cellFsRename(from, to) == CELL_OK ? 0 : -1;
+}
+
 int plat_dir_create(const char *path)
 {
 	return cellFsMkdir(path, 0777) == CELL_OK ? 0 : -1;

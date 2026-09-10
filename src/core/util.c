@@ -212,6 +212,50 @@ char *qtrim(char *s)
 	return s;
 }
 
+/* ------------------------------------------------------------------- CRC32 */
+
+/*
+ * The reflected CRC-32 polynomial 0xEDB88320, four bits at a time. Entry i is
+ * the remainder of the nibble i, which is the same table every "half-byte
+ * CRC32" in the wild uses; two lookups a byte give zlib's answer exactly.
+ */
+static const u32 g_crc_nibble[16] = {
+	0x00000000u, 0x1DB71064u, 0x3B6E20C8u, 0x26D930ACu,
+	0x76DC4190u, 0x6B6B51F4u, 0x4DB26158u, 0x5005713Cu,
+	0xEDB88320u, 0xF00F9344u, 0xD6D6A3E8u, 0xCB61B38Cu,
+	0x9B64C2B0u, 0x86D3D2D4u, 0xA00AE278u, 0xBDBDF21Cu
+};
+
+u32 qcrc32_start(void)
+{
+	return 0xFFFFFFFFu;
+}
+
+u32 qcrc32_update(u32 state, const u8 *data, u32 len)
+{
+	u32 i;
+
+	if (data == NULL) return state;
+
+	for (i = 0; i < len; i++) {
+		state ^= data[i];
+		state = (state >> 4) ^ g_crc_nibble[state & 0x0Fu];
+		state = (state >> 4) ^ g_crc_nibble[state & 0x0Fu];
+	}
+
+	return state;
+}
+
+u32 qcrc32_finish(u32 state)
+{
+	return state ^ 0xFFFFFFFFu;
+}
+
+u32 qcrc32(const u8 *data, u32 len)
+{
+	return qcrc32_finish(qcrc32_update(qcrc32_start(), data, len));
+}
+
 void qslug(const char *src, char *dst, u32 cap)
 {
 	u32 n = 0;

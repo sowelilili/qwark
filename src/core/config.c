@@ -173,6 +173,7 @@ int config_init(void)
 	plat_dir_create("/dev_hdd0/qwark");
 	plat_dir_create(QWARK_POSDIR);
 	plat_dir_create(QWARK_MODSDIR);
+	plat_dir_create(QWARK_SAVEDIR);
 	plat_trace("qwark:     config dirs ok");
 
 	config_load();      /* a missing file is fine, we start empty */

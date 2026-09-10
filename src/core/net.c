@@ -625,8 +625,8 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 	 * the game's helper the first time they are asked.
 	 */
 	case OP_SAVEFILE_INFO: {
-		u8 supported = 0, installed = 0, running = 0, pending = 0;
-		u32 size = 0;
+		u8 supported = 0, installed = 0, running = 0, pending = 0, error = 0;
+		u32 size = 0, done = 0, total = 0;
 
 		if (cmd->replycap < SAVEFILE_INFO_SIZE) { cmd->status = ST_FULL; break; }
 
@@ -634,12 +634,48 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		                                 &pending, &size);
 		if (cmd->status != ST_OK) break;
 
+		savefile_transfer(&done, &total, &error);
+
 		reply[0] = supported;
 		reply[1] = installed;
 		reply[2] = running;
 		reply[3] = pending;
 		be32_put(reply + 4, size);
+		/*
+		 * Revision 1.10. The three transfer fields sit past the eight bytes 1.9
+		 * defined, so a client built against 1.9 reads the first half and is
+		 * right about every byte of it.
+		 */
+		be32_put(reply + 8, done);
+		be32_put(reply + 12, total);
+		reply[16] = error;
+		reply[17] = 0;
+		reply[18] = 0;
+		reply[19] = 0;
 		cmd->replylen = SAVEFILE_INFO_SIZE;
+		break;
+	}
+
+	/*
+	 * Protocol 1.10. The two transfers. Both start here on the tick thread,
+	 * because both write the game's request byte, and both then run as a chunked
+	 * state machine in savefile_tick so nothing else on this thread is held up.
+	 */
+	case OP_SAVEFILE_STORE:
+	case OP_SAVEFILE_RESTORE: {
+		char category[SAVEFILE_NAME_LEN + 1];
+		char name[SAVEFILE_NAME_LEN + 1];
+
+		if (reqlen < 2u * SAVEFILE_NAME_LEN) { cmd->status = ST_BAD_ARG; break; }
+
+		memcpy(category, req, SAVEFILE_NAME_LEN);
+		category[SAVEFILE_NAME_LEN] = 0;
+		memcpy(name, req + SAVEFILE_NAME_LEN, SAVEFILE_NAME_LEN);
+		name[SAVEFILE_NAME_LEN] = 0;
+
+		cmd->status = (u16)(cmd->op == OP_SAVEFILE_STORE
+		                    ? savefile_store(category, name)
+		                    : savefile_restore(category, name));
 		break;
 	}
 
@@ -716,6 +752,8 @@ static int op_needs_ring(u16 op)
 	case OP_SAVEFILE_INFO:
 	case OP_SAVEFILE_READ:
 	case OP_SAVEFILE_WRITE:
+	case OP_SAVEFILE_STORE:
+	case OP_SAVEFILE_RESTORE:
 		return 1;
 	default:
 		return 0;
@@ -1233,6 +1271,91 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		be32_put(reply, plat_user_id());
 		*replylen = 4;
 		return ST_OK;
+
+	/*
+	 * Protocol 1.10. `u16 from_len`, the old path, then the new one as the rest
+	 * of the payload: every other op in this block ends with a path, and one
+	 * length is all it takes to fit two of them into that shape.
+	 *
+	 * A destination that already exists is refused rather than replaced. cellFs
+	 * and Windows refuse one and POSIX replaces it silently, and a rename that
+	 * means different things on the console and in the simulator is worse than
+	 * one that overwrites nothing anywhere.
+	 */
+	case OP_FILE_RENAME: {
+		char from[PATH_MAX_LEN];
+		char to[PATH_MAX_LEN];
+		u32 nfrom, nto;
+
+		if (reqlen < 3) return ST_BAD_ARG;
+
+		nfrom = be16_get(req);
+		if (nfrom == 0 || nfrom >= sizeof(from) || reqlen <= 2u + nfrom) return ST_BAD_ARG;
+
+		nto = reqlen - 2u - nfrom;
+		if (nto == 0 || nto >= sizeof(to)) return ST_BAD_ARG;
+
+		memcpy(from, req + 2, nfrom);
+		from[nfrom] = 0;
+		memcpy(to, req + 2 + nfrom, nto);
+		to[nto] = 0;
+
+		if (!path_ok(from) || !path_ok(to)) return ST_BAD_ARG;
+		if (!plat_path_exists(from, NULL, NULL)) return ST_NOT_FOUND;
+		if (plat_path_exists(to, NULL, NULL)) return ST_BAD_ARG;
+
+		return plat_file_rename(from, to) == 0 ? ST_OK : ST_IO_ERROR;
+	}
+
+	/*
+	 * Protocol 1.10, the savefile library's three read-and-arrange ops. They
+	 * touch files and never game memory, so they answer here rather than on the
+	 * tick thread: a directory walk, and the one CRC over a 2 MB file a client's
+	 * own upload leaves to be summed, would otherwise be a stall of the 120 Hz
+	 * loop. The gate is taken under the core lock, the work is not.
+	 */
+	case OP_SAVEFILE_CATEGORIES: {
+		u16 rc;
+
+		core_lock();
+		rc = (u16)savefile_library_gate();
+		core_unlock();
+		if (rc != ST_OK) return rc;
+
+		return (u16)savefile_categories(reply, replycap, replylen);
+	}
+
+	case OP_SAVEFILE_LIST: {
+		char category[SAVEFILE_NAME_LEN + 1];
+		u16 rc;
+
+		if (reqlen < SAVEFILE_NAME_LEN) return ST_BAD_ARG;
+		memcpy(category, req, SAVEFILE_NAME_LEN);
+		category[SAVEFILE_NAME_LEN] = 0;
+
+		core_lock();
+		rc = (u16)savefile_library_gate();
+		core_unlock();
+		if (rc != ST_OK) return rc;
+
+		return (u16)savefile_list(category, reply, replycap, replylen);
+	}
+
+	case OP_SAVEFILE_CATEGORY: {
+		char name[SAVEFILE_NAME_LEN + 1];
+		u16 rc;
+
+		if (reqlen < 1u + SAVEFILE_NAME_LEN) return ST_BAD_ARG;
+		memcpy(name, req + 1, SAVEFILE_NAME_LEN);
+		name[SAVEFILE_NAME_LEN] = 0;
+
+		core_lock();
+		rc = (u16)savefile_library_gate();
+		core_unlock();
+		if (rc != ST_OK) return rc;
+
+		return (u16)savefile_category(req[0], name);
+	}
 
 	case OP_COMBO_SET:
 		if (reqlen < 8) return ST_BAD_ARG;

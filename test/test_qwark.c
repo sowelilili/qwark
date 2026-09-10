@@ -532,7 +532,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 11, "and this module is build 11");
+	check_eq_u64(packet[5], 12, "and this module is build 12");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -620,6 +620,26 @@ static void test_config(void)
 		check_eq_u64(qparse_u32("1234", &ok), 1234, "decimal parses");
 		qparse_u32("zzz", &ok);
 		check(!ok, "garbage reports failure");
+	}
+
+	group("CRC32");
+	{
+		/*
+		 * The one number every CRC-32 implementation is checked against, and the
+		 * one the PC client's Crc32.cs and Python's zlib.crc32 both produce. The
+		 * split call is what a 2 MB save gets: summed 64 KB at a time as it goes
+		 * past, never held whole.
+		 */
+		u32 state;
+
+		check_eq_u64(qcrc32((const u8 *)"123456789", 9), 0xCBF43926u,
+		             "the check vector is 0xcbf43926");
+		check_eq_u64(qcrc32((const u8 *)"", 0), 0, "an empty buffer sums to zero");
+
+		state = qcrc32_update(qcrc32_start(), (const u8 *)"12345", 5);
+		state = qcrc32_update(state, (const u8 *)"6789", 4);
+		check_eq_u64(qcrc32_finish(state), 0xCBF43926u,
+		             "and summing it in two pieces gives the same answer");
 	}
 }
 
@@ -1329,6 +1349,347 @@ static void test_savefile_helper(void)
 		check_eq_u64(be32_get(word), sf_desc_for_game(GAME_RAC1)->hooks[0].value,
 		             "and the hook word is back");
 	}
+}
+
+/* ------------------------------ protocol 1.10, the console savefile library */
+
+/*
+ * What can be checked here is everything but the game: the copies run on qwark's
+ * own tick thread between a file on the fake console's disk and the fake
+ * process's memory, so the state machine, the chunking, the CRC, the sidecar,
+ * the listing and every refusal are all exercised. What the *game* does with the
+ * buffer afterwards is still a question only hardware answers.
+ */
+
+/* One 64 KB chunk of a pattern, poked straight into the aside buffer. */
+static u8 g_pattern[SAVEFILE_COPY_CHUNK];
+
+/* Fills the aside buffer with a seeded pattern and reports its CRC32. */
+static u32 fill_aside(const struct sf_desc *d, u8 seed)
+{
+	u32 off = 0;
+	u32 crc = qcrc32_start();
+
+	while (off < d->aside_size) {
+		u32 n = d->aside_size - off;
+		u32 i;
+
+		if (n > sizeof(g_pattern)) n = sizeof(g_pattern);
+		for (i = 0; i < n; i++) g_pattern[i] = (u8)((off + i) * 7u + seed);
+
+		host_poke(d->aside_addr + off, g_pattern, n);
+		crc = qcrc32_update(crc, g_pattern, n);
+		off += n;
+	}
+
+	return qcrc32_finish(crc);
+}
+
+/* The CRC32 and the size of a file on the fake console, 0 and 0 when missing. */
+static u32 file_crc(const char *path, u32 *size_out)
+{
+	plat_file_t f;
+	u32 crc = qcrc32_start();
+	u32 total = 0;
+
+	if (size_out != NULL) *size_out = 0;
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return 0;
+
+	for (;;) {
+		u32 got = 0;
+		if (plat_file_read(f, g_pattern, sizeof(g_pattern), &got) != 0) break;
+		if (got == 0) break;
+		crc = qcrc32_update(crc, g_pattern, got);
+		total += got;
+	}
+
+	plat_file_close(f);
+	if (size_out != NULL) *size_out = total;
+	return qcrc32_finish(crc);
+}
+
+/* Pumps until the transfer bit clears, or gives up so a failure is not a hang. */
+static int pump_until_transfer_done(int max_ticks)
+{
+	u8 supported, installed, running, pending;
+	u32 size;
+	int i;
+
+	for (i = 0; i < max_ticks; i++) {
+		savefile_info(&supported, &installed, &running, &pending, &size);
+		if ((pending & SAVEFILE_PENDING_TRANSFER) == 0) return 1;
+		pump(1);
+	}
+
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	return (pending & SAVEFILE_PENDING_TRANSFER) == 0;
+}
+
+#define SAVE_ROOT "/dev_hdd0/qwark/savefiles/NPEA00385"
+
+static void test_savefile_library(void)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+	u8 supported = 0, installed = 0, running = 0, pending = 0, error = 9;
+	u32 size = 0, done = 0, total = 0;
+	u8 out[2048];
+	u32 len = 0;
+	u32 crc_saved;
+	u32 file_size = 0;
+	u8 byte = 9;
+
+	group("protocol 1.10: the console savefile library");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00385"), "RaC1 reaches INGAME");
+	if (d == NULL) { check(0, "RaC1 has a helper table entry"); return; }
+
+	/* ------------------------------------------------------- categories */
+
+	check(savefile_categories(out, sizeof(out), &len) == ST_OK,
+	      "SAVEFILE_CATEGORIES answers before anything has been saved");
+	check_eq_u64(out[0], 0, "with an empty library");
+
+	check(savefile_category(SAVEFILE_CATEGORY_CREATE, "runs") == ST_OK,
+	      "a category is created");
+	check(savefile_categories(out, sizeof(out), &len) == ST_OK,
+	      "SAVEFILE_CATEGORIES answers again");
+	check_eq_u64(out[0], 1, "and reports the one category");
+	check(qstreq((const char *)(out + 1), "runs"), "by name, NUL-padded to 32");
+	check_eq_u64(len, 1 + SAVEFILE_NAME_LEN, "the reply is one 32-byte row");
+
+	check(savefile_category(SAVEFILE_CATEGORY_CREATE, "../escape") == ST_BAD_ARG,
+	      "a category name with a separator in it is refused");
+	check(savefile_category(9, "runs") == ST_BAD_ARG, "and so is an unknown op");
+
+	/* ------------------------------------------------------------ STORE */
+
+	crc_saved = fill_aside(d, 1);
+
+	check(savefile_store("runs", "one.txt") == ST_BAD_ARG,
+	      "a name that is not a .sav is refused");
+	check(savefile_store("runs", "one.sav") == ST_OK, "STORE is accepted");
+
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	savefile_transfer(&done, &total, &error);
+	check((pending & SAVEFILE_PENDING_TRANSFER) != 0, "a transfer is in flight");
+	check((pending & SAVEFILE_PENDING_SET_ASIDE) != 0,
+	      "and the set-aside it raised is outstanding");
+	check_eq_u64(total, d->aside_size, "total is the size of the aside buffer");
+	check_eq_u64(done, 0, "and nothing has been copied yet");
+	check_eq_u64(error, SAVEFILE_ERR_NONE, "the last error was cleared");
+
+	/* Only one transfer at a time, and the library ops step aside for it. */
+	check(savefile_store("runs", "two.sav") == ST_BUSY,
+	      "a second STORE during one is refused");
+	check(savefile_restore("runs", "one.sav") == ST_BUSY, "and so is a RESTORE");
+	check(savefile_library_gate() == ST_BUSY,
+	      "the listing ops answer BUSY while it runs");
+
+	/*
+	 * Nothing may be read out of the buffer until the helper has answered, so
+	 * the copy does not start until the settle window is over. The helper's
+	 * clearing of the byte is what host_poke stands in for.
+	 */
+	pump(2);
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(done, 0, "the copy waits for the set-aside to settle");
+
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+	pump(1);
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(done, 2 * SAVEFILE_COPY_CHUNK,
+	             "then two 64 KB chunks go per tick");
+
+	check(pump_until_transfer_done(64), "the transfer finishes");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(pending, 0, "with nothing left outstanding");
+	check_eq_u64(done, d->aside_size, "done is the whole buffer");
+	check_eq_u64(error, SAVEFILE_ERR_NONE, "and no error");
+
+	check_eq_u64(file_crc(SAVE_ROOT "/runs/one.sav", &file_size), crc_saved,
+	             "the file holds the bytes the buffer held");
+	check_eq_u64(file_size, d->aside_size, "and is exactly the buffer's size");
+
+	{
+		char text[32];
+		char want[16];
+		check(qread_file(SAVE_ROOT "/runs/one.sav.sum", text, sizeof(text), NULL) == ST_OK,
+		      "the CRC sidecar is beside it");
+		qfmt_hex(want, sizeof(want), crc_saved, 8);
+		check(qstreq(qtrim(text), want), "holding the same eight hex digits");
+	}
+
+	/* ------------------------------------------------------------- LIST */
+
+	check(savefile_list("runs", out, sizeof(out), &len) == ST_OK, "SAVEFILE_LIST answers");
+	check_eq_u64(out[0], 1, "with the one save");
+	check(qstreq((const char *)(out + 1), "one.sav"), "named as it was stored");
+	check_eq_u64(be32_get(out + 1 + SAVEFILE_NAME_LEN), d->aside_size, "with its size");
+	check_eq_u64(be32_get(out + 1 + SAVEFILE_NAME_LEN + 4), crc_saved, "and its CRC");
+	check_eq_u64(len, 1 + SAVEFILE_ROW_SIZE, "the row is 40 bytes");
+
+	check(savefile_list("nosuch", out, sizeof(out), &len) == ST_NOT_FOUND,
+	      "a category that does not exist is NOT_FOUND");
+
+	/* ---------------------------------------------------------- RESTORE */
+
+	/* A different pattern first, so a restore that did nothing would show. */
+	check(fill_aside(d, 9) != crc_saved, "the buffer is filled with something else");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+
+	check(savefile_restore("runs", "one.sav") == ST_OK, "RESTORE is accepted");
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 0, "and raises nothing at the game yet");
+
+	pump(1);
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(done, 2 * SAVEFILE_COPY_CHUNK, "the copy starts on the next tick");
+
+	/* It runs to the end of the file and only then asks the game to take it. */
+	{
+		int ticks;
+		for (ticks = 0; ticks < 64; ticks++) {
+			host_peek(d->api_load, &byte, 1);
+			if (byte != 0) break;
+			pump(1);
+		}
+	}
+	check_eq_u64(byte, 1, "the load request goes out once the whole file is in");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(done, d->aside_size, "with every byte of it copied");
+
+	{
+		u32 crc = qcrc32_start();
+		u32 off = 0;
+		while (off < d->aside_size) {
+			u32 n = d->aside_size - off;
+			if (n > sizeof(g_pattern)) n = sizeof(g_pattern);
+			host_peek(d->aside_addr + off, g_pattern, n);
+			crc = qcrc32_update(crc, g_pattern, n);
+			off += n;
+		}
+		check_eq_u64(qcrc32_finish(crc), crc_saved,
+		             "and the buffer holds what the file holds");
+	}
+
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check((pending & SAVEFILE_PENDING_TRANSFER) != 0,
+	      "the transfer is still in flight while the load settles");
+
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	check(pump_until_transfer_done(SAVEFILE_SETTLE_TICKS + 4),
+	      "and it is over once the load has settled");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NONE, "with no error");
+
+	/* ------------------------------------- a store the game walks out on */
+
+	/*
+	 * The game going away mid-copy is the one failure a PC can stage: the file
+	 * has been opened, so whatever was under that name is already gone, and
+	 * what must not be left is a file of the right name and the wrong length.
+	 */
+	crc_saved = fill_aside(d, 3);
+	check(savefile_store("runs", "torn.sav") == ST_OK, "another STORE starts");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS + 2);
+	savefile_transfer(&done, &total, &error);
+	check(done > 0 && done < total, "and is part way through the copy");
+	check(plat_path_exists(SAVE_ROOT "/runs/torn.sav", NULL, NULL),
+	      "with a file open on the console");
+
+	check(quit_and_wait(), "the game quits underneath it");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NO_HELPER, "the transfer says the helper went away");
+	check(!plat_path_exists(SAVE_ROOT "/runs/torn.sav", NULL, NULL),
+	      "and the half-written file was not left behind");
+
+	check(boot_and_wait("NPEA00385"), "RaC1 comes back");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+
+	/* --------------------------------------------------- a missing file */
+
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	check(savefile_restore("runs", "gone.sav") == ST_NOT_FOUND,
+	      "restoring a file that is not there is NOT_FOUND");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_MISSING, "the error says which");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "nothing is outstanding");
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 0, "and nothing was raised at the game");
+
+	/* A file that is not the size of the buffer is refused the same way. */
+	{
+		plat_file_t f;
+		check(plat_file_open(SAVE_ROOT "/runs/short.sav", PLAT_OPEN_WRITE, &f) == 0,
+		      "a short file is written into the category");
+		plat_file_write(f, "not a save", 10);
+		plat_file_close(f);
+
+		check(savefile_restore("runs", "short.sav") == ST_BAD_ARG,
+		      "restoring it is BAD_ARG");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_SHORT, "with the short-file error");
+		host_peek(d->api_load, &byte, 1);
+		check_eq_u64(byte, 0, "and again nothing was raised");
+	}
+
+	/* ---------------------------- a file the client uploaded itself */
+
+	/*
+	 * No sidecar, because the client wrote it with the file ops. The listing
+	 * sums it once and writes the sum out, so the next listing is free.
+	 */
+	check(savefile_list("runs", out, sizeof(out), &len) == ST_OK, "the listing runs again");
+	check_eq_u64(out[0], 2, "and reports the uploaded file too");
+	check_eq_u64(be32_get(out + 1 + SAVEFILE_ROW_SIZE + SAVEFILE_NAME_LEN), 10,
+	             "with its real size");
+	check_eq_u64(be32_get(out + 1 + SAVEFILE_ROW_SIZE + SAVEFILE_NAME_LEN + 4),
+	             qcrc32((const u8 *)"not a save", 10),
+	             "and a CRC computed from the file itself");
+	check(plat_path_exists(SAVE_ROOT "/runs/short.sav.sum", NULL, NULL),
+	      "the sum it computed was written beside the file");
+
+	/* ------------------------------------------------------- FILE_RENAME */
+
+	check(plat_file_rename(SAVE_ROOT "/runs/short.sav",
+	                       SAVE_ROOT "/runs/renamed.sav") == 0,
+	      "plat_file_rename moves a file");
+	check(!plat_path_exists(SAVE_ROOT "/runs/short.sav", NULL, NULL),
+	      "the old name is gone");
+	check(plat_path_exists(SAVE_ROOT "/runs/renamed.sav", NULL, NULL),
+	      "and the new one is there");
+
+	/* ------------------------------------------------- deleting a category */
+
+	check(savefile_category(SAVEFILE_CATEGORY_DELETE, "runs") != ST_OK,
+	      "a category with saves in it is not deleted");
+
+	plat_file_unlink(SAVE_ROOT "/runs/one.sav");
+	plat_file_unlink(SAVE_ROOT "/runs/renamed.sav");
+	/*
+	 * one.sav.sum and short.sav.sum are left behind on purpose: a client that
+	 * forgets a sidecar must not end up with a category it cannot remove.
+	 */
+	check(savefile_category(SAVEFILE_CATEGORY_DELETE, "runs") == ST_OK,
+	      "with the saves gone the category goes, sidecars and all");
+	check(savefile_category(SAVEFILE_CATEGORY_DELETE, "runs") == ST_NOT_FOUND,
+	      "and deleting it twice is NOT_FOUND");
+
+	check(savefile_categories(out, sizeof(out), &len) == ST_OK, "the categories are read again");
+	check_eq_u64(out[0], 0, "and the library is empty");
+
+	/* ------------------------------------------- outside a running game */
+
+	check(quit_and_wait(), "the game goes away");
+	check(savefile_store("runs", "one.sav") == ST_NOT_INGAME, "STORE is NOT_INGAME");
+	check(savefile_restore("runs", "one.sav") == ST_NOT_INGAME, "and RESTORE");
+	check(savefile_library_gate() == ST_NOT_INGAME, "and the library ops");
 }
 
 /*
@@ -3450,6 +3811,18 @@ static void test_no_code_patches(void)
 		check(features_trigger(18) == ST_UNSUPPORTED, "and the LOAD_ASIDE one");
 		check(session_load_setaside() == ST_UNSUPPORTED, "and the combo action");
 
+		/*
+		 * Protocol 1.10. The library on the console is the same code cave by
+		 * another road: without the helper there is nothing to copy out of and
+		 * nothing to hand a copied file to, so the five new ops go the same way.
+		 */
+		check(savefile_store("runs", "one.sav") == ST_UNSUPPORTED,
+		      "SAVEFILE_STORE is UNSUPPORTED");
+		check(savefile_restore("runs", "one.sav") == ST_UNSUPPORTED,
+		      "and SAVEFILE_RESTORE");
+		check(savefile_library_gate() == ST_UNSUPPORTED,
+		      "and the gate the three library ops share");
+
 		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
 		check(be32_get(word) != sf_desc_for_game(GAME_RAC1)->hooks[0].value,
 		      "and no hook word was written");
@@ -3777,6 +4150,7 @@ int main(void)
 	test_live_toggles();
 	test_savefile_flags();
 	test_savefile_helper();
+	test_savefile_library();
 	test_signed_values();
 	test_combo_suspend();
 	test_rac2();

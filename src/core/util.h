@@ -46,6 +46,26 @@ void qbytes_to_hex(const u8 *in, u32 len, char *out, u32 cap);
 /* Trims ASCII whitespace in place, returns the new start. */
 char *qtrim(char *s);
 
+/* ------------------------------------------------------------------- CRC32 */
+
+/*
+ * CRC-32, the ordinary reflected one that zlib, PNG and the PC client's
+ * Crc32.cs all compute, so a sum written on the console and a sum computed on
+ * the PC agree byte for byte.
+ *
+ * It is a running state so a 2 MB save can be summed as it goes past in 64 KB
+ * chunks without ever being held whole. The table is sixteen entries and takes
+ * two lookups a byte, which is a compromise on purpose: a full 256-entry table
+ * is a kilobyte of the module and the bit-at-a-time loop is eight shifts a byte,
+ * which is too slow to sit on the tick thread.
+ */
+u32  qcrc32_start(void);
+u32  qcrc32_update(u32 state, const u8 *data, u32 len);
+u32  qcrc32_finish(u32 state);
+
+/* The whole of a buffer in one call, for a caller that has it all already. */
+u32  qcrc32(const u8 *data, u32 len);
+
 /*
  * Lowercases, replaces every run of non-alphanumeric characters with a single
  * underscore, and trims leading/trailing underscores. Used to turn a feature

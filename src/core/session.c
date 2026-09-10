@@ -309,6 +309,15 @@ static void enter_quitting(void)
 	mem_set_context(0, 0);
 	watch_invalidate();
 
+	/*
+	 * The savefile helper lived in that process and a copy may have been half
+	 * way through it. savefile_tick only runs while INGAME, so this is the last
+	 * moment anything can tidy up after it: the transfer is stopped here rather
+	 * than on the way back in, so a client polling SAVEFILE_INFO is told the
+	 * game went away instead of watching a byte count that will never move.
+	 */
+	savefile_forget();
+
 	if (g_game != NULL && g_game->on_quit != NULL) g_game->on_quit();
 
 	qstrcpy(g_last_title, sizeof(g_last_title), g_title);

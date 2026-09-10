@@ -9,6 +9,7 @@ Revision 1.6 (2026-09-09): SessionInfo `flags` gained bit1 EMULATOR and bit2 NO_
 Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes is now `bits`, the width in bits of the field behind a VALUE, and Feature flags bit5 SIGNED says that field is two's complement in that width. See section 5.3.2.
 Revision 1.8 (2026-09-09): COMBO_SUSPEND, which holds every stored combo off while a client captures a new one, so the buttons being recorded do not also fire the combos already there. See section 5.9.
 Revision 1.9 (2026-09-10): the savefile block. SAVEFILE_INFO, SAVEFILE_READ and SAVEFILE_WRITE in the 0x00B0 block. A save no longer travels as a file: qwark embeds one helper per game, installs it invisibly on first use, and the helper parks the save in a RAM buffer these three ops stream. See section 5.12.
+Revision 1.10 (2026-09-10): the savefile library moves onto the console. SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE and SAVEFILE_CATEGORY at 0x00B3, FILE_RENAME at 0x0079, and a SAVEFILE_INFO grown to 20 bytes that reports the copy qwark now runs between a file and the aside buffer. See section 5.13.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -49,7 +50,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 10 (see below)
+u8   qwark_version      module build number, currently 12 (see below)
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
@@ -99,6 +100,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | PATCH_APPLY | `UNSUPPORTED` |
 | MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED` |
 | SAVEFILE_INFO, SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` (section 5.12) |
+| Every op of the savefile library: SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE, SAVEFILE_CATEGORY | `UNSUPPORTED` (section 5.13). The library is only reachable through the helper, so without one there is nothing to copy out of and nothing to hand a copy to |
 
 Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction.
 
@@ -347,7 +349,7 @@ char author[32]
 
 Paths are absolute, at most 511 bytes, sent as the remainder of the payload with no terminator. Only paths under `/dev_hdd0/` and `/dev_usb` are accepted. These run on the network thread and never touch game memory.
 
-These are the mod library's transport: the client uploads a mod's files with them (section 5.7). Save files no longer travel this way; see section 5.12.
+These are the transport of both libraries: the client uploads a mod's files with them (section 5.7), and it uploads, mirrors, renames and deletes savefiles with them (section 5.13). What a savefile no longer travels this way for is a *load*: the console keeps the file and copies it into the aside buffer itself.
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
@@ -360,6 +362,11 @@ These are the mod library's transport: the client uploads a mod's files with the
 | 0x0076 | DIR_CREATE | `path` | none. Creates missing parents |
 | 0x0077 | DIR_DELETE | `path` | none. Recursive |
 | 0x0078 | USER_ID | none | `u32 user_id` |
+| 0x0079 | FILE_RENAME | `u16 from_len, char from[from_len], char to[rest]` | none (revision 1.10) |
+
+**FILE_RENAME** (revision 1.10) moves a file within `/dev_hdd0`. Both paths obey the rule above; the old path must exist (`NOT_FOUND` otherwise) and the new one must **not** (`BAD_ARG` if it does), because cellFs and Windows refuse to replace an existing destination while POSIX replaces it silently, and a rename that means one thing on a console and another in the simulator is worse than one that never overwrites anywhere. A client that means to replace a file deletes it first.
+
+It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gone: 0x0075 has been DIR_LIST since revision 1, and an opcode is never renumbered.
 
 ### 5.9 Combos (0x008x)
 
@@ -399,21 +406,26 @@ AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
-| 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size` |
+| 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size, u32 done, u32 total, u8 error, u8 pad[3]` (20 bytes since revision 1.10) |
 | 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 65536) | the bytes of the aside buffer at that offset; short at the end |
 | 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 65536) | none |
 
 All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) and **NOT_INGAME** outside INGAME, and all three install the game's helper on demand: a client never asks for that and never sees it happen.
 
+Since revision 1.10 READ and WRITE are the **debug and test path**, not what a save or a load does: the library ops of section 5.13 move a whole file between the console's own filesystem and this buffer without any of it crossing the wire. They still work exactly as they did, and a client that wants the bytes on the PC still reads them here.
+
 - **supported** — 1 when qwark has a helper for the running game. 0 is an OK answer, not an error: it is how a client knows to hide its save-file panel. All four games are 1 today.
 - **installed** — 1 when qwark has written the helper into this process. Since asking is what installs it, this is 1 whenever `supported` is.
 - **running** — 1 when the helper's own byte reads 1. The helper writes it on every call, so this says the code is installed *and* that the game is reaching the hook. It is 0 for the first frame or two after an install, and it stays 0 for as long as the game is on a screen that does not run the hooked routine.
-- **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
+- **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. bit2 (revision 1.10): qwark is copying between a file and the aside buffer, section 5.13. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
 
   **A clear bit means the work is over, not that the byte happens to read 0.** Build 11 made that true at both ends. In the game, the helper clears the set-aside byte *after* its copy loop rather than before it, so the byte reading 0 is the copy having finished; it copies a megabyte or two in 32 KB steps, and clearing first meant a client could read the aside buffer while the copy was still walking it and save a file with a torn tail. In qwark, a bit goes up the moment the request byte is written and stays up until the byte has read 0 on **every tick of a settle window**, 30 ticks of the 120 Hz loop, a quarter of a second (`SAVEFILE_SETTLE_TICKS` in `src/core/savefile.h`). The window is there because one read of one byte of a running game is thin evidence: the helper puts no barrier between the copy and the store that clears the byte, and a memory read that fails answers with a zero of its own. A byte that goes back to non-zero inside the window starts it again.
 
   A client should therefore poll INFO until the bit clears and only then read (or, for a load, only then consider the load done). The quarter of a second is the price of the guarantee, on an operation a user waits seconds for.
 - **size** — how many bytes the aside buffer holds, which is the size of a save file for that game. It is fixed per game and does not depend on the save.
+- **done**, **total**, **error** (revision 1.10) — the transfer of section 5.13. `done` and `total` are its bytes, and `error` is why the last one stopped: 0 none, 1 file missing, 2 io error, 3 the file is not exactly `total` bytes, 4 the game went away underneath the copy, 5 the aside buffer was already spoken for. All three describe the **last** transfer until the next STORE or RESTORE starts, so a client that polls once more after `pending` bit2 clears reads how it ended rather than zeroes.
+
+A client built against revision 1.9 reads the first eight bytes and is right about every one of them; the three new fields are appended, and nothing before them moved.
 
 **A save, end to end.** FEATURE_TRIGGER the game's SAVE_ASIDE action; poll SAVEFILE_INFO until `pending` bit0 clears; SAVEFILE_READ the whole buffer in 64 KB chunks. **A load** is the reverse: SAVEFILE_WRITE the file into the buffer in chunks from offset 0, in order, each write answered before the next goes out, then FEATURE_TRIGGER the LOAD_ASIDE action and poll until `pending` bit1 clears. The bytes are opaque; nothing on the PC knows the save format.
 
@@ -424,6 +436,55 @@ Bounds: a READ whose `offset` is past the end is BAD_ARG and one that runs off t
 **Where the buffer comes from.** qwark carries a small piece of PowerPC code per game, compiled from one source in `src/games/sfhelper/` and embedded as bytes. Installing it writes one or two code caves and a branch word into the running game; from then on the game calls it once a frame, and it does nothing until a request byte changes. It is never reverted: taking a branch back out from under code that may be executing it is a crash, and with no request outstanding it costs a byte write and three comparisons a frame. Nothing is written to the console's filesystem at any point.
 
 Before this revision the same two ACTIONs moved a `tempsave` file under `/dev_hdd0/game/<TITLEID>/USRDIR`, which the client then pulled over the FILE ops, and the helper was a mod the user had to load first. Both are gone. The FILE ops stay, for the mod library.
+
+## 5.13 The savefile library on the console (0x00B3..0x00B7), revision 1.10
+
+**Where a save lives.** The library of record is on the console, laid out like the mod library:
+
+```
+/dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav
+/dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav.sum
+```
+
+The `.sum` sidecar holds eight lowercase hex digits of CRC32 over the `.sav` beside it, exactly as `qwark.sum` does for a mod. qwark writes it whenever it stores a file, and computes it once for a file the client uploaded itself, so a listing never costs a 2 MB read twice.
+
+A save is up to 2 MB, and until this revision every load streamed one from the PC over SAVEFILE_WRITE. Now the console copies it out of its own filesystem: the PC's copy is a **mirror**, kept so nothing is lost when a console is wiped, and a file that exists only on the PC is uploaded once, on first use, and lives on the console from then on.
+
+| Op | Name | Request | Reply |
+|---|---|---|---|
+| 0x00B3 | SAVEFILE_CATEGORIES | none | `u8 n, char[32] name[n]` |
+| 0x00B4 | SAVEFILE_LIST | `char[32] category` | `u8 n, { char[32] name, u32 size, u32 crc32 }[n]` |
+| 0x00B5 | SAVEFILE_STORE | `char[32] category, char[32] name` | none |
+| 0x00B6 | SAVEFILE_RESTORE | `char[32] category, char[32] name` | none |
+| 0x00B7 | SAVEFILE_CATEGORY | `u8 op` (0 create, 1 delete), `char[32] name` | none |
+
+All five answer **UNSUPPORTED** where the platform cannot patch code and **NOT_INGAME** outside INGAME, for the same reason section 5.12 does: the library exists to feed the helper, and without a helper there is nothing to feed. The title id in the path is always the running game's, so a client never names one.
+
+**Names.** A category or a file name is a NUL-padded 32-byte field. qwark refuses one that is empty, starts with a dot, holds `/`, `\` or `:`, or has a byte outside printable ASCII, and it refuses a file name that does not end in `.sav`, because the listing reports nothing else and a file stored under another name would be one nobody could ever see again. Everything else is taken as given.
+
+**SAVEFILE_LIST** reports only `<name>.sav` files: the sidecars are qwark's own bookkeeping and never appear. `size` is the file's size and `crc32` is the CRC of its contents, which is the ordinary reflected CRC-32 that zlib, PNG and `qwark.sum` all use, so a client compares it against its own mirror to decide whether the two copies agree.
+
+**SAVEFILE_STORE** raises the set-aside request, waits out the settle window of section 5.12 (so the copy inside the game is over before a byte of it is read), then copies the aside buffer into the file and writes the sidecar. **SAVEFILE_RESTORE** is the reverse: it copies the whole file into the buffer and only then raises the load request, so the game never sees a half-filled buffer. The file must be exactly `size` bytes, and a file that is not is refused with `BAD_ARG` and error 3 without anything being raised at the game; a file that is not there is `NOT_FOUND` with error 1, again with nothing raised.
+
+A store that stops part way through leaves **nothing** behind: the half-written file is unlinked, because a file of the right name and the wrong length is what a user would take for their save. The copy it was replacing is gone either way, since opening the file for writing truncated it.
+
+**One at a time.** There is one aside buffer, so a STORE or RESTORE while another is in flight, or while the game has a set-aside or load of its own outstanding, is answered `BUSY` and error 5. SAVEFILE_CATEGORIES, SAVEFILE_LIST and SAVEFILE_CATEGORY answer `BUSY` too while a transfer runs, because a listing taken half way through a write would report the size and the sum of half a save.
+
+**The transfer, and how long it takes.** The copy runs on qwark's tick thread as a chunked state machine: 64 KB a chunk, two chunks a tick, so 128 KB per tick of the 120 Hz loop. A 2 MB save is 32 chunks, sixteen ticks, an eighth of a second; RaC1's 704 KB save is eleven chunks and six ticks. Telemetry, freezes, watches and every other request keep flowing throughout, which is the whole reason it is a state machine rather than a loop. On top of the copy, a STORE waits the settle window before it starts (a quarter of a second) and a RESTORE waits one after it (the same), so end to end either is well under a second for the largest save.
+
+Poll SAVEFILE_INFO: `pending` bit2 is up from the moment the op is accepted until the copy **and** its request have both finished, `done` and `total` are the progress, and `error` says how the last one ended.
+
+**Deletes and renames** go through FILE_DELETE and FILE_RENAME with the whole path, which the client builds from the layout above. Two rules follow from the sidecar:
+
+- Deleting a save means deleting `<name>.sav` **and** `<name>.sav.sum`; `NOT_FOUND` on the second is not a failure, since a file the client uploaded may not have one yet.
+- Renaming means renaming both, for the same reason.
+
+Deleting a category (`op` 1) removes the folder. It sweeps up any `.sum` files left in it first, so a client that forgot a sidecar cannot end up with a category it is unable to remove, but a folder that still holds a `.sav` is refused: `IO_ERROR`, and the category stays. A category that is not there is `NOT_FOUND`.
+
+**What a client does.**
+
+- *Save:* SAVEFILE_STORE, poll INFO to completion showing `done`/`total`, then, if it mirrors, read the file down with FILE_OPEN/FILE_READ in the background.
+- *Load:* if the console has the file and its CRC matches the PC's copy, SAVEFILE_RESTORE. If it is only on the PC, or the two differ, upload it once with FILE_OPEN/FILE_WRITE/FILE_CLOSE and then SAVEFILE_RESTORE. Poll INFO either way.
 
 ## 6. Pad mask layout
 

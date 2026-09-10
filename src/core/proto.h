@@ -21,6 +21,9 @@
  * Revision 1.9: the savefile block, SAVEFILE_INFO / READ / WRITE at 0x00B0. The
  * save no longer travels as a file: qwark installs one helper per game, the
  * helper parks the save in a RAM buffer, and these three ops stream that buffer.
+ * Revision 1.10: the savefile library moves onto the console. FILE_RENAME, the
+ * five library ops at 0x00B3, and a SAVEFILE_INFO that reports the transfer
+ * qwark is running between a file and the aside buffer on its own tick thread.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -36,7 +39,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             11
+#define QWARK_BUILD             12
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -136,6 +139,12 @@
 #define OP_DIR_CREATE        0x0076
 #define OP_DIR_DELETE        0x0077
 #define OP_USER_ID           0x0078
+/*
+ * Revision 1.10. The file block's rename, at the end of the block rather than at
+ * 0x0075 where the savefile work first drew it: that number has been DIR_LIST
+ * since revision 1, and an opcode is never renumbered.
+ */
+#define OP_FILE_RENAME       0x0079
 
 #define OP_COMBO_SET         0x0080
 #define OP_COMBO_LIST        0x0081
@@ -156,9 +165,38 @@
 #define OP_SAVEFILE_READ      0x00B1
 #define OP_SAVEFILE_WRITE     0x00B2
 
-/* SAVEFILE_INFO's reply is eight bytes, and SAVEFILE_READ caps at one chunk. */
-#define SAVEFILE_INFO_SIZE    8
+/*
+ * Revision 1.10, the console-side library. The savefile of record lives at
+ * /dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav and qwark itself
+ * copies between one of those files and the helper's aside buffer, so a save no
+ * longer travels over the wire every time it is loaded. Deletes and renames go
+ * through FILE_DELETE and FILE_RENAME with the whole path: the client knows the
+ * layout, and PROTOCOL.md 5.13 writes it down.
+ */
+#define OP_SAVEFILE_CATEGORIES 0x00B3
+#define OP_SAVEFILE_LIST       0x00B4
+#define OP_SAVEFILE_STORE      0x00B5
+#define OP_SAVEFILE_RESTORE    0x00B6
+#define OP_SAVEFILE_CATEGORY   0x00B7
+
+/*
+ * SAVEFILE_INFO's reply was eight bytes until revision 1.10 added the transfer:
+ * u32 done, u32 total and u8 error with three pad bytes. A client written
+ * against 1.9 reads the first eight and is right about all of them.
+ */
+#define SAVEFILE_INFO_SIZE    20
+#define SAVEFILE_INFO_SIZE_19 8
 #define SAVEFILE_CHUNK_MAX    65536u
+
+/* A category or file name on the wire is a fixed 32-byte field, NUL-padded. */
+#define SAVEFILE_NAME_LEN     32
+
+/* SAVEFILE_LIST row: char[32] name, u32 size, u32 crc32. */
+#define SAVEFILE_ROW_SIZE     40
+
+/* SAVEFILE_CATEGORY's `op`. */
+#define SAVEFILE_CATEGORY_CREATE 0
+#define SAVEFILE_CATEGORY_DELETE 1
 
 /* ------------------------------------------------------------- table sizes */
 

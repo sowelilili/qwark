@@ -21,7 +21,9 @@ qwark listens on TCP port 9673 and streams telemetry over UDP to connected clien
 
 qwark carries a small savefile helper for each of the four games: a few hundred bytes of PowerPC code, built from one source in `src/games/sfhelper/` and embedded in the module. The first time a client asks anything about save files, qwark writes that code into a code cave in the running game and branches the game into it; from then on the game calls it once a frame and it does nothing until asked. The user never loads a mod for it and never sees it happen.
 
-Asked to set a save aside, the helper copies the game's live save buffer into a spare region of the game's own memory, and qwark streams that region to the PC. Loading is the reverse: the PC writes the bytes back into the region and the helper hands them to the game's own loader. **Nothing is written to the console's filesystem** — there is no `tempsave` any more, and the old `sfhelper`, `rc2-save`, `rc3-save` and `rc4-save` mods are not needed and should not be loaded alongside it.
+Asked to set a save aside, the helper copies the game's live save buffer into a spare region of the game's own memory. Loading is the reverse: something fills that region and the helper hands it to the game's own loader. The old `tempsave` under `USRDIR` is gone, and the old `sfhelper`, `rc2-save`, `rc3-save` and `rc4-save` mods are not needed and should not be loaded alongside it.
+
+The saves themselves live on the console, under `/dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav`, with the CRC32 of each one beside it as `<name>.sav.sum`. qwark copies between one of those files and the aside buffer itself, 64 KB at a time on its own tick thread, so a save that is already on the console is loaded without a byte of it crossing the network: a save is up to 2 MB, and it used to be streamed from the PC on every single load. The PC keeps a mirror of the library so nothing is lost if the console is wiped, and a file that only exists on the PC is uploaded once, the first time it is used. See PROTOCOL.md section 5.13.
 
 The code and the addresses are ported from those mods and from their upstream sources, which are credited in the per-game headers under `src/games/sfhelper/`. Because it is code, it does not work under RPCS3 (see below).
 
@@ -38,6 +40,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 | `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
+| `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
 | `qwark.log` | state transitions, when `log = 1` |
 
 ## RPCS3

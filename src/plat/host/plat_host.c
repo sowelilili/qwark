@@ -467,6 +467,16 @@ int plat_file_unlink(const char *path)
 	return remove(real) == 0 ? 0 : -1;
 }
 
+int plat_file_rename(const char *from, const char *to)
+{
+	char real_from[1024];
+	char real_to[1024];
+
+	host_path(from, real_from, sizeof(real_from));
+	host_path(to, real_to, sizeof(real_to));
+	return rename(real_from, real_to) == 0 ? 0 : -1;
+}
+
 int plat_dir_create(const char *path)
 {
 	char real[1024];

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -32,7 +33,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 11
+QWARK_BUILD = 12
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -73,12 +74,42 @@ OP_AUTOSPLIT_DESCRIBE = 0x00A1
 OP_SAVEFILE_INFO = 0x00B0
 OP_SAVEFILE_READ = 0x00B1
 OP_SAVEFILE_WRITE = 0x00B2
+# Protocol 1.10: the console-side savefile library and the file rename it needs.
+OP_FILE_OPEN = 0x0070
+OP_FILE_WRITE = 0x0071
+OP_FILE_READ = 0x0072
+OP_FILE_CLOSE = 0x0073
+OP_FILE_DELETE = 0x0074
+OP_FILE_RENAME = 0x0079
+OP_SAVEFILE_CATEGORIES = 0x00B3
+OP_SAVEFILE_LIST = 0x00B4
+OP_SAVEFILE_STORE = 0x00B5
+OP_SAVEFILE_RESTORE = 0x00B6
+OP_SAVEFILE_CATEGORY = 0x00B7
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
+ST_NOT_INGAME = 1
 ST_UNSUPPORTED = 2
 ST_BAD_ARG = 3
+ST_IO_ERROR = 4
 ST_UNKNOWN_OP = 6
+ST_NOT_FOUND = 7
+ST_BUSY = 8
+
+# SAVEFILE_INFO, revision 1.10: twenty bytes, the last twelve the transfer.
+SAVEFILE_INFO_SIZE = 20
+SAVEFILE_PENDING_SET_ASIDE = 0x01
+SAVEFILE_PENDING_LOAD = 0x02
+SAVEFILE_PENDING_TRANSFER = 0x04
+SAVEFILE_ERR_NONE = 0
+SAVEFILE_ERR_MISSING = 1
+SAVEFILE_ERR_IO = 2
+SAVEFILE_ERR_SHORT = 3
+SAVEFILE_NAME_LEN = 32
+SAVEFILE_ROW_SIZE = 40
+SAVEFILE_CATEGORY_CREATE = 0
+SAVEFILE_CATEGORY_DELETE = 1
 
 SESSION_XMB, SESSION_BOOTING, SESSION_INGAME, SESSION_QUITTING = 0, 1, 2, 3
 
@@ -905,8 +936,8 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     window from the wire.
     """
     status, body = c.call(OP_SAVEFILE_INFO)
-    if not check(status == ST_OK and len(body) == 8,
-                 "%s: SAVEFILE_INFO answers with eight bytes" % name,
+    if not check(status == ST_OK and len(body) == SAVEFILE_INFO_SIZE,
+                 "%s: SAVEFILE_INFO answers with twenty bytes" % name,
                  (status, len(body))):
         return
 
@@ -972,6 +1003,284 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     check(status == ST_OK and body[3] == 0,
           "%s: and a whole settle window of zeroes is what clears it" % name,
           body[3] if body else None)
+
+
+def savefile_info(c):
+    """SAVEFILE_INFO as a dict, revision 1.10."""
+    status, body = c.call(OP_SAVEFILE_INFO)
+    if status != ST_OK or len(body) != SAVEFILE_INFO_SIZE:
+        return None
+    size, done, total = struct.unpack(">III", body[4:16])
+    return {
+        "supported": body[0], "installed": body[1], "running": body[2],
+        "pending": body[3], "size": size, "done": done, "total": total,
+        "error": body[16],
+    }
+
+
+def savefile_names(payload, row_size):
+    """The `u8 n` and the fixed 32-byte names of a CATEGORIES or LIST reply."""
+    n = payload[0]
+    rows = []
+    for i in range(n):
+        off = 1 + i * row_size
+        rows.append(payload[off:off + row_size])
+    return [r[:SAVEFILE_NAME_LEN].split(b"\0")[0].decode() for r in rows], rows
+
+
+def fixed32(text):
+    return text.encode().ljust(SAVEFILE_NAME_LEN, b"\0")
+
+
+def wait_transfer(c, timeout=10.0):
+    """Polls INFO until the transfer bit clears, as a client's save loop does."""
+    deadline = time.time() + timeout
+    info = savefile_info(c)
+    while info is not None and (info["pending"] & SAVEFILE_PENDING_TRANSFER):
+        if time.time() > deadline:
+            return info
+        time.sleep(0.02)
+        info = savefile_info(c)
+    return info
+
+
+def read_console_file(c, path):
+    """FILE_OPEN read, FILE_READ to the end, FILE_CLOSE. None when missing."""
+    status, body = c.call(OP_FILE_OPEN, b"\x00" + path.encode())
+    if status != ST_OK:
+        return None
+
+    handle = body[:4]
+    data = b""
+    while True:
+        status, chunk = c.call(OP_FILE_READ, handle + struct.pack(">I", 65536))
+        if status != ST_OK:
+            break
+        data += chunk
+        if len(chunk) < 65536:
+            break
+
+    c.call(OP_FILE_CLOSE, handle)
+    return data
+
+
+def write_console_file(c, path, data):
+    status, body = c.call(OP_FILE_OPEN, b"\x01" + path.encode())
+    if status != ST_OK:
+        return False
+
+    handle = body[:4]
+    for off in range(0, len(data), 65536):
+        status, _ = c.call(OP_FILE_WRITE, handle + data[off:off + 65536])
+        if status != ST_OK:
+            c.call(OP_FILE_CLOSE, handle)
+            return False
+
+    c.call(OP_FILE_CLOSE, handle)
+    return True
+
+
+def exercise_savefile_library(c, name, setaside_addr, load_addr):
+    """
+    Protocol 1.10: the savefile library on the console, over the real wire.
+
+    The console keeps /dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav
+    and copies between one of those and the helper's aside buffer on its own
+    tick thread, so a save is never streamed from the PC again. Nothing here
+    runs a line of the helper - the simulator has no PowerPC in it - so this
+    plays the helper's part by clearing its request bytes, which is exactly what
+    exercise_savefile does for the plain requests.
+
+    The CRC the console reports is checked against Python's zlib.crc32, because
+    the whole point of it is that the two sides agree about a file byte for byte.
+    """
+    root = "/dev_hdd0/qwark/savefiles/NPEA00385"
+    category = "smoke"
+    folder = "%s/%s" % (root, category)
+
+    info = savefile_info(c)
+    if info is None or not info["supported"]:
+        check(False, "%s: SAVEFILE_INFO answers before the library is used" % name, info)
+        return
+
+    size = info["size"]
+
+    # ------------------------------------------------------------ categories
+    status, body = c.call(OP_SAVEFILE_CATEGORIES)
+    check(status == ST_OK, "%s: SAVEFILE_CATEGORIES answers" % name, status)
+
+    status, _ = c.call(OP_SAVEFILE_CATEGORY,
+                       bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32(category))
+    check(status == ST_OK, "%s: a category is created" % name, status)
+
+    status, body = c.call(OP_SAVEFILE_CATEGORIES)
+    names, _ = savefile_names(body, SAVEFILE_NAME_LEN)
+    check(status == ST_OK and category in names,
+          "%s: and comes back in the categories" % name, names)
+
+    status, _ = c.call(OP_SAVEFILE_CATEGORY,
+                       bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32("../escape"))
+    check(status == ST_BAD_ARG,
+          "%s: a category name with a separator is BAD_ARG" % name, status)
+
+    # ----------------------------------------------------------------- STORE
+    # A whole buffer of a known pattern, so the CRC the console computes has
+    # something to be right about.
+    payload = bytes(((i * 31 + 7) & 0xFF) for i in range(65536))
+    written = b""
+    for off in range(0, size, 65536):
+        chunk = payload[:min(65536, size - off)]
+        status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", off) + chunk)
+        if status != ST_OK:
+            break
+        written += chunk
+    check(status == ST_OK and len(written) == size,
+          "%s: the aside buffer is filled with a known pattern" % name,
+          (status, len(written)))
+    want_crc = zlib.crc32(written) & 0xFFFFFFFF
+
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32(category) + fixed32("run1.txt"))
+    check(status == ST_BAD_ARG,
+          "%s: STORE of a name that is not a .sav is BAD_ARG" % name, status)
+
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32(category) + fixed32("run1.sav"))
+    check(status == ST_OK, "%s: SAVEFILE_STORE is accepted" % name, status)
+
+    info = savefile_info(c)
+    check(info and (info["pending"] & SAVEFILE_PENDING_TRANSFER),
+          "%s: INFO says a transfer is in flight" % name, info)
+    check(info and info["total"] == size and info["done"] == 0,
+          "%s: with the whole buffer to go" % name, info)
+
+    # One transfer at a time, and the listing steps aside for it.
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32(category) + fixed32("run2.sav"))
+    check(status == ST_BUSY, "%s: a second STORE during one is BUSY" % name, status)
+    status, _ = c.call(OP_SAVEFILE_LIST, fixed32(category))
+    check(status == ST_BUSY, "%s: and so is a listing" % name, status)
+
+    # The helper's part: the request byte goes back to zero and the settle
+    # window runs out, and only then does the copy start.
+    mem_write(c, setaside_addr, b"\x00")
+    info = wait_transfer(c)
+    check(info and (info["pending"] & SAVEFILE_PENDING_TRANSFER) == 0,
+          "%s: the transfer finishes" % name, info)
+    check(info and info["done"] == size and info["error"] == SAVEFILE_ERR_NONE,
+          "%s: with every byte copied and no error" % name, info)
+
+    # ------------------------------------------------------------------ LIST
+    status, body = c.call(OP_SAVEFILE_LIST, fixed32(category))
+    names, rows = savefile_names(body, SAVEFILE_ROW_SIZE)
+    check(status == ST_OK and names == ["run1.sav"],
+          "%s: SAVEFILE_LIST reports the stored save" % name, (status, names))
+    if rows:
+        row_size, row_crc = struct.unpack(">II", rows[0][SAVEFILE_NAME_LEN:])
+        check(row_size == size, "%s: with the size of the buffer" % name, row_size)
+        check(row_crc == want_crc,
+              "%s: and a CRC that agrees with Python's zlib.crc32" % name,
+              (hex(row_crc), hex(want_crc)))
+
+    data = read_console_file(c, "%s/run1.sav" % folder)
+    check(data is not None and len(data) == size,
+          "%s: the file itself is the size of the buffer" % name,
+          None if data is None else len(data))
+    check(data is not None and (zlib.crc32(data) & 0xFFFFFFFF) == want_crc,
+          "%s: and holds the bytes the buffer held" % name)
+
+    sidecar = read_console_file(c, "%s/run1.sav.sum" % folder)
+    check(sidecar == ("%08x" % want_crc).encode(),
+          "%s: the .sum sidecar holds the same eight hex digits" % name, sidecar)
+
+    # --------------------------------------------------------------- RESTORE
+    # Something else in the buffer first, so a restore that did nothing shows.
+    c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + bytes(4096))
+    mem_write(c, load_addr, b"\x00")
+
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32(category) + fixed32("run1.sav"))
+    check(status == ST_OK, "%s: SAVEFILE_RESTORE is accepted" % name, status)
+
+    # It copies the file in and only then raises the load at the game.
+    deadline = time.time() + 10.0
+    raised = b"\x00"
+    while time.time() < deadline:
+        status, raised = c.call(OP_MEM_READ, struct.pack(">II", load_addr, 1))
+        if status == ST_OK and raised == b"\x01":
+            break
+        time.sleep(0.02)
+    check(raised == b"\x01",
+          "%s: the load request goes out once the file is in the buffer" % name, raised)
+
+    status, body = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, 4096))
+    check(status == ST_OK and body == payload[:4096],
+          "%s: and the buffer holds the file again" % name, status)
+
+    mem_write(c, load_addr, b"\x00")
+    info = wait_transfer(c)
+    check(info and info["error"] == SAVEFILE_ERR_NONE,
+          "%s: the restore ends when the load has settled" % name, info)
+
+    # ------------------------------------------------------- the two refusals
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32(category) + fixed32("gone.sav"))
+    check(status == ST_NOT_FOUND, "%s: restoring a missing file is NOT_FOUND" % name, status)
+    info = savefile_info(c)
+    check(info and info["error"] == SAVEFILE_ERR_MISSING,
+          "%s: and the error byte says which" % name, info)
+    check(info and (info["pending"] & SAVEFILE_PENDING_TRANSFER) == 0,
+          "%s: with nothing raised at the game" % name, info)
+
+    check(write_console_file(c, "%s/short.sav" % folder, b"not a save"),
+          "%s: a short file is uploaded with the file ops" % name)
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32(category) + fixed32("short.sav"))
+    check(status == ST_BAD_ARG, "%s: restoring it is BAD_ARG" % name, status)
+    info = savefile_info(c)
+    check(info and info["error"] == SAVEFILE_ERR_SHORT,
+          "%s: with the short-file error" % name, info)
+
+    # A file the client uploaded has no sidecar, so the listing sums it once.
+    status, body = c.call(OP_SAVEFILE_LIST, fixed32(category))
+    names, rows = savefile_names(body, SAVEFILE_ROW_SIZE)
+    check(status == ST_OK and sorted(names) == ["run1.sav", "short.sav"],
+          "%s: the listing reports the uploaded file too" % name, names)
+    for row in rows:
+        if row[:SAVEFILE_NAME_LEN].split(b"\0")[0] != b"short.sav":
+            continue
+        row_size, row_crc = struct.unpack(">II", row[SAVEFILE_NAME_LEN:])
+        check(row_crc == (zlib.crc32(b"not a save") & 0xFFFFFFFF),
+              "%s: with a CRC computed from the file itself" % name, hex(row_crc))
+
+    # ----------------------------------------------------------- FILE_RENAME
+    def rename(src, dst):
+        return c.call(OP_FILE_RENAME,
+                      struct.pack(">H", len(src)) + src.encode() + dst.encode())[0]
+
+    check(rename("%s/short.sav" % folder, "%s/renamed.sav" % folder) == ST_OK,
+          "%s: FILE_RENAME moves a file" % name)
+    check(read_console_file(c, "%s/renamed.sav" % folder) == b"not a save",
+          "%s: under its new name" % name)
+    check(rename("%s/short.sav" % folder, "%s/other.sav" % folder) == ST_NOT_FOUND,
+          "%s: renaming a file that is not there is NOT_FOUND" % name)
+    check(rename("%s/renamed.sav" % folder, "%s/run1.sav" % folder) == ST_BAD_ARG,
+          "%s: and renaming onto a name that exists is refused" % name)
+    check(rename("/dev_hdd0/qwark/x", "/etc/passwd") == ST_BAD_ARG,
+          "%s: a path outside /dev_hdd0 is BAD_ARG" % name)
+
+    # ------------------------------------------------------ delete the lot
+    status, _ = c.call(OP_SAVEFILE_CATEGORY,
+                       bytes([SAVEFILE_CATEGORY_DELETE]) + fixed32(category))
+    check(status != ST_OK,
+          "%s: a category with saves in it is not deleted" % name, status)
+
+    for leaf in ("run1.sav", "run1.sav.sum", "renamed.sav"):
+        c.call(OP_FILE_DELETE, ("%s/%s" % (folder, leaf)).encode())
+
+    status, _ = c.call(OP_SAVEFILE_CATEGORY,
+                       bytes([SAVEFILE_CATEGORY_DELETE]) + fixed32(category))
+    check(status == ST_OK,
+          "%s: with the saves gone the category goes, sidecars and all" % name, status)
+
+    status, body = c.call(OP_SAVEFILE_CATEGORIES)
+    names, _ = savefile_names(body, SAVEFILE_NAME_LEN)
+    check(status == ST_OK and category not in names,
+          "%s: and it is out of the categories" % name, names)
 
 
 def exercise_game(c, sim, spec, udp=None):
@@ -1360,6 +1669,26 @@ def smoke_rpcs3(exe):
         status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + b"\x01\x02\x03\x04")
         check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_WRITE is UNSUPPORTED", status)
 
+        # Revision 1.10: the library on the console is the same helper by
+        # another road, so all five of its ops go the same way.
+        status, _ = c.call(OP_SAVEFILE_CATEGORIES)
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_CATEGORIES is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_LIST, fixed32("misc"))
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_LIST is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_STORE, fixed32("misc") + fixed32("a.sav"))
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_STORE is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("misc") + fixed32("a.sav"))
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_RESTORE is UNSUPPORTED", status)
+        status, _ = c.call(OP_SAVEFILE_CATEGORY,
+                           bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32("misc"))
+        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_CATEGORY is UNSUPPORTED", status)
+
+        # FILE_RENAME is not a code patch and answers here as it does anywhere.
+        rename_payload = (struct.pack(">H", len("/dev_hdd0/qwark/nothing"))
+                          + b"/dev_hdd0/qwark/nothing" + b"/dev_hdd0/qwark/nothing2")
+        status, _ = c.call(OP_FILE_RENAME, rename_payload)
+        check(status == ST_NOT_FOUND, "rpcs3: FILE_RENAME still answers", status)
+
         aside = [f for f in features if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
         if aside:
             status, _ = c.call(OP_FEATURE_TRIGGER, bytes([aside[0]["id"]]))
@@ -1618,6 +1947,11 @@ def main():
         if check(len(save_aside) == 1, "RaC1 names one SAVE_ASIDE action", save_aside):
             # SF_API_SETASIDE from src/games/sfhelper/sf_rac1.h.
             exercise_savefile(c, "RaC1", save_aside[0]["id"], 0x00B00072)
+
+        # -------------------------------- the console savefile library, 1.10
+        # SF_API_SETASIDE and SF_API_LOAD, the two request bytes this stands in
+        # for the helper in clearing.
+        exercise_savefile_library(c, "RaC1", 0x00B00072, 0x00B00071)
 
         # --------------------------------------------- a VALUE readout round trip
         c.call(OP_FEATURE_SET, struct.pack(">BI", F_DBG_CAMERA, 2))

@@ -13,6 +13,12 @@
 #define QWARK_CONFIG    "/dev_hdd0/qwark/config.txt"
 #define QWARK_POSDIR    "/dev_hdd0/qwark/positions"
 #define QWARK_MODSDIR   "/dev_hdd0/qwark/mods"
+/*
+ * Revision 1.10. The savefile library, laid out like the mod library:
+ * <QWARK_SAVEDIR>/<TITLEID>/<category>/<name>.sav, with the CRC of each file
+ * beside it as <name>.sav.sum. See src/core/savefile.h.
+ */
+#define QWARK_SAVEDIR   "/dev_hdd0/qwark/savefiles"
 
 #define CONFIG_KEY_MAX  64
 #define CONFIG_VAL_MAX  80
