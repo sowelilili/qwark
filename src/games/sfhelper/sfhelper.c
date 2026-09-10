@@ -13,7 +13,9 @@
  *   api_mod       the helper writes 1 here every call, so a byte that reads 1 is
  *                 proof the code is installed and the hook is being reached
  *   api_setaside  the client writes 1; the helper copies the game's live save
- *                 buffer into the aside buffer and clears the byte
+ *                 buffer into the aside buffer and then clears the byte, in
+ *                 that order, because the cleared byte is what says the bytes
+ *                 are there to be read
  *   api_load      the client writes 1; the helper hands the aside buffer to the
  *                 game's loader and clears the byte
  *
@@ -92,9 +94,18 @@ void sf_entry(void)
 	if (SF_WORD(SF_FRAME_TIMER) > 0) SF_WORD(SF_FRAME_TIMER) -= 1;
 #endif
 
+	/*
+	 * The byte goes to zero after the copy, never before it. A zero here is what
+	 * qwark reports the request answered on, and the client reads the aside
+	 * buffer out on that answer, so clearing first hands out a buffer the copy
+	 * loop is still walking: the file gets a torn tail, and loading it later
+	 * crashes the game. The mods this comes from all cleared it first, and RaC2
+	 * copies two megabytes in 32 KB steps, which is the window that showed up on
+	 * hardware.
+	 */
 	if (SF_BYTE(SF_API_SETASIDE) == 1) {
-		SF_BYTE(SF_API_SETASIDE) = 0;
 		sf_copy_aside();
+		SF_BYTE(SF_API_SETASIDE) = 0;
 	}
 
 #if SF_GAME == SF_RAC4
