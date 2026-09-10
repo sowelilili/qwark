@@ -73,10 +73,6 @@ Host builds, which need no console: `build-host.sh` builds both `qwark-host.exe`
 
 `qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 
-## Status
-
-The core and the four game modules build cleanly and pass the host tests, but nothing has run on a console yet. Treat the first live sessions as testing.
-
 ## Licence
 
 The VSH and PS3MAPI glue under `src/plat/ps3/` and the build files come from webMAN MOD by way of Ratchetron and carry its GPL v3 notice.
