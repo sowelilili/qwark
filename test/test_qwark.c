@@ -532,7 +532,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 13, "and this module is build 13");
+	check_eq_u64(packet[5], 14, "and this module is build 14");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1320,6 +1320,32 @@ static void test_savefile_helper(void)
 
 	group("protocol 1.9: Deadlocked's savefile helper");
 	savefile_one_game("NPEA00423", GAME_RAC4, 13);
+
+	/*
+	 * Build 14 moved Deadlocked's helper: Bot Info and IL HUD Display fill the
+	 * mod's old cave at 0x661F9C and branch out of its old hook word at
+	 * 0x70719C, so the helper now has a cave of its own in dead lobby code and
+	 * hooks the last instruction of the pad routine, through a stub that runs
+	 * the displaced store first (src/games/sfhelper/sf_rac4_stub.s). Pinned so
+	 * that a regenerated table drifting back onto the mods' addresses fails here.
+	 */
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC4);
+
+		check_eq_u64(d->ncaves, 2, "Deadlocked has a stub cave and a helper cave");
+		check_eq_u64(d->caves[0].addr, 0x00667F70u, "the stub is at 0x667F70");
+		check_eq_u64(d->caves[1].addr, 0x00667FB0u, "the helper follows at 0x667FB0");
+		check(d->caves[0].addr + d->caves[0].len <= d->caves[1].addr,
+		      "and the stub fits in front of it");
+		check(d->caves[1].addr + d->caves[1].len <= 0x0066840Cu,
+		      "and the helper ends inside the dead function");
+		check_eq_u64(be32_get(d->caves[0].bytes), 0x9BDD0457u,
+		             "the stub opens with the displaced store, stb r30,0x457(r29)");
+		check_eq_u64(d->hooks[0].addr, 0x00707430u,
+		             "the hook word replaces that store");
+		check_eq_u64(d->hooks[0].value, 0x4BF60B41u,
+		             "and is the relative bl from there to the stub");
+	}
 
 	group("protocol 1.9: the savefile ops outside INGAME");
 

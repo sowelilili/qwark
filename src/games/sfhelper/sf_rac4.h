@@ -2,7 +2,8 @@
  * Ratchet: Deadlocked (NPEA00423): the savefile helper's address table.
  *
  * From https://github.com/sowelilili/rc4-save, src/patch1.c and src/rc4-save.h.
- * The cave and the hook word agree with racman's mods/NPEA00423/rc4-save.
+ * The request bytes, the aside buffer and the game functions are that mod's; the
+ * cave and the hook are not, see below.
  *
  * Deadlocked is the one game that cannot simply hand its loader a buffer and
  * carry on. Its load is a menu operation: the helper pauses the game by putting
@@ -18,10 +19,32 @@
 
 /* ------------------------------------------------------------------- caves */
 
-#define SF_CAVE 0x00661F9C
+/*
+ * The mod's cave, 0x661F9C, and its hook, the `nop` at 0x70719C in the pad
+ * routine, are also what Bot Info and IL HUD Display use: their code sits at
+ * 0x662000, inside the helper's 604 bytes, and their branch word replaces the
+ * same `nop`. Loading either beside the helper corrupted whichever went in
+ * second, and the game crashed the first time the hook was reached.
+ *
+ * So the helper lives somewhere of its own. Both caves are in one function of
+ * the shipped lobby code that nothing reaches: FUN_00667F70 in the Ghidra
+ * project, 1180 bytes from 0x667F70 to 0x66840C, the routine that logs in to
+ * the MAS server under a random "Jesus##" account. No branch targets it, no
+ * word anywhere in the executable holds its address or its descriptor, and no
+ * mod in the library or the legacy tree writes near it. The stub (sf_rac4_stub.s)
+ * takes the first 64 bytes and the compiled helper follows.
+ */
+#define SF_CAVE_STUB 0x00667F70
+#define SF_CAVE      0x00667FB0
 
-/* The hook site, relative as the repo's own word (0x4BF5AE01) is. */
-#define SF_HOOK_ADDR     0x0070719C
+/*
+ * The hook site: the last instruction of the same pad routine the `nop` was in,
+ * `stb r30, 0x457(r29)` at 0x707430, just before the epilogue reloads the saved
+ * registers. Every scratch register is dead there, so the stub runs that store
+ * itself and calls the helper as a plain function; sf_rac4_stub.s has the
+ * listing. Relative, as the mod's branch was.
+ */
+#define SF_HOOK_ADDR     0x00707430
 #define SF_HOOK_ABSOLUTE 0
 
 /* -------------------------------------------------------- the request bytes */
