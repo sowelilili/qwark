@@ -22,6 +22,9 @@
 
 #define SUB_TIMEOUT_US  5000000u
 
+/* How long net_init sleeps between tries while the console's network comes up. */
+#define NET_WAIT_STEP_US 500000u
+
 #define MAX_FILES       16
 #define PATH_MAX_LEN    512
 
@@ -1552,10 +1555,38 @@ int net_init(void)
 		for (i = 0; i < QWARK_MAX_CLIENTS; i++) g_conns[i].sock = -1;
 	}
 
-	g_udp = (int)socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (g_udp < 0) {
-		plat_trace("qwark:   udp socket create FAILED");
-		return ST_IO_ERROR;
+	/*
+	 * A plugin named in boot_plugins.txt starts before the VSH has brought its
+	 * network stack up, and every socket() fails until it has. This used to
+	 * return on the first failure, which left the module resident with its
+	 * boot thread gone: a qwark.sprx installed for boot was loaded and dead.
+	 * So wait for the stack the way the accept loop below waits to listen,
+	 * half a second at a time, for as long as the module is alive. A load
+	 * through webMAN comes long after the stack is up and never waits.
+	 */
+	{
+		u32 waited_ms = 0;
+
+		for (;;) {
+			g_udp = (int)socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+			if (g_udp >= 0) break;
+			if (!g_working) {
+				plat_trace("qwark:   udp socket create FAILED and the module is stopping");
+				return ST_IO_ERROR;
+			}
+			if (waited_ms == 0) {
+				plat_trace("qwark:   no network yet, waiting for it");
+			}
+			plat_sleep_us(NET_WAIT_STEP_US);
+			waited_ms += NET_WAIT_STEP_US / 1000u;
+		}
+
+		/*
+		 * To the log file as well as the TTY, since a console that boots the
+		 * module has no TTY attached: this line is the proof that a boot load
+		 * came up, and how long the network kept it waiting.
+		 */
+		if (waited_ms != 0) plat_log("qwark: the network came up after %u ms", waited_ms);
 	}
 	plat_trace("qwark:   udp socket ok");
 
