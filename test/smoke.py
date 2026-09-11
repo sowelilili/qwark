@@ -33,7 +33,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 12
+QWARK_BUILD = 13
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -709,6 +709,7 @@ OTHER_GAMES = [
                    ("", UNLOCK_KIND_FLAG, 0),
                    ("", UNLOCK_KIND_FLAG, 0),
                    ("", UNLOCK_KIND_FLAG, 0)],
+        "category_fields": {"Weapons": 0x1, "Gadgets": 0x1, "Items": 0x1},
         "levelflags": 0x10,
         "coords": 0x147F260,
         # Bolts, a VALUE with readout 0.
@@ -777,16 +778,23 @@ OTHER_GAMES = [
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
-        "unlocks": 41,
+        "unlocks": 40,
         "categories": 3,
-        "unlock0": "Bomb Glove",
+        "unlock0": "Heli Pack",
         # Slot 1 is UYA's weapon version, not a gold flag, and slot 2 is its XP.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
                    ("Level", UNLOCK_KIND_NUMBER, 8),
                    ("XP", UNLOCK_KIND_NUMBER, 0),
                    ("Ammo", UNLOCK_KIND_NUMBER, 0)],
+        # Build 13: the level, XP and ammo slots belong to the weapons. A gadget
+        # and a vid comic are owned or not owned and carry nothing else.
+        "category_fields": {"Weapons": 0xF, "Gadgets and items": 0x1,
+                            "Vid comics": 0x1},
         # The Suck Cannon carries no ammo the game counts.
         "no_field": [("Suck Cannon", 3)],
+        # Build 13: id 0, the Bomb Glove, retired because UYA cannot reach the
+        # item in game. Ids are never renumbered, so the rest kept theirs.
+        "unlock_retired": [(0, "Bomb Glove")],
         "levelflags": 0x10,
         "coords": 0xDA2870,
         "value_id": 7,
@@ -868,6 +876,7 @@ OTHER_GAMES = [
                    ("", UNLOCK_KIND_FLAG, 0),
                    ("", UNLOCK_KIND_FLAG, 0),
                    ("", UNLOCK_KIND_FLAG, 0)],
+        "category_fields": {"Bot upgrades": 0x1},
         # Deadlocked has never had a level-flag region.
         "levelflags": None,
         "coords": 0x10D44D0,
@@ -1401,6 +1410,39 @@ def exercise_game(c, sim, spec, udp=None):
             check(all((r["fields"] & (1 << slot)) == 0 for r in rows),
                   "%s: no row declares the unnamed slot %d" % (name, slot))
 
+        # What a row declares is decided by its category: a client draws the
+        # column from the descriptors and the cell from the row's own bits, so
+        # a category with no level, XP or ammo leaves those cells empty. The
+        # no_field rows below are the per-row exceptions to this.
+        exceptions = {}
+        for row_name, slot in spec.get("no_field", []):
+            exceptions.setdefault(row_name, 0)
+            exceptions[row_name] |= 1 << slot
+        wrong = []
+        for r in rows:
+            cat = cats[r["category"]] if r["category"] < len(cats) else None
+            want = spec.get("category_fields", {}).get(cat)
+            if want is None:
+                wrong.append((r["name"], cat))
+                continue
+            want &= ~exceptions.get(r["name"], 0)
+            if r["fields"] != want:
+                wrong.append((r["name"], hex(r["fields"]), hex(want)))
+        check(not wrong,
+              "%s: every row declares the slots its category has" % name, wrong)
+
+        # A retired unlock id keeps its number out of use: no row carries it,
+        # nothing is renumbered into it, and UNLOCK_SET on it is BAD_ARG.
+        for gone_id, gone_name in spec.get("unlock_retired", []):
+            check(all(r["id"] != gone_id for r in rows),
+                  "%s: the retired unlock id %d is absent" % (name, gone_id))
+            check(all(r["name"] != gone_name for r in rows),
+                  "%s: and so is the %s" % (name, gone_name))
+            status, _ = c.call(OP_UNLOCK_SET,
+                               struct.pack(">BBHI", gone_id, 0, 0, 1))
+            check(status == ST_BAD_ARG,
+                  "%s: UNLOCK_SET on it is BAD_ARG" % name, status)
+
         # Rows that must not offer a slot the rest of their category does, and
         # whose UNLOCK_SET on it has to be refused rather than quietly written.
         for row_name, slot in spec.get("no_field", []):
@@ -1416,8 +1458,10 @@ def exercise_game(c, sim, spec, udp=None):
             check(status == ST_UNSUPPORTED,
                   "%s: and UNLOCK_SET on it is UNSUPPORTED" % name, status)
 
-        # And one round trip through UNLOCK_SET.
-        status, _ = c.call(OP_UNLOCK_SET, struct.pack(">BBHI", 0, 0, 0, 1))
+        # And one round trip through UNLOCK_SET, on whatever id row 0 carries:
+        # a game with a retired id no longer has one at 0.
+        row0 = rows[0]["id"] if rows else 0
+        status, _ = c.call(OP_UNLOCK_SET, struct.pack(">BBHI", row0, 0, 0, 1))
         check(status == ST_OK, "%s: UNLOCK_SET owned=1" % name, status)
         status, body = c.call(OP_UNLOCK_LIST)
         if status == ST_OK:

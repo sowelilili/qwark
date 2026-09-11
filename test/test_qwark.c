@@ -532,7 +532,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 12, "and this module is build 12");
+	check_eq_u64(packet[5], 13, "and this module is build 13");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2160,23 +2160,57 @@ static void test_rac2(void)
 #define F3_LOAD_ASIDE    32
 #define F3_FAST_LOADS    38
 
+/* The unlock categories, in the order rac3_panel.c declares them. */
+#define R3_CAT_WEAPONS 0
+#define R3_CAT_GADGETS 1
+#define R3_CAT_COMICS  2
+
 /* Agents of Doom: item id 0x57, unlock 0x4FF, exp 0x74C, ammo 0x39F, 8 levels. */
-#define AOD_ROW    21
+#define AOD_ID     21
 #define AOD_UNLOCK (R3_UNLOCK_ARRAY + 0x57u)
 #define AOD_EXP    (R3_EXP_ARRAY + (0x74Cu - 0x5F0u))
 #define AOD_AMMO   (R3_AMMO_ARRAY + (0x39Fu - 0x243u))
 #define AOD_ITEM   (R3_ITEM_ARRAY + 0x57u)
 
 /* Bouncer, one of the five GC weapons whose versions live in a table of their own. */
-#define BOUNCER_ROW  23
+#define BOUNCER_ID   23
 #define BOUNCER_ITEM (R3_ITEM_ARRAY + 0x13u)
 
 /* R3YNO: item id 0x97, the one weapon that stops at v5 rather than v8. */
-#define RYNO_ROW  36
+#define RYNO_ID   36
 #define RYNO_ITEM (R3_ITEM_ARRAY + 0x97u)
 
 /* Suck Cannon: item id 0x87, and no ammo the game actually counts. */
-#define SUCK_ROW  40
+#define SUCK_ID   40
+#define SUCK_ITEM (R3_ITEM_ARRAY + 0x87u)
+
+/* Heli Pack: a gadget, so an owned byte and nothing else. */
+#define HELI_ID     1
+#define HELI_UNLOCK (R3_UNLOCK_ARRAY + (0x4AAu - 0x4A8u))
+#define HELI_EXP    (R3_EXP_ARRAY + (0x5F8u - 0x5F0u))
+#define HELI_AMMO   (R3_AMMO_ARRAY + (0x24Bu - 0x243u))
+
+/* Vid comic 2, and vid comic 3 three bytes into the comic run. */
+#define COMIC2_ID 17
+#define COMIC3_ID 18
+
+/* The Bomb Glove's id, retired because UYA cannot reach the item in game. */
+#define BOMB_GLOVE_ID 0
+
+/*
+ * The list stopped running id by id when the Bomb Glove went, so a check that
+ * wants a particular item asks for it by id.
+ */
+static const struct game_unlock *unlock_row(const struct game_unlock *list,
+                                            u8 n, u8 id)
+{
+	u8 i;
+
+	for (i = 0; i < n; i++)
+		if (list[i].id == id) return &list[i];
+
+	return NULL;
+}
 
 static void test_rac3(void)
 {
@@ -2269,22 +2303,69 @@ static void test_rac3(void)
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
 		const struct unlock_field_desc *fields = NULL;
+		const struct game_unlock *row = NULL;
 		u32 values[4];
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
-		check_eq_u64(n, 41, "the whole UYAUnlocks table is there");
+		check_eq_u64(n, 40, "the whole UYAUnlocks table is there, less the Bomb Glove");
 		check_eq_u64(ncat, 3, "in three categories");
-		check(list != NULL && qstreq(list[AOD_ROW].name, "Agents of Doom"),
-		      "row 21 is the Agents of Doom");
-		check(list != NULL && list[AOD_ROW].fields ==
+
+		row = unlock_row(list, n, AOD_ID);
+		check(row != NULL && qstreq(row->name, "Agents of Doom"),
+		      "id 21 is the Agents of Doom");
+		check(row != NULL && row->fields ==
 		      (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
 		       UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
 		      "a weapon declares all four fields");
-		check(list != NULL && list[16].fields == UNLOCK_FIELD_0,
+
+		row = unlock_row(list, n, COMIC2_ID);
+		check(row != NULL && row->fields == UNLOCK_FIELD_0,
 		      "a vid comic is owned-only");
-		check(list != NULL && qstreq(list[SUCK_ROW].name, "Suck Cannon") &&
-		      (list[SUCK_ROW].fields & UNLOCK_FIELD_3) == 0,
+
+		row = unlock_row(list, n, HELI_ID);
+		check(row != NULL && qstreq(row->name, "Heli Pack") &&
+		      row->fields == UNLOCK_FIELD_0,
+		      "a gadget has no level, no XP and no ammo, so it is owned-only too");
+
+		row = unlock_row(list, n, SUCK_ID);
+		check(row != NULL && qstreq(row->name, "Suck Cannon") &&
+		      (row->fields & UNLOCK_FIELD_3) == 0,
 		      "the Suck Cannon carries no ammo in game, so it declares none");
+
+		/*
+		 * The categories are what decide the mask: the weapons carry all four
+		 * slots, bar the Suck Cannon's ammo, and everything else carries the
+		 * owned flag alone.
+		 */
+		{
+			u8 i, wrong = 0;
+
+			for (i = 0; i < n; i++) {
+				u8 want = UNLOCK_FIELD_0;
+
+				if (list[i].category == R3_CAT_WEAPONS)
+					want = (u8)(UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
+					            UNLOCK_FIELD_2 | UNLOCK_FIELD_3);
+				if (list[i].id == SUCK_ID)
+					want = (u8)(want & ~(u8)UNLOCK_FIELD_3);
+
+				if (list[i].fields != want) wrong++;
+			}
+			check_eq_u64(wrong, 0, "every row declares the slots its category has");
+		}
+
+		/* Id 0 is retired, not renumbered: the ids around it did not move. */
+		check(unlock_row(list, n, BOMB_GLOVE_ID) == NULL,
+		      "the Bomb Glove is gone from the table");
+		{
+			u8 i, named = 0;
+
+			for (i = 0; i < n; i++)
+				if (qstreq(list[i].name, "Bomb Glove")) named++;
+			check_eq_u64(named, 0, "and no row carries its name");
+		}
+		check(unlock_row(list, n, 1) != NULL && unlock_row(list, n, 40) != NULL,
+		      "the ids on either side of it kept their places");
 
 		/*
 		 * Protocol 1.3. Before this, slot 1 was called "Gold" and slot 2
@@ -2303,19 +2384,19 @@ static void test_rac3(void)
 		      fields[3].kind == UNLOCK_KIND_NUMBER && fields[3].max == 0,
 		      "slot 3 is an unbounded Ammo number");
 
-		check(g->unlock_set(AOD_ROW, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
+		check(g->unlock_set(AOD_ID, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
 		host_peek(AOD_UNLOCK, &b, 1);
 		check_eq_u64(b, 1, "the owned byte was written");
 
-		check(g->unlock_set(AOD_ROW, 1, 3) == ST_OK, "UNLOCK_SET level=3");
+		check(g->unlock_set(AOD_ID, 1, 3) == ST_OK, "UNLOCK_SET level=3");
 		host_peek(AOD_ITEM, &b, 1);
 		check_eq_u64(b, 0x59, "the item array carries id + version - 1");
 
-		check(g->unlock_set(AOD_ROW, 2, 4242) == ST_OK, "UNLOCK_SET xp");
+		check(g->unlock_set(AOD_ID, 2, 4242) == ST_OK, "UNLOCK_SET xp");
 		mem_read_u32(AOD_EXP, &v);
 		check_eq_u64(v, 4242, "the exp word was written");
 
-		check(g->unlock_set(AOD_ROW, 3, 77) == ST_OK, "UNLOCK_SET ammo");
+		check(g->unlock_set(AOD_ID, 3, 77) == ST_OK, "UNLOCK_SET ammo");
 		mem_read_u32(AOD_AMMO, &v);
 		check_eq_u64(v, 77, "the ammo word was written");
 
@@ -2324,42 +2405,82 @@ static void test_rac3(void)
 		 * may well send 8 for the R3YNO. UNLOCK_SET clamps to the entry's own
 		 * level count rather than refusing.
 		 */
-		check(g->unlock_set(AOD_ROW, 1, 99) == ST_OK,
+		check(g->unlock_set(AOD_ID, 1, 99) == ST_OK,
 		      "a version past the weapon's level count is clamped, not refused");
 		host_peek(AOD_ITEM, &b, 1);
 		check_eq_u64(b, 0x5Eu, "the Agents of Doom landed on v8");
-		check(g->unlock_set(RYNO_ROW, 1, 8) == ST_OK, "the R3YNO takes a level of 8");
+		check(g->unlock_set(RYNO_ID, 1, 8) == ST_OK, "the R3YNO takes a level of 8");
 		host_peek(RYNO_ITEM, &b, 1);
 		check_eq_u64(b, 0x9Bu, "and stops at its own v5");
-		check(g->unlock_set(AOD_ROW, 1, 3) == ST_OK, "back down to v3");
+		check(g->unlock_set(AOD_ID, 1, 3) == ST_OK, "back down to v3");
 
-		check(g->unlock_set(16, 2, 1) == ST_UNSUPPORTED,
+		check(g->unlock_set(COMIC2_ID, 2, 1) == ST_UNSUPPORTED,
 		      "a vid comic has no exp word");
-		check(g->unlock_set(SUCK_ROW, 3, 5) == ST_UNSUPPORTED,
+		check(g->unlock_set(SUCK_ID, 3, 5) == ST_UNSUPPORTED,
 		      "and the Suck Cannon refuses an ammo write");
 		check(g->unlock_set(200, 0, 1) == ST_BAD_ARG, "an unknown id is BAD_ARG");
+		check(g->unlock_set(BOMB_GLOVE_ID, 0, 1) == ST_BAD_ARG,
+		      "and so is the retired Bomb Glove id");
 
-		check(g->unlock_set(BOUNCER_ROW, 1, 2) == ST_OK, "the Bouncer goes to v2");
+		/*
+		 * A gadget takes its owned byte and refuses the other three slots,
+		 * which is what stops a client writing an exp or ammo word the game
+		 * does not count for it.
+		 */
+		host_poke(HELI_EXP, (const u8 *)"\x00\x00\x00\x09", 4);
+		host_poke(HELI_AMMO, (const u8 *)"\x00\x00\x00\x09", 4);
+		check(g->unlock_set(HELI_ID, 0, 1) == ST_OK, "a gadget takes owned=1");
+		host_peek(HELI_UNLOCK, &b, 1);
+		check_eq_u64(b, 1, "and its owned byte was written");
+		check(g->unlock_set(HELI_ID, 1, 2) == ST_UNSUPPORTED, "a gadget has no level");
+		check(g->unlock_set(HELI_ID, 2, 1) == ST_UNSUPPORTED, "a gadget has no XP");
+		check(g->unlock_set(HELI_ID, 3, 1) == ST_UNSUPPORTED, "a gadget has no ammo");
+		mem_read_u32(HELI_EXP, &v);
+		check_eq_u64(v, 9, "the refused XP write left the word alone");
+		mem_read_u32(HELI_AMMO, &v);
+		check_eq_u64(v, 9, "and so did the refused ammo write");
+
+		check(g->unlock_set(BOUNCER_ID, 1, 2) == ST_OK, "the Bouncer goes to v2");
 		host_peek(BOUNCER_ITEM, &b, 1);
 		check_eq_u64(b, 0xA6, "which is its own table offset, not id + 1");
+
+		/*
+		 * The last row is where a slip between the unlock table and the item
+		 * table would show, so the Suck Cannon's version has to land on the
+		 * Suck Cannon's own item byte.
+		 */
+		check(g->unlock_set(SUCK_ID, 1, 3) == ST_OK, "the Suck Cannon takes a level");
+		host_peek(SUCK_ITEM, &b, 1);
+		check_eq_u64(b, 0x89u, "on its own item byte: the two tables still line up");
 
 		/* Vid comic 3 sits at 0x12CA - 0x4A8 past the unlock array, so +3 here. */
 		host_poke(R3_VID_COMICS + 3, (const u8 *)"\x01", 1);
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
-		check(g->unlock_read(&list[AOD_ROW], values) == ST_OK, "row 21 reads live");
+		check(g->unlock_read(unlock_row(list, n, AOD_ID), values) == ST_OK,
+		      "id 21 reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
 		check_eq_u64(values[1], 3, "the version heuristic reads back");
 		check_eq_u64(values[2], 4242, "the exp reads back");
 		check_eq_u64(values[3], 77, "the ammo reads back");
 
 		memset(values, 0, sizeof(values));
-		check(g->unlock_read(&list[BOUNCER_ROW], values) == ST_OK, "the Bouncer reads");
+		check(g->unlock_read(unlock_row(list, n, BOUNCER_ID), values) == ST_OK,
+		      "the Bouncer reads");
 		check_eq_u64(values[1], 0, "a GC weapon reports no readable version");
 
+		/* The gadget's owned byte is live; the words it withholds stay zero. */
 		memset(values, 0, sizeof(values));
-		check(g->unlock_read(&list[18], values) == ST_OK, "vid comic 3 reads");
+		check(g->unlock_read(unlock_row(list, n, HELI_ID), values) == ST_OK,
+		      "the Heli Pack reads");
+		check_eq_u64(values[0], 1, "its owned byte reads back");
+		check_eq_u64(values[2], 0, "and the XP it does not declare reads as zero");
+		check_eq_u64(values[3], 0, "as does the ammo");
+
+		memset(values, 0, sizeof(values));
+		check(g->unlock_read(unlock_row(list, n, COMIC3_ID), values) == ST_OK,
+		      "vid comic 3 reads");
 		check_eq_u64(values[0], 1, "from the far end of the unlock array");
 	}
 

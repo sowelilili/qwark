@@ -318,6 +318,10 @@ Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is hand
 
 An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it.
 
+A whole category may withhold one. The four descriptor rows say what a game names, not what every row carries, so a client draws a column from the descriptors and then a cell only where the row's `fields` bit is set. In RaC3 the level, XP and ammo slots belong to the weapons: its gadgets, items and vid comics are owned or not owned and declare slot 0 alone.
+
+An id is retired rather than renumbered when an entry goes: the remaining rows keep the ids they had, the list simply gets shorter, and UNLOCK_SET on the retired id answers BAD_ARG. RaC3's id 0, the Bomb Glove, is the one retired so far, dropped because UYA has no way to reach the item in game.
+
 A game that does not offer level flags answers all three ops UNSUPPORTED, and a client that gets that is expected to hide its level-flag panel for that game. RaC2 and RaC3 return 0x10 bytes per planet. RaC1 and Deadlocked answer UNSUPPORTED: Deadlocked has no such region, and RaC1's is not laid out the way the old client's viewer assumed, so it is withheld until the format has been worked out. RaC1's PLANET_LOAD bit0 still resets the flags, which is the one thing racman actually did with them.
 
 ### 5.7 Mods (0x006x)

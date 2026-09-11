@@ -28,7 +28,12 @@
  *
  * A raw 0 in the exp or ammo column means the item has none: the five vid comics
  * carry 0 there and the C# subtraction wrapped, so the old form never touched
- * those words either. They are owned-only entries here.
+ * those words either.
+ *
+ * The gadgets keep their exp and ammo columns because that is what the
+ * spreadsheet holds, but no gadget row declares either slot: UYA gives a gadget
+ * no version, no experience and no ammunition, so those words are not counts
+ * the player can act on. Only the weapons carry the other three slots.
  *
  * `levels` is how many versions the weapon has. Anything above 1 gets the level
  * field; SetVersion writes one byte into the item array, and the five GC weapons
@@ -63,6 +68,10 @@ static const char * const rac3_categories[] = { "Weapons", "Gadgets and items", 
  * The version maximum is game-wide: every levelled weapon goes to 8 except the
  * R3YNO, which stops at 5. UNLOCK_SET clamps per entry, so a client that offers
  * 8 everywhere still cannot push the R3YNO past v5.
+ *
+ * Slots 1 to 3 belong to the weapons alone. A gadget and a vid comic are owned
+ * or not owned and nothing else, so their rows declare slot 0 by itself and a
+ * client draws no level, XP or ammo cell against them.
  */
 static const struct unlock_field_desc rac3_fields[4] = {
 	{ "Owned", UNLOCK_KIND_FLAG,   0 },
@@ -76,25 +85,28 @@ static const struct unlock_field_desc rac3_fields[4] = {
 #define XP    UNLOCK_FIELD_2
 #define AMMO  UNLOCK_FIELD_3
 
+/*
+ * Id 0, the Bomb Glove, is retired: UYA keeps it out of both menus and there is
+ * no way to reach it in game, so an entry for it only ever promised something
+ * the player could not have. Ids are never renumbered, so the table starts at 1
+ * and 0 answers BAD_ARG.
+ */
 static const struct game_unlock rac3_unlocks[] = {
-	/* levels 0: the bomb glove is deliberately kept out of both menus. */
-	{  0, CAT_GADGETS, OWNED | XP | AMMO, "Bomb Glove" },
-
-	{  1, CAT_GADGETS, OWNED | XP | AMMO, "Heli Pack" },
-	{  2, CAT_GADGETS, OWNED | XP | AMMO, "Thruster Pack" },
-	{  3, CAT_GADGETS, OWNED | XP | AMMO, "Charge Boots" },
-	{  4, CAT_GADGETS, OWNED | XP | AMMO, "Gravity Boots" },
-	{  5, CAT_GADGETS, OWNED | XP | AMMO, "Tyhrra Guise" },
-	{  6, CAT_GADGETS, OWNED | XP | AMMO, "Refractor" },
-	{  7, CAT_GADGETS, OWNED | XP | AMMO, "Hypershot" },
-	{  8, CAT_GADGETS, OWNED | XP | AMMO, "Nano Pak" },
-	{  9, CAT_GADGETS, OWNED | XP | AMMO, "PDA" },
-	{ 10, CAT_GADGETS, OWNED | XP | AMMO, "Bolt Grabber v2" },
-	{ 11, CAT_GADGETS, OWNED | XP | AMMO, "Map-o-matic" },
-	{ 12, CAT_GADGETS, OWNED | XP | AMMO, "Master Plan" },
-	{ 13, CAT_GADGETS, OWNED | XP | AMMO, "Star Map" },
-	{ 14, CAT_GADGETS, OWNED | XP | AMMO, "The Hacker" },
-	{ 15, CAT_GADGETS, OWNED | XP | AMMO, "Warp Pad" },
+	{  1, CAT_GADGETS, OWNED, "Heli Pack" },
+	{  2, CAT_GADGETS, OWNED, "Thruster Pack" },
+	{  3, CAT_GADGETS, OWNED, "Charge Boots" },
+	{  4, CAT_GADGETS, OWNED, "Gravity Boots" },
+	{  5, CAT_GADGETS, OWNED, "Tyhrra Guise" },
+	{  6, CAT_GADGETS, OWNED, "Refractor" },
+	{  7, CAT_GADGETS, OWNED, "Hypershot" },
+	{  8, CAT_GADGETS, OWNED, "Nano Pak" },
+	{  9, CAT_GADGETS, OWNED, "PDA" },
+	{ 10, CAT_GADGETS, OWNED, "Bolt Grabber v2" },
+	{ 11, CAT_GADGETS, OWNED, "Map-o-matic" },
+	{ 12, CAT_GADGETS, OWNED, "Master Plan" },
+	{ 13, CAT_GADGETS, OWNED, "Star Map" },
+	{ 14, CAT_GADGETS, OWNED, "The Hacker" },
+	{ 15, CAT_GADGETS, OWNED, "Warp Pad" },
 
 	{ 16, CAT_COMICS, OWNED, "Vid Comic 1" },
 	{ 17, CAT_COMICS, OWNED, "Vid Comic 2" },
@@ -131,10 +143,11 @@ static const struct game_unlock rac3_unlocks[] = {
  * what keeps the read and the descriptor table honest with each other.
  */
 
-/* Parallel to rac3_unlocks, id by id. */
+/*
+ * Parallel to rac3_unlocks, row by row. It stopped running id by id when the
+ * Bomb Glove was retired, so both handlers look a row up by its id.
+ */
 static const struct rac3_item rac3_items[] = {
-	{ 0x0A, 0x4B2, 0x618, 0x26B, 0, 0, 0, 0 },      /* Bomb Glove */
-
 	{ 0x02, 0x4AA, 0x5F8, 0x24B, 1, 0, 0, 0 },      /* Heli Pack */
 	{ 0x03, 0x4AB, 0x5FC, 0x24F, 1, 0, 0, 0 },      /* Thruster Pack */
 	{ 0x1D, 0x4C5, 0x664, 0x2B7, 1, 0, 0, 0 },      /* Charge Boots */
@@ -180,6 +193,20 @@ static const struct rac3_item rac3_items[] = {
 };
 
 #define RAC3_UNLOCK_COUNT ((u8)(sizeof(rac3_unlocks) / sizeof(rac3_unlocks[0])))
+
+/*
+ * The row an id names, or -1 for an id no row carries, which is every retired
+ * one. Both tables are indexed by the row this returns.
+ */
+static int rac3_row_for_id(u8 id)
+{
+	u8 i;
+
+	for (i = 0; i < RAC3_UNLOCK_COUNT; i++)
+		if (rac3_unlocks[i].id == id) return (int)i;
+
+	return -1;
+}
 
 static u32 item_unlock_addr(const struct rac3_item *it)
 {
@@ -298,11 +325,14 @@ int rac3_unlock_list(const struct game_unlock **list, u8 *count,
 int rac3_unlock_read(const struct game_unlock *entry, u32 values[4])
 {
 	const struct rac3_item *it;
+	int row;
 	u8 b = 0;
 	u32 w = 0;
 
-	if (entry == NULL || entry->id >= RAC3_UNLOCK_COUNT) return ST_BAD_ARG;
-	it = &rac3_items[entry->id];
+	if (entry == NULL) return ST_BAD_ARG;
+	row = rac3_row_for_id(entry->id);
+	if (row < 0) return ST_BAD_ARG;
+	it = &rac3_items[row];
 
 	values[0] = values[1] = values[2] = values[3] = 0;
 
@@ -337,18 +367,20 @@ int rac3_unlock_read(const struct game_unlock *entry, u32 values[4])
 int rac3_unlock_set(u8 id, u8 field, u32 value)
 {
 	const struct rac3_item *it;
+	int row = rac3_row_for_id(id);
 
-	if (id >= RAC3_UNLOCK_COUNT) return ST_BAD_ARG;
+	if (row < 0) return ST_BAD_ARG;
 	if (field > 3) return ST_UNSUPPORTED;
 
 	/*
 	 * The row's declared fields are the contract, so a slot it does not offer
-	 * is refused even where the address behind it happens to exist: the Suck
-	 * Cannon's ammo word is not the count the game uses.
+	 * is refused even where the address behind it happens to exist: a gadget's
+	 * exp and ammo words are not counts the game keeps, and the Suck Cannon's
+	 * ammo word is not the count the game uses.
 	 */
-	if ((rac3_unlocks[id].fields & (u8)(1u << field)) == 0) return ST_UNSUPPORTED;
+	if ((rac3_unlocks[row].fields & (u8)(1u << field)) == 0) return ST_UNSUPPORTED;
 
-	it = &rac3_items[id];
+	it = &rac3_items[row];
 
 	switch (field) {
 	case 0:
