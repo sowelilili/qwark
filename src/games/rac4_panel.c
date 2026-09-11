@@ -209,7 +209,7 @@ static int rac4_act_tune(void)
 
 /*
  * RAC4Form.unlockPlanetsButton_Click: badges, rank, a million dread points, a
- * load of Dread Zone, and every mission on every planet marked complete.
+ * load of DreadZone, and every mission on every planet marked complete.
  *
  * The old handler wrote the status byte of each mission one call at a time, 288
  * writes in all. One read-modify-write of each planet's mission array does the

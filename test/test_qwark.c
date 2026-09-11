@@ -3787,7 +3787,7 @@ static void test_autosplit(void)
 	check(as_find(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET) == NULL,
 	      "and the load out of the menu after it is not either");
 
-	/* The SPRX's reset_needed: a load starts for Dread Zone with no tutorial flag. */
+	/* The SPRX's reset_needed: a load starts for DreadZone with no tutorial flag. */
 	mark = autosplit_latest_seq();
 	poke32(A4_TARGET, 1);
 	poke32(A4_TUTORIAL, 0);
@@ -3795,7 +3795,7 @@ static void test_autosplit(void)
 	pump(2);
 	poke32(A4_REQUEST_LOAD, 1);
 	pump(1);
-	as_expect_kind(mark, AUTOSPLIT_RESET, "a Dread Zone load emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_RESET, "a DreadZone load emits RESET");
 	as_expect_kind(mark, AUTOSPLIT_START, "and START");
 
 	/* planet_change_split: in game, a real destination that is not the Interior. */

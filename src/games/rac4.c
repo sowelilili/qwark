@@ -703,12 +703,12 @@ static int rac4_blob_xyz(const u8 *blob, u8 len, f32 out[3])
 
 /*
  * rac4.cs planetsList already carries the game's own numbering: index 0 is the
- * unused slot, index 1 is Dread Zone, and RAC4Form turned its combo box index
+ * unused slot, index 1 is DreadZone, and RAC4Form turned its combo box index
  * into `index + 1` to reach the same ids.
  */
 static const char * const rac4_planets[] = {
 	"(unused)",
-	"Dread Zone",
+	"DreadZone",
 	"Catacrom",
 	"(infinite loop)",
 	"Sarathos",

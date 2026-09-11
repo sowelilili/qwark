@@ -629,7 +629,7 @@ Code 6 is the script's long load: a second off game time when the loading-screen
 
 The script's split route and its strict-order mode are the client's business: qwark emits code 1 for every planet change and the PC filters.
 
-**Deadlocked** — START/RESET when a load starts for Dread Zone (planet 1) with the tutorial flag clear.
+**Deadlocked** — START/RESET when a load starts for DreadZone (planet 1) with the tutorial flag clear.
 
 | Code | Kind | Label | Default | Timing | `arg` |
 |---|---|---|---|---|---|
