@@ -125,6 +125,15 @@ static u32  g_pid;
 
 /* The boot window: how many ticks BOOTING has had, how many it owes, and how
  * many times running the fingerprint has given the same answer. */
+/*
+ * Before any of that: the process id qwark has seen but not yet asked the XMB
+ * about. A game appearing is the XMB tearing itself down and building the game
+ * up, and the title has to come from a plugin inside that XMB, so the question
+ * waits until the same id has been there a while. See the XMB case below.
+ */
+static u32  g_pre_pid;
+static u32  g_pre_tick;
+
 static u32  g_boot_ticks;       /* ticks since BOOTING began, for the packet */
 static u32  g_boot_start_tick;  /* the tick it began on */
 static u32  g_fp_last_tick;     /* the tick the fingerprint last ran on */
@@ -584,7 +593,28 @@ static void step_state(void)
 	case SESSION_XMB: {
 		char title[16];
 
-		if (!running || pid == 0) break;
+		if (!running || pid == 0) { g_pre_pid = 0; break; }
+
+		/*
+		 * The title comes from game_plugin, a plugin inside the XMB, and this is
+		 * the one thing qwark asks of another VSH plugin. Asking it the moment a
+		 * process id appears means asking while the XMB is mid-handover, which is
+		 * when that plugin is least likely to be a thing worth calling into: a
+		 * console that reboots here reboots before BOOTING is ever reached, which
+		 * is why none of the windows below covered it.
+		 *
+		 * So the id has to hold still first. A quarter of the boot window, which
+		 * is two seconds on a console and nothing on a platform that has no XMB,
+		 * and which follows boot_delay_ms for anyone who tunes it.
+		 */
+		if (pid != g_pre_pid) {
+			g_pre_pid = pid;
+			g_pre_tick = g_tick;
+			plat_log("qwark: a game process appeared (pid %d), letting it settle", (int)pid);
+			break;
+		}
+		if (g_tick - g_pre_tick < boot_settle_ticks() / 4u) break;
+
 		if (!plat_game_title(title)) break;
 
 		g_ncandidates = game_candidates_for_title(title, g_candidates,

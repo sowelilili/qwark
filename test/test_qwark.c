@@ -563,7 +563,7 @@ static void test_boot_window(void)
 	 * it is running ten times a second rather than a hundred and twenty, because
 	 * those are calls into the XMB and a handover is when they are dearest.
 	 */
-	check(pump_until(SESSION_BOOTING, 60), "the process id puts the session in BOOTING");
+	check(pump_until(SESSION_BOOTING, 400), "the process id puts the session in BOOTING");
 
 	reads_at_boot = host_mem_reads();
 
@@ -651,6 +651,9 @@ static void test_boot_quiet(void)
 	check(config_set_u32("boot_delay_ms", 2000) == ST_OK, "a two second window");
 
 	host_boot("NPEA00385");
+
+	/* Past the wait that keeps qwark out of the XMB's handover, and into BOOTING. */
+	check(pump_until(SESSION_BOOTING, 400), "the session reaches BOOTING");
 	pump(24);
 
 	/*
@@ -711,7 +714,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 19, "and this module is build 19");
+	check_eq_u64(packet[5], 20, "and this module is build 20");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
