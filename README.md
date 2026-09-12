@@ -37,7 +37,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `boot_delay_ms`, `trace_ops`, `savefile_helper` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `boot_delay_ms`, `trace_ops`, `savefile_helper`, `telemetry` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
@@ -51,7 +51,12 @@ a crash names the operation it happened in; it costs a file write per request, w
 not on. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game. That is the
 largest write it makes, so turning it off and seeing whether the crashes stop is the fastest way to
 find out whether it is to blame; with it off, a game reports as having no helper and the client
-hides the panel.
+hides the panel. `telemetry = 0` stops the UDP push, which is the one thing a client connecting
+turns on in a thread it never talks to; with it off a client falls back to asking over TCP, which is
+how one behind a firewall has always worked.
+
+`trace_ops` logs a line as each request arrives and another when it is answered. A log that stops
+between the two died inside that operation; one that stops after a `done` died somewhere else.
 
 ## RPCS3
 

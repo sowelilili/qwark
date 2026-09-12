@@ -54,4 +54,7 @@ void net_subs_touch_all(void);
 /* config.txt `trace_ops`: log every request as it arrives, for a crash hunt. */
 void net_set_trace_ops(int on);
 
+/* config.txt `telemetry`: 0 stops the UDP push entirely; clients fall back to TCP. */
+void net_set_telemetry(int on);
+
 #endif /* QWARK_NET_H */

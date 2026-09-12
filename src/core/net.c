@@ -70,6 +70,20 @@ static volatile int g_working = 1;
 /* config.txt `trace_ops`: one log line per request. See the request loop. */
 static int g_trace_ops;
 
+/*
+ * config.txt `telemetry = 0`. The UDP push is the one thing a connection turns
+ * on in a thread the client never talks to, and a console that crashes shortly
+ * after a client connects is a console worth trying without it. Off, nothing is
+ * sent and a client falls back to asking over TCP, which is slower and visibly
+ * fine: it is how a client behind a firewall has always worked.
+ */
+static int g_telemetry_on = 1;
+
+void net_set_telemetry(int on)
+{
+	g_telemetry_on = on ? 1 : 0;
+}
+
 void net_set_trace_ops(int on)
 {
 	g_trace_ops = on ? 1 : 0;
@@ -200,6 +214,7 @@ static u16 subs_add(int conn_slot, u32 ip, u16 port)
 		g_subs[i].conn_slot = conn_slot;
 		g_subs[i].last_us = now;
 		rc = ST_OK;
+		if (g_trace_ops) plat_log("qwark: subscribed, telemetry starts going out");
 		break;
 	}
 
@@ -222,7 +237,7 @@ void net_send_telemetry(const u8 *packet, u32 len)
 
 	g_telemetry_sends++;
 
-	if (g_udp < 0 || len == 0) return;
+	if (!g_telemetry_on || g_udp < 0 || len == 0) return;
 
 	now = plat_time_us();
 
@@ -1518,6 +1533,16 @@ static void conn_thread(void *arg)
 		}
 
 		if (status != ST_OK) replylen = 0;
+
+		/*
+		 * The other end of the trace. A log that stops between an op and its
+		 * `done` died inside the handler; one that stops after a `done` died
+		 * somewhere else entirely, which is the difference worth knowing.
+		 */
+		if (g_trace_ops) {
+			plat_log("qwark: op %d done, status %d, reply %d",
+			         (int)op, (int)status, (int)replylen);
+		}
 
 		be32_put(header, replylen);
 		be16_put(header + 4, seq);

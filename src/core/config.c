@@ -151,6 +151,7 @@ int config_load(void)
 	 *                        another theory about it.
 	 */
 	net_set_trace_ops((int)config_get_u32("trace_ops", 0));
+	net_set_telemetry((int)config_get_u32("telemetry", 1));
 	savefile_set_enabled((int)config_get_u32("savefile_helper", 1));
 
 	return ST_OK;
