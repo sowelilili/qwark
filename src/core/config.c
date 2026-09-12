@@ -1,5 +1,7 @@
 #include "config.h"
 #include "util.h"
+#include "net.h"
+#include "savefile.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -137,6 +139,19 @@ int config_load(void)
 	 * not want that pays nothing for it. Default on, since the module is new.
 	 */
 	plat_log_enable((int)config_get_u32("log", 1));
+
+	/*
+	 * Two switches for a console that is crashing and will not say why.
+	 *
+	 *   trace_ops = 1        every request in the log, so the last line before a
+	 *                        crash names the operation it happened in
+	 *   savefile_helper = 0  never write the helper into a game. It is the
+	 *                        largest write qwark makes, so turning it off and
+	 *                        seeing whether the crashes stop is worth more than
+	 *                        another theory about it.
+	 */
+	net_set_trace_ops((int)config_get_u32("trace_ops", 0));
+	savefile_set_enabled((int)config_get_u32("savefile_helper", 1));
 
 	return ST_OK;
 }

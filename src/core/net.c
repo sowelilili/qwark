@@ -67,6 +67,14 @@ static int g_listen = -1;
 static int g_udp = -1;
 static volatile int g_working = 1;
 
+/* config.txt `trace_ops`: one log line per request. See the request loop. */
+static int g_trace_ops;
+
+void net_set_trace_ops(int on)
+{
+	g_trace_ops = on ? 1 : 0;
+}
+
 static plat_mutex_t g_net_mutex;
 static plat_mutex_t g_file_mutex;
 
@@ -1477,6 +1485,18 @@ static void conn_thread(void *arg)
 		if (length > 0 && recv_all(c->sock, c->req, length) != 0) break;
 
 		subs_refresh(slot);
+
+		/*
+		 * config.txt's `trace_ops = 1`. Off by default, because it is a file
+		 * open, write and close per request and a client's first second is a
+		 * hundred of them. On, the log's last line before a console dies names
+		 * the operation it died in, which is the difference between knowing and
+		 * three rounds of plausible theories.
+		 */
+		if (g_trace_ops) {
+			plat_log("qwark: op %d seq %d len %d (state %d)",
+			         (int)op, (int)seq, (int)length, (int)session_state());
+		}
 
 		if (op_needs_ring(op)) {
 			struct ring_cmd cmd;

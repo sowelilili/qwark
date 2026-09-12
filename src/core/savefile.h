@@ -106,6 +106,9 @@ void savefile_forget(void);
  * here calls it, and so does RaC1's Force autosave, which drives a fourth
  * request byte of its own.
  */
+/* config.txt `savefile_helper`: 0 takes the helper out of the picture entirely. */
+void savefile_set_enabled(int on);
+
 int savefile_install(void);
 
 /*

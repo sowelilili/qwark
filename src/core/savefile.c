@@ -18,6 +18,19 @@
 static int g_installed;
 
 /*
+ * config.txt `savefile_helper = 0`. The helper is the largest write qwark makes
+ * and the console it is written into keeps crashing; a switch that takes it out
+ * of the picture is worth more than another argument about whether it is to
+ * blame. Off, the game reports as unsupported and nothing is ever written.
+ */
+static int g_enabled = 1;
+
+void savefile_set_enabled(int on)
+{
+	g_enabled = on ? 1 : 0;
+}
+
+/*
  * One outstanding request, watched from the tick thread.
  *
  * `armed` is set the moment qwark writes the request byte and is what
@@ -152,6 +165,7 @@ static int gate(const struct sf_desc **out)
 
 	*out = NULL;
 
+	if (!g_enabled) return ST_UNSUPPORTED;
 	if (!plat_can_patch_code()) return ST_UNSUPPORTED;
 	if (!mem_is_ingame()) return ST_NOT_INGAME;
 
@@ -252,9 +266,11 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 	d = desc_now();
 	/*
 	 * A game qwark has no helper for is not an error: the client asks every
-	 * game and hides its save-file panel for the ones that answer 0 here.
+	 * game and hides its save-file panel for the ones that answer 0 here. A
+	 * helper switched off in config.txt answers the same way, so a console
+	 * being bisected looks like a game without one rather than a broken one.
 	 */
-	if (d == NULL) return ST_OK;
+	if (d == NULL || !g_enabled) return ST_OK;
 
 	*supported = 1;
 	*size = d->aside_size;

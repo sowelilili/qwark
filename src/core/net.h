@@ -51,4 +51,7 @@ u32  net_telemetry_sends(void);
  * silence ends, so the silence itself never expires one. */
 void net_subs_touch_all(void);
 
+/* config.txt `trace_ops`: log every request as it arrives, for a crash hunt. */
+void net_set_trace_ops(int on);
+
 #endif /* QWARK_NET_H */

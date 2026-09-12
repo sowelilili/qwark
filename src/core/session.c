@@ -125,7 +125,9 @@ static u32  g_pid;
 
 /* The boot window: how many ticks BOOTING has had, how many it owes, and how
  * many times running the fingerprint has given the same answer. */
-static u32  g_boot_ticks;
+static u32  g_boot_ticks;       /* ticks since BOOTING began, for the packet */
+static u32  g_boot_start_tick;  /* the tick it began on */
+static u32  g_fp_last_tick;     /* the tick the fingerprint last ran on */
 static u32  g_boot_settle;
 static u32  g_fp_matches;
 static const struct game_api *g_fp_game;
@@ -555,10 +557,28 @@ static void enter_ingame(void)
 	plat_log("qwark: session INGAME (%s) gen %d", g_title, (int)g_generation);
 }
 
+/*
+ * How often the VSH is asked what it is running, while it is not running a
+ * game. plat_game_running and plat_game_pid are calls into vsh.self, and
+ * plat_game_title reaches further still: it looks the game_plugin view up by
+ * name and calls into it. Asking 120 times a second is free while a game is up
+ * and the XMB is idle; it is 120 calls a second into the XMB *while the XMB is
+ * handing the machine over*, which is the one moment none of it is free.
+ *
+ * INGAME keeps the full rate, because that is where the quit has to be noticed
+ * within a frame or two.
+ */
+#define STATE_POLL_QUIET 12u   /* 10 Hz */
+
 static void step_state(void)
 {
-	int running = plat_game_running();
-	u32 pid = running ? plat_game_pid() : 0;
+	int running;
+	u32 pid;
+
+	if (g_state != SESSION_INGAME && (g_tick % STATE_POLL_QUIET) != 0) return;
+
+	running = plat_game_running();
+	pid = running ? plat_game_pid() : 0;
 
 	switch (g_state) {
 	case SESSION_XMB: {
@@ -586,6 +606,8 @@ static void step_state(void)
 		qstrcpy(g_title, sizeof(g_title), title);
 		g_pid = pid;
 		g_boot_ticks = 0;
+		g_boot_start_tick = g_tick;
+		g_fp_last_tick = g_tick;
 		g_boot_settle = boot_settle_ticks();
 		g_fp_matches = 0;
 		g_fp_game = NULL;
@@ -607,10 +629,16 @@ static void step_state(void)
 		 * only every BOOT_FINGERPRINT_EVERY ticks. This is the one path in
 		 * qwark that reads a process before mem_set_context has let the gate
 		 * open, so it is the one that has to hold itself back.
+		 *
+		 * Both intervals are measured against the tick counter rather than
+		 * counted here, because this function does not run every tick any more:
+		 * outside a game it runs at 10 Hz, and a window counted in visits would
+		 * silently become twelve times what it says it is.
 		 */
-		g_boot_ticks++;
+		g_boot_ticks = g_tick - g_boot_start_tick;
 		if (g_boot_ticks < g_boot_settle) break;
-		if ((g_boot_ticks % BOOT_FINGERPRINT_EVERY) != 0) break;
+		if (g_tick - g_fp_last_tick < BOOT_FINGERPRINT_EVERY) break;
+		g_fp_last_tick = g_tick;
 
 		found = fingerprinted_game();
 		if (found == NULL) {
