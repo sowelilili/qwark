@@ -44,4 +44,11 @@ void net_shutdown(void);
 /* Called from the tick thread every fourth tick. */
 void net_send_telemetry(const u8 *packet, u32 len);
 
+/* How many times the tick has decided to send one. For the boot-silence test. */
+u32  net_telemetry_sends(void);
+
+/* Restarts every subscription's idle clock; the session calls it when a boot's
+ * silence ends, so the silence itself never expires one. */
+void net_subs_touch_all(void);
+
 #endif /* QWARK_NET_H */

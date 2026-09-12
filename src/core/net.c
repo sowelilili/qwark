@@ -134,6 +134,26 @@ static void subs_refresh(int conn_slot)
 	plat_mutex_unlock(&g_net_mutex);
 }
 
+/*
+ * A subscription ages out after five seconds without a word from its client,
+ * which is right while both ends are talking and wrong while a game is starting:
+ * qwark sends nothing for the whole boot window and a client that understands
+ * that sends nothing back, so the first packet after the window would find every
+ * subscription stale and drop it instead. The session calls this when the silence
+ * ends, and the clock starts again from there.
+ */
+void net_subs_touch_all(void)
+{
+	u64 now = plat_time_us();
+	int i;
+
+	plat_mutex_lock(&g_net_mutex);
+	for (i = 0; i < QWARK_MAX_SUBS; i++) {
+		if (g_subs[i].used) g_subs[i].last_us = now;
+	}
+	plat_mutex_unlock(&g_net_mutex);
+}
+
 static void subs_drop_conn(int conn_slot)
 {
 	int i;
@@ -179,10 +199,20 @@ static u16 subs_add(int conn_slot, u32 ip, u16 port)
 	return rc;
 }
 
+/* Every call, whether or not anyone is subscribed: what qwark decided to send. */
+static u32 g_telemetry_sends;
+
+u32 net_telemetry_sends(void)
+{
+	return g_telemetry_sends;
+}
+
 void net_send_telemetry(const u8 *packet, u32 len)
 {
 	u64 now;
 	int i;
+
+	g_telemetry_sends++;
 
 	if (g_udp < 0 || len == 0) return;
 
@@ -839,6 +869,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 
 	case OP_GET_STATE:
+		session_note_state_poll();
 		*replylen = session_telemetry_copy(reply, replycap);
 		return *replylen ? ST_OK : ST_FULL;
 

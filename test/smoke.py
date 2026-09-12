@@ -33,7 +33,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 17
+QWARK_BUILD = 18
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004

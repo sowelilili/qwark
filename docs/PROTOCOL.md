@@ -122,10 +122,30 @@ a busy network, does working the network stack across the handover. The boot win
 of that: from the game's process id appearing until its fingerprint answers, several seconds later,
 nothing touches the process at all.
 
-This is the client's half. While the session is BOOTING, qwark sets bit3 and puts the remaining
-window in `quiet_ms`; it sends about five packets saying so and then **stops sending telemetry**
-until the game is up. A client that understands this does nothing for that long: no GET_STATE
-polling, no list requests, nothing it can hold back.
+This is the client's half. While the session is BOOTING, qwark **sends no telemetry at all**. It
+still builds the block, so HELLO and GET_STATE hand back the truth (state BOOTING, bit3 set, the
+remaining window in `quiet_ms`); it simply does not put anything on the wire until the game is up.
+
+A client is not told in advance, because the packet that told it would be one of the packets this
+is trying not to send. It works the silence out instead: the last state it saw was XMB (or
+BOOTING), and telemetry stopped, so a game is starting. **A client must not fall back to polling
+GET_STATE in that case.** Polling is right when the session is INGAME and the packets are missing,
+which means UDP is blocked; it is wrong here, where the silence is deliberate.
+
+If a client polls anyway, qwark gives up and resumes sending for the rest of that boot. A TCP round
+trip costs the console more than the packet it replaced, so between a client that will not be quiet
+and a console doing the cheaper of two things, the console takes the cheaper one. Every client older
+than this revision behaves that way, which is the case it is there for.
+
+**Nothing else goes out either.** Autosplit datagrams are held for the window as well, though in
+practice there are none: the watchers that produce them only run INGAME. A client should be as
+quiet, and that includes its heartbeat, which is a round trip like any other and which nothing
+depends on for those few seconds.
+
+One consequence to get right on both sides: a telemetry subscription ages out after five seconds
+without a word from its client, and a silent boot is longer than that. qwark restarts every
+subscription's clock when the window ends, so a client that was properly quiet is still subscribed
+when the packets come back.
 
 The silence is not a disconnection. The TCP connection is untouched, every op still answers, and
 normal telemetry resumes the moment the session reaches INGAME. A client that has not heard the

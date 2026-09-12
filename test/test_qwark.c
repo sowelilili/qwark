@@ -648,27 +648,38 @@ static void test_boot_quiet(void)
 	host_boot("NPEA00385");
 	pump(24);
 
+	/*
+	 * Still published, so HELLO and GET_STATE tell a client the truth about the
+	 * boot it walked in on. It is the sending that stops.
+	 */
 	session_info_copy(info, sizeof(info));
 	check_eq_u64(info[2], SESSION_BOOTING, "the session is BOOTING");
 	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) != 0,
-	      "and the packet says it is about to go quiet");
-	check(be16_get(info + 29) > 0, "with how long the silence will last");
+	      "and the block says so, with the quiet flag");
+	check(be16_get(info + 29) > 0, "and how long the silence has left");
 
-	/* Past the announcements, nothing new is published: the tick inside stops. */
-	pump(72);
-	session_info_copy(info, sizeof(info));
-	tick_a = be32_get(info + 8);
+	tick_a = net_telemetry_sends();
+	pump(240);
+	check_eq_u64(net_telemetry_sends(), tick_a,
+	             "but not one packet goes out in two seconds of it");
+
+	/*
+	 * A client that does not know about any of this fills the silence with
+	 * GET_STATE, which costs more than the packets did. Answering one is what
+	 * calls the silence off.
+	 */
+	session_note_state_poll();
+	pump(24);
+	tick_b = net_telemetry_sends();
+	check(tick_b > tick_a, "a client polling instead gets the packets back");
 
 	pump(120);
-	session_info_copy(info, sizeof(info));
-	tick_b = be32_get(info + 8);
-	check_eq_u64(tick_a, tick_b, "and then it stops publishing altogether");
+	check(net_telemetry_sends() > tick_b, "and keeps them for the rest of the boot");
 
 	check(pump_until(SESSION_INGAME, 4000), "the game comes up");
 	pump(8);
 	session_info_copy(info, sizeof(info));
-	check(be32_get(info + 8) > tick_b, "and telemetry starts again");
-	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) == 0, "with the flag clear");
+	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) == 0, "and the flag clears");
 
 	check(config_set_u32("boot_delay_ms", 0) == ST_OK, "the window goes back");
 	check(pump_until_settled(4000), "and the game settles");
@@ -695,7 +706,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 17, "and this module is build 17");
+	check_eq_u64(packet[5], 18, "and this module is build 18");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");

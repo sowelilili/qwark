@@ -71,11 +71,20 @@
 #define BOOT_FINGERPRINT_MATCHES 3u
 
 /*
- * How long BOOTING keeps announcing that it is about to go quiet before it
- * does. Five packets at the quiet rate is half a second, which is enough for
- * one of them to arrive on a link that is dropping some.
+ * BOOTING sends nothing at all. Build 17 spent half a second announcing the
+ * silence first, on the grounds that a client cannot honour a window it never
+ * heard about; a console died inside those packets, so the announcement is
+ * gone. A client works the silence out from the state it last saw: XMB, and
+ * then nothing, is a game starting.
+ *
+ * Except for a client that does not know that and polls GET_STATE to fill the
+ * gap, which is what every client before revision 1.11 does after 400 ms. That
+ * costs a TCP round trip each time, several times worse than the packet it is
+ * replacing, so if one arrives while BOOTING the silence is called off for the
+ * rest of this boot and the cheaper thing happens instead. Nothing is asked of
+ * the client and nothing is taken on trust: it is answered by what it does.
  */
-#define QUIET_ANNOUNCE_PACKETS 5u
+static volatile int g_quiet_broken;
 
 /* ------------------------------------------------------- the settle after that */
 
@@ -88,7 +97,7 @@
  *
  * So the writes that are big enough to matter (a mod's code cave, the savefile
  * helper's) wait for that count to hold still, floor and ceiling either side:
- * never sooner than the platform's floor, never later than SETTLE_MAX_TICKS, and
+ * never sooner than the platform's floor, never later than SETTLE_MAX_TICKS, and on
  * a platform with no module list the floor is the whole of it.
  */
 #define SETTLE_MAX_TICKS  3600u   /* 30 s, a ceiling so nothing waits forever */
@@ -121,8 +130,6 @@ static u32  g_boot_settle;
 static u32  g_fp_matches;
 static const struct game_api *g_fp_game;
 
-/* How many telemetry packets BOOTING has spent announcing its silence. */
-static u32  g_quiet_announced;
 
 /*
  * And the window after that one. INGAME means the game is mapped and running;
@@ -178,6 +185,19 @@ void core_lock(void)   { plat_mutex_lock(&g_core_mutex); }
 void core_unlock(void) { plat_mutex_unlock(&g_core_mutex); }
 
 u8   session_state(void)      { return g_state; }
+
+/*
+ * A client asked for the snapshot over TCP. Harmless in itself, and during a
+ * boot it is the thing the silence exists to avoid, so the silence gives way:
+ * a packet costs this console less than answering the poll that replaces it.
+ */
+void session_note_state_poll(void)
+{
+	if (g_state == SESSION_BOOTING && !g_quiet_broken) {
+		g_quiet_broken = 1;
+		plat_log("qwark: a client polled during the boot, so telemetry resumes");
+	}
+}
 int  session_settled(void)    { return (g_state == SESSION_INGAME) && g_settled; }
 u32  session_generation(void) { return g_generation; }
 u32  session_tick_count(void) { return g_tick; }
@@ -438,6 +458,7 @@ static void enter_quitting(void)
 	g_combo_suspend_until = 0;
 
 	g_state = SESSION_QUITTING;
+	net_subs_touch_all();
 	plat_log("qwark: session QUITTING (%s)", g_title);
 }
 
@@ -493,6 +514,14 @@ static void enter_ingame(void)
 
 	mem_set_context(g_pid, 1);
 	g_state = SESSION_INGAME;
+
+	/*
+	 * The boot's silence is over. Nothing came from this module for the whole of
+	 * it and a client that understood that sent nothing either, so every
+	 * subscription's idle clock reads as expired; start them again here rather
+	 * than let the first packet after a boot drop the client it is meant for.
+	 */
+	net_subs_touch_all();
 
 	/* The hot buffers still hold the dead process; read every block once. */
 	memset(g_hotbuf, 0, sizeof(g_hotbuf));
@@ -560,7 +589,7 @@ static void step_state(void)
 		g_boot_settle = boot_settle_ticks();
 		g_fp_matches = 0;
 		g_fp_game = NULL;
-		g_quiet_announced = 0;
+		g_quiet_broken = 0;
 		g_generation++;
 		g_state = SESSION_BOOTING;
 		plat_log("qwark: session BOOTING (%s) pid %d, leaving it alone for %d ticks",
@@ -1127,22 +1156,31 @@ static void session_step(void)
 	 * Protocol 1.4. Autosplit datagrams go out every tick, not every fourth:
 	 * a split has to reach the PC in single-digit milliseconds, and each event
 	 * repeats for three ticks so one lost datagram costs nothing.
+	 *
+	 * Not while a game is starting, though. Nothing produces an event then - the
+	 * watchers run INGAME - so in practice this holds back nothing at all, and
+	 * "the network is completely quiet during a boot" is worth more as a rule
+	 * with no exceptions in it than as one with a harmless-looking exception.
 	 */
-	autosplit_push();
+	if (g_state != SESSION_BOOTING || g_quiet_broken) autosplit_push();
 
 	g_tick++;
 
 	if ((g_tick % ((g_state == SESSION_INGAME) ? TELEMETRY_EVERY : TELEMETRY_EVERY_QUIET)) == 0) {
 		/*
-		 * Revision 1.11. BOOTING says so for half a second and then stops
-		 * sending altogether: a game is starting, this module lives in the VSH,
-		 * and the network is the half of the crash the boot window does not
-		 * cover. The packets that do go out carry the flag and how long the
-		 * silence will last, so a client stops asking rather than filling it.
+		 * Revision 1.11. A game is starting, this module lives in the VSH, and
+		 * the network is the half of the crash the boot window does not cover:
+		 * BOOTING sends nothing, unless a client has already shown that its
+		 * idea of nothing is to ask over TCP instead.
 		 */
-		if (g_state != SESSION_BOOTING || g_quiet_announced < QUIET_ANNOUNCE_PACKETS) {
-			if (g_state == SESSION_BOOTING) g_quiet_announced++;
-			publish();
+		/*
+		 * Published either way: HELLO and GET_STATE hand back the last published
+		 * block, and a client that connects or asks during a boot deserves the
+		 * truth about it. Filling that buffer costs nothing and touches nothing.
+		 * It is the sending that stops.
+		 */
+		publish();
+		if (g_state != SESSION_BOOTING || g_quiet_broken) {
 			net_send_telemetry(g_tele_pub, g_tele_pub_len);
 		}
 	}

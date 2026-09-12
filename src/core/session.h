@@ -61,6 +61,14 @@ u8   session_state(void);
  * INGAME on its own is not enough, see settled_tick in session.c.
  */
 int  session_settled(void);
+
+/*
+ * Called from a network thread when a client asks for the session block over
+ * TCP. While a game is starting qwark sends no telemetry at all; a client that
+ * fills that silence with polling is costing more than the packets would, so
+ * this hands the packets back for the rest of the boot. See section 3.3.
+ */
+void session_note_state_poll(void);
 u32  session_generation(void);
 u32  session_tick_count(void);
 const char *session_title(void);
