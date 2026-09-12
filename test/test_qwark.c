@@ -141,16 +141,21 @@ static void pump(int ticks)
 	for (i = 0; i < ticks; i++) session_step_once();
 }
 
-/* Steps until the session reaches `want` or we give up. Returns 1 on success. */
-static int pump_until(u8 want, int max_ms)
+/*
+ * Steps until the session reaches `want` or we give up. Returns 1 on success.
+ *
+ * Ticks, not milliseconds, and no sleeping: the boot window is counted in ticks
+ * precisely so that it can be stepped through rather than waited out, and a
+ * suite that boots a dozen games would otherwise spend a minute and a half
+ * asleep proving it.
+ */
+static int pump_until(u8 want, int max_ticks)
 {
-	int elapsed = 0;
+	int i;
 
-	while (elapsed < max_ms) {
+	for (i = 0; i < max_ticks; i++) {
 		session_step_once();
 		if (session_state() == want) return 1;
-		plat_sleep_us(2000);
-		elapsed += 2;
 	}
 
 	return session_state() == want;
@@ -159,7 +164,7 @@ static int pump_until(u8 want, int max_ms)
 static int boot_and_wait(const char *title)
 {
 	host_boot(title);
-	/* BOOTING waits about a second after the PID shows up before it reads. */
+	/* The settle window, the fingerprint poll's period and its repeats, over. */
 	return pump_until(SESSION_INGAME, 4000);
 }
 
@@ -511,6 +516,61 @@ static void test_session_different_title(void)
 	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
 }
 
+/*
+ * The boot window, which exists because reading a game process that the VSH has
+ * only just handed over to panics a console. The rule it enforces is simple
+ * enough to check exactly: between the process id appearing and the window
+ * closing, the core reads the process zero times.
+ */
+static void test_boot_window(void)
+{
+	u32 reads_at_boot;
+	u32 settle_ms = 2000;                       /* 240 ticks at 120 Hz */
+	u32 settle_ticks = (settle_ms * 1000u) / 8333u;
+
+	group("session: the boot window");
+
+	check(quit_and_wait(), "quit whatever was running");
+
+	/* Longer than the host default, so the window is the thing being measured. */
+	check(config_set_u32("boot_delay_ms", settle_ms) == ST_OK,
+	      "the window is set from config.txt");
+
+	host_boot("NPEA00385");
+	session_step_once();
+	check(session_state() == SESSION_BOOTING, "the process id puts the session in BOOTING");
+
+	reads_at_boot = host_mem_reads();
+
+	/* One tick short of the window: still nothing may have touched the process. */
+	pump((int)settle_ticks - 2);
+	check(session_state() == SESSION_BOOTING, "it is still BOOTING through the window");
+	check_eq_u64(host_mem_reads() - reads_at_boot, 0,
+	             "and the process has not been read once");
+
+	check(pump_until(SESSION_INGAME, 4000), "the window closes and the game comes up");
+
+	/*
+	 * Four fingerprint reads a second, three of them agreeing, so a game that
+	 * comes up the moment the window closes costs a handful of reads rather
+	 * than the hundreds a per-tick poll used to spend on it.
+	 */
+	check(host_mem_reads() - reads_at_boot < 64,
+	      "on a handful of fingerprint reads, not hundreds");
+
+	/*
+	 * Zero is allowed, and then the fingerprint is the whole of the gate. The
+	 * key is left at zero for the tests that follow: this platform's own window
+	 * is a tenth of a second and neither costs them anything.
+	 */
+	check(config_set_u32("boot_delay_ms", 0) == ST_OK, "the window can be turned off");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "and then the fingerprint alone decides");
+
+	check_eq_u64(plat_boot_settle_ticks(), 12,
+	             "and with no key at all the platform decides, briefly here");
+}
+
 /* ------------------------------------------------------------- telemetry */
 
 static void test_telemetry(void)
@@ -532,7 +592,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 15, "and this module is build 15");
+	check_eq_u64(packet[5], 16, "and this module is build 16");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -4289,6 +4349,7 @@ int main(void)
 	test_telemetry();
 	test_session_same_title();
 	test_session_different_title();
+	test_boot_window();
 	test_unlocks();
 	test_levelflags();
 	test_planet_load();

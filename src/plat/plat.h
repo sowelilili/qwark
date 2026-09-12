@@ -66,6 +66,19 @@ int  plat_can_patch_code(void);
  */
 int  plat_is_emulator(void);
 
+/*
+ * How many 120 Hz ticks the session leaves a newly appeared game process alone
+ * before it reads a single byte of it, this platform's answer.
+ *
+ * On a console this is a safety number, not a nicety: the process id appears
+ * when the VSH hands over, which is before the game has finished building
+ * itself, and reading it in that state panics the machine. Everywhere else the
+ * process is a fake or an emulator's and there is nothing to protect, so the
+ * wait is short enough not to be felt. config.txt's `boot_delay_ms` overrides
+ * whatever this says.
+ */
+u32  plat_boot_settle_ticks(void);
+
 /* --------------------------------------------------------------- game memory */
 
 #define PLAT_MEM_MAX 65536u

@@ -76,6 +76,16 @@ int plat_is_emulator(void)
 	return 0;
 }
 
+/*
+ * 1000 ticks, 8.3 seconds at 120 Hz. RaCMAN arrived at the same number the same
+ * way: anything less and a slower console, or one on WiFi with a client already
+ * asking it questions, panics while the game is still building itself.
+ */
+u32 plat_boot_settle_ticks(void)
+{
+	return 1000u;
+}
+
 /* ------------------------------------------------------------ game memory */
 
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)

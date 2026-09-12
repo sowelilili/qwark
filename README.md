@@ -37,11 +37,13 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `boot_delay_ms` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
 | `qwark.log` | state transitions, when `log = 1` |
+
+`boot_delay_ms` is the only one worth knowing about. When a game starts, its process id appears before the game has finished building itself, and reading it in that state panics the console, so qwark waits 8.3 seconds after the id appears before it touches the process at all. Raise it if a console still crashes when a game starts; lower it to get the seconds back on a console that does not.
 
 ## RPCS3
 

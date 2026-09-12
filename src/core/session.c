@@ -15,6 +15,20 @@
 #define TELEMETRY_EVERY  4         /* 30 Hz */
 
 /*
+ * Outside a game there is nothing moving to report, and one of the times there
+ * is nothing moving is while a game is starting, which is the worst moment to
+ * be busy on the network: this module lives in the VSH, and a VSH plugin
+ * working the network stack while the console hands over to a game is the other
+ * half of the crash the boot window below is about. So the packet drops to
+ * 10 Hz whenever the session is not INGAME.
+ *
+ * It does not stop. A client that has heard nothing for 400 ms starts asking
+ * for the same snapshot over TCP instead, which is more traffic at a worse
+ * moment, so this has to stay comfortably inside that.
+ */
+#define TELEMETRY_EVERY_QUIET 12   /* 10 Hz */
+
+/*
  * Protocol 1.3. How often the FEATURE_FLAG_LIVE toggles are re-read out of game
  * memory, in ticks: 12 is 10 Hz, which is three telemetry frames apart and
  * costs one small read per live toggle. A checkbox that follows the save file
@@ -23,11 +37,38 @@
 #define LIVE_POLL_EVERY  12        /* 10 Hz */
 
 /*
- * The autosplitter waits a second after the PID shows up before it touches the
- * process; reading too early is how you crash a console. We do the same, and
- * then still wait for the fingerprint.
+ * How long qwark keeps away from a process that has just appeared.
+ *
+ * A second was not enough. IS_INGAME goes true when the VSH has handed over to
+ * the game, which is before the game has finished building itself, and reading
+ * a process in that state is how a console panics. It was survivable on a fast
+ * console over Ethernet and it crashed reliably on a slower one over WiFi.
+ *
+ * The number is the platform's, since it is the platform that knows what it
+ * costs to be wrong: see plat_boot_settle_ticks. It is counted in ticks rather
+ * than microseconds so that a console too busy to hold 120 Hz waits longer
+ * rather than less, and so the host tests can step through the window instead
+ * of sleeping through it. config.txt's `boot_delay_ms` overrides it, in the
+ * milliseconds somebody tuning it would think in.
  */
-#define BOOT_SETTLE_US   1000000u
+#define BOOT_SETTLE_MS_DEFAULT    8300u
+
+/*
+ * Then the fingerprint, four times a second rather than at the full tick rate.
+ * Under BCES01503 there are three candidates to try, so a tick used to cost the
+ * booting process three reads; at 120 Hz that is 360 reads a second thrown at
+ * something that may still be mapping itself. Nothing is waiting on the answer
+ * to the millisecond: the game is still on its own loading screen.
+ */
+#define BOOT_FINGERPRINT_EVERY 30u   /* 4 Hz */
+
+/*
+ * And the fingerprint has to agree with itself. One read that happens to land
+ * while the image is being mapped could match on a page that is not finished;
+ * three quarters of a second of the same answer is cheap proof that the process
+ * has settled at the address the game is meant to live at.
+ */
+#define BOOT_FINGERPRINT_MATCHES 3u
 
 /*
  * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
@@ -47,7 +88,14 @@ static u8   g_state = SESSION_XMB;
 static u32  g_generation;
 static u32  g_tick;
 static u32  g_pid;
-static u64  g_pid_seen_us;
+
+/* The boot window: how many ticks BOOTING has had, how many it owes, and how
+ * many times running the fingerprint has given the same answer. */
+static u32  g_boot_ticks;
+static u32  g_boot_settle;
+static u32  g_fp_matches;
+static const struct game_api *g_fp_game;
+
 static char g_title[16];
 static char g_last_title[16];
 static u8   g_last_game_id;
@@ -266,6 +314,22 @@ void session_previous_dismiss(void)
 
 /* ------------------------------------------------------- the state machine */
 
+/*
+ * The boot window in ticks. config.txt's `boot_delay_ms` is in milliseconds,
+ * which is what somebody tuning it thinks in, and a tick is what the loop
+ * counts. Zero is allowed and means "as soon as the fingerprint agrees", for a
+ * console whose owner would rather have the seconds back than the margin.
+ */
+static u32 boot_settle_ticks(void)
+{
+	if (config_get("boot_delay_ms") != NULL) {
+		u32 ms = config_get_u32("boot_delay_ms", BOOT_SETTLE_MS_DEFAULT);
+		return (u32)(((u64)ms * 1000u) / TICK_PERIOD_US);
+	}
+
+	return plat_boot_settle_ticks();
+}
+
 static int fingerprint_matches(const struct game_api *g)
 {
 	u8 buf[64];
@@ -443,10 +507,14 @@ static void step_state(void)
 		g_game = g_candidates[0];
 		qstrcpy(g_title, sizeof(g_title), title);
 		g_pid = pid;
-		g_pid_seen_us = plat_time_us();
+		g_boot_ticks = 0;
+		g_boot_settle = boot_settle_ticks();
+		g_fp_matches = 0;
+		g_fp_game = NULL;
 		g_generation++;
 		g_state = SESSION_BOOTING;
-		plat_log("qwark: session BOOTING (%s) pid %d", g_title, (int)g_pid);
+		plat_log("qwark: session BOOTING (%s) pid %d, leaving it alone for %d ticks",
+		         g_title, (int)g_pid, (int)g_boot_settle);
 		break;
 	}
 
@@ -454,13 +522,35 @@ static void step_state(void)
 		const struct game_api *found;
 
 		if (!running || pid != g_pid) { enter_quitting(); break; }
-		if (plat_time_us() - g_pid_seen_us < BOOT_SETTLE_US) break;
+
+		/*
+		 * Nothing here touches the process until the window is over, and then
+		 * only every BOOT_FINGERPRINT_EVERY ticks. This is the one path in
+		 * qwark that reads a process before mem_set_context has let the gate
+		 * open, so it is the one that has to hold itself back.
+		 */
+		g_boot_ticks++;
+		if (g_boot_ticks < g_boot_settle) break;
+		if ((g_boot_ticks % BOOT_FINGERPRINT_EVERY) != 0) break;
 
 		found = fingerprinted_game();
-		if (found != NULL) {
-			g_game = found;
-			enter_ingame();
+		if (found == NULL) {
+			g_fp_matches = 0;
+			g_fp_game = NULL;
+			break;
 		}
+
+		/* The same game, repeatedly, or the count starts again. */
+		if (found != g_fp_game) {
+			g_fp_game = found;
+			g_fp_matches = 0;
+		}
+
+		g_fp_matches++;
+		if (g_fp_matches < BOOT_FINGERPRINT_MATCHES) break;
+
+		g_game = found;
+		enter_ingame();
 		break;
 	}
 
@@ -916,7 +1006,7 @@ static void session_step(void)
 
 	g_tick++;
 
-	if ((g_tick % TELEMETRY_EVERY) == 0) {
+	if ((g_tick % ((g_state == SESSION_INGAME) ? TELEMETRY_EVERY : TELEMETRY_EVERY_QUIET)) == 0) {
 		publish();
 		net_send_telemetry(g_tele_pub, g_tele_pub_len);
 	}

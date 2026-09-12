@@ -63,6 +63,9 @@ int  host_set_pad(u32 mask);
 int  host_poke(u32 addr, const u8 *data, u32 len);
 int  host_peek(u32 addr, u8 *out, u32 len);
 
+/* How many reads the core has made of the fake process, for the boot-window test. */
+u32  host_mem_reads(void);
+
 /*
  * Test hooks. The fake backend answers 1 and 0 the way the PS3 does; forcing
  * them lets the unit tests drive the core's code-patch gating without a second

@@ -234,12 +234,35 @@ int plat_is_emulator(void)
 	return g_is_emulator;
 }
 
+/*
+ * A tenth of a second. There is no process here to damage, and the smoke test
+ * boots six games over the wire: a console's window would be most of a minute
+ * spent proving nothing this platform can get wrong.
+ */
+u32 plat_boot_settle_ticks(void)
+{
+	return 12u;
+}
+
+/*
+ * Every read the core makes of the "process", for the test that the boot window
+ * is respected. host_peek does not go through here, so a test can look at the
+ * fake console's memory without disturbing the count.
+ */
+static u32 g_mem_reads;
+
+u32 host_mem_reads(void)
+{
+	return g_mem_reads;
+}
+
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 {
 	if (len == 0 || len > PLAT_MEM_MAX) return -1;
 	if (!g_game_running || pid != g_game_pid) return -1;
 
 	pthread_mutex_lock(&g_mem_lock);
+	g_mem_reads++;
 	mem_access(addr, buf, len, 0);
 	pthread_mutex_unlock(&g_mem_lock);
 	return 0;

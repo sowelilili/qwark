@@ -1034,6 +1034,9 @@ int plat_game_title(char out[16]) { return pine_game_title(out); }
 int plat_can_patch_code(void) { return 0; }
 int plat_is_emulator(void)    { return 1; }
 
+/* An emulator's memory is not a console's: there is nothing here to panic. */
+u32 plat_boot_settle_ticks(void) { return 12u; }
+
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 {
 	(void)pid;
