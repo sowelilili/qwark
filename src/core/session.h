@@ -23,6 +23,16 @@ struct ring_cmd {
 	u32 replylen;   /* out */
 	u16 status;     /* out */
 	void *user;     /* the connection, for handlers that need it */
+
+	/*
+	 * Out, and only for the op trace: what running this command cost the game.
+	 * Every one of these is a PS3MAPI call against the running process, made
+	 * inside a single tick, so a command with hundreds of them is a tick the
+	 * game can feel.
+	 */
+	u32 mem_reads;
+	u32 mem_writes;
+	u32 exec_us;
 };
 
 typedef void (*ring_exec_fn)(struct ring_cmd *cmd);

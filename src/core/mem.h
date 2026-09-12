@@ -17,6 +17,10 @@
  * against a dead PID.
  */
 void mem_set_context(u32 pid, int ingame);
+
+/* How many reads and writes have reached the platform, for the op trace. */
+u32  mem_read_calls(void);
+u32  mem_write_calls(void);
 int  mem_is_ingame(void);
 u32  mem_pid(void);
 

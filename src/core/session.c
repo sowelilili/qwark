@@ -290,7 +290,17 @@ static void ring_drain(void)
 		cmd->status = ST_UNKNOWN_OP;
 		cmd->replylen = 0;
 
-		if (g_ring_exec != NULL) g_ring_exec(cmd);
+		{
+			u32 reads = mem_read_calls();
+			u32 writes = mem_write_calls();
+			u64 started = plat_time_us();
+
+			if (g_ring_exec != NULL) g_ring_exec(cmd);
+
+			cmd->mem_reads = mem_read_calls() - reads;
+			cmd->mem_writes = mem_write_calls() - writes;
+			cmd->exec_us = (u32)(plat_time_us() - started);
+		}
 
 		g_ring[i].state = RING_DONE;
 		plat_sem_post(&g_ring[i].sem);

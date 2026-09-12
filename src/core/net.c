@@ -1511,6 +1511,7 @@ static void conn_thread(void *arg)
 		u16 op;
 		u16 status;
 		u32 replylen = 0;
+		u32 mem_reads = 0, mem_writes = 0, exec_us = 0;
 
 		if (recv_all(c->sock, header, QWARK_FRAME_HEADER) != 0) break;
 
@@ -1592,6 +1593,9 @@ static void conn_thread(void *arg)
 			session_submit(&cmd);
 			status = cmd.status;
 			replylen = cmd.replylen;
+			mem_reads = cmd.mem_reads;
+			mem_writes = cmd.mem_writes;
+			exec_us = cmd.exec_us;
 		} else {
 			status = handle_inline(c, slot, op, c->req, length,
 			                       c->reply, CONN_REPLY_CAP, &replylen);
@@ -1605,8 +1609,9 @@ static void conn_thread(void *arg)
 		 * somewhere else entirely, which is the difference worth knowing.
 		 */
 		if (g_trace_ops) {
-			plat_log("qwark: op %d done, status %d, reply %d",
-			         (int)op, (int)status, (int)replylen);
+			plat_log("qwark: op %d done, status %d, reply %d, %d reads %d writes, %d us on the tick",
+			         (int)op, (int)status, (int)replylen,
+			         (int)mem_reads, (int)mem_writes, (int)exec_us);
 		}
 
 		be32_put(header, replylen);

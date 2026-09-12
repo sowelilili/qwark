@@ -21,10 +21,22 @@ void mem_set_context(u32 pid, int ingame)
 int mem_is_ingame(void) { return g_ingame; }
 u32 mem_pid(void)       { return g_pid; }
 
+/*
+ * Every call that reaches the platform, which on a console is one PS3MAPI
+ * syscall against the game process each. Only the tick thread calls these, so a
+ * plain counter is exact; the ring reads it either side of a command.
+ */
+static u32 g_read_calls;
+static u32 g_write_calls;
+
+u32 mem_read_calls(void)  { return g_read_calls; }
+u32 mem_write_calls(void) { return g_write_calls; }
+
 int mem_read(u32 addr, void *buf, u32 len)
 {
 	if (!g_ingame || g_pid == 0) return ST_NOT_INGAME;
 	if (len == 0 || len > PLAT_MEM_MAX) return ST_BAD_ARG;
+	g_read_calls++;
 	if (plat_mem_read(g_pid, addr, buf, len) != 0) return ST_IO_ERROR;
 	return ST_OK;
 }
@@ -33,6 +45,7 @@ int mem_write(u32 addr, const void *buf, u32 len)
 {
 	if (!g_ingame || g_pid == 0) return ST_NOT_INGAME;
 	if (len == 0 || len > PLAT_MEM_MAX) return ST_BAD_ARG;
+	g_write_calls++;
 	if (plat_mem_write(g_pid, addr, buf, len) != 0) return ST_IO_ERROR;
 	return ST_OK;
 }
