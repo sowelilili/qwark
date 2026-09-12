@@ -545,6 +545,7 @@ static void test_session_different_title(void)
 static void test_boot_window(void)
 {
 	u32 reads_at_boot;
+	u32 vsh_at_boot;
 	u32 settle_ms = 2000;                       /* 240 ticks at 120 Hz */
 	u32 settle_ticks = (settle_ms * 1000u) / 8333u;
 
@@ -566,12 +567,22 @@ static void test_boot_window(void)
 	check(pump_until(SESSION_BOOTING, 400), "the process id puts the session in BOOTING");
 
 	reads_at_boot = host_mem_reads();
+	vsh_at_boot = host_vsh_calls();
 
 	/* One tick short of the window: still nothing may have touched the process. */
 	pump((int)settle_ticks - 2);
 	check(session_state() == SESSION_BOOTING, "it is still BOOTING through the window");
 	check_eq_u64(host_mem_reads() - reads_at_boot, 0,
 	             "and the process has not been read once");
+
+	/*
+	 * The rule the crash logs finally forced: not the process, and not the VSH
+	 * either. No question about what is running, and no title from the XMB's
+	 * game_plugin, until the window has closed. This is what Ratchetron's 8.3
+	 * second sleep did and what qwark kept almost doing.
+	 */
+	check_eq_u64(host_vsh_calls() - vsh_at_boot, 0,
+	             "and the console has not been asked a single thing");
 
 	check(pump_until(SESSION_INGAME, 4000), "the window closes and the game comes up");
 
@@ -714,7 +725,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 21, "and this module is build 21");
+	check_eq_u64(packet[5], 22, "and this module is build 22");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");

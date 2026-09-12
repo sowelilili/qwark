@@ -123,17 +123,14 @@ static u32  g_generation;
 static u32  g_tick;
 static u32  g_pid;
 
+/*
+ * A process that turned out not to be a game qwark knows, so the XMB case does
+ * not start a new boot for it on every poll while it runs.
+ */
+static u32  g_ignored_pid;
+
 /* The boot window: how many ticks BOOTING has had, how many it owes, and how
  * many times running the fingerprint has given the same answer. */
-/*
- * Before any of that: the process id qwark has seen but not yet asked the XMB
- * about. A game appearing is the XMB tearing itself down and building the game
- * up, and the title has to come from a plugin inside that XMB, so the question
- * waits until the same id has been there a while. See the XMB case below.
- */
-static u32  g_pre_pid;
-static u32  g_pre_tick;
-
 static u32  g_boot_ticks;       /* ticks since BOOTING began, for the packet */
 static u32  g_boot_start_tick;  /* the tick it began on */
 static u32  g_fp_last_tick;     /* the tick the fingerprint last ran on */
@@ -454,13 +451,20 @@ static void enter_quitting(void)
 
 	if (g_game != NULL && g_game->on_quit != NULL) g_game->on_quit();
 
-	qstrcpy(g_last_title, sizeof(g_last_title), g_title);
 	/*
-	 * Under BCES01503 the same title id can come back as a different game, so
-	 * "same title" is not enough to decide that the feature and position tables
-	 * still apply: remember which game it actually was.
+	 * A game that went away before its title was ever read has nothing to
+	 * remember, and remembering the empty string would make the next launch of
+	 * the game before it look like a different title.
 	 */
-	g_last_game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+	if (g_title[0] != 0) {
+		qstrcpy(g_last_title, sizeof(g_last_title), g_title);
+		/*
+		 * Under BCES01503 the same title id can come back as a different game,
+		 * so "same title" is not enough to decide that the feature and position
+		 * tables still apply: remember which game it actually was.
+		 */
+		g_last_game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+	}
 
 	/*
 	 * A combo hold belongs to the client's capture, and the game it was holding
@@ -584,57 +588,45 @@ static void step_state(void)
 	int running;
 	u32 pid;
 
+	/*
+	 * A game is starting: ask the console nothing at all until it has.
+	 *
+	 * This is the pattern Ratchetron and the old RaCMAN proved over years, and
+	 * the one this module kept almost-following. Once a game process appears
+	 * their thread slept for 8.3 seconds and made no calls of any kind. qwark
+	 * went on asking the VSH what it was running ten times a second through
+	 * the handover, and until build 20 it asked the XMB's game_plugin for the
+	 * title in the middle of it too. The last three crash logs all end inside
+	 * that stretch, with and without a client connected.
+	 *
+	 * So while the window runs, this returns before it calls anything: no
+	 * vsh.self, no game_plugin, no process, and BOOTING sends no packets. The
+	 * only cost is that a game which fails to start is noticed when the window
+	 * closes rather than the moment it goes.
+	 */
+	if (g_state == SESSION_BOOTING && (g_tick - g_boot_start_tick) < g_boot_settle) return;
+
 	if (g_state != SESSION_INGAME && (g_tick % STATE_POLL_QUIET) != 0) return;
 
 	running = plat_game_running();
 	pid = running ? plat_game_pid() : 0;
-
 	switch (g_state) {
-	case SESSION_XMB: {
-		char title[16];
+	case SESSION_XMB:
+		if (!running || pid == 0) { g_ignored_pid = 0; break; }
 
-		if (!running || pid == 0) { g_pre_pid = 0; break; }
-
-		/*
-		 * The title comes from game_plugin, a plugin inside the XMB, and this is
-		 * the one thing qwark asks of another VSH plugin. Asking it the moment a
-		 * process id appears means asking while the XMB is mid-handover, which is
-		 * when that plugin is least likely to be a thing worth calling into: a
-		 * console that reboots here reboots before BOOTING is ever reached, which
-		 * is why none of the windows below covered it.
-		 *
-		 * So the id has to hold still first. A quarter of the boot window, which
-		 * is two seconds on a console and nothing on a platform that has no XMB,
-		 * and which follows boot_delay_ms for anyone who tunes it.
-		 */
-		if (pid != g_pre_pid) {
-			g_pre_pid = pid;
-			g_pre_tick = g_tick;
-			plat_log("qwark: a game process appeared (pid %d), letting it settle", (int)pid);
-			break;
-		}
-		if (g_tick - g_pre_tick < boot_settle_ticks() / 4u) break;
-
-		if (!plat_game_title(title)) break;
-
-		g_ncandidates = game_candidates_for_title(title, g_candidates,
-		                                          GAME_MAX_CANDIDATES);
-		if (g_ncandidates == 0) {
-			/*
-			 * A title qwark does not know keeps the session in XMB: there is no
-			 * fingerprint to wait for and nothing we could safely write.
-			 */
-			break;
-		}
+		/* A process already found to be a game qwark does not know. */
+		if (pid == g_ignored_pid) break;
 
 		/*
-		 * Provisional until a fingerprint answers. For a single-game title it is
-		 * already the right one; for BCES01503 it only fills the telemetry game
-		 * byte during BOOTING, which the client shows as "booting".
+		 * The first sighting is the start of the handover, so BOOTING starts
+		 * here and not once the title is known: every protection BOOTING has,
+		 * the silence above and on the wire, applies from this tick. The title
+		 * and the candidates come after the window, from the case below.
 		 */
-		g_game = g_candidates[0];
-		qstrcpy(g_title, sizeof(g_title), title);
 		g_pid = pid;
+		g_game = NULL;
+		g_title[0] = 0;
+		g_ncandidates = 0;
 		g_boot_ticks = 0;
 		g_boot_start_tick = g_tick;
 		g_fp_last_tick = g_tick;
@@ -644,29 +636,59 @@ static void step_state(void)
 		g_quiet_broken = 0;
 		g_generation++;
 		g_state = SESSION_BOOTING;
-		plat_log("qwark: session BOOTING (%s) pid %d, leaving it alone for %d ticks",
-		         g_title, (int)g_pid, (int)g_boot_settle);
+		plat_log("qwark: a game is starting (pid %d), asking the console nothing for %d ticks",
+		         (int)pid, (int)g_boot_settle);
 		break;
-	}
 
 	case SESSION_BOOTING: {
 		const struct game_api *found;
+		char title[16];
 
 		if (!running || pid != g_pid) { enter_quitting(); break; }
 
-		/*
-		 * Nothing here touches the process until the window is over, and then
-		 * only every BOOT_FINGERPRINT_EVERY ticks. This is the one path in
-		 * qwark that reads a process before mem_set_context has let the gate
-		 * open, so it is the one that has to hold itself back.
-		 *
-		 * Both intervals are measured against the tick counter rather than
-		 * counted here, because this function does not run every tick any more:
-		 * outside a game it runs at 10 Hz, and a window counted in visits would
-		 * silently become twelve times what it says it is.
-		 */
 		g_boot_ticks = g_tick - g_boot_start_tick;
-		if (g_boot_ticks < g_boot_settle) break;
+
+		/*
+		 * The window is over, so the XMB can be asked what it launched. This is
+		 * the game_plugin call, and it happens eight seconds after the handover
+		 * rather than during it. A plugin that is not ready answers nothing and
+		 * is asked again on the next poll.
+		 */
+		if (g_ncandidates == 0) {
+			if (!plat_game_title(title)) break;
+
+			g_ncandidates = game_candidates_for_title(title, g_candidates,
+			                                          GAME_MAX_CANDIDATES);
+			if (g_ncandidates == 0) {
+				/*
+				 * Not a game qwark knows: nothing to fingerprint and nothing it
+				 * could safely write. Back to XMB, and this process is not
+				 * mistaken for a new launch on every poll after.
+				 */
+				plat_log("qwark: %s is not a game qwark knows", title);
+				g_ignored_pid = pid;
+				g_pid = 0;
+				g_state = SESSION_XMB;
+				break;
+			}
+
+			/*
+			 * Provisional until a fingerprint answers. For a single-game title it
+			 * is already the right one; for BCES01503 it only fills the telemetry
+			 * game byte, which the client shows as "booting".
+			 */
+			g_game = g_candidates[0];
+			qstrcpy(g_title, sizeof(g_title), title);
+			plat_log("qwark: session BOOTING (%s) pid %d", g_title, (int)g_pid);
+		}
+
+		/*
+		 * Then the fingerprint, only every BOOT_FINGERPRINT_EVERY ticks. This is
+		 * the one path in qwark that reads a process before mem_set_context has
+		 * let the gate open, so it is the one that has to hold itself back. The
+		 * interval is measured against the tick counter, since this function
+		 * runs at 10 Hz outside a game and a count of visits would lie.
+		 */
 		if (g_tick - g_fp_last_tick < BOOT_FINGERPRINT_EVERY) break;
 		g_fp_last_tick = g_tick;
 
@@ -960,7 +982,9 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * at what the field holds. Zero whenever the flag is clear.
 	 */
 	if ((flags & SESSION_FLAG_TELEMETRY_QUIET) != 0) {
-		u32 left = (g_boot_settle > g_boot_ticks) ? (g_boot_settle - g_boot_ticks) : 0;
+		/* Against the tick counter: nothing updates a count while the window runs. */
+		u32 elapsed = g_tick - g_boot_start_tick;
+		u32 left = (g_boot_settle > elapsed) ? (g_boot_settle - elapsed) : 0;
 		u32 ms = (u32)(((u64)left * TICK_PERIOD_US) / 1000u);
 		if (ms > 0xFFFFu) ms = 0xFFFFu;
 		be16_put(out + 29, (u16)ms);

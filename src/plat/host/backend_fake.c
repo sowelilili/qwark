@@ -208,18 +208,34 @@ void host_set_emulator(int on)
 	g_is_emulator = on ? 1 : 0;
 }
 
+/*
+ * Every question the core asks the "VSH": on a console these are calls into
+ * vsh.self and, for the title, into the XMB's game_plugin. The boot-window test
+ * counts them, because on hardware asking them during a handover is what the
+ * crash logs pointed at.
+ */
+static u32 g_vsh_calls;
+
+u32 host_vsh_calls(void)
+{
+	return g_vsh_calls;
+}
+
 int plat_game_running(void)
 {
+	g_vsh_calls++;
 	return g_game_running;
 }
 
 u32 plat_game_pid(void)
 {
+	g_vsh_calls++;
 	return g_game_pid;
 }
 
 int plat_game_title(char out[16])
 {
+	g_vsh_calls++;
 	snprintf(out, 16, "%s", g_game_title);
 	return out[0] != 0;
 }
@@ -244,17 +260,17 @@ u32 plat_boot_settle_ticks(void)
 	return 12u;
 }
 
-/*
- * The fake console's module list. A game that has just appeared is still
- * loading them, so host_boot starts the count low and host_set_module_count
- * lets a test walk it up the way a real one does.
- */
 /* A fifth of a second: there is no game here that could be halfway through starting. */
 u32 plat_settle_min_ticks(void)
 {
 	return 24u;
 }
 
+/*
+ * The fake console's module list. A game that has just appeared is still
+ * loading them, so host_boot starts the count low and host_set_module_count
+ * lets a test walk it up the way a real one does.
+ */
 static int g_module_count = 8;
 
 void host_set_module_count(int n)
