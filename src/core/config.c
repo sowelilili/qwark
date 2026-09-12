@@ -141,17 +141,11 @@ int config_load(void)
 	plat_log_enable((int)config_get_u32("log", 1));
 
 	/*
-	 * Two switches for a console that is crashing and will not say why.
-	 *
-	 *   trace_ops = 1        every request in the log, so the last line before a
-	 *                        crash names the operation it happened in
-	 *   savefile_helper = 0  never write the helper into a game. It is the
-	 *                        largest write qwark makes, so turning it off and
-	 *                        seeing whether the crashes stop is worth more than
-	 *                        another theory about it.
+	 *   trace_ops = 1        every request in the log with what it cost the game,
+	 *                        so the last line before a crash names the operation
+	 *   savefile_helper = 0  never write the savefile helper into a game
 	 */
 	net_set_trace_ops((int)config_get_u32("trace_ops", 0));
-	net_set_telemetry((int)config_get_u32("telemetry", 1));
 	savefile_set_enabled((int)config_get_u32("savefile_helper", 1));
 
 	return ST_OK;

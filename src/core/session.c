@@ -15,20 +15,6 @@
 #define TELEMETRY_EVERY  4         /* 30 Hz */
 
 /*
- * Outside a game there is nothing moving to report, and one of the times there
- * is nothing moving is while a game is starting, which is the worst moment to
- * be busy on the network: this module lives in the VSH, and a VSH plugin
- * working the network stack while the console hands over to a game is the other
- * half of the crash the boot window below is about. So the packet drops to
- * 10 Hz whenever the session is not INGAME.
- *
- * It does not stop. A client that has heard nothing for 400 ms starts asking
- * for the same snapshot over TCP instead, which is more traffic at a worse
- * moment, so this has to stay comfortably inside that.
- */
-#define TELEMETRY_EVERY_QUIET 12   /* 10 Hz */
-
-/*
  * Protocol 1.3. How often the FEATURE_FLAG_LIVE toggles are re-read out of game
  * memory, in ticks: 12 is 10 Hz, which is three telemetry frames apart and
  * costs one small read per live toggle. A checkbox that follows the save file
@@ -37,72 +23,19 @@
 #define LIVE_POLL_EVERY  12        /* 10 Hz */
 
 /*
- * How long qwark keeps away from a process that has just appeared.
+ * How long a game process is left alone once it appears: a second, before the
+ * XMB is asked for its title and before a byte of it is read.
  *
- * A second was not enough. IS_INGAME goes true when the VSH has handed over to
- * the game, which is before the game has finished building itself, and reading
- * a process in that state is how a console panics. It was survivable on a fast
- * console over Ethernet and it crashed reliably on a slower one over WiFi.
+ * It is the wait the Deadlocked autosplitter makes between IS_INGAME and its
+ * first read and patch of the process, and that module has been stable through
+ * every game switch it has seen. It keeps the call into the XMB's game_plugin
+ * out of the handover itself. Nothing longer is needed: the crashes the longer
+ * windows were built against were a connection holding the VSH's memory through
+ * the launch and the RSX pause around code writes, and both are gone.
  *
- * The number is the platform's, since it is the platform that knows what it
- * costs to be wrong: see plat_boot_settle_ticks. It is counted in ticks rather
- * than microseconds so that a console too busy to hold 120 Hz waits longer
- * rather than less, and so the host tests can step through the window instead
- * of sleeping through it. config.txt's `boot_delay_ms` overrides it, in the
- * milliseconds somebody tuning it would think in.
+ * Counted in ticks so the host tests step through it rather than sleep.
  */
-#define BOOT_SETTLE_MS_DEFAULT    8300u
-
-/*
- * Then the fingerprint, four times a second rather than at the full tick rate.
- * Under BCES01503 there are three candidates to try, so a tick used to cost the
- * booting process three reads; at 120 Hz that is 360 reads a second thrown at
- * something that may still be mapping itself. Nothing is waiting on the answer
- * to the millisecond: the game is still on its own loading screen.
- */
-#define BOOT_FINGERPRINT_EVERY 30u   /* 4 Hz */
-
-/*
- * And the fingerprint has to agree with itself. One read that happens to land
- * while the image is being mapped could match on a page that is not finished;
- * three quarters of a second of the same answer is cheap proof that the process
- * has settled at the address the game is meant to live at.
- */
-#define BOOT_FINGERPRINT_MATCHES 3u
-
-/*
- * BOOTING sends nothing at all. Build 17 spent half a second announcing the
- * silence first, on the grounds that a client cannot honour a window it never
- * heard about; a console died inside those packets, so the announcement is
- * gone. A client works the silence out from the state it last saw: XMB, and
- * then nothing, is a game starting.
- *
- * Except for a client that does not know that and polls GET_STATE to fill the
- * gap, which is what every client before revision 1.11 does after 400 ms. That
- * costs a TCP round trip each time, several times worse than the packet it is
- * replacing, so if one arrives while BOOTING the silence is called off for the
- * rest of this boot and the cheaper thing happens instead. Nothing is asked of
- * the client and nothing is taken on trust: it is answered by what it does.
- */
-static volatile int g_quiet_broken;
-
-/* ------------------------------------------------------- the settle after that */
-
-/*
- * INGAME says the game is mapped and its fingerprint is where it belongs. It
- * does not say the game has finished starting: it is still opening its PRXs,
- * setting up the RSX and reading the disc. The one thing qwark can ask about
- * that, without reading the process, is how many modules the process has, and
- * a count that has stopped moving is a game that has stopped loading.
- *
- * So the writes that are big enough to matter (a mod's code cave, the savefile
- * helper's) wait for that count to hold still, floor and ceiling either side:
- * never sooner than the platform's floor, never later than SETTLE_MAX_TICKS, and on
- * a platform with no module list the floor is the whole of it.
- */
-#define SETTLE_MAX_TICKS  3600u   /* 30 s, a ceiling so nothing waits forever */
-#define SETTLE_POLL_EVERY   30u   /* 4 Hz */
-#define SETTLE_SAME_POLLS    4u   /* a second of the same answer */
+#define BOOT_WAIT_TICKS  120u      /* 1 s */
 
 /*
  * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
@@ -129,25 +62,8 @@ static u32  g_pid;
  */
 static u32  g_ignored_pid;
 
-/* The boot window: how many ticks BOOTING has had, how many it owes, and how
- * many times running the fingerprint has given the same answer. */
-static u32  g_boot_ticks;       /* ticks since BOOTING began, for the packet */
-static u32  g_boot_start_tick;  /* the tick it began on */
-static u32  g_fp_last_tick;     /* the tick the fingerprint last ran on */
-static u32  g_boot_settle;
-static u32  g_fp_matches;
-static const struct game_api *g_fp_game;
-
-
-/*
- * And the window after that one. INGAME means the game is mapped and running;
- * it does not mean the game has finished starting, and the biggest writes qwark
- * makes are the worst thing to do while it has not. See settled_tick.
- */
-static u8   g_settled;
-static u32  g_settled_ticks;
-static int  g_module_count;
-static u32  g_module_same;
+/* The tick BOOTING began on, which BOOT_WAIT_TICKS is counted from. */
+static u32  g_boot_start_tick;
 
 static char g_title[16];
 static char g_last_title[16];
@@ -193,20 +109,6 @@ void core_lock(void)   { plat_mutex_lock(&g_core_mutex); }
 void core_unlock(void) { plat_mutex_unlock(&g_core_mutex); }
 
 u8   session_state(void)      { return g_state; }
-
-/*
- * A client asked for the snapshot over TCP. Harmless in itself, and during a
- * boot it is the thing the silence exists to avoid, so the silence gives way:
- * a packet costs this console less than answering the poll that replaces it.
- */
-void session_note_state_poll(void)
-{
-	if (g_state == SESSION_BOOTING && !g_quiet_broken) {
-		g_quiet_broken = 1;
-		plat_log("qwark: a client polled during the boot, so telemetry resumes");
-	}
-}
-int  session_settled(void)    { return (g_state == SESSION_INGAME) && g_settled; }
 u32  session_generation(void) { return g_generation; }
 u32  session_tick_count(void) { return g_tick; }
 const char *session_title(void) { return g_title; }
@@ -391,22 +293,6 @@ void session_previous_dismiss(void)
 
 /* ------------------------------------------------------- the state machine */
 
-/*
- * The boot window in ticks. config.txt's `boot_delay_ms` is in milliseconds,
- * which is what somebody tuning it thinks in, and a tick is what the loop
- * counts. Zero is allowed and means "as soon as the fingerprint agrees", for a
- * console whose owner would rather have the seconds back than the margin.
- */
-static u32 boot_settle_ticks(void)
-{
-	if (config_get("boot_delay_ms") != NULL) {
-		u32 ms = config_get_u32("boot_delay_ms", BOOT_SETTLE_MS_DEFAULT);
-		return (u32)(((u64)ms * 1000u) / TICK_PERIOD_US);
-	}
-
-	return plat_boot_settle_ticks();
-}
-
 static int fingerprint_matches(const struct game_api *g)
 {
 	u8 buf[64];
@@ -483,7 +369,6 @@ static void enter_quitting(void)
 	g_combo_suspend_until = 0;
 
 	g_state = SESSION_QUITTING;
-	net_subs_touch_all();
 	plat_log("qwark: session QUITTING (%s)", g_title);
 }
 
@@ -540,14 +425,6 @@ static void enter_ingame(void)
 	mem_set_context(g_pid, 1);
 	g_state = SESSION_INGAME;
 
-	/*
-	 * The boot's silence is over. Nothing came from this module for the whole of
-	 * it and a client that understood that sent nothing either, so every
-	 * subscription's idle clock reads as expired; start them again here rather
-	 * than let the first packet after a boot drop the client it is meant for.
-	 */
-	net_subs_touch_all();
-
 	/* The hot buffers still hold the dead process; read every block once. */
 	memset(g_hotbuf, 0, sizeof(g_hotbuf));
 	memset(&g_hot, 0, sizeof(g_hot));
@@ -555,19 +432,9 @@ static void enter_ingame(void)
 
 	if (g_game->on_enter != NULL) g_game->on_enter();
 
-	/*
-	 * The auto-flagged toggles and mods used to go in here. They do not any
-	 * more: a mod is a code cave, the biggest write qwark makes, and a game that
-	 * has only just reached INGAME is still loading its own modules. They go in
-	 * from the tick, once settled() says the process has stopped changing shape.
-	 * on_enter above stays where it is: those are three instruction words with a
-	 * proven record, and the Deadlocked autosplitter needs its quit hook in
-	 * place before the player can possibly quit.
-	 */
-	g_settled = 0;
-	g_settled_ticks = 0;
-	g_module_count = -1;
-	g_module_same = 0;
+	/* Auto-flagged toggles and mods come back silently. */
+	features_apply_mask(features_auto_mask());
+	mods_apply_mask(mods_auto_mask());
 
 	g_prev.toggles &= ~features_toggle_auto();
 	g_prev.mods    &= ~mods_auto_mask();
@@ -580,89 +447,42 @@ static void enter_ingame(void)
 	plat_log("qwark: session INGAME (%s) gen %d", g_title, (int)g_generation);
 }
 
-/*
- * How often the VSH is asked what it is running, while it is not running a
- * game. plat_game_running and plat_game_pid are calls into vsh.self, and
- * plat_game_title reaches further still: it looks the game_plugin view up by
- * name and calls into it. Asking 120 times a second is free while a game is up
- * and the XMB is idle; it is 120 calls a second into the XMB *while the XMB is
- * handing the machine over*, which is the one moment none of it is free.
- *
- * INGAME keeps the full rate, because that is where the quit has to be noticed
- * within a frame or two.
- */
-#define STATE_POLL_QUIET 12u   /* 10 Hz */
-
 static void step_state(void)
 {
-	int running;
-	u32 pid;
-
 	/*
-	 * A game is starting: ask the console nothing at all until it has.
-	 *
-	 * This is the pattern Ratchetron and the old RaCMAN proved over years, and
-	 * the one this module kept almost-following. Once a game process appears
-	 * their thread slept for 8.3 seconds and made no calls of any kind. qwark
-	 * went on asking the VSH what it was running ten times a second through
-	 * the handover, and until build 20 it asked the XMB's game_plugin for the
-	 * title in the middle of it too. The last three crash logs all end inside
-	 * that stretch, with and without a client connected.
-	 *
-	 * So while the window runs, this returns before it calls anything: no
-	 * vsh.self, no game_plugin, no process, and BOOTING sends no packets. The
-	 * only cost is that a game which fails to start is noticed when the window
-	 * closes rather than the moment it goes.
+	 * One question drives every transition: which game process is running, if
+	 * any. On a console that is IS_INGAME and then the process id, asked every
+	 * tick in every state, as Ratchetron asks it.
 	 */
-	if (g_state == SESSION_BOOTING && (g_tick - g_boot_start_tick) < g_boot_settle) return;
+	u32 pid = plat_game_pid();
 
-	if (g_state != SESSION_INGAME && (g_tick % STATE_POLL_QUIET) != 0) return;
-
-	running = plat_game_running();
-	pid = running ? plat_game_pid() : 0;
 	switch (g_state) {
 	case SESSION_XMB:
-		if (!running || pid == 0) { g_ignored_pid = 0; break; }
+		if (pid == 0) { g_ignored_pid = 0; break; }
 
-		/* A process already found to be a game qwark does not know. */
+		/* A process already found not to be a game qwark knows. */
 		if (pid == g_ignored_pid) break;
 
-		/*
-		 * The first sighting is the start of the handover, so BOOTING starts
-		 * here and not once the title is known: every protection BOOTING has,
-		 * the silence above and on the wire, applies from this tick. The title
-		 * and the candidates come after the window, from the case below.
-		 */
 		g_pid = pid;
 		g_game = NULL;
 		g_title[0] = 0;
 		g_ncandidates = 0;
-		g_boot_ticks = 0;
 		g_boot_start_tick = g_tick;
-		g_fp_last_tick = g_tick;
-		g_boot_settle = boot_settle_ticks();
-		g_fp_matches = 0;
-		g_fp_game = NULL;
-		g_quiet_broken = 0;
 		g_generation++;
 		g_state = SESSION_BOOTING;
-		plat_log("qwark: a game is starting (pid %d), asking the console nothing for %d ticks",
-		         (int)pid, (int)g_boot_settle);
+		plat_log("qwark: a game is starting (pid %d)", (int)pid);
 		break;
 
 	case SESSION_BOOTING: {
 		const struct game_api *found;
 		char title[16];
 
-		if (!running || pid != g_pid) { enter_quitting(); break; }
-
-		g_boot_ticks = g_tick - g_boot_start_tick;
+		if (pid != g_pid) { enter_quitting(); break; }
+		if (g_tick - g_boot_start_tick < BOOT_WAIT_TICKS) break;
 
 		/*
-		 * The window is over, so the XMB can be asked what it launched. This is
-		 * the game_plugin call, and it happens eight seconds after the handover
-		 * rather than during it. A plugin that is not ready answers nothing and
-		 * is asked again on the next poll.
+		 * The title, once. A game_plugin that is not ready answers nothing and
+		 * is asked again next tick.
 		 */
 		if (g_ncandidates == 0) {
 			if (!plat_game_title(title)) break;
@@ -693,30 +513,11 @@ static void step_state(void)
 		}
 
 		/*
-		 * Then the fingerprint, only every BOOT_FINGERPRINT_EVERY ticks. This is
-		 * the one path in qwark that reads a process before mem_set_context has
-		 * let the gate open, so it is the one that has to hold itself back. The
-		 * interval is measured against the tick counter, since this function
-		 * runs at 10 Hz outside a game and a count of visits would lie.
+		 * The fingerprint: the game's executable is mapped where its tables say,
+		 * and under BCES01503 it also says which of the three is running.
 		 */
-		if (g_tick - g_fp_last_tick < BOOT_FINGERPRINT_EVERY) break;
-		g_fp_last_tick = g_tick;
-
 		found = fingerprinted_game();
-		if (found == NULL) {
-			g_fp_matches = 0;
-			g_fp_game = NULL;
-			break;
-		}
-
-		/* The same game, repeatedly, or the count starts again. */
-		if (found != g_fp_game) {
-			g_fp_game = found;
-			g_fp_matches = 0;
-		}
-
-		g_fp_matches++;
-		if (g_fp_matches < BOOT_FINGERPRINT_MATCHES) break;
+		if (found == NULL) break;
 
 		g_game = found;
 		enter_ingame();
@@ -724,7 +525,7 @@ static void step_state(void)
 	}
 
 	case SESSION_INGAME:
-		if (!running || pid != g_pid) { enter_quitting(); break; }
+		if (pid != g_pid) { enter_quitting(); break; }
 		if (g_game != NULL && g_game->quit_hook_addr != 0) {
 			u8 quit = 0;
 			if (mem_read(g_game->quit_hook_addr, &quit, 1) == ST_OK && quit != 0) {
@@ -734,7 +535,7 @@ static void step_state(void)
 		break;
 
 	case SESSION_QUITTING:
-		if (!running || pid == 0 || pid != g_pid) {
+		if (pid != g_pid) {
 			g_state = SESSION_XMB;
 			g_pid = 0;
 			g_title[0] = 0;
@@ -965,7 +766,6 @@ static u32 encode_info(u8 *out, u32 cap)
 	 */
 	if (plat_is_emulator())      flags |= SESSION_FLAG_EMULATOR;
 	if (!plat_can_patch_code())  flags |= SESSION_FLAG_NO_CODE_PATCHES;
-	if (g_state == SESSION_BOOTING) flags |= SESSION_FLAG_TELEMETRY_QUIET;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
@@ -985,23 +785,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[26] = config_selected_planet();
 	out[27] = config_selected_planet_flags();
 	out[28] = g_hot.current_planet;
-
-	/*
-	 * Revision 1.11, out of the first two of the three pad bytes: how long the
-	 * silence announced by flags bit3 has left to run, in milliseconds, capped
-	 * at what the field holds. Zero whenever the flag is clear.
-	 */
-	if ((flags & SESSION_FLAG_TELEMETRY_QUIET) != 0) {
-		/* Against the tick counter: nothing updates a count while the window runs. */
-		u32 elapsed = g_tick - g_boot_start_tick;
-		u32 left = (g_boot_settle > elapsed) ? (g_boot_settle - elapsed) : 0;
-		u32 ms = (u32)(((u64)left * TICK_PERIOD_US) / 1000u);
-		if (ms > 0xFFFFu) ms = 0xFFFFu;
-		be16_put(out + 29, (u16)ms);
-	} else {
-		be16_put(out + 29, 0);
-	}
-	/* out[31] pad */
+	/* out[29..31] pad */
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	be32_put(out + 44, g_hot.pad_mask);
@@ -1141,66 +925,6 @@ void session_shutdown(void)
 	plat_trace("qwark:   session mutexes destroyed");
 }
 
-/*
- * The moment the big writes are allowed. The auto-flagged toggles and mods were
- * held back from enter_ingame for this, so they go in here instead, in the same
- * order and with the same bookkeeping they had there.
- */
-static void settled_reached(void)
-{
-	g_settled = 1;
-
-	features_apply_mask(features_auto_mask());
-	mods_apply_mask(mods_auto_mask());
-
-	g_prev.toggles &= ~features_toggle_auto();
-	g_prev.mods    &= ~mods_auto_mask();
-	prev_update_pending();
-}
-
-/*
- * Watches the process stop changing shape, and lets the big writes through when
- * it has. Runs on the tick, INGAME only, and asks the kernel rather than the
- * process: see plat_module_count.
- */
-static void settled_tick(void)
-{
-	int count;
-
-	if (g_settled) return;
-
-	g_settled_ticks++;
-	if (g_settled_ticks < plat_settle_min_ticks()) return;
-
-	if (g_settled_ticks >= SETTLE_MAX_TICKS) {
-		plat_log("qwark: settling gave up after %d ticks, letting the writes through",
-		         (int)g_settled_ticks);
-		settled_reached();
-		return;
-	}
-
-	if ((g_settled_ticks % SETTLE_POLL_EVERY) != 0) return;
-
-	count = plat_module_count(g_pid);
-	if (count < 0) {
-		/* No module list here. The floor was the whole of the wait. */
-		settled_reached();
-		return;
-	}
-
-	if (count == g_module_count) {
-		g_module_same++;
-		if (g_module_same >= SETTLE_SAME_POLLS) {
-			plat_log("qwark: %d modules, steady, %d ticks in", count, (int)g_settled_ticks);
-			settled_reached();
-		}
-		return;
-	}
-
-	g_module_count = count;
-	g_module_same = 1;
-}
-
 /* One iteration of the loop. Exposed as session_step_once() for the host tests. */
 static void session_step(void)
 {
@@ -1238,7 +962,6 @@ static void session_step(void)
 		 * one that polls in a tight loop must not lengthen it either.
 		 */
 		savefile_tick();
-		settled_tick();
 	} else {
 		watch_invalidate();
 	}
@@ -1248,33 +971,14 @@ static void session_step(void)
 	 * Protocol 1.4. Autosplit datagrams go out every tick, not every fourth:
 	 * a split has to reach the PC in single-digit milliseconds, and each event
 	 * repeats for three ticks so one lost datagram costs nothing.
-	 *
-	 * Not while a game is starting, though. Nothing produces an event then - the
-	 * watchers run INGAME - so in practice this holds back nothing at all, and
-	 * "the network is completely quiet during a boot" is worth more as a rule
-	 * with no exceptions in it than as one with a harmless-looking exception.
 	 */
-	if (g_state != SESSION_BOOTING || g_quiet_broken) autosplit_push();
+	autosplit_push();
 
 	g_tick++;
 
-	if ((g_tick % ((g_state == SESSION_INGAME) ? TELEMETRY_EVERY : TELEMETRY_EVERY_QUIET)) == 0) {
-		/*
-		 * Revision 1.11. A game is starting, this module lives in the VSH, and
-		 * the network is the half of the crash the boot window does not cover:
-		 * BOOTING sends nothing, unless a client has already shown that its
-		 * idea of nothing is to ask over TCP instead.
-		 */
-		/*
-		 * Published either way: HELLO and GET_STATE hand back the last published
-		 * block, and a client that connects or asks during a boot deserves the
-		 * truth about it. Filling that buffer costs nothing and touches nothing.
-		 * It is the sending that stops.
-		 */
+	if ((g_tick % TELEMETRY_EVERY) == 0) {
 		publish();
-		if (g_state != SESSION_BOOTING || g_quiet_broken) {
-			net_send_telemetry(g_tele_pub, g_tele_pub_len);
-		}
+		net_send_telemetry(g_tele_pub, g_tele_pub_len);
 	}
 }
 

@@ -100,15 +100,15 @@
  */
 void savefile_forget(void);
 
+/* config.txt `savefile_helper`: 0 never writes the helper into a game. */
+void savefile_set_enabled(int on);
+
 /*
  * Writes the caves and the hook words unless this process already has them.
  * ST_OK when the helper is in, whoever put it there. Every other entry point
  * here calls it, and so does RaC1's Force autosave, which drives a fourth
  * request byte of its own.
  */
-/* config.txt `savefile_helper`: 0 takes the helper out of the picture entirely. */
-void savefile_set_enabled(int on);
-
 int savefile_install(void);
 
 /*

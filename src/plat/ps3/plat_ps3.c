@@ -41,11 +41,6 @@ void plat_shutdown(void)
 
 /* ----------------------------------------------------------- console state */
 
-int plat_game_running(void)
-{
-	return IS_INGAME ? 1 : 0;
-}
-
 u32 plat_game_pid(void)
 {
 	if (!IS_INGAME) return 0;
@@ -74,62 +69,6 @@ int plat_can_patch_code(void)
 int plat_is_emulator(void)
 {
 	return 0;
-}
-
-/*
- * 1000 ticks, 8.3 seconds at 120 Hz. RaCMAN arrived at the same number the same
- * way: anything less and a slower console, or one on WiFi with a client already
- * asking it questions, panics while the game is still building itself.
- */
-u32 plat_boot_settle_ticks(void)
-{
-	return 1000u;
-}
-
-/*
- * PS3MAPI_OPCODE_GET_ALL_PROC_MODULE_PID. The kernel side writes exactly
- * MAX_MODULES ids, 128 of them, zero padded, whatever the real count is: the
- * buffer is not negotiable and a smaller one is 512 bytes of somebody else's
- * memory. It is static rather than a local for the same reason the rest of
- * qwark is: the tick thread's stack is 48 KB and this is called from it.
- */
-/* Two seconds after INGAME before the biggest writes, whatever the modules say. */
-u32 plat_settle_min_ticks(void)
-{
-	return 240u;
-}
-
-#define PLAT_MAX_MODULES 128
-
-static u32 g_module_ids[PLAT_MAX_MODULES];
-
-int plat_module_count(u32 pid)
-{
-	int i;
-	int count = 0;
-	int rc;
-
-	if (pid == 0) return -1;
-
-	memset(g_module_ids, 0, sizeof(g_module_ids));
-
-	/*
-	 * Two things about the macro decide the shape of this. It declares p1 in
-	 * the scope it expands into, so the call cannot go in braces of its own or
-	 * the result goes out of scope with them; and it declares the syscall
-	 * number as `n` in register 11, so nothing here may be called n.
-	 */
-	system_call_4(SC_COBRA_SYSCALL8, SYSCALL8_OPCODE_PS3MAPI,
-	              PS3MAPI_OPCODE_GET_ALL_PROC_MODULE_PID, (u64)pid,
-	              (u64)(u32)g_module_ids);
-	rc = (int)p1;
-
-	if (rc != 0) return -1;
-
-	for (i = 0; i < PLAT_MAX_MODULES; i++) {
-		if (g_module_ids[i] != 0) count++;
-	}
-	return count;
 }
 
 /* ------------------------------------------------------------ game memory */

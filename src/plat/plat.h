@@ -37,10 +37,11 @@ void plat_shutdown(void);
 
 /* ------------------------------------------------------------ console and game */
 
-/* Non-zero while the console is running a game (VSH IS_INGAME). */
-int  plat_game_running(void);
-
-/* The game process id, 0 when there is no game process. */
+/*
+ * The running game's process id, or 0 when no game is running. On a console that
+ * is VSH IS_INGAME first and then the process id, so an app that is not a game
+ * answers 0 here too.
+ */
 u32  plat_game_pid(void);
 
 /* NUL-terminated title id ("NPEA00385") into out. Returns 1 on success. */
@@ -65,37 +66,6 @@ int  plat_can_patch_code(void);
  * client can say so and soften what it expects. SessionInfo flags bit1.
  */
 int  plat_is_emulator(void);
-
-/*
- * How many 120 Hz ticks the session leaves a newly appeared game process alone
- * before it reads a single byte of it, this platform's answer.
- *
- * On a console this is a safety number, not a nicety: the process id appears
- * when the VSH hands over, which is before the game has finished building
- * itself, and reading it in that state panics the machine. Everywhere else the
- * process is a fake or an emulator's and there is nothing to protect, so the
- * wait is short enough not to be felt. config.txt's `boot_delay_ms` overrides
- * whatever this says.
- */
-u32  plat_boot_settle_ticks(void);
-
-/*
- * How many PRX modules the process has loaded, or -1 when this platform cannot
- * say. A game loads a dozen or more of them while it starts (Deadlocked alone
- * imports cellGcmSys, cellSysutil, cellAudio, cellSpurs, cellPad and the rest),
- * so a count that has stopped growing is the nearest thing to a signal that the
- * game is past its own initialisation. It asks the kernel about its own
- * bookkeeping rather than reading the process, which is the point.
- */
-int  plat_module_count(u32 pid);
-
-/*
- * The floor under the second window: the fewest ticks after INGAME before the
- * big writes are allowed, however quickly the module count settles. On a
- * console that is two seconds of the game having the machine to itself; off it
- * there is nothing to protect and it is short enough not to be felt.
- */
-u32  plat_settle_min_ticks(void);
 
 /* --------------------------------------------------------------- game memory */
 

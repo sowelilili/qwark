@@ -209,33 +209,25 @@ void host_set_emulator(int on)
 }
 
 /*
- * Every question the core asks the "VSH": on a console these are calls into
- * vsh.self and, for the title, into the XMB's game_plugin. The boot-window test
- * counts them, because on hardware asking them during a handover is what the
- * crash logs pointed at.
+ * Every time the core asks for the title, which on a console is a call into the
+ * XMB's game_plugin. The boot test counts them: that call stays out of the first
+ * second of a launch.
  */
-static u32 g_vsh_calls;
+static u32 g_title_calls;
 
-u32 host_vsh_calls(void)
+u32 host_title_calls(void)
 {
-	return g_vsh_calls;
-}
-
-int plat_game_running(void)
-{
-	g_vsh_calls++;
-	return g_game_running;
+	return g_title_calls;
 }
 
 u32 plat_game_pid(void)
 {
-	g_vsh_calls++;
 	return g_game_pid;
 }
 
 int plat_game_title(char out[16])
 {
-	g_vsh_calls++;
+	g_title_calls++;
 	snprintf(out, 16, "%s", g_game_title);
 	return out[0] != 0;
 }
@@ -251,42 +243,8 @@ int plat_is_emulator(void)
 }
 
 /*
- * A tenth of a second. There is no process here to damage, and the smoke test
- * boots six games over the wire: a console's window would be most of a minute
- * spent proving nothing this platform can get wrong.
- */
-u32 plat_boot_settle_ticks(void)
-{
-	return 12u;
-}
-
-/* A fifth of a second: there is no game here that could be halfway through starting. */
-u32 plat_settle_min_ticks(void)
-{
-	return 24u;
-}
-
-/*
- * The fake console's module list. A game that has just appeared is still
- * loading them, so host_boot starts the count low and host_set_module_count
- * lets a test walk it up the way a real one does.
- */
-static int g_module_count = 8;
-
-void host_set_module_count(int n)
-{
-	g_module_count = n;
-}
-
-int plat_module_count(u32 pid)
-{
-	if (!g_game_running || pid != g_game_pid) return -1;
-	return g_module_count;
-}
-
-/*
- * Every read the core makes of the "process", for the test that the boot window
- * is respected. host_peek does not go through here, so a test can look at the
+ * Every read the core makes of the "process", for the test that a boot leaves it
+ * alone for its first second. host_peek does not go through here, so a test can look at the
  * fake console's memory without disturbing the count.
  */
 static u32 g_mem_reads;

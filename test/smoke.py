@@ -33,9 +33,10 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 24
+QWARK_BUILD = 25
 
 OP_HELLO = 0x0001
+OP_HEARTBEAT = 0x0002
 OP_PREVIOUS_LIST = 0x0004
 OP_PREVIOUS_REAPPLY = 0x0005
 OP_PREVIOUS_DISMISS = 0x0006
@@ -525,6 +526,23 @@ def drain_udp(udp):
         udp.settimeout(2.0)
 
 
+def telemetry_within(udp, seconds):
+    """True when a QWRK telemetry packet arrives within `seconds`."""
+    deadline = time.time() + seconds
+    try:
+        while time.time() < deadline:
+            udp.settimeout(max(0.01, deadline - time.time()))
+            try:
+                data, _addr = udp.recvfrom(4096)
+            except socket.timeout:
+                return False
+            if data[:4] == b"QWRK":
+                return True
+        return False
+    finally:
+        udp.settimeout(2.0)
+
+
 def wait_qe(udp, seq, timeout=2.0):
     """The 20-byte 'QE' datagram carrying this sequence number, or None."""
     deadline = time.time() + timeout
@@ -943,25 +961,6 @@ OTHER_GAMES = [
 ]
 
 
-def wait_for_helper(c, timeout=20.0):
-    """Polls SAVEFILE_INFO until the helper is in, the way the client does.
-
-    The install waits for the game to stop loading modules, which on a console
-    is a second or two after INGAME and here is a fraction of one. Returns the
-    installed byte, so a caller can report what it got if it never went in."""
-    deadline = time.time() + timeout
-    installed = 0
-    while time.time() < deadline:
-        status, body = c.call(OP_SAVEFILE_INFO)
-        if status != ST_OK or len(body) < 2:
-            return 0
-        installed = body[1]
-        if installed == 1:
-            return 1
-        time.sleep(0.05)
-    return installed
-
-
 def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     """
     Protocol 1.9: the savefile block, against whichever game is up.
@@ -976,11 +975,6 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     the helper's part in clearing it, which is the only way to see the settle
     window from the wire.
     """
-    # The helper is the largest write qwark makes, so it waits for the game to
-    # stop loading its modules: INFO reports it as not installed and answers BUSY
-    # to the ops that need it until then. A client polls, and so does this.
-    installed = wait_for_helper(c)
-
     status, body = c.call(OP_SAVEFILE_INFO)
     if not check(status == ST_OK and len(body) == SAVEFILE_INFO_SIZE,
                  "%s: SAVEFILE_INFO answers with twenty bytes" % name,
@@ -1956,6 +1950,19 @@ def main():
             c.call(OP_HELLO, bytes([1]))
         pages = sim_pages(sim)
         check(pages == 0, "and still none after five more", pages)
+
+        # ------------------------------------------- a subscriber that goes quiet
+        # A client that sends nothing for five seconds is not sent to, and its next
+        # frame starts the packets again. The console used to throw the
+        # subscription away instead, and a client that had gone quiet for a moment
+        # was left polling over TCP for the rest of its connection.
+        time.sleep(5.5)
+        drain_udp(udp)
+        check(not telemetry_within(udp, 0.5),
+              "a subscriber that has sent nothing for five seconds is not sent to")
+        status, _ = c.call(OP_HEARTBEAT)
+        check(status == ST_OK, "HEARTBEAT answers", status)
+        check(telemetry_within(udp, 1.0), "and its next frame brings the telemetry back")
 
         # ------------------------------------------------------------ boot
         sim.send("boot NPEA00385")

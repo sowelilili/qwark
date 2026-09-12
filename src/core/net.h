@@ -44,17 +44,10 @@ void net_shutdown(void);
 /* Called from the tick thread every fourth tick. */
 void net_send_telemetry(const u8 *packet, u32 len);
 
-/* How many times the tick has decided to send one. For the boot-silence test. */
+/* How many times the tick has handed it a packet, subscribers or not. For the tests. */
 u32  net_telemetry_sends(void);
-
-/* Restarts every subscription's idle clock; the session calls it when a boot's
- * silence ends, so the silence itself never expires one. */
-void net_subs_touch_all(void);
 
 /* config.txt `trace_ops`: log every request as it arrives, for a crash hunt. */
 void net_set_trace_ops(int on);
-
-/* config.txt `telemetry`: 0 stops the UDP push entirely; clients fall back to TCP. */
-void net_set_telemetry(int on);
 
 #endif /* QWARK_NET_H */

@@ -39,7 +39,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             24
+#define QWARK_BUILD             25
 
 #define QWARK_PORT              9673
 #define QWARK_MAX_PAYLOAD       65600u
@@ -294,14 +294,6 @@
  */
 #define SESSION_FLAG_EMULATOR         0x02
 #define SESSION_FLAG_NO_CODE_PATCHES  0x04
-
-/*
- * Revision 1.11. qwark is about to stop sending telemetry, for quiet_ms. A game
- * is starting and this module lives in the VSH: the less it does on the network
- * while the console hands over, the better. A client that understands this
- * stops its own polling for that long rather than filling the silence with it.
- */
-#define SESSION_FLAG_TELEMETRY_QUIET  0x08
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

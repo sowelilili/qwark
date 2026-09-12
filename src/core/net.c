@@ -20,6 +20,13 @@
 #define CLIENT_STACK    16384u
 #define ACCEPT_STACK    16384u
 
+/*
+ * A subscriber that has sent nothing for this long is not sent to. The entry stays,
+ * and the next frame on its connection starts the packets again: a client that
+ * went quiet for a while, or whose requests were held up, is never left polling
+ * over TCP for a subscription the console threw away. It ends when the connection
+ * closes or the client unsubscribes.
+ */
 #define SUB_TIMEOUT_US  5000000u
 
 /* How long net_init sleeps between tries while the console's network comes up. */
@@ -69,20 +76,6 @@ static volatile int g_working = 1;
 
 /* config.txt `trace_ops`: one log line per request. See the request loop. */
 static int g_trace_ops;
-
-/*
- * config.txt `telemetry = 0`. The UDP push is the one thing a connection turns
- * on in a thread the client never talks to, and a console that crashes shortly
- * after a client connects is a console worth trying without it. Off, nothing is
- * sent and a client falls back to asking over TCP, which is slower and visibly
- * fine: it is how a client behind a firewall has always worked.
- */
-static int g_telemetry_on = 1;
-
-void net_set_telemetry(int on)
-{
-	g_telemetry_on = on ? 1 : 0;
-}
 
 void net_set_trace_ops(int on)
 {
@@ -156,26 +149,6 @@ static void subs_refresh(int conn_slot)
 	plat_mutex_unlock(&g_net_mutex);
 }
 
-/*
- * A subscription ages out after five seconds without a word from its client,
- * which is right while both ends are talking and wrong while a game is starting:
- * qwark sends nothing for the whole boot window and a client that understands
- * that sends nothing back, so the first packet after the window would find every
- * subscription stale and drop it instead. The session calls this when the silence
- * ends, and the clock starts again from there.
- */
-void net_subs_touch_all(void)
-{
-	u64 now = plat_time_us();
-	int i;
-
-	plat_mutex_lock(&g_net_mutex);
-	for (i = 0; i < QWARK_MAX_SUBS; i++) {
-		if (g_subs[i].used) g_subs[i].last_us = now;
-	}
-	plat_mutex_unlock(&g_net_mutex);
-}
-
 static void subs_drop_conn(int conn_slot)
 {
 	int i;
@@ -222,7 +195,7 @@ static u16 subs_add(int conn_slot, u32 ip, u16 port)
 	return rc;
 }
 
-/* Every call, whether or not anyone is subscribed: what qwark decided to send. */
+/* Every call, whether or not anyone is subscribed. */
 static u32 g_telemetry_sends;
 
 u32 net_telemetry_sends(void)
@@ -237,7 +210,7 @@ void net_send_telemetry(const u8 *packet, u32 len)
 
 	g_telemetry_sends++;
 
-	if (!g_telemetry_on || g_udp < 0 || len == 0) return;
+	if (g_udp < 0 || len == 0) return;
 
 	now = plat_time_us();
 
@@ -247,10 +220,7 @@ void net_send_telemetry(const u8 *packet, u32 len)
 
 		if (!g_subs[i].used) continue;
 
-		if (now - g_subs[i].last_us > SUB_TIMEOUT_US) {
-			memset(&g_subs[i], 0, sizeof(g_subs[i]));
-			continue;
-		}
+		if (now - g_subs[i].last_us > SUB_TIMEOUT_US) continue;
 
 		memset(&sa, 0, sizeof(sa));
 		sa.sin_family = AF_INET;
@@ -892,7 +862,6 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 
 	case OP_GET_STATE:
-		session_note_state_poll();
 		*replylen = session_telemetry_copy(reply, replycap);
 		return *replylen ? ST_OK : ST_FULL;
 

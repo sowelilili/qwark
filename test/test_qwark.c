@@ -144,10 +144,8 @@ static void pump(int ticks)
 /*
  * Steps until the session reaches `want` or we give up. Returns 1 on success.
  *
- * Ticks, not milliseconds, and no sleeping: the boot window is counted in ticks
- * precisely so that it can be stepped through rather than waited out, and a
- * suite that boots a dozen games would otherwise spend a minute and a half
- * asleep proving it.
+ * Ticks, not milliseconds, and no sleeping: the second a boot waits is counted
+ * in ticks so that it can be stepped through rather than waited out.
  */
 static int pump_until(u8 want, int max_ticks)
 {
@@ -161,38 +159,17 @@ static int pump_until(u8 want, int max_ticks)
 	return session_state() == want;
 }
 
-/*
- * Steps until the session says the game has stopped loading modules, which is
- * when the writes big enough to matter are allowed: an auto-applied mod, the
- * savefile helper. Everything that boots a game and then writes to it wants
- * this rather than the bare INGAME above.
- */
-static int pump_until_settled(int max_ticks)
-{
-	int i;
-
-	for (i = 0; i < max_ticks; i++) {
-		session_step_once();
-		if (session_settled()) return 1;
-	}
-
-	return session_settled();
-}
-
 static int boot_and_wait(const char *title)
 {
 	host_boot(title);
-	/* The settle window, the fingerprint poll's period and its repeats, over. */
-	if (!pump_until(SESSION_INGAME, 4000)) return 0;
-	return pump_until_settled(4000);
+	return pump_until(SESSION_INGAME, 4000);
 }
 
 /* The same, for BCES01503, whose title id hosts three different games. */
 static int boot_as_and_wait(const char *title, const char *which)
 {
 	host_boot_as(title, which);
-	if (!pump_until(SESSION_INGAME, 4000)) return 0;
-	return pump_until_settled(4000);
+	return pump_until(SESSION_INGAME, 4000);
 }
 
 static int quit_and_wait(void)
@@ -683,171 +660,40 @@ static void test_session_different_title(void)
 }
 
 /*
- * The boot window, which exists because reading a game process that the VSH has
- * only just handed over to panics a console. The rule it enforces is simple
- * enough to check exactly: between the process id appearing and the window
- * closing, the core reads the process zero times.
+ * A launch, start to finish. The process id puts the session in BOOTING on the
+ * tick it appears. For the next second nothing reads the process and nothing asks
+ * the XMB for the title; then the title and the fingerprint bring the game up on
+ * the first tick they are allowed to. Telemetry never stops, and nothing that
+ * writes to the game waits for more than INGAME.
  */
-static void test_boot_window(void)
+static void test_boot(void)
 {
-	u32 reads_at_boot;
-	u32 vsh_at_boot;
-	u32 settle_ms = 2000;                       /* 240 ticks at 120 Hz */
-	u32 settle_ticks = (settle_ms * 1000u) / 8333u;
+	u32 booted_at, reads_at_boot, titles_at_boot, sends_at_boot;
 
-	group("session: the boot window");
+	group("session: a boot");
 
 	check(quit_and_wait(), "quit whatever was running");
 
-	/* Longer than the host default, so the window is the thing being measured. */
-	check(config_set_u32("boot_delay_ms", settle_ms) == ST_OK,
-	      "the window is set from config.txt");
-
 	host_boot("NPEA00385");
+	pump(1);
+	check(session_state() == SESSION_BOOTING, "the process id puts the session in BOOTING at once");
 
-	/*
-	 * A handful of ticks, not one: outside a game the session asks the VSH what
-	 * it is running ten times a second rather than a hundred and twenty, because
-	 * those are calls into the XMB and a handover is when they are dearest.
-	 */
-	check(pump_until(SESSION_BOOTING, 400), "the process id puts the session in BOOTING");
-
+	booted_at = session_tick_count();
 	reads_at_boot = host_mem_reads();
-	vsh_at_boot = host_vsh_calls();
+	titles_at_boot = host_title_calls();
+	sends_at_boot = net_telemetry_sends();
 
-	/* One tick short of the window: still nothing may have touched the process. */
-	pump((int)settle_ticks - 2);
-	check(session_state() == SESSION_BOOTING, "it is still BOOTING through the window");
-	check_eq_u64(host_mem_reads() - reads_at_boot, 0,
-	             "and the process has not been read once");
+	/* The wait is 120 ticks from the one BOOTING began on, and one has gone. */
+	pump(118);
+	check(session_state() == SESSION_BOOTING, "it is still BOOTING a tick short of a second");
+	check_eq_u64(host_mem_reads() - reads_at_boot, 0, "and the process has not been read");
+	check_eq_u64(host_title_calls() - titles_at_boot, 0, "nor the XMB asked for the title");
+	check(net_telemetry_sends() - sends_at_boot >= 29, "while telemetry kept going out at 30 Hz");
 
-	/*
-	 * The rule the crash logs finally forced: not the process, and not the VSH
-	 * either. No question about what is running, and no title from the XMB's
-	 * game_plugin, until the window has closed. This is what Ratchetron's 8.3
-	 * second sleep did and what qwark kept almost doing.
-	 */
-	check_eq_u64(host_vsh_calls() - vsh_at_boot, 0,
-	             "and the console has not been asked a single thing");
-
-	check(pump_until(SESSION_INGAME, 4000), "the window closes and the game comes up");
-
-	/*
-	 * Four fingerprint reads a second, three of them agreeing, so a game that
-	 * comes up the moment the window closes costs a handful of reads rather
-	 * than the hundreds a per-tick poll used to spend on it.
-	 */
-	check(host_mem_reads() - reads_at_boot < 64,
-	      "on a handful of fingerprint reads, not hundreds");
-
-	/*
-	 * Zero is allowed, and then the fingerprint is the whole of the gate. The
-	 * key is left at zero for the tests that follow: this platform's own window
-	 * is a tenth of a second and neither costs them anything.
-	 */
-	check(config_set_u32("boot_delay_ms", 0) == ST_OK, "the window can be turned off");
-	check(quit_and_wait(), "quit");
-	check(boot_and_wait("NPEA00385"), "and then the fingerprint alone decides");
-
-	check_eq_u64(plat_boot_settle_ticks(), 12,
-	             "and with no key at all the platform decides, briefly here");
-}
-
-/*
- * The window after the boot window. INGAME says the game is mapped; it does not
- * say the game has stopped loading, and the writes big enough to matter wait
- * for the module count to hold still.
- */
-static void test_settle_window(void)
-{
-	group("session: the settle after INGAME");
-
-	check(quit_and_wait(), "quit whatever was running");
-
-	/* A game that is still opening its modules. */
-	host_set_module_count(4);
-	host_boot("NPEA00385");
-	check(pump_until(SESSION_INGAME, 4000), "the game reaches INGAME");
-	check(!session_settled(), "which is not the same as settled");
-	check(savefile_install() == ST_BUSY,
-	      "so the helper install is BUSY rather than six hundred bytes of code");
-
-	/*
-	 * Well past the floor, with the count moving under every poll: the gate is
-	 * the list holding still, not the time going by.
-	 */
-	{
-		int i;
-		for (i = 0; i < 8; i++) {
-			host_set_module_count(5 + i);
-			pump(30);
-		}
-	}
-	check(!session_settled(), "a module list that is still growing holds it off");
-	check(savefile_install() == ST_BUSY, "and the install with it");
-
-	check(pump_until_settled(4000), "a count that holds still opens the gate");
-	check(savefile_install() == ST_OK, "and the helper goes in then");
-
-	host_set_module_count(8);
-}
-
-/*
- * Revision 1.11. A game is starting, and this module lives in the VSH: it says
- * so for half a second and then stops sending until the game is up.
- */
-static void test_boot_quiet(void)
-{
-	u8 info[SESSION_INFO_SIZE];
-	u32 tick_a, tick_b;
-
-	group("session: a boot goes quiet");
-
-	check(quit_and_wait(), "quit whatever was running");
-	/* Long enough to watch the silence inside it. */
-	check(config_set_u32("boot_delay_ms", 2000) == ST_OK, "a two second window");
-
-	host_boot("NPEA00385");
-
-	/* Past the wait that keeps qwark out of the XMB's handover, and into BOOTING. */
-	check(pump_until(SESSION_BOOTING, 400), "the session reaches BOOTING");
-	pump(24);
-
-	/*
-	 * Still published, so HELLO and GET_STATE tell a client the truth about the
-	 * boot it walked in on. It is the sending that stops.
-	 */
-	session_info_copy(info, sizeof(info));
-	check_eq_u64(info[2], SESSION_BOOTING, "the session is BOOTING");
-	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) != 0,
-	      "and the block says so, with the quiet flag");
-	check(be16_get(info + 29) > 0, "and how long the silence has left");
-
-	tick_a = net_telemetry_sends();
-	pump(240);
-	check_eq_u64(net_telemetry_sends(), tick_a,
-	             "but not one packet goes out in two seconds of it");
-
-	/*
-	 * A client that does not know about any of this fills the silence with
-	 * GET_STATE, which costs more than the packets did. Answering one is what
-	 * calls the silence off.
-	 */
-	session_note_state_poll();
-	pump(24);
-	tick_b = net_telemetry_sends();
-	check(tick_b > tick_a, "a client polling instead gets the packets back");
-
-	pump(120);
-	check(net_telemetry_sends() > tick_b, "and keeps them for the rest of the boot");
-
-	check(pump_until(SESSION_INGAME, 4000), "the game comes up");
-	pump(8);
-	session_info_copy(info, sizeof(info));
-	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) == 0, "and the flag clears");
-
-	check(config_set_u32("boot_delay_ms", 0) == ST_OK, "the window goes back");
-	check(pump_until_settled(4000), "and the game settles");
+	check(pump_until(SESSION_INGAME, 4), "the game is up the moment the second is over");
+	check(session_tick_count() - booted_at <= 121, "a second after the process appeared");
+	check_eq_u64(host_title_calls() - titles_at_boot, 1, "after one question to the XMB");
+	check(savefile_install() == ST_OK, "and the savefile helper goes in straight away");
 }
 
 /* ------------------------------------------------------------- telemetry */
@@ -871,7 +717,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 24, "and this module is build 24");
+	check_eq_u64(packet[5], 25, "and this module is build 25");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -3040,19 +2886,12 @@ static void test_rac4(void)
 
 	/*
 	 * The quit hook byte must not read as set on a fresh boot, or the session
-	 * quits the instant it arrives. Poke it during the boot settle to prove
-	 * on_enter clears it.
+	 * quits the instant it arrives. Poke it during the boot to prove on_enter
+	 * clears it.
 	 */
 	host_boot("NPEA00423");
 	host_poke(R4_QUIT_FLAG, (const u8 *)"\xFF", 1);
 	check(pump_until(SESSION_INGAME, 4000), "NPEA00423 reaches INGAME");
-
-	/*
-	 * The quit and loading hooks are on_enter's and are in by now; the auto
-	 * toggles below are not, because a toggle that patches code waits for the
-	 * process to stop loading modules like every other write of that size.
-	 */
-	check(pump_until_settled(4000), "and then settles");
 
 	g = session_game();
 	check(g != NULL && g->game_id == GAME_RAC4, "the session says Deadlocked");
@@ -4636,9 +4475,7 @@ int main(void)
 	test_telemetry();
 	test_session_same_title();
 	test_session_different_title();
-	test_boot_window();
-	test_settle_window();
-	test_boot_quiet();
+	test_boot();
 	test_unlocks();
 	test_levelflags();
 	test_planet_load();
