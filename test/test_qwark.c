@@ -161,18 +161,38 @@ static int pump_until(u8 want, int max_ticks)
 	return session_state() == want;
 }
 
+/*
+ * Steps until the session says the game has stopped loading modules, which is
+ * when the writes big enough to matter are allowed: an auto-applied mod, the
+ * savefile helper. Everything that boots a game and then writes to it wants
+ * this rather than the bare INGAME above.
+ */
+static int pump_until_settled(int max_ticks)
+{
+	int i;
+
+	for (i = 0; i < max_ticks; i++) {
+		session_step_once();
+		if (session_settled()) return 1;
+	}
+
+	return session_settled();
+}
+
 static int boot_and_wait(const char *title)
 {
 	host_boot(title);
 	/* The settle window, the fingerprint poll's period and its repeats, over. */
-	return pump_until(SESSION_INGAME, 4000);
+	if (!pump_until(SESSION_INGAME, 4000)) return 0;
+	return pump_until_settled(4000);
 }
 
 /* The same, for BCES01503, whose title id hosts three different games. */
 static int boot_as_and_wait(const char *title, const char *which)
 {
 	host_boot_as(title, which);
-	return pump_until(SESSION_INGAME, 4000);
+	if (!pump_until(SESSION_INGAME, 4000)) return 0;
+	return pump_until_settled(4000);
 }
 
 static int quit_and_wait(void)
@@ -571,6 +591,89 @@ static void test_boot_window(void)
 	             "and with no key at all the platform decides, briefly here");
 }
 
+/*
+ * The window after the boot window. INGAME says the game is mapped; it does not
+ * say the game has stopped loading, and the writes big enough to matter wait
+ * for the module count to hold still.
+ */
+static void test_settle_window(void)
+{
+	group("session: the settle after INGAME");
+
+	check(quit_and_wait(), "quit whatever was running");
+
+	/* A game that is still opening its modules. */
+	host_set_module_count(4);
+	host_boot("NPEA00385");
+	check(pump_until(SESSION_INGAME, 4000), "the game reaches INGAME");
+	check(!session_settled(), "which is not the same as settled");
+	check(savefile_install() == ST_BUSY,
+	      "so the helper install is BUSY rather than six hundred bytes of code");
+
+	/*
+	 * Well past the floor, with the count moving under every poll: the gate is
+	 * the list holding still, not the time going by.
+	 */
+	{
+		int i;
+		for (i = 0; i < 8; i++) {
+			host_set_module_count(5 + i);
+			pump(30);
+		}
+	}
+	check(!session_settled(), "a module list that is still growing holds it off");
+	check(savefile_install() == ST_BUSY, "and the install with it");
+
+	check(pump_until_settled(4000), "a count that holds still opens the gate");
+	check(savefile_install() == ST_OK, "and the helper goes in then");
+
+	host_set_module_count(8);
+}
+
+/*
+ * Revision 1.11. A game is starting, and this module lives in the VSH: it says
+ * so for half a second and then stops sending until the game is up.
+ */
+static void test_boot_quiet(void)
+{
+	u8 info[SESSION_INFO_SIZE];
+	u32 tick_a, tick_b;
+
+	group("session: a boot goes quiet");
+
+	check(quit_and_wait(), "quit whatever was running");
+	/* Long enough to watch the silence inside it. */
+	check(config_set_u32("boot_delay_ms", 2000) == ST_OK, "a two second window");
+
+	host_boot("NPEA00385");
+	pump(24);
+
+	session_info_copy(info, sizeof(info));
+	check_eq_u64(info[2], SESSION_BOOTING, "the session is BOOTING");
+	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) != 0,
+	      "and the packet says it is about to go quiet");
+	check(be16_get(info + 29) > 0, "with how long the silence will last");
+
+	/* Past the announcements, nothing new is published: the tick inside stops. */
+	pump(72);
+	session_info_copy(info, sizeof(info));
+	tick_a = be32_get(info + 8);
+
+	pump(120);
+	session_info_copy(info, sizeof(info));
+	tick_b = be32_get(info + 8);
+	check_eq_u64(tick_a, tick_b, "and then it stops publishing altogether");
+
+	check(pump_until(SESSION_INGAME, 4000), "the game comes up");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check(be32_get(info + 8) > tick_b, "and telemetry starts again");
+	check((info[24] & SESSION_FLAG_TELEMETRY_QUIET) == 0, "with the flag clear");
+
+	check(config_set_u32("boot_delay_ms", 0) == ST_OK, "the window goes back");
+	check(pump_until_settled(4000), "and the game settles");
+}
+
 /* ------------------------------------------------------------- telemetry */
 
 static void test_telemetry(void)
@@ -592,7 +695,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 16, "and this module is build 16");
+	check_eq_u64(packet[5], 17, "and this module is build 17");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2768,6 +2871,13 @@ static void test_rac4(void)
 	host_poke(R4_QUIT_FLAG, (const u8 *)"\xFF", 1);
 	check(pump_until(SESSION_INGAME, 4000), "NPEA00423 reaches INGAME");
 
+	/*
+	 * The quit and loading hooks are on_enter's and are in by now; the auto
+	 * toggles below are not, because a toggle that patches code waits for the
+	 * process to stop loading modules like every other write of that size.
+	 */
+	check(pump_until_settled(4000), "and then settles");
+
 	g = session_game();
 	check(g != NULL && g->game_id == GAME_RAC4, "the session says Deadlocked");
 	if (g == NULL) return;
@@ -4350,6 +4460,8 @@ int main(void)
 	test_session_same_title();
 	test_session_different_title();
 	test_boot_window();
+	test_settle_window();
+	test_boot_quiet();
 	test_unlocks();
 	test_levelflags();
 	test_planet_load();

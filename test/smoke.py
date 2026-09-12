@@ -33,7 +33,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 16
+QWARK_BUILD = 17
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -930,6 +930,25 @@ OTHER_GAMES = [
 ]
 
 
+def wait_for_helper(c, timeout=20.0):
+    """Polls SAVEFILE_INFO until the helper is in, the way the client does.
+
+    The install waits for the game to stop loading modules, which on a console
+    is a second or two after INGAME and here is a fraction of one. Returns the
+    installed byte, so a caller can report what it got if it never went in."""
+    deadline = time.time() + timeout
+    installed = 0
+    while time.time() < deadline:
+        status, body = c.call(OP_SAVEFILE_INFO)
+        if status != ST_OK or len(body) < 2:
+            return 0
+        installed = body[1]
+        if installed == 1:
+            return 1
+        time.sleep(0.05)
+    return installed
+
+
 def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     """
     Protocol 1.9: the savefile block, against whichever game is up.
@@ -944,6 +963,11 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     the helper's part in clearing it, which is the only way to see the settle
     window from the wire.
     """
+    # The helper is the largest write qwark makes, so it waits for the game to
+    # stop loading its modules: INFO reports it as not installed and answers BUSY
+    # to the ops that need it until then. A client polls, and so does this.
+    installed = wait_for_helper(c)
+
     status, body = c.call(OP_SAVEFILE_INFO)
     if not check(status == ST_OK and len(body) == SAVEFILE_INFO_SIZE,
                  "%s: SAVEFILE_INFO answers with twenty bytes" % name,

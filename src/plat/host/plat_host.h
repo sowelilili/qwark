@@ -66,6 +66,9 @@ int  host_peek(u32 addr, u8 *out, u32 len);
 /* How many reads the core has made of the fake process, for the boot-window test. */
 u32  host_mem_reads(void);
 
+/* The fake process's PRX module count, which a test walks up as a game would. */
+void host_set_module_count(int n);
+
 /*
  * Test hooks. The fake backend answers 1 and 0 the way the PS3 does; forcing
  * them lets the unit tests drive the core's code-patch gating without a second

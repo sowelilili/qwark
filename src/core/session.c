@@ -71,6 +71,31 @@
 #define BOOT_FINGERPRINT_MATCHES 3u
 
 /*
+ * How long BOOTING keeps announcing that it is about to go quiet before it
+ * does. Five packets at the quiet rate is half a second, which is enough for
+ * one of them to arrive on a link that is dropping some.
+ */
+#define QUIET_ANNOUNCE_PACKETS 5u
+
+/* ------------------------------------------------------- the settle after that */
+
+/*
+ * INGAME says the game is mapped and its fingerprint is where it belongs. It
+ * does not say the game has finished starting: it is still opening its PRXs,
+ * setting up the RSX and reading the disc. The one thing qwark can ask about
+ * that, without reading the process, is how many modules the process has, and
+ * a count that has stopped moving is a game that has stopped loading.
+ *
+ * So the writes that are big enough to matter (a mod's code cave, the savefile
+ * helper's) wait for that count to hold still, floor and ceiling either side:
+ * never sooner than the platform's floor, never later than SETTLE_MAX_TICKS, and
+ * a platform with no module list the floor is the whole of it.
+ */
+#define SETTLE_MAX_TICKS  3600u   /* 30 s, a ceiling so nothing waits forever */
+#define SETTLE_POLL_EVERY   30u   /* 4 Hz */
+#define SETTLE_SAME_POLLS    4u   /* a second of the same answer */
+
+/*
  * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
  * them per-tick reads once its autosplit watcher is counted, and four slow ones
  * for ship colour, file time, the savefile helper and the chargeboot colours.
@@ -95,6 +120,19 @@ static u32  g_boot_ticks;
 static u32  g_boot_settle;
 static u32  g_fp_matches;
 static const struct game_api *g_fp_game;
+
+/* How many telemetry packets BOOTING has spent announcing its silence. */
+static u32  g_quiet_announced;
+
+/*
+ * And the window after that one. INGAME means the game is mapped and running;
+ * it does not mean the game has finished starting, and the biggest writes qwark
+ * makes are the worst thing to do while it has not. See settled_tick.
+ */
+static u8   g_settled;
+static u32  g_settled_ticks;
+static int  g_module_count;
+static u32  g_module_same;
 
 static char g_title[16];
 static char g_last_title[16];
@@ -140,6 +178,7 @@ void core_lock(void)   { plat_mutex_lock(&g_core_mutex); }
 void core_unlock(void) { plat_mutex_unlock(&g_core_mutex); }
 
 u8   session_state(void)      { return g_state; }
+int  session_settled(void)    { return (g_state == SESSION_INGAME) && g_settled; }
 u32  session_generation(void) { return g_generation; }
 u32  session_tick_count(void) { return g_tick; }
 const char *session_title(void) { return g_title; }
@@ -462,9 +501,19 @@ static void enter_ingame(void)
 
 	if (g_game->on_enter != NULL) g_game->on_enter();
 
-	/* Auto-flagged toggles and mods come back silently. */
-	features_apply_mask(features_auto_mask());
-	mods_apply_mask(mods_auto_mask());
+	/*
+	 * The auto-flagged toggles and mods used to go in here. They do not any
+	 * more: a mod is a code cave, the biggest write qwark makes, and a game that
+	 * has only just reached INGAME is still loading its own modules. They go in
+	 * from the tick, once settled() says the process has stopped changing shape.
+	 * on_enter above stays where it is: those are three instruction words with a
+	 * proven record, and the Deadlocked autosplitter needs its quit hook in
+	 * place before the player can possibly quit.
+	 */
+	g_settled = 0;
+	g_settled_ticks = 0;
+	g_module_count = -1;
+	g_module_same = 0;
 
 	g_prev.toggles &= ~features_toggle_auto();
 	g_prev.mods    &= ~mods_auto_mask();
@@ -511,6 +560,7 @@ static void step_state(void)
 		g_boot_settle = boot_settle_ticks();
 		g_fp_matches = 0;
 		g_fp_game = NULL;
+		g_quiet_announced = 0;
 		g_generation++;
 		g_state = SESSION_BOOTING;
 		plat_log("qwark: session BOOTING (%s) pid %d, leaving it alone for %d ticks",
@@ -796,6 +846,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	 */
 	if (plat_is_emulator())      flags |= SESSION_FLAG_EMULATOR;
 	if (!plat_can_patch_code())  flags |= SESSION_FLAG_NO_CODE_PATCHES;
+	if (g_state == SESSION_BOOTING) flags |= SESSION_FLAG_TELEMETRY_QUIET;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
@@ -815,7 +866,21 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[26] = config_selected_planet();
 	out[27] = config_selected_planet_flags();
 	out[28] = g_hot.current_planet;
-	/* out[29..31] pad */
+
+	/*
+	 * Revision 1.11, out of the first two of the three pad bytes: how long the
+	 * silence announced by flags bit3 has left to run, in milliseconds, capped
+	 * at what the field holds. Zero whenever the flag is clear.
+	 */
+	if ((flags & SESSION_FLAG_TELEMETRY_QUIET) != 0) {
+		u32 left = (g_boot_settle > g_boot_ticks) ? (g_boot_settle - g_boot_ticks) : 0;
+		u32 ms = (u32)(((u64)left * TICK_PERIOD_US) / 1000u);
+		if (ms > 0xFFFFu) ms = 0xFFFFu;
+		be16_put(out + 29, (u16)ms);
+	} else {
+		be16_put(out + 29, 0);
+	}
+	/* out[31] pad */
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	be32_put(out + 44, g_hot.pad_mask);
@@ -955,6 +1020,66 @@ void session_shutdown(void)
 	plat_trace("qwark:   session mutexes destroyed");
 }
 
+/*
+ * The moment the big writes are allowed. The auto-flagged toggles and mods were
+ * held back from enter_ingame for this, so they go in here instead, in the same
+ * order and with the same bookkeeping they had there.
+ */
+static void settled_reached(void)
+{
+	g_settled = 1;
+
+	features_apply_mask(features_auto_mask());
+	mods_apply_mask(mods_auto_mask());
+
+	g_prev.toggles &= ~features_toggle_auto();
+	g_prev.mods    &= ~mods_auto_mask();
+	prev_update_pending();
+}
+
+/*
+ * Watches the process stop changing shape, and lets the big writes through when
+ * it has. Runs on the tick, INGAME only, and asks the kernel rather than the
+ * process: see plat_module_count.
+ */
+static void settled_tick(void)
+{
+	int count;
+
+	if (g_settled) return;
+
+	g_settled_ticks++;
+	if (g_settled_ticks < plat_settle_min_ticks()) return;
+
+	if (g_settled_ticks >= SETTLE_MAX_TICKS) {
+		plat_log("qwark: settling gave up after %d ticks, letting the writes through",
+		         (int)g_settled_ticks);
+		settled_reached();
+		return;
+	}
+
+	if ((g_settled_ticks % SETTLE_POLL_EVERY) != 0) return;
+
+	count = plat_module_count(g_pid);
+	if (count < 0) {
+		/* No module list here. The floor was the whole of the wait. */
+		settled_reached();
+		return;
+	}
+
+	if (count == g_module_count) {
+		g_module_same++;
+		if (g_module_same >= SETTLE_SAME_POLLS) {
+			plat_log("qwark: %d modules, steady, %d ticks in", count, (int)g_settled_ticks);
+			settled_reached();
+		}
+		return;
+	}
+
+	g_module_count = count;
+	g_module_same = 1;
+}
+
 /* One iteration of the loop. Exposed as session_step_once() for the host tests. */
 static void session_step(void)
 {
@@ -992,6 +1117,7 @@ static void session_step(void)
 		 * one that polls in a tight loop must not lengthen it either.
 		 */
 		savefile_tick();
+		settled_tick();
 	} else {
 		watch_invalidate();
 	}
@@ -1007,8 +1133,18 @@ static void session_step(void)
 	g_tick++;
 
 	if ((g_tick % ((g_state == SESSION_INGAME) ? TELEMETRY_EVERY : TELEMETRY_EVERY_QUIET)) == 0) {
-		publish();
-		net_send_telemetry(g_tele_pub, g_tele_pub_len);
+		/*
+		 * Revision 1.11. BOOTING says so for half a second and then stops
+		 * sending altogether: a game is starting, this module lives in the VSH,
+		 * and the network is the half of the crash the boot window does not
+		 * cover. The packets that do go out carry the flag and how long the
+		 * silence will last, so a client stops asking rather than filling it.
+		 */
+		if (g_state != SESSION_BOOTING || g_quiet_announced < QUIET_ANNOUNCE_PACKETS) {
+			if (g_state == SESSION_BOOTING) g_quiet_announced++;
+			publish();
+			net_send_telemetry(g_tele_pub, g_tele_pub_len);
+		}
 	}
 }
 

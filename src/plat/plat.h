@@ -79,6 +79,24 @@ int  plat_is_emulator(void);
  */
 u32  plat_boot_settle_ticks(void);
 
+/*
+ * How many PRX modules the process has loaded, or -1 when this platform cannot
+ * say. A game loads a dozen or more of them while it starts (Deadlocked alone
+ * imports cellGcmSys, cellSysutil, cellAudio, cellSpurs, cellPad and the rest),
+ * so a count that has stopped growing is the nearest thing to a signal that the
+ * game is past its own initialisation. It asks the kernel about its own
+ * bookkeeping rather than reading the process, which is the point.
+ */
+int  plat_module_count(u32 pid);
+
+/*
+ * The floor under the second window: the fewest ticks after INGAME before the
+ * big writes are allowed, however quickly the module count settles. On a
+ * console that is two seconds of the game having the machine to itself; off it
+ * there is nothing to protect and it is short enough not to be felt.
+ */
+u32  plat_settle_min_ticks(void);
+
 /* --------------------------------------------------------------- game memory */
 
 #define PLAT_MEM_MAX 65536u

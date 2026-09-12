@@ -10,6 +10,7 @@ Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes i
 Revision 1.8 (2026-09-09): COMBO_SUSPEND, which holds every stored combo off while a client captures a new one, so the buttons being recorded do not also fire the combos already there. See section 5.9.
 Revision 1.9 (2026-09-10): the savefile block. SAVEFILE_INFO, SAVEFILE_READ and SAVEFILE_WRITE in the 0x00B0 block. A save no longer travels as a file: qwark embeds one helper per game, installs it invisibly on first use, and the helper parks the save in a RAM buffer these three ops stream. See section 5.12.
 Revision 1.10 (2026-09-10): the savefile library moves onto the console. SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE and SAVEFILE_CATEGORY at 0x00B3, FILE_RENAME at 0x0079, and a SAVEFILE_INFO grown to 20 bytes that reports the copy qwark now runs between a file and the aside buffer. See section 5.13.
+Revision 1.11 (2026-09-12): the boot goes quiet. SessionInfo `flags` gained bit3 TELEMETRY_QUIET and a `u16 quiet_ms` out of the pad bytes at offset 29: while a game is starting, qwark says so for half a second and then stops sending telemetry until the game is up, and a client stops polling for the same window rather than filling the silence with TCP. SAVEFILE_INFO may also report the helper as not installed, and the ops that need it answer BUSY, until the game has stopped loading its modules. See sections 3.3 and 5.12.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -61,11 +62,13 @@ char title_id[12]       e.g. "NPEA00385"
 u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is waiting (section 4.1)
                         bit1 EMULATOR: qwark is driving an emulator, not a console (section 3.2)
                         bit2 NO_CODE_PATCHES: this platform refuses code patches (section 3.2)
+                        bit3 TELEMETRY_QUIET: telemetry is about to stop for quiet_ms (section 3.3)
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo
 u8   current_planet     game planet index, 0 when unknown
-u8   pad[3]
+u16  quiet_ms           milliseconds of telemetry silence still to come (revision 1.11, section 3.3)
+u8   pad[1]
 f32  pos[3]             player x, y, z
 u32  pad_mask           controller buttons, OG layout (section 10)
 f32  analog[4]          rx, ry, lx, ly, each -1..1
@@ -110,6 +113,28 @@ Two side effects a client should know about, both inside qwark rather than on th
 
 - Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
 - The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, which is why the whole of section 5.12 is refused here.
+
+### 3.3 `flags` bit3 TELEMETRY_QUIET and `quiet_ms` (revision 1.11)
+
+qwark is a VSH plugin, and the moment a console is least able to spare it is the one where the VSH
+hands a game the machine. Reading the new process too early panics it, and so, on a slow console or
+a busy network, does working the network stack across the handover. The boot window is qwark's half
+of that: from the game's process id appearing until its fingerprint answers, several seconds later,
+nothing touches the process at all.
+
+This is the client's half. While the session is BOOTING, qwark sets bit3 and puts the remaining
+window in `quiet_ms`; it sends about five packets saying so and then **stops sending telemetry**
+until the game is up. A client that understands this does nothing for that long: no GET_STATE
+polling, no list requests, nothing it can hold back.
+
+The silence is not a disconnection. The TCP connection is untouched, every op still answers, and
+normal telemetry resumes the moment the session reaches INGAME. A client that has not heard the
+announcement (the packets are UDP and one boot may lose all five) learns it from the first
+GET_STATE it makes, since that reply is the same block. A client older than this revision keeps
+polling and costs what it always cost; nothing breaks, it simply does not help.
+
+`quiet_ms` counts down and is 0 whenever bit3 is clear. It is capped at 65535, which is longer than
+any window qwark will ask for.
 
 ## 4. Telemetry packet (UDP)
 
@@ -419,7 +444,12 @@ All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `f
 Since revision 1.10 READ and WRITE are the **debug and test path**, not what a save or a load does: the library ops of section 5.13 move a whole file between the console's own filesystem and this buffer without any of it crossing the wire. They still work exactly as they did, and a client that wants the bytes on the PC still reads them here.
 
 - **supported** — 1 when qwark has a helper for the running game. 0 is an OK answer, not an error: it is how a client knows to hide its save-file panel. All four games are 1 today.
-- **installed** — 1 when qwark has written the helper into this process. Since asking is what installs it, this is 1 whenever `supported` is.
+- **installed** — 1 when qwark has written the helper into this process. Asking is what installs it,
+  but not immediately: the helper is the largest write qwark makes, six hundred bytes of code, and a
+  game that has only just reached INGAME is still loading its own modules. Until it has stopped,
+  `installed` reports 0 and the ops that need the helper answer `BUSY` (revision 1.11). This lasts a
+  second or two after a game appears and is not an error: poll, and it goes in. On a platform with no
+  module list to ask about, a fixed floor is the whole of the wait.
 - **running** — 1 when the helper's own byte reads 1. The helper writes it on every call, so this says the code is installed *and* that the game is reaching the hook. It is 0 for the first frame or two after an install, and it stays 0 for as long as the game is on a screen that does not run the hooked routine.
 - **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. bit2 (revision 1.10): qwark is copying between a file and the aside buffer, section 5.13. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
 

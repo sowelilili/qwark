@@ -245,6 +245,30 @@ u32 plat_boot_settle_ticks(void)
 }
 
 /*
+ * The fake console's module list. A game that has just appeared is still
+ * loading them, so host_boot starts the count low and host_set_module_count
+ * lets a test walk it up the way a real one does.
+ */
+/* A fifth of a second: there is no game here that could be halfway through starting. */
+u32 plat_settle_min_ticks(void)
+{
+	return 24u;
+}
+
+static int g_module_count = 8;
+
+void host_set_module_count(int n)
+{
+	g_module_count = n;
+}
+
+int plat_module_count(u32 pid)
+{
+	if (!g_game_running || pid != g_game_pid) return -1;
+	return g_module_count;
+}
+
+/*
  * Every read the core makes of the "process", for the test that the boot window
  * is respected. host_peek does not go through here, so a test can look at the
  * fake console's memory without disturbing the count.

@@ -54,6 +54,13 @@ int  session_running(void);
 void session_shutdown(void);
 
 u8   session_state(void);
+
+/*
+ * Non-zero once the game has stopped loading modules, which is when the writes
+ * big enough to matter are allowed: a mod's code cave and the savefile helper's.
+ * INGAME on its own is not enough, see settled_tick in session.c.
+ */
+int  session_settled(void);
 u32  session_generation(void);
 u32  session_tick_count(void);
 const char *session_title(void);

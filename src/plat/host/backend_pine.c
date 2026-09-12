@@ -1037,6 +1037,10 @@ int plat_is_emulator(void)    { return 1; }
 /* An emulator's memory is not a console's: there is nothing here to panic. */
 u32 plat_boot_settle_ticks(void) { return 12u; }
 
+/* PINE has no module list to ask for, and no kernel to protect. */
+int plat_module_count(u32 pid) { (void)pid; return -1; }
+u32 plat_settle_min_ticks(void) { return 24u; }
+
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 {
 	(void)pid;

@@ -172,6 +172,15 @@ int savefile_install(void)
 	if (g_installed) return ST_OK;
 
 	/*
+	 * This is the largest write qwark makes, six hundred bytes of code into a
+	 * game that INGAME says is running and does not say has finished starting.
+	 * It waits for the session to say the process has stopped loading modules.
+	 * BUSY rather than an error: nothing is wrong, the client asks again, and
+	 * SAVEFILE_INFO keeps reporting the helper as not installed meanwhile.
+	 */
+	if (!session_settled()) return ST_BUSY;
+
+	/*
 	 * A request byte left over from whatever used to live at these addresses
 	 * would fire the moment the hook goes in, so the three go to zero while
 	 * nothing is reading them yet.
@@ -184,17 +193,33 @@ int savefile_install(void)
 	 * Caves first and hook words second, the order mods.c uses: the words branch
 	 * into the caves, so the target exists before anything can jump to it. The
 	 * caves go in with the RSX paused, as every other code write does.
+	 *
+	 * Every step is logged. A console that dies here leaves the last line it
+	 * reached in the log, which is the difference between knowing which syscall
+	 * killed it and guessing from the outside.
 	 */
+	plat_log("savefile: installing game %d, %d cave(s), %d hook(s)",
+	         (int)d->game_id, (int)d->ncaves, (int)d->nhooks);
+
+	plat_log("savefile:   rsx pause");
 	plat_rsx_pause(1);
 	for (i = 0; i < d->ncaves; i++) {
+		plat_log("savefile:   cave %d: %d bytes at 0x%x",
+		         (int)i, (int)d->caves[i].len, (unsigned)d->caves[i].addr);
 		rc = mem_write(d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
 		if (rc != ST_OK) break;
 	}
+	plat_log("savefile:   rsx resume");
 	plat_rsx_pause(0);
 
-	if (rc != ST_OK) return rc;
+	if (rc != ST_OK) {
+		plat_log("savefile:   a cave failed, rc %d, nothing is hooked", rc);
+		return rc;
+	}
 
 	for (i = 0; i < d->nhooks; i++) {
+		plat_log("savefile:   hook %d: 0x%x at 0x%x", (int)i,
+		         (unsigned)d->hooks[i].value, (unsigned)d->hooks[i].addr);
 		rc = mem_write_u32(d->hooks[i].addr, d->hooks[i].value);
 		if (rc != ST_OK) return rc;
 	}
