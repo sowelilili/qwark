@@ -622,14 +622,41 @@ void plat_dir_close(plat_dir_t *d)
 
 /* ------------------------------------------------------------ page memory */
 
+/*
+ * Live page allocations. On a console these come out of the VSH's own memory,
+ * which is what a game launch has to take back, so the smoke test asks how many
+ * a connected, idle client is holding: the answer has to be none.
+ */
+static pthread_mutex_t g_pages_lock = PTHREAD_MUTEX_INITIALIZER;
+static u32 g_live_pages;
+
+u32 host_live_pages(void)
+{
+	u32 n;
+	pthread_mutex_lock(&g_pages_lock);
+	n = g_live_pages;
+	pthread_mutex_unlock(&g_pages_lock);
+	return n;
+}
+
 void *plat_alloc_pages(u32 size)
 {
-	return calloc(1, size);
+	void *p = calloc(1, size);
+	if (p != NULL) {
+		pthread_mutex_lock(&g_pages_lock);
+		g_live_pages++;
+		pthread_mutex_unlock(&g_pages_lock);
+	}
+	return p;
 }
 
 void plat_free_pages(void *p)
 {
+	if (p == NULL) return;
 	free(p);
+	pthread_mutex_lock(&g_pages_lock);
+	if (g_live_pages > 0) g_live_pages--;
+	pthread_mutex_unlock(&g_pages_lock);
 }
 
 /* ------------------------------------------------------------------- misc */

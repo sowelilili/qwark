@@ -138,6 +138,10 @@ static void handle_line(char *line, int *keep_running)
 		qbytes_to_hex(bytes, len, hex, sizeof(hex));
 		printf("ok peek %s\n", hex);
 
+	} else if (qstreq(cmd, "pages")) {
+		/* Live page allocations: an idle connection must be holding none. */
+		printf("ok pages %u\n", (unsigned)host_live_pages());
+
 	} else if (qstreq(cmd, "status")) {
 		print_status();
 		return;

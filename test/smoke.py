@@ -33,7 +33,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 22
+QWARK_BUILD = 23
 
 OP_HELLO = 0x0001
 OP_PREVIOUS_LIST = 0x0004
@@ -269,6 +269,19 @@ class Sim:
             self.proc.wait(timeout=5)
         except Exception:
             self.proc.kill()
+
+
+def sim_pages(sim, timeout=3.0):
+    """How many page allocations the simulator has live, via its `pages` command."""
+    mark = len(sim.lines)
+    sim.send("pages")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for line in sim.lines[mark:]:
+            if line.startswith("ok pages "):
+                return int(line.split()[2])
+        time.sleep(0.02)
+    return None
 
 
 # ------------------------------------------------------------- decoding
@@ -1930,6 +1943,19 @@ def main():
         # ------------------------------------------------------- subscribe
         status, _ = c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))
         check(status == ST_OK, "SUBSCRIBE accepted", status)
+
+        # ------------------------------------------------- what a client holds
+        # A connection used to allocate its request and reply buffers when it
+        # connected and keep them until it left: 192 KB of the VSH's own memory,
+        # held through a game launch, which is when the VSH has to give memory back.
+        # They exist for one request now. Between requests an idle, connected
+        # client must hold no pages at all.
+        pages = sim_pages(sim)
+        check(pages == 0, "a connected client that has finished its requests holds no pages", pages)
+        for _ in range(5):
+            c.call(OP_HELLO, bytes([1]))
+        pages = sim_pages(sim)
+        check(pages == 0, "and still none after five more", pages)
 
         # ------------------------------------------------------------ boot
         sim.send("boot NPEA00385")

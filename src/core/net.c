@@ -1461,6 +1461,33 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 /* ---------------------------------------------------------- the connection */
 
+/* A connection's request buffers, back to the VSH. Safe to call when there are none. */
+static void release_buffers(struct conn *c)
+{
+	if (c->block != NULL) {
+		plat_free_pages(c->block);
+		c->block = NULL;
+	}
+	c->req = NULL;
+	c->reply = NULL;
+}
+
+/*
+ * Reads and discards a payload there was nowhere to put, so the next header is
+ * read from where the next header actually starts.
+ */
+static int drain(int s, u32 len)
+{
+	char scratch[256];
+
+	while (len > 0) {
+		u32 chunk = len > sizeof(scratch) ? (u32)sizeof(scratch) : len;
+		if (recv_all(s, scratch, chunk) != 0) return -1;
+		len -= chunk;
+	}
+	return 0;
+}
+
 static void conn_thread(void *arg)
 {
 	int slot = (int)(size_t)arg;
@@ -1497,7 +1524,45 @@ static void conn_thread(void *arg)
 			break;
 		}
 
-		if (length > 0 && recv_all(c->sock, c->req, length) != 0) break;
+		/*
+		 * The buffers exist for one request and not a moment longer.
+		 *
+		 * They used to be allocated when a client connected and kept until it
+		 * left: 192 KB of the VSH's own memory, three times what Ratchetron holds
+		 * per connection, and held through everything the console did meanwhile,
+		 * a game launch included. A launch is when the VSH has to give memory
+		 * back to make room for the game, and a console that reboots during one
+		 * with a client connected, and boots the same game fine with none, is a
+		 * console short of exactly that. The last crash happened with this module
+		 * idle and the client silent, so it was not anything being done; it was
+		 * something being held.
+		 *
+		 * Between requests the thread waits on the eight-byte header, a local, and
+		 * holds nothing. A client that is quiet while a game starts therefore
+		 * costs the VSH no memory at all for the length of the launch.
+		 */
+		c->block = plat_alloc_pages(CONN_ALLOC);
+		if (c->block == NULL) {
+			/*
+			 * The VSH has none to give, which in a game is the condition this
+			 * is all about. Drain the payload so the stream stays in step, answer
+			 * FULL, and let the client try again later rather than closing on it.
+			 */
+			plat_log("qwark: no memory for a request (op %d), answering FULL", (int)op);
+			if (drain(c->sock, length) != 0) break;
+			be32_put(header, 0);
+			be16_put(header + 4, seq);
+			be16_put(header + 6, ST_FULL);
+			if (send_all(c->sock, header, QWARK_FRAME_HEADER) != 0) break;
+			continue;
+		}
+		c->req = (u8 *)c->block;
+		c->reply = c->req + CONN_REQ_CAP;
+
+		if (length > 0 && recv_all(c->sock, c->req, length) != 0) {
+			release_buffers(c);
+			break;
+		}
 
 		subs_refresh(slot);
 
@@ -1548,8 +1613,16 @@ static void conn_thread(void *arg)
 		be16_put(header + 4, seq);
 		be16_put(header + 6, status);
 
-		if (send_all(c->sock, header, QWARK_FRAME_HEADER) != 0) break;
-		if (replylen > 0 && send_all(c->sock, c->reply, replylen) != 0) break;
+		if (send_all(c->sock, header, QWARK_FRAME_HEADER) != 0) {
+			release_buffers(c);
+			break;
+		}
+		if (replylen > 0 && send_all(c->sock, c->reply, replylen) != 0) {
+			release_buffers(c);
+			break;
+		}
+
+		release_buffers(c);
 	}
 
 	subs_drop_conn(slot);
@@ -1557,12 +1630,7 @@ static void conn_thread(void *arg)
 
 	close_tracked(&c->sock);
 
-	if (c->block != NULL) {
-		plat_free_pages(c->block);
-		c->block = NULL;
-	}
-	c->req = NULL;
-	c->reply = NULL;
+	release_buffers(c);
 	c->used = 0;
 
 	plat_log("qwark: client on slot %d gone", slot);
@@ -1778,16 +1846,13 @@ void net_accept_thread(void *arg)
 				continue;
 			}
 
-			g_conns[slot].block = plat_alloc_pages(CONN_ALLOC);
-			if (g_conns[slot].block == NULL) {
-				plat_log("qwark: out of memory for a client buffer");
-				plat_socket_close(fd);
-				g_conns[slot].used = 0;
-				continue;
-			}
-
-			g_conns[slot].req = (u8 *)g_conns[slot].block;
-			g_conns[slot].reply = g_conns[slot].req + CONN_REQ_CAP;
+			/*
+			 * No buffers yet: a connection holds none while it waits. See the
+			 * request loop in conn_thread.
+			 */
+			g_conns[slot].block = NULL;
+			g_conns[slot].req = NULL;
+			g_conns[slot].reply = NULL;
 			g_conns[slot].remote_ip = peer.sin_addr.s_addr;
 			g_conns[slot].sock = fd;
 
@@ -1798,8 +1863,6 @@ void net_accept_thread(void *arg)
 			if (plat_thread_create_detached(conn_thread, (void *)(size_t)slot,
 			                                CLIENT_STACK, "qwark_cli") != 0) {
 				close_tracked(&g_conns[slot].sock);
-				plat_free_pages(g_conns[slot].block);
-				g_conns[slot].block = NULL;
 				g_conns[slot].used = 0;
 			}
 		}

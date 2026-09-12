@@ -69,6 +69,9 @@ u32  host_mem_reads(void);
 /* How many times the core has asked the fake VSH what it is running. */
 u32  host_vsh_calls(void);
 
+/* Page allocations still live, which an idle connection must hold none of. */
+u32  host_live_pages(void);
+
 /* The fake process's PRX module count, which a test walks up as a game would. */
 void host_set_module_count(int n);
 
