@@ -205,8 +205,8 @@ int savefile_install(void)
 
 	/*
 	 * Caves first and hook words second, the order mods.c uses: the words branch
-	 * into the caves, so the target exists before anything can jump to it. The
-	 * caves go in with the RSX paused, as every other code write does.
+	 * into the caves, so the target exists before anything can jump to it.
+	 * Nothing pauses the game; that order is what keeps it off a half-written cave.
 	 *
 	 * Every step is logged. A console that dies here leaves the last line it
 	 * reached in the log, which is the difference between knowing which syscall
@@ -215,16 +215,12 @@ int savefile_install(void)
 	plat_log("savefile: installing game %d, %d cave(s), %d hook(s)",
 	         (int)d->game_id, (int)d->ncaves, (int)d->nhooks);
 
-	plat_log("savefile:   rsx pause");
-	plat_rsx_pause(1);
 	for (i = 0; i < d->ncaves; i++) {
 		plat_log("savefile:   cave %d: %d bytes at 0x%x",
 		         (int)i, (int)d->caves[i].len, (unsigned)d->caves[i].addr);
 		rc = mem_write(d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
 		if (rc != ST_OK) break;
 	}
-	plat_log("savefile:   rsx resume");
-	plat_rsx_pause(0);
 
 	if (rc != ST_OK) {
 		plat_log("savefile:   a cave failed, rc %d, nothing is hooked", rc);

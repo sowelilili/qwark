@@ -283,6 +283,137 @@ void patch_pool_reset(void)
 	g_patch_pool_used = 0;
 }
 
+/* ---------------------------------------------------------- patch write order */
+
+/*
+ * Nothing stops the game while a patch goes in, because nothing can: the RSX
+ * pause these writes used to sit inside stops the GPU's command stream and no
+ * more, and every PPU thread of the game keeps running through it. The order of
+ * the writes is what keeps running code off a half-written patch.
+ *
+ * A def's words are cut into runs, words listed one after another at
+ * consecutive addresses, and each run goes out as a single write. A run that
+ * branches into another run of the same def goes in after that run, so no branch
+ * lands on code that is not there yet. Revert walks the same order backwards,
+ * taking the branches into a trampoline out before the trampoline itself.
+ *
+ * Only b and bc (primary opcodes 18 and 16) name a target; bclr and bcctr jump
+ * through a register. Two runs that branch into each other have no safe order
+ * and go in as listed.
+ */
+#define PATCH_ORDER_WORDS 2048          /* the largest def, a mod holding the whole word pool */
+#define PATCH_RUN_WORDS   256           /* how much of a run goes out in one write */
+#define NO_RUN            0xFFFFu
+
+static u16 g_run_first[PATCH_ORDER_WORDS];  /* the index of each run's first word */
+static u16 g_run_order[PATCH_ORDER_WORDS];  /* runs, in the order they are written */
+static u16 g_word_dep[PATCH_ORDER_WORDS];   /* the other run a word branches into */
+static u8  g_run_done[PATCH_ORDER_WORDS];
+static u8  g_run_buf[PATCH_RUN_WORDS * 4];
+
+/* Where a b or bc at addr lands. 0 for any other word. */
+static int branch_target(u32 addr, u32 word, u32 *target)
+{
+	u32 op = word >> 26;
+	u32 disp;
+
+	if (op == 18) {
+		disp = word & 0x03FFFFFCu;
+		if (disp & 0x02000000u) disp |= 0xFC000000u;
+	} else if (op == 16) {
+		disp = word & 0x0000FFFCu;
+		if (disp & 0x00008000u) disp |= 0xFFFF0000u;
+	} else {
+		return 0;
+	}
+
+	*target = (word & 2u) ? disp : addr + disp;   /* AA: an absolute address */
+	return 1;
+}
+
+static u16 run_end(const struct patch_def *def, u16 nruns, u16 r)
+{
+	return (u16)(r + 1 < nruns ? g_run_first[r + 1] : def->count);
+}
+
+/* Cuts def into runs and fills g_run_order. Returns the number of runs. */
+static u16 patch_order(const struct patch_def *def)
+{
+	u16 nruns = 0;
+	u16 w, r, k;
+
+	if (def->count > PATCH_ORDER_WORDS) return 0;
+
+	for (w = 0; w < def->count; w++) {
+		if (w == 0 || def->words[w].addr != def->words[w - 1].addr + 4u)
+			g_run_first[nruns++] = w;
+	}
+
+	for (r = 0; r < nruns; r++) {
+		u16 end = run_end(def, nruns, r);
+
+		g_run_done[r] = 0;
+		for (w = g_run_first[r]; w < end; w++) {
+			u32 target;
+
+			g_word_dep[w] = NO_RUN;
+			if (!branch_target(def->words[w].addr, def->words[w].value, &target)) continue;
+
+			for (k = 0; k < nruns; k++) {
+				u32 base = def->words[g_run_first[k]].addr;
+				u32 len = (u32)(run_end(def, nruns, k) - g_run_first[k]) * 4u;
+				if (k != r && target - base < len) { g_word_dep[w] = k; break; }
+			}
+		}
+	}
+
+	for (k = 0; k < nruns; k++) {
+		u16 pick = NO_RUN;
+
+		/* The first run listed whose branch targets are all in already. */
+		for (r = 0; r < nruns && pick == NO_RUN; r++) {
+			u16 end = run_end(def, nruns, r);
+			if (g_run_done[r]) continue;
+			for (w = g_run_first[r]; w < end; w++) {
+				if (g_word_dep[w] != NO_RUN && !g_run_done[g_word_dep[w]]) break;
+			}
+			if (w == end) pick = r;
+		}
+
+		/* None: a cycle, so the first run still waiting goes in as listed. */
+		for (r = 0; r < nruns && pick == NO_RUN; r++) {
+			if (!g_run_done[r]) pick = r;
+		}
+
+		g_run_order[k] = pick;
+		g_run_done[pick] = 1;
+	}
+
+	return nruns;
+}
+
+/*
+ * One run's patched or original words. A run too long for one write goes out
+ * back to front: code runs forward, so what a word falls through to is already
+ * in by the time the word itself is.
+ */
+static void write_run(const struct patch_def *def, u16 nruns, u16 r, int revert)
+{
+	u16 first = g_run_first[r];
+	u16 stop = run_end(def, nruns, r);
+
+	while (stop > first) {
+		u16 start = (u16)(stop - first > PATCH_RUN_WORDS ? stop - PATCH_RUN_WORDS : first);
+		u16 w;
+
+		for (w = start; w < stop; w++)
+			be32_put(&g_run_buf[(w - start) * 4], revert ? def->originals[w] : def->words[w].value);
+
+		mem_write(def->words[start].addr, g_run_buf, (u32)(stop - start) * 4u);
+		stop = start;
+	}
+}
+
 int patch_is_applied(const struct patch_def *def)
 {
 	int i;
@@ -296,10 +427,11 @@ int patch_apply(const struct patch_def *def)
 {
 	int slot = -1;
 	int i;
-	u16 w;
+	u16 w, k, nruns;
 
 	if (def == NULL || def->words == NULL || def->count == 0 || def->originals == NULL)
 		return ST_BAD_ARG;
+	if (def->count > PATCH_ORDER_WORDS) return ST_FULL;
 
 	/* A second apply is a no-op. It must never re-capture the originals. */
 	if (patch_is_applied(def)) return ST_OK;
@@ -326,11 +458,8 @@ int patch_apply(const struct patch_def *def)
 		def->originals[w] = original;
 	}
 
-	plat_rsx_pause(1);
-	for (w = 0; w < def->count; w++) {
-		mem_write_u32(def->words[w].addr, def->words[w].value);
-	}
-	plat_rsx_pause(0);
+	nruns = patch_order(def);
+	for (k = 0; k < nruns; k++) write_run(def, nruns, g_run_order[k], 0);
 
 	g_patches[slot] = def;
 	return ST_OK;
@@ -340,7 +469,7 @@ int patch_revert(const struct patch_def *def)
 {
 	int slot = -1;
 	int i;
-	u16 w;
+	u16 k, nruns;
 
 	if (def == NULL) return ST_BAD_ARG;
 
@@ -350,11 +479,8 @@ int patch_revert(const struct patch_def *def)
 	if (slot < 0) return ST_NOT_FOUND;
 
 	if (g_ingame && g_pid != 0) {
-		plat_rsx_pause(1);
-		for (w = 0; w < def->count; w++) {
-			mem_write_u32(def->words[w].addr, def->originals[w]);
-		}
-		plat_rsx_pause(0);
+		nruns = patch_order(def);
+		for (k = nruns; k > 0; k--) write_run(def, nruns, g_run_order[k - 1], 1);
 	}
 
 	g_patches[slot] = NULL;

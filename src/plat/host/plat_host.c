@@ -3,7 +3,7 @@
  *
  * Threads, mutexes, semaphores, sockets, files, directories, time, logging and
  * page memory: everything a host build needs whatever it is driving. The game
- * half - process state, memory, RSX and notify - comes from whichever backend
+ * half - process state, memory and notify - comes from whichever backend
  * is linked beside this file, backend_fake.c or backend_pine.c.
  *
  * Windows-specific code is behind _WIN32; the rest is plain POSIX, so a Linux

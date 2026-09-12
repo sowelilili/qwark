@@ -89,7 +89,8 @@ struct patch_def {
  * a second apply is a no-op that must not re-capture, or a patched word ends up
  * recorded as the original (the RaC2 fast-load bug in BUGS.md).
  *
- * Both wrap the writes in plat_rsx_pause(1) / plat_rsx_pause(0).
+ * Nothing pauses the game around either. Contiguous words go out as one write,
+ * and a branch never goes in before the code it lands on (mem.c has the order).
  */
 int patch_apply(const struct patch_def *def);
 int patch_revert(const struct patch_def *def);

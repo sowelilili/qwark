@@ -148,20 +148,6 @@ int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 	return 0;
 }
 
-/* -------------------------------------------------------------------- RSX */
-
-/*
- * The same syscall webMAN MOD performs for /xmb.ps3$rsx_pause: lv2 syscall 674
- * (0x2A2), sys_rsx_context_attribute, with the magic context id and 2 to pause /
- * 3 to continue. Lifted from webMAN-MOD include/feat/xmb_savebmp.h's
- * rsx_fifo_pause(), which include/cmd/xmb_browser.h calls for that command.
- */
-void plat_rsx_pause(int pause)
-{
-	system_call_6(0x2A2, 0x55555555ULL, (u64)(pause ? 2 : 3), 0, 0, 0, 0);
-	(void)p1;
-}
-
 /* --------------------------------------------------------- notify and log */
 
 void plat_notify(const char *msg)

@@ -105,11 +105,6 @@ u32  plat_settle_min_ticks(void);
 int  plat_mem_read(u32 pid, u32 addr, void *buf, u32 len);
 int  plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len);
 
-/* --------------------------------------------------------------------- RSX */
-
-/* pause != 0 pauses the RSX FIFO, 0 resumes it. */
-void plat_rsx_pause(int pause);
-
 /* ------------------------------------------------------------ notify and log */
 
 void plat_notify(const char *msg);

@@ -264,6 +264,123 @@ static void test_patches(void)
 	check_eq_u64(v, 0x11223344u, "the client patch restored the original");
 }
 
+/* ------------------------------------------------------ patch write order */
+
+/* The logged write that covers addr, or -1. */
+static int write_covering(u32 addr)
+{
+	u32 i, a, len;
+
+	for (i = 0; i < host_write_log_count(); i++) {
+		if (host_write_log_at(i, &a, &len) != 0) break;
+		if (addr - a < len) return (int)i;
+	}
+	return -1;
+}
+
+static u32 write_len_at(int index)
+{
+	u32 a = 0, len = 0;
+	if (index < 0 || host_write_log_at((u32)index, &a, &len) != 0) return 0;
+	return len;
+}
+
+/* A hook listed ahead of the three-word trampoline it branches into. */
+#define ORDER_HOOK  0x00510000u
+#define ORDER_TRAMP 0x00520000u
+
+static const struct patch_word order_hook_words[] = {
+	{ ORDER_HOOK,        0x48010000u },     /* b ORDER_TRAMP */
+	{ ORDER_TRAMP + 0,   0x38600001u },     /* li r3, 1 */
+	{ ORDER_TRAMP + 4,   0x60000000u },     /* nop */
+	{ ORDER_TRAMP + 8,   0x4BFEFFFCu }      /* b ORDER_HOOK + 4, outside the patch */
+};
+static u32 order_hook_originals[4];
+static struct patch_def order_hook = {
+	"order: hook first", PATCH_KIND_CLIENT, order_hook_words, 4, order_hook_originals
+};
+
+/* A ba into B, whose beq lands in C: listed A, B, C, it can only go in C, B, A. */
+#define ORDER_A 0x00530000u
+#define ORDER_B 0x00530100u
+#define ORDER_C 0x00530200u
+
+static const struct patch_word order_chain_words[] = {
+	{ ORDER_A,     0x48530102u },           /* ba ORDER_B */
+	{ ORDER_B,     0x60000000u },
+	{ ORDER_B + 4, 0x41820100u },           /* beq ORDER_C + 4 */
+	{ ORDER_C,     0x60000000u },
+	{ ORDER_C + 4, 0x38600002u }
+};
+static u32 order_chain_originals[5];
+static struct patch_def order_chain = {
+	"order: chain", PATCH_KIND_CLIENT, order_chain_words, 5, order_chain_originals
+};
+
+/* Two runs that branch into each other. */
+#define ORDER_D 0x00540000u
+#define ORDER_E 0x00540100u
+
+static const struct patch_word order_cycle_words[] = {
+	{ ORDER_D, 0x48000100u },               /* b ORDER_E */
+	{ ORDER_E, 0x4BFFFF00u }                /* b ORDER_D */
+};
+static u32 order_cycle_originals[2];
+static struct patch_def order_cycle = {
+	"order: cycle", PATCH_KIND_CLIENT, order_cycle_words, 2, order_cycle_originals
+};
+
+static void test_patch_order(void)
+{
+	u32 v = 0;
+	int hook, tramp, a, b, c;
+
+	group("patch write order, with nothing pausing the game");
+
+	host_poke(ORDER_HOOK, (const u8 *)"\x7C\x08\x02\xA6", 4);
+	host_poke(ORDER_TRAMP, (const u8 *)"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 12);
+
+	host_write_log_reset();
+	check(patch_apply(&order_hook) == ST_OK, "a hook listed before its trampoline applies");
+	hook = write_covering(ORDER_HOOK);
+	tramp = write_covering(ORDER_TRAMP);
+	check_eq_u64(host_write_log_count(), 2, "in two writes, one per run of adjacent words");
+	check(tramp >= 0 && hook > tramp, "the trampoline went in before the branch into it");
+	check_eq_u64(write_len_at(tramp), 12, "and all three trampoline words went in together");
+	mem_read_u32(ORDER_HOOK, &v);
+	check_eq_u64(v, 0x48010000u, "the hook word is in");
+	mem_read_u32(ORDER_TRAMP + 8, &v);
+	check_eq_u64(v, 0x4BFEFFFCu, "the trampoline's last word is in");
+
+	host_write_log_reset();
+	check(patch_revert(&order_hook) == ST_OK, "it reverts");
+	hook = write_covering(ORDER_HOOK);
+	tramp = write_covering(ORDER_TRAMP);
+	check(hook >= 0 && tramp > hook, "the branch came out before the trampoline did");
+	mem_read_u32(ORDER_HOOK, &v);
+	check_eq_u64(v, 0x7C0802A6u, "the hook site has its original word back");
+
+	host_write_log_reset();
+	check(patch_apply(&order_chain) == ST_OK, "a chain listed A, B, C applies");
+	a = write_covering(ORDER_A);
+	b = write_covering(ORDER_B);
+	c = write_covering(ORDER_C);
+	check(c >= 0 && b > c && a > b, "and went in C, B, A: ba and beq targets both followed");
+
+	host_write_log_reset();
+	check(patch_revert(&order_chain) == ST_OK, "the chain reverts");
+	a = write_covering(ORDER_A);
+	b = write_covering(ORDER_B);
+	c = write_covering(ORDER_C);
+	check(a >= 0 && b > a && c > b, "in A, B, C, the reverse");
+
+	host_write_log_reset();
+	check(patch_apply(&order_cycle) == ST_OK, "two runs that branch into each other still apply");
+	check_eq_u64(host_write_log_count(), 2, "each written once");
+	check(write_covering(ORDER_D) == 0, "in the order they were listed");
+	check(patch_revert(&order_cycle) == ST_OK, "and revert");
+}
+
 /* ----------------------------------------------------------- watch, freeze */
 
 static void test_tables(void)
@@ -410,6 +527,25 @@ static void test_mods(void)
 		check_eq_u64(v, cave, "but the cave bytes are still there");
 	}
 
+	/*
+	 * quartu_patch lists its two hooks, ba 0x224860 and ba 0x224870, ahead of the
+	 * ten words at 0x22485C they land in. Nothing pauses the game while a mod
+	 * loads, so the order is all that keeps the hooks off missing code.
+	 */
+	{
+		int tramp, hook1, hook2;
+
+		host_write_log_reset();
+		check(mods_load("quartu_patch") == ST_OK, "quartu_patch loads");
+		tramp = write_covering(0x224860u);
+		hook1 = write_covering(0xE03F4u);
+		hook2 = write_covering(0x168B3Cu);
+		check(tramp >= 0 && hook1 > tramp && hook2 > tramp,
+		      "its trampoline went in before either hook, though listed after them");
+		check_eq_u64(write_len_at(tramp), 40, "all ten trampoline words in one write");
+		check(mods_unload("quartu_patch") == ST_OK, "and it unloads");
+	}
+
 	check(mods_load("does-not-exist") == ST_NOT_FOUND, "an unknown dirname is NOT_FOUND");
 
 	group("patch.txt parser, dependencies");
@@ -428,9 +564,19 @@ static void test_mods(void)
 			check(mods_at((u32)dlcs)->def.count > 200,
 			      "dl-cs parsed its couple of hundred patch lines");
 
+			host_write_log_reset();
 			check(mods_load("il-ghost") == ST_OK, "loading il-ghost succeeds");
 			check((mods_at((u32)dlcs)->flags & MOD_FLAG_LOADED) != 0,
 			      "its dependency was loaded first");
+
+			/* dl-cs lists b 0x3d84c8 at 0x37b9b0 ahead of the 248 words it lands in. */
+			{
+				int tramp = write_covering(0x3D84C8u);
+				int hook = write_covering(0x37B9B0u);
+				check(tramp >= 0 && hook > tramp,
+				      "dl-cs's trampoline went in before the branch into it");
+				check_eq_u64(write_len_at(tramp), 248 * 4, "as one write of all 248 words");
+			}
 
 			mods_unload("il-ghost");
 			mods_unload("dl-cs");
@@ -725,7 +871,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 23, "and this module is build 23");
+	check_eq_u64(packet[5], 24, "and this module is build 24");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -4483,6 +4629,7 @@ int main(void)
 	test_endian();
 	test_framing();
 	test_patches();
+	test_patch_order();
 	test_tables();
 	test_mods();
 	test_describe();

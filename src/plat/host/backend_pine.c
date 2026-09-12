@@ -1053,12 +1053,6 @@ int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 	return pine_write(addr, buf, len);
 }
 
-/* PINE has no equivalent, and RPCS3 needs none: nothing here patches code. */
-void plat_rsx_pause(int pause)
-{
-	(void)pause;
-}
-
 void plat_notify(const char *msg)
 {
 	char ts[16];

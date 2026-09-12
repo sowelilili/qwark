@@ -440,12 +440,15 @@ static int mods_load_index(int index, int depth)
 	 * into a cave go away a moment before its bytes would, and anything still
 	 * executing there falls off the end. Reverting the branches first and
 	 * leaving the cave bytes where they are is safe and is what racman does too.
+	 *
+	 * Nothing pauses the game meanwhile; racman paused the RSX, which stops the
+	 * GPU and leaves every game thread running. The order is the protection, and
+	 * patch_apply keeps it among the words too: the real dl-cs and quartu_patch
+	 * list a branch ahead of the trampoline it jumps to.
 	 */
-	plat_rsx_pause(1);
 	for (c = 0; c < m->ncaves; c++) {
 		write_cave(m, &g_caves[m->cave_first + c]);
 	}
-	plat_rsx_pause(0);
 
 	if (m->def.count > 0) {
 		rc = patch_apply(&m->def);
@@ -474,8 +477,7 @@ int mods_unload(const char *dirname)
 
 	/*
 	 * The patch words only; the cave bytes stay where they are, because putting
-	 * them back crashed the game. patch_revert pauses RSX around its writes
-	 * itself, so nothing here needs to.
+	 * them back crashed the game. patch_revert takes the branches out first.
 	 */
 	if (m->def.count > 0) patch_revert(&m->def);
 

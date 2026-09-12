@@ -308,20 +308,47 @@ int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 	return 0;
 }
 
+/* Where each write landed, for the tests of the order code goes in. */
+#define HOST_WRITE_LOG 64
+
+static u32 g_write_log_addr[HOST_WRITE_LOG];
+static u32 g_write_log_len[HOST_WRITE_LOG];
+static u32 g_write_log_count;
+
+void host_write_log_reset(void)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	g_write_log_count = 0;
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+u32 host_write_log_count(void)
+{
+	return g_write_log_count;
+}
+
+int host_write_log_at(u32 index, u32 *addr, u32 *len)
+{
+	if (index >= g_write_log_count || index >= HOST_WRITE_LOG) return -1;
+	*addr = g_write_log_addr[index];
+	*len = g_write_log_len[index];
+	return 0;
+}
+
 int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 {
 	if (len == 0 || len > PLAT_MEM_MAX) return -1;
 	if (!g_game_running || pid != g_game_pid) return -1;
 
 	pthread_mutex_lock(&g_mem_lock);
+	if (g_write_log_count < HOST_WRITE_LOG) {
+		g_write_log_addr[g_write_log_count] = addr;
+		g_write_log_len[g_write_log_count] = len;
+	}
+	g_write_log_count++;
 	mem_access(addr, (void *)buf, len, 1);
 	pthread_mutex_unlock(&g_mem_lock);
 	return 0;
-}
-
-void plat_rsx_pause(int pause)
-{
-	plat_log("host: rsx %s", pause ? "pause" : "continue");
 }
 
 void plat_notify(const char *msg)

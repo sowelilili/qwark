@@ -72,6 +72,14 @@ u32  host_vsh_calls(void);
 /* Page allocations still live, which an idle connection must hold none of. */
 u32  host_live_pages(void);
 
+/*
+ * The writes the core has made since host_write_log_reset, oldest first: where
+ * each landed and how many bytes it was. The count keeps going past the 64 kept.
+ */
+void host_write_log_reset(void);
+u32  host_write_log_count(void);
+int  host_write_log_at(u32 index, u32 *addr, u32 *len);
+
 /* The fake process's PRX module count, which a test walks up as a game would. */
 void host_set_module_count(int n);
 

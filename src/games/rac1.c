@@ -429,12 +429,10 @@ static void rac1_install_helper(void)
 	 * Caves first, then the words, the way mods.c orders them: the words branch
 	 * into the caves, so the target exists before anything can jump to it.
 	 */
-	plat_rsx_pause(1);
 	for (i = 0; i < sizeof(rac1_helper_caves) / sizeof(rac1_helper_caves[0]); i++) {
 		mem_write(rac1_helper_caves[i].addr, rac1_helper_caves[i].bytes,
 		          rac1_helper_caves[i].len);
 	}
-	plat_rsx_pause(0);
 
 	for (i = 0; i < sizeof(rac1_helper_hooks) / sizeof(rac1_helper_hooks[0]); i++)
 		mem_write_u32(rac1_helper_hooks[i].addr, rac1_helper_hooks[i].value);
