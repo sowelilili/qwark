@@ -285,6 +285,17 @@ def sim_pages(sim, timeout=3.0):
     return None
 
 
+def sim_pages_idle(sim, timeout=1.0):
+    """The live page count once the last request has let go of its buffers, or what it
+    still was when `timeout` ran out."""
+    deadline = time.time() + timeout
+    pages = sim_pages(sim)
+    while pages != 0 and time.time() < deadline:
+        time.sleep(0.01)
+        pages = sim_pages(sim)
+    return pages
+
+
 # ------------------------------------------------------------- decoding
 
 def parse_session_info(b):
@@ -1934,6 +1945,15 @@ def main():
               "HELLO reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
 
+        # trace_ops is on unless config.txt says otherwise, and this HDD has no
+        # config.txt: the HELLO above is in the log, arriving and answered.
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not any("qwark: op 1 done" in l for l in sim.lines):
+            time.sleep(0.02)
+        check(any("qwark: op 1 seq" in l for l in sim.lines) and
+              any("qwark: op 1 done, status 0" in l for l in sim.lines),
+              "with no config the log traces every request, arriving and answered")
+
         # ------------------------------------------------------- subscribe
         status, _ = c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))
         check(status == ST_OK, "SUBSCRIBE accepted", status)
@@ -1944,11 +1964,14 @@ def main():
         # held through a game launch, which is when the VSH has to give memory back.
         # They exist for one request now. Between requests an idle, connected
         # client must hold no pages at all.
-        pages = sim_pages(sim)
+        #
+        # The reply goes out a moment before its buffers are freed, so a count taken
+        # the instant a reply lands can still see them: ask until it reads 0.
+        pages = sim_pages_idle(sim)
         check(pages == 0, "a connected client that has finished its requests holds no pages", pages)
         for _ in range(5):
             c.call(OP_HELLO, bytes([1]))
-        pages = sim_pages(sim)
+        pages = sim_pages_idle(sim)
         check(pages == 0, "and still none after five more", pages)
 
         # ------------------------------------------- a subscriber that goes quiet

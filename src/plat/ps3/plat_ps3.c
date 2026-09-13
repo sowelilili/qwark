@@ -26,12 +26,29 @@
  */
 #define QWARK_TTY_CHANNEL SYS_TTYP0
 
-#define QWARK_LOG_PATH "/dev_hdd0/qwark/qwark.log"
+#define QWARK_LOG_PATH     "/dev_hdd0/qwark/qwark.log"
+#define QWARK_LOG_OLD_PATH "/dev_hdd0/qwark/qwark.old.log"
+
+/*
+ * The log is appended to and never truncated, and with trace_ops on it gains two
+ * lines for every request a client makes. Past this size when the module starts,
+ * it becomes qwark.old.log, replacing the one before, and a new log begins. A
+ * crash is followed by a reboot and so by this check: its last lines are at the
+ * end of qwark.log, or of qwark.old.log when this is what moved them.
+ */
+#define QWARK_LOG_KEEP     (1024u * 1024u)
 
 /* --------------------------------------------------------------- lifecycle */
 
 int plat_init(void)
 {
+	u64 size = 0;
+
+	if (plat_path_exists(QWARK_LOG_PATH, NULL, &size) && size > QWARK_LOG_KEEP) {
+		plat_file_unlink(QWARK_LOG_OLD_PATH);
+		plat_file_rename(QWARK_LOG_PATH, QWARK_LOG_OLD_PATH);
+	}
+
 	return 0;
 }
 

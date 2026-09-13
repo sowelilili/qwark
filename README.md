@@ -43,7 +43,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
 | `qwark.log` | state transitions, when `log = 1` |
 
-Two of them are for working out why a console is crashing, and both are off by default. `trace_ops = 1` puts two lines in the log for every request a client makes, one as it arrives and one when it is answered with what it cost the game, so the last line before a crash names the operation. It costs a file write per line, which is why it is not on. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
+Two of them are for working out why a console is crashing. `trace_ops` is on for now: it puts two lines in the log for every request a client makes, one as it arrives and one when it is answered with what it cost the game, so the last line before a crash names the operation. `trace_ops = 0` turns it off. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
 
 ## RPCS3
 

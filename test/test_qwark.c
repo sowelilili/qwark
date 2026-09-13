@@ -773,6 +773,15 @@ static void test_config(void)
 	      "the mod auto flag persists the same way");
 	config_set_mod_auto("NPEA00385", "flight", 0);
 
+	/* trace_ops is on for now, for any config.txt that does not say otherwise. */
+	net_set_trace_ops(0);
+	check(config_load() == ST_OK, "config.txt reloads with no trace_ops key in it");
+	check(net_trace_ops(), "and every request is traced by default");
+	check(config_set_u32("trace_ops", 0) == ST_OK && config_load() == ST_OK && !net_trace_ops(),
+	      "trace_ops = 0 turns it off");
+	check(config_set_u32("trace_ops", 1) == ST_OK && config_load() == ST_OK && net_trace_ops(),
+	      "and 1 turns it back on");
+
 	{
 		u8 blob[16];
 		u8 got[QWARK_MAX_BLOB];
