@@ -188,9 +188,9 @@ int savefile_install(void)
 	 * would fire the moment the hook goes in, so the three go to zero while
 	 * nothing is reading them yet.
 	 */
-	mem_write_u8(d->api_mod, 0);
-	mem_write_u8(d->api_load, 0);
-	mem_write_u8(d->api_setaside, 0);
+	if (mem_write_u8(d->api_mod, 0) != ST_OK ||
+	    mem_write_u8(d->api_load, 0) != ST_OK ||
+	    mem_write_u8(d->api_setaside, 0) != ST_OK) return ST_IO_ERROR;
 
 	/*
 	 * Caves first and hook words second, the order mods.c uses: the words branch

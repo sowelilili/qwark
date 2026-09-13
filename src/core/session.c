@@ -23,19 +23,11 @@
 #define LIVE_POLL_EVERY  12        /* 10 Hz */
 
 /*
- * How long a game process is left alone once it appears: a second, before the
- * XMB is asked for its title and before a byte of it is read.
- *
- * It is the wait the Deadlocked autosplitter makes between IS_INGAME and its
- * first read and patch of the process, and that module has been stable through
- * every game switch it has seen. It keeps the call into the XMB's game_plugin
- * out of the handover itself. Nothing longer is needed: the crashes the longer
- * windows were built against were a connection holding the VSH's memory through
- * the launch and the RSX pause around code writes, and both are gone.
- *
- * Counted in ticks so the host tests step through it rather than sleep.
+ * A full second after IS_INGAME, before even the first PID query. Use elapsed
+ * time, not a tick count: network traffic and scheduler timing must not shorten
+ * this window. TCP processing and UDP sends are suspended over the same window.
  */
-#define BOOT_WAIT_TICKS  120u      /* 1 s */
+#define BOOT_QUIET_US  1000000ull
 
 /*
  * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
@@ -62,8 +54,8 @@ static u32  g_pid;
  */
 static u32  g_ignored_pid;
 
-/* The tick BOOTING began on, which BOOT_WAIT_TICKS is counted from. */
-static u32  g_boot_start_tick;
+static u64  g_quiet_until;
+static int  g_was_running;
 
 static char g_title[16];
 static char g_last_title[16];
@@ -100,6 +92,7 @@ static u64 g_combo_suspend_window = COMBO_SUSPEND_WINDOW_US;
 
 static plat_mutex_t g_core_mutex;
 static plat_mutex_t g_ring_mutex;
+static plat_mutex_t g_activity_mutex;
 
 static u8  g_info_pub[SESSION_INFO_SIZE];
 static u8  g_tele_pub[TELEMETRY_MAX];
@@ -107,6 +100,10 @@ static u32 g_tele_pub_len;
 
 void core_lock(void)   { plat_mutex_lock(&g_core_mutex); }
 void core_unlock(void) { plat_mutex_unlock(&g_core_mutex); }
+
+void session_activity_lock(void) { plat_mutex_lock(&g_activity_mutex); }
+void session_activity_unlock(void) { plat_mutex_unlock(&g_activity_mutex); }
+int session_quiet(void) { return g_quiet_until != 0; }
 
 u8   session_state(void)      { return g_state; }
 u32  session_generation(void) { return g_generation; }
@@ -197,7 +194,8 @@ static void ring_drain(void)
 			u32 writes = mem_write_calls();
 			u64 started = plat_time_us();
 
-			if (g_ring_exec != NULL) g_ring_exec(cmd);
+			if (session_quiet()) cmd->status = ST_BUSY;
+			else if (g_ring_exec != NULL) g_ring_exec(cmd);
 
 			cmd->mem_reads = mem_read_calls() - reads;
 			cmd->mem_writes = mem_write_calls() - writes;
@@ -331,6 +329,7 @@ static const struct game_api *fingerprinted_game(void)
 static void enter_quitting(void)
 {
 	if (g_state == SESSION_QUITTING) return;
+	net_set_booting(1);
 
 	/* Memory access stops immediately, before anything else happens. */
 	mem_set_context(0, 0);
@@ -345,14 +344,15 @@ static void enter_quitting(void)
 	 */
 	savefile_forget();
 
-	if (g_game != NULL && g_game->on_quit != NULL) g_game->on_quit();
+	if (g_state == SESSION_INGAME && g_game != NULL && g_game->on_quit != NULL)
+		g_game->on_quit();
 
 	/*
-	 * A game that went away before its title was ever read has nothing to
-	 * remember, and remembering the empty string would make the next launch of
-	 * the game before it look like a different title.
+	 * Only an initialized session owns the retained feature/mod/position tables.
+	 * An aborted BOOTING candidate must not change their remembered identity,
+	 * even if its title was read before its fingerprint became available.
 	 */
-	if (g_title[0] != 0) {
+	if (g_state == SESSION_INGAME && g_title[0] != 0) {
 		qstrcpy(g_last_title, sizeof(g_last_title), g_title);
 		/*
 		 * Under BCES01503 the same title id can come back as a different game,
@@ -444,17 +444,48 @@ static void enter_ingame(void)
 
 	core_unlock();
 
+	net_set_booting(0);
 	plat_log("qwark: session INGAME (%s) gen %d", g_title, (int)g_generation);
 }
 
+static void enter_booting(void)
+{
+	net_set_booting(1);
+	if (g_state == SESSION_INGAME) enter_quitting();
+	mem_set_context(0, 0);
+	g_pid = 0;
+	g_game = NULL;
+	g_title[0] = 0;
+	g_ncandidates = 0;
+	g_ignored_pid = 0;
+	g_generation++;
+	g_state = SESSION_BOOTING;
+	g_quiet_until = plat_time_us() + BOOT_QUIET_US;
+}
+
+/* Caller holds the activity lock, also used by TCP I/O and inline handlers. */
 static void step_state(void)
 {
-	/*
-	 * One question drives every transition: which game process is running, if
-	 * any. On a console that is IS_INGAME and then the process id, asked every
-	 * tick in every state, as Ratchetron asks it.
-	 */
-	u32 pid = plat_game_pid();
+	u32 pid;
+	int running;
+
+	if (g_quiet_until != 0) {
+		if (plat_time_us() < g_quiet_until) return;
+		g_quiet_until = 0;
+	}
+	running = plat_game_running();
+	if (running && !g_was_running) {
+		g_was_running = 1;
+		enter_booting();
+		return;
+	}
+	g_was_running = running;
+	pid = running ? plat_game_pid() : 0;
+
+	/* Close the allocation gate before publishing or processing this transition. */
+	net_set_booting(g_state == SESSION_INGAME ? pid != g_pid :
+	                (g_state == SESSION_BOOTING || g_state == SESSION_QUITTING ||
+	                 (pid != 0 && pid != g_ignored_pid)));
 
 	switch (g_state) {
 	case SESSION_XMB:
@@ -463,22 +494,18 @@ static void step_state(void)
 		/* A process already found not to be a game qwark knows. */
 		if (pid == g_ignored_pid) break;
 
-		g_pid = pid;
-		g_game = NULL;
-		g_title[0] = 0;
-		g_ncandidates = 0;
-		g_boot_start_tick = g_tick;
-		g_generation++;
-		g_state = SESSION_BOOTING;
-		plat_log("qwark: a game is starting (pid %d)", (int)pid);
+		/* Also guard a PID replacement whose intervening XMB was not observed. */
+		enter_booting();
 		break;
 
 	case SESSION_BOOTING: {
 		const struct game_api *found;
 		char title[16];
 
-		if (pid != g_pid) { enter_quitting(); break; }
-		if (g_tick - g_boot_start_tick < BOOT_WAIT_TICKS) break;
+		if (!running) { enter_quitting(); break; }
+		if (pid == 0) break; /* IS_INGAME may precede a usable PID. */
+		if (g_pid != 0 && pid != g_pid) { enter_booting(); break; }
+		g_pid = pid;
 
 		/*
 		 * The title, once. A game_plugin that is not ready answers nothing and
@@ -499,6 +526,7 @@ static void step_state(void)
 				g_ignored_pid = pid;
 				g_pid = 0;
 				g_state = SESSION_XMB;
+				net_set_booting(0);
 				break;
 			}
 
@@ -548,6 +576,7 @@ static void step_state(void)
 			g_game = NULL;
 			g_ncandidates = 0;
 			mem_set_context(0, 0);
+			if (pid == 0) net_set_booting(0);
 			plat_log("qwark: session XMB");
 		}
 		break;
@@ -874,6 +903,7 @@ int session_init(void)
 
 	plat_mutex_init(&g_core_mutex);
 	plat_mutex_init(&g_ring_mutex);
+	plat_mutex_init(&g_activity_mutex);
 	plat_trace("qwark:   session mutexes ok");
 
 	for (i = 0; i < QWARK_RING_SLOTS; i++) {
@@ -922,15 +952,23 @@ void session_shutdown(void)
 	autosplit_shutdown();
 	plat_mutex_destroy(&g_ring_mutex);
 	plat_mutex_destroy(&g_core_mutex);
+	plat_mutex_destroy(&g_activity_mutex);
 	plat_trace("qwark:   session mutexes destroyed");
 }
 
 /* One iteration of the loop. Exposed as session_step_once() for the host tests. */
 static void session_step(void)
 {
+	session_activity_lock();
 	step_state();
+	session_activity_unlock();
 
 	ring_drain();
+	if (session_quiet()) {
+		/* Only return ownership of cancelled ring buffers; dispatch nothing. */
+		g_tick++;
+		return;
+	}
 
 	/*
 	 * The core lock covers every table a network thread can list, so a WATCH_LIST

@@ -13,6 +13,10 @@
 
 int  net_init(void);
 
+/* Tick thread: serialize the launch allocation gate with buffer acquisition.
+ * Cancels connections holding bulk buffers; their owners release them safely. */
+void net_set_booting(int booting);
+
 /*
  * Moves the command port off QWARK_PORT. Call before net_accept_thread starts.
  * The SPRX never does: the console always listens on 9673. qwark-rpcs3.exe

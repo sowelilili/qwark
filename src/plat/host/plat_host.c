@@ -14,6 +14,10 @@
 #include "plat_host.h"
 
 #include <stdio.h>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/select.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -191,7 +195,7 @@ void plat_log(const char *fmt, ...)
 
 /* ------------------------------------------------------------------- time */
 
-u64 plat_time_us(void)
+static u64 real_time_us(void)
 {
 #ifdef _WIN32
 	static LARGE_INTEGER freq;
@@ -205,6 +209,34 @@ u64 plat_time_us(void)
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (u64)ts.tv_sec * 1000000ULL + (u64)(ts.tv_nsec / 1000);
+#endif
+}
+
+#ifdef QWARK_TEST
+static u64 g_time_offset;
+static u64 g_frozen_time;
+void host_advance_time(u64 us)
+{
+	if (g_frozen_time) g_frozen_time += us;
+	else g_time_offset += us;
+}
+void host_freeze_time(int on)
+{
+	if (on) g_frozen_time = real_time_us() + g_time_offset;
+	else {
+		g_time_offset = g_frozen_time - real_time_us();
+		g_frozen_time = 0;
+	}
+}
+#endif
+
+u64 plat_time_us(void)
+{
+#ifdef QWARK_TEST
+	if (g_frozen_time) return g_frozen_time;
+	return real_time_us() + g_time_offset;
+#else
+	return real_time_us();
 #endif
 }
 
@@ -629,6 +661,16 @@ void plat_dir_close(plat_dir_t *d)
  */
 static pthread_mutex_t g_pages_lock = PTHREAD_MUTEX_INITIALIZER;
 static u32 g_live_pages;
+static u32 g_page_allocations;
+
+u32 host_page_allocations(void)
+{
+	u32 n;
+	pthread_mutex_lock(&g_pages_lock);
+	n = g_page_allocations;
+	pthread_mutex_unlock(&g_pages_lock);
+	return n;
+}
 
 u32 host_live_pages(void)
 {
@@ -645,6 +687,7 @@ void *plat_alloc_pages(u32 size)
 	if (p != NULL) {
 		pthread_mutex_lock(&g_pages_lock);
 		g_live_pages++;
+		g_page_allocations++;
 		pthread_mutex_unlock(&g_pages_lock);
 	}
 	return p;
@@ -688,6 +731,31 @@ void plat_socket_shutdown(int s)
 #endif
 }
 
+int plat_socket_nonblocking(int s)
+{
+#ifdef _WIN32
+	u_long on = 1;
+	return ioctlsocket((SOCKET)s, FIONBIO, &on);
+#else
+	int flags = fcntl(s, F_GETFL, 0);
+	return flags < 0 ? -1 : fcntl(s, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+int plat_socket_wait(int s, int writing, u32 ms)
+{
+	fd_set fds;
+	struct timeval timeout;
+#ifndef _WIN32
+	if (s < 0 || s >= FD_SETSIZE) return -1;
+#endif
+	FD_ZERO(&fds);
+	FD_SET(s, &fds);
+	timeout.tv_sec = ms / 1000u;
+	timeout.tv_usec = (ms % 1000u) * 1000u;
+	return select(s + 1, writing ? NULL : &fds, writing ? &fds : NULL, NULL, &timeout);
+}
+
 int plat_net_errno(void)
 {
 #ifdef _WIN32
@@ -700,8 +768,8 @@ int plat_net_errno(void)
 int plat_net_would_retry(int err)
 {
 #ifdef _WIN32
-	return err == WSAEINTR;
+	return err == WSAEINTR || err == WSAEWOULDBLOCK;
 #else
-	return err == EINTR;
+	return err == EINTR || err == EAGAIN || err == EWOULDBLOCK;
 #endif
 }

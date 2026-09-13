@@ -265,6 +265,9 @@ void freeze_tick(void)
 /* --------------------------------------------------------------- patch table */
 
 static const struct patch_def *g_patches[QWARK_MAX_PATCHES];
+/* Attempted prefix in patch_order; includes a possibly partial failed run. */
+static u16 g_patch_runs[QWARK_MAX_PATCHES];
+static u8 g_patch_complete[QWARK_MAX_PATCHES];
 static u32 g_patch_pool[PATCH_POOL_WORDS];
 static u16 g_patch_pool_used;
 
@@ -397,7 +400,7 @@ static u16 patch_order(const struct patch_def *def)
  * back to front: code runs forward, so what a word falls through to is already
  * in by the time the word itself is.
  */
-static void write_run(const struct patch_def *def, u16 nruns, u16 r, int revert)
+static int write_run(const struct patch_def *def, u16 nruns, u16 r, int revert)
 {
 	u16 first = g_run_first[r];
 	u16 stop = run_end(def, nruns, r);
@@ -409,9 +412,11 @@ static void write_run(const struct patch_def *def, u16 nruns, u16 r, int revert)
 		for (w = start; w < stop; w++)
 			be32_put(&g_run_buf[(w - start) * 4], revert ? def->originals[w] : def->words[w].value);
 
-		mem_write(def->words[start].addr, g_run_buf, (u32)(stop - start) * 4u);
+		int rc = mem_write(def->words[start].addr, g_run_buf, (u32)(stop - start) * 4u);
+		if (rc != ST_OK) return rc;
 		stop = start;
 	}
+	return ST_OK;
 }
 
 int patch_is_applied(const struct patch_def *def)
@@ -434,7 +439,10 @@ int patch_apply(const struct patch_def *def)
 	if (def->count > PATCH_ORDER_WORDS) return ST_FULL;
 
 	/* A second apply is a no-op. It must never re-capture the originals. */
-	if (patch_is_applied(def)) return ST_OK;
+	for (i = 0; i < QWARK_MAX_PATCHES; i++) {
+		if (g_patches[i] == def)
+			return g_patch_complete[i] ? ST_OK : ST_IO_ERROR;
+	}
 
 	/*
 	 * Under RPCS3 the PPU code is already recompiled, so writing an instruction
@@ -459,9 +467,21 @@ int patch_apply(const struct patch_def *def)
 	}
 
 	nruns = patch_order(def);
-	for (k = 0; k < nruns; k++) write_run(def, nruns, g_run_order[k], 0);
-
 	g_patches[slot] = def;
+	g_patch_runs[slot] = 0;
+	g_patch_complete[slot] = 0;
+	for (k = 0; k < nruns; k++) {
+		int rc;
+		g_patch_runs[slot] = (u16)(k + 1);
+		rc = write_run(def, nruns, g_run_order[k], 0);
+		if (rc != ST_OK) {
+			/* Stop before any dependent hook, and try to restore the prefix.
+			 * Failed cleanup stays tracked, with its original words intact. */
+			patch_revert(def);
+			return rc;
+		}
+	}
+	g_patch_complete[slot] = 1;
 	return ST_OK;
 }
 
@@ -469,7 +489,7 @@ int patch_revert(const struct patch_def *def)
 {
 	int slot = -1;
 	int i;
-	u16 k, nruns;
+	u16 nruns;
 
 	if (def == NULL) return ST_BAD_ARG;
 
@@ -479,17 +499,28 @@ int patch_revert(const struct patch_def *def)
 	if (slot < 0) return ST_NOT_FOUND;
 
 	if (g_ingame && g_pid != 0) {
+		g_patch_complete[slot] = 0;
 		nruns = patch_order(def);
-		for (k = nruns; k > 0; k--) write_run(def, nruns, g_run_order[k - 1], 1);
+		while (g_patch_runs[slot] > 0) {
+			u16 k = (u16)(g_patch_runs[slot] - 1);
+			int rc = write_run(def, nruns, g_run_order[k], 1);
+			/* A failed hook removal must not be followed by target removal. */
+			if (rc != ST_OK) return rc;
+			g_patch_runs[slot] = k;
+		}
 	}
 
 	g_patches[slot] = NULL;
+	g_patch_runs[slot] = 0;
+	g_patch_complete[slot] = 0;
 	return ST_OK;
 }
 
 void patch_forget_all(void)
 {
 	memset(g_patches, 0, sizeof(g_patches));
+	memset(g_patch_runs, 0, sizeof(g_patch_runs));
+	memset(g_patch_complete, 0, sizeof(g_patch_complete));
 }
 
 u32 patch_count(void)
@@ -556,7 +587,7 @@ int client_patch_apply(const struct patch_word *words, u16 count)
 	c = client_find(words[0].addr);
 	if (c != NULL) {
 		/* Applying the same client patch twice is a no-op. */
-		if (patch_is_applied(&c->def)) return ST_OK;
+		if (patch_is_applied(&c->def)) return patch_apply(&c->def);
 	} else {
 		for (i = 0; i < CLIENT_PATCH_SLOTS; i++) {
 			if (!g_client[i].used) { c = &g_client[i]; break; }
@@ -594,14 +625,18 @@ int client_patch_revert(u32 first_addr)
 	return rc;
 }
 
-void client_patch_clear(void)
+int client_patch_clear(void)
 {
 	int i;
+	int status = ST_OK;
 	for (i = 0; i < CLIENT_PATCH_SLOTS; i++) {
+		int rc;
 		if (!g_client[i].used) continue;
-		patch_revert(&g_client[i].def);
-		g_client[i].used = 0;
+		rc = patch_revert(&g_client[i].def);
+		if (rc == ST_OK || rc == ST_NOT_FOUND) g_client[i].used = 0;
+		else status = rc;
 	}
+	return status;
 }
 
 u32 client_patch_count(void)
@@ -640,9 +675,10 @@ void client_patch_gc(void)
 	}
 }
 
-void mem_clear_client(void)
+int mem_clear_client(void)
 {
-	client_patch_clear();
+	int rc = client_patch_clear();
 	watch_clear();
 	freeze_clear();
+	return rc;
 }

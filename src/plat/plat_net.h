@@ -52,6 +52,10 @@ int plat_socket_close(int s);
 /* Shuts a socket down in both directions so a blocked call returns. */
 void plat_socket_shutdown(int s);
 
+/* Connected sockets: nonblocking I/O and bounded readiness waits. */
+int plat_socket_nonblocking(int s);
+int plat_socket_wait(int s, int writing, u32 ms);
+
 /* The last socket error for this thread. */
 int plat_net_errno(void);
 

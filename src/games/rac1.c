@@ -430,12 +430,19 @@ static void rac1_install_helper(void)
 	 * into the caves, so the target exists before anything can jump to it.
 	 */
 	for (i = 0; i < sizeof(rac1_helper_caves) / sizeof(rac1_helper_caves[0]); i++) {
-		mem_write(rac1_helper_caves[i].addr, rac1_helper_caves[i].bytes,
-		          rac1_helper_caves[i].len);
+		if (mem_write(rac1_helper_caves[i].addr, rac1_helper_caves[i].bytes,
+		              rac1_helper_caves[i].len) != ST_OK) {
+			plat_log("rac1: autosplit cave write failed; hooks not installed");
+			return;
+		}
 	}
 
-	for (i = 0; i < sizeof(rac1_helper_hooks) / sizeof(rac1_helper_hooks[0]); i++)
-		mem_write_u32(rac1_helper_hooks[i].addr, rac1_helper_hooks[i].value);
+	for (i = 0; i < sizeof(rac1_helper_hooks) / sizeof(rac1_helper_hooks[0]); i++) {
+		if (mem_write_u32(rac1_helper_hooks[i].addr, rac1_helper_hooks[i].value) != ST_OK) {
+			plat_log("rac1: autosplit hook write failed");
+			return;
+		}
+	}
 
 	/* The three counter words patch.txt zeroes, in its order. */
 	mem_write_u32(RAC1_HELPER_ZERO_1, 0);

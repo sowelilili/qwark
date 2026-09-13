@@ -94,6 +94,8 @@ struct patch_def {
  */
 int patch_apply(const struct patch_def *def);
 int patch_revert(const struct patch_def *def);
+/* Also true for a partial operation whose cleanup failed. Revert must retry;
+ * apply returns IO_ERROR until cleanup succeeds, without recapturing originals. */
 int patch_is_applied(const struct patch_def *def);
 void patch_forget_all(void);        /* drops the table without writing anything */
 
@@ -112,7 +114,7 @@ void patch_pool_reset(void);
  */
 int  client_patch_apply(const struct patch_word *words, u16 count);
 int  client_patch_revert(u32 first_addr);
-void client_patch_clear(void);
+int  client_patch_clear(void);
 u32  client_patch_count(void);
 const struct patch_def *client_patch_at(u32 index);
 
@@ -123,6 +125,6 @@ void client_patch_drop_all(void);
 void client_patch_gc(void);
 
 /* CLEAR_CLIENT: every watch, every freeze, every client patch. */
-void mem_clear_client(void);
+int mem_clear_client(void);
 
 #endif /* QWARK_MEM_H */

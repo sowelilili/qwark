@@ -1024,6 +1024,7 @@ void plat_shutdown(void)
 	host_common_shutdown();
 }
 
+int plat_game_running(void) { return pine_game_running(); }
 u32 plat_game_pid(void) { return pine_game_pid(); }
 
 int plat_game_title(char out[16]) { return pine_game_title(out); }

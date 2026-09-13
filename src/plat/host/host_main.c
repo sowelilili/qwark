@@ -142,6 +142,18 @@ static void handle_line(char *line, int *keep_running)
 		/* Live page allocations: an idle connection must be holding none. */
 		printf("ok pages %u\n", (unsigned)host_live_pages());
 
+	} else if (qstreq(cmd, "page_allocs")) {
+		printf("ok page_allocs %u\n", (unsigned)host_page_allocations());
+
+	} else if (qstreq(cmd, "activity")) {
+		/* Observe the quiet window without asking the backend for a PID/title. */
+		session_activity_lock();
+		printf("ok activity %d %u %u %u %u %u\n", session_quiet(),
+		       (unsigned)host_pid_calls(), (unsigned)host_title_calls(),
+		       (unsigned)host_mem_reads(), (unsigned)host_write_log_count(),
+		       (unsigned)net_telemetry_sends());
+		session_activity_unlock();
+
 	} else if (qstreq(cmd, "status")) {
 		print_status();
 		return;

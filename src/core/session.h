@@ -56,6 +56,13 @@ void session_step_once(void);
 void session_stop(void);
 int  session_running(void);
 
+/* Lock before core_lock; never hold it while waiting for a ring command.
+ * Serializes boot detection with TCP I/O/inline dispatch. session_quiet() is
+ * read under this lock by network threads, or directly by the owning tick. */
+void session_activity_lock(void);
+void session_activity_unlock(void);
+int  session_quiet(void);
+
 /*
  * Destroys the mutexes and the ring semaphores session_init created. Call only
  * after the tick thread has been joined; nothing may enter the session code

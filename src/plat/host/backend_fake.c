@@ -214,6 +214,17 @@ void host_set_emulator(int on)
  * second of a launch.
  */
 static u32 g_title_calls;
+static u32 g_pid_calls;
+static u32 g_presence_calls;
+
+u32 host_pid_calls(void) { return g_pid_calls; }
+u32 host_presence_calls(void) { return g_presence_calls; }
+
+int plat_game_running(void)
+{
+	g_presence_calls++;
+	return g_game_running;
+}
 
 u32 host_title_calls(void)
 {
@@ -222,6 +233,7 @@ u32 host_title_calls(void)
 
 u32 plat_game_pid(void)
 {
+	g_pid_calls++;
 	return g_game_pid;
 }
 
@@ -272,6 +284,16 @@ int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 static u32 g_write_log_addr[HOST_WRITE_LOG];
 static u32 g_write_log_len[HOST_WRITE_LOG];
 static u32 g_write_log_count;
+static u32 g_fail_write_addr;
+static u32 g_fail_write_count;
+
+void host_fail_writes(u32 addr, u32 count)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	g_fail_write_addr = addr;
+	g_fail_write_count = count;
+	pthread_mutex_unlock(&g_mem_lock);
+}
 
 void host_write_log_reset(void)
 {
@@ -299,6 +321,11 @@ int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 	if (!g_game_running || pid != g_game_pid) return -1;
 
 	pthread_mutex_lock(&g_mem_lock);
+	if (g_fail_write_count && addr == g_fail_write_addr) {
+		g_fail_write_count--;
+		pthread_mutex_unlock(&g_mem_lock);
+		return -1;
+	}
 	if (g_write_log_count < HOST_WRITE_LOG) {
 		g_write_log_addr[g_write_log_count] = addr;
 		g_write_log_len[g_write_log_count] = len;

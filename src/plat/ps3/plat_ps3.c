@@ -17,6 +17,8 @@
 
 #include <cell/cell_fs.h>
 #include <sys/tty.h>
+#include <sys/time.h>
+#include <sys/select.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -58,9 +60,13 @@ void plat_shutdown(void)
 
 /* ----------------------------------------------------------- console state */
 
+int plat_game_running(void)
+{
+	return IS_INGAME != 0;
+}
+
 u32 plat_game_pid(void)
 {
-	if (!IS_INGAME) return 0;
 	return (u32)GetGameProcessID();
 }
 
@@ -526,7 +532,25 @@ int plat_net_errno(void)
 	return sys_net_errno;
 }
 
+int plat_socket_nonblocking(int s)
+{
+	int on = 1;
+	return setsockopt(s, SOL_SOCKET, SO_NBIO, &on, sizeof(on));
+}
+
+int plat_socket_wait(int s, int writing, u32 ms)
+{
+	fd_set fds;
+	struct timeval timeout;
+	if (s < 0 || s >= FD_SETSIZE) return -1;
+	FD_ZERO(&fds);
+	FD_SET(s, &fds);
+	timeout.tv_sec = ms / 1000u;
+	timeout.tv_usec = (ms % 1000u) * 1000u;
+	return socketselect(s + 1, writing ? NULL : &fds, writing ? &fds : NULL, NULL, &timeout);
+}
+
 int plat_net_would_retry(int err)
 {
-	return err == SYS_NET_EINTR;
+	return err == SYS_NET_EINTR || err == SYS_NET_EWOULDBLOCK;
 }

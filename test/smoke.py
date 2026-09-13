@@ -13,6 +13,7 @@ Usage:  python test/smoke.py [path-to-qwark-host.exe]
 import os
 import shutil
 import socket
+import select
 import struct
 import subprocess
 import sys
@@ -33,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 25
+QWARK_BUILD = 27
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -41,6 +42,7 @@ OP_PREVIOUS_LIST = 0x0004
 OP_PREVIOUS_REAPPLY = 0x0005
 OP_PREVIOUS_DISMISS = 0x0006
 OP_SUBSCRIBE = 0x0010
+OP_UNSUBSCRIBE = 0x0011
 OP_GET_STATE = 0x0012
 OP_DESCRIBE = 0x0020
 OP_FEATURE_SET = 0x0021
@@ -294,6 +296,138 @@ def sim_pages_idle(sim, timeout=1.0):
         time.sleep(0.01)
         pages = sim_pages(sim)
     return pages
+
+
+def sim_allocations(sim):
+    mark = len(sim.lines)
+    sim.send("page_allocs")
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        for line in sim.lines[mark:]:
+            if line.startswith("ok page_allocs "):
+                return int(line.split()[2])
+        time.sleep(.01)
+    raise RuntimeError("no allocation count from simulator")
+
+
+def sim_activity(sim):
+    mark = len(sim.lines)
+    sim.send("activity")
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        for line in sim.lines[mark:]:
+            if line.startswith("ok activity "):
+                return tuple(map(int, line.split()[2:]))
+        time.sleep(.005)
+    raise RuntimeError("no activity snapshot from simulator")
+
+
+def test_boot_buffers(sim, c, udp_port, udp):
+    """Real socket framing, allocation accounting and cancellation at launch."""
+    before = sim_allocations(sim)
+    for _ in range(5):
+        c.call(OP_HELLO, b"\x01")
+        c.call(OP_HEARTBEAT)
+        c.call(OP_GET_STATE)
+    check(sim_allocations(sim) == before, "control traffic never allocates request pages")
+
+    # Every fixed-buffer opcode, including a SUBSCRIBE whose payload straddles
+    # the pause. It is already 1.15 seconds old when the second-long pause starts.
+    controls = [(OP_HELLO, b"\x01"), (OP_HEARTBEAT, b""),
+                (OP_SUBSCRIBE, struct.pack(">H", udp_port)),
+                (OP_UNSUBSCRIBE, b""), (OP_GET_STATE, b"")]
+    peers = [connect() for _ in controls]
+    for peer in peers:
+        Client(peer).call(OP_HEARTBEAT)
+    peers[2].sendall(struct.pack(">IHH", 2, 71, OP_SUBSCRIBE) + controls[2][1][:1])
+    time.sleep(1.15)
+    partial = connect()
+    try:
+        # MOD_LOAD, with the entire payload delayed. HELLO now uses fixed buffers.
+        partial.sendall(struct.pack(">IHH", 32, 1, 0x61))
+        deadline = time.time() + 1
+        while sim_pages(sim) == 0 and time.time() < deadline:
+            time.sleep(.01)
+        check(sim_pages(sim) == 1, "partial bulk request acquires one allocation outside boot")
+        before = sim_allocations(sim)
+        sim.send("boot NPEA00385")
+        # Hold BOOTING beyond the one-second wait, so the gate test has no timing race.
+        with open(os.path.join(ROOT, "src", "games", "rac1.h")) as source:
+            fp_header = source.read()
+        import re
+        fp_addr = re.search(r"#define\s+RAC1_FP_ADDR\s+(0x[0-9A-Fa-f]+)", fp_header).group(1)
+        sim.send("poke %s 00000000" % fp_addr)
+        deadline = time.monotonic() + 1
+        activity = sim_activity(sim)
+        while not activity[0] and time.monotonic() < deadline:
+            activity = sim_activity(sim)
+        check(activity[0] == 1, "IS_INGAME starts the quiet window")
+        drain_udp(udp)
+        for i, (op, payload) in enumerate(controls):
+            if i == 2:
+                peers[i].sendall(payload[1:])
+            else:
+                peers[i].sendall(struct.pack(">IHH", len(payload), 71, op) + payload)
+        ready, _, _ = select.select(peers + [udp], [], [], .65)
+        check(not ready, "all control requests and UDP remain silent inside the first second")
+        check(sim_activity(sim) == activity, "no PID, title, memory or telemetry activity during the pause")
+        check(sim_pages_idle(sim, .1) == 0, "cancelled bulk buffers are released during the quiet window")
+        check(sim_allocations(sim) == before, "quiet-window traffic allocates no request pages")
+        for peer in peers:
+            response = Client(peer)
+            length, seq, status = struct.unpack(">IHH", response.recv_exact(8))
+            if length:
+                response.recv_exact(length)
+            check(seq == 71 and status == ST_OK, "deferred control frame resumes with its original sequence")
+        check(wait_state(c, SESSION_BOOTING)[0], "allocation gate test reaches BOOTING")
+        check(sim_pages_idle(sim, 1.0) == 0, "launch cancels and releases an incomplete bulk request")
+        try:
+            disconnected = partial.recv(1) == b""
+        except (ConnectionResetError, ConnectionAbortedError):
+            disconnected = True
+        check(disconnected, "cancelled bulk connection closes")
+
+        for op, payload in [(OP_DESCRIBE, b""), (OP_FILE_WRITE, bytes(65600)),
+                            (OP_SAVEFILE_INFO, b"")]:
+            status, body = c.call(op, payload)
+            check(status == ST_BUSY and body == b"", "boot refuses allocating op %d with BUSY" % op, status)
+        check(c.call(OP_HELLO, b"\x01")[0] == ST_OK, "HELLO still works in boot")
+        check(c.call(OP_HEARTBEAT)[0] == ST_OK, "HEARTBEAT still works after draining a large frame")
+        check(c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))[0] == ST_OK,
+              "SUBSCRIBE still works in boot")
+        check(c.call(OP_GET_STATE)[0] == ST_OK, "GET_STATE still works in boot")
+        check(sim_allocations(sim) == before, "boot traffic made zero page allocations")
+
+        newcomer = connect()
+        try:
+            try:
+                newcomer.sendall(struct.pack(">IHHB", 1, 1, OP_HELLO, 1))
+                closed = newcomer.recv(1) == b""
+            except (ConnectionResetError, ConnectionAbortedError):
+                closed = True
+            check(closed, "boot refuses new connection-thread allocations")
+        finally:
+            newcomer.close()
+        sim.send("poke %s 30649ce0" % fp_addr)
+        check(wait_state(c, SESSION_INGAME)[0], "normal boot resumes when fingerprint arrives")
+        check(c.call(OP_DESCRIBE)[0] == ST_OK, "deferred request succeeds after boot")
+        sim.send("quit")
+        check(wait_state(c, SESSION_XMB)[0], "allocation probe returns to XMB")
+    finally:
+        partial.close()
+        for peer in peers:
+            peer.close()
+
+    # A stalled request also expires without a game transition.
+    stalled = connect()
+    try:
+        stalled.sendall(struct.pack(">IHH", 32, 1, 0x61))
+        time.sleep(.1)
+        check(sim_pages(sim) == 1, "timeout probe starts with a live allocation")
+        check(sim_pages_idle(sim, 3.0) == 0, "payload timeout releases its allocation without a boot")
+        check(c.call(OP_HEARTBEAT)[0] == ST_OK, "other connections survive a stalled request")
+    finally:
+        stalled.close()
 
 
 # ------------------------------------------------------------- decoding
@@ -1988,6 +2122,7 @@ def main():
         check(telemetry_within(udp, 1.0), "and its next frame brings the telemetry back")
 
         # ------------------------------------------------------------ boot
+        test_boot_buffers(sim, c, udp_port, udp)
         sim.send("boot NPEA00385")
         ok, info = wait_state(c, SESSION_INGAME)
         check(ok, "the session reaches INGAME after boot NPEA00385", info)

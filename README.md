@@ -17,6 +17,15 @@ Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NP
 
 qwark listens on TCP port 9673 and streams telemetry over UDP to connected clients. It can coexist with Ratchetron (9671) and the old autosplitter modules (9672).
 
+Build 27 leaves the console alone for a measured second after IS_INGAME, before
+the first PID, title or memory query. TCP requests wait on existing connections;
+telemetry and autosplit UDP sends pause too. After that second, control and state
+polling resume on fixed buffers. Requests needing larger buffers answer BUSY until
+boot finishes. A bulk request already in flight is cancelled on a game transition,
+which can cause the client to reconnect. New connection attempts are refused until
+the transition finishes. Failed mod caves and patch writes now stop before dependent hooks are
+enabled, and an aborted boot no longer leaves the previous game's tables active.
+
 ## Save files
 
 qwark carries a small savefile helper for each of the four games: a few hundred bytes of PowerPC code, built from one source in `src/games/sfhelper/` and embedded in the module. The first time a client asks anything about save files, qwark writes that code into a code cave in the running game and branches the game into it; from then on the game calls it once a frame and it does nothing until asked. The user never loads a mod for it and never sees it happen.

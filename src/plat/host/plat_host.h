@@ -68,9 +68,17 @@ u32  host_mem_reads(void);
 
 /* How many times the core has asked the fake XMB for the running title. */
 u32  host_title_calls(void);
+u32  host_pid_calls(void);
+u32  host_presence_calls(void);
+#ifdef QWARK_TEST
+void host_advance_time(u64 us);
+void host_freeze_time(int on);
+#endif
 
 /* Page allocations still live, which an idle connection must hold none of. */
 u32  host_live_pages(void);
+u32  host_page_allocations(void);
+void host_fail_writes(u32 addr, u32 count);
 
 /*
  * The writes the core has made since host_write_log_reset, oldest first: where

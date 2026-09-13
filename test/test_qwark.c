@@ -138,21 +138,23 @@ static void test_framing(void)
 static void pump(int ticks)
 {
 	int i;
-	for (i = 0; i < ticks; i++) session_step_once();
+	for (i = 0; i < ticks; i++) {
+		host_advance_time(8334);
+		session_step_once();
+	}
 }
 
 /*
  * Steps until the session reaches `want` or we give up. Returns 1 on success.
  *
- * Ticks, not milliseconds, and no sleeping: the second a boot waits is counted
- * in ticks so that it can be stepped through rather than waited out.
+ * Advance the host clock as well as the tick, without sleeping through boots.
  */
 static int pump_until(u8 want, int max_ticks)
 {
 	int i;
 
 	for (i = 0; i < max_ticks; i++) {
-		session_step_once();
+		pump(1);
 		if (session_state() == want) return 1;
 	}
 
@@ -660,39 +662,121 @@ static void test_session_different_title(void)
 }
 
 /*
- * A launch, start to finish. The process id puts the session in BOOTING on the
- * tick it appears. For the next second nothing reads the process and nothing asks
- * the XMB for the title; then the title and the fingerprint bring the game up on
- * the first tick they are allowed to. Telemetry never stops, and nothing that
- * writes to the game waits for more than INGAME.
+ * Failures while staging code and while changing titles must not install hooks
+ * into missing code or carry the previous game's tables into a new process.
  */
+static void test_launch_failures(void)
+{
+	u8 zero[64] = {0}, description[8192];
+	u32 len, value;
+	const struct game_api *candidates[GAME_MAX_CANDIDATES];
+	const struct patch_word words[] = {{0x1000u, 0x48001000u}, {0x2000u, 0x4E800020u}};
+	u32 originals[2];
+	struct patch_def def = {"failure test", PATCH_KIND_CLIENT, words, 2, originals};
+	plat_file_t f;
+	const char *path = "/dev_hdd0/qwark/mods/NPEA00385/failure-test/patch.txt";
+	const char patch[] = "0x3000: missing.bin\n0x4000: 0x4bfff000\n";
+
+	group("failed code writes and aborted launches");
+	check(quit_and_wait() && boot_and_wait("NPEA00385"), "RaC1 starts for failure checks");
+	host_poke(0x1000, zero, 4);
+	host_poke(0x2000, zero, 4);
+	host_fail_writes(0x2000, 1);
+	check(patch_apply(&def) == ST_IO_ERROR, "failed trampoline reports IO_ERROR");
+	mem_read_u32(0x1000, &value);
+	check_eq_u64(value, 0, "failed trampoline never enables its hook");
+	check(!patch_is_applied(&def), "successful rollback drops the patch record");
+
+	check(patch_apply(&def) == ST_OK, "patch can be applied after successful cleanup");
+	host_fail_writes(0x1000, 2);
+	check(patch_revert(&def) == ST_IO_ERROR, "failed hook removal reports IO_ERROR");
+	mem_read_u32(0x2000, &value);
+	check_eq_u64(value, 0x4E800020u, "failed hook removal leaves the trampoline intact");
+	check(patch_is_applied(&def), "failed revert retains the original words and record");
+	check(patch_apply(&def) == ST_IO_ERROR, "partial revert is not reported as an applied patch");
+	check(patch_revert(&def) == ST_IO_ERROR, "cleanup can report another failure");
+	check(patch_revert(&def) == ST_OK, "cleanup can retry once writes recover");
+	mem_read_u32(0x2000, &value);
+	check_eq_u64(value, 0, "retry restores the original trampoline bytes");
+
+	host_fail_writes(0x2000, 2);
+	check(client_patch_apply(words, 2) == ST_IO_ERROR, "client patch reports failed staging and cleanup");
+	check(client_patch_count() == 1, "client retains storage for failed cleanup");
+	check(client_patch_apply(words, 2) == ST_IO_ERROR, "client retry does not falsely succeed");
+	host_fail_writes(0x2000, 1);
+	check(mem_clear_client() == ST_IO_ERROR && client_patch_count() == 1,
+	      "CLEAR_CLIENT preserves and reports a patch it could not remove");
+	check(mem_clear_client() == ST_OK && client_patch_count() == 0, "CLEAR_CLIENT retry finishes cleanup");
+
+	plat_dir_create("/dev_hdd0/qwark/mods/NPEA00385/failure-test");
+	check(plat_file_open(path, PLAT_OPEN_WRITE, &f) == 0, "missing-cave fixture opens");
+	plat_file_write(f, patch, sizeof(patch)-1);
+	plat_file_close(f);
+	mods_set_title("NPEA00385");
+	check(mods_load("failure-test") == ST_NOT_FOUND, "missing cave refuses mod load");
+	mem_read_u32(0x4000, &value);
+	check_eq_u64(value, 0, "missing cave never enables its hook");
+	check(!(mods_at((u32)mods_find("failure-test"))->flags & MOD_FLAG_LOADED), "missing-cave mod is not marked loaded");
+	plat_file_unlink(path);
+	plat_dir_remove("/dev_hdd0/qwark/mods/NPEA00385/failure-test");
+	mods_set_title("NPEA00385");
+
+	check(quit_and_wait(), "RaC1 quits");
+	host_boot("NPEA00386");
+	game_candidates_for_title("NPEA00386", candidates, GAME_MAX_CANDIDATES);
+	host_poke(candidates[0]->fp_addr, zero, candidates[0]->fp_len);
+	pump(122);
+	check(session_state() == SESSION_BOOTING && qstreq(session_title(), "NPEA00386"), "RaC2 title is known but fingerprint is not ready");
+	check(quit_and_wait() && boot_and_wait("NPEA00386"), "aborted RaC2 launch retries successfully");
+	check(features_describe(description, sizeof(description), &len) == ST_OK && description[0] == GAME_RAC2,
+	      "retried RaC2 launch replaces the feature table with RaC2's");
+	check(mods_find("quartu_patch") < 0, "retried RaC2 launch drops RaC1's mod table");
+	check(quit_and_wait() && boot_and_wait("NPEA00385"), "restore RaC1 for later tests");
+}
+
 static void test_boot(void)
 {
-	u32 booted_at, reads_at_boot, titles_at_boot, sends_at_boot;
+	u32 reads_at_boot, writes_at_boot, titles_at_boot, sends_at_boot, pids_at_boot;
+	u32 presence_at_boot;
 
 	group("session: a boot");
 
 	check(quit_and_wait(), "quit whatever was running");
 
+	host_freeze_time(1);
+	pids_at_boot = host_pid_calls();
 	host_boot("NPEA00385");
 	pump(1);
-	check(session_state() == SESSION_BOOTING, "the process id puts the session in BOOTING at once");
+	check(session_state() == SESSION_BOOTING, "IS_INGAME puts the session in BOOTING at once");
+	check_eq_u64(host_pid_calls() - pids_at_boot, 0, "even the first PID query is deferred");
 
-	booted_at = session_tick_count();
 	reads_at_boot = host_mem_reads();
+	writes_at_boot = host_write_log_count();
 	titles_at_boot = host_title_calls();
 	sends_at_boot = net_telemetry_sends();
+	presence_at_boot = host_presence_calls();
 
-	/* The wait is 120 ticks from the one BOOTING began on, and one has gone. */
-	pump(118);
-	check(session_state() == SESSION_BOOTING, "it is still BOOTING a tick short of a second");
+	/* Lots of ticks cannot shorten the measured second. */
+	{
+		int i;
+		for (i = 0; i < 250; i++) session_step_once();
+	}
+	host_advance_time(999999);
+	session_step_once();
+	check(session_state() == SESSION_BOOTING, "still BOOTING one microsecond short of a second");
 	check_eq_u64(host_mem_reads() - reads_at_boot, 0, "and the process has not been read");
+	check_eq_u64(host_write_log_count() - writes_at_boot, 0, "nor written");
 	check_eq_u64(host_title_calls() - titles_at_boot, 0, "nor the XMB asked for the title");
-	check(net_telemetry_sends() - sends_at_boot >= 29, "while telemetry kept going out at 30 Hz");
+	check_eq_u64(host_pid_calls() - pids_at_boot, 0, "nor the process ID queried");
+	check_eq_u64(host_presence_calls() - presence_at_boot, 0, "nor IS_INGAME polled again");
+	check_eq_u64(net_telemetry_sends() - sends_at_boot, 0, "UDP telemetry is silent too");
 
-	check(pump_until(SESSION_INGAME, 4), "the game is up the moment the second is over");
-	check(session_tick_count() - booted_at <= 121, "a second after the process appeared");
+	host_advance_time(1);
+	session_step_once();
+	check(session_state() == SESSION_INGAME, "the game is up when the full second is over");
 	check_eq_u64(host_title_calls() - titles_at_boot, 1, "after one question to the XMB");
+	check_eq_u64(host_pid_calls() - pids_at_boot, 1, "and the first PID query");
+	host_freeze_time(0);
 	check(savefile_install() == ST_OK, "and the savefile helper goes in straight away");
 }
 
@@ -717,7 +801,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 25, "and this module is build 25");
+	check_eq_u64(packet[5], 27, "and this module is build 27");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -4485,6 +4569,7 @@ int main(void)
 	test_session_same_title();
 	test_session_different_title();
 	test_boot();
+	test_launch_failures();
 	test_unlocks();
 	test_levelflags();
 	test_planet_load();

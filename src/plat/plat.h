@@ -38,11 +38,11 @@ void plat_shutdown(void);
 /* ------------------------------------------------------------ console and game */
 
 /*
- * The running game's process id, or 0 when no game is running. On a console that
- * is VSH IS_INGAME first and then the process id, so an app that is not a game
- * answers 0 here too.
+ * Presence is separate from PID discovery so the session can leave the console
+ * alone for a second after IS_INGAME, before making any process queries.
  */
-u32  plat_game_pid(void);
+int  plat_game_running(void);
+u32  plat_game_pid(void); /* 0 when no PID is ready. Call only after presence. */
 
 /* NUL-terminated title id ("NPEA00385") into out. Returns 1 on success. */
 int  plat_game_title(char out[16]);

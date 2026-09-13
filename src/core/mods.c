@@ -366,7 +366,7 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 	}
 
 	plat_file_close(f);
-	return ST_OK;
+	return offset != 0 ? ST_OK : ST_IO_ERROR;
 }
 
 static int mods_load_index(int index, int depth);
@@ -416,7 +416,8 @@ static int mods_load_index(int index, int depth)
 
 	m = &g_mods[index];
 	if (!m->used) return ST_NOT_FOUND;
-	if (m->flags & MOD_FLAG_LOADED) return ST_OK;
+	if (m->flags & MOD_FLAG_LOADED)
+		return m->def.count > 0 ? patch_apply(&m->def) : ST_OK;
 	if (m->flags & MOD_FLAG_PARSE_ERROR) return ST_IO_ERROR;
 	/*
 	 * Every mod is patch words, code caves, or both, and neither survives a
@@ -447,12 +448,17 @@ static int mods_load_index(int index, int depth)
 	 * list a branch ahead of the trampoline it jumps to.
 	 */
 	for (c = 0; c < m->ncaves; c++) {
-		write_cave(m, &g_caves[m->cave_first + c]);
+		rc = write_cave(m, &g_caves[m->cave_first + c]);
+		if (rc != ST_OK) return rc;
 	}
 
 	if (m->def.count > 0) {
 		rc = patch_apply(&m->def);
-		if (rc != ST_OK) return rc;
+		if (rc != ST_OK) {
+			/* Keep a failed cleanup unloadable, and never rewrite its caves. */
+			if (patch_is_applied(&m->def)) m->flags |= MOD_FLAG_LOADED;
+			return rc;
+		}
 	}
 
 	m->flags |= MOD_FLAG_LOADED;
@@ -479,7 +485,10 @@ int mods_unload(const char *dirname)
 	 * The patch words only; the cave bytes stay where they are, because putting
 	 * them back crashed the game. patch_revert takes the branches out first.
 	 */
-	if (m->def.count > 0) patch_revert(&m->def);
+	if (m->def.count > 0) {
+		int rc = patch_revert(&m->def);
+		if (rc != ST_OK) return rc;
+	}
 
 	m->flags &= (u8)~MOD_FLAG_LOADED;
 	return ST_OK;

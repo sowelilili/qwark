@@ -16,6 +16,7 @@
 #define CONN_REQ_CAP    QWARK_MAX_PAYLOAD
 #define CONN_REPLY_CAP  65600u
 #define CONN_ALLOC      (3u * 65536u)      /* 64 KB pages, holds both buffers */
+#define REQUEST_TIMEOUT_US 2000000u
 
 #define CLIENT_STACK    16384u
 #define ACCEPT_STACK    16384u
@@ -48,6 +49,10 @@ struct conn {
 	u8   *req;
 	u8   *reply;
 	void *block;
+	volatile int cancelled;
+	/* Control traffic needs no page allocation, including during launch. */
+	u8    control_req[2];
+	u8    control_reply[TELEMETRY_MAX];
 	u32   remote_ip;      /* network byte order, as it came off the socket */
 	u8    used;
 };
@@ -73,6 +78,22 @@ static struct filehandle g_files[MAX_FILES];
 static int g_listen = -1;
 static int g_udp = -1;
 static volatile int g_working = 1;
+/* Protected by core_lock, including the allocation itself. Closed at startup. */
+static int g_booting = 1;
+
+void net_set_booting(int booting)
+{
+	int i;
+	core_lock();
+	g_booting = booting;
+	if (booting) {
+		for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
+			/* Never free memory that a handler/ring command might still own. */
+			if (g_conns[i].block != NULL) g_conns[i].cancelled = 1;
+		}
+	}
+	core_unlock();
+}
 
 /* config.txt `trace_ops`: two log lines per request. See the request loop. */
 static int g_trace_ops = 1;
@@ -103,40 +124,68 @@ static void close_tracked(int *sock)
 	}
 }
 
-static int send_all(int s, const void *buf, u32 len)
+/* Returns with the activity lock held. Pausing preserves frame offsets and
+ * does not consume the payload/reply timeout. Cancelled bulk owners can leave
+ * immediately to release their pages, even inside the quiet window. */
+static int conn_activity(struct conn *c, u64 *deadline)
 {
-	const char *p = (const char *)buf;
-	u32 sent = 0;
+	for (;;) {
+		u64 started;
+		session_activity_lock();
+		if (!g_working || c->cancelled) {
+			session_activity_unlock();
+			return -1;
+		}
+		if (!session_quiet()) return 0;
+		started = plat_time_us();
+		session_activity_unlock();
+		plat_sleep_us(20000);
+		if (deadline != NULL && *deadline != 0)
+			*deadline += plat_time_us() - started;
+	}
+}
 
-	while (sent < len) {
-		int res = (int)send(s, p + sent, (int)(len - sent), 0);
+/* Nonblocking I/O makes cancellation independent of shutdown() wakeups. */
+static int conn_io(struct conn *c, void *buf, u32 len, int writing, int idle)
+{
+	char *p = (char *)buf;
+	u32 done = 0;
+	u64 deadline = idle ? 0 : plat_time_us() + REQUEST_TIMEOUT_US;
+
+	while (done < len) {
+		int ready, res;
+		if (conn_activity(c, &deadline) != 0) return -1;
+		session_activity_unlock();
+		if (deadline && plat_time_us() >= deadline) return -1;
+		ready = plat_socket_wait(c->sock, writing, 20);
+		if (ready == 0) continue;
+		if (ready < 0) {
+			if (plat_net_would_retry(plat_net_errno())) continue;
+			return -1;
+		}
+		/* Detection can run while select waits. Recheck before touching a frame. */
+		if (conn_activity(c, &deadline) != 0) return -1;
+		res = writing ? (int)send(c->sock, p + done, (int)(len - done), 0) :
+		                (int)recv(c->sock, p + done, (int)(len - done), 0);
+		session_activity_unlock();
 		if (res < 0) {
 			if (plat_net_would_retry(plat_net_errno())) continue;
 			return -1;
 		}
 		if (res == 0) return -1;
-		sent += (u32)res;
+		done += (u32)res;
 	}
-
 	return 0;
 }
 
-static int recv_all(int s, void *buf, u32 len)
+static int send_all(struct conn *c, const void *buf, u32 len)
 {
-	char *p = (char *)buf;
-	u32 got = 0;
+	return conn_io(c, (void *)buf, len, 1, 0);
+}
 
-	while (got < len) {
-		int res = (int)recv(s, p + got, (int)(len - got), 0);
-		if (res < 0) {
-			if (plat_net_would_retry(plat_net_errno())) continue;
-			return -1;
-		}
-		if (res == 0) return -1;
-		got += (u32)res;
-	}
-
-	return 0;
+static int recv_all(struct conn *c, void *buf, u32 len)
+{
+	return conn_io(c, buf, len, 0, 0);
 }
 
 /* ------------------------------------------------------------- subscribers */
@@ -475,7 +524,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		break;
 
 	case OP_CLEAR_CLIENT:
-		mem_clear_client();
+		cmd->status = (u16)mem_clear_client();
 		break;
 
 	case OP_FEATURE_SET:
@@ -747,7 +796,10 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 static void net_ring_exec(struct ring_cmd *cmd)
 {
 	core_lock();
-	ring_exec_locked(cmd);
+	if (g_booting) {
+		cmd->status = ST_BUSY;
+		cmd->replylen = 0;
+	} else ring_exec_locked(cmd);
 	core_unlock();
 }
 
@@ -1438,25 +1490,41 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 /* A connection's request buffers, back to the VSH. Safe to call when there are none. */
 static void release_buffers(struct conn *c)
 {
+	core_lock();
 	if (c->block != NULL) {
 		plat_free_pages(c->block);
 		c->block = NULL;
 	}
 	c->req = NULL;
 	c->reply = NULL;
+	core_unlock();
+}
+
+static int control_request(u16 op, u32 len)
+{
+	if (len > 2) return 0;
+	switch (op) {
+	case OP_HELLO:
+	case OP_HEARTBEAT:
+	case OP_SUBSCRIBE:
+	case OP_UNSUBSCRIBE:
+	case OP_GET_STATE:
+		return 1;
+	default: return 0;
+	}
 }
 
 /*
  * Reads and discards a payload there was nowhere to put, so the next header is
  * read from where the next header actually starts.
  */
-static int drain(int s, u32 len)
+static int drain(struct conn *c, u32 len)
 {
 	char scratch[256];
 
 	while (len > 0) {
 		u32 chunk = len > sizeof(scratch) ? (u32)sizeof(scratch) : len;
-		if (recv_all(s, scratch, chunk) != 0) return -1;
+		if (recv_all(c, scratch, chunk) != 0) return -1;
 		len -= chunk;
 	}
 	return 0;
@@ -1474,20 +1542,25 @@ static void conn_thread(void *arg)
 		return;
 	}
 
-	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
+	if (conn_activity(c, NULL) == 0) {
+		setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
+		if (plat_socket_nonblocking(sock) != 0) c->cancelled = 1;
+		plat_log("qwark: client connected on slot %d", slot);
+		session_activity_unlock();
+	}
 
-	plat_log("qwark: client connected on slot %d", slot);
-
-	while (g_working && c->sock >= 0) {
+	while (g_working && !c->cancelled && c->sock >= 0) {
 		u8 header[QWARK_FRAME_HEADER];
 		u32 length;
 		u16 seq;
 		u16 op;
 		u16 status;
 		u32 replylen = 0;
+		u32 replycap;
 		u32 mem_reads = 0, mem_writes = 0, exec_us = 0;
 
-		if (recv_all(c->sock, header, QWARK_FRAME_HEADER) != 0) break;
+		/* Idle headers hold no pages. Payloads and replies have a deadline. */
+		if (conn_io(c, header, QWARK_FRAME_HEADER, 0, 1) != 0) break;
 
 		length = be32_get(header);
 		seq    = be16_get(header + 4);
@@ -1499,47 +1572,41 @@ static void conn_thread(void *arg)
 			break;
 		}
 
-		/*
-		 * The buffers exist for one request and not a moment longer.
-		 *
-		 * They used to be allocated when a client connected and kept until it
-		 * left: 192 KB of the VSH's own memory, three times what Ratchetron holds
-		 * per connection, and held through everything the console did meanwhile,
-		 * a game launch included. A launch is when the VSH has to give memory
-		 * back to make room for the game, and a console that reboots during one
-		 * with a client connected, and boots the same game fine with none, is a
-		 * console short of exactly that. The last crash happened with this module
-		 * idle and the client silent, so it was not anything being done; it was
-		 * something being held.
-		 *
-		 * Between requests the thread waits on the eight-byte header, a local, and
-		 * holds nothing. A client that is quiet while a game starts therefore
-		 * costs the VSH no memory at all for the length of the launch.
-		 */
-		c->block = plat_alloc_pages(CONN_ALLOC);
-		if (c->block == NULL) {
-			/*
-			 * The VSH has none to give, which in a game is the condition this
-			 * is all about. Drain the payload so the stream stays in step, answer
-			 * FULL, and let the client try again later rather than closing on it.
-			 */
-			plat_log("qwark: no memory for a request (op %d), answering FULL", (int)op);
-			if (drain(c->sock, length) != 0) break;
-			be32_put(header, 0);
-			be16_put(header + 4, seq);
-			be16_put(header + 6, ST_FULL);
-			if (send_all(c->sock, header, QWARK_FRAME_HEADER) != 0) break;
-			continue;
+		status = ST_OK;
+		if (control_request(op, length)) {
+			c->req = c->control_req;
+			c->reply = c->control_reply;
+			replycap = sizeof(c->control_reply);
+		} else {
+			/* The gate and allocation share the transition's lock. */
+			if (conn_activity(c, NULL) != 0) break;
+			core_lock();
+			if (g_booting) status = ST_BUSY;
+			else {
+				c->block = plat_alloc_pages(CONN_ALLOC);
+				if (c->block == NULL) status = ST_FULL;
+			}
+			core_unlock();
+			session_activity_unlock();
+			if (status != ST_OK) {
+				/* Consume the frame without pages; keep framing and liveness. */
+				if (drain(c, length) != 0) break;
+				subs_refresh(slot);
+				be32_put(header, 0);
+				be16_put(header + 4, seq);
+				be16_put(header + 6, status);
+				if (send_all(c, header, QWARK_FRAME_HEADER) != 0) break;
+				continue;
+			}
+			c->req = (u8 *)c->block;
+			c->reply = c->req + CONN_REQ_CAP;
+			replycap = CONN_REPLY_CAP;
 		}
-		c->req = (u8 *)c->block;
-		c->reply = c->req + CONN_REQ_CAP;
 
-		if (length > 0 && recv_all(c->sock, c->req, length) != 0) {
+		if (length > 0 && recv_all(c, c->req, length) != 0) {
 			release_buffers(c);
 			break;
 		}
-
-		subs_refresh(slot);
 
 		/*
 		 * config.txt's `trace_ops`, on unless it says 0. It is a file open,
@@ -1548,20 +1615,37 @@ static void conn_thread(void *arg)
 		 * console dies names the operation it died in, which is the difference
 		 * between knowing and three rounds of plausible theories.
 		 */
+		if (conn_activity(c, NULL) != 0) {
+			release_buffers(c);
+			break;
+		}
+		subs_refresh(slot);
 		if (g_trace_ops) {
 			plat_log("qwark: op %d seq %d len %d (state %d)",
 			         (int)op, (int)seq, (int)length, (int)session_state());
 		}
 
+		core_lock();
+		status = c->cancelled || (c->block != NULL && g_booting) ? ST_BUSY : ST_OK;
+		core_unlock();
+		if (status != ST_OK) {
+			/* The transition has cancelled this connection. */
+			session_activity_unlock();
+			release_buffers(c);
+			break;
+		}
+
 		if (op_needs_ring(op)) {
 			struct ring_cmd cmd;
+			/* The tick needs the activity lock before it can drain the ring. */
+			session_activity_unlock();
 
 			memset(&cmd, 0, sizeof(cmd));
 			cmd.op = op;
 			cmd.req = c->req;
 			cmd.reqlen = length;
 			cmd.reply = c->reply;
-			cmd.replycap = CONN_REPLY_CAP;
+			cmd.replycap = replycap;
 			cmd.user = c;
 
 			session_submit(&cmd);
@@ -1570,9 +1654,13 @@ static void conn_thread(void *arg)
 			mem_reads = cmd.mem_reads;
 			mem_writes = cmd.mem_writes;
 			exec_us = cmd.exec_us;
+			if (conn_activity(c, NULL) != 0) {
+				release_buffers(c);
+				break;
+			}
 		} else {
 			status = handle_inline(c, slot, op, c->req, length,
-			                       c->reply, CONN_REPLY_CAP, &replylen);
+			                       c->reply, replycap, &replylen);
 		}
 
 		if (status != ST_OK) replylen = 0;
@@ -1587,16 +1675,17 @@ static void conn_thread(void *arg)
 			         (int)op, (int)status, (int)replylen,
 			         (int)mem_reads, (int)mem_writes, (int)exec_us);
 		}
+		session_activity_unlock();
 
 		be32_put(header, replylen);
 		be16_put(header + 4, seq);
 		be16_put(header + 6, status);
 
-		if (send_all(c->sock, header, QWARK_FRAME_HEADER) != 0) {
+		if (send_all(c, header, QWARK_FRAME_HEADER) != 0) {
 			release_buffers(c);
 			break;
 		}
-		if (replylen > 0 && send_all(c->sock, c->reply, replylen) != 0) {
+		if (replylen > 0 && send_all(c, c->reply, replylen) != 0) {
 			release_buffers(c);
 			break;
 		}
@@ -1813,6 +1902,14 @@ void net_accept_thread(void *arg)
 
 			if (!g_working) { plat_socket_close(fd); break; }
 
+			session_activity_lock();
+			core_lock();
+			if (g_booting) {
+				core_unlock();
+				session_activity_unlock();
+				plat_socket_close(fd);
+				continue;
+			}
 			plat_mutex_lock(&g_net_mutex);
 			for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
 				if (!g_conns[i].used) { slot = i; g_conns[i].used = 1; break; }
@@ -1820,6 +1917,8 @@ void net_accept_thread(void *arg)
 			plat_mutex_unlock(&g_net_mutex);
 
 			if (slot < 0) {
+				core_unlock();
+				session_activity_unlock();
 				plat_log("qwark: too many clients");
 				plat_socket_close(fd);
 				continue;
@@ -1829,6 +1928,7 @@ void net_accept_thread(void *arg)
 			 * No buffers yet: a connection holds none while it waits. See the
 			 * request loop in conn_thread.
 			 */
+			g_conns[slot].cancelled = 0;
 			g_conns[slot].block = NULL;
 			g_conns[slot].req = NULL;
 			g_conns[slot].reply = NULL;
@@ -1844,6 +1944,8 @@ void net_accept_thread(void *arg)
 				close_tracked(&g_conns[slot].sock);
 				g_conns[slot].used = 0;
 			}
+			core_unlock();
+			session_activity_unlock();
 		}
 
 		close_tracked(&g_listen);
