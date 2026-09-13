@@ -26,9 +26,17 @@ which can cause the client to reconnect. New connection attempts are refused unt
 the transition finishes. Failed mod caves and patch writes now stop before dependent hooks are
 enabled, and an aborted boot no longer leaves the previous game's tables active.
 
+Build 28 removed RaC1's embedded collectable autosplitter hooks, which the user
+confirmed fixed the boot black screen. Build 29 also removes Gold bolt collected,
+Skill point, Item collected and Infobot from the advertised autosplitter options
+and stops those events. Planet, Veldin, Drek button, start/reset and load tracking
+remain. Savefile hooks are installed only by an action that requires them;
+status polling, library browsing and buffer I/O do not install them. The one-second
+quiet window remains in place.
+
 ## Save files
 
-qwark carries a small savefile helper for each of the four games: a few hundred bytes of PowerPC code, built from one source in `src/games/sfhelper/` and embedded in the module. The first time a client asks anything about save files, qwark writes that code into a code cave in the running game and branches the game into it; from then on the game calls it once a frame and it does nothing until asked. The user never loads a mod for it and never sees it happen.
+qwark carries a small savefile helper for each of the four games: a few hundred bytes of PowerPC code, built from one source in `src/games/sfhelper/` and embedded in the module. The first time an action needs the savefile helper, qwark writes that code into a code cave in the running game and branches the game into it; from then on the game calls it once a frame and it does nothing until asked. The user never loads a mod for it and never sees it happen.
 
 Asked to set a save aside, the helper copies the game's live save buffer into a spare region of the game's own memory. Loading is the reverse: something fills that region and the helper hands it to the game's own loader. The old `tempsave` under `USRDIR` is gone, and the old `sfhelper`, `rc2-save`, `rc3-save` and `rc4-save` mods are not needed and should not be loaded alongside it.
 

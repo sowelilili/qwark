@@ -23,7 +23,7 @@
  *
  * The helper itself is PowerPC code that lives in the game's process. qwark
  * carries it as bytes in src/games/sfhelper_bins.c and writes it in on the first
- * request of a session, so a user never loads a mod for it and never knows it is
+ * action that needs it, so a user never loads a mod for it and never knows it is
  * there. It is code, so a platform that cannot patch code cannot have it, and
  * everything here answers UNSUPPORTED under RPCS3.
  *
@@ -105,9 +105,9 @@ void savefile_set_enabled(int on);
 
 /*
  * Writes the caves and the hook words unless this process already has them.
- * ST_OK when the helper is in, whoever put it there. Every other entry point
- * here calls it, and so does RaC1's Force autosave, which drives a fourth
- * request byte of its own.
+ * ST_OK when qwark has installed it. Called by set-aside/load actions, valid
+ * restores and RaC1's Force autosave. Status, metadata and raw buffer I/O never
+ * install code.
  */
 int savefile_install(void);
 

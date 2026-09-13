@@ -243,9 +243,10 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 	*supported = 1;
 	*size = d->aside_size;
 
-	/* Asking about the helper is a first use, so this is where it goes in. */
-	savefile_install();
+	/* Discovery must not patch a newly booted game. Until an action installs
+	 * the helper, its request bytes may contain unrelated data. */
 	*installed = (u8)(g_installed != 0);
+	if (!g_installed) return ST_OK;
 
 	if (mem_read_u8(d->api_mod, &byte) == ST_OK && byte == 1) *running = 1;
 
@@ -466,9 +467,6 @@ int savefile_read(u32 offset, u32 len, u8 *out, u32 *outlen)
 	 * chunk at every offset and let the last one come back short. */
 	if (len > d->aside_size - offset) len = d->aside_size - offset;
 
-	rc = savefile_install();
-	if (rc != ST_OK) return rc;
-
 	rc = mem_read(d->aside_addr + offset, out, len);
 	if (rc != ST_OK) return rc;
 
@@ -488,9 +486,6 @@ int savefile_write(u32 offset, const u8 *data, u32 len)
 	/* Unlike a read, a write past the end is refused rather than trimmed: a
 	 * client sending more than the buffer holds has the wrong file. */
 	if (len > d->aside_size - offset) return ST_BAD_ARG;
-
-	rc = savefile_install();
-	if (rc != ST_OK) return rc;
 
 	return mem_write(d->aside_addr + offset, data, len);
 }
@@ -629,9 +624,6 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 	 */
 	if (!has_sav_ext(name)) return ST_BAD_ARG;
 
-	rc = savefile_install();
-	if (rc != ST_OK) return rc;
-
 	if (buffer_busy()) {
 		g_xfer.error = SAVEFILE_ERR_BUSY;
 		return ST_BUSY;
@@ -715,6 +707,14 @@ int savefile_restore(const char *category, const char *name)
 	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) {
 		g_xfer.error = SAVEFILE_ERR_IO;
 		return ST_IO_ERROR;
+	}
+
+	/* A valid restore needs the game-side loader. Metadata queries and missing
+	 * or invalid files must not install code as a side effect. */
+	rc = savefile_install();
+	if (rc != ST_OK) {
+		plat_file_close(f);
+		return rc;
 	}
 
 	xfer_begin(SF_RESTORE_COPY, d->aside_size, path);

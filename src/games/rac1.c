@@ -291,27 +291,8 @@ static void rac1_on_tick(const struct game_hot *hot)
 		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_DREK_BUTTON, 0);
 	}
 
-	/* Gold bolt split, including the Kalebo3 bolt the counter misses. */
-	if (g_as.gold_bolts != p->gold_bolts)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, g_as.gold_bolts);
-	if (g_as.kalebo_bolt != p->kalebo_bolt && g_as.kalebo_bolt != 0)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, g_as.gold_bolts);
-
-	/* Skill point split. */
-	if (g_as.skill_points != p->skill_points)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_SKILL_POINT, g_as.skill_points);
-
-	/* Item split, plus the two items with no index of their own. */
-	if (g_as.items != p->items)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
-	if (g_as.codebot != p->codebot && g_as.codebot != 0)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
-	if (g_as.rari != p->rari && g_as.rari != 0)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_ITEM, g_as.items);
-
-	/* Infobot split. */
-	if (g_as.infobots != p->infobots)
-		autosplit_emit(AUTOSPLIT_SPLIT, R1_AS_INFOBOT, g_as.infobots);
+	/* Collectable reasons 4-7 are retired while their helper is disabled.
+	 * Do not emit hidden splits from stale counters or partial fallbacks. */
 
 	/*
 	 * The loading screen, as an interval rather than a split. `arg` carries the
@@ -328,128 +309,6 @@ static void rac1_on_tick(const struct game_hot *hot)
 	g_as_prev = g_as;
 }
 
-/* ------------------------------------------------ the embedded helper mod */
-
-/*
- * racman's mods/NPEA00385/gb_sp_as_helper, byte for byte: four code caves and
- * the four words that branch into them. It is what keeps the counters at
- * 0xAFF000 / 10 / 20 / 30 that codes 4 to 7 read, and the old autosplitter was
- * useless for collectables unless the runner remembered to load it.
- *
- * qwark writes it on every entry instead. Nothing reverts it: without a run in
- * progress it is four counters nobody reads, and taking a branch back out from
- * under code that may be executing in the cave is the crash mods.c documents.
- */
-
-/* gold_bolt.bin, 156 bytes */
-static const u8 rac1_helper_gold_bolt[] = {
-	0x89, 0x23, 0x00, 0x20, 0x81, 0x43, 0x00, 0x78, 0x2C, 0x09, 0x00, 0x00,
-	0x40, 0x82, 0x00, 0x24, 0x81, 0x4A, 0x00, 0x00, 0x3D, 0x4A, 0x00, 0xB0,
-	0x99, 0x2A, 0xF0, 0x04, 0x3D, 0x20, 0x00, 0x1D, 0x61, 0x29, 0x9D, 0x48,
-	0x7D, 0x29, 0x03, 0xA6, 0x4E, 0x80, 0x04, 0x20, 0x60, 0x00, 0x00, 0x00,
-	0x28, 0x09, 0x00, 0x02, 0x40, 0x82, 0xFF, 0xE8, 0x81, 0x2A, 0x00, 0x00,
-	0x3D, 0x29, 0x00, 0xB0, 0x89, 0x29, 0xF0, 0x04, 0x2C, 0x09, 0x00, 0x00,
-	0x40, 0x82, 0xFF, 0xD4, 0x3D, 0x20, 0x00, 0xAF, 0x38, 0xE0, 0x00, 0x01,
-	0x61, 0x29, 0xF0, 0x00, 0x81, 0x09, 0x00, 0x00, 0x39, 0x08, 0x00, 0x01,
-	0x91, 0x09, 0x00, 0x00, 0x81, 0x2A, 0x00, 0x00, 0x3D, 0x29, 0x00, 0xB0,
-	0x98, 0xE9, 0xF0, 0x04, 0x4B, 0xFF, 0xFF, 0xAC, 0x00, 0x00, 0x00, 0x10,
-	0x00, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01,
-	0x1B, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18,
-	0xFF, 0xFF, 0xFF, 0x70, 0x00, 0x00, 0x00, 0x74, 0x00, 0x00, 0x00, 0x00
-};
-
-/* skillpoint.bin, 68 bytes */
-static const u8 rac1_helper_skillpoint[] = {
-	0x60, 0x00, 0x00, 0x00, 0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x10,
-	0x81, 0x49, 0x00, 0x00, 0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00,
-	0x4E, 0x80, 0x00, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00,
-	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC,
-	0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00
-};
-
-/* item.bin, 64 bytes */
-static const u8 rac1_helper_item[] = {
-	0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x20, 0x81, 0x49, 0x00, 0x00,
-	0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00, 0x4E, 0x80, 0x00, 0x20,
-	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x52, 0x00,
-	0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x10,
-	0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC, 0x00, 0x00, 0x00, 0x18,
-	0x00, 0x00, 0x00, 0x00
-};
-
-/* infobots.bin, 68 bytes */
-static const u8 rac1_helper_infobots[] = {
-	0x60, 0x00, 0x00, 0x00, 0x3D, 0x20, 0x00, 0xAF, 0x61, 0x29, 0xF0, 0x30,
-	0x81, 0x49, 0x00, 0x00, 0x39, 0x4A, 0x00, 0x01, 0x91, 0x49, 0x00, 0x00,
-	0x4E, 0x80, 0x00, 0x20, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0x7A, 0x52, 0x00, 0x04, 0x7C, 0x41, 0x01, 0x1B, 0x0C, 0x01, 0x00,
-	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x18, 0xFF, 0xFF, 0xFF, 0xCC,
-	0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00
-};
-
-struct rac1_helper_cave {
-	u32 addr;
-	const u8 *bytes;
-	u32 len;
-};
-
-static const struct rac1_helper_cave rac1_helper_caves[] = {
-	{ RAC1_HELPER_CAVE_GB,   rac1_helper_gold_bolt,  (u32)sizeof(rac1_helper_gold_bolt) },
-	{ RAC1_HELPER_CAVE_SP,   rac1_helper_skillpoint, (u32)sizeof(rac1_helper_skillpoint) },
-	{ RAC1_HELPER_CAVE_ITEM, rac1_helper_item,       (u32)sizeof(rac1_helper_item) },
-	{ RAC1_HELPER_CAVE_IB,   rac1_helper_infobots,   (u32)sizeof(rac1_helper_infobots) }
-};
-
-/* patch.txt's four hook words, in its order. */
-static const struct patch_word rac1_helper_hooks[] = {
-	{ RAC1_HELPER_HOOK_GB,   0x004F5BE4u },
-	{ RAC1_HELPER_HOOK_SP,   0x483DA4EDu },
-	{ RAC1_HELPER_HOOK_ITEM, 0x483E2E09u },
-	{ RAC1_HELPER_HOOK_IB,   0x484F5D77u }
-};
-
-static void rac1_install_helper(void)
-{
-	unsigned i;
-
-	/*
-	 * The helper is four code caves and four branches into them, so it does
-	 * nothing at all on a platform that cannot patch code (RPCS3). Autosplit
-	 * codes 4 to 7 - gold bolt, skill point, item, infobot - read counters only
-	 * this mod maintains, so they simply never fire there; every other RaC1
-	 * split is a plain memory read and is unaffected.
-	 */
-	if (!plat_can_patch_code()) {
-		plat_log("rac1: autosplit helper skipped, this platform cannot patch code");
-		return;
-	}
-
-	/*
-	 * Caves first, then the words, the way mods.c orders them: the words branch
-	 * into the caves, so the target exists before anything can jump to it.
-	 */
-	for (i = 0; i < sizeof(rac1_helper_caves) / sizeof(rac1_helper_caves[0]); i++) {
-		if (mem_write(rac1_helper_caves[i].addr, rac1_helper_caves[i].bytes,
-		              rac1_helper_caves[i].len) != ST_OK) {
-			plat_log("rac1: autosplit cave write failed; hooks not installed");
-			return;
-		}
-	}
-
-	for (i = 0; i < sizeof(rac1_helper_hooks) / sizeof(rac1_helper_hooks[0]); i++) {
-		if (mem_write_u32(rac1_helper_hooks[i].addr, rac1_helper_hooks[i].value) != ST_OK) {
-			plat_log("rac1: autosplit hook write failed");
-			return;
-		}
-	}
-
-	/* The three counter words patch.txt zeroes, in its order. */
-	mem_write_u32(RAC1_HELPER_ZERO_1, 0);
-	mem_write_u32(RAC1_HELPER_ZERO_2, 0);
-	mem_write_u32(RAC1_HELPER_ZERO_3, 0);
-}
-
 static void rac1_on_enter(void)
 {
 	/* A fresh process: the script's vars start over and nothing has been seen. */
@@ -458,8 +317,8 @@ static void rac1_on_enter(void)
 	g_as_primed = 0;
 	g_veldin_fix = 0;
 
-	/* Codes 4 to 7 read counters only this mod maintains, so it goes in first. */
-	rac1_install_helper();
+	/* Removing the embedded collectable hooks fixed the reported RaC1 boot
+	 * black screen. Keep supported read-only events; inject no helper. */
 }
 
 #define DF AUTOSPLIT_FLAG_DEFAULT
@@ -468,8 +327,8 @@ static void rac1_on_enter(void)
 
 /*
  * The script's settings.Add list, in its order, with the three unconditional
- * splits in front. A setting that defaults to true is DF here; the four
- * collectable splits default to false and a client leaves them unticked.
+ * splits in front. Only supported reasons are advertised. Collectable codes
+ * 4-7 remain reserved while their helper is disabled.
  *
  * The loading row is last and is not a split: DF because the time adjustment is
  * not a user option, and NORMALISE with the 7.56 s the script's WinForms timer
@@ -479,10 +338,6 @@ static const struct autosplit_desc rac1_autosplits[] = {
 	{ R1_AS_PLANET,      AUTOSPLIT_SPLIT,      DF | RT, 0,       "Planet entered" },
 	{ R1_AS_VELDIN,      AUTOSPLIT_SPLIT,      DF,      0,       "Veldin" },
 	{ R1_AS_DREK_BUTTON, AUTOSPLIT_SPLIT,      DF,      0,       "Drek button" },
-	{ R1_AS_GOLD_BOLT,   AUTOSPLIT_SPLIT,      0,       0,       "Gold bolt collected" },
-	{ R1_AS_SKILL_POINT, AUTOSPLIT_SPLIT,      0,       0,       "Skill point" },
-	{ R1_AS_ITEM,        AUTOSPLIT_SPLIT,      0,       0,       "Item collected" },
-	{ R1_AS_INFOBOT,     AUTOSPLIT_SPLIT,      0,       0,       "Infobot" },
 	{ R1_AS_LOADING,     AUTOSPLIT_LOAD_START, DF | NM, 7560000, "Loading screen" }
 };
 

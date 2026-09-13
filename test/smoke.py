@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 27
+QWARK_BUILD = 29
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -1130,7 +1130,9 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     size = struct.unpack(">I", body[4:8])[0]
 
     check(supported == 1, "%s: the game is supported" % name, supported)
-    check(installed == 1, "%s: and asking installed the helper" % name, installed)
+    if name == "RaC1":
+        check(installed == 0, "RaC1: initial status query leaves the helper uninstalled", installed)
+    initial_installed = installed
     check(running == 0, "%s: the fake console runs no PowerPC, so it is idle" % name,
           running)
     check(pending == 0, "%s: and no request is outstanding" % name, pending)
@@ -1145,6 +1147,9 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     check(status == ST_OK and body == pattern,
           "%s: SAVEFILE_READ hands the same bytes back" % name,
           (status, len(body)))
+    status, body = c.call(OP_SAVEFILE_INFO)
+    check(status == ST_OK and body[1] == initial_installed,
+          "%s: buffer I/O does not install helper hooks" % name)
 
     status, body = c.call(OP_SAVEFILE_READ, struct.pack(">II", size - 16, 4096))
     check(status == ST_OK and len(body) == 16,
@@ -1167,7 +1172,7 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
     if check(status == ST_OK, "%s: the SAVE_ASIDE action fires" % name, status):
         status, body = c.call(OP_SAVEFILE_INFO)
-        check(status == ST_OK and body[3] == 0x01,
+        check(status == ST_OK and body[1] == 1 and body[3] == 0x01,
               "%s: and INFO's pending bit0 says the set-aside is outstanding" % name,
               body[3] if body else None)
 
@@ -2649,10 +2654,6 @@ def main():
                 (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
                 (2, AUTOSPLIT_SPLIT, DF, 0, "Veldin"),
                 (3, AUTOSPLIT_SPLIT, DF, 0, "Drek button"),
-                (4, AUTOSPLIT_SPLIT, 0, 0, "Gold bolt collected"),
-                (5, AUTOSPLIT_SPLIT, 0, 0, "Skill point"),
-                (6, AUTOSPLIT_SPLIT, 0, 0, "Item collected"),
-                (7, AUTOSPLIT_SPLIT, 0, 0, "Infobot"),
                 (8, AUTOSPLIT_LOAD_START, DF | NM, 7560000, "Loading screen"),
             ],
             "setup": [(0x969C70, struct.pack(">I", 3)),
@@ -2678,33 +2679,18 @@ def main():
             ],
         })
 
-        # The gb_sp_as_helper mod is embedded and written on entry, so the four
-        # collectable codes work with nothing loaded.
-        check(mem_read_u32(c, 0x708EC8) == 0x004F5BE4,
-              "RaC1: the helper mod's gold-bolt hook word is in memory")
-        check(mem_read_u32(c, 0x11B7C0) == 0x483DA4ED,
-              "RaC1: and its skill-point hook word")
-        check(mem_read_u32(c, 0x4F5BE4) == 0x89230020,
-              "RaC1: the gold-bolt cave landed")
-        check(mem_read_u32(c, 0x4F5BE4 + 148) == 0x00000074,
-              "RaC1: all 156 bytes of it")
+        # RaC1's embedded collectable helper is disabled while boot crashes
+        # are investigated. Read-only events can still consume externally set counters.
+        for address in (0x708EC8, 0x11B7C0, 0x112F08, 0x112CD0,
+                        0x4F5BE4, 0x4F5CAC, 0x4F5D10, 0x4F5D74):
+            check(mem_read_u32(c, address) == 0,
+                  "RaC1: autosplit hook/cave remains untouched at %x" % address)
 
-        # And a collectable split, which is a different reason code entirely.
-        drain_udp(udp)
+        # An unsupported option must not split after disappearing from the menu.
         mark, _events, _n = autosplit_events(c, 0)
         mem_write(c, 0xAFF000, struct.pack(">I", 0x21))
-        gold = None
-        deadline = time.time() + 3.0
-        while time.time() < deadline and gold is None:
-            _latest, events, _n = autosplit_events(c, mark)
-            gold = next((e for e in events
-                         if e["kind"] == AUTOSPLIT_SPLIT and e["code"] == 4), None)
-            if gold is None:
-                time.sleep(0.05)
-        if check(gold is not None, "RaC1: a gold bolt splits with its own code"):
-            check(gold["arg"] == 0x21, "RaC1: and reports the counter", gold["arg"])
-            check(wait_qe(udp, gold["seq"]) is not None,
-                  "RaC1: its datagram arrives too")
+        check(as_absent(c, mark, AUTOSPLIT_SPLIT, 4),
+              "RaC1: retired gold-bolt option emits no hidden split")
 
         # -------------------------------------- RaC2, RaC3 and Deadlocked
         for spec in OTHER_GAMES:

@@ -777,7 +777,7 @@ static void test_boot(void)
 	check_eq_u64(host_title_calls() - titles_at_boot, 1, "after one question to the XMB");
 	check_eq_u64(host_pid_calls() - pids_at_boot, 1, "and the first PID query");
 	host_freeze_time(0);
-	check(savefile_install() == ST_OK, "and the savefile helper goes in straight away");
+	check(host_write_log_count() == writes_at_boot, "RaC1 boot injects no helper code");
 }
 
 /* ------------------------------------------------------------- telemetry */
@@ -801,7 +801,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 27, "and this module is build 27");
+	check_eq_u64(packet[5], 29, "and this module is build 29");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1205,7 +1205,7 @@ static void test_planet_load(void)
 #define A_SF_AUTO  0xB00073u
 
 /*
- * Protocol 1.9. Nobody loads a mod for the helper any more: the first request of
+ * Protocol 1.9. Nobody loads a mod for the helper any more: the first action needing it in
  * a session installs it, so the actions work from a cold process and the helper
  * byte is qwark's own write rather than a gate.
  */
@@ -1459,14 +1459,33 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	if (d == NULL) return;
 	check(d->ncaves >= 1 && d->nhooks >= 1, "which names a cave and a hook word");
 
-	/* Nothing has asked for the helper yet, and asking is what installs it. */
+	/* Dirty request bytes must not masquerade as an installed helper. */
+	host_poke(d->api_mod, (const u8 *)"\x01", 1);
+	host_poke(d->api_load, (const u8 *)"\x01", 1);
+	host_poke(d->api_setaside, (const u8 *)"\x01", 1);
+	host_write_log_reset();
 	check(savefile_info(&supported, &installed, &running, &pending, &size) == ST_OK,
 	      "SAVEFILE_INFO answers");
 	check_eq_u64(supported, 1, "the game is supported");
-	check_eq_u64(installed, 1, "and asking is what put the helper in");
+	check_eq_u64(installed, 0, "status queries leave the helper uninstalled");
 	check_eq_u64(size, d->aside_size, "the size is the aside buffer's");
 	check_eq_u64(running, 0, "nothing has executed it, so it is not running");
 	check_eq_u64(pending, 0, "and no request is outstanding");
+
+	check(savefile_info(&supported, &installed, &running, &pending, &size) == ST_OK,
+	      "repeated status polling succeeds");
+	check_eq_u64(host_write_log_count(), 0, "status polling writes no game memory");
+	check(savefile_write(0, (const u8 *)"test", 4) == ST_OK, "a cold buffer upload succeeds");
+	check(savefile_read(0, 4, buf, &got) == ST_OK && memcmp(buf, "test", 4) == 0,
+	      "a cold buffer read round-trips without installing code");
+	check_eq_u64(host_write_log_count(), 1, "only the uploaded data was written");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(installed, 0, "buffer I/O leaves the helper uninstalled");
+	check(savefile_set_aside() == ST_OK, "the first set-aside action installs the helper");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(installed, 1, "the action reports installed");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
 
 	for (i = 0; i < d->ncaves; i++) {
 		u8 head[16];
@@ -1648,7 +1667,7 @@ static void test_savefile_helper(void)
 		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
 		check(be32_get(word) != sf_desc_for_game(GAME_RAC1)->hooks[0].value,
 		      "the fresh process has no hook word in it");
-		check(savefile_install() == ST_OK, "installing again");
+		check(savefile_load_aside() == ST_OK, "a cold load action installs it again");
 		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
 		check_eq_u64(be32_get(word), sf_desc_for_game(GAME_RAC1)->hooks[0].value,
 		             "and the hook word is back");
@@ -1747,6 +1766,7 @@ static void test_savefile_library(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00385"), "RaC1 reaches INGAME");
 	if (d == NULL) { check(0, "RaC1 has a helper table entry"); return; }
+	host_write_log_reset();
 
 	/* ------------------------------------------------------- categories */
 
@@ -1765,6 +1785,11 @@ static void test_savefile_library(void)
 	check(savefile_category(SAVEFILE_CATEGORY_CREATE, "../escape") == ST_BAD_ARG,
 	      "a category name with a separator in it is refused");
 	check(savefile_category(9, "runs") == ST_BAD_ARG, "and so is an unknown op");
+	check(savefile_restore("runs", "missing.sav") == ST_NOT_FOUND,
+	      "a missing restore file is refused before installation");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(installed, 0, "metadata and a refused restore leave the helper uninstalled");
+	check_eq_u64(host_write_log_count(), 0, "metadata and refused restore write no game memory");
 
 	/* ------------------------------------------------------------ STORE */
 
@@ -3539,10 +3564,6 @@ static const struct as_want rac1_want[] = {
 	{ 1, AUTOSPLIT_SPLIT,      WANT_DF | WANT_RT, 0,       "Planet entered" },
 	{ 2, AUTOSPLIT_SPLIT,      WANT_DF,           0,       "Veldin" },
 	{ 3, AUTOSPLIT_SPLIT,      WANT_DF,           0,       "Drek button" },
-	{ 4, AUTOSPLIT_SPLIT,      0,                 0,       "Gold bolt collected" },
-	{ 5, AUTOSPLIT_SPLIT,      0,                 0,       "Skill point" },
-	{ 6, AUTOSPLIT_SPLIT,      0,                 0,       "Item collected" },
-	{ 7, AUTOSPLIT_SPLIT,      0,                 0,       "Infobot" },
 	{ 8, AUTOSPLIT_LOAD_START, WANT_DF | WANT_NM, 7560000, "Loading screen" }
 };
 
@@ -3587,39 +3608,18 @@ static void test_autosplit(void)
 	check(boot_and_wait("NPEA00385"), "RaC1 boots");
 
 	as_check_describe(session_game(), rac1_want, WANT_ROWS(rac1_want),
-	                  "RaC1 declares eight reason codes");
+	                  "RaC1 advertises only its four supported reason codes");
 
-	/*
-	 * The embedded gb_sp_as_helper: on_enter writes the four caves and the four
-	 * words that branch into them, because codes 4 to 7 read counters nothing
-	 * else maintains.
-	 */
+	/* Disabling injection must leave every former cave and hook untouched. */
 	{
-		u8 cave[4];
-		u32 word = 0;
-
-		host_peek(A1_CAVE_GB, cave, 4);
-		check(cave[0] == 0x89 && cave[1] == 0x23 && cave[2] == 0x00 &&
-		      cave[3] == 0x20, "the gold-bolt cave landed in memory");
-		/* Its 148th byte, so the whole 156 went in and not just the head. */
-		host_peek(A1_CAVE_GB + 148, cave, 4);
-		check_eq_u64(be32_get(cave), 0x00000074u, "all 156 bytes of it");
-		host_peek(A1_CAVE_SP, cave, 4);
-		check(be32_get(cave) == 0x60000000u, "the skill-point cave landed");
-		host_peek(A1_CAVE_ITEM, cave, 4);
-		check(be32_get(cave) == 0x3D2000AFu, "the item cave landed");
-		host_peek(A1_CAVE_IB, cave, 4);
-		check(be32_get(cave) == 0x60000000u, "the infobot cave landed");
-
-		host_peek(A1_HOOK_GB, cave, 4);
-		word = be32_get(cave);
-		check_eq_u64(word, 0x004F5BE4u, "and the gold-bolt hook word");
-		host_peek(A1_HOOK_SP, cave, 4);
-		check_eq_u64(be32_get(cave), 0x483DA4EDu, "the skill-point hook word");
-		host_peek(A1_HOOK_ITEM, cave, 4);
-		check_eq_u64(be32_get(cave), 0x483E2E09u, "the item hook word");
-		host_peek(A1_HOOK_IB, cave, 4);
-		check_eq_u64(be32_get(cave), 0x484F5D77u, "the infobot hook word");
+		const u32 sites[] = {A1_CAVE_GB, A1_CAVE_SP, A1_CAVE_ITEM, A1_CAVE_IB,
+		                     A1_HOOK_GB, A1_HOOK_SP, A1_HOOK_ITEM, A1_HOOK_IB};
+		u32 i;
+		for (i = 0; i < sizeof(sites) / sizeof(sites[0]); i++) {
+			u8 word[4];
+			host_peek(sites[i], word, 4);
+			check_eq_u64(be32_get(word), 0, "boot leaves the autosplit cave/hook untouched");
+		}
 	}
 
 	/* start and reset are one expression: game state 6 -> 0 while on Veldin. */
@@ -3658,33 +3658,18 @@ static void test_autosplit(void)
 	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_PLANET, 5,
 	          "the planet split carries the destination planet");
 
-	/* The four collectable counters the helper mod keeps. */
+	/* Retired menu options must not generate hidden splits, even if the old
+	 * counters or the fallback collectible bytes change. */
 	mark = autosplit_latest_seq();
 	poke32(A1_GB, 1);
-	pump(1);
-	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, 1, "a gold bolt splits");
-
-	mark = autosplit_latest_seq();
 	poke32(A1_SP, 2);
-	pump(1);
-	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_SKILL_POINT, 2, "a skill point splits");
-
-	mark = autosplit_latest_seq();
-	poke32(A1_INFOBOTS, 3);
-	pump(1);
-	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_INFOBOT, 3, "an infobot splits");
-
-	mark = autosplit_latest_seq();
+	poke32(A1_ITEMS, 3);
+	poke32(A1_INFOBOTS, 4);
 	poke8(A1_CODEBOT, 1);
-	pump(1);
-	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_ITEM, 0,
-	          "the codebot splits as an item");
-
-	mark = autosplit_latest_seq();
+	poke8(A1_CODEBOT + 1, 1);
 	poke8(A1_KALEBO, 1);
-	pump(1);
-	as_expect(mark, AUTOSPLIT_SPLIT, R1_AS_GOLD_BOLT, 1,
-	          "and the Kalebo3 bolt as a gold bolt");
+	pump(2);
+	check(autosplit_latest_seq() == mark, "unsupported collectable changes emit no hidden split");
 
 	/* The Drek buttons: the player state edge only counts inside 1.7 of one. */
 	mark = autosplit_latest_seq();
@@ -4420,9 +4405,12 @@ static void test_autosplit_udp(int client)
 	      (int)QWARK_FRAME_HEADER, "and comes back");
 	check_eq_u64(be16_get(header + 6), ST_OK, "with OK");
 
-	/* RaC1 is INGAME: a gold-bolt counter change is one event. */
+	/* RaC1 is INGAME: use its supported planet split for UDP coverage. */
+	poke32(A1_PLANET, 3);
+	poke32(A1_DEST_PLANET, 0);
+	pump(1);
 	mark = autosplit_latest_seq();
-	poke32(A1_GB, 0x40);
+	poke32(A1_DEST_PLANET, 5);
 	pump(1);
 	check(autosplit_latest_seq() > mark, "the poke emitted an event");
 
@@ -4447,8 +4435,8 @@ static void test_autosplit_udp(int client)
 		check_eq_u64(be32_get(dgram + 4), autosplit_latest_seq(),
 		             "it carries the newest sequence number");
 		check_eq_u64(dgram[4 + 8], AUTOSPLIT_SPLIT, "the kind is SPLIT");
-		check_eq_u64(dgram[4 + 9], R1_AS_GOLD_BOLT, "with the gold-bolt code");
-		check_eq_u64(be32_get(dgram + 4 + 12), 0x40, "and the counter as its arg");
+		check_eq_u64(dgram[4 + 9], R1_AS_PLANET, "with the planet code");
+		check_eq_u64(be32_get(dgram + 4 + 12), 5, "and the destination as its arg");
 	}
 
 	plat_socket_close(udp);

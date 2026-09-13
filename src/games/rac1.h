@@ -82,25 +82,6 @@
 #define RAC1_AS_ITEMS         0xAFF020u
 #define RAC1_AS_INFOBOTS      0xAFF030u
 
-/*
- * gb_sp_as_helper, from racman's mods/NPEA00385/gb_sp_as_helper/patch.txt: four
- * code caves and the four words that branch into them, plus the three counter
- * words its patch.txt zeroes. The caves are the .bin files, embedded in rac1.c.
- */
-#define RAC1_HELPER_CAVE_GB   0x4F5BE4u   /* gold_bolt.bin, 156 bytes */
-#define RAC1_HELPER_CAVE_SP   0x4F5CACu   /* skillpoint.bin, 68 bytes */
-#define RAC1_HELPER_CAVE_ITEM 0x4F5D10u   /* item.bin, 64 bytes */
-#define RAC1_HELPER_CAVE_IB   0x4F5D74u   /* infobots.bin, 68 bytes */
-
-#define RAC1_HELPER_HOOK_GB   0x708EC8u   /* -> 0x004F5BE4 */
-#define RAC1_HELPER_HOOK_SP   0x11B7C0u   /* -> 0x483DA4ED */
-#define RAC1_HELPER_HOOK_ITEM 0x112F08u   /* -> 0x483E2E09 */
-#define RAC1_HELPER_HOOK_IB   0x112CD0u   /* -> 0x484F5D77 */
-
-#define RAC1_HELPER_ZERO_1    0xAFF000u
-#define RAC1_HELPER_ZERO_2    0xAFF004u
-#define RAC1_HELPER_ZERO_3    0xAFF010u
-
 /* The two index-less items the script watches beside the item counter. */
 #define RAC1_ITEM_CODEBOT     (RAC1_MOVIE_FLAGS + 1)   /* 0x96BFF1 */
 #define RAC1_ITEM_RARI        (RAC1_MOVIE_FLAGS + 2)   /* 0x96BFF2 */

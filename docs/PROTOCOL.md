@@ -441,7 +441,7 @@ All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `f
 Since revision 1.10 READ and WRITE are the **debug and test path**, not what a save or a load does: the library ops of section 5.13 move a whole file between the console's own filesystem and this buffer without any of it crossing the wire. They still work exactly as they did, and a client that wants the bytes on the PC still reads them here.
 
 - **supported** — 1 when qwark has a helper for the running game. 0 is an OK answer, not an error: it is how a client knows to hide its save-file panel. All four games are 1 today.
-- **installed** — 1 when qwark has written the helper into this process. Since asking is what installs it, this is 1 whenever `supported` is.
+- **installed** - 1 when qwark has written the helper into this process. Since build 28, INFO is observational: a supported game reports 0 until an action installs the helper. While uninstalled, `running` and `pending` are 0 and helper request bytes are not read.
 - **running** — 1 when the helper's own byte reads 1. The helper writes it on every call, so this says the code is installed *and* that the game is reaching the hook. It is 0 for the first frame or two after an install, and it stays 0 for as long as the game is on a screen that does not run the hooked routine.
 - **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. bit2 (revision 1.10): qwark is copying between a file and the aside buffer, section 5.13. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
 
@@ -452,6 +452,8 @@ Since revision 1.10 READ and WRITE are the **debug and test path**, not what a s
 - **done**, **total**, **error** (revision 1.10) — the transfer of section 5.13. `done` and `total` are its bytes, and `error` is why the last one stopped: 0 none, 1 file missing, 2 io error, 3 the file is not exactly `total` bytes, 4 the game went away underneath the copy, 5 the aside buffer was already spoken for. All three describe the **last** transfer until the next STORE or RESTORE starts, so a client that polls once more after `pending` bit2 clears reads how it ended rather than zeroes.
 
 A client built against revision 1.9 reads the first eight bytes and is right about every one of them; the three new fields are appended, and nothing before them moved.
+
+Build 28 installs the helper for set-aside/load actions, Force autosave and valid library STORE/RESTORE operations. INFO, library metadata operations and raw READ/WRITE of the aside buffer never install hooks.
 
 **A save, end to end.** FEATURE_TRIGGER the game's SAVE_ASIDE action; poll SAVEFILE_INFO until `pending` bit0 clears; SAVEFILE_READ the whole buffer in 64 KB chunks. **A load** is the reverse: SAVEFILE_WRITE the file into the buffer in chunks from offset 0, in order, each write answered before the next goes out, then FEATURE_TRIGGER the LOAD_ASIDE action and poll until `pending` bit1 clears. The bytes are opaque; nothing on the PC knows the save format.
 
@@ -608,13 +610,13 @@ Ported from racman's `rac1-autosplitter.asl`, `rac2-autosplitter.asl`, `rac3-aut
 | 1 | SPLIT | Planet entered | yes (route) | — | the destination planet |
 | 2 | SPLIT | Veldin | yes | — | 0. Fires once per run; a latch stops the double split |
 | 3 | SPLIT | Drek button | yes | — | 0. The player state reaching 34 within 1.7 of one of the four buttons |
-| 4 | SPLIT | Gold bolt collected | no | — | the helper mod's counter |
-| 5 | SPLIT | Skill point | no | — | the helper mod's counter |
-| 6 | SPLIT | Item collected | no | — | the helper mod's counter |
-| 7 | SPLIT | Infobot | no | — | the helper mod's counter |
 | 8 | LOAD_START | Loading screen | yes | NORMALISE 7 560 000 | the loading-screen id it moved to; 4 on the LOAD_END |
 
-Codes 4 to 7 count changes in four words the `gb_sp_as_helper` mod keeps. qwark now embeds that mod and writes it — four code caves and four hook words — every time RaC1 reaches INGAME, so the four collectable codes work without anyone loading anything; it is never reverted, because without a run in progress it is four counters nobody reads. Code 4 also fires for the Kalebo3 gold bolt, code 6 also for the codebot and the raritanium, exactly as the script had them.
+Build 29 advertises only codes 1, 2, 3 and 8. Collectable reason codes 4-7
+(Gold bolt collected, Skill point, Item collected and Infobot) remain reserved
+but are no longer advertised or emitted. Their menu options disappear through
+AUTOSPLIT_DESCRIBE; saved preferences cannot enable a hidden event. The embedded
+helper stays removed after the user confirmed build 28 fixed the RaC1 black screen.
 
 Code 8 is the script's `isLoading` block. It started a 7.56 s timer when the loading-screen id left 4 and only called the game "loading" once that timer had run out, so the first 7.56 s of every load counted towards game time and the rest did not. qwark emits LOAD_START when the id leaves 4 and LOAD_END when it comes back, and the client subtracts `max(0, duration − 7.56 s)`.
 
