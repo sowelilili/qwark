@@ -485,6 +485,13 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_SETUP_NO_IMG,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "NG+ No IMG setup" },
 	{ R2_SETUP_ALL_MISSION, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "NG+ All Missions setup" },
 	{ R2_MAKTAR_SLOTS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Maktar slots" },
+	/*
+	 * The two weapon actions the other three games have. Both pass over a weapon
+	 * the player does not have rather than handing it out, and the labels are the
+	 * other games' word for word so the client lays them out together.
+	 */
+	{ R2_MAX_LEVELS,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon levels" },
+	{ R2_MAX_AMMO,        FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon ammo" },
 	{ R2_AUTO_ANYPCT,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (any%)" },
 	{ R2_AUTO_NGPLUS,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (NG+)" },
 	/*
@@ -537,13 +544,15 @@ static const struct game_describe *rac2_describe(void)
 /* --------------------------------------------------------------- toggles */
 
 /*
- * freezeAmmoCheckbox did two things: filled the 136-byte ammo array with
+ * freezeAmmoCheckbox did two things: filled 136 bytes of the ammo array with
  * 0x7FFFFFFF and nopped the decrement. Turning it off only restored the
- * instruction, so the ammo stays where it was put; that is kept.
+ * instruction, so the ammo stays where it was put; that is kept. The 136 bytes
+ * are ammo[12] through ammo[45] now that the array has a base and a stride, and
+ * the window is the one the old checkbox wrote and no wider.
  */
 static int rac2_infinite_ammo(int on)
 {
-	u8 full[136];
+	u8 full[RAC2_AMMO_FILL_LEN];
 	u32 i;
 	int rc;
 
@@ -551,7 +560,7 @@ static int rac2_infinite_ammo(int on)
 
 	for (i = 0; i < sizeof(full); i += 4) be32_put(full + i, 0x7FFFFFFFu);
 
-	rc = mem_write(RAC2_AMMO_ARRAY, full, sizeof(full));
+	rc = mem_write(RAC2_AMMO_ARRAY + 4u * RAC2_AMMO_FILL_FIRST, full, sizeof(full));
 	if (rc != ST_OK) return rc;
 
 	return patch_apply(&rac2_ammo);

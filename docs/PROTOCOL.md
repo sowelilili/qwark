@@ -316,9 +316,11 @@ What the four games ship today:
 | Game | Slot 0 | Slot 1 | Slot 2 | Slot 3 |
 |---|---|---|---|---|
 | RaC1 | Owned, flag | Gold, flag | — | Ammo, number |
-| RaC2 | Owned, flag | — | — | — |
+| RaC2 | Owned, flag | **Level, number, max 4** | **XP, number** | Ammo, number |
 | RaC3 | Owned, flag | **Level, number, max 8** | **XP, number** | Ammo, number |
 | Deadlocked | Owned, flag | **Level, number, max 99** | **Ammo, number** | — |
+
+RaC2's four slots are RaC3's, because the two games keep the same item system: every item, gadget and weapon version has an item id, and the game keeps an owned byte, an ammunition word, an experience word and a version byte per id. Slot 1 is that version, and what crosses the wire is the step in the weapon's own chain — v1, v2, v3, v4 — not the item id the game records it with: a V2 Lancer holds the Lancer V2's item id, and UNLOCK_SET is what turns a level into it. `max` is 4, the game-wide maximum; sixteen weapons reach V4, the Clank Zapper stops at V2, and UNLOCK_SET clamps to the entry's own count rather than refusing. A weapon whose version byte names no version of itself reads level **0**, a number the field never otherwise takes. Slots 2 and 3 are per BASE weapon: a V4 Lancer's experience and rounds are still the Lancer's own two words, and only the magazine size "Max all weapon ammo" fills to comes from the V4's stats. The XP is the raw word the game keeps, which is thirty-two times the number the weapon's HUD bar counts. Seven weapons have no second version — the five RaC1 leftovers, the Zodiac and the RYNO II — and declare no level, and RaC2's gadgets and items are owned or not owned and declare slot 0 alone. Ticking Owned leaves the version byte where it is, so a weapon taken away and handed back comes back on the version it had.
 
 RaC3's slot 1 is the weapon version UYAUnlocks drew as a v1..v8 combo box, not a gold flag: gold weapons are a RaC1 idea and RaC3 has none. `max` is the game-wide maximum, so a client may offer 8 for every weapon; UNLOCK_SET clamps to the entry's own level count, and the R3YNO — the one weapon that stops at v5 — lands on v5. Writing 1 is a real downgrade, not "unset".
 
@@ -326,9 +328,9 @@ Deadlocked's slot 1 is the weapon version too, and its slot 2 is that weapon's a
 
 Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did. In Deadlocked owning a locked weapon hands it V1, and a weapon that already has a version keeps the one it has, so the checkbox never undoes a level. Clearing it takes the weapon away again and leaves the ammunition where it was.
 
-Deadlocked's feature id 16, "Reset all weapon levels", is retired and never reused, so DESCRIBE no longer lists it. "Max all weapon levels" (15) and "Max all weapon ammo" (17) keep their ids, and both pass over a weapon the player does not have rather than handing it out.
+Deadlocked's feature id 16, "Reset all weapon levels", is retired and never reused, so DESCRIBE no longer lists it. "Max all weapon levels" (15) and "Max all weapon ammo" (17) keep their ids, and both pass over a weapon the player does not have rather than handing it out. RaC2 has the same pair under ids 38 and 39, and RaC3's "Max all weapon levels" is id 26; the labels are word for word the same in all three, so a client can lay them out together.
 
-An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it.
+An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it, and each of RaC2's seven versionless weapons declares no level.
 
 A whole category may withhold one. The four descriptor rows say what a game names, not what every row carries, so a client draws a column from the descriptors and then a cell only where the row's `fields` bit is set. In RaC3 the level, XP and ammo slots belong to the weapons: its gadgets, items and vid comics are owned or not owned and declare slot 0 alone.
 

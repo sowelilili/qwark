@@ -2264,7 +2264,6 @@ static void test_combo_suspend(void)
 #define R2_LOADCOUNT    0x0147A25Bu
 #define R2_COORDS       0x0147F260u
 #define R2_BOSS_SIB     0x01481792u
-#define R2_UNLOCK_LANCE 0x01481A9Eu
 #define R2_PLANET_ADDR  0x01329A3Cu
 #define R2_BOLTS_ADDR   0x01329A90u
 #define R2_PAD_MANIP    0x013185B8u
@@ -2284,6 +2283,76 @@ static void test_combo_suspend(void)
 #define F2_AUTO_ANYPCT  21
 #define F2_LOAD_ASIDE   30
 #define F2_SET_ASIDE    31
+#define F2_MAX_LEVELS   38
+#define F2_MAX_AMMO     39
+
+/*
+ * The item system: every array is base plus item id times stride, and the stats
+ * table is 208-byte records indexed by the item id of a weapon VERSION.
+ */
+#define R2_AMMO_ARRAY   0x0148182Cu
+#define R2_OWNED_ARRAY  0x01481A80u
+#define R2_EXP_ARRAY    0x01481AF0u
+#define R2_ITEM_ARRAY   0x01329A40u
+#define R2_STATS_TABLE  0x01322A90u
+#define R2_STATS_STRIDE 208u
+#define R2_STATS_CAP    0x8Au
+
+#define R2_OWNED(item)  (R2_OWNED_ARRAY + (u32)(item))
+#define R2_AMMO(item)   (R2_AMMO_ARRAY + (u32)(item) * 4u)
+#define R2_EXP(item)    (R2_EXP_ARRAY + (u32)(item) * 4u)
+#define R2_ITEM(item)   (R2_ITEM_ARRAY + (u32)(item))
+#define R2_CAPACITY(v)  (R2_STATS_TABLE + (u32)(v) * R2_STATS_STRIDE + R2_STATS_CAP)
+
+/* The unlock categories, in the order rac2_panel.c declares them. */
+#define R2_CAT_WEAPONS 0
+#define R2_CAT_GADGETS 1
+#define R2_CAT_ITEMS   2
+
+/* Lancer: unlock id 0, item id 30, versions 60, 79 and 80. */
+#define LANCER_ID       0
+#define LANCER_ITEM     30
+#define LANCER_V2       60
+#define LANCER_V3       79
+#define LANCER_V4       80
+#define R2_UNLOCK_LANCE R2_OWNED(LANCER_ITEM)   /* 0x1481A9E, the old address */
+
+/* Bouncer: unlock id 10, item id 37, top version 98. */
+#define BOUNCER_ID      10
+#define BOUNCER_ITEM    37
+#define BOUNCER_V4      98
+
+/* Clank Zapper: unlock id 23, item id 9, and the one weapon that stops at V2. */
+#define ZAPPER_ID       23
+#define ZAPPER_ITEM     9
+#define ZAPPER_V2       73
+
+/* Zodiac: a weapon with no second version, so no Level slot. */
+#define ZODIAC_ID       21
+#define ZODIAC_ITEM     43
+
+/* Heli-Pack: a gadget, so an owned byte and nothing else. */
+#define HELI2_ID        29
+#define HELI2_ITEM      2
+
+/* The seven weapons with one version: Tesla Claw through the RYNO II. */
+#define R2_NO_LEVEL(id) ((id) >= 16 && (id) <= 22)
+
+/*
+ * A row by its unlock id. RaC2 has no retired unlock id and RaC3 has one, so
+ * neither list can be assumed to run id by id: a check that wants a particular
+ * item asks for it by id.
+ */
+static const struct game_unlock *unlock_row(const struct game_unlock *list,
+                                            u8 n, u8 id)
+{
+	u8 i;
+
+	for (i = 0; i < n; i++)
+		if (list[i].id == id) return &list[i];
+
+	return NULL;
+}
 
 static void test_rac2(void)
 {
@@ -2304,7 +2373,7 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 35, "RaC2 declares thirty-five features");
+		check_eq_u64(d->nfeatures, 37, "RaC2 declares thirty-seven features");
 		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 		check(qstreq(d->readouts[0], "Bolts"), "readout 0 is Bolts");
@@ -2330,38 +2399,216 @@ static void test_rac2(void)
 	mem_read_u32(R2_AMMO_INSTR, &v);
 	check_eq_u64(v, 0x7C64292Eu, "and the instruction was restored");
 
-	group("RaC2: unlocks");
+	group("RaC2: unlocks with levels, XP and ammo");
 
 	{
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
 		const struct unlock_field_desc *fields = NULL;
+		const struct game_unlock *row = NULL;
 		u32 values[4];
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
 		check_eq_u64(n, 44, "the whole RC2Unlocks table is there");
 		check_eq_u64(ncat, 3, "in three categories");
 		check(list != NULL && qstreq(list[0].name, "Lancer"), "entry 0 is the Lancer");
-		check(list != NULL && list[0].fields == UNLOCK_FIELD_OWNED,
-		      "RaC2 entries own nothing but their byte");
+
+		/*
+		 * RaC2's unlocks moved onto the item arrays, so slot 1 is the weapon
+		 * version the item array holds and slot 2 its experience, the way RaC3
+		 * has had them since protocol 1.3.
+		 */
 		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
 		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
-		check(fields != NULL &&
-		      (fields[1].name == NULL || fields[1].name[0] == 0) &&
-		      (fields[2].name == NULL || fields[2].name[0] == 0) &&
-		      (fields[3].name == NULL || fields[3].name[0] == 0),
-		      "and RaC2 names no other slot");
+		check(fields != NULL && qstreq(fields[1].name, "Level") &&
+		      fields[1].kind == UNLOCK_KIND_NUMBER && fields[1].max == 4,
+		      "slot 1 is a Level number that stops at 4");
+		check(fields != NULL && qstreq(fields[2].name, "XP") &&
+		      fields[2].kind == UNLOCK_KIND_NUMBER && fields[2].max == 0,
+		      "slot 2 is an unbounded XP number");
+		check(fields != NULL && qstreq(fields[3].name, "Ammo") &&
+		      fields[3].kind == UNLOCK_KIND_NUMBER && fields[3].max == 0,
+		      "slot 3 is an unbounded Ammo number");
 
-		check(g->unlock_set(0, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
-		host_peek(R2_UNLOCK_LANCE, &b, 1);
-		check_eq_u64(b, 1, "the owned byte was written");
-		check(g->unlock_set(0, 3, 1) == ST_UNSUPPORTED, "RaC2 has no ammo field");
+		row = unlock_row(list, n, LANCER_ID);
+		check(row != NULL && row->fields ==
+		      (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
+		       UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
+		      "a weapon with versions declares all four fields");
+
+		row = unlock_row(list, n, ZODIAC_ID);
+		check(row != NULL && qstreq(row->name, "Zodiac") &&
+		      row->fields == (UNLOCK_FIELD_0 | UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
+		      "a weapon with no second version declares no Level");
+
+		row = unlock_row(list, n, HELI2_ID);
+		check(row != NULL && qstreq(row->name, "Heli-Pack") &&
+		      row->fields == UNLOCK_FIELD_0,
+		      "a gadget has no level, no XP and no ammo, so it is owned-only");
+
+		/*
+		 * The category decides the mask, bar the seven weapons the game gives
+		 * no second version: those declare everything but the level.
+		 */
+		{
+			u8 i, wrong = 0;
+
+			for (i = 0; i < n; i++) {
+				u8 want = UNLOCK_FIELD_0;
+
+				if (list[i].category == R2_CAT_WEAPONS)
+					want = (u8)(UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
+					            UNLOCK_FIELD_2 | UNLOCK_FIELD_3);
+				if (R2_NO_LEVEL(list[i].id))
+					want = (u8)(want & ~(u8)UNLOCK_FIELD_1);
+
+				if (list[i].fields != want) wrong++;
+			}
+			check_eq_u64(wrong, 0, "every row declares the slots its category has");
+		}
+
+		/* A weapon on V2 with experience and rounds in the magazine. */
+		host_poke(R2_UNLOCK_LANCE, (const u8 *)"\x01", 1);
+		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);   /* V2 */
+		host_poke(R2_EXP(LANCER_ITEM), (const u8 *)"\x00\x00\x10\x92", 4);
+		host_poke(R2_AMMO(LANCER_ITEM), (const u8 *)"\x00\x00\x00\x4D", 4);
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
-		check(g->unlock_read(&list[0], values) == ST_OK, "and reads entry 0 live");
+		check(g->unlock_read(unlock_row(list, n, LANCER_ID), values) == ST_OK,
+		      "the Lancer reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
+		check_eq_u64(values[1], 2, "the item array byte reads back as its version");
+		check_eq_u64(values[2], 4242, "the exp reads back");
+		check_eq_u64(values[3], 77, "the ammo reads back");
+
+		/* The level is the step in the chain, not the distance from the id. */
+		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x50", 1);   /* V4 */
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
+		memset(values, 0, sizeof(values));
+		check(g->unlock_read(unlock_row(list, n, LANCER_ID), values) == ST_OK,
+		      "the Lancer reads again");
+		check_eq_u64(values[1], 4, "the top version reads as 4");
+
+		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x07", 1);   /* nothing of ours */
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
+		memset(values, 0, sizeof(values));
+		check(g->unlock_read(unlock_row(list, n, LANCER_ID), values) == ST_OK,
+		      "and once more");
+		check_eq_u64(values[1], 0, "a byte that names no version of it reads as 0");
+
+		/* Writing a level writes that version's item id and nothing else. */
+		host_poke(R2_ITEM(LANCER_ITEM - 1), (const u8 *)"\x55", 1);
+		host_poke(R2_ITEM(LANCER_ITEM + 1), (const u8 *)"\x66", 1);
+		check(g->unlock_set(LANCER_ID, 1, 3) == ST_OK, "UNLOCK_SET level=3");
+		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+		check_eq_u64(b, LANCER_V3, "the item array carries the V3 item id");
+		host_peek(R2_ITEM(LANCER_ITEM - 1), &b, 1);
+		check_eq_u64(b, 0x55, "the item on either side of it was left alone");
+		host_peek(R2_ITEM(LANCER_ITEM + 1), &b, 1);
+		check_eq_u64(b, 0x66, "both of them");
+		host_peek(R2_OWNED(LANCER_V3), &b, 1);
+		check_eq_u64(b, 0, "and a version has no owned byte of its own to write");
+
+		/*
+		 * The level field advertises the game-wide maximum of 4, so a client may
+		 * well send 4 for the Clank Zapper. UNLOCK_SET clamps to the entry's own
+		 * version count rather than refusing.
+		 */
+		check(g->unlock_set(LANCER_ID, 1, 99) == ST_OK,
+		      "a version past the weapon's count is clamped, not refused");
+		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+		check_eq_u64(b, LANCER_V4, "the Lancer landed on V4");
+		check(g->unlock_set(ZAPPER_ID, 1, 4) == ST_OK, "the Clank Zapper takes a level of 4");
+		host_peek(R2_ITEM(ZAPPER_ITEM), &b, 1);
+		check_eq_u64(b, ZAPPER_V2, "and stops at its own V2");
+		check(g->unlock_set(LANCER_ID, 1, 1) == ST_OK, "back down to V1");
+		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+		check_eq_u64(b, LANCER_ITEM, "which is the weapon's own item id");
+
+		/* Owned, XP and ammo land in their own array cell and nowhere else. */
+		check(g->unlock_set(LANCER_ID, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
+		host_peek(R2_UNLOCK_LANCE, &b, 1);
+		check_eq_u64(b, 1, "the owned byte was written");
+
+		host_poke(R2_EXP(LANCER_ITEM - 1), (const u8 *)"\xAA\xAA\xAA\xAA", 4);
+		host_poke(R2_EXP(LANCER_ITEM + 1), (const u8 *)"\xBB\xBB\xBB\xBB", 4);
+		check(g->unlock_set(LANCER_ID, 2, 1234) == ST_OK, "UNLOCK_SET xp");
+		mem_read_u32(R2_EXP(LANCER_ITEM), &v);
+		check_eq_u64(v, 1234, "the exp word was written");
+		mem_read_u32(R2_EXP(LANCER_ITEM - 1), &v);
+		check_eq_u64(v, 0xAAAAAAAAu, "the exp beside it was left alone");
+		mem_read_u32(R2_EXP(LANCER_ITEM + 1), &v);
+		check_eq_u64(v, 0xBBBBBBBBu, "on both sides");
+
+		host_poke(R2_AMMO(LANCER_ITEM - 1), (const u8 *)"\xAA\xAA\xAA\xAA", 4);
+		host_poke(R2_AMMO(LANCER_ITEM + 1), (const u8 *)"\xBB\xBB\xBB\xBB", 4);
+		check(g->unlock_set(LANCER_ID, 3, 55) == ST_OK, "UNLOCK_SET ammo");
+		mem_read_u32(R2_AMMO(LANCER_ITEM), &v);
+		check_eq_u64(v, 55, "the ammo word was written");
+		mem_read_u32(R2_AMMO(LANCER_ITEM - 1), &v);
+		check_eq_u64(v, 0xAAAAAAAAu, "and the magazines beside it were left alone");
+		mem_read_u32(R2_AMMO(LANCER_ITEM + 1), &v);
+		check_eq_u64(v, 0xBBBBBBBBu, "on both sides");
+
+		/*
+		 * A gadget takes its owned byte and refuses the other three slots, which
+		 * is what stops a client writing an exp or ammo word the game does not
+		 * count for it.
+		 */
+		host_poke(R2_EXP(HELI2_ITEM), (const u8 *)"\x00\x00\x00\x09", 4);
+		host_poke(R2_AMMO(HELI2_ITEM), (const u8 *)"\x00\x00\x00\x09", 4);
+		check(g->unlock_set(HELI2_ID, 0, 1) == ST_OK, "a gadget takes owned=1");
+		host_peek(R2_OWNED(HELI2_ITEM), &b, 1);
+		check_eq_u64(b, 1, "and its owned byte was written");
+		check(g->unlock_set(HELI2_ID, 1, 2) == ST_UNSUPPORTED, "a gadget has no level");
+		check(g->unlock_set(HELI2_ID, 2, 1) == ST_UNSUPPORTED, "a gadget has no XP");
+		check(g->unlock_set(HELI2_ID, 3, 1) == ST_UNSUPPORTED, "a gadget has no ammo");
+		mem_read_u32(R2_EXP(HELI2_ITEM), &v);
+		check_eq_u64(v, 9, "the refused XP write left the word alone");
+		mem_read_u32(R2_AMMO(HELI2_ITEM), &v);
+		check_eq_u64(v, 9, "and so did the refused ammo write");
+
+		check(g->unlock_set(ZODIAC_ID, 1, 2) == ST_UNSUPPORTED,
+		      "a weapon with one version has no level either");
+		host_peek(R2_ITEM(ZODIAC_ITEM), &b, 1);
+		check_eq_u64(b, 0, "and nothing was written for it");
+		check(g->unlock_set(200, 0, 1) == ST_BAD_ARG, "an unknown id is BAD_ARG");
+	}
+
+	group("RaC2: the two weapon actions");
+
+	{
+		/* The Lancer is held at V2, the Bouncer is not held at all. */
+		host_poke(R2_OWNED(LANCER_ITEM), (const u8 *)"\x01", 1);
+		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);
+		host_poke(R2_OWNED(BOUNCER_ITEM), (const u8 *)"\x00", 1);
+		host_poke(R2_ITEM(BOUNCER_ITEM), (const u8 *)"\x25", 1);
+
+		check(features_trigger(F2_MAX_LEVELS) == ST_OK, "Max all weapon levels runs");
+		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+		check_eq_u64(b, LANCER_V4, "the Lancer went to its top version");
+		host_peek(R2_ITEM(BOUNCER_ITEM), &b, 1);
+		check_eq_u64(b, BOUNCER_ITEM,
+		             "and the Bouncer, which the player has not got, was passed over");
+
+		/*
+		 * The magazine comes from the stats record of the version the weapon is
+		 * on, so a V2 Lancer is refilled to the V2 capacity and not the V1 one.
+		 */
+		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);
+		host_poke(R2_CAPACITY(LANCER_ITEM), (const u8 *)"\x00\x0A", 2);
+		host_poke(R2_CAPACITY(LANCER_V2), (const u8 *)"\x00\x64", 2);
+		host_poke(R2_CAPACITY(BOUNCER_ITEM), (const u8 *)"\x00\x0F", 2);
+		host_poke(R2_AMMO(LANCER_ITEM), (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(R2_AMMO(BOUNCER_ITEM), (const u8 *)"\x00\x00\x00\x07", 4);
+
+		check(features_trigger(F2_MAX_AMMO) == ST_OK, "Max all weapon ammo runs");
+		mem_read_u32(R2_AMMO(LANCER_ITEM), &v);
+		check_eq_u64(v, 100, "the V2 magazine, not the V1 one");
+		mem_read_u32(R2_AMMO(BOUNCER_ITEM), &v);
+		check_eq_u64(v, 7, "and the unowned Bouncer was passed over again");
 	}
 
 	group("RaC2: level flags and planet load");
@@ -2547,21 +2794,6 @@ static void test_rac2(void)
 
 /* The Bomb Glove's id, retired because UYA cannot reach the item in game. */
 #define BOMB_GLOVE_ID 0
-
-/*
- * The list stopped running id by id when the Bomb Glove went, so a check that
- * wants a particular item asks for it by id.
- */
-static const struct game_unlock *unlock_row(const struct game_unlock *list,
-                                            u8 n, u8 id)
-{
-	u8 i;
-
-	for (i = 0; i < n; i++)
-		if (list[i].id == id) return &list[i];
-
-	return NULL;
-}
 
 static void test_rac3(void)
 {
@@ -3487,7 +3719,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 35, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 37, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");
