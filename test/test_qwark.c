@@ -823,7 +823,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 32, "and this module is build 32");
+	check_eq_u64(packet[5], 33, "and this module is build 33");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -3133,7 +3133,7 @@ static void test_rac4(void)
 	mem_read_u32(R4_FASTLOAD_2, &v);
 	check_eq_u64(v, 0x4E9E0421u, "both words restored");
 
-	group("Deadlocked: bot and weapon unlocks");
+	group("Deadlocked: bot, weapon and gadget unlocks");
 
 	{
 		const struct game_unlock *list = NULL;
@@ -3142,20 +3142,23 @@ static void test_rac4(void)
 		const struct unlock_field_desc *fields = NULL;
 		const struct game_unlock *vipers = NULL;
 		const struct game_unlock *flail = NULL;
+		const struct game_unlock *charge = NULL;
+		const struct game_unlock *gravity = NULL;
 		u32 values[4];
-		u32 vaddr = 0, faddr = 0;
+		u32 vaddr = 0, faddr = 0, caddr = 0, graddr = 0;
 		u8 entry[4];
 		u8 around[8];
-		u8 i, weapons = 0;
-		int rows_ok = 1;
+		u8 i, weapons = 0, boots = 0, bots = 0;
+		int rows_ok = 1, order_ok = 1;
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
-		check_eq_u64(n, 26, "sixteen bot upgrades and ten weapons");
-		check_eq_u64(ncat, 2, "in two categories");
-		check(list != NULL && qstreq(list[0].name, "Pistol Flux LX"),
-		      "entry 0 is the Pistol Flux LX");
-		check(cats != NULL && qstreq(cats[0], "Bot upgrades") &&
-		      qstreq(cats[1], "Weapons"), "the bots first and the weapons after them");
+		check_eq_u64(n, 28, "ten weapons, two pairs of boots and sixteen bot upgrades");
+		check_eq_u64(ncat, 3, "in three categories");
+		check(list != NULL && qstreq(list[0].name, "Dual Vipers"),
+		      "entry 0 is the Dual Vipers");
+		check(cats != NULL && qstreq(cats[0], "Weapons") &&
+		      qstreq(cats[1], "Gadgets") && qstreq(cats[2], "Bot upgrades"),
+		      "the weapons first, then the gadgets, then the bots");
 
 		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
 		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
@@ -3169,29 +3172,45 @@ static void test_rac4(void)
 		      "and Deadlocked names no fourth slot");
 
 		/*
-		 * A weapon's id is 32 plus its index into g_GadgetData, which is what
-		 * keeps the two halves of the table apart for good; the addresses below
-		 * are derived from the ids, so the real indices are only stated once.
-		 * An entry is 68 bytes, of which qwark touches the first four.
+		 * Anything in g_GadgetData has an id of 32 plus its index into that
+		 * table, which is what keeps it apart from the bots for good; the
+		 * addresses below are derived from the ids, so the real indices are
+		 * only stated once. An entry is 68 bytes, of which qwark touches the
+		 * first four — and only the first two for a pair of boots.
 		 */
 		for (i = 0; i < n; i++) {
+			if (list[i].category != (i < 10 ? 0 : (i < 12 ? 1 : 2))) order_ok = 0;
+
 			if (list[i].category == 0) {
+				weapons++;
+				if (list[i].id < 32) rows_ok = 0;
+				if (list[i].fields != (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_2))
+					rows_ok = 0;
+				if (qstreq(list[i].name, "Dual Vipers")) vipers = &list[i];
+				if (qstreq(list[i].name, "Scorpion Flail")) flail = &list[i];
+			} else if (list[i].category == 1) {
+				boots++;
+				if (list[i].id < 32) rows_ok = 0;
 				if (list[i].fields != UNLOCK_FIELD_0) rows_ok = 0;
-				continue;
+				if (qstreq(list[i].name, "Charge Boots")) charge = &list[i];
+				if (qstreq(list[i].name, "Gravity Boots")) gravity = &list[i];
+			} else {
+				bots++;
+				if (list[i].fields != UNLOCK_FIELD_0) rows_ok = 0;
 			}
-			weapons++;
-			if (list[i].id < 32) rows_ok = 0;
-			if (list[i].fields != (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_2))
-				rows_ok = 0;
-			if (qstreq(list[i].name, "Dual Vipers")) vipers = &list[i];
-			if (qstreq(list[i].name, "Scorpion Flail")) flail = &list[i];
 		}
 		check_eq_u64(weapons, 10, "ten weapon rows");
-		check(rows_ok, "a bot declares owned alone and a weapon owned, level and ammo "
-		               "with an id past the bots");
+		check_eq_u64(boots, 2, "two gadget rows");
+		check_eq_u64(bots, 16, "and sixteen bot rows");
+		check(order_ok, "listed in that order, which is the order the client draws");
+		check(rows_ok, "a bot and a pair of boots declare owned alone, a weapon owned, "
+		               "level and ammo, and everything in the gadget table has an id "
+		               "past the bots");
 
 		check(vipers != NULL && flail != NULL,
 		      "the Dual Vipers and the Scorpion Flail are in the table");
+		check(charge != NULL && gravity != NULL,
+		      "and so are the Charge Boots and the Gravity Boots");
 
 		if (vipers != NULL && flail != NULL) {
 			vaddr = R4_GADGETS + ((u32)vipers->id - 32) * R4_GADGET_STEP;
@@ -3323,6 +3342,72 @@ static void test_rac4(void)
 			      "with the level and ammo that were written");
 		}
 
+		/*
+		 * The boots. Same table, same halfword, same -1 for an item the player
+		 * has not got, and nothing else: no version to raise and no magazine,
+		 * so the two number slots stay 0 whatever is in the entry behind them.
+		 */
+		if (charge != NULL && gravity != NULL) {
+			caddr  = R4_GADGETS + ((u32)charge->id - 32) * R4_GADGET_STEP;
+			graddr = R4_GADGETS + ((u32)gravity->id - 32) * R4_GADGET_STEP;
+
+			check_eq_u64(charge->id, 49, "the Charge Boots are gadget 17, so id 49");
+			check_eq_u64(gravity->id, 50, "and the Gravity Boots gadget 18, id 50");
+			check_eq_u64(caddr, 0x00B2BBE4u,
+			             "which is the halfword whose low byte the address list gives");
+			check_eq_u64(graddr, 0x00B2BC28u, "and the same for the other pair");
+
+			host_poke(caddr, (const u8 *)"\xFF\xFF\x01\x2C", 4);
+			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
+			      "UNLOCK_LIST with locked boots");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(charge, values) == ST_OK, "the boots row reads live");
+			check_eq_u64(values[0], 0, "a level of -1 reads as not owned");
+			check(values[1] == 0 && values[2] == 0,
+			      "and the level and ammo slots stay 0, whatever the entry holds");
+
+			host_poke(caddr, (const u8 *)"\x00\x00", 2);
+			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
+			      "UNLOCK_LIST with the boots unlocked");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(charge, values) == ST_OK, "the row reads again");
+			check_eq_u64(values[0], 1, "a 0 in memory is owned, as it is for a weapon");
+			check(values[1] == 0 && values[2] == 0, "and still no level and no ammo");
+
+			host_poke(caddr, (const u8 *)"\xFF\xFF\x01\x2C", 4);
+			check(g->unlock_set(charge->id, 0, 1) == ST_OK,
+			      "UNLOCK_SET owned=1 on locked boots");
+			host_peek(caddr, entry, 4);
+			check(be16_get(entry) == 0 && be16_get(entry + 2) == 300,
+			      "stores the 0 the game uses and leaves the ammo halfword alone");
+
+			host_poke(caddr, (const u8 *)"\x00\x03", 2);
+			check(g->unlock_set(charge->id, 0, 1) == ST_OK,
+			      "UNLOCK_SET owned=1 on boots already owned");
+			host_peek(caddr, entry, 4);
+			check(be16_get(entry) == 3, "leaves the halfword exactly as it found it");
+
+			check(g->unlock_set(charge->id, 0, 0) == ST_OK, "UNLOCK_SET owned=0");
+			host_peek(caddr, entry, 4);
+			check(be16_get(entry) == 0xFFFF && be16_get(entry + 2) == 300,
+			      "writes the locked -1 back and nothing else");
+
+			check(g->unlock_set(charge->id, 1, 5) == ST_UNSUPPORTED,
+			      "boots have no level to set");
+			check(g->unlock_set(charge->id, 2, 5) == ST_UNSUPPORTED,
+			      "and no ammunition either");
+			host_peek(caddr, entry, 4);
+			check(be16_get(entry) == 0xFFFF && be16_get(entry + 2) == 300,
+			      "and neither refusal wrote a byte");
+
+			check(g->unlock_set(gravity->id, 0, 1) == ST_OK,
+			      "UNLOCK_SET owned=1 on the other pair");
+			host_peek(graddr, entry, 2);
+			check(be16_get(entry) == 0, "which is its own entry, a stride further on");
+			host_peek(caddr, entry, 2);
+			check(be16_get(entry) == 0xFFFF, "and left the first pair locked");
+		}
+
 		check(g->unlock_set(5, 0, 1) == ST_OK, "UNLOCK_SET owned=1 on a bot");
 		host_peek(R4_BOTS_LIVE + 5, &b, 1);
 		check_eq_u64(b, 1, "the live byte was written");
@@ -3333,9 +3418,20 @@ static void test_rac4(void)
 		check(g->unlock_set(16, 0, 1) == ST_BAD_ARG, "an id no row carries is BAD_ARG");
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
-		memset(values, 0, sizeof(values));
-		check(g->unlock_read(&list[5], values) == ST_OK, "entry 5 reads live");
-		check_eq_u64(values[0], 1, "owned reads back");
+		{
+			/* Id 5 is the bot's, wherever the row for it now sits in the list. */
+			const struct game_unlock *bot = NULL;
+
+			for (i = 0; i < n; i++)
+				if (list[i].id == 5) bot = &list[i];
+
+			check(bot != NULL && qstreq(bot->name, "EMP Grenade"),
+			      "the row carrying id 5 is the bot's");
+			memset(values, 0, sizeof(values));
+			check(bot != NULL && g->unlock_read(bot, values) == ST_OK,
+			      "it reads live");
+			check_eq_u64(values[0], 1, "owned reads back");
+		}
 	}
 
 	group("Deadlocked: the weapon actions");
@@ -3344,6 +3440,8 @@ static void test_rac4(void)
 		u32 g2  = R4_GADGETS + 2 * R4_GADGET_STEP;    /* Dual Vipers */
 		u32 g3  = R4_GADGETS + 3 * R4_GADGET_STEP;    /* Magma Cannon */
 		u32 g15 = R4_GADGETS + 15 * R4_GADGET_STEP;   /* Scorpion Flail */
+		u32 g17 = R4_GADGETS + 17 * R4_GADGET_STEP;   /* Charge Boots */
+		u32 g18 = R4_GADGETS + 18 * R4_GADGET_STEP;   /* Gravity Boots */
 		u8 got[4];
 		u8 desc[4096];
 		u32 dlen = 0;
@@ -3355,6 +3453,20 @@ static void test_rac4(void)
 		host_poke(g2,  (const u8 *)"\x00\x02\x00\x00", 4);   /* V3 */
 		host_poke(g3,  (const u8 *)"\x00\x00\x00\x00", 4);   /* V1 */
 		host_poke(g15, (const u8 *)"\xFF\xFF\x00\x05", 4);   /* locked, 5 rounds */
+
+		/*
+		 * The two pairs of boots, owned, in the same table between the weapons
+		 * the actions walk and past the last of them. Both halfwords are 0, and
+		 * both have a stats record and a per-mod amount behind them, so either
+		 * action straying onto an entry the weapon list does not name would put
+		 * a number in one of them.
+		 */
+		host_poke(g17, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(g18, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(R4_STATS + 17 * R4_STATS_STEP + 0x42, (const u8 *)"\x00\x64", 2);
+		host_poke(R4_STATS + 18 * R4_STATS_STEP + 0x42, (const u8 *)"\x00\x64", 2);
+		host_poke(R4_PER_MOD + 17 * 4, (const u8 *)"\x00\x00\x00\x19", 4);
+		host_poke(R4_PER_MOD + 18 * 4, (const u8 *)"\x00\x00\x00\x19", 4);
 
 		/* Two ammo mods on the Dual Vipers, one mod of another type, none elsewhere. */
 		host_poke(g2 + 0x14, (const u8 *)"\x02", 1);
@@ -3395,6 +3507,13 @@ static void test_rac4(void)
 		check(be16_get(got) == 98, "and so does the V1 weapon beside it");
 		host_peek(g15, got, 4);
 		check(be16_get(got) == 0xFFFF, "while a locked weapon is not handed out");
+
+		host_peek(g17, got, 4);
+		check(be16_get(got) == 0 && be16_get(got + 2) == 0,
+		      "neither action gave the Charge Boots a level or a magazine");
+		host_peek(g18, got, 4);
+		check(be16_get(got) == 0 && be16_get(got + 2) == 0,
+		      "and the Gravity Boots are untouched too: both walk the weapons alone");
 
 		/*
 		 * Id 16, reset all weapon levels, is retired in build 32: gone from

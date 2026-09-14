@@ -6,6 +6,11 @@
  * RAC4Form and BotsUnlocksFactory did, and where the old code was ambiguous the
  * comment says what was assumed so it can be checked on hardware.
  *
+ * The unlock table has three categories: the ten weapons of g_GadgetData, then
+ * the two pairs of boots at entries 17 and 18 of that same table, which share
+ * its encoding but have no level and no ammunition, then the sixteen bot
+ * upgrades, which are one byte each somewhere else entirely.
+ *
  * All of it runs on the tick thread, through the command ring.
  */
 #include "rac4.h"
@@ -18,7 +23,7 @@
 /* ------------------------------------------------------------ the unlocks */
 
 /*
- * Two categories.
+ * Three categories.
  *
  * BotsUnlocksFactory.GetUpgrades: sixteen bot upgrades, one byte each. rac4.cs
  * writes both the live byte and the saved copy, because an unlock that only
@@ -31,20 +36,24 @@
  * way a bot upgrade does: a write to this table survives a game save, which is
  * the one thing about it that had to be checked on hardware.
  *
- * Ten of those entries are the weapons the player buys, and they are the rows
- * below; the rest of the table is not a weapon the trainer has any business
- * handing out.
+ * Ten of those entries are the weapons the player buys. Two more, entries 17
+ * and 18, are the Charge Boots and the Gravity Boots, which live in the same
+ * table with the same encoding: the level halfword is -1 until the player has
+ * the boots and reads 0 once they do. Boots have no version to raise and no
+ * magazine to fill, so those rows are owned and nothing else. The rest of the
+ * table is not something the trainer has any business handing out.
  */
-#define CAT_BOTS    0
-#define CAT_WEAPONS 1
+#define CAT_WEAPONS 0
+#define CAT_GADGETS 1
+#define CAT_BOTS    2
 
-static const char * const rac4_categories[] = { "Bot upgrades", "Weapons" };
+static const char * const rac4_categories[] = { "Weapons", "Gadgets", "Bot upgrades" };
 
 /*
  * Protocol 1.3, the four value slots as Deadlocked uses them. A bot upgrade is
- * one owned byte and declares slot 0 alone; a weapon carries the level and the
- * ammo of its gadget entry as well, and no game of the four has anything to put
- * in slot 3, so it stays unnamed.
+ * one owned byte and declares slot 0 alone, and so does a pair of boots; a
+ * weapon carries the level and the ammo of its gadget entry as well, and no
+ * game of the four has anything to put in slot 3, so it stays unnamed.
  *
  * The level maximum is the challenge-mode V99. A first playthrough stops at
  * V10, but nothing in the entry says which mode the file is in, so the
@@ -66,12 +75,32 @@ static const struct unlock_field_desc rac4_fields[4] = {
 #define AMMO  UNLOCK_FIELD_2
 
 /*
- * A bot's id is its index into the sixteen-byte arrays, and a weapon's is 32
- * plus its index into g_GadgetData. Thirty-two is past the last bot for good,
- * so the two halves of the table can never grow into each other, and no row
- * ever has to be renumbered to make room.
+ * A bot's id is its index into the sixteen-byte arrays, and anything in
+ * g_GadgetData is 32 plus its index into that table, weapons and boots alike.
+ * Thirty-two is past the last bot for good, so the two halves of the table can
+ * never grow into each other, and no row ever has to be renumbered to make
+ * room: the boots take the ids 49 and 50 their entries give them and the rows
+ * around them keep the numbers they already had.
+ *
+ * The client draws one tab per category in category order and the rows in list
+ * order, so the ten weapons come first, then the two pairs of boots, then the
+ * sixteen bot upgrades.
  */
 static const struct game_unlock rac4_unlocks[] = {
+	{ 34, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Dual Vipers" },
+	{ 35, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Magma Cannon" },
+	{ 36, CAT_WEAPONS, OWNED | LEVEL | AMMO, "The Arbiter" },
+	{ 37, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Fusion Rifle" },
+	{ 38, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Hunter Mine Launcher" },
+	{ 39, CAT_WEAPONS, OWNED | LEVEL | AMMO, "B6-Obliterator" },
+	{ 40, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Holoshield Launcher" },
+	{ 41, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Mini-Turret Launcher" },
+	{ 42, CAT_WEAPONS, OWNED | LEVEL | AMMO, "The Harbinger" },
+	{ 47, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Scorpion Flail" },
+
+	{ 49, CAT_GADGETS, OWNED, "Charge Boots" },
+	{ 50, CAT_GADGETS, OWNED, "Gravity Boots" },
+
 	{  0, CAT_BOTS, OWNED, "Pistol Flux LX" },
 	{  1, CAT_BOTS, OWNED, "Range Warrior" },
 	{  2, CAT_BOTS, OWNED, "Bogo" },
@@ -87,18 +116,7 @@ static const struct game_unlock rac4_unlocks[] = {
 	{ 12, CAT_BOTS, OWNED, "Hyper-Tron" },
 	{ 13, CAT_BOTS, OWNED, "Dreadinator" },
 	{ 14, CAT_BOTS, OWNED, "DZ Ultra" },
-	{ 15, CAT_BOTS, OWNED, "Ultranator" },
-
-	{ 34, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Dual Vipers" },
-	{ 35, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Magma Cannon" },
-	{ 36, CAT_WEAPONS, OWNED | LEVEL | AMMO, "The Arbiter" },
-	{ 37, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Fusion Rifle" },
-	{ 38, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Hunter Mine Launcher" },
-	{ 39, CAT_WEAPONS, OWNED | LEVEL | AMMO, "B6-Obliterator" },
-	{ 40, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Holoshield Launcher" },
-	{ 41, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Mini-Turret Launcher" },
-	{ 42, CAT_WEAPONS, OWNED | LEVEL | AMMO, "The Harbinger" },
-	{ 47, CAT_WEAPONS, OWNED | LEVEL | AMMO, "Scorpion Flail" }
+	{ 15, CAT_BOTS, OWNED, "Ultranator" }
 };
 
 #define RAC4_UNLOCK_COUNT ((u8)(sizeof(rac4_unlocks) / sizeof(rac4_unlocks[0])))
@@ -125,6 +143,22 @@ static const u8 rac4_weapon_gadget[] = {
 #define RAC4_WEAPON_COUNT \
 	((u8)(sizeof(rac4_weapon_gadget) / sizeof(rac4_weapon_gadget[0])))
 
+/*
+ * The same thing for the two pairs of boots, which sit in g_GadgetData beside
+ * the weapons. A community address list has them as one byte each, "255 =
+ * Locked, 0 = Unlocked", at 0xB2BBE5 and 0xB2BC29: those are the low bytes of
+ * the level halfwords of entries 17 and 18, so the boots are locked at -1 and
+ * owned at 0 exactly as a weapon is, and the whole difference is that there is
+ * no version and no magazine to act on.
+ */
+static const u8 rac4_boots_gadget[] = {
+	17,   /* Charge Boots,  0xB2BBE4 */
+	18    /* Gravity Boots, 0xB2BC28 */
+};
+
+#define RAC4_BOOTS_COUNT \
+	((u8)(sizeof(rac4_boots_gadget) / sizeof(rac4_boots_gadget[0])))
+
 /* The row an id names, or -1 for an id no row carries. */
 static int rac4_row_for_id(u8 id)
 {
@@ -136,17 +170,28 @@ static int rac4_row_for_id(u8 id)
 	return -1;
 }
 
-/* The gadget entry a row edits, or -1 when the row is a bot upgrade. */
+/*
+ * The g_GadgetData entry a row edits, or -1 when the row is a bot upgrade and
+ * lives in the sixteen-byte arrays instead. The weapon rows are the first ten
+ * of the list and the boots the two after them, which is the order the table
+ * above is written in and the order the client draws.
+ */
 static int rac4_gadget_for_row(int row)
 {
 	if (row < 0 || (u8)row >= RAC4_UNLOCK_COUNT) return -1;
-	if (rac4_unlocks[row].category != CAT_WEAPONS) return -1;
 
-	/* The weapon rows come after the bots, one for each gadget index below. */
-	row -= RAC4_BOTS_COUNT;
-	if (row < 0 || (u8)row >= RAC4_WEAPON_COUNT) return -1;
+	if (rac4_unlocks[row].category == CAT_WEAPONS) {
+		if ((u8)row >= RAC4_WEAPON_COUNT) return -1;
+		return (int)rac4_weapon_gadget[row];
+	}
 
-	return (int)rac4_weapon_gadget[row];
+	if (rac4_unlocks[row].category == CAT_GADGETS) {
+		row -= RAC4_WEAPON_COUNT;
+		if (row < 0 || (u8)row >= RAC4_BOOTS_COUNT) return -1;
+		return (int)rac4_boots_gadget[row];
+	}
+
+	return -1;
 }
 
 static u32 gadget_addr(int gadget)
@@ -224,12 +269,20 @@ int rac4_unlock_read(const struct game_unlock *entry, u32 values[4])
 		s16 level = gadget_level(e);
 		int owned = gadget_owned(level);
 
+		values[0] = owned ? 1 : 0;
+
+		/*
+		 * A pair of boots is the same halfword and nothing else: it declares no
+		 * level and no ammo, so those slots stay 0 and the client draws no cell
+		 * for them.
+		 */
+		if ((rac4_unlocks[row].fields & LEVEL) == 0) return ST_OK;
+
 		/*
 		 * The level goes out as the game shows it, so memory 0 is V1 and 98 is
 		 * V99. A locked weapon has no version to show and reads 0, which is a
 		 * level the field never otherwise takes.
 		 */
-		values[0] = owned ? 1 : 0;
 		values[1] = owned ? (u32)((int)level + 1) : 0;
 		values[2] = be16_get(e + 2);
 	}
@@ -249,8 +302,10 @@ static int rac4_bot_set(u8 id, u32 value)
 }
 
 /*
- * A weapon's three slots, all of them halfwords at the head of its 68-byte
- * gadget entry, so nothing here ever writes past the level and the ammo.
+ * A g_GadgetData row's slots, all of them halfwords at the head of its 68-byte
+ * entry, so nothing here ever writes past the level and the ammo. A pair of
+ * boots reaches this with field 0 and never with any other: the row declares
+ * the one slot, and rac4_unlock_set refuses the rest before it gets here.
  *
  * 99 is a hard cap on the level, not a clamp: the game misbehaves above V99, so
  * a client asking for more is told no rather than quietly given 99. Nor is 0 a
@@ -259,7 +314,7 @@ static int rac4_bot_set(u8 id, u32 value)
  * holds, and a wire value past those is clamped the way rac3_unlock_set clamps
  * its own ranges.
  */
-static int rac4_weapon_set(int gadget, u8 field, u32 value)
+static int rac4_gadget_set(int gadget, u8 field, u32 value)
 {
 	u32 addr = gadget_addr(gadget);
 	u8 halfword[2];
@@ -267,9 +322,10 @@ static int rac4_weapon_set(int gadget, u8 field, u32 value)
 
 	if (field == 0) {
 		/*
-		 * Owning a locked weapon hands it V1, which is a 0 in memory. A weapon
-		 * that already has a version keeps it: the checkbox is there to give
-		 * the player the weapon, not to quietly undo the levels it has earned.
+		 * Owning a locked weapon hands it V1, which is a 0 in memory, and that
+		 * same 0 is what a pair of boots the player has reads. A weapon that
+		 * already has a version keeps it: the checkbox is there to give the
+		 * player the item, not to quietly undo the levels it has earned.
 		 * Unticking writes the locked -1 back and leaves the ammo alone.
 		 */
 		rc = mem_read(addr, halfword, sizeof(halfword));
@@ -306,21 +362,25 @@ int rac4_unlock_set(u8 id, u8 field, u32 value)
 
 	/*
 	 * The row's declared fields are the contract: a bot upgrade is one byte
-	 * and has no level or ammo to write, and nothing declares slot 3.
+	 * and has no level or ammo to write, a pair of boots has neither either,
+	 * and nothing declares slot 3.
 	 */
 	if ((rac4_unlocks[row].fields & (u8)(1u << field)) == 0) return ST_UNSUPPORTED;
 
 	gadget = rac4_gadget_for_row(row);
 	if (gadget < 0) return rac4_bot_set(id, value);
 
-	return rac4_weapon_set(gadget, field, value);
+	return rac4_gadget_set(gadget, field, value);
 }
 
 /* ---------------------------------------------------- the weapon actions */
 
 /*
- * Both walk the weapon rows and pass over anything the player has not got: a
- * locked weapon reads -1, and writing a level or a magazine over that would be
+ * Both walk rac4_weapon_gadget and nothing else, so the boots at entries 17 and
+ * 18 are never touched: they have no version to raise and no magazine to fill,
+ * and a level written into one of those halfwords would be a number the game
+ * never puts there. Both also pass over anything the player has not got: a
+ * locked entry reads -1, and writing a level or a magazine over that would be
  * handing out the weapon. Giving one is the Owned checkbox's job.
  */
 static int rac4_all_max_levels(void)

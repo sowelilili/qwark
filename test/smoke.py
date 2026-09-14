@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 32
+QWARK_BUILD = 33
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -1046,21 +1046,24 @@ OTHER_GAMES = [
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
-        "unlocks": 26,
-        "categories": 2,
-        "unlock0": "Pistol Flux LX",
+        "unlocks": 28,
+        "categories": 3,
+        "unlock0": "Dual Vipers",
         # A bot upgrade is one owned byte. A weapon is an entry in g_GadgetData:
         # a level halfword and an ammo halfword. The level on the wire is the one
         # the game shows, V1..V99, and the halfword behind it is one lower; a
-        # locked weapon holds -1 there and reads out as level 0.
+        # locked weapon holds -1 there and reads out as level 0. The two pairs of
+        # boots are entries 17 and 18 of that same table with the same encoding,
+        # but no version and no magazine, so they are owned and nothing else.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
                    ("Level", UNLOCK_KIND_NUMBER, 99),
                    ("Ammo", UNLOCK_KIND_NUMBER, 0),
                    ("", UNLOCK_KIND_FLAG, 0)],
-        "category_fields": {"Bot upgrades": 0x1, "Weapons": 0x7},
-        # The weapon rows' ids are 32 plus the gadget index, so the address
-        # follows from the id and the indices are stated only in the SPRX. An
-        # entry is 68 bytes and the level and ammo halfwords are its first four.
+        "category_fields": {"Weapons": 0x7, "Gadgets": 0x1, "Bot upgrades": 0x1},
+        # The rows that live in g_GadgetData have ids 32 plus the gadget index,
+        # so the address follows from the id and the indices are stated only in
+        # the SPRX. An entry is 68 bytes and the level and ammo halfwords are
+        # its first four.
         "unlock_entry": {"row": "Dual Vipers", "base": 0x00B2B760,
                          "id_base": 32, "stride": 68, "level_bias": -1},
         # Deadlocked has never had a level-flag region.

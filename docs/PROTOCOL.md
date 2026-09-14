@@ -324,9 +324,11 @@ RaC3's slot 1 is the weapon version UYAUnlocks drew as a v1..v8 combo box, not a
 
 Deadlocked's slot 1 is the weapon version too, and its slot 2 is that weapon's ammunition rather than any experience the game keeps. The level that crosses the wire is the one the game shows, V1..V99, and a client needs to know nothing else: 1 is the lowest version a weapon can have, and a weapon the player does not have reads Owned 0 and level **0**, a number the field never otherwise takes. `max` is 99, the version a weapon reaches in challenge mode; a first playthrough stops at V10, and nothing in the entry says which mode the file is in. Unlike RaC3's version, that 99 is a hard limit rather than a clamp — the game misbehaves above V99, so UNLOCK_SET answers BAD_ARG for a larger level, and for 0, and writes nothing either time. Its bot upgrades are one owned byte each and declare slot 0 alone, so the level and ammo columns belong to the weapons.
 
+The table has three categories, in this order: Weapons, then Gadgets, then Bot upgrades. Gadgets is the two pairs of boots, the Charge Boots and the Gravity Boots, which sit in the same gadget table as the weapons and are taken and given by the same halfword, but have no version and no ammunition of their own, so those two rows declare slot 0 alone the way a bot upgrade does.
+
 Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did. In Deadlocked owning a locked weapon hands it V1, and a weapon that already has a version keeps the one it has, so the checkbox never undoes a level. Clearing it takes the weapon away again and leaves the ammunition where it was.
 
-Deadlocked's feature id 16, "Reset all weapon levels", is retired and never reused, so DESCRIBE no longer lists it. "Max all weapon levels" (15) and "Max all weapon ammo" (17) keep their ids, and both pass over a weapon the player does not have rather than handing it out.
+Deadlocked's feature id 16, "Reset all weapon levels", is retired and never reused, so DESCRIBE no longer lists it. "Max all weapon levels" (15) and "Max all weapon ammo" (17) keep their ids, and both pass over a weapon the player does not have rather than handing it out, and over the two gadget rows entirely.
 
 An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it.
 

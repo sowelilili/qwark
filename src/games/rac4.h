@@ -49,6 +49,13 @@
  * write here survives a game save, so unlike the bot upgrades there is no
  * second copy to keep in step.
  *
+ * Entries 17 and 18 are not weapons but the Charge Boots and the Gravity
+ * Boots, and they share the encoding: locked at -1, owned at 0. A community
+ * address list gives them as single bytes, "255 = Locked, 0 = Unlocked", at
+ * 0xB2BBE5 and 0xB2BC29, which are the low bytes of those two level halfwords.
+ * Boots have no version to raise and no ammunition, so the unlock table gives
+ * them an owned checkbox and nothing else.
+ *
  * It sits at +0xA30 inside the object at 0xB2AD30, which nothing here needs:
  * the absolute address is the seam.
  */
