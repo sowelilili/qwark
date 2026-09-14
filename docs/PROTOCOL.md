@@ -58,7 +58,7 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 
 ```
 u8   protocol_version   = 1
-u8   qwark_version      module build number, currently 12 (see below)
+u8   qwark_version      module build number (see below); a client compares it with the build it shipped beside
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
