@@ -1545,8 +1545,8 @@ static void conn_thread(void *arg)
 	if (conn_activity(c, NULL) == 0) {
 		setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
 		if (plat_socket_nonblocking(sock) != 0) c->cancelled = 1;
-		plat_log("qwark: client connected on slot %d", slot);
 		session_activity_unlock();
+		plat_log("qwark: client connected on slot %d", slot);
 	}
 
 	while (g_working && !c->cancelled && c->sock >= 0) {
@@ -1609,36 +1609,45 @@ static void conn_thread(void *arg)
 		}
 
 		/*
-		 * config.txt's `trace_ops`, on unless it says 0. It is a file open,
-		 * write and close per line, a couple of dozen for a client connecting and
-		 * a few a second after that. In exchange the log's last line before a
-		 * console dies names the operation it died in, which is the difference
-		 * between knowing and three rounds of plausible theories.
+		 * The gate. A frame is dispatched only outside the quiet second and
+		 * only while no transition has cancelled this connection, and the
+		 * activity lock covers exactly that decision. It is released before
+		 * anything slow happens on this thread: the handler, and the two trace
+		 * lines that bracket it, each an HDD write on a console. The tick
+		 * thread takes the same lock every tick, so anything held under it is
+		 * a stall of the freezes, the combos and the telemetry. A quiet second
+		 * that begins while a handler is running still holds its reply, since
+		 * the send goes through the same gate.
 		 */
 		if (conn_activity(c, NULL) != 0) {
 			release_buffers(c);
 			break;
 		}
 		subs_refresh(slot);
+		core_lock();
+		status = c->cancelled || (c->block != NULL && g_booting) ? ST_BUSY : ST_OK;
+		core_unlock();
+		session_activity_unlock();
+		if (status != ST_OK) {
+			/* The transition has cancelled this connection. */
+			release_buffers(c);
+			break;
+		}
+
+		/*
+		 * config.txt's `trace_ops`, on unless it says 0. It is a file open,
+		 * write and close per line, a couple of dozen for a client connecting and
+		 * a few a second after that. In exchange the log's last line before a
+		 * console dies names the operation it died in, which is the difference
+		 * between knowing and three rounds of plausible theories.
+		 */
 		if (g_trace_ops) {
 			plat_log("qwark: op %d seq %d len %d (state %d)",
 			         (int)op, (int)seq, (int)length, (int)session_state());
 		}
 
-		core_lock();
-		status = c->cancelled || (c->block != NULL && g_booting) ? ST_BUSY : ST_OK;
-		core_unlock();
-		if (status != ST_OK) {
-			/* The transition has cancelled this connection. */
-			session_activity_unlock();
-			release_buffers(c);
-			break;
-		}
-
 		if (op_needs_ring(op)) {
 			struct ring_cmd cmd;
-			/* The tick needs the activity lock before it can drain the ring. */
-			session_activity_unlock();
 
 			memset(&cmd, 0, sizeof(cmd));
 			cmd.op = op;
@@ -1654,7 +1663,7 @@ static void conn_thread(void *arg)
 			mem_reads = cmd.mem_reads;
 			mem_writes = cmd.mem_writes;
 			exec_us = cmd.exec_us;
-			if (conn_activity(c, NULL) != 0) {
+			if (c->cancelled) {
 				release_buffers(c);
 				break;
 			}
@@ -1675,7 +1684,6 @@ static void conn_thread(void *arg)
 			         (int)op, (int)status, (int)replylen,
 			         (int)mem_reads, (int)mem_writes, (int)exec_us);
 		}
-		session_activity_unlock();
 
 		be32_put(header, replylen);
 		be16_put(header + 4, seq);

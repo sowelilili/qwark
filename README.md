@@ -17,22 +17,9 @@ Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NP
 
 qwark listens on TCP port 9673 and streams telemetry over UDP to connected clients. It can coexist with Ratchetron (9671) and the old autosplitter modules (9672).
 
-Build 27 leaves the console alone for a measured second after IS_INGAME, before
-the first PID, title or memory query. TCP requests wait on existing connections;
-telemetry and autosplit UDP sends pause too. After that second, control and state
-polling resume on fixed buffers. Requests needing larger buffers answer BUSY until
-boot finishes. A bulk request already in flight is cancelled on a game transition,
-which can cause the client to reconnect. New connection attempts are refused until
-the transition finishes. Failed mod caves and patch writes now stop before dependent hooks are
-enabled, and an aborted boot no longer leaves the previous game's tables active.
+## When a game launches
 
-Build 28 removed RaC1's embedded collectable autosplitter hooks, which the user
-confirmed fixed the boot black screen. Build 29 also removes Gold bolt collected,
-Skill point, Item collected and Infobot from the advertised autosplitter options
-and stops those events. Planet, Veldin, Drek button, start/reset and load tracking
-remain. Savefile hooks are installed only by an action that requires them;
-status polling, library browsing and buffer I/O do not install them. The one-second
-quiet window remains in place.
+The moment a game process appears, qwark leaves the console alone for one second: nothing reads the process, the XMB is not asked for its title, and nothing moves on the network, telemetry included. Ratchetron and the old autosplitter modules kept the same silence, and consoles that crashed at launch without it are why. After that second the fingerprint runs and the session comes up, usually within a second or two of the launch. Until it does, a client's small requests (the handshake, heartbeats, the state poll) keep working and anything larger is answered BUSY, and a connection made or a large request already in flight during the switch is dropped, which the client's reconnect handles. PROTOCOL.md section 1.1 has the exact rules.
 
 ## Save files
 

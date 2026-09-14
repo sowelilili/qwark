@@ -56,9 +56,15 @@ void session_step_once(void);
 void session_stop(void);
 int  session_running(void);
 
-/* Lock before core_lock; never hold it while waiting for a ring command.
- * Serializes boot detection with TCP I/O/inline dispatch. session_quiet() is
- * read under this lock by network threads, or directly by the owning tick. */
+/*
+ * Lock before core_lock; never hold it while waiting for a ring command, and
+ * never across anything slow. It serializes boot detection with the moments a
+ * network thread touches its socket or decides to dispatch a frame, and with
+ * nothing else: a handler, a file operation or a log line runs without it,
+ * because the tick thread takes it every tick and whatever is held under it is
+ * a stall of the freezes, the combos and the telemetry. session_quiet() is read
+ * under this lock by network threads, or directly by the owning tick.
+ */
 void session_activity_lock(void);
 void session_activity_unlock(void);
 int  session_quiet(void);

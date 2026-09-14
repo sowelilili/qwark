@@ -42,6 +42,15 @@
 
 /* --------------------------------------------------------------- lifecycle */
 
+/*
+ * One line at a time into the log. The tick thread and every connection thread
+ * log, and with trace_ops on the connection threads log twice per request;
+ * without this a line could land in the middle of another. Zero until
+ * plat_init makes it, and plat_mutex_lock does nothing on a zero mutex, so a
+ * line logged before then simply goes in unlocked.
+ */
+static plat_mutex_t g_log_mutex;
+
 int plat_init(void)
 {
 	u64 size = 0;
@@ -51,6 +60,7 @@ int plat_init(void)
 		plat_file_rename(QWARK_LOG_PATH, QWARK_LOG_OLD_PATH);
 	}
 
+	plat_mutex_init(&g_log_mutex);
 	return 0;
 }
 
@@ -167,13 +177,13 @@ void plat_log(const char *fmt, ...)
 	line[n] = 0x0A;
 	n++;
 
+	plat_mutex_lock(&g_log_mutex);
 	if (cellFsOpen(QWARK_LOG_PATH, CELL_FS_O_WRONLY | CELL_FS_O_CREAT | CELL_FS_O_APPEND,
-	               &fd, NULL, 0) != CELL_OK) {
-		return;
+	               &fd, NULL, 0) == CELL_OK) {
+		cellFsWrite(fd, line, (uint64_t)n, NULL);
+		cellFsClose(fd);
 	}
-
-	cellFsWrite(fd, line, (uint64_t)n, NULL);
-	cellFsClose(fd);
+	plat_mutex_unlock(&g_log_mutex);
 }
 
 /* ------------------------------------------------------------------- time */
