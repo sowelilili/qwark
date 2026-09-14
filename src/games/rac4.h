@@ -40,9 +40,17 @@
 #define RAC4_LEVEL_SAVES       0x00B27FF0u  /* MF_LevelSave[15], 0x304 each */
 /*
  * g_GadgetData, the live weapon table: GadgetEntry[32], sixty-eight bytes each,
- * a big-endian s16 level at +0 and a big-endian s16 ammo count at +2. Level 0
- * is a weapon the player does not have. It sits at +0xA30 inside the object at
- * 0xB2AD30, which nothing here needs: the absolute address is the seam.
+ * a big-endian s16 level at +0 and a big-endian s16 ammo count at +2.
+ *
+ * The level halfword is one below the level the game shows: V1 is 0, V2 is 1,
+ * and so on up to V99 at 98. A weapon the player does not have reads -1, which
+ * is why the halfword has to be read signed — an unsigned read makes a locked
+ * weapon look like V65536. Checked on hardware, along with the fact that a
+ * write here survives a game save, so unlike the bot upgrades there is no
+ * second copy to keep in step.
+ *
+ * It sits at +0xA30 inside the object at 0xB2AD30, which nothing here needs:
+ * the absolute address is the seam.
  */
 #define RAC4_GADGETS           0x00B2B760u  /* GadgetEntry[32], 0xB2B760..0xB2BFE0 */
 #define RAC4_GAME_STATE        0x00B3C5A0u  /* the fast-load restore watches +3 */
@@ -167,10 +175,17 @@
  * The game's own accessors index the table as i * 68 (i * 64 plus i * 4), so
  * the stride is 0x44 and only the first four bytes of an entry are the level
  * and the ammo. The other sixty-four are fields qwark neither reads nor writes.
+ *
+ * RAC4_MAX_LEVEL is the number the player sees, the one the field descriptor
+ * advertises and the one UNLOCK_SET takes. RAC4_LEVEL_MEM_MAX is what V99 is in
+ * memory, and nothing may write above it: the game breaks past V99.
+ * RAC4_LEVEL_LOCKED is the halfword a weapon the player has not got reads.
  */
 #define RAC4_GADGET_COUNT      32
 #define RAC4_GADGET_STRIDE     68      /* 0x44 */
 #define RAC4_MAX_LEVEL         99
+#define RAC4_LEVEL_MEM_MAX     98      /* V99, the highest the halfword may hold */
+#define RAC4_LEVEL_LOCKED      ((s16)-1)
 
 /*
  * What the game's own maximum-ammunition arithmetic reads, decoded from the
@@ -235,7 +250,10 @@ extern const u8 rac4_fp_patched[4];
 
 /* ------------------------------------------------------------- feature ids */
 
-/* Stable: new features go on the end, a retired one leaves its number behind. */
+/*
+ * Stable: new features go on the end, a retired one leaves its number behind.
+ * Retired, never to be reused: 16 (reset all weapon levels).
+ */
 #define R4_CRASH_PATCHES   0
 #define R4_SOFTLOCK_FIX    1
 #define R4_FAST_LOADS      2
@@ -256,6 +274,11 @@ extern const u8 rac4_fp_patched[4];
 #define R4_LOAD_ASIDE      14
 
 #define R4_MAX_LEVELS      15
+/*
+ * 16 retired, never to be reused: "Reset all weapon levels" put every owned
+ * weapon back to V1, and nobody wanted the button. The number stays spoken for
+ * so a client that still remembers it can never be handed something else.
+ */
 #define R4_RESET_LEVELS    16
 #define R4_MAX_AMMO        17
 

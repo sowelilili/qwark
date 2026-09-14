@@ -24,11 +24,16 @@
  * writes both the live byte and the saved copy, because an unlock that only
  * lands in the live array is lost the moment the game saves over it.
  *
- * The weapons are g_GadgetData, the thirty-two entry table at RAC4_GADGETS:
- * a level halfword and an ammo halfword at the head of each 68-byte entry,
- * with level 0 meaning locked. Ten of those entries are the weapons the player
- * buys, and they are the rows below; the rest of the table is not a weapon the
- * trainer has any business handing out.
+ * The weapons are g_GadgetData, the thirty-two entry table at RAC4_GADGETS: a
+ * signed level halfword and an ammo halfword at the head of each 68-byte entry.
+ * The level is one below the level the game shows — V1 is 0, V99 is 98 — and a
+ * weapon the player has not got reads -1. Nothing here needs a saved copy the
+ * way a bot upgrade does: a write to this table survives a game save, which is
+ * the one thing about it that had to be checked on hardware.
+ *
+ * Ten of those entries are the weapons the player buys, and they are the rows
+ * below; the rest of the table is not a weapon the trainer has any business
+ * handing out.
  */
 #define CAT_BOTS    0
 #define CAT_WEAPONS 1
@@ -44,6 +49,10 @@ static const char * const rac4_categories[] = { "Bot upgrades", "Weapons" };
  * The level maximum is the challenge-mode V99. A first playthrough stops at
  * V10, but nothing in the entry says which mode the file is in, so the
  * descriptor advertises the number the game itself can reach.
+ *
+ * Every number crossing this seam is the level the game shows, V1..V99, never
+ * the halfword behind it: the client has no game knowledge and simply draws
+ * what the console says. The +1 and the -1 live in the two handlers below.
  */
 static const struct unlock_field_desc rac4_fields[4] = {
 	{ "Owned", UNLOCK_KIND_FLAG,   0 },
@@ -145,6 +154,22 @@ static u32 gadget_addr(int gadget)
 	return RAC4_GADGETS + (u32)gadget * RAC4_GADGET_STRIDE;
 }
 
+/* The level halfword of an entry, read signed: a locked weapon holds -1. */
+static s16 gadget_level(const u8 *entry)
+{
+	return (s16)be16_get(entry);
+}
+
+/*
+ * Whether the player has the weapon. RAC4_LEVEL_LOCKED is the only value below
+ * zero the game ever writes, and a negative level is no level in any case, so
+ * this is the one test the whole file asks.
+ */
+static int gadget_owned(s16 level)
+{
+	return level >= 0;
+}
+
 /*
  * Two reads cover both categories: the live bot array, which is the one the old
  * form read back, and the whole gadget table. That is 2176 bytes, well inside
@@ -196,11 +221,16 @@ int rac4_unlock_read(const struct game_unlock *entry, u32 values[4])
 
 	{
 		const u8 *e = g_gadgets + (u32)gadget * RAC4_GADGET_STRIDE;
-		u16 level = be16_get(e);
+		s16 level = gadget_level(e);
+		int owned = gadget_owned(level);
 
-		/* A weapon is owned when it has a version at all. */
-		values[0] = level != 0 ? 1 : 0;
-		values[1] = level;
+		/*
+		 * The level goes out as the game shows it, so memory 0 is V1 and 98 is
+		 * V99. A locked weapon has no version to show and reads 0, which is a
+		 * level the field never otherwise takes.
+		 */
+		values[0] = owned ? 1 : 0;
+		values[1] = owned ? (u32)((int)level + 1) : 0;
 		values[2] = be16_get(e + 2);
 	}
 
@@ -222,10 +252,12 @@ static int rac4_bot_set(u8 id, u32 value)
  * A weapon's three slots, all of them halfwords at the head of its 68-byte
  * gadget entry, so nothing here ever writes past the level and the ammo.
  *
- * 99 is a hard cap on the level, not a clamp: the game misbehaves above it, so
- * a client asking for more is told no rather than quietly given 99. The ammo
- * has no such ceiling, only the sixteen bits the entry holds, and a wire value
- * past those is clamped the way rac3_unlock_set clamps its own ranges.
+ * 99 is a hard cap on the level, not a clamp: the game misbehaves above V99, so
+ * a client asking for more is told no rather than quietly given 99. Nor is 0 a
+ * level — the field counts from V1, and unticking Owned is how a weapon is
+ * taken away. The ammo has no such ceiling, only the sixteen bits the entry
+ * holds, and a wire value past those is clamped the way rac3_unlock_set clamps
+ * its own ranges.
  */
 static int rac4_weapon_set(int gadget, u8 field, u32 value)
 {
@@ -234,30 +266,28 @@ static int rac4_weapon_set(int gadget, u8 field, u32 value)
 	int rc;
 
 	if (field == 0) {
-		u16 level;
-
 		/*
-		 * Owning a locked weapon hands it V1. A weapon that already has a
-		 * version keeps it: the checkbox is there to give the player the
-		 * weapon, not to quietly undo the levels it has earned.
+		 * Owning a locked weapon hands it V1, which is a 0 in memory. A weapon
+		 * that already has a version keeps it: the checkbox is there to give
+		 * the player the weapon, not to quietly undo the levels it has earned.
+		 * Unticking writes the locked -1 back and leaves the ammo alone.
 		 */
 		rc = mem_read(addr, halfword, sizeof(halfword));
 		if (rc != ST_OK) return rc;
 
-		level = be16_get(halfword);
 		if (value != 0) {
-			if (level != 0) return ST_OK;
-			be16_put(halfword, 1);
-		} else {
+			if (gadget_owned(gadget_level(halfword))) return ST_OK;
 			be16_put(halfword, 0);
+		} else {
+			be16_put(halfword, (u16)RAC4_LEVEL_LOCKED);
 		}
 
 		return mem_write(addr, halfword, sizeof(halfword));
 	}
 
 	if (field == 1) {
-		if (value > RAC4_MAX_LEVEL) return ST_BAD_ARG;
-		be16_put(halfword, (u16)value);
+		if (value == 0 || value > RAC4_MAX_LEVEL) return ST_BAD_ARG;
+		be16_put(halfword, (u16)(value - 1));
 		return mem_write(addr, halfword, sizeof(halfword));
 	}
 
@@ -289,12 +319,11 @@ int rac4_unlock_set(u8 id, u8 field, u32 value)
 /* ---------------------------------------------------- the weapon actions */
 
 /*
- * All three walk the weapon rows and pass over anything the player has not got:
- * a locked weapon reads level 0, and in Deadlocked that zero is the ownership
- * itself, so handing it a level or a magazine would be handing out the weapon.
- * Giving one is the Owned checkbox's job.
+ * Both walk the weapon rows and pass over anything the player has not got: a
+ * locked weapon reads -1, and writing a level or a magazine over that would be
+ * handing out the weapon. Giving one is the Owned checkbox's job.
  */
-static int rac4_all_levels(u16 level)
+static int rac4_all_max_levels(void)
 {
 	u8 i;
 
@@ -303,9 +332,9 @@ static int rac4_all_levels(u16 level)
 		u8 halfword[2];
 
 		if (mem_read(addr, halfword, sizeof(halfword)) != ST_OK) continue;
-		if (be16_get(halfword) == 0) continue;
+		if (!gadget_owned(gadget_level(halfword))) continue;
 
-		be16_put(halfword, level);
+		be16_put(halfword, RAC4_LEVEL_MEM_MAX);   /* V99 */
 		mem_write(addr, halfword, sizeof(halfword));
 	}
 
@@ -358,7 +387,7 @@ static int rac4_all_max_ammo(void)
 		u16 max = 0;
 
 		if (mem_read(gadget_addr(gadget), entry, sizeof(entry)) != ST_OK) continue;
-		if (be16_get(entry) == 0) continue;
+		if (!gadget_owned(gadget_level(entry))) continue;
 
 		if (rac4_weapon_max_ammo(gadget, entry, gametype,
 		                         be32_get(per_mod + gadget * 4), &max) != ST_OK)
@@ -545,8 +574,8 @@ int rac4_trigger(u8 id)
 	case R4_UNLOCK_PLANETS: return rac4_unlock_all_planets();
 	case R4_ACT_TUNE:       return rac4_act_tune();
 
-	case R4_MAX_LEVELS:     return rac4_all_levels(RAC4_MAX_LEVEL);
-	case R4_RESET_LEVELS:   return rac4_all_levels(1);
+	case R4_MAX_LEVELS:     return rac4_all_max_levels();
+	/* R4_RESET_LEVELS is retired; its id answers NOT_FOUND with every other. */
 	case R4_MAX_AMMO:       return rac4_all_max_ammo();
 	case R4_SET_ASIDE:      return savefile_set_aside();
 	case R4_LOAD_ASIDE:     return savefile_load_aside();

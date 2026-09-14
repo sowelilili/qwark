@@ -589,12 +589,13 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_ACT_TUNE,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Act tune bosses" },
 
 	/*
-	 * The weapon actions. In Deadlocked the level is the ownership, so all
-	 * three pass over a weapon the player has not got rather than handing it
-	 * out: the Unlocks panel's own Owned checkbox is what gives a weapon.
+	 * The weapon actions. A locked weapon reads level -1, so both pass over
+	 * anything the player has not got rather than handing it out: the Unlocks
+	 * panel's own Owned checkbox is what gives a weapon.
+	 *
+	 * R4_RESET_LEVELS sat between these two and is retired, id and all.
 	 */
 	{ R4_MAX_LEVELS,     FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon levels" },
-	{ R4_RESET_LEVELS,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all weapon levels" },
 	{ R4_MAX_AMMO,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon ammo" },
 
 	/* Protocol 1.2: Deadlocked's helper has exactly the one pair. */

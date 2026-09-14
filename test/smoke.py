@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 31
+QWARK_BUILD = 32
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -1038,9 +1038,11 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 18,
+        "features": 17,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
+        # Retired, never renumbered: 16, "Reset all weapon levels".
+        "retired": [16],
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
@@ -1048,7 +1050,9 @@ OTHER_GAMES = [
         "categories": 2,
         "unlock0": "Pistol Flux LX",
         # A bot upgrade is one owned byte. A weapon is an entry in g_GadgetData:
-        # a level halfword and an ammo halfword, with level 0 meaning locked.
+        # a level halfword and an ammo halfword. The level on the wire is the one
+        # the game shows, V1..V99, and the halfword behind it is one lower; a
+        # locked weapon holds -1 there and reads out as level 0.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
                    ("Level", UNLOCK_KIND_NUMBER, 99),
                    ("Ammo", UNLOCK_KIND_NUMBER, 0),
@@ -1058,7 +1062,7 @@ OTHER_GAMES = [
         # follows from the id and the indices are stated only in the SPRX. An
         # entry is 68 bytes and the level and ammo halfwords are its first four.
         "unlock_entry": {"row": "Dual Vipers", "base": 0x00B2B760,
-                         "id_base": 32, "stride": 68},
+                         "id_base": 32, "stride": 68, "level_bias": -1},
         # Deadlocked has never had a level-flag region.
         "levelflags": None,
         "coords": 0x10D44D0,
@@ -1659,7 +1663,9 @@ def exercise_game(c, sim, spec, udp=None):
 
         # A row whose number slots are a struct in game memory: the level and
         # the ammo go out as halfwords in the entry the row's id points at, and
-        # come back through UNLOCK_LIST in the slots that named them.
+        # come back through UNLOCK_LIST in the slots that named them. A game
+        # whose halfword is not the level it shows says so with level_bias, and
+        # the round trip still has to end on the number that was sent.
         spec_entry = spec.get("unlock_entry")
         if spec_entry:
             row = next((r for r in rows if r["name"] == spec_entry["row"]), None)
@@ -1667,6 +1673,7 @@ def exercise_game(c, sim, spec, udp=None):
                      "%s: %s is in the table" % (name, spec_entry["row"])):
                 addr = (spec_entry["base"] +
                         (row["id"] - spec_entry["id_base"]) * spec_entry["stride"])
+                stored = 7 + spec_entry.get("level_bias", 0)
                 status, _ = c.call(OP_UNLOCK_SET,
                                    struct.pack(">BBHI", row["id"], 1, 0, 7))
                 check(status == ST_OK, "%s: UNLOCK_SET level=7" % name, status)
@@ -1675,7 +1682,7 @@ def exercise_game(c, sim, spec, udp=None):
                 check(status == ST_OK, "%s: UNLOCK_SET ammo=250" % name, status)
 
                 status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, 4))
-                check(body == b"\x00\x07\x00\xFA",
+                check(body == struct.pack(">HH", stored, 250),
                       "%s: both halfwords are at the head of the entry" % name,
                       body)
 
