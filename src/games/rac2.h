@@ -42,8 +42,77 @@
 #define RAC2_BOSS_SNIVELAK     0x14817A3u  /* one byte, cleared on death */
 #define RAC2_SLOTS_HIT         0x14817AFu
 #define RAC2_SKILL_POINTS      0x1481809u  /* 30 bytes */
-#define RAC2_AMMO_ARRAY        0x148185Cu  /* 136 bytes */
-#define RAC2_UNLOCK_BASE       0x1481A82u  /* first owned byte, see rac2_panel.c */
+
+/* ------------------------------------------------------------ the item arrays */
+
+/*
+ * RaC2 uses the same item system as RaC3: every item, gadget and weapon version
+ * has an item id, and the game keeps parallel arrays indexed by that id. Each of
+ * these is base + id * stride, which is what the old per-row address lists in
+ * RC2Unlocks.cs and rac2.cs were writing out by hand:
+ *
+ *   owned  u8  [id]   0x1481A80   1 = the player has this item
+ *   ammo   u32 [id]   0x148182C   rounds in the magazine
+ *   exp    u32 [id]   0x1481AF0   experience towards the next version, shifted
+ *                                 left five: the HUD bar divides it by 32
+ *   item   u8  [id]   0x1329A40   the item id of the VERSION in use, RaC3's item
+ *                                 array under another name; see rac2_panel.c
+ *   mods   u8  [id]   0x148190C   not exposed
+ *
+ * Every one was checked against every row of the community address list that
+ * carries a PS3 PAL address (the Lancer's item id is 30 and its words land at
+ * 0x1481A9E, 0x14818A4, 0x1481B68 and 0x148192A) and then against the NPEA00386
+ * ELF in Ghidra, which indexes all five the same way.
+ *
+ * 56 is the length the game itself uses: its save and restore routine (0xBBB798)
+ * copies exactly 56 entries of each of these arrays, and every loop that walks
+ * an item stops at 56. Item ids above 55 are weapon VERSIONS, which have stats
+ * records and no inventory of their own, so nothing here indexes an array with
+ * one.
+ */
+#define RAC2_AMMO_ARRAY        0x148182Cu  /* u32 ammo[id] */
+#define RAC2_MODS_ARRAY        0x148190Cu  /* u8 mods[id], the ammo array's end */
+#define RAC2_OWNED_ARRAY       0x1481A80u  /* u8 owned[id] */
+#define RAC2_EXP_ARRAY         0x1481AF0u  /* u32 exp[id] */
+#define RAC2_ITEM_ARRAY        0x1329A40u  /* u8 item[id]: the version in use */
+#define RAC2_ITEM_COUNT        56
+
+/*
+ * freezeAmmoCheckbox filled 136 bytes from 0x148185C, which in the array above
+ * is ammo[12] through ammo[45]: the Bomb Glove to the Shield Charger. Kept
+ * exactly as it was rather than widened to the whole array.
+ */
+#define RAC2_AMMO_FILL_FIRST   12
+#define RAC2_AMMO_FILL_LEN     136
+
+/*
+ * The per-item stats table: 208-byte (0xD0) records indexed by item id, one per
+ * weapon VERSION, and the table the item array above points into. From the ELF:
+ *
+ *   +0x00  u8    non-zero where the record is a real item
+ *   +0x42  u16   the item's name string
+ *   +0x46  s16   the item id of the NEXT version, 0 at the top of the chain
+ *   +0x48  s16   the item id of the previous version, 0 at the bottom
+ *   +0x68  s32   the experience the next version costs, again shifted left five
+ *   +0x84  u16   what a magazine costs at a vendor
+ *   +0x8A  u16   the magazine size, which is what the game refills ammo[id] to
+ *
+ * The community address list's own damage, price and capacity columns are the
+ * same 208-byte records with the same field spacing, but every address in them
+ * is 0x3F0 further along than this build's: they are not PS3 PAL addresses, and
+ * the numbers here are the ones the NPEA00386 code actually reads.
+ */
+#define RAC2_STATS_TABLE       0x1322A90u
+#define RAC2_STATS_STRIDE      208
+#define RAC2_STATS_CAPACITY    0x8A
+
+/*
+ * The highest number of versions any RaC2 weapon has, and so the maximum the
+ * Level field advertises in UNLOCK_LIST. Sixteen weapons go to V4, the Clank
+ * Zapper stops at V2 and the rest have no second version at all; UNLOCK_SET
+ * clamps to the entry's own count the way RaC3 does.
+ */
+#define RAC2_MAX_LEVELS        4
 
 #define RAC2_PLATINUM_BOLTS    0x1562540u  /* 0x70 bytes */
 #define RAC2_LEVEL_FLAGS       0x15625B0u  /* 0x10 per planet */
@@ -266,6 +335,14 @@ extern const u8 rac2_fp_patched[4];
 #define R2_CB_PRIMARY_BACK   35
 #define R2_CB_TINT_FRONT     36
 #define R2_CB_TINT_BACK      37
+
+/*
+ * The two weapon actions the other three games have had all along. RaC2 only
+ * grew a Level column when its unlocks moved onto the item arrays, so these go
+ * on the end rather than beside the collectable pairs.
+ */
+#define R2_MAX_LEVELS        38
+#define R2_MAX_AMMO          39
 
 /* ------------------------------------------------------ rac2_panel.c exports */
 

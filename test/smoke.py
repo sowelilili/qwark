@@ -648,6 +648,13 @@ def mem_read_u32(c, addr):
     return struct.unpack(">I", body)[0]
 
 
+def mem_read_u8(c, addr):
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, 1))
+    if status != ST_OK or len(body) != 1:
+        return None
+    return body[0]
+
+
 # ------------------------------------------------------------- autosplitting
 
 def autosplit_events(c, since=0):
@@ -869,7 +876,7 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        "features": 35,
+        "features": 37,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h.
         "sf_setaside": 0x010CD71F,
         # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
@@ -880,12 +887,22 @@ OTHER_GAMES = [
         "unlocks": 44,
         "categories": 3,
         "unlock0": "Lancer",
-        # RC2Unlocks.cs is one owned byte per row and nothing else.
+        # RaC2 keeps the same item arrays RaC3 does, so slot 1 is the weapon
+        # version and slot 2 the experience it earns towards the next one.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
-                   ("", UNLOCK_KIND_FLAG, 0),
-                   ("", UNLOCK_KIND_FLAG, 0),
-                   ("", UNLOCK_KIND_FLAG, 0)],
-        "category_fields": {"Weapons": 0x1, "Gadgets": 0x1, "Items": 0x1},
+                   ("Level", UNLOCK_KIND_NUMBER, 4),
+                   ("XP", UNLOCK_KIND_NUMBER, 0),
+                   ("Ammo", UNLOCK_KIND_NUMBER, 0)],
+        "category_fields": {"Weapons": 0xF, "Gadgets": 0x1, "Items": 0x1},
+        # The seven weapons the game gives no second version: five RaC1
+        # leftovers, the Zodiac and the RYNO II.
+        "no_field": [("Tesla-Claw", 1), ("Bomb-Glove", 1), ("Wolloper", 1),
+                     ("Visi-bomb-Gun", 1), ("Decoy Glove", 1), ("Zodiac", 1),
+                     ("RYNO-II", 1)],
+        # The Lancer is item id 30 and its V2 is item id 60.
+        "unlock_arrays": {"row": "Lancer", "item": 30, "level": 2, "version": 60,
+                          "owned": 0x1481A80, "items": 0x1329A40,
+                          "exp": 0x1481AF0, "ammo": 0x148182C},
         "levelflags": 0x10,
         "coords": 0x147F260,
         # Bolts, a VALUE with readout 0.
@@ -1697,6 +1714,47 @@ def exercise_game(c, sim, spec, udp=None):
                     check(row and row["values"][:3] == (1, 7, 250),
                           "%s: and UNLOCK_LIST reads owned, level and ammo back"
                           % name, row["values"] if row else None)
+
+        # The other shape a game's number slots take: parallel arrays indexed by
+        # an item id, one cell per slot, and a level that is the id of the
+        # version in use rather than a count. Each write has to land in the cell
+        # its own array names and come back through UNLOCK_LIST as the number
+        # that was sent.
+        spec_arrays = spec.get("unlock_arrays")
+        if spec_arrays:
+            row = next((r for r in rows if r["name"] == spec_arrays["row"]), None)
+            if check(row is not None,
+                     "%s: %s is in the table" % (name, spec_arrays["row"])):
+                item = spec_arrays["item"]
+                sent = (1, spec_arrays["level"], 4242, 250)
+                ok = True
+                for slot, value in enumerate(sent):
+                    status, _ = c.call(OP_UNLOCK_SET,
+                                       struct.pack(">BBHI", row["id"], slot, 0,
+                                                   value))
+                    ok = check(status == ST_OK,
+                               "%s: UNLOCK_SET slot %d = %d" % (name, slot, value),
+                               status) and ok
+
+                if ok:
+                    check(mem_read_u8(c, spec_arrays["owned"] + item) == 1,
+                          "%s: the owned byte is at its item id" % name)
+                    check(mem_read_u8(c, spec_arrays["items"] + item) ==
+                          spec_arrays["version"],
+                          "%s: and the item array holds the version's own id" % name)
+                    check(mem_read_u32(c, spec_arrays["exp"] + item * 4) == 4242,
+                          "%s: the XP landed in the exp array" % name)
+                    check(mem_read_u32(c, spec_arrays["ammo"] + item * 4) == 250,
+                          "%s: and the ammo in the ammo array" % name)
+
+                    status, body = c.call(OP_UNLOCK_LIST)
+                    if status == ST_OK:
+                        _cats, _fields, rows, _n = parse_unlocks(body)
+                        row = next((r for r in rows
+                                    if r["name"] == spec_arrays["row"]), None)
+                        check(row and row["values"] == sent,
+                              "%s: and UNLOCK_LIST reads all four back" % name,
+                              row["values"] if row else None)
 
     # -------------------------------------------------------- level flags
     # A game with no level-flag hooks answers UNSUPPORTED, which is what tells
