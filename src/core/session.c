@@ -563,7 +563,14 @@ static void step_state(void)
 		break;
 
 	case SESSION_QUITTING:
-		if (pid != g_pid) {
+		/*
+		 * A boot can end before a pid was ever read: the quiet second is
+		 * ticking, the process is gone, and g_pid is still 0. Waiting for
+		 * `pid != g_pid` then waits for a process that will never differ from
+		 * nothing, with the allocation gate shut and every new connection
+		 * refused until the next launch. No process at all is the XMB.
+		 */
+		if (pid == 0 || pid != g_pid) {
 			g_state = SESSION_XMB;
 			g_pid = 0;
 			g_title[0] = 0;

@@ -778,6 +778,28 @@ static void test_boot(void)
 	check_eq_u64(host_pid_calls() - pids_at_boot, 1, "and the first PID query");
 	host_freeze_time(0);
 	check(host_write_log_count() == writes_at_boot, "RaC1 boot injects no helper code");
+
+	/*
+	 * A process that comes and goes inside the quiet second: a launch that
+	 * failed, or a launcher handing over to the game proper. No pid was ever
+	 * read, so QUITTING has no process to wait for and must not wait for one:
+	 * with the gate shut, every bulk request was BUSY and every new connection
+	 * was refused until the next launch happened to come along.
+	 */
+	check(quit_and_wait(), "quit again");
+	host_freeze_time(1);
+	host_boot("NPEA00385");
+	pump(1);
+	check(session_state() == SESSION_BOOTING, "a second boot starts its quiet second");
+	host_quit();
+	host_advance_time(500000);
+	session_step_once();
+	check(session_state() == SESSION_BOOTING, "and does not look at the process inside it");
+	host_advance_time(500000);
+	pump(3);
+	check(session_state() == SESSION_XMB, "a process gone before its pid was read leaves the session in the XMB");
+	host_freeze_time(0);
+	check(boot_and_wait("NPEA00385"), "and the next launch still comes up");
 }
 
 /* ------------------------------------------------------------- telemetry */
@@ -801,7 +823,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 29, "and this module is build 29");
+	check_eq_u64(packet[5], 30, "and this module is build 30");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
