@@ -38,6 +38,13 @@
 #define RAC4_IS_LOADING        0x00B0FD84u
 
 #define RAC4_LEVEL_SAVES       0x00B27FF0u  /* MF_LevelSave[15], 0x304 each */
+/*
+ * g_GadgetData, the live weapon table: GadgetEntry[32], sixty-eight bytes each,
+ * a big-endian s16 level at +0 and a big-endian s16 ammo count at +2. Level 0
+ * is a weapon the player does not have. It sits at +0xA30 inside the object at
+ * 0xB2AD30, which nothing here needs: the absolute address is the seam.
+ */
+#define RAC4_GADGETS           0x00B2B760u  /* GadgetEntry[32], 0xB2B760..0xB2BFE0 */
 #define RAC4_GAME_STATE        0x00B3C5A0u  /* the fast-load restore watches +3 */
 #define RAC4_FRAME_COUNTER     0x00B3C59Cu  /* the IL timer readout */
 #define RAC4_LOAD_PLANET2      0x00B36DCCu  /* write 1 to start the load */
@@ -153,6 +160,41 @@
 #define RAC4_SKIN_COUNT        22
 
 /*
+ * The gadget table's shape, and the level a weapon can reach: V10 in a first
+ * playthrough, V99 in challenge mode, which is the number the field descriptor
+ * advertises.
+ *
+ * The game's own accessors index the table as i * 68 (i * 64 plus i * 4), so
+ * the stride is 0x44 and only the first four bytes of an entry are the level
+ * and the ammo. The other sixty-four are fields qwark neither reads nor writes.
+ */
+#define RAC4_GADGET_COUNT      32
+#define RAC4_GADGET_STRIDE     68      /* 0x44 */
+#define RAC4_MAX_LEVEL         99
+
+/*
+ * What the game's own maximum-ammunition arithmetic reads, decoded from the
+ * function around RAC4_AMMO_INSTR: a base out of the gadget's stats record,
+ * one figure for single player and another for multiplayer, plus the amount an
+ * ammo mod adds for every ammo mod fitted in the entry's ten mod slots. The
+ * numbers are all read live, so nothing here is a copy of a table that a patch
+ * or a different build could move.
+ */
+#define RAC4_GAME_TYPE         0x00B36DF4u  /* u32 g_gameType, 1 = multiplayer */
+#define RAC4_GAME_TYPE_MP      1u
+#define RAC4_GADGET_STATS      0x009DE970u  /* one record per gadget */
+#define RAC4_STATS_STRIDE      176u         /* 0xB0 */
+#define RAC4_STATS_AMMO_SP     0x42u        /* u16 base ammo, single player */
+#define RAC4_STATS_AMMO_MP     0x44u        /* u16 base ammo, multiplayer */
+#define RAC4_AMMO_PER_MOD      0x009DD434u  /* u32 per gadget, added per ammo mod */
+
+/* The mod slots inside a GadgetEntry: ten of them, one word each, type 2 is ammo. */
+#define RAC4_MOD_SLOT0         0x14u
+#define RAC4_MOD_SLOT_SIZE     4u
+#define RAC4_MOD_SLOTS         10u
+#define RAC4_MOD_AMMO          2u
+
+/*
  * Position slots: 0x20 bytes of position and rotation, then the two camera
  * floats. Loading puts the 0x20 back at RAC4_COORDS and the first 0x10 at
  * RAC4_COORDS2; the camera is saved but not restored, exactly as rac4.cs has it.
@@ -212,6 +254,10 @@ extern const u8 rac4_fp_patched[4];
 
 #define R4_SET_ASIDE       13
 #define R4_LOAD_ASIDE      14
+
+#define R4_MAX_LEVELS      15
+#define R4_RESET_LEVELS    16
+#define R4_MAX_AMMO        17
 
 /* ------------------------------------------------------ rac4_panel.c exports */
 

@@ -823,7 +823,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 30, "and this module is build 30");
+	check_eq_u64(packet[5], 31, "and this module is build 31");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2993,6 +2993,12 @@ static void test_rac3(void)
 #define R4_BOLTS_ADDR   0x009C32E8u
 #define R4_BOTS_SAVE    0x009C3325u
 #define R4_BOTS_LIVE    0x009D2775u
+#define R4_GADGETS      0x00B2B760u
+#define R4_GADGET_STEP  68u
+#define R4_PER_MOD      0x009DD434u
+#define R4_STATS        0x009DE970u
+#define R4_STATS_STEP   176u
+#define R4_GAME_TYPE    0x00B36DF4u
 #define R4_LOADP2       0x00B36DCCu
 #define R4_TARGET       0x00B36DD0u
 #define R4_TUTORIAL     0x00B1F46Cu
@@ -3011,6 +3017,9 @@ static void test_rac3(void)
 #define F4_FAST_LOADS    2
 #define F4_SKIN          10
 #define F4_SET_ASIDE     13
+#define F4_MAX_LEVELS    15
+#define F4_RESET_LEVELS  16
+#define F4_MAX_AMMO      17
 
 static void test_rac4(void)
 {
@@ -3050,7 +3059,7 @@ static void test_rac4(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 15, "Deadlocked declares fifteen features");
+		check_eq_u64(d->nfeatures, 18, "Deadlocked declares eighteen features");
 		check_eq_u64(d->nreadouts, 8, "and eight readouts");
 		check_eq_u64(d->auto_default,
 		             ((u64)1 << F4_CRASH_PATCHES) | ((u64)1 << F4_SOFTLOCK_FIX),
@@ -3124,40 +3133,238 @@ static void test_rac4(void)
 	mem_read_u32(R4_FASTLOAD_2, &v);
 	check_eq_u64(v, 0x4E9E0421u, "both words restored");
 
-	group("Deadlocked: bot unlocks");
+	group("Deadlocked: bot and weapon unlocks");
 
 	{
 		const struct game_unlock *list = NULL;
 		const char * const *cats = NULL;
 		u8 n = 0, ncat = 0;
 		const struct unlock_field_desc *fields = NULL;
+		const struct game_unlock *vipers = NULL;
+		const struct game_unlock *flail = NULL;
 		u32 values[4];
+		u32 vaddr = 0, faddr = 0;
+		u8 entry[4];
+		u8 around[8];
+		u8 i, weapons = 0;
+		int rows_ok = 1;
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
-		check_eq_u64(n, 16, "sixteen bot upgrades");
-		check_eq_u64(ncat, 1, "in one category");
+		check_eq_u64(n, 26, "sixteen bot upgrades and ten weapons");
+		check_eq_u64(ncat, 2, "in two categories");
 		check(list != NULL && qstreq(list[0].name, "Pistol Flux LX"),
 		      "entry 0 is the Pistol Flux LX");
+		check(cats != NULL && qstreq(cats[0], "Bot upgrades") &&
+		      qstreq(cats[1], "Weapons"), "the bots first and the weapons after them");
+
 		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
 		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
-		check(fields != NULL &&
-		      (fields[1].name == NULL || fields[1].name[0] == 0) &&
-		      (fields[2].name == NULL || fields[2].name[0] == 0) &&
-		      (fields[3].name == NULL || fields[3].name[0] == 0),
-		      "and Deadlocked names no other slot");
+		check(fields != NULL && qstreq(fields[1].name, "Level") &&
+		      fields[1].kind == UNLOCK_KIND_NUMBER && fields[1].max == 99,
+		      "slot 1 is the level, up to the challenge-mode 99");
+		check(fields != NULL && qstreq(fields[2].name, "Ammo") &&
+		      fields[2].kind == UNLOCK_KIND_NUMBER && fields[2].max == 0,
+		      "slot 2 is the ammo count, with no bound");
+		check(fields != NULL && (fields[3].name == NULL || fields[3].name[0] == 0),
+		      "and Deadlocked names no fourth slot");
 
-		check(g->unlock_set(5, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
+		/*
+		 * A weapon's id is 32 plus its index into g_GadgetData, which is what
+		 * keeps the two halves of the table apart for good; the addresses below
+		 * are derived from the ids, so the real indices are only stated once.
+		 * An entry is 68 bytes, of which qwark touches the first four.
+		 */
+		for (i = 0; i < n; i++) {
+			if (list[i].category == 0) {
+				if (list[i].fields != UNLOCK_FIELD_0) rows_ok = 0;
+				continue;
+			}
+			weapons++;
+			if (list[i].id < 32) rows_ok = 0;
+			if (list[i].fields != (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_2))
+				rows_ok = 0;
+			if (qstreq(list[i].name, "Dual Vipers")) vipers = &list[i];
+			if (qstreq(list[i].name, "Scorpion Flail")) flail = &list[i];
+		}
+		check_eq_u64(weapons, 10, "ten weapon rows");
+		check(rows_ok, "a bot declares owned alone and a weapon owned, level and ammo "
+		               "with an id past the bots");
+
+		check(vipers != NULL && flail != NULL,
+		      "the Dual Vipers and the Scorpion Flail are in the table");
+
+		if (vipers != NULL && flail != NULL) {
+			vaddr = R4_GADGETS + ((u32)vipers->id - 32) * R4_GADGET_STEP;
+			faddr = R4_GADGETS + ((u32)flail->id - 32) * R4_GADGET_STEP;
+
+			/* The indices behind the two rows, stated the long way once. */
+			check_eq_u64(vaddr, 0x00B2B760u + 2 * 68, "the Dual Vipers are gadget 2");
+			check_eq_u64(faddr, 0x00B2B760u + 15 * 68,
+			             "and the Scorpion Flail gadget 15, 68 bytes apiece");
+
+			host_poke(vaddr, (const u8 *)"\x00\x05\x01\x2C", 4);  /* V5, 300 rounds */
+			host_poke(faddr, (const u8 *)"\x00\x00\x00\x07", 4);  /* locked, 7 rounds */
+
+			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
+			      "UNLOCK_LIST snapshots the gadget table");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(vipers, values) == ST_OK, "a weapon row reads live");
+			check_eq_u64(values[0], 1, "a weapon with a level reads owned");
+			check_eq_u64(values[1], 5, "the level is the first halfword");
+			check_eq_u64(values[2], 300, "and the ammo the second");
+
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(flail, values) == ST_OK, "and so does a locked one");
+			check_eq_u64(values[0], 0, "level 0 reads as not owned");
+			check_eq_u64(values[1], 0, "with no level");
+			check_eq_u64(values[2], 7, "though its ammo still comes back");
+
+			/*
+			 * The last row's entry is 15 strides in, at the far end of the
+			 * snapshot: a level poked there has to come back on that row and
+			 * on no other, which is what the stride buys.
+			 */
+			host_poke(faddr, (const u8 *)"\x00\x09", 2);
+			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
+			      "UNLOCK_LIST covers the whole table");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(flail, values) == ST_OK, "the last weapon row reads");
+			check(values[0] == 1 && values[1] == 9 && values[2] == 7,
+			      "a level 15 strides in is the Scorpion Flail's own");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(vipers, values) == ST_OK, "and the first row again");
+			check_eq_u64(values[1], 5, "which still reads its own level");
+			host_poke(faddr, (const u8 *)"\x00\x00", 2);
+
+			check(g->unlock_set(flail->id, 0, 1) == ST_OK,
+			      "UNLOCK_SET owned=1 on a locked weapon");
+			host_peek(faddr, entry, 4);
+			check(be16_get(entry) == 1 && be16_get(entry + 2) == 7,
+			      "hands it V1 and leaves the ammo alone");
+
+			check(g->unlock_set(vipers->id, 0, 1) == ST_OK,
+			      "UNLOCK_SET owned=1 on a V5 weapon");
+			host_peek(vaddr, entry, 4);
+			check(be16_get(entry) == 5, "keeps the level it had");
+
+			check(g->unlock_set(vipers->id, 0, 0) == ST_OK, "UNLOCK_SET owned=0");
+			host_peek(vaddr, entry, 4);
+			check(be16_get(entry) == 0 && be16_get(entry + 2) == 300,
+			      "zeroes the level and nothing else");
+
+			/* A level write moves exactly two bytes of the 68-byte entry. */
+			host_poke(vaddr - 2, (const u8 *)"\xA1\xA2", 2);
+			host_poke(vaddr + 4, (const u8 *)"\xB1\xB2", 2);
+
+			check(g->unlock_set(vipers->id, 1, 42) == ST_OK, "UNLOCK_SET level=42");
+			host_peek(vaddr - 2, around, 8);
+			check(be16_get(around + 2) == 42 && be16_get(around + 4) == 300,
+			      "writes the level halfword big-endian and no further");
+			check(around[0] == 0xA1 && around[1] == 0xA2,
+			      "the bytes before the entry are left alone");
+			check(around[6] == 0xB1 && around[7] == 0xB2,
+			      "and so is the rest of the entry behind the ammo");
+
+			check(g->unlock_set(vipers->id, 2, 999) == ST_OK, "UNLOCK_SET ammo=999");
+			host_peek(vaddr, entry, 4);
+			check(be16_get(entry) == 42 && be16_get(entry + 2) == 999,
+			      "writes the ammo halfword after it");
+
+			check(g->unlock_set(vipers->id, 1, 99) == ST_OK, "UNLOCK_SET level=99");
+			check(g->unlock_set(vipers->id, 1, 100) == ST_BAD_ARG,
+			      "a level past 99 is BAD_ARG, not a clamp: the game breaks above it");
+			host_peek(vaddr, entry, 4);
+			check(be16_get(entry) == 99, "and nothing was written for it");
+
+			check(g->unlock_set(vipers->id, 2, 0x12345) == ST_OK,
+			      "an ammo past a halfword too");
+			host_peek(vaddr, entry, 4);
+			check(be16_get(entry + 2) == 0xFFFF, "and clamped to what the entry holds");
+
+			check(g->unlock_set(vipers->id, 3, 1) == ST_UNSUPPORTED,
+			      "no weapon has a fourth field");
+
+			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
+			      "UNLOCK_LIST after the writes");
+			memset(values, 0, sizeof(values));
+			check(g->unlock_read(vipers, values) == ST_OK, "the row reads back");
+			check(values[0] == 1 && values[1] == 99 && values[2] == 0xFFFF,
+			      "with the level and ammo that were written");
+		}
+
+		check(g->unlock_set(5, 0, 1) == ST_OK, "UNLOCK_SET owned=1 on a bot");
 		host_peek(R4_BOTS_LIVE + 5, &b, 1);
 		check_eq_u64(b, 1, "the live byte was written");
 		host_peek(R4_BOTS_SAVE + 5, &b, 1);
 		check_eq_u64(b, 1, "and so was the saved copy");
 
-		check(g->unlock_set(5, 1, 1) == ST_UNSUPPORTED, "there is no second field");
+		check(g->unlock_set(5, 1, 1) == ST_UNSUPPORTED, "a bot has no level");
+		check(g->unlock_set(16, 0, 1) == ST_BAD_ARG, "an id no row carries is BAD_ARG");
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
 		memset(values, 0, sizeof(values));
 		check(g->unlock_read(&list[5], values) == ST_OK, "entry 5 reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
+	}
+
+	group("Deadlocked: the weapon actions");
+
+	{
+		u32 g2  = R4_GADGETS + 2 * R4_GADGET_STEP;    /* Dual Vipers */
+		u32 g3  = R4_GADGETS + 3 * R4_GADGET_STEP;    /* Magma Cannon */
+		u32 g15 = R4_GADGETS + 15 * R4_GADGET_STEP;   /* Scorpion Flail */
+		u8 got[4];
+
+		/* Two weapons the player has, and one still locked. */
+		host_poke(g2,  (const u8 *)"\x00\x03\x00\x00", 4);
+		host_poke(g3,  (const u8 *)"\x00\x07\x00\x00", 4);
+		host_poke(g15, (const u8 *)"\x00\x00\x00\x05", 4);
+
+		/* Two ammo mods on the Dual Vipers, one mod of another type, none elsewhere. */
+		host_poke(g2 + 0x14, (const u8 *)"\x02", 1);
+		host_poke(g2 + 0x18, (const u8 *)"\x02", 1);
+		host_poke(g2 + 0x1C, (const u8 *)"\x01", 1);
+		host_poke(g3 + 0x14, (const u8 *)"\x00\x00\x00\x00", 4);
+
+		/* The stats records, a single-player base and a multiplayer one. */
+		host_poke(R4_STATS + 2 * R4_STATS_STEP + 0x42, (const u8 *)"\x00\x64", 2);
+		host_poke(R4_STATS + 2 * R4_STATS_STEP + 0x44, (const u8 *)"\x00\xC8", 2);
+		host_poke(R4_STATS + 3 * R4_STATS_STEP + 0x42, (const u8 *)"\x00\x32", 2);
+		host_poke(R4_STATS + 15 * R4_STATS_STEP + 0x42, (const u8 *)"\x03\xE7", 2);
+		host_poke(R4_PER_MOD + 2 * 4, (const u8 *)"\x00\x00\x00\x19", 4);
+		host_poke(R4_PER_MOD + 3 * 4, (const u8 *)"\x00\x00\x00\x0A", 4);
+		host_poke(R4_GAME_TYPE, (const u8 *)"\x00\x00\x00\x00", 4);
+
+		check(features_trigger(F4_MAX_AMMO) == ST_OK, "the max-ammo action runs");
+		host_peek(g2, got, 4);
+		check(be16_get(got + 2) == 150,
+		      "a base of 100 and two ammo mods at 25 apiece make 150");
+		host_peek(g3, got, 4);
+		check(be16_get(got + 2) == 50, "a weapon with no mods gets its base");
+		host_peek(g15, got, 4);
+		check(be16_get(got) == 0 && be16_get(got + 2) == 5,
+		      "and a locked weapon is left alone");
+
+		host_poke(R4_GAME_TYPE, (const u8 *)"\x00\x00\x00\x01", 4);
+		check(features_trigger(F4_MAX_AMMO) == ST_OK, "it runs again in multiplayer");
+		host_peek(g2, got, 4);
+		check(be16_get(got + 2) == 250, "which takes the other base out of the record");
+		host_poke(R4_GAME_TYPE, (const u8 *)"\x00\x00\x00\x00", 4);
+
+		check(features_trigger(F4_MAX_LEVELS) == ST_OK, "the max-levels action runs");
+		host_peek(g2, got, 4);
+		check(be16_get(got) == 99, "an owned weapon goes to V99");
+		host_peek(g3, got, 4);
+		check(be16_get(got) == 99, "and so does the one beside it");
+		host_peek(g15, got, 4);
+		check(be16_get(got) == 0, "while a locked weapon is not handed out");
+
+		check(features_trigger(F4_RESET_LEVELS) == ST_OK, "the reset-levels action runs");
+		host_peek(g2, got, 4);
+		check(be16_get(got) == 1, "an owned weapon goes back to V1");
+		check(be16_get(got + 2) == 250, "with the ammo left where it was");
+		host_peek(g15, got, 4);
+		check(be16_get(got) == 0, "and a locked one stays locked");
 	}
 
 	group("Deadlocked: positions, skins and die");

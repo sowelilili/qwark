@@ -588,6 +588,15 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_UNLOCK_PLANETS, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all planets" },
 	{ R4_ACT_TUNE,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Act tune bosses" },
 
+	/*
+	 * The weapon actions. In Deadlocked the level is the ownership, so all
+	 * three pass over a weapon the player has not got rather than handing it
+	 * out: the Unlocks panel's own Owned checkbox is what gives a weapon.
+	 */
+	{ R4_MAX_LEVELS,     FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon levels" },
+	{ R4_RESET_LEVELS,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all weapon levels" },
+	{ R4_MAX_AMMO,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon ammo" },
+
 	/* Protocol 1.2: Deadlocked's helper has exactly the one pair. */
 	{ R4_SET_ASIDE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" }

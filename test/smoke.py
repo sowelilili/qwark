@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 30
+QWARK_BUILD = 31
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -1038,21 +1038,27 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 15,
+        "features": 18,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
-        "unlocks": 16,
-        "categories": 1,
+        "unlocks": 26,
+        "categories": 2,
         "unlock0": "Pistol Flux LX",
-        # A bot upgrade is one owned byte; Deadlocked's weapons are not listed.
+        # A bot upgrade is one owned byte. A weapon is an entry in g_GadgetData:
+        # a level halfword and an ammo halfword, with level 0 meaning locked.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
-                   ("", UNLOCK_KIND_FLAG, 0),
-                   ("", UNLOCK_KIND_FLAG, 0),
+                   ("Level", UNLOCK_KIND_NUMBER, 99),
+                   ("Ammo", UNLOCK_KIND_NUMBER, 0),
                    ("", UNLOCK_KIND_FLAG, 0)],
-        "category_fields": {"Bot upgrades": 0x1},
+        "category_fields": {"Bot upgrades": 0x1, "Weapons": 0x7},
+        # The weapon rows' ids are 32 plus the gadget index, so the address
+        # follows from the id and the indices are stated only in the SPRX. An
+        # entry is 68 bytes and the level and ammo halfwords are its first four.
+        "unlock_entry": {"row": "Dual Vipers", "base": 0x00B2B760,
+                         "id_base": 32, "stride": 68},
         # Deadlocked has never had a level-flag region.
         "levelflags": None,
         "coords": 0x10D44D0,
@@ -1650,6 +1656,37 @@ def exercise_game(c, sim, spec, udp=None):
             check(rows and rows[0]["values"][0] == 1,
                   "%s: and it reads back live" % name,
                   rows[0]["values"] if rows else None)
+
+        # A row whose number slots are a struct in game memory: the level and
+        # the ammo go out as halfwords in the entry the row's id points at, and
+        # come back through UNLOCK_LIST in the slots that named them.
+        spec_entry = spec.get("unlock_entry")
+        if spec_entry:
+            row = next((r for r in rows if r["name"] == spec_entry["row"]), None)
+            if check(row is not None,
+                     "%s: %s is in the table" % (name, spec_entry["row"])):
+                addr = (spec_entry["base"] +
+                        (row["id"] - spec_entry["id_base"]) * spec_entry["stride"])
+                status, _ = c.call(OP_UNLOCK_SET,
+                                   struct.pack(">BBHI", row["id"], 1, 0, 7))
+                check(status == ST_OK, "%s: UNLOCK_SET level=7" % name, status)
+                status, _ = c.call(OP_UNLOCK_SET,
+                                   struct.pack(">BBHI", row["id"], 2, 0, 250))
+                check(status == ST_OK, "%s: UNLOCK_SET ammo=250" % name, status)
+
+                status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, 4))
+                check(body == b"\x00\x07\x00\xFA",
+                      "%s: both halfwords are at the head of the entry" % name,
+                      body)
+
+                status, body = c.call(OP_UNLOCK_LIST)
+                if status == ST_OK:
+                    _cats, _fields, rows, _n = parse_unlocks(body)
+                    row = next((r for r in rows if r["name"] == spec_entry["row"]),
+                               None)
+                    check(row and row["values"][:3] == (1, 7, 250),
+                          "%s: and UNLOCK_LIST reads owned, level and ammo back"
+                          % name, row["values"] if row else None)
 
     # -------------------------------------------------------- level flags
     # A game with no level-flag hooks answers UNSUPPORTED, which is what tells

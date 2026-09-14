@@ -318,11 +318,13 @@ What the four games ship today:
 | RaC1 | Owned, flag | Gold, flag | — | Ammo, number |
 | RaC2 | Owned, flag | — | — | — |
 | RaC3 | Owned, flag | **Level, number, max 8** | **XP, number** | Ammo, number |
-| Deadlocked | Owned, flag | — | — | — |
+| Deadlocked | Owned, flag | **Level, number, max 99** | **Ammo, number** | — |
 
 RaC3's slot 1 is the weapon version UYAUnlocks drew as a v1..v8 combo box, not a gold flag: gold weapons are a RaC1 idea and RaC3 has none. `max` is the game-wide maximum, so a client may offer 8 for every weapon; UNLOCK_SET clamps to the entry's own level count, and the R3YNO — the one weapon that stops at v5 — lands on v5. Writing 1 is a real downgrade, not "unset".
 
-Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did.
+Deadlocked's slot 1 is the weapon version too, and its slot 2 is that weapon's ammunition rather than any experience the game keeps: a weapon there is one entry of a level halfword and an ammo halfword, and level 0 is a weapon the player does not have. `max` is 99, the version a weapon reaches in challenge mode; a first playthrough stops at V10, and nothing in the entry says which mode the file is in. Unlike RaC3's version, that 99 is a hard limit rather than a clamp — the game misbehaves above it, so UNLOCK_SET answers BAD_ARG for a larger level and writes nothing. Its bot upgrades are one owned byte each and declare slot 0 alone, so the level and ammo columns belong to the weapons.
+
+Setting field 0 to 1 may carry its game's side effects: in RaC1 a weapon is handed its maximum ammo, as the old client did. In Deadlocked owning a locked weapon hands it V1, and a weapon that already has a version keeps the one it has, so the checkbox never undoes a level.
 
 An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on that slot is then UNSUPPORTED: RaC3's Suck Cannon declares no ammo, because the game does not count any for it.
 
