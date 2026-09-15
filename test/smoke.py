@@ -1911,7 +1911,7 @@ RAC1_FP_ADDR = 0x0007F558
 RAC1_FP = bytes([0x30, 0x64, 0x9C, 0xE0])
 
 # A port of its own, so this can run beside the host smoke above.
-RPCS3_PORT = 9674
+RPCS3_PORT = 9684
 
 
 def smoke_rpcs3(exe):
