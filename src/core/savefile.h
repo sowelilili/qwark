@@ -74,11 +74,12 @@
  *
  * The chunk was 64 KB (PLAT_MEM_MAX, the largest single read) in a 64 KB buffer
  * of its own until build 35, when the buffer became the 16 KB one the mod loader
- * also uses. Four times as many calls move exactly the same bytes per tick, so a
- * transfer takes the same number of ticks it always did.
+ * also uses, and 8 KB in build 37. Eight times as many calls move exactly the
+ * same bytes per tick, so a transfer takes the same number of ticks it always
+ * did: the two numbers still multiply out to 128 KB.
  */
 #define SAVEFILE_COPY_CHUNK      QSCRATCH_BYTES
-#define SAVEFILE_CHUNKS_PER_TICK 8
+#define SAVEFILE_CHUNKS_PER_TICK 16
 
 /* What a save is called, and what its CRC sidecar is called. */
 #define SAVEFILE_EXT     ".sav"

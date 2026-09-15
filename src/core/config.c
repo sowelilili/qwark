@@ -10,14 +10,22 @@
  * value widths they are derived from. */
 
 /*
- * positions/<game>.txt. A line is "<planet>.<slot> = <hex>\n" and the blob is at
- * most 40 bytes in the four games (RaC4's; the other three store 30), so the 64
- * slots this table holds are about 5.7 KB of file. 8192 is room for that and a
- * couple of dozen lines more, and it is left where it was: the positions file is
- * already the smaller of the two and there is nothing here worth winning.
+ * positions/<game>.txt. A line is "<planet>.<slot> = <hex>\n": a planet index,
+ * which is a u8 and so at most three digits, a dot, a slot digit (there are
+ * eight), " = ", two hex digits per blob byte, and the newline. The blob is 40
+ * bytes in RaC4 and 30 in the other three, and QWARK_MAX_BLOB, the most any game
+ * may store, is 64.
+ *
+ * So the file this table can write is POS_MAX_ENTRIES of the widest line, and
+ * that is what the buffer is, rather than the round 8192 it was: a full table of
+ * maximum-length blobs came to 8769 bytes, which the old buffer could not read
+ * back, and a positions file that does not fit is a file whose every slot is
+ * silently dropped. What the four games actually write is 89 bytes a line, so a
+ * full table of RaC4 positions is 5.6 KB and always was.
  */
 #define POS_MAX_ENTRIES    64
-#define POS_TEXT_MAX       8192
+#define POS_LINE_MAX       (3 + 1 + 1 + 3 + 2 * QWARK_MAX_BLOB + 1)
+#define POS_TEXT_MAX       (POS_MAX_ENTRIES * POS_LINE_MAX + 2)
 
 struct kv {
 	char key[CONFIG_KEY_MAX];
@@ -27,7 +35,15 @@ struct kv {
 
 static struct kv g_kv[CONFIG_MAX_ENTRIES];
 static u32 g_version;
-static char g_text[CONFIG_TEXT_MAX];
+
+/*
+ * config.txt and the positions file are read into the core's shared text buffer
+ * (util.h), under the core lock like every other user of it, rather than into
+ * two buffers of their own. gnu99, so no _Static_assert: a cap that outgrew that
+ * buffer fails the build here rather than running off the end of it.
+ */
+typedef char config_text_fits[CONFIG_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
+typedef char pos_text_fits[POS_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
 
 static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.save",
@@ -107,6 +123,7 @@ int config_set_u32(const char *key, u32 value)
 
 int config_load(void)
 {
+	char *text = qtext();
 	char *cursor;
 	char *line;
 	u32 len = 0;
@@ -115,13 +132,13 @@ int config_load(void)
 	memset(g_kv, 0, sizeof(g_kv));
 	g_version++;
 
-	rc = qread_file(QWARK_CONFIG, g_text, sizeof(g_text), &len);
+	rc = qread_file(QWARK_CONFIG, text, CONFIG_TEXT_MAX, &len);
 	if (rc != ST_OK) {
 		plat_log_enable(1);   /* no file, so the default applies */
 		return rc;
 	}
 
-	cursor = g_text;
+	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
 		char *eq;
 		char *key;
@@ -307,8 +324,13 @@ void config_set_mod_auto(const char *title, const char *dirname, int on)
 
 /* -------------------------------------------------------------- positions */
 
+/*
+ * A planet is a u8 everywhere it is asked for, so it is one here too: a
+ * hand-edited line naming a planet past 255 used to take a slot it could never
+ * be fetched from again, and is skipped instead.
+ */
 struct pos_entry {
-	u32 planet;
+	u8  planet;
 	u8  slot;
 	u8  len;
 	u8  used;
@@ -317,7 +339,6 @@ struct pos_entry {
 
 static struct pos_entry g_pos[POS_MAX_ENTRIES];
 static char g_pos_title[16];
-static char g_pos_text[POS_TEXT_MAX];
 
 static void pos_path(char *out, u32 cap)
 {
@@ -331,6 +352,7 @@ static void pos_path(char *out, u32 cap)
 static int pos_load_file(void)
 {
 	char path[128];
+	char *text = qtext();
 	char *cursor;
 	char *line;
 
@@ -339,9 +361,9 @@ static int pos_load_file(void)
 	if (g_pos_title[0] == 0) return ST_OK;
 
 	pos_path(path, sizeof(path));
-	if (qread_file(path, g_pos_text, sizeof(g_pos_text), NULL) != ST_OK) return ST_OK;
+	if (qread_file(path, text, POS_TEXT_MAX, NULL) != ST_OK) return ST_OK;
 
-	cursor = g_pos_text;
+	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
 		char *eq;
 		char *dot;
@@ -368,13 +390,13 @@ static int pos_load_file(void)
 		*dot = 0;
 
 		planet = qparse_u32(key, &ok);
-		if (!ok) continue;
+		if (!ok || planet > 0xFFu) continue;
 		slot = qparse_u32(dot + 1, &ok);
 		if (!ok || slot >= QWARK_POS_SLOTS) continue;
 
 		for (i = 0; i < POS_MAX_ENTRIES; i++) {
 			if (g_pos[i].used) continue;
-			g_pos[i].planet = planet;
+			g_pos[i].planet = (u8)planet;
 			g_pos[i].slot   = (u8)slot;
 			g_pos[i].len    = (u8)qhex_to_bytes(value, g_pos[i].blob, QWARK_MAX_BLOB);
 			g_pos[i].used   = 1;

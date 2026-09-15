@@ -4,7 +4,6 @@
 #include <string.h>
 
 #define CLIENT_PATCH_SLOTS 16
-#define CLIENT_PATCH_WORDS QWARK_MAX_PATCH_WORDS
 /*
  * Originals for the games' compile-time defs. All four games together allocate
  * 36 words (RaC4's loading hook and crash fix are eleven each and the rest are
@@ -551,21 +550,94 @@ const struct patch_def *patch_at(u32 index)
 
 /* ------------------------------------------------------------ client patches */
 
+/*
+ * The sixteen slots used to keep a full QWARK_MAX_PATCH_WORDS of words and the
+ * same again of originals each, whether they held one word or sixty-four: 16
+ * times 64 times twelve bytes, 12 KB, for a table whose real occupancy is a
+ * handful of words. They draw on one shared pool now.
+ *
+ * QWARK_MAX_PATCH_WORDS is unchanged and is still what one PATCH_APPLY may
+ * carry; what is new is that sixteen patches of it no longer all fit at once. A
+ * PATCH_APPLY that would run the pool over is answered ST_FULL, the same status
+ * a client already gets when every slot is taken.
+ *
+ * The pool is kept packed: freeing a slot slides the words above it down and
+ * re-points the defs that own them, so there is no fragmentation to run out of.
+ * Only the tick thread writes client patches (they all arrive through the
+ * command ring under the core lock), and the two readers a network thread uses,
+ * client_patch_count and client_patch_at, take that same lock.
+ */
+#define CLIENT_PATCH_POOL_WORDS 256
+
 struct client_patch {
 	struct patch_def  def;
-	struct patch_word words[CLIENT_PATCH_WORDS];
-	u32               originals[CLIENT_PATCH_WORDS];
 	char              name[32];
+	u16               first;     /* where its words start in the pool */
 	u8                used;
 };
 
 static struct client_patch g_client[CLIENT_PATCH_SLOTS];
+static struct patch_word   g_client_words[CLIENT_PATCH_POOL_WORDS];
+static u32                 g_client_orig[CLIENT_PATCH_POOL_WORDS];
+static u16                 g_client_pool_used;
+
+/* Points a slot's def at its slice of the two pools. */
+static void client_point(struct client_patch *c)
+{
+	c->def.words     = &g_client_words[c->first];
+	c->def.originals = &g_client_orig[c->first];
+}
+
+/*
+ * Takes `count` words off the end of the pool. NULL when they will not fit,
+ * which PATCH_APPLY answers ST_FULL.
+ */
+static int client_pool_take(struct client_patch *c, u16 count)
+{
+	if ((u32)g_client_pool_used + (u32)count > CLIENT_PATCH_POOL_WORDS) return 0;
+	c->first = g_client_pool_used;
+	g_client_pool_used = (u16)(g_client_pool_used + count);
+	client_point(c);
+	return 1;
+}
+
+/*
+ * Gives a slot's words back and closes the gap behind them, so the pool is
+ * always one run from 0 to g_client_pool_used and a later patch cannot be
+ * refused for a hole an earlier one left.
+ */
+static void client_pool_release(struct client_patch *c)
+{
+	u16 at = c->first;
+	u16 count = c->def.count;
+	u16 tail;
+	int i;
+
+	c->used = 0;
+	if (count == 0) return;
+
+	tail = (u16)(g_client_pool_used - at - count);
+	if (tail > 0) {
+		memmove(&g_client_words[at], &g_client_words[at + count],
+		        (u32)tail * sizeof(g_client_words[0]));
+		memmove(&g_client_orig[at], &g_client_orig[at + count],
+		        (u32)tail * sizeof(g_client_orig[0]));
+	}
+	g_client_pool_used = (u16)(g_client_pool_used - count);
+
+	for (i = 0; i < CLIENT_PATCH_SLOTS; i++) {
+		if (!g_client[i].used || g_client[i].first < at) continue;
+		g_client[i].first = (u16)(g_client[i].first - count);
+		client_point(&g_client[i]);
+	}
+}
 
 static struct client_patch *client_find(u32 first_addr)
 {
 	int i;
 	for (i = 0; i < CLIENT_PATCH_SLOTS; i++) {
-		if (g_client[i].used && g_client[i].words[0].addr == first_addr)
+		if (g_client[i].used && g_client[i].def.count > 0 &&
+		    g_client[i].def.words[0].addr == first_addr)
 			return &g_client[i];
 	}
 	return NULL;
@@ -588,7 +660,7 @@ int client_patch_apply(const struct patch_word *words, u16 count)
 	int rc;
 	int i;
 
-	if (words == NULL || count == 0 || count > CLIENT_PATCH_WORDS) return ST_BAD_ARG;
+	if (words == NULL || count == 0 || count > QWARK_MAX_PATCH_WORDS) return ST_BAD_ARG;
 
 	c = client_find(words[0].addr);
 	if (c != NULL) {
@@ -601,20 +673,20 @@ int client_patch_apply(const struct patch_word *words, u16 count)
 		if (c == NULL) return ST_FULL;
 
 		memset(c, 0, sizeof(*c));
-		memcpy(c->words, words, sizeof(struct patch_word) * count);
+		c->def.count = count;
+		if (!client_pool_take(c, count)) return ST_FULL;
+
+		memcpy(&g_client_words[c->first], words, sizeof(struct patch_word) * count);
 		client_name(c, words[0].addr);
-		c->def.name      = c->name;
-		c->def.kind      = PATCH_KIND_CLIENT;
-		c->def.words     = c->words;
-		c->def.count     = count;
-		c->def.originals = c->originals;
-		c->used          = 1;
+		c->def.name = c->name;
+		c->def.kind = PATCH_KIND_CLIENT;
+		c->used     = 1;
 	}
 
 	rc = patch_apply(&c->def);
 	if (rc != ST_OK && !patch_is_applied(&c->def)) {
-		/* Nothing was written, so give the slot straight back. */
-		c->used = 0;
+		/* Nothing was written, so give the slot and its words straight back. */
+		client_pool_release(c);
 	}
 	return rc;
 }
@@ -627,7 +699,7 @@ int client_patch_revert(u32 first_addr)
 	if (c == NULL) return ST_NOT_FOUND;
 
 	rc = patch_revert(&c->def);
-	if (rc == ST_OK) c->used = 0;
+	if (rc == ST_OK) client_pool_release(c);
 	return rc;
 }
 
@@ -639,7 +711,7 @@ int client_patch_clear(void)
 		int rc;
 		if (!g_client[i].used) continue;
 		rc = patch_revert(&g_client[i].def);
-		if (rc == ST_OK || rc == ST_NOT_FOUND) g_client[i].used = 0;
+		if (rc == ST_OK || rc == ST_NOT_FOUND) client_pool_release(&g_client[i]);
 		else status = rc;
 	}
 	return status;
@@ -669,6 +741,7 @@ void client_patch_drop_all(void)
 {
 	int i;
 	for (i = 0; i < CLIENT_PATCH_SLOTS; i++) g_client[i].used = 0;
+	g_client_pool_used = 0;
 }
 
 void client_patch_gc(void)
@@ -677,7 +750,7 @@ void client_patch_gc(void)
 	for (i = 0; i < CLIENT_PATCH_SLOTS; i++) {
 		if (!g_client[i].used) continue;
 		if (patch_is_applied(&g_client[i].def)) continue;
-		g_client[i].used = 0;
+		client_pool_release(&g_client[i]);
 	}
 }
 

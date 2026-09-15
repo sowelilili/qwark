@@ -10,12 +10,13 @@ Revision 1.7 (2026-09-09): signed VALUEs. The first of Feature's two pad bytes i
 Revision 1.8 (2026-09-09): COMBO_SUSPEND, which holds every stored combo off while a client captures a new one, so the buttons being recorded do not also fire the combos already there. See section 5.9.
 Revision 1.9 (2026-09-10): the savefile block. SAVEFILE_INFO, SAVEFILE_READ and SAVEFILE_WRITE in the 0x00B0 block. A save no longer travels as a file: qwark embeds one helper per game, installs it invisibly on first use, and the helper parks the save in a RAM buffer these three ops stream. See section 5.12.
 Revision 1.10 (2026-09-10): the savefile library moves onto the console. SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE and SAVEFILE_CATEGORY at 0x00B3, FILE_RENAME at 0x0079, and a SAVEFILE_INFO grown to 20 bytes that reports the copy qwark now runs between a file and the aside buffer. See section 5.13.
+Revision 1.11 (2026-09-15): `QWARK_MAX_PAYLOAD` is **16384**. One frame, request or reply, carries at most that, so every op that used to name 65536 — MEM_READ, FILE_READ, FILE_WRITE, SAVEFILE_READ, SAVEFILE_WRITE — is capped there too. No opcode, structure, status or field moved: this is the size of a frame and nothing else. The console holds one 16 KB request buffer and one 16 KB reply buffer for every connection to share, instead of allocating 192 KB of the machine's own memory per request in flight, which is what a user running qwark beside other VSH plugins actually feels. A client that sends chunks of 16000 bytes is safe against this build and against every older one.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
 
-Transport: TCP on port 9673 for commands, UDP telemetry sent to the port the client names in SUBSCRIBE. Up to 8 concurrent TCP clients.
+Transport: TCP on port 9673 for commands, UDP telemetry sent to the port the client names in SUBSCRIBE. Up to 4 concurrent TCP clients (8 before revision 1.11); a connection arriving when they are all taken is closed as it arrives, which is what always happened one past the limit.
 
 ## 1. Frames
 
@@ -24,7 +25,7 @@ Request:  u32 length | u16 seq | u16 opcode | payload[length]
 Reply:    u32 length | u16 seq | u16 status | payload[length]
 ```
 
-- `length` is the payload size, at most `QWARK_MAX_PAYLOAD` = 65600. A larger length closes the connection.
+- `length` is the payload size, at most `QWARK_MAX_PAYLOAD` = 16384 (65600 before revision 1.11). A larger length closes the connection.
 - Every request gets exactly one reply carrying the same `seq`. Replies come back in request order, so clients may pipeline.
 - An unknown opcode is answered with `UNKNOWN_OP` and an empty payload; the payload is drained and the connection stays open.
 - A payload shorter than the opcode requires is answered with `BAD_ARG`.
@@ -34,9 +35,11 @@ Reply:    u32 length | u16 seq | u16 status | payload[length]
 
 The moment the console reports a game process, qwark leaves it alone for one second, measured by the clock rather than counted in ticks. Nothing reads the process, the XMB is not asked for its title, and nothing moves on the network: existing connections neither receive nor reply, and the telemetry and autosplit datagrams stop. Frames sent into that second are answered, in order, once it ends; nothing is buffered for them beyond what the socket holds. The OS still acknowledges TCP by itself, and other plugins are outside this. Ratchetron and the old autosplitter modules kept the same silence, and the consoles that crashed at launch without it are why. None of this depends on which game is starting, because none of it knows yet: the title is not asked for until the second is over, so a process qwark turns out not to know (section 3.3) is launched through exactly the same silence and reaches INGAME the same way.
 
-For the rest of BOOTING, and through QUITTING, no request buffers are allocated. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE and GET_STATE, with at most two payload bytes, use fixed buffers and keep working. Any other request is drained without allocating and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
+For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE and GET_STATE, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
 
-Connected sockets are non-blocking. A payload receive and a reply send each have a two-second deadline, not counting time paused for a launch, and a connection that misses one is closed and its buffers released. Waiting for the next request header has no deadline and holds no buffers.
+Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. A second client's bulk request therefore waits for the first to finish rather than being refused, and the five control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
+
+Connected sockets are non-blocking. A payload receive and a reply send each have a two-second deadline, not counting time paused for a launch, and a connection that misses one is closed and the buffers released. Waiting for the next request header has no deadline and holds no buffers.
 
 ## 2. Status codes (u16)
 
@@ -50,7 +53,7 @@ Connected sockets are non-blocking. A payload receive and a reply send each have
 | 5 | FULL | A fixed table is full |
 | 6 | UNKNOWN_OP | |
 | 7 | NOT_FOUND | Handle, mod, slot or path does not exist |
-| 8 | BUSY | Command ring is full, a save transfer is busy, or boot prevents buffer allocation; retry |
+| 8 | BUSY | Command ring is full, a save transfer is busy, or boot is holding the request buffers back; retry |
 
 ## 3. Session info block
 
@@ -260,15 +263,15 @@ All of these except the LIST ops return NOT_INGAME outside INGAME. Watches and f
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
-| 0x0030 | MEM_READ | `u32 addr, u32 len` (len at most 65536) | `len` bytes |
-| 0x0031 | MEM_WRITE | `u32 addr, bytes` | none |
+| 0x0030 | MEM_READ | `u32 addr, u32 len` (len at most 16384 since revision 1.11, 65536 before it) | `len` bytes |
+| 0x0031 | MEM_WRITE | `u32 addr, bytes` (at most 16380 bytes of data: the frame is 16384 and the address is four of them) | none |
 | 0x0032 | WATCH_ADD | `u32 addr, u8 size` (1, 2, 4 or 8) | `u8 id`. Adding the same address and size again returns the existing id |
 | 0x0033 | WATCH_REMOVE | `u8 id` | none |
 | 0x0034 | WATCH_LIST | none | `u8 n, { u8 id, u8 size, u8 pad[2], u32 addr }[n]` |
 | 0x0035 | FREEZE_ADD | `u32 addr, u8 size, u8 pad[3], u64 value` | `u8 id` |
 | 0x0036 | FREEZE_REMOVE | `u8 id` | none |
 | 0x0037 | FREEZE_LIST | none | `u8 n, { u8 id, u8 size, u8 pad[2], u32 addr, u64 value }[n]` |
-| 0x0038 | PATCH_APPLY | `u16 nwords, u16 pad, { u32 addr, u32 word }[nwords]` (at most 64 words) | none. A client patch keyed by its first address; applying it twice is a no-op |
+| 0x0038 | PATCH_APPLY | `u16 nwords, u16 pad, { u32 addr, u32 word }[nwords]` (at most 64 words) | none. A client patch keyed by its first address; applying it twice is a no-op. Since revision 1.11 the sixteen client-patch slots share a pool of 256 words, so a patch that would run the pool over is answered `FULL`, the same status a client already gets when every slot is taken |
 | 0x0039 | PATCH_REVERT | `u32 first_addr` | none |
 | 0x003A | PATCH_LIST | none | `u8 n, { u32 first_addr, u16 nwords, u8 kind, u8 pad, char[32] name }[n]`. kind: 0 client, 1 feature, 2 mod |
 | 0x003B | CLEAR_CLIENT | none | none. Removes every watch, freeze and client patch. Toggles and mods are untouched |
@@ -389,8 +392,8 @@ These are the transport of both libraries: the client uploads a mod's files with
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x0070 | FILE_OPEN | `u8 mode` (0 read, 1 write and truncate), `path` | `u32 handle` |
-| 0x0071 | FILE_WRITE | `u32 handle, bytes` (at most 65536) | none |
-| 0x0072 | FILE_READ | `u32 handle, u32 len` | up to `len` bytes; fewer at end of file |
+| 0x0071 | FILE_WRITE | `u32 handle, bytes` (at most 16380 since revision 1.11, 65536 before it) | none |
+| 0x0072 | FILE_READ | `u32 handle, u32 len` (len is taken as 16384 when larger, since revision 1.11) | up to `len` bytes; fewer at end of file |
 | 0x0073 | FILE_CLOSE | `u32 handle` | none |
 | 0x0074 | FILE_DELETE | `path` | none |
 | 0x0075 | DIR_LIST | `path` | `u16 n, { u8 type (0 file, 1 dir), u8 namelen, u32 size, char name[namelen] }[n]` |
@@ -398,6 +401,8 @@ These are the transport of both libraries: the client uploads a mod's files with
 | 0x0077 | DIR_DELETE | `path` | none. Recursive |
 | 0x0078 | USER_ID | none | `u32 user_id` |
 | 0x0079 | FILE_RENAME | `u16 from_len, char from[from_len], char to[rest]` | none (revision 1.10) |
+
+**DIR_LIST** fills one reply frame and stops: it has always broken off at whatever the reply buffer held rather than paging, and since revision 1.11 that buffer is 16384 bytes, so a folder of about 1400 short names is where the listing now ends instead of about 5700. Every folder qwark's own libraries use — the mod folders under `/dev_hdd0/qwark/mods/<TITLEID>/` and the savefile categories under `/dev_hdd0/qwark/savefiles/<TITLEID>/` — is orders of magnitude smaller than that, and the two library listings a client actually reads, MOD_LIST and SAVEFILE_LIST, are bounded by their own tables and fit whole. A client browsing an arbitrary `/dev_hdd0` folder with thousands of files in it will see the listing cut short.
 
 **FILE_RENAME** (revision 1.10) moves a file within `/dev_hdd0`. Both paths obey the rule above; the old path must exist (`NOT_FOUND` otherwise) and the new one must **not** (`BAD_ARG` if it does), because cellFs and Windows refuse to replace an existing destination while POSIX replaces it silently, and a rename that means one thing on a console and another in the simulator is worse than one that never overwrites anywhere. A client that means to replace a file deletes it first.
 
@@ -442,8 +447,8 @@ AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size, u32 done, u32 total, u8 error, u8 pad[3]` (20 bytes since revision 1.10) |
-| 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 65536) | the bytes of the aside buffer at that offset; short at the end |
-| 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 65536) | none |
+| 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 16384 since revision 1.11, 65536 before it) | the bytes of the aside buffer at that offset; short at the end |
+| 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 16380 since revision 1.11, 65536 before it) | none |
 
 All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) and **NOT_INGAME** outside INGAME. None of the three installs the helper: that is done by the set-aside and load actions, by RaC1's Force autosave, and by a library STORE or RESTORE with a valid file, and a client never asks for it or sees it happen. INFO, the library's metadata ops and raw READ and WRITE of the aside buffer only ever look.
 
@@ -462,7 +467,7 @@ Since revision 1.10 READ and WRITE are the **debug and test path**, not what a s
 
 A client built against revision 1.9 reads the first eight bytes and is right about every one of them; the three new fields are appended, and nothing before them moved.
 
-**A save, end to end.** FEATURE_TRIGGER the game's SAVE_ASIDE action; poll SAVEFILE_INFO until `pending` bit0 clears; SAVEFILE_READ the whole buffer in 64 KB chunks. **A load** is the reverse: SAVEFILE_WRITE the file into the buffer in chunks from offset 0, in order, each write answered before the next goes out, then FEATURE_TRIGGER the LOAD_ASIDE action and poll until `pending` bit1 clears. The bytes are opaque; nothing on the PC knows the save format.
+**A save, end to end.** FEATURE_TRIGGER the game's SAVE_ASIDE action; poll SAVEFILE_INFO until `pending` bit0 clears; SAVEFILE_READ the whole buffer in chunks of at most 16384 bytes (16000 is the size a client that also talks to older builds should use). **A load** is the reverse: SAVEFILE_WRITE the file into the buffer in chunks from offset 0, in order, each write answered before the next goes out, then FEATURE_TRIGGER the LOAD_ASIDE action and poll until `pending` bit1 clears. The bytes are opaque; nothing on the PC knows the save format.
 
 A client is expected to hold the whole save until it has every chunk before it writes a file, and to send a file only when its length is exactly `size`: the console cannot tell a short file from a whole one, and a save that is neither is what the game crashes on later.
 
@@ -505,7 +510,7 @@ A store that stops part way through leaves **nothing** behind: the half-written 
 
 **One at a time.** There is one aside buffer, so a STORE or RESTORE while another is in flight, or while the game has a set-aside or load of its own outstanding, is answered `BUSY` and error 5. SAVEFILE_CATEGORIES, SAVEFILE_LIST and SAVEFILE_CATEGORY answer `BUSY` too while a transfer runs, because a listing taken half way through a write would report the size and the sum of half a save.
 
-**The transfer, and how long it takes.** The copy runs on qwark's tick thread as a chunked state machine: 16 KB a chunk, eight chunks a tick, so 128 KB per tick of the 120 Hz loop. A 2 MB save is sixteen ticks, an eighth of a second; RaC1's 704 KB save is six. (Build 35 made the chunk 16 KB where it had been 64 KB, and put eight of them in a tick where there had been two: the same bytes per tick and the same number of ticks, out of a buffer a quarter the size.) Telemetry, freezes, watches and every other request keep flowing throughout, which is the whole reason it is a state machine rather than a loop. On top of the copy, a STORE waits the settle window before it starts (a quarter of a second) and a RESTORE waits one after it (the same), so end to end either is well under a second for the largest save.
+**The transfer, and how long it takes.** The copy runs on qwark's tick thread as a chunked state machine: 8 KB a chunk, sixteen chunks a tick, so 128 KB per tick of the 120 Hz loop. A 2 MB save is sixteen ticks, an eighth of a second; RaC1's 704 KB save is six. (Build 35 made the chunk 16 KB where it had been 64 KB and put eight of them in a tick where there had been two; build 37 made it 8 KB and sixteen of them. The bytes per tick and the number of ticks are the same all three times, out of a buffer an eighth the size it started at.) Telemetry, freezes, watches and every other request keep flowing throughout, which is the whole reason it is a state machine rather than a loop. On top of the copy, a STORE waits the settle window before it starts (a quarter of a second) and a RESTORE waits one after it (the same), so end to end either is well under a second for the largest save.
 
 Poll SAVEFILE_INFO: `pending` bit2 is up from the moment the op is accepted until the copy **and** its request have both finished, `done` and `total` are the progress, and `error` says how the last one ended.
 

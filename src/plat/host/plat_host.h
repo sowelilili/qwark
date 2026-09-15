@@ -75,9 +75,6 @@ void host_advance_time(u64 us);
 void host_freeze_time(int on);
 #endif
 
-/* Page allocations still live, which an idle connection must hold none of. */
-u32  host_live_pages(void);
-u32  host_page_allocations(void);
 void host_fail_writes(u32 addr, u32 count);
 
 /*

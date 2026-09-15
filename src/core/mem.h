@@ -114,9 +114,16 @@ const struct patch_def *patch_at(u32 index);
 #define PATCH_ORDER_WORDS 640
 
 /*
- * The largest client patch PATCH_APPLY accepts, and the words a client patch
- * slot keeps. It is a wire limit: a client may send this many words in one
- * PATCH_APPLY and the op has refused more since revision 1.
+ * The largest client patch PATCH_APPLY accepts. It is a wire limit: a client may
+ * send this many words in one PATCH_APPLY and the op has refused more since
+ * revision 1, and that has not moved.
+ *
+ * What moved in build 37 is where the words live. A slot used to keep this many
+ * of its own whether it held one word or sixty-four, so the sixteen slots were
+ * 12 KB of module for a table that is normally a few words; they draw on one
+ * 256-word pool now. Sixteen patches of 64 words no longer fit at once, and the
+ * PATCH_APPLY that runs the pool over is answered ST_FULL - the same status a
+ * client already gets when every slot is taken.
  */
 #define QWARK_MAX_PATCH_WORDS 64
 

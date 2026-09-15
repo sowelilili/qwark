@@ -13,32 +13,42 @@
 
 #include <string.h>
 
-#define CONN_REPLY_CAP  65600u
 /*
- * The per-request block, in 64 KB pages, which is what sys_memory_allocate hands
- * out. It held a full request buffer and a full reply buffer side by side and
- * was always three pages, 192 KB, for every request that is not a control op.
+ * The request arena, revision 1.11.
  *
- * Two pages cannot hold both at their present caps and nothing here may shrink a
- * cap: QWARK_MAX_PAYLOAD is 65600, so a request buffer alone spills 64 bytes
- * past one page, and a reply must still have room for a 64 KB MEM_READ,
- * SAVEFILE_READ or FILE_READ. 65600 + 65600 is 131200, which is 128 bytes more
- * than two pages.
+ * Every non-control request used to allocate its own buffers out of the VSH's
+ * small memory pool - sys_memory_allocate, 64 KB pages, up to three of them per
+ * request in flight - because a frame could be 65600 bytes and a reply another
+ * 65600. A frame is 16384 now, so one request buffer and one reply buffer of
+ * that size are small enough to live in the module's own bss and be shared by
+ * every connection. The module never calls sys_memory_allocate again.
  *
- * What it does not have to be is three pages *every time*. The frame header
- * carries the payload length and it is read before anything is allocated, so the
- * request half is allocated at the length that actually arrived while the reply
- * half keeps its full cap. Everything except a bulk write - MEM_READ, the
- * listings, the savefile reads, every request a client sends between them - asks
- * for 64 KB less than it used to, and the three ops that do send a full 64 KB
- * payload (MEM_WRITE, FILE_WRITE, SAVEFILE_WRITE) still get their three pages.
- * Not one limit moves either way.
+ * One request owns the arena at a time: it is taken before the payload is read,
+ * held across the ring command or the inline handler, and released after the
+ * reply has gone out. A second bulk request waits for it, and waits without
+ * holding session_activity_lock and without becoming uncancellable, so a game
+ * launch still closes it and the tick thread is never held up by it.
+ *
+ * The control ops (HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE) keep
+ * their own small per-connection buffers and never come near this, so they are
+ * answered while another client holds the arena, exactly as they are answered
+ * during a boot.
  */
-#define CONN_ALLOC_FOR(reqlen) ((((reqlen) + 7u) & ~7u) + CONN_REPLY_CAP)
+#define CONN_REPLY_CAP  QWARK_MAX_PAYLOAD
 #define REQUEST_TIMEOUT_US 2000000u
 
+/* How long a connection waiting for the arena sleeps between tries. */
+#define ARENA_WAIT_US   1000u
+
+/*
+ * A connection thread's stack, and it stays where it is. Its deepest chain is
+ * DIR_DELETE's recursive walk - about 1.4 KB a level, five levels deep, which is
+ * what the depth cap in rmdir_recursive is there to bound - at a little over
+ * 12 KB, and SAVEFILE_LIST is next at 10 KB because its frame carries a 4 KB
+ * buffer for the CRC it computes. Neither can borrow the tick thread's scratch
+ * buffer, so neither number moves. See qwark_ps3.h for how they are measured.
+ */
 #define CLIENT_STACK    16384u
-#define ACCEPT_STACK    16384u
 
 /*
  * A subscriber that has sent nothing for this long is not sent to. The entry stays,
@@ -67,9 +77,10 @@ struct conn {
 	int   sock;
 	u8   *req;
 	u8   *reply;
-	void *block;
+	/* 1 while this connection owns the shared request arena. */
+	volatile u8 has_arena;
 	volatile int cancelled;
-	/* Control traffic needs no page allocation, including during launch. */
+	/* Control traffic never waits for the arena, including during launch. */
 	u8    control_req[2];
 	u8    control_reply[TELEMETRY_MAX];
 	u32   remote_ip;      /* network byte order, as it came off the socket */
@@ -94,6 +105,21 @@ static struct conn g_conns[QWARK_MAX_CLIENTS];
 static struct sub  g_subs[QWARK_MAX_SUBS];
 static struct filehandle g_files[MAX_FILES];
 
+/*
+ * The arena itself. Two buffers, one frame each, and a flag that says whether a
+ * connection has them. The flag is taken and given back under g_arena_mutex; a
+ * connection that cannot have it sleeps and tries again rather than blocking on
+ * the mutex, so it stays cancellable and holds no other lock while it waits.
+ */
+static u8 g_arena_req[QWARK_MAX_PAYLOAD];
+static u8 g_arena_reply[CONN_REPLY_CAP];
+static plat_mutex_t g_arena_mutex;
+static int g_arena_held;
+static u32 g_arena_takes;
+
+u32 net_arena_held(void)  { return g_arena_held ? 1u : 0u; }
+u32 net_arena_takes(void) { return g_arena_takes; }
+
 static int g_listen = -1;
 static int g_udp = -1;
 static volatile int g_working = 1;
@@ -107,8 +133,8 @@ void net_set_booting(int booting)
 	g_booting = booting;
 	if (booting) {
 		for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
-			/* Never free memory that a handler/ring command might still own. */
-			if (g_conns[i].block != NULL) g_conns[i].cancelled = 1;
+			/* Never take the arena back from a handler/ring command that owns it. */
+			if (g_conns[i].has_arena) g_conns[i].cancelled = 1;
 		}
 	}
 	core_unlock();
@@ -1295,7 +1321,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (!file_get(slot, be32_get(req), &f)) return ST_NOT_FOUND;
 
 		len = reqlen - 4;
-		if (len > 65536) return ST_BAD_ARG;
+		if (len > QWARK_MAX_PAYLOAD) return ST_BAD_ARG;
 		if (len == 0) return ST_OK;
 
 		return plat_file_write(f, req + 4, len) == 0 ? ST_OK : ST_IO_ERROR;
@@ -1310,7 +1336,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (!file_get(slot, be32_get(req), &f)) return ST_NOT_FOUND;
 
 		want = be32_get(req + 4);
-		if (want > 65536) want = 65536;
+		if (want > QWARK_MAX_PAYLOAD) want = QWARK_MAX_PAYLOAD;
 		if (want > replycap) want = replycap;
 
 		if (plat_file_read(f, reply, want, &got) != 0) return ST_IO_ERROR;
@@ -1509,17 +1535,35 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 /* ---------------------------------------------------------- the connection */
 
-/* A connection's request buffers, back to the VSH. Safe to call when there are none. */
+/* The arena, back to whoever is waiting. Safe to call when this connection has none. */
 static void release_buffers(struct conn *c)
 {
-	core_lock();
-	if (c->block != NULL) {
-		plat_free_pages(c->block);
-		c->block = NULL;
+	plat_mutex_lock(&g_arena_mutex);
+	if (c->has_arena) {
+		c->has_arena = 0;
+		g_arena_held = 0;
 	}
 	c->req = NULL;
 	c->reply = NULL;
-	core_unlock();
+	plat_mutex_unlock(&g_arena_mutex);
+}
+
+/* 1 when this connection now owns the arena, 0 when somebody else still does. */
+static int take_arena(struct conn *c)
+{
+	int got = 0;
+
+	plat_mutex_lock(&g_arena_mutex);
+	if (!g_arena_held) {
+		g_arena_held = 1;
+		g_arena_takes++;
+		c->has_arena = 1;
+		c->req = g_arena_req;
+		c->reply = g_arena_reply;
+		got = 1;
+	}
+	plat_mutex_unlock(&g_arena_mutex);
+	return got;
 }
 
 static int control_request(u16 op, u32 len)
@@ -1581,7 +1625,7 @@ static void conn_thread(void *arg)
 		u32 replycap;
 		u32 mem_reads = 0, mem_writes = 0, exec_us = 0;
 
-		/* Idle headers hold no pages. Payloads and replies have a deadline. */
+		/* An idle header holds no arena. Payloads and replies have a deadline. */
 		if (conn_io(c, header, QWARK_FRAME_HEADER, 0, 1) != 0) break;
 
 		length = be32_get(header);
@@ -1600,18 +1644,30 @@ static void conn_thread(void *arg)
 			c->reply = c->control_reply;
 			replycap = sizeof(c->control_reply);
 		} else {
-			/* The gate and allocation share the transition's lock. */
-			if (conn_activity(c, NULL) != 0) break;
-			core_lock();
-			if (g_booting) status = ST_BUSY;
-			else {
-				c->block = plat_alloc_pages(CONN_ALLOC_FOR(length));
-				if (c->block == NULL) status = ST_FULL;
+			/*
+			 * The gate and the arena. The boot check is taken under the
+			 * transition's lock, exactly as the allocation used to be; the wait
+			 * for the arena is not, because another connection may hold it for
+			 * as long as a ring command takes and the tick thread wants that
+			 * lock every tick. A connection waiting here holds nothing and is
+			 * still cancelled by a launch, which is what closes it.
+			 */
+			for (;;) {
+				int booting;
+
+				if (conn_activity(c, NULL) != 0) break;
+				core_lock();
+				booting = g_booting;
+				core_unlock();
+				session_activity_unlock();
+
+				if (booting) { status = ST_BUSY; break; }
+				if (take_arena(c)) break;
+				plat_sleep_us(ARENA_WAIT_US);
 			}
-			core_unlock();
-			session_activity_unlock();
+			if (!c->has_arena && status == ST_OK) break;   /* cancelled while waiting */
 			if (status != ST_OK) {
-				/* Consume the frame without pages; keep framing and liveness. */
+				/* Consume the frame without the arena; keep framing and liveness. */
 				if (drain(c, length) != 0) break;
 				subs_refresh(slot);
 				be32_put(header, 0);
@@ -1620,13 +1676,7 @@ static void conn_thread(void *arg)
 				if (send_all(c, header, QWARK_FRAME_HEADER) != 0) break;
 				continue;
 			}
-			/*
-			 * The reply starts where this request ends, eight-byte aligned,
-			 * rather than at a fixed QWARK_MAX_PAYLOAD: the request buffer is
-			 * only ever read up to `length`, and the reply keeps its cap.
-			 */
-			c->req = (u8 *)c->block;
-			c->reply = c->req + ((length + 7u) & ~7u);
+			/* take_arena pointed req and reply at the two shared buffers. */
 			replycap = CONN_REPLY_CAP;
 		}
 
@@ -1652,7 +1702,7 @@ static void conn_thread(void *arg)
 		}
 		subs_refresh(slot);
 		core_lock();
-		status = c->cancelled || (c->block != NULL && g_booting) ? ST_BUSY : ST_OK;
+		status = c->cancelled || (c->has_arena && g_booting) ? ST_BUSY : ST_OK;
 		core_unlock();
 		session_activity_unlock();
 		if (status != ST_OK) {
@@ -1792,6 +1842,8 @@ int net_init(void)
 {
 	plat_mutex_init(&g_net_mutex);
 	plat_mutex_init(&g_file_mutex);
+	plat_mutex_init(&g_arena_mutex);
+	g_arena_held = 0;
 
 	memset(g_conns, 0, sizeof(g_conns));
 	memset(g_subs, 0, sizeof(g_subs));
@@ -1900,6 +1952,7 @@ void net_shutdown(void)
 {
 	plat_mutex_destroy(&g_net_mutex);
 	plat_mutex_destroy(&g_file_mutex);
+	plat_mutex_destroy(&g_arena_mutex);
 	plat_trace("qwark:   net mutexes destroyed");
 }
 
@@ -1964,7 +2017,7 @@ void net_accept_thread(void *arg)
 			 * request loop in conn_thread.
 			 */
 			g_conns[slot].cancelled = 0;
-			g_conns[slot].block = NULL;
+			g_conns[slot].has_arena = 0;
 			g_conns[slot].req = NULL;
 			g_conns[slot].reply = NULL;
 			g_conns[slot].remote_ip = peer.sin_addr.s_addr;

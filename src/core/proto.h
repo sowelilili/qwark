@@ -24,6 +24,10 @@
  * Revision 1.10: the savefile library moves onto the console. FILE_RENAME, the
  * five library ops at 0x00B3, and a SAVEFILE_INFO that reports the transfer
  * qwark is running between a file and the aside buffer on its own tick thread.
+ * Revision 1.11: QWARK_MAX_PAYLOAD is 16384. Every request and every reply
+ * carries at most that, so the bulk ops that named 65536 - MEM_READ, FILE_READ,
+ * FILE_WRITE, SAVEFILE_READ, SAVEFILE_WRITE - are capped at 16384 too. No
+ * opcode, structure or status changed with it: it is the size of one frame.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -39,10 +43,18 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             36
+#define QWARK_BUILD             37
 
 #define QWARK_PORT              9673
-#define QWARK_MAX_PAYLOAD       65600u
+/*
+ * Revision 1.11. One frame's payload, request or reply. It was 65600 - 64 KB
+ * and a header's worth of slack - and every connection allocated three 64 KB
+ * pages out of the VSH's small pool to hold one. Two static 16 KB buffers
+ * shared by every connection hold a frame of this size instead, so the module
+ * asks the console for no memory at all after it has loaded. A frame that
+ * announces more than this closes the connection, exactly as 65601 did.
+ */
+#define QWARK_MAX_PAYLOAD       16384u
 #define QWARK_FRAME_HEADER      8u
 
 /* Reply header is u32 length, u16 seq, u16 status: the same 8 bytes. */
@@ -186,7 +198,11 @@
  */
 #define SAVEFILE_INFO_SIZE    20
 #define SAVEFILE_INFO_SIZE_19 8
-#define SAVEFILE_CHUNK_MAX    65536u
+/*
+ * Revision 1.11: one SAVEFILE_READ or SAVEFILE_WRITE is a frame, and a frame is
+ * QWARK_MAX_PAYLOAD. It was 65536.
+ */
+#define SAVEFILE_CHUNK_MAX    QWARK_MAX_PAYLOAD
 
 /* A category or file name on the wire is a fixed 32-byte field, NUL-padded. */
 #define SAVEFILE_NAME_LEN     32
@@ -207,9 +223,22 @@
 #define QWARK_MAX_GROUPS     16
 #define QWARK_MAX_READOUTS   16
 #define QWARK_MAX_MODS       32
-#define QWARK_MAX_CLIENTS    8
+/*
+ * Concurrent TCP connections. Nothing on the wire names this number: a client
+ * that finds the console full is closed as it connects, which is what happened
+ * at nine before and happens at five now. A PC runs one client and the second
+ * slot is what a restarted one lands in while the old connection is still being
+ * reaped, so four is two spare rather than none.
+ */
+#define QWARK_MAX_CLIENTS    4
 #define QWARK_MAX_SUBS       8
-#define QWARK_RING_SLOTS     32
+/*
+ * Commands in flight on the tick thread's ring. A connection holds the request
+ * arena while it waits for its answer, so no more than QWARK_MAX_CLIENTS
+ * commands can ever be queued at once; 16 is four times that, and a full ring
+ * still answers BUSY the way it always has.
+ */
+#define QWARK_RING_SLOTS     16
 #define QWARK_POS_SLOTS      8
 #define QWARK_MAX_BLOB       64
 #define QWARK_MAX_PLANETS    64

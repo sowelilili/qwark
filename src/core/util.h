@@ -91,13 +91,42 @@ void qslug(const char *src, char *dst, u32 cap);
  *     and empties it inside one call, so the next caller finding it full of
  *     somebody else's bytes cannot matter.
  *
- * 16 KB is four PS3MAPI reads to the 64 KB the savefile copy used to do in one,
- * so the transfer moves the same bytes per tick out of four times as many
- * calls: see SAVEFILE_CHUNKS_PER_TICK.
+ * 8 KB is eight PS3MAPI reads to the 64 KB the savefile copy used to do in one,
+ * so the transfer moves the same bytes per tick out of eight times as many
+ * calls: see SAVEFILE_CHUNKS_PER_TICK, which is doubled to match. It was 64 KB
+ * until build 35 and 16 KB until build 37; the largest single user is still the
+ * mod loader's 4 KB cave chunk.
  */
-#define QSCRATCH_BYTES 16384u
+#define QSCRATCH_BYTES 8192u
 
 u8 *qscratch(void);
+
+/* ------------------------------------------------------- the text buffer */
+
+/*
+ * The other shared buffer: the one every whole-file text read lands in.
+ *
+ * Three files are read entire and parsed in place - config.txt, a title's
+ * positions file and a mod's patch.txt - and each used to keep a buffer of its
+ * own, 6.5 KB, 8.5 KB and 16 KB, held for the life of the module so that three
+ * reads which never happen at the same moment could each have one. They share
+ * this one now, which is the largest of the three.
+ *
+ * The rule that makes it safe, and the reason it is not a plain extern:
+ *
+ *   - it is only touched under the core lock. config_load, pos_load_file,
+ *     parse_mod (through mods_rescan) and mods_info are all reached with that
+ *     lock held, from the tick thread or from a network thread, so two of them
+ *     can never be inside it at once.
+ *   - nothing holds it across a return to its caller. Every user reads a file
+ *     into it, parses it, and is finished with it before it lets the lock go.
+ *
+ * Each caller still passes its own cap - CONFIG_TEXT_MAX, POS_TEXT_MAX,
+ * MOD_TEXT_MAX - so the size each file is refused at is exactly what it was.
+ */
+#define QTEXT_BYTES 16384u
+
+char *qtext(void);
 
 /* ------------------------------------------------------------- text files */
 

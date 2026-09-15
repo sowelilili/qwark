@@ -294,6 +294,17 @@ u8 *qscratch(void)
 	return g_scratch;
 }
 
+/*
+ * The core's one whole-file text buffer, shared by config.txt, the positions
+ * file and a mod's patch.txt. See util.h for the two rules that let them.
+ */
+static char g_qtext[QTEXT_BYTES];
+
+char *qtext(void)
+{
+	return g_qtext;
+}
+
 /* ------------------------------------------------------------- text files */
 
 int qread_file(const char *path, char *buf, u32 cap, u32 *len)

@@ -34,7 +34,16 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 36
+QWARK_BUILD = 37
+
+# QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
+# frame announcing more than this closes the connection.
+QWARK_MAX_PAYLOAD = 16384
+
+# What a client actually sends. The protocol says 16000 everywhere, because a
+# client that talks to this build and to an older one can use one number for
+# both: it is inside 16384 here and inside 65536 there.
+CHUNK = 16000
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -274,40 +283,47 @@ class Sim:
             self.proc.kill()
 
 
-def sim_pages(sim, timeout=3.0):
-    """How many page allocations the simulator has live, via its `pages` command."""
+def sim_arena(sim, timeout=3.0):
+    """1 while a connection owns the shared request arena, via the `arena` command.
+
+    Revision 1.11 removed the per-request page allocation entirely: the module
+    keeps one 16 KB request buffer and one 16 KB reply buffer and a connection
+    holds the pair for the length of one request. What used to be "how many
+    pages are live" is "is anybody holding the arena".
+    """
     mark = len(sim.lines)
-    sim.send("pages")
+    sim.send("arena")
     deadline = time.time() + timeout
     while time.time() < deadline:
         for line in sim.lines[mark:]:
-            if line.startswith("ok pages "):
+            if line.startswith("ok arena "):
                 return int(line.split()[2])
         time.sleep(0.02)
     return None
 
 
-def sim_pages_idle(sim, timeout=1.0):
-    """The live page count once the last request has let go of its buffers, or what it
-    still was when `timeout` ran out."""
+def sim_arena_idle(sim, timeout=1.0):
+    """0 once the last request has let the arena go, or what it still was when
+    `timeout` ran out."""
     deadline = time.time() + timeout
-    pages = sim_pages(sim)
-    while pages != 0 and time.time() < deadline:
+    held = sim_arena(sim)
+    while held != 0 and time.time() < deadline:
         time.sleep(0.01)
-        pages = sim_pages(sim)
-    return pages
+        held = sim_arena(sim)
+    return held
 
 
-def sim_allocations(sim):
+def sim_arena_takes(sim):
+    """How many times the arena has ever been taken."""
     mark = len(sim.lines)
-    sim.send("page_allocs")
+    sim.send("arena_takes")
     deadline = time.time() + 3
     while time.time() < deadline:
         for line in sim.lines[mark:]:
-            if line.startswith("ok page_allocs "):
+            if line.startswith("ok arena_takes "):
                 return int(line.split()[2])
         time.sleep(.01)
-    raise RuntimeError("no allocation count from simulator")
+    raise RuntimeError("no arena count from simulator")
 
 
 def sim_activity(sim):
@@ -324,32 +340,38 @@ def sim_activity(sim):
 
 def test_boot_buffers(sim, c, udp_port, udp):
     """Real socket framing, allocation accounting and cancellation at launch."""
-    before = sim_allocations(sim)
+    before = sim_arena_takes(sim)
     for _ in range(5):
         c.call(OP_HELLO, b"\x01")
         c.call(OP_HEARTBEAT)
         c.call(OP_GET_STATE)
-    check(sim_allocations(sim) == before, "control traffic never allocates request pages")
+    check(sim_arena_takes(sim) == before, "control traffic never takes the request arena")
 
     # Every fixed-buffer opcode, including a SUBSCRIBE whose payload straddles
     # the pause. It is already 1.15 seconds old when the second-long pause starts.
-    controls = [(OP_HELLO, b"\x01"), (OP_HEARTBEAT, b""),
-                (OP_SUBSCRIBE, struct.pack(">H", udp_port)),
-                (OP_UNSUBSCRIBE, b""), (OP_GET_STATE, b"")]
-    peers = [connect() for _ in controls]
+    #
+    # Revision 1.11 made QWARK_MAX_CLIENTS 4, and `c` and the stalled bulk
+    # connection below take two of the four, so the four whole control frames go
+    # down one peer pipelined and the split SUBSCRIBE gets the other. Pipelining
+    # is what a client is told it may do, and the ordering guarantee is the same
+    # thing being checked: every frame comes back, in order, with its own seq.
+    pipelined = [(OP_HELLO, b"\x01"), (OP_HEARTBEAT, b""),
+                 (OP_UNSUBSCRIBE, b""), (OP_GET_STATE, b"")]
+    subscribe_payload = struct.pack(">H", udp_port)
+    peers = [connect() for _ in range(2)]
     for peer in peers:
         Client(peer).call(OP_HEARTBEAT)
-    peers[2].sendall(struct.pack(">IHH", 2, 71, OP_SUBSCRIBE) + controls[2][1][:1])
+    peers[1].sendall(struct.pack(">IHH", 2, 71, OP_SUBSCRIBE) + subscribe_payload[:1])
     time.sleep(1.15)
     partial = connect()
     try:
         # MOD_LOAD, with the entire payload delayed. HELLO now uses fixed buffers.
         partial.sendall(struct.pack(">IHH", 32, 1, 0x61))
         deadline = time.time() + 1
-        while sim_pages(sim) == 0 and time.time() < deadline:
+        while sim_arena(sim) == 0 and time.time() < deadline:
             time.sleep(.01)
-        check(sim_pages(sim) == 1, "partial bulk request acquires one allocation outside boot")
-        before = sim_allocations(sim)
+        check(sim_arena(sim) == 1, "a partial bulk request holds the arena outside boot")
+        before = sim_arena_takes(sim)
         sim.send("boot NPEA00385")
         # Hold BOOTING beyond the one-second wait, so the gate test has no timing race.
         with open(os.path.join(ROOT, "src", "games", "rac1.h")) as source:
@@ -363,40 +385,40 @@ def test_boot_buffers(sim, c, udp_port, udp):
             activity = sim_activity(sim)
         check(activity[0] == 1, "IS_INGAME starts the quiet window")
         drain_udp(udp)
-        for i, (op, payload) in enumerate(controls):
-            if i == 2:
-                peers[i].sendall(payload[1:])
-            else:
-                peers[i].sendall(struct.pack(">IHH", len(payload), 71, op) + payload)
+        for op, payload in pipelined:
+            peers[0].sendall(struct.pack(">IHH", len(payload), 71, op) + payload)
+        peers[1].sendall(subscribe_payload[1:])
         ready, _, _ = select.select(peers + [udp], [], [], .65)
         check(not ready, "all control requests and UDP remain silent inside the first second")
         check(sim_activity(sim) == activity, "no PID, title, memory or telemetry activity during the pause")
-        check(sim_pages_idle(sim, .1) == 0, "cancelled bulk buffers are released during the quiet window")
-        check(sim_allocations(sim) == before, "quiet-window traffic allocates no request pages")
-        for peer in peers:
+        check(sim_arena_idle(sim, .1) == 0, "a cancelled bulk request lets the arena go during the quiet window")
+        check(sim_arena_takes(sim) == before, "quiet-window traffic never takes the arena")
+        for peer, frames in ((peers[0], len(pipelined)), (peers[1], 1)):
             response = Client(peer)
-            length, seq, status = struct.unpack(">IHH", response.recv_exact(8))
-            if length:
-                response.recv_exact(length)
-            check(seq == 71 and status == ST_OK, "deferred control frame resumes with its original sequence")
+            for _ in range(frames):
+                length, seq, status = struct.unpack(">IHH", response.recv_exact(8))
+                if length:
+                    response.recv_exact(length)
+                check(seq == 71 and status == ST_OK,
+                      "deferred control frame resumes with its original sequence")
         check(wait_state(c, SESSION_BOOTING)[0], "allocation gate test reaches BOOTING")
-        check(sim_pages_idle(sim, 1.0) == 0, "launch cancels and releases an incomplete bulk request")
+        check(sim_arena_idle(sim, 1.0) == 0, "launch cancels an incomplete bulk request and frees the arena")
         try:
             disconnected = partial.recv(1) == b""
         except (ConnectionResetError, ConnectionAbortedError):
             disconnected = True
         check(disconnected, "cancelled bulk connection closes")
 
-        for op, payload in [(OP_DESCRIBE, b""), (OP_FILE_WRITE, bytes(65600)),
+        for op, payload in [(OP_DESCRIBE, b""), (OP_FILE_WRITE, bytes(QWARK_MAX_PAYLOAD)),
                             (OP_SAVEFILE_INFO, b"")]:
             status, body = c.call(op, payload)
-            check(status == ST_BUSY and body == b"", "boot refuses allocating op %d with BUSY" % op, status)
+            check(status == ST_BUSY and body == b"", "boot refuses arena op %d with BUSY" % op, status)
         check(c.call(OP_HELLO, b"\x01")[0] == ST_OK, "HELLO still works in boot")
         check(c.call(OP_HEARTBEAT)[0] == ST_OK, "HEARTBEAT still works after draining a large frame")
         check(c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))[0] == ST_OK,
               "SUBSCRIBE still works in boot")
         check(c.call(OP_GET_STATE)[0] == ST_OK, "GET_STATE still works in boot")
-        check(sim_allocations(sim) == before, "boot traffic made zero page allocations")
+        check(sim_arena_takes(sim) == before, "boot traffic never took the arena")
 
         newcomer = connect()
         try:
@@ -405,7 +427,7 @@ def test_boot_buffers(sim, c, udp_port, udp):
                 closed = newcomer.recv(1) == b""
             except (ConnectionResetError, ConnectionAbortedError):
                 closed = True
-            check(closed, "boot refuses new connection-thread allocations")
+            check(closed, "boot refuses a new connection outright")
         finally:
             newcomer.close()
         sim.send("poke %s 30649ce0" % fp_addr)
@@ -423,11 +445,160 @@ def test_boot_buffers(sim, c, udp_port, udp):
     try:
         stalled.sendall(struct.pack(">IHH", 32, 1, 0x61))
         time.sleep(.1)
-        check(sim_pages(sim) == 1, "timeout probe starts with a live allocation")
-        check(sim_pages_idle(sim, 3.0) == 0, "payload timeout releases its allocation without a boot")
+        check(sim_arena(sim) == 1, "timeout probe starts holding the arena")
+        check(sim_arena_idle(sim, 3.0) == 0, "payload timeout releases the arena without a boot")
         check(c.call(OP_HEARTBEAT)[0] == ST_OK, "other connections survive a stalled request")
     finally:
         stalled.close()
+
+
+def test_frame_cap(c):
+    """Revision 1.11: a frame's payload is at most QWARK_MAX_PAYLOAD.
+
+    The edge on both sides, over a real socket: exactly the cap is a frame like
+    any other, and one byte past it closes the connection, which is what 65601
+    did before. There is nothing to drain a frame into that will not fit, so the
+    connection cannot be kept in step and is dropped rather than desynchronised.
+    """
+    status, _ = c.call(OP_FILE_WRITE, bytes(QWARK_MAX_PAYLOAD))
+    check(status in (ST_NOT_FOUND, ST_BAD_ARG),
+          "a payload of exactly 16384 bytes is accepted and answered", status)
+
+    check(c.call(OP_HEARTBEAT)[0] == ST_OK,
+          "and the connection is still in step after it")
+
+    over = connect()
+    try:
+        # The header alone says 16385; the payload never has to be sent.
+        over.sendall(struct.pack(">IHH", QWARK_MAX_PAYLOAD + 1, 1, OP_FILE_WRITE))
+        over.settimeout(5)
+        try:
+            closed = over.recv(1) == b""
+        except (ConnectionResetError, ConnectionAbortedError):
+            closed = True
+        except socket.timeout:
+            closed = False
+        check(closed, "a frame announcing 16385 bytes closes the connection")
+    finally:
+        over.close()
+
+    check(c.call(OP_HEARTBEAT)[0] == ST_OK,
+          "and the other connections are untouched by it")
+
+
+def test_mem_read_cap(c, addr):
+    """MEM_READ at the frame cap and one past it.
+
+    A reply is a frame too, so the largest read is QWARK_MAX_PAYLOAD; one byte
+    more is BAD_ARG, the same answer a read past the old 65536 always got.
+    """
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, QWARK_MAX_PAYLOAD))
+    check(status == ST_OK and len(body) == QWARK_MAX_PAYLOAD,
+          "MEM_READ of 16384 bytes answers with all of them", (status, len(body)))
+
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, QWARK_MAX_PAYLOAD + 1))
+    check(status == ST_BAD_ARG and body == b"",
+          "MEM_READ of 16385 is BAD_ARG, as a read past the cap has always been",
+          status)
+
+    check(c.call(OP_HEARTBEAT)[0] == ST_OK, "and the connection carries on")
+
+
+def test_client_limit(c):
+    """QWARK_MAX_CLIENTS is 4 since revision 1.11, where it was 8.
+
+    Nothing on the wire carries the number. What a client sees is that a
+    connection arriving when every slot is taken is closed as it arrives, which
+    is what happened at the ninth before and happens at the fifth now. `c` holds
+    one slot, so three more fit and the next is refused.
+    """
+    extra = []
+    try:
+        while len(extra) < 8:
+            sock = connect()
+            try:
+                if Client(sock).call(OP_HEARTBEAT)[0] != ST_OK:
+                    sock.close()
+                    break
+            except (OSError, RuntimeError, struct.error):
+                sock.close()
+                break
+            extra.append(sock)
+        check(len(extra) == 3,
+              "three more clients fit beside this one, and the fifth is closed as it arrives",
+              len(extra))
+    finally:
+        for sock in extra:
+            sock.close()
+
+    # Give the connection threads their slots back before anything else knocks.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            probe = connect()
+            probe.close()
+            break
+        except OSError:
+            time.sleep(0.05)
+    check(c.call(OP_HEARTBEAT)[0] == ST_OK, "and this one was never disturbed")
+
+
+def test_arena_sharing(sim, c, addr):
+    """Two clients at once, now that they share one request buffer.
+
+    The arena serialises them: the second client's bulk request waits for the
+    first rather than being refused, and both get their own correct answer. A
+    control op meanwhile never touches the arena and has to be answered while
+    the two of them are passing it back and forth.
+    """
+    peers = [Client(connect()) for _ in range(2)]
+    try:
+        # Two distinct patterns, so an answer that came from the other client's
+        # request would be visible rather than plausible.
+        blocks = [bytes([(i * 7 + 1) & 0xFF for i in range(4096)]),
+                  bytes([(i * 13 + 200) & 0xFF for i in range(4096)])]
+        for n, peer in enumerate(peers):
+            status = mem_write(peer, addr + n * 0x8000, blocks[n])
+            check(status == ST_OK, "client %d seeds its own block" % n, status)
+
+        results = [None, None]
+
+        def bulk(n):
+            try:
+                for _ in range(12):
+                    status, body = peers[n].call(
+                        OP_MEM_READ, struct.pack(">II", addr + n * 0x8000, 4096))
+                    if status != ST_OK or body != blocks[n]:
+                        results[n] = (status, len(body))
+                        return
+                results[n] = "ok"
+            except Exception as exc:          # noqa: BLE001 - reported as a failure
+                results[n] = repr(exc)
+
+        threads = [threading.Thread(target=bulk, args=(n,)) for n in range(2)]
+        for t in threads:
+            t.start()
+
+        # While those two are hammering the arena, this connection's control ops
+        # have to keep coming back: they use their own fixed buffers and never
+        # wait for it, which is the same reason they work during a boot.
+        control_ok = True
+        for _ in range(20):
+            if c.call(OP_HEARTBEAT)[0] != ST_OK or c.call(OP_GET_STATE)[0] != ST_OK:
+                control_ok = False
+                break
+        check(control_ok,
+              "a control op from another client is answered while two hold the arena")
+
+        for t in threads:
+            t.join(30)
+
+        check(results[0] == "ok", "the first client's bulk reads are all its own", results[0])
+        check(results[1] == "ok", "and so are the second client's", results[1])
+        check(sim_arena_idle(sim, 2.0) == 0, "and the arena is free again afterwards")
+    finally:
+        for peer in peers:
+            peer.sock.close()
 
 
 # ------------------------------------------------------------- decoding
@@ -1194,9 +1365,9 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     check(status == ST_BAD_ARG,
           "%s: a write that runs past the end is BAD_ARG" % name, status)
 
-    status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, 65537))
+    status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, QWARK_MAX_PAYLOAD + 1))
     check(status == ST_BAD_ARG,
-          "%s: a read longer than one chunk is BAD_ARG" % name, status)
+          "%s: a read longer than one frame is BAD_ARG" % name, status)
 
     # The SAVE_ASIDE action, and the bit a client polls until the helper clears.
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
@@ -1273,11 +1444,11 @@ def read_console_file(c, path):
     handle = body[:4]
     data = b""
     while True:
-        status, chunk = c.call(OP_FILE_READ, handle + struct.pack(">I", 65536))
+        status, chunk = c.call(OP_FILE_READ, handle + struct.pack(">I", CHUNK))
         if status != ST_OK:
             break
         data += chunk
-        if len(chunk) < 65536:
+        if len(chunk) < CHUNK:
             break
 
     c.call(OP_FILE_CLOSE, handle)
@@ -1290,8 +1461,8 @@ def write_console_file(c, path, data):
         return False
 
     handle = body[:4]
-    for off in range(0, len(data), 65536):
-        status, _ = c.call(OP_FILE_WRITE, handle + data[off:off + 65536])
+    for off in range(0, len(data), CHUNK):
+        status, _ = c.call(OP_FILE_WRITE, handle + data[off:off + CHUNK])
         if status != ST_OK:
             c.call(OP_FILE_CLOSE, handle)
             return False
@@ -1346,10 +1517,10 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr):
     # ----------------------------------------------------------------- STORE
     # A whole buffer of a known pattern, so the CRC the console computes has
     # something to be right about.
-    payload = bytes(((i * 31 + 7) & 0xFF) for i in range(65536))
+    payload = bytes(((i * 31 + 7) & 0xFF) for i in range(CHUNK))
     written = b""
-    for off in range(0, size, 65536):
-        chunk = payload[:min(65536, size - off)]
+    for off in range(0, size, CHUNK):
+        chunk = payload[:min(CHUNK, size - off)]
         status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", off) + chunk)
         if status != ST_OK:
             break
@@ -2212,17 +2383,19 @@ def main():
         # A connection used to allocate its request and reply buffers when it
         # connected and keep them until it left: 192 KB of the VSH's own memory,
         # held through a game launch, which is when the VSH has to give memory back.
-        # They exist for one request now. Between requests an idle, connected
-        # client must hold no pages at all.
+        # Revision 1.11 went further: there is no allocation at all now, one
+        # shared 16 KB request buffer and one 16 KB reply buffer live in the
+        # module, and a connection holds them for one request. Between requests
+        # an idle, connected client must hold nothing.
         #
-        # The reply goes out a moment before its buffers are freed, so a count taken
-        # the instant a reply lands can still see them: ask until it reads 0.
-        pages = sim_pages_idle(sim)
-        check(pages == 0, "a connected client that has finished its requests holds no pages", pages)
+        # The reply goes out a moment before the arena is let go, so a reading
+        # taken the instant a reply lands can still see it: ask until it reads 0.
+        held = sim_arena_idle(sim)
+        check(held == 0, "a connected client that has finished its requests holds no arena", held)
         for _ in range(5):
             c.call(OP_HELLO, bytes([1]))
-        pages = sim_pages_idle(sim)
-        check(pages == 0, "and still none after five more", pages)
+        held = sim_arena_idle(sim)
+        check(held == 0, "and still none after five more", held)
 
         # ------------------------------------------- a subscriber that goes quiet
         # A client that sends nothing for five seconds is not sent to, and its next
@@ -2478,6 +2651,12 @@ def main():
         info = fresh_state(c)
         check(info and info["readout"][0] == 12345,
               "readout 0 mirrors the bolt count", info["readout"][0] if info else None)
+
+        # ------------------------------------------- the frame cap, revision 1.11
+        test_frame_cap(c)
+        test_mem_read_cap(c, 0x00700000)
+        test_client_limit(c)
+        test_arena_sharing(sim, c, 0x00720000)
 
         # ------------------------------------------------------------ watch
         status, body = c.call(OP_WATCH_ADD, struct.pack(">IB", RAC1_BOLTS, 4))

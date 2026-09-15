@@ -652,55 +652,13 @@ void plat_dir_close(plat_dir_t *d)
 	d->handle = -1;
 }
 
-/* ------------------------------------------------------------ page memory */
-
 /*
- * Live page allocations. On a console these come out of the VSH's own memory,
- * which is what a game launch has to take back, so the smoke test asks how many
- * a connected, idle client is holding: the answer has to be none.
+ * Page memory is gone. Until revision 1.11 a connection allocated its request
+ * and reply buffers per request, out of the VSH's own pool on a console, and
+ * this file counted them for the smoke test. net.c holds two static buffers
+ * instead and nothing in the module allocates from the platform any more, so
+ * net_arena_held() and net_arena_takes() are what the simulator reports now.
  */
-static pthread_mutex_t g_pages_lock = PTHREAD_MUTEX_INITIALIZER;
-static u32 g_live_pages;
-static u32 g_page_allocations;
-
-u32 host_page_allocations(void)
-{
-	u32 n;
-	pthread_mutex_lock(&g_pages_lock);
-	n = g_page_allocations;
-	pthread_mutex_unlock(&g_pages_lock);
-	return n;
-}
-
-u32 host_live_pages(void)
-{
-	u32 n;
-	pthread_mutex_lock(&g_pages_lock);
-	n = g_live_pages;
-	pthread_mutex_unlock(&g_pages_lock);
-	return n;
-}
-
-void *plat_alloc_pages(u32 size)
-{
-	void *p = calloc(1, size);
-	if (p != NULL) {
-		pthread_mutex_lock(&g_pages_lock);
-		g_live_pages++;
-		g_page_allocations++;
-		pthread_mutex_unlock(&g_pages_lock);
-	}
-	return p;
-}
-
-void plat_free_pages(void *p)
-{
-	if (p == NULL) return;
-	free(p);
-	pthread_mutex_lock(&g_pages_lock);
-	if (g_live_pages > 0) g_live_pages--;
-	pthread_mutex_unlock(&g_pages_lock);
-}
 
 /* ------------------------------------------------------------------- misc */
 

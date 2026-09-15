@@ -499,23 +499,12 @@ void plat_dir_close(plat_dir_t *d)
 	d->handle = -1;
 }
 
-/* ------------------------------------------------------------ page memory */
-
-void *plat_alloc_pages(u32 size)
-{
-	sys_addr_t addr = 0;
-	u32 rounded = (size + 0xFFFFu) & ~0xFFFFu;
-
-	if (sys_memory_allocate(rounded, SYS_MEMORY_PAGE_SIZE_64K, &addr) != CELL_OK)
-		return NULL;
-
-	return (void *)(u32)addr;
-}
-
-void plat_free_pages(void *p)
-{
-	if (p != NULL) sys_memory_free((sys_addr_t)(u32)p);
-}
+/*
+ * sys_memory_allocate is gone from the module, as of revision 1.11. The request
+ * buffers it used to hand out - three 64 KB pages of the VSH's own pool per
+ * request in flight - are two static 16 KB buffers in net.c now, shared by every
+ * connection, so nothing here asks the console for memory after the load.
+ */
 
 /* ------------------------------------------------------------------- misc */
 

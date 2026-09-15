@@ -138,12 +138,12 @@ static void handle_line(char *line, int *keep_running)
 		qbytes_to_hex(bytes, len, hex, sizeof(hex));
 		printf("ok peek %s\n", hex);
 
-	} else if (qstreq(cmd, "pages")) {
-		/* Live page allocations: an idle connection must be holding none. */
-		printf("ok pages %u\n", (unsigned)host_live_pages());
+	} else if (qstreq(cmd, "arena")) {
+		/* 1 while a connection owns the request arena: an idle one must not. */
+		printf("ok arena %u\n", (unsigned)net_arena_held());
 
-	} else if (qstreq(cmd, "page_allocs")) {
-		printf("ok page_allocs %u\n", (unsigned)host_page_allocations());
+	} else if (qstreq(cmd, "arena_takes")) {
+		printf("ok arena_takes %u\n", (unsigned)net_arena_takes());
 
 	} else if (qstreq(cmd, "activity")) {
 		/* Observe the quiet window without asking the backend for a PID/title. */

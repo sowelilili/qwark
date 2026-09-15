@@ -13,9 +13,20 @@
 
 int  net_init(void);
 
-/* Tick thread: serialize the launch allocation gate with buffer acquisition.
- * Cancels connections holding bulk buffers; their owners release them safely. */
+/* Tick thread: serialize the launch gate with the request arena being taken.
+ * Cancels the connection holding the arena; its owner releases it safely. */
 void net_set_booting(int booting);
+
+/*
+ * The shared request arena, revision 1.11. One 16 KB request buffer and one
+ * 16 KB reply buffer in bss, held by one connection at a time for the life of
+ * one request; the control ops never touch it. These two are for the tests and
+ * the simulator's console: `held` is 1 while somebody owns it and `takes` counts
+ * how many times it has ever been taken. Nothing in the module allocates memory
+ * from the console any more, so both replace the old page counters.
+ */
+u32  net_arena_held(void);
+u32  net_arena_takes(void);
 
 /*
  * Moves the command port off QWARK_PORT. Call before net_accept_thread starts.

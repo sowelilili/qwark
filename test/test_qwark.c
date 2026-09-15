@@ -113,7 +113,7 @@ static void test_framing(void)
 	group("frame codec");
 
 	check(QWARK_FRAME_HEADER == 8, "frame header is 8 bytes");
-	check(QWARK_MAX_PAYLOAD == 65600u, "max payload is 65600");
+	check(QWARK_MAX_PAYLOAD == 16384u, "max payload is 16384 (revision 1.11)");
 	check(SESSION_INFO_SIZE == 164, "SessionInfo is 164 bytes (protocol 1.1)");
 	check(TELEMETRY_MAX == 937, "telemetry packet never exceeds 937 bytes");
 	check(QWARK_MAX_READOUTS == 16, "SessionInfo carries sixteen readouts");
@@ -360,6 +360,97 @@ static void test_patch_order(void)
 	check(patch_revert(&order_cycle) == ST_OK, "and revert");
 }
 
+/* -------------------------------------------------- the client patch pool */
+
+/*
+ * Build 37 gave the sixteen client-patch slots one shared pool of words instead
+ * of a private QWARK_MAX_PATCH_WORDS each. QWARK_MAX_PATCH_WORDS is unchanged
+ * and is still what one PATCH_APPLY may carry, so what these check is the new
+ * edge: the pool exactly full, one word past it, and that reverting a patch
+ * gives its words back for the next one to use.
+ */
+#define POOL_BASE 0x00A00000u
+
+static void test_patch_pool(void)
+{
+	struct patch_word words[QWARK_MAX_PATCH_WORDS];
+	u32 patches;
+	u32 i;
+	u32 p;
+
+	group("client patches share one word pool");
+
+	client_patch_drop_all();
+
+	/* Four patches of 64 words is 256, which is the pool exactly. */
+	patches = 256u / QWARK_MAX_PATCH_WORDS;
+
+	for (p = 0; p < patches; p++) {
+		u8 seed[4];
+		seed[0] = (u8)(0xA0 + p); seed[1] = 0x11; seed[2] = 0x22; seed[3] = 0x33;
+		host_poke(POOL_BASE + p * 0x1000u, seed, 4);
+	}
+
+	for (p = 0; p < patches; p++) {
+		for (i = 0; i < QWARK_MAX_PATCH_WORDS; i++) {
+			words[i].addr  = POOL_BASE + p * 0x1000u + i * 4u;
+			words[i].value = 0x60000000u;
+		}
+		if (client_patch_apply(words, (u16)QWARK_MAX_PATCH_WORDS) != ST_OK) break;
+	}
+	check_eq_u64(p, patches, "four patches of 64 words fill the pool exactly");
+	check_eq_u64(client_patch_count(), patches, "and all four are in the table");
+
+	/* One more word than the pool holds, with slots still free. */
+	words[0].addr  = POOL_BASE + 0x8000u;
+	words[0].value = 0x60000000u;
+	check(client_patch_apply(words, 1) == ST_FULL,
+	      "one word past a full pool is ST_FULL, though slots are free");
+	check_eq_u64(client_patch_count(), patches, "and nothing was added");
+
+	/* Reverting one hands its words back, and the next patch fits again. */
+	check(client_patch_revert(POOL_BASE) == ST_OK, "the first patch reverts");
+	check_eq_u64(client_patch_count(), patches - 1, "leaving three");
+
+	check(client_patch_apply(words, 1) == ST_OK,
+	      "and the word it gave back is enough for another patch");
+	check_eq_u64(client_patch_count(), patches, "which is in the table");
+
+	/*
+	 * The pool is kept packed rather than bump allocated, so the three patches
+	 * that were above the hole still describe their own words: a client that
+	 * reverts the one it added last must put back what it wrote, not somebody
+	 * else's word.
+	 */
+	{
+		u32 v = 0;
+
+		check(client_patch_revert(POOL_BASE + 0x1000u) == ST_OK,
+		      "a patch that sat above the freed one reverts");
+		mem_read_u32(POOL_BASE + 0x1000u, &v);
+		check_eq_u64(v, 0xA1112233u, "and put its own original word back, not a neighbour's");
+
+		check(client_patch_revert(POOL_BASE + 0x2000u) == ST_OK, "so does the next");
+		mem_read_u32(POOL_BASE + 0x2000u, &v);
+		check_eq_u64(v, 0xA2112233u, "with its own original too");
+
+		check(client_patch_revert(POOL_BASE + 0x3000u) == ST_OK, "and the next");
+		check(client_patch_revert(POOL_BASE + 0x8000u) == ST_OK, "and the late arrival");
+		check_eq_u64(client_patch_count(), 0, "the table is empty again");
+	}
+
+	/* The wire cap itself has not moved. */
+	for (i = 0; i < QWARK_MAX_PATCH_WORDS; i++) {
+		words[i].addr  = POOL_BASE + 0x9000u + i * 4u;
+		words[i].value = 0x60000000u;
+	}
+	check(client_patch_apply(words, (u16)QWARK_MAX_PATCH_WORDS + 1) == ST_BAD_ARG,
+	      "a PATCH_APPLY of 65 words is still BAD_ARG");
+	check(client_patch_apply(words, (u16)QWARK_MAX_PATCH_WORDS) == ST_OK,
+	      "and 64 is still accepted");
+	check(client_patch_clear() == ST_OK, "CLEAR_CLIENT empties it");
+}
+
 /* ----------------------------------------------------------- watch, freeze */
 
 static void test_tables(void)
@@ -485,6 +576,88 @@ static void write_generated_padded_mod(const char *title, const char *dirname, u
 	plat_file_write(f, "\n", 1);
 
 	plat_file_close(f);
+}
+
+/*
+ * One mod folder with a patch.txt written out line by line: a "#- name:", an
+ * optional "#- depends:" and one patch word, which is all a dependency test
+ * needs. The word addresses are spread so two mods never claim the same one.
+ */
+static void write_named_mod(const char *title, const char *dirname,
+                            const char *depends, u32 addr)
+{
+	char path[256];
+	char line[160];
+	plat_file_t f;
+
+	path[0] = 0;
+	qstrcat(path, sizeof(path), QWARK_MODSDIR);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), title);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), dirname);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/patch.txt");
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+
+	line[0] = 0;
+	qstrcat(line, sizeof(line), "#- name: ");
+	qstrcat(line, sizeof(line), dirname);
+	qstrcat(line, sizeof(line), "\n");
+	plat_file_write(f, line, qstrlen(line));
+
+	if (depends != NULL && depends[0] != 0) {
+		line[0] = 0;
+		qstrcat(line, sizeof(line), "#- depends: ");
+		qstrcat(line, sizeof(line), depends);
+		qstrcat(line, sizeof(line), "\n");
+		plat_file_write(f, line, qstrlen(line));
+	}
+
+	line[0] = 0;
+	qstrcat(line, sizeof(line), "0x");
+	qfmt_hex(line + 2, sizeof(line) - 2, addr, 8);
+	qstrcat(line, sizeof(line), ": 0x60000000\n");
+	plat_file_write(f, line, qstrlen(line));
+
+	plat_file_close(f);
+}
+
+/* link0, then link1 depending on link0, up to link<n-1>: a chain n levels deep. */
+static void write_chain_mods(const char *title, u32 n)
+{
+	char dir[16];
+	char dep[16];
+	u32 i;
+
+	for (i = 0; i < n; i++) {
+		qstrcpy(dir, sizeof(dir), "link");
+		qfmt_u32(dir + 4, sizeof(dir) - 4, i);
+
+		dep[0] = 0;
+		if (i > 0) {
+			qstrcpy(dep, sizeof(dep), "link");
+			qfmt_u32(dep + 4, sizeof(dep) - 4, i - 1);
+		}
+
+		write_named_mod(title, dir, dep, 0x00810000u + i * 4u);
+	}
+}
+
+/* Two mods that name each other: a chain with no bottom. */
+static void write_cycle_mods(const char *title)
+{
+	write_named_mod(title, "loopa", "loopb", 0x00820000u);
+	write_named_mod(title, "loopb", "loopa", 0x00820004u);
+}
+
+/* One mod depending on a name no mod in the folder carries. */
+static void write_missing_dep_mod(const char *title)
+{
+	write_named_mod(title, "orphan", "nobody-here", 0x00830000u);
 }
 
 /*
@@ -802,6 +975,78 @@ static void test_mods(void)
 			check((m->flags & MOD_FLAG_PARSE_ERROR) != 0, "and flagged parse_error");
 			check_eq_u64(m->def.count, 0, "with nothing parsed out of it");
 		}
+	}
+
+	/*
+	 * Dependency chains, now that the loader walks them with an explicit work
+	 * list instead of recursing. The answers are the ones the recursion gave:
+	 * a chain the depth limit allows loads every link of it, bottom up; a chain
+	 * past the limit is ST_BAD_ARG; and a cycle, which is a chain of no end, is
+	 * ST_BAD_ARG too. The old limit was a recursion depth of QWARK_MAX_MODS, and
+	 * these walk right up to it and one past.
+	 */
+	{
+		const char *title = "NPEA09995";
+		int i;
+
+		/*
+		 * link0 <- link1 <- ... <- link31, each depending on the one below it:
+		 * QWARK_MAX_MODS links, so loading the top one is a chain exactly as deep
+		 * as the limit allows.
+		 */
+		write_chain_mods(title, QWARK_MAX_MODS);
+		mods_set_title(title);
+		check_eq_u64(mods_count(), QWARK_MAX_MODS, "a 32-link dependency chain is scanned");
+
+		check(mods_load("link31") == ST_OK,
+		      "loading the top of a chain as deep as the old recursion limit succeeds");
+
+		for (i = 0; i < QWARK_MAX_MODS; i++) {
+			char dir[16];
+			int idx;
+
+			qstrcpy(dir, sizeof(dir), "link");
+			qfmt_u32(dir + 4, sizeof(dir) - 4, (u32)i);
+			idx = mods_find(dir);
+			if (idx < 0 || (mods_at((u32)idx)->flags & MOD_FLAG_LOADED) == 0) break;
+		}
+		check_eq_u64(i, QWARK_MAX_MODS, "and every link of it went in, bottom up");
+
+		/* Put every word back before the table is thrown away. */
+		for (i = 0; i < QWARK_MAX_MODS; i++) {
+			char dir[16];
+
+			qstrcpy(dir, sizeof(dir), "link");
+			qfmt_u32(dir + 4, sizeof(dir) - 4, (u32)i);
+			if (mods_unload(dir) != ST_OK) break;
+		}
+		check_eq_u64(i, QWARK_MAX_MODS, "and every link unloads again");
+	}
+
+	{
+		/*
+		 * Two mods that name each other. The recursion could only see a cycle by
+		 * running out of depth, and the work list keeps that exact rule, so this
+		 * is still ST_BAD_ARG rather than a hang.
+		 */
+		const char *title = "NPEA09996";
+
+		write_cycle_mods(title);
+		mods_set_title(title);
+		check_eq_u64(mods_count(), 2, "two mods that depend on each other are scanned");
+		check(mods_load("loopa") == ST_BAD_ARG,
+		      "and a dependency cycle is refused ST_BAD_ARG, as the recursion depth did");
+		check_eq_u64(mods_loaded_mask(), 0, "with neither of them loaded");
+	}
+
+	{
+		/* A dependency that names a mod nobody has is NOT_FOUND, as before. */
+		const char *title = "NPEA09997";
+
+		write_missing_dep_mod(title);
+		mods_set_title(title);
+		check(mods_load("orphan") == ST_NOT_FOUND,
+		      "a dependency naming a mod that is not there is NOT_FOUND");
 	}
 
 	/* Put the mod table back where the rest of the tests expect it. */
@@ -1245,7 +1490,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 36, "and this module is build 36");
+	check_eq_u64(packet[5], 37, "and this module is build 37");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1383,6 +1628,58 @@ static void test_config(void)
 		/* Put a small config back for whatever runs after this. */
 		check(config_set_u32("trace_ops", 1) == ST_OK, "a small config is written back");
 		check(config_load() == ST_OK, "and reloads");
+	}
+
+	/*
+	 * CONFIG_MAX_ENTRIES, which is 64 since build 37 and was 128. The table fills
+	 * and then refuses, exactly as it did at 128: config_set answers ST_FULL for
+	 * a key there is no room for, and a file with more keys than the table holds
+	 * loads the ones that fit and drops the rest, which is what config_load has
+	 * always done with kv_put's answer.
+	 */
+	{
+		plat_file_t f;
+		u32 i;
+		u32 stored = 0;
+
+		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+			for (i = 0; i < CONFIG_MAX_ENTRIES + 1u; i++) {
+				char line[CONFIG_KEY_MAX + CONFIG_VAL_MAX + 8];
+
+				line[0] = 0;
+				qstrcat(line, sizeof(line), "fill");
+				qfmt_u32(line + 4, sizeof(line) - 4, i);
+				qstrcat(line, sizeof(line), " = ");
+				qfmt_u32(line + qstrlen(line), sizeof(line) - qstrlen(line), i);
+				qstrcat(line, sizeof(line), "\n");
+				plat_file_write(f, line, qstrlen(line));
+			}
+			plat_file_close(f);
+		}
+
+		check(config_load() == ST_OK, "a config.txt of 65 keys reads");
+
+		for (i = 0; i < CONFIG_MAX_ENTRIES + 1u; i++) {
+			char key[32];
+
+			qstrcpy(key, sizeof(key), "fill");
+			qfmt_u32(key + 4, sizeof(key) - 4, i);
+			if (config_get(key) != NULL) stored++;
+		}
+		check_eq_u64(stored, CONFIG_MAX_ENTRIES,
+		             "64 of them are kept and the 65th is dropped");
+		check(config_get("fill0") != NULL, "the first key is one of the 64");
+
+		check(config_set("one_too_many", "1") == ST_FULL,
+		      "and a 65th key set through config_set is ST_FULL");
+
+		/* Back to a small config for whatever runs after this. */
+		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+			plat_file_write(f, "trace_ops = 1\n", 14);
+			plat_file_close(f);
+		}
+		check(config_load() == ST_OK, "a small config reloads");
+		check_eq_u64(config_get_u32("trace_ops", 0), 1, "with its one key in it");
 	}
 
 	group("string and number helpers");
@@ -5475,6 +5772,118 @@ static void test_no_code_patches(void)
 	features_forget_state();
 }
 
+/* -------------------------------------------- every list reply fits a frame */
+
+/*
+ * Revision 1.11 made a frame 16384 bytes, so every reply the module can compose
+ * has to fit one. The listings are the ones worth proving: each is a table times
+ * a row size, and a table that outgrew the frame would either be cut short or
+ * refused, and a client would be missing rows it has no way to ask for again.
+ *
+ * The fixed tables are checked against their own maxima, which is the whole of
+ * what they can ever hold. The per-game lists are encoded for real, for each of
+ * the four games in turn, which is what the games actually ship.
+ */
+static void check_fits(u32 bytes, const char *what)
+{
+	check(bytes <= QWARK_MAX_PAYLOAD, what);
+	if (bytes > QWARK_MAX_PAYLOAD)
+		printf("        %u bytes, cap %u\n", (unsigned)bytes, (unsigned)QWARK_MAX_PAYLOAD);
+}
+
+static void test_reply_sizes(void)
+{
+	static u8 reply[QWARK_MAX_PAYLOAD];
+	static const char * const titles[] = {
+		"NPEA00385", "NPEA00386", "NPEA00387", "NPEA00423"
+	};
+	u32 len = 0;
+	u32 i;
+
+	group("every list reply fits one 16384-byte frame");
+
+	/* The tables whose maximum is a compile-time constant. */
+	check_fits(1u + QWARK_MAX_WATCHES * 8u, "WATCH_LIST with all 64 watches");
+	check_fits(1u + QWARK_MAX_FREEZES * 16u, "FREEZE_LIST with all 64 freezes");
+	check_fits(1u + QWARK_MAX_PATCHES * 40u, "PATCH_LIST with all 64 patches");
+	check_fits(1u + (u32)QWARK_MAX_MODS * MOD_WIRE_SIZE, "MOD_LIST with all 32 mods");
+	check_fits(2u + QWARK_POS_SLOTS * 16u, "POS_LIST with all 8 slots");
+	check_fits(1u + COMBO_COUNT * 8u, "COMBO_LIST");
+	check_fits(2u + (u32)QWARK_MAX_GROUPS * 24u + 1u + (u32)QWARK_MAX_READOUTS * 24u
+	           + 1u + (u32)QWARK_MAX_FEATURES * FEATURE_WIRE_SIZE,
+	           "DESCRIBE with 16 groups, 16 readouts and 64 features");
+	check_fits(1u + (u32)QWARK_MAX_PLANETS * 24u, "PLANET_LIST with 64 planets");
+	check_fits(13u + QWARK_MAX_FREEZES * 16u + 1u + 16u * 8u,
+	           "PREVIOUS_LIST with 64 freezes and 16 client patches");
+	check_fits(5u + (u32)AUTOSPLIT_RING_SLOTS * AUTOSPLIT_EVENT_SIZE,
+	           "AUTOSPLIT_EVENTS with the whole 64-event ring");
+	check_fits((u32)TELEMETRY_MAX, "GET_STATE and the telemetry packet");
+	check_fits(1u + 255u * SAVEFILE_ROW_SIZE, "SAVEFILE_LIST with 255 saves");
+	check_fits(1u + 255u * SAVEFILE_NAME_LEN, "SAVEFILE_CATEGORIES with 255 categories");
+	check_fits(1024u, "MOD_INFO, which is capped at 1024 bytes");
+	check_fits(1u + 255u * 24u, "FEATURE_OPTIONS with 255 options");
+
+	/* And the four games' own tables, encoded the way the wire encodes them. */
+	for (i = 0; i < sizeof(titles) / sizeof(titles[0]); i++) {
+		const struct game_api *g;
+		char what[96];
+
+		if (!quit_and_wait()) { check(0, "quit before the next game"); return; }
+		if (!boot_and_wait(titles[i])) { check(0, titles[i]); continue; }
+
+		g = session_game();
+		if (g == NULL) { check(0, "the game came up"); continue; }
+
+		what[0] = 0;
+		qstrcat(what, sizeof(what), titles[i]);
+		qstrcat(what, sizeof(what), ": DESCRIBE fits a frame");
+		check(features_describe(reply, sizeof(reply), &len) == ST_OK &&
+		      len <= QWARK_MAX_PAYLOAD, what);
+
+		what[0] = 0;
+		qstrcat(what, sizeof(what), titles[i]);
+		qstrcat(what, sizeof(what), ": MOD_LIST fits a frame");
+		check(mods_list_encode(reply, sizeof(reply), &len) == ST_OK &&
+		      len <= QWARK_MAX_PAYLOAD, what);
+
+		if (g->planet_names != NULL) {
+			u8 count = 0;
+			g->planet_names(&count);
+			what[0] = 0;
+			qstrcat(what, sizeof(what), titles[i]);
+			qstrcat(what, sizeof(what), ": PLANET_LIST fits a frame");
+			check_fits(1u + (u32)count * 24u, what);
+		}
+
+		if (g->unlock_list != NULL) {
+			const struct game_unlock *list = NULL;
+			const char * const *cats = NULL;
+			const struct unlock_field_desc *fields = NULL;
+			u8 n = 0, ncat = 0;
+
+			if (g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK) {
+				what[0] = 0;
+				qstrcat(what, sizeof(what), titles[i]);
+				qstrcat(what, sizeof(what), ": UNLOCK_LIST fits a frame");
+				check_fits(1u + (u32)ncat * 24u + 4u * UNLOCK_FIELD_WIRE_SIZE
+				           + 1u + (u32)n * UNLOCK_WIRE_SIZE, what);
+			}
+		}
+
+		if (g->autosplit_describe != NULL) {
+			u8 count = 0;
+			g->autosplit_describe(&count);
+			what[0] = 0;
+			qstrcat(what, sizeof(what), titles[i]);
+			qstrcat(what, sizeof(what), ": AUTOSPLIT_DESCRIBE fits a frame");
+			check_fits(1u + (u32)count * AUTOSPLIT_DESC_SIZE, what);
+		}
+	}
+
+	check(quit_and_wait(), "quit the last game");
+	check(boot_and_wait("NPEA00385"), "and put RaC1 back for what follows");
+}
+
 /* ---------------------------------------------------------------- shutdown */
 
 /*
@@ -5731,6 +6140,7 @@ int main(void)
 	test_framing();
 	test_patches();
 	test_patch_order();
+	test_patch_pool();
 	test_tables();
 	test_mods();
 	test_describe();
@@ -5758,6 +6168,7 @@ int main(void)
 	test_trilogy();
 	test_autosplit();
 	test_no_code_patches();
+	test_reply_sizes();
 	test_config();
 	test_hot_tables();
 	test_fingerprint();

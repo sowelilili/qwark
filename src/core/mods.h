@@ -21,6 +21,12 @@
 #include "proto.h"
 #include "mem.h"
 
+/*
+ * How much of a "#- description:" line MOD_INFO hands back. It is not kept per
+ * mod any more: build 37 reads the line out of patch.txt when MOD_INFO asks for
+ * it, because 256 bytes a mod times 32 mods was half of the mod table and a
+ * client asks for one description at a time, when a user opens a mod.
+ */
 #define MOD_DESC_MAX    256
 #define MOD_DEPENDS_MAX 128
 
@@ -58,7 +64,12 @@ struct mod_entry {
 	char name[32];
 	char version[16];
 	char author[32];
-	char description[MOD_DESC_MAX];
+	/*
+	 * No description here: MOD_INFO re-reads patch.txt for the one mod a user
+	 * asked about. `depends` stays, because the loader walks it on the tick
+	 * thread and a file read per level of a dependency chain is not a trade
+	 * worth making for 4 KB.
+	 */
 	char depends[MOD_DEPENDS_MAX];
 
 	u32  hash;                 /* qwark.sum, 0 when absent */

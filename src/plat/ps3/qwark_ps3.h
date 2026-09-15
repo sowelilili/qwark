@@ -40,8 +40,34 @@
 #define THREAD_NAME_CLIENT  "qwark_cli"
 #define THREAD_NAME_STOP    "qwark_stop"
 
-#define QWARK_STACK_TICK    THREAD_STACK_SIZE_48KB
-#define QWARK_STACK_NET     THREAD_STACK_SIZE_16KB
+/*
+ * Thread stacks, measured rather than guessed. The deepest chain each thread can
+ * reach is read off the linked module with
+ *
+ *   ppu-lv2-objdump -d qwark.prx   and the stdu r1,-N(r1) in every prologue
+ *
+ * following the call graph from the thread's entry point, including the two
+ * indirect hops the graph does not show: the command ring's dispatcher and the
+ * game vtable.
+ *
+ *   tick    4864 bytes   session_step -> net_ring_exec -> mods_rescan ->
+ *                        plat_dir_next -> snprintf -> vsnprintf
+ *   accept   784 bytes   net_accept_thread -> plat_log -> vsnprintf
+ *
+ * The tick thread wanted 48 KB because loading a mod recursed: mods_load_index
+ * and load_dependencies called each other at about 700 bytes a level for as many
+ * as 33 levels. Build 37 walks the dependency graph with an explicit work list
+ * in static storage, the recursion is gone, and the deepest chain is under
+ * 5 KB. 16 KB is 3.4 times it and the smallest size the SDK's ladder offers
+ * above two and a half times it; 8 KB is ten times what the accept thread uses.
+ *
+ * The connection threads keep 16 KB (CLIENT_STACK in net.c): their deepest chain
+ * is a recursive directory delete at about 12 KB, and savefile_list, which
+ * inlines a 4 KB buffer of its own, is close behind it. Neither can move to the
+ * shared scratch buffer, which belongs to the tick thread.
+ */
+#define QWARK_STACK_TICK    THREAD_STACK_SIZE_16KB
+#define QWARK_STACK_NET     THREAD_STACK_SIZE_8KB
 #define QWARK_STACK_STOP    THREAD_STACK_SIZE_6KB
 
 #define CELL_FS_O_CREAT         000100

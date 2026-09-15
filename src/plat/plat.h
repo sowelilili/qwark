@@ -186,15 +186,14 @@ int  plat_dir_open(const char *path, plat_dir_t *d);
 int  plat_dir_next(plat_dir_t *d, struct plat_dirent *e); /* 1 entry, 0 end, <0 error */
 void plat_dir_close(plat_dir_t *d);
 
-/* -------------------------------------------------------------- page memory */
-
 /*
- * A large, page-aligned block. On the PS3 this is sys_memory_allocate with 64 KB
- * pages, the way Ratchetron gets its per-connection transfer buffer; on the host
- * it is malloc. Used once per connection, never in the tick loop.
+ * There is no page allocator here any more. Until revision 1.11 a connection
+ * took one to hold a request and its reply, because a frame could be 65600
+ * bytes; on the console that was sys_memory_allocate out of the VSH's own pool,
+ * the same pool every other plugin and the XMB draw on. A frame is 16384 now
+ * and net.c keeps two static buffers of that size for every connection to share,
+ * so the module asks the console for no memory once it has loaded.
  */
-void *plat_alloc_pages(u32 size);
-void  plat_free_pages(void *p);
 
 /* --------------------------------------------------------------------- misc */
 

@@ -42,7 +42,13 @@ static struct mod_cave   g_caves[MOD_CAVE_POOL];
 static u16               g_caves_used;
 
 static char g_title[16];
-static char g_text[MOD_TEXT_MAX];
+
+/*
+ * patch.txt is read into the core's shared text buffer (util.h) rather than into
+ * one of its own: every read of it happens under the core lock and nothing holds
+ * it across a return. MOD_TEXT_MAX is still the size a patch.txt is refused at.
+ */
+typedef char mods_text_fits[MOD_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
 
 /* --------------------------------------------------------------- helpers */
 
@@ -136,8 +142,8 @@ static void parse_meta(struct mod_entry *m, char *line)
 	if (qstreq(key, "name"))             qstrcpy(m->name, sizeof(m->name), value);
 	else if (qstreq(key, "version"))     qstrcpy(m->version, sizeof(m->version), value);
 	else if (qstreq(key, "author"))      qstrcpy(m->author, sizeof(m->author), value);
-	else if (qstreq(key, "description")) qstrcpy(m->description, sizeof(m->description), value);
 	else if (qstreq(key, "depends"))     qstrcpy(m->depends, sizeof(m->depends), value);
+	/* "description" is not kept: mods_info reads it back out of patch.txt. */
 }
 
 /*
@@ -147,6 +153,7 @@ static void parse_meta(struct mod_entry *m, char *line)
 static int parse_mod(struct mod_entry *m, const char *dirname)
 {
 	char path[MOD_PATH_MAX];
+	char *text = qtext();
 	char *cursor;
 	char *line;
 	u16 word_start = g_words_used;
@@ -160,14 +167,14 @@ static int parse_mod(struct mod_entry *m, const char *dirname)
 	m->used = 1;
 
 	mod_dir_path(path, sizeof(path), dirname, "patch.txt");
-	rc = qread_file(path, g_text, sizeof(g_text), NULL);
+	rc = qread_file(path, text, MOD_TEXT_MAX, NULL);
 	if (rc != ST_OK) {
 		m->flags |= MOD_FLAG_PARSE_ERROR;
 		return rc;
 	}
 
 	/* Pass one: the #- metadata lines. */
-	cursor = g_text;
+	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
 		if (line_is_meta(line)) parse_meta(m, line);
 	}
@@ -196,12 +203,12 @@ static int parse_mod(struct mod_entry *m, const char *dirname)
 	/* Pass two: the patch lines. The metadata pass already consumed the file, so
 	 * re-read it: qnext_line writes NULs into the buffer. */
 	mod_dir_path(path, sizeof(path), dirname, "patch.txt");
-	if (qread_file(path, g_text, sizeof(g_text), NULL) != ST_OK) {
+	if (qread_file(path, text, MOD_TEXT_MAX, NULL) != ST_OK) {
 		m->flags |= MOD_FLAG_PARSE_ERROR;
 		return ST_IO_ERROR;
 	}
 
-	cursor = g_text;
+	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
 		char *colon;
 		char *addr_s;
@@ -389,68 +396,65 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 	return offset != 0 ? ST_OK : ST_IO_ERROR;
 }
 
-static int mods_load_index(int index, int depth);
-
-static int load_dependencies(struct mod_entry *m, int depth)
+/*
+ * The next name out of a "#- depends:" list, without writing into it.
+ *
+ * `*pos` is a byte offset into `list` and is carried across calls, which is what
+ * lets the loader below keep one two-byte cursor per level instead of a
+ * 128-byte copy of the list. Separators and empty names are skipped and each
+ * name is trimmed, exactly as the old strtok-and-qtrim walk did. Returns 1 with
+ * a name in `out`, 0 at the end of the list.
+ */
+static int depends_next(const char *list, u16 *pos, char *out, u32 cap)
 {
-	char list[MOD_DEPENDS_MAX];
-	char *p;
+	u32 i = *pos;
+	u32 start, end, n;
 
-	if (m->depends[0] == 0) return ST_OK;
+	while (list[i] == ',' || list[i] == ' ' || list[i] == '\t' ||
+	       list[i] == '\r' || list[i] == '\n') i++;
 
-	qstrcpy(list, sizeof(list), m->depends);
-	p = list;
+	if (list[i] == 0) { *pos = (u16)i; return 0; }
 
-	while (*p != 0) {
-		char *start = p;
-		char *name;
-		int dep;
-		int rc;
+	start = i;
+	while (list[i] != 0 && list[i] != ',') i++;
+	*pos = (u16)i;
 
-		while (*p != 0 && *p != ',') p++;
-		if (*p == ',') { *p = 0; p++; }
+	end = i;
+	while (end > start && (list[end - 1] == ' ' || list[end - 1] == '\t' ||
+	                       list[end - 1] == '\r' || list[end - 1] == '\n')) end--;
 
-		name = qtrim(start);
-		if (name[0] == 0) continue;
-
-		dep = mods_find_by_name(name);
-		if (dep < 0) return ST_NOT_FOUND;
-
-		rc = mods_load_index(dep, depth + 1);
-		if (rc != ST_OK) return rc;
-	}
-
-	return ST_OK;
+	n = end - start;
+	if (n >= cap) n = cap - 1;
+	memcpy(out, list + start, n);
+	out[n] = 0;
+	return 1;
 }
 
-static int mods_load_index(int index, int depth)
+/*
+ * One level of the load walk. Four bytes, so the whole work list is 136 bytes of
+ * static storage rather than the 23 KB of tick-thread stack the recursion used
+ * to reserve: load_dependencies and mods_load_index called each other and the
+ * pair cost about 700 bytes a level for as many as 33 levels, which is the only
+ * reason the tick thread ever needed a 48 KB stack.
+ *
+ * It is static and therefore shared, which is safe because only the tick thread
+ * ever loads a mod: mods_load and mods_apply_mask are reached from the command
+ * ring or from enter_ingame, both on that thread, and neither re-enters.
+ */
+struct load_frame {
+	u8  index;
+	u8  depth;
+	u8  opened;      /* its own checks have passed; its depends list is being walked */
+	u16 pos;         /* how far into that list the walk has got */
+};
+
+static struct load_frame g_load_stack[QWARK_MAX_MODS + 2];
+
+/* The mod itself, once every dependency of it is in. */
+static int mod_write(struct mod_entry *m)
 {
-	struct mod_entry *m;
 	u16 c;
 	int rc;
-
-	if (index < 0 || (u32)index >= g_nmods) return ST_NOT_FOUND;
-
-	/* A cycle can only show up as unbounded recursion; QWARK_MAX_MODS bounds it. */
-	if (depth > QWARK_MAX_MODS) return ST_BAD_ARG;
-
-	m = &g_mods[index];
-	if (!m->used) return ST_NOT_FOUND;
-	if (m->flags & MOD_FLAG_LOADED)
-		return m->def.count > 0 ? patch_apply(&m->def) : ST_OK;
-	if (m->flags & MOD_FLAG_PARSE_ERROR) return ST_IO_ERROR;
-	/*
-	 * Every mod is patch words, code caves, or both, and neither survives a
-	 * platform that cannot patch code: the caves would land in memory nothing
-	 * ever branches to and the words would change instructions nobody executes.
-	 * Refuse the whole mod rather than write half of it.
-	 */
-	if (!plat_can_patch_code() && (m->def.count > 0 || m->ncaves > 0))
-		return ST_UNSUPPORTED;
-	if (!mem_is_ingame()) return ST_NOT_INGAME;
-
-	rc = load_dependencies(m, depth);
-	if (rc != ST_OK) return rc;
 
 	/*
 	 * Caves first, then the words: the words are usually branches into the cave,
@@ -484,6 +488,90 @@ static int mods_load_index(int index, int depth)
 	m->flags |= MOD_FLAG_LOADED;
 	m->flags &= (u8)~MOD_FLAG_PREVIOUS;
 	return ST_OK;
+}
+
+/*
+ * Depth-first, dependencies before the mod that names them and in the order the
+ * list writes them, stopping at the first failure with that failure's status:
+ * the same walk the recursion made, with the explicit work list above standing
+ * in for the call stack. The depth limit is unchanged, so a cycle still shows up
+ * as a chain longer than QWARK_MAX_MODS levels and is still refused ST_BAD_ARG.
+ */
+static int mods_load_index(int index, int depth)
+{
+	int sp = 0;
+	int rc = ST_OK;
+
+	if (index < 0 || (u32)index >= g_nmods) return ST_NOT_FOUND;
+	if (depth > QWARK_MAX_MODS) return ST_BAD_ARG;
+
+	g_load_stack[0].index  = (u8)index;
+	g_load_stack[0].depth  = (u8)depth;
+	g_load_stack[0].opened = 0;
+	g_load_stack[0].pos    = 0;
+
+	for (;;) {
+		struct load_frame *fr = &g_load_stack[sp];
+		struct mod_entry *m;
+		char name[33];
+
+		if (!fr->opened) {
+			if ((u32)fr->index >= g_nmods) { rc = ST_NOT_FOUND; break; }
+			if (fr->depth > QWARK_MAX_MODS) { rc = ST_BAD_ARG; break; }
+
+			m = &g_mods[fr->index];
+			if (!m->used) { rc = ST_NOT_FOUND; break; }
+
+			if (m->flags & MOD_FLAG_LOADED) {
+				rc = m->def.count > 0 ? patch_apply(&m->def) : ST_OK;
+				if (rc != ST_OK || sp == 0) break;
+				sp--;                      /* nothing to do; back to its dependant */
+				continue;
+			}
+			if (m->flags & MOD_FLAG_PARSE_ERROR) { rc = ST_IO_ERROR; break; }
+			/*
+			 * Every mod is patch words, code caves, or both, and neither survives
+			 * a platform that cannot patch code: the caves would land in memory
+			 * nothing ever branches to and the words would change instructions
+			 * nobody executes. Refuse the whole mod rather than write half of it.
+			 */
+			if (!plat_can_patch_code() && (m->def.count > 0 || m->ncaves > 0)) {
+				rc = ST_UNSUPPORTED;
+				break;
+			}
+			if (!mem_is_ingame()) { rc = ST_NOT_INGAME; break; }
+
+			fr->opened = 1;
+			fr->pos = 0;
+		}
+
+		m = &g_mods[fr->index];
+
+		if (depends_next(m->depends, &fr->pos, name, sizeof(name))) {
+			int dep = mods_find_by_name(name);
+
+			if (dep < 0) { rc = ST_NOT_FOUND; break; }
+
+			/* The depth check above already bounds this; belt to its braces. */
+			if (sp + 1 >= (int)(sizeof(g_load_stack) / sizeof(g_load_stack[0]))) {
+				rc = ST_BAD_ARG;
+				break;
+			}
+
+			sp++;
+			g_load_stack[sp].index  = (u8)dep;
+			g_load_stack[sp].depth  = (u8)(fr->depth + 1);
+			g_load_stack[sp].opened = 0;
+			g_load_stack[sp].pos    = 0;
+			continue;
+		}
+
+		rc = mod_write(m);
+		if (rc != ST_OK || sp == 0) break;
+		sp--;
+	}
+
+	return rc;
 }
 
 int mods_load(const char *dirname)
@@ -528,14 +616,49 @@ int mods_set_auto(const char *dirname, int on)
 	return ST_OK;
 }
 
+/*
+ * The "#- description:" line, read out of the mod's patch.txt rather than kept
+ * in the table: one description at a time, when a user opens one mod, instead of
+ * 256 bytes for every mod of every title for the life of the module.
+ *
+ * It runs on a network thread, under the core lock, which is the same lock
+ * mods_rescan takes; the text buffer belongs to whoever holds it. A mod with no
+ * description line, or whose patch.txt has gone, answers with an empty string
+ * and ST_OK, exactly as an entry with an empty description field used to.
+ */
 int mods_info(const char *dirname, char *out, u32 cap, u32 *len)
 {
+	char path[MOD_PATH_MAX];
+	char *text = qtext();
+	char *cursor;
+	char *line;
 	int index = mods_find(dirname);
 
 	*len = 0;
+	if (cap == 0) return ST_FULL;
+	out[0] = 0;
 	if (index < 0) return ST_NOT_FOUND;
 
-	qstrcpy(out, cap, g_mods[index].description);
+	mod_dir_path(path, sizeof(path), dirname, "patch.txt");
+	if (qread_file(path, text, MOD_TEXT_MAX, NULL) != ST_OK) return ST_OK;
+
+	cursor = text;
+	while ((line = qnext_line(&cursor)) != NULL) {
+		char *colon;
+
+		if (!line_is_meta(line)) continue;
+
+		colon = line;
+		while (*colon != 0 && *colon != ':') colon++;
+		if (*colon != ':') continue;
+		*colon = 0;
+
+		if (!qstreq(qtrim(line + 2), "description")) continue;
+
+		qstrcpy(out, cap > MOD_DESC_MAX ? MOD_DESC_MAX : cap, qtrim(colon + 1));
+		break;
+	}
+
 	*len = qstrlen(out);
 	return ST_OK;
 }
