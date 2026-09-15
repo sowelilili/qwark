@@ -54,7 +54,11 @@
  *   owned  u8  [id]   0x1481A80   1 = the player has this item
  *   ammo   u32 [id]   0x148182C   rounds in the magazine
  *   exp    u32 [id]   0x1481AF0   experience towards the next version, shifted
- *                                 left five: the HUD bar divides it by 32
+ *                                 left five: the HUD bar divides it by 32. Build
+ *                                 33 offered it as a value slot and build 34
+ *                                 stopped: the column did not fit the table a
+ *                                 client draws, so nothing reads this any more
+ *                                 and it has no constant of its own
  *   item   u8  [id]   0x1329A40   the item id of the VERSION in use, RaC3's item
  *                                 array under another name; see rac2_panel.c
  *   mods   u8  [id]   0x148190C   not exposed
@@ -73,7 +77,6 @@
 #define RAC2_AMMO_ARRAY        0x148182Cu  /* u32 ammo[id] */
 #define RAC2_MODS_ARRAY        0x148190Cu  /* u8 mods[id], the ammo array's end */
 #define RAC2_OWNED_ARRAY       0x1481A80u  /* u8 owned[id] */
-#define RAC2_EXP_ARRAY         0x1481AF0u  /* u32 exp[id] */
 #define RAC2_ITEM_ARRAY        0x1329A40u  /* u8 item[id]: the version in use */
 #define RAC2_ITEM_COUNT        56
 
@@ -108,9 +111,10 @@
 
 /*
  * The highest number of versions any RaC2 weapon has, and so the maximum the
- * Level field advertises in UNLOCK_LIST. Sixteen weapons go to V4, the Clank
- * Zapper stops at V2 and the rest have no second version at all; UNLOCK_SET
- * clamps to the entry's own count the way RaC3 does.
+ * Level field advertises in UNLOCK_LIST. Sixteen weapons go to V4; the Clank
+ * Zapper and the five RaC1 carry-overs, whose second version is a Slim Cognito
+ * purchase, stop at V2; the Zodiac and the RYNO II have no second version at
+ * all. UNLOCK_SET clamps to the entry's own count the way RaC3 does.
  */
 #define RAC2_MAX_LEVELS        4
 

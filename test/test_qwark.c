@@ -823,7 +823,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 33, "and this module is build 33");
+	check_eq_u64(packet[5], 34, "and this module is build 34");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2327,6 +2327,15 @@ static void test_combo_suspend(void)
 #define ZAPPER_ITEM     9
 #define ZAPPER_V2       73
 
+/*
+ * Tesla Claw: unlock id 16, item id 18, and one of the five RaC1 carry-overs
+ * whose second and last version is bought from Slim Cognito. 114 is that
+ * version's item id.
+ */
+#define TESLA_ID        16
+#define TESLA_ITEM      18
+#define TESLA_V2        114
+
 /* Zodiac: a weapon with no second version, so no Level slot. */
 #define ZODIAC_ID       21
 #define ZODIAC_ITEM     43
@@ -2335,8 +2344,8 @@ static void test_combo_suspend(void)
 #define HELI2_ID        29
 #define HELI2_ITEM      2
 
-/* The seven weapons with one version: Tesla Claw through the RYNO II. */
-#define R2_NO_LEVEL(id) ((id) >= 16 && (id) <= 22)
+/* The two weapons with one version: the Zodiac and the RYNO II. */
+#define R2_NO_LEVEL(id) ((id) == 21 || (id) == 22)
 
 /*
  * A row by its unlock id. RaC2 has no retired unlock id and RaC3 has one, so
@@ -2399,7 +2408,7 @@ static void test_rac2(void)
 	mem_read_u32(R2_AMMO_INSTR, &v);
 	check_eq_u64(v, 0x7C64292Eu, "and the instruction was restored");
 
-	group("RaC2: unlocks with levels, XP and ammo");
+	group("RaC2: unlocks with levels and ammo");
 
 	{
 		const struct game_unlock *list = NULL;
@@ -2416,40 +2425,45 @@ static void test_rac2(void)
 
 		/*
 		 * RaC2's unlocks moved onto the item arrays, so slot 1 is the weapon
-		 * version the item array holds and slot 2 its experience, the way RaC3
-		 * has had them since protocol 1.3.
+		 * version the item array holds. Slot 2 was its experience until build
+		 * 34 took the column away; the slot keeps its number and is left
+		 * unnamed, so the Ammo slot stays where a client expects it.
 		 */
 		check(fields != NULL && qstreq(fields[0].name, "Owned") &&
 		      fields[0].kind == UNLOCK_KIND_FLAG, "slot 0 is the Owned checkbox");
 		check(fields != NULL && qstreq(fields[1].name, "Level") &&
 		      fields[1].kind == UNLOCK_KIND_NUMBER && fields[1].max == 4,
 		      "slot 1 is a Level number that stops at 4");
-		check(fields != NULL && qstreq(fields[2].name, "XP") &&
-		      fields[2].kind == UNLOCK_KIND_NUMBER && fields[2].max == 0,
-		      "slot 2 is an unbounded XP number");
+		check(fields != NULL && (fields[2].name == NULL || fields[2].name[0] == 0),
+		      "slot 2 is unnamed, so no XP column is drawn");
 		check(fields != NULL && qstreq(fields[3].name, "Ammo") &&
 		      fields[3].kind == UNLOCK_KIND_NUMBER && fields[3].max == 0,
-		      "slot 3 is an unbounded Ammo number");
+		      "slot 3 is still the unbounded Ammo number");
 
 		row = unlock_row(list, n, LANCER_ID);
 		check(row != NULL && row->fields ==
-		      (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
-		       UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
-		      "a weapon with versions declares all four fields");
+		      (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_3),
+		      "a weapon with versions declares Owned, Level and Ammo");
+
+		row = unlock_row(list, n, TESLA_ID);
+		check(row != NULL && qstreq(row->name, "Tesla Claw") &&
+		      row->fields == (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_3),
+		      "and so does a RaC1 carry-over, whose second version Slim sells");
 
 		row = unlock_row(list, n, ZODIAC_ID);
 		check(row != NULL && qstreq(row->name, "Zodiac") &&
-		      row->fields == (UNLOCK_FIELD_0 | UNLOCK_FIELD_2 | UNLOCK_FIELD_3),
+		      row->fields == (UNLOCK_FIELD_0 | UNLOCK_FIELD_3),
 		      "a weapon with no second version declares no Level");
 
 		row = unlock_row(list, n, HELI2_ID);
 		check(row != NULL && qstreq(row->name, "Heli-Pack") &&
 		      row->fields == UNLOCK_FIELD_0,
-		      "a gadget has no level, no XP and no ammo, so it is owned-only");
+		      "a gadget has no level and no ammo, so it is owned-only");
 
 		/*
-		 * The category decides the mask, bar the seven weapons the game gives
-		 * no second version: those declare everything but the level.
+		 * The category decides the mask, bar the two weapons the game gives no
+		 * second version: those declare everything but the level. Nothing at
+		 * all declares the unnamed slot 2.
 		 */
 		{
 			u8 i, wrong = 0;
@@ -2459,7 +2473,7 @@ static void test_rac2(void)
 
 				if (list[i].category == R2_CAT_WEAPONS)
 					want = (u8)(UNLOCK_FIELD_0 | UNLOCK_FIELD_1 |
-					            UNLOCK_FIELD_2 | UNLOCK_FIELD_3);
+					            UNLOCK_FIELD_3);
 				if (R2_NO_LEVEL(list[i].id))
 					want = (u8)(want & ~(u8)UNLOCK_FIELD_1);
 
@@ -2468,7 +2482,7 @@ static void test_rac2(void)
 			check_eq_u64(wrong, 0, "every row declares the slots its category has");
 		}
 
-		/* A weapon on V2 with experience and rounds in the magazine. */
+		/* A weapon on V2 with rounds in the magazine. */
 		host_poke(R2_UNLOCK_LANCE, (const u8 *)"\x01", 1);
 		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);   /* V2 */
 		host_poke(R2_EXP(LANCER_ITEM), (const u8 *)"\x00\x00\x10\x92", 4);
@@ -2480,7 +2494,7 @@ static void test_rac2(void)
 		      "the Lancer reads live");
 		check_eq_u64(values[0], 1, "owned reads back");
 		check_eq_u64(values[1], 2, "the item array byte reads back as its version");
-		check_eq_u64(values[2], 4242, "the exp reads back");
+		check_eq_u64(values[2], 0, "the exp word is no longer read out");
 		check_eq_u64(values[3], 77, "the ammo reads back");
 
 		/* The level is the step in the chain, not the distance from the id. */
@@ -2527,20 +2541,48 @@ static void test_rac2(void)
 		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
 		check_eq_u64(b, LANCER_ITEM, "which is the weapon's own item id");
 
-		/* Owned, XP and ammo land in their own array cell and nowhere else. */
+		/*
+		 * A RaC1 carry-over is the same two-version shape as the Clank Zapper:
+		 * the byte at its own item id is V1 and the one holding 114 is V2, and
+		 * a client sending the game-wide 4 lands on 114 rather than on some
+		 * item id four steps along.
+		 */
+		host_poke(R2_ITEM(TESLA_ITEM), (const u8 *)"\x12", 1);    /* its own id */
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
+		memset(values, 0, sizeof(values));
+		check(g->unlock_read(unlock_row(list, n, TESLA_ID), values) == ST_OK,
+		      "the Tesla Claw reads live");
+		check_eq_u64(values[1], 1, "its own item id reads as level 1");
+
+		host_poke(R2_ITEM(TESLA_ITEM), (const u8 *)"\x72", 1);    /* 114 */
+		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST again");
+		memset(values, 0, sizeof(values));
+		check(g->unlock_read(unlock_row(list, n, TESLA_ID), values) == ST_OK,
+		      "and again on its second version");
+		check_eq_u64(values[1], 2, "114 reads as level 2");
+
+		check(g->unlock_set(TESLA_ID, 1, 1) == ST_OK, "UNLOCK_SET puts it back on V1");
+		host_peek(R2_ITEM(TESLA_ITEM), &b, 1);
+		check_eq_u64(b, TESLA_ITEM, "which is its own item id");
+		check(g->unlock_set(TESLA_ID, 1, 4) == ST_OK, "and takes the game-wide 4");
+		host_peek(R2_ITEM(TESLA_ITEM), &b, 1);
+		check_eq_u64(b, TESLA_V2, "clamped to its own V2, which is item id 114");
+
+		/* Owned and ammo land in their own array cell and nowhere else. */
 		check(g->unlock_set(LANCER_ID, 0, 1) == ST_OK, "UNLOCK_SET owned=1");
 		host_peek(R2_UNLOCK_LANCE, &b, 1);
 		check_eq_u64(b, 1, "the owned byte was written");
 
-		host_poke(R2_EXP(LANCER_ITEM - 1), (const u8 *)"\xAA\xAA\xAA\xAA", 4);
-		host_poke(R2_EXP(LANCER_ITEM + 1), (const u8 *)"\xBB\xBB\xBB\xBB", 4);
-		check(g->unlock_set(LANCER_ID, 2, 1234) == ST_OK, "UNLOCK_SET xp");
+		/*
+		 * Slot 2 named the experience word until build 34 and names nothing
+		 * now, so every row refuses it and the word itself is left where the
+		 * game put it.
+		 */
+		host_poke(R2_EXP(LANCER_ITEM), (const u8 *)"\x00\x00\x10\x92", 4);
+		check(g->unlock_set(LANCER_ID, 2, 1234) == ST_UNSUPPORTED,
+		      "UNLOCK_SET on the unnamed slot 2 is UNSUPPORTED");
 		mem_read_u32(R2_EXP(LANCER_ITEM), &v);
-		check_eq_u64(v, 1234, "the exp word was written");
-		mem_read_u32(R2_EXP(LANCER_ITEM - 1), &v);
-		check_eq_u64(v, 0xAAAAAAAAu, "the exp beside it was left alone");
-		mem_read_u32(R2_EXP(LANCER_ITEM + 1), &v);
-		check_eq_u64(v, 0xBBBBBBBBu, "on both sides");
+		check_eq_u64(v, 4242, "and the exp word was left alone");
 
 		host_poke(R2_AMMO(LANCER_ITEM - 1), (const u8 *)"\xAA\xAA\xAA\xAA", 4);
 		host_poke(R2_AMMO(LANCER_ITEM + 1), (const u8 *)"\xBB\xBB\xBB\xBB", 4);
@@ -2554,21 +2596,18 @@ static void test_rac2(void)
 
 		/*
 		 * A gadget takes its owned byte and refuses the other three slots, which
-		 * is what stops a client writing an exp or ammo word the game does not
-		 * count for it.
+		 * is what stops a client writing an ammo word the game does not count
+		 * for it.
 		 */
-		host_poke(R2_EXP(HELI2_ITEM), (const u8 *)"\x00\x00\x00\x09", 4);
 		host_poke(R2_AMMO(HELI2_ITEM), (const u8 *)"\x00\x00\x00\x09", 4);
 		check(g->unlock_set(HELI2_ID, 0, 1) == ST_OK, "a gadget takes owned=1");
 		host_peek(R2_OWNED(HELI2_ITEM), &b, 1);
 		check_eq_u64(b, 1, "and its owned byte was written");
 		check(g->unlock_set(HELI2_ID, 1, 2) == ST_UNSUPPORTED, "a gadget has no level");
-		check(g->unlock_set(HELI2_ID, 2, 1) == ST_UNSUPPORTED, "a gadget has no XP");
+		check(g->unlock_set(HELI2_ID, 2, 1) == ST_UNSUPPORTED, "and no slot 2 either");
 		check(g->unlock_set(HELI2_ID, 3, 1) == ST_UNSUPPORTED, "a gadget has no ammo");
-		mem_read_u32(R2_EXP(HELI2_ITEM), &v);
-		check_eq_u64(v, 9, "the refused XP write left the word alone");
 		mem_read_u32(R2_AMMO(HELI2_ITEM), &v);
-		check_eq_u64(v, 9, "and so did the refused ammo write");
+		check_eq_u64(v, 9, "and the refused ammo write left the word alone");
 
 		check(g->unlock_set(ZODIAC_ID, 1, 2) == ST_UNSUPPORTED,
 		      "a weapon with one version has no level either");
@@ -2580,15 +2619,22 @@ static void test_rac2(void)
 	group("RaC2: the two weapon actions");
 
 	{
-		/* The Lancer is held at V2, the Bouncer is not held at all. */
+		/*
+		 * The Lancer is held at V2 and the Tesla Claw at its own V1; the
+		 * Bouncer is not held at all.
+		 */
 		host_poke(R2_OWNED(LANCER_ITEM), (const u8 *)"\x01", 1);
 		host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);
+		host_poke(R2_OWNED(TESLA_ITEM), (const u8 *)"\x01", 1);
+		host_poke(R2_ITEM(TESLA_ITEM), (const u8 *)"\x12", 1);
 		host_poke(R2_OWNED(BOUNCER_ITEM), (const u8 *)"\x00", 1);
 		host_poke(R2_ITEM(BOUNCER_ITEM), (const u8 *)"\x25", 1);
 
 		check(features_trigger(F2_MAX_LEVELS) == ST_OK, "Max all weapon levels runs");
 		host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
 		check_eq_u64(b, LANCER_V4, "the Lancer went to its top version");
+		host_peek(R2_ITEM(TESLA_ITEM), &b, 1);
+		check_eq_u64(b, TESLA_V2, "the Tesla Claw went to the one Slim sells");
 		host_peek(R2_ITEM(BOUNCER_ITEM), &b, 1);
 		check_eq_u64(b, BOUNCER_ITEM,
 		             "and the Bouncer, which the player has not got, was passed over");

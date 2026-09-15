@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 33
+QWARK_BUILD = 34
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -888,21 +888,21 @@ OTHER_GAMES = [
         "categories": 3,
         "unlock0": "Lancer",
         # RaC2 keeps the same item arrays RaC3 does, so slot 1 is the weapon
-        # version and slot 2 the experience it earns towards the next one.
+        # version. Slot 2 was the experience that version earns towards the
+        # next one; build 34 stopped offering the column and left the slot
+        # unnamed rather than moving Ammo down out of slot 3.
         "fields": [("Owned", UNLOCK_KIND_FLAG, 0),
                    ("Level", UNLOCK_KIND_NUMBER, 4),
-                   ("XP", UNLOCK_KIND_NUMBER, 0),
+                   ("", UNLOCK_KIND_FLAG, 0),
                    ("Ammo", UNLOCK_KIND_NUMBER, 0)],
-        "category_fields": {"Weapons": 0xF, "Gadgets": 0x1, "Items": 0x1},
-        # The seven weapons the game gives no second version: five RaC1
-        # leftovers, the Zodiac and the RYNO II.
-        "no_field": [("Tesla-Claw", 1), ("Bomb-Glove", 1), ("Walloper", 1),
-                     ("Visi-bomb-Gun", 1), ("Decoy Glove", 1), ("Zodiac", 1),
-                     ("RYNO-II", 1)],
+        "category_fields": {"Weapons": 0xB, "Gadgets": 0x1, "Items": 0x1},
+        # The two weapons the game gives no second version. The five RaC1
+        # carry-overs have one apiece, bought from Slim Cognito.
+        "no_field": [("Zodiac", 1), ("RYNO II", 1)],
         # The Lancer is item id 30 and its V2 is item id 60.
         "unlock_arrays": {"row": "Lancer", "item": 30, "level": 2, "version": 60,
                           "owned": 0x1481A80, "items": 0x1329A40,
-                          "exp": 0x1481AF0, "ammo": 0x148182C},
+                          "ammo": 0x148182C},
         "levelflags": 0x10,
         "coords": 0x147F260,
         # Bolts, a VALUE with readout 0.
@@ -1726,13 +1726,18 @@ def exercise_game(c, sim, spec, udp=None):
             if check(row is not None,
                      "%s: %s is in the table" % (name, spec_arrays["row"])):
                 item = spec_arrays["item"]
-                sent = (1, spec_arrays["level"], 4242, 250)
+                # Slot 2 is the experience word, which a game offers only where
+                # the spec names an exp array: RaC2 dropped the column in build
+                # 34, and the slot then reads back 0 and refuses a write.
+                exp = spec_arrays.get("exp")
+                sent = (1, spec_arrays["level"], 4242 if exp else 0, 250)
                 ok = True
                 for slot, value in enumerate(sent):
+                    want = ST_OK if slot != 2 or exp else ST_UNSUPPORTED
                     status, _ = c.call(OP_UNLOCK_SET,
                                        struct.pack(">BBHI", row["id"], slot, 0,
                                                    value))
-                    ok = check(status == ST_OK,
+                    ok = check(status == want,
                                "%s: UNLOCK_SET slot %d = %d" % (name, slot, value),
                                status) and ok
 
@@ -1742,8 +1747,9 @@ def exercise_game(c, sim, spec, udp=None):
                     check(mem_read_u8(c, spec_arrays["items"] + item) ==
                           spec_arrays["version"],
                           "%s: and the item array holds the version's own id" % name)
-                    check(mem_read_u32(c, spec_arrays["exp"] + item * 4) == 4242,
-                          "%s: the XP landed in the exp array" % name)
+                    if exp:
+                        check(mem_read_u32(c, exp + item * 4) == 4242,
+                              "%s: the XP landed in the exp array" % name)
                     check(mem_read_u32(c, spec_arrays["ammo"] + item * 4) == 250,
                           "%s: and the ammo in the ammo array" % name)
 

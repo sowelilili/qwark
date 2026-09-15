@@ -19,10 +19,10 @@
 
 /*
  * RC2Unlocks.cs was three lists of owned bytes and nothing else, and the old
- * form had no level, XP or ammo column for RaC2. The addresses in those lists
+ * form had no level or ammo column for RaC2. The addresses in those lists
  * are all one array, `u8 owned[item id]` at RAC2_OWNED_ARRAY, so the table below
  * carries each row's ITEM ID and every address is worked out from it: an item id
- * is the index into the owned, ammo, exp and item arrays alike, exactly as RaC3
+ * is the index into the owned, ammo and item arrays alike, exactly as RaC3
  * does. Every id here is the old address minus the array base, so the forty-four
  * rows keep the ids, categories and names they shipped with.
  *
@@ -36,66 +36,72 @@
 static const char * const rac2_categories[] = { "Weapons", "Gadgets", "Items" };
 
 /*
- * Protocol 1.3, the four value slots as RaC2 uses them, which is how RaC3 uses
- * them: gold weapons are a RaC1 idea and RaC2 has none, so slot 1 is the weapon
- * VERSION, v1..v4, and slot 2 the experience it earns towards the next one.
+ * Protocol 1.3, the four value slots as RaC2 uses them: gold weapons are a RaC1
+ * idea and RaC2 has none, so slot 1 is the weapon VERSION, v1..v4.
  *
  * The maximum is game-wide, the way UnlockFieldDesc.max has to be: sixteen
- * weapons go to V4 and the Clank Zapper stops at V2, so UNLOCK_SET clamps to the
- * entry's own version count.
+ * weapons go to V4, the Clank Zapper and the five RaC1 carry-overs stop at V2,
+ * so UNLOCK_SET clamps to the entry's own version count.
  *
- * Slots 1 to 3 belong to the weapons. A gadget and an item are owned or not
+ * Slot 2 is left unnamed. The game does keep an experience word per item, and
+ * qwark read it out until build 33, but the column does not fit the table a
+ * client draws and nothing was done with the number, so no row declares the
+ * slot, UNLOCK_SET on it answers UNSUPPORTED and UNLOCK_LIST reports 0. The
+ * Ammo slot keeps its number: slot numbers are part of the wire contract and a
+ * client draws only the named ones, so shuffling it down would be a change to
+ * the protocol for nothing.
+ *
+ * Slots 1 and 3 belong to the weapons. A gadget and an item are owned or not
  * owned and nothing else, so their rows declare slot 0 by itself and a client
- * draws no level, XP or ammo cell against them.
+ * draws no level or ammo cell against them.
  */
 static const struct unlock_field_desc rac2_fields[4] = {
 	{ "Owned", UNLOCK_KIND_FLAG,   0 },
 	{ "Level", UNLOCK_KIND_NUMBER, RAC2_MAX_LEVELS },
-	{ "XP",    UNLOCK_KIND_NUMBER, 0 },
+	{ NULL,    UNLOCK_KIND_FLAG,   0 },
 	{ "Ammo",  UNLOCK_KIND_NUMBER, 0 }
 };
 
 #define OWNED UNLOCK_FIELD_0
 #define LEVEL UNLOCK_FIELD_1
-#define XP    UNLOCK_FIELD_2
 #define AMMO  UNLOCK_FIELD_3
 
 /* What a weapon with versions declares, and what one without them does. */
-#define WPN_V  (OWNED | LEVEL | XP | AMMO)
-#define WPN_1  (OWNED | XP | AMMO)
+#define WPN_V  (OWNED | LEVEL | AMMO)
+#define WPN_1  (OWNED | AMMO)
 
 static const struct game_unlock rac2_unlocks[] = {
 	/* Weapons */
 	{  0, CAT_WEAPONS, WPN_V, "Lancer" },
-	{  1, CAT_WEAPONS, WPN_V, "Gravity-Bomb" },
+	{  1, CAT_WEAPONS, WPN_V, "Gravity Bomb" },
 	{  2, CAT_WEAPONS, WPN_V, "Chopper" },
-	{  3, CAT_WEAPONS, WPN_V, "Seeker-Gun" },
-	{  4, CAT_WEAPONS, WPN_V, "Pulse-Rifle" },
-	{  5, CAT_WEAPONS, WPN_V, "Miniturret-Glove" },
-	{  6, CAT_WEAPONS, WPN_V, "Blitz-Gun" },
-	{  7, CAT_WEAPONS, WPN_V, "Shield-Charger" },
+	{  3, CAT_WEAPONS, WPN_V, "Seeker Gun" },
+	{  4, CAT_WEAPONS, WPN_V, "Pulse Rifle" },
+	{  5, CAT_WEAPONS, WPN_V, "Miniturret Glove" },
+	{  6, CAT_WEAPONS, WPN_V, "Blitz Gun" },
+	{  7, CAT_WEAPONS, WPN_V, "Shield Charger" },
 	{  8, CAT_WEAPONS, WPN_V, "Synthenoid" },
-	{  9, CAT_WEAPONS, WPN_V, "Lava-Gun" },
+	{  9, CAT_WEAPONS, WPN_V, "Lava Gun" },
 	{ 10, CAT_WEAPONS, WPN_V, "Bouncer" },
-	{ 11, CAT_WEAPONS, WPN_V, "Minirocket-Tube" },
-	{ 12, CAT_WEAPONS, WPN_V, "Plasma-Coil" },
-	{ 13, CAT_WEAPONS, WPN_V, "Hoverbomb-Gun" },
-	{ 14, CAT_WEAPONS, WPN_V, "Spiderbot-Glove" },
+	{ 11, CAT_WEAPONS, WPN_V, "Minirocket Tube" },
+	{ 12, CAT_WEAPONS, WPN_V, "Plasma Coil" },
+	{ 13, CAT_WEAPONS, WPN_V, "Hoverbomb Gun" },
+	{ 14, CAT_WEAPONS, WPN_V, "Spiderbot Glove" },
 	{ 15, CAT_WEAPONS, WPN_V, "Sheepinator" },
-	{ 16, CAT_WEAPONS, WPN_1, "Tesla-Claw" },
-	{ 17, CAT_WEAPONS, WPN_1, "Bomb-Glove" },
-	{ 18, CAT_WEAPONS, WPN_1, "Walloper" },
-	{ 19, CAT_WEAPONS, WPN_1, "Visi-bomb-Gun" },
-	{ 20, CAT_WEAPONS, WPN_1, "Decoy Glove" },
+	{ 16, CAT_WEAPONS, WPN_V, "Tesla Claw" },
+	{ 17, CAT_WEAPONS, WPN_V, "Bomb Glove" },
+	{ 18, CAT_WEAPONS, WPN_V, "Walloper" },
+	{ 19, CAT_WEAPONS, WPN_V, "Visibomb Gun" },
+	{ 20, CAT_WEAPONS, WPN_V, "Decoy Glove" },
 	{ 21, CAT_WEAPONS, WPN_1, "Zodiac" },
-	{ 22, CAT_WEAPONS, WPN_1, "RYNO-II" },
-	{ 23, CAT_WEAPONS, WPN_V, "Clank-Zapper" },
+	{ 22, CAT_WEAPONS, WPN_1, "RYNO II" },
+	{ 23, CAT_WEAPONS, WPN_V, "Clank Zapper" },
 
 	/* Gadgets */
 	{ 24, CAT_GADGETS, OWNED, "Swingshot" },
 	{ 25, CAT_GADGETS, OWNED, "Dynamo" },
-	{ 26, CAT_GADGETS, OWNED, "Therminator" },
-	{ 27, CAT_GADGETS, OWNED, "Tractor-Beam" },
+	{ 26, CAT_GADGETS, OWNED, "Thermanator" },
+	{ 27, CAT_GADGETS, OWNED, "Tractor Beam" },
 	{ 28, CAT_GADGETS, OWNED, "Hypnomatic" },
 	{ 29, CAT_GADGETS, OWNED, "Heli-Pack" },
 	{ 30, CAT_GADGETS, OWNED, "Thruster-Pack" },
@@ -104,15 +110,15 @@ static const struct game_unlock rac2_unlocks[] = {
 	{ 33, CAT_GADGETS, OWNED, "Charge Boots" },
 
 	/* Items */
-	{ 34, CAT_ITEMS, OWNED, "Biker-Helmet" },
+	{ 34, CAT_ITEMS, OWNED, "Biker Helmet" },
 	{ 35, CAT_ITEMS, OWNED, "Glider" },
-	{ 36, CAT_ITEMS, OWNED, "Quark-Statuette" },
-	{ 37, CAT_ITEMS, OWNED, "Armor-Magnetizer" },
-	{ 38, CAT_ITEMS, OWNED, "Box-Breaker" },
+	{ 36, CAT_ITEMS, OWNED, "Qwark Statuette" },
+	{ 37, CAT_ITEMS, OWNED, "Armor Magnetizer" },
+	{ 38, CAT_ITEMS, OWNED, "Box Breaker" },
 	{ 39, CAT_ITEMS, OWNED, "Mapper" },
 	{ 40, CAT_ITEMS, OWNED, "Electrolyzer" },
 	{ 41, CAT_ITEMS, OWNED, "Infiltrator" },
-	{ 42, CAT_ITEMS, OWNED, "HydroPack" },
+	{ 42, CAT_ITEMS, OWNED, "Hydro-Pack" },
 	{ 43, CAT_ITEMS, OWNED, "Levitator" }
 };
 
@@ -120,9 +126,9 @@ static const struct game_unlock rac2_unlocks[] = {
 #undef WPN_1
 
 /*
- * OWNED, LEVEL, XP and AMMO stay defined for the rest of the file: unlock_read
- * and unlock_set test the same four slot bits, and spelling them out there is
- * what keeps the read and the descriptor table honest with each other.
+ * OWNED, LEVEL and AMMO stay defined for the rest of the file: unlock_read and
+ * unlock_set test the same slot bits, and spelling them out there is what keeps
+ * the read and the descriptor table honest with each other.
  */
 
 /*
@@ -134,12 +140,15 @@ static const struct game_unlock rac2_unlocks[] = {
  * the one the game keeps in its stats records: record(id) + 0x46 is the next
  * version's id, which is what its own upgrade routine (0xB25078) follows.
  *
- * The five RaC1 leftovers (Tesla Claw, Bomb Glove, Walloper, Visibomb and Decoy
- * Glove) carry a "V3" in that list, ids 114 to 118, and are still declared
- * single-version here: their upgrade is a Slim Cognito purchase, the chain
- * behind it has not been read out of the game, and offering a level qwark
- * cannot place is worse than offering none. The Zodiac and the RYNO II have no
- * second version at all.
+ * The five RaC1 carry-overs (Tesla Claw, Bomb Glove, Walloper, Visibomb Gun and
+ * Decoy Glove) each have a second and last version, bought from Slim Cognito
+ * rather than earned, and the item list gives those ids 114 to 118 in that
+ * order. It calls them "V3", which is the list's naming and not the game's: they
+ * are version 2 of a two-version weapon, so the rows below declare two levels
+ * and the second one is placed through the same item-array byte every other
+ * weapon uses. Those five ids are the list's; the ELF's own +0x46 halfwords
+ * could not be read back through the tooling to check them, unlike the ordinary
+ * chain above, which was. The Zodiac and the RYNO II have no second version.
  */
 struct rac2_item {
 	u8 id;       /* the item id, and so the index into every array */
@@ -149,34 +158,34 @@ struct rac2_item {
 
 static const struct rac2_item rac2_items[] = {
 	{  30, 4, {  60,  79,  80 } },   /* Lancer */
-	{  42, 4, {  71,  81,  82 } },   /* Gravity-Bomb */
+	{  42, 4, {  71,  81,  82 } },   /* Gravity Bomb */
 	{  22, 4, {  65,  83,  84 } },   /* Chopper */
-	{  24, 4, {  67,  85,  86 } },   /* Seeker-Gun */
-	{  23, 4, {  66,  87,  88 } },   /* Pulse-Rifle */
-	{  41, 4, {  64,  89,  90 } },   /* Miniturret-Glove */
-	{  26, 4, {  68,  91,  92 } },   /* Blitz-Gun */
-	{  45, 4, {  77, 107, 108 } },   /* Shield-Charger */
+	{  24, 4, {  67,  85,  86 } },   /* Seeker Gun */
+	{  23, 4, {  66,  87,  88 } },   /* Pulse Rifle */
+	{  41, 4, {  64,  89,  90 } },   /* Miniturret Glove */
+	{  26, 4, {  68,  91,  92 } },   /* Blitz Gun */
+	{  45, 4, {  77, 107, 108 } },   /* Shield Charger */
 	{  31, 4, {  61,  93,  94 } },   /* Synthenoid */
-	{  29, 4, {  63,  95,  96 } },   /* Lava-Gun */
+	{  29, 4, {  63,  95,  96 } },   /* Lava Gun */
 	{  37, 4, {  76,  97,  98 } },   /* Bouncer */
-	{  27, 4, {  69,  99, 100 } },   /* Minirocket-Tube */
-	{  28, 4, {  62, 101, 102 } },   /* Plasma-Coil */
-	{  25, 4, {  70, 103, 104 } },   /* Hoverbomb-Gun */
-	{  32, 4, {  78, 105, 106 } },   /* Spiderbot-Glove */
+	{  27, 4, {  69,  99, 100 } },   /* Minirocket Tube */
+	{  28, 4, {  62, 101, 102 } },   /* Plasma Coil */
+	{  25, 4, {  70, 103, 104 } },   /* Hoverbomb Gun */
+	{  32, 4, {  78, 105, 106 } },   /* Spiderbot Glove */
 	{  16, 4, {  72, 109, 110 } },   /* Sheepinator */
-	{  18, 1, {   0,   0,   0 } },   /* Tesla-Claw */
-	{  12, 1, {   0,   0,   0 } },   /* Bomb-Glove */
-	{  53, 1, {   0,   0,   0 } },   /* Walloper */
-	{  14, 1, {   0,   0,   0 } },   /* Visi-bomb-Gun */
-	{  17, 1, {   0,   0,   0 } },   /* Decoy Glove */
+	{  18, 2, { 114,   0,   0 } },   /* Tesla Claw */
+	{  12, 2, { 115,   0,   0 } },   /* Bomb Glove */
+	{  53, 2, { 116,   0,   0 } },   /* Walloper */
+	{  14, 2, { 117,   0,   0 } },   /* Visibomb Gun */
+	{  17, 2, { 118,   0,   0 } },   /* Decoy Glove */
 	{  43, 1, {   0,   0,   0 } },   /* Zodiac */
-	{  44, 1, {   0,   0,   0 } },   /* RYNO-II */
-	{   9, 2, {  73,   0,   0 } },   /* Clank-Zapper */
+	{  44, 1, {   0,   0,   0 } },   /* RYNO II */
+	{   9, 2, {  73,   0,   0 } },   /* Clank Zapper */
 
 	{  13, 1, {   0,   0,   0 } },   /* Swingshot */
 	{  36, 1, {   0,   0,   0 } },   /* Dynamo */
-	{  39, 1, {   0,   0,   0 } },   /* Therminator */
-	{  46, 1, {   0,   0,   0 } },   /* Tractor-Beam */
+	{  39, 1, {   0,   0,   0 } },   /* Thermanator */
+	{  46, 1, {   0,   0,   0 } },   /* Tractor Beam */
 	{  55, 1, {   0,   0,   0 } },   /* Hypnomatic */
 	{   2, 1, {   0,   0,   0 } },   /* Heli-Pack */
 	{   3, 1, {   0,   0,   0 } },   /* Thruster-Pack */
@@ -184,15 +193,15 @@ static const struct rac2_item rac2_items[] = {
 	{  20, 1, {   0,   0,   0 } },   /* Grindboots */
 	{  54, 1, {   0,   0,   0 } },   /* Charge Boots */
 
-	{  48, 1, {   0,   0,   0 } },   /* Biker-Helmet */
+	{  48, 1, {   0,   0,   0 } },   /* Biker Helmet */
 	{  21, 1, {   0,   0,   0 } },   /* Glider */
-	{  49, 1, {   0,   0,   0 } },   /* Quark-Statuette */
-	{   7, 1, {   0,   0,   0 } },   /* Armor-Magnetizer */
-	{  50, 1, {   0,   0,   0 } },   /* Box-Breaker */
+	{  49, 1, {   0,   0,   0 } },   /* Qwark Statuette */
+	{   7, 1, {   0,   0,   0 } },   /* Armor Magnetizer */
+	{  50, 1, {   0,   0,   0 } },   /* Box Breaker */
 	{   5, 1, {   0,   0,   0 } },   /* Mapper */
 	{  38, 1, {   0,   0,   0 } },   /* Electrolyzer */
 	{  51, 1, {   0,   0,   0 } },   /* Infiltrator */
-	{   4, 1, {   0,   0,   0 } },   /* HydroPack */
+	{   4, 1, {   0,   0,   0 } },   /* Hydro-Pack */
 	{   8, 1, {   0,   0,   0 } }    /* Levitator */
 };
 
@@ -213,11 +222,6 @@ static int rac2_row_for_id(u8 id)
 static u32 item_owned_addr(u8 id)
 {
 	return id < RAC2_ITEM_COUNT ? RAC2_OWNED_ARRAY + id : 0;
-}
-
-static u32 item_exp_addr(u8 id)
-{
-	return id < RAC2_ITEM_COUNT ? RAC2_EXP_ARRAY + (u32)id * 4u : 0;
 }
 
 static u32 item_ammo_addr(u8 id)
@@ -281,8 +285,11 @@ static int item_set_level(const struct rac2_item *it, u32 version)
  * Three reads cover every array this table touches:
  *
  *   A  0x148182C .. 0x148190C   the ammo array, up to the mods array
- *   B  0x1481A80 .. 0x1481BD0   the owned array and the exp array behind it
+ *   B  0x1481A80 .. 0x1481AB8   the owned array
  *   C  0x1329A40 .. 0x1329A78   the item array, for the weapon versions
+ *
+ * Build 34 stopped offering the experience word, so B is the owned array and
+ * nothing more: it used to reach past the exp array to cover both in one read.
  *
  * unlock_list fills them and unlock_read serves each row from them; the core
  * calls the two back to back on the tick thread, so nothing goes stale.
@@ -290,7 +297,7 @@ static int item_set_level(const struct rac2_item *it, u32 version)
 #define SNAP_A_ADDR RAC2_AMMO_ARRAY
 #define SNAP_A_LEN  (4u * RAC2_ITEM_COUNT)
 #define SNAP_B_ADDR RAC2_OWNED_ARRAY
-#define SNAP_B_LEN  ((RAC2_EXP_ARRAY - RAC2_OWNED_ARRAY) + 4u * RAC2_ITEM_COUNT)
+#define SNAP_B_LEN  ((u32)RAC2_ITEM_COUNT)
 #define SNAP_C_ADDR RAC2_ITEM_ARRAY
 #define SNAP_C_LEN  ((u32)RAC2_ITEM_COUNT)
 
@@ -318,16 +325,13 @@ static int snap_byte(u32 addr, u8 *out)
 	return 0;
 }
 
+/* The ammo array is the only one of the three that holds words. */
 static int snap_word(u32 addr, u32 *out)
 {
 	if (!g_snap_valid || addr == 0) return 0;
 
 	if (addr >= SNAP_A_ADDR && addr + 4 <= SNAP_A_ADDR + SNAP_A_LEN) {
 		*out = be32_get(g_snap_a + (addr - SNAP_A_ADDR));
-		return 1;
-	}
-	if (addr >= SNAP_B_ADDR && addr + 4 <= SNAP_B_ADDR + SNAP_B_LEN) {
-		*out = be32_get(g_snap_b + (addr - SNAP_B_ADDR));
 		return 1;
 	}
 	return 0;
@@ -378,8 +382,7 @@ int rac2_unlock_read(const struct game_unlock *entry, u32 values[4])
 	/* Snapshot C is the item array itself, so it indexes by item id directly. */
 	if ((entry->fields & LEVEL) != 0) values[1] = item_level(it, g_snap_c);
 
-	if ((entry->fields & XP) != 0 && snap_word(item_exp_addr(it->id), &w))
-		values[2] = w;
+	/* Slot 2 is unnamed and no row declares it, so values[2] stays 0. */
 
 	if ((entry->fields & AMMO) != 0 && snap_word(item_ammo_addr(it->id), &w))
 		values[3] = w;
@@ -397,9 +400,9 @@ int rac2_unlock_set(u8 id, u8 field, u32 value)
 
 	/*
 	 * The row's declared fields are the contract, so a slot it does not offer is
-	 * refused even where the address behind it exists: a gadget has no version,
-	 * no experience and no magazine, and a weapon with no second version has no
-	 * level to put it on.
+	 * refused even where the address behind it exists: a gadget has no version
+	 * and no magazine, a weapon with no second version has no level to put it
+	 * on, and slot 2 is unnamed, so every row refuses it.
 	 */
 	if ((rac2_unlocks[row].fields & (u8)(1u << field)) == 0) return ST_UNSUPPORTED;
 
@@ -418,13 +421,13 @@ int rac2_unlock_set(u8 id, u8 field, u32 value)
 	case 1:
 		return item_set_level(it, value);
 
-	case 2:
-		if (item_exp_addr(it->id) == 0) return ST_UNSUPPORTED;
-		return mem_write_u32(item_exp_addr(it->id), value);
-
-	default:
+	case 3:
 		if (item_ammo_addr(it->id) == 0) return ST_UNSUPPORTED;
 		return mem_write_u32(item_ammo_addr(it->id), value);
+
+	default:
+		/* Slot 2: the gate above has already refused it for every row. */
+		return ST_UNSUPPORTED;
 	}
 }
 
