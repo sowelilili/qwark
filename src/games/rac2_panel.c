@@ -84,7 +84,7 @@ static const struct game_unlock rac2_unlocks[] = {
 	{ 15, CAT_WEAPONS, WPN_V, "Sheepinator" },
 	{ 16, CAT_WEAPONS, WPN_1, "Tesla-Claw" },
 	{ 17, CAT_WEAPONS, WPN_1, "Bomb-Glove" },
-	{ 18, CAT_WEAPONS, WPN_1, "Wolloper" },
+	{ 18, CAT_WEAPONS, WPN_1, "Walloper" },
 	{ 19, CAT_WEAPONS, WPN_1, "Visi-bomb-Gun" },
 	{ 20, CAT_WEAPONS, WPN_1, "Decoy Glove" },
 	{ 21, CAT_WEAPONS, WPN_1, "Zodiac" },
@@ -166,7 +166,7 @@ static const struct rac2_item rac2_items[] = {
 	{  16, 4, {  72, 109, 110 } },   /* Sheepinator */
 	{  18, 1, {   0,   0,   0 } },   /* Tesla-Claw */
 	{  12, 1, {   0,   0,   0 } },   /* Bomb-Glove */
-	{  53, 1, {   0,   0,   0 } },   /* Wolloper */
+	{  53, 1, {   0,   0,   0 } },   /* Walloper */
 	{  14, 1, {   0,   0,   0 } },   /* Visi-bomb-Gun */
 	{  17, 1, {   0,   0,   0 } },   /* Decoy Glove */
 	{  43, 1, {   0,   0,   0 } },   /* Zodiac */

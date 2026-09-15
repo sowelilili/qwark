@@ -896,7 +896,7 @@ OTHER_GAMES = [
         "category_fields": {"Weapons": 0xF, "Gadgets": 0x1, "Items": 0x1},
         # The seven weapons the game gives no second version: five RaC1
         # leftovers, the Zodiac and the RYNO II.
-        "no_field": [("Tesla-Claw", 1), ("Bomb-Glove", 1), ("Wolloper", 1),
+        "no_field": [("Tesla-Claw", 1), ("Bomb-Glove", 1), ("Walloper", 1),
                      ("Visi-bomb-Gun", 1), ("Decoy Glove", 1), ("Zodiac", 1),
                      ("RYNO-II", 1)],
         # The Lancer is item id 30 and its V2 is item id 60.
