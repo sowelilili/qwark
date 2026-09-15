@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 35
+QWARK_BUILD = 36
 
 OP_HELLO = 0x0001
 OP_HEARTBEAT = 0x0002
@@ -2859,19 +2859,103 @@ def main():
             check(len(features) == 32, "with RaC3's thirty-two features",
                   len(features))
 
-        # -------------------------------------------- unregistered title
+        # ------------------------ BLMODYOOO, a repacked PAL Going Commando
+        # The old client accepted two repacks of NPEA00386 by their own title
+        # ids. They are the same build, so they answer RaC2's fingerprint and
+        # get RaC2's whole table.
         sim.send("quit")
         ok, _ = wait_state(c, SESSION_XMB)
-        check(ok, "quit again")
+        check(ok, "quit before the RaC2 repack")
 
-        sim.send("boot NPEA99999")
-        # Documented behaviour: an unregistered title keeps the session in XMB.
-        never_ingame, info = wait_state(c, SESSION_INGAME, timeout=3.0)
-        check(not never_ingame, "an unregistered title never reaches INGAME")
-        check(info and info["state"] == SESSION_XMB,
-              "it stays in XMB", info["state"] if info else None)
-        check(info and info["game"] == 0, "and reports no game",
+        sim.send("boot BLMODYOOO")
+        ok, info = wait_state(c, SESSION_INGAME)
+        check(ok, "boot BLMODYOOO reaches INGAME", info)
+        check(info and info["title"] == "BLMODYOOO",
+              "the repack keeps its own title id", info)
+        check(info and info["game"] == 2, "and the game byte says RaC2",
               info["game"] if info else None)
+
+        status, body = c.call(OP_DESCRIBE)
+        if check(status == ST_OK, "DESCRIBE answers under BLMODYOOO", status):
+            game, _groups, _readouts, features, _consumed = parse_describe(body)
+            check(game == 2, "and names RaC2", game)
+            check(len(features) == 37, "with RaC2's thirty-seven features",
+                  len(features))
+
+        # ------------------------------- a title no game table claims
+        # Build 36, PROTOCOL.md section 3.3: it reaches INGAME with game 0, the
+        # memory tools work on it and everything else answers UNSUPPORTED.
+        sim.send("quit")
+        ok, _ = wait_state(c, SESSION_XMB)
+        check(ok, "quit before the unknown title")
+
+        sim.send("boot BLUS99999")
+        ok, info = wait_state(c, SESSION_INGAME)
+        check(ok, "a title no game table claims still reaches INGAME", info)
+        check(info and info["game"] == 0, "with game 0, no game",
+              info["game"] if info else None)
+        check(info and info["title"] == "BLUS99999",
+              "and the title id it was launched with", info)
+
+        status, body = c.call(OP_HELLO, bytes([1]))
+        hello = parse_session_info(body) if status == ST_OK else None
+        check(hello and hello["state"] == SESSION_INGAME and hello["game"] == 0
+              and hello["title"] == "BLUS99999",
+              "HELLO says the same: INGAME, no game, that title", hello)
+        check(hello and hello["planet"] == 0 and hello["pad_mask"] == 0
+              and hello["pos"] == (0.0, 0.0, 0.0) and not any(hello["readout"]),
+              "and no planet, position, pad or readout is filled in", hello)
+
+        # The memory panel is the whole point: write, read it back, watch it.
+        check(mem_write(c, 0x00820000, struct.pack(">I", 0xC0FFEE00)) == ST_OK,
+              "MEM_WRITE answers OK against a process qwark does not know")
+        check(mem_read_u32(c, 0x00820000) == 0xC0FFEE00,
+              "and MEM_READ brings the bytes back")
+
+        status, body = c.call(OP_WATCH_ADD, struct.pack(">IB", 0x00820004, 4))
+        watch_id = body[0] if status == ST_OK and body else None
+        check(watch_id is not None, "WATCH_ADD answers with an id", status)
+        mem_write(c, 0x00820004, struct.pack(">I", 0x0000BEEF))
+
+        drain_udp(udp)
+        got = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline and watch_id is not None:
+            try:
+                data, _addr = udp.recvfrom(2048)
+            except socket.timeout:
+                break
+            if data[:4] != b"QWRK":
+                continue
+            tinfo, twatches, _n = parse_telemetry(data)
+            row = next((w for w in twatches if w["id"] == watch_id), None)
+            if row and row["valid"] and row["value"] == 0x0000BEEF:
+                got = (tinfo, row)
+                break
+        check(got is not None,
+              "a telemetry packet carries the watch, valid and live")
+        if got:
+            check(got[0]["state"] == SESSION_INGAME and got[0]["game"] == 0,
+                  "and still says INGAME with no game", got[0]["state"])
+
+        status, _ = c.call(OP_MOBY_TABLE)
+        check(status == ST_UNSUPPORTED, "MOBY_TABLE is UNSUPPORTED", status)
+        status, _ = c.call(OP_PLANET_LIST)
+        check(status == ST_UNSUPPORTED, "PLANET_LIST is UNSUPPORTED", status)
+        status, _ = c.call(OP_UNLOCK_LIST)
+        check(status == ST_UNSUPPORTED, "UNLOCK_LIST is UNSUPPORTED", status)
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 0, 1))
+        check(status == ST_UNSUPPORTED, "FEATURE_SET is UNSUPPORTED", status)
+        status, body = c.call(OP_DESCRIBE)
+        check(status == ST_UNSUPPORTED and len(body) == 0,
+              "DESCRIBE is UNSUPPORTED, exactly as it is at the XMB",
+              (status, len(body)))
+
+        sim.send("quit")
+        ok, info = wait_state(c, SESSION_XMB)
+        check(ok, "and the process going away returns it to the XMB")
+        check(info and info["game"] == 0 and info["title"] == "",
+              "clearing the game and the title", info)
 
         status, body = c.call(OP_DESCRIBE)
         check(status == ST_UNSUPPORTED,

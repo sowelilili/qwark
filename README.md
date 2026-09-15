@@ -2,7 +2,9 @@
 
 qwark is a PS3 VSH plugin (SPRX) that runs the RaCMAN trainer on the console itself: game detection, feature toggles, freezes, instruction patches, controller combos, position slots, mods and a small network protocol for the PC client, [RaCMAN Reloaded](../racman-reloaded/). It replaces Ratchetron plus the per-game autosplitter modules. The architecture is described in [DESIGN.md](../DESIGN.md); the wire contract in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
-Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NPEA00386), Up Your Arsenal (NPEA00387), Deadlocked (NPEA00423), and the BCES01503 trilogy collection.
+Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NPEA00386, and the RC2ILYOOO and BLMODYOOO repacks of it), Up Your Arsenal (NPEA00387), Deadlocked (NPEA00423), and the BCES01503 trilogy collection.
+
+Anything else the console runs still gets the memory tools: a game qwark has no table for comes up with its title id and no features, and the memory viewer, watches, freezes and patches work on it.
 
 ## Requirements
 

@@ -62,18 +62,19 @@ static u32  g_generation;
 static u32  g_tick;
 static u32  g_pid;
 
-/*
- * A process that turned out not to be a game qwark knows, so the XMB case does
- * not start a new boot for it on every poll while it runs.
- */
-static u32  g_ignored_pid;
-
 static u64  g_quiet_until;
 static int  g_was_running;
 
 static char g_title[16];
 static char g_last_title[16];
 static u8   g_last_game_id;
+
+/*
+ * The running game, or NULL. NULL while INGAME is a real session against a
+ * process no game table claims: the memory, watch, freeze and patch ops work
+ * against it and everything game-specific answers UNSUPPORTED. See step_state's
+ * BOOTING case and docs/PROTOCOL.md section 3.3.
+ */
 static const struct game_api *g_game;
 
 /*
@@ -390,7 +391,11 @@ static void enter_quitting(void)
 /*
  * Position slots are keyed on the game, not the title: BCES01503 hosts three
  * games with different coordinate addresses, and the disc and PSN releases of
- * one game share addresses, so the file is positions/<game>.txt.
+ * one game share addresses, so the file is positions/<game>.txt. A process with
+ * no game gets positions/unknown.txt, which nothing can ever write to: without a
+ * save_blob there is no coordinate to store, and pointing it here rather than
+ * leaving the last game's file loaded keeps POS_LIST from offering slots that
+ * belong to something else.
  */
 static const char *pos_key_for(u8 game_id)
 {
@@ -405,8 +410,14 @@ static const char *pos_key_for(u8 game_id)
 
 static void enter_ingame(void)
 {
+	/*
+	 * GAME_NONE is an identity like any other here: an unknown title that
+	 * reboots is the same session coming back, and one that gives way to a game
+	 * qwark knows, or the other way round, is not.
+	 */
+	u8 game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
 	int same = (g_last_title[0] != 0 && qstreq(g_last_title, g_title) &&
-	            g_last_game_id == g_game->game_id);
+	            g_last_game_id == game_id);
 
 	core_lock();
 
@@ -432,9 +443,18 @@ static void enter_ingame(void)
 	savefile_forget();
 
 	if (!same) {
+		/*
+		 * With no game these three clear rather than load, and all three have
+		 * to run: the feature registry would otherwise still hold the last
+		 * game's table, and the auto-apply below would write its toggles into a
+		 * process that has nothing of the sort in it. The mod table and the
+		 * position file go the same way. Mods stay keyed by the title id, as
+		 * they are for every game, so a folder named after this title is the
+		 * one thing that does carry over.
+		 */
 		features_set_game(g_game, g_title);
 		mods_set_title(g_title);
-		pos_use_title(pos_key_for(g_game->game_id));
+		pos_use_title(pos_key_for(game_id));
 	}
 
 	mem_set_context(g_pid, 1);
@@ -445,7 +465,7 @@ static void enter_ingame(void)
 	memset(&g_hot, 0, sizeof(g_hot));
 	g_hot_primed = 0;
 
-	if (g_game->on_enter != NULL) g_game->on_enter();
+	if (g_game != NULL && g_game->on_enter != NULL) g_game->on_enter();
 
 	/* Auto-flagged toggles and mods come back silently. */
 	features_apply_mask(features_auto_mask());
@@ -460,7 +480,8 @@ static void enter_ingame(void)
 	core_unlock();
 
 	net_set_booting(0);
-	plat_log("qwark: session INGAME (%s) gen %d", g_title, (int)g_generation);
+	plat_log("qwark: session INGAME (%s) game %d gen %d", g_title,
+	         (int)game_id, (int)g_generation);
 }
 
 static void enter_booting(void)
@@ -472,7 +493,6 @@ static void enter_booting(void)
 	g_game = NULL;
 	g_title[0] = 0;
 	g_ncandidates = 0;
-	g_ignored_pid = 0;
 	g_generation++;
 	g_state = SESSION_BOOTING;
 	g_quiet_until = plat_time_us() + BOOT_QUIET_US;
@@ -500,14 +520,11 @@ static void step_state(void)
 	/* Close the allocation gate before publishing or processing this transition. */
 	net_set_booting(g_state == SESSION_INGAME ? pid != g_pid :
 	                (g_state == SESSION_BOOTING || g_state == SESSION_QUITTING ||
-	                 (pid != 0 && pid != g_ignored_pid)));
+	                 pid != 0));
 
 	switch (g_state) {
 	case SESSION_XMB:
-		if (pid == 0) { g_ignored_pid = 0; break; }
-
-		/* A process already found not to be a game qwark knows. */
-		if (pid == g_ignored_pid) break;
+		if (pid == 0) break;
 
 		/* Also guard a PID replacement whose intervening XMB was not observed. */
 		enter_booting();
@@ -533,15 +550,19 @@ static void step_state(void)
 			                                          GAME_MAX_CANDIDATES);
 			if (g_ncandidates == 0) {
 				/*
-				 * Not a game qwark knows: nothing to fingerprint and nothing it
-				 * could safely write. Back to XMB, and this process is not
-				 * mistaken for a new launch on every poll after.
+				 * Not a game qwark knows. There is no fingerprint to wait for
+				 * and no table of addresses to hang anything on, but the
+				 * process is real and its memory is as readable as any other:
+				 * the session goes INGAME with no game, so MEM_READ, MEM_WRITE,
+				 * the watches, the freezes and the client patches work against
+				 * it and every game-specific op answers UNSUPPORTED. Telemetry
+				 * reports state INGAME, game NONE and this title id.
 				 */
-				plat_log("qwark: %s is not a game qwark knows", title);
-				g_ignored_pid = pid;
-				g_pid = 0;
-				g_state = SESSION_XMB;
-				net_set_booting(0);
+				g_game = NULL;
+				qstrcpy(g_title, sizeof(g_title), title);
+				plat_log("qwark: %s is not a game qwark knows, memory tools only",
+				         g_title);
+				enter_ingame();
 				break;
 			}
 

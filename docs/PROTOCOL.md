@@ -32,7 +32,7 @@ Reply:    u32 length | u16 seq | u16 status | payload[length]
 
 ### 1.1 While a game launches
 
-The moment the console reports a game process, qwark leaves it alone for one second, measured by the clock rather than counted in ticks. Nothing reads the process, the XMB is not asked for its title, and nothing moves on the network: existing connections neither receive nor reply, and the telemetry and autosplit datagrams stop. Frames sent into that second are answered, in order, once it ends; nothing is buffered for them beyond what the socket holds. The OS still acknowledges TCP by itself, and other plugins are outside this. Ratchetron and the old autosplitter modules kept the same silence, and the consoles that crashed at launch without it are why.
+The moment the console reports a game process, qwark leaves it alone for one second, measured by the clock rather than counted in ticks. Nothing reads the process, the XMB is not asked for its title, and nothing moves on the network: existing connections neither receive nor reply, and the telemetry and autosplit datagrams stop. Frames sent into that second are answered, in order, once it ends; nothing is buffered for them beyond what the socket holds. The OS still acknowledges TCP by itself, and other plugins are outside this. Ratchetron and the old autosplitter modules kept the same silence, and the consoles that crashed at launch without it are why. None of this depends on which game is starting, because none of it knows yet: the title is not asked for until the second is over, so a process qwark turns out not to know (section 3.3) is launched through exactly the same silence and reaches INGAME the same way.
 
 For the rest of BOOTING, and through QUITTING, no request buffers are allocated. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE and GET_STATE, with at most two payload bytes, use fixed buffers and keep working. Any other request is drained without allocating and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
 
@@ -62,7 +62,8 @@ u8   qwark_version      module build number (see below); a client compares it wi
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
 u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
-                        on which executable is mapped; the client never picks
+                        on which executable is mapped; the client never picks.
+                        0 while INGAME is a process qwark does not know (section 3.3)
 u32  generation         incremented every time a game enters BOOTING
 u32  tick               tick-thread counter, 120 Hz
 char title_id[12]       e.g. "NPEA00385"
@@ -118,6 +119,18 @@ Two side effects a client should know about, both inside qwark rather than on th
 
 - Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
 - The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, which is why the whole of section 5.12 is refused here.
+
+### 3.3 INGAME with `game` 0: a process qwark does not know
+
+A title id no game table claims still reaches INGAME. `state` is 2, `game` is 0 NONE, and `title_id` is the id the console reported. It is a real session against a real process: the memory tools work on it exactly as they do on a game.
+
+- **MEM_READ, MEM_WRITE, WATCH_\*, FREEZE_\* and PATCH_\*** work, under the same rules as always. A watch reads live and its value travels in every telemetry packet; PATCH_APPLY is still refused where `flags` bit2 says the platform cannot patch code.
+- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13. The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS.
+- **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the pad is not read.
+
+Everything else about the session is unchanged: the launch is quiet for its second (section 1.1), `generation` advances, QUITTING and the return to the XMB happen when the process goes away, and a same-title reboot keeps its watches and builds the previous-session record (section 4.1) out of what is actually there, which is freezes and client patches.
+
+A client should offer the memory panel and hide the game panels when `game` is 0 while `state` is 2. DESCRIBE answering `UNSUPPORTED` is the same answer it gives at the XMB, so no client is surprised by it.
 
 ## 4. Telemetry packet (UDP)
 

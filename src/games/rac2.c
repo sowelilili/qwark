@@ -1,8 +1,13 @@
 /*
- * Ratchet & Clank 2 (NPEA00386, BCES01503): addresses, patch words, planets, the
- * fingerprint and the loading-screen watcher. The feature handlers, unlocks and
- * level flags live next door in rac2_panel.c; this file owns the numbers, the
- * hot block and the vtable.
+ * Ratchet & Clank 2 (NPEA00386, BCES01503, RC2ILYOOO, BLMODYOOO): addresses,
+ * patch words, planets, the fingerprint and the loading-screen watcher. The
+ * feature handlers, unlocks and level flags live next door in rac2_panel.c;
+ * this file owns the numbers, the hot block and the vtable.
+ *
+ * RC2ILYOOO and BLMODYOOO (the letter O, not a zero, in both) are repacked PAL
+ * builds the community passes around. They are NPEA00386 under another title id,
+ * byte for byte where it matters, so they answer the same fingerprint and get
+ * the same table. The old client accepted them and this one does too.
  *
  * Every address comes from racman's RaCTrainer/Games/RAC2. Where the old code
  * was ambiguous the comment says what was assumed.
@@ -716,8 +721,15 @@ static int rac2_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *st
 
 /* ---------------------------------------------------------------- vtable */
 
+/*
+ * All four slots are taken. Everything qwark keys by the title id rather than by
+ * the game - the mods folder, config.txt's per-feature auto flags - goes on
+ * using whichever of these four is actually running, exactly as BCES01503 does:
+ * a repack has its own mods folder and its own auto flags. Only the position
+ * slots are keyed on the game, because the coordinate addresses are.
+ */
 const struct game_api rac2_game = {
-	{ "NPEA00386", "BCES01503", NULL, NULL },
+	{ "NPEA00386", "BCES01503", "RC2ILYOOO", "BLMODYOOO" },
 	GAME_RAC2,
 
 	RAC2_FP_ADDR,

@@ -892,15 +892,195 @@ static void test_session_different_title(void)
 
 	check(quit_and_wait(), "quit");
 	/* All four NPEA ids and BCES01503 are registered now, so pick a made-up one. */
-	host_boot("NPEA99999");
-	pump(200);
-	check(session_state() == SESSION_XMB,
-	      "an unregistered title leaves the session in XMB");
+	check(boot_and_wait("NPEA99999"),
+	      "an unregistered title reaches INGAME all the same");
 	check(session_game() == NULL, "and no game is selected");
 
 	/* Back to RaC1 for anything that follows. */
 	check(quit_and_wait(), "quit");
 	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
+}
+
+/*
+ * Build 36. A process whose title id no game table claims is a session like any
+ * other: INGAME with no game, so the memory panel works on anything the console
+ * runs, and everything that needs a game's addresses answers UNSUPPORTED.
+ * docs/PROTOCOL.md section 3.3 is the contract this checks.
+ */
+static void test_unknown_title(void)
+{
+	u8 packet[TELEMETRY_MAX];
+	u8 info[SESSION_INFO_SIZE];
+	u8 describe[8192];
+	const char * const *options = NULL;
+	u32 len = 0;
+	u32 v = 0;
+	u8 watch_id = 0xFF;
+	u8 count = 0;
+
+	group("unknown title: it reaches INGAME");
+
+	check(quit_and_wait(), "quit whatever was running");
+	watch_clear();
+	freeze_clear();
+
+	check(boot_and_wait("BLUS99999"), "a title no game table claims reaches INGAME");
+	check(session_game() == NULL, "and the session has no game");
+	check(qstreq(session_title(), "BLUS99999"), "but it does have the title id");
+
+	pump(8);   /* far enough for a publish, which is every fourth tick */
+	check_eq_u64(session_info_copy(info, sizeof(info)), SESSION_INFO_SIZE,
+	             "the info block is published");
+	check_eq_u64(info[2], SESSION_INGAME, "its state byte says INGAME");
+	check_eq_u64(info[3], GAME_NONE, "its game byte says NONE");
+	check(memcmp(info + 12, "BLUS99999", 9) == 0, "and it carries the title id");
+
+	/* Nothing knows where any of these live, so nothing reads them. */
+	check_eq_u64(info[28], 0, "current_planet stays 0");
+	check_eq_u64(be32_get(info + 32), 0, "pos[0] stays 0");
+	check_eq_u64(be32_get(info + 44), 0, "the pad mask stays 0");
+	check_eq_u64(be32_get(info + 64), 0, "readout[0] stays 0");
+
+	group("unknown title: the memory tools work on it");
+
+	host_poke(0x00810000u, (const u8 *)"\xDE\xAD\xBE\xEF", 4);
+	check(mem_read_u32(0x00810000u, &v) == ST_OK, "mem_read reaches the process");
+	check_eq_u64(v, 0xDEADBEEFu, "and brings back what is there");
+	check(mem_write_u32(0x00810000u, 0x12345678u) == ST_OK, "mem_write reaches it too");
+	mem_read_u32(0x00810000u, &v);
+	check_eq_u64(v, 0x12345678u, "and the write landed");
+
+	check(watch_add(0x00810004u, 4, &watch_id) == ST_OK, "a watch is registered");
+	host_poke(0x00810004u, (const u8 *)"\x00\x00\x0B\xAD", 4);
+	pump(8);
+
+	len = session_telemetry_copy(packet, sizeof(packet));
+	check_eq_u64(len, 4u + SESSION_INFO_SIZE + 1u + 12u,
+	             "the telemetry packet carries exactly one watch");
+	check_eq_u64(packet[6], SESSION_INGAME, "its state byte says INGAME");
+	check_eq_u64(packet[7], GAME_NONE, "its game byte says NONE");
+	{
+		const u8 *w = packet + 4 + SESSION_INFO_SIZE + 1;
+		check_eq_u64(w[0], watch_id, "the watch id matches");
+		check_eq_u64(w[2], 1, "the watch is valid");
+		check_eq_u64(be64_get(w + 4), 0x0BADu, "and its value is live");
+	}
+
+	check(freeze_add(0x00810008u, 4, 0x2222u, NULL) == ST_OK, "a freeze is registered");
+	pump(2);
+	mem_read_u32(0x00810008u, &v);
+	check_eq_u64(v, 0x2222u, "and the tick writes it");
+	freeze_clear();
+
+	{
+		const struct patch_word words[] = { { 0x00810010u, 0x60000000u } };
+
+		check(client_patch_apply(words, 1) == ST_OK, "a client patch applies");
+		mem_read_u32(0x00810010u, &v);
+		check_eq_u64(v, 0x60000000u, "and its word reached memory");
+		check(client_patch_revert(0x00810010u) == ST_OK, "and it reverts");
+	}
+
+	group("unknown title: everything that needs a game is UNSUPPORTED");
+
+	check(features_describe(describe, sizeof(describe), &len) == ST_UNSUPPORTED,
+	      "DESCRIBE is UNSUPPORTED");
+	check_eq_u64(len, 0, "and encodes nothing");
+	check(features_set(0, 1) == ST_UNSUPPORTED, "FEATURE_SET is UNSUPPORTED");
+	check(features_trigger(0) == ST_UNSUPPORTED, "FEATURE_TRIGGER is UNSUPPORTED");
+	check(features_set_auto(0, 1) == ST_UNSUPPORTED, "FEATURE_SET_AUTO is UNSUPPORTED");
+	check(features_options(0, &options, &count) == ST_UNSUPPORTED,
+	      "FEATURE_OPTIONS is UNSUPPORTED");
+	check_eq_u64(features_toggle_state(), 0, "no toggle is on");
+	check_eq_u64(features_toggle_auto(), 0, "and none is flagged auto");
+	check(session_position_save(0) == ST_UNSUPPORTED, "POS_SAVE is UNSUPPORTED");
+	check(session_position_load(0) == ST_UNSUPPORTED, "POS_LOAD is UNSUPPORTED");
+	check(session_planet_load(0, 0) == ST_UNSUPPORTED, "PLANET_LOAD is UNSUPPORTED");
+	check(session_die() == ST_UNSUPPORTED, "DIE is UNSUPPORTED");
+	check(session_load_setaside() == ST_UNSUPPORTED, "LOAD_ASIDE is UNSUPPORTED");
+	{
+		u8 supported = 1, installed = 1, running = 1, pending = 1;
+		u32 size = 1;
+
+		/*
+		 * The one exception, and it is the answer a game with no helper has
+		 * always given: supported 0, which is how a client knows to hide the
+		 * save-file panel. Everything that would move a save is refused.
+		 */
+		check(savefile_info(&supported, &installed, &running, &pending, &size) == ST_OK,
+		      "SAVEFILE_INFO answers, as it does for a game with no helper");
+		check_eq_u64(supported, 0, "reporting no save-file support");
+		check_eq_u64(size, 0, "and no aside buffer");
+		check(savefile_read(0, 4, describe, &len) == ST_UNSUPPORTED,
+		      "SAVEFILE_READ is UNSUPPORTED");
+		check(savefile_library_gate() == ST_UNSUPPORTED,
+		      "and the whole savefile library with it");
+	}
+	check_eq_u64(mods_loaded_mask(), 0, "the mod table is the unknown title's own, and empty");
+
+	group("unknown title: quit and the same title again");
+
+	host_quit();
+	pump(1);
+	check(session_state() == SESSION_QUITTING, "the process going away means QUITTING");
+	check(pump_until(SESSION_XMB, 200), "and the tick after that, the XMB");
+	check_eq_u64(session_title()[0], 0, "which clears the title id");
+	check(session_game() == NULL, "with still no game");
+
+	check(boot_and_wait("BLUS99999"), "the same unknown title boots again");
+	check(session_game() == NULL, "still with no game");
+	check(watch_slot(watch_id) != NULL, "its watches survived, as a game's do");
+	check_eq_u64(features_toggle_state(), 0, "nothing re-applied a toggle");
+	check_eq_u64(mods_loaded_mask(), 0, "nor a mod");
+	check(!session_previous()->pending, "and nothing is left pending");
+
+	group("unknown title: a game after it");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots after it");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC1,
+	      "and the session says RaC1 again");
+	check(watch_slot(watch_id) == NULL, "the unknown title's watches were dropped");
+	check(features_describe(describe, sizeof(describe), &len) == ST_OK &&
+	      describe[0] == GAME_RAC1, "DESCRIBE answers with RaC1's table");
+	watch_clear();
+}
+
+/*
+ * The two repacked PAL builds of Going Commando the old client accepted. They
+ * are NPEA00386 under another title id, so they get RaC2's whole table.
+ */
+static void test_rac2_repacks(void)
+{
+	const struct game_api *cands[GAME_MAX_CANDIDATES];
+	u8 describe[8192];
+	u32 len = 0;
+	u32 n;
+
+	group("RaC2: the repacked PAL title ids");
+
+	n = game_candidates_for_title("RC2ILYOOO", cands, GAME_MAX_CANDIDATES);
+	check_eq_u64(n, 1, "RC2ILYOOO names exactly one game");
+	check(n == 1 && cands[0]->game_id == GAME_RAC2, "and it is RaC2");
+
+	n = game_candidates_for_title("BLMODYOOO", cands, GAME_MAX_CANDIDATES);
+	check_eq_u64(n, 1, "BLMODYOOO names exactly one game");
+	check(n == 1 && cands[0]->game_id == GAME_RAC2, "and it is RaC2");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("BLMODYOOO"), "BLMODYOOO reaches INGAME");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC2,
+	      "as RaC2, on RaC2's fingerprint");
+	check(qstreq(session_title(), "BLMODYOOO"), "keeping its own title id");
+	check(features_describe(describe, sizeof(describe), &len) == ST_OK &&
+	      describe[0] == GAME_RAC2, "DESCRIBE answers with RaC2's table");
+	if (session_game() != NULL) {
+		const struct game_describe *d = session_game()->describe();
+		check_eq_u64(d->nfeatures, 37, "and every one of RaC2's thirty-seven features");
+	}
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 comes back for the rest of the run");
 }
 
 /*
@@ -1065,7 +1245,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 35, "and this module is build 35");
+	check_eq_u64(packet[5], 36, "and this module is build 36");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -5557,6 +5737,8 @@ int main(void)
 	test_telemetry();
 	test_session_same_title();
 	test_session_different_title();
+	test_unknown_title();
+	test_rac2_repacks();
 	test_boot();
 	test_launch_failures();
 	test_unlocks();
