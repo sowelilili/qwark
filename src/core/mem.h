@@ -102,6 +102,24 @@ void patch_forget_all(void);        /* drops the table without writing anything 
 u32 patch_count(void);
 const struct patch_def *patch_at(u32 index);
 
+/*
+ * The largest def patch_apply will take, and with it the width of the write
+ * ordering tables in mem.c. A mod may hold the whole mod word pool on its own,
+ * so MOD_WORD_POOL is this number; the games' own defs are eleven words at the
+ * most and a client patch is capped at QWARK_MAX_PATCH_WORDS.
+ *
+ * It was 2048 until build 35, which cost 14 KB of ordering tables for a library
+ * whose busiest title is 279 words.
+ */
+#define PATCH_ORDER_WORDS 640
+
+/*
+ * The largest client patch PATCH_APPLY accepts, and the words a client patch
+ * slot keeps. It is a wire limit: a client may send this many words in one
+ * PATCH_APPLY and the op has refused more since revision 1.
+ */
+#define QWARK_MAX_PATCH_WORDS 64
+
 /* A static originals pool for feature and other compile-time defs. */
 u32 *patch_pool_alloc(u16 words);
 void patch_pool_reset(void);

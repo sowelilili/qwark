@@ -13,9 +13,28 @@
 
 #include <string.h>
 
-#define CONN_REQ_CAP    QWARK_MAX_PAYLOAD
 #define CONN_REPLY_CAP  65600u
-#define CONN_ALLOC      (3u * 65536u)      /* 64 KB pages, holds both buffers */
+/*
+ * The per-request block, in 64 KB pages, which is what sys_memory_allocate hands
+ * out. It held a full request buffer and a full reply buffer side by side and
+ * was always three pages, 192 KB, for every request that is not a control op.
+ *
+ * Two pages cannot hold both at their present caps and nothing here may shrink a
+ * cap: QWARK_MAX_PAYLOAD is 65600, so a request buffer alone spills 64 bytes
+ * past one page, and a reply must still have room for a 64 KB MEM_READ,
+ * SAVEFILE_READ or FILE_READ. 65600 + 65600 is 131200, which is 128 bytes more
+ * than two pages.
+ *
+ * What it does not have to be is three pages *every time*. The frame header
+ * carries the payload length and it is read before anything is allocated, so the
+ * request half is allocated at the length that actually arrived while the reply
+ * half keeps its full cap. Everything except a bulk write - MEM_READ, the
+ * listings, the savefile reads, every request a client sends between them - asks
+ * for 64 KB less than it used to, and the three ops that do send a full 64 KB
+ * payload (MEM_WRITE, FILE_WRITE, SAVEFILE_WRITE) still get their three pages.
+ * Not one limit moves either way.
+ */
+#define CONN_ALLOC_FOR(reqlen) ((((reqlen) + 7u) & ~7u) + CONN_REPLY_CAP)
 #define REQUEST_TIMEOUT_US 2000000u
 
 #define CLIENT_STACK    16384u
@@ -502,13 +521,16 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		break;
 
 	case OP_PATCH_APPLY: {
-		struct patch_word words[64];
+		struct patch_word words[QWARK_MAX_PATCH_WORDS];
 		u16 n;
 		u16 i;
 
 		if (reqlen < 4) { cmd->status = ST_BAD_ARG; break; }
 		n = be16_get(req);
-		if (n == 0 || n > 64 || reqlen < 4u + (u32)n * 8u) { cmd->status = ST_BAD_ARG; break; }
+		if (n == 0 || n > QWARK_MAX_PATCH_WORDS || reqlen < 4u + (u32)n * 8u) {
+			cmd->status = ST_BAD_ARG;
+			break;
+		}
 
 		for (i = 0; i < n; i++) {
 			words[i].addr  = be32_get(req + 4 + i * 8);
@@ -1583,7 +1605,7 @@ static void conn_thread(void *arg)
 			core_lock();
 			if (g_booting) status = ST_BUSY;
 			else {
-				c->block = plat_alloc_pages(CONN_ALLOC);
+				c->block = plat_alloc_pages(CONN_ALLOC_FOR(length));
 				if (c->block == NULL) status = ST_FULL;
 			}
 			core_unlock();
@@ -1598,8 +1620,13 @@ static void conn_thread(void *arg)
 				if (send_all(c, header, QWARK_FRAME_HEADER) != 0) break;
 				continue;
 			}
+			/*
+			 * The reply starts where this request ends, eight-byte aligned,
+			 * rather than at a fixed QWARK_MAX_PAYLOAD: the request buffer is
+			 * only ever read up to `length`, and the reply keeps its cap.
+			 */
 			c->req = (u8 *)c->block;
-			c->reply = c->req + CONN_REQ_CAP;
+			c->reply = c->req + ((length + 7u) & ~7u);
 			replycap = CONN_REPLY_CAP;
 		}
 

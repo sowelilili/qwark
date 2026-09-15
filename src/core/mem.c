@@ -4,8 +4,14 @@
 #include <string.h>
 
 #define CLIENT_PATCH_SLOTS 16
-#define CLIENT_PATCH_WORDS 64
-#define PATCH_POOL_WORDS   1024
+#define CLIENT_PATCH_WORDS QWARK_MAX_PATCH_WORDS
+/*
+ * Originals for the games' compile-time defs. All four games together allocate
+ * 36 words (RaC4's loading hook and crash fix are eleven each and the rest are
+ * one to three), and nothing else draws on it, so 128 is three and a half times
+ * what the module can ever ask for. It was 1024.
+ */
+#define PATCH_POOL_WORDS   128
 
 /* ------------------------------------------------------------------ the gate */
 
@@ -304,7 +310,7 @@ void patch_pool_reset(void)
  * through a register. Two runs that branch into each other have no safe order
  * and go in as listed.
  */
-#define PATCH_ORDER_WORDS 2048          /* the largest def, a mod holding the whole word pool */
+/* PATCH_ORDER_WORDS, the largest def, is in mem.h beside MOD_WORD_POOL's use of it. */
 #define PATCH_RUN_WORDS   256           /* how much of a run goes out in one write */
 #define NO_RUN            0xFFFFu
 

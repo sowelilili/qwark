@@ -30,14 +30,28 @@
 #define BOOT_QUIET_US  1000000ull
 
 /*
- * Sixteen blocks, which is more than any game needs: RaC3 uses twelve, eight of
+ * Sixteen blocks, which is more than any game needs: RaC3 uses thirteen, nine of
  * them per-tick reads once its autosplit watcher is counted, and four slow ones
  * for ship colour, file time, the savefile helper and the chargeboot colours.
  * The slow blocks carry a period and a phase, so a tick pays for the per-tick
  * reads plus at most one of them.
+ *
+ * The bytes come out of one pool rather than sixteen fixed slots. The longest
+ * single block in any game is RaC2's input block at 0x3CC, so HOT_MAX_LEN has to
+ * stay at 1024, but no game asks for sixteen of those: the busiest table is
+ * RaC3's at 2363 bytes all told, then RaC2 at 1781, RaC1 at 1218 and Deadlocked
+ * at 664. A 4 KB pool holds the largest of them with room for another 1.7 KB of
+ * blocks, where sixteen fixed 1 KB slots cost 16 KB to hold 2.3 KB.
+ *
+ * hot_layout hands each block its slice and says whether the table fitted;
+ * session_hot_fits is the same answer for one game, which is what the unit tests
+ * assert for every registered game so a new block can never quietly fall off the
+ * end of the pool.
  */
 #define HOT_MAX_BLOCKS   16
 #define HOT_MAX_LEN      1024
+#define HOT_POOL_BYTES   4096
+#define HOT_NO_SLOT      0xFFFFu
 
 /* ------------------------------------------------------------------- state */
 
@@ -71,7 +85,8 @@ static const struct game_api *g_candidates[GAME_MAX_CANDIDATES];
 static u32 g_ncandidates;
 
 static struct game_hot g_hot;
-static u8   g_hotbuf[HOT_MAX_BLOCKS][HOT_MAX_LEN];
+static u8   g_hotbuf[HOT_POOL_BYTES];
+static u16  g_hotoff[HOT_MAX_BLOCKS];
 static int  g_hot_primed;
 
 static struct previous_record g_prev;
@@ -596,6 +611,47 @@ static void step_state(void)
 
 /* -------------------------------------------------------------- hot blocks */
 
+/*
+ * Cuts the pool up between one game's blocks, in table order, four-byte aligned.
+ * Returns 1 when every block got a slice and 0 when the table asks for more than
+ * the pool or HOT_MAX_BLOCKS holds; the blocks that missed out keep HOT_NO_SLOT
+ * and read as an absent block, which is the same thing hot_decode has always
+ * been handed for a block a game does not have.
+ */
+static int hot_layout(const struct game_api *g, u16 *off)
+{
+	u32 used = 0;
+	u8 i, n;
+	int ok = 1;
+
+	for (i = 0; i < HOT_MAX_BLOCKS; i++) off[i] = HOT_NO_SLOT;
+
+	if (g == NULL || g->hot == NULL) return 1;
+
+	n = g->nhot;
+	if (n > HOT_MAX_BLOCKS) { n = HOT_MAX_BLOCKS; ok = 0; }
+
+	for (i = 0; i < n; i++) {
+		u32 len = g->hot[i].len;
+
+		if (len > HOT_MAX_LEN) { len = HOT_MAX_LEN; ok = 0; }
+		len = (len + 3u) & ~3u;
+
+		if (used + len > HOT_POOL_BYTES) { ok = 0; break; }
+
+		off[i] = (u16)used;
+		used += len;
+	}
+
+	return ok;
+}
+
+int session_hot_fits(const struct game_api *g)
+{
+	u16 off[HOT_MAX_BLOCKS];
+	return hot_layout(g, off);
+}
+
 static void read_hot(void)
 {
 	const u8 *ptrs[HOT_MAX_BLOCKS];
@@ -607,15 +663,27 @@ static void read_hot(void)
 		return;
 	}
 
+	/*
+	 * The layout belongs to whichever game is running, so it is taken on the
+	 * first pass of a session, next to the pass that reads every block.
+	 */
+	if (!g_hot_primed && !hot_layout(g_game, g_hotoff))
+		plat_log("qwark: hot table for game %d does not fit the pool",
+		         (int)g_game->game_id);
+
 	n = g_game->nhot;
 	if (n > HOT_MAX_BLOCKS) n = HOT_MAX_BLOCKS;
 
 	for (i = 0; i < n; i++) {
 		u16 len = g_game->hot[i].len;
 		u8 period = g_game->hot[i].period;
+		u8 *buf;
+
+		if (g_hotoff[i] == HOT_NO_SLOT) { ptrs[i] = NULL; continue; }
 
 		if (len > HOT_MAX_LEN) len = HOT_MAX_LEN;
-		ptrs[i] = g_hotbuf[i];
+		buf = g_hotbuf + g_hotoff[i];
+		ptrs[i] = buf;
 
 		/*
 		 * A slow block keeps the bytes from its last read in between, so the
@@ -626,8 +694,8 @@ static void read_hot(void)
 		    (g_tick % period) != (u32)(g_game->hot[i].phase % period))
 			continue;
 
-		if (mem_read(g_game->hot[i].addr, g_hotbuf[i], len) != ST_OK)
-			memset(g_hotbuf[i], 0, len);
+		if (mem_read(g_game->hot[i].addr, buf, len) != ST_OK)
+			memset(buf, 0, len);
 	}
 	for (; i < HOT_MAX_BLOCKS; i++) ptrs[i] = NULL;
 

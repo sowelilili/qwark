@@ -20,8 +20,32 @@
  */
 #define QWARK_SAVEDIR   "/dev_hdd0/qwark/savefiles"
 
+/*
+ * A key is at most "<title>.auto.<slug>": nine characters of title id, six of
+ * separator and the 47 a slug can be (see qslug and feature_key), so 64 is
+ * exactly the bound rather than a guess.
+ *
+ * A value is a number. Every value qwark writes is one, decimal or "0x" and
+ * eight hex digits, which is eleven characters at the widest, and every value it
+ * reads goes through qparse_u32. 32 was 80 until build 35; anything longer in a
+ * hand-edited file is cut at the same place it was always cut, and a value that
+ * does not parse falls back the same way.
+ */
 #define CONFIG_KEY_MAX  64
-#define CONFIG_VAL_MAX  80
+#define CONFIG_VAL_MAX  32
+
+#define CONFIG_MAX_ENTRIES 128
+
+/*
+ * config.txt is read whole, and config_save writes one line per entry, so the
+ * file qwark itself can produce is bounded: CONFIG_MAX_ENTRIES lines of a key, a
+ * " = ", a value and a newline. This is that bound with the 8 bytes config_save
+ * already budgets per line, so a config qwark wrote always reads back. A file
+ * larger than this - a hand-edited one - makes qread_file answer ST_FULL and
+ * config_load hand that back without applying any of it, exactly as it did when
+ * this was a flat 16384.
+ */
+#define CONFIG_TEXT_MAX (CONFIG_MAX_ENTRIES * (CONFIG_KEY_MAX + CONFIG_VAL_MAX + 8) + 1)
 
 /* Creates the directory tree and reads config.txt. */
 int  config_init(void);

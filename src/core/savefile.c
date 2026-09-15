@@ -85,11 +85,10 @@ struct sf_transfer {
 static struct sf_transfer g_xfer;
 
 /*
- * The copy buffer. Static because the tick thread's budget is 48 KB of stack
- * and this is 64 KB; only the tick thread ever touches it, and only one
- * transfer exists at a time, so it needs no lock of its own.
+ * gnu99, so no _Static_assert: a copy chunk bigger than the shared scratch
+ * buffer fails the build here rather than running off the end of it.
  */
-static u8 g_copy[SAVEFILE_COPY_CHUNK];
+typedef char savefile_copy_chunk_fits[SAVEFILE_COPY_CHUNK <= QSCRATCH_BYTES ? 1 : -1];
 
 static void request_clear(struct sf_request *r)
 {
@@ -331,6 +330,11 @@ static void sum_write(const char *path, u32 crc)
  */
 static void xfer_tick(const struct sf_desc *d)
 {
+	/*
+	 * The tick thread's shared scratch buffer, filled and emptied inside this
+	 * call and never held across a return to the tick loop: see util.h.
+	 */
+	u8 *copy = qscratch();
 	u32 chunks;
 
 	switch (g_xfer.state) {
@@ -357,16 +361,16 @@ static void xfer_tick(const struct sf_desc *d)
 			u32 n = g_xfer.total - g_xfer.done;
 			if (n > SAVEFILE_COPY_CHUNK) n = SAVEFILE_COPY_CHUNK;
 
-			if (mem_read(d->aside_addr + g_xfer.done, g_copy, n) != ST_OK) {
+			if (mem_read(d->aside_addr + g_xfer.done, copy, n) != ST_OK) {
 				xfer_stop(SAVEFILE_ERR_IO);
 				return;
 			}
-			if (plat_file_write(g_xfer.file, g_copy, n) != 0) {
+			if (plat_file_write(g_xfer.file, copy, n) != 0) {
 				xfer_stop(SAVEFILE_ERR_IO);
 				return;
 			}
 
-			g_xfer.crc = qcrc32_update(g_xfer.crc, g_copy, n);
+			g_xfer.crc = qcrc32_update(g_xfer.crc, copy, n);
 			g_xfer.done += n;
 		}
 
@@ -385,7 +389,7 @@ static void xfer_tick(const struct sf_desc *d)
 			u32 got = 0;
 			if (n > SAVEFILE_COPY_CHUNK) n = SAVEFILE_COPY_CHUNK;
 
-			if (plat_file_read(g_xfer.file, g_copy, n, &got) != 0) {
+			if (plat_file_read(g_xfer.file, copy, n, &got) != 0) {
 				xfer_stop(SAVEFILE_ERR_IO);
 				return;
 			}
@@ -398,7 +402,7 @@ static void xfer_tick(const struct sf_desc *d)
 				xfer_stop(SAVEFILE_ERR_SHORT);
 				return;
 			}
-			if (mem_write(d->aside_addr + g_xfer.done, g_copy, got) != ST_OK) {
+			if (mem_write(d->aside_addr + g_xfer.done, copy, got) != ST_OK) {
 				xfer_stop(SAVEFILE_ERR_IO);
 				return;
 			}
@@ -788,8 +792,8 @@ int savefile_categories(u8 *out, u32 cap, u32 *len)
  * uploaded itself. Computed once and written out, so the next listing reads it.
  *
  * The buffer is on the stack on purpose: a client thread has 16 KB of it and
- * this is one of two frames deep, while the tick thread's own 64 KB copy buffer
- * belongs to the transfer and must not be borrowed from another thread.
+ * this is one of two frames deep, while the shared scratch buffer belongs to the
+ * tick thread and must never be borrowed from another one.
  */
 static int crc_of_file(const char *path, u32 *out)
 {

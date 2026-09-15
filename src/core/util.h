@@ -73,6 +73,32 @@ u32  qcrc32(const u8 *data, u32 len);
  */
 void qslug(const char *src, char *dst, u32 cap);
 
+/* ---------------------------------------------------------- the scratch buffer */
+
+/*
+ * One buffer for the tick thread's bulk copies, shared by the savefile transfer
+ * (game memory to and from a file) and the mod loader (a cave file into game
+ * memory). Both used to keep 64 KB of their own, which is 128 KB of the VSH's
+ * small pool held for the whole life of the module so that two operations that
+ * can never overlap could each have a chunk.
+ *
+ * The rules that make one buffer safe, and the reason it is not a plain extern:
+ *
+ *   - only the tick thread may touch it. The savefile transfer runs in
+ *     savefile_tick and a mod loads out of the command ring, which the tick
+ *     thread drains; nothing on a network thread comes near it.
+ *   - nothing may hold it across a return to the tick loop. Every user fills it
+ *     and empties it inside one call, so the next caller finding it full of
+ *     somebody else's bytes cannot matter.
+ *
+ * 16 KB is four PS3MAPI reads to the 64 KB the savefile copy used to do in one,
+ * so the transfer moves the same bytes per tick out of four times as many
+ * calls: see SAVEFILE_CHUNKS_PER_TICK.
+ */
+#define QSCRATCH_BYTES 16384u
+
+u8 *qscratch(void);
+
 /* ------------------------------------------------------------- text files */
 
 /* Reads a whole file, NUL-terminates it. Returns ST_OK / ST_NOT_FOUND / ST_FULL. */

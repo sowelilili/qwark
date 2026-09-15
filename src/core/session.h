@@ -82,6 +82,15 @@ u32  session_tick_count(void);
 const char *session_title(void);
 const struct game_api *session_game(void);
 
+/*
+ * Whether every block of a game's hot table gets a slice of the shared pool the
+ * tick thread reads them into. Nothing in the running module calls it: it is
+ * there so the unit tests can assert it of every registered game, because a
+ * table that outgrows the pool loses its last blocks and a game that quietly
+ * stops decoding half its state is a bad way to find that out.
+ */
+int  session_hot_fits(const struct game_api *g);
+
 /* Copies the published SessionInfo (164 bytes) or the full telemetry packet. */
 u32  session_info_copy(u8 *out, u32 cap);
 u32  session_telemetry_copy(u8 *out, u32 cap);

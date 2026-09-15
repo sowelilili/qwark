@@ -7,7 +7,8 @@
  *   #- key: value      metadata (name, version, author, description, depends)
  *   # ...              comment
  *   0xADDR: 0xVALUE    one 4-byte word, reverted on unload
- *   0xADDR: file.bin   a code cave, written in 64 KB chunks and never restored
+ *   0xADDR: file.bin   a code cave, written in scratch-sized pieces and never
+ *                      restored
  *   automation: x.lua  a Lua automation; the mod is flagged needs_lua and the
  *                      line is skipped
  *
@@ -22,6 +23,35 @@
 
 #define MOD_DESC_MAX    256
 #define MOD_DEPENDS_MAX 128
+
+/*
+ * The shared word pool, bump allocated across every mod of one title, and the
+ * largest patch def anything can hand patch_apply: a single mod may hold the
+ * whole pool, so the two are the same number and mem.h owns it.
+ *
+ * It was 2048 until build 35. The shipped library's busiest title is Deadlocked
+ * at 279 words over five mods, the largest single mod being dl-cs at 253, so 640
+ * is better than twice what the library needs and two and a half times the
+ * fixtures. A mod that does not fit is refused with ST_FULL and flagged
+ * MOD_FLAG_PARSE_ERROR, exactly as it was before.
+ */
+#define MOD_WORD_POOL   PATCH_ORDER_WORDS
+
+/*
+ * Code caves, also pooled across a title. Four in the shipped library, and a
+ * mod rarely has more than one; 32 is eight times the busiest title and costs
+ * 68 bytes a slot.
+ */
+#define MOD_CAVE_POOL   32
+
+/*
+ * One patch.txt is read whole, so the text buffer has to hold a file that fills
+ * the word pool on its own: MOD_WORD_POOL lines of "0xADDR: 0xVALUE" is about
+ * 15 KB, which is why this stays at 16 KB while the pool shrank. A file bigger
+ * than it fails to read and the mod is flagged MOD_FLAG_PARSE_ERROR, which is
+ * what it has always done.
+ */
+#define MOD_TEXT_MAX    16384
 
 struct mod_entry {
 	char dirname[32];

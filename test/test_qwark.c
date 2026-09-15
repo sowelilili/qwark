@@ -407,6 +407,98 @@ static void test_tables(void)
 
 /* ------------------------------------------------------- the mod parser */
 
+/*
+ * Writes a generated patch.txt into the fake console's mod folder: `nwords`
+ * "0xADDR: 0xVALUE" lines and `ncaves` "0xADDR: rack.bin" lines. Used to walk
+ * the word and cave pools right up to their edges, which no shipped mod comes
+ * near.
+ */
+static void write_generated_mod(const char *title, const char *dirname,
+                                u32 nwords, u32 ncaves)
+{
+	char path[256];
+	char line[64];
+	plat_file_t f;
+	u32 i;
+
+	path[0] = 0;
+	qstrcat(path, sizeof(path), QWARK_MODSDIR);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), title);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), dirname);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/patch.txt");
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+
+	for (i = 0; i < nwords; i++) {
+		line[0] = 0;
+		qstrcat(line, sizeof(line), "0x");
+		qfmt_hex(line + 2, sizeof(line) - 2, 0x00800000u + i * 4u, 8);
+		qstrcat(line, sizeof(line), ": 0x60000000\n");
+		plat_file_write(f, line, qstrlen(line));
+	}
+
+	for (i = 0; i < ncaves; i++) {
+		line[0] = 0;
+		qstrcat(line, sizeof(line), "0x");
+		qfmt_hex(line + 2, sizeof(line) - 2, 0x00900000u + i * 0x1000u, 8);
+		qstrcat(line, sizeof(line), ": rack.bin\n");
+		plat_file_write(f, line, qstrlen(line));
+	}
+
+	plat_file_close(f);
+}
+
+/* The same, but padded with one long comment line to exactly `bytes`. */
+static void write_generated_padded_mod(const char *title, const char *dirname, u32 bytes)
+{
+	char path[256];
+	char pad[256];
+	plat_file_t f;
+	u32 written = 0;
+
+	memset(pad, 'x', sizeof(pad));
+	write_generated_mod(title, dirname, 1, 0);
+
+	path[0] = 0;
+	qstrcat(path, sizeof(path), QWARK_MODSDIR);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), title);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), dirname);
+	qstrcat(path, sizeof(path), "/patch.txt");
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+
+	plat_file_write(f, "#", 1);
+	written = 1;
+	while (written + 1 < bytes) {
+		u32 n = bytes - 1 - written;
+		if (n > sizeof(pad)) n = sizeof(pad);
+		plat_file_write(f, pad, n);
+		written += n;
+	}
+	plat_file_write(f, "\n", 1);
+
+	plat_file_close(f);
+}
+
+/*
+ * test/fixtures/mods/NPEA00385/big-cave: a 10240-byte cave at 0x700000 and two
+ * words at 0x740000. The bytes are generated rather than read back out of the
+ * fixture so the check is against what the file is meant to hold.
+ */
+#define BIG_CAVE_ADDR  0x00700000u
+#define BIG_CAVE_LEN   10240u
+#define BIG_CAVE_WORDS 0x00740000u
+
+static u8 g_big_cave[BIG_CAVE_LEN];
+static u8 g_big_read[BIG_CAVE_LEN];
+
 static void test_mods(void)
 {
 	int i;
@@ -420,7 +512,7 @@ static void test_mods(void)
 	group("patch.txt parser, real racman mods");
 
 	mods_set_title("NPEA00385");
-	check(mods_count() >= 6, "all six RaC1 fixtures were scanned");
+	check(mods_count() >= 7, "all seven RaC1 fixtures were scanned");
 
 	for (i = 0; i < (int)mods_count(); i++) {
 		m = mods_at((u32)i);
@@ -507,6 +599,63 @@ static void test_mods(void)
 	}
 
 	/*
+	 * A cave several chunks long. mods.c streams a cave file into the game a
+	 * MOD_CAVE_CHUNK at a time out of the shared scratch buffer, and the patch
+	 * words go in as one batch only once every byte of every cave has landed: a
+	 * cave is memory nothing branches to until those words point at it, so how
+	 * many pieces it arrives in is invisible to the running game, but a word
+	 * written early would point at a cave that is not all there.
+	 *
+	 * big-cave is a 10240-byte rack.bin at 0x700000, two full chunks and a short
+	 * one, and two words at 0x740000.
+	 */
+	{
+		u32 i;
+		int last_cave = -1;
+		int first_word = -1;
+		int cave_writes = 0;
+
+		for (i = 0; i < BIG_CAVE_LEN; i++)
+			g_big_cave[i] = (u8)((i * 7u + 3u) & 0xFFu);
+
+		host_poke(BIG_CAVE_WORDS, (const u8 *)"\x11\x22\x33\x44", 4);
+		host_write_log_reset();
+
+		check(mods_load("big-cave") == ST_OK, "a mod with a multi-chunk cave loads");
+
+		for (i = 0; i < host_write_log_count(); i++) {
+			u32 a = 0, len = 0;
+			if (host_write_log_at(i, &a, &len) != 0) break;
+			if (a - BIG_CAVE_ADDR < BIG_CAVE_LEN) {
+				last_cave = (int)i;
+				cave_writes++;
+			} else if (first_word < 0) {
+				first_word = (int)i;
+			}
+		}
+
+		check(cave_writes >= 3, "the cave went in as three writes or more");
+		check(first_word > last_cave,
+		      "and every patch word went in after the last piece of the cave");
+
+		host_peek(BIG_CAVE_ADDR, g_big_read, BIG_CAVE_LEN);
+		check(memcmp(g_big_read, g_big_cave, BIG_CAVE_LEN) == 0,
+		      "the whole cave arrived, every chunk of it, in order");
+
+		mem_read_u32(BIG_CAVE_WORDS, &v);
+		check_eq_u64(v, 0x48000008u, "the first patch word is in");
+		mem_read_u32(BIG_CAVE_WORDS + 4, &v);
+		check_eq_u64(v, 0x60000000u, "and so is the second");
+
+		check(mods_unload("big-cave") == ST_OK, "it unloads");
+		mem_read_u32(BIG_CAVE_WORDS, &v);
+		check_eq_u64(v, 0x11223344u, "putting the words back");
+		host_peek(BIG_CAVE_ADDR, g_big_read, 4);
+		check_eq_u64(be32_get(g_big_read), be32_get(g_big_cave),
+		             "and leaving the cave bytes where they are");
+	}
+
+	/*
 	 * quartu_patch lists its two hooks, ba 0x224860 and ba 0x224870, ahead of the
 	 * ten words at 0x22485C they land in. Nothing pauses the game while a mod
 	 * loads, so the order is all that keeps the hooks off missing code.
@@ -559,6 +708,99 @@ static void test_mods(void)
 
 			mods_unload("il-ghost");
 			mods_unload("dl-cs");
+		}
+	}
+
+	group("patch.txt parser, the pool limits");
+
+	/*
+	 * The shared word and cave pools, at the size and one past it. Each generated
+	 * mod gets a title of its own so it meets an empty pool: the two pools are
+	 * bump allocated across every mod of one title, and a mod sharing a title
+	 * with the big one would be refused for its neighbour's size rather than its
+	 * own, which is not what is being measured here.
+	 *
+	 * The statuses are the ones this has always answered: a mod that does not fit
+	 * is flagged MOD_FLAG_PARSE_ERROR, keeps none of the pool and contributes no
+	 * words, and mods_load answers ST_IO_ERROR for it.
+	 */
+	{
+		const char *title = "NPEA09990";
+
+		write_generated_mod(title, "fits", MOD_WORD_POOL, 0);
+		mods_set_title(title);
+		m = mods_at((u32)mods_find("fits"));
+		check(m != NULL, "a mod holding the whole word pool is scanned");
+		if (m != NULL) {
+			check((m->flags & MOD_FLAG_PARSE_ERROR) == 0, "and parses");
+			check_eq_u64(m->def.count, MOD_WORD_POOL, "with every one of its words");
+		}
+
+		/*
+		 * And applies: PATCH_ORDER_WORDS is the same number, so this walks the
+		 * run-ordering tables to their last entry. The words are consecutive, so
+		 * they are one run and go out PATCH_RUN_WORDS at a time.
+		 */
+		check(mods_load("fits") == ST_OK, "and loads, ordering tables and all");
+		mem_read_u32(0x00800000u + (MOD_WORD_POOL - 1) * 4u, &v);
+		check_eq_u64(v, 0x60000000u, "the last word of the pool reached memory");
+		check(mods_unload("fits") == ST_OK, "and it unloads");
+	}
+
+	{
+		const char *title = "NPEA09991";
+
+		write_generated_mod(title, "over", MOD_WORD_POOL + 1, 0);
+		mods_set_title(title);
+		m = mods_at((u32)mods_find("over"));
+		check(m != NULL, "a mod one word past the pool is still scanned");
+		if (m != NULL) {
+			check((m->flags & MOD_FLAG_PARSE_ERROR) != 0, "but is flagged parse_error");
+			check_eq_u64(m->def.count, 0, "and keeps no words");
+		}
+		check(mods_load("over") == ST_IO_ERROR, "and loading it is IO_ERROR");
+	}
+
+	{
+		const char *title = "NPEA09992";
+
+		write_generated_mod(title, "caves", 0, MOD_CAVE_POOL);
+		mods_set_title(title);
+		m = mods_at((u32)mods_find("caves"));
+		check(m != NULL, "a mod holding the whole cave pool is scanned");
+		if (m != NULL) {
+			check((m->flags & MOD_FLAG_PARSE_ERROR) == 0, "and parses");
+			check_eq_u64(m->ncaves, MOD_CAVE_POOL, "with every one of its caves");
+		}
+	}
+
+	{
+		const char *title = "NPEA09993";
+
+		write_generated_mod(title, "caves", 0, MOD_CAVE_POOL + 1);
+		mods_set_title(title);
+		m = mods_at((u32)mods_find("caves"));
+		check(m != NULL, "a mod one cave past the pool is still scanned");
+		if (m != NULL) {
+			check((m->flags & MOD_FLAG_PARSE_ERROR) != 0, "but is flagged parse_error");
+			check_eq_u64(m->ncaves, 0, "and keeps no caves");
+		}
+	}
+
+	/*
+	 * MOD_TEXT_MAX. A patch.txt too big to read is the same refusal by another
+	 * road, and the pool is sized so a file that fills it is still readable.
+	 */
+	{
+		const char *title = "NPEA09994";
+
+		write_generated_padded_mod(title, "huge", MOD_TEXT_MAX + 16u);
+		mods_set_title(title);
+		m = mods_at((u32)mods_find("huge"));
+		check(m != NULL, "a patch.txt bigger than the text buffer is scanned");
+		if (m != NULL) {
+			check((m->flags & MOD_FLAG_PARSE_ERROR) != 0, "and flagged parse_error");
+			check_eq_u64(m->def.count, 0, "with nothing parsed out of it");
 		}
 	}
 
@@ -823,7 +1065,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 34, "and this module is build 34");
+	check_eq_u64(packet[5], 35, "and this module is build 35");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -842,6 +1084,38 @@ static void test_telemetry(void)
 }
 
 /* ----------------------------------------------------------------- config */
+
+/*
+ * Writes a config.txt of exactly `bytes` bytes: one real key and then a single
+ * comment line padded out to length, which config_load skips the way it skips
+ * any comment. Returns what the write did.
+ */
+static int write_sized_config(u32 bytes)
+{
+	static const char head[] = "log = 1\n";
+	char pad[256];
+	plat_file_t f;
+	u32 written;
+
+	memset(pad, 'x', sizeof(pad));
+
+	if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) != 0) return ST_IO_ERROR;
+
+	plat_file_write(f, head, sizeof(head) - 1);
+	plat_file_write(f, "#", 1);
+	written = sizeof(head);
+
+	while (written + 1 < bytes) {
+		u32 n = bytes - 1 - written;
+		if (n > sizeof(pad)) n = sizeof(pad);
+		plat_file_write(f, pad, n);
+		written += n;
+	}
+	plat_file_write(f, "\n", 1);
+
+	plat_file_close(f);
+	return ST_OK;
+}
 
 static void test_config(void)
 {
@@ -903,6 +1177,32 @@ static void test_config(void)
 		check(pos_fetch(5, 3, got, &len) == ST_NOT_FOUND, "an empty slot is NOT_FOUND");
 		check(pos_clear(5, 2) == ST_OK, "a slot clears");
 		check(pos_fetch(5, 2, got, &len) == ST_NOT_FOUND, "and is gone");
+	}
+
+	/*
+	 * CONFIG_TEXT_MAX. config.txt is read whole into one buffer, so the buffer
+	 * has to hold anything config_save can write: CONFIG_MAX_ENTRIES lines of a
+	 * key, a value and the separators. These two walk the edge of it.
+	 *
+	 * qread_file cannot tell a full buffer from a file that just fits, so the
+	 * largest file it reads is two bytes short of the cap; that is unchanged and
+	 * is what the first of these pins. A file past it answers ST_FULL and
+	 * config_load hands that straight back, applying none of the file.
+	 */
+	{
+		check(write_sized_config(CONFIG_TEXT_MAX - 2) == ST_OK,
+		      "a config.txt at the text limit is written");
+		check(config_load() == ST_OK, "and loads");
+		check_eq_u64(config_get_u32("log", 0), 1, "with its keys in it");
+
+		check(write_sized_config(CONFIG_TEXT_MAX - 1) == ST_OK,
+		      "a config.txt one byte past the limit is written");
+		check(config_load() == ST_FULL, "and is refused with ST_FULL");
+		check_eq_u64(config_get_u32("log", 7), 7, "leaving nothing of it loaded");
+
+		/* Put a small config back for whatever runs after this. */
+		check(config_set_u32("trace_ops", 1) == ST_OK, "a small config is written back");
+		check(config_load() == ST_OK, "and reloads");
 	}
 
 	group("string and number helpers");
@@ -1827,6 +2127,8 @@ static void test_savefile_library(void)
 	check((pending & SAVEFILE_PENDING_SET_ASIDE) != 0,
 	      "and the set-aside it raised is outstanding");
 	check_eq_u64(total, d->aside_size, "total is the size of the aside buffer");
+	check(d->aside_size > SAVEFILE_COPY_CHUNK * SAVEFILE_CHUNKS_PER_TICK,
+	      "which is more than one tick's worth of chunks, so the copy is a real loop");
 	check_eq_u64(done, 0, "and nothing has been copied yet");
 	check_eq_u64(error, SAVEFILE_ERR_NONE, "the last error was cleared");
 
@@ -1850,8 +2152,8 @@ static void test_savefile_library(void)
 	pump(SAVEFILE_SETTLE_TICKS);
 	pump(1);
 	savefile_transfer(&done, &total, &error);
-	check_eq_u64(done, 2 * SAVEFILE_COPY_CHUNK,
-	             "then two 64 KB chunks go per tick");
+	check_eq_u64(done, SAVEFILE_CHUNKS_PER_TICK * SAVEFILE_COPY_CHUNK,
+	             "then a whole tick's worth of chunks goes per tick");
 
 	check(pump_until_transfer_done(64), "the transfer finishes");
 	savefile_info(&supported, &installed, &running, &pending, &size);
@@ -1897,7 +2199,8 @@ static void test_savefile_library(void)
 
 	pump(1);
 	savefile_transfer(&done, &total, &error);
-	check_eq_u64(done, 2 * SAVEFILE_COPY_CHUNK, "the copy starts on the next tick");
+	check_eq_u64(done, SAVEFILE_CHUNKS_PER_TICK * SAVEFILE_COPY_CHUNK,
+	             "the copy starts on the next tick");
 
 	/* It runs to the end of the file and only then asks the game to take it. */
 	{
@@ -5207,6 +5510,31 @@ static void test_net_stop_with_client(void)
 
 /* ------------------------------------------------------------------- main */
 
+/* ------------------------------------------------------------- hot blocks */
+
+/*
+ * Every registered game's hot table has to fit the pool the tick thread reads
+ * the blocks into. The pool is smaller than the number of blocks times the
+ * longest one, on purpose - no game asks for sixteen 1 KB blocks - so this is
+ * the check that keeps a new block, or a longer one, from quietly falling off
+ * the end and leaving a game decoding half its state.
+ */
+static void test_hot_tables(void)
+{
+	u32 i;
+
+	group("hot tables fit the shared pool");
+
+	for (i = 0; ; i++) {
+		const struct game_api *g = game_at(i);
+		if (g == NULL) break;
+		check(session_hot_fits(g),
+		      g->title_ids[0] != NULL ? g->title_ids[0] : "a registered game");
+	}
+
+	check(i >= 4, "all four games were checked");
+}
+
 int main(void)
 {
 	if (plat_init() != 0) {
@@ -5249,6 +5577,7 @@ int main(void)
 	test_autosplit();
 	test_no_code_patches();
 	test_config();
+	test_hot_tables();
 	test_fingerprint();
 	test_submit_after_stop();
 	test_net_stop_with_client();

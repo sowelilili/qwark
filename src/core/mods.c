@@ -5,11 +5,26 @@
 
 #include <string.h>
 
-#define MOD_WORD_POOL   2048
-#define MOD_CAVE_POOL   128
-#define MOD_TEXT_MAX    16384
-#define MOD_CAVE_CHUNK  65536
+/*
+ * MOD_WORD_POOL, MOD_CAVE_POOL and MOD_TEXT_MAX are in mods.h, next to the
+ * mod_entry that indexes them.
+ *
+ * A cave file is streamed into the game a MOD_CAVE_CHUNK at a time out of the
+ * shared scratch buffer; it used to have a 64 KB buffer all to itself. A cave
+ * region is memory nothing branches to until the mod's patch words go in, and
+ * those go in as one batch after every cave byte has landed (see
+ * mods_load_index), so how many pieces the cave arrives in is invisible to the
+ * running game and 4 KB is as good as 64 KB. The largest cave in the shipped
+ * library is 2968 bytes and the loop handles a cave of any size.
+ */
+#define MOD_CAVE_CHUNK  4096u
 #define MOD_PATH_MAX    512
+
+/*
+ * gnu99, so no _Static_assert: a chunk bigger than the shared buffer fails the
+ * build here rather than running off the end of it.
+ */
+typedef char mods_cave_chunk_fits[MOD_CAVE_CHUNK <= QSCRATCH_BYTES ? 1 : -1];
 
 struct mod_cave {
 	u32  addr;
@@ -28,7 +43,6 @@ static u16               g_caves_used;
 
 static char g_title[16];
 static char g_text[MOD_TEXT_MAX];
-static u8   g_chunk[MOD_CAVE_CHUNK];
 
 /* --------------------------------------------------------------- helpers */
 
@@ -342,6 +356,12 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 {
 	char path[MOD_PATH_MAX];
 	plat_file_t f;
+	/*
+	 * The first MOD_CAVE_CHUNK of the tick thread's shared scratch buffer. A mod
+	 * loads out of the command ring, which only the tick thread drains, and the
+	 * bytes are gone again by the time this returns: see util.h.
+	 */
+	u8 *chunk = qscratch();
 	u32 offset = 0;
 
 	mod_dir_path(path, sizeof(path), m->dirname, cave->file);
@@ -351,13 +371,13 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 		u32 got = 0;
 		int rc;
 
-		if (plat_file_read(f, g_chunk, MOD_CAVE_CHUNK, &got) != 0) {
+		if (plat_file_read(f, chunk, MOD_CAVE_CHUNK, &got) != 0) {
 			plat_file_close(f);
 			return ST_IO_ERROR;
 		}
 		if (got == 0) break;
 
-		rc = mem_write(cave->addr + offset, g_chunk, got);
+		rc = mem_write(cave->addr + offset, chunk, got);
 		if (rc != ST_OK) {
 			plat_file_close(f);
 			return rc;

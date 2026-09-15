@@ -8,6 +8,13 @@ PRX_DIR				= .
 INSTALL				= cp
 PEXPORTPICKUP		= ppu-lv2-prx-exportpickup
 SDKLIB_DIR			= $(CELL_SDK)/target/ppu/lib
+#
+# --strip-unused-data IS the dead stripping: ps3ppuld answers --gc-sections with
+# "L0153: --gc-sections is deprecated: using --strip-unused-data for dead
+# stripping" and links exactly the same bytes, so adding it buys nothing and
+# costs a build warning. -ffunction-sections and -fdata-sections below are what
+# give it something to strip.
+#
 PRX_LDFLAGS_EXTRA	= -L $(LIBSTUB_DIR) -L $(SDKLIB_DIR) -Wl,--strip-unused-data
 
 CRT_HEAD += $(shell ppu-lv2-gcc -print-file-name'='ecrti.o)

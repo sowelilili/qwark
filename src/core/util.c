@@ -281,6 +281,19 @@ void qslug(const char *src, char *dst, u32 cap)
 	dst[n] = 0;
 }
 
+/* ---------------------------------------------------------- the scratch buffer */
+
+/*
+ * The tick thread's one bulk-copy buffer. See util.h for the two rules that let
+ * the savefile transfer and the mod loader share it.
+ */
+static u8 g_scratch[QSCRATCH_BYTES];
+
+u8 *qscratch(void)
+{
+	return g_scratch;
+}
+
 /* ------------------------------------------------------------- text files */
 
 int qread_file(const char *path, char *buf, u32 cap, u32 *len)

@@ -38,6 +38,7 @@
 #define QWARK_SAVEFILE_H
 
 #include "proto.h"
+#include "util.h"
 
 /* SAVEFILE_INFO's `pending` bits: a request the helper has not answered yet. */
 #define SAVEFILE_PENDING_SET_ASIDE 0x01
@@ -63,15 +64,21 @@
 #define SAVEFILE_ERR_BUSY       5  /* the aside buffer was already spoken for */
 
 /*
- * How the copy is chunked on the tick thread. 64 KB is one mem_read or
- * mem_write, which is PLAT_MEM_MAX, and two of them a tick is 128 KB per tick:
- * a 2 MB save is 32 chunks, so sixteen ticks, an eighth of a second of the
- * 120 Hz loop. Telemetry, freezes and every other request keep flowing
- * throughout, which is the reason the copy is a state machine at all rather
- * than a loop that owns the tick thread for as long as it takes.
+ * How the copy is chunked on the tick thread. A chunk is one mem_read or
+ * mem_write and one file read or write, out of the shared scratch buffer in
+ * util.c; the two numbers multiply out to 128 KB per tick, so a 2 MB save is
+ * sixteen ticks, an eighth of a second of the 120 Hz loop. Telemetry, freezes
+ * and every other request keep flowing throughout, which is the reason the copy
+ * is a state machine at all rather than a loop that owns the tick thread for as
+ * long as it takes.
+ *
+ * The chunk was 64 KB (PLAT_MEM_MAX, the largest single read) in a 64 KB buffer
+ * of its own until build 35, when the buffer became the 16 KB one the mod loader
+ * also uses. Four times as many calls move exactly the same bytes per tick, so a
+ * transfer takes the same number of ticks it always did.
  */
-#define SAVEFILE_COPY_CHUNK      65536u
-#define SAVEFILE_CHUNKS_PER_TICK 2
+#define SAVEFILE_COPY_CHUNK      QSCRATCH_BYTES
+#define SAVEFILE_CHUNKS_PER_TICK 8
 
 /* What a save is called, and what its CRC sidecar is called. */
 #define SAVEFILE_EXT     ".sav"

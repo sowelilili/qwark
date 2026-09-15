@@ -1,0 +1,11 @@
+#- name: Big Cave
+#- version: 1.0
+#- author: qwark tests
+#- description: A cave several chunks long, to exercise the chunked cave writer.
+
+# rack.bin is 10240 bytes, which is two full MOD_CAVE_CHUNKs and a short one.
+0x00700000: rack.bin
+
+# Two patch words, which must go in after every byte of the cave has landed.
+0x00740000: 0x48000008
+0x00740004: 0x60000000

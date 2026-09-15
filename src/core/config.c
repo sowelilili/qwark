@@ -6,8 +6,16 @@
 
 #include <string.h>
 
-#define CONFIG_MAX_ENTRIES 128
-#define CONFIG_TEXT_MAX    16384
+/* CONFIG_MAX_ENTRIES and CONFIG_TEXT_MAX are in config.h, beside the key and
+ * value widths they are derived from. */
+
+/*
+ * positions/<game>.txt. A line is "<planet>.<slot> = <hex>\n" and the blob is at
+ * most 40 bytes in the four games (RaC4's; the other three store 30), so the 64
+ * slots this table holds are about 5.7 KB of file. 8192 is room for that and a
+ * couple of dozen lines more, and it is left where it was: the positions file is
+ * already the smaller of the two and there is nothing here worth winning.
+ */
 #define POS_MAX_ENTRIES    64
 #define POS_TEXT_MAX       8192
 
