@@ -359,7 +359,21 @@ static void rac3_autosplit_tick(void)
 		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_BIOBLITERATOR, 0);
 	} else if (g_as.dest_planet != p->dest_planet &&
 	           g_as.planet != g_as.dest_planet &&
-	           g_as.dest_planet != 0 && g_as.planet != 0) {
+	           g_as.dest_planet != 0 && g_as.planet != 0 &&
+	           g_as.dest_planet != RAC3_PLANET_VELDIN) {
+		/*
+		 * The script's own comment on this line says "not reloading, and not
+		 * going to or from veldin", but the two tests under it are its RaC1
+		 * ancestor's, where Veldin is planet 0; here it is planet 1 and neither
+		 * test catches it. So a run being started over — the load to Veldin that
+		 * the game-state edge above turns into RESET a few seconds later — took
+		 * a split first, and the run it threw away got a bogus last segment out
+		 * of it. A load to Veldin is the beginning of a run, not a planet change.
+		 *
+		 * Only the destination: leaving Veldin for Florana is the run's first
+		 * real split, and RaC3 has no Veldin split of its own to carry it the way
+		 * RaC1 does.
+		 */
 		autosplit_emit(AUTOSPLIT_SPLIT, R3_AS_PLANET, g_as.dest_planet);
 	}
 

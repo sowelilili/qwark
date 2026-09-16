@@ -555,6 +555,8 @@ OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x
 
 The one thing that is **not** left to taste is timing. The old scripts adjusted game time at fixed points — a load screen that stopped counting after 7.56 s, a transition worth nine frames, a quit that always cost 14.8 s — and a run that does not reproduce those adjustments to the microsecond is a different time. Those adjustments travel as the `FLAT` and `NORMALISE` flags on an `EventDesc` row, and **a client applies them whenever the autosplitter is on**, whatever its split checkboxes say (section 8.3).
 
+Two things a client must *not* do with a split follow from the scripts rather than from the wire, because both used to lose a runner a segment. A script's `split` block ran once per update and returned at most one `true`, so **a client takes at most one split per moment the console stamped**, however many candidates that moment carried; and a script checked `reset` before `split` and never ran `split` at all on the update a run began, so **a split the console stamped in the same moment as a START or a RESET is not a split**. Neither rule waits for anything: both are decided on the `time_ms` the events already carry, so nothing is held back and no split reaches LiveSplit a millisecond later than it would have.
+
 Only Deadlocked emits PAUSE and RESUME. Every game but Deadlocked emits LOAD_START; only RaC1 and RaC3 close one with LOAD_END.
 
 Events are emitted only while the session is INGAME.
@@ -631,7 +633,7 @@ Ported from racman's `rac1-autosplitter.asl`, `rac2-autosplitter.asl`, `rac3-aut
 
 | Code | Kind | Label | Default | Timing | `arg` |
 |---|---|---|---|---|---|
-| 1 | SPLIT | Planet entered | yes (route) | — | the destination planet |
+| 1 | SPLIT | Planet entered | yes (route) | — | the destination planet; never Veldin (0), at either end |
 | 2 | SPLIT | Veldin | yes | — | 0. Fires once per run; a latch stops the double split |
 | 3 | SPLIT | Drek button | yes | — | 0. The player state reaching 34 within 1.7 of one of the four buttons |
 | 8 | LOAD_START | Loading screen | yes | NORMALISE 7 560 000 | the loading-screen id it moved to; 4 on the LOAD_END |
@@ -644,7 +646,7 @@ Code 8 is the script's `isLoading` block. It started a 7.56 s timer when the loa
 
 | Code | Kind | Label | Default | Timing | `arg` |
 |---|---|---|---|---|---|
-| 1 | SPLIT | Planet entered | yes (route) | — | the planet just entered; never the Insomniac Museum (21) |
+| 1 | SPLIT | Planet entered | yes (route) | — | the planet just entered; never Aranos (0) and never the Insomniac Museum (21) |
 | 2 | SPLIT | Protopet defeated | yes | FLAT 116 667 | 0 |
 | 3 | SPLIT | Aranos 2 Clank swap | yes | — | 0 |
 | 4 | SPLIT | Maktar arena entry | no | — | 0 |
@@ -658,11 +660,13 @@ Code 8 is the script's `isLoading` block. It started a 7.56 s timer when the loa
 
 Codes 9 to 11 are the script's `update` block: every time the load-screen byte changed it subtracted a fixed number of frames at 60 fps, keyed on the value it changed *to* — 1 frame for 0, 9 for 1, 21 for 3, and nothing for any other value. One code each, emitted on the change, with no LOAD_END: the script never timed a load, it only paid a toll on entering one. Code 2 carries the seven frames the script took off immediately before returning true for the Protopet split.
 
+**Why Aranos is not a planet entered.** A new game loads Aranos, and the planet byte gets there first: it reads 0 for as long as the load takes, and only then does the player state flip to 98 and the START/RESET above go out. The script split on that, so the run it was about to throw away ended on a segment nobody ran, and LiveSplit kept the gold. Arriving on Aranos is the beginning of a run in this game and never anything else, so it is not a planet change. **In every game the planet the run starts on is excluded from code 1 for this reason**: RaC1's script did it already, by testing `destinationPlanet != 0` where its Veldin is planet 0; RaC3's says in a comment that it does and does not, and qwark's does.
+
 **RaC3** — START/RESET when the game state goes 6 to 0 while on Veldin (planet 1).
 
 | Code | Kind | Label | Default | Timing | `arg` |
 |---|---|---|---|---|---|
-| 1 | SPLIT | Planet entered | yes (route) | — | the destination planet |
+| 1 | SPLIT | Planet entered | yes (route) | — | the destination planet; never Veldin (1) |
 | 5 | SPLIT | Biobliterator defeated | yes | — | 0. Armed by an odd Neffyrious phase at full health |
 | 2 | SPLIT | LDF entered | no | — | 0 |
 | 4 | SPLIT | Koros bolt 2 | no | — | 0. The second titanium bolt of the run on Koros |
@@ -672,6 +676,8 @@ Codes 9 to 11 are the script's `update` block: every time the load-screen byte c
 Code 6 is the script's long load: a second off game time when the loading-screen id becomes 1, **unless** the destination planet or the origin planet is one of 20, 26, 27, 28 or 29, whose loading screens are different ones that only look long. qwark tracks the origin the way the script did — the planet you left when a planet change is under way, the planet you are standing on when one is not — and emits the LOAD_START only when both ends pass. LOAD_END follows when the id leaves 1, and only for a load that actually opened.
 
 The script's split route and its strict-order mode are the client's business: qwark emits code 1 for every planet change and the PC filters.
+
+**Why Veldin is not a planet entered.** The script's comment on the planet-change line reads "we are changing levels (but not reloading, and not going to or from veldin)", but the two tests under it — `destinationPlanet != 0 && planet != 0` — are its RaC1 ancestor's, where Veldin is planet 0. In RaC3 it is planet 1 and neither test catches it, so the load that starts a run over split the run the game-state edge was about to reset a moment later. qwark excludes the destination only: leaving Veldin for Florana is the run's first real split, and RaC3 has no Veldin split of its own to carry it the way RaC1 does.
 
 **Deadlocked** — START/RESET when a load starts for DreadZone (planet 1) with the tutorial flag clear.
 
@@ -684,6 +690,8 @@ The script's split route and its strict-order mode are the client's business: qw
 Deadlocked is the only game whose detection already ran on the console; codes 1 and 2 replace the old command stream's single "split" whose packet byte the LC script had to read as "0 means Vox". The script's AEC setting, which disables resetting, is the client's business: qwark still emits every RESET.
 
 **Where Deadlocked's origin planet comes from (build 9).** Code 1 needs the planet the player is coming from as well as the one they are going to, and the game's own current-planet word at `0x009C3240` is saved with the file: after a quit to the XMB and a boot it still holds whatever planet the save was on, so the first load out of the main menu read as a planet change and split. qwark keeps its own origin instead. It is planet 0, the main menu, whenever a session is primed, and it becomes the destination of every load that starts after that — so a load back to the main menu puts it back to 0 on its own, and neither that load nor the load out of the menu after it is a split. The word itself is still read, for the Vox split and for the readout.
+
+The origin is also what makes code 1 a planet *change* rather than a load. The SPRX watched the load request word for a plain 0-to-something edge, and one flight can raise it more than once: the second edge carried the same destination and split a second time, so one transition took two splits. By then the origin is already that destination, so **a load whose destination is the origin is not a planet change** and emits nothing.
 
 Code 3 is the quit to the XMB, which some categories use as a strategy. PAUSE goes out when the game leaves the running state — the quit hook fires, or the process disappears underneath qwark. RESUME carries the same code 3, and the LC script's arithmetic (stop game time for the whole quit and reload, then add 14.8 s back on the way in) is NORMALISE 14 800 000: the quit costs exactly 14.8 s however slow the console was.
 
