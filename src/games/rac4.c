@@ -400,11 +400,20 @@ static void rac4_autosplit_tick(void)
 	 * Planet values go to 0 when the box is beaten, which is not a planet change,
 	 * and the origin is the watcher's own: a load out of the main menu is where a
 	 * run starts, not a split.
+	 *
+	 * The last test is the one that makes this a planet *change*. The load
+	 * request word is a plain edge, and one trip through the loader can raise it
+	 * more than once for the same destination: the second edge used to split
+	 * again, with the same planet in `arg`, and the runner got two splits out of
+	 * one flight. The origin has already been moved to this load's destination by
+	 * then, so a load that goes where the watcher already has the player is the
+	 * same load coming round again, and never a change.
 	 */
 	planet_split = started_loading && g_as.in_game != 0 &&
 	               g_as.dest_planet != RAC4_PLANET_INTERIOR &&
 	               origin != RAC4_PLANET_MAINMENU &&
-	               g_as.dest_planet != RAC4_PLANET_MAINMENU;
+	               g_as.dest_planet != RAC4_PLANET_MAINMENU &&
+	               g_as.dest_planet != origin;
 
 	vox_split = (g_as.planet == RAC4_PLANET_INTERIOR) && g_as.vox_hp < 0.0f &&
 	            p->cutscene_ptr == 0 && g_as.cutscene_ptr == 1;

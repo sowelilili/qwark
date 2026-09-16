@@ -5023,6 +5023,36 @@ static const struct as_event *as_find(u32 since, u8 kind, u8 code)
 	return NULL;
 }
 
+/*
+ * How many events of this kind and code turned up past `since`. The duplicate
+ * checks want the count, not the first one: a transition that emits its split
+ * twice looks exactly like one that emits it once until somebody counts.
+ */
+static u8 as_count(u32 since, u8 kind, u8 code)
+{
+	u8 i;
+	u8 n = 0;
+
+	as_fetch(since);
+	for (i = 0; i < g_as_count; i++) {
+		if (g_as_list[i].kind == kind && g_as_list[i].code == code) n++;
+	}
+	return n;
+}
+
+/* Every SPLIT past `since`, whatever its reason code. */
+static u8 as_splits(u32 since)
+{
+	u8 i;
+	u8 n = 0;
+
+	as_fetch(since);
+	for (i = 0; i < g_as_count; i++) {
+		if (g_as_list[i].kind == AUTOSPLIT_SPLIT) n++;
+	}
+	return n;
+}
+
 /* Asserts one event of this kind and code showed up, and that its arg matches. */
 static void as_expect(u32 since, u8 kind, u8 code, u32 arg, const char *what)
 {
@@ -5118,6 +5148,7 @@ static void as_expect_coded(u32 since, u8 kind, u8 code, const char *what)
 #define A2_BARLOW       0x15625F7u
 #define A2_YEEDIL       0x1478991u
 #define A2_LOADSCR      0x147A257u
+#define A2_ARANOS       0u            /* the planet a RaC2 run starts and restarts on */
 
 #define A3_PLANET       0x00C1E438u
 #define A3_DEST_PLANET  0x00EE9314u
@@ -5128,6 +5159,7 @@ static void as_expect_coded(u32 since, u8 kind, u8 code, const char *what)
 #define A3_CHUNK        0x00F08100u
 #define A3_GUISE        0x00DA570Au
 #define A3_LOADSCR      0x00D99117u   /* low byte of the loading-screen word */
+#define A3_VELDIN       1u            /* the planet a RaC3 run starts and restarts on */
 
 #define A4_PLANET       0x009C3240u
 #define A4_REQUEST_LOAD 0x00B36DCCu
@@ -5800,8 +5832,183 @@ static void test_autosplit(void)
 	/* The sequence survives the reboot: it counts for the life of the module. */
 	check(autosplit_latest_seq() > mark, "the sequence carried on across the boot");
 
-	/* Back to RaC1 for anything that follows. */
+	/*
+	 * ------------------------------------------------ the run boundary
+	 *
+	 * Two things went wrong in front of a reset, and the reports came from RaC2
+	 * and Deadlocked. One transition took two splits, and a run that was about to
+	 * be thrown away took a split on its way out, which left LiveSplit holding a
+	 * bogus last segment and a gold it had no business keeping. Every game gets
+	 * walked through both here: the ones that were wrong so they stay fixed, and
+	 * the ones that were already right so the audit leaves something behind.
+	 */
+
+	group("autosplitting: Deadlocked, the run boundary");
+
+	/* Start from a known origin: a real planet, in game, the tutorial done. */
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_IN_GAME, 1);
+	poke32(A4_TUTORIAL, 1);
+	poke32(A4_PLANET, 6);
+	poke32(A4_TARGET, 6);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 0);
+	pump(2);
+
+	/*
+	 * One flight, the load request word going up twice. The second edge carries
+	 * the same destination, and the origin is already that planet by then: it is
+	 * the same load coming round again, not a second planet change.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A4_TARGET, 7);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 0);
+	pump(1);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	check_eq_u64(as_count(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET), 1,
+	             "one flight whose load request rises twice splits once");
+
+	/* And the flight after it, to a different planet, still splits. */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_TARGET, 8);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	as_expect(mark, AUTOSPLIT_SPLIT, R4_AS_PLANET, 8,
+	          "and the next planet still splits");
+
+	/*
+	 * The reset, the way a console gets to one: back to the main menu, out of
+	 * the game, then New Game. Nothing of it is a split.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_TARGET, A4_MAINMENU);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	poke32(A4_REQUEST_LOAD, 0);
+	poke32(A4_IN_GAME, 0);
+	poke32(A4_PLANET, A4_MAINMENU);
+	pump(2);
+	poke32(A4_TARGET, 1);
+	poke32(A4_TUTORIAL, 0);
+	poke32(A4_REQUEST_LOAD, 1);
+	pump(2);
+	check_eq_u64(as_splits(mark), 0, "a new game takes no split on its way in");
+	as_expect_kind(mark, AUTOSPLIT_RESET, "and still emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	group("autosplitting: RaC2, the run boundary");
+
 	check(quit_and_wait(), "quit Deadlocked");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+
+	/* Mid-run: on Oozla, the player in the state the script calls running. */
+	poke32(A2_PLANET, 1);
+	poke32(A2_PLAYER_STATE, 98);
+	poke8(A2_CHUNK, 0);
+	pump(3);
+
+	/*
+	 * The new game. Aranos loads first and the player state follows it seconds
+	 * later, so the planet reaching 0 used to split the run that the state flip
+	 * was about to reset.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A2_PLAYER_STATE, 0);
+	pump(2);
+	poke32(A2_PLANET, A2_ARANOS);
+	pump(3);
+	check_eq_u64(as_count(mark, AUTOSPLIT_SPLIT, R2_AS_PLANET), 0,
+	             "the load into Aranos is not a planet split");
+	poke32(A2_PLAYER_STATE, 98);
+	pump(2);
+	check_eq_u64(as_splits(mark), 0, "a new game takes no split on its way in");
+	as_expect_kind(mark, AUTOSPLIT_RESET, "and still emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	/* Leaving Aranos is the run's first real split, and still is. */
+	mark = autosplit_latest_seq();
+	poke32(A2_PLANET, 1);
+	pump(2);
+	as_expect(mark, AUTOSPLIT_SPLIT, R2_AS_PLANET, 1,
+	          "and leaving it for Oozla still splits");
+
+	group("autosplitting: RaC3, the run boundary");
+
+	check(quit_and_wait(), "quit RaC2");
+	check(boot_and_wait("NPEA00387"), "RaC3 boots");
+
+	poke32(A3_PLANET, 4);
+	poke32(A3_DEST_PLANET, 0);
+	poke32(A3_GAME_STATE, 0);
+	pump(3);
+
+	/*
+	 * The script's comment on this line says it does not split going to Veldin;
+	 * the two tests under it are its RaC1 ancestor's, where Veldin is planet 0.
+	 * Here it is planet 1, and the load that starts a run over used to split.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A3_DEST_PLANET, A3_VELDIN);
+	pump(2);
+	check_eq_u64(as_count(mark, AUTOSPLIT_SPLIT, R3_AS_PLANET), 0,
+	             "the load to Veldin is not a planet split");
+	poke32(A3_PLANET, A3_VELDIN);
+	poke32(A3_DEST_PLANET, 0);
+	poke32(A3_GAME_STATE, 6);
+	pump(2);
+	poke32(A3_GAME_STATE, 0);
+	pump(2);
+	check_eq_u64(as_splits(mark), 0, "a run started over takes no split on its way in");
+	as_expect_kind(mark, AUTOSPLIT_RESET, "and still emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	/* Leaving Veldin for Florana is the run's first split, and still is. */
+	mark = autosplit_latest_seq();
+	poke32(A3_DEST_PLANET, 2);
+	pump(2);
+	as_expect(mark, AUTOSPLIT_SPLIT, R3_AS_PLANET, 2,
+	          "and leaving it for Florana still splits");
+
+	group("autosplitting: RaC1, the run boundary");
+
+	check(quit_and_wait(), "quit RaC3");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+
+	poke32(A1_PLANET, 5);
+	poke32(A1_DEST_PLANET, 3);
+	poke32(A1_GAME_STATE, 0);
+	pump(3);
+
+	/*
+	 * RaC1 was already right, because its Veldin is planet 0 and the script
+	 * excluded planet 0 at both ends of the test. Checked anyway, so the day
+	 * somebody renumbers something this says what the rule was.
+	 */
+	mark = autosplit_latest_seq();
+	poke32(A1_DEST_PLANET, 0);
+	pump(2);
+	check_eq_u64(as_count(mark, AUTOSPLIT_SPLIT, R1_AS_PLANET), 0,
+	             "the load to Veldin is not a planet split");
+	poke32(A1_PLANET, 0);
+	poke32(A1_GAME_STATE, 6);
+	pump(2);
+	poke32(A1_GAME_STATE, 0);
+	pump(2);
+	check_eq_u64(as_splits(mark), 0, "a run started over takes no split on its way in");
+	as_expect_kind(mark, AUTOSPLIT_RESET, "and still emits RESET");
+	as_expect_kind(mark, AUTOSPLIT_START, "and START");
+
+	/* Back to RaC1 for anything that follows. */
+	check(quit_and_wait(), "quit RaC1");
 	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
 }
 

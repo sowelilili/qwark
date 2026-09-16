@@ -1130,6 +1130,16 @@ OTHER_GAMES = [
                             (AUTOSPLIT_LOAD_START, 10),
                             (AUTOSPLIT_LOAD_START, 11)],
                  "what": "an unpriced load screen costs nothing"},
+                # A new game loads Aranos before the player state flips to 98,
+                # so arriving there is the run starting, never a planet change.
+                {"poke": [(0x1329A3C, struct.pack(">I", 7))],
+                 "then": [(0x1329A3C, struct.pack(">I", 0))],
+                 "absent": (AUTOSPLIT_SPLIT, 1),
+                 "what": "the load into Aranos is not a planet split"},
+                {"then": [(0x1329A3C, struct.pack(">I", 1))],
+                 "expect": (AUTOSPLIT_SPLIT, 1),
+                 "arg": 1,
+                 "what": "and leaving it for Oozla still splits"},
             ],
         },
     },
@@ -1222,6 +1232,17 @@ OTHER_GAMES = [
                 {"then": [(0x00D99117, b"\x00")],
                  "absent": (AUTOSPLIT_LOAD_END, 6),
                  "what": "and nothing closes a load that never opened"},
+                # The script's comment says it does not split going to Veldin;
+                # the test under it is its RaC1 ancestor's, where Veldin is 0.
+                {"poke": [(0x00EE9314, struct.pack(">I", 0))],
+                 "then": [(0x00EE9314, struct.pack(">I", 1))],
+                 "absent": (AUTOSPLIT_SPLIT, 1),
+                 "what": "the load to Veldin is not a planet split"},
+                {"poke": [(0x00EE9314, struct.pack(">I", 0))],
+                 "then": [(0x00EE9314, struct.pack(">I", 2))],
+                 "expect": (AUTOSPLIT_SPLIT, 1),
+                 "arg": 2,
+                 "what": "and the load to Florana still splits"},
             ],
         },
     },
@@ -1305,6 +1326,21 @@ OTHER_GAMES = [
             "trigger": [(0x00B36DCC, struct.pack(">I", 1))],
             "code": 1,
             "arg": 6,
+            # One flight whose load request word rises twice. The second edge
+            # names the planet the watcher already has as the origin, so it is
+            # the same load coming round again rather than a second change.
+            "timing": [
+                {"poke": [(0x00B36DCC, struct.pack(">I", 0))],
+                 "then": [(0x00B36DCC, struct.pack(">I", 1))],
+                 "absent": (AUTOSPLIT_SPLIT, 1),
+                 "what": "a second load request for the same planet does not split again"},
+                {"poke": [(0x00B36DCC, struct.pack(">I", 0)),
+                          (0x00B36DD0, struct.pack(">I", 7))],
+                 "then": [(0x00B36DCC, struct.pack(">I", 1))],
+                 "expect": (AUTOSPLIT_SPLIT, 1),
+                 "arg": 7,
+                 "what": "and the flight after it still splits"},
+            ],
         },
     },
 ]

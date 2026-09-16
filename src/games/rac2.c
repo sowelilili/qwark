@@ -304,8 +304,19 @@ static void rac2_autosplit_tick(void)
 		autosplit_emit(AUTOSPLIT_START, 0, 0);
 	}
 
-	/* Never split entering the Insomniac Museum. */
-	if (g_as.planet != p->planet && g_as.planet != RAC2_PLANET_MUSEUM)
+	/*
+	 * Never split entering the Insomniac Museum, and never entering Aranos.
+	 *
+	 * Aranos is where a run begins, and the planet byte gets there first: a new
+	 * game loads Aranos, so the planet changes to 0 seconds before the player
+	 * state flips to 98 and the reset above fires. The script split on that, and
+	 * the run it was about to throw away got a bogus last segment out of it; the
+	 * RaC1 script, whose Veldin is planet 0, excluded its own start planet from
+	 * exactly this test, and the RaC3 script says in a comment that it does. A
+	 * load to the start planet is the beginning of a run, not a planet change.
+	 */
+	if (g_as.planet != p->planet && g_as.planet != RAC2_PLANET_MUSEUM &&
+	    g_as.planet != RAC2_PLANET_ARANOS)
 		autosplit_emit(AUTOSPLIT_SPLIT, R2_AS_PLANET, g_as.planet);
 
 	if (g_as.planet == RAC2_PLANET_MAKTAR && g_as.chunk == 1 && p->chunk == 0)
