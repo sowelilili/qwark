@@ -28,6 +28,8 @@
  * carries at most that, so the bulk ops that named 65536 - MEM_READ, FILE_READ,
  * FILE_WRITE, SAVEFILE_READ, SAVEFILE_WRITE - are capped at 16384 too. No
  * opcode, structure or status changed with it: it is the size of one frame.
+ * Revision 1.12: COMBO_ENABLE, the persistent on/off for every combo, and
+ * SessionInfo flags bit3 COMBOS_OFF, which reports it.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -43,7 +45,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             37
+#define QWARK_BUILD             38
 
 #define QWARK_PORT              9673
 /*
@@ -161,6 +163,14 @@
 #define OP_COMBO_SET         0x0080
 #define OP_COMBO_LIST        0x0081
 #define OP_COMBO_SUSPEND     0x0082
+/*
+ * Revision 1.12. The user's own switch under all five combos: 0 holds every one
+ * of them off until a later 1. It lives in config beside the masks, so it
+ * survives a client restart and a console reboot, and it is nothing like the
+ * COMBO_SUSPEND hold above - that one belongs to a capture and expires by
+ * itself, this one never expires and never changes on its own.
+ */
+#define OP_COMBO_ENABLE      0x0083
 
 #define OP_CONFIG_RELOAD     0x0090
 #define OP_CONFIG_SAVE       0x0091
@@ -323,6 +333,13 @@
  */
 #define SESSION_FLAG_EMULATOR         0x02
 #define SESSION_FLAG_NO_CODE_PATCHES  0x04
+/*
+ * Revision 1.12. bit3 is set while the COMBO_ENABLE switch is off, so a client
+ * draws its combo checkbox out of the block it already reads rather than
+ * needing an op to ask. A COMBO_SUSPEND hold is deliberately not in here: that
+ * is the asking client's own capture and it lifts itself.
+ */
+#define SESSION_FLAG_COMBOS_OFF       0x08
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

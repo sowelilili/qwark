@@ -803,6 +803,7 @@ static void run_combo(u8 action)
 
 /* The config store is a linear scan, so cache the masks and refresh on change. */
 static u32 g_combo_mask[COMBO_COUNT];
+static int g_combos_enabled = 1;
 static u32 g_combo_cfg_version = 0xFFFFFFFFu;
 
 static void refresh_combos(void)
@@ -814,6 +815,12 @@ static void refresh_combos(void)
 	g_combo_cfg_version = v;
 
 	for (a = 0; a < COMBO_COUNT; a++) g_combo_mask[a] = config_combo(a);
+	/*
+	 * Revision 1.12, the COMBO_ENABLE switch. It rides the same version check as
+	 * the masks, so a COMBO_ENABLE and a hand-edited config.txt picked up by
+	 * CONFIG_RELOAD both reach the tick thread on the next tick.
+	 */
+	g_combos_enabled = config_combo_enabled();
 }
 
 void session_combo_suspend(u8 on)
@@ -850,12 +857,19 @@ static void step_combos(void)
 	}
 
 	/*
-	 * Held off while the client captures. The arming rule above is untouched, so
-	 * a pad still full when the hold ends stays disarmed: the buttons the user
-	 * pressed to record a combo do not fire one the instant the combos come
-	 * back, they wait for the pad to return to empty like any other press.
+	 * Two things hold the combos off, and they know nothing about each other:
+	 * the client's capture hold, which expires two minutes after the
+	 * COMBO_SUSPEND that set it and is dropped when the session leaves the game,
+	 * and the user's COMBO_ENABLE switch (revision 1.12), which never expires
+	 * and never changes on its own. Either one is enough; combos fire only when
+	 * neither applies.
+	 *
+	 * The arming rule above is untouched, so a pad still full when a hold ends
+	 * or the switch comes back on stays disarmed: the buttons the user was
+	 * pressing do not fire a combo the instant the combos return, they wait for
+	 * the pad to go empty like any other press.
 	 */
-	if (combos_suspended()) {
+	if (!g_combos_enabled || combos_suspended()) {
 		g_combo_armed = 0;
 		return;
 	}
@@ -891,6 +905,12 @@ static u32 encode_info(u8 *out, u32 cap)
 	 */
 	if (plat_is_emulator())      flags |= SESSION_FLAG_EMULATOR;
 	if (!plat_can_patch_code())  flags |= SESSION_FLAG_NO_CODE_PATCHES;
+	/*
+	 * Revision 1.12. The COMBO_ENABLE switch, read out of config rather than out
+	 * of the tick thread's cache: this block is published whatever the session
+	 * state is, and the cache is only refreshed while a game is running.
+	 */
+	if (!config_combo_enabled()) flags |= SESSION_FLAG_COMBOS_OFF;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;

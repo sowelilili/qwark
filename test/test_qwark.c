@@ -1490,7 +1490,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 37, "and this module is build 37");
+	check_eq_u64(packet[5], 38, "and this module is build 38");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1587,6 +1587,21 @@ static void test_config(void)
 	check(config_set_u32("trace_ops", 1) == ST_OK && config_load() == ST_OK && net_trace_ops(),
 	      "and 1 turns it back on");
 
+	/*
+	 * combo.enabled, the revision 1.12 switch, reads the way trace_ops does: a
+	 * plain 0 or 1 a user can edit by hand, picked up by the next reload, and
+	 * written by COMBO_ENABLE under the same name.
+	 */
+	check(config_set_u32("combo.enabled", 0) == ST_OK && config_load() == ST_OK &&
+	      !config_combo_enabled(), "combo.enabled = 0 holds every combo off");
+	check(config_set_u32("combo.enabled", 1) == ST_OK && config_load() == ST_OK &&
+	      config_combo_enabled(), "and 1 hands them back");
+	check(config_set_combo_enabled(0) == ST_OK &&
+	      qstreq(config_get("combo.enabled"), "0"),
+	      "COMBO_ENABLE writes that same key");
+	check(config_set_combo_enabled(2) == ST_BAD_ARG, "and anything but 0 or 1 is BAD_ARG");
+	check(config_set_combo_enabled(1) == ST_OK, "the switch goes back on");
+
 	{
 		u8 blob[16];
 		u8 got[QWARK_MAX_BLOB];
@@ -1619,6 +1634,8 @@ static void test_config(void)
 		      "a config.txt at the text limit is written");
 		check(config_load() == ST_OK, "and loads");
 		check_eq_u64(config_get_u32("log", 0), 1, "with its keys in it");
+		check(config_combo_enabled(),
+		      "and a config with no combo.enabled in it leaves the combos on");
 
 		check(write_sized_config(CONFIG_TEXT_MAX - 1) == ST_OK,
 		      "a config.txt one byte past the limit is written");
@@ -3034,6 +3051,187 @@ static void test_combo_suspend(void)
 	config_set_selected_slot(0);
 
 	check(quit_and_wait(), "quit RaC1");
+}
+
+/* ------------------------------------------- COMBO_ENABLE, revision 1.12 */
+
+/*
+ * The switch the old RaCMAN had and this one did not: one persistent on/off
+ * over all five combos. It lives in config, so it outlives the client and the
+ * console rather than being re-sent on every connection, and the info block's
+ * flags bit3 reports it, so a client draws its checkbox out of the telemetry it
+ * already reads. It has nothing to do with the capture hold above: either of
+ * them holds every combo off, the hold expires and the switch never does.
+ */
+static void test_combo_enable(void)
+{
+	u8 info[SESSION_INFO_SIZE];
+	u8 blob[QWARK_MAX_BLOB];
+	u8 len = 0;
+	u8 planet;
+	u64 window;
+
+	group("combo enable");
+
+	check(boot_and_wait("NPEA00385"), "RaC1 boots for the combo switch checks");
+
+	config_set_selected_slot(COMBO_TEST_SLOT);
+	check(config_set_combo(COMBO_SAVE_POSITION, COMBO_TEST_MASK) == ST_OK,
+	      "the save-position combo is stored");
+
+	planet = session_current_planet();
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	/* Nothing has ever written the key, so the switch is on and combos fire. */
+	check(config_combo_enabled(),
+	      "a config.txt that never mentions the switch has the combos on");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) == 0, "and flags bit3 is clear");
+
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "the combo fires with the switch on");
+
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	/* COMBO_ENABLE 0. */
+	check(config_set_combo_enabled(0) == ST_OK, "the switch is turned off");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) != 0,
+	      "flags bit3 says every combo is held off");
+
+	host_set_pad(COMBO_TEST_MASK);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "and the stored mask under the user's fingers fires nothing");
+
+	/*
+	 * COMBO_ENABLE 1 re-arms as little as lifting a hold does: the pad is still
+	 * full of the combo, and it has to come back to empty first.
+	 */
+	check(config_set_combo_enabled(1) == ST_OK, "the switch is turned back on");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) == 0, "flags bit3 clears with it");
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "re-enabling does not fire the combo under the buttons still held");
+
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "and the next press, after the pad returned to 0, fires it again");
+
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+
+	/* Anything but 0 or 1 is refused, and refusing changes nothing. */
+	check(config_set_combo_enabled(2) == ST_BAD_ARG, "2 is BAD_ARG");
+	check(config_combo_enabled(), "and a refused value leaves the switch alone");
+
+	/*
+	 * It is in the file, so config_load with nothing in between - a CONFIG_RELOAD,
+	 * and the same thing a console power cycle does - still comes back off.
+	 */
+	check(config_set_combo_enabled(0) == ST_OK, "the switch goes off again");
+	check(config_load() == ST_OK, "config.txt reloads from disk");
+	check(!config_combo_enabled(), "and the switch is still off after a CONFIG_RELOAD");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) != 0,
+	      "the reloaded config still reports bit3");
+
+	check(quit_and_wait(), "the game quits with the switch off");
+	check(boot_and_wait("NPEA00385"), "and the same title boots again");
+	check(!config_combo_enabled(), "the switch is still off in the new session");
+
+	planet = session_current_planet();
+	pos_clear(planet, COMBO_TEST_SLOT);
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "and no combo fires after the reboot, with no client having said so");
+
+	/*
+	 * The switch and a hold are independent, so each one holds the combos off by
+	 * itself. A hold that has expired hands nothing back while the switch is off.
+	 */
+	window = session_combo_suspend_window_us();
+	session_set_combo_suspend_window_us(30000);   /* 30 ms */
+	session_combo_suspend(1);
+	host_set_pad(0);
+	pump(2);
+	plat_sleep_us(60000);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "an expired hold hands nothing back while the switch is off");
+	session_set_combo_suspend_window_us(window);
+
+	/* And the other way round: the switch back on under a live hold. */
+	host_set_pad(0);
+	pump(2);
+	session_combo_suspend(1);
+	check(config_set_combo_enabled(1) == ST_OK,
+	      "the switch comes back on under a live hold");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) == 0,
+	      "bit3 follows the switch alone, not the hold");
+
+	host_set_pad(COMBO_TEST_MASK);
+	pump(4);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_NOT_FOUND,
+	      "and the hold still holds every combo off on its own");
+
+	session_combo_suspend(0);
+	host_set_pad(0);
+	pump(2);
+	host_set_pad(COMBO_TEST_MASK);
+	pump(2);
+	check(pos_fetch(planet, COMBO_TEST_SLOT, blob, &len) == ST_OK,
+	      "with neither the switch nor a hold against it the combo fires");
+
+	/* Leave nothing behind for the tests that follow. */
+	host_set_pad(0);
+	pump(2);
+	pos_clear(planet, COMBO_TEST_SLOT);
+	config_set_combo(COMBO_SAVE_POSITION, 0);
+	config_set_selected_slot(0);
+
+	check(quit_and_wait(), "quit RaC1");
+
+	/*
+	 * Neither op writes game memory, so both answer at the XMB what they answer
+	 * in a game: whatever writing config.txt answered. This is the state rule
+	 * COMBO_ENABLE inherits from COMBO_SET.
+	 */
+	check(session_state() == SESSION_XMB, "the session is back at the XMB");
+	check(config_set_combo_enabled(0) == ST_OK,
+	      "the switch is settable with no game running");
+	check(config_set_combo(COMBO_SAVE_POSITION, 0) == ST_OK,
+	      "exactly as a combo mask is");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) != 0,
+	      "and the XMB info block carries bit3 too");
+
+	check(config_set_combo_enabled(1) == ST_OK, "the switch goes back on");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((info[24] & SESSION_FLAG_COMBOS_OFF) == 0,
+	      "leaving bit3 clear for everything after this");
 }
 
 /* ------------------------------------------------------------------ RaC2 */
@@ -6162,6 +6360,7 @@ int main(void)
 	test_savefile_library();
 	test_signed_values();
 	test_combo_suspend();
+	test_combo_enable();
 	test_rac2();
 	test_rac3();
 	test_rac4();

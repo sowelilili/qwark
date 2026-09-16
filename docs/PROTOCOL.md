@@ -12,6 +12,8 @@ Revision 1.9 (2026-09-10): the savefile block. SAVEFILE_INFO, SAVEFILE_READ and 
 Revision 1.10 (2026-09-10): the savefile library moves onto the console. SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE and SAVEFILE_CATEGORY at 0x00B3, FILE_RENAME at 0x0079, and a SAVEFILE_INFO grown to 20 bytes that reports the copy qwark now runs between a file and the aside buffer. See section 5.13.
 Revision 1.11 (2026-09-15): `QWARK_MAX_PAYLOAD` is **16384**. One frame, request or reply, carries at most that, so every op that used to name 65536 — MEM_READ, FILE_READ, FILE_WRITE, SAVEFILE_READ, SAVEFILE_WRITE — is capped there too. No opcode, structure, status or field moved: this is the size of a frame and nothing else. The console holds one 16 KB request buffer and one 16 KB reply buffer for every connection to share, instead of allocating 192 KB of the machine's own memory per request in flight, which is what a user running qwark beside other VSH plugins actually feels. A client that sends chunks of 16000 bytes is safe against this build and against every older one.
 
+Revision 1.12 (2026-09-16): COMBO_ENABLE at 0x0083, the user's own on/off for every combo. It is kept in the console's config as `combo.enabled`, so it survives a client restart and a console reboot the way the five masks do, and SessionInfo `flags` gained bit3 COMBOS_OFF, set while it is off, so a client draws the checkbox out of the info block it already reads. See section 5.9.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -73,6 +75,7 @@ char title_id[12]       e.g. "NPEA00385"
 u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is waiting (section 4.1)
                         bit1 EMULATOR: qwark is driving an emulator, not a console (section 3.2)
                         bit2 NO_CODE_PATCHES: this platform refuses code patches (section 3.2)
+                        bit3 COMBOS_OFF: the COMBO_ENABLE switch is off, so no combo fires (section 5.9)
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo
@@ -410,7 +413,7 @@ It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gon
 
 ### 5.9 Combos (0x008x)
 
-A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config.
+A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title.
 
 Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE. LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper or where code cannot be patched.
 
@@ -419,10 +422,17 @@ Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE
 | 0x0080 | COMBO_SET | `u8 action, u8 pad[3], u32 mask` | none |
 | 0x0081 | COMBO_LIST | none | `u8 n, { u8 action, u8 pad[3], u32 mask }[n]` |
 | 0x0082 | COMBO_SUSPEND | `u8 suspend` (1 hold every combo off, 0 resume) | none |
+| 0x0083 | COMBO_ENABLE | `u8 on` (1 combos fire, 0 every combo is held off) | none |
+
+COMBO_ENABLE (revision 1.12) is the user's switch, the one the old RaCMAN had. Send 0 and no combo fires again until a later 1, whatever the masks say; any value other than 0 or 1 is `BAD_ARG`. It is not a game write, so it answers in any session state, exactly as COMBO_SET does: both do the same thing, which is write a key into `/dev_hdd0/qwark/config.txt`. The key is `combo.enabled`, it is 1 for a config that has never mentioned it, and it has the same scope as the five mask keys — one switch for the console, not one per title — so it survives a client restart, a game reboot and a console power cycle without the client storing anything. A hand edit picked up by CONFIG_RELOAD counts as a change like any other.
+
+There is no op to read it back, because there is no need for one: `flags` bit3 COMBOS_OFF in the session info block (section 3) is set while the switch is off, and HELLO, GET_STATE and every telemetry packet carry it. COMBO_LIST is unchanged and still reports the five masks whether the switch is on or off.
 
 COMBO_SUSPEND (revision 1.8) exists for capture. A client that records a combo reads the buttons out of telemetry's `pad_mask`, which is the same pad the console is watching, so without the hold the press that records "load position" also loads a position. Send 1 when the capture starts and 0 when it commits, is cancelled or is dropped; it is not a game write, so it answers in any session state.
 
 The hold expires by itself two minutes after the COMBO_SUSPEND that set it, and is dropped when the session leaves the game. A client that dies mid-capture therefore cannot leave the combos off for good, and a client that resumes at the two-minute mark just sends 1 again. Lifting a hold does not re-arm anything: a combo still held when the hold ends fires only after the pad has returned to 0, which is the ordinary arming rule.
+
+The switch and the hold are independent, and either one on its own holds every combo off: a combo fires only while the switch is on and no hold is in force. Turning the switch back on under a live hold changes nothing until the hold ends, and a hold expiring while the switch is off changes nothing either. Re-enabling re-arms as little as lifting a hold does — a combo whose buttons are still held when the switch comes on fires only after the pad has returned to 0.
 
 ### 5.10 Config (0x009x)
 
@@ -432,6 +442,8 @@ The hold expires by itself two minutes after the COMBO_SUSPEND that set it, and 
 | 0x0091 | CONFIG_SAVE | none | none. Config is also written on every change |
 
 Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console.
+
+Keys a client's own ops write, all of them console-wide rather than per title: the five combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet` and `combo.setaside` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it) and `selected.slot`, `selected.planet` and `selected.planet_flags` (POS_SELECT and PLANET_SELECT). Each is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart.
 
 ### 5.11 Autosplitting (0x00Ax)
 

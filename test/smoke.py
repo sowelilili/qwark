@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 37
+QWARK_BUILD = 38
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -80,6 +80,7 @@ OP_MOD_LIST = 0x0060
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
 OP_COMBO_SUSPEND = 0x0082
+OP_COMBO_ENABLE = 0x0083
 OP_CONFIG_RELOAD = 0x0090
 OP_AUTOSPLIT_EVENTS = 0x00A0
 OP_AUTOSPLIT_DESCRIBE = 0x00A1
@@ -128,9 +129,11 @@ SESSION_XMB, SESSION_BOOTING, SESSION_INGAME, SESSION_QUITTING = 0, 1, 2, 3
 # SessionInfo.flags. Revision 1.6 added the two platform bits: EMULATOR says
 # qwark is driving RPCS3 rather than a console, NO_CODE_PATCHES says every
 # WRITES_CODE feature is refused here and a client should grey those rows.
+# Revision 1.12 added COMBOS_OFF, the state of the COMBO_ENABLE switch.
 SESSION_FLAG_PREVIOUS_PENDING = 0x01
 SESSION_FLAG_EMULATOR = 0x02
 SESSION_FLAG_NO_CODE_PATCHES = 0x04
+SESSION_FLAG_COMBOS_OFF = 0x08
 
 # Protocol 1.1: sixteen readouts, so SessionInfo is 164 bytes.
 SESSION_INFO_SIZE = 164
@@ -2871,6 +2874,78 @@ def main():
         check(resumed is not None and abs(resumed[0] - 1.0) < 0.001,
               "and the next press saves a position again", resumed)
 
+        # ---------------------------------------- the combo switch, revision 1.12
+        # The user's own on/off, kept on the console instead of in the client:
+        # 0 holds every combo off until a later 1, it is in config.txt so it
+        # outlives the client and the console, and flags bit3 reports it in
+        # every info block, so a checkbox needs no op of its own to read it.
+        status, _ = c.call(OP_COMBO_ENABLE, b"")
+        check(status == ST_BAD_ARG, "COMBO_ENABLE with no payload is BAD_ARG", status)
+        status, _ = c.call(OP_COMBO_ENABLE, bytes([2]))
+        check(status == ST_BAD_ARG, "COMBO_ENABLE 2 is BAD_ARG", status)
+
+        state = fresh_state(c)
+        check(state and (state["flags"] & SESSION_FLAG_COMBOS_OFF) == 0,
+              "the combos start on, so flags bit3 is clear",
+              state["flags"] if state else None)
+
+        status, _ = c.call(OP_COMBO_ENABLE, bytes([0]))
+        check(status == ST_OK, "COMBO_ENABLE 0 turns every combo off", status)
+
+        state = fresh_state(c)
+        check(state and (state["flags"] & SESSION_FLAG_COMBOS_OFF) != 0,
+              "GET_STATE reports flags bit3 COMBOS_OFF",
+              state["flags"] if state else None)
+
+        drain_udp(udp)
+        tflags = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            try:
+                data, _addr = udp.recvfrom(2048)
+            except socket.timeout:
+                break
+            if data[:4] != b"QWRK":
+                continue
+            tinfo, _tw, _n = parse_telemetry(data)
+            tflags = tinfo["flags"]
+            break
+        check(tflags is not None and (tflags & SESSION_FLAG_COMBOS_OFF) != 0,
+              "and a telemetry packet carries the same bit", tflags)
+
+        coords4 = struct.pack(">fff", 4.0, 5.0, 6.0) + b"\x00" * 18
+        c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords4)
+
+        sim.send("pad 0x1005")
+        time.sleep(0.4)
+        sim.send("pad 0x0")
+        time.sleep(0.2)
+
+        switched_off = saved_position()
+        check(switched_off is not None and abs(switched_off[0] - 1.0) < 0.001,
+              "the combo pressed with the switch off saved nothing", switched_off)
+
+        status, _ = c.call(OP_COMBO_ENABLE, bytes([1]))
+        check(status == ST_OK, "COMBO_ENABLE 1 hands the combos back", status)
+
+        state = fresh_state(c)
+        check(state and (state["flags"] & SESSION_FLAG_COMBOS_OFF) == 0,
+              "and flags bit3 clears with it",
+              state["flags"] if state else None)
+
+        sim.send("pad 0x1005")
+        time.sleep(0.4)
+        sim.send("pad 0x0")
+        time.sleep(0.2)
+
+        switched_on = saved_position()
+        check(switched_on is not None and abs(switched_on[0] - 4.0) < 0.001,
+              "and a press with the switch on saves a position again", switched_on)
+
+        # Off again, so the reboot below finds it where the user left it.
+        status, _ = c.call(OP_COMBO_ENABLE, bytes([0]))
+        check(status == ST_OK, "COMBO_ENABLE 0 once more, before the reboot", status)
+
         # ------------------------------------------------------ mod listing
         status, body = c.call(OP_MOD_LIST)
         mods = []
@@ -2903,6 +2978,17 @@ def main():
               (gen_first, info["generation"] if info else None))
         check(info and (info["flags"] & 1) != 0,
               "PREVIOUS_PENDING is set", info["flags"] if info else None)
+        # Revision 1.12: the switch is console state, not session state, so a
+        # boot cycle of the same title finds it exactly as the user left it.
+        check(info and (info["flags"] & SESSION_FLAG_COMBOS_OFF) != 0,
+              "and the combo switch is still off after the reboot",
+              info["flags"] if info else None)
+        status, _ = c.call(OP_COMBO_ENABLE, bytes([1]))
+        check(status == ST_OK, "COMBO_ENABLE 1 turns the combos back on", status)
+        state = fresh_state(c)
+        check(state and (state["flags"] & SESSION_FLAG_COMBOS_OFF) == 0,
+              "leaving flags bit3 clear for the rest of the run",
+              state["flags"] if state else None)
         check(info and info["toggle_state"] == 0,
               "no toggle is live after the reboot",
               info["toggle_state"] if info else None)

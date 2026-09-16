@@ -37,12 +37,12 @@
 /*
  * What one config.txt holds. It was 128 until build 37.
  *
- * What a title actually writes: the five combo masks, the selected slot, the
- * selected planet and its flags, and `log`, `trace_ops` and `savefile_helper` -
- * eleven keys - plus one key per feature auto flag and one per mod auto flag,
- * and those two are only written when a user ticks the box. The shipped mod
- * library's busiest title has five mods, and a user who auto-flagged a dozen
- * features in each of the four games is still inside 64.
+ * What a title actually writes: the five combo masks, the combo switch, the
+ * selected slot, the selected planet and its flags, and `log`, `trace_ops` and
+ * `savefile_helper` - twelve keys - plus one key per feature auto flag and one
+ * per mod auto flag, and those two are only written when a user ticks the box.
+ * The shipped mod library's busiest title has five mods, and a user who
+ * auto-flagged a dozen features in each of the four games is still inside 64.
  */
 #define CONFIG_MAX_ENTRIES 64
 
@@ -73,6 +73,15 @@ int  config_set_u32(const char *key, u32 value);
 /* Combos, indexed by COMBO_* action. Mask 0 disables. */
 u32  config_combo(u8 action);
 int  config_set_combo(u8 action, u32 mask);
+
+/*
+ * Revision 1.12, COMBO_ENABLE. The one switch under all five of them: 0 holds
+ * every combo off whatever its mask says. It is `combo.enabled`, console-wide
+ * like the masks beside it rather than per title, and 1 for a config.txt that
+ * has never mentioned it. Anything but 0 or 1 is ST_BAD_ARG.
+ */
+int  config_combo_enabled(void);
+int  config_set_combo_enabled(u8 on);
 
 u8   config_selected_slot(void);
 u8   config_selected_planet(void);

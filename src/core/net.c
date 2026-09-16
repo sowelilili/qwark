@@ -1512,6 +1512,18 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 	}
 
+	/*
+	 * Protocol 1.12. The persistent switch. It is a config write and nothing
+	 * else, exactly like COMBO_SET beside it: no game memory is touched, so it
+	 * does not go to the tick thread and it answers whatever the session state
+	 * is. The tick thread picks the new value up on its next tick, through the
+	 * same config version the masks are cached against.
+	 */
+	case OP_COMBO_ENABLE:
+		if (reqlen < 1) return ST_BAD_ARG;
+		if (req[0] > 1) return ST_BAD_ARG;
+		return (u16)config_set_combo_enabled(req[0]);
+
 	case OP_CONFIG_RELOAD: {
 		u16 rc;
 		core_lock();

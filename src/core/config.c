@@ -53,6 +53,9 @@ static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.setaside"
 };
 
+/* Revision 1.12. The switch under those five, and in the same scope as them. */
+static const char g_combo_enabled_key[] = "combo.enabled";
+
 /* ------------------------------------------------------------------ store */
 
 static struct kv *kv_find(const char *key)
@@ -235,6 +238,24 @@ int config_set_combo(u8 action, u32 mask)
 	buf[1] = 'x';
 	qfmt_hex(buf + 2, sizeof(buf) - 2, mask, 8);
 	return config_set(g_combo_key[action], buf);
+}
+
+/*
+ * Revision 1.12. A config.txt written before this switch existed, or one a user
+ * has never touched it in, has no such key, and combos fire: the switch is only
+ * ever off because somebody turned it off, and it stays off until somebody
+ * turns it back on. Written as a plain 0 or 1, the way every other flag in the
+ * file is, so it reads the same by hand as through COMBO_ENABLE.
+ */
+int config_combo_enabled(void)
+{
+	return config_get_u32(g_combo_enabled_key, 1) != 0;
+}
+
+int config_set_combo_enabled(u8 on)
+{
+	if (on > 1) return ST_BAD_ARG;
+	return config_set_u32(g_combo_enabled_key, on);
 }
 
 /* -------------------------------------------------------------- selection */
