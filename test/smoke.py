@@ -3,7 +3,9 @@
 End-to-end smoke test for qwark-host.
 
 Starts the simulator, drives its fake console over stdin and talks the real wire
-protocol over TCP 9673 and UDP telemetry, exactly as docs/PROTOCOL.md describes.
+protocol over TCP and UDP telemetry, exactly as docs/PROTOCOL.md describes. Every
+port here is picked free at start-up, so a run never lands on the qwark-rpcs3.exe
+that is already serving somebody's client on 9673.
 
 Every step prints PASS or FAIL. The exit code is 0 only when everything passed.
 
@@ -27,14 +29,44 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from fake_pine import FakePine, STATUS_PAUSED, STATUS_RUNNING  # noqa: E402  the fake RPCS3 IPC server
 
-PORT = 9673
 HOST = "127.0.0.1"
+
+_taken = set()
+
+
+def free_port():
+    """A TCP port nothing is listening on, chosen by the OS.
+
+    Bind port 0 on loopback, read the number back, close. Nothing here binds
+    0.0.0.0 - that is what raises the Windows Firewall prompt, and a rule is left
+    behind for every Allow - and nothing here uses a fixed port either: 9673 is
+    the port a qwark-rpcs3.exe driving somebody's client already holds, and the
+    suite used to attach itself to that process instead of the build under test.
+
+    The port is only needed free for the moment the program under test binds it,
+    so letting it go again is enough; the set keeps two calls from handing out
+    the same number when the OS recycles it.
+    """
+    for _ in range(64):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((HOST, 0))
+            port = s.getsockname()[1]
+        finally:
+            s.close()
+        if port not in _taken:
+            _taken.add(port)
+            return port
+    raise RuntimeError("no free port")
+
+
+PORT = free_port()
 
 # ---------------------------------------------------------------- protocol
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 39
+QWARK_BUILD = 40
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -284,6 +316,23 @@ class Sim:
             self.proc.wait(timeout=5)
         except Exception:
             self.proc.kill()
+
+
+def sim_line(sim, needle, timeout=3.0):
+    """The first line the program printed that contains `needle`, or None.
+
+    The banner is printed just after the threads start, so a client can be
+    connected before the reader thread has appended it: wait rather than look
+    once.
+    """
+    deadline = time.time() + timeout
+    while True:
+        for line in list(sim.lines):
+            if needle in line:
+                return line
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.02)
 
 
 def sim_arena(sim, timeout=3.0):
@@ -2084,8 +2133,9 @@ def exercise_game(c, sim, spec, udp=None):
 RAC1_FP_ADDR = 0x0007F558
 RAC1_FP = bytes([0x30, 0x64, 0x9C, 0xE0])
 
-# A port of its own, so this can run beside the host smoke above.
-RPCS3_PORT = 9684
+# A port of its own, so this can run beside the host smoke above. Free-chosen
+# like PORT: the RPCS3 helper is the very program the user may have running.
+RPCS3_PORT = free_port()
 
 
 def smoke_rpcs3(exe):
@@ -2100,8 +2150,11 @@ def smoke_rpcs3(exe):
     pine = FakePine()
     pine.poke(RAC1_FP_ADDR, RAC1_FP)
 
+    # --bind spelled out here, so the flag itself is exercised; 127.0.0.1 is
+    # also what it defaults to, and the only address anything here ever binds.
     sim = Sim(exe, ["--pine-port", str(pine.port),
                     "--port", str(RPCS3_PORT),
+                    "--bind", HOST,
                     "--root", root])
     sock = None
 
@@ -2117,6 +2170,40 @@ def smoke_rpcs3(exe):
         check(info and info["build"] == QWARK_BUILD,
               "rpcs3: it reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
+
+        # The banner says where it bound, and we are talking to it there.
+        want = "client on %s:%d" % (HOST, RPCS3_PORT)
+        line = sim_line(sim, "client on ")
+        check(line is not None and want in line,
+              "rpcs3: --bind %s is honoured and announced" % HOST, line)
+
+        # Two helpers cannot share a port any more. The host builds ask for no
+        # SO_REUSEADDR, so a second one started on a port that is already being
+        # served loses the bind and says so, rather than quietly taking the
+        # listener over - which is how a suite run used to end up testing the
+        # qwark-rpcs3.exe behind the user's own client instead of the build under
+        # test. Its own root and a PINE port nothing listens on keep it clear of
+        # the helper we are actually testing.
+        rival_root = os.path.join(HERE, "qwark-rpcs3-rival-root")
+        shutil.rmtree(rival_root, ignore_errors=True)
+        rival = Sim(exe, ["--pine-port", str(free_port()),
+                          "--port", str(RPCS3_PORT),
+                          "--bind", HOST,
+                          "--root", rival_root])
+        try:
+            said = sim_line(rival, "cannot listen", timeout=5.0)
+            check(said is not None,
+                  "rpcs3: a second helper on the same port loses the bind and says so",
+                  rival.lines[-3:])
+        finally:
+            rival.stop()
+            shutil.rmtree(rival_root, ignore_errors=True)
+
+        status, body = c.call(OP_HELLO, bytes([1]))
+        info = parse_session_info(body) if status == ST_OK else None
+        check(status == ST_OK,
+              "rpcs3: and the helper under test still owns the port", status)
+
         check(info and (info["flags"] & SESSION_FLAG_EMULATOR) != 0,
               "rpcs3: flags bit1 EMULATOR is set",
               hex(info["flags"]) if info else None)
@@ -2349,9 +2436,10 @@ def main():
         for name in os.listdir(fixtures):
             shutil.copytree(os.path.join(fixtures, name), os.path.join(mods_dst, name))
 
-    sim = Sim(exe)
+    # No --bind: the simulator's own default is loopback, which is the point.
+    sim = Sim(exe, ["--port", str(PORT)])
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind(("0.0.0.0", 0))
+    udp.bind((HOST, 0))
     udp_port = udp.getsockname()[1]
     udp.settimeout(2.0)
 
@@ -2368,6 +2456,15 @@ def main():
         check(info and info["build"] == QWARK_BUILD,
               "HELLO reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
+
+        # --port was honoured and, with no --bind given, the default is loopback:
+        # nothing the host builds open reaches beyond this machine, which is why
+        # no run of this suite raises a Windows Firewall prompt.
+        want = "ready on %s:%d" % (HOST, PORT)
+        line = sim_line(sim, "ready on ")
+        check(line is not None and want in line,
+              "the simulator took --port %d and bound %s by default" % (PORT, HOST),
+              line)
 
         # Every request used to leave two lines in the log, one as it arrived and
         # one when it was answered, on unless config.txt said trace_ops = 0.

@@ -9,12 +9,15 @@
  *   version  what RPCS3 reports for MsgVersion, MsgTitle and MsgID
  *   exit     shut down
  *
- * Usage: qwark-rpcs3.exe [--pine-port N] [--port 9673] [--root DIR]
- *                        [--pine-timeouts WAIT,LINK,RETRY]
+ * Usage: qwark-rpcs3.exe [--pine-port N] [--port 9673] [--bind 127.0.0.1]
+ *                        [--root DIR] [--pine-timeouts WAIT,LINK,RETRY]
  *
  *   --pine-port  RPCS3's IPC port, 28012 unless it was changed in
  *                Settings -> I/O -> IPC
  *   --port       the port qwark itself listens on for the client, 9673
+ *   --bind       the address the listener binds. Loopback by default, which is
+ *                where the client looks and which Windows Firewall never asks
+ *                about; pass 0.0.0.0 to serve a client on another machine.
  *   --root       where /dev_hdd0 is mapped; by default a qwark-rpcs3-root
  *                folder beside the executable, with the same layout the
  *                console uses (dev_hdd0/qwark/config.txt, positions, mods)
@@ -163,8 +166,10 @@ static int parse_int(const char *s, int *out)
 
 static void usage(void)
 {
-	printf("usage: qwark-rpcs3 [--pine-port N] [--port N] [--root DIR] "
-	       "[--pine-timeouts WAIT,LINK,RETRY]\n");
+	printf("usage: qwark-rpcs3 [--pine-port N] [--port N] [--bind ADDR] "
+	       "[--root DIR] [--pine-timeouts WAIT,LINK,RETRY]\n");
+	printf("  --bind ADDR  the address to listen on, 127.0.0.1 by default;\n");
+	printf("               0.0.0.0 to be reachable from another machine\n");
 	fflush(stdout);
 }
 
@@ -174,6 +179,7 @@ int main(int argc, char **argv)
 	int qwark_port = QWARK_PORT;
 	int pine = PINE_DEFAULT_PORT;
 	const char *root = NULL;
+	const char *bind_addr = "127.0.0.1";
 	int i;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -183,6 +189,8 @@ int main(int argc, char **argv)
 			if (!parse_int(argv[++i], &pine)) { usage(); return 2; }
 		} else if (qstreq(argv[i], "--port") && i + 1 < argc) {
 			if (!parse_int(argv[++i], &qwark_port)) { usage(); return 2; }
+		} else if (qstreq(argv[i], "--bind") && i + 1 < argc) {
+			bind_addr = argv[++i];
 		} else if (qstreq(argv[i], "--root") && i + 1 < argc) {
 			root = argv[++i];
 		} else if (qstreq(argv[i], "--pine-timeouts") && i + 1 < argc) {
@@ -201,6 +209,10 @@ int main(int argc, char **argv)
 	pine_set_port(pine);
 	pine_set_root(root);
 	net_set_port((u16)qwark_port);
+	if (!net_set_bind(bind_addr)) {
+		fprintf(stderr, "qwark-rpcs3: --bind wants a dotted quad, not '%s'\n", bind_addr);
+		return 2;
+	}
 
 	if (plat_init() != 0) {
 		fprintf(stderr, "qwark-rpcs3: plat_init failed\n");
@@ -231,8 +243,9 @@ int main(int argc, char **argv)
 	SetConsoleCtrlHandler(console_handler, TRUE);
 #endif
 
-	printf("qwark-rpcs3 protocol %d build %d: client port %d, PINE 127.0.0.1:%d, root %s\n",
-	       QWARK_PROTOCOL_VERSION, QWARK_BUILD, (int)net_port(), pine_port(), host_root());
+	printf("qwark-rpcs3 protocol %d build %d: client on %s:%d, PINE 127.0.0.1:%d, root %s\n",
+	       QWARK_PROTOCOL_VERSION, QWARK_BUILD, bind_addr, (int)net_port(),
+	       pine_port(), host_root());
 	printf("code patches are refused on RPCS3; type 'status', 'version' or 'exit'\n");
 	fflush(stdout);
 

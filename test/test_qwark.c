@@ -23,6 +23,7 @@
 #include "test_common.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_checks;
@@ -1490,7 +1491,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 39, "and this module is build 39");
+	check_eq_u64(packet[5], 40, "and this module is build 40");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -6244,7 +6245,7 @@ static void test_net_stop_with_client(void)
 
 		memset(&sa, 0, sizeof(sa));
 		sa.sin_family = AF_INET;
-		sa.sin_port = htons(QWARK_PORT);
+		sa.sin_port = htons(net_port());
 		sa.sin_addr.s_addr = htonl(0x7F000001u);   /* 127.0.0.1 */
 
 		if (connect(client, (struct sockaddr *)&sa, sizeof(sa)) == 0) break;
@@ -6326,8 +6327,66 @@ static void test_hot_tables(void)
 	check(i >= 4, "all four games were checked");
 }
 
+/* ------------------------------------------------------ the port for this run */
+
+/*
+ * test/run.sh picks a free TCP port and passes it in QWARK_TEST_PORT; main hands
+ * it to net_set_port before anything listens. The suite used to sit on 9673, and
+ * because the listener asked for SO_REUSEADDR the bind quietly succeeded beside
+ * a qwark-rpcs3.exe that was already serving the user's client - so the tests
+ * connected to that process and checked it instead of the build under test. The
+ * host builds no longer set SO_REUSEADDR and the suite no longer uses a fixed
+ * port. With no variable set the default still stands, so a bare run works.
+ */
+static void test_command_port(void)
+{
+	const char *env = getenv("QWARK_TEST_PORT");
+	struct sockaddr_in sa;
+	int probe;
+
+	group("the command port for this run");
+
+	if (env != NULL && env[0] != 0) {
+		check_eq_u64(net_port(), (u64)atoi(env),
+		             "QWARK_TEST_PORT is the port the suite listens on");
+		check(net_port() != QWARK_PORT,
+		      "and it is not 9673, so a running helper cannot answer for us");
+	} else {
+		check_eq_u64(net_port(), QWARK_PORT,
+		             "with no QWARK_TEST_PORT the suite keeps the default 9673");
+	}
+
+	/*
+	 * Nothing holds it yet: the proof that the port really was free, and so the
+	 * proof that a second run in a row picks another one that is free too.
+	 */
+	probe = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	check(probe >= 0, "a probe socket opens");
+	if (probe < 0) return;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(net_port());
+	sa.sin_addr.s_addr = htonl(0x7F000001u);   /* never 0.0.0.0: no firewall prompt */
+	check(bind(probe, (struct sockaddr *)&sa, sizeof(sa)) == 0,
+	      "and the port is free before the listener opens");
+	plat_socket_close(probe);
+
+	/* --bind on both PC builds goes through this, and takes a dotted quad only. */
+	check(net_set_bind("0.0.0.0") == 1, "--bind accepts 0.0.0.0");
+	check(net_set_bind("") == 0, "and refuses an empty address");
+	check(net_set_bind("the living room") == 0, "and refuses what is not an address");
+	check(net_set_bind("127.0.0.1") == 1,
+	      "and takes 127.0.0.1, which is where everything here listens");
+}
+
 int main(void)
 {
+	const char *port_env = getenv("QWARK_TEST_PORT");
+
+	/* Before plat_init, and long before any listener: see test_command_port. */
+	if (port_env != NULL && port_env[0] != 0) net_set_port((u16)atoi(port_env));
+
 	if (plat_init() != 0) {
 		printf("plat_init failed\n");
 		return 2;
@@ -6338,6 +6397,7 @@ int main(void)
 		return 2;
 	}
 
+	test_command_port();
 	test_endian();
 	test_framing();
 	test_patches();

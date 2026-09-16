@@ -1777,9 +1777,10 @@ static void conn_thread(void *arg)
 /* -------------------------------------------------------------- the server */
 
 /*
- * The command port. QWARK_PORT on the console and in the simulator, and only
- * qwark-rpcs3.exe ever moves it: two emulator sessions on one PC need two
- * ports, and 9673 is the one the client looks for first.
+ * The command port. QWARK_PORT on the console and in the simulator, and only a
+ * PC build ever moves it: two emulator sessions on one PC need two ports, the
+ * test suites want one nobody else holds, and 9673 is the one the client looks
+ * for first.
  */
 static u16 g_port = QWARK_PORT;
 
@@ -1793,21 +1794,61 @@ u16 net_port(void)
 	return g_port;
 }
 
+#ifdef QWARK_HOST
+/*
+ * Where the listener binds, on the PC only. The console binds every interface
+ * because the client is on another machine; a PC build that did the same raised
+ * a Windows Firewall prompt the first time each executable ran from each path,
+ * and left another rule behind for every Allow - and the simulator, the RPCS3
+ * helper and the test suite are all rebuilt in throwaway directories. Loopback
+ * is never asked about, so that is the default, and --bind moves it for somebody
+ * who really wants the simulator reachable from another machine.
+ */
+static u32 g_bind = 0x7F000001u;   /* 127.0.0.1, network order below */
+
+int net_set_bind(const char *addr)
+{
+	unsigned long v;
+
+	if (addr == NULL || addr[0] == 0) return 0;
+
+	v = (unsigned long)inet_addr(addr);
+	if (v == INADDR_NONE) return 0;   /* not a dotted quad */
+
+	g_bind = ntohl((u32)v);
+	return 1;
+}
+#endif
+
 static int open_listener(void)
 {
 	int s;
-	int reuse = 1;
 	struct sockaddr_in sa;
+#ifndef QWARK_HOST
+	int reuse = 1;
+#endif
 
 	s = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (s < 0) return -1;
 
+#ifndef QWARK_HOST
+	/*
+	 * The console restarts fast after a crash and must not be told its own
+	 * port is still in use. The PC builds deliberately go without: two qwarks
+	 * on one port there is the bug (the tests silently talked to whichever
+	 * qwark-rpcs3.exe was already running), so let the second bind fail and say so.
+	 */
 	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+#endif
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(g_port);
+#ifdef QWARK_HOST
+	sa.sin_addr.s_addr = htonl(g_bind);
+#else
 	sa.sin_addr.s_addr = htonl(INADDR_ANY);
+#endif
 
 	if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
 		plat_socket_close(s);
@@ -1942,12 +1983,30 @@ void net_shutdown(void)
 
 void net_accept_thread(void *arg)
 {
+#ifdef QWARK_HOST
+	int complained = 0;
+#endif
+
 	(void)arg;
 
 	while (g_working) {
 		int listener = open_listener();
 		if (listener < 0) {
 			if (!g_working) break;
+#ifdef QWARK_HOST
+			/*
+			 * On the PC a refused bind means somebody else holds the port, not
+			 * that the network is still coming up, and with no SO_REUSEADDR the
+			 * retry below will never win. Say it once instead of spinning in
+			 * silence: this is exactly the case that used to end with two
+			 * qwarks and a client talking to the wrong one.
+			 */
+			if (!complained) {
+				complained = 1;
+				plat_log("qwark: cannot listen on %d, something else has it",
+				         (int)g_port);
+			}
+#endif
 			plat_yield();
 			plat_sleep_us(250000);
 			continue;

@@ -40,5 +40,29 @@ rm -rf "$ROOT"
 mkdir -p "$ROOT/dev_hdd0/qwark/mods"
 cp -r test/fixtures/mods/. "$ROOT/dev_hdd0/qwark/mods/"
 
-echo "running $OUT"
+# A free port for this run. The suite used to listen on 9673, which is the port
+# a qwark-rpcs3.exe serving the user's own client already holds; the bind
+# succeeded anyway and the tests talked to that process. The port only has to be
+# free for the moment the listener opens, so asking the OS for one and letting it
+# go again is enough. Set QWARK_TEST_PORT yourself to pin it; with neither, the
+# suite falls back to 9673 and a bare run still works.
+PICK='import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+
+if [ -z "${QWARK_TEST_PORT:-}" ]; then
+	for PY in python python3 py; do
+		QWARK_TEST_PORT=$("$PY" -c "$PICK" 2>/dev/null) && break
+		QWARK_TEST_PORT=""
+	done
+fi
+export QWARK_TEST_PORT
+
+if [ -n "$QWARK_TEST_PORT" ]; then
+	echo "running $OUT on port $QWARK_TEST_PORT"
+else
+	echo "running $OUT (no python to pick a port, falling back to 9673)"
+fi
 "./$OUT"

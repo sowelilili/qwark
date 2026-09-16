@@ -13,6 +13,13 @@
  *   peek <addr> <len>     print bytes from the fake process memory
  *   status                one line of session state
  *   exit                  shut down
+ *
+ * Usage: qwark-host.exe [--port 9673] [--bind 127.0.0.1]
+ *
+ *   --port  the port qwark itself listens on for the client, 9673
+ *   --bind  the address the listener binds. Loopback by default, so Windows
+ *           Firewall is never asked about the simulator; pass 0.0.0.0 to make
+ *           it reachable from another machine, and answer the prompt once.
  */
 #include "../plat.h"
 #include "plat_host.h"
@@ -169,15 +176,55 @@ static void handle_line(char *line, int *keep_running)
 	fflush(stdout);
 }
 
+static int parse_int(const char *s, int *out)
+{
+	long v;
+	char *end = NULL;
+
+	if (s == NULL || s[0] == 0) return 0;
+	v = strtol(s, &end, 0);
+	if (end == NULL || *end != 0) return 0;
+	if (v <= 0 || v > 65535) return 0;
+
+	*out = (int)v;
+	return 1;
+}
+
+static void usage(void)
+{
+	printf("usage: qwark-host [--port N] [--bind ADDR]\n");
+	printf("  --port N     the port to listen on, %d by default\n", QWARK_PORT);
+	printf("  --bind ADDR  the address to listen on, 127.0.0.1 by default;\n");
+	printf("               0.0.0.0 to be reachable from another machine\n");
+	fflush(stdout);
+}
+
 int main(int argc, char **argv)
 {
 	char line[1024];
 	int keep_running = 1;
-
-	(void)argc;
-	(void)argv;
+	int port = QWARK_PORT;
+	const char *bind_addr = "127.0.0.1";
+	int i;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
+
+	for (i = 1; i < argc; i++) {
+		if (qstreq(argv[i], "--port") && i + 1 < argc) {
+			if (!parse_int(argv[++i], &port)) { usage(); return 2; }
+		} else if (qstreq(argv[i], "--bind") && i + 1 < argc) {
+			bind_addr = argv[++i];
+		} else {
+			usage();
+			return 2;
+		}
+	}
+
+	net_set_port((u16)port);
+	if (!net_set_bind(bind_addr)) {
+		fprintf(stderr, "qwark-host: --bind wants a dotted quad, not '%s'\n", bind_addr);
+		return 2;
+	}
 
 	if (plat_init() != 0) {
 		fprintf(stderr, "qwark-host: plat_init failed\n");
@@ -204,7 +251,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("qwark-host ready on %d, root %s\n", QWARK_PORT, host_root());
+	printf("qwark-host ready on %s:%d, root %s\n",
+	       bind_addr, (int)net_port(), host_root());
 	fflush(stdout);
 
 	while (keep_running && fgets(line, sizeof(line), stdin) != NULL) {

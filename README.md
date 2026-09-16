@@ -60,13 +60,14 @@ The same core also runs on the PC as `qwark-rpcs3.exe`, driving [RPCS3](https://
 **Run it.**
 
 ```
-qwark-rpcs3.exe [--pine-port 28012] [--port 9673] [--root DIR]
+qwark-rpcs3.exe [--pine-port 28012] [--port 9673] [--bind 127.0.0.1] [--root DIR]
 ```
 
 | Option | Meaning |
 |---|---|
 | `--pine-port N` | RPCS3's IPC port, if it is not 28012 |
 | `--port N` | the port qwark listens on for the client, 9673 by default |
+| `--bind ADDR` | the address it listens on, `127.0.0.1` by default, which is where the client looks and which Windows Firewall never asks about. `--bind 0.0.0.0` serves a client on another machine, at the cost of that prompt |
 | `--root DIR` | where `/dev_hdd0` is mapped. By default a `qwark-rpcs3-root` folder beside the executable, holding the same `dev_hdd0/qwark/` layout the console uses: `config.txt`, `positions/`, `mods/` |
 | `--pine-timeouts W,L,R` | the PINE clocks in milliseconds, for the tests only: how long a caller waits for a reply (100), how long a silent link lives (5000), how long a silent RPCS3 is left alone (5000) |
 
@@ -90,6 +91,8 @@ Everything that is a plain data write or a freeze works exactly as it does on a 
 PS3 module: the PS3 toolchain with `CELL_SDK` set and Cygwin, as for Ratchetron. Run `_Make.bat`, or `make` from a Cygwin login shell in this directory. The output is `qwark.sprx`.
 
 Host builds, which need no console: `build-host.sh` builds both `qwark-host.exe` and `qwark-rpcs3.exe` with the clang listed in `CLAUDE.md` (`build-host.sh host` or `build-host.sh rpcs3` for one of them). `test/run.sh` runs the unit tests; `python test/smoke.py` drives both executables through the full wire protocol, the second against the fake PINE server in `test/fake_pine.py`.
+
+Both PC executables bind their listener to `127.0.0.1` by default, so no build and no test run raises a Windows Firewall prompt; `--bind ADDR` on either of them moves it, and `--bind 0.0.0.0` is the old behaviour, which the SPRX keeps because the console's client is on another machine. Neither suite uses a fixed port: `test/run.sh` picks a free one and passes it in `QWARK_TEST_PORT` (set it yourself to pin it), and `test/smoke.py` picks one for each program it starts, so a run never attaches itself to a `qwark-rpcs3.exe` that is already serving a client on 9673.
 
 The savefile helper is built separately, because it is PowerPC code that runs inside the *game* rather than inside qwark: `make sfhelper` compiles `src/games/sfhelper/sfhelper.c` once per game at that game's cave address and regenerates `src/games/sfhelper_bins.c`, which is committed. A plain `make` never needs to do that, but it does rebuild it when one of the helper's sources is newer, so an edit cannot be left out of a module by accident. The host builds and the tests compile the committed file and need no SDK.
 

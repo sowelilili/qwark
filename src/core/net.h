@@ -30,11 +30,26 @@ u32  net_arena_takes(void);
 
 /*
  * Moves the command port off QWARK_PORT. Call before net_accept_thread starts.
- * The SPRX never does: the console always listens on 9673. qwark-rpcs3.exe
- * offers --port so two emulator sessions can run side by side on one PC.
+ * The SPRX never does: the console always listens on 9673. Both PC builds offer
+ * --port, so two emulator sessions can run side by side on one PC, and both test
+ * suites pick a free port with it so a run never lands on a helper that is
+ * already serving the user's client.
  */
 void net_set_port(u16 port);
 u16  net_port(void);
+
+#ifdef QWARK_HOST
+/*
+ * Moves the listener off 127.0.0.1, on the PC builds only. `addr` is a dotted
+ * quad; returns 1 when it parsed and 0 when it did not, in which case the bind
+ * address is unchanged. Call before net_accept_thread starts.
+ *
+ * The console listens on every interface and has no such call: only a PC build
+ * binds loopback, to keep Windows Firewall out of every rebuild, and only
+ * --bind 0.0.0.0 puts a PC build back on the network.
+ */
+int  net_set_bind(const char *addr);
+#endif
 
 /* The accept loop. Runs until net_stop(). */
 void net_accept_thread(void *arg);
