@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 40
+QWARK_BUILD = 41
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
