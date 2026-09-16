@@ -1,6 +1,5 @@
 #include "config.h"
 #include "util.h"
-#include "net.h"
 #include "savefile.h"
 #include "../plat/plat.h"
 
@@ -168,13 +167,7 @@ int config_load(void)
 	 */
 	plat_log_enable((int)config_get_u32("log", 1));
 
-	/*
-	 *   trace_ops = 0        stop logging every request. On by default for now,
-	 *                        so a console that crashes leaves the operation it
-	 *                        was in, and what it cost the game, in the log
-	 *   savefile_helper = 0  never write the savefile helper into a game
-	 */
-	net_set_trace_ops((int)config_get_u32("trace_ops", 1));
+	/* savefile_helper = 0: never write the savefile helper into a game. */
 	savefile_set_enabled((int)config_get_u32("savefile_helper", 1));
 
 	return ST_OK;

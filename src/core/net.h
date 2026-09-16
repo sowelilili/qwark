@@ -62,8 +62,4 @@ void net_send_telemetry(const u8 *packet, u32 len);
 /* How many times the tick has handed it a packet, subscribers or not. For the tests. */
 u32  net_telemetry_sends(void);
 
-/* config.txt `trace_ops`: log every request as it arrives and as it is answered. */
-void net_set_trace_ops(int on);
-int  net_trace_ops(void);
-
 #endif /* QWARK_NET_H */

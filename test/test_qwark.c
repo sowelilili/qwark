@@ -1490,7 +1490,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 38, "and this module is build 38");
+	check_eq_u64(packet[5], 39, "and this module is build 39");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -1578,19 +1578,23 @@ static void test_config(void)
 	      "the mod auto flag persists the same way");
 	config_set_mod_auto("NPEA00385", "flight", 0);
 
-	/* trace_ops is on for now, for any config.txt that does not say otherwise. */
-	net_set_trace_ops(0);
-	check(config_load() == ST_OK, "config.txt reloads with no trace_ops key in it");
-	check(net_trace_ops(), "and every request is traced by default");
-	check(config_set_u32("trace_ops", 0) == ST_OK && config_load() == ST_OK && !net_trace_ops(),
-	      "trace_ops = 0 turns it off");
-	check(config_set_u32("trace_ops", 1) == ST_OK && config_load() == ST_OK && net_trace_ops(),
-	      "and 1 turns it back on");
+	/*
+	 * trace_ops was the per-request log switch until build 39 took the tracing
+	 * out. Any config.txt written before then still carries the line, and a user
+	 * who reads an old guide may well type it in again, so it has to be inert
+	 * rather than fatal: the file loads like any other, and the key sits in the
+	 * table as one more nobody reads. Nothing in net looks at it any more.
+	 */
+	check(config_set_u32("trace_ops", 1) == ST_OK,
+	      "a config.txt carrying a stale trace_ops line is written");
+	check(config_load() == ST_OK, "and loads with no complaint");
+	check_eq_u64(config_get_u32("trace_ops", 7), 1,
+	             "the key is kept like any other unknown key and acts on nothing");
 
 	/*
-	 * combo.enabled, the revision 1.12 switch, reads the way trace_ops does: a
-	 * plain 0 or 1 a user can edit by hand, picked up by the next reload, and
-	 * written by COMBO_ENABLE under the same name.
+	 * combo.enabled, the revision 1.12 switch: a plain 0 or 1 a user can edit by
+	 * hand, picked up by the next reload, and written by COMBO_ENABLE under the
+	 * same name.
 	 */
 	check(config_set_u32("combo.enabled", 0) == ST_OK && config_load() == ST_OK &&
 	      !config_combo_enabled(), "combo.enabled = 0 holds every combo off");
@@ -1643,7 +1647,7 @@ static void test_config(void)
 		check_eq_u64(config_get_u32("log", 7), 7, "leaving nothing of it loaded");
 
 		/* Put a small config back for whatever runs after this. */
-		check(config_set_u32("trace_ops", 1) == ST_OK, "a small config is written back");
+		check(config_set_u32("log", 1) == ST_OK, "a small config is written back");
 		check(config_load() == ST_OK, "and reloads");
 	}
 
@@ -1692,11 +1696,11 @@ static void test_config(void)
 
 		/* Back to a small config for whatever runs after this. */
 		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
-			plat_file_write(f, "trace_ops = 1\n", 14);
+			plat_file_write(f, "combo.enabled = 1\n", 18);
 			plat_file_close(f);
 		}
 		check(config_load() == ST_OK, "a small config reloads");
-		check_eq_u64(config_get_u32("trace_ops", 0), 1, "with its one key in it");
+		check_eq_u64(config_get_u32("combo.enabled", 0), 1, "with its one key in it");
 	}
 
 	group("string and number helpers");

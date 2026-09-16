@@ -38,8 +38,8 @@
  * What one config.txt holds. It was 128 until build 37.
  *
  * What a title actually writes: the five combo masks, the combo switch, the
- * selected slot, the selected planet and its flags, and `log`, `trace_ops` and
- * `savefile_helper` - twelve keys - plus one key per feature auto flag and one
+ * selected slot, the selected planet and its flags, and `log` and
+ * `savefile_helper` - eleven keys - plus one key per feature auto flag and one
  * per mod auto flag, and those two are only written when a user ticks the box.
  * The shipped mod library's busiest title has five mods, and a user who
  * auto-flagged a dozen features in each of the four games is still inside 64.

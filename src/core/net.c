@@ -62,6 +62,19 @@
 /* How long net_init sleeps between tries while the console's network comes up. */
 #define NET_WAIT_STEP_US 500000u
 
+/*
+ * How long the accept thread waits after the listener is up before it asks the
+ * XMB to show "qwark loaded and listening". See net_accept_thread for why there
+ * is a wait at all. The host builds are the simulator and the two test suites,
+ * where there is no XMB and no plugin loader to stay out of the way of, and
+ * where plat_sleep_us really sleeps, so there the wait is nothing.
+ */
+#ifdef QWARK_HOST
+#define BOOT_NOTIFY_DELAY_US 0u
+#else
+#define BOOT_NOTIFY_DELAY_US 1500000u
+#endif
+
 #define MAX_FILES       16
 #define PATH_MAX_LEN    512
 
@@ -138,19 +151,6 @@ void net_set_booting(int booting)
 		}
 	}
 	core_unlock();
-}
-
-/* config.txt `trace_ops`: two log lines per request. See the request loop. */
-static int g_trace_ops = 1;
-
-void net_set_trace_ops(int on)
-{
-	g_trace_ops = on ? 1 : 0;
-}
-
-int net_trace_ops(void)
-{
-	return g_trace_ops;
 }
 
 static plat_mutex_t g_net_mutex;
@@ -286,7 +286,7 @@ static u16 subs_add(int conn_slot, u32 ip, u16 port)
 		g_subs[i].conn_slot = conn_slot;
 		g_subs[i].last_us = now;
 		rc = ST_OK;
-		if (g_trace_ops) plat_log("qwark: subscribed, telemetry starts going out");
+		plat_log("qwark: subscribed, telemetry starts going out");
 		break;
 	}
 
@@ -1635,7 +1635,6 @@ static void conn_thread(void *arg)
 		u16 status;
 		u32 replylen = 0;
 		u32 replycap;
-		u32 mem_reads = 0, mem_writes = 0, exec_us = 0;
 
 		/* An idle header holds no arena. Payloads and replies have a deadline. */
 		if (conn_io(c, header, QWARK_FRAME_HEADER, 0, 1) != 0) break;
@@ -1701,8 +1700,7 @@ static void conn_thread(void *arg)
 		 * The gate. A frame is dispatched only outside the quiet second and
 		 * only while no transition has cancelled this connection, and the
 		 * activity lock covers exactly that decision. It is released before
-		 * anything slow happens on this thread: the handler, and the two trace
-		 * lines that bracket it, each an HDD write on a console. The tick
+		 * anything slow happens on this thread, the handler above all. The tick
 		 * thread takes the same lock every tick, so anything held under it is
 		 * a stall of the freezes, the combos and the telemetry. A quiet second
 		 * that begins while a handler is running still holds its reply, since
@@ -1723,18 +1721,6 @@ static void conn_thread(void *arg)
 			break;
 		}
 
-		/*
-		 * config.txt's `trace_ops`, on unless it says 0. It is a file open,
-		 * write and close per line, a couple of dozen for a client connecting and
-		 * a few a second after that. In exchange the log's last line before a
-		 * console dies names the operation it died in, which is the difference
-		 * between knowing and three rounds of plausible theories.
-		 */
-		if (g_trace_ops) {
-			plat_log("qwark: op %d seq %d len %d (state %d)",
-			         (int)op, (int)seq, (int)length, (int)session_state());
-		}
-
 		if (op_needs_ring(op)) {
 			struct ring_cmd cmd;
 
@@ -1749,9 +1735,6 @@ static void conn_thread(void *arg)
 			session_submit(&cmd);
 			status = cmd.status;
 			replylen = cmd.replylen;
-			mem_reads = cmd.mem_reads;
-			mem_writes = cmd.mem_writes;
-			exec_us = cmd.exec_us;
 			if (c->cancelled) {
 				release_buffers(c);
 				break;
@@ -1762,17 +1745,6 @@ static void conn_thread(void *arg)
 		}
 
 		if (status != ST_OK) replylen = 0;
-
-		/*
-		 * The other end of the trace. A log that stops between an op and its
-		 * `done` died inside the handler; one that stops after a `done` died
-		 * somewhere else entirely, which is the difference worth knowing.
-		 */
-		if (g_trace_ops) {
-			plat_log("qwark: op %d done, status %d, reply %d, %d reads %d writes, %d us on the tick",
-			         (int)op, (int)status, (int)replylen,
-			         (int)mem_reads, (int)mem_writes, (int)exec_us);
-		}
 
 		be32_put(header, replylen);
 		be16_put(header + 4, seq);
@@ -1983,7 +1955,23 @@ void net_accept_thread(void *arg)
 
 		g_listen = listener;
 		plat_log("qwark: listening on %d", (int)g_port);
-		plat_notify("qwark loaded and listening");
+
+		/*
+		 * A breath before the XMB is spoken to. PS3HEN reads boot_plugins.txt
+		 * with the XMB already up and starts the plugins one after another,
+		 * waiting on each start entry, so a module's first moments are spent
+		 * inside the loader's own sequence. A user found the XMB hung when
+		 * qwark.sprx was listed after webMAN and not when it was listed before,
+		 * which points at exactly that window; the pause keeps our notification
+		 * call off the loader's heels rather than racing it. It costs one
+		 * delayed message per listener open and nothing else: accepting
+		 * connections is what happens next, and is unaffected.
+		 *
+		 * The host backend really sleeps, so BOOT_NOTIFY_DELAY_US is 0 there
+		 * and the unit and smoke suites do not wait on this.
+		 */
+		if (BOOT_NOTIFY_DELAY_US != 0) plat_sleep_us(BOOT_NOTIFY_DELAY_US);
+		if (g_working) plat_notify("qwark loaded and listening");
 
 		while (g_working) {
 			struct sockaddr_in peer;

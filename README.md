@@ -43,13 +43,13 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `trace_ops`, `savefile_helper` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `savefile_helper` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
 | `qwark.log` | state transitions, when `log = 1` |
 
-Two of them are for working out why a console is crashing. `trace_ops` is on for now: it puts two lines in the log for every request a client makes, one as it arrives and one when it is answered with what it cost the game, so the last line before a crash names the operation. `trace_ops = 0` turns it off. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
+The log is there for working out why a console is crashing. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
 
 ## RPCS3
 

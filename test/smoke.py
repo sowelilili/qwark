@@ -34,7 +34,7 @@ HOST = "127.0.0.1"
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 38
+QWARK_BUILD = 39
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -2369,14 +2369,13 @@ def main():
               "HELLO reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
 
-        # trace_ops is on unless config.txt says otherwise, and this HDD has no
-        # config.txt: the HELLO above is in the log, arriving and answered.
-        deadline = time.time() + 2.0
-        while time.time() < deadline and not any("qwark: op 1 done" in l for l in sim.lines):
-            time.sleep(0.02)
-        check(any("qwark: op 1 seq" in l for l in sim.lines) and
-              any("qwark: op 1 done, status 0" in l for l in sim.lines),
-              "with no config the log traces every request, arriving and answered")
+        # Every request used to leave two lines in the log, one as it arrived and
+        # one when it was answered, on unless config.txt said trace_ops = 0.
+        # Build 39 took that out: an op is logged nowhere, whatever the config
+        # says, and this HDD has no config.txt at all.
+        time.sleep(0.5)
+        traced = [l for l in sim.lines if "qwark: op " in l]
+        check(not traced, "a request leaves no trace line in the log", traced[:2])
 
         # ------------------------------------------------------- subscribe
         status, _ = c.call(OP_SUBSCRIBE, struct.pack(">H", udp_port))

@@ -32,11 +32,10 @@
 #define QWARK_LOG_OLD_PATH "/dev_hdd0/qwark/qwark.old.log"
 
 /*
- * The log is appended to and never truncated, and with trace_ops on it gains two
- * lines for every request a client makes. Past this size when the module starts,
- * it becomes qwark.old.log, replacing the one before, and a new log begins. A
- * crash is followed by a reboot and so by this check: its last lines are at the
- * end of qwark.log, or of qwark.old.log when this is what moved them.
+ * The log is appended to and never truncated. Past this size when the module
+ * starts, it becomes qwark.old.log, replacing the one before, and a new log
+ * begins. A crash is followed by a reboot and so by this check: its last lines
+ * are at the end of qwark.log, or of qwark.old.log when this is what moved them.
  */
 #define QWARK_LOG_KEEP     (1024u * 1024u)
 
@@ -44,8 +43,7 @@
 
 /*
  * One line at a time into the log. The tick thread and every connection thread
- * log, and with trace_ops on the connection threads log twice per request;
- * without this a line could land in the middle of another. Zero until
+ * log, and without this a line could land in the middle of another. Zero until
  * plat_init makes it, and plat_mutex_lock does nothing on a zero mutex, so a
  * line logged before then simply goes in unlocked.
  */
