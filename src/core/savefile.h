@@ -62,6 +62,28 @@
 #define SAVEFILE_ERR_SHORT      3  /* the file is not exactly the buffer's size */
 #define SAVEFILE_ERR_NO_HELPER  4  /* the game went away underneath the copy */
 #define SAVEFILE_ERR_BUSY       5  /* the aside buffer was already spoken for */
+/*
+ * Build 43. The game was not somewhere a save could be taken or put back: it
+ * was in a cutscene, a transition, a menu or a lobby, or a mode change was
+ * queued. Deadlocked is the game this is known for; `savefile_ready` in
+ * struct game_api is what each game answers with, and a game that does not
+ * answer at all is treated as always ready.
+ */
+#define SAVEFILE_ERR_NOT_IDLE   6
+
+/*
+ * What the helper leaves in a request byte when it drops a request for the same
+ * reason - the belt to qwark's braces, because qwark asks on its own tick and
+ * the game gets frames of its own between that and the one the helper runs on.
+ * The helper never acts on a request it answers this way; qwark puts the byte
+ * back to 0, drops the request and reports SAVEFILE_ERR_NOT_IDLE.
+ *
+ * It is a value of the request byte because the request byte is the whole
+ * interface: it already carries 0 idle, 1 requested, and, in Deadlocked, 2 for
+ * a load menu that is still up. SF_API_REFUSED in src/games/sfhelper/sfhelper.h
+ * is the same number on the other side.
+ */
+#define SAVEFILE_HELPER_REFUSED 0xFE
 
 /*
  * How the copy is chunked on the tick thread. A chunk is one mem_read or
@@ -141,7 +163,11 @@ void savefile_transfer(u32 *done, u32 *total, u8 *error);
 int savefile_read(u32 offset, u32 len, u8 *out, u32 *outlen);
 int savefile_write(u32 offset, const u8 *data, u32 len);
 
-/* The two requests the flagged ACTIONs make. */
+/*
+ * The two requests the flagged ACTIONs make. Build 43: either answers ST_BUSY
+ * with SAVEFILE_ERR_NOT_IDLE, and raises nothing at the game, when the running
+ * game says it is not somewhere a save may be taken or put back.
+ */
 int savefile_set_aside(void);
 int savefile_load_aside(void);
 
@@ -166,6 +192,9 @@ void savefile_tick(void);
  * request of its own outstanding, NOT_FOUND for a file that is not there,
  * BAD_ARG for a name qwark will not have or a file that is not exactly the size
  * of the buffer, and neither raises anything at the game when it refuses.
+ *
+ * Build 43: BUSY with SAVEFILE_ERR_NOT_IDLE is the other refusal, for a game
+ * that is not sitting still. It is checked before either op touches a file.
  */
 int savefile_store(const char *category, const char *name);
 int savefile_restore(const char *category, const char *name);

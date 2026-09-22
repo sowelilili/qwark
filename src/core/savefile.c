@@ -44,6 +44,14 @@ void savefile_set_enabled(int on)
  */
 struct sf_request {
 	u8  armed;
+	/*
+	 * Build 43. The helper answered this request with SAVEFILE_HELPER_REFUSED
+	 * instead of doing the work: the game was not idle on the frame it saw it.
+	 * Set when the byte is read back, cleared when the next request goes out,
+	 * and what tells a transfer waiting on this request to stop rather than
+	 * copy a buffer nothing has filled.
+	 */
+	u8  refused;
 	u16 settle;
 };
 
@@ -94,6 +102,21 @@ static void request_clear(struct sf_request *r)
 {
 	r->armed = 0;
 	r->settle = 0;
+	r->refused = 0;
+}
+
+/*
+ * Build 43. Whether the running game is somewhere a set-aside or a load may
+ * happen at all. A game that does not answer - which is every game but
+ * Deadlocked today - is always ready, so nothing outside Deadlocked changes.
+ * Tick thread, like everything else that reads the game.
+ */
+static int game_ready(void)
+{
+	const struct game_api *g = session_game();
+
+	if (g == NULL || g->savefile_ready == NULL) return 1;
+	return g->savefile_ready() != 0;
 }
 
 /* Drops whatever the transfer was doing, keeping `error` for the client. */
@@ -298,6 +321,24 @@ static void request_tick(struct sf_request *r, u32 addr)
 
 	if (mem_read_u8(addr, &byte) != ST_OK) return;
 
+	/*
+	 * Build 43. The helper dropped the request: the game was not idle on the
+	 * frame it saw it, so it did nothing and left this code in the byte instead
+	 * of clearing it. The request is over - it is never retried, because a load
+	 * that fires at some later moment the user did not ask for is worse than
+	 * one that plainly did not happen - so put the byte back to 0, since the
+	 * helper leaves the code there for exactly one reader, and let the error
+	 * say why nothing came of it.
+	 */
+	if (byte == SAVEFILE_HELPER_REFUSED) {
+		mem_write_u8(addr, 0);
+		request_clear(r);
+		r->refused = 1;
+		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
+		plat_log("savefile: the helper refused the request, the game was not idle");
+		return;
+	}
+
 	if (byte != 0) {
 		r->settle = 0;
 		return;
@@ -336,10 +377,21 @@ static void xfer_tick(const struct sf_desc *d)
 	 */
 	u8 *copy = qscratch();
 	u32 chunks;
+	int rc;
 
 	switch (g_xfer.state) {
 
 	case SF_STORE_SETTLE:
+		/*
+		 * The helper dropped it, so the aside buffer still holds whatever was
+		 * in it before. Storing that would write a file of the last save under
+		 * this one's name, which is worse than storing nothing.
+		 */
+		if (g_set_aside.refused) {
+			xfer_stop(SAVEFILE_ERR_NOT_IDLE);
+			return;
+		}
+
 		/*
 		 * The helper has the request. Nothing may be read out of the buffer
 		 * until the settle window says the copy inside the game is over, which
@@ -415,9 +467,15 @@ static void xfer_tick(const struct sf_desc *d)
 		plat_file_close(g_xfer.file);
 		g_xfer.have_file = 0;
 
-		/* The whole file is in the buffer, so now the game may have it. */
-		if (savefile_load_aside() != ST_OK) {
-			xfer_stop(SAVEFILE_ERR_IO);
+		/*
+		 * The whole file is in the buffer, so now the game may have it - if the
+		 * game is still somewhere it may take it. The copy took ticks, and the
+		 * game had frames of its own in them, so this is asked again here
+		 * rather than taken on trust from when the RESTORE was accepted.
+		 */
+		rc = savefile_load_aside();
+		if (rc != ST_OK) {
+			xfer_stop(rc == ST_BUSY ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_IO);
 			return;
 		}
 		plat_log("savefile: restored %d bytes, load requested", (int)g_xfer.total);
@@ -425,6 +483,12 @@ static void xfer_tick(const struct sf_desc *d)
 		return;
 
 	case SF_RESTORE_LOAD:
+		/* The helper dropped it, so the game never took the buffer. */
+		if (g_load.refused) {
+			xfer_stop(SAVEFILE_ERR_NOT_IDLE);
+			return;
+		}
+
 		/* Done when the load has settled, the same window a plain load waits. */
 		if (g_load.armed) return;
 		xfer_stop(SAVEFILE_ERR_NONE);
@@ -502,6 +566,18 @@ static int request(int load)
 
 	if (rc != ST_OK) return rc;
 
+	/*
+	 * Build 43. Nothing is raised at a game that is not sitting still. The
+	 * helper makes the same test on the frame it would act, because the game
+	 * gets frames of its own between this tick and that one, but asking here
+	 * as well is what lets a client say why: a BUSY now, at the moment the user
+	 * pressed the button, instead of a request that quietly comes to nothing.
+	 */
+	if (!game_ready()) {
+		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
+		return ST_BUSY;
+	}
+
 	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
@@ -516,6 +592,7 @@ static int request(int load)
 	r = load ? &g_load : &g_set_aside;
 	r->armed = 1;
 	r->settle = 0;
+	r->refused = 0;
 	return ST_OK;
 }
 
@@ -633,6 +710,17 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 		return ST_BUSY;
 	}
 
+	/*
+	 * Build 43. Refused here rather than part way in: a STORE that got as far
+	 * as the request and then found the game busy would have created the file
+	 * already, and a RESTORE would have read two megabytes off the disc for a
+	 * load nothing was going to take.
+	 */
+	if (!game_ready()) {
+		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
+		return ST_BUSY;
+	}
+
 	return ST_OK;
 }
 
@@ -672,7 +760,7 @@ int savefile_store(const char *category, const char *name)
 	 */
 	rc = savefile_set_aside();
 	if (rc != ST_OK) {
-		xfer_stop(SAVEFILE_ERR_IO);
+		xfer_stop(rc == ST_BUSY ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_IO);
 		return rc;
 	}
 

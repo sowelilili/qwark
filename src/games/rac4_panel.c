@@ -505,6 +505,39 @@ int rac4_load_setaside(void)
 	return savefile_load_aside();
 }
 
+/*
+ * Build 43. Whether a save may be copied aside or handed back this moment.
+ *
+ * Deadlocked owns its save data from inside the game: the load is a menu
+ * operation, the autosave writes the same buffer, and every planet load, lobby
+ * screen and cutscene transition moves the game between modes that read or
+ * rewrite it. A set-aside raised in the middle of one of those copies a save
+ * the game is still writing, and a load raised there hands the loader a buffer
+ * something else is about to walk over - which is the bug this answers: a file
+ * that came back off the console with the game's fingerprints on it.
+ *
+ * The two words are the game's own, and the test is the one the game's own
+ * mode_requestChange makes: nothing may start while a mode change is queued
+ * (pendingGameMode is anything but -2), and of the modes themselves only
+ * ordinary play and the pause are somewhere the save sits still. The pause
+ * counts because it is the mode the helper parks the game in itself to run the
+ * load menu, so a load raised from the pause screen still goes through.
+ *
+ * A read that fails answers "not ready" rather than "ready": there is no
+ * process to ask, and the caller has nothing to lose by waiting.
+ */
+int rac4_savefile_ready(void)
+{
+	u32 mode = 0;
+	u32 pending = 0;
+
+	if (mem_read_u32(RAC4_GAME_MODE, &mode) != ST_OK) return 0;
+	if (mem_read_u32(RAC4_PENDING_GAME_MODE, &pending) != ST_OK) return 0;
+
+	if (mode != RAC4_GAME_MODE_NORMAL && mode != RAC4_GAME_MODE_PAUSE) return 0;
+	return pending == RAC4_GAME_MODE_NONE;
+}
+
 /* ----------------------------------------------------------------- skins */
 
 static const char * const rac4_skin_options[RAC4_SKIN_COUNT] = {

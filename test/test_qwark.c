@@ -1491,7 +1491,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 42, "and this module is build 42");
+	check_eq_u64(packet[5], 43, "and this module is build 43");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2251,6 +2251,35 @@ static void test_savefile_flags(void)
 /* ------------------------------------- protocol 1.9, the savefile helper */
 
 /*
+ * Build 43. Deadlocked's two mode words, the ones its `savefile_ready` reads:
+ * gameMode (0 ordinary play, 3 the pause, anything else a transition, a menu or
+ * a lobby) and pendingGameMode (-2 when no mode change is queued).
+ *
+ * A fresh fake process is all zeroes, which reads as gameMode 0 and
+ * pendingGameMode 0 - a mode change queued - so Deadlocked is *not* idle when a
+ * test boots it. Every test that wants a request to go out says so first.
+ */
+#define R4_MODE_ADDR         0x00B3C5A0u
+#define R4_PENDING_MODE_ADDR 0x009C37F4u
+#define R4_MODE_NONE         0xFFFFFFFEu
+
+static void rac4_modes(u32 mode, u32 pending)
+{
+	u8 raw[4];
+
+	be32_put(raw, mode);
+	host_poke(R4_MODE_ADDR, raw, 4);
+	be32_put(raw, pending);
+	host_poke(R4_PENDING_MODE_ADDR, raw, 4);
+}
+
+/* The idle state, for the games that have a notion of one. */
+static void savefile_make_idle(u8 game_id)
+{
+	if (game_id == GAME_RAC4) rac4_modes(0, R4_MODE_NONE);
+}
+
+/*
  * What can and cannot be checked here.
  *
  * The helper is PowerPC code that runs inside the game, and the fake console
@@ -2275,6 +2304,7 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait(title), "the game reaches INGAME");
+	savefile_make_idle(game_id);
 
 	check(d != NULL, "the game has an entry in the generated helper table");
 	if (d == NULL) return;
@@ -2843,6 +2873,240 @@ static void test_savefile_library(void)
 	check(savefile_store("runs", "one.sav") == ST_NOT_INGAME, "STORE is NOT_INGAME");
 	check(savefile_restore("runs", "one.sav") == ST_NOT_INGAME, "and RESTORE");
 	check(savefile_library_gate() == ST_NOT_INGAME, "and the library ops");
+}
+
+/* ------------------------ build 43, a save taken only while the game is idle */
+
+/*
+ * What can and cannot be checked here, again.
+ *
+ * qwark's half runs on the PC: the two words are poked into the fake process and
+ * every entry point is asked what it does with them. The *helper's* half is
+ * PowerPC that runs a frame at a time inside the game, and nothing here executes
+ * it, so what a console has to answer is whether a Deadlocked that is mid
+ * cutscene, mid planet load or in the load menu really does read as something
+ * other than mode 0 or 3 with pendingGameMode -2 - and whether a save taken on
+ * the frames that do read idle comes back clean. What is checked here is the
+ * contract between the two: the code the helper leaves in the request byte when
+ * it drops a request, and everything qwark does with it.
+ */
+#define SAVE_ROOT_R4 "/dev_hdd0/qwark/savefiles/NPEA00423"
+
+/* The gameMode values that are not somewhere a save may be taken. */
+static const u32 g_r4_busy_modes[] = {
+	1,  /* movie   */
+	2,  /* scene   */
+	4,  /* freeze  */
+	5,  /* vendor  */
+	6,  /* the space transition, which is a planet load */
+	7,  /* puzzle  */
+	10, /* lobby   */
+	14  /* pre-lobby */
+};
+
+static void test_savefile_not_idle(void)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC4);
+	u8 supported = 0, installed = 0, running = 0, pending = 0, error = 9;
+	u32 size = 0, done = 0, total = 0;
+	u8 byte = 9;
+	u32 i;
+
+	group("build 43: Deadlocked refuses a save while the game is busy");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00423"), "Deadlocked reaches INGAME");
+	if (d == NULL) { check(0, "Deadlocked has a helper table entry"); return; }
+
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+
+	/* ---------------------------------------- pendingGameMode, on its own */
+
+	/* Ordinary play, but a mode change already queued. */
+	rac4_modes(0, 0);
+	host_write_log_reset();
+
+	check(savefile_set_aside() == ST_BUSY,
+	      "a set-aside with a mode change queued is BUSY");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "and the error says the game was not idle");
+	host_peek(d->api_setaside, &byte, 1);
+	check_eq_u64(byte, 0, "with nothing raised at the game");
+	check_eq_u64(host_write_log_count(), 0, "and not a byte written into it");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "nothing is left outstanding");
+	check_eq_u64(installed, 0, "and a refusal does not install the helper either");
+
+	check(savefile_load_aside() == ST_BUSY, "a load is refused the same way");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "with the same error");
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 0, "and nothing raised at the game");
+
+	/* ------------------------------------------- gameMode, on its own */
+
+	for (i = 0; i < sizeof(g_r4_busy_modes) / sizeof(g_r4_busy_modes[0]); i++) {
+		rac4_modes(g_r4_busy_modes[i], R4_MODE_NONE);
+		check(savefile_set_aside() == ST_BUSY,
+		      "a set-aside in a mode that is not play or the pause is BUSY");
+		check(savefile_load_aside() == ST_BUSY, "and so is a load");
+	}
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "every one of them for the same reason");
+	host_peek(d->api_setaside, &byte, 1);
+	check_eq_u64(byte, 0, "and none of them raised anything");
+
+	/* ------------------------------------------------- the two idle modes */
+
+	rac4_modes(0, R4_MODE_NONE);
+	check(savefile_set_aside() == ST_OK, "ordinary play with nothing queued is accepted");
+	host_peek(d->api_setaside, &byte, 1);
+	check_eq_u64(byte, 1, "and raises the request exactly as it always did");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, SAVEFILE_PENDING_SET_ASIDE, "the pending bit goes up");
+	check_eq_u64(installed, 1, "and this is the action that installed the helper");
+
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "and the settle window closes it, unchanged by any of this");
+
+	/*
+	 * The pause counts, because it is the mode the helper puts the game into
+	 * itself to run Deadlocked's load menu.
+	 */
+	rac4_modes(3, R4_MODE_NONE);
+	check(savefile_load_aside() == ST_OK, "the pause is an idle mode too");
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 1, "and the load goes out from it");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+
+	/* --------------------------------------- the helper's own refusal code */
+
+	/*
+	 * qwark asks on its tick; the helper asks on the game's frame, and the two
+	 * are different clocks. A request that qwark let through and the helper then
+	 * found the game busy comes back as SAVEFILE_HELPER_REFUSED in the request
+	 * byte - which the fake console cannot produce, so the test writes it.
+	 */
+	rac4_modes(0, R4_MODE_NONE);
+	check(savefile_set_aside() == ST_OK, "a set-aside goes out while the game is idle");
+	host_poke(d->api_setaside, (const u8 *)"\xFE", 1);
+	pump(1);
+	host_peek(d->api_setaside, &byte, 1);
+	check_eq_u64(byte, 0, "qwark clears the refusal code out of the byte");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "the request is over at once, with no settle window");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "and it is reported as the game not being idle");
+
+	check(savefile_load_aside() == ST_OK, "a load goes out while the game is idle");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(1);
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 0, "the load's refusal is cleared the same way");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "and it is not retried on a later frame");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "with the same error");
+
+	/* ------------------------------------------------- STORE and RESTORE */
+
+	check(savefile_category(SAVEFILE_CATEGORY_CREATE, "dl") == ST_OK,
+	      "a category for Deadlocked");
+
+	rac4_modes(0, 0);
+	check(savefile_store("dl", "busy.sav") == ST_BUSY, "STORE is refused while busy");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "for the same reason");
+	savefile_info(&supported, &installed, &running, &pending, &size);
+	check_eq_u64(pending, 0, "no transfer started");
+	check(!plat_path_exists(SAVE_ROOT_R4 "/dl/busy.sav", NULL, NULL),
+	      "and no file was made for it");
+
+	/* A real store, from an idle game, so there is something to restore. */
+	rac4_modes(0, R4_MODE_NONE);
+	fill_aside(d, 4);
+	check(savefile_store("dl", "good.sav") == ST_OK, "STORE from an idle game is accepted");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	check(pump_until_transfer_done(SAVEFILE_SETTLE_TICKS + 64), "and runs to the end");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NONE, "with no error");
+	check(plat_path_exists(SAVE_ROOT_R4 "/dl/good.sav", NULL, NULL), "leaving the file");
+
+	rac4_modes(6, R4_MODE_NONE);
+	check(savefile_restore("dl", "good.sav") == ST_BUSY,
+	      "RESTORE into a planet load is refused");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "for the same reason");
+
+	/*
+	 * A RESTORE is a megabyte of copying before the load goes out, and the game
+	 * has frames of its own in that time. The readiness test is made again at
+	 * the end, not taken on trust from when the op was accepted.
+	 */
+	rac4_modes(0, R4_MODE_NONE);
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	check(savefile_restore("dl", "good.sav") == ST_OK, "RESTORE from an idle game is accepted");
+	pump(2);
+	rac4_modes(6, R4_MODE_NONE);
+	check(pump_until_transfer_done(128), "the copy finishes and the transfer stops");
+	host_peek(d->api_load, &byte, 1);
+	check_eq_u64(byte, 0, "with no load raised at a game that stopped being idle");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "and the error says why");
+
+	/* The same again, but it is the helper that says no. */
+	rac4_modes(0, R4_MODE_NONE);
+	check(savefile_restore("dl", "good.sav") == ST_OK, "one more RESTORE");
+	{
+		int ticks;
+		for (ticks = 0; ticks < 128; ticks++) {
+			host_peek(d->api_load, &byte, 1);
+			if (byte != 0) break;
+			pump(1);
+		}
+	}
+	check_eq_u64(byte, 1, "which does raise the load once the file is in");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	check(pump_until_transfer_done(8), "the helper refuses it and the transfer stops");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "saying the game was not idle");
+
+	/* And a STORE whose set-aside the helper refuses writes no file at all. */
+	rac4_modes(0, R4_MODE_NONE);
+	check(savefile_store("dl", "dropped.sav") == ST_OK, "a STORE goes out");
+	host_poke(d->api_setaside, (const u8 *)"\xFE", 1);
+	check(pump_until_transfer_done(8), "the helper refuses the set-aside");
+	savefile_transfer(&done, &total, &error);
+	check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "and the transfer stops for that reason");
+	check_eq_u64(done, 0, "without copying a byte");
+	check(!plat_path_exists(SAVE_ROOT_R4 "/dl/dropped.sav", NULL, NULL),
+	      "and without leaving a file of the last save under this one's name");
+
+	/* -------------------------------------------------- the other games */
+
+	/*
+	 * A game whose vtable has no savefile_ready is always ready, so the three
+	 * that have not been looked at answer exactly as they did before build 43.
+	 */
+	check(quit_and_wait(), "Deadlocked goes away");
+	check(boot_and_wait("NPEA00385"), "RaC1 comes up");
+	check(savefile_set_aside() == ST_OK,
+	      "RaC1 has no idle test, so a set-aside goes straight out");
+	host_poke(sf_desc_for_game(GAME_RAC1)->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+
+	/* ------------------------------------------------------------ tidy up */
+
+	check(quit_and_wait(), "RaC1 goes away");
+	check(boot_and_wait("NPEA00423"), "Deadlocked comes back to clean up after itself");
+	plat_file_unlink(SAVE_ROOT_R4 "/dl/good.sav");
+	plat_file_unlink(SAVE_ROOT_R4 "/dl/good.sav.sum");
+	check(savefile_category(SAVEFILE_CATEGORY_DELETE, "dl") == ST_OK,
+	      "and the category goes with them");
 }
 
 /*
@@ -4972,6 +5236,7 @@ static void test_rac4(void)
 	group("Deadlocked: savefile requests");
 
 	host_poke(R4_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	savefile_make_idle(GAME_RAC4);
 	check(features_trigger(F4_SET_ASIDE) == ST_OK,
 	      "set aside works from a cold process");
 	host_peek(R4_SF_SET_ASIDE, &b, 1);
@@ -6767,6 +7032,7 @@ int main(void)
 	test_savefile_flags();
 	test_savefile_helper();
 	test_savefile_library();
+	test_savefile_not_idle();
 	test_signed_values();
 	test_combo_suspend();
 	test_combo_enable();

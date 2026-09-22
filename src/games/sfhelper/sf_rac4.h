@@ -76,6 +76,32 @@
 #define SF_MAGIC_ADDR 0x0119F8DC
 #define SF_GAME_MODE  0x00B3C5A0
 
+/*
+ * Build 43: the second half of the idle test, and the values it compares
+ * against. `pendingGameMode` is the mode the game has been asked to change to
+ * and has not changed to yet, and -2 (the game's own GAME_MODE_NONE) is the
+ * value it holds when nothing is queued.
+ *
+ * Both symbols are the Ghidra project's, and both addresses were read back out
+ * of the shipped EBOOT: mode_requestChange at 0x0022BE00 loads pendingGameMode
+ * with `lis r3,0x9c; lwz r3,0x37f4(r3)` and returns -1 unless it is -2, loads
+ * gameMode with `lis r3,0xb4; lwz r3,-0x3a60(r3)`, and mode_doChange closes a
+ * change out at 0x0022CBA0 with `gameMode = pendingGameMode; pendingGameMode =
+ * -2`.
+ *
+ * The modes are gameMode_t: 0 normal, 1 movie, 2 scene, 3 pause, 4 freeze,
+ * 5 vendor, 6 the space transition, 7 puzzle, 8 weapon upgrade, 9 credits,
+ * 10 lobby, 11 flyby, 12 thermal, 13 and 14 the pre-lobby pair, 15 waiting for
+ * a multiplayer start, 16 a memory-card command, 17 IOP debug. Only 0 and 3 are
+ * somewhere the save data sits still: ordinary play, and the pause this helper
+ * puts the game in itself to run the load menu.
+ */
+#define SF_PENDING_GAME_MODE 0x009C37F4
+
+#define SF_MODE_NORMAL 0x00000000
+#define SF_MODE_PAUSE  0x00000003
+#define SF_MODE_NONE   0xFFFFFFFE
+
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY             0x007E61F4

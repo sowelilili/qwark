@@ -824,6 +824,7 @@ const struct game_api rac4_game = {
 	rac4_planet_load,
 	rac4_die,
 	rac4_load_setaside,
+	rac4_savefile_ready,  /* build 43: gameMode 0 or 3, pendingGameMode -2 */
 
 	rac4_unlock_list,
 	rac4_unlock_read,

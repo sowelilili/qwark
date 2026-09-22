@@ -180,8 +180,41 @@
 #define RAC4_MISSIONS_DREAD    64      /* planet 0 has the whole array */
 #define RAC4_MISSIONS_OTHER    16
 
+/*
+ * The game's two mode words, which are what says whether a save may be taken or
+ * put back. `gameMode` is RAC4_GAME_STATE above, the word the fast-load watcher
+ * already reads; `pendingGameMode` is the mode the game has been asked to change
+ * to and has not changed to yet.
+ *
+ * Both come out of the Ghidra project's own symbols, and the addresses are the
+ * ones the shipped EBOOT builds: mode_requestChange at 0x0022BE00 reads
+ * pendingGameMode (`lis r3,0x9c; lwz r3,0x37f4(r3)`) and refuses with -1 unless
+ * it holds -2, writes the caller's mode there when it accepts, and reads
+ * gameMode at 0x0022BF08 (`lis r3,0xb4; lwz r3,-0x3a60(r3)`); mode_doChange
+ * finishes a change with `gameMode = pendingGameMode; pendingGameMode = -2` at
+ * 0x0022CBA0.
+ *
+ * So -2 in pendingGameMode means nothing is queued, and the modes themselves are
+ * the game's own gameMode_t: -2 none, -1 debug, 0 normal, 1 movie, 2 scene,
+ * 3 pause, 4 freeze, 5 vendor, 6 the space transition, 7 puzzle, 8 weapon
+ * upgrade, 9 credits, 10 lobby, 11 flyby, 12 thermal, 13 and 14 the pre-lobby
+ * pair, 15 waiting for a multiplayer start, 16 a memory-card command, 17 IOP
+ * debug.
+ *
+ * Only 0 and 3 are safe: ordinary play, and the pause the savefile helper parks
+ * the game in itself to run Deadlocked's load menu. Everything else is a
+ * transition, a cutscene, a menu or a lobby that is already moving the save
+ * about underneath whatever qwark would do.
+ */
+#define RAC4_GAME_MODE         RAC4_GAME_STATE
+#define RAC4_PENDING_GAME_MODE 0x009C37F4u
+
+#define RAC4_GAME_MODE_NORMAL  0u
+#define RAC4_GAME_MODE_PAUSE   3u
 /* gameMode while the ship is in the space transition; the load ends when it leaves. */
 #define RAC4_GAME_MODE_SPACE   6
+/* pendingGameMode when no mode change is queued: GAME_MODE_NONE, -2. */
+#define RAC4_GAME_MODE_NONE    0xFFFFFFFEu
 
 #define RAC4_BOTS_COUNT        16
 #define RAC4_SKIN_COUNT        22
@@ -350,6 +383,7 @@ int rac4_trigger(u8 id);
 int rac4_set_value(u8 id, u32 value);
 int rac4_get_options(u8 id, const char * const **options, u8 *count);
 int rac4_load_setaside(void);
+int rac4_savefile_ready(void);
 int rac4_die(void);
 
 int rac4_planet_load(u8 planet, u8 flags);

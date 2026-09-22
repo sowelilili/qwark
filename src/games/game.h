@@ -195,6 +195,19 @@ struct game_api {
 	int (*load_setaside)(void);
 
 	/*
+	 * Build 43. Whether the game is somewhere a save may be copied aside or
+	 * handed back right now: 1 when it is, 0 when something in the game owns
+	 * the save data or is about to. src/core/savefile.c asks before it raises a
+	 * set-aside or a load, and refuses with BUSY and SAVEFILE_ERR_NOT_IDLE
+	 * rather than start work the game will walk over.
+	 *
+	 * NULL where a game has no such notion, and a NULL reads as "always ready",
+	 * so the three games that have not been looked at behave exactly as before.
+	 * Tick thread only: it reads game memory.
+	 */
+	int (*savefile_ready)(void);
+
+	/*
 	 * unlock_list may snapshot the live values so that unlock_read can serve
 	 * every row from a couple of reads. The core calls the two together on the
 	 * tick thread under the core lock, so the snapshot is never stale.

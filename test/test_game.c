@@ -113,6 +113,7 @@ const struct game_api testgame_game = {
 	NULL,                 /* planet_load */
 	NULL,                 /* die */
 	NULL,                 /* load_setaside */
+	NULL,                 /* savefile_ready */
 
 	NULL, NULL, NULL,     /* unlocks */
 	NULL, NULL, NULL,     /* level flags */
