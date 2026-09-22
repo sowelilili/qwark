@@ -396,6 +396,10 @@ char version[16]
 char author[32]
 ```
 
+**MOD_RESCAN** reads every mod folder of the current title again, and that is what makes the upload above land: the `qwark.sum` just written becomes the `hash` MOD_LIST reports, the `#-` lines become the name, version and author in the row, and the patch words become what the next MOD_LOAD writes into the game. It answers OK whatever it finds, including for a title with no mod folder at all.
+
+A mod that is loaded at that moment is the one exception, and it is left exactly as it was parsed: its patch words are in the running game next to the originals its unload will put back, so re-reading its folder would leave the console unable to give the game its own instructions again. Its row therefore keeps the hash it was parsed with, and a client that uploads over a mod the console has loaded goes on seeing the old hash until it unloads the mod and rescans. Every other mod is re-read whatever is loaded, so a client that uploads a mod in order to load it — which is the only time the mods panel uploads one — always sees what it just wrote. A rescan used to skip *every* folder it already knew as soon as any one mod was loaded, so an uploaded mod kept the hash and the words of the copy it replaced for the rest of the session; that is fixed, and no client has to do anything differently for it.
+
 ### 5.8 Files (0x007x)
 
 Paths are absolute, at most 511 bytes, sent as the remainder of the payload with no terminator. Only paths under `/dev_hdd0/` and `/dev_usb` are accepted. These run on the network thread and never touch game memory.

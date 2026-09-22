@@ -282,12 +282,70 @@ static int parse_mod(struct mod_entry *m, const char *dirname)
 
 /* ----------------------------------------------------------------- rescan */
 
+/*
+ * Packs the word, originals and cave pools down onto the entries the table
+ * still holds, so the space the ones a rescan dropped were using comes back.
+ * The pools are bump allocated and a mod owns one slice of each; walking the
+ * table in order walks the slices in the order they were taken, so a slice only
+ * ever moves down and never onto one that has not moved yet.
+ *
+ * A kept entry's def is re-pointed at its moved slice. The entry itself does
+ * not move, and must not: patch.c's applied table holds the address of a loaded
+ * mod's patch_def, and a def that moved would never be matched again to be
+ * reverted. The words themselves are copied bytes for bytes, so a mod that is
+ * loaded reverts with exactly the originals it captured.
+ */
+static void mods_pack_pools(void)
+{
+	u16 wdst = 0;
+	u16 cdst = 0;
+	u32 i;
+
+	for (i = 0; i < g_nmods; i++) {
+		struct mod_entry *m = &g_mods[i];
+		u16 wsrc;
+
+		if (!m->used || m->def.words == NULL) continue;
+
+		wsrc = (u16)(m->def.words - (const struct patch_word *)g_words);
+
+		if (m->def.count > 0 && wdst != wsrc) {
+			memmove(&g_words[wdst], &g_words[wsrc],
+			        (u32)m->def.count * sizeof(g_words[0]));
+			memmove(&g_originals[wdst], &g_originals[wsrc],
+			        (u32)m->def.count * sizeof(g_originals[0]));
+		}
+		m->def.words     = &g_words[wdst];
+		m->def.originals = &g_originals[wdst];
+		wdst = (u16)(wdst + m->def.count);
+
+		if (m->ncaves > 0 && cdst != m->cave_first) {
+			memmove(&g_caves[cdst], &g_caves[m->cave_first],
+			        (u32)m->ncaves * sizeof(g_caves[0]));
+		}
+		m->cave_first = cdst;
+		cdst = (u16)(cdst + m->ncaves);
+	}
+
+	g_words_used = wdst;
+	g_caves_used = cdst;
+}
+
+/* The lowest free table slot, or QWARK_MAX_MODS when the table is full. */
+static u32 mods_free_slot(void)
+{
+	u32 i;
+	for (i = 0; i < QWARK_MAX_MODS; i++) {
+		if (!g_mods[i].used) return i;
+	}
+	return QWARK_MAX_MODS;
+}
+
 int mods_rescan(void)
 {
 	char path[MOD_PATH_MAX];
 	plat_dir_t dir;
 	struct plat_dirent ent;
-	int any_loaded = 0;
 	u32 i;
 
 	if (g_title[0] == 0) {
@@ -298,21 +356,26 @@ int mods_rescan(void)
 		return ST_OK;
 	}
 
-	for (i = 0; i < g_nmods; i++) {
-		if (g_mods[i].used && (g_mods[i].flags & MOD_FLAG_LOADED)) any_loaded = 1;
-	}
-
 	/*
-	 * The word and cave pools are bump allocated, so a full re-parse is only
-	 * safe when nothing is holding onto a slice of them. With mods loaded we do
-	 * what racman's ReloadMods does and only pick up folders we have not seen.
+	 * Every folder is read again, because a rescan is what a client asks for
+	 * the moment it has replaced a mod's files and it has to see the new ones:
+	 * the new qwark.sum, which is the hash MOD_LIST reports and the only thing
+	 * telling that client its upload landed, and the new patch words, which are
+	 * what the next MOD_LOAD writes into the game.
+	 *
+	 * A mod that is loaded right now is the exception. It is in the running
+	 * process: its words are in the pool next to the originals it will need to
+	 * put back, and patch.c holds the address of its patch_def. So it keeps its
+	 * entry, its slot and its slice and stays exactly as it was parsed, and a
+	 * client that wants it re-read unloads it first - which is what the mods
+	 * panel does, since it only ever uploads a mod it is about to load.
 	 */
-	if (!any_loaded) {
-		g_nmods = 0;
-		memset(g_mods, 0, sizeof(g_mods));
-		g_words_used = 0;
-		g_caves_used = 0;
+	for (i = 0; i < g_nmods; i++) {
+		if (g_mods[i].used && (g_mods[i].flags & MOD_FLAG_LOADED)) continue;
+		memset(&g_mods[i], 0, sizeof(g_mods[i]));
 	}
+	mods_pack_pools();
+	while (g_nmods > 0 && !g_mods[g_nmods - 1].used) g_nmods--;
 
 	path[0] = 0;
 	qstrcat(path, sizeof(path), QWARK_MODSDIR);
@@ -323,22 +386,25 @@ int mods_rescan(void)
 
 	while (plat_dir_next(&dir, &ent) == 1) {
 		struct mod_entry tmp;
+		u32 slot;
 
 		if (!ent.is_dir) continue;
 		if (qstreq(ent.name, ".") || qstreq(ent.name, "..")) continue;
-		if (g_nmods >= QWARK_MAX_MODS) break;
-		if (mods_find(ent.name) >= 0) continue;
+		if (mods_find(ent.name) >= 0) continue;   /* a loaded mod, left alone */
+
+		slot = mods_free_slot();
+		if (slot >= QWARK_MAX_MODS) break;
 
 		parse_mod(&tmp, ent.name);
-		tmp.index = (u8)g_nmods;
-		g_mods[g_nmods] = tmp;
+		tmp.index = (u8)slot;
+		g_mods[slot] = tmp;
 		/*
 		 * parse_mod pointed def.name at the temporary's own name buffer, which
 		 * dies with this loop iteration; the copy in the table has to point at
 		 * its own. Without this PATCH_LIST read a dead stack frame for the name.
 		 */
-		g_mods[g_nmods].def.name = g_mods[g_nmods].name;
-		g_nmods++;
+		g_mods[slot].def.name = g_mods[slot].name;
+		if (slot + 1 > g_nmods) g_nmods = slot + 1;
 	}
 
 	plat_dir_close(&dir);

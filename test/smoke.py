@@ -114,6 +114,14 @@ OP_LEVELFLAGS_GET = 0x0053
 OP_LEVELFLAGS_RESET = 0x0054
 OP_LEVELFLAGS_SET = 0x0055
 OP_MOD_LIST = 0x0060
+OP_MOD_LOAD = 0x0061
+OP_MOD_UNLOAD = 0x0062
+OP_MOD_RESCAN = 0x0064
+OP_MOD_INFO = 0x0065
+
+# One Mod row, and the flag that says the console has this one in the game.
+MOD_WIRE_SIZE = 120
+MOD_FLAG_LOADED = 0x01
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
 OP_COMBO_SUSPEND = 0x0082
@@ -1554,6 +1562,25 @@ def read_console_file(c, path):
 
     c.call(OP_FILE_CLOSE, handle)
     return data
+
+
+def mod_list(c):
+    """MOD_LIST, as the rows a client reads out of it."""
+    status, body = c.call(OP_MOD_LIST)
+    mods = []
+    if status == ST_OK and body:
+        for i in range(body[0]):
+            off = 1 + i * MOD_WIRE_SIZE
+            mods.append({
+                "index": body[off],
+                "flags": body[off + 1],
+                "hash": struct.unpack(">I", body[off + 4:off + 8])[0],
+                "dirname": body[off + 8:off + 40].split(b"\0")[0].decode(),
+                "name": body[off + 40:off + 72].split(b"\0")[0].decode(),
+                "version": body[off + 72:off + 88].split(b"\0")[0].decode(),
+                "author": body[off + 88:off + 120].split(b"\0")[0].decode(),
+            })
+    return status, mods
 
 
 def write_console_file(c, path, data):
@@ -3155,23 +3182,56 @@ def main():
         check(status == ST_OK, "COMBO_ENABLE 0 once more, before the reboot", status)
 
         # ------------------------------------------------------ mod listing
-        status, body = c.call(OP_MOD_LIST)
-        mods = []
-        if status == ST_OK:
-            n = body[0]
-            for i in range(n):
-                off = 1 + i * 120
-                mods.append({
-                    "index": body[off],
-                    "flags": body[off + 1],
-                    "hash": struct.unpack(">I", body[off + 4:off + 8])[0],
-                    "dirname": body[off + 8:off + 40].split(b"\0")[0].decode(),
-                    "name": body[off + 40:off + 72].split(b"\0")[0].decode(),
-                })
+        status, mods = mod_list(c)
         check(status == ST_OK and len(mods) >= 6,
               "MOD_LIST reports the installed mod fixtures", len(mods))
         check(any(m["name"] == "Hardcore Mode" for m in mods),
               "a mod's #- name came through", [m["name"] for m in mods])
+
+        # --------------------------------------- an upload while a mod is on
+        # What the client's Load button does: write the files, write qwark.sum,
+        # MOD_RESCAN, MOD_LOAD. The rescan has to hand back the mod that is on
+        # the console now, and it has to do that while other mods are loaded -
+        # one the user left on, or an auto one the game brought in by itself.
+        # It used to skip every folder it already knew the moment any mod was
+        # loaded, so an uploaded mod kept the hash and the words of the copy it
+        # replaced: the client compared its own CRC against a hash that could
+        # never change and called the mod stale for the rest of the session.
+        status, _ = c.call(OP_MOD_LOAD, fixed32("hardcore"))
+        check(status == ST_OK, "MOD_LOAD hardcore, a mod the user leaves on", status)
+
+        folder = "/dev_hdd0/qwark/mods/NPEA00385/lock_rng"
+        write_console_file(c, folder + "/patch.txt",
+                           b"#- name: Lock RNG\r\n"
+                           b"#- version: 2.0\r\n"
+                           b"#- description: the edited copy\r\n"
+                           b"\r\n"
+                           b"# a comment line the old copy did not have\r\n"
+                           b"0x00A10000: 0x60000000\r\n")
+        write_console_file(c, folder + "/qwark.sum", b"0badf00d")
+        status, _ = c.call(OP_MOD_RESCAN)
+        check(status == ST_OK, "MOD_RESCAN answers OK with a mod loaded", status)
+
+        status, mods = mod_list(c)
+        edited = next((m for m in mods if m["dirname"] == "lock_rng"), None)
+        check(edited is not None and edited["hash"] == 0x0BADF00D,
+              "MOD_LIST reports the hash the upload just wrote",
+              "%08x" % edited["hash"] if edited else None)
+        check(edited is not None and edited["version"] == "2.0",
+              "and the metadata out of the patch.txt that came with it",
+              edited["version"] if edited else None)
+
+        status, body = c.call(OP_MOD_INFO, fixed32("lock_rng"))
+        check(status == ST_OK and body == b"the edited copy",
+              "MOD_INFO reads the new description back", (status, body))
+
+        kept = next((m for m in mods if m["dirname"] == "hardcore"), None)
+        check(kept is not None and (kept["flags"] & MOD_FLAG_LOADED) != 0,
+              "and the mod that was loaded came through the rescan loaded",
+              kept["flags"] if kept else None)
+
+        status, _ = c.call(OP_MOD_UNLOAD, fixed32("hardcore"))
+        check(status == ST_OK, "MOD_UNLOAD hands the game back its own words", status)
 
         # ----------------------------------------------- same-title reboot
         sim.send("quit")

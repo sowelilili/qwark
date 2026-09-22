@@ -580,6 +580,65 @@ static void write_generated_padded_mod(const char *title, const char *dirname, u
 }
 
 /*
+ * A mod folder as a client's upload leaves one: a patch.txt carrying a version
+ * line and `nwords` words from `base`, and then the qwark.sum the client writes
+ * after the files, which is the hash MOD_LIST reports. Writing one over another
+ * is what an edited mod being uploaded again looks like from this side.
+ */
+static void write_uploaded_mod(const char *title, const char *dirname,
+                               const char *version, u32 nwords, u32 base,
+                               const char *sum)
+{
+	char dirpath[256];
+	char path[288];
+	char line[64];
+	plat_file_t f;
+	u32 i;
+
+	dirpath[0] = 0;
+	qstrcat(dirpath, sizeof(dirpath), QWARK_MODSDIR);
+	plat_dir_create(dirpath);
+	qstrcat(dirpath, sizeof(dirpath), "/");
+	qstrcat(dirpath, sizeof(dirpath), title);
+	plat_dir_create(dirpath);
+	qstrcat(dirpath, sizeof(dirpath), "/");
+	qstrcat(dirpath, sizeof(dirpath), dirname);
+	plat_dir_create(dirpath);
+
+	qstrcpy(path, sizeof(path), dirpath);
+	qstrcat(path, sizeof(path), "/patch.txt");
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+
+	line[0] = 0;
+	qstrcat(line, sizeof(line), "#- name: ");
+	qstrcat(line, sizeof(line), dirname);
+	qstrcat(line, sizeof(line), "\n");
+	plat_file_write(f, line, qstrlen(line));
+
+	line[0] = 0;
+	qstrcat(line, sizeof(line), "#- version: ");
+	qstrcat(line, sizeof(line), version);
+	qstrcat(line, sizeof(line), "\n");
+	plat_file_write(f, line, qstrlen(line));
+
+	for (i = 0; i < nwords; i++) {
+		line[0] = 0;
+		qstrcat(line, sizeof(line), "0x");
+		qfmt_hex(line + 2, sizeof(line) - 2, base + i * 4u, 8);
+		qstrcat(line, sizeof(line), ": 0x60000000\n");
+		plat_file_write(f, line, qstrlen(line));
+	}
+
+	plat_file_close(f);
+
+	qstrcpy(path, sizeof(path), dirpath);
+	qstrcat(path, sizeof(path), "/qwark.sum");
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+	plat_file_write(f, sum, qstrlen(sum));
+	plat_file_close(f);
+}
+
+/*
  * One mod folder with a patch.txt written out line by line: a "#- name:", an
  * optional "#- depends:" and one patch word, which is all a dependency test
  * needs. The word addresses are spread so two mods never claim the same one.
@@ -883,6 +942,71 @@ static void test_mods(void)
 			mods_unload("il-ghost");
 			mods_unload("dl-cs");
 		}
+	}
+
+	group("a rescan after an upload");
+
+	/*
+	 * What MOD_RESCAN is for: a client has just replaced a mod's files and has
+	 * to see the mod that is on the console now. The hash out of the new
+	 * qwark.sum is the one the mods panel compares against its own copy and
+	 * marks the row stale when the two differ, and the words are what the next
+	 * MOD_LOAD writes into the game.
+	 *
+	 * A rescan used to skip every folder it already knew as soon as any one mod
+	 * was loaded, so with a single mod on - one the user left loaded, or an
+	 * auto one the game brought in by itself - an uploaded mod kept the hash,
+	 * the metadata and the words of the copy it replaced. The row stayed stale
+	 * for the rest of the session whatever the user pressed, and loading it
+	 * wrote the old patch.
+	 *
+	 * The mod that is loaded is the one thing a rescan leaves alone, and that is
+	 * here too: its words are in the running process with the originals it will
+	 * need to put them back, so it keeps them, and it still unloads to exactly
+	 * what it captured although the pool was packed underneath it.
+	 */
+	{
+		const char *title = "NPEA09998";
+
+		write_uploaded_mod(title, "edited", "1.0", 4, 0x00850000u, "11112222");
+		write_named_mod(title, "keeper", NULL, 0x00860000u);
+		mods_set_title(title);
+
+		host_poke(0x00860000u, (const u8 *)"\x12\x34\x56\x78", 4);
+		host_poke(0x00850014u, (const u8 *)"\xAA\xAA\xAA\xAA", 4);
+
+		check(mods_load("keeper") == ST_OK, "one mod of the title is loaded");
+
+		m = mods_at((u32)mods_find("edited"));
+		check(m != NULL && m->hash == 0x11112222u,
+		      "the other mod reports the hash its qwark.sum holds");
+
+		/* The upload: the new files, the new qwark.sum, then MOD_RESCAN. */
+		write_uploaded_mod(title, "edited", "2.0", 6, 0x00850000u, "33334444");
+		check(mods_rescan() == ST_OK, "a rescan with a mod loaded answers OK");
+
+		m = mods_at((u32)mods_find("edited"));
+		check(m != NULL, "the uploaded mod is still in the table");
+		if (m != NULL) {
+			check_eq_u64(m->hash, 0x33334444u, "with the hash the upload wrote");
+			check(qstreq(m->version, "2.0"),
+			      "and the version out of the patch.txt that came with it");
+			check_eq_u64(m->def.count, 6, "and the words that patch.txt lists");
+		}
+
+		m = mods_at((u32)mods_find("keeper"));
+		check(m != NULL && (m->flags & MOD_FLAG_LOADED) != 0,
+		      "the loaded mod came through the rescan loaded");
+
+		check(mods_load("edited") == ST_OK, "the uploaded mod loads");
+		mem_read_u32(0x00850014u, &v);
+		check_eq_u64(v, 0x60000000u, "and it is the new words that reach memory");
+
+		check(mods_unload("keeper") == ST_OK, "the mod that stayed loaded unloads");
+		mem_read_u32(0x00860000u, &v);
+		check_eq_u64(v, 0x12345678u,
+		             "restoring the original it captured before the pool was packed");
+		check(mods_unload("edited") == ST_OK, "and the uploaded one unloads too");
 	}
 
 	group("patch.txt parser, the pool limits");
