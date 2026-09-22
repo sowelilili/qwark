@@ -103,9 +103,9 @@ static void sf_fill_if_empty(void)
  * The test is the one the game's own mode_requestChange makes, plus the two
  * modes where the save sits still: nothing may happen while a mode change is
  * queued, and gameMode must be ordinary play or the pause. The pause is in
- * because it is the mode this helper parks the game in itself, three frames
- * further down, to run the load menu - so the load's own later steps still see
- * an idle game, which is exactly what they should.
+ * because it is the mode this helper parks the game in itself, further down,
+ * to run the load menu - so the load's own later steps still see an idle game,
+ * which is exactly what they should.
  *
  * qwark makes the same test on its own tick before it writes the request byte
  * at all, and refuses with SAVEFILE_ERR_NOT_IDLE so the client can say why.
@@ -139,10 +139,6 @@ void sf_entry(void)
 {
 	SF_BYTE(SF_API_MOD) = 1;
 
-#if SF_GAME == SF_RAC4
-	if (SF_WORD(SF_FRAME_TIMER) > 0) SF_WORD(SF_FRAME_TIMER) -= 1;
-#endif
-
 	/*
 	 * The byte goes to zero after the copy, never before it. A zero here is what
 	 * qwark reports the request answered on, and the client reads the aside
@@ -170,37 +166,81 @@ void sf_entry(void)
 	/*
 	 * Deadlocked's loader is the load *menu*, so this runs over several frames.
 	 *
-	 *   api_load 1, timer 0   pause the game (mode 3) and start a four-frame
-	 *                         countdown, so the pause has taken by the time the
-	 *                         buffer goes in
-	 *   api_load 1, timer 1   hand the buffer over and move to state 2
-	 *   api_load 2            watch the menu's status word: 15 or 24 is the
-	 *                         player confirming, and the load goes through; 28
-	 *                         is a cancel, and the game mode goes back
+	 *   api_load 1, first frame   pause the game (mode 3); SF_PAUSE_WAIT goes to 1
+	 *   api_load 1, then          wait until the game has sat in the pause, with
+	 *                             no mode change queued, for SF_PAUSE_HOLD frames
+	 *                             in a row, then hand the buffer over and move to
+	 *                             state 2
+	 *   api_load 2                watch the menu's status word: 15 or 24 is the
+	 *                             player confirming, and the load goes through;
+	 *                             28 is a cancel, and the game mode goes back
 	 *
-	 * Build 43: the idle test is made where the sequence starts, on the frame
-	 * the request is first seen, and the request is dropped there if the game
-	 * is busy. It is not made again at timer 1 or in state 2, and deliberately
-	 * so: by then the helper has put the game in the pause itself and the menu
-	 * is up, and unwinding that from underneath the game would be a worse thing
-	 * to do than finishing. The player backing out of the menu is already the
-	 * documented way out, and it is the 28 below.
+	 * Build 44: the wait is on the game's own mode rather than a frame count.
+	 * The helper runs from the pad routine, part way through a frame, so the
+	 * frame it pauses in still finishes its world update, and anything that
+	 * frame queues - an autosave, a message, a cutscene - is applied at its end
+	 * and takes the game out of the pause the helper put it in. The old
+	 * four-frame countdown restored the save regardless, and whatever the game
+	 * was doing then went on writing into the save it had just been handed:
+	 * the carried-over data. Now the restore waits for the game to be back in
+	 * mode 3 with nothing queued, and to stay there, however long that takes up
+	 * to SF_PAUSE_WAIT_MAX frames.
+	 *
+	 * A request the game will not settle for is dropped, as build 43 drops one
+	 * seen while the game is busy: the game back in ordinary play means the
+	 * pause is gone and the player is playing, so the load is not raised at
+	 * them later; running out of frames means the same. If the helper's own
+	 * pause is still in place when it gives up, the mode it replaced goes back,
+	 * so the game is not left paused with no menu.
 	 */
+	/*
+	 * The wait belongs to one request. Anything that clears the byte from
+	 * outside - qwark, a game that restarted - must not leave the next request
+	 * starting half way through a wait that never paused anything.
+	 */
+	if (SF_BYTE(SF_API_LOAD) != 1) SF_WORD(SF_PAUSE_WAIT) = 0;
+
 	if (SF_BYTE(SF_API_LOAD) == 1) {
-		if (SF_WORD(SF_FRAME_TIMER) == 0) {
+		/* Each word read once, so the helper stays inside its cave. */
+		sf_u32 mode   = SF_WORD(SF_GAME_MODE);
+		sf_u32 queued = SF_WORD(SF_PENDING_GAME_MODE) != SF_MODE_NONE;
+		sf_u32 wait   = SF_WORD(SF_PAUSE_WAIT);
+		sf_u32 held   = SF_WORD(SF_FRAME_TIMER);
+
+		if (wait == 0) {
 			if (!sf_game_idle()) {
 				SF_BYTE(SF_API_LOAD) = SF_API_REFUSED;
 			} else {
 				sf_fill_if_empty();
 
-				SF_WORD(SF_FRAME_TIMER) = 4;
-				SF_WORD(SF_PREV_GAME_MODE) = SF_WORD(SF_GAME_MODE);
-				SF_WORD(SF_GAME_MODE) = 3;
+				SF_WORD(SF_PREV_GAME_MODE) = mode;
+				SF_WORD(SF_GAME_MODE) = SF_MODE_PAUSE;
+				held = 0;
+				wait = 1;
 			}
-		} else if (SF_WORD(SF_FRAME_TIMER) == 1) {
-			sf_restore_saved_game(0, (void *)SF_ASIDE_ADDR);
-			SF_BYTE(SF_API_LOAD) = 2;
+		} else if (mode == SF_MODE_PAUSE && !queued) {
+			held += 1;
+			if (held >= SF_PAUSE_HOLD) {
+				wait = 0;
+				sf_restore_saved_game(0, (void *)SF_ASIDE_ADDR);
+				SF_BYTE(SF_API_LOAD) = 2;
+			}
+		} else if (mode == SF_MODE_NORMAL && !queued) {
+			wait = 0;
+			SF_BYTE(SF_API_LOAD) = SF_API_REFUSED;
+		} else {
+			held = 0;
+			wait += 1;
+			if (wait > SF_PAUSE_WAIT_MAX) {
+				if (mode == SF_MODE_PAUSE)
+					SF_WORD(SF_GAME_MODE) = SF_WORD(SF_PREV_GAME_MODE);
+				wait = 0;
+				SF_BYTE(SF_API_LOAD) = SF_API_REFUSED;
+			}
 		}
+
+		SF_WORD(SF_PAUSE_WAIT) = wait;
+		SF_WORD(SF_FRAME_TIMER) = held;
 	} else if (SF_BYTE(SF_API_LOAD) == 2) {
 		if (SF_WORD(SF_MAGIC_ADDR) == 15 || SF_WORD(SF_MAGIC_ADDR) == 24) {
 			SF_BYTE(SF_API_LOAD) = 0;

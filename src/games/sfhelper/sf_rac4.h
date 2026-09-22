@@ -7,9 +7,10 @@
  *
  * Deadlocked is the one game that cannot simply hand its loader a buffer and
  * carry on. Its load is a menu operation: the helper pauses the game by putting
- * it in game mode 3, waits three frames for the pause to take, hands the buffer
- * to restore_saved_game, and then watches a status word until the game says the
- * player confirmed (15 or 24) or backed out (28). sfhelper.c keeps that shape.
+ * it in game mode 3, waits until the game has sat in that pause for a run of
+ * frames, hands the buffer to restore_saved_game, and then watches a status word
+ * until the game says the player confirmed (15 or 24) or backed out (28).
+ * sfhelper.c keeps that shape.
  *
  * The build.sh parser reads the #define lines below, so each one is a plain name
  * and a hexadecimal literal with nothing else on it.
@@ -60,6 +61,22 @@
 
 #define SF_PREV_GAME_MODE 0x015CD750
 #define SF_FRAME_TIMER    0x015CD760
+
+/*
+ * Build 44. How many frames in a row the game has to sit in the pause, with no
+ * mode change queued, before the load hands it the save (SF_FRAME_TIMER counts
+ * them), and how many frames the helper waits for that before it drops the
+ * request (SF_PAUSE_WAIT counts those, and is 0 while no load is waiting).
+ * A quarter of a second and ten seconds at 60 frames a second: an autosave
+ * the pause catches half way through takes the game out of the pause for a
+ * second or two and then brings it back, and the load waits it out.
+ *
+ * 0x015CD770 is in the same unused stretch as the words above: nothing in the
+ * EBOOT refers to it, and it reads zero on a running game.
+ */
+#define SF_PAUSE_WAIT     0x015CD770
+#define SF_PAUSE_HOLD     15
+#define SF_PAUSE_WAIT_MAX 600
 
 /* ------------------------------------------------------- the aside buffer */
 
