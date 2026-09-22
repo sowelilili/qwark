@@ -105,7 +105,9 @@ const struct game_api testgame_game = {
 	NULL,                 /* set_value */
 	NULL,                 /* get_options */
 
-	NULL, NULL, NULL,     /* positions */
+	NULL, NULL, NULL,     /* positions: save_blob, load_blob, blob_xyz */
+	NULL,                 /* blob_set_xyz */
+	0,                    /* blob_len */
 
 	tg_planet_names,
 	NULL,                 /* planet_load */

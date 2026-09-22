@@ -681,6 +681,15 @@ static int rac3_blob_xyz(const u8 *blob, u8 len, f32 out[3])
 	return ST_OK;
 }
 
+static int rac3_blob_set_xyz(u8 *blob, u8 len, const f32 xyz[3])
+{
+	int i;
+
+	if (len < 12) return ST_BAD_ARG;
+	for (i = 0; i < 3; i++) bef32_put(blob + i * 4, xyz[i]);
+	return ST_OK;
+}
+
 /* ---------------------------------------------------------------- planets */
 
 /*
@@ -688,6 +697,13 @@ static int rac3_blob_xyz(const u8 *blob, u8 len, f32 out[3])
  * `index + 1` before handing it to LoadPlanet, and current_planet reports the
  * same numbering. PLANET_LIST index has to equal the id, so index 0 is a
  * placeholder that planet_load refuses; index 1 is Veldin, and so on.
+ *
+ * Ids 15 and 25 are gaps in the game's own numbering, not planets qwark failed
+ * to name. rac3.cs called them "Unknown" and "Unknown2"; the client's autosplit
+ * route file has `null` on both lines; and the community address list's planet
+ * table runs 14 = Koros, 16 = Metropolis and 24 = Insomniac Museum, 26 =
+ * Metropolis Battle, skipping them. They are named the way Deadlocked's list
+ * names its own gaps, and they keep their places so the index stays the id.
  */
 static const char * const rac3_planets[] = {
 	"(none)",
@@ -705,7 +721,7 @@ static const char * const rac3_planets[] = {
 	"Blackwater City",
 	"Holostar",
 	"Koros",
-	"Unknown",
+	"(unused)",
 	"Metropolis",
 	"Crash Site",
 	"Aridia",
@@ -715,7 +731,7 @@ static const char * const rac3_planets[] = {
 	"Command Center",
 	"Holostar Clank",
 	"Insomniac Museum",
-	"Unknown 2",
+	"(unused)",
 	"Metropolis Rangers",
 	"Aquatos Clank",
 	"Aquatos Sewers",
@@ -784,6 +800,8 @@ const struct game_api rac3_game = {
 	rac3_save_blob,
 	rac3_load_blob,
 	rac3_blob_xyz,
+	rac3_blob_set_xyz,
+	RAC3_POS_BLOB_LEN,
 
 	rac3_planet_names,
 	rac3_planet_load,

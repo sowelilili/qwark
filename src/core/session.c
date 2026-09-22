@@ -762,6 +762,49 @@ int session_position_load(u8 slot)
 	return g_game->load_blob(blob, len);
 }
 
+/*
+ * Protocol 1.13. POS_EDIT moves a slot the client is holding in a text box:
+ * three floats in, the rest of the blob untouched, so a rotation and a camera
+ * captured in the game survive a coordinate the user typed. The slot has to
+ * exist, because there is nothing to preserve otherwise and a client editing an
+ * empty box wants to hear NOT_FOUND rather than to invent a blob.
+ */
+int session_position_edit(u8 slot, const f32 xyz[3])
+{
+	u8 blob[QWARK_MAX_BLOB];
+	u8 len = 0;
+	int rc;
+
+	if (g_game == NULL || g_game->blob_set_xyz == NULL) return ST_UNSUPPORTED;
+	if (g_state != SESSION_INGAME) return ST_NOT_INGAME;
+	if (slot >= QWARK_POS_SLOTS) return ST_BAD_ARG;
+
+	rc = pos_fetch(g_hot.current_planet, slot, blob, &len);
+	if (rc != ST_OK) return rc;
+
+	rc = g_game->blob_set_xyz(blob, len, xyz);
+	if (rc != ST_OK) return rc;
+
+	return pos_store(g_hot.current_planet, slot, blob, len);
+}
+
+/*
+ * Protocol 1.13. POS_STORE is the import: a whole blob a client kept from an
+ * older qwark or from the old trainer's config.txt, put into a slot as if the
+ * game had just saved it. The length must be this game's length to the byte, so
+ * a blob of the wrong shape - another game's, or one from before a game's blob
+ * changed - is refused rather than stored for load_blob to misread later.
+ */
+int session_position_store(u8 slot, const u8 *blob, u8 len)
+{
+	if (g_game == NULL || g_game->save_blob == NULL) return ST_UNSUPPORTED;
+	if (g_state != SESSION_INGAME) return ST_NOT_INGAME;
+	if (slot >= QWARK_POS_SLOTS) return ST_BAD_ARG;
+	if (len == 0 || len != g_game->blob_len) return ST_BAD_ARG;
+
+	return pos_store(g_hot.current_planet, slot, blob, len);
+}
+
 int session_planet_load(u8 planet, u8 flags)
 {
 	if (g_game == NULL || g_game->planet_load == NULL) return ST_UNSUPPORTED;

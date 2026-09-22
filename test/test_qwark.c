@@ -1491,7 +1491,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 41, "and this module is build 41");
+	check_eq_u64(packet[5], 42, "and this module is build 42");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -4266,6 +4266,7 @@ static void test_rac3(void)
 #define R4_GAMESTATE    0x00B3C5A0u
 #define R4_COORDS       0x010D44D0u
 #define R4_COORDS2      0x010D7334u
+#define R4_CAM_YAW      0x010D5DE0u
 #define R4_CAM_LR       0x010D5DF0u
 #define R4_CAM_UD       0x010D5E00u
 #define R4_SOFTLOCK     0x011C04C0u
@@ -4797,26 +4798,79 @@ static void test_rac4(void)
 	group("Deadlocked: positions, skins and die");
 
 	host_poke(R4_COORDS, (const u8 *)"\x41\x20\x00\x00\x42\x48\x00\x00"
-	                                 "\xC1\x20\x00\x00\x00\x00\x00\x00", 16);
+	                                 "\xC1\x20\x00\x00\x00\x00\x00\x00"
+	                                 "\x3D\x80\x00\x00\x3E\x00\x00\x00"
+	                                 "\x3E\x80\x00\x00\x3F\x00\x00\x00", 32);
 	host_poke(R4_CAM_LR, (const u8 *)"\x3F\x80\x00\x00", 4);
 	host_poke(R4_CAM_UD, (const u8 *)"\x40\x00\x00\x00", 4);
 
 	check(g->save_blob(blob, &len) == ST_OK, "save_blob reads");
 	check_eq_u64(len, 40, "0x20 of position and rotation plus the two camera floats");
-	check(be32_get(blob + 0x20) == 0x3F800000u, "the yaw came with it");
-	check(be32_get(blob + 0x24) == 0x40000000u, "and the pitch");
+	check(be32_get(blob + 0x18) == 0x3E800000u, "the rotation's Z is the facing at 0x18");
+	check(be32_get(blob + 0x20) == 0x3F800000u, "the LR float came with it");
+	check(be32_get(blob + 0x24) == 0x40000000u, "and the camera pitch");
 
-	host_poke(R4_COORDS, (const u8 *)"\x00\x00\x00\x00", 4);
-	host_poke(R4_COORDS2, (const u8 *)"\x00\x00\x00\x00", 4);
-	host_poke(R4_CAM_LR, (const u8 *)"\x00\x00\x00\x00", 4);
+	/*
+	 * Exactly which words a load puts back. Every word it should write is
+	 * cleared first and every word around them carries a sentinel, so a write
+	 * that strays one field either way fails here rather than on a console.
+	 * RAC4_CAMERA_LR is a sentinel too: the blob saves that float but it is a
+	 * camera tuning constant, not a rotation, and a load must leave it alone.
+	 */
+	{
+		static const u8 sent[4] = { 0x5A, 0x5A, 0x5A, 0x5A };
+		static const u8 cleared[32] = { 0 };
+		static const u32 guards[] = {
+			R4_COORDS - 4,  R4_COORDS + 0x20,
+			R4_COORDS2 - 4, R4_COORDS2 + 0x10,
+			R4_CAM_YAW - 4, R4_CAM_YAW + 4, R4_CAM_LR,
+			R4_CAM_UD - 4,  R4_CAM_UD + 4
+		};
+		u32 i;
+		int clean = 1;
 
-	check(g->load_blob(blob, len) == ST_OK, "load_blob writes");
-	mem_read_u32(R4_COORDS, &v);
-	check_eq_u64(v, 0x41200000u, "the main position came back");
-	mem_read_u32(R4_COORDS2, &v);
-	check_eq_u64(v, 0x41200000u, "and the second address got the position half");
-	mem_read_u32(R4_CAM_LR, &v);
-	check_eq_u64(v, 0, "the camera is saved but not restored, as the old code had it");
+		for (i = 0; i < sizeof(guards) / sizeof(guards[0]); i++)
+			host_poke(guards[i], sent, 4);
+		host_poke(R4_COORDS, cleared, 32);
+		host_poke(R4_COORDS2, cleared, 16);
+		host_poke(R4_CAM_YAW, cleared, 4);
+		host_poke(R4_CAM_UD, cleared, 4);
+
+		check(g->load_blob(blob, len) == ST_OK, "load_blob writes");
+
+		for (i = 0; i < 8; i++) {
+			mem_read_u32(R4_COORDS + i * 4, &v);
+			if (v != be32_get(blob + i * 4)) clean = 0;
+		}
+		check(clean, "the position and the rotation both went back to RAC4_COORDS");
+
+		clean = 1;
+		for (i = 0; i < 4; i++) {
+			mem_read_u32(R4_COORDS2 + i * 4, &v);
+			if (v != be32_get(blob + i * 4)) clean = 0;
+		}
+		check(clean, "and the position half to the second address");
+
+		mem_read_u32(R4_CAM_YAW, &v);
+		check_eq_u64(v, 0x3E800000u, "the camera yaw got the rotation's Z");
+		mem_read_u32(R4_CAM_UD, &v);
+		check_eq_u64(v, 0x40000000u, "and the camera pitch the float the blob saved");
+
+		clean = 1;
+		for (i = 0; i < sizeof(guards) / sizeof(guards[0]); i++) {
+			mem_read_u32(guards[i], &v);
+			if (v != 0x5A5A5A5Au) clean = 0;
+		}
+		check(clean, "and nothing around any of them was touched");
+
+		/* A blob from before the camera floats stops after the yaw. */
+		host_poke(R4_CAM_UD, sent, 4);
+		check(g->load_blob(blob, 32) == ST_OK, "a 0x20 blob still loads");
+		mem_read_u32(R4_CAM_UD, &v);
+		check_eq_u64(v, 0x5A5A5A5Au, "and leaves the camera pitch alone");
+		check(g->load_blob(blob, 31) == ST_BAD_ARG,
+		      "a blob shorter than the position and rotation is BAD_ARG");
+	}
 
 	check(features_set(F4_SKIN, 6) == ST_OK, "the skin ENUM writes");
 	host_peek(0x009C32FBu, &b, 1);
@@ -4830,6 +4884,90 @@ static void test_rac4(void)
 	check_eq_u64(v, 0, "Z is zeroed at the main address");
 	mem_read_u32(R4_COORDS2 + 8, &v);
 	check_eq_u64(v, 0, "and at the second one");
+
+	/*
+	 * Protocol 1.13. POS_EDIT moves a slot without disturbing anything else in
+	 * its blob, and POS_STORE puts a whole blob in as if the game had saved it.
+	 * Deadlocked is the game with the most to lose either way: its blob carries
+	 * a rotation and two camera floats behind the three coordinates.
+	 */
+	group("Deadlocked: POS_EDIT and POS_STORE");
+	{
+		u8 planet = session_current_planet();
+		u8 saved[QWARK_MAX_BLOB];
+		u8 got[QWARK_MAX_BLOB];
+		u8 glen = 0;
+		f32 xyz[3];
+		u32 i;
+		int clean;
+
+		xyz[0] = 7.0f; xyz[1] = 8.0f; xyz[2] = 9.0f;
+
+		pos_clear(planet, 3);
+		check(session_position_edit(3, xyz) == ST_NOT_FOUND,
+		      "POS_EDIT on an empty slot is NOT_FOUND");
+		check(session_position_edit(8, xyz) == ST_BAD_ARG,
+		      "and on slot 8 it is BAD_ARG");
+
+		host_poke(R4_COORDS, (const u8 *)"\x41\x20\x00\x00\x42\x48\x00\x00"
+		                                 "\xC1\x20\x00\x00\x00\x00\x00\x00"
+		                                 "\x3D\x80\x00\x00\x3E\x00\x00\x00"
+		                                 "\x3E\x80\x00\x00\x3F\x00\x00\x00", 32);
+		host_poke(R4_CAM_LR, (const u8 *)"\x3F\x80\x00\x00", 4);
+		host_poke(R4_CAM_UD, (const u8 *)"\x40\x00\x00\x00", 4);
+		check(session_position_save(3) == ST_OK, "POS_SAVE fills slot 3");
+		check(pos_fetch(planet, 3, saved, &glen) == ST_OK && glen == 40,
+		      "with a forty-byte blob");
+
+		check(session_position_edit(3, xyz) == ST_OK, "POS_EDIT rewrites it");
+		check(pos_fetch(planet, 3, got, &glen) == ST_OK && glen == 40,
+		      "the slot is still forty bytes");
+		check(be32_get(got) == 0x40E00000u && be32_get(got + 4) == 0x41000000u &&
+		      be32_get(got + 8) == 0x41100000u,
+		      "the three floats are the edited ones");
+		clean = 1;
+		for (i = 12; i < 40; i++) if (got[i] != saved[i]) clean = 0;
+		check(clean, "and every other byte of the blob is untouched");
+
+		host_poke(R4_COORDS, (const u8 *)"\x00\x00\x00\x00\x00\x00\x00\x00"
+		                                 "\x00\x00\x00\x00\x00\x00\x00\x00"
+		                                 "\x00\x00\x00\x00\x00\x00\x00\x00"
+		                                 "\x00\x00\x00\x00\x00\x00\x00\x00", 32);
+		check(session_position_load(3) == ST_OK, "POS_LOAD puts it in the game");
+		mem_read_u32(R4_COORDS, &v);
+		check_eq_u64(v, 0x40E00000u, "the edited X is what the game got");
+		mem_read_u32(R4_COORDS + 8, &v);
+		check_eq_u64(v, 0x41100000u, "and the edited Z");
+		mem_read_u32(R4_COORDS + 0x10, &v);
+		check_eq_u64(v, 0x3D800000u, "while the rotation is the one that was captured");
+		mem_read_u32(R4_CAM_YAW, &v);
+		check_eq_u64(v, 0x3E800000u, "and the camera yaw is still its Z");
+
+		/* POS_STORE: a whole blob of this game's length and nothing else. */
+		for (i = 0; i < 40; i++) got[i] = (u8)(0x90 + i);
+		check(session_position_store(4, got, 39) == ST_BAD_ARG,
+		      "POS_STORE with a blob one byte short is BAD_ARG");
+		check(session_position_store(4, got, 30) == ST_BAD_ARG,
+		      "another game's length is BAD_ARG too");
+		check(session_position_store(4, got, 0) == ST_BAD_ARG,
+		      "and so is an empty one");
+		check(session_position_store(8, got, 40) == ST_BAD_ARG,
+		      "slot 8 is BAD_ARG");
+
+		check(session_position_store(4, got, 40) == ST_OK,
+		      "POS_STORE fills a slot from a whole blob");
+		check(pos_fetch(planet, 4, saved, &glen) == ST_OK && glen == 40 &&
+		      memcmp(saved, got, 40) == 0,
+		      "byte for byte");
+		check(session_position_load(4) == ST_OK, "and POS_LOAD writes it back");
+		mem_read_u32(R4_COORDS, &v);
+		check_eq_u64(v, 0x90919293u, "the stored blob reached the game");
+		mem_read_u32(R4_CAM_YAW, &v);
+		check_eq_u64(v, 0xA8A9AAABu, "camera yaw included");
+
+		pos_clear(planet, 3);
+		pos_clear(planet, 4);
+	}
 
 	group("Deadlocked: savefile requests");
 

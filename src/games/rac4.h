@@ -70,11 +70,23 @@
 #define RAC4_MOBY_TABLE_END    0x00C845A4u
 #define RAC4_MOBY_STRIDE       0x100u
 
-#define RAC4_COORDS            0x010D44D0u  /* Vec4 position then Vec4 rotation */
-#define RAC4_COORDS2           0x010D7334u  /* position only, 0x10 bytes */
+/*
+ * Everything from here to RAC4_PLAYER_STATE is a field of the one static Hero
+ * object the local player owns, which the game's own symbols call MyHero and
+ * which lives at 0x010D4430: the EBOOT builds its address with `lis rX,0x10d;
+ * addic rX,rX,0x4430` (0x0013FFD0, 0x002E2E60 and a dozen more sites). The four
+ * addresses RaCMAN already knew line up with that struct exactly, which is what
+ * makes the field offsets below trustworthy: +0x00A0 is the position, +0x25CC
+ * the state byte RAC4_PLAYER_STATE names, +0x2E20 the hit points
+ * RAC4_PLAYER_HEALTH names and +0x2F04 the three debug-teleport floats
+ * RAC4_COORDS2 names.
+ */
+#define RAC4_COORDS            0x010D44D0u  /* +0x00A0 Vec4 pos then +0x00B0 Vec4 rot */
+#define RAC4_COORDS2           0x010D7334u  /* +0x2F04 cheatX/Y/Z, position only */
 #define RAC4_GHOST_TIMER       0x010D47CEu
-#define RAC4_CAMERA_LR         0x010D5DF0u  /* f32 yaw */
-#define RAC4_CAMERA_UD         0x010D5E00u  /* f32 pitch */
+#define RAC4_CAM_YAW           0x010D5DE0u  /* +0x19B0 f32 camera yaw, left/right */
+#define RAC4_CAMERA_LR         0x010D5DF0u  /* +0x19C0 NOT a rotation, see below */
+#define RAC4_CAMERA_UD         0x010D5E00u  /* +0x19D0 f32 camera pitch, up/down */
 #define RAC4_PLAYER_HEALTH     0x010D7250u
 #define RAC4_PLAYER_STATE      0x010D69FCu
 
@@ -217,13 +229,56 @@
 #define RAC4_MOD_AMMO          2u
 
 /*
- * Position slots: 0x20 bytes of position and rotation, then the two camera
- * floats. Loading puts the 0x20 back at RAC4_COORDS and the first 0x10 at
- * RAC4_COORDS2; the camera is saved but not restored, exactly as rac4.cs has it.
+ * Position slots. The blob is unchanged from build 41 and from rac4.cs before
+ * it, so every slot a user has ever saved stays readable: 0x20 bytes of Vec4
+ * position then Vec4 rotation out of RAC4_COORDS, then the RAC4_CAMERA_LR float
+ * and the RAC4_CAMERA_UD float.
+ *
+ * Loading used to write only the position and rotation, and the facing never
+ * survived it. The reason is in the EBOOT. The hero's rot.z is not the authority
+ * on where he is pointing: HeroTurn.ideal (MyHero+0x17A0) is loaded straight out
+ * of the camera yaw at 0x0032B25C (`lfs f1,6576(r31)` -> 0x0032B264 `stfs
+ * f1,6048(r31)`), and rot.z is then dragged towards that ideal every frame at
+ * 0x002F3410..0x002F341C (`lfs f1,184(r31)`, one call, `stfs f1,184(r31)`). Write
+ * rot.z on its own and the camera pulls it back inside a frame or two, which is
+ * exactly what a user sees.
+ *
+ * The game's own teleport, the function at 0x0030C5D8, shows the full set. It
+ * writes the position at +0x00A0, the rotation at +0x00B0..+0x00BC (0x0030C828
+ * through 0x0030C840), rebuilds the hero matrix and the hero moby's rMtx from
+ * it, then loads rot.z at 0x0030CAF4 (`lfs f6,184(r31)`) and stores that same
+ * word into the camera yaw at 0x0030CC58 (`stfs f6,6576(r31)`, MyHero+0x19B0 =
+ * RAC4_CAM_YAW) while zeroing the camera pitch at 0x0030CC54 (`stw
+ * r24,6608(r31)` with r24 = 0 from 0x0030C7F8, MyHero+0x19D0 = RAC4_CAMERA_UD).
+ * It ends by copying pos.x/y/z into the three cheat floats at +0x2F04, which is
+ * RAC4_COORDS2. Nothing needs the matrices written by hand: they are rebuilt
+ * every frame, which is why the position alone always did come back.
+ *
+ * So a load writes, in this order:
+ *
+ *   RAC4_COORDS      0x20 bytes, blob[0x00..0x1F]: the Vec4 position and the
+ *                    Vec4 rotation at their real home, MyHero+0x00A0/+0x00B0.
+ *   RAC4_COORDS2     0x10 bytes, blob[0x00..0x0F]: the position copy the teleport
+ *                    also keeps, MyHero+0x2F04. Note the fourth word lands on
+ *                    MyHero+0x2F10; that is what rac4.cs did and what build 41
+ *                    shipped, and it is left alone here.
+ *   RAC4_CAM_YAW     4 bytes, blob[0x18], which is rot.z: the camera yaw the
+ *                    teleport sets from exactly that word. Without this the
+ *                    facing is pulled back to wherever the camera was.
+ *   RAC4_CAMERA_UD   4 bytes, blob[0x24]: the camera pitch. The teleport zeroes
+ *                    it, but the blob has carried the real one all along, so the
+ *                    saved pitch goes back instead. Skipped for a short blob.
+ *
+ * RAC4_CAMERA_LR, blob[0x20], is *not* written back. It is MyHero+0x19C0, one
+ * field past the camera yaw, and it is the camera's quick-turn acceleration
+ * constant, not a rotation: rac4.cs named it cameraRotationLeftRight and was off
+ * by 0x10. It is still saved so the blob keeps its shape.
  */
 #define RAC4_POS_MAIN_LEN  0x20
 #define RAC4_POS_ALT_LEN   0x10
 #define RAC4_POS_BLOB_LEN  (RAC4_POS_MAIN_LEN + 8)
+#define RAC4_POS_ROT_Z     0x18    /* rot.z inside the blob: the facing */
+#define RAC4_POS_CAM_UD    0x24    /* the saved camera pitch inside the blob */
 
 /*
  * Fingerprint: the original instruction at the refill-ammo patch site,

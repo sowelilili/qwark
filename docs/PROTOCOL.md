@@ -14,6 +14,8 @@ Revision 1.11 (2026-09-15): `QWARK_MAX_PAYLOAD` is **16384**. One frame, request
 
 Revision 1.12 (2026-09-16): COMBO_ENABLE at 0x0083, the user's own on/off for every combo. It is kept in the console's config as `combo.enabled`, so it survives a client restart and a console reboot the way the five masks do, and SessionInfo `flags` gained bit3 COMBOS_OFF, set while it is off, so a client draws the checkbox out of the info block it already reads. See section 5.9.
 
+Revision 1.13 (2026-09-22): POS_EDIT at 0x004A and POS_STORE at 0x004B, the two ways a client writes a position slot without the player standing in it. POS_EDIT rewrites the three coordinates of a slot that is already filled and leaves the rest of that slot's blob - the rotation, and whatever else the game keeps in it - untouched, so a coordinate typed into a box does not throw away a facing captured in the game. POS_STORE replaces a slot's whole blob and will only take one of the running game's own length, so a blob of the wrong shape can never be stored for POS_LOAD to misread. Both act on the current planet and both persist immediately, as POS_SAVE does. See section 5.5.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -297,6 +299,14 @@ POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the sele
 | 0x0047 | PLANET_LOAD | `u8 planet` 0xFF = selected, `u8 flags` 0xFF = selected | none. The planet request goes out first, then the flags act on the planet being loaded |
 | 0x0048 | DIE | none | none |
 | 0x0049 | MOBY_TABLE | none | `u32 table_ptr_addr, u32 table_end_ptr_addr, u16 stride, u16 pad`. The client reads the pointers and the entries with MEM_READ |
+| 0x004A | POS_EDIT | `u8 slot, u8 pad[3], f32 x, f32 y, f32 z` | none. Revision 1.13 |
+| 0x004B | POS_STORE | `u8 slot, u8 len, u8 pad[2], bytes[len]` | none. Revision 1.13 |
+
+**Writing a slot the player is not standing in (revision 1.13).** POS_SAVE captures a blob from the live game and is the only way a slot was ever filled. POS_EDIT and POS_STORE are the other two a client needs: POS_EDIT for coordinates the user typed into a box, POS_STORE for a blob the client already has. Both act on the current planet, the one POS_LIST reports, and both persist the moment they succeed exactly as POS_SAVE does; no CONFIG_SAVE is needed. Both need the session to be INGAME and answer **NOT_INGAME** otherwise, and both answer **UNSUPPORTED** where the running game has no position slots. A slot outside 0..7 is **BAD_ARG**.
+
+POS_EDIT replaces only the three coordinates of a slot that is already filled. The rest of the blob - the rotation, and the camera floats Deadlocked keeps - is left exactly as the game wrote it, so a position nudged sideways still comes back facing the way it was captured. It is the game that decides which bytes of its blob are x, y and z, the same knowledge POS_LIST's reply is built from, so the coordinates POS_EDIT writes are the ones the next POS_LIST reports and the ones the next POS_LOAD puts in the game. An empty slot is **NOT_FOUND**: there is no blob to preserve, and a client that wants to fill an empty slot from nothing uses POS_STORE.
+
+POS_STORE replaces the whole blob of a slot and marks it filled, whether or not it was filled before. `len` must equal the running game's blob length to the byte, and anything else is **BAD_ARG**: a blob is opaque and self-describing only to the game that made it, so one of the wrong shape - another game's, or one saved before that game's blob changed - would be stored happily and then misread by POS_LOAD. The lengths themselves are not on the wire and never have been: a blob is only ever handed back to the game it came from, so nothing needed to name its size. A client importing old slots therefore keeps the lengths beside its own game knowledge and checks the running game first; a blob it cannot place is one to keep rather than to store, and the BAD_ARG is the console refusing to take its word for it.
 
 ### 5.6 Unlocks and level flags (0x005x)
 

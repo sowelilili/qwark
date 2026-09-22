@@ -30,6 +30,11 @@
  * opcode, structure or status changed with it: it is the size of one frame.
  * Revision 1.12: COMBO_ENABLE, the persistent on/off for every combo, and
  * SessionInfo flags bit3 COMBOS_OFF, which reports it.
+ * Revision 1.13: POS_EDIT at 0x004A and POS_STORE at 0x004B, the two ways a
+ * client writes a position slot without standing in it. POS_EDIT replaces the
+ * three coordinates of a slot that already exists and leaves the rest of the
+ * blob alone; POS_STORE replaces the whole blob, and takes only a blob of the
+ * running game's own length.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -45,7 +50,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             41
+#define QWARK_BUILD             42
 
 #define QWARK_PORT              9673
 /*
@@ -130,6 +135,8 @@
 #define OP_PLANET_LOAD       0x0047
 #define OP_DIE               0x0048
 #define OP_MOBY_TABLE        0x0049
+#define OP_POS_EDIT          0x004A
+#define OP_POS_STORE         0x004B
 
 #define OP_UNLOCK_LIST       0x0050
 #define OP_UNLOCK_SET        0x0051

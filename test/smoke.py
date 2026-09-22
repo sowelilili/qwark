@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 41
+QWARK_BUILD = 42
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -99,10 +99,15 @@ OP_FREEZE_LIST = 0x0037
 OP_PATCH_APPLY = 0x0038
 OP_POS_SELECT = 0x0040
 OP_POS_SAVE = 0x0041
+OP_POS_LOAD = 0x0042
 OP_POS_LIST = 0x0043
+OP_POS_CLEAR = 0x0044
 OP_PLANET_LIST = 0x0045
 OP_PLANET_LOAD = 0x0047
 OP_MOBY_TABLE = 0x0049
+# Protocol 1.13: the two ways a client writes a slot it is not standing in.
+OP_POS_EDIT = 0x004A
+OP_POS_STORE = 0x004B
 OP_UNLOCK_LIST = 0x0050
 OP_UNLOCK_SET = 0x0051
 OP_LEVELFLAGS_GET = 0x0053
@@ -1128,6 +1133,9 @@ OTHER_GAMES = [
                           "ammo": 0x148182C},
         "levelflags": 0x10,
         "coords": 0x147F260,
+        # What POS_SAVE produces and what POS_LOAD puts back at "coords".
+        "blob_len": 30,
+        "blob_main": 30,
         # Bolts, a VALUE with readout 0.
         "value_id": 7,
         "value_addr": 0x1329A90,
@@ -1223,6 +1231,8 @@ OTHER_GAMES = [
         "unlock_retired": [(0, "Bomb Glove")],
         "levelflags": 0x10,
         "coords": 0xDA2870,
+        "blob_len": 30,
+        "blob_main": 30,
         "value_id": 7,
         "value_addr": 0xC1E4DC,
         "signed": [("QE offset", 16), ("Health XP", 32)],
@@ -1330,6 +1340,9 @@ OTHER_GAMES = [
         # Deadlocked has never had a level-flag region.
         "levelflags": None,
         "coords": 0x10D44D0,
+        # Deadlocked adds the two camera floats, and puts 0x20 back at "coords".
+        "blob_len": 40,
+        "blob_main": 32,
         "value_id": 7,
         "value_addr": 0x9C32E8,
         # "Act tune bosses" writes 20 into five one-byte tuning slots.
@@ -2107,6 +2120,69 @@ def exercise_game(c, sim, spec, udp=None):
             check(abs(x - 10.0) < 0.01 and abs(y - 50.0) < 0.01 and
                   abs(z + 10.0) < 0.01,
                   "%s: with the coordinates that were saved" % name, (x, y, z))
+
+    # --------------------------------- POS_EDIT and POS_STORE, revision 1.13
+    # A slot with something recognisable behind the coordinates, so an edit
+    # that trampled the rotation would show.
+    blob_len, blob_main = spec["blob_len"], spec["blob_main"]
+    tail = bytes((0x40 + i) & 0xFF for i in range(blob_main - 12))
+    mem_write(c, spec["coords"], struct.pack(">3f", 10.0, 50.0, -10.0) + tail)
+    status, _ = c.call(OP_POS_SAVE, bytes([2]))
+    check(status == ST_OK, "%s: POS_SAVE fills slot 2" % name, status)
+
+    status, _ = c.call(OP_POS_EDIT, struct.pack(">B3x3f", 2, 11.0, 22.0, 33.0))
+    if check(status == ST_OK, "%s: POS_EDIT rewrites slot 2" % name, status):
+        status, body = c.call(OP_POS_LIST)
+        off = 2 + 2 * 16
+        x, y, z = struct.unpack(">3f", body[off + 4:off + 16])
+        check(abs(x - 11.0) < 0.01 and abs(y - 22.0) < 0.01 and abs(z - 33.0) < 0.01,
+              "%s: and POS_LIST reports the three new floats" % name, (x, y, z))
+
+    mem_write(c, spec["coords"], b"\x00" * blob_main)
+    status, _ = c.call(OP_POS_LOAD, bytes([2]))
+    if check(status == ST_OK, "%s: POS_LOAD after the edit runs" % name, status):
+        status, got = c.call(OP_MEM_READ, struct.pack(">II", spec["coords"], blob_main))
+        x, y, z = struct.unpack(">3f", got[0:12])
+        check(abs(x - 11.0) < 0.01 and abs(y - 22.0) < 0.01 and abs(z - 33.0) < 0.01,
+              "%s: putting the edited coordinates in the game" % name, (x, y, z))
+        check(got[12:blob_main] == tail,
+              "%s: while the rotation words are the ones that were captured" % name,
+              got[12:blob_main].hex())
+
+    c.call(OP_POS_CLEAR, bytes([3]))
+    status, _ = c.call(OP_POS_EDIT, struct.pack(">B3x3f", 3, 1.0, 2.0, 3.0))
+    check(status == ST_NOT_FOUND,
+          "%s: POS_EDIT on an empty slot is NOT_FOUND" % name, status)
+    status, _ = c.call(OP_POS_EDIT, struct.pack(">B3x3f", 8, 1.0, 2.0, 3.0))
+    check(status == ST_BAD_ARG, "%s: POS_EDIT on slot 8 is BAD_ARG" % name, status)
+
+    # POS_STORE: a whole blob, of exactly this game's length.
+    imported = (struct.pack(">3f", 70.0, 80.0, 90.0) +
+                bytes((0x90 + i) & 0xFF for i in range(blob_len - 12)))
+    status, _ = c.call(OP_POS_STORE, bytes([5, blob_len, 0, 0]) + imported)
+    if check(status == ST_OK, "%s: POS_STORE fills slot 5" % name, status):
+        status, body = c.call(OP_POS_LIST)
+        off = 2 + 5 * 16
+        x, y, z = struct.unpack(">3f", body[off + 4:off + 16])
+        check(body[off] == 1 and abs(x - 70.0) < 0.01 and abs(y - 80.0) < 0.01 and
+              abs(z - 90.0) < 0.01,
+              "%s: and POS_LIST shows the imported slot" % name, (body[off], x, y, z))
+        mem_write(c, spec["coords"], b"\x00" * blob_main)
+        status, _ = c.call(OP_POS_LOAD, bytes([5]))
+        if check(status == ST_OK, "%s: POS_LOAD on the imported slot runs" % name, status):
+            status, got = c.call(OP_MEM_READ, struct.pack(">II", spec["coords"], blob_main))
+            check(got == imported[:blob_main],
+                  "%s: writing the stored blob back into the game" % name, got.hex())
+
+    status, _ = c.call(OP_POS_STORE,
+                       bytes([5, blob_len - 1, 0, 0]) + imported[:blob_len - 1])
+    check(status == ST_BAD_ARG,
+          "%s: a blob one byte short is BAD_ARG" % name, status)
+    status, _ = c.call(OP_POS_STORE, bytes([8, blob_len, 0, 0]) + imported)
+    check(status == ST_BAD_ARG, "%s: POS_STORE on slot 8 is BAD_ARG" % name, status)
+
+    c.call(OP_POS_CLEAR, bytes([2]))
+    c.call(OP_POS_CLEAR, bytes([5]))
 
     # -------------------------------------------------------- planet load
     for addr, _want in spec["load_expect"]:

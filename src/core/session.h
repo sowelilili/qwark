@@ -137,6 +137,9 @@ void core_unlock(void);
 /* Position and planet helpers the combo actions and the net handlers share. */
 int  session_position_save(u8 slot);
 int  session_position_load(u8 slot);
+/* Protocol 1.13: the two ways a client writes a slot without being in it. */
+int  session_position_edit(u8 slot, const f32 xyz[3]);
+int  session_position_store(u8 slot, const u8 *blob, u8 len);
 int  session_planet_load(u8 planet, u8 flags);
 int  session_die(void);
 int  session_load_setaside(void);

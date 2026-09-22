@@ -173,6 +173,19 @@ struct game_api {
 	int (*save_blob)(u8 *blob, u8 *len);
 	int (*load_blob)(const u8 *blob, u8 len);
 	int (*blob_xyz)(const u8 *blob, u8 len, f32 out[3]);
+	/*
+	 * Protocol 1.13, POS_EDIT: put x, y and z back into a stored blob and leave
+	 * every other byte of it, rotation and camera included, exactly as it was.
+	 * The inverse of blob_xyz and the only writer the core has for a slot it is
+	 * not saving from the live game.
+	 */
+	int (*blob_set_xyz)(u8 *blob, u8 len, const f32 xyz[3]);
+	/*
+	 * Protocol 1.13, POS_STORE: the length save_blob produces for this game, so
+	 * the core can refuse a whole blob of any other shape rather than store one
+	 * load_blob would misread. 0 where the game has no position slots.
+	 */
+	u8 blob_len;
 
 	const char * const *(*planet_names)(u8 *count);
 	int (*planet_load)(u8 planet, u8 flags);

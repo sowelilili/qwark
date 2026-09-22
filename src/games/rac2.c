@@ -678,6 +678,15 @@ static int rac2_blob_xyz(const u8 *blob, u8 len, f32 out[3])
 	return ST_OK;
 }
 
+static int rac2_blob_set_xyz(u8 *blob, u8 len, const f32 xyz[3])
+{
+	int i;
+
+	if (len < 12) return ST_BAD_ARG;
+	for (i = 0; i < 3; i++) bef32_put(blob + i * 4, xyz[i]);
+	return ST_OK;
+}
+
 /* ---------------------------------------------------------------- planets */
 
 /* rac2.cs planetsList, index by index: the game's own planet numbering. */
@@ -768,6 +777,8 @@ const struct game_api rac2_game = {
 	rac2_save_blob,
 	rac2_load_blob,
 	rac2_blob_xyz,
+	rac2_blob_set_xyz,
+	RAC2_POS_BLOB_LEN,
 
 	rac2_planet_names,
 	rac2_planet_load,

@@ -595,6 +595,25 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		cmd->status = (u16)session_position_load(req[0]);
 		break;
 
+	case OP_POS_EDIT: {
+		f32 xyz[3];
+		int i;
+
+		if (reqlen < 16) { cmd->status = ST_BAD_ARG; break; }
+		for (i = 0; i < 3; i++) xyz[i] = bef32_get(req + 4 + i * 4);
+		cmd->status = (u16)session_position_edit(req[0], xyz);
+		break;
+	}
+
+	case OP_POS_STORE:
+		if (reqlen < 4) { cmd->status = ST_BAD_ARG; break; }
+		if (req[1] > QWARK_MAX_BLOB || reqlen < 4u + (u32)req[1]) {
+			cmd->status = ST_BAD_ARG;
+			break;
+		}
+		cmd->status = (u16)session_position_store(req[0], req + 4, req[1]);
+		break;
+
 	case OP_PLANET_LOAD:
 		if (reqlen < 2) { cmd->status = ST_BAD_ARG; break; }
 		cmd->status = (u16)session_planet_load(req[0], req[1]);
@@ -867,6 +886,8 @@ static int op_needs_ring(u16 op)
 	case OP_FEATURE_TRIGGER:
 	case OP_POS_SAVE:
 	case OP_POS_LOAD:
+	case OP_POS_EDIT:
+	case OP_POS_STORE:
 	case OP_PLANET_LOAD:
 	case OP_DIE:
 	case OP_PREVIOUS_REAPPLY:

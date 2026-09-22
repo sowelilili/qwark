@@ -589,6 +589,15 @@ static int rac1_blob_xyz(const u8 *blob, u8 len, f32 out[3])
 	return ST_OK;
 }
 
+static int rac1_blob_set_xyz(u8 *blob, u8 len, const f32 xyz[3])
+{
+	int i;
+
+	if (len < 12) return ST_BAD_ARG;
+	for (i = 0; i < 3; i++) bef32_put(blob + i * 4, xyz[i]);
+	return ST_OK;
+}
+
 /* ---------------------------------------------------------------- planets */
 
 static const char * const rac1_planets[] = {
@@ -668,6 +677,8 @@ const struct game_api rac1_game = {
 	rac1_save_blob,
 	rac1_load_blob,
 	rac1_blob_xyz,
+	rac1_blob_set_xyz,
+	RAC1_POS_BLOB_LEN,
 
 	rac1_planet_names,
 	rac1_planet_load,

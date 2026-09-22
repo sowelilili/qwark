@@ -678,9 +678,9 @@ static int rac4_set_toggle(u8 id, int on)
 
 /*
  * rac4.cs SavePosition stores position and rotation from RAC4_COORDS and the two
- * camera floats beside them. LoadPositionRac4 puts the 0x20 back at RAC4_COORDS
- * and the position half at RAC4_COORDS2; the camera restore was commented out in
- * the old client, so it stays saved and unused here too.
+ * camera floats beside them, and the blob keeps that shape. Loading is a longer
+ * story: rac4.h's position comment says which words go back and what in the
+ * EBOOT says so.
  */
 static int rac4_save_blob(u8 *blob, u8 *len)
 {
@@ -706,7 +706,30 @@ static int rac4_load_blob(const u8 *blob, u8 len)
 	rc = mem_write(RAC4_COORDS, blob, RAC4_POS_MAIN_LEN);
 	if (rc != ST_OK) return rc;
 
-	return mem_write(RAC4_COORDS2, blob, RAC4_POS_ALT_LEN);
+	rc = mem_write(RAC4_COORDS2, blob, RAC4_POS_ALT_LEN);
+	if (rc != ST_OK) return rc;
+
+	/*
+	 * The facing. rot.z goes to the camera yaw as well as to the rotation
+	 * Vec4, because the hero's turn target is read out of the camera yaw and
+	 * would otherwise drag him back round within a frame or two.
+	 */
+	rc = mem_write(RAC4_CAM_YAW, blob + RAC4_POS_ROT_Z, 4);
+	if (rc != ST_OK) return rc;
+
+	/* A blob from before the camera floats existed stops here. */
+	if (len < RAC4_POS_BLOB_LEN) return ST_OK;
+
+	return mem_write(RAC4_CAMERA_UD, blob + RAC4_POS_CAM_UD, 4);
+}
+
+static int rac4_blob_set_xyz(u8 *blob, u8 len, const f32 xyz[3])
+{
+	int i;
+
+	if (len < 12) return ST_BAD_ARG;
+	for (i = 0; i < 3; i++) bef32_put(blob + i * 4, xyz[i]);
+	return ST_OK;
 }
 
 static int rac4_blob_xyz(const u8 *blob, u8 len, f32 out[3])
@@ -794,6 +817,8 @@ const struct game_api rac4_game = {
 	rac4_save_blob,
 	rac4_load_blob,
 	rac4_blob_xyz,
+	rac4_blob_set_xyz,
+	RAC4_POS_BLOB_LEN,
 
 	rac4_planet_names,
 	rac4_planet_load,
