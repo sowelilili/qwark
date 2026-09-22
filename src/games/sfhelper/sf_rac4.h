@@ -34,9 +34,13 @@
  * word anywhere in the executable holds its address or its descriptor, and no
  * mod in the library or the legacy tree writes near it. The stub (sf_rac4_stub.s)
  * takes the first 64 bytes and the compiled helper follows.
+ *
+ * SF_CAVE_END is where the function stops; build.sh fails a helper that would
+ * run past it (build 45).
  */
 #define SF_CAVE_STUB 0x00667F70
 #define SF_CAVE      0x00667FB0
+#define SF_CAVE_END  0x0066840C
 
 /*
  * The hook site: the last instruction of the same pad routine the `nop` was in,
@@ -60,22 +64,23 @@
 #define SF_API_I        0x015CD720
 
 #define SF_PREV_GAME_MODE 0x015CD750
-#define SF_FRAME_TIMER    0x015CD760
 
 /*
- * Build 44. How many frames in a row the game has to sit in the pause, with no
- * mode change queued, before the load hands it the save (SF_FRAME_TIMER counts
- * them), and how many frames the helper waits for that before it drops the
- * request (SF_PAUSE_WAIT counts those, and is 0 while no load is waiting).
- * A quarter of a second and ten seconds at 60 frames a second: an autosave
- * the pause catches half way through takes the game out of the pause for a
- * second or two and then brings it back, and the load waits it out.
+ * Build 45. SF_PAUSE_FRAME holds the game's mode timer as the helper read it
+ * in the call that paused; the load waits for a later frame. SF_PAUSE_WAIT
+ * counts the frames the load has waited for the game to be in the pause with
+ * no mode change queued, and is 0 while no load is waiting; after
+ * SF_PAUSE_WAIT_MAX (ten seconds at 60 frames a second) the request is
+ * dropped. An autosave the pause catches half way through takes the game out
+ * of the pause for a second or two and then brings it back, and the load
+ * waits it out.
  *
- * 0x015CD770 is in the same unused stretch as the words above: nothing in the
- * EBOOT refers to it, and it reads zero on a running game.
+ * 0x015CD760 and 0x015CD770 are in the same unused stretch as the words
+ * above: nothing in the EBOOT refers to them, and they read zero on a running
+ * game.
  */
+#define SF_PAUSE_FRAME    0x015CD760
 #define SF_PAUSE_WAIT     0x015CD770
-#define SF_PAUSE_HOLD     15
 #define SF_PAUSE_WAIT_MAX 600
 
 /* ------------------------------------------------------- the aside buffer */
@@ -118,6 +123,18 @@
 #define SF_MODE_NORMAL 0x00000000
 #define SF_MODE_PAUSE  0x00000003
 #define SF_MODE_NONE   0xFFFFFFFE
+
+/*
+ * Build 45: the game's gameModeTimer, the number of frames spent in the
+ * current mode. The main loop (0x001CFE30) adds one to it at 0x001D1110
+ * (`lwz r5,0x6dec(r4); addic r5,r5,1; stw r5,0x6dec(r4)`, r4 = 0x00B30000),
+ * after the mode's own update - where the pad routine, and so this helper,
+ * runs - and before the end-of-frame mode change, which sets it back to 0
+ * at 0x001D14E8 when the mode actually changes. The helper's own write to
+ * gameMode goes round mode_doChange, so pausing does not reset it. Read on
+ * the console it moves by one per frame, 59.9 a second.
+ */
+#define SF_MODE_TIMER 0x00B36DEC
 
 /* ---------------------------------------------------------- game functions */
 

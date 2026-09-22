@@ -133,6 +133,11 @@ for g in $GAMES; do
 	aside_addr=$(need "$hdr" SF_ASIDE_ADDR)
 	aside_size=$(need "$hdr" SF_ASIDE_SIZE)
 
+	# Optional: where the cave stops. The helper's bytes go over whatever code
+	# follows it, so a helper that has outgrown its cave fails the build.
+	cave_end=$(tr -d '\r' < "$hdr" |
+		sed -n 's/^#define[ \t][ \t]*SF_CAVE_END[ \t][ \t]*\(0x[0-9A-Fa-f]*\).*$/\1/p')
+
 	if [ -f "$stub" ]; then
 		stub_org=$(need "$hdr" SF_CAVE_STUB)
 		hook_sym=.sf_input_hook
@@ -185,6 +190,12 @@ for g in $GAMES; do
 		if [ "$section" = ".text.stub" ]; then addr=$stub_org; else addr=$cave; fi
 		name="sf_${g}_$(echo "$section" | sed 's/^\.//; s/\./_/g')"
 		size=$(wc -c < "$bin" | tr -d ' ')
+
+		if [ "$section" = ".text" ] && [ -n "$cave_end" ] &&
+		   [ $((addr + size)) -gt $((cave_end)) ]; then
+			echo "sfhelper: $g helper is $size bytes and runs past $cave_end" >&2
+			exit 1
+		fi
 
 		{
 			echo "/* $g, $section at $addr, $size bytes */"
