@@ -50,6 +50,23 @@ typedef unsigned int       sf_u32;
 /* How much of the save buffer one memcpy call moves. The mods all used 32 KB. */
 #define SF_CHUNK 0x8000u
 
+/*
+ * Build 43. What the helper puts in a request byte when it drops the request
+ * rather than doing the work, which today means one thing: the game was not
+ * idle on the frame the request was seen.
+ *
+ * The request byte is the whole interface in both directions, and it already
+ * carries more than 0 and 1 - Deadlocked's load parks a 2 in api_load for as
+ * long as its menu is up - so a refusal is one more value of it. The request is
+ * over when this goes in: the helper does not hold it for a later frame,
+ * because a load that fires at some moment the player did not ask for is worse
+ * than one that plainly did not happen. qwark reads the code on its next tick,
+ * puts the byte back to 0 and reports SAVEFILE_ERR_NOT_IDLE, so the client
+ * shows a reason rather than a request that came to nothing.
+ * SAVEFILE_HELPER_REFUSED in src/core/savefile.h is the same number.
+ */
+#define SF_API_REFUSED 0xFE
+
 /* The game's own memcpy, in every game. */
 void sf_memcpy(void *dst, const void *src, int len);
 

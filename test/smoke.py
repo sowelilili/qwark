@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 42
+QWARK_BUILD = 43
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -164,6 +164,17 @@ SAVEFILE_ERR_NONE = 0
 SAVEFILE_ERR_MISSING = 1
 SAVEFILE_ERR_IO = 2
 SAVEFILE_ERR_SHORT = 3
+SAVEFILE_ERR_NO_HELPER = 4
+SAVEFILE_ERR_BUSY = 5
+# Build 43: the game was not somewhere a save could be taken or put back.
+SAVEFILE_ERR_NOT_IDLE = 6
+# What the helper leaves in a request byte when it drops one for that reason.
+SAVEFILE_HELPER_REFUSED = 0xFE
+# Deadlocked's gameMode and pendingGameMode, out of src/games/rac4.h.
+R4_GAME_MODE = 0x00B3C5A0
+R4_PENDING_GAME_MODE = 0x009C37F4
+R4_MODE_IDLE = (struct.pack(">I", 0), struct.pack(">i", -2))
+R4_MODE_BUSY = (struct.pack(">I", 6), struct.pack(">i", -2))
 SAVEFILE_NAME_LEN = 32
 SAVEFILE_ROW_SIZE = 40
 SAVEFILE_CATEGORY_CREATE = 0
@@ -1318,8 +1329,13 @@ OTHER_GAMES = [
         "name": "Deadlocked",
         "game": 4,
         "features": 17,
-        # SF_API_SETASIDE from src/games/sfhelper/sf_rac4.h.
+        # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
+        "sf_load": 0x015CD71E,
+        # Build 43: Deadlocked raises nothing at a game that is not idle, and a
+        # fresh fake process reads as a mode change queued, so it is told so.
+        "sf_idle": [(R4_GAME_MODE, R4_MODE_IDLE[0]),
+                    (R4_PENDING_GAME_MODE, R4_MODE_IDLE[1])],
         # Retired, never renumbered: 16, "Reset all weapon levels".
         "retired": [16],
         "readouts": 8,
@@ -1416,7 +1432,7 @@ OTHER_GAMES = [
 ]
 
 
-def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
+def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None):
     """
     Protocol 1.9: the savefile block, against whichever game is up.
 
@@ -1429,7 +1445,15 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     `setaside_addr` is the game's own request byte. Given one, this also plays
     the helper's part in clearing it, which is the only way to see the settle
     window from the wire.
+
+    `idle` is the state a game that refuses a request while it is busy has to
+    be put in first (build 43). A fresh fake process is all zeroes, which for
+    Deadlocked reads as a queued mode change, so nothing would be raised at it
+    at all without this.
     """
+    if idle:
+        for addr, data in idle:
+            mem_write(c, addr, data)
     status, body = c.call(OP_SAVEFILE_INFO)
     if not check(status == ST_OK and len(body) == SAVEFILE_INFO_SIZE,
                  "%s: SAVEFILE_INFO answers with twenty bytes" % name,
@@ -1503,6 +1527,82 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None):
     check(status == ST_OK and body[3] == 0,
           "%s: and a whole settle window of zeroes is what clears it" % name,
           body[3] if body else None)
+
+
+def exercise_savefile_not_idle(c, name, setaside_addr, load_addr,
+                               save_aside_id, load_aside_id):
+    """
+    Build 43, over the wire: nothing is raised at a game that is not idle.
+
+    Deadlocked works on its own save data from inside the game, so a request
+    raised in a cutscene, a planet load or a menu either copies a save the game
+    is still writing or hands its loader a buffer something else is about to
+    walk over. qwark reads the game's two mode words before it writes a request
+    byte and answers BUSY with SAVEFILE_INFO error 6 instead, and the helper
+    makes the same test on the frame it would act and drops the request there.
+
+    The helper's own frame is not something a PC can run, so the simulator
+    stands in for it here exactly as it stands in for the cleared request byte
+    everywhere else in this file: the refusal code goes into the request byte by
+    hand, and what is checked is what qwark does with it.
+    """
+    busy = [(R4_GAME_MODE, R4_MODE_BUSY[0]), (R4_PENDING_GAME_MODE, R4_MODE_BUSY[1])]
+    idle = [(R4_GAME_MODE, R4_MODE_IDLE[0]), (R4_PENDING_GAME_MODE, R4_MODE_IDLE[1])]
+
+    mem_write(c, setaside_addr, b"\x00")
+    mem_write(c, load_addr, b"\x00")
+    for addr, data in busy:
+        mem_write(c, addr, data)
+
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
+    check(status == ST_BUSY,
+          "%s: the SAVE_ASIDE action is BUSY while the game is not idle" % name, status)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([load_aside_id]))
+    check(status == ST_BUSY, "%s: and so is LOAD_ASIDE" % name, status)
+
+    info = savefile_info(c)
+    check(info is not None and info["error"] == SAVEFILE_ERR_NOT_IDLE,
+          "%s: SAVEFILE_INFO says the game was not idle" % name,
+          info["error"] if info else None)
+    check(info is not None and info["pending"] == 0,
+          "%s: with nothing left outstanding" % name,
+          info["pending"] if info else None)
+    check(mem_read_u8(c, setaside_addr) == 0 and mem_read_u8(c, load_addr) == 0,
+          "%s: and neither request byte was written" % name)
+
+    status, _ = c.call(OP_SAVEFILE_STORE,
+                       fixed32("busy") + fixed32("busy.sav"))
+    check(status == ST_BUSY, "%s: SAVEFILE_STORE is BUSY too" % name, status)
+    status, _ = c.call(OP_SAVEFILE_RESTORE,
+                       fixed32("busy") + fixed32("busy.sav"))
+    check(status == ST_BUSY,
+          "%s: and SAVEFILE_RESTORE, ahead of even looking for the file" % name, status)
+    info = savefile_info(c)
+    check(info is not None and info["error"] == SAVEFILE_ERR_NOT_IDLE,
+          "%s: both for the same documented reason" % name,
+          info["error"] if info else None)
+
+    # The same ops, from a game that is sitting still.
+    for addr, data in idle:
+        mem_write(c, addr, data)
+
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
+    check(status == ST_OK, "%s: from an idle game the action fires" % name, status)
+    check(mem_read_u8(c, setaside_addr) == 1,
+          "%s: and raises the request byte as it always did" % name)
+
+    # And the other half: the helper found the game busy on its own frame.
+    mem_write(c, setaside_addr, bytes([SAVEFILE_HELPER_REFUSED]))
+    time.sleep(0.2)
+    check(mem_read_u8(c, setaside_addr) == 0,
+          "%s: qwark clears the helper's refusal code out of the byte" % name)
+    info = savefile_info(c)
+    check(info is not None and info["pending"] == 0,
+          "%s: the request is dropped at once, not held for a later frame" % name,
+          info["pending"] if info else None)
+    check(info is not None and info["error"] == SAVEFILE_ERR_NOT_IDLE,
+          "%s: and the client is told why" % name,
+          info["error"] if info else None)
 
 
 def savefile_info(c):
@@ -1850,7 +1950,12 @@ def exercise_game(c, sim, spec, udp=None):
 
         # Protocol 1.9: that pair, and the block that moves the bytes.
         if save_aside:
-            exercise_savefile(c, name, save_aside[0]["id"], spec.get("sf_setaside"))
+            exercise_savefile(c, name, save_aside[0]["id"], spec.get("sf_setaside"),
+                              spec.get("sf_idle"))
+            if spec.get("sf_idle"):
+                exercise_savefile_not_idle(c, name, spec["sf_setaside"],
+                                           spec["sf_load"], save_aside[0]["id"],
+                                           load_aside[0]["id"])
 
         # Protocol 1.7: only a VALUE carries a field width, and a SIGNED row
         # leaves min and max at 0 because the width is already the range.

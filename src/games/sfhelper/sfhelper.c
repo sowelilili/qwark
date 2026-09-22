@@ -19,6 +19,13 @@
  *   api_load      the client writes 1; the helper hands the aside buffer to the
  *                 game's loader and clears the byte
  *
+ * Build 43 adds one value to the two request bytes rather than a fourth byte:
+ * the helper writes SF_API_REFUSED into either of them when it sees a request
+ * it will not act on, which today means Deadlocked was in a cutscene, a
+ * transition or a menu when the request came in. The request is dropped, never
+ * deferred, and qwark reads the code, puts the byte back to 0 and tells the
+ * client why. See sf_game_idle below.
+ *
  * qwark reads and writes the aside buffer with ordinary memory reads, which is
  * the whole point: the save never becomes a file on the console. The mods this
  * is ported from wrote /dev_hdd0/game/<TITLEID>/USRDIR/tempsave with syscalls
@@ -82,6 +89,48 @@ static void sf_fill_if_empty(void)
 }
 
 /*
+ * Build 43. Whether the game is somewhere a save may be copied out of it or
+ * handed back to it on this frame.
+ *
+ * Deadlocked keeps working on its save data from inside the game: the load is a
+ * menu, the autosave writes the same buffer, and every planet load, lobby
+ * screen and cutscene transition moves the game between modes that read or
+ * rewrite it. A copy taken across one of those is a save with the game's
+ * fingerprints half way through it, which is what the file coming back off the
+ * console was; a load raised across one hands the loader a buffer something
+ * else is already walking.
+ *
+ * The test is the one the game's own mode_requestChange makes, plus the two
+ * modes where the save sits still: nothing may happen while a mode change is
+ * queued, and gameMode must be ordinary play or the pause. The pause is in
+ * because it is the mode this helper parks the game in itself, three frames
+ * further down, to run the load menu - so the load's own later steps still see
+ * an idle game, which is exactly what they should.
+ *
+ * qwark makes the same test on its own tick before it writes the request byte
+ * at all, and refuses with SAVEFILE_ERR_NOT_IDLE so the client can say why.
+ * This is the half of it that cannot be raced: qwark's tick and the game's
+ * frame are different clocks, and the game gets frames of its own in between.
+ *
+ * The other three games have no such check. Their loaders take a buffer and
+ * return, with no menu and no mode of their own, and nobody has reported a save
+ * coming back dirty from them; whether they want the same guard is a question
+ * for a console, not for this build.
+ */
+#if SF_GAME == SF_RAC4
+static int sf_game_idle(void)
+{
+	sf_u32 mode = SF_WORD(SF_GAME_MODE);
+
+	if (mode != SF_MODE_NORMAL && mode != SF_MODE_PAUSE) return 0;
+	return SF_WORD(SF_PENDING_GAME_MODE) == SF_MODE_NONE;
+}
+#else
+/* Folded away at -O2, so the other three games' bytes do not move. */
+#define sf_game_idle() 1
+#endif
+
+/*
  * Its own section so the link map can put it at the front of the cave, which is
  * where the mods this comes from have their entry point.
  */
@@ -104,8 +153,17 @@ void sf_entry(void)
 	 * hardware.
 	 */
 	if (SF_BYTE(SF_API_SETASIDE) == 1) {
-		sf_copy_aside();
-		SF_BYTE(SF_API_SETASIDE) = 0;
+		/*
+		 * Build 43, Deadlocked only: a request seen while the game is busy is
+		 * dropped, not held for a quieter frame. The byte carries the reason
+		 * out; see SF_API_REFUSED.
+		 */
+		if (!sf_game_idle()) {
+			SF_BYTE(SF_API_SETASIDE) = SF_API_REFUSED;
+		} else {
+			sf_copy_aside();
+			SF_BYTE(SF_API_SETASIDE) = 0;
+		}
 	}
 
 #if SF_GAME == SF_RAC4
@@ -119,14 +177,26 @@ void sf_entry(void)
 	 *   api_load 2            watch the menu's status word: 15 or 24 is the
 	 *                         player confirming, and the load goes through; 28
 	 *                         is a cancel, and the game mode goes back
+	 *
+	 * Build 43: the idle test is made where the sequence starts, on the frame
+	 * the request is first seen, and the request is dropped there if the game
+	 * is busy. It is not made again at timer 1 or in state 2, and deliberately
+	 * so: by then the helper has put the game in the pause itself and the menu
+	 * is up, and unwinding that from underneath the game would be a worse thing
+	 * to do than finishing. The player backing out of the menu is already the
+	 * documented way out, and it is the 28 below.
 	 */
 	if (SF_BYTE(SF_API_LOAD) == 1) {
 		if (SF_WORD(SF_FRAME_TIMER) == 0) {
-			sf_fill_if_empty();
+			if (!sf_game_idle()) {
+				SF_BYTE(SF_API_LOAD) = SF_API_REFUSED;
+			} else {
+				sf_fill_if_empty();
 
-			SF_WORD(SF_FRAME_TIMER) = 4;
-			SF_WORD(SF_PREV_GAME_MODE) = SF_WORD(SF_GAME_MODE);
-			SF_WORD(SF_GAME_MODE) = 3;
+				SF_WORD(SF_FRAME_TIMER) = 4;
+				SF_WORD(SF_PREV_GAME_MODE) = SF_WORD(SF_GAME_MODE);
+				SF_WORD(SF_GAME_MODE) = 3;
+			}
 		} else if (SF_WORD(SF_FRAME_TIMER) == 1) {
 			sf_restore_saved_game(0, (void *)SF_ASIDE_ADDR);
 			SF_BYTE(SF_API_LOAD) = 2;

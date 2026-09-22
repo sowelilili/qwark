@@ -784,6 +784,7 @@ const struct game_api rac2_game = {
 	rac2_planet_load,
 	rac2_die,
 	rac2_load_setaside,
+	NULL,                 /* savefile_ready: build 43, not looked at yet */
 
 	rac2_unlock_list,
 	rac2_unlock_read,
