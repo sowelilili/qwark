@@ -7,6 +7,7 @@
 #include "util.h"
 #include "autosplit.h"
 #include "savefile.h"
+#include "switches.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
@@ -1038,6 +1039,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 		*replylen = off;
 		return ST_OK;
+	}
+
+	/*
+	 * Revision 1.17. The running game's code switches as the words an RPCS3
+	 * patch writes. Like SAVEFILE_PATCH it reads the generated table and the
+	 * session's game and nothing else, so it answers here, under the core lock,
+	 * on either platform.
+	 */
+	case OP_SWITCH_PATCH: {
+		u16 rc;
+
+		core_lock();
+		rc = (u16)switches_patch(reply, replycap, replylen);
+		core_unlock();
+		return rc;
 	}
 
 	/*

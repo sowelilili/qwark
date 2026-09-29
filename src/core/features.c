@@ -1,5 +1,6 @@
 #include "features.h"
 #include "config.h"
+#include "switches.h"
 #include "util.h"
 #include "../plat/plat.h"
 
@@ -9,6 +10,24 @@ static const struct game_api *g_game;
 static char g_title[16];
 static u64 g_toggle_state;
 static u64 g_toggle_auto;
+
+/*
+ * Build 50. WRITES_CODE toggles features_apply_mask was asked for, on a platform
+ * that cannot patch code, before the tick had looked for the game's code
+ * switches: the auto-apply at INGAME always comes first, and a PREVIOUS_REAPPLY
+ * may. They are applied or dropped by features_apply_waiting when the look
+ * answers, and forgotten with the rest of the toggle state.
+ */
+static u64 g_code_waiting;
+
+/*
+ * Whether a WRITES_CODE feature can be set on this platform: always where code
+ * can be patched, and elsewhere only while the game's code switches are in.
+ */
+static int code_ok(void)
+{
+	return plat_can_patch_code() || switches_present();
+}
 
 static const struct feature_desc *find_desc(u8 id)
 {
@@ -82,6 +101,7 @@ u64 features_live_mask(void)
 void features_poll_live(void)
 {
 	const struct game_describe *d;
+	int switched;
 	u8 i;
 
 	if (g_game == NULL || g_game->describe == NULL) return;
@@ -90,13 +110,21 @@ void features_poll_live(void)
 	d = g_game->describe();
 	if (d == NULL) return;
 
+	/*
+	 * Build 50. A WRITES_CODE toggle is read back only while the switches are
+	 * in: its state is then the flag byte. On a console and without them it is
+	 * a patch, which qwark's own bit describes and memory does not.
+	 */
+	switched = switches_present();
+
 	for (i = 0; i < d->nfeatures; i++) {
 		const struct feature_desc *f = &d->features[i];
 		int on = 0;
 
 		if (f->kind != FEATURE_TOGGLE) continue;
 		if (f->id >= QWARK_MAX_FEATURES) continue;
-		if ((f->flags & FEATURE_FLAG_LIVE) == 0) continue;
+		if ((f->flags & FEATURE_FLAG_LIVE) == 0 &&
+		    !(switched && (f->flags & FEATURE_FLAG_WRITES_CODE) != 0)) continue;
 
 		/* A read that fails leaves the bit where it was rather than lying. */
 		if (g_game->toggle_read(f->id, &on) != ST_OK) continue;
@@ -111,12 +139,14 @@ void features_set_game(const struct game_api *game, const char *title)
 	g_game = game;
 	qstrcpy(g_title, sizeof(g_title), title ? title : "");
 	g_toggle_state = 0;
+	g_code_waiting = 0;
 	g_toggle_auto = features_auto_mask();
 }
 
 void features_forget_state(void)
 {
 	g_toggle_state = 0;
+	g_code_waiting = 0;
 }
 
 u64 features_toggle_state(void) { return g_toggle_state; }
@@ -134,8 +164,14 @@ int features_set(u8 id, u32 value)
 	 * A WRITES_CODE feature is an instruction patch wearing a checkbox, so on a
 	 * platform that cannot patch code it is refused rather than half-applied.
 	 * The client already knows: SessionInfo flags bit2 greys the row.
+	 *
+	 * Build 50: unless the game's code switches are in, put there by an RPCS3
+	 * patch at load. Then the game's own handler writes the toggle's flag byte
+	 * instead of the instruction (classic_code_toggle), and bit4 tells the
+	 * client to offer the row. Before the tick has looked this still refuses,
+	 * which is what a client that has not seen bit4 expects.
 	 */
-	if ((f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && !plat_can_patch_code())
+	if ((f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && !code_ok())
 		return ST_UNSUPPORTED;
 
 	if (f->kind == FEATURE_TOGGLE) {
@@ -212,6 +248,7 @@ void features_apply_mask(u64 mask)
 {
 	const struct game_describe *d;
 	int can_patch = plat_can_patch_code();
+	int switches = switches_state();
 	u8 skipped = 0;
 	u8 i;
 
@@ -231,9 +268,15 @@ void features_apply_mask(u64 mask)
 		 * An auto-flagged WRITES_CODE toggle would answer UNSUPPORTED anyway;
 		 * skipping it quietly here keeps the boot path free of noise, and the
 		 * one line below says how many went by.
+		 *
+		 * Build 50: unless the code switches are in, when it goes on like any
+		 * other toggle, as a byte write. And while nobody knows yet - at INGAME
+		 * the tick has not looked - it waits for the answer rather than being
+		 * skipped for want of one.
 		 */
-		if (!can_patch && (f->flags & FEATURE_FLAG_WRITES_CODE) != 0) {
-			skipped++;
+		if (!can_patch && (f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && switches != 1) {
+			if (switches < 0) g_code_waiting |= (u64)1 << f->id;
+			else              skipped++;
 			continue;
 		}
 		features_set(f->id, 1);
@@ -242,6 +285,14 @@ void features_apply_mask(u64 mask)
 	if (skipped != 0)
 		plat_log("qwark: %d code-patch toggle(s) skipped, this platform cannot patch code",
 		         (int)skipped);
+}
+
+void features_apply_waiting(void)
+{
+	u64 mask = g_code_waiting;
+
+	g_code_waiting = 0;
+	if (mask != 0) features_apply_mask(mask);
 }
 
 /* -------------------------------------------------------------- DESCRIBE */

@@ -9,14 +9,19 @@
  */
 #include "rac3.h"
 #include "classic.h"
+#include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
 
 #include <string.h>
 
-/* See rac3.h for what these two are and why both are accepted. */
+/* See rac3.h for what these three are and why all three are accepted. */
 const u8 rac3_fp[4]         = { 0x7C, 0x85, 0x31, 0x2E };
 const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
+const u8 rac3_fp_switch[4]  = {
+	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 24), (u8)(SW_RAC3_SITE_FREEZE_AMMO >> 16),
+	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 8),  (u8)SW_RAC3_SITE_FREEZE_AMMO
+};
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -192,6 +197,11 @@ static const struct patch_word rac3_ammo_words[] = {
 static struct patch_def rac3_ammo = {
 	"Freeze ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 1, NULL
 };
+
+/*
+ * Build 50. Under RPCS3 it is a code switch instead (src/games/switches/
+ * sw_rac3.s), chosen by the flag byte SW_RAC3_FLAG_FREEZE_AMMO.
+ */
 
 static void rac3_init(void)
 {
@@ -618,7 +628,7 @@ static int rac3_health_freeze(u64 value, int on)
 static int rac3_set_toggle(u8 id, int on)
 {
 	switch (id) {
-	case R3_FREEZE_AMMO:   return classic_patch_toggle(&rac3_ammo, on);
+	case R3_FREEZE_AMMO:   return classic_code_toggle(&rac3_ammo, SW_RAC3_FLAG_FREEZE_AMMO, on);
 	case R3_FREEZE_HEALTH: return rac3_health_freeze(200, on);
 	case R3_OHKO:          return rac3_health_freeze(1, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
@@ -646,6 +656,9 @@ static int rac3_toggle_read(u8 id, int *on)
 {
 	u8 b = 0;
 	int rc;
+
+	/* Build 50: the code switch's flag byte, while the switch is in. */
+	if (id == R3_FREEZE_AMMO) return classic_code_read(SW_RAC3_FLAG_FREEZE_AMMO, on);
 
 	if (id != R3_QS_PAUSE) return ST_NOT_FOUND;
 
@@ -778,6 +791,7 @@ const struct game_api rac3_game = {
 	RAC3_FP_ADDR,
 	rac3_fp,
 	rac3_fp_patched,
+	rac3_fp_switch,
 	sizeof(rac3_fp),
 
 	0,                    /* no quit hook is known for RaC3 yet */

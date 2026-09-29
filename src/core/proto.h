@@ -44,6 +44,11 @@
  * patch writes, in SAVEFILE_PATCH's layout. On a platform refusing code patches
  * MOD_LIST's LOADED bit says the mod is in game memory, put there by such a
  * patch at load, and the new CHECKING bit says qwark has not looked yet.
+ * Revision 1.17: SWITCH_PATCH at 0x0025, the running game's code switches as
+ * the words and bytes an RPCS3 patch writes, in SAVEFILE_PATCH's layout, and
+ * SessionInfo flags bit4 CODE_SWITCHES, set on a platform refusing code patches
+ * while such a patch has put them in the game. Every WRITES_CODE toggle then
+ * works there, as a byte write to its flag.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -59,7 +64,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             49
+#define QWARK_BUILD             50
 
 #define QWARK_PORT              9673
 /*
@@ -120,6 +125,16 @@
 #define OP_FEATURE_TRIGGER   0x0022
 #define OP_FEATURE_SET_AUTO  0x0023
 #define OP_FEATURE_OPTIONS   0x0024
+/*
+ * Revision 1.17. The running game's code switches as what an RPCS3 patch writes
+ * to put them there, laid out exactly as SAVEFILE_PATCH's reply: u16 n, u16 pad,
+ * u32 stamp, n (u32 addr, u32 value) pairs - every cave as consecutive words,
+ * caves in address order, then the site branch words in address order - then
+ * u16 nb, u16 pad and nb (u32 addr, u8 value, u8 pad[3]) single bytes, every
+ * flag byte of the game at 0. The stamp is the CRC-32 of every byte after it.
+ * Request none. See PROTOCOL.md 5.12.2.
+ */
+#define OP_SWITCH_PATCH      0x0025
 
 #define OP_MEM_READ          0x0030
 #define OP_MEM_WRITE         0x0031
@@ -249,6 +264,12 @@
 #define MOD_PATCH_ROW              SAVEFILE_PATCH_ROW
 #define MOD_PATCH_BYTES_HEAD       SAVEFILE_PATCH_BYTES_HEAD
 #define MOD_PATCH_BYTE_ROW         SAVEFILE_PATCH_BYTE_ROW
+
+/* Revision 1.17. So is SWITCH_PATCH's. */
+#define SWITCH_PATCH_HEAD          SAVEFILE_PATCH_HEAD
+#define SWITCH_PATCH_ROW           SAVEFILE_PATCH_ROW
+#define SWITCH_PATCH_BYTES_HEAD    SAVEFILE_PATCH_BYTES_HEAD
+#define SWITCH_PATCH_BYTE_ROW      SAVEFILE_PATCH_BYTE_ROW
 
 /*
  * SAVEFILE_INFO's reply was eight bytes until revision 1.10 added the transfer:
@@ -389,6 +410,15 @@
  * is the asking client's own capture and it lifts itself.
  */
 #define SESSION_FLAG_COMBOS_OFF       0x08
+/*
+ * Revision 1.17. bit4 is set on a platform that refuses code patches (bit2)
+ * while the running game's code switches are in it, put there at load by an
+ * RPCS3 patch written from SWITCH_PATCH: every WRITES_CODE toggle of the game
+ * works then, as a byte write, so a client stops greying those rows. It is
+ * never set on a console, where those toggles patch code as they always have,
+ * and never before qwark has looked this session.
+ */
+#define SESSION_FLAG_CODE_SWITCHES    0x10
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

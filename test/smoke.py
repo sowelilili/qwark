@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 49
+QWARK_BUILD = 50
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -120,6 +120,8 @@ OP_MOD_RESCAN = 0x0064
 OP_MOD_INFO = 0x0065
 # Revision 1.16: one mod as the words and bytes an RPCS3 patch writes.
 OP_MOD_PATCH = 0x0066
+# Revision 1.17: the running game's code switches, in SAVEFILE_PATCH's layout.
+OP_SWITCH_PATCH = 0x0025
 
 # One Mod row, and the flag that says the console has this one in the game.
 MOD_WIRE_SIZE = 120
@@ -198,6 +200,9 @@ SESSION_FLAG_PREVIOUS_PENDING = 0x01
 SESSION_FLAG_EMULATOR = 0x02
 SESSION_FLAG_NO_CODE_PATCHES = 0x04
 SESSION_FLAG_COMBOS_OFF = 0x08
+# Revision 1.17: the running game's code switches are in it, so the WRITES_CODE
+# rows work after all. Only ever beside NO_CODE_PATCHES.
+SESSION_FLAG_CODE_SWITCHES = 0x10
 
 # Protocol 1.1: sixteen readouts, so SessionInfo is 164 bytes.
 SESSION_INFO_SIZE = 164
@@ -1132,8 +1137,9 @@ OTHER_GAMES = [
         "name": "RaC2",
         "game": 2,
         "features": 37,
-        # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h.
-        "sf_setaside": 0x010CD71F,
+        # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h; build 50 moved it
+        # out of the executable's code segment.
+        "sf_setaside": 0x0131772A,
         # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
         "retired": [32, 33],
         "readouts": 9,
@@ -1620,7 +1626,7 @@ def exercise_savefile_not_idle(c, name, setaside_addr, load_addr,
           info["error"] if info else None)
 
 
-def savefile_patch(c):
+def savefile_patch(c, op=OP_SAVEFILE_PATCH):
     """
     SAVEFILE_PATCH, revision 1.15:
     (status, stamp, [(addr, 4 value bytes), ...], [(addr, value), ...], body).
@@ -1628,9 +1634,10 @@ def savefile_patch(c):
     The reply is u16 n, u16 pad, u32 stamp, n (u32 addr, u32 value) pairs, then
     u16 nb, u16 pad and nb (u32 addr, u8 value, u8 pad[3]) single bytes. The
     stamp is the CRC-32 of every byte after it exactly as it came in, so a
-    client can check it with zlib.crc32 and nothing else.
+    client can check it with zlib.crc32 and nothing else. SWITCH_PATCH
+    (revision 1.17) is laid out the same way, and `op` asks for it instead.
     """
-    status, body = c.call(OP_SAVEFILE_PATCH)
+    status, body = c.call(op)
     if status != ST_OK or len(body) < 8:
         return status, None, None, None, body
     n, _, stamp = struct.unpack(">HHI", body[:8])
@@ -2531,8 +2538,8 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     check(info is not None and info["installed"] == 0,
           "rpcs3: words that arrive mid-session do not count until a restart", info)
 
-    # The request bytes as RaC2's executable loads its own, out of its code
-    # segment: 80 FE A4. The words alone leave them there.
+    # The request bytes as RaC2's executable loaded its own until build 50 moved
+    # them out of its code segment: 80 FE A4. The words alone leave them there.
     pine.poke(RAC1_SF_API_MOD, b"\x80\xFE\xA4")
     pine.shutdown_game()
     ok, _ = wait_state(c, SESSION_XMB)
@@ -2630,6 +2637,106 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     check(any(a == RAC1_SF_API_SETASIDE for a, _ in pine.write_log),
           "rpcs3: the emulator's write log saw the request bytes go in")
     check(not hits, "rpcs3: and it saw no cave byte and no hook word written", hits[:4])
+
+
+# Build 50: RaC1's code switches. Its three flag bytes, from
+# src/games/switches_bins.h, and the ids of the toggles they belong to.
+RAC1_SW_FLAGS = [0x009058B0, 0x009058B1, 0x009058B2]
+RAC1_SW_AMMO_ID = 1
+RAC1_SW_AMMO_FLAG = 0x009058B1
+
+
+def wait_info_flag(c, flag, want, timeout=3.0):
+    """Polls HELLO until SessionInfo flags has `flag` set (want) or clear."""
+    deadline = time.time() + timeout
+    info = None
+    while time.time() < deadline:
+        status, body = c.call(OP_HELLO, bytes([1]))
+        info = parse_session_info(body) if status == ST_OK else None
+        if info is not None and bool(info["flags"] & flag) == want:
+            return True, info
+        time.sleep(0.05)
+    return False, info
+
+
+def smoke_rpcs3_switches(c, pine):
+    """
+    Build 50, revision 1.17: RaC1's WRITES_CODE toggles under RPCS3, once the
+    code switches are in the game.
+
+    RPCS3 applies a patch file as it loads the executable, so the words from
+    SWITCH_PATCH go straight into the fake emulator's memory, never through
+    qwark, and the game is restarted for them to count. Then a WRITES_CODE
+    checkbox is a write of its flag byte: the emulator sees that byte change
+    and no code word at all. RaC1 is running and stays running at the end.
+    """
+    status, stamp, words, single, body = savefile_patch(c, OP_SWITCH_PATCH)
+    if not check(status == ST_OK, "rpcs3 switches: SWITCH_PATCH answers", status):
+        return
+    n = struct.unpack(">H", body[:2])[0]
+    check(len(body) == 8 + n * 8 + 4 + len(single) * 8 and body[2:4] == b"\0\0",
+          "rpcs3 switches: in SAVEFILE_PATCH's layout", len(body))
+    check(stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
+          "rpcs3 switches: stamped with the CRC-32 of everything after the stamp", stamp)
+    check(n == 44, "rpcs3 switches: RaC1's are 39 trampoline words and 5 sites", n)
+    check([addr for addr, _ in single] == RAC1_SW_FLAGS and all(v == 0 for _, v in single),
+          "rpcs3 switches: and its three flag bytes, each at 0",
+          [(hex(a), v) for a, v in single])
+
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, False)
+    check(ok, "rpcs3 switches: without them SessionInfo bit4 is clear",
+          hex(info["flags"]) if info else None)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC1_SW_AMMO_ID, 1))
+    check(status == ST_UNSUPPORTED, "rpcs3 switches: and Infinite ammo is refused", status)
+
+    # -------------------------------------------------------- the restart
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 switches: the game is stopped for the patch to take")
+    for addr, value in words:
+        pine.poke(addr, value)
+    for addr, value in single:
+        pine.poke(addr, bytes([value]))
+    del pine.write_log[:]
+    pine.boot("NPEA00385", "Ratchet & Clank")
+    ok, _ = wait_state(c, SESSION_INGAME)
+    check(ok, "rpcs3 switches: and comes back with them applied at load")
+
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, True)
+    check(ok, "rpcs3 switches: SessionInfo bit4 CODE_SWITCHES is set",
+          hex(info["flags"]) if info else None)
+    check(info is not None and info["flags"] & SESSION_FLAG_NO_CODE_PATCHES,
+          "rpcs3 switches: beside bit2, which has not changed")
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC1_SW_AMMO_ID, 1))
+    check(status == ST_OK, "rpcs3 switches: FEATURE_SET turns Infinite ammo on", status)
+    check(pine.peek(RAC1_SW_AMMO_FLAG, 1) == b"\x01",
+          "rpcs3 switches: by writing 1 into its flag byte in the emulator",
+          pine.peek(RAC1_SW_AMMO_FLAG, 1).hex())
+    info = fresh_state(c)
+    check(info is not None and info["toggle_state"] & (1 << RAC1_SW_AMMO_ID),
+          "rpcs3 switches: and its toggle_state bit is set", info["toggle_state"] if info else None)
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC1_SW_AMMO_ID, 0))
+    check(status == ST_OK and pine.peek(RAC1_SW_AMMO_FLAG, 1) == b"\x00",
+          "rpcs3 switches: and off again writes 0", status)
+
+    # The byte is the truth: written behind qwark's back, the checkbox follows.
+    pine.poke(RAC1_SW_AMMO_FLAG, b"\x01")
+    time.sleep(0.4)
+    info = fresh_state(c)
+    check(info is not None and info["toggle_state"] & (1 << RAC1_SW_AMMO_ID),
+          "rpcs3 switches: the checkbox reads the flag byte back", info["toggle_state"] if info else None)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC1_SW_AMMO_ID, 0))
+    check(status == ST_OK, "rpcs3 switches: and turns it off for what follows", status)
+
+    code = set()
+    for addr, _ in words:
+        code.update(range(addr, addr + 4))
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
+    check(any(a == RAC1_SW_AMMO_FLAG for a, _ in pine.write_log),
+          "rpcs3 switches: the emulator's write log saw the flag byte go in")
+    check(not hits, "rpcs3 switches: and saw no trampoline byte and no site word written", hits[:4])
 
 
 # Build 49: a mod uploaded to qwark-rpcs3 and put in the game as an RPCS3 patch.
@@ -2938,6 +3045,9 @@ def smoke_rpcs3(exe):
 
         # ------------------------------------ a mod by an RPCS3 patch
         smoke_rpcs3_mods(c, pine)
+
+        # ------------------------------ the code switches by an RPCS3 patch
+        smoke_rpcs3_switches(c, pine)
 
         # ---------------------------------------------------------- paused
         # Pausing the emulator leaves the game, its memory and its title id
@@ -3765,6 +3875,20 @@ def main():
         check(status == ST_NOT_FOUND, "and MOD_PATCH of an index past the list NOT_FOUND", status)
         check(all((m["flags"] & MOD_FLAG_CHECKING) == 0 for m in mods),
               "no mod on a console is ever CHECKING", [m["flags"] for m in mods])
+
+        # Revision 1.17: SWITCH_PATCH answers on a console too, where it is only
+        # informational, and a console never sets bit4: its toggles patch code.
+        status, stamp, rows, single, body = savefile_patch(c, OP_SWITCH_PATCH)
+        check(status == ST_OK and len(rows) == 44 and
+              [a for a, _ in single] == [0x009058B0, 0x009058B1, 0x009058B2],
+              "SWITCH_PATCH hands back RaC1's 44 rows and 3 flag bytes on a console too",
+              (status, len(rows) if rows else None))
+        check(status == ST_OK and stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
+              "stamped with the CRC-32 of the rest of the reply", stamp)
+        status, body = c.call(OP_HELLO, bytes([1]))
+        info = parse_session_info(body) if status == ST_OK else None
+        check(info is not None and (info["flags"] & SESSION_FLAG_CODE_SWITCHES) == 0,
+              "and a console never sets SessionInfo bit4", hex(info["flags"]) if info else None)
 
         # --------------------------------------- an upload while a mod is on
         # What the client's Load button does: write the files, write qwark.sum,

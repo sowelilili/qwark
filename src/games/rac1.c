@@ -13,6 +13,7 @@
  */
 #include "rac1.h"
 #include "classic.h"
+#include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
 
@@ -367,6 +368,13 @@ static const struct patch_word rac1_health_words[] = {
 	{ RAC1_FP_ADDR, 0x30640000u } /* addic r3, r4, 0 instead of -25376 */
 };
 
+/*
+ * Build 50. Under RPCS3 these three are code switches instead
+ * (src/games/switches/sw_rac1.s): the same instructions, both forms of each in
+ * a trampoline, chosen by the flag bytes SW_RAC1_FLAG_* name. Infinite health's
+ * switch hooks the word after the one patched here, so the fingerprint stays.
+ */
+
 static struct patch_def rac1_fastload = {
 	"Fast loads", PATCH_KIND_FEATURE, rac1_fastload_words, 3, NULL
 };
@@ -512,9 +520,9 @@ int rac1_debug_bit(u32 bit, int on)
 static int rac1_set_toggle(u8 id, int on)
 {
 	switch (id) {
-	case F_FAST_LOADS:      return classic_patch_toggle(&rac1_fastload, on);
-	case F_INFINITE_AMMO:   return classic_patch_toggle(&rac1_ammo, on);
-	case F_INFINITE_HEALTH: return classic_patch_toggle(&rac1_health, on);
+	case F_FAST_LOADS:      return classic_code_toggle(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS, on);
+	case F_INFINITE_AMMO:   return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
+	case F_INFINITE_HEALTH: return classic_code_toggle(&rac1_health, SW_RAC1_FLAG_INFINITE_HEALTH, on);
 	case F_GHOST:           return classic_ghost(RAC1_GHOST_TIMER, on);
 	case F_GOODIES:         return mem_write_u8(RAC1_GOODIES_MENU, on ? 1 : 0);
 	case F_DBG_RATCHET:     return rac1_debug_bit(RAC1_DBG_RATCHET, on);
@@ -528,6 +536,8 @@ static int rac1_set_toggle(u8 id, int on)
  * Protocol 1.3. The four RaC1 toggles whose state is a byte the game owns: the
  * goodies menu flag, which lives in the save file, and the three debug update
  * bits of one word. Read-only, and only ever from the tick thread.
+ *
+ * Build 50: and the three code switches' flag bytes, while the switches are in.
  */
 static u32 rac1_debug_bit_for(u8 id)
 {
@@ -543,6 +553,13 @@ static int rac1_toggle_read(u8 id, int *on)
 {
 	u32 bit;
 	int rc;
+
+	switch (id) {
+	case F_FAST_LOADS:      return classic_code_read(SW_RAC1_FLAG_FAST_LOADS, on);
+	case F_INFINITE_AMMO:   return classic_code_read(SW_RAC1_FLAG_INFINITE_AMMO, on);
+	case F_INFINITE_HEALTH: return classic_code_read(SW_RAC1_FLAG_INFINITE_HEALTH, on);
+	default:                break;
+	}
 
 	if (id == F_GOODIES) {
 		u8 b = 0;
@@ -655,6 +672,7 @@ const struct game_api rac1_game = {
 	RAC1_FP_ADDR,
 	rac1_fp,
 	rac1_fp_patched,
+	NULL,                 /* fp_switch: the health switch hooks the word after it */
 	sizeof(rac1_fp),
 
 	0,                    /* no quit hook is known for RaC1 yet */

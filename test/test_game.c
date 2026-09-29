@@ -86,6 +86,7 @@ const struct game_api testgame_game = {
 	TG_FP_ADDR,
 	tg_fp,
 	NULL,                 /* no alternative fingerprint */
+	NULL,                 /* and no code switches */
 	sizeof(tg_fp),
 
 	0,

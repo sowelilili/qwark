@@ -317,10 +317,15 @@
  * Fingerprint: the original instruction at the refill-ammo patch site,
  * 0x4182000C ("beq +12"), which RAC4Form restores when the checkbox is cleared.
  * qwark's own patched form, the nop, is accepted too.
+ *
+ * Build 50: and the branch into the refill-ammo trampoline, which is what the
+ * site holds on every boot under RPCS3 once the code switches' patch is in
+ * (src/games/switches/sw_rac4.s).
  */
 #define RAC4_FP_ADDR RAC4_AMMO_INSTR
 extern const u8 rac4_fp[4];
 extern const u8 rac4_fp_patched[4];
+extern const u8 rac4_fp_switch[4];
 
 /* ---------------------------------------------------------------- hot block */
 

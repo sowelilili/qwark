@@ -29,6 +29,25 @@ int  classic_ghost(u32 timer_addr, int on);
 int  classic_patch_toggle(const struct patch_def *def, int on);
 
 /*
+ * Build 50, the code switches (src/core/switches.h). A WRITES_CODE toggle is
+ * one of these three rather than a bare classic_patch_toggle, each naming the
+ * flag byte its switch reads (switches_bins.h) beside the patch it makes on a
+ * console. While the running game's switches are in - only ever under RPCS3 -
+ * the flag is what they write and read; otherwise they are exactly the patch
+ * calls they replace.
+ *
+ *   classic_code_toggle  classic_patch_toggle, or the flag at 1 or 0
+ *   classic_code_force   patch_apply, or the flag at 1: the fast-load forcing
+ *                        a planet load does behind the checkbox's back
+ *   classic_code_read    the flag, for toggle_read; NOT_FOUND without the
+ *                        switches, where the toggle is a patch and memory says
+ *                        nothing qwark's own bit does not
+ */
+int  classic_code_toggle(const struct patch_def *def, u32 flag, int on);
+int  classic_code_force(const struct patch_def *def, u32 flag);
+int  classic_code_read(u32 flag, int *on);
+
+/*
  * Chargeboot colours, RaC2 and RaC3. Both store one colour per word as the four
  * bytes { alpha, B, G, R }, and ChargebootColorPicker wrote 0x40 as the alpha
  * for the front and tint words and 0x25 for the primary back one. The wire

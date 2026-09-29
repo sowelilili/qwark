@@ -29,7 +29,13 @@
 
 /* ------------------------------------------------------------------- caves */
 
-/* CODE_CAVE_START in Gigahelper's Makefile; it runs to 0x983754. */
+/*
+ * CODE_CAVE_START in Gigahelper's Makefile, which says the cave runs to
+ * 0x983754. It does not: the dead function it starts in ends at 0x981064, and
+ * 0x981064..0x983754 is live code. What the helper leaves of the function,
+ * 0x980C34..0x981064, holds the Freeze ammo code switch at 0x980F00
+ * (src/games/switches/sw_rac3.s).
+ */
 #define SF_CAVE 0x00980AC0
 
 /*

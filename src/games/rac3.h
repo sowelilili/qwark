@@ -145,10 +145,15 @@
  * Fingerprint: the original instruction at the infinite-ammo patch site,
  * 0x7C85312E, which racman restores when the toggle is turned off. qwark's own
  * patched form, the nop, is accepted too.
+ *
+ * Build 50: and the branch into the freeze-ammo trampoline, which is what the
+ * site holds on every boot under RPCS3 once the code switch's patch is in
+ * (src/games/switches/sw_rac3.s).
  */
 #define RAC3_FP_ADDR RAC3_AMMO_INSTR
 extern const u8 rac3_fp[4];
 extern const u8 rac3_fp_patched[4];
+extern const u8 rac3_fp_switch[4];
 
 /* ---------------------------------------------------------------- hot block */
 

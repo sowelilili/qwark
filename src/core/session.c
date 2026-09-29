@@ -7,6 +7,7 @@
 #include "util.h"
 #include "autosplit.h"
 #include "savefile.h"
+#include "switches.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -324,7 +325,13 @@ static int fingerprint_matches(const struct game_api *g)
 	if (memcmp(buf, g->fp_bytes, len) == 0) return 1;
 
 	/* The site may already carry a known patched form; that still proves it. */
-	return g->fp_alt != NULL && memcmp(buf, g->fp_alt, len) == 0;
+	if (g->fp_alt != NULL && memcmp(buf, g->fp_alt, len) == 0) return 1;
+
+	/*
+	 * Build 50. Or the branch the code switches' RPCS3 patch puts there, which
+	 * is on every boot of a game that has it.
+	 */
+	return g->fp_switch != NULL && memcmp(buf, g->fp_switch, len) == 0;
 }
 
 /*
@@ -359,6 +366,12 @@ static void enter_quitting(void)
 	 * game went away instead of watching a byte count that will never move.
 	 */
 	savefile_forget();
+
+	/*
+	 * Build 50. So did the code switches, if an RPCS3 patch put them in: the
+	 * next process is looked at afresh, and bit4 goes down meanwhile.
+	 */
+	switches_forget();
 
 	/*
 	 * Build 49. Which mods an RPCS3 patch put into that process went with it;
@@ -450,6 +463,12 @@ static void enter_ingame(void)
 	mods_forget_loaded();
 	/* A fresh process has none of the savefile helper in it. */
 	savefile_forget();
+	/*
+	 * Build 50. Nor, as far as anyone knows yet, the code switches. The first
+	 * tick looks; the auto-apply below leaves the WRITES_CODE toggles waiting
+	 * for that answer where code cannot be patched.
+	 */
+	switches_forget();
 
 	if (!same) {
 		/*
@@ -970,6 +989,12 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * state is, and the cache is only refreshed while a game is running.
 	 */
 	if (!config_combo_enabled()) flags |= SESSION_FLAG_COMBOS_OFF;
+	/*
+	 * Revision 1.17. The running game's code switches are in, so every
+	 * WRITES_CODE row works after all. Never on a console, and never before the
+	 * tick has looked this session.
+	 */
+	if (switches_present())      flags |= SESSION_FLAG_CODE_SWITCHES;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
@@ -1181,6 +1206,13 @@ static void session_step(void)
 		 * has its answer, and nothing at all after that or on a console.
 		 */
 		mods_presence_tick();
+		/*
+		 * Build 50. Where code cannot be patched, the look for the game's code
+		 * switches, a few reads a tick for the first tick or four of a session.
+		 * The tick it answers, the WRITES_CODE toggles the auto-apply or a
+		 * reapply set aside go on through their flag bytes, or are skipped.
+		 */
+		if (switches_tick()) features_apply_waiting();
 	} else {
 		watch_invalidate();
 	}

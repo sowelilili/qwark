@@ -31,10 +31,26 @@
 
 /* -------------------------------------------------------- the request bytes */
 
-#define SF_API_MOD      0x010CD71D
-#define SF_API_LOAD     0x010CD71E
-#define SF_API_SETASIDE 0x010CD71F
-#define SF_API_I        0x010CD720
+/*
+ * Build 50. rc2-save kept these at 0x10CD71D..0x10CD720, which is inside the
+ * executable's code segment - inside its .text section, even, loading as
+ * 80 FE A4 and a 0x38 - and the helper stores to api_mod every frame. A console
+ * does not mind. RPCS3 does: once it has applied its patches it takes write
+ * permission away from every segment of the executable that has none of its
+ * own, so under RPCS3 that first store would fault the game the moment the
+ * patched-in hook ran.
+ *
+ * They live at the top of the read-write segment instead, in the gap between
+ * the end of the TLS template and the next data, 0x1317714..0x131773F. It is
+ * part of the segment's file data, reads zero there and nothing in the
+ * executable refers to it. The code switches' two flag bytes take its first
+ * bytes (src/games/switches/sw_rac2.s) and these follow, the copy counter on a
+ * word boundary.
+ */
+#define SF_API_MOD      0x01317728
+#define SF_API_LOAD     0x01317729
+#define SF_API_SETASIDE 0x0131772A
+#define SF_API_I        0x0131772C
 
 /* ------------------------------------------------------- the aside buffer */
 

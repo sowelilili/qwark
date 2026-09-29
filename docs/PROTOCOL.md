@@ -20,6 +20,8 @@ Revision 1.15 (2026-09-29): the savefile helper under RPCS3. SAVEFILE_PATCH at 0
 
 Revision 1.16 (2026-09-29): mods under RPCS3, the way the savefile helper got there in 1.15. MOD_PATCH at 0x0066 hands out one mod as the (address, value) words an RPCS3 patch writes - every cave as consecutive words, then the mod's own words - and the tail bytes of any cave that is not whole words, in SAVEFILE_PATCH's layout and with the same CRC stamp. On a platform that refuses code patches MOD_LIST's `flags` bit0 LOADED now means the mod is in game memory, every cave byte and every word of it, which is how a patch RPCS3 applied at load shows up, and the new bit5 CHECKING says qwark has not looked yet this session; a console never sets bit5 and its LOADED is unchanged. MOD_LOAD, MOD_UNLOAD, auto-apply and the previous-session reapply behave there exactly as before. Separately, `flags` bit3 PREVIOUS was documented and never set: it is now set on a mod whose bit is in the previous-session record while it is not loaded again. Module build 49. See sections 3.2, 5.7 and 5.7.1.
 
+Revision 1.17 (2026-09-29): code switches, the nine WRITES_CODE toggles under RPCS3. SWITCH_PATCH at 0x0025 hands out the running game's code switches - a trampoline in a code cave for every instruction those toggles patch on a console, and the branch that replaces each such instruction - as the (address, value) words an RPCS3 patch writes, with every flag byte the trampolines read as a byte entry at 0, in SAVEFILE_PATCH's layout and with the same CRC stamp. On a platform that refuses code patches qwark looks for them once a session, and while they are in the game SessionInfo `flags` bit4 CODE_SWITCHES is set and every WRITES_CODE toggle of the game works, as a write of its flag byte: FEATURE_SET, the read-back into `toggle_state`, auto-apply, PREVIOUS_REAPPLY and the fast loads RaC2's and Deadlocked's loads force. RaC2's, RaC3's and Deadlocked's fingerprints accept the branch at their site. Separately, RaC2's savefile helper keeps its request bytes at 0x1317728..0x131772A since this build, out of the executable's code segment, which RPCS3 makes read-only (section 5.12.1). Module build 50. See sections 3, 3.2 and 5.12.2.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -82,6 +84,8 @@ u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is wait
                         bit1 EMULATOR: qwark is driving an emulator, not a console (section 3.2)
                         bit2 NO_CODE_PATCHES: this platform refuses code patches (section 3.2)
                         bit3 COMBOS_OFF: the COMBO_ENABLE switch is off, so no combo fires (section 5.9)
+                        bit4 CODE_SWITCHES (revision 1.17): the running game's code switches are in it,
+                             so its WRITES_CODE toggles work on a platform that sets bit2 (section 5.12.2)
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo
@@ -114,11 +118,11 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 
 **bit1 EMULATOR** is set when the thing on the other side is an emulator. It is cosmetic: say "RPCS3" rather than "console" and do not offer to upload an SPRX.
 
-**bit2 NO_CODE_PATCHES** is not cosmetic. RPCS3 recompiles PPU code ahead of execution, so writing an instruction word changes memory and the game carries on running the old instruction. Rather than let a checkbox lie, qwark refuses everything that depends on a code patch:
+**bit2 NO_CODE_PATCHES** is not cosmetic. RPCS3 recompiles PPU code ahead of execution, so writing an instruction word changes memory and the game carries on running the old instruction. It goes further than that once the game is loaded: RPCS3 applies its own patches to the executable and then takes write permission away from every segment of it that has none of its own, the code segment and whatever read-only data shares it. From then on a write into that segment fails, a MEM_WRITE through PINE and a store the game makes itself alike; data memory stays writable. Rather than let a checkbox lie, qwark refuses everything that depends on a code patch:
 
 | Request | Answer when bit2 is set |
 |---|---|
-| FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED` |
+| FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED`, except FEATURE_SET on a toggle while bit4 CODE_SWITCHES is set (revision 1.17, section 5.12.2) |
 | PATCH_APPLY | `UNSUPPORTED` |
 | MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED`, and MOD_UNLOAD has nothing to unload. The mod goes in as an RPCS3 patch instead (revision 1.16, section 5.7.1) |
 | SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` unless an RPCS3 patch put the savefile helper in the game when it loaded (revision 1.15, section 5.12.1) |
@@ -128,13 +132,15 @@ SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform
 
 **Mods work here too, once the client has written them as RPCS3 patches and the game has been restarted** (revision 1.16). A mod is code - patch words, code caves or both - so qwark cannot put one into a running game on this platform, but RPCS3 applies its own patch files as it loads the executable, before it compiles anything. The client asks for each mod with MOD_PATCH, writes it into RPCS3's per-title patch file, enables it in `patch_config.yml`, and the user restarts the game; qwark then finds the mod in game memory and MOD_LIST reports it LOADED. What does not exist here is everything that changes a mod's state inside a session: MOD_LOAD is refused and MOD_UNLOAD has nothing to unload, as the table says, auto-flagged mods are skipped at boot as they always were, and there is no previous-session reapply for them, because qwark never loaded them and the record never holds them. Taking a mod out is the reverse of putting it in: the client disables the patch and the game is restarted. Section 5.7.1 has the rules.
 
-Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction. One difference inside a planet load: on a console, RaC2's and Deadlocked's PLANET_LOAD force fast loads on first, which is a code patch, so here they leave that step out and the load takes the game's own time rather than being refused.
+Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction. One difference inside a planet load: on a console, RaC2's and Deadlocked's PLANET_LOAD force fast loads on first, which is a code patch, so here they leave that step out and the load takes the game's own time rather than being refused. With the code switches in (revision 1.17) they force them after all, through the fast-load flag byte.
 
-DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same ids, labels, groups and flags. A client greys them itself from bit2 rather than discovering one refusal at a time, so the same DESCRIBE parsing works against both platforms and a client built before this revision still functions, it simply sees the refusals instead of predicting them.
+**The WRITES_CODE toggles work here too, once the client has written the game's code switches as an RPCS3 patch and the game has been restarted** (revision 1.17). The patch gives the game both forms of every instruction those toggles change, and a flag byte in data memory that picks one, so a toggle is a byte write; qwark finds the switches in the game once a session and sets bit4 CODE_SWITCHES while they are there. Section 5.12.2 has the rules. Without them, everything in this section stands.
+
+DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same ids, labels, groups and flags. A client greys them itself from bit2 rather than discovering one refusal at a time, so the same DESCRIBE parsing works against both platforms and a client built before this revision still functions, it simply sees the refusals instead of predicting them. Since revision 1.17 a client offers them again while bit4 CODE_SWITCHES is set; DESCRIBE is the same then too.
 
 Two side effects a client should know about, both inside qwark rather than on the wire:
 
-- Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
+- Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth. Since revision 1.17 they wait for qwark's look for the code switches instead, and go on through their flag bytes when it finds them.
 - The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, and the one with a way back in (revision 1.15): RPCS3 applies its own patch files to the executable as it loads it, before it recompiles anything, so a patch that writes the helper's caves and hook words at load, and zeroes its request bytes, is code the game really runs. The client writes that patch from SAVEFILE_PATCH into RPCS3's per-title patch file, `patches/<TITLE_ID>_patch.yml`, enables it in `patch_config.yml`, and the game is restarted; from then on qwark finds its helper in the game and the whole of sections 5.12 and 5.13 works as it does on a console. A patch written by an older qwark build no longer matches this one's helper and reads as not present, so the client writes the new one. Section 5.12.1 has the rules.
 
 ### 3.3 INGAME with `game` 0: a process qwark does not know
@@ -207,6 +213,7 @@ Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 
 | 0x0022 | FEATURE_TRIGGER | `u8 id` (ACTION only) | none |
 | 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
+| 0x0025 | SWITCH_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's code switches as the words and bytes an RPCS3 patch writes (revision 1.17, section 5.12.2) |
 
 ```
 Feature (48 bytes):
@@ -592,7 +599,9 @@ u16 pad     0
 
 Every cave comes first, as consecutive words in address order and the caves in the order qwark installs them, then the hook words, which is also the order a patch file should list them in: a reader applying them one at a time never has a branch in place before what it branches to. A word's `value` is the four bytes the game holds at `addr`, read as a big-endian word, so a patch entry of type `be32` writes it as it stands. A cave whose length is not a multiple of four would have its last word padded with zero bytes; every cave today is whole instructions, so none is.
 
-The single bytes are the helper's three request bytes, `api_mod`, `api_load` and `api_setaside` in that order, each with `value` 0: the three a console install zeroes before it hooks anything, because whatever the executable holds there would fire the moment the hook goes in. Under RPCS3 there is no install and the hook is live from the first frame, so the patch zeroes them at load instead. It matters: RaC2's three sit in its executable's code segment and load as 0x80 0xFE 0xA4, which without the zeroing reads from boot as a set-aside and a load outstanding that never clear, with the helper's refusal code in the load byte. Deadlocked's are in zero-filled BSS and would load as zeroes anyway; RaC1's and RaC3's have not been checked, and all four games carry the bytes the same way.
+The single bytes are the helper's three request bytes, `api_mod`, `api_load` and `api_setaside` in that order, each with `value` 0: the three a console install zeroes before it hooks anything, because whatever the executable holds there would fire the moment the hook goes in. Under RPCS3 there is no install and the hook is live from the first frame, so the patch zeroes them at load instead. It mattered: until build 50 RaC2's three sat in its executable's code segment and loaded as 0x80 0xFE 0xA4, which without the zeroing read from boot as a set-aside and a load outstanding that never cleared, with the helper's refusal code in the load byte. Since build 50 every game's request bytes load as zero - RaC1's, RaC3's and Deadlocked's are in zero-filled BSS, and RaC2's are in a gap of the read-write segment that is zero in the file - and the byte entries stay, for the next executable that does not.
+
+**RaC2's request bytes moved in build 50.** rc2-save, which the RaC2 helper comes from, kept `api_mod`, `api_load`, `api_setaside` and its copy counter at 0x10CD71D..0x10CD723, inside the executable's code segment, and the helper stores to `api_mod` on every frame. A console does not mind. RPCS3 does: it makes that segment read-only once it has applied its patches (section 3.2), so the first frame through the patched-in hook would have faulted the game. They are at 0x1317728, 0x1317729 and 0x131772A now, with the counter at 0x131772C, in the gap between the end of the TLS template and the next data at the top of the read-write segment (0x1317714..0x131773F), which is part of the segment's file data, reads zero and is referred to by nothing in the executable; the code switches' two RaC2 flag bytes take the start of the same gap. SAVEFILE_PATCH names the new addresses, and a patch written by an earlier build differs in the helper's own code as well as in its bytes, so it reads as not present and the client writes the new one.
 
 The stamp is the ordinary reflected CRC-32 that SAVEFILE_LIST and `qwark.sum` use, taken over everything after it exactly as it is on the wire - the word pairs, the `nb` head and the byte entries - so it changes exactly when anything the patch writes does: a client keeps it beside the patch it wrote and knows from it alone whether that patch is still the current build's.
 
@@ -609,6 +618,60 @@ It reads nothing out of the game and writes nothing into it, and it answers on b
 **When it is not**, INFO answers with `supported` as on a console and `installed` 0, and everything that needs the helper answers UNSUPPORTED as it did before this revision. A client tells the platform apart by SessionInfo `flags` bit2, which it already reads: with bit2 set and `installed` 0, it offers to write the patch.
 
 **What the client does with the reply.** It writes the words and the bytes into RPCS3's per-title patch file, `patches/<TITLE_ID>_patch.yml` under RPCS3's folder, enables that patch for the game in `patch_config.yml`, and has the user restart the game. That half is the client's; nothing in qwark touches RPCS3's files.
+
+### 5.12.2 Code switches under RPCS3 (revision 1.17)
+
+Nine toggles are instruction patches on a console, flagged `WRITES_CODE`: RaC1's Fast loads, Infinite ammo and Infinite health; RaC2's Fast loads and Infinite ammo; RaC3's Freeze ammo; Deadlocked's Crash patches, Fast loads and Refill ammo. qwark cannot patch code under RPCS3 (section 3.2), so on that platform the game is given both forms of every instruction those toggles change, at load, by an RPCS3 patch - the road the savefile helper takes in section 5.12.1. Each patched instruction, a *site*, becomes a branch to a *trampoline* in a code cave; the trampoline reads a *flag byte*, runs the patched form of the instruction when it is 1 and the game's own when it is 0, and branches back to the instruction after the site. The flag bytes are in data memory, which RPCS3 leaves writable, so turning a toggle on or off there is a byte write.
+
+Deadlocked's crash patches include one word of data, the last word of a vperm control table at 0x808830, which RPCS3 makes read-only with the code around it. Its switch hooks the one instruction that loads the table instead, and with the flag set loads a copy of the patched table out of the cave.
+
+On a console none of this happens: the toggles patch code as they always have, qwark never looks for the switches, bit4 is never set, and SWITCH_PATCH is informational.
+
+**Where the words come from.** SWITCH_PATCH, request none, describes the switches of the running game. All big-endian, laid out exactly as SAVEFILE_PATCH's reply:
+
+```
+u16 n       number of rows
+u16 pad     0
+u32 stamp   CRC-32 over every byte of the reply after this field
+{ u32 addr, u32 value }[n]                 be32 words
+u16 nb      number of flag bytes
+u16 pad     0
+{ u32 addr, u8 value, u8 pad[3] }[nb]      the flag bytes, each with value 0
+```
+
+Every cave comes first, as consecutive words, caves in address order - Deadlocked's last is the sixteen-byte table its bot-crash trampoline loads - and then every site's branch word, in address order: a reader applying the rows one at a time never has a branch in place before the trampoline it branches to. A row's `value` is the four bytes the game holds at `addr`, read as a big-endian word, so a `be32` patch entry writes it as it stands. The byte entries set every flag byte of the game to 0, so every switch is off at every boot whatever the executable holds there; every flag is zero in the file today, and the entries are the belt to that. The stamp is the reflected CRC-32 of section 5.12.1, over everything after it as it is on the wire.
+
+| Game | Rows | Flag bytes |
+|---|---|---|
+| RaC1 | 44: five trampolines (39 words) and five sites | 0x9058B0 fast loads, 0x9058B1 infinite ammo, 0x9058B2 infinite health |
+| RaC2 | 14: two trampolines (12 words) and two sites | 0x1317720 fast loads, 0x1317721 infinite ammo |
+| RaC3 | 7: one trampoline (6 words) and one site | 0xD9FF10 freeze ammo |
+| Deadlocked | 123: fourteen trampolines and the table (109 words), fourteen sites | 0x15CD780 crash patches, 0x15CD781 fast loads, 0x15CD782 refill ammo |
+
+Deadlocked's is the largest reply, 1020 bytes. The words are built from one assembly source per game in `src/games/switches/`, linked at the game's own addresses so that every branch is computed by the linker, and they change only when a trampoline does. None of them shares a byte with the savefile helper's patch, so a client writes both.
+
+SWITCH_PATCH reads nothing out of the game and writes nothing into it, and answers on both platforms. **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no switches, a title qwark does not know included.
+
+**The presence rule.** On a platform that refuses code patches the switches count as present when every byte of every cave and every site word reads back from the game exactly as SWITCH_PATCH hands them out. The flag bytes are no part of it: the patch zeroes them at load and qwark writes them from then on. qwark looks once a session, from the first INGAME tick, a few reads a tick - every game is looked through within four ticks - and keeps the answer until the session ends; it looks again whenever a game comes back. So, as for the helper:
+
+- A patch written while the game is running counts from the next restart, and not before.
+- A patch from another build, or one that is only partly there, differs somewhere and reads as not present.
+- A read that fails, because the emulator is not answering, leaves the answer unknown rather than "not present", and the next tick looks again.
+
+**SessionInfo `flags` bit4 CODE_SWITCHES** is set while the answer is yes, and only then: never on a console, never outside INGAME, never before the look has answered.
+
+**While bit4 is set:**
+
+- FEATURE_SET works on every WRITES_CODE toggle of the game, on and off, and writes 1 or 0 into the toggle's flag byte instead of an instruction. qwark writes no code word for any of it. FEATURE_TRIGGER on a WRITES_CODE action is still refused; no game has one.
+- `toggle_state` for those toggles is read back out of their flag bytes at 10 Hz, as a LIVE toggle's is (section 5.3.1), so a flag something else wrote shows in the checkbox. They are not LIVE in any other respect: DESCRIBE flags them WRITES_CODE as before, FEATURE_SET_AUTO works on them, and they go into the previous-session record. The one exception to the read-back is the fast-load flag a load has forced on: for the length of that load the checkbox reports the user's setting, not the force.
+- Auto-apply at INGAME and PREVIOUS_REAPPLY turn them on through their flags. Both can come before the look has answered - the auto-apply always does - so a WRITES_CODE toggle asked for before then waits for the answer, and goes on through its flag when the answer is yes, or is skipped as it always was when it is no. Deadlocked's crash patches, which ship auto-flagged, are therefore on a few ticks into every session that has the switches.
+- RaC2's and Deadlocked's planet loads and RaC2's set-aside load force fast loads on through the fast-load flag, and the games' own watchers put the flag back when the load is over, exactly as a console forces and reverts the patch.
+
+**While it is not** - no patch in the game, one from another build, the look not yet answered - everything is as section 3.2 describes: FEATURE_SET on a WRITES_CODE toggle answers UNSUPPORTED, the auto-apply skips those toggles, and the loads go without fast loads.
+
+**Fingerprints.** Three of the sites are fingerprint sites: RaC2's fast-load call at 0xBEA8A0, RaC3's ammo store at 0x182A88 and Deadlocked's refill-ammo branch at 0x1D7D18. With the patch in, those hold the branch into the trampoline, and each game's fingerprint accepts that word as a third form beside the game's own instruction and qwark's patched one. RaC1's Infinite health switch hooks the instruction after its fingerprint, 0x7F55C, where a console patches 0x7F558 itself, and runs the patched addic again from the trampoline, so RaC1's fingerprint is untouched. A patch from a build whose trampolines sit elsewhere would put a branch at those three sites that the fingerprint does not know and the game would not leave BOOTING, so a build that moves one keeps accepting the old word.
+
+**What the client does with the reply** is what it does with SAVEFILE_PATCH's: it writes the rows and the bytes into RPCS3's per-title patch file `patches/<TITLE_ID>_patch.yml` as their own entry, enables it in `patch_config.yml`, and has the user restart the game. With bit2 set and bit4 clear it offers to write the patch; with bit4 set it offers the WRITES_CODE rows. A mod that writes a site or a cave collides with the switches the way two mods can collide with each other, and the client checks for that as it does between mods. Nothing in qwark touches RPCS3's files.
 
 ## 5.13 The savefile library on the console (0x00B3..0x00B7), revision 1.10
 

@@ -11,14 +11,19 @@
  */
 #include "rac4.h"
 #include "classic.h"
+#include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
 
 #include <string.h>
 
-/* See rac4.h for what these two are and why both are accepted. */
+/* See rac4.h for what these three are and why all three are accepted. */
 const u8 rac4_fp[4]         = { 0x41, 0x82, 0x00, 0x0C };
 const u8 rac4_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
+const u8 rac4_fp_switch[4]  = {
+	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 24), (u8)(SW_RAC4_SITE_REFILL_AMMO >> 16),
+	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 8),  (u8)SW_RAC4_SITE_REFILL_AMMO
+};
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -207,6 +212,12 @@ static const struct patch_word rac4_loading_hook_words[] = {
  * autosplitter SPRX writes every time it finds the process. The toggle ships
  * auto-flagged so qwark behaves the same way without anyone remembering to load
  * a mod before a run.
+ *
+ * Build 50. Under RPCS3 these three toggles are code switches instead
+ * (src/games/switches/sw_rac4.s), chosen by the flag bytes SW_RAC4_FLAG_* name.
+ * The first word here is data, a vperm table, not an instruction; RPCS3 makes it
+ * read-only with the code around it, so its switch hooks the lvx that reads the
+ * table rather than the table itself. A console goes on writing it.
  */
 static const struct patch_word rac4_crash_words[] = {
 	/* Bot crash / flying */
@@ -251,13 +262,22 @@ static struct patch_def rac4_ammo = {
 };
 
 static int g_fastload_on;
+/*
+ * Build 50. Fast loads are on because a planet load forced them, not because
+ * the checkbox is, until the game-mode watcher puts them back; rac2.c's
+ * g_fastload_forced says why the read-back needs to know.
+ */
+static int g_fastload_forced;
 static int g_softlock_on;
 static u8  g_prev_tutorial  = 0xFF;
 static u8  g_prev_game_mode;
 
 int rac4_fastload_force(void)
 {
-	return patch_apply(&rac4_fastload);
+	int rc = classic_code_force(&rac4_fastload, SW_RAC4_FLAG_FAST_LOADS);
+
+	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
+	return rc;
 }
 
 static void rac4_init(void)
@@ -474,6 +494,7 @@ static const struct autosplit_desc *rac4_autosplit_describe(u8 *count)
 static void rac4_on_enter(void)
 {
 	g_fastload_on   = 0;
+	g_fastload_forced = 0;
 	g_softlock_on   = 0;
 	g_prev_tutorial = 0xFF;
 	g_prev_game_mode = 0;
@@ -542,8 +563,11 @@ static void rac4_on_tick(const struct game_hot *hot)
 
 		g_prev_game_mode = g_game_mode;
 
-		if (load_finished && !g_fastload_on)
-			classic_patch_toggle(&rac4_fastload, 0);
+		if (load_finished) {
+			g_fastload_forced = 0;
+			if (!g_fastload_on)
+				classic_code_toggle(&rac4_fastload, SW_RAC4_FLAG_FAST_LOADS, 0);
+		}
 	}
 }
 
@@ -654,7 +678,7 @@ static int rac4_set_toggle(u8 id, int on)
 	int rc;
 
 	switch (id) {
-	case R4_CRASH_PATCHES:  return classic_patch_toggle(&rac4_crash, on);
+	case R4_CRASH_PATCHES:  return classic_code_toggle(&rac4_crash, SW_RAC4_FLAG_CRASH_PATCHES, on);
 
 	case R4_SOFTLOCK_FIX:
 		g_softlock_on = on;
@@ -663,14 +687,40 @@ static int rac4_set_toggle(u8 id, int on)
 		return ST_OK;
 
 	case R4_FAST_LOADS:
-		rc = classic_patch_toggle(&rac4_fastload, on);
-		if (rc == ST_OK) g_fastload_on = on;
+		rc = classic_code_toggle(&rac4_fastload, SW_RAC4_FLAG_FAST_LOADS, on);
+		if (rc == ST_OK) {
+			g_fastload_on = on;
+			/* Whatever a load forced, the checkbox has the say now. */
+			g_fastload_forced = 0;
+		}
 		return rc;
 
-	case R4_REFILL_AMMO:    return classic_patch_toggle(&rac4_ammo, on);
+	case R4_REFILL_AMMO:    return classic_code_toggle(&rac4_ammo, SW_RAC4_FLAG_REFILL_AMMO, on);
 	case R4_FREEZE_HEALTH:  return rac4_freeze_health(on);
 	case R4_GHOST:          return classic_ghost(RAC4_GHOST_TIMER, on);
 	default:                return ST_NOT_FOUND;
+	}
+}
+
+/*
+ * Build 50. Deadlocked has no LIVE toggle, but with the code switches in, its
+ * three WRITES_CODE toggles are read back out of their flag bytes the same way.
+ * NOT_FOUND for everything without them. Tick thread only.
+ */
+static int rac4_toggle_read(u8 id, int *on)
+{
+	int rc;
+
+	switch (id) {
+	case R4_CRASH_PATCHES: return classic_code_read(SW_RAC4_FLAG_CRASH_PATCHES, on);
+	case R4_REFILL_AMMO:   return classic_code_read(SW_RAC4_FLAG_REFILL_AMMO, on);
+	case R4_FAST_LOADS:
+		rc = classic_code_read(SW_RAC4_FLAG_FAST_LOADS, on);
+		/* A planet load's force is not the checkbox; see g_fastload_forced. */
+		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
+		return rc;
+	default:
+		return ST_NOT_FOUND;
 	}
 }
 
@@ -795,6 +845,7 @@ const struct game_api rac4_game = {
 	RAC4_FP_ADDR,
 	rac4_fp,
 	rac4_fp_patched,
+	rac4_fp_switch,
 	sizeof(rac4_fp),
 
 	RAC4_QUIT_FLAG,       /* the autosplitter's quit hook, installed on_enter */
@@ -809,7 +860,7 @@ const struct game_api rac4_game = {
 	rac4_describe,
 
 	rac4_set_toggle,
-	NULL,                 /* toggle_read: Deadlocked has no live toggle */
+	rac4_toggle_read,     /* no live toggle, but the code switches' flags (build 50) */
 	rac4_trigger,
 	rac4_set_value,
 	rac4_get_options,

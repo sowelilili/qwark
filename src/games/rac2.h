@@ -131,7 +131,12 @@
 #define RAC2_RESPAWN_COORDS    0x15D26E0u  /* 32 bytes copied from the player */
 
 #define RAC2_CHARGE_BUFFER     0x145C180u  /* auto buffer charge, set to 30 */
-#define RAC2_AMMO_RESET_INSTR  0x0B30C7Cu  /* the ammo decrement, nopped */
+/*
+ * stwx r3, r4, r5: the magazine clamp, not a decrement. When ammo[id] holds more
+ * rounds than the magazine does, this store puts it back to the magazine size;
+ * nopped, the 0x7FFFFFFF infinite ammo fills the array with stays there.
+ */
+#define RAC2_AMMO_RESET_INSTR  0x0B30C7Cu
 #define RAC2_FASTLOAD_INSTR    0x00BEA8A0u /* also the fingerprint site */
 
 #define RAC2_PBOLTS            0x1390C27u  /* Maktar slots */
@@ -177,13 +182,17 @@
  * first request of a session (src/core/savefile.c), and it writes 1 here on
  * every call, so this reads 1 as soon as the game has reached the hook once.
  *
- * These are the helper's own addresses, from king_dedede's rc2-save, and not the
- * ones RAC2Form used: that form drove a different mod whose five bytes sat at
- * 0x1BF0000..4 and whose save manager wrote a tempsave file. Nothing writes a
- * file any more, so the two "Save manager" rows are retired and the set-aside
- * and load bytes are driven through src/games/sfhelper_bins.c.
+ * These are the helper's own addresses, not the ones RAC2Form used: that form
+ * drove a different mod whose five bytes sat at 0x1BF0000..4 and whose save
+ * manager wrote a tempsave file. Nothing writes a file any more, so the two
+ * "Save manager" rows are retired and the set-aside and load bytes are driven
+ * through src/games/sfhelper_bins.c.
+ *
+ * Build 50: king_dedede's rc2-save kept this at 0x10CD71D, in the executable's
+ * code segment, which RPCS3 makes read-only once it has loaded the game. It is
+ * in the read-write segment now; src/games/sfhelper/sf_rac2.h has the move.
  */
-#define RAC2_SF_HELPER         0x10CD71Du
+#define RAC2_SF_HELPER         0x1317728u
 
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
@@ -251,13 +260,18 @@
 
 /*
  * Fingerprint: the original instruction at the fast-load patch site, 0x4BFFEA69
- * ("b -5527"), which racman restores when fast loads are turned off. qwark's own
+ * ("bl 0xBE9308"), which racman restores when fast loads are turned off. qwark's own
  * patched form, the nop, is accepted too, so a console where the site is already
  * patched does not sit in BOOTING for ever.
+ *
+ * Build 50: and the branch into the fast-load trampoline, which is what the site
+ * holds on every boot under RPCS3 once the code switches' patch is in
+ * (src/games/switches/sw_rac2.s).
  */
 #define RAC2_FP_ADDR RAC2_FASTLOAD_INSTR
 extern const u8 rac2_fp[4];
 extern const u8 rac2_fp_patched[4];
+extern const u8 rac2_fp_switch[4];
 
 /* ---------------------------------------------------------------- hot block */
 

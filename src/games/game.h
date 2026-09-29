@@ -128,10 +128,17 @@ struct game_api {
 	 * fp_bytes, or fp_alt when that is not NULL. The alternative exists so a
 	 * console where another tool already patched the fingerprint site does not
 	 * stall in BOOTING for ever.
+	 *
+	 * Build 50: or fp_switch when that is not NULL. Three games' fingerprints
+	 * are instructions their code switches replace (src/games/switches/), so
+	 * under RPCS3 with the switch patch in, the site holds the branch into the
+	 * trampoline instead, and that proves the executable just as well. RaC1's
+	 * switch leaves its fingerprint alone and it has none.
 	 */
 	u32 fp_addr;
 	const u8 *fp_bytes;
 	const u8 *fp_alt;
+	const u8 *fp_switch;
 	u16 fp_len;
 
 	/*

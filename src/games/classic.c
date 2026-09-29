@@ -1,5 +1,6 @@
 #include "classic.h"
 #include "../core/mem.h"
+#include "../core/switches.h"
 
 void classic_decode_analogs(const u8 *block, f32 out[4])
 {
@@ -47,6 +48,37 @@ int classic_patch_toggle(const struct patch_def *def, int on)
 
 	rc = patch_revert(def);
 	return rc == ST_NOT_FOUND ? ST_OK : rc;
+}
+
+int classic_code_toggle(const struct patch_def *def, u32 flag, int on)
+{
+	/*
+	 * Under RPCS3 with the switches in, the instruction the patch would write
+	 * is a branch to a trampoline that asks this byte which form to run. Off
+	 * is a write like on: nothing was patched, so there is nothing to revert.
+	 */
+	if (switches_present()) return mem_write_u8(flag, on ? 1 : 0);
+	return classic_patch_toggle(def, on);
+}
+
+int classic_code_force(const struct patch_def *def, u32 flag)
+{
+	if (switches_present()) return mem_write_u8(flag, 1);
+	return patch_apply(def);
+}
+
+int classic_code_read(u32 flag, int *on)
+{
+	u8 b = 0;
+	int rc;
+
+	if (!switches_present()) return ST_NOT_FOUND;
+
+	rc = mem_read_u8(flag, &b);
+	if (rc != ST_OK) return rc;
+
+	*on = (b != 0);
+	return ST_OK;
 }
 
 int classic_cb_write(u32 addr, u8 alpha, u32 rgb)

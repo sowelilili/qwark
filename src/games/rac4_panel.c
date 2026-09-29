@@ -468,7 +468,9 @@ static int rac4_all_max_ammo(void)
  * game-state watcher in rac4.c puts them back when the load ends.
  *
  * Fast loads are an instruction patch, so a platform that refuses one (RPCS3)
- * loads at the game's own pace rather than not at all.
+ * loads at the game's own pace rather than not at all. Build 50: unless the
+ * code switches are in the game, when forcing them is a write of their flag
+ * byte and the watcher puts that back as it would the patch.
  */
 int rac4_planet_load(u8 planet, u8 flags)
 {

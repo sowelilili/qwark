@@ -848,12 +848,14 @@ int savefile_patch(u8 *out, u32 cap, u32 *len)
 	 * them before it hooks anything. A console clears them because whatever the
 	 * executable holds there would fire the moment the hook goes in, and under
 	 * RPCS3 the hook is in from the first frame with no install to clear them,
-	 * so the patch has to: RaC2's three sit in the executable's code segment and
-	 * load as 0x80 0xFE 0xA4, which INFO would report from boot as a load and a
-	 * set-aside still outstanding, two pending bits that never clear, and which
-	 * is the helper's own refusal code (SAVEFILE_HELPER_REFUSED) in the load
-	 * byte. Deadlocked's are in zero-filled BSS and RaC1's and RaC3's have not
-	 * been looked at, so all four games carry them the same way.
+	 * so the patch has to. Until build 50 RaC2's three sat in the executable's
+	 * code segment and loaded as 0x80 0xFE 0xA4, which INFO reported from boot
+	 * as a load and a set-aside still outstanding, two pending bits that never
+	 * cleared, with the helper's own refusal code (SAVEFILE_HELPER_REFUSED) in
+	 * the load byte. Every game's load as zero now - RaC2's moved out of the
+	 * code segment, which RPCS3 makes read-only (sf_rac2.h), and the other
+	 * three are in zero-filled BSS - and all four still carry them, for the
+	 * next executable that does not.
 	 *
 	 * They are no part of the presence look: the helper and qwark change them
 	 * from the first frame on, so what they read later says nothing about

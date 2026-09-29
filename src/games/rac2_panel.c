@@ -554,7 +554,9 @@ int rac2_planet_load(u8 planet, u8 flags)
 	 * Fast loads are an instruction patch, so a platform that refuses one
 	 * (RPCS3) loads at the game's own pace rather than not at all: the request
 	 * and the flag reset are data writes, and the load is what was asked for.
-	 * The set-aside load below makes the same call.
+	 * The set-aside load below makes the same call. Build 50: unless the code
+	 * switches are in the game, when forcing them is a write of their flag byte
+	 * and the watcher puts that back as it would the patch.
 	 */
 	rc = rac2_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
@@ -608,7 +610,8 @@ int rac2_die(void)
  * one can still have the helper, put in at load by an RPCS3 patch. There the
  * load goes ahead at the game's own pace rather than being refused for want of
  * a faster one: the helper's loader does not need the patch, only the old
- * client's impatience did.
+ * client's impatience did. Build 50: with the code switches in as well, the
+ * load is forced fast there too, through the fast-load flag byte.
  */
 int rac2_load_setaside(void)
 {

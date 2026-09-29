@@ -14,15 +14,20 @@
  */
 #include "rac2.h"
 #include "classic.h"
+#include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/features.h"
 #include "../core/autosplit.h"
 
 #include <string.h>
 
-/* See rac2.h for what these two are and why both are accepted. */
+/* See rac2.h for what these three are and why all three are accepted. */
 const u8 rac2_fp[4]         = { 0x4B, 0xFF, 0xEA, 0x69 };
 const u8 rac2_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
+const u8 rac2_fp_switch[4]  = {
+	(u8)(SW_RAC2_SITE_FAST_LOADS >> 24), (u8)(SW_RAC2_SITE_FAST_LOADS >> 16),
+	(u8)(SW_RAC2_SITE_FAST_LOADS >> 8),  (u8)SW_RAC2_SITE_FAST_LOADS
+};
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -181,8 +186,13 @@ static const struct patch_word rac2_fastload_words[] = {
 };
 
 static const struct patch_word rac2_ammo_words[] = {
-	{ RAC2_AMMO_RESET_INSTR, 0x60000000u } /* nop the ammo decrement */
+	{ RAC2_AMMO_RESET_INSTR, 0x60000000u } /* nop the magazine clamp */
 };
+
+/*
+ * Build 50. Under RPCS3 both are code switches instead
+ * (src/games/switches/sw_rac2.s), chosen by the flag bytes SW_RAC2_FLAG_* name.
+ */
 
 static struct patch_def rac2_fastload = {
 	"Fast loads", PATCH_KIND_FEATURE, rac2_fastload_words, 1, NULL
@@ -193,6 +203,15 @@ static struct patch_def rac2_ammo = {
 
 /* Live toggle state the watcher and the planet load need to see. */
 static int g_fastload_on;
+/*
+ * Build 50. Fast loads are on because a load forced them, not because the
+ * checkbox is: from rac2_fastload_force until the watcher's restore. On a
+ * console that is invisible, since the checkbox is qwark's own bit. With the
+ * code switches in, the checkbox is read back out of the flag byte, and while
+ * this is set the read-back reports the checkbox rather than the force, so it
+ * does not flick on for the length of every planet load.
+ */
+static int g_fastload_forced;
 static int g_auto_anypct;
 static int g_auto_ngplus;
 static int g_death_bosses;
@@ -220,13 +239,17 @@ int rac2_death_pbolts(void) { return g_death_pbolts; }
  */
 int rac2_fastload_force(void)
 {
-	return patch_apply(&rac2_fastload);
+	int rc = classic_code_force(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS);
+
+	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
+	return rc;
 }
 
 int rac2_fastload_restore(void)
 {
+	g_fastload_forced = 0;
 	if (g_fastload_on) return ST_OK;
-	return classic_patch_toggle(&rac2_fastload, 0);
+	return classic_code_toggle(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS, 0);
 }
 
 static void rac2_init(void)
@@ -393,6 +416,7 @@ static void rac2_on_enter(void)
 {
 	/* A fresh process: nothing is forced, nothing has been seen yet. */
 	g_fastload_on     = 0;
+	g_fastload_forced = 0;
 	g_prev_load_count = 0xFF;
 	g_shortcut_index  = 0xFFFFFFFFu;
 
@@ -572,14 +596,14 @@ static int rac2_infinite_ammo(int on)
 	u32 i;
 	int rc;
 
-	if (!on) return classic_patch_toggle(&rac2_ammo, 0);
+	if (!on) return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, 0);
 
 	for (i = 0; i < sizeof(full); i += 4) be32_put(full + i, 0x7FFFFFFFu);
 
 	rc = mem_write(RAC2_AMMO_ARRAY + 4u * RAC2_AMMO_FILL_FIRST, full, sizeof(full));
 	if (rc != ST_OK) return rc;
 
-	return patch_apply(&rac2_ammo);
+	return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, 1);
 }
 
 /*
@@ -615,8 +639,12 @@ static int rac2_set_toggle(u8 id, int on)
 
 	switch (id) {
 	case R2_FAST_LOADS:
-		rc = classic_patch_toggle(&rac2_fastload, on);
-		if (rc == ST_OK) g_fastload_on = on;
+		rc = classic_code_toggle(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS, on);
+		if (rc == ST_OK) {
+			g_fastload_on = on;
+			/* Whatever a load forced, the checkbox has the say now. */
+			g_fastload_forced = 0;
+		}
 		return rc;
 
 	case R2_INFINITE_AMMO:  return rac2_infinite_ammo(on);
@@ -638,11 +666,21 @@ static int rac2_set_toggle(u8 id, int on)
 /*
  * Protocol 1.3. Debug mode is one byte the game owns, so its checkbox follows
  * memory rather than the last thing qwark wrote. Tick thread only.
+ *
+ * Build 50: and the two code switches' flag bytes, while the switches are in.
  */
 static int rac2_toggle_read(u8 id, int *on)
 {
 	u8 b = 0;
 	int rc;
+
+	if (id == R2_FAST_LOADS) {
+		rc = classic_code_read(SW_RAC2_FLAG_FAST_LOADS, on);
+		/* A load's force is not the checkbox; see g_fastload_forced. */
+		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
+		return rc;
+	}
+	if (id == R2_INFINITE_AMMO) return classic_code_read(SW_RAC2_FLAG_INFINITE_AMMO, on);
 
 	if (id != R2_DEBUG_MODE) return ST_NOT_FOUND;
 
@@ -755,6 +793,7 @@ const struct game_api rac2_game = {
 	RAC2_FP_ADDR,
 	rac2_fp,
 	rac2_fp_patched,
+	rac2_fp_switch,
 	sizeof(rac2_fp),
 
 	0,                    /* no quit hook is known for RaC2 yet */
