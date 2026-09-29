@@ -31,7 +31,7 @@ Asked to set a save aside, the helper copies the game's live save buffer into a 
 
 The saves themselves live on the console, under `/dev_hdd0/qwark/savefiles/<TITLEID>/<category>/<name>.sav`, with the CRC32 of each one beside it as `<name>.sav.sum`. qwark copies between one of those files and the aside buffer itself, 64 KB at a time on its own tick thread, so a save that is already on the console is loaded without a byte of it crossing the network: a save is up to 2 MB, and it used to be streamed from the PC on every single load. The PC keeps a mirror of the library so nothing is lost if the console is wiped, and a file that only exists on the PC is uploaded once, the first time it is used. See PROTOCOL.md section 5.13.
 
-The code and the addresses are ported from those mods and from their upstream sources, which are credited in the per-game headers under `src/games/sfhelper/`. Because it is code, it does not work under RPCS3 (see below).
+The code and the addresses are ported from those mods and from their upstream sources, which are credited in the per-game headers under `src/games/sfhelper/`. Because it is code, qwark cannot put it into a game under RPCS3 itself; an RPCS3 patch can (see below).
 
 ## What it does without a PC
 
@@ -82,7 +82,8 @@ qwark follows RPCS3's own status: a game counts as up while the emulator reports
 - toggles marked "writes code" — fast loads, infinite ammo and infinite health in RaC1, Deadlocked's crash patches and refill ammo, and their equivalents in RaC2 and RaC3
 - mods, all of them: a mod is patch words, code caves, or both
 - PATCH_APPLY from the client's own patch panel
-- the save-file manager: the helper behind it is a code cave and a branch into it, so the client hides its Save files panel here
+
+**Save files work once the RPCS3 patch is in the game.** The savefile helper is code too, so qwark cannot write it into a running game here. RPCS3 applies its own patch files as it loads a game, though, before it compiles anything, so the client writes the helper as one: it asks qwark for the helper's words and the three request bytes the patch zeroes at load (SAVEFILE_PATCH), writes them into RPCS3's per-title patch file `patches/<TITLE_ID>_patch.yml`, enables the patch in `patch_config.yml`, and the game is restarted. qwark then finds its own helper in the game and the save-file manager works exactly as on a console. A patch written by an older qwark build no longer matches and reads as not there, so the client writes the new one and the game is restarted again. PROTOCOL.md section 5.12.1 has the details.
 
 Everything that is a plain data write or a freeze works exactly as it does on a console: health, bolts, unlocks, level flags, positions, colours, planet loads, combos, watches, freezes, the live toggles, and the autosplitter. Two autosplit details differ, because the helpers behind them are code patches: RaC1's four collectable splits (gold bolt, skill point, item, infobot) never fire, and Deadlocked's quit still pauses the timer — the session notices the game vanish on its own — but resumes on the way back into the game rather than on the SCE logo.
 

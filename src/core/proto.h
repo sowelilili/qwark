@@ -35,6 +35,11 @@
  * three coordinates of a slot that already exists and leaves the rest of the
  * blob alone; POS_STORE replaces the whole blob, and takes only a blob of the
  * running game's own length.
+ * Revision 1.14 is reserved for opcodes 0x0056 and 0x0057 on a parked branch
+ * and is not in this build.
+ * Revision 1.15: SAVEFILE_PATCH at 0x00B8, the savefile helper as the words an
+ * RPCS3 patch writes, and a savefile block that works on a platform refusing
+ * code patches once such a patch has put the helper in the game.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -50,7 +55,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             45
+#define QWARK_BUILD             47
 
 #define QWARK_PORT              9673
 /*
@@ -188,7 +193,9 @@
 /*
  * Revision 1.9, the savefile block. See src/core/savefile.h and PROTOCOL.md 5.12.
  * All three install the game's helper on demand, answer UNSUPPORTED where code
- * cannot be patched and NOT_INGAME outside INGAME.
+ * cannot be patched and NOT_INGAME outside INGAME. Revision 1.15: where code
+ * cannot be patched they work once an RPCS3 patch has put the helper in the game
+ * at load, and INFO answers there either way.
  */
 #define OP_SAVEFILE_INFO      0x00B0
 #define OP_SAVEFILE_READ      0x00B1
@@ -207,6 +214,23 @@
 #define OP_SAVEFILE_STORE      0x00B5
 #define OP_SAVEFILE_RESTORE    0x00B6
 #define OP_SAVEFILE_CATEGORY   0x00B7
+
+/*
+ * Revision 1.15. The running game's savefile helper as what a patch writes to
+ * put it there: u16 n, u16 pad, u32 stamp, then n (u32 addr, u32 value) pairs,
+ * every cave as consecutive words and then the hook words; then u16 nb, u16 pad
+ * and nb (u32 addr, u8 value, u8 pad[3]) single bytes, the three request bytes
+ * a console install zeroes, at 0. The stamp is the CRC-32 of every byte after
+ * it, as they went out. It exists for RPCS3, which cannot take a code patch from
+ * qwark but applies its own patch files as it loads a game; see PROTOCOL.md
+ * 5.12.1 and 3.2.
+ */
+#define OP_SAVEFILE_PATCH          0x00B8
+#define SAVEFILE_PATCH_HEAD        8
+#define SAVEFILE_PATCH_ROW         8
+#define SAVEFILE_PATCH_BYTES_HEAD  4
+#define SAVEFILE_PATCH_BYTE_ROW    8
+#define SAVEFILE_PATCH_NBYTES      3
 
 /*
  * SAVEFILE_INFO's reply was eight bytes until revision 1.10 added the transfer:

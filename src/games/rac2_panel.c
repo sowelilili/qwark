@@ -597,6 +597,12 @@ int rac2_die(void)
  * load does, and the loading-screen watcher puts them back afterwards. The
  * request itself goes through src/core/savefile.c, which installs the helper if
  * this process has not had it yet.
+ *
+ * Build 47. Fast loads are an instruction patch, and a platform that refuses
+ * one can still have the helper, put in at load by an RPCS3 patch. There the
+ * load goes ahead at the game's own pace rather than being refused for want of
+ * a faster one: the helper's loader does not need the patch, only the old
+ * client's impatience did.
  */
 int rac2_load_setaside(void)
 {
@@ -605,6 +611,7 @@ int rac2_load_setaside(void)
 	if (rc != ST_OK) return rc;
 
 	rc = rac2_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	return savefile_load_aside();

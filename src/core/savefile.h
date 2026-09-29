@@ -24,8 +24,17 @@
  * The helper itself is PowerPC code that lives in the game's process. qwark
  * carries it as bytes in src/games/sfhelper_bins.c and writes it in on the first
  * action that needs it, so a user never loads a mod for it and never knows it is
- * there. It is code, so a platform that cannot patch code cannot have it, and
- * everything here answers UNSUPPORTED under RPCS3.
+ * there. It is code, so a platform that cannot patch code cannot have qwark put
+ * it there.
+ *
+ * Build 47 gives RPCS3 the other road in. RPCS3 applies its own patch files to
+ * the executable as it loads it, before it recompiles anything, so a patch that
+ * writes the helper's caves and hook words at load is code the game really runs.
+ * SAVEFILE_PATCH hands a client those words to write into RPCS3's patch file;
+ * on a platform that refuses code patches qwark then looks, once a session, for
+ * its own helper already in the game, and where it finds every byte of it the
+ * savefile block works exactly as it does on a console after an install. Where
+ * it does not, everything that needs the helper answers UNSUPPORTED as before.
  *
  * Everything that touches game memory is tick thread only, the transfer state
  * machine included. The three library ops - the categories, the listing and
@@ -125,8 +134,11 @@
 #define SAVEFILE_SETTLE_TICKS 30
 
 /*
- * Forget that the helper was installed. The session calls this on the way into
- * INGAME: a new process has none of it, so the next request writes it again.
+ * Forget that the helper was installed, and, build 47, whether it was found
+ * already in the game. The session calls this on the way into INGAME and on the
+ * way out of it: a new process has none of qwark's install in it, so the next
+ * request writes it again, and it may or may not have been loaded with an RPCS3
+ * patch, so the next tick looks again.
  */
 void savefile_forget(void);
 
@@ -138,6 +150,12 @@ void savefile_set_enabled(int on);
  * ST_OK when qwark has installed it. Called by set-aside/load actions, valid
  * restores and RaC1's Force autosave. Status, metadata and raw buffer I/O never
  * install code.
+ *
+ * Build 47: where code cannot be patched, ST_OK when an RPCS3 patch put the
+ * helper in at load and UNSUPPORTED when nothing did. It writes nothing either
+ * way, not even the request bytes the console install zeroes first: the patch
+ * zeroed them at load, the hook has been live since the game booted, and those
+ * bytes are the helper's own.
  */
 int savefile_install(void);
 
@@ -149,8 +167,26 @@ int savefile_install(void);
  * from the moment a request goes out until its byte has read 0 for a whole
  * settle window, so a client that polls it can treat a clear bit as the work
  * being over rather than as the request not having landed yet.
+ *
+ * Build 47: it answers on a platform that refuses code patches too, where
+ * `installed` says whether an RPCS3 patch put the helper in this process. It is
+ * BUSY there for as long as qwark cannot read the game to find out.
  */
 int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *size);
+
+/*
+ * SAVEFILE_PATCH, revision 1.15, network thread under the core lock. The running
+ * game's helper as what a patch writes to put it in: the (address, value) words
+ * - every cave as consecutive words in address order, caves in the table's
+ * order, then the hook words - and after them the three request bytes a console
+ * install zeroes, as single bytes at 0, with the CRC of everything after the
+ * stamp in front. It reads the generated table and nothing else, so it answers
+ * on either platform; on a console it is informational. NOT_INGAME outside a
+ * game, UNSUPPORTED for a game with no helper or with the helper switched off,
+ * FULL for a reply that would not fit `cap` (never, for the four games today:
+ * Deadlocked's is the largest, at 2132 bytes).
+ */
+int savefile_patch(u8 *out, u32 cap, u32 *len);
 
 /*
  * The transfer half of SAVEFILE_INFO, revision 1.10. `done` and `total` are the
@@ -201,8 +237,10 @@ int savefile_restore(const char *category, const char *name);
 
 /*
  * The gate the three library ops share, checked on the network thread under the
- * core lock: UNSUPPORTED where code cannot be patched or the game has no helper,
- * NOT_INGAME outside INGAME, BUSY while a transfer is running.
+ * core lock: UNSUPPORTED where the game has no helper, or, where code cannot be
+ * patched, no RPCS3 patch put one in; NOT_INGAME outside INGAME; BUSY while a
+ * transfer is running, and, build 47, in the moment before the tick thread has
+ * looked for a patched-in helper, since this thread never reads the game.
  */
 int savefile_library_gate(void);
 

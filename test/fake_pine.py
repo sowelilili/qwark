@@ -60,6 +60,10 @@ class FakePine:
         self.packets = 0
         self.connections = 0
         self.drop = False             # set to hang up on the live connection
+        # Every write a client made, as (address, width), oldest first. poke()
+        # is the test's own hand and is not in here, so a test can tell what the
+        # client wrote from what it put in memory itself.
+        self.write_log = []
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -197,6 +201,7 @@ class FakePine:
                 if not self._valid(addr, width):
                     return fail
                 self.poke(addr, value.to_bytes(width, "big"))
+                self.write_log.append((addr, width))
 
             elif op == MSG_STATUS:
                 out.extend(struct.pack("<I", self.status))

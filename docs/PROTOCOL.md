@@ -16,6 +16,8 @@ Revision 1.12 (2026-09-16): COMBO_ENABLE at 0x0083, the user's own on/off for ev
 
 Revision 1.13 (2026-09-22): POS_EDIT at 0x004A and POS_STORE at 0x004B, the two ways a client writes a position slot without the player standing in it. POS_EDIT rewrites the three coordinates of a slot that is already filled and leaves the rest of that slot's blob - the rotation, and whatever else the game keeps in it - untouched, so a coordinate typed into a box does not throw away a facing captured in the game. POS_STORE replaces a slot's whole blob and will only take one of the running game's own length, so a blob of the wrong shape can never be stored for POS_LOAD to misread. Both act on the current planet and both persist immediately, as POS_SAVE does. See section 5.5.
 
+Revision 1.15 (2026-09-29): the savefile helper under RPCS3. SAVEFILE_PATCH at 0x00B8 hands out the running game's helper as the (address, value) words a patch writes to put it there and the request bytes it zeroes, with a CRC stamp, and on a platform that refuses code patches the savefile block now works once an RPCS3 patch has put the helper in the game at load: qwark looks for it once a session and, finding every byte of it, behaves exactly as a console does after an install. SAVEFILE_INFO answers on that platform either way, where it used to be UNSUPPORTED, and says in `installed` whether the patch is in. Revision 1.14 is reserved for opcodes 0x0056 and 0x0057 on a parked branch and is not in this build. See sections 3.2 and 5.12.1.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -57,7 +59,7 @@ Connected sockets are non-blocking. A payload receive and a reply send each have
 | 5 | FULL | A fixed table is full |
 | 6 | UNKNOWN_OP | |
 | 7 | NOT_FOUND | Handle, mod, slot or path does not exist |
-| 8 | BUSY | Command ring is full, a save transfer is busy, or boot is holding the request buffers back; retry |
+| 8 | BUSY | Command ring is full, a save transfer is busy, boot is holding the request buffers back, or (revision 1.15) qwark has not yet been able to look for a patched-in savefile helper (section 5.12.1); retry |
 
 ## 3. Session info block
 
@@ -116,8 +118,10 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED` |
 | PATCH_APPLY | `UNSUPPORTED` |
 | MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED` |
-| SAVEFILE_INFO, SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` (section 5.12) |
-| Every op of the savefile library: SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE, SAVEFILE_CATEGORY | `UNSUPPORTED` (section 5.13). The library is only reachable through the helper, so without one there is nothing to copy out of and nothing to hand a copy to |
+| SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` unless an RPCS3 patch put the savefile helper in the game when it loaded (revision 1.15, section 5.12.1) |
+| Every op of the savefile library: SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE, SAVEFILE_CATEGORY | `UNSUPPORTED` under the same condition (section 5.13). The library is only reachable through the helper, so without one there is nothing to copy out of and nothing to hand a copy to |
+
+SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on both platforms (section 5.12.1).
 
 Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction.
 
@@ -126,14 +130,14 @@ DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same 
 Two side effects a client should know about, both inside qwark rather than on the wire:
 
 - Auto-flagged WRITES_CODE toggles (Deadlocked's crash patches, for instance) are skipped when a game reaches INGAME. `toggle_state` reports them as off, which is the truth.
-- The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, which is why the whole of section 5.12 is refused here.
+- The games' own embedded helpers are code patches too, so they are not installed. RaC1's autosplit helper is one, and without it the four collectable reason codes (gold bolt, skill point, item, infobot) never fire; every other RaC1 split is a plain memory read and is unaffected. Deadlocked's quit and loading hooks are the others: the PAUSE still fires when the game goes away, because the session also watches the process itself, and the RESUME then fires on the way back INGAME rather than on the SCE logo. The savefile helper is a third, and the one with a way back in (revision 1.15): RPCS3 applies its own patch files to the executable as it loads it, before it recompiles anything, so a patch that writes the helper's caves and hook words at load, and zeroes its request bytes, is code the game really runs. The client writes that patch from SAVEFILE_PATCH into RPCS3's per-title patch file, `patches/<TITLE_ID>_patch.yml`, enables it in `patch_config.yml`, and the game is restarted; from then on qwark finds its helper in the game and the whole of sections 5.12 and 5.13 works as it does on a console. A patch written by an older qwark build no longer matches this one's helper and reads as not present, so the client writes the new one. Section 5.12.1 has the rules.
 
 ### 3.3 INGAME with `game` 0: a process qwark does not know
 
 A title id no game table claims still reaches INGAME. `state` is 2, `game` is 0 NONE, and `title_id` is the id the console reported. It is a real session against a real process: the memory tools work on it exactly as they do on a game.
 
 - **MEM_READ, MEM_WRITE, WATCH_\*, FREEZE_\* and PATCH_\*** work, under the same rules as always. A watch reads live and its value travels in every telemetry packet; PATCH_APPLY is still refused where `flags` bit2 says the platform cannot patch code.
-- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13. The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS.
+- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS.
 - **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the pad is not read.
 
 Everything else about the session is unchanged: the launch is quiet for its second (section 1.1), `generation` advances, QUITTING and the return to the XMB happen when the process goes away, and a same-title reboot keeps its watches and builds the previous-session record (section 4.1) out of what is actually there, which is freezes and client patches.
@@ -429,7 +433,7 @@ It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gon
 
 A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title.
 
-Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE. LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper or where code cannot be patched.
+Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE. LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper, or where code cannot be patched and no RPCS3 patch put the helper in (section 5.12.1).
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
@@ -475,13 +479,14 @@ AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects
 | 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size, u32 done, u32 total, u8 error, u8 pad[3]` (20 bytes since revision 1.10) |
 | 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 16384 since revision 1.11, 65536 before it) | the bytes of the aside buffer at that offset; short at the end |
 | 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 16380 since revision 1.11, 65536 before it) | none |
+| 0x00B8 | SAVEFILE_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's helper as the words and bytes a patch writes (revision 1.15, section 5.12.1) |
 
-All three answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) and **NOT_INGAME** outside INGAME. None of the three installs the helper: that is done by the set-aside and load actions, by RaC1's Force autosave, and by a library STORE or RESTORE with a valid file, and a client never asks for it or sees it happen. INFO, the library's metadata ops and raw READ and WRITE of the aside buffer only ever look.
+INFO, READ and WRITE answer **NOT_INGAME** outside INGAME. READ and WRITE answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) unless an RPCS3 patch put the helper in the game when it loaded; INFO answers there either way (revision 1.15, section 5.12.1). Before revision 1.15 the three answered UNSUPPORTED on that platform ahead of the INGAME test, so it said UNSUPPORTED at the XMB too; it says NOT_INGAME there now, as a console does. None of the three installs the helper: that is done by the set-aside and load actions, by RaC1's Force autosave, and by a library STORE or RESTORE with a valid file, and a client never asks for it or sees it happen. INFO, the library's metadata ops and raw READ and WRITE of the aside buffer only ever look.
 
 Since revision 1.10 READ and WRITE are the **debug and test path**, not what a save or a load does: the library ops of section 5.13 move a whole file between the console's own filesystem and this buffer without any of it crossing the wire. They still work exactly as they did, and a client that wants the bytes on the PC still reads them here.
 
 - **supported** — 1 when qwark has a helper for the running game. 0 is an OK answer, not an error: it is how a client knows to hide its save-file panel. All four games are 1 today.
-- **installed** — 1 when qwark has written the helper into this process. A supported game reports 0 until an action installs it, and while it is 0 so are `running` and `pending`, since the helper's request bytes are not read from a process that has no helper in it.
+- **installed** — 1 when qwark has written the helper into this process. A supported game reports 0 until an action installs it, and while it is 0 so are `running` and `pending`, since the helper's request bytes are not read from a process that has no helper in it. Where code cannot be patched (revision 1.15) it is 1 when an RPCS3 patch put the helper in the game at load, and 0 when nothing did or what is there does not match; qwark writes nothing there, so it is the only way it is ever 1 on that platform (section 5.12.1).
 - **running** — 1 when the helper's own byte reads 1. The helper writes it on every call, so this says the code is installed *and* that the game is reaching the hook. It is 0 for the first frame or two after an install, and it stays 0 for as long as the game is on a screen that does not run the hooked routine.
 - **pending** — bit0: a set-aside request is still outstanding. bit1: a load request is still outstanding. bit2 (revision 1.10): qwark is copying between a file and the aside buffer, section 5.13. The helper clears its own request byte when it has done the work, so a client polls this rather than guessing at a delay.
 
@@ -507,6 +512,42 @@ Bounds: a READ whose `offset` is past the end is BAD_ARG and one that runs off t
 
 Before this revision the same two ACTIONs moved a `tempsave` file under `/dev_hdd0/game/<TITLEID>/USRDIR`, which the client then pulled over the FILE ops, and the helper was a mod the user had to load first. Both are gone. The FILE ops stay, for the mod library.
 
+### 5.12.1 The helper under RPCS3 (revision 1.15)
+
+qwark cannot install the helper under RPCS3: the emulator recompiles PPU code before it runs it, so a cave and a branch written into a running game are memory and nothing more (section 3.2). RPCS3 does apply its own patch files, though, and it applies them to the executable as it loads it, before it compiles anything. A patch that writes the helper's caves and hook words at load, and zeroes its three request bytes, is therefore code the game runs from its first frame, and the savefile block works on top of it exactly as it does on a console.
+
+**Where the words come from.** SAVEFILE_PATCH, request none, describes the helper for the running game. All big-endian:
+
+```
+u16 n       number of patch words
+u16 pad     0
+u32 stamp   CRC-32 over every byte of the reply after this field
+{ u32 addr, u32 value }[n]                 be32 words
+u16 nb      number of single bytes, 3 today
+u16 pad     0
+{ u32 addr, u8 value, u8 pad[3] }[nb]      single bytes the patch sets at load
+```
+
+Every cave comes first, as consecutive words in address order and the caves in the order qwark installs them, then the hook words, which is also the order a patch file should list them in: a reader applying them one at a time never has a branch in place before what it branches to. A word's `value` is the four bytes the game holds at `addr`, read as a big-endian word, so a patch entry of type `be32` writes it as it stands. A cave whose length is not a multiple of four would have its last word padded with zero bytes; every cave today is whole instructions, so none is.
+
+The single bytes are the helper's three request bytes, `api_mod`, `api_load` and `api_setaside` in that order, each with `value` 0: the three a console install zeroes before it hooks anything, because whatever the executable holds there would fire the moment the hook goes in. Under RPCS3 there is no install and the hook is live from the first frame, so the patch zeroes them at load instead. It matters: RaC2's three sit in its executable's code segment and load as 0x80 0xFE 0xA4, which without the zeroing reads from boot as a set-aside and a load outstanding that never clear, with the helper's refusal code in the load byte. Deadlocked's are in zero-filled BSS and would load as zeroes anyway; RaC1's and RaC3's have not been checked, and all four games carry the bytes the same way.
+
+The stamp is the ordinary reflected CRC-32 that SAVEFILE_LIST and `qwark.sum` use, taken over everything after it exactly as it is on the wire - the word pairs, the `nb` head and the byte entries - so it changes exactly when anything the patch writes does: a client keeps it beside the patch it wrote and knows from it alone whether that patch is still the current build's.
+
+It reads nothing out of the game and writes nothing into it, and it answers on both platforms; on a console it is informational, since qwark writes those very words itself on the first action that needs them. **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no helper (a title qwark does not know included) and with the helper switched off by `savefile_helper = 0` in `config.txt`. Deadlocked's is the largest reply, 262 words and three bytes in 2132 bytes, well inside a frame.
+
+**The presence rule.** On a platform that refuses code patches, the running game's helper counts as present when every byte of every cave and every hook word SAVEFILE_PATCH describes reads back from the game exactly as qwark would have written it. The single bytes are no part of it: the helper and qwark change them from the first frame on, so what they read later says nothing about whether the patch went in. qwark looks once a session, on the first INGAME tick, and keeps the answer until the session ends; it never looks outside INGAME, and it looks again when a game comes back, since a patch goes in at load or not at all. So:
+
+- A patch written while the game is running counts from the next restart, and not before.
+- A patch from an older qwark build differs somewhere - a cave byte, or a hook word that branches to where the old helper began - and reads as **not present**. The client writes the current words over it and the game is restarted again.
+- A read that fails, because the emulator is not answering, leaves the answer unknown rather than "not present": INFO and every op that needs the helper answer **BUSY** until a look succeeds. The three library ops that answer on the network thread rather than the tick (CATEGORIES, LIST, CATEGORY) never read the game themselves: they take the answer the tick found, and are BUSY for the tick or so before the first look as well.
+
+**When it is present** everything behaves as on a console after an install. INFO reports `installed` 1, `running` is the helper's own `api_mod` byte reading 1, and `pending` and the transfer fields are what they always are; READ, WRITE, the two actions, RaC1's Force autosave, the combo and the whole library of section 5.13 work. The install step writes nothing at all - not the caves and the hook, which are there already, and not the three request bytes a console install zeroes first either, because here the patch zeroed them at load, the hook has been live since the game booted, and those bytes are the helper's own. RaC2's load does without the fast loads it forces on a console, which are an instruction patch, and runs at the game's own pace.
+
+**When it is not**, INFO answers with `supported` as on a console and `installed` 0, and everything that needs the helper answers UNSUPPORTED as it did before this revision. A client tells the platform apart by SessionInfo `flags` bit2, which it already reads: with bit2 set and `installed` 0, it offers to write the patch.
+
+**What the client does with the reply.** It writes the words and the bytes into RPCS3's per-title patch file, `patches/<TITLE_ID>_patch.yml` under RPCS3's folder, enables that patch for the game in `patch_config.yml`, and has the user restart the game. That half is the client's; nothing in qwark touches RPCS3's files.
+
 ## 5.13 The savefile library on the console (0x00B3..0x00B7), revision 1.10
 
 **Where a save lives.** The library of record is on the console, laid out like the mod library:
@@ -528,7 +569,7 @@ A save is up to 2 MB, and until this revision every load streamed one from the P
 | 0x00B6 | SAVEFILE_RESTORE | `char[32] category, char[32] name` | none |
 | 0x00B7 | SAVEFILE_CATEGORY | `u8 op` (0 create, 1 delete), `char[32] name` | none |
 
-All five answer **UNSUPPORTED** where the platform cannot patch code and **NOT_INGAME** outside INGAME, for the same reason section 5.12 does: the library exists to feed the helper, and without a helper there is nothing to feed. The title id in the path is always the running game's, so a client never names one.
+All five answer **UNSUPPORTED** where the platform cannot patch code and **NOT_INGAME** outside INGAME, for the same reason section 5.12 does: the library exists to feed the helper, and without a helper there is nothing to feed. Since revision 1.15 an RPCS3 patch that put the helper in the game at load is a helper like any other, and all five work under RPCS3 once it is there (section 5.12.1). The title id in the path is always the running game's, so a client never names one.
 
 **Names.** A category or a file name is a NUL-padded 32-byte field. qwark refuses one that is empty, starts with a dot, holds `/`, `\` or `:`, or has a byte outside printable ASCII, and it refuses a file name that does not end in `.sav`, because the listing reports nothing else and a file stored under another name would be one nobody could ever see again. Everything else is taken as given.
 

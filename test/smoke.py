@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 45
+QWARK_BUILD = 47
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -144,6 +144,8 @@ OP_SAVEFILE_LIST = 0x00B4
 OP_SAVEFILE_STORE = 0x00B5
 OP_SAVEFILE_RESTORE = 0x00B6
 OP_SAVEFILE_CATEGORY = 0x00B7
+# Revision 1.15: the savefile helper as the words an RPCS3 patch writes.
+OP_SAVEFILE_PATCH = 0x00B8
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
@@ -1472,6 +1474,13 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None):
     check(pending == 0, "%s: and no request is outstanding" % name, pending)
     check(size > 0, "%s: the aside buffer has a size" % name, size)
 
+    # Revision 1.15: on a console the op is informational, and it asks nothing
+    # of the game, so INFO says what it said before.
+    check_savefile_patch(c, name)
+    status, body = c.call(OP_SAVEFILE_INFO)
+    check(status == ST_OK and body[1] == initial_installed,
+          "%s: SAVEFILE_PATCH installs nothing" % name)
+
     # A chunk at the front and a chunk that runs off the end.
     pattern = bytes((i * 7 + 3) & 0xFF for i in range(4096))
     status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + pattern)
@@ -1603,6 +1612,57 @@ def exercise_savefile_not_idle(c, name, setaside_addr, load_addr,
     check(info is not None and info["error"] == SAVEFILE_ERR_NOT_IDLE,
           "%s: and the client is told why" % name,
           info["error"] if info else None)
+
+
+def savefile_patch(c):
+    """
+    SAVEFILE_PATCH, revision 1.15:
+    (status, stamp, [(addr, 4 value bytes), ...], [(addr, value), ...], body).
+
+    The reply is u16 n, u16 pad, u32 stamp, n (u32 addr, u32 value) pairs, then
+    u16 nb, u16 pad and nb (u32 addr, u8 value, u8 pad[3]) single bytes. The
+    stamp is the CRC-32 of every byte after it exactly as it came in, so a
+    client can check it with zlib.crc32 and nothing else.
+    """
+    status, body = c.call(OP_SAVEFILE_PATCH)
+    if status != ST_OK or len(body) < 8:
+        return status, None, None, None, body
+    n, _, stamp = struct.unpack(">HHI", body[:8])
+    off = 8
+    words = []
+    for _ in range(n):
+        words.append((struct.unpack(">I", body[off:off + 4])[0], body[off + 4:off + 8]))
+        off += 8
+    single = []
+    if off + 4 <= len(body):
+        nb = struct.unpack(">H", body[off:off + 2])[0]
+        off += 4
+        for _ in range(nb):
+            single.append((struct.unpack(">I", body[off:off + 4])[0], body[off + 4]))
+            off += 8
+    return status, stamp, words, single, body
+
+
+def check_savefile_patch(c, name):
+    """That SAVEFILE_PATCH answers and describes itself, whatever the platform."""
+    status, stamp, words, single, body = savefile_patch(c)
+    if not check(status == ST_OK, "%s: SAVEFILE_PATCH answers" % name, status):
+        return None
+    n = struct.unpack(">H", body[:2])[0]
+    check(body[2:4] == b"\0\0", "%s: SAVEFILE_PATCH's pad is 0" % name)
+    check(len(single) == 3 and len(body) == 8 + n * 8 + 4 + 3 * 8,
+          "%s: it is %d word pairs, then three single bytes behind their own head"
+          % (name, n), (len(body), len(single)))
+    tail = body[8 + n * 8:]
+    check(tail[2:4] == b"\0\0" and all(tail[4 + i * 8 + 4:4 + i * 8 + 8] == b"\0\0\0\0"
+                                       for i in range(len(single))),
+          "%s: the byte entries are 0 with their pads 0" % name)
+    check(stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
+          "%s: and its stamp is the CRC-32 of everything after it" % name, hex(stamp))
+    check(len(body) <= QWARK_MAX_PAYLOAD, "%s: and it fits one frame" % name, len(body))
+    check(all(addr % 4 == 0 for addr, _ in words),
+          "%s: every word is at an aligned address" % name)
+    return stamp, words, single
 
 
 def savefile_info(c):
@@ -2382,6 +2442,158 @@ RAC1_FP = bytes([0x30, 0x64, 0x9C, 0xE0])
 RPCS3_PORT = free_port()
 
 
+# RaC1's savefile helper, from src/games/sfhelper_bins.c: its request bytes and
+# its aside buffer. The caves and the hook word are not here, because they come
+# off the wire from SAVEFILE_PATCH, which is the point of the op.
+RAC1_SF_API_MOD = 0x00B00070
+RAC1_SF_API_LOAD = 0x00B00071
+RAC1_SF_API_SETASIDE = 0x00B00072
+RAC1_SF_ASIDE = 0x01000000
+
+
+def wait_savefile_pending_clear(c, timeout=3.0):
+    """Polls INFO until no request is outstanding, as a client's save loop does."""
+    deadline = time.time() + timeout
+    info = savefile_info(c)
+    while info is not None and info["pending"] != 0 and time.time() < deadline:
+        time.sleep(0.02)
+        info = savefile_info(c)
+    return info
+
+
+def smoke_rpcs3_savefile_patch(c, pine, features):
+    """
+    Build 47, revision 1.15: the savefile helper under RPCS3, once a patch has
+    put it in the game.
+
+    RPCS3 applies a patch file as it loads the executable, before it recompiles
+    anything, so here the words from SAVEFILE_PATCH go straight into the fake
+    emulator's memory, the way RPCS3 writes them and never through qwark, and
+    the game is restarted for them to count, as a user restarts it once the
+    client has written the patch. One game, RaC1, and two restarts: one with
+    the words alone over request bytes that are not zero, the case the patch's
+    byte entries exist for, and one with the whole patch. Every restart is a
+    second of boot, and the unit tests cover the other three games.
+    """
+    got = check_savefile_patch(c, "rpcs3")
+    if got is None:
+        return
+    stamp, words, single = got
+    check(len(words) > 100, "rpcs3: RaC1's helper is a few hundred bytes of words", len(words))
+    check([addr for addr, _ in single] ==
+          [RAC1_SF_API_MOD, RAC1_SF_API_LOAD, RAC1_SF_API_SETASIDE],
+          "rpcs3: the bytes are api_mod, api_load and api_setaside, in that order",
+          [hex(addr) for addr, _ in single])
+
+    # Written into the game that is already running they change nothing: the
+    # look is once a session, and a patch only ever goes in at load.
+    for addr, value in words:
+        pine.poke(addr, value)
+    info = savefile_info(c)
+    check(info is not None and info["installed"] == 0,
+          "rpcs3: words that arrive mid-session do not count until a restart", info)
+
+    # The request bytes as RaC2's executable loads its own, out of its code
+    # segment: 80 FE A4. The words alone leave them there.
+    pine.poke(RAC1_SF_API_MOD, b"\x80\xFE\xA4")
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3: the game is stopped for the patch to take")
+    pine.boot("NPEA00385", "Ratchet & Clank")
+    ok, _ = wait_state(c, SESSION_INGAME)
+    check(ok, "rpcs3: and comes back with the words applied at load, but not the bytes")
+    info = savefile_info(c)
+    check(info is not None and info["installed"] == 1,
+          "rpcs3: the helper is found: the bytes are no part of the look", info)
+    check(info is not None and
+          info["pending"] == SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
+          "rpcs3: and INFO reports a set-aside and a load outstanding from boot", info)
+    time.sleep(0.5)
+    info = savefile_info(c)
+    check(info is not None and
+          info["pending"] == SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
+          "rpcs3: which never clears: the case the byte entries are there for", info)
+
+    # Now the whole patch: the byte entries go in at load over the same bytes.
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3: the game is stopped again")
+    for addr, value in words:
+        pine.poke(addr, value)
+    for addr, value in single:
+        pine.poke(addr, bytes([value]))
+    pine.boot("NPEA00385", "Ratchet & Clank")
+    ok, _ = wait_state(c, SESSION_INGAME)
+    check(ok, "rpcs3: and comes back with the whole patch applied at load")
+    del pine.write_log[:]
+
+    check(pine.peek(RAC1_SF_API_MOD, 3) == b"\0\0\0",
+          "rpcs3: the three request bytes read 0", pine.peek(RAC1_SF_API_MOD, 3).hex())
+    info = savefile_info(c)
+    check(info is not None and info["installed"] == 1,
+          "rpcs3: SAVEFILE_INFO now says the helper is in the game", info)
+    check(info is not None and info["pending"] == 0,
+          "rpcs3: with nothing outstanding", info)
+    check(info is not None and info["running"] == 0,
+          "rpcs3: not running while its own byte reads 0", info)
+
+    # The helper's own byte, as it reads once the hook has run a frame.
+    pine.poke(RAC1_SF_API_MOD, b"\x01")
+    info = savefile_info(c)
+    check(info is not None and info["running"] == 1,
+          "rpcs3: and running once that byte reads 1", info)
+
+    status, stamp2, _, _, _ = savefile_patch(c)
+    check(status == ST_OK and stamp2 == stamp,
+          "rpcs3: the same helper after the restart, by the same stamp", stamp2)
+
+    status, _ = c.call(OP_SAVEFILE_CATEGORIES)
+    check(status == ST_OK, "rpcs3: the savefile library answers now", status)
+
+    aside = [f for f in features if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
+    load = [f for f in features if f["flags"] & FEATURE_FLAG_LOAD_ASIDE]
+    if not (aside and load):
+        check(False, "rpcs3: DESCRIBE names the two savefile actions")
+        return
+
+    # A set-aside round trip, with the test playing the helper's part.
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([aside[0]["id"]]))
+    check(status == ST_OK, "rpcs3: the SAVE_ASIDE action fires", status)
+    check(pine.peek(RAC1_SF_API_SETASIDE, 1) == b"\x01",
+          "rpcs3: and raises the set-aside byte in the emulator")
+    check(pine.peek(RAC1_SF_API_MOD, 1) == b"\x01",
+          "rpcs3: leaving the helper's own byte alone: nothing is zeroed first")
+    info = savefile_info(c)
+    check(info is not None and info["pending"] == SAVEFILE_PENDING_SET_ASIDE,
+          "rpcs3: INFO says the set-aside is outstanding", info)
+
+    pattern = bytes((i * 11 + 5) & 0xFF for i in range(4096))
+    pine.poke(RAC1_SF_ASIDE, pattern)
+    pine.poke(RAC1_SF_API_SETASIDE, b"\x00")
+    info = wait_savefile_pending_clear(c)
+    check(info is not None and info["pending"] == 0,
+          "rpcs3: the helper clears it and the settle window follows", info)
+
+    status, body = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, len(pattern)))
+    check(status == ST_OK and body == pattern,
+          "rpcs3: SAVEFILE_READ hands the set-aside save back", (status, len(body)))
+
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([load[0]["id"]]))
+    check(status == ST_OK, "rpcs3: the LOAD_ASIDE action fires", status)
+    check(pine.peek(RAC1_SF_API_LOAD, 1) == b"\x01",
+          "rpcs3: and raises the load byte")
+    pine.poke(RAC1_SF_API_LOAD, b"\x00")
+    info = wait_savefile_pending_clear(c)
+    check(info is not None and info["pending"] == 0, "rpcs3: and the load settles", info)
+
+    code = set(addr for addr, _ in words)
+    hits = [(hex(a), w) for a, w in pine.write_log
+            if any(((a + k) & ~3) in code for k in range(w))]
+    check(any(a == RAC1_SF_API_SETASIDE for a, _ in pine.write_log),
+          "rpcs3: the emulator's write log saw the request bytes go in")
+    check(not hits, "rpcs3: and it saw no cave byte and no hook word written", hits[:4])
+
+
 def smoke_rpcs3(exe):
     """qwark-rpcs3.exe against the fake PINE server: flags, boot, DESCRIBE."""
     if not os.path.exists(exe):
@@ -2501,10 +2713,13 @@ def smoke_rpcs3(exe):
                            struct.pack(">II", 0x00500000, 0x60000000))
         check(status == ST_UNSUPPORTED, "rpcs3: PATCH_APPLY is UNSUPPORTED", status)
 
-        # The savefile helper is a code cave and a branch into it, so there is
-        # nothing here to install and nothing to talk to (protocol 1.9).
-        status, _ = c.call(OP_SAVEFILE_INFO)
-        check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_INFO is UNSUPPORTED", status)
+        # The savefile helper is a code cave and a branch into it, so qwark
+        # cannot put it here (protocol 1.9). Build 47: INFO answers anyway, to
+        # say whether an RPCS3 patch put it in at load - and none has yet.
+        info = savefile_info(c)
+        check(info is not None, "rpcs3: SAVEFILE_INFO answers (build 47)")
+        check(info is not None and info["supported"] == 1 and info["installed"] == 0,
+              "rpcs3: the game is supported and the helper is not in it", info)
         status, _ = c.call(OP_SAVEFILE_READ, struct.pack(">II", 0, 16))
         check(status == ST_UNSUPPORTED, "rpcs3: SAVEFILE_READ is UNSUPPORTED", status)
         status, _ = c.call(OP_SAVEFILE_WRITE, struct.pack(">I", 0) + b"\x01\x02\x03\x04")
@@ -2555,6 +2770,9 @@ def smoke_rpcs3(exe):
         check(status == ST_OK and body == RAC1_FP,
               "rpcs3: the RaC1 fingerprint reads back as 30 64 9c e0",
               body.hex() if body else None)
+
+        # ------------------------------------ the helper by an RPCS3 patch
+        smoke_rpcs3_savefile_patch(c, pine, features)
 
         # ---------------------------------------------------------- paused
         # Pausing the emulator leaves the game, its memory and its title id

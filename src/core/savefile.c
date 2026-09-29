@@ -18,6 +18,27 @@
 static int g_installed;
 
 /*
+ * Build 47. Whether the running game already had the helper in it when it
+ * loaded, on a platform that refuses code patches: -1 until the tick thread has
+ * looked, then 0 or 1 for the rest of the session. savefile_forget puts it back
+ * to -1 wherever it puts g_installed back to 0.
+ *
+ * That platform is RPCS3, and the helper gets there through an RPCS3 patch the
+ * client writes from SAVEFILE_PATCH: RPCS3 applies it to the executable as it
+ * loads it, before it recompiles a single block, so the caves are code the game
+ * runs and the hook is live from the first frame. Nothing about that can change
+ * while the game runs - a patch goes in at load or not at all, and nothing ever
+ * takes one out - so one look a session is the whole of the question. The look
+ * is one read per cave and one per hook word, a kilobyte or two over PINE,
+ * which is cheap once and not something to repeat on every INFO a client polls.
+ *
+ * It is its own flag rather than g_installed because the two answer different
+ * questions: g_installed is "qwark wrote it", this is "it was there already",
+ * and only the second means anything on this platform.
+ */
+static int g_present = -1;
+
+/*
  * config.txt `savefile_helper = 0`: never write the helper into a game. Off, the
  * game reports as having none and nothing is ever written.
  */
@@ -156,6 +177,12 @@ static void xfer_stop(u8 error)
 void savefile_forget(void)
 {
 	g_installed = 0;
+	/*
+	 * Build 47. The next process may have been loaded with the RPCS3 patch or
+	 * without it - a user who has just written one restarts the game for it to
+	 * take - so it is looked for again rather than taken from the last one.
+	 */
+	g_present = -1;
 	request_clear(&g_set_aside);
 	request_clear(&g_load);
 
@@ -175,25 +202,126 @@ static const struct sf_desc *desc_now(void)
 }
 
 /*
- * The gate every entry point starts with. UNSUPPORTED for a platform that
- * refuses code patches, because the helper *is* a code patch; NOT_INGAME
- * outside INGAME, because there is no process to write into.
+ * Build 47. Whether every byte of every cave and every hook word in the table is
+ * in the game exactly as savefile_install would have written it: 1 yes, 0 no,
+ * -1 when a read failed and nothing can be said yet. Tick thread, because it
+ * reads the game.
+ *
+ * All of it or nothing. A cave from an older build of the helper differs
+ * somewhere, and so does a hook word that branches to where an older helper
+ * started, and code this module did not build may not keep the request bytes
+ * the way this module reads them: it reads as not present, and the client
+ * writes the new patch. The request bytes and the aside buffer are not part of
+ * the look - they are data the helper and the game change, and the patch only
+ * sets the request bytes to 0 at load - only the code the patch wrote.
  */
-static int gate(const struct sf_desc **out)
+static int helper_matches(const struct sf_desc *d)
+{
+	/*
+	 * The tick thread's scratch buffer, filled and compared inside this call and
+	 * never held across a return: see util.h. A cave is a few hundred bytes, so
+	 * it is one read each, in chunks only if one ever outgrows the buffer.
+	 */
+	u8 *buf = qscratch();
+	u8 i;
+
+	for (i = 0; i < d->ncaves; i++) {
+		u32 off = 0;
+
+		while (off < d->caves[i].len) {
+			u32 n = d->caves[i].len - off;
+			if (n > QSCRATCH_BYTES) n = QSCRATCH_BYTES;
+
+			if (mem_read(d->caves[i].addr + off, buf, n) != ST_OK) return -1;
+			if (memcmp(buf, d->caves[i].bytes + off, n) != 0) return 0;
+			off += n;
+		}
+	}
+
+	for (i = 0; i < d->nhooks; i++) {
+		u32 word = 0;
+
+		if (mem_read_u32(d->hooks[i].addr, &word) != ST_OK) return -1;
+		if (word != d->hooks[i].value) return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Build 47. The one look a session takes, on a platform that refuses code
+ * patches, for the helper an RPCS3 patch put in at load. It does nothing once
+ * the answer is known, on a platform that patches code (the console installs
+ * its own and never asks), with the helper switched off, and outside INGAME,
+ * where there is no process to look at. A read that fails leaves the answer
+ * unknown and the next caller looks again: a stalled emulator is not an absent
+ * helper, and the session would otherwise carry that wrong answer to its end.
+ */
+static void present_look(const struct sf_desc *d)
+{
+	int found;
+
+	if (g_present >= 0 || d == NULL) return;
+	if (plat_can_patch_code() || !g_enabled || !mem_is_ingame()) return;
+
+	found = helper_matches(d);
+	if (found < 0) return;
+
+	g_present = found;
+	if (found) plat_log("savefile: the helper is already in game %d, patched in at load", (int)d->game_id);
+	else       plat_log("savefile: no helper in game %d, or one from another build", (int)d->game_id);
+}
+
+/*
+ * The gate every entry point starts with. NOT_INGAME outside INGAME, because
+ * there is no process to write into; UNSUPPORTED for a game with no helper.
+ *
+ * On a platform that refuses code patches the helper cannot be qwark's own, so
+ * it is UNSUPPORTED there unless an RPCS3 patch put it in (build 47). Before
+ * build 47 that refusal came ahead of the INGAME test, so such a platform said
+ * UNSUPPORTED at the XMB too; whether the helper is there is a question about a
+ * process now, and outside INGAME there is none to ask about. On a console the
+ * order changes nothing, since that test never refused.
+ *
+ * `look` is 0 for the one caller on a network thread, which must never read the
+ * game: it takes the answer the tick thread has already found, and BUSY in the
+ * tick or so before it has found one.
+ */
+static int gate_as(const struct sf_desc **out, int look)
 {
 	const struct sf_desc *d;
 
 	*out = NULL;
 
 	if (!g_enabled) return ST_UNSUPPORTED;
-	if (!plat_can_patch_code()) return ST_UNSUPPORTED;
 	if (!mem_is_ingame()) return ST_NOT_INGAME;
 
 	d = desc_now();
 	if (d == NULL) return ST_UNSUPPORTED;
 
+	if (!plat_can_patch_code()) {
+		if (look) present_look(d);
+		if (g_present < 0) return ST_BUSY;
+		if (!g_present) return ST_UNSUPPORTED;
+	}
+
 	*out = d;
 	return ST_OK;
+}
+
+static int gate(const struct sf_desc **out)
+{
+	return gate_as(out, 1);
+}
+
+/*
+ * Whether this process has the helper in it, by either road: qwark's own
+ * install on a console, the RPCS3 patch where code cannot be patched.
+ */
+static int helper_in(void)
+{
+	if (plat_can_patch_code()) return g_installed != 0;
+	return g_present == 1;
 }
 
 int savefile_install(void)
@@ -204,6 +332,18 @@ int savefile_install(void)
 
 	if (rc != ST_OK) return rc;
 	if (g_installed) return ST_OK;
+
+	/*
+	 * Build 47. Where code cannot be patched the gate has already found the
+	 * helper in the game, put there by an RPCS3 patch when it loaded, and there
+	 * is nothing left to write. Not the caves or the hook, which are there and
+	 * which RPCS3 has already compiled, and not the three request bytes either:
+	 * the console zeroes them below because nothing is reading them yet, and
+	 * here the patch zeroed them at load (SAVEFILE_PATCH carries them) and the
+	 * hook has been live since the first frame, so they are the helper's own
+	 * and a zero written now could land on top of its work.
+	 */
+	if (!plat_can_patch_code()) return ST_OK;
 
 	/*
 	 * A request byte left over from whatever used to live at these addresses
@@ -251,7 +391,6 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 	*pending   = 0;
 	*size      = 0;
 
-	if (!plat_can_patch_code()) return ST_UNSUPPORTED;
 	if (!mem_is_ingame()) return ST_NOT_INGAME;
 
 	d = desc_now();
@@ -265,10 +404,25 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 	*supported = 1;
 	*size = d->aside_size;
 
+	/*
+	 * Build 47. Where code cannot be patched this used to be UNSUPPORTED before
+	 * anything else was asked. It answers now, and `installed` is whether an
+	 * RPCS3 patch put the helper in when the game loaded - which is how a client
+	 * knows whether to offer to write one. A client tells the two platforms
+	 * apart by SessionInfo flags bit2, which it already reads. The look is the
+	 * session's one, usually taken already by the first INGAME tick; a read that
+	 * fails leaves it unknown, and BUSY says to ask again rather than report a
+	 * helper absent that may well be there.
+	 */
+	if (!plat_can_patch_code()) {
+		present_look(d);
+		if (g_present < 0) return ST_BUSY;
+	}
+
 	/* Discovery must not patch a newly booted game. Until an action installs
 	 * the helper, its request bytes may contain unrelated data. */
-	*installed = (u8)(g_installed != 0);
-	if (!g_installed) return ST_OK;
+	*installed = (u8)helper_in();
+	if (!*installed) return ST_OK;
 
 	if (mem_read_u8(d->api_mod, &byte) == ST_OK && byte == 1) *running = 1;
 
@@ -503,9 +657,24 @@ void savefile_tick(void)
 {
 	const struct sf_desc *d;
 
+	/*
+	 * Build 47. The session's one look for a patched-in helper is taken here, on
+	 * the first INGAME tick, rather than left for the first op that needs it: the
+	 * three library ops gate on a network thread that never reads the game, and
+	 * they need the answer to be there already. Once it has one this is a
+	 * comparison a tick, and on a console a comparison and a call.
+	 */
+	if (g_present < 0 && !plat_can_patch_code()) present_look(desc_now());
+
 	if (!g_set_aside.armed && !g_load.armed && g_xfer.state == SF_IDLE) return;
 
-	if (!plat_can_patch_code() || !mem_is_ingame()) {
+	/*
+	 * Nothing can be armed without the gate having passed, which on a platform
+	 * that refuses code patches means the RPCS3 patch was found (build 47), so
+	 * the platform is not asked again here: a request there is watched exactly
+	 * as one on a console is.
+	 */
+	if (!mem_is_ingame()) {
 		if (g_xfer.state != SF_IDLE) xfer_stop(SAVEFILE_ERR_NO_HELPER);
 		return;
 	}
@@ -598,6 +767,129 @@ static int request(int load)
 
 int savefile_set_aside(void) { return request(0); }
 int savefile_load_aside(void) { return request(1); }
+
+/* ------------------------------------------ the RPCS3 patch, revision 1.15 */
+
+/*
+ * How many words a cave takes on the wire. Every cave is whole words today:
+ * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
+ * RaC1's 116 and 452 bytes, RaC2's and RaC3's 372 and Deadlocked's 40 and 1004
+ * are all multiples of four and none of them is padded. The rounding is there
+ * for a cave that one day is not, whose last word then carries its tail and
+ * zeroes after it rather than losing the tail.
+ */
+static u32 cave_words(const struct sf_cave *c)
+{
+	return (c->len + 3u) / 4u;
+}
+
+int savefile_patch(u8 *out, u32 cap, u32 *len)
+{
+	const struct sf_desc *d;
+	u32 n = 0;
+	u32 off = SAVEFILE_PATCH_HEAD;
+	u32 need;
+	u32 bytes[SAVEFILE_PATCH_NBYTES];
+	u8 i;
+
+	*len = 0;
+
+	/*
+	 * The gate the other savefile ops use, bar the one test: the platform is not
+	 * asked and neither is the game. This describes the helper; it does not need
+	 * one to be there, and on a console it is the same words the install writes.
+	 */
+	if (!g_enabled) return ST_UNSUPPORTED;
+	if (!mem_is_ingame()) return ST_NOT_INGAME;
+
+	d = desc_now();
+	if (d == NULL) return ST_UNSUPPORTED;
+
+	for (i = 0; i < d->ncaves; i++) n += cave_words(&d->caves[i]);
+	n += d->nhooks;
+
+	need = SAVEFILE_PATCH_HEAD + n * SAVEFILE_PATCH_ROW
+	     + SAVEFILE_PATCH_BYTES_HEAD + SAVEFILE_PATCH_NBYTES * SAVEFILE_PATCH_BYTE_ROW;
+	if (n > 0xFFFFu || need > cap) return ST_FULL;
+
+	/*
+	 * Caves first and hook words last, the order the install writes them in and
+	 * so the order a patch file lists them in: a reader applying the words one
+	 * at a time never has a hook in place before the cave it branches to.
+	 */
+	for (i = 0; i < d->ncaves; i++) {
+		const struct sf_cave *c = &d->caves[i];
+		u32 at;
+
+		for (at = 0; at < c->len; at += 4u) {
+			u32 take = c->len - at;
+			u32 k;
+
+			if (take > 4u) take = 4u;
+
+			be32_put(out + off, c->addr + at);
+			/*
+			 * The cave's bytes go on the wire as they are, which is the word the
+			 * game reads there: both are the PS3's big-endian order.
+			 */
+			for (k = 0; k < 4u; k++) out[off + 4u + k] = k < take ? c->bytes[at + k] : 0;
+			off += SAVEFILE_PATCH_ROW;
+		}
+	}
+
+	for (i = 0; i < d->nhooks; i++) {
+		be32_put(out + off, d->hooks[i].addr);
+		be32_put(out + off + 4u, d->hooks[i].value);
+		off += SAVEFILE_PATCH_ROW;
+	}
+
+	/*
+	 * Then the three request bytes, at 0, in the order a console install zeroes
+	 * them before it hooks anything. A console clears them because whatever the
+	 * executable holds there would fire the moment the hook goes in, and under
+	 * RPCS3 the hook is in from the first frame with no install to clear them,
+	 * so the patch has to: RaC2's three sit in the executable's code segment and
+	 * load as 0x80 0xFE 0xA4, which INFO would report from boot as a load and a
+	 * set-aside still outstanding, two pending bits that never clear, and which
+	 * is the helper's own refusal code (SAVEFILE_HELPER_REFUSED) in the load
+	 * byte. Deadlocked's are in zero-filled BSS and RaC1's and RaC3's have not
+	 * been looked at, so all four games carry them the same way.
+	 *
+	 * They are no part of the presence look: the helper and qwark change them
+	 * from the first frame on, so what they read later says nothing about
+	 * whether the patch went in.
+	 */
+	bytes[0] = d->api_mod;
+	bytes[1] = d->api_load;
+	bytes[2] = d->api_setaside;
+
+	be16_put(out + off, SAVEFILE_PATCH_NBYTES);
+	be16_put(out + off + 2u, 0);
+	off += SAVEFILE_PATCH_BYTES_HEAD;
+
+	for (i = 0; i < SAVEFILE_PATCH_NBYTES; i++) {
+		be32_put(out + off, bytes[i]);
+		out[off + 4u] = 0;
+		out[off + 5u] = 0;
+		out[off + 6u] = 0;
+		out[off + 7u] = 0;
+		off += SAVEFILE_PATCH_BYTE_ROW;
+	}
+
+	/*
+	 * The stamp is the CRC of everything after it exactly as it went out, words
+	 * and bytes alike, so it moves when anything the patch writes does and at no
+	 * other time. A client keeps it beside the patch it wrote and knows from it
+	 * alone whether that patch is still this build's helper, without comparing a
+	 * kilobyte of words.
+	 */
+	be16_put(out, (u16)n);
+	be16_put(out + 2, 0);
+	be32_put(out + 4, qcrc32(out + SAVEFILE_PATCH_HEAD, off - SAVEFILE_PATCH_HEAD));
+
+	*len = off;
+	return ST_OK;
+}
 
 /* ------------------------------------------------------ the console library
  *
@@ -822,7 +1114,12 @@ int savefile_restore(const char *category, const char *name)
 int savefile_library_gate(void)
 {
 	const struct sf_desc *d;
-	int rc = gate(&d);
+	/*
+	 * Network thread: the answer the tick thread's look found, never a look of
+	 * its own. The look is taken on the first INGAME tick, so the BUSY it gives
+	 * before then lasts a tick, or for as long as the emulator will not answer.
+	 */
+	int rc = gate_as(&d, 0);
 
 	if (rc != ST_OK) return rc;
 

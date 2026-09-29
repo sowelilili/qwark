@@ -1385,6 +1385,9 @@ static void test_unknown_title(void)
 		      "SAVEFILE_READ is UNSUPPORTED");
 		check(savefile_library_gate() == ST_UNSUPPORTED,
 		      "and the whole savefile library with it");
+		check(savefile_patch(describe, sizeof(describe), &len) == ST_UNSUPPORTED,
+		      "and SAVEFILE_PATCH, with no helper to describe (revision 1.15)");
+		check_eq_u64(len, 0, "and no words");
 	}
 	check_eq_u64(mods_loaded_mask(), 0, "the mod table is the unknown title's own, and empty");
 
@@ -1615,7 +1618,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 45, "and this module is build 45");
+	check_eq_u64(packet[5], 47, "and this module is build 47");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -6592,18 +6595,24 @@ static void test_no_code_patches(void)
 
 	/*
 	 * The savefile helper is a code cave and a branch into it, so on a platform
-	 * that cannot patch code there is nothing to install and nothing to talk to:
-	 * all three ops and both request actions say so rather than half-working.
+	 * that cannot patch code there is nothing to install. Build 47: INFO answers
+	 * all the same, to say whether an RPCS3 patch put the helper in at load, and
+	 * here nothing did - so the ops that need the helper and both request
+	 * actions still refuse rather than half-working. test_savefile_rpcs3 has
+	 * the other half, with the patch in the game.
 	 */
 	{
 		u8 sup = 9, ins = 9, run = 9, pend = 9;
 		u32 sz = 9;
 		u32 got = 0;
 
-		check(savefile_info(&sup, &ins, &run, &pend, &sz) == ST_UNSUPPORTED,
-		      "SAVEFILE_INFO is UNSUPPORTED");
+		check(savefile_info(&sup, &ins, &run, &pend, &sz) == ST_OK,
+		      "SAVEFILE_INFO answers (build 47)");
+		check_eq_u64(sup, 1, "the game is supported, as on a console");
+		check_eq_u64(ins, 0, "and no patch put the helper in this process");
+		check_eq_u64(run, 0, "so nothing is running");
 		check(savefile_read(0, 4, word, &got) == ST_UNSUPPORTED,
-		      "and so is SAVEFILE_READ");
+		      "SAVEFILE_READ is UNSUPPORTED");
 		check(savefile_write(0, word, 4) == ST_UNSUPPORTED, "and SAVEFILE_WRITE");
 		check(savefile_install() == ST_UNSUPPORTED, "and installing the helper");
 		check(features_trigger(19) == ST_UNSUPPORTED,
@@ -6709,6 +6718,584 @@ static void test_no_code_patches(void)
 	features_forget_state();
 }
 
+/* ------------------------- build 47, the helper an RPCS3 patch put in at load */
+
+/*
+ * RPCS3 cannot take a code patch from qwark, but it applies its own patch files
+ * to the executable as it loads it. SAVEFILE_PATCH hands out the words for one,
+ * and on a platform that refuses code patches qwark looks once a session for
+ * its own helper already in the game. The fake console stands in for RPCS3 here
+ * the way it does in test_no_code_patches: plat_can_patch_code() answers 0, and
+ * a "patch" is the reply's words poked into the fresh process between the boot
+ * and the first tick, which is where RPCS3 puts them.
+ */
+
+/* One game's savefile actions, by the ids its DESCRIBE gives them. */
+struct sf_test_game {
+	const char *title;
+	u8 game_id;
+	u8 set_aside_id;
+	u8 load_aside_id;
+};
+
+static const struct sf_test_game g_sf_games[] = {
+	{ "NPEA00385", GAME_RAC1, 19, 18 },
+	{ "NPEA00386", GAME_RAC2, 31, 30 },
+	{ "NPEA00387", GAME_RAC3, 31, 32 },
+	{ "NPEA00423", GAME_RAC4, 13, 14 },
+};
+
+#define SF_NO_FLIP 0xFFFFFFFFu
+
+/* RaC1's fourth request byte, the one Force autosave (feature 20) drives. */
+#define SF_RAC1_SAVEMODE 0x00B00073u
+#define F_FORCE_AUTOSAVE_ID 20
+
+/* A SAVEFILE_PATCH reply, and a second one to compare it against. */
+static u8 g_sf_patch[QWARK_MAX_PAYLOAD];
+static u8 g_sf_patch2[QWARK_MAX_PAYLOAD];
+
+/*
+ * Writes a SAVEFILE_PATCH reply into the fake process, as RPCS3 writes a patch
+ * file's entries: every word pair, and then, with `with_bytes`, the single
+ * bytes after them. `flip` names one pair whose last byte goes in changed,
+ * which is what a patch from another build of the helper looks like to a module
+ * that did not write it.
+ */
+static void sf_poke_patch(const u8 *reply, u32 len, u32 flip, int with_bytes)
+{
+	u32 n = be16_get(reply);
+	u32 off = SAVEFILE_PATCH_HEAD;
+	u32 nb;
+	u32 i;
+
+	for (i = 0; i < n; i++) {
+		const u8 *row = reply + off;
+		u8 word[4];
+
+		if (off + SAVEFILE_PATCH_ROW > len) return;
+		memcpy(word, row + 4, 4);
+		if (i == flip) word[3] ^= 0x01;
+		host_poke(be32_get(row), word, 4);
+		off += SAVEFILE_PATCH_ROW;
+	}
+
+	if (!with_bytes || off + SAVEFILE_PATCH_BYTES_HEAD > len) return;
+	nb = be16_get(reply + off);
+	off += SAVEFILE_PATCH_BYTES_HEAD;
+
+	for (i = 0; i < nb && off + SAVEFILE_PATCH_BYTE_ROW <= len; i++) {
+		host_poke(be32_get(reply + off), reply + off + 4, 1);
+		off += SAVEFILE_PATCH_BYTE_ROW;
+	}
+}
+
+/* A boot with the whole patch applied at load, before the session has looked. */
+static int sf_boot_patched(const char *title, const u8 *reply, u32 len, u32 flip)
+{
+	host_boot(title);
+	sf_poke_patch(reply, len, flip, 1);
+	return pump_until(SESSION_INGAME, 4000);
+}
+
+/*
+ * The same with the three request bytes holding `seed` as the executable loads
+ * them, before RPCS3 applies the patch over it: RaC2's executable holds file
+ * data there, not zeroes. `with_bytes` 0 applies only the words, which is the
+ * patch without the byte entries that clear them.
+ */
+static int sf_boot_seeded(const char *title, const struct sf_desc *d, const u8 seed[3],
+                          const u8 *reply, u32 len, int with_bytes)
+{
+	host_boot(title);
+	host_poke(d->api_mod, seed + 0, 1);
+	host_poke(d->api_load, seed + 1, 1);
+	host_poke(d->api_setaside, seed + 2, 1);
+	sf_poke_patch(reply, len, SF_NO_FLIP, with_bytes);
+	return pump_until(SESSION_INGAME, 4000);
+}
+
+/* RaC2's three request bytes as its executable loads them, from its code segment. */
+static const u8 g_sf_rac2_load_bytes[3] = { 0x80, 0xFE, 0xA4 };
+
+/* Whether any write since the last log reset touched a cave or a hook word. */
+static int sf_wrote_code(const struct sf_desc *d)
+{
+	u32 i;
+
+	for (i = 0; ; i++) {
+		u32 a = 0, len = 0;
+		u8 k;
+
+		if (host_write_log_at(i, &a, &len) != 0) break;
+
+		for (k = 0; k < d->ncaves; k++)
+			if (a < d->caves[k].addr + d->caves[k].len && a + len > d->caves[k].addr) return 1;
+		for (k = 0; k < d->nhooks; k++)
+			if (a < d->hooks[k].addr + 4u && a + len > d->hooks[k].addr) return 1;
+	}
+
+	return 0;
+}
+
+/*
+ * That a SAVEFILE_PATCH reply is exactly the table's caves and hooks, then the
+ * three request bytes at 0.
+ */
+static void sf_check_patch_words(const struct sf_desc *d, const u8 *reply, u32 len)
+{
+	u32 want = 0;
+	u32 off = SAVEFILE_PATCH_HEAD;
+	u32 whole;
+	int caves_ok = 1;
+	int hooks_ok = 1;
+	int bytes_ok = 1;
+	u32 req[3];
+	u8 i;
+
+	for (i = 0; i < d->ncaves; i++) want += (d->caves[i].len + 3u) / 4u;
+	want += d->nhooks;
+	whole = SAVEFILE_PATCH_HEAD + want * SAVEFILE_PATCH_ROW
+	      + SAVEFILE_PATCH_BYTES_HEAD + 3u * SAVEFILE_PATCH_BYTE_ROW;
+
+	check_eq_u64(be16_get(reply), want, "n is every cave word and every hook word");
+	check_eq_u64(len, whole,
+	             "and the reply is those pairs and three single bytes behind their heads");
+	check_eq_u64(be16_get(reply + 2), 0, "the pad is 0");
+	check(len <= QWARK_MAX_PAYLOAD, "the reply fits one frame");
+	if (len != whole) return;
+
+	for (i = 0; i < d->ncaves; i++) {
+		u32 at;
+
+		check_eq_u64(d->caves[i].len % 4u, 0, "the cave is whole words, so nothing is padded");
+		for (at = 0; at < d->caves[i].len; at += 4u) {
+			u8 w[4] = { 0, 0, 0, 0 };
+			u32 k;
+
+			for (k = 0; k < 4u && at + k < d->caves[i].len; k++) w[k] = d->caves[i].bytes[at + k];
+			if (be32_get(reply + off) != d->caves[i].addr + at) caves_ok = 0;
+			if (memcmp(reply + off + 4, w, 4) != 0) caves_ok = 0;
+			off += SAVEFILE_PATCH_ROW;
+		}
+	}
+	check(caves_ok, "every cave is there, word by word in address order, caves in table order");
+
+	for (i = 0; i < d->nhooks; i++) {
+		if (be32_get(reply + off) != d->hooks[i].addr) hooks_ok = 0;
+		if (be32_get(reply + off + 4) != d->hooks[i].value) hooks_ok = 0;
+		off += SAVEFILE_PATCH_ROW;
+	}
+	check(hooks_ok, "and the hook words come after the caves");
+
+	/* The three request bytes a console install zeroes, in that order, at 0. */
+	check_eq_u64(be16_get(reply + off), 3, "then nb is 3");
+	check_eq_u64(be16_get(reply + off + 2), 0, "and its pad is 0");
+	off += SAVEFILE_PATCH_BYTES_HEAD;
+
+	req[0] = d->api_mod;
+	req[1] = d->api_load;
+	req[2] = d->api_setaside;
+	for (i = 0; i < 3; i++) {
+		if (be32_get(reply + off) != req[i]) bytes_ok = 0;
+		if (reply[off + 4] != 0 || reply[off + 5] != 0 ||
+		    reply[off + 6] != 0 || reply[off + 7] != 0) bytes_ok = 0;
+		off += SAVEFILE_PATCH_BYTE_ROW;
+	}
+	check(bytes_ok, "the bytes are api_mod, api_load and api_setaside, each set to 0");
+
+	check_eq_u64(be32_get(reply + 4),
+	             qcrc32(reply + SAVEFILE_PATCH_HEAD, len - SAVEFILE_PATCH_HEAD),
+	             "the stamp is the CRC-32 of everything after it, as it went out");
+}
+
+/* One game on the refusing platform: first without the patch, then with it. */
+static void sf_rpcs3_one_game(const struct sf_test_game *g)
+{
+	const struct sf_desc *d = sf_desc_for_game(g->game_id);
+	u8 sup = 9, ins = 9, run = 9, pend = 9;
+	u32 size = 0, got = 0, len = 0, len2 = 0;
+	u8 pattern[64];
+	u8 buf[64];
+	u8 b = 0;
+	u32 i;
+
+	check(d != NULL, "the game has a helper in the table");
+	if (d == NULL) return;
+
+	/* ---------------------------------------------------- no patch in it */
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait(g->title), "the game boots with no patch in it");
+	savefile_make_idle(g->game_id);
+	host_write_log_reset();
+
+	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK, "SAVEFILE_INFO answers");
+	check_eq_u64(sup, 1, "the game is supported");
+	check_eq_u64(ins, 0, "and the helper is not in it");
+	check_eq_u64(run, 0, "so it is not running");
+	check_eq_u64(size, d->aside_size, "the size is the aside buffer's");
+	check(savefile_set_aside() == ST_UNSUPPORTED, "a set-aside is UNSUPPORTED");
+	check(features_trigger(g->set_aside_id) == ST_UNSUPPORTED, "and so is the SAVE_ASIDE action");
+	check(features_trigger(g->load_aside_id) == ST_UNSUPPORTED, "and the LOAD_ASIDE action");
+	check(savefile_read(0, 4, buf, &got) == ST_UNSUPPORTED, "and SAVEFILE_READ");
+	check(savefile_library_gate() == ST_UNSUPPORTED, "and the library");
+	check_eq_u64(host_write_log_count(), 0, "and nothing was written into the game");
+
+	/* ----------------------------------------------------- the patch op */
+
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK,
+	      "SAVEFILE_PATCH answers where code cannot be patched");
+	sf_check_patch_words(d, g_sf_patch, len);
+	check(savefile_patch(g_sf_patch2, sizeof(g_sf_patch2), &len2) == ST_OK &&
+	      len2 == len && memcmp(g_sf_patch, g_sf_patch2, len) == 0,
+	      "and asked again it is the same words and the same stamp");
+
+	/*
+	 * The words written into the process that is already running are too late:
+	 * RPCS3 applies a patch as it loads a game, and the look is once a session,
+	 * so the answer holds until the game restarts.
+	 */
+	sf_poke_patch(g_sf_patch, len, SF_NO_FLIP, 1);
+	savefile_info(&sup, &ins, &run, &pend, &size);
+	check_eq_u64(ins, 0, "words that arrive mid-session do not count until a restart");
+	check(savefile_set_aside() == ST_UNSUPPORTED, "and a set-aside is still refused");
+
+	/* ------------------------------------------------ restarted with it */
+
+	check(quit_and_wait(), "the game is restarted");
+	check(sf_boot_patched(g->title, g_sf_patch, len, SF_NO_FLIP),
+	      "and comes back with the patch applied at load");
+	savefile_make_idle(g->game_id);
+	host_write_log_reset();
+
+	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK, "SAVEFILE_INFO answers");
+	check_eq_u64(ins, 1, "and says the helper is in the game");
+	check_eq_u64(run, 0, "not running while api_mod reads 0");
+	check_eq_u64(pend, 0, "with nothing outstanding");
+
+	/* The helper's own byte, as it would read once the hook has run a frame. */
+	host_poke(d->api_mod, (const u8 *)"\x01", 1);
+	savefile_info(&sup, &ins, &run, &pend, &size);
+	check_eq_u64(run, 1, "running once api_mod reads 1");
+	check(savefile_library_gate() == ST_OK, "the library is open");
+
+	/* A set-aside round trip, with the test playing the helper's part. */
+	check(features_trigger(g->set_aside_id) == ST_OK, "the SAVE_ASIDE action fires");
+	host_peek(d->api_setaside, &b, 1);
+	check_eq_u64(b, 1, "and raises the set-aside byte");
+	host_peek(d->api_mod, &b, 1);
+	check_eq_u64(b, 1, "while the helper's own byte is left alone: the install zeroes nothing");
+	savefile_info(&sup, &ins, &run, &pend, &size);
+	check_eq_u64(pend, SAVEFILE_PENDING_SET_ASIDE, "INFO says the set-aside is outstanding");
+
+	for (i = 0; i < sizeof(pattern); i++) pattern[i] = (u8)(i * 5u + g->game_id);
+	host_poke(d->aside_addr, pattern, sizeof(pattern));
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+	savefile_info(&sup, &ins, &run, &pend, &size);
+	check_eq_u64(pend, 0, "and the settle window clears it as on a console");
+	check(savefile_read(0, sizeof(buf), buf, &got) == ST_OK && got == sizeof(buf) &&
+	      memcmp(buf, pattern, sizeof(buf)) == 0,
+	      "the save comes back out of the aside buffer");
+
+	check(savefile_write(0, pattern, sizeof(pattern)) == ST_OK, "SAVEFILE_WRITE works");
+	check(features_trigger(g->load_aside_id) == ST_OK, "the LOAD_ASIDE action fires");
+	host_peek(d->api_load, &b, 1);
+	check_eq_u64(b, 1, "and raises the load byte");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+	savefile_info(&sup, &ins, &run, &pend, &size);
+	check_eq_u64(pend, 0, "and the load settles");
+
+	check(!sf_wrote_code(d), "qwark wrote no cave byte and no hook word");
+	check(host_write_log_count() < 64, "(and every write it made was logged to be sure)");
+}
+
+static void test_savefile_rpcs3(void)
+{
+	u8 sup = 9, ins = 9, run = 9, pend = 9;
+	u32 size = 0, len = 0, len2 = 0, got = 0;
+	u32 stamps[4];
+	u32 reads;
+	u8 b = 0;
+	u32 i;
+
+	/* ---------------------------------------------- the op, on a console */
+
+	group("build 47: SAVEFILE_PATCH on a console");
+
+	for (i = 0; i < 4; i++) {
+		const struct sf_desc *d = sf_desc_for_game(g_sf_games[i].game_id);
+
+		check(quit_and_wait(), "quit whatever was running");
+		check(boot_and_wait(g_sf_games[i].title), g_sf_games[i].title);
+
+		reads = host_mem_reads();
+		host_write_log_reset();
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK,
+		      "SAVEFILE_PATCH answers on a console too");
+		sf_check_patch_words(d, g_sf_patch, len);
+		if (g_sf_games[i].game_id == GAME_RAC4)
+			check_eq_u64(len, 2132, "Deadlocked's, the largest, is 2132 bytes");
+		check_eq_u64(host_mem_reads() - reads, 0, "it reads nothing out of the game");
+		check_eq_u64(host_write_log_count(), 0, "and writes nothing into it");
+		stamps[i] = be32_get(g_sf_patch + 4);
+
+		check(savefile_patch(g_sf_patch, SAVEFILE_PATCH_HEAD + 8u, &len2) == ST_FULL,
+		      "a reply buffer too small for it is FULL");
+	}
+
+	check(stamps[0] != stamps[1] && stamps[0] != stamps[2] && stamps[0] != stamps[3] &&
+	      stamps[1] != stamps[2] && stamps[1] != stamps[3] && stamps[2] != stamps[3],
+	      "the four games' stamps are four different numbers");
+
+	/* The same game again is the same helper and the same stamp. */
+	check(quit_and_wait(), "Deadlocked quits");
+	check(boot_and_wait("NPEA00423"), "and comes back");
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK &&
+	      be32_get(g_sf_patch + 4) == stamps[3],
+	      "with the stamp it had before the reboot");
+
+	savefile_set_enabled(0);
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_UNSUPPORTED,
+	      "with the helper switched off in config it is UNSUPPORTED");
+	savefile_set_enabled(1);
+
+	check(quit_and_wait(), "the game goes away");
+	reads = host_mem_reads();
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_NOT_INGAME,
+	      "outside a game it is NOT_INGAME, like the other savefile ops");
+	check_eq_u64(host_mem_reads() - reads, 0, "and there is no game for it to read");
+
+	/*
+	 * The console path is unchanged: it never looks for a helper, so words
+	 * already in the process do not make one installed, and the first action
+	 * still writes the caves and the hook and zeroes the request bytes first.
+	 */
+	group("build 47: a console still installs its own helper");
+
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC1 words");
+	check(quit_and_wait(), "RaC1 quits");
+	check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP),
+	      "and boots with the words already in it");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "a console does not look: nothing is installed until an action");
+		host_poke(d->api_mod, (const u8 *)"\x01", 1);
+		host_write_log_reset();
+		check(savefile_set_aside() == ST_OK, "the set-aside installs it");
+		check(sf_wrote_code(d), "writing the caves and the hook itself");
+		host_peek(d->api_mod, &b, 1);
+		check_eq_u64(b, 0, "after zeroing the request bytes, as it always has");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+	}
+
+	/* ------------------------------------ the platform that refuses code */
+
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+
+	for (i = 0; i < 4; i++) {
+		char name[64];
+
+		name[0] = 0;
+		qstrcat(name, sizeof(name), "build 47: the RPCS3 patch in ");
+		qstrcat(name, sizeof(name), g_sf_games[i].title);
+		group(name);
+		sf_rpcs3_one_game(&g_sf_games[i]);
+	}
+
+	group("build 47: the look is all of the helper or none of it");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+		u32 n;
+
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00385"), "RaC1 boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC1 words");
+		n = be16_get(g_sf_patch);
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_patched("NPEA00385", g_sf_patch, len, n / 2u),
+		      "RaC1 boots with one byte in the middle of a cave different");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "which is not the helper");
+		check(savefile_set_aside() == ST_UNSUPPORTED, "so a set-aside is UNSUPPORTED");
+		check(savefile_library_gate() == ST_UNSUPPORTED, "and so is the library");
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_patched("NPEA00385", g_sf_patch, len, n - 1u),
+		      "RaC1 boots with every cave right and the hook word one bit off");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "which is not the helper either: a hook from another build");
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP),
+		      "RaC1 boots with all of it");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "which is");
+
+		/* Once a session: damage after the look does not unmake it. */
+		host_poke(d->caves[0].addr, (const u8 *)"\x00\x00\x00\x00", 4);
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "a cave byte changed mid-session is not looked at again");
+
+		/* Force autosave, RaC1's own byte, rides on the same install. */
+		host_write_log_reset();
+		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_OK, "RaC1's Force autosave works");
+		host_peek(SF_RAC1_SAVEMODE, &b, 1);
+		check_eq_u64(b, 3, "and writes its autosave mode");
+		check(session_load_setaside() == ST_OK, "the combo's load works too");
+		check(!sf_wrote_code(d), "with no code word written by qwark");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		/*
+		 * The network thread's gate never reads the game: in the moment between
+		 * a session starting and its first tick it has no answer to give, and
+		 * says BUSY rather than guessing. The cave damaged above is put right
+		 * first, since this look, unlike the last, will see it.
+		 */
+		sf_poke_patch(g_sf_patch, len, SF_NO_FLIP, 0);
+		savefile_forget();
+		check(savefile_library_gate() == ST_BUSY,
+		      "before the tick has looked, the library gate is BUSY");
+		pump(1);
+		check(savefile_library_gate() == ST_OK, "and the next tick's look opens it");
+	}
+
+	/*
+	 * RaC2's request bytes are in its executable's code segment and load as
+	 * 0x80 0xFE 0xA4. A console install zeroes them before it hooks anything;
+	 * under RPCS3 the hook is in from the first frame and nothing installs, so
+	 * the patch zeroes them at load itself. Without that, INFO reports a load
+	 * and a set-aside outstanding from boot and neither ever clears.
+	 */
+	group("build 47: the patch clears the request bytes the executable loads with");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+		u8 mod = 9, load = 9, aside = 9;
+
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00386"), "RaC2 boots");
+		check(savefile_patch(g_sf_patch2, sizeof(g_sf_patch2), &len2) == ST_OK,
+		      "the RaC2 patch");
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_seeded("NPEA00386", d, g_sf_rac2_load_bytes, g_sf_patch2, len2, 0),
+		      "RaC2 boots with the words in and its request bytes left at 80 FE A4");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "the helper is found: the bytes are no part of the look");
+		check_eq_u64(run, 0, "api_mod reads 0x80, which is not running");
+		check_eq_u64(pend, SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
+		             "and INFO reports a set-aside and a load outstanding from boot");
+		pump(SAVEFILE_SETTLE_TICKS * 2);
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(pend, SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
+		             "for good, since nothing qwark asked for is there to settle");
+		host_peek(d->api_load, &load, 1);
+		check_eq_u64(load, SAVEFILE_HELPER_REFUSED, "with the helper's refusal code in the load byte");
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_seeded("NPEA00386", d, g_sf_rac2_load_bytes, g_sf_patch2, len2, 1),
+		      "RaC2 boots with the whole patch over the same bytes");
+		host_peek(d->api_mod, &mod, 1);
+		host_peek(d->api_load, &load, 1);
+		host_peek(d->api_setaside, &aside, 1);
+		check(mod == 0 && load == 0 && aside == 0,
+		      "the patch's byte entries zeroed all three at load");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "the helper is found");
+		check_eq_u64(pend, 0, "and nothing is outstanding");
+		check(savefile_set_aside() == ST_OK, "a set-aside goes out as it would on a console");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(pend, 0, "and settles");
+	}
+
+	group("build 47: the look starts again with every session");
+	{
+		check(quit_and_wait(), "the game quits");
+		reads = host_mem_reads();
+		check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_NOT_INGAME,
+		      "at the XMB SAVEFILE_INFO is NOT_INGAME on this platform too");
+		check(savefile_install() == ST_NOT_INGAME, "and so is installing");
+		check(savefile_library_gate() == ST_NOT_INGAME, "and the library");
+		check(savefile_patch(g_sf_patch2, sizeof(g_sf_patch2), &len2) == ST_NOT_INGAME,
+		      "and SAVEFILE_PATCH");
+		pump(8);
+		check_eq_u64(host_mem_reads() - reads, 0, "and nothing looks at a game that is not there");
+
+		check(boot_and_wait("NPEA00385"), "RaC1 comes back without the patch");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "and the last session's answer went with it");
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP), "RaC1 with the patch");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "is found");
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00386"), "and a different game without one");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "is not: the answer belongs to the game it was found in");
+	}
+
+	group("build 47: the console library through a patched-in helper");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+		u32 done = 0, total = 0;
+		u8 error = 9;
+		u8 out[512];
+		int t;
+
+		check(quit_and_wait(), "quit");
+		check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP), "RaC1 with the patch");
+		host_write_log_reset();
+
+		check(savefile_category(SAVEFILE_CATEGORY_CREATE, "rpcs3") == ST_OK, "a category");
+		check(savefile_store("rpcs3", "one.sav") == ST_OK, "SAVEFILE_STORE is accepted");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		check(pump_until_transfer_done(400), "and the store finishes");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NONE, "with no error");
+		check_eq_u64(done, d->aside_size, "having copied the whole buffer");
+		check(savefile_list("rpcs3", out, sizeof(out), &got) == ST_OK && out[0] == 1,
+		      "the listing has the file");
+
+		check(savefile_restore("rpcs3", "one.sav") == ST_OK, "SAVEFILE_RESTORE is accepted");
+		for (t = 0; t < 100; t++) {
+			host_peek(d->api_load, &b, 1);
+			if (b == 1) break;
+			pump(1);
+		}
+		check_eq_u64(b, 1, "the restore raises the load once the file is in the buffer");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		check(pump_until_transfer_done(400), "and finishes once the load has settled");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NONE, "with no error");
+		check(!sf_wrote_code(d), "no code word was written for any of it");
+
+		plat_file_unlink("/dev_hdd0/qwark/savefiles/NPEA00385/rpcs3/one.sav");
+		plat_file_unlink("/dev_hdd0/qwark/savefiles/NPEA00385/rpcs3/one.sav.sum");
+		check(savefile_category(SAVEFILE_CATEGORY_DELETE, "rpcs3") == ST_OK,
+		      "and the category is cleaned away");
+	}
+
+	/* ------------------------------------------------- put it all back */
+
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
+}
+
 /* -------------------------------------------- every list reply fits a frame */
 
 /*
@@ -6781,6 +7368,13 @@ static void test_reply_sizes(void)
 		qstrcat(what, sizeof(what), titles[i]);
 		qstrcat(what, sizeof(what), ": MOD_LIST fits a frame");
 		check(mods_list_encode(reply, sizeof(reply), &len) == ST_OK &&
+		      len <= QWARK_MAX_PAYLOAD, what);
+
+		/* Revision 1.15. Deadlocked's is the largest, at 2132 bytes. */
+		what[0] = 0;
+		qstrcat(what, sizeof(what), titles[i]);
+		qstrcat(what, sizeof(what), ": SAVEFILE_PATCH fits a frame");
+		check(savefile_patch(reply, sizeof(reply), &len) == ST_OK &&
 		      len <= QWARK_MAX_PAYLOAD, what);
 
 		if (g->planet_names != NULL) {
@@ -7166,6 +7760,7 @@ int main(void)
 	test_trilogy();
 	test_autosplit();
 	test_no_code_patches();
+	test_savefile_rpcs3();
 	test_reply_sizes();
 	test_config();
 	test_hot_tables();

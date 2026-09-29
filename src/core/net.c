@@ -1509,6 +1509,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return (u16)savefile_category(req[0], name);
 	}
 
+	/*
+	 * Revision 1.15. The helper as the words an RPCS3 patch writes. It reads the
+	 * generated table and the session's game and nothing else - no game memory,
+	 * no file - so it answers here the way DESCRIBE does, under the core lock the
+	 * library gate above takes for the same session state.
+	 */
+	case OP_SAVEFILE_PATCH: {
+		u16 rc;
+
+		core_lock();
+		rc = (u16)savefile_patch(reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+
 	case OP_COMBO_SET:
 		if (reqlen < 8) return ST_BAD_ARG;
 		if (req[0] >= COMBO_COUNT) return ST_BAD_ARG;
