@@ -50,6 +50,8 @@ int classic_patch_toggle(const struct patch_def *def, int on)
 	return rc == ST_NOT_FOUND ? ST_OK : rc;
 }
 
+#ifdef QWARK_EMULATOR   /* classic.h: the PS3's are the patch calls themselves */
+
 int classic_code_toggle(const struct patch_def *def, u32 flag, int on)
 {
 	/*
@@ -80,6 +82,8 @@ int classic_code_read(u32 flag, int *on)
 	*on = (b != 0);
 	return ST_OK;
 }
+
+#endif /* QWARK_EMULATOR */
 
 int classic_cb_write(u32 addr, u8 alpha, u32 rgb)
 {

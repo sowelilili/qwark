@@ -21,7 +21,7 @@
  * savefile helper since build 47:
  *
  *   - SWITCH_PATCH hands out the running game's caves and site words, and the
- *     flag bytes at 0, on either platform.
+ *     flag bytes at 0, whether or not the platform patches code.
  *   - Where code cannot be patched the tick thread looks, once a session, for
  *     every byte of every cave and every site word in the game, a few reads a
  *     tick, and keeps the answer until the session ends.
@@ -31,12 +31,17 @@
  *     LIVE toggle's byte.
  *
  * On a console none of it happens: the look never runs, switches_present() is
- * always 0, and every toggle patches code exactly as it always has.
+ * always 0, and every toggle patches code exactly as it always has. Since build
+ * 51 none of it is in the PS3 module either: switches.c and switches_bins.c are
+ * built only with QWARK_EMULATOR (plat.h), and the PS3 build gets the constant
+ * stubs at the bottom of this file instead.
  */
 #ifndef QWARK_SWITCHES_H
 #define QWARK_SWITCHES_H
 
 #include "proto.h"
+
+#ifdef QWARK_EMULATOR
 
 /*
  * Forget the answer. The session calls this where it calls savefile_forget, on
@@ -66,10 +71,19 @@ int  switches_present(void);
 /*
  * SWITCH_PATCH, revision 1.17, network thread under the core lock: the running
  * game's switches as what an RPCS3 patch writes, in SAVEFILE_PATCH's layout.
- * It reads the generated table and nothing else, so it answers on either
- * platform. NOT_INGAME outside a game, UNSUPPORTED for a game without switches,
- * FULL for a reply that would not fit `cap`.
+ * It reads the generated table and nothing else, so it answers whether or not
+ * the platform patches code. NOT_INGAME outside a game, UNSUPPORTED for a game
+ * without switches, FULL for a reply that would not fit `cap`.
  */
 int  switches_patch(u8 *out, u32 cap, u32 *len);
+
+#else /* the PS3: no switches, ever, and no SWITCH_PATCH (net.c) */
+
+static __inline void switches_forget(void)   { }
+static __inline int  switches_tick(void)     { return 0; }
+static __inline int  switches_state(void)    { return 0; }
+static __inline int  switches_present(void)  { return 0; }
+
+#endif /* QWARK_EMULATOR */
 
 #endif /* QWARK_SWITCHES_H */

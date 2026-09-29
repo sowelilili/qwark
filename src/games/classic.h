@@ -42,10 +42,21 @@ int  classic_patch_toggle(const struct patch_def *def, int on);
  *   classic_code_read    the flag, for toggle_read; NOT_FOUND without the
  *                        switches, where the toggle is a patch and memory says
  *                        nothing qwark's own bit does not
+ *
+ * The PS3 module never has the switches (build 51, QWARK_EMULATOR in plat.h),
+ * so there the three are the patch calls themselves and the flag is dropped.
+ * They are macros there rather than inline functions because gcc 4.1 at -Os
+ * kept an out-of-line copy of the toggle in every game that calls it often.
  */
+#ifdef QWARK_EMULATOR
 int  classic_code_toggle(const struct patch_def *def, u32 flag, int on);
 int  classic_code_force(const struct patch_def *def, u32 flag);
 int  classic_code_read(u32 flag, int *on);
+#else
+#define classic_code_toggle(def, flag, on) classic_patch_toggle((def), (on))
+#define classic_code_force(def, flag)      patch_apply(def)
+#define classic_code_read(flag, on)        ((void)(on), ST_NOT_FOUND)
+#endif
 
 /*
  * Chargeboot colours, RaC2 and RaC3. Both store one colour per word as the four

@@ -133,7 +133,9 @@ struct game_api {
 	 * are instructions their code switches replace (src/games/switches/), so
 	 * under RPCS3 with the switch patch in, the site holds the branch into the
 	 * trampoline instead, and that proves the executable just as well. RaC1's
-	 * switch leaves its fingerprint alone and it has none.
+	 * switch leaves its fingerprint alone and it has none. A console never
+	 * has the switch patch, so the games name it through GAME_FP_SWITCH below
+	 * and on the PS3 it is NULL (build 51).
 	 */
 	u32 fp_addr;
 	const u8 *fp_bytes;
@@ -258,6 +260,17 @@ struct game_api {
 	 */
 	const struct autosplit_desc *(*autosplit_describe)(u8 *count);
 };
+
+/*
+ * fp_switch, as a game names it. The branch a code switch puts at a fingerprint
+ * site is only ever there under RPCS3, so the PS3 module (no QWARK_EMULATOR,
+ * plat.h) has NULL for it and no fingerprint test against it.
+ */
+#ifdef QWARK_EMULATOR
+#define GAME_FP_SWITCH(fp) (fp)
+#else
+#define GAME_FP_SWITCH(fp) NULL
+#endif
 
 /*
  * The registry. Returns the first game registered for the title, or NULL for a

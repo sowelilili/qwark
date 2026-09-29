@@ -90,17 +90,10 @@ int plat_game_title(char out[16])
 
 /*
  * Real hardware executes what is in memory, so an instruction patch is a plain
- * write and everything that depends on one works.
+ * write and everything that depends on one works. plat_can_patch_code() and
+ * plat_is_emulator() are the constants 1 and 0 in plat.h here (build 51), so
+ * the core's RPCS3 branches fold away rather than asking this file.
  */
-int plat_can_patch_code(void)
-{
-	return 1;
-}
-
-int plat_is_emulator(void)
-{
-	return 0;
-}
 
 /* ------------------------------------------------------------ game memory */
 

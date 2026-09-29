@@ -181,12 +181,18 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
  * order, then the hook words - and after them the three request bytes a console
  * install zeroes, as single bytes at 0, with the CRC of everything after the
  * stamp in front. It reads the generated table and nothing else, so it answers
- * on either platform; on a console it is informational. NOT_INGAME outside a
- * game, UNSUPPORTED for a game with no helper or with the helper switched off,
- * FULL for a reply that would not fit `cap` (never, for the four games today:
+ * whether or not the platform patches code. NOT_INGAME outside a game,
+ * UNSUPPORTED for a game with no helper or with the helper switched off, FULL
+ * for a reply that would not fit `cap` (never, for the four games today:
  * Deadlocked's is the largest, at 2132 bytes).
+ *
+ * Build 51: only in the emulator builds (QWARK_EMULATOR, plat.h), as is the
+ * look for a patched-in helper. The PS3 module answers SAVEFILE_PATCH
+ * UNSUPPORTED (net.c) and only ever has the helper it installs itself.
  */
+#ifdef QWARK_EMULATOR
 int savefile_patch(u8 *out, u32 cap, u32 *len);
+#endif
 
 /*
  * The transfer half of SAVEFILE_INFO, revision 1.10. `done` and `total` are the

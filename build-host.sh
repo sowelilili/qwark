@@ -35,7 +35,12 @@ CORE="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
 HOST_SRC="$CORE src/plat/host/backend_fake.c src/plat/host/host_main.c"
 RPCS3_SRC="$CORE src/plat/host/backend_pine.c src/plat/host/rpcs3_main.c"
 
-CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST"
+# QWARK_EMULATOR (src/plat/plat.h) builds in everything that only exists for a
+# platform that refuses code patches: the RPCS3 patch ops, the presence looks
+# and the code switches. Both executables need it - qwark-rpcs3.exe is that
+# platform, and qwark-host.exe stands in for it in the smoke run - and the PS3
+# makefile never defines it.
+CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR"
 # -static folds winpthreads into the executable. Without it both programs import
 # libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
 # on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at

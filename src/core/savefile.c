@@ -35,8 +35,24 @@ static int g_installed;
  * It is its own flag rather than g_installed because the two answer different
  * questions: g_installed is "qwark wrote it", this is "it was there already",
  * and only the second means anything on this platform.
+ *
+ * Build 51: the emulator builds' alone (QWARK_EMULATOR, plat.h). A console
+ * installs its own helper and never looks for one, so on the PS3 this is a
+ * constant nothing asks: every read of it sits behind !plat_can_patch_code(),
+ * the constant 0 there, and folds away with the look (present_look, below).
  */
+#ifdef QWARK_EMULATOR
 static int g_present = -1;
+
+static void present_forget(void)
+{
+	g_present = -1;
+}
+#else
+static const int g_present = -1;
+
+static __inline void present_forget(void) { }
+#endif
 
 /*
  * config.txt `savefile_helper = 0`: never write the helper into a game. Off, the
@@ -182,7 +198,7 @@ void savefile_forget(void)
 	 * without it - a user who has just written one restarts the game for it to
 	 * take - so it is looked for again rather than taken from the last one.
 	 */
-	g_present = -1;
+	present_forget();
 	request_clear(&g_set_aside);
 	request_clear(&g_load);
 
@@ -214,7 +230,12 @@ static const struct sf_desc *desc_now(void)
  * writes the new patch. The request bytes and the aside buffer are not part of
  * the look - they are data the helper and the game change, and the patch only
  * sets the request bytes to 0 at load - only the code the patch wrote.
+ *
+ * Build 51: the look is the emulator builds' alone. On the PS3 every caller of
+ * present_look sits behind !plat_can_patch_code(), which is the constant 0
+ * there, so the stub below is only ever compiled, never called.
  */
+#ifdef QWARK_EMULATOR
 static int helper_matches(const struct sf_desc *d)
 {
 	/*
@@ -271,6 +292,9 @@ static void present_look(const struct sf_desc *d)
 	if (found) plat_log("savefile: the helper is already in game %d, patched in at load", (int)d->game_id);
 	else       plat_log("savefile: no helper in game %d, or one from another build", (int)d->game_id);
 }
+#else
+static __inline void present_look(const struct sf_desc *d) { (void)d; }
+#endif /* QWARK_EMULATOR */
 
 /*
  * The gate every entry point starts with. NOT_INGAME outside INGAME, because
@@ -770,6 +794,8 @@ int savefile_load_aside(void) { return request(1); }
 
 /* ------------------------------------------ the RPCS3 patch, revision 1.15 */
 
+#ifdef QWARK_EMULATOR   /* build 51: the PS3 answers SAVEFILE_PATCH UNSUPPORTED */
+
 /*
  * How many words a cave takes on the wire. Every cave is whole words today:
  * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
@@ -892,6 +918,8 @@ int savefile_patch(u8 *out, u32 cap, u32 *len)
 	*len = off;
 	return ST_OK;
 }
+
+#endif /* QWARK_EMULATOR */
 
 /* ------------------------------------------------------ the console library
  *

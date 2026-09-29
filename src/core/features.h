@@ -45,8 +45,15 @@ void features_apply_mask(u64 mask);
  * code switches were looked for: on now, through their flag bytes, if the look
  * found the switches, and skipped as they always were if it did not. The
  * session calls this on the tick the answer arrives. Tick thread only.
+ *
+ * Build 51: the emulator builds only (QWARK_EMULATOR, plat.h). A console has no
+ * look to wait for, so nothing ever waits there.
  */
+#ifdef QWARK_EMULATOR
 void features_apply_waiting(void);
+#else
+static __inline void features_apply_waiting(void) { }
+#endif
 
 /* The mask of toggles flagged auto in config for the current game. */
 u64  features_auto_mask(void);

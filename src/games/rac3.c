@@ -791,7 +791,7 @@ const struct game_api rac3_game = {
 	RAC3_FP_ADDR,
 	rac3_fp,
 	rac3_fp_patched,
-	rac3_fp_switch,
+	GAME_FP_SWITCH(rac3_fp_switch),
 	sizeof(rac3_fp),
 
 	0,                    /* no quit hook is known for RaC3 yet */

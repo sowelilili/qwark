@@ -1041,11 +1041,12 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 	}
 
+#ifdef QWARK_EMULATOR
 	/*
 	 * Revision 1.17. The running game's code switches as the words an RPCS3
 	 * patch writes. Like SAVEFILE_PATCH it reads the generated table and the
-	 * session's game and nothing else, so it answers here, under the core lock,
-	 * on either platform.
+	 * session's game and nothing else, so it answers here, under the core lock.
+	 * The emulator builds only; see the end of this switch for the PS3.
 	 */
 	case OP_SWITCH_PATCH: {
 		u16 rc;
@@ -1055,6 +1056,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		core_unlock();
 		return rc;
 	}
+#endif
 
 	/*
 	 * Protocol 1.4. The catch-up read for the UDP push: everything the 64-entry
@@ -1327,11 +1329,12 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return rc;
 	}
 
+#ifdef QWARK_EMULATOR
 	/*
 	 * Revision 1.16. One mod as the words and bytes an RPCS3 patch writes. It
 	 * reads the mod table and the mod's own files and never the game, so it
 	 * answers here, under the core lock, the way MOD_LIST and MOD_INFO do, and
-	 * in the same session states they do.
+	 * in the same session states they do. The emulator builds only.
 	 */
 	case OP_MOD_PATCH: {
 		u16 rc;
@@ -1343,6 +1346,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		core_unlock();
 		return rc;
 	}
+#endif
 
 	case OP_FILE_OPEN: {
 		char path[PATH_MAX_LEN];
@@ -1542,11 +1546,13 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return (u16)savefile_category(req[0], name);
 	}
 
+#ifdef QWARK_EMULATOR
 	/*
 	 * Revision 1.15. The helper as the words an RPCS3 patch writes. It reads the
 	 * generated table and the session's game and nothing else - no game memory,
 	 * no file - so it answers here the way DESCRIBE does, under the core lock the
-	 * library gate above takes for the same session state.
+	 * library gate above takes for the same session state. The emulator builds
+	 * only.
 	 */
 	case OP_SAVEFILE_PATCH: {
 		u16 rc;
@@ -1556,6 +1562,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		core_unlock();
 		return rc;
 	}
+#endif
 
 	case OP_COMBO_SET:
 		if (reqlen < 8) return ST_BAD_ARG;
@@ -1608,6 +1615,20 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		core_unlock();
 		return rc;
 	}
+
+#ifndef QWARK_EMULATOR
+	/*
+	 * Revision 1.18. The three RPCS3 patch ops exist only in the emulator
+	 * builds. A console patches code itself, so there is nothing for a client
+	 * to write into a patch file here, and a client only ever asks under its
+	 * RPCS3 target; they are known ops all the same, so UNSUPPORTED rather than
+	 * UNKNOWN_OP.
+	 */
+	case OP_SWITCH_PATCH:
+	case OP_MOD_PATCH:
+	case OP_SAVEFILE_PATCH:
+		return ST_UNSUPPORTED;
+#endif
 
 	default:
 		return ST_UNKNOWN_OP;

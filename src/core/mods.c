@@ -50,13 +50,20 @@ static char g_title[16];
  * when the session leaves the game. The cursor says how far the look has got:
  * which mod, which part of it (cave 0 .. ncaves-1, then its words at ncaves),
  * and how far into that part, in bytes for a cave and in words for the words.
+ *
+ * Build 51: only in the emulator builds. A console never looks, so on the PS3
+ * every mod's `look` stays MOD_LOOK_NONE and arming it is nothing.
  */
+#ifdef QWARK_EMULATOR
 static u8  g_look_on;
 static u32 g_look_mod;
 static u16 g_look_part;
 static u32 g_look_at;
 
 static void look_arm_all(void);
+#else
+static __inline void look_arm_all(void) { }
+#endif
 
 /*
  * patch.txt is read into the core's shared text buffer (util.h) rather than into
@@ -842,6 +849,12 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 /* ------------------------------------------------ MOD_PATCH, revision 1.16 */
 
 /*
+ * MOD_PATCH and the presence look are the emulator builds' alone, to the end of
+ * the file (build 51, mods.h).
+ */
+#ifdef QWARK_EMULATOR
+
+/*
  * How much of a cave file MOD_PATCH reads at a time. It runs on a network
  * thread, which must never borrow the tick thread's scratch buffer, so this is
  * on the stack; a multiple of four, so a chunk is whole rows but for its tail.
@@ -1246,3 +1259,5 @@ void mods_presence_tick(void)
 		}
 	}
 }
+
+#endif /* QWARK_EMULATOR */

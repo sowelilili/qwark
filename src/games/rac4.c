@@ -845,7 +845,7 @@ const struct game_api rac4_game = {
 	RAC4_FP_ADDR,
 	rac4_fp,
 	rac4_fp_patched,
-	rac4_fp_switch,
+	GAME_FP_SWITCH(rac4_fp_switch),
 	sizeof(rac4_fp),
 
 	RAC4_QUIT_FLAG,       /* the autosplitter's quit hook, installed on_enter */

@@ -188,8 +188,9 @@ int switches_patch(u8 *out, u32 cap, u32 *len)
 
 	/*
 	 * The platform is not asked and neither is the game: this describes the
-	 * switches, it does not need them to be there, and on a console it is
-	 * informational.
+	 * switches and does not need them to be there. (The PS3 module has no
+	 * SWITCH_PATCH since build 51; where the simulator stands in for a console
+	 * it is informational.)
 	 */
 	if (!mem_is_ingame()) return ST_NOT_INGAME;
 

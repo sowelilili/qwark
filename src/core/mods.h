@@ -135,6 +135,14 @@ void mods_apply_mask(u32 mask);
 int  mods_list_encode(u8 *out, u32 cap, u32 *len);
 
 /*
+ * What follows exists only for a platform that refuses code patches, so only
+ * the emulator builds have it (build 51, QWARK_EMULATOR in plat.h). The PS3
+ * module answers MOD_PATCH UNSUPPORTED (net.c) and never looks for a mod in
+ * the game: it loads its own.
+ */
+#ifdef QWARK_EMULATOR
+
+/*
  * Revision 1.16. Encodes the MOD_PATCH reply for MOD_LIST index `index`: the
  * mod as the words and bytes an RPCS3 patch writes. It reads the mod's files
  * and never the game, so it runs on a network thread, under the core lock.
@@ -152,5 +160,13 @@ int  mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len);
 void mods_presence_start(void);
 void mods_presence_stop(void);
 void mods_presence_tick(void);
+
+#else
+
+static __inline void mods_presence_start(void) { }
+static __inline void mods_presence_stop(void)  { }
+static __inline void mods_presence_tick(void)  { }
+
+#endif /* QWARK_EMULATOR */
 
 #endif /* QWARK_MODS_H */

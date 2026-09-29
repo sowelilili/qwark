@@ -49,6 +49,9 @@
  * SessionInfo flags bit4 CODE_SWITCHES, set on a platform refusing code patches
  * while such a patch has put them in the game. Every WRITES_CODE toggle then
  * works there, as a byte write to its flag.
+ * Revision 1.18: the three patch ops and the looks behind them are built only
+ * with QWARK_EMULATOR (src/plat/plat.h). The PS3 module answers SAVEFILE_PATCH,
+ * MOD_PATCH and SWITCH_PATCH UNSUPPORTED and never sets flags bit4.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -64,7 +67,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             50
+#define QWARK_BUILD             51
 
 #define QWARK_PORT              9673
 /*

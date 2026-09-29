@@ -17,8 +17,19 @@ static u64 g_toggle_auto;
  * switches: the auto-apply at INGAME always comes first, and a PREVIOUS_REAPPLY
  * may. They are applied or dropped by features_apply_waiting when the look
  * answers, and forgotten with the rest of the toggle state.
+ *
+ * Build 51: the emulator builds' alone (QWARK_EMULATOR, plat.h). A console
+ * can patch code, so nothing waits there and the two below are nothing.
  */
+#ifdef QWARK_EMULATOR
 static u64 g_code_waiting;
+
+static void code_wait(u8 id)       { g_code_waiting |= (u64)1 << id; }
+static void code_wait_forget(void) { g_code_waiting = 0; }
+#else
+static __inline void code_wait(u8 id)       { (void)id; }
+static __inline void code_wait_forget(void) { }
+#endif
 
 /*
  * Whether a WRITES_CODE feature can be set on this platform: always where code
@@ -139,14 +150,14 @@ void features_set_game(const struct game_api *game, const char *title)
 	g_game = game;
 	qstrcpy(g_title, sizeof(g_title), title ? title : "");
 	g_toggle_state = 0;
-	g_code_waiting = 0;
+	code_wait_forget();
 	g_toggle_auto = features_auto_mask();
 }
 
 void features_forget_state(void)
 {
 	g_toggle_state = 0;
-	g_code_waiting = 0;
+	code_wait_forget();
 }
 
 u64 features_toggle_state(void) { return g_toggle_state; }
@@ -275,7 +286,7 @@ void features_apply_mask(u64 mask)
 		 * skipped for want of one.
 		 */
 		if (!can_patch && (f->flags & FEATURE_FLAG_WRITES_CODE) != 0 && switches != 1) {
-			if (switches < 0) g_code_waiting |= (u64)1 << f->id;
+			if (switches < 0) code_wait(f->id);
 			else              skipped++;
 			continue;
 		}
@@ -287,6 +298,7 @@ void features_apply_mask(u64 mask)
 		         (int)skipped);
 }
 
+#ifdef QWARK_EMULATOR   /* features.h: nothing waits on the PS3 */
 void features_apply_waiting(void)
 {
 	u64 mask = g_code_waiting;
@@ -294,6 +306,7 @@ void features_apply_waiting(void)
 	g_code_waiting = 0;
 	if (mask != 0) features_apply_mask(mask);
 }
+#endif
 
 /* -------------------------------------------------------------- DESCRIBE */
 

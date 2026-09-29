@@ -48,6 +48,18 @@ u32  plat_game_pid(void); /* 0 when no PID is ready. Call only after presence. *
 int  plat_game_title(char out[16]);
 
 /*
+ * QWARK_EMULATOR (build 51) is defined by the host builds, build-host.sh and
+ * test/run.sh, and never by the PS3 makefile. Everything that exists only for a
+ * platform that refuses code patches - the RPCS3 patch ops, the presence looks,
+ * the code switches - is compiled only where it is defined, so the SPRX carries
+ * none of it. The host builds are always emulator builds: the simulator stands
+ * in for RPCS3 in the tests as well as for a console.
+ */
+#if defined(QWARK_HOST) && !defined(QWARK_EMULATOR)
+#error "the host builds define QWARK_EMULATOR (build-host.sh, test/run.sh)"
+#endif
+
+/*
  * Whether writing an instruction word into the running game actually changes
  * what the game executes.
  *
@@ -58,14 +70,21 @@ int  plat_game_title(char out[16]);
  * FEATURE_SET on a WRITES_CODE feature, a mod with patch words or caves - and
  * the games skip their embedded helpers. See PROTOCOL.md, SessionInfo flags
  * bit2 NO_CODE_PATCHES.
+ *
+ * plat_is_emulator: non-zero when the "console" is an emulator rather than real
+ * hardware, so a client can say so and soften what it expects. SessionInfo
+ * flags bit1.
+ *
+ * On the PS3 both are constants, so every branch that exists for RPCS3 folds
+ * away at compile time rather than riding along in the module.
  */
+#ifdef QWARK_EMULATOR
 int  plat_can_patch_code(void);
-
-/*
- * Non-zero when the "console" is an emulator rather than real hardware, so a
- * client can say so and soften what it expects. SessionInfo flags bit1.
- */
 int  plat_is_emulator(void);
+#else
+static __inline int plat_can_patch_code(void) { return 1; }
+static __inline int plat_is_emulator(void)    { return 0; }
+#endif
 
 /* --------------------------------------------------------------- game memory */
 

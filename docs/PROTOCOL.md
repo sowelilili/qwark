@@ -22,6 +22,8 @@ Revision 1.16 (2026-09-29): mods under RPCS3, the way the savefile helper got th
 
 Revision 1.17 (2026-09-29): code switches, the nine WRITES_CODE toggles under RPCS3. SWITCH_PATCH at 0x0025 hands out the running game's code switches - a trampoline in a code cave for every instruction those toggles patch on a console, and the branch that replaces each such instruction - as the (address, value) words an RPCS3 patch writes, with every flag byte the trampolines read as a byte entry at 0, in SAVEFILE_PATCH's layout and with the same CRC stamp. On a platform that refuses code patches qwark looks for them once a session, and while they are in the game SessionInfo `flags` bit4 CODE_SWITCHES is set and every WRITES_CODE toggle of the game works, as a write of its flag byte: FEATURE_SET, the read-back into `toggle_state`, auto-apply, PREVIOUS_REAPPLY and the fast loads RaC2's and Deadlocked's loads force. RaC2's, RaC3's and Deadlocked's fingerprints accept the branch at their site. Separately, RaC2's savefile helper keeps its request bytes at 0x1317728..0x131772A since this build, out of the executable's code segment, which RPCS3 makes read-only (section 5.12.1). Module build 50. See sections 3, 3.2 and 5.12.2.
 
+Revision 1.18 (2026-09-29): the PS3 module carries nothing that only RPCS3 needs. The three patch ops, SAVEFILE_PATCH, MOD_PATCH and SWITCH_PATCH, and the looks for a savefile helper, a mod or the code switches an RPCS3 patch put in the game exist only in the emulator builds, `qwark-rpcs3.exe` and the `qwark-host.exe` simulator; they are compiled out of `qwark.sprx`, which runs where memory is tight. The PS3 module answers SAVEFILE_PATCH, MOD_PATCH and SWITCH_PATCH with `UNSUPPORTED`, where until now it answered them for information, and never sets SessionInfo `flags` bit4 CODE_SWITCHES, as before. A client only asks for the three under its RPCS3 target, so nothing a client does has to change; no opcode, structure or other status moved. Module build 51. See sections 3.2, 5.7.1, 5.12.1 and 5.12.2.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -85,7 +87,8 @@ u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is wait
                         bit2 NO_CODE_PATCHES: this platform refuses code patches (section 3.2)
                         bit3 COMBOS_OFF: the COMBO_ENABLE switch is off, so no combo fires (section 5.9)
                         bit4 CODE_SWITCHES (revision 1.17): the running game's code switches are in it,
-                             so its WRITES_CODE toggles work on a platform that sets bit2 (section 5.12.2)
+                             so its WRITES_CODE toggles work on a platform that sets bit2 (section 5.12.2).
+                             Never set by the PS3 module
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo
@@ -128,7 +131,9 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` unless an RPCS3 patch put the savefile helper in the game when it loaded (revision 1.15, section 5.12.1) |
 | Every op of the savefile library: SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE, SAVEFILE_CATEGORY | `UNSUPPORTED` under the same condition (section 5.13). The library is only reachable through the helper, so without one there is nothing to copy out of and nothing to hand a copy to |
 
-SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on both platforms (section 5.12.1).
+SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on this platform (section 5.12.1).
+
+**The patch ops are the emulator builds' alone** (revision 1.18). SAVEFILE_PATCH, MOD_PATCH and SWITCH_PATCH, and the looks that find what their patches put in a game, are built into `qwark-rpcs3.exe` and the `qwark-host.exe` simulator and not into `qwark.sprx`: the PS3 module runs beside other VSH plugins in very little memory, and a console patches code itself. The PS3 module answers the three with `UNSUPPORTED`, where until revision 1.18 it answered them for information. A client asks for them only while bit2 is set, so it never sees that answer.
 
 **Mods work here too, once the client has written them as RPCS3 patches and the game has been restarted** (revision 1.16). A mod is code - patch words, code caves or both - so qwark cannot put one into a running game on this platform, but RPCS3 applies its own patch files as it loads the executable, before it compiles anything. The client asks for each mod with MOD_PATCH, writes it into RPCS3's per-title patch file, enables it in `patch_config.yml`, and the user restarts the game; qwark then finds the mod in game memory and MOD_LIST reports it LOADED. What does not exist here is everything that changes a mod's state inside a session: MOD_LOAD is refused and MOD_UNLOAD has nothing to unload, as the table says, auto-flagged mods are skipped at boot as they always were, and there is no previous-session reapply for them, because qwark never loaded them and the record never holds them. Taking a mod out is the reverse of putting it in: the client disables the patch and the game is restarted. Section 5.7.1 has the rules.
 
@@ -213,7 +218,7 @@ Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 
 | 0x0022 | FEATURE_TRIGGER | `u8 id` (ACTION only) | none |
 | 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
-| 0x0025 | SWITCH_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's code switches as the words and bytes an RPCS3 patch writes (revision 1.17, section 5.12.2) |
+| 0x0025 | SWITCH_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's code switches as the words and bytes an RPCS3 patch writes (revision 1.17, section 5.12.2). `UNSUPPORTED` from the PS3 module (revision 1.18) |
 
 ```
 Feature (48 bytes):
@@ -399,7 +404,7 @@ Mods live under `/dev_hdd0/qwark/mods/<TITLEID>/<dirname>/` on the console. The 
 | 0x0063 | MOD_SET_AUTO | `char[32] dirname, u8 auto` | none. Persisted in config |
 | 0x0064 | MOD_RESCAN | none | none |
 | 0x0065 | MOD_INFO | `char[32] dirname` | description text, at most 1024 bytes |
-| 0x0066 | MOD_PATCH | `u8 index, u8 pad[3]` (the Mod row's `index`) | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the mod as the words and bytes an RPCS3 patch writes (revision 1.16, section 5.7.1) |
+| 0x0066 | MOD_PATCH | `u8 index, u8 pad[3]` (the Mod row's `index`) | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the mod as the words and bytes an RPCS3 patch writes (revision 1.16, section 5.7.1). `UNSUPPORTED` from the PS3 module (revision 1.18) |
 
 ```
 Mod (120 bytes):
@@ -451,7 +456,7 @@ A cave whose length is not a multiple of four ends in one to three bytes that ma
 
 The **stamp** is the ordinary reflected CRC-32 SAVEFILE_PATCH, SAVEFILE_LIST and `qwark.sum` use, over everything after it exactly as it is on the wire. A client keeps it beside the patch entry it wrote and knows from it alone whether that entry is still the mod's current contents.
 
-MOD_PATCH reads the mod table and the mod's files and nothing of the game, writes nothing, and answers on both platforms and in every session state MOD_LIST answers in; on a console it is informational. It answers:
+MOD_PATCH reads the mod table and the mod's files and nothing of the game, writes nothing, and answers in every session state MOD_LIST answers in. Since revision 1.18 it exists only in the emulator builds, `qwark-rpcs3.exe` and the `qwark-host.exe` simulator: the PS3 module answers it `UNSUPPORTED` whatever the payload, where it used to answer it for information, and never looks for a mod in the game (section 3.2). In the emulator builds it answers:
 
 - `NOT_FOUND` for an index that is not in the list, as MOD_LOAD does for a mod it does not have
 - `IO_ERROR` for a mod that failed to parse (flags bit4), as MOD_LOAD does, and for one whose `.bin` is missing, unreadable or empty
@@ -548,7 +553,7 @@ AUTOSPLIT_EVENTS answers whatever the session state is: a client that reconnects
 | 0x00B0 | SAVEFILE_INFO | none | `u8 supported, u8 installed, u8 running, u8 pending, u32 size, u32 done, u32 total, u8 error, u8 pad[3]` (20 bytes since revision 1.10) |
 | 0x00B1 | SAVEFILE_READ | `u32 offset, u32 len` (len at most 16384 since revision 1.11, 65536 before it) | the bytes of the aside buffer at that offset; short at the end |
 | 0x00B2 | SAVEFILE_WRITE | `u32 offset, bytes` (at most 16380 since revision 1.11, 65536 before it) | none |
-| 0x00B8 | SAVEFILE_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's helper as the words and bytes a patch writes (revision 1.15, section 5.12.1) |
+| 0x00B8 | SAVEFILE_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's helper as the words and bytes a patch writes (revision 1.15, section 5.12.1). `UNSUPPORTED` from the PS3 module (revision 1.18) |
 
 INFO, READ and WRITE answer **NOT_INGAME** outside INGAME. READ and WRITE answer **UNSUPPORTED** where the platform cannot patch code (RPCS3, `flags` bit2) unless an RPCS3 patch put the helper in the game when it loaded; INFO answers there either way (revision 1.15, section 5.12.1). Before revision 1.15 the three answered UNSUPPORTED on that platform ahead of the INGAME test, so it said UNSUPPORTED at the XMB too; it says NOT_INGAME there now, as a console does. None of the three installs the helper: that is done by the set-aside and load actions, by RaC1's Force autosave, and by a library STORE or RESTORE with a valid file, and a client never asks for it or sees it happen. INFO, the library's metadata ops and raw READ and WRITE of the aside buffer only ever look.
 
@@ -605,7 +610,7 @@ The single bytes are the helper's three request bytes, `api_mod`, `api_load` and
 
 The stamp is the ordinary reflected CRC-32 that SAVEFILE_LIST and `qwark.sum` use, taken over everything after it exactly as it is on the wire - the word pairs, the `nb` head and the byte entries - so it changes exactly when anything the patch writes does: a client keeps it beside the patch it wrote and knows from it alone whether that patch is still the current build's.
 
-It reads nothing out of the game and writes nothing into it, and it answers on both platforms; on a console it is informational, since qwark writes those very words itself on the first action that needs them. **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no helper (a title qwark does not know included) and with the helper switched off by `savefile_helper = 0` in `config.txt`. Deadlocked's is the largest reply, 262 words and three bytes in 2132 bytes, well inside a frame.
+It reads nothing out of the game and writes nothing into it. Since revision 1.18 it exists only in the emulator builds, `qwark-rpcs3.exe` and the `qwark-host.exe` simulator: the PS3 module answers it **UNSUPPORTED** in every session state, where it used to answer it for information - on a console qwark writes those very words itself, on the first action that needs them - and never looks for a patched-in helper (section 3.2). In the emulator builds it answers **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no helper (a title qwark does not know included) and with the helper switched off by `savefile_helper = 0` in `config.txt`. Deadlocked's is the largest reply, 262 words and three bytes in 2132 bytes, well inside a frame.
 
 **The presence rule.** On a platform that refuses code patches, the running game's helper counts as present when every byte of every cave and every hook word SAVEFILE_PATCH describes reads back from the game exactly as qwark would have written it. The single bytes are no part of it: the helper and qwark change them from the first frame on, so what they read later says nothing about whether the patch went in. qwark looks once a session, on the first INGAME tick, and keeps the answer until the session ends; it never looks outside INGAME, and it looks again when a game comes back, since a patch goes in at load or not at all. So:
 
@@ -625,7 +630,7 @@ Nine toggles are instruction patches on a console, flagged `WRITES_CODE`: RaC1's
 
 Deadlocked's crash patches include one word of data, the last word of a vperm control table at 0x808830, which RPCS3 makes read-only with the code around it. Its switch hooks the one instruction that loads the table instead, and with the flag set loads a copy of the patched table out of the cave.
 
-On a console none of this happens: the toggles patch code as they always have, qwark never looks for the switches, bit4 is never set, and SWITCH_PATCH is informational.
+On a console none of this happens: the toggles patch code as they always have, qwark never looks for the switches, and bit4 is never set. Since revision 1.18 none of it is in the PS3 module at all, and SWITCH_PATCH, which used to answer there for information, answers `UNSUPPORTED`; it exists only in the emulator builds, `qwark-rpcs3.exe` and the `qwark-host.exe` simulator (section 3.2).
 
 **Where the words come from.** SWITCH_PATCH, request none, describes the switches of the running game. All big-endian, laid out exactly as SAVEFILE_PATCH's reply:
 
@@ -650,7 +655,7 @@ Every cave comes first, as consecutive words, caves in address order - Deadlocke
 
 Deadlocked's is the largest reply, 1020 bytes. The words are built from one assembly source per game in `src/games/switches/`, linked at the game's own addresses so that every branch is computed by the linker, and they change only when a trampoline does. None of them shares a byte with the savefile helper's patch, so a client writes both.
 
-SWITCH_PATCH reads nothing out of the game and writes nothing into it, and answers on both platforms. **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no switches, a title qwark does not know included.
+SWITCH_PATCH reads nothing out of the game and writes nothing into it, and in the emulator builds it answers whether or not the platform patches code (the PS3 module answers `UNSUPPORTED`, above). **NOT_INGAME** outside a game, **UNSUPPORTED** for a game with no switches, a title qwark does not know included.
 
 **The presence rule.** On a platform that refuses code patches the switches count as present when every byte of every cave and every site word reads back from the game exactly as SWITCH_PATCH hands them out. The flag bytes are no part of it: the patch zeroes them at load and qwark writes them from then on. qwark looks once a session, from the first INGAME tick, a few reads a tick - every game is looked through within four ticks - and keeps the answer until the session ends; it looks again whenever a game comes back. So, as for the helper:
 
