@@ -123,7 +123,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 
 SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on both platforms (section 5.12.1).
 
-Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction.
+Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction. One difference inside a planet load: on a console, RaC2's and Deadlocked's PLANET_LOAD force fast loads on first, which is a code patch, so here they leave that step out and the load takes the game's own time rather than being refused.
 
 DESCRIBE is **unchanged**: the WRITES_CODE rows are still listed, with the same ids, labels, groups and flags. A client greys them itself from bit2 rather than discovering one refusal at a time, so the same DESCRIBE parsing works against both platforms and a client built before this revision still functions, it simply sees the refusals instead of predicting them.
 

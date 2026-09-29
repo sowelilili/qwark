@@ -466,6 +466,9 @@ static int rac4_all_max_ammo(void)
  * Deadlocked does not use the RaC1..RaC3 request word. RAC4Form writes the
  * planet id and then a 1 into a second word, and forces fast loads on first; the
  * game-state watcher in rac4.c puts them back when the load ends.
+ *
+ * Fast loads are an instruction patch, so a platform that refuses one (RPCS3)
+ * loads at the game's own pace rather than not at all.
  */
 int rac4_planet_load(u8 planet, u8 flags)
 {
@@ -476,6 +479,7 @@ int rac4_planet_load(u8 planet, u8 flags)
 	if (planet == 0 || planet >= rac4_planet_count()) return ST_BAD_ARG;
 
 	rc = rac4_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = mem_write_u32(RAC4_TARGET_PLANET, planet);

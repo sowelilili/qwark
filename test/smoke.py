@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 47
+QWARK_BUILD = 48
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -2789,6 +2789,9 @@ def smoke_rpcs3(exe):
         check(ok, "rpcs3: stopping the emulated game returns the session to XMB",
               info)
 
+        # ---------------------------------------------------- planet loads
+        smoke_rpcs3_planet_loads(c, pine)
+
         sock.close()
         sock = None
 
@@ -2800,6 +2803,77 @@ def smoke_rpcs3(exe):
             sock.close()
         sim.stop()
         pine.stop()
+
+
+# RaC2's and Deadlocked's fingerprints (src/games/rac2.c, rac4.c) and the words
+# their planet loads touch (rac2.h, rac4.h). RaC2's fingerprint site is also its
+# fast-load patch site.
+RAC2_FP_ADDR = 0x00BEA8A0
+RAC2_FP = bytes([0x4B, 0xFF, 0xEA, 0x69])
+RAC2_LEVEL_FLAGS = 0x015625B0
+RAC2_LOAD_PLANET = 0x0156B050
+RAC4_FP_ADDR = 0x001D7D18
+RAC4_FP = bytes([0x41, 0x82, 0x00, 0x0C])
+RAC4_FASTLOAD_1 = 0x002A8AF4
+RAC4_FASTLOAD_2 = 0x002A8C50
+RAC4_FASTLOAD_ORIG = bytes([0x48, 0x12, 0x02, 0x61, 0x4E, 0x9E, 0x04, 0x21])
+RAC4_LOAD_PLANET2 = 0x00B36DCC
+RAC4_TARGET_PLANET = 0x00B36DD0
+
+
+def smoke_rpcs3_planet_loads(c, pine):
+    """RaC2 and Deadlocked force fast loads, an instruction patch, before a
+    planet load. RPCS3 refuses the patch, so the load goes out without it:
+    the request and the level-flag reset reach the emulator and the patch
+    sites keep their instructions. Starts and ends at XMB."""
+    # ------------------------------------------------------------- RaC2
+    pine.poke(RAC2_FP_ADDR, RAC2_FP)
+    pine.boot("NPEA00386", "Ratchet & Clank: Going Commando")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 2, "rpcs3: RaC2 reaches INGAME", info)
+
+    flag = RAC2_LEVEL_FLAGS + 5 * 0x10 + 2
+    pine.poke(flag, b"\xAA")
+    status, _ = c.call(OP_PLANET_LOAD, bytes([5, PLANET_FLAG_RESET_LEVELFLAGS]))
+    check(status == ST_OK, "rpcs3: RaC2's PLANET_LOAD goes ahead without fast loads",
+          status)
+    check(pine.peek(RAC2_LOAD_PLANET, 8) == struct.pack(">II", 1, 5),
+          "rpcs3: the request and the planet reached the emulator",
+          pine.peek(RAC2_LOAD_PLANET, 8).hex())
+    check(pine.peek(flag, 1) == b"\x00",
+          "rpcs3: and the level flags were zeroed", pine.peek(flag, 1).hex())
+    check(pine.peek(RAC2_FP_ADDR, 4) == RAC2_FP,
+          "rpcs3: the fast-load site kept its instruction",
+          pine.peek(RAC2_FP_ADDR, 4).hex())
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3: RaC2 stops", info)
+
+    # ------------------------------------------------------- Deadlocked
+    pine.poke(RAC4_FP_ADDR, RAC4_FP)
+    pine.poke(RAC4_FASTLOAD_1, RAC4_FASTLOAD_ORIG[:4])
+    pine.poke(RAC4_FASTLOAD_2, RAC4_FASTLOAD_ORIG[4:])
+    pine.boot("NPEA00423", "Ratchet: Deadlocked")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 4, "rpcs3: Deadlocked reaches INGAME", info)
+
+    status, _ = c.call(OP_PLANET_LOAD, bytes([4, 0]))
+    check(status == ST_OK,
+          "rpcs3: Deadlocked's PLANET_LOAD goes ahead without fast loads", status)
+    check(pine.peek(RAC4_TARGET_PLANET, 4) == struct.pack(">I", 4),
+          "rpcs3: the target planet reached the emulator",
+          pine.peek(RAC4_TARGET_PLANET, 4).hex())
+    check(pine.peek(RAC4_LOAD_PLANET2, 4) == struct.pack(">I", 1),
+          "rpcs3: and so did the load request",
+          pine.peek(RAC4_LOAD_PLANET2, 4).hex())
+    words = pine.peek(RAC4_FASTLOAD_1, 4) + pine.peek(RAC4_FASTLOAD_2, 4)
+    check(words == RAC4_FASTLOAD_ORIG,
+          "rpcs3: both fast-load sites kept their instructions", words.hex())
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3: Deadlocked stops", info)
 
 
 def smoke_rpcs3_held(exe):

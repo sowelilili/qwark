@@ -550,8 +550,14 @@ int rac2_planet_load(u8 planet, u8 flags)
 	 * The old load button forced fast loads on before the request and let the
 	 * loading-screen watcher put the checkbox setting back when the load
 	 * finished. Both halves are kept.
+	 *
+	 * Fast loads are an instruction patch, so a platform that refuses one
+	 * (RPCS3) loads at the game's own pace rather than not at all: the request
+	 * and the flag reset are data writes, and the load is what was asked for.
+	 * The set-aside load below makes the same call.
 	 */
 	rc = rac2_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = classic_planet_request(RAC2_LOAD_PLANET, planet);

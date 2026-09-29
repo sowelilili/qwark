@@ -1618,7 +1618,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 47, "and this module is build 47");
+	check_eq_u64(packet[5], 48, "and this module is build 48");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -6554,6 +6554,89 @@ static void test_autosplit(void)
 #define R4_SOFTLOCK_FIX   1
 
 /*
+ * RaC2 and Deadlocked force fast loads on before a planet load, and fast loads
+ * are an instruction patch. On a platform that refuses one the load still goes
+ * out, at the game's own pace: the request and the level-flag reset are data
+ * writes, and no instruction word is touched on the way in or on the way out.
+ * test_rac2 and test_rac4 hold the console half, where the patch goes in.
+ */
+static void test_no_code_patches_planet_load(void)
+{
+	u32 v = 0;
+	u8 b = 0xFF;
+
+	group("no code patches: planet loads skip fast loads");
+
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+
+	/* ------------------------------------------------------------ RaC2 */
+
+	check(quit_and_wait(), "quit RaC1");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots with the gate closed");
+
+	host_poke(R2_LEVELFLAGS + 5 * 0x10 + 2, (const u8 *)"\xAA", 1);
+	check(session_planet_load(5, PLANET_FLAG_RESET_LEVELFLAGS) == ST_OK,
+	      "RaC2's PLANET_LOAD goes ahead");
+	mem_read_u32(R2_LOADPLANET, &v);
+	check_eq_u64(v, 1, "the request word was written");
+	mem_read_u32(R2_LOADPLANET + 4, &v);
+	check_eq_u64(v, 5, "with the planet index");
+	host_peek(R2_LEVELFLAGS + 5 * 0x10 + 2, &b, 1);
+	check_eq_u64(b, 0, "and the level flags were zeroed");
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "while the fast-load site kept its instruction");
+
+	/* The loading-screen watcher's restore has nothing to put back. */
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+	pump(4);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "nor does the end of the load write it");
+
+	check(session_planet_load(99, 0) == ST_BAD_ARG,
+	      "an unknown planet is still BAD_ARG");
+
+	/* ------------------------------------------------------ Deadlocked */
+
+	check(quit_and_wait(), "quit RaC2");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots with the gate closed");
+
+	host_poke(R4_FASTLOAD_1, (const u8 *)"\x48\x12\x02\x61", 4);
+	host_poke(R4_FASTLOAD_2, (const u8 *)"\x4E\x9E\x04\x21", 4);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+
+	check(session_planet_load(4, 0) == ST_OK, "Deadlocked's PLANET_LOAD goes ahead");
+	mem_read_u32(R4_TARGET, &v);
+	check_eq_u64(v, 4, "the target planet was written");
+	mem_read_u32(R4_LOADP2, &v);
+	check_eq_u64(v, 1, "and the load was requested");
+	mem_read_u32(R4_FASTLOAD_1, &v);
+	check_eq_u64(v, 0x48120261u, "while the first fast-load word kept its instruction");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, 0x4E9E0421u, "and so did the second");
+
+	/* Through the space transition and out: the watcher writes nothing. */
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(6);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x02", 1);
+	pump(6);
+	mem_read_u32(R4_FASTLOAD_1, &v);
+	check_eq_u64(v, 0x48120261u, "nor does the end of the load write them");
+
+	check(session_planet_load(0, 0) == ST_BAD_ARG,
+	      "the unused planet is still BAD_ARG");
+
+	/* ------------------------------------------------- put it all back */
+
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+
+	check(quit_and_wait(), "quit Deadlocked");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
+}
+
+/*
  * Everything the core refuses when plat_can_patch_code() says no, which is what
  * qwark-rpcs3.exe answers because RPCS3 recompiles PPU code. The fake backend
  * lets the tests force that answer, so the whole gate is exercised here rather
@@ -7759,6 +7842,7 @@ int main(void)
 	test_rac4();
 	test_trilogy();
 	test_autosplit();
+	test_no_code_patches_planet_load();
 	test_no_code_patches();
 	test_savefile_rpcs3();
 	test_reply_sizes();
