@@ -260,10 +260,18 @@ int plat_is_emulator(void)
  * fake console's memory without disturbing the count.
  */
 static u32 g_mem_reads;
+static u32 g_fail_reads;
 
 u32 host_mem_reads(void)
 {
 	return g_mem_reads;
+}
+
+void host_fail_reads(u32 count)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	g_fail_reads = count;
+	pthread_mutex_unlock(&g_mem_lock);
 }
 
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
@@ -272,6 +280,11 @@ int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 	if (!g_game_running || pid != g_game_pid) return -1;
 
 	pthread_mutex_lock(&g_mem_lock);
+	if (g_fail_reads) {
+		g_fail_reads--;
+		pthread_mutex_unlock(&g_mem_lock);
+		return -1;
+	}
 	g_mem_reads++;
 	mem_access(addr, buf, len, 0);
 	pthread_mutex_unlock(&g_mem_lock);

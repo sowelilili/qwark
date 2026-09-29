@@ -40,6 +40,10 @@
  * Revision 1.15: SAVEFILE_PATCH at 0x00B8, the savefile helper as the words an
  * RPCS3 patch writes, and a savefile block that works on a platform refusing
  * code patches once such a patch has put the helper in the game.
+ * Revision 1.16: MOD_PATCH at 0x0066, one mod as the words and bytes an RPCS3
+ * patch writes, in SAVEFILE_PATCH's layout. On a platform refusing code patches
+ * MOD_LIST's LOADED bit says the mod is in game memory, put there by such a
+ * patch at load, and the new CHECKING bit says qwark has not looked yet.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -55,7 +59,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             48
+#define QWARK_BUILD             49
 
 #define QWARK_PORT              9673
 /*
@@ -155,6 +159,14 @@
 #define OP_MOD_SET_AUTO      0x0063
 #define OP_MOD_RESCAN        0x0064
 #define OP_MOD_INFO          0x0065
+/*
+ * Revision 1.16. One mod as what an RPCS3 patch writes to put it in the game:
+ * request u8 index (MOD_LIST's), u8 pad[3]; the reply is SAVEFILE_PATCH's
+ * layout, below, with every cave as consecutive words, then the mod's own
+ * words, then the tail bytes of any cave that is not whole words, in address
+ * order. See PROTOCOL.md 5.7.1.
+ */
+#define OP_MOD_PATCH         0x0066
 
 #define OP_FILE_OPEN         0x0070
 #define OP_FILE_WRITE        0x0071
@@ -231,6 +243,12 @@
 #define SAVEFILE_PATCH_BYTES_HEAD  4
 #define SAVEFILE_PATCH_BYTE_ROW    8
 #define SAVEFILE_PATCH_NBYTES      3
+
+/* Revision 1.16. MOD_PATCH's reply is laid out exactly as SAVEFILE_PATCH's. */
+#define MOD_PATCH_HEAD             SAVEFILE_PATCH_HEAD
+#define MOD_PATCH_ROW              SAVEFILE_PATCH_ROW
+#define MOD_PATCH_BYTES_HEAD       SAVEFILE_PATCH_BYTES_HEAD
+#define MOD_PATCH_BYTE_ROW         SAVEFILE_PATCH_BYTE_ROW
 
 /*
  * SAVEFILE_INFO's reply was eight bytes until revision 1.10 added the transfer:
@@ -457,12 +475,22 @@
 #define UNLOCK_FIELD_LEVEL UNLOCK_FIELD_2
 #define UNLOCK_FIELD_AMMO  UNLOCK_FIELD_3
 
-/* Mod flags */
+/*
+ * Mod flags.
+ *
+ * LOADED is qwark's own load on a console. On a platform that refuses code
+ * patches (revision 1.16) it is whether the mod is in game memory, every cave
+ * byte and every word of it, which is how an RPCS3 patch put in at load shows
+ * up; CHECKING is set there until qwark has looked this session, and never on
+ * a console. PREVIOUS is the mod's bit in the previous-session record while it
+ * is not loaded again; it was documented and never set before build 49.
+ */
 #define MOD_FLAG_LOADED      0x01
 #define MOD_FLAG_AUTO        0x02
 #define MOD_FLAG_NEEDS_LUA   0x04
 #define MOD_FLAG_PREVIOUS    0x08
 #define MOD_FLAG_PARSE_ERROR 0x10
+#define MOD_FLAG_CHECKING    0x20
 
 /* Patch kinds, PATCH_LIST */
 #define PATCH_KIND_CLIENT  0

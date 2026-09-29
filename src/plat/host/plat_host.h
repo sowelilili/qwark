@@ -78,6 +78,12 @@ void host_freeze_time(int on);
 void host_fail_writes(u32 addr, u32 count);
 
 /*
+ * The next `count` reads of the fake process fail, wherever they are, the way a
+ * stalled emulator answers; 0 lets them through again.
+ */
+void host_fail_reads(u32 count);
+
+/*
  * The writes the core has made since host_write_log_reset, oldest first: where
  * each landed and how many bytes it was. The count keeps going past the 64 kept.
  */

@@ -1,5 +1,6 @@
 #include "mods.h"
 #include "config.h"
+#include "session.h"
 #include "util.h"
 #include "../plat/plat.h"
 
@@ -42,6 +43,20 @@ static struct mod_cave   g_caves[MOD_CAVE_POOL];
 static u16               g_caves_used;
 
 static char g_title[16];
+
+/*
+ * Build 49, the presence look (mods.h). `g_look_on` is whether this session
+ * looks at all: set at INGAME on a platform that refuses code patches, cleared
+ * when the session leaves the game. The cursor says how far the look has got:
+ * which mod, which part of it (cave 0 .. ncaves-1, then its words at ncaves),
+ * and how far into that part, in bytes for a cave and in words for the words.
+ */
+static u8  g_look_on;
+static u32 g_look_mod;
+static u16 g_look_part;
+static u32 g_look_at;
+
+static void look_arm_all(void);
 
 /*
  * patch.txt is read into the core's shared text buffer (util.h) rather than into
@@ -353,6 +368,7 @@ int mods_rescan(void)
 		memset(g_mods, 0, sizeof(g_mods));
 		g_words_used = 0;
 		g_caves_used = 0;
+		look_arm_all();
 		return ST_OK;
 	}
 
@@ -382,7 +398,10 @@ int mods_rescan(void)
 	qstrcat(path, sizeof(path), "/");
 	qstrcat(path, sizeof(path), g_title);
 
-	if (plat_dir_open(path, &dir) != 0) return ST_OK;   /* no mods installed yet */
+	if (plat_dir_open(path, &dir) != 0) {   /* no mods installed yet */
+		look_arm_all();
+		return ST_OK;
+	}
 
 	while (plat_dir_next(&dir, &ent) == 1) {
 		struct mod_entry tmp;
@@ -408,6 +427,14 @@ int mods_rescan(void)
 	}
 
 	plat_dir_close(&dir);
+
+	/*
+	 * Build 49. Whatever the last look found was found against the files this
+	 * rescan has just replaced, so every mod is looked for again - the ones kept
+	 * because they were loaded too, since their folders may have changed under
+	 * them all the same.
+	 */
+	look_arm_all();
 	return ST_OK;
 }
 
@@ -551,8 +578,8 @@ static int mod_write(struct mod_entry *m)
 		}
 	}
 
+	/* PREVIOUS is not stored, so there is nothing to clear: see mods_list_encode. */
 	m->flags |= MOD_FLAG_LOADED;
-	m->flags &= (u8)~MOD_FLAG_PREVIOUS;
 	return ST_OK;
 }
 
@@ -748,9 +775,41 @@ static void put_fixed(u8 *dst, u32 cap, const char *src)
 	while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
 }
 
+/*
+ * The flags a row goes out with, which are not quite the flags it is kept with.
+ *
+ * PREVIOUS is the mod's bit in the previous-session record (SessionInfo's
+ * mod_previous), for as long as the mod is not loaded again. Build 49: before
+ * it the bit was documented, cleared on a load and never set anywhere, so a
+ * client could not have seen it once. Working it out here rather than storing
+ * it means a rescan, a REAPPLY and a DISMISS can never leave it stale.
+ *
+ * Build 49, on a platform that refuses code patches: LOADED is whether the look
+ * found the mod in the game, and CHECKING whether it is still to look. qwark's
+ * own LOADED stands beside it for the one kind of mod that can still load there,
+ * one with no words and no caves, which loads as nothing on any platform and is
+ * never looked for, so the two never meet on one row. On a console neither
+ * applies and the row is what it always was.
+ */
+static u8 wire_flags(const struct mod_entry *m, u32 i, u32 previous)
+{
+	u8 flags = (u8)(m->flags & ~(MOD_FLAG_PREVIOUS | MOD_FLAG_CHECKING));
+
+	if (i < 32 && (previous & (1u << i)) != 0 && (flags & MOD_FLAG_LOADED) == 0)
+		flags |= MOD_FLAG_PREVIOUS;
+
+	if (!plat_can_patch_code()) {
+		if (m->look == MOD_LOOK_PRESENT) flags |= MOD_FLAG_LOADED;
+		if (m->look == MOD_LOOK_PENDING) flags |= MOD_FLAG_CHECKING;
+	}
+
+	return flags;
+}
+
 int mods_list_encode(u8 *out, u32 cap, u32 *len)
 {
 	u32 off = 0;
+	u32 previous = session_previous()->mods;
 	u32 i;
 	u8 n = 0;
 
@@ -763,7 +822,7 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 		if (!m->used) continue;
 
 		out[off + 0] = m->index;
-		out[off + 1] = m->flags;
+		out[off + 1] = wire_flags(m, i, previous);
 		out[off + 2] = 0;
 		out[off + 3] = 0;
 		be32_put(out + off + 4, m->hash);
@@ -778,4 +837,412 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 	out[0] = n;
 	*len = off;
 	return ST_OK;
+}
+
+/* ------------------------------------------------ MOD_PATCH, revision 1.16 */
+
+/*
+ * How much of a cave file MOD_PATCH reads at a time. It runs on a network
+ * thread, which must never borrow the tick thread's scratch buffer, so this is
+ * on the stack; a multiple of four, so a chunk is whole rows but for its tail.
+ */
+#define MOD_PATCH_CHUNK  256u
+
+/* A cave's tail is its last len % 4 bytes: at most three a cave. */
+#define MOD_PATCH_TAILS  (MOD_CAVE_POOL * 3u)
+
+struct patch_out {
+	u8  *out;
+	u32  cap;
+	u32  off;                           /* where the next row goes */
+	u32  n;                             /* rows so far */
+	u32  ntail;
+	u32  tail_addr[MOD_PATCH_TAILS];
+	u8   tail_val[MOD_PATCH_TAILS];
+};
+
+static int patch_row(struct patch_out *p, u32 addr, const u8 value[4])
+{
+	if (p->off + MOD_PATCH_ROW > p->cap) return ST_FULL;
+
+	be32_put(p->out + p->off, addr);
+	memcpy(p->out + p->off + 4, value, 4);
+	p->off += MOD_PATCH_ROW;
+	p->n++;
+	return ST_OK;
+}
+
+/*
+ * One cave as rows: its file four bytes at a time, each as the be32 word the
+ * game holds there, and what is left over at the end as tail bytes. The file is
+ * streamed whole, exactly as MOD_LOAD streams it into a console's memory, and a
+ * missing, unreadable or empty one is IO_ERROR: MOD_LOAD would not load it
+ * either, and a patch of half a mod is not one to hand a client.
+ */
+static int patch_cave(struct patch_out *p, const struct mod_entry *m,
+                      const struct mod_cave *cave)
+{
+	char path[MOD_PATH_MAX];
+	u8 buf[MOD_PATCH_CHUNK];
+	plat_file_t f;
+	u32 have = 0;     /* bytes at the front of buf not yet made into a row */
+	u32 at = 0;       /* the cave offset of buf[0] */
+	u32 k;
+	int rc = ST_OK;
+
+	mod_dir_path(path, sizeof(path), m->dirname, cave->file);
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return ST_IO_ERROR;
+
+	for (;;) {
+		u32 got = 0;
+
+		if (plat_file_read(f, buf + have, sizeof(buf) - have, &got) != 0) {
+			rc = ST_IO_ERROR;
+			break;
+		}
+		if (got == 0) break;
+		have += got;
+
+		for (k = 0; k + 4u <= have && rc == ST_OK; k += 4u)
+			rc = patch_row(p, cave->addr + at + k, buf + k);
+		if (rc != ST_OK) break;
+
+		at += k;
+		have -= k;
+		memmove(buf, buf + k, have);
+	}
+
+	plat_file_close(f);
+	if (rc != ST_OK) return rc;
+	if (at + have == 0) return ST_IO_ERROR;
+
+	for (k = 0; k < have; k++) {
+		if (p->ntail >= MOD_PATCH_TAILS) return ST_FULL;
+		p->tail_addr[p->ntail] = cave->addr + at + k;
+		p->tail_val[p->ntail] = buf[k];
+		p->ntail++;
+	}
+	return ST_OK;
+}
+
+int mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len)
+{
+	/*
+	 * Static rather than on the stack: 500 bytes that a network thread's stack
+	 * need not carry, and safe because every caller holds the core lock, the
+	 * same rule the shared text buffer lives by.
+	 */
+	static struct patch_out p;
+	const struct mod_entry *m;
+	u32 i, j;
+	int rc;
+
+	*len = 0;
+	if (cap > QWARK_MAX_PAYLOAD) cap = QWARK_MAX_PAYLOAD;
+
+	/*
+	 * The refusals MOD_LOAD makes, in its order, and one of its own: a mod
+	 * with a Lua automation is only half there as words, and the half that
+	 * is not is something no patch can carry.
+	 */
+	m = mods_at(index);
+	if (m == NULL) return ST_NOT_FOUND;
+	if (m->flags & MOD_FLAG_PARSE_ERROR) return ST_IO_ERROR;
+	if (m->flags & MOD_FLAG_NEEDS_LUA) return ST_UNSUPPORTED;
+
+	p.out = out;
+	p.cap = cap;
+	p.off = MOD_PATCH_HEAD;
+	p.n = 0;
+	p.ntail = 0;
+	if (cap < MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD) return ST_FULL;
+
+	/*
+	 * Every cave in patch.txt order, then every word in patch.txt order: the
+	 * order a console writes them in, caves before the branches into them, and
+	 * so the order a patch file lists them in. The dependencies are not folded
+	 * in; a client walks "#- depends" itself and writes each mod on its own.
+	 */
+	for (i = 0; i < m->ncaves; i++) {
+		rc = patch_cave(&p, m, &g_caves[m->cave_first + i]);
+		if (rc != ST_OK) return rc;
+	}
+
+	for (i = 0; i < m->def.count; i++) {
+		u8 value[4];
+
+		be32_put(value, m->def.words[i].value);
+		rc = patch_row(&p, m->def.words[i].addr, value);
+		if (rc != ST_OK) return rc;
+	}
+
+	if (p.n > 0xFFFFu) return ST_FULL;
+	if (p.off + MOD_PATCH_BYTES_HEAD + p.ntail * MOD_PATCH_BYTE_ROW > cap) return ST_FULL;
+
+	/* The tail bytes in address order, which is also the caves' own order within one. */
+	for (i = 1; i < p.ntail; i++) {
+		u32 a = p.tail_addr[i];
+		u8 v = p.tail_val[i];
+
+		for (j = i; j > 0 && p.tail_addr[j - 1] > a; j--) {
+			p.tail_addr[j] = p.tail_addr[j - 1];
+			p.tail_val[j] = p.tail_val[j - 1];
+		}
+		p.tail_addr[j] = a;
+		p.tail_val[j] = v;
+	}
+
+	be16_put(out + p.off, (u16)p.ntail);
+	be16_put(out + p.off + 2, 0);
+	p.off += MOD_PATCH_BYTES_HEAD;
+
+	for (i = 0; i < p.ntail; i++) {
+		be32_put(out + p.off, p.tail_addr[i]);
+		out[p.off + 4] = p.tail_val[i];
+		out[p.off + 5] = 0;
+		out[p.off + 6] = 0;
+		out[p.off + 7] = 0;
+		p.off += MOD_PATCH_BYTE_ROW;
+	}
+
+	/* The stamp is SAVEFILE_PATCH's: the CRC-32 of everything after it. */
+	be16_put(out, (u16)p.n);
+	be16_put(out + 2, 0);
+	be32_put(out + 4, qcrc32(out + MOD_PATCH_HEAD, p.off - MOD_PATCH_HEAD));
+
+	*len = p.off;
+	return ST_OK;
+}
+
+/* ----------------------------------------------- the presence look, build 49 */
+
+/*
+ * Where code cannot be patched - RPCS3, which recompiles PPU code - a mod gets
+ * into the game one way: the client writes it from MOD_PATCH into RPCS3's patch
+ * file and RPCS3 applies it as it loads the executable, before it compiles a
+ * block. qwark's part is to say which mods went in, and it says that the way
+ * savefile.c says it for the helper: a mod is there when every byte of every
+ * cave and every word reads back exactly as MOD_PATCH hands it out.
+ *
+ * A patch goes in at load or not at all, so the answer holds for the session:
+ * each mod is looked at once, and looked at again only when a new session
+ * starts or a rescan has replaced the files it was compared against.
+ *
+ * The look is spread over ticks, because a word here and a word there is a PINE
+ * round trip each and a title can have hundreds: MOD_LOOK_READS reads a tick at
+ * most, each of at most MOD_LOOK_CHUNK bytes, so a tick never waits on more
+ * than four replies or 8 KB. A run of consecutive words is one read. Every
+ * title of the shipped library is looked through in under thirty ticks - bl-mod,
+ * whose 103 words fall in 85 runs, is the slowest mod at 22 - and a tick whose
+ * read fails stops there and tries again next tick from the same place.
+ */
+#define MOD_LOOK_READS  4u
+#define MOD_LOOK_CHUNK  2048u
+
+/* The memory half and the file half of the scratch buffer. */
+typedef char mods_look_fits[2u * MOD_LOOK_CHUNK <= QSCRATCH_BYTES ? 1 : -1];
+
+static void look_arm_all(void)
+{
+	u32 i;
+
+	g_look_mod = 0;
+	g_look_part = 0;
+	g_look_at = 0;
+
+	/*
+	 * Only a mod MOD_PATCH would describe, and that has something to describe:
+	 * one with no words and no caves loads as nothing on any platform, MOD_LOAD
+	 * takes it here as it always has, and qwark's own LOADED stays its answer.
+	 */
+	for (i = 0; i < g_nmods; i++) {
+		struct mod_entry *m = &g_mods[i];
+
+		if (g_look_on && m->used &&
+		    (m->flags & (MOD_FLAG_PARSE_ERROR | MOD_FLAG_NEEDS_LUA)) == 0 &&
+		    (m->ncaves > 0 || m->def.count > 0))
+			m->look = MOD_LOOK_PENDING;
+		else
+			m->look = MOD_LOOK_NONE;
+	}
+}
+
+void mods_presence_start(void)
+{
+	g_look_on = plat_can_patch_code() ? 0 : 1;
+	look_arm_all();
+}
+
+void mods_presence_stop(void)
+{
+	g_look_on = 0;
+	look_arm_all();
+}
+
+/*
+ * Whether a word from `from` on in the mod's list covers `addr`. A patch is
+ * applied in MOD_PATCH's order, caves and then words, so where two of them name
+ * the same byte the later one is what the game holds; the look compares that
+ * byte against the later one only. No shipped mod does this, but a mod that
+ * fixes up its own cave with a word, or names one address twice, is not absent
+ * for it.
+ */
+static int later_word_covers(const struct mod_entry *m, u32 from, u32 addr)
+{
+	u32 k;
+
+	for (k = from; k < m->def.count; k++) {
+		if (addr - m->def.words[k].addr < 4u) return 1;
+	}
+	return 0;
+}
+
+/*
+ * Up to `cap` bytes of a cave's file from byte `at`, into `buf`, looping until
+ * it has them or the file ends, so fewer than `cap` means the end. There is no
+ * seek in the platform layer, so what comes before `at` is read and dropped;
+ * caves are a few kilobytes and this only runs on a PC.
+ */
+static int cave_read_at(const struct mod_entry *m, const struct mod_cave *cave,
+                        u32 at, u8 *buf, u32 cap, u32 *got)
+{
+	char path[MOD_PATH_MAX];
+	plat_file_t f;
+	u32 skipped = 0;
+	int rc = ST_OK;
+
+	*got = 0;
+	mod_dir_path(path, sizeof(path), m->dirname, cave->file);
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return ST_NOT_FOUND;
+
+	while (rc == ST_OK && skipped < at) {
+		u32 want = at - skipped;
+		u32 n = 0;
+
+		if (want > cap) want = cap;
+		if (plat_file_read(f, buf, want, &n) != 0) rc = ST_IO_ERROR;
+		else if (n == 0) break;
+		skipped += n;
+	}
+
+	while (rc == ST_OK && skipped == at && *got < cap) {
+		u32 n = 0;
+
+		if (plat_file_read(f, buf + *got, cap - *got, &n) != 0) rc = ST_IO_ERROR;
+		else if (n == 0) break;
+		*got += n;
+	}
+
+	plat_file_close(f);
+	return rc;
+}
+
+/*
+ * One read's worth of the look at `m`, from the cursor. 1 when the mod is
+ * decided (its `look` says how), 0 when there is more of it, -1 when the read
+ * failed and the mod stays PENDING.
+ */
+static int look_step(struct mod_entry *m)
+{
+	u8 *mem = qscratch();
+	u32 k;
+
+	if (g_look_part < m->ncaves) {
+		const struct mod_cave *cave = &g_caves[m->cave_first + g_look_part];
+		u8 *file = mem + MOD_LOOK_CHUNK;
+		u32 got = 0;
+
+		/*
+		 * A cave whose file has gone cannot be compared, and a client cannot
+		 * have written it from MOD_PATCH either, which refuses it the same way:
+		 * absent, not unknown, since asking again next tick will not bring the
+		 * file back. An empty one is refused by MOD_PATCH and MOD_LOAD alike.
+		 */
+		if (cave_read_at(m, cave, g_look_at, file, MOD_LOOK_CHUNK, &got) != ST_OK ||
+		    (got == 0 && g_look_at == 0)) {
+			m->look = MOD_LOOK_ABSENT;
+			return 1;
+		}
+
+		if (got > 0) {
+			if (mem_read(cave->addr + g_look_at, mem, got) != ST_OK) return -1;
+
+			for (k = 0; k < got; k++) {
+				if (mem[k] == file[k]) continue;
+				if (later_word_covers(m, 0, cave->addr + g_look_at + k)) continue;
+				m->look = MOD_LOOK_ABSENT;
+				return 1;
+			}
+			g_look_at += got;
+		}
+
+		/* A short read is the end of the file, and so of this cave. */
+		if (got < MOD_LOOK_CHUNK) {
+			g_look_part++;
+			g_look_at = 0;
+		}
+		return 0;
+	}
+
+	if (g_look_at < m->def.count) {
+		const struct patch_word *w = m->def.words;
+		u32 first = g_look_at;
+		u32 n = 1;
+
+		while (first + n < m->def.count && n < MOD_LOOK_CHUNK / 4u &&
+		       w[first + n].addr == w[first + n - 1].addr + 4u)
+			n++;
+
+		if (mem_read(w[first].addr, mem, n * 4u) != ST_OK) return -1;
+
+		for (k = 0; k < n * 4u; k++) {
+			u8 want[4];
+
+			be32_put(want, w[first + k / 4u].value);
+			if (mem[k] == want[k % 4u]) continue;
+			if (later_word_covers(m, first + k / 4u + 1u, w[first + k / 4u].addr + k % 4u))
+				continue;
+			m->look = MOD_LOOK_ABSENT;
+			return 1;
+		}
+		g_look_at += n;
+		if (g_look_at < m->def.count) return 0;
+	}
+
+	/* Every cave and every word read back. */
+	m->look = MOD_LOOK_PRESENT;
+	return 1;
+}
+
+void mods_presence_tick(void)
+{
+	u32 reads = 0;
+
+	if (!g_look_on || plat_can_patch_code() || !mem_is_ingame()) return;
+
+	while (reads < MOD_LOOK_READS) {
+		struct mod_entry *m;
+		int rc;
+
+		while (g_look_mod < g_nmods &&
+		       (!g_mods[g_look_mod].used || g_mods[g_look_mod].look != MOD_LOOK_PENDING)) {
+			g_look_mod++;
+			g_look_part = 0;
+			g_look_at = 0;
+		}
+		if (g_look_mod >= g_nmods) return;   /* every mod has its answer */
+
+		m = &g_mods[g_look_mod];
+		rc = look_step(m);
+		reads++;
+
+		if (rc < 0) return;                  /* not answering: again next tick */
+		if (rc > 0) {
+			if (m->look == MOD_LOOK_PRESENT)
+				plat_log("mods: %s is in the game, patched in at load", m->dirname);
+			g_look_mod++;
+			g_look_part = 0;
+			g_look_at = 0;
+		}
+	}
 }

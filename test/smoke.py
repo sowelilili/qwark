@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 48
+QWARK_BUILD = 49
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -118,10 +118,15 @@ OP_MOD_LOAD = 0x0061
 OP_MOD_UNLOAD = 0x0062
 OP_MOD_RESCAN = 0x0064
 OP_MOD_INFO = 0x0065
+# Revision 1.16: one mod as the words and bytes an RPCS3 patch writes.
+OP_MOD_PATCH = 0x0066
 
 # One Mod row, and the flag that says the console has this one in the game.
 MOD_WIRE_SIZE = 120
 MOD_FLAG_LOADED = 0x01
+MOD_FLAG_PREVIOUS = 0x08
+# Revision 1.16: where code cannot be patched, qwark has not looked for it yet.
+MOD_FLAG_CHECKING = 0x20
 OP_COMBO_SET = 0x0080
 OP_COMBO_LIST = 0x0081
 OP_COMBO_SUSPEND = 0x0082
@@ -138,6 +143,7 @@ OP_FILE_WRITE = 0x0071
 OP_FILE_READ = 0x0072
 OP_FILE_CLOSE = 0x0073
 OP_FILE_DELETE = 0x0074
+OP_DIR_CREATE = 0x0076
 OP_FILE_RENAME = 0x0079
 OP_SAVEFILE_CATEGORIES = 0x00B3
 OP_SAVEFILE_LIST = 0x00B4
@@ -1743,6 +1749,38 @@ def mod_list(c):
     return status, mods
 
 
+def mod_row(c, dirname):
+    """One mod's MOD_LIST row, or None."""
+    _, mods = mod_list(c)
+    return next((m for m in mods if m["dirname"] == dirname), None)
+
+
+def mod_patch(c, index):
+    """
+    MOD_PATCH, revision 1.16: (status, stamp, [(addr, 4 value bytes)],
+    [(addr, value)], body). SAVEFILE_PATCH's layout: u16 n, u16 pad, u32 stamp,
+    n (u32 addr, u32 value) rows, u16 nb, u16 pad, nb (u32 addr, u8 value,
+    u8 pad[3]) bytes, the stamp being the CRC-32 of everything after it.
+    """
+    status, body = c.call(OP_MOD_PATCH, bytes([index, 0, 0, 0]))
+    if status != ST_OK or len(body) < 8:
+        return status, None, None, None, body
+    n, _, stamp = struct.unpack(">HHI", body[:8])
+    off = 8
+    rows = []
+    for _ in range(n):
+        rows.append((struct.unpack(">I", body[off:off + 4])[0], body[off + 4:off + 8]))
+        off += 8
+    single = []
+    if off + 4 <= len(body):
+        nb = struct.unpack(">H", body[off:off + 2])[0]
+        off += 4
+        for _ in range(nb):
+            single.append((struct.unpack(">I", body[off:off + 4])[0], body[off + 4]))
+            off += 8
+    return status, stamp, rows, single, body
+
+
 def write_console_file(c, path, data):
     status, body = c.call(OP_FILE_OPEN, b"\x01" + path.encode())
     if status != ST_OK:
@@ -2594,6 +2632,130 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     check(not hits, "rpcs3: and it saw no cave byte and no hook word written", hits[:4])
 
 
+# Build 49: a mod uploaded to qwark-rpcs3 and put in the game as an RPCS3 patch.
+# Addresses clear of RaC1's savefile helper, its aside buffer and its tables.
+RPCS3_MOD_DIR = "rpcs3-smoke"
+RPCS3_MOD_FOLDER = "/dev_hdd0/qwark/mods/NPEA00385/" + RPCS3_MOD_DIR
+RPCS3_MOD_CAVE = 0x01480000
+RPCS3_MOD_WORDS = 0x01400000
+# 256 words eight bytes apart, so no two are one read: the look takes a
+# second's worth of ticks, long enough to watch it say CHECKING.
+RPCS3_MOD_NWORDS = 256
+# 22 bytes: five whole words and two tail bytes.
+RPCS3_MOD_BIN = bytes((0x40 + i) for i in range(22))
+
+
+def rpcs3_mod_text():
+    lines = ["#- name: RPCS3 smoke", "#- version: 1.0", "#- author: qwark tests",
+             "0x%08X: cave.bin" % RPCS3_MOD_CAVE]
+    for i in range(RPCS3_MOD_NWORDS):
+        lines.append("0x%08X: 0x%08X" % (RPCS3_MOD_WORDS + i * 8, 0x60000000 + i))
+    return ("\r\n".join(lines) + "\r\n").encode()
+
+
+def wait_mod_looked(c, dirname, timeout=10.0):
+    """Polls MOD_LIST until the mod is not CHECKING. (row, seen_checking)."""
+    deadline = time.time() + timeout
+    seen = False
+    row = mod_row(c, dirname)
+    while row is not None and row["flags"] & MOD_FLAG_CHECKING and time.time() < deadline:
+        seen = True
+        time.sleep(0.02)
+        row = mod_row(c, dirname)
+    return row, seen
+
+
+def smoke_rpcs3_mods(c, pine):
+    """
+    Build 49, revision 1.16: a mod under RPCS3. The client uploads it with the
+    file ops, as it would to a console - the files, qwark.sum, MOD_RESCAN - and
+    then writes it from MOD_PATCH into RPCS3's patch file, which RPCS3 applies
+    as it loads the game. Here the rows and bytes go straight into the fake
+    emulator's memory, never through qwark, and the game is restarted for them
+    to count. RaC1 is running and stays running at the end.
+    """
+    text = rpcs3_mod_text()
+    status, _ = c.call(OP_DIR_CREATE, RPCS3_MOD_FOLDER.encode())
+    check(status == ST_OK, "rpcs3 mods: the mod's folder is created under --root", status)
+    ok = write_console_file(c, RPCS3_MOD_FOLDER + "/patch.txt", text)
+    ok = write_console_file(c, RPCS3_MOD_FOLDER + "/cave.bin", RPCS3_MOD_BIN) and ok
+    crc = zlib.crc32(text + RPCS3_MOD_BIN) & 0xFFFFFFFF
+    ok = write_console_file(c, RPCS3_MOD_FOLDER + "/qwark.sum", ("%08x" % crc).encode()) and ok
+    check(ok, "rpcs3 mods: patch.txt, cave.bin and qwark.sum are uploaded")
+    status, _ = c.call(OP_MOD_RESCAN)
+    check(status == ST_OK, "rpcs3 mods: MOD_RESCAN", status)
+
+    row = mod_row(c, RPCS3_MOD_DIR)
+    if not check(row is not None, "rpcs3 mods: MOD_LIST has the uploaded mod"):
+        return
+    check(row["hash"] == crc, "rpcs3 mods: with the hash the upload wrote", "%08x" % row["hash"])
+    row, _ = wait_mod_looked(c, RPCS3_MOD_DIR)
+    check(row is not None and row["flags"] & (MOD_FLAG_LOADED | MOD_FLAG_CHECKING) == 0,
+          "rpcs3 mods: once looked for, it is not in the game", row)
+
+    status, _ = c.call(OP_MOD_LOAD, fixed32(RPCS3_MOD_DIR))
+    check(status == ST_UNSUPPORTED, "rpcs3 mods: MOD_LOAD is still UNSUPPORTED here", status)
+
+    # ----------------------------------------------------------- MOD_PATCH
+    status, stamp, rows, single, body = mod_patch(c, row["index"])
+    if not check(status == ST_OK, "rpcs3 mods: MOD_PATCH answers", status):
+        return
+    cave_rows = [(RPCS3_MOD_CAVE + k, RPCS3_MOD_BIN[k:k + 4]) for k in range(0, 20, 4)]
+    word_rows = [(RPCS3_MOD_WORDS + i * 8, struct.pack(">I", 0x60000000 + i))
+                 for i in range(RPCS3_MOD_NWORDS)]
+    check(rows == cave_rows + word_rows,
+          "rpcs3 mods: the cave's five words first, then the 256 words in patch.txt order",
+          len(rows))
+    check(single == [(RPCS3_MOD_CAVE + 20, RPCS3_MOD_BIN[20]), (RPCS3_MOD_CAVE + 21, RPCS3_MOD_BIN[21])],
+          "rpcs3 mods: and the cave's two tail bytes after them", single)
+    check(len(body) == 8 + len(rows) * 8 + 4 + len(single) * 8 and body[2:4] == b"\0\0",
+          "rpcs3 mods: in SAVEFILE_PATCH's layout", len(body))
+    check(stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
+          "rpcs3 mods: stamped with the CRC-32 of everything after the stamp", stamp)
+
+    # Written into the running game they change nothing until a restart.
+    for addr, value in rows:
+        pine.poke(addr, value)
+    for addr, value in single:
+        pine.poke(addr, bytes([value]))
+    time.sleep(0.3)
+    row = mod_row(c, RPCS3_MOD_DIR)
+    check(row is not None and row["flags"] & MOD_FLAG_LOADED == 0,
+          "rpcs3 mods: words that arrive mid-session do not count until a restart", row)
+
+    # -------------------------------------------------------- the restart
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 mods: the game is stopped for the patch to take")
+    row = mod_row(c, RPCS3_MOD_DIR)
+    check(row is not None and row["flags"] & (MOD_FLAG_LOADED | MOD_FLAG_CHECKING) == 0,
+          "rpcs3 mods: at the XMB the mod is neither LOADED nor CHECKING", row)
+
+    del pine.write_log[:]
+    pine.boot("NPEA00385", "Ratchet & Clank")
+    ok, _ = wait_state(c, SESSION_INGAME)
+    check(ok, "rpcs3 mods: and comes back with the mod applied at load")
+    row, seen = wait_mod_looked(c, RPCS3_MOD_DIR)
+    check(seen, "rpcs3 mods: MOD_LIST says CHECKING while qwark looks")
+    check(row is not None and row["flags"] == MOD_FLAG_LOADED,
+          "rpcs3 mods: and then LOADED, the mod found in game memory", row)
+
+    status, _ = c.call(OP_MOD_RESCAN)
+    row = mod_row(c, RPCS3_MOD_DIR)
+    check(status == ST_OK and row is not None and row["flags"] & MOD_FLAG_CHECKING,
+          "rpcs3 mods: a rescan looks again", row)
+    row, _ = wait_mod_looked(c, RPCS3_MOD_DIR)
+    check(row is not None and row["flags"] == MOD_FLAG_LOADED,
+          "rpcs3 mods: and finds it again", row)
+
+    mine = set()
+    for addr, _ in rows:
+        mine.update(range(addr, addr + 4))
+    mine.update(addr for addr, _ in single)
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in mine for k in range(w))]
+    check(not hits, "rpcs3 mods: and qwark wrote none of it into the emulator", hits[:4])
+
+
 def smoke_rpcs3(exe):
     """qwark-rpcs3.exe against the fake PINE server: flags, boot, DESCRIBE."""
     if not os.path.exists(exe):
@@ -2773,6 +2935,9 @@ def smoke_rpcs3(exe):
 
         # ------------------------------------ the helper by an RPCS3 patch
         smoke_rpcs3_savefile_patch(c, pine, features)
+
+        # ------------------------------------ a mod by an RPCS3 patch
+        smoke_rpcs3_mods(c, pine)
 
         # ---------------------------------------------------------- paused
         # Pausing the emulator leaves the game, its memory and its title id
@@ -3584,6 +3749,22 @@ def main():
               "MOD_LIST reports the installed mod fixtures", len(mods))
         check(any(m["name"] == "Hardcore Mode" for m in mods),
               "a mod's #- name came through", [m["name"] for m in mods])
+
+        # Revision 1.16: MOD_PATCH answers on a console too, where it is only
+        # informational, and a console never says CHECKING.
+        hardcore = next((m for m in mods if m["dirname"] == "hardcore"), None)
+        if check(hardcore is not None, "hardcore is in the list for MOD_PATCH"):
+            status, stamp, rows, single, body = mod_patch(c, hardcore["index"])
+            check(status == ST_OK and rows == [(0x4684B0, b"\x60\x00\x00\x00")] and single == [],
+                  "MOD_PATCH hands back hardcore's one word", (status, rows, single))
+            check(status == ST_OK and stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
+                  "with the CRC-32 stamp over the rest of the reply", stamp)
+        status, _ = c.call(OP_MOD_PATCH, b"\x01")
+        check(status == ST_BAD_ARG, "MOD_PATCH without its pad bytes is BAD_ARG", status)
+        status, _ = c.call(OP_MOD_PATCH, bytes([200, 0, 0, 0]))
+        check(status == ST_NOT_FOUND, "and MOD_PATCH of an index past the list NOT_FOUND", status)
+        check(all((m["flags"] & MOD_FLAG_CHECKING) == 0 for m in mods),
+              "no mod on a console is ever CHECKING", [m["flags"] for m in mods])
 
         # --------------------------------------- an upload while a mod is on
         # What the client's Load button does: write the files, write qwark.sum,

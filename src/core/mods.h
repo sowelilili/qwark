@@ -59,6 +59,26 @@
  */
 #define MOD_TEXT_MAX    16384
 
+/*
+ * Build 49. Whether a mod is in the running game, on a platform that refuses
+ * code patches: RPCS3, where a mod gets into the game as an RPCS3 patch the
+ * client writes from MOD_PATCH and RPCS3 applies as it loads the executable.
+ *
+ *   NONE     not looked for: a console, no session, or a mod that cannot be in
+ *            the game this way (a parse error, a Lua automation) or has nothing
+ *            to put there (no words and no caves)
+ *   PENDING  to be looked for this session; MOD_LIST says CHECKING
+ *   ABSENT   looked for and not all there, or its cave file is gone
+ *   PRESENT  every cave byte and every word reads back; MOD_LIST says LOADED
+ *
+ * A read that fails leaves a mod PENDING: an emulator that is not answering
+ * says nothing about whether the patch went in.
+ */
+#define MOD_LOOK_NONE     0
+#define MOD_LOOK_PENDING  1
+#define MOD_LOOK_ABSENT   2
+#define MOD_LOOK_PRESENT  3
+
 struct mod_entry {
 	char dirname[32];
 	char name[32];
@@ -74,8 +94,14 @@ struct mod_entry {
 
 	u32  hash;                 /* qwark.sum, 0 when absent */
 	u8   index;
-	u8   flags;                /* MOD_FLAG_* */
+	/*
+	 * MOD_FLAG_* as parsed and loaded. PREVIOUS and CHECKING are never stored
+	 * here: MOD_LIST works both out when it encodes a row, and so does LOADED on
+	 * a platform that refuses code patches, from `look` below.
+	 */
+	u8   flags;
 	u8   used;
+	u8   look;                 /* MOD_LOOK_*, build 49 */
 
 	struct patch_def def;
 	u16  cave_first;
@@ -107,5 +133,24 @@ void mods_apply_mask(u32 mask);
 
 /* Encodes the MOD_LIST reply. */
 int  mods_list_encode(u8 *out, u32 cap, u32 *len);
+
+/*
+ * Revision 1.16. Encodes the MOD_PATCH reply for MOD_LIST index `index`: the
+ * mod as the words and bytes an RPCS3 patch writes. It reads the mod's files
+ * and never the game, so it runs on a network thread, under the core lock.
+ * The reply is capped at QWARK_MAX_PAYLOAD whatever `cap` says.
+ */
+int  mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len);
+
+/*
+ * Build 49, the presence look. `start` when a session reaches INGAME: on a
+ * platform that refuses code patches every mod that can be looked for is
+ * PENDING, and on a console it does nothing. `stop` when the session leaves
+ * the game, forgetting every answer. `tick` looks a little further each tick,
+ * on the tick thread while INGAME, and a rescan starts the look over.
+ */
+void mods_presence_start(void);
+void mods_presence_stop(void);
+void mods_presence_tick(void);
 
 #endif /* QWARK_MODS_H */

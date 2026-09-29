@@ -1618,7 +1618,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 48, "and this module is build 48");
+	check_eq_u64(packet[5], 49, "and this module is build 49");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -7379,6 +7379,644 @@ static void test_savefile_rpcs3(void)
 	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
 }
 
+/* ------------------------------------- build 49, mods as RPCS3 patches */
+
+/*
+ * RPCS3 cannot take a mod from qwark any more than it can take the savefile
+ * helper, and it takes one the same way: the client writes the mod from
+ * MOD_PATCH into RPCS3's patch file, RPCS3 applies it as it loads the game, and
+ * qwark looks for it once a session. As in test_savefile_rpcs3, the fake console
+ * is RPCS3 once plat_can_patch_code() answers 0, and a "patch" is the reply's
+ * rows and bytes poked into a fresh process between the boot and the first
+ * tick.
+ *
+ * The mods live under a title no game claims, so the session comes up INGAME
+ * with no game and nothing else in it ever writes the process: every write the
+ * log sees would be qwark's own.
+ */
+#define MP_TITLE      "NPEA09049"
+#define MP_OTHER      "NPEA09050"
+#define MP_NO_FLIP    0xFFFFFFFFu
+
+/* The test mods' bytes, generated so the checks compare against intent. */
+static const u8 g_mp_cave_bin[16] = {
+	0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+	0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF
+};
+static const u8 g_mp_tail_a[7] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16 };
+static const u8 g_mp_tail_b[6] = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25 };
+
+/* 8184 bytes is a cave of exactly 2046 rows, the most one reply holds. */
+#define MP_EDGE_LEN   8184u
+static u8 g_mp_edge_bin[MP_EDGE_LEN + 1u];
+
+static u8 g_mp_reply[QWARK_MAX_PAYLOAD];
+static u8 g_mp_words[256], g_mp_cave[256], g_mp_tail[256];
+static u32 g_mp_words_len, g_mp_cave_len, g_mp_tail_len;
+static u8 g_mp_list[1 + QWARK_MAX_MODS * MOD_WIRE_SIZE];
+static u8 g_mp_file[4096];
+
+/* One file of a mod folder, creating the folders on the way. */
+static void mp_write(const char *title, const char *dirname, const char *leaf,
+                     const void *data, u32 len)
+{
+	char path[256];
+	plat_file_t f;
+
+	path[0] = 0;
+	qstrcat(path, sizeof(path), QWARK_MODSDIR);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), title);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), dirname);
+	plat_dir_create(path);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), leaf);
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+	if (len > 0) plat_file_write(f, data, len);
+	plat_file_close(f);
+}
+
+static void mp_write_text(const char *dirname, const char *text)
+{
+	mp_write(MP_TITLE, dirname, "patch.txt", text, qstrlen(text));
+}
+
+static const char g_mp_words_txt[] =
+	"#- name: Words\n"
+	"0x00810000: 0x11111111\n"
+	"0x00810004: 0x22222222\n"
+	"0x00820000: 0x33333333\n";
+
+static void mp_write_mods(void)
+{
+	u32 i;
+
+	for (i = 0; i < sizeof(g_mp_edge_bin); i++) g_mp_edge_bin[i] = (u8)(i * 13u + 7u);
+
+	/* Three words, two of them one run. */
+	mp_write_text("words", g_mp_words_txt);
+
+	/* A 16-byte cave and the branch into it. */
+	mp_write_text("cave",
+		"#- name: Cave\n"
+		"0x00830000: cave.bin\n"
+		"0x00840000: 0x4BFEFFFC\n");
+	mp_write(MP_TITLE, "cave", "cave.bin", g_mp_cave_bin, sizeof(g_mp_cave_bin));
+
+	/*
+	 * Two caves that are not whole words, listed with the higher address
+	 * first: the rows come in patch.txt order and the tail bytes in address
+	 * order, so the two orders are told apart.
+	 */
+	mp_write_text("tail",
+		"#- name: Tail\n"
+		"0x00860000: b.bin\n"
+		"0x00850000: a.bin\n"
+		"0x00870000: 0x44444444\n");
+	mp_write(MP_TITLE, "tail", "a.bin", g_mp_tail_a, sizeof(g_mp_tail_a));
+	mp_write(MP_TITLE, "tail", "b.bin", g_mp_tail_b, sizeof(g_mp_tail_b));
+
+	/* A cave whose file was never uploaded, and one that is empty. */
+	mp_write_text("nobin",
+		"0x00880000: missing.bin\n"
+		"0x00890000: 0x55555555\n");
+	mp_write_text("emptybin",
+		"0x008B0000: empty.bin\n"
+		"0x008B1000: 0x77777777\n");
+	mp_write(MP_TITLE, "emptybin", "empty.bin", "", 0);
+
+	/* A Lua automation beside a word. */
+	mp_write_text("lua",
+		"automation: x.lua\n"
+		"0x008A0000: 0x66666666\n");
+
+	/* A patch.txt too big to read, which is a parse error. */
+	write_generated_padded_mod(MP_TITLE, "broken", MOD_TEXT_MAX + 16u);
+
+	/* Nothing to write at all: a mod that loads as nothing everywhere. */
+	mp_write_text("empty", "#- name: Empty\n");
+
+	/* The largest reply there is, and one byte past it. */
+	mp_write_text("edge", "0x00900000: edge.bin\n");
+	mp_write(MP_TITLE, "edge", "edge.bin", g_mp_edge_bin, MP_EDGE_LEN);
+	mp_write_text("over", "0x00910000: over.bin\n");
+	mp_write(MP_TITLE, "over", "over.bin", g_mp_edge_bin, MP_EDGE_LEN + 1u);
+}
+
+/* The MOD_LIST index of a mod by its folder, which is what MOD_PATCH takes. */
+static u8 mp_index(const char *dirname)
+{
+	int i = mods_find(dirname);
+	return i < 0 ? 0xFF : (u8)i;
+}
+
+/* A mod's flags as MOD_LIST sends them, or 0xFF when it is not in the list. */
+static u8 mp_flags(const char *dirname)
+{
+	u32 len = 0;
+	u32 i;
+
+	if (mods_list_encode(g_mp_list, sizeof(g_mp_list), &len) != ST_OK) return 0xFF;
+	for (i = 0; i < g_mp_list[0]; i++) {
+		const u8 *row = g_mp_list + 1 + i * MOD_WIRE_SIZE;
+		if (strncmp((const char *)row + 8, dirname, 32) == 0) return row[1];
+	}
+	return 0xFF;
+}
+
+static int mp_any_flag(u8 flag)
+{
+	u32 len = 0;
+	u32 i;
+
+	if (mods_list_encode(g_mp_list, sizeof(g_mp_list), &len) != ST_OK) return 1;
+	for (i = 0; i < g_mp_list[0]; i++)
+		if (g_mp_list[1 + i * MOD_WIRE_SIZE + 1] & flag) return 1;
+	return 0;
+}
+
+/* Ticks until no mod is CHECKING any more. */
+static int mp_pump_until_looked(int max_ticks)
+{
+	int i;
+
+	for (i = 0; i < max_ticks; i++) {
+		if (!mp_any_flag(MOD_FLAG_CHECKING)) return 1;
+		pump(1);
+	}
+	return !mp_any_flag(MOD_FLAG_CHECKING);
+}
+
+/* MOD_PATCH for one mod into `out`, 0 length on any refusal. */
+static int mp_patch(const char *dirname, u8 *out, u32 cap, u32 *len)
+{
+	return mods_patch_encode(mp_index(dirname), out, cap, len);
+}
+
+/*
+ * A MOD_PATCH reply written into the fake process as RPCS3 writes a patch
+ * file's entries: every row, then every byte. `flip_row` and `flip_byte` name
+ * one row or one byte that goes in with its low bit changed.
+ */
+static void mp_poke(const u8 *reply, u32 len, u32 flip_row, u32 flip_byte)
+{
+	u32 n = be16_get(reply);
+	u32 off = MOD_PATCH_HEAD;
+	u32 nb;
+	u32 i;
+
+	for (i = 0; i < n && off + MOD_PATCH_ROW <= len; i++) {
+		u8 word[4];
+
+		memcpy(word, reply + off + 4, 4);
+		if (i == flip_row) word[3] ^= 0x01;
+		host_poke(be32_get(reply + off), word, 4);
+		off += MOD_PATCH_ROW;
+	}
+
+	if (off + MOD_PATCH_BYTES_HEAD > len) return;
+	nb = be16_get(reply + off);
+	off += MOD_PATCH_BYTES_HEAD;
+
+	for (i = 0; i < nb && off + MOD_PATCH_BYTE_ROW <= len; i++) {
+		u8 b = reply[off + 4];
+
+		if (i == flip_byte) b ^= 0x01;
+		host_poke(be32_get(reply + off), &b, 1);
+		off += MOD_PATCH_BYTE_ROW;
+	}
+}
+
+/* A restart of the test title with whichever patches are named applied at load. */
+static int mp_boot(int words, int cave, int tail, u32 flip_cave_row, u32 flip_tail_byte)
+{
+	host_boot(MP_TITLE);
+	if (words) mp_poke(g_mp_words, g_mp_words_len, MP_NO_FLIP, MP_NO_FLIP);
+	if (cave)  mp_poke(g_mp_cave, g_mp_cave_len, flip_cave_row, MP_NO_FLIP);
+	if (tail)  mp_poke(g_mp_tail, g_mp_tail_len, MP_NO_FLIP, flip_tail_byte);
+	return pump_until(SESSION_INGAME, 4000);
+}
+
+/* One row of a reply: its address and its value. */
+static int mp_row(const u8 *reply, u32 i, u32 addr, u32 value)
+{
+	const u8 *row = reply + MOD_PATCH_HEAD + i * MOD_PATCH_ROW;
+	return be32_get(row) == addr && be32_get(row + 4) == value;
+}
+
+static int mp_stamp_ok(const u8 *reply, u32 len)
+{
+	return len >= MOD_PATCH_HEAD &&
+	       be32_get(reply + 4) == qcrc32(reply + MOD_PATCH_HEAD, len - MOD_PATCH_HEAD);
+}
+
+/* A whole file off the fake HDD, 0 length when it is not there. */
+static u32 mp_read_file(const char *path, u8 *out, u32 cap)
+{
+	plat_file_t f;
+	u32 total = 0;
+
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return 0;
+	for (;;) {
+		u32 got = 0;
+		if (total >= cap || plat_file_read(f, out + total, cap - total, &got) != 0 || got == 0) break;
+		total += got;
+	}
+	plat_file_close(f);
+	return total;
+}
+
+static void test_mod_patch_layout(void)
+{
+	u32 len = 0, len2 = 0, reads;
+	const u8 *b;
+	int ok;
+	u32 i;
+
+	group("build 49: MOD_PATCH, a mod of words");
+
+	mp_write_mods();
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait(MP_TITLE), "a title with the test mods boots, on a console");
+	check(mods_find("words") >= 0 && mods_find("over") >= 0, "and its mods are scanned");
+
+	reads = host_mem_reads();
+	host_write_log_reset();
+
+	check(mp_patch("words", g_mp_words, sizeof(g_mp_words), &g_mp_words_len) == ST_OK,
+	      "MOD_PATCH answers for a mod of three words");
+	b = g_mp_words;
+	check_eq_u64(be16_get(b), 3, "n is its three words");
+	check_eq_u64(be16_get(b + 2), 0, "the pad is 0");
+	check_eq_u64(g_mp_words_len, MOD_PATCH_HEAD + 3u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
+	             "the reply is three rows and an empty byte section");
+	check(mp_row(b, 0, 0x00810000u, 0x11111111u) && mp_row(b, 1, 0x00810004u, 0x22222222u) &&
+	      mp_row(b, 2, 0x00820000u, 0x33333333u), "the words, in patch.txt order");
+	check_eq_u64(be16_get(b + MOD_PATCH_HEAD + 3u * MOD_PATCH_ROW), 0, "nb is 0");
+	check(mp_stamp_ok(b, g_mp_words_len), "the stamp is the CRC-32 of everything after it");
+	check(mp_patch("words", g_mp_reply, sizeof(g_mp_reply), &len2) == ST_OK &&
+	      len2 == g_mp_words_len && memcmp(g_mp_reply, g_mp_words, len2) == 0,
+	      "asked again it is the same bytes and the same stamp");
+
+	group("build 49: MOD_PATCH, a cave and a branch");
+
+	check(mp_patch("cave", g_mp_cave, sizeof(g_mp_cave), &g_mp_cave_len) == ST_OK,
+	      "MOD_PATCH answers for a mod with a cave");
+	b = g_mp_cave;
+	check_eq_u64(be16_get(b), 5, "n is the cave's four words and the mod's one");
+	check_eq_u64(g_mp_cave_len, MOD_PATCH_HEAD + 5u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
+	             "and nothing else");
+	ok = 1;
+	for (i = 0; i < 4; i++)
+		if (!mp_row(b, i, 0x00830000u + i * 4u, be32_get(g_mp_cave_bin + i * 4u))) ok = 0;
+	check(ok, "the cave comes first, as consecutive words of its file");
+	check(mp_row(b, 4, 0x00840000u, 0x4BFEFFFCu), "and the branch into it after it");
+	check(mp_stamp_ok(b, g_mp_cave_len), "with the stamp over all of it");
+
+	group("build 49: MOD_PATCH, caves that are not whole words");
+
+	check(mp_patch("tail", g_mp_tail, sizeof(g_mp_tail), &g_mp_tail_len) == ST_OK,
+	      "MOD_PATCH answers for a 6-byte and a 7-byte cave");
+	b = g_mp_tail;
+	check_eq_u64(be16_get(b), 3, "n is one word of each cave and the mod's own");
+	check_eq_u64(g_mp_tail_len,
+	             MOD_PATCH_HEAD + 3u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD + 5u * MOD_PATCH_BYTE_ROW,
+	             "and five tail bytes behind them");
+	check(mp_row(b, 0, 0x00860000u, 0x20212223u) && mp_row(b, 1, 0x00850000u, 0x10111213u),
+	      "the caves' rows in patch.txt order, the higher address first");
+	check(mp_row(b, 2, 0x00870000u, 0x44444444u), "then the word");
+	{
+		const u8 *t = b + MOD_PATCH_HEAD + 3u * MOD_PATCH_ROW;
+		static const u32 addrs[5] = { 0x00850004u, 0x00850005u, 0x00850006u,
+		                              0x00860004u, 0x00860005u };
+		static const u8 vals[5] = { 0x14, 0x15, 0x16, 0x24, 0x25 };
+
+		check_eq_u64(be16_get(t), 5, "nb is 5");
+		check_eq_u64(be16_get(t + 2), 0, "and its pad is 0");
+		ok = 1;
+		for (i = 0; i < 5; i++) {
+			const u8 *e = t + MOD_PATCH_BYTES_HEAD + i * MOD_PATCH_BYTE_ROW;
+			if (be32_get(e) != addrs[i] || e[4] != vals[i] || e[5] || e[6] || e[7]) ok = 0;
+		}
+		check(ok, "the tail bytes are in address order, each with three zero pads");
+	}
+	check(mp_stamp_ok(b, g_mp_tail_len), "and the stamp covers them too");
+
+	group("build 49: MOD_PATCH, the refusals");
+
+	check(mods_patch_encode((u8)mods_count(), g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
+	      "an index past the list is NOT_FOUND, as MOD_LOAD's unknown mod is");
+	check(mods_patch_encode(200, g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
+	      "and so is one far past it");
+	check(mp_patch("broken", g_mp_reply, sizeof(g_mp_reply), &len) == ST_IO_ERROR,
+	      "a mod that failed to parse is IO_ERROR, as MOD_LOAD answers it");
+	check(mp_patch("nobin", g_mp_reply, sizeof(g_mp_reply), &len) == ST_IO_ERROR,
+	      "a cave whose file is missing is IO_ERROR");
+	check_eq_u64(len, 0, "with nothing in the reply");
+	check(mp_patch("emptybin", g_mp_reply, sizeof(g_mp_reply), &len) == ST_IO_ERROR,
+	      "and so is a cave whose file is empty");
+	check(mp_patch("lua", g_mp_reply, sizeof(g_mp_reply), &len) == ST_UNSUPPORTED,
+	      "a mod with a Lua automation is UNSUPPORTED");
+	check(mp_patch("edge", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
+	      "an 8184-byte cave fits");
+	check_eq_u64(be16_get(g_mp_reply), 2046, "as 2046 rows");
+	check_eq_u64(len, 16380, "in 16380 bytes, the most rows a frame holds");
+	check(mp_stamp_ok(g_mp_reply, len), "stamped like any other");
+	ok = 1;
+	for (i = 0; i < 2046u; i++)
+		if (!mp_row(g_mp_reply, i, 0x00900000u + i * 4u, be32_get(g_mp_edge_bin + i * 4u))) ok = 0;
+	check(ok, "every row of it the file's own bytes");
+	check(mp_patch("over", g_mp_reply, sizeof(g_mp_reply), &len) == ST_FULL,
+	      "one byte more, a tail byte behind 2046 rows, is FULL");
+	check_eq_u64(len, 0, "with nothing in the reply");
+	check(mp_patch("words", g_mp_reply, 16, &len) == ST_FULL,
+	      "a reply buffer too small for the words is FULL");
+	{
+		static u8 big[QWARK_MAX_PAYLOAD * 2u];
+		check(mp_patch("over", big, sizeof(big), &len) == ST_FULL,
+		      "and a bigger buffer changes nothing: the cap is the frame");
+	}
+	check(mp_patch("empty", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+	      len == MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD && be16_get(g_mp_reply) == 0,
+	      "a mod with nothing to write is an empty patch");
+
+	check_eq_u64(host_mem_reads() - reads, 0, "none of it read the game");
+	check_eq_u64(host_write_log_count(), 0, "or wrote into it");
+
+	group("build 49: MOD_PATCH on the shipped library");
+
+	mods_set_title("NPEA00423");
+	check(mp_patch("il-ghost", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
+	      "il-ghost, the largest shipped cave, answers");
+	check_eq_u64(be16_get(g_mp_reply), 742 + 3, "its 2968-byte cave is 742 rows, then its 3 words");
+	check_eq_u64(len, 5972, "in 5972 bytes, well inside a frame");
+	{
+		u32 n = mp_read_file("/dev_hdd0/qwark/mods/NPEA00423/il-ghost/rack.bin",
+		                     g_mp_file, sizeof(g_mp_file));
+		const struct mod_entry *m = mods_at(mp_index("il-ghost"));
+
+		check_eq_u64(n, 2968, "the fixture's rack.bin is the 2968 bytes");
+		ok = n == 2968;
+		for (i = 0; ok && i < 742; i++)
+			if (!mp_row(g_mp_reply, i, 0x00676B9Cu + i * 4u, be32_get(g_mp_file + i * 4u))) ok = 0;
+		check(ok, "and the cave rows are its bytes, word by word");
+		ok = m != NULL && m->def.count == 3;
+		for (i = 0; ok && i < 3; i++)
+			if (!mp_row(g_mp_reply, 742 + i, m->def.words[i].addr, m->def.words[i].value)) ok = 0;
+		check(ok, "the words come after it, as patch.txt lists them");
+		check(m != NULL && m->depends[0] != 0,
+		      "it depends on dl-cs, whose 253 words are not folded in: n counts its own");
+	}
+	check(mp_stamp_ok(g_mp_reply, len), "and the stamp checks");
+
+	mods_set_title("NPEA00385");
+	check(mp_patch("big-cave", g_mp_reply, sizeof(g_mp_reply), &len) == ST_FULL,
+	      "big-cave's 10240-byte cave is past a frame: FULL");
+	check(mp_patch("flight", g_mp_reply, sizeof(g_mp_reply), &len) == ST_UNSUPPORTED,
+	      "flight, a Lua mod, is UNSUPPORTED");
+	check(mp_patch("rc1-hoven-health", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+	      be16_get(g_mp_reply) == 1096 / 4 + 9,
+	      "rc1-hoven-health is its 274 cave rows and its 9 words");
+	mods_set_title(MP_TITLE);
+
+	/* ------------------------------------------ the console path is unchanged */
+
+	group("build 49: a console does not look for mods");
+
+	check(quit_and_wait(), "quit");
+	check(mp_boot(1, 1, 1, MP_NO_FLIP, MP_NO_FLIP),
+	      "the title boots on a console with every patch already in memory");
+	pump(40);
+	check(!mp_any_flag(MOD_FLAG_CHECKING), "no mod is ever CHECKING on a console");
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0,
+	             "and words in memory do not make a mod LOADED: only a load does");
+	host_write_log_reset();
+	check(mods_load("words") == ST_OK, "MOD_LOAD writes it as it always has");
+	check((mp_flags("words") & MOD_FLAG_LOADED) != 0, "and then it is LOADED");
+	check(host_write_log_count() > 0, "by writing");
+	check(mods_unload("words") == ST_OK, "and it unloads");
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0, "and is not LOADED");
+}
+
+static void test_mod_presence(void)
+{
+	u32 len = 0;
+	u8 f;
+
+	/* The platform that refuses code patches, from here to the end. */
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+
+	group("build 49: presence, a game with no patch in it");
+
+	check(quit_and_wait(), "quit");
+	host_write_log_reset();
+	check(boot_and_wait(MP_TITLE), "the title boots where code cannot be patched");
+	check(mp_any_flag(MOD_FLAG_CHECKING),
+	      "after its first tick some mods are still CHECKING: a few reads a tick");
+	check(!mp_any_flag(MOD_FLAG_LOADED), "and none is LOADED yet");
+	check_eq_u64(mp_flags("lua") & MOD_FLAG_CHECKING, 0, "a Lua mod is never looked for");
+	check_eq_u64(mp_flags("broken") & MOD_FLAG_CHECKING, 0, "nor one that failed to parse");
+	check_eq_u64(mp_flags("empty") & MOD_FLAG_CHECKING, 0, "nor one with nothing to write");
+
+	check(mp_pump_until_looked(200), "the look finishes");
+	check(!mp_any_flag(MOD_FLAG_LOADED), "and finds none of them in the game");
+	check_eq_u64(mp_flags("nobin"), 0, "a mod with a missing cave file is simply not there");
+
+	check(mp_patch("words", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+	      len == g_mp_words_len && memcmp(g_mp_reply, g_mp_words, len) == 0,
+	      "MOD_PATCH hands out the same bytes here as on a console");
+
+	check(mods_load("words") == ST_UNSUPPORTED, "MOD_LOAD is refused, as it always was here");
+	check(mods_unload("words") == ST_NOT_FOUND, "and MOD_UNLOAD has nothing to unload");
+
+	mp_poke(g_mp_words, g_mp_words_len, MP_NO_FLIP, MP_NO_FLIP);
+	pump(20);
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0,
+	             "words that arrive mid-session count from the next restart, not before");
+
+	group("build 49: presence, restarted with the patches applied at load");
+
+	check(quit_and_wait(), "quit");
+	check(!mp_any_flag(MOD_FLAG_CHECKING | MOD_FLAG_LOADED),
+	      "outside a session no mod is CHECKING or LOADED");
+	check(mp_boot(1, 1, 1, MP_NO_FLIP, MP_NO_FLIP), "and back with all three patches in it");
+	check(mp_any_flag(MOD_FLAG_CHECKING),
+	      "the first tick's four reads are not the whole look: mods are CHECKING");
+	check(mp_pump_until_looked(200), "until the look is done");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "then the words are LOADED and nothing else");
+	check_eq_u64(mp_flags("cave"), MOD_FLAG_LOADED, "and so is the cave with its branch");
+	check_eq_u64(mp_flags("tail"), MOD_FLAG_LOADED, "and the caves with tails, bytes and all");
+	check_eq_u64(mp_flags("edge") & MOD_FLAG_LOADED, 0, "while the mod nothing patched is not");
+	check_eq_u64(mods_loaded_mask(), 0,
+	             "SessionInfo's mod_loaded stays qwark's own loads, which here are none");
+	check(mods_load("words") == ST_UNSUPPORTED, "MOD_LOAD of a mod that is there is still refused");
+	check(mods_unload("words") == ST_NOT_FOUND, "and there is still nothing to unload");
+
+	/* Once a session: damage after the look does not unmake it. */
+	host_poke(0x00810004u, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(20);
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "a word changed mid-session is not looked at again");
+
+	group("build 49: presence, a rescan looks again");
+
+	check(mods_rescan() == ST_OK, "MOD_RESCAN");
+	check((mp_flags("words") & MOD_FLAG_CHECKING) != 0 && (mp_flags("cave") & MOD_FLAG_CHECKING) != 0,
+	      "puts every mod back to CHECKING");
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0, "and not LOADED while it is");
+	check(mp_pump_until_looked(200), "the look runs again");
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0, "and sees the word that was changed");
+	check_eq_u64(mp_flags("cave"), MOD_FLAG_LOADED, "while the cave is still there");
+
+	mp_poke(g_mp_words, g_mp_words_len, MP_NO_FLIP, MP_NO_FLIP);
+	mods_rescan();
+	check(mp_pump_until_looked(200), "the word put back and a rescan");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "and the words are LOADED again");
+
+	/* An upload that changes a mod: the new files do not match the old patch. */
+	mp_write_text("words",
+		"#- name: Words\n"
+		"0x00810000: 0x11111111\n"
+		"0x00810004: 0x22222222\n"
+		"0x00820000: 0x33333334\n");
+	mods_rescan();
+	check(mp_pump_until_looked(200), "a new copy of the mod uploaded and rescanned");
+	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0,
+	             "is not the one in the game: the client writes the new patch");
+	mp_write_text("words", g_mp_words_txt);
+	mods_rescan();
+	check(mp_pump_until_looked(200) && mp_flags("words") == MOD_FLAG_LOADED,
+	      "and the old copy back is LOADED again");
+
+	group("build 49: presence, a read that fails is not an answer");
+
+	mods_rescan();
+	host_fail_reads(100000);
+	pump(10);
+	f = mp_flags("words");
+	check((f & MOD_FLAG_CHECKING) != 0 && (f & MOD_FLAG_LOADED) == 0,
+	      "while the emulator does not answer, the mod stays CHECKING, not absent");
+	host_fail_reads(0);
+	check(mp_pump_until_looked(200), "once it answers the look goes on");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "and finds it");
+
+	group("build 49: presence, all of it or none of it");
+
+	check(quit_and_wait(), "quit");
+	check(mp_boot(1, 1, 1, 1, MP_NO_FLIP), "back with one cave row one bit off");
+	check(mp_pump_until_looked(200), "the look finishes");
+	check_eq_u64(mp_flags("cave") & MOD_FLAG_LOADED, 0, "and that mod is not there");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "while the others are");
+	check_eq_u64(mp_flags("tail"), MOD_FLAG_LOADED, "both of them");
+
+	check(quit_and_wait(), "quit");
+	check(mp_boot(1, 1, 1, MP_NO_FLIP, 3), "back with one tail byte one bit off");
+	check(mp_pump_until_looked(200), "the look finishes");
+	check_eq_u64(mp_flags("tail") & MOD_FLAG_LOADED, 0, "and the tail bytes are part of the look");
+	check_eq_u64(mp_flags("cave"), MOD_FLAG_LOADED, "while the cave is whole again");
+
+	group("build 49: presence, every session starts over");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait(MP_OTHER), "another title runs in between");
+	check(mods_find("words") < 0, "with its own mod table");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait(MP_TITLE), "and the title comes back with nothing patched in");
+	check(mp_pump_until_looked(200), "the look finishes");
+	check(!mp_any_flag(MOD_FLAG_LOADED), "and the last session's answers went with it");
+
+	check(quit_and_wait(), "quit");
+	check(mp_boot(1, 0, 0, MP_NO_FLIP, MP_NO_FLIP), "the same title again, with the words alone");
+	check(mp_pump_until_looked(200), "the look finishes");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED, "the words are found");
+	check_eq_u64(mp_flags("cave") & MOD_FLAG_LOADED, 0, "and nothing else");
+
+	group("build 49: presence, auto-apply is skipped as before");
+
+	check(mods_set_auto("words", 1) == ST_OK, "the words mod is flagged auto");
+	check(quit_and_wait(), "quit");
+	check(mp_boot(1, 0, 0, MP_NO_FLIP, MP_NO_FLIP), "and the title comes back with its patch");
+	check(mp_pump_until_looked(200), "the look finishes");
+	check_eq_u64(mp_flags("words"), MOD_FLAG_LOADED | MOD_FLAG_AUTO,
+	             "LOADED by the look, auto as flagged");
+	check_eq_u64(mods_loaded_mask(), 0, "while the auto-apply loaded nothing, silently");
+	check(!session_previous()->pending, "and left nothing in a previous-session record");
+	mods_set_auto("words", 0);
+
+	group("build 49: presence, a mod with nothing to write");
+
+	check(mods_load("empty") == ST_OK, "MOD_LOAD of a mod with no words and no caves works, as ever");
+	check_eq_u64(mp_flags("empty"), MOD_FLAG_LOADED, "and that is its LOADED, never CHECKING");
+	check(mods_unload("empty") == ST_OK, "and it unloads");
+
+	check_eq_u64(host_write_log_count(), 0, "and in all of it qwark wrote nothing into the game");
+
+	/* ------------------------------------------------- put it all back */
+
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
+}
+
+/*
+ * Build 49. MOD_FLAG_PREVIOUS was documented, cleared on a load and never set,
+ * so no client could ever have seen it. It is the mod's bit in the
+ * previous-session record while the mod is not loaded again.
+ */
+static void test_mod_previous(void)
+{
+	u8 info[SESSION_INFO_SIZE];
+	int hardcore;
+
+	group("build 49: MOD_LIST's PREVIOUS flag");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+	session_previous_dismiss();
+	hardcore = mods_find("hardcore");
+	check(hardcore >= 0, "hardcore is in the table");
+
+	check(mods_load("hardcore") == ST_OK, "hardcore is loaded");
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_LOADED, "LOADED and nothing else");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "the same title again");
+	check((session_previous()->mods & (1u << hardcore)) != 0,
+	      "the mod is in the previous-session record");
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_PREVIOUS, "and MOD_LIST says PREVIOUS, not LOADED");
+	check_eq_u64(mp_flags("lock_rng") & MOD_FLAG_PREVIOUS, 0, "a mod that was not loaded is not");
+	pump(8);
+	session_info_copy(info, sizeof(info));
+	check((be32_get(info + 160) & (1u << hardcore)) != 0,
+	      "the same bit SessionInfo's mod_previous carries");
+
+	check(mods_load("hardcore") == ST_OK, "loading it by hand");
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_LOADED, "makes it LOADED and not PREVIOUS");
+	check(mods_unload("hardcore") == ST_OK, "unloading it again");
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_PREVIOUS,
+	             "brings PREVIOUS back while the record still holds it");
+	check(mods_rescan() == ST_OK && mp_flags("hardcore") == MOD_FLAG_PREVIOUS,
+	      "and a rescan does not lose it");
+
+	session_previous_dismiss();
+	check_eq_u64(mp_flags("hardcore"), 0, "PREVIOUS_DISMISS clears it");
+
+	check(mods_load("hardcore") == ST_OK, "loaded once more");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "and the same title");
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_PREVIOUS, "PREVIOUS again");
+	session_previous_reapply(PREV_MODS);
+	check_eq_u64(mp_flags("hardcore"), MOD_FLAG_LOADED, "PREVIOUS_REAPPLY loads it, and PREVIOUS goes");
+	check(mods_unload("hardcore") == ST_OK, "and it unloads");
+	check_eq_u64(mp_flags("hardcore"), 0, "leaving neither");
+}
+
 /* -------------------------------------------- every list reply fits a frame */
 
 /*
@@ -7428,6 +8066,8 @@ static void test_reply_sizes(void)
 	check_fits(1u + 255u * SAVEFILE_ROW_SIZE, "SAVEFILE_LIST with 255 saves");
 	check_fits(1u + 255u * SAVEFILE_NAME_LEN, "SAVEFILE_CATEGORIES with 255 categories");
 	check_fits(1024u, "MOD_INFO, which is capped at 1024 bytes");
+	check_fits(MOD_PATCH_HEAD + 2046u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
+	           "MOD_PATCH at its largest, 2046 rows (revision 1.16)");
 	check_fits(1u + 255u * 24u, "FEATURE_OPTIONS with 255 options");
 
 	/* And the four games' own tables, encoded the way the wire encodes them. */
@@ -7845,6 +8485,9 @@ int main(void)
 	test_no_code_patches_planet_load();
 	test_no_code_patches();
 	test_savefile_rpcs3();
+	test_mod_patch_layout();
+	test_mod_presence();
+	test_mod_previous();
 	test_reply_sizes();
 	test_config();
 	test_hot_tables();

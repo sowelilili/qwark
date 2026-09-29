@@ -18,6 +18,8 @@ Revision 1.13 (2026-09-22): POS_EDIT at 0x004A and POS_STORE at 0x004B, the two 
 
 Revision 1.15 (2026-09-29): the savefile helper under RPCS3. SAVEFILE_PATCH at 0x00B8 hands out the running game's helper as the (address, value) words a patch writes to put it there and the request bytes it zeroes, with a CRC stamp, and on a platform that refuses code patches the savefile block now works once an RPCS3 patch has put the helper in the game at load: qwark looks for it once a session and, finding every byte of it, behaves exactly as a console does after an install. SAVEFILE_INFO answers on that platform either way, where it used to be UNSUPPORTED, and says in `installed` whether the patch is in. Revision 1.14 is reserved for opcodes 0x0056 and 0x0057 on a parked branch and is not in this build. See sections 3.2 and 5.12.1.
 
+Revision 1.16 (2026-09-29): mods under RPCS3, the way the savefile helper got there in 1.15. MOD_PATCH at 0x0066 hands out one mod as the (address, value) words an RPCS3 patch writes - every cave as consecutive words, then the mod's own words - and the tail bytes of any cave that is not whole words, in SAVEFILE_PATCH's layout and with the same CRC stamp. On a platform that refuses code patches MOD_LIST's `flags` bit0 LOADED now means the mod is in game memory, every cave byte and every word of it, which is how a patch RPCS3 applied at load shows up, and the new bit5 CHECKING says qwark has not looked yet this session; a console never sets bit5 and its LOADED is unchanged. MOD_LOAD, MOD_UNLOAD, auto-apply and the previous-session reapply behave there exactly as before. Separately, `flags` bit3 PREVIOUS was documented and never set: it is now set on a mod whose bit is in the previous-session record while it is not loaded again. Module build 49. See sections 3.2, 5.7 and 5.7.1.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -92,7 +94,8 @@ u32  readout[16]        game-defined live values; DESCRIBE names them. readout[0
 u64  toggle_state       bit i set = TOGGLE feature id i is on. A LIVE toggle's bit is whatever game memory says, re-read at 10 Hz (section 5.3.1)
 u64  toggle_auto        bit i set = feature id i re-applies itself on game boot. Never set for a LIVE toggle
 u64  freeze_active      bit i set = freeze id i is active
-u32  mod_loaded         bit i set = console mod index i is loaded
+u32  mod_loaded         bit i set = console mod index i is loaded by qwark. A mod an RPCS3 patch put in
+                        the game is not in here: MOD_LIST's LOADED bit says that (revision 1.16, section 5.7.1)
 u32  mod_auto           bit i set = console mod index i auto-applies on game boot
 u32  mod_previous       bit i set = mod i was loaded before the last same-game reboot and is neither re-applied nor dismissed
 ```
@@ -117,11 +120,13 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 |---|---|
 | FEATURE_SET or FEATURE_TRIGGER on a feature flagged `WRITES_CODE` | `UNSUPPORTED` |
 | PATCH_APPLY | `UNSUPPORTED` |
-| MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED` |
+| MOD_LOAD of a mod with patch words or code caves | `UNSUPPORTED`, and MOD_UNLOAD has nothing to unload. The mod goes in as an RPCS3 patch instead (revision 1.16, section 5.7.1) |
 | SAVEFILE_READ, SAVEFILE_WRITE, and the SAVE_ASIDE and LOAD_ASIDE actions | `UNSUPPORTED` unless an RPCS3 patch put the savefile helper in the game when it loaded (revision 1.15, section 5.12.1) |
 | Every op of the savefile library: SAVEFILE_CATEGORIES, SAVEFILE_LIST, SAVEFILE_STORE, SAVEFILE_RESTORE, SAVEFILE_CATEGORY | `UNSUPPORTED` under the same condition (section 5.13). The library is only reachable through the helper, so without one there is nothing to copy out of and nothing to hand a copy to |
 
 SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on both platforms (section 5.12.1).
+
+**Mods work here too, once the client has written them as RPCS3 patches and the game has been restarted** (revision 1.16). A mod is code - patch words, code caves or both - so qwark cannot put one into a running game on this platform, but RPCS3 applies its own patch files as it loads the executable, before it compiles anything. The client asks for each mod with MOD_PATCH, writes it into RPCS3's per-title patch file, enables it in `patch_config.yml`, and the user restarts the game; qwark then finds the mod in game memory and MOD_LIST reports it LOADED. What does not exist here is everything that changes a mod's state inside a session: MOD_LOAD is refused and MOD_UNLOAD has nothing to unload, as the table says, auto-flagged mods are skipped at boot as they always were, and there is no previous-session reapply for them, because qwark never loaded them and the record never holds them. Taking a mod out is the reverse of putting it in: the client disables the patch and the game is restarted. Section 5.7.1 has the rules.
 
 Everything else works unchanged: memory reads and writes, freezes, watches, positions, planet loads, unlocks, level flags, colours, values, and every toggle whose truth is a data byte rather than an instruction. One difference inside a planet load: on a console, RaC2's and Deadlocked's PLANET_LOAD force fast loads on first, which is a code patch, so here they leave that step out and the load takes the game's own time rather than being refused.
 
@@ -387,11 +392,13 @@ Mods live under `/dev_hdd0/qwark/mods/<TITLEID>/<dirname>/` on the console. The 
 | 0x0063 | MOD_SET_AUTO | `char[32] dirname, u8 auto` | none. Persisted in config |
 | 0x0064 | MOD_RESCAN | none | none |
 | 0x0065 | MOD_INFO | `char[32] dirname` | description text, at most 1024 bytes |
+| 0x0066 | MOD_PATCH | `u8 index, u8 pad[3]` (the Mod row's `index`) | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the mod as the words and bytes an RPCS3 patch writes (revision 1.16, section 5.7.1) |
 
 ```
 Mod (120 bytes):
 u8   index
-u8   flags           bit0 loaded, bit1 auto, bit2 needs_lua, bit3 previous, bit4 parse_error
+u8   flags           bit0 loaded, bit1 auto, bit2 needs_lua, bit3 previous, bit4 parse_error,
+                     bit5 checking (revision 1.16)
 u8   pad[2]
 u32  hash            content of qwark.sum, 0 when absent
 char dirname[32]
@@ -403,6 +410,61 @@ char author[32]
 **MOD_RESCAN** reads every mod folder of the current title again, and that is what makes the upload above land: the `qwark.sum` just written becomes the `hash` MOD_LIST reports, the `#-` lines become the name, version and author in the row, and the patch words become what the next MOD_LOAD writes into the game. It answers OK whatever it finds, including for a title with no mod folder at all.
 
 A mod that is loaded at that moment is the one exception, and it is left exactly as it was parsed: its patch words are in the running game next to the originals its unload will put back, so re-reading its folder would leave the console unable to give the game its own instructions again. Its row therefore keeps the hash it was parsed with, and a client that uploads over a mod the console has loaded goes on seeing the old hash until it unloads the mod and rescans. Every other mod is re-read whatever is loaded, so a client that uploads a mod in order to load it — which is the only time the mods panel uploads one — always sees what it just wrote. A rescan used to skip *every* folder it already knew as soon as any one mod was loaded, so an uploaded mod kept the hash and the words of the copy it replaced for the rest of the session; that is fixed, and no client has to do anything differently for it.
+
+**The flags.**
+
+- bit0 **LOADED**: qwark has the mod in this process, by MOD_LOAD, an auto-apply at boot or a PREVIOUS_REAPPLY. On a platform that refuses code patches (SessionInfo `flags` bit2) it means instead that the mod is in game memory, every cave byte and every word of it, which is how a mod an RPCS3 patch put in at load shows up (revision 1.16, section 5.7.1).
+- bit1 **AUTO**: the mod re-applies itself silently when the game boots (MOD_SET_AUTO).
+- bit2 **NEEDS_LUA**: `patch.txt` names an `automation:` script, which qwark never runs. On a console the mod's words and caves still load.
+- bit3 **PREVIOUS**: the mod's bit is set in the previous-session record (SessionInfo `mod_previous`, section 4.1) and the mod has not been loaded again since; it goes when the mod loads and when the record is re-applied or dismissed. Before build 49 this bit was documented and never set, so a client that read it read 0.
+- bit4 **PARSE_ERROR**: `patch.txt` could not be read or does not fit qwark's tables. MOD_LOAD answers `IO_ERROR`.
+- bit5 **CHECKING** (revision 1.16): only on a platform that refuses code patches, and only while INGAME: qwark has not yet looked for this mod in the running game, so bit0 says nothing yet. It is never set on a console.
+
+### 5.7.1 Mods under RPCS3 (revision 1.16)
+
+qwark cannot load a mod under RPCS3: a mod is patch words, code caves or both, and the emulator recompiles PPU code before it runs it, so words and caves written into a running game are memory and nothing more (section 3.2). RPCS3 applies its own patch files as it loads the executable, though, before it compiles anything, so a mod written as an RPCS3 patch is code the game runs from its first frame. This is the road the savefile helper takes in section 5.12.1, and it is the same here.
+
+**Where the words come from.** MOD_PATCH, request `u8 index, u8 pad[3]` with the `index` of the mod's MOD_LIST row. All big-endian, laid out exactly as SAVEFILE_PATCH's reply:
+
+```
+u16 n       number of rows
+u16 pad     0
+u32 stamp   CRC-32 over every byte of the reply after this field
+{ u32 addr, u32 value }[n]                 be32 words
+u16 nb      number of single bytes
+u16 pad     0
+{ u32 addr, u8 value, u8 pad[3] }[nb]      single bytes
+```
+
+Every cave comes first, in `patch.txt` order, each as consecutive words of its `.bin` - the whole file, streamed exactly as MOD_LOAD streams it into a console's memory - and then the mod's own words, in `patch.txt` order. That is the order a console writes them in, caves before the branches into them, and the order a patch file should list them in. A row's `value` is the four bytes the game holds at `addr`, read as a big-endian word, so a patch entry of type `be32` writes it as it stands.
+
+A cave whose length is not a multiple of four ends in one to three bytes that make no whole word. They are not padded into one, which would write bytes the mod never names: they are the byte section, one entry each, every cave's tail together and sorted by address. NPEA00386's barlow_joba_trainer is the shipped example: its 534-byte `rack.bin` is 133 rows and two bytes. A patch that writes the rows and then the bytes, in reply order, puts exactly what MOD_LOAD would into the game. Should two entries ever name the same byte, the later one wins; no shipped mod does that.
+
+**Dependencies are not flattened.** MOD_PATCH describes one mod and nothing it depends on. A client walks `#- depends` itself - it names other mods by their `#- name` - writes each mod as its own patch entry, and decides for itself what to do when two mods write the same address. NPEA00423's il-ghost depends on dl-cs; its reply is its own 745 rows, and dl-cs's 253 words are dl-cs's own reply.
+
+The **stamp** is the ordinary reflected CRC-32 SAVEFILE_PATCH, SAVEFILE_LIST and `qwark.sum` use, over everything after it exactly as it is on the wire. A client keeps it beside the patch entry it wrote and knows from it alone whether that entry is still the mod's current contents.
+
+MOD_PATCH reads the mod table and the mod's files and nothing of the game, writes nothing, and answers on both platforms and in every session state MOD_LIST answers in; on a console it is informational. It answers:
+
+- `NOT_FOUND` for an index that is not in the list, as MOD_LOAD does for a mod it does not have
+- `IO_ERROR` for a mod that failed to parse (flags bit4), as MOD_LOAD does, and for one whose `.bin` is missing, unreadable or empty
+- `UNSUPPORTED` for a mod with a Lua automation (flags bit2): part of it is a script, and a patch cannot carry that
+- `FULL` for a mod whose reply would not fit one frame, below
+- `BAD_ARG` for a payload shorter than its four bytes
+
+**The size limit.** A reply is at most `QWARK_MAX_PAYLOAD`, 16384 bytes: 8 + 8 n + 4 + 8 nb ≤ 16384, so **n + nb ≤ 2046**. Counted in what a mod is made of, its words plus a quarter of its caves' whole-word bytes plus its caves' tail bytes may come to 2046: a mod with no words may carry 8184 bytes of cave, and every word it has costs four bytes of that. The largest shipped mod, NPEA00423's il-ghost, is a 2968-byte cave and three words, 745 rows in 5972 bytes; the largest in the old racman library, NPEA00387's coolcam, is a 6312-byte cave and seven words, 1585 rows in 12692 bytes, and fits as well. A mod past the limit answers `FULL`, and still loads on a console.
+
+**The presence rule.** On a platform that refuses code patches a mod counts as in the game when every byte of every cave and every one of its words reads back from game memory exactly as MOD_PATCH hands them out. qwark starts looking on the first INGAME tick and looks a little each tick - at most four reads of at most 2 KB a tick, a run of consecutive words being one read - so that no tick waits on the emulator for long; every mod of the shipped library is looked at within a few dozen ticks. While it looks, MOD_LIST says:
+
+- bit5 CHECKING and not bit0: not looked at yet this session. The row changes by itself once there is an answer, so a client polls MOD_LIST.
+- bit0 LOADED: all of the mod is there.
+- neither: not all of it is there - a cave byte or a word differs, which is also what a patch from an older copy of the mod looks like - or its cave file is missing.
+
+A mod that is never looked for never shows CHECKING: one that failed to parse, one with a Lua automation, and one with no words and no caves, which MOD_LOAD still loads, as nothing, exactly as it always has.
+
+The answer holds for the session, because a patch goes in at load or not at all. It is looked for again when a game comes back, the same title included, since a patch written meanwhile counts from the next restart and not before, and after every MOD_RESCAN, since the files it was compared against may have changed: a client that uploads a new copy of a mod sees it CHECKING and then not LOADED until it rewrites the patch and the game is restarted. A read that fails, because the emulator is not answering, leaves the mod CHECKING rather than calling it absent. Outside INGAME no mod is CHECKING or LOADED on this platform. qwark writes nothing into the game for any of this, and SessionInfo's `mod_loaded` stays qwark's own loads, so it never carries a patched-in mod.
+
+**What the client does with the reply.** It uploads the mod exactly as for a console - the files, `qwark.sum`, MOD_RESCAN - asks for it with MOD_PATCH, writes it into RPCS3's per-title patch file `patches/<TITLE_ID>_patch.yml` as its own entry, `be32` rows and `byte` entries, enables that entry in `patch_config.yml`, and has the user restart the game. Taking a mod out is disabling the entry and restarting. That half is the client's; nothing in qwark touches RPCS3's files.
 
 ### 5.8 Files (0x007x)
 

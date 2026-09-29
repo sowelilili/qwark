@@ -1311,6 +1311,23 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return rc;
 	}
 
+	/*
+	 * Revision 1.16. One mod as the words and bytes an RPCS3 patch writes. It
+	 * reads the mod table and the mod's own files and never the game, so it
+	 * answers here, under the core lock, the way MOD_LIST and MOD_INFO do, and
+	 * in the same session states they do.
+	 */
+	case OP_MOD_PATCH: {
+		u16 rc;
+
+		if (reqlen < 4) return ST_BAD_ARG;
+
+		core_lock();
+		rc = (u16)mods_patch_encode(req[0], reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+
 	case OP_FILE_OPEN: {
 		char path[PATH_MAX_LEN];
 		plat_file_t f;

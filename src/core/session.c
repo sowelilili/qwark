@@ -360,6 +360,15 @@ static void enter_quitting(void)
 	 */
 	savefile_forget();
 
+	/*
+	 * Build 49. Which mods an RPCS3 patch put into that process went with it;
+	 * the next one is looked at afresh. Under the core lock, because MOD_LIST
+	 * reads the answers on a network thread.
+	 */
+	core_lock();
+	mods_presence_stop();
+	core_unlock();
+
 	if (g_state == SESSION_INGAME && g_game != NULL && g_game->on_quit != NULL)
 		g_game->on_quit();
 
@@ -456,6 +465,13 @@ static void enter_ingame(void)
 		mods_set_title(g_title);
 		pos_use_title(pos_key_for(game_id));
 	}
+
+	/*
+	 * Build 49. Where code cannot be patched, every mod of the title is to be
+	 * looked for in this new process, a little each tick from the first one; on
+	 * a console this does nothing.
+	 */
+	mods_presence_start();
 
 	mem_set_context(g_pid, 1);
 	g_state = SESSION_INGAME;
@@ -1159,6 +1175,12 @@ static void session_step(void)
 		 * one that polls in a tight loop must not lengthen it either.
 		 */
 		savefile_tick();
+		/*
+		 * Build 49. Where code cannot be patched, the look for mods an RPCS3
+		 * patch put in at load, a few reads a tick until every mod of the title
+		 * has its answer, and nothing at all after that or on a console.
+		 */
+		mods_presence_tick();
 	} else {
 		watch_invalidate();
 	}
