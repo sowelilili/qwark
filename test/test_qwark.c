@@ -1620,7 +1620,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 51, "and this module is build 51");
+	check_eq_u64(packet[5], 52, "and this module is build 52");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -7563,10 +7563,16 @@ static int mp_pump_until_looked(int max_ticks)
 	return !mp_any_flag(MOD_FLAG_CHECKING);
 }
 
-/* MOD_PATCH for one mod into `out`, 0 length on any refusal. */
+/* MOD_PATCH page 0 for one mod into `out`, 0 length on any refusal. */
 static int mp_patch(const char *dirname, u8 *out, u32 cap, u32 *len)
 {
-	return mods_patch_encode(mp_index(dirname), out, cap, len);
+	return mods_patch_encode(mp_index(dirname), 0, out, cap, len);
+}
+
+/* The same for any page (revision 1.19). */
+static int mp_patch_page(const char *dirname, u16 page, u8 *out, u32 cap, u32 *len)
+{
+	return mods_patch_encode(mp_index(dirname), page, out, cap, len);
 }
 
 /*
@@ -7626,6 +7632,49 @@ static int mp_stamp_ok(const u8 *reply, u32 len)
 	       be32_get(reply + 4) == qcrc32(reply + MOD_PATCH_HEAD, len - MOD_PATCH_HEAD);
 }
 
+/*
+ * What build 51, the last build before paging, answered for the words, cave and
+ * tail mods, captured off its qwark-host.exe over the wire. Revision 1.19 keeps
+ * every byte of a one-page reply but bytes 2..3, the pad that is now `pages`.
+ */
+static const u8 g_mp_b51_words[] = {
+	0x00, 0x03, 0x00, 0x00, 0xD6, 0x40, 0xC9, 0xF5,
+	0x00, 0x81, 0x00, 0x00, 0x11, 0x11, 0x11, 0x11,
+	0x00, 0x81, 0x00, 0x04, 0x22, 0x22, 0x22, 0x22,
+	0x00, 0x82, 0x00, 0x00, 0x33, 0x33, 0x33, 0x33,
+	0x00, 0x00, 0x00, 0x00
+};
+static const u8 g_mp_b51_cave[] = {
+	0x00, 0x05, 0x00, 0x00, 0x4A, 0xC3, 0x24, 0x2C,
+	0x00, 0x83, 0x00, 0x00, 0xA0, 0xA1, 0xA2, 0xA3,
+	0x00, 0x83, 0x00, 0x04, 0xA4, 0xA5, 0xA6, 0xA7,
+	0x00, 0x83, 0x00, 0x08, 0xA8, 0xA9, 0xAA, 0xAB,
+	0x00, 0x83, 0x00, 0x0C, 0xAC, 0xAD, 0xAE, 0xAF,
+	0x00, 0x84, 0x00, 0x00, 0x4B, 0xFE, 0xFF, 0xFC,
+	0x00, 0x00, 0x00, 0x00
+};
+static const u8 g_mp_b51_tail[] = {
+	0x00, 0x03, 0x00, 0x00, 0x6E, 0x0C, 0x75, 0x7B,
+	0x00, 0x86, 0x00, 0x00, 0x20, 0x21, 0x22, 0x23,
+	0x00, 0x85, 0x00, 0x00, 0x10, 0x11, 0x12, 0x13,
+	0x00, 0x87, 0x00, 0x00, 0x44, 0x44, 0x44, 0x44,
+	0x00, 0x05, 0x00, 0x00, 0x00, 0x85, 0x00, 0x04,
+	0x14, 0x00, 0x00, 0x00, 0x00, 0x85, 0x00, 0x05,
+	0x15, 0x00, 0x00, 0x00, 0x00, 0x85, 0x00, 0x06,
+	0x16, 0x00, 0x00, 0x00, 0x00, 0x86, 0x00, 0x04,
+	0x24, 0x00, 0x00, 0x00, 0x00, 0x86, 0x00, 0x05,
+	0x25, 0x00, 0x00, 0x00
+};
+
+/* A reply that is build 51's `b51` with u16 pages 1 where its pad was 0. */
+static int mp_same_as_b51(const u8 *reply, u32 len, const u8 *b51, u32 b51_len)
+{
+	return len == b51_len && len >= MOD_PATCH_HEAD &&
+	       memcmp(reply, b51, 2) == 0 &&
+	       b51[2] == 0 && b51[3] == 0 && reply[2] == 0 && reply[3] == 1 &&
+	       memcmp(reply + 4, b51 + 4, len - 4) == 0;
+}
+
 /* A whole file off the fake HDD, 0 length when it is not there. */
 static u32 mp_read_file(const char *path, u8 *out, u32 cap)
 {
@@ -7663,7 +7712,7 @@ static void test_mod_patch_layout(void)
 	      "MOD_PATCH answers for a mod of three words");
 	b = g_mp_words;
 	check_eq_u64(be16_get(b), 3, "n is its three words");
-	check_eq_u64(be16_get(b + 2), 0, "the pad is 0");
+	check_eq_u64(be16_get(b + 2), 1, "pages is 1, where build 51 had a 0 pad (revision 1.19)");
 	check_eq_u64(g_mp_words_len, MOD_PATCH_HEAD + 3u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
 	             "the reply is three rows and an empty byte section");
 	check(mp_row(b, 0, 0x00810000u, 0x11111111u) && mp_row(b, 1, 0x00810004u, 0x22222222u) &&
@@ -7718,11 +7767,46 @@ static void test_mod_patch_layout(void)
 	}
 	check(mp_stamp_ok(b, g_mp_tail_len), "and the stamp covers them too");
 
+	group("revision 1.19: a one-page mod is build 51's reply but for `pages`");
+
+	check(mp_same_as_b51(g_mp_words, g_mp_words_len, g_mp_b51_words, sizeof(g_mp_b51_words)),
+	      "the words' reply is build 51's byte for byte, with pages 1 where its pad was 0");
+	check(mp_same_as_b51(g_mp_cave, g_mp_cave_len, g_mp_b51_cave, sizeof(g_mp_b51_cave)),
+	      "and so is the cave's");
+	check(mp_same_as_b51(g_mp_tail, g_mp_tail_len, g_mp_b51_tail, sizeof(g_mp_b51_tail)),
+	      "and the tail bytes', byte rows and stamp included");
+	{
+		u8 req[5];
+
+		req[0] = mp_index("tail");
+		req[1] = 0; req[2] = 0; req[3] = 0; req[4] = 0;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      len == g_mp_tail_len && memcmp(g_mp_reply, g_mp_tail, len) == 0,
+		      "the old request, u8 index and three zero pads, is page 0 byte for byte");
+		check(mods_patch_request(req, 5, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      len == g_mp_tail_len && memcmp(g_mp_reply, g_mp_tail, len) == 0,
+		      "and a byte past the four changes nothing");
+		req[3] = 1;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG,
+		      "u16 page 1 of a one-page mod is BAD_ARG");
+		check_eq_u64(len, 0, "with nothing in the reply");
+		req[2] = 0xFF; req[3] = 0xFF;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG,
+		      "and so is page 65535");
+		req[2] = 0; req[3] = 0;
+		check(mods_patch_request(req, 3, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG,
+		      "a request shorter than its four bytes is BAD_ARG, as it always was");
+		req[1] = 0x5A;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      len == g_mp_tail_len && memcmp(g_mp_reply, g_mp_tail, len) == 0,
+		      "and the pad byte between index and page is not looked at");
+	}
+
 	group("build 49: MOD_PATCH, the refusals");
 
-	check(mods_patch_encode((u8)mods_count(), g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
+	check(mods_patch_encode((u8)mods_count(), 0, g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
 	      "an index past the list is NOT_FOUND, as MOD_LOAD's unknown mod is");
-	check(mods_patch_encode(200, g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
+	check(mods_patch_encode(200, 0, g_mp_reply, sizeof(g_mp_reply), &len) == ST_NOT_FOUND,
 	      "and so is one far past it");
 	check(mp_patch("broken", g_mp_reply, sizeof(g_mp_reply), &len) == ST_IO_ERROR,
 	      "a mod that failed to parse is IO_ERROR, as MOD_LOAD answers it");
@@ -7736,21 +7820,52 @@ static void test_mod_patch_layout(void)
 	check(mp_patch("edge", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
 	      "an 8184-byte cave fits");
 	check_eq_u64(be16_get(g_mp_reply), 2046, "as 2046 rows");
+	check_eq_u64(be16_get(g_mp_reply + 2), 1, "on one page");
 	check_eq_u64(len, 16380, "in 16380 bytes, the most rows a frame holds");
 	check(mp_stamp_ok(g_mp_reply, len), "stamped like any other");
 	ok = 1;
 	for (i = 0; i < 2046u; i++)
 		if (!mp_row(g_mp_reply, i, 0x00900000u + i * 4u, be32_get(g_mp_edge_bin + i * 4u))) ok = 0;
 	check(ok, "every row of it the file's own bytes");
-	check(mp_patch("over", g_mp_reply, sizeof(g_mp_reply), &len) == ST_FULL,
-	      "one byte more, a tail byte behind 2046 rows, is FULL");
+	check(mp_patch_page("edge", 1, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG,
+	      "and its page 1 is BAD_ARG: there is none");
 	check_eq_u64(len, 0, "with nothing in the reply");
+
+	/* Revision 1.19: one byte more was FULL; now it is a second page. */
+	check(mp_patch("over", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
+	      "one byte more, a tail byte behind 2046 rows, answers (it was FULL before 1.19)");
+	check_eq_u64(be16_get(g_mp_reply + 2), 2, "on two pages");
+	check_eq_u64(be16_get(g_mp_reply), 2046, "page 0 is the 2046 words");
+	check_eq_u64(len, 16380, "and no byte rows: a whole frame");
+	check_eq_u64(be16_get(g_mp_reply + MOD_PATCH_HEAD + 2046u * MOD_PATCH_ROW), 0, "its nb is 0");
+	ok = 1;
+	for (i = 0; i < 2046u; i++)
+		if (!mp_row(g_mp_reply, i, 0x00910000u + i * 4u, be32_get(g_mp_edge_bin + i * 4u))) ok = 0;
+	check(ok, "every one of them the file's own bytes");
+	{
+		u32 stamp0 = be32_get(g_mp_reply + 4);
+		const u8 *t;
+
+		check(mp_patch_page("over", 1, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
+		      "page 1 answers");
+		t = g_mp_reply + MOD_PATCH_HEAD;
+		check(be16_get(g_mp_reply) == 0 && be16_get(g_mp_reply + 2) == 2 &&
+		      be32_get(g_mp_reply + 4) == stamp0,
+		      "with no words, the same pages and the same stamp");
+		check(len == MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD + MOD_PATCH_BYTE_ROW &&
+		      be16_get(t) == 1 && be32_get(t + 4) == 0x00910000u + 8184u &&
+		      t[8] == g_mp_edge_bin[8184],
+		      "and the one tail byte");
+	}
 	check(mp_patch("words", g_mp_reply, 16, &len) == ST_FULL,
 	      "a reply buffer too small for the words is FULL");
+	check(mp_patch("over", g_mp_reply, 1000, &len) == ST_FULL && len == 0,
+	      "and so is one too small for the page it asked for");
 	{
 		static u8 big[QWARK_MAX_PAYLOAD * 2u];
-		check(mp_patch("over", big, sizeof(big), &len) == ST_FULL,
-		      "and a bigger buffer changes nothing: the cap is the frame");
+		check(mp_patch("over", big, sizeof(big), &len) == ST_OK &&
+		      be16_get(big) == 2046 && be16_get(big + 2) == 2 && len == 16380,
+		      "and a bigger buffer changes nothing: a page is at most a frame");
 	}
 	check(mp_patch("empty", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
 	      len == MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD && be16_get(g_mp_reply) == 0,
@@ -7784,10 +7899,17 @@ static void test_mod_patch_layout(void)
 		      "it depends on dl-cs, whose 253 words are not folded in: n counts its own");
 	}
 	check(mp_stamp_ok(g_mp_reply, len), "and the stamp checks");
+	check_eq_u64(be32_get(g_mp_reply + 4), 0x68EFD3BDu, "and is build 51's stamp for it, unchanged");
+	check_eq_u64(be16_get(g_mp_reply + 2), 1, "on one page");
 
 	mods_set_title("NPEA00385");
-	check(mp_patch("big-cave", g_mp_reply, sizeof(g_mp_reply), &len) == ST_FULL,
-	      "big-cave's 10240-byte cave is past a frame: FULL");
+	check(mp_patch("big-cave", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK,
+	      "big-cave's 10240-byte cave is past a frame, and answers all the same (FULL before 1.19)");
+	check(be16_get(g_mp_reply) == 2046 && be16_get(g_mp_reply + 2) == 2 && len == 16380,
+	      "page 0 is a full frame of 2046 rows, of two pages");
+	check(mp_patch_page("big-cave", 1, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+	      be16_get(g_mp_reply) == 2560 + 2 - 2046 && be16_get(g_mp_reply + 2) == 2,
+	      "and page 1 the other 516: 2560 cave rows and 2 words in all");
 	check(mp_patch("flight", g_mp_reply, sizeof(g_mp_reply), &len) == ST_UNSUPPORTED,
 	      "flight, a Lua mod, is UNSUPPORTED");
 	check(mp_patch("rc1-hoven-health", g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
@@ -7812,6 +7934,358 @@ static void test_mod_patch_layout(void)
 	check(host_write_log_count() > 0, "by writing");
 	check(mods_unload("words") == ST_OK, "and it unloads");
 	check_eq_u64(mp_flags("words") & MOD_FLAG_LOADED, 0, "and is not LOADED");
+}
+
+/* ------------------------------ revision 1.19, MOD_PATCH a page at a time */
+
+/*
+ * Mods bigger than one frame, under a title of their own so that the presence
+ * tests after these never meet them. Each is written from a spec, and the same
+ * spec gives the layout one unbounded reply would hold - every word row in
+ * patch.txt order, then every byte row in address order - which is what the
+ * pages, joined, are checked against.
+ */
+#define MPP_TITLE      "NPEA09051"
+#define MPP_MAX_ROWS   6144u
+#define MPP_MAX_BYTES  16u
+#define MPP_NWORDS     16u
+
+struct mpp_cave {
+	u32 addr;
+	u32 len;
+	const char *file;
+};
+
+struct mpp_layout {
+	u32 nw, nb;
+	u32 waddr[MPP_MAX_ROWS];
+	u32 wval[MPP_MAX_ROWS];
+	u32 baddr[MPP_MAX_BYTES];
+	u8  bval[MPP_MAX_BYTES];
+};
+
+static struct mpp_layout g_mpp_want, g_mpp_got;
+static u8 g_mpp_bin[20480];
+static u8 g_mpp_page0[QWARK_MAX_PAYLOAD];
+static u32 g_mpp_page0_len;
+static u32 g_mpp_sorted[MPP_MAX_ROWS + MPP_MAX_BYTES];
+static char g_mpp_what[160];
+
+static const char *mpp_what(const char *dirname, const char *what)
+{
+	snprintf(g_mpp_what, sizeof(g_mpp_what), "%s: %s", dirname, what);
+	return g_mpp_what;
+}
+
+/* A cave's bytes, different at every offset and from one cave to the next. */
+static void mpp_fill(u8 *buf, u32 len, u32 addr)
+{
+	u32 i;
+	for (i = 0; i < len; i++) buf[i] = (u8)((i * 31u) ^ (i >> 8) ^ (addr >> 16) ^ 0x5Au);
+}
+
+/*
+ * Writes mod `dirname` under MPP_TITLE - its caves in the order given, then
+ * MPP_NWORDS words eight bytes apart from `words` - and fills g_mpp_want with
+ * the layout one unbounded MOD_PATCH reply would hold.
+ */
+static void mpp_write_mod(const char *dirname, const struct mpp_cave *caves, u32 ncaves,
+                          u32 words)
+{
+	static char text[1024];
+	struct mpp_layout *w = &g_mpp_want;
+	u32 off = 0;
+	u32 c, i, j;
+
+	w->nw = 0;
+	w->nb = 0;
+	off += (u32)snprintf(text + off, sizeof(text) - off, "#- name: %s\n", dirname);
+
+	for (c = 0; c < ncaves; c++) {
+		off += (u32)snprintf(text + off, sizeof(text) - off, "0x%08X: %s\n",
+		                     (unsigned)caves[c].addr, caves[c].file);
+		mpp_fill(g_mpp_bin, caves[c].len, caves[c].addr);
+		mp_write(MPP_TITLE, dirname, caves[c].file, g_mpp_bin, caves[c].len);
+
+		for (i = 0; i + 4u <= caves[c].len; i += 4u) {
+			w->waddr[w->nw] = caves[c].addr + i;
+			w->wval[w->nw] = be32_get(g_mpp_bin + i);
+			w->nw++;
+		}
+		for (; i < caves[c].len; i++) {
+			w->baddr[w->nb] = caves[c].addr + i;
+			w->bval[w->nb] = g_mpp_bin[i];
+			w->nb++;
+		}
+	}
+
+	for (i = 0; i < MPP_NWORDS; i++) {
+		u32 value = 0x48000000u | (words >> 4) | i;
+
+		off += (u32)snprintf(text + off, sizeof(text) - off, "0x%08X: 0x%08X\n",
+		                     (unsigned)(words + i * 8u), (unsigned)value);
+		w->waddr[w->nw] = words + i * 8u;
+		w->wval[w->nw] = value;
+		w->nw++;
+	}
+
+	for (i = 1; i < w->nb; i++) {
+		for (j = i; j > 0 && w->baddr[j - 1] > w->baddr[j]; j--) {
+			u32 a = w->baddr[j];
+			u8 v = w->bval[j];
+
+			w->baddr[j] = w->baddr[j - 1];
+			w->bval[j] = w->bval[j - 1];
+			w->baddr[j - 1] = a;
+			w->bval[j - 1] = v;
+		}
+	}
+
+	mp_write(MPP_TITLE, dirname, "patch.txt", text, off);
+}
+
+/* The CRC-32 of what one unbounded reply holds after its stamp, from g_mpp_want. */
+static u32 mpp_want_stamp(void)
+{
+	const struct mpp_layout *w = &g_mpp_want;
+	u32 crc = qcrc32_start();
+	u8 b[8];
+	u32 i;
+
+	for (i = 0; i < w->nw; i++) {
+		be32_put(b, w->waddr[i]);
+		be32_put(b + 4, w->wval[i]);
+		crc = qcrc32_update(crc, b, 8);
+	}
+	be16_put(b, (u16)w->nb);
+	be16_put(b + 2, 0);
+	crc = qcrc32_update(crc, b, 4);
+	for (i = 0; i < w->nb; i++) {
+		be32_put(b, w->baddr[i]);
+		b[4] = w->bval[i];
+		b[5] = 0;
+		b[6] = 0;
+		b[7] = 0;
+		crc = qcrc32_update(crc, b, 8);
+	}
+	return qcrc32_finish(crc);
+}
+
+static int mpp_cmp_u32(const void *a, const void *b)
+{
+	u32 x = *(const u32 *)a;
+	u32 y = *(const u32 *)b;
+	return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/*
+ * Every page of `dirname`, fetched one by one and checked against the page rule
+ * (`want_pages` pages, page k carrying `want_counts[k]` word rows) and, joined,
+ * against g_mpp_want. Page 0 stays in g_mpp_page0.
+ */
+static void mpp_check(const char *dirname, u32 want_pages, const u32 *want_counts)
+{
+	struct mpp_layout *g = &g_mpp_got;
+	const struct mpp_layout *w = &g_mpp_want;
+	u32 len = 0, pages, stamp, k, i, nsorted;
+	int parsed = 1, fits = 1, agree = 1, counts = 1, bytes_last = 1, same, unique;
+
+	g->nw = 0;
+	g->nb = 0;
+	g_mpp_page0_len = 0;
+
+	if (mp_patch_page(dirname, 0, g_mpp_page0, sizeof(g_mpp_page0), &g_mpp_page0_len) != ST_OK) {
+		check(0, mpp_what(dirname, "page 0 answers"));
+		return;
+	}
+	pages = be16_get(g_mpp_page0 + 2);
+	stamp = be32_get(g_mpp_page0 + 4);
+	check_eq_u64(pages, want_pages, mpp_what(dirname, "pages is what the rule gives"));
+	if (pages != want_pages) return;
+
+	for (k = 0; k < pages; k++) {
+		u32 n, nb, off;
+
+		if (mp_patch_page(dirname, (u16)k, g_mp_reply, sizeof(g_mp_reply), &len) != ST_OK) {
+			parsed = 0;
+			break;
+		}
+		if (len > QWARK_MAX_PAYLOAD) fits = 0;
+		if (len < MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD) { parsed = 0; break; }
+
+		n = be16_get(g_mp_reply);
+		off = MOD_PATCH_HEAD + n * MOD_PATCH_ROW;
+		if (off + MOD_PATCH_BYTES_HEAD > len) { parsed = 0; break; }
+		nb = be16_get(g_mp_reply + off);
+		if (be16_get(g_mp_reply + off + 2) != 0 ||
+		    len != off + MOD_PATCH_BYTES_HEAD + nb * MOD_PATCH_BYTE_ROW) {
+			parsed = 0;
+			break;
+		}
+
+		if (be16_get(g_mp_reply + 2) != pages || be32_get(g_mp_reply + 4) != stamp) agree = 0;
+		if (n != want_counts[k]) counts = 0;
+		if (k + 1u < pages ? nb != 0 : nb != w->nb) bytes_last = 0;
+
+		for (i = 0; i < n && g->nw < MPP_MAX_ROWS; i++) {
+			const u8 *row = g_mp_reply + MOD_PATCH_HEAD + i * MOD_PATCH_ROW;
+
+			g->waddr[g->nw] = be32_get(row);
+			g->wval[g->nw] = be32_get(row + 4);
+			g->nw++;
+		}
+		off += MOD_PATCH_BYTES_HEAD;
+		for (i = 0; i < nb && g->nb < MPP_MAX_BYTES; i++, off += MOD_PATCH_BYTE_ROW) {
+			g->baddr[g->nb] = be32_get(g_mp_reply + off);
+			g->bval[g->nb] = g_mp_reply[off + 4];
+			if (g_mp_reply[off + 5] || g_mp_reply[off + 6] || g_mp_reply[off + 7]) parsed = 0;
+			g->nb++;
+		}
+	}
+
+	check(parsed, mpp_what(dirname, "every page answers and parses: n rows, nb and its pad, nb byte rows, to its length"));
+	check(fits, mpp_what(dirname, "every page fits one 16384-byte frame"));
+	check(agree, mpp_what(dirname, "every page has the same pages and the same stamp"));
+	check(counts, mpp_what(dirname, "each page carries the word rows the rule gives it"));
+	check(bytes_last, mpp_what(dirname, "the byte rows are all on the last page and none on another"));
+
+	same = g->nw == w->nw;
+	for (i = 0; same && i < w->nw; i++)
+		if (g->waddr[i] != w->waddr[i] || g->wval[i] != w->wval[i]) same = 0;
+	check(same, mpp_what(dirname, "the word rows joined in page order are the unpaged layout's"));
+	same = g->nb == w->nb;
+	for (i = 0; same && i < w->nb; i++)
+		if (g->baddr[i] != w->baddr[i] || g->bval[i] != w->bval[i]) same = 0;
+	check(same, mpp_what(dirname, "and the byte rows are its byte rows, in address order"));
+	check_eq_u64(stamp, mpp_want_stamp(),
+	             mpp_what(dirname, "the stamp is the CRC-32 of one unbounded reply after its stamp"));
+
+	nsorted = 0;
+	for (i = 0; i < g->nw; i++) g_mpp_sorted[nsorted++] = g->waddr[i];
+	for (i = 0; i < g->nb; i++) g_mpp_sorted[nsorted++] = g->baddr[i];
+	qsort(g_mpp_sorted, nsorted, sizeof(g_mpp_sorted[0]), mpp_cmp_u32);
+	unique = 1;
+	for (i = 1; i < nsorted; i++)
+		if (g_mpp_sorted[i] == g_mpp_sorted[i - 1]) unique = 0;
+	check(unique && nsorted == w->nw + w->nb, mpp_what(dirname, "no address appears twice across the pages"));
+
+	len = 1;
+	check(mp_patch_page(dirname, (u16)pages, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG &&
+	      len == 0, mpp_what(dirname, "the page after the last is BAD_ARG, with nothing in the reply"));
+}
+
+static void test_mod_patch_pages(void)
+{
+	/* About the user's dl-tas: a 9.3 KB cave and 16 words, 2346 rows. */
+	static const struct mpp_cave two[] = { { 0x00A00000u, 9314u, "rack.bin" } };
+	/* About 20 KB of cave in two caves, listed higher address first, 5023 rows. */
+	static const struct mpp_cave three[] = {
+		{ 0x00B80000u, 7u, "small.bin" },
+		{ 0x00B00000u, 20003u, "big.bin" }
+	};
+	/* The edges: 2046 rows, 2046 with two of them bytes, 2047, and 2045 + 2. */
+	static const struct mpp_cave r2046[]  = { { 0x00C00000u, 8120u, "c.bin" } };
+	static const struct mpp_cave r2046b[] = { { 0x00C20000u, 8114u, "c.bin" } };
+	static const struct mpp_cave r2047[]  = { { 0x00D00000u, 8124u, "c.bin" } };
+	static const struct mpp_cave tip[]    = { { 0x00E00000u, 8118u, "c.bin" } };
+	static const u32 two_counts[]    = { 2046, 298 };
+	static const u32 three_counts[]  = { 2046, 2046, 925 };
+	static const u32 r2046_counts[]  = { 2046 };
+	static const u32 r2046b_counts[] = { 2044 };
+	static const u32 r2047_counts[]  = { 2046, 1 };
+	static const u32 tip_counts[]    = { 2045, 0 };
+	u32 len = 0, count = 0;
+	u8 req[4];
+
+	group("revision 1.19: the page rule, by the numbers");
+
+	check_eq_u64(MOD_PATCH_PAGE_ROWS, 2046, "a page is (16384 - 8 - 4) / 8 = 2046 rows");
+	check(mods_test_page_split(0, 0, 0, &count) == 1 && count == 0,
+	      "nothing at all is one empty page");
+	check(mods_test_page_split(2046, 0, 0, &count) == 1 && count == 2046,
+	      "2046 words are one full page");
+	check(mods_test_page_split(2044, 2, 0, &count) == 1 && count == 2044,
+	      "2044 words and 2 bytes are one full page too");
+	check(mods_test_page_split(2047, 0, 1, &count) == 2 && count == 1,
+	      "2047 words are two pages, the second of one word");
+	check(mods_test_page_split(2045, 2, 0, &count) == 2 && count == 2045,
+	      "2045 words and 2 bytes are two pages: the words all on the first, not full");
+	check(mods_test_page_split(2045, 2, 1, &count) == 2 && count == 0,
+	      "and the bytes alone on the second");
+	check(mods_test_page_split(4092, 1, 2, &count) == 3 && count == 0,
+	      "two full pages of words and a byte make a third page that holds only the byte");
+	check(mods_test_page_split(4093, 3, 1, &count) == 3 && count == 2046,
+	      "a middle page is always full");
+	check(mods_test_page_split(4093, 3, 2, &count) == 3 && count == 1,
+	      "and the last carries what is left beside the bytes");
+	check(mods_test_page_split(0, 96, 0, &count) == 1 && count == 0,
+	      "the most byte rows a mod can have, 3 for each of 32 caves, are one page");
+
+	group("revision 1.19: MOD_PATCH of a mod past one frame");
+
+	mpp_write_mod("two", two, 1, 0x00A80000u);
+	mods_set_title(MPP_TITLE);
+	check(mods_find("two") >= 0, "a 9314-byte cave and 16 words is scanned");
+	mpp_check("two", 2, two_counts);
+	{
+		static u8 again[QWARK_MAX_PAYLOAD];
+		u32 len2 = 0;
+
+		check(mp_patch_page("two", 1, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      mp_patch_page("two", 1, again, sizeof(again), &len2) == ST_OK &&
+		      len == len2 && memcmp(g_mp_reply, again, len) == 0,
+		      "two: a page asked for twice is the same bytes twice");
+
+		req[0] = mp_index("two");
+		req[1] = 0; req[2] = 0; req[3] = 0;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      len == g_mpp_page0_len && memcmp(g_mp_reply, g_mpp_page0, len) == 0,
+		      "two: the old four-byte request with zero pads is page 0");
+		req[3] = 1;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+		      len == len2 && memcmp(g_mp_reply, again, len) == 0,
+		      "two: and u16 page 1 is page 1");
+		req[3] = 2;
+		check(mods_patch_request(req, 4, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG &&
+		      len == 0, "two: u16 page 2, at pages, is BAD_ARG");
+	}
+
+	mpp_write_mod("three", three, 2, 0x00B90000u);
+	mods_rescan();
+	check(mods_find("three") >= 0, "a 7-byte and a 20003-byte cave and 16 words is scanned");
+	mpp_check("three", 3, three_counts);
+	check(mp_patch_page("three", 0xFFFF, g_mp_reply, sizeof(g_mp_reply), &len) == ST_BAD_ARG,
+	      "three: and page 65535 is BAD_ARG too");
+
+	group("revision 1.19: MOD_PATCH at the page edges");
+
+	mpp_write_mod("r2046", r2046, 1, 0x00C80000u);
+	mods_rescan();
+	mpp_check("r2046", 1, r2046_counts);
+	check_eq_u64(g_mpp_page0_len, 16380, "r2046: exactly 2046 rows are one page of 16380 bytes");
+	check(be32_get(g_mpp_page0 + 4) == qcrc32(g_mpp_page0 + MOD_PATCH_HEAD,
+	                                          g_mpp_page0_len - MOD_PATCH_HEAD),
+	      "r2046: and one page's stamp is the CRC-32 of everything after it, as before 1.19");
+
+	mpp_write_mod("r2046b", r2046b, 1, 0x00C90000u);
+	mods_rescan();
+	mpp_check("r2046b", 1, r2046b_counts);
+	check_eq_u64(g_mpp_page0_len, 16380, "r2046b: 2044 words and 2 bytes also fill one page exactly");
+
+	mpp_write_mod("r2047", r2047, 1, 0x00D80000u);
+	mods_rescan();
+	mpp_check("r2047", 2, r2047_counts);
+
+	mpp_write_mod("tip", tip, 1, 0x00E80000u);
+	mods_rescan();
+	mpp_check("tip", 2, tip_counts);
+	check_eq_u64(g_mpp_page0_len, MOD_PATCH_HEAD + 2045u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
+	             "tip: page 0 is the 2045 words, one short of full, since the words ran out");
+	check(mp_patch_page("tip", 1, g_mp_reply, sizeof(g_mp_reply), &len) == ST_OK &&
+	      len == MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD + 2u * MOD_PATCH_BYTE_ROW,
+	      "tip: and the two bytes that tipped it over go on page 1, with no words");
+
+	mods_set_title(MP_TITLE);
 }
 
 static void test_mod_presence(void)
@@ -8896,8 +9370,8 @@ static void test_reply_sizes(void)
 	check_fits(1u + 255u * SAVEFILE_ROW_SIZE, "SAVEFILE_LIST with 255 saves");
 	check_fits(1u + 255u * SAVEFILE_NAME_LEN, "SAVEFILE_CATEGORIES with 255 categories");
 	check_fits(1024u, "MOD_INFO, which is capped at 1024 bytes");
-	check_fits(MOD_PATCH_HEAD + 2046u * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
-	           "MOD_PATCH at its largest, 2046 rows (revision 1.16)");
+	check_fits(MOD_PATCH_HEAD + MOD_PATCH_PAGE_ROWS * MOD_PATCH_ROW + MOD_PATCH_BYTES_HEAD,
+	           "a MOD_PATCH page at its largest, 2046 rows (revisions 1.16 and 1.19)");
 	check_fits(1u + 255u * 24u, "FEATURE_OPTIONS with 255 options");
 
 	/* And the four games' own tables, encoded the way the wire encodes them. */
@@ -9316,6 +9790,7 @@ int main(void)
 	test_no_code_patches();
 	test_savefile_rpcs3();
 	test_mod_patch_layout();
+	test_mod_patch_pages();
 	test_mod_presence();
 	test_mod_previous();
 	test_switches();

@@ -1335,6 +1335,9 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	 * reads the mod table and the mod's own files and never the game, so it
 	 * answers here, under the core lock, the way MOD_LIST and MOD_INFO do, and
 	 * in the same session states they do. The emulator builds only.
+	 *
+	 * Revision 1.19: a page at a time, `u8 index, u8 pad, u16 page`, so a mod
+	 * bigger than one frame still goes out (mods.h).
 	 */
 	case OP_MOD_PATCH: {
 		u16 rc;
@@ -1342,7 +1345,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (reqlen < 4) return ST_BAD_ARG;
 
 		core_lock();
-		rc = (u16)mods_patch_encode(req[0], reply, replycap, replylen);
+		rc = (u16)mods_patch_request(req, reqlen, reply, replycap, replylen);
 		core_unlock();
 		return rc;
 	}

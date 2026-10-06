@@ -147,8 +147,33 @@ int  mods_list_encode(u8 *out, u32 cap, u32 *len);
  * mod as the words and bytes an RPCS3 patch writes. It reads the mod's files
  * and never the game, so it runs on a network thread, under the core lock.
  * The reply is capped at QWARK_MAX_PAYLOAD whatever `cap` says.
+ *
+ * Revision 1.19: paged, since one frame holds at most MOD_PATCH_PAGE_ROWS
+ * (2046) rows. Reply `u16 n, u16 pages, u32 stamp, {u32 addr, u32 value}[n],
+ * u16 nb, u16 pad, {u32 addr, u8 value, u8 pad[3]}[nb]`: page k carries word
+ * rows [2046 k, 2046 (k+1)) of the mod, the last page every byte row after its
+ * words, and `pages` = ceil((words + bytes) / 2046), at least 1. `stamp` is the
+ * same on every page, the CRC-32 of one unbounded reply after its stamp (every
+ * word row, `u16 nb, u16 pad`, every byte row), so a one-page mod's stamp is
+ * the one it always had. A page at or past `pages` is BAD_ARG; FULL means the
+ * byte rows alone would not fit one page, which no mod qwark can parse reaches,
+ * or that `cap` is too small for the page asked for. Every page lays the whole
+ * mod out again (the layout is deterministic) and keeps its own slice.
  */
-int  mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len);
+int  mods_patch_encode(u8 index, u16 page, u8 *out, u32 cap, u32 *len);
+
+/*
+ * MOD_PATCH as it arrives: `u8 index, u8 pad, u16 page`, four bytes, BAD_ARG
+ * when shorter. Before revision 1.19 the last three were `u8 pad[3]`, which a
+ * client sends as zeros, so an old request asks for page 0.
+ */
+int  mods_patch_request(const u8 *req, u32 reqlen, u8 *out, u32 cap, u32 *len);
+
+#ifdef QWARK_TEST
+/* MOD_PATCH's page rule: the pages `nw` word rows and `nb` byte rows take, and
+ * in `count` the word rows page `page` carries. */
+u32  mods_test_page_split(u32 nw, u32 nb, u32 page, u32 *count);
+#endif
 
 /*
  * Build 49, the presence look. `start` when a session reaches INGAME: on a

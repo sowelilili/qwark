@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 51
+QWARK_BUILD = 52
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -1762,17 +1762,21 @@ def mod_row(c, dirname):
     return next((m for m in mods if m["dirname"] == dirname), None)
 
 
-def mod_patch(c, index):
+def mod_patch_page(c, index, page, request=None):
     """
-    MOD_PATCH, revision 1.16: (status, stamp, [(addr, 4 value bytes)],
-    [(addr, value)], body). SAVEFILE_PATCH's layout: u16 n, u16 pad, u32 stamp,
-    n (u32 addr, u32 value) rows, u16 nb, u16 pad, nb (u32 addr, u8 value,
-    u8 pad[3]) bytes, the stamp being the CRC-32 of everything after it.
+    MOD_PATCH, revision 1.19: one page, (status, pages, stamp, [(addr, 4 value
+    bytes)], [(addr, value)], body). The request is u8 index, u8 pad, u16 page
+    unless `request` gives the payload itself. SAVEFILE_PATCH's layout with the
+    pad after n being pages: u16 n, u16 pages, u32 stamp, n (u32 addr,
+    u32 value) rows, u16 nb, u16 pad, nb (u32 addr, u8 value, u8 pad[3]) bytes.
+    The stamp is the same on every page: the CRC-32 of one unbounded reply after
+    its stamp, which for a one-page mod is everything after it.
     """
-    status, body = c.call(OP_MOD_PATCH, bytes([index, 0, 0, 0]))
+    payload = request if request is not None else struct.pack(">BBH", index, 0, page)
+    status, body = c.call(OP_MOD_PATCH, payload)
     if status != ST_OK or len(body) < 8:
-        return status, None, None, None, body
-    n, _, stamp = struct.unpack(">HHI", body[:8])
+        return status, None, None, None, None, body
+    n, pages, stamp = struct.unpack(">HHI", body[:8])
     off = 8
     rows = []
     for _ in range(n):
@@ -1785,6 +1789,16 @@ def mod_patch(c, index):
         for _ in range(nb):
             single.append((struct.unpack(">I", body[off:off + 4])[0], body[off + 4]))
             off += 8
+    return status, pages, stamp, rows, single, body
+
+
+def mod_patch(c, index):
+    """
+    MOD_PATCH as a client before revision 1.19 sends it, u8 index and three zero
+    pads, which is page 0: (status, stamp, rows, single, body), as above.
+    """
+    status, _, stamp, rows, single, body = mod_patch_page(
+        c, index, 0, request=bytes([index, 0, 0, 0]))
     return status, stamp, rows, single, body
 
 
@@ -2815,8 +2829,8 @@ def smoke_rpcs3_mods(c, pine):
           len(rows))
     check(single == [(RPCS3_MOD_CAVE + 20, RPCS3_MOD_BIN[20]), (RPCS3_MOD_CAVE + 21, RPCS3_MOD_BIN[21])],
           "rpcs3 mods: and the cave's two tail bytes after them", single)
-    check(len(body) == 8 + len(rows) * 8 + 4 + len(single) * 8 and body[2:4] == b"\0\0",
-          "rpcs3 mods: in SAVEFILE_PATCH's layout", len(body))
+    check(len(body) == 8 + len(rows) * 8 + 4 + len(single) * 8 and body[2:4] == b"\0\1",
+          "rpcs3 mods: in SAVEFILE_PATCH's layout, on one page (revision 1.19)", len(body))
     check(stamp == (zlib.crc32(body[8:]) & 0xFFFFFFFF),
           "rpcs3 mods: stamped with the CRC-32 of everything after the stamp", stamp)
 
@@ -2861,6 +2875,144 @@ def smoke_rpcs3_mods(c, pine):
     mine.update(addr for addr, _ in single)
     hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in mine for k in range(w))]
     check(not hits, "rpcs3 mods: and qwark wrote none of it into the emulator", hits[:4])
+
+
+# Revision 1.19: the big-cave fixture, a 10240-byte cave and two words, is 2562
+# rows: more than the 2046 one frame holds, so MOD_PATCH answers it in two pages.
+PAGES_MOD_DIR = "big-cave"
+PAGES_MOD_SRC = os.path.join(HERE, "fixtures", "mods", "NPEA00385", PAGES_MOD_DIR)
+PAGES_MOD_FOLDER = "/dev_hdd0/qwark/mods/NPEA00385/" + PAGES_MOD_DIR
+MOD_PATCH_PAGE_ROWS = (QWARK_MAX_PAYLOAD - 8 - 4) // 8
+
+
+def unpaged_mod_layout(folder):
+    """
+    What one unbounded MOD_PATCH reply would hold for the mod in `folder`, from
+    its files: every cave in patch.txt order as whole words, then every word,
+    and the caves' tail bytes in address order. (rows, single, stamp), the stamp
+    being the CRC-32 of the rows, u16 nb, u16 pad and the byte rows.
+    """
+    with open(os.path.join(folder, "patch.txt"), "rb") as f:
+        text = f.read().decode()
+    caves, words = [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        addr, value = (s.strip() for s in line.split(":", 1))
+        if not addr.lower().startswith("0x"):
+            continue
+        if value.lower().startswith("0x"):
+            words.append((int(addr, 16), struct.pack(">I", int(value, 16))))
+        else:
+            with open(os.path.join(folder, value), "rb") as f:
+                caves.append((int(addr, 16), f.read()))
+    rows, single = [], []
+    for addr, data in caves:
+        whole = len(data) - len(data) % 4
+        rows += [(addr + k, data[k:k + 4]) for k in range(0, whole, 4)]
+        single += [(addr + k, data[k]) for k in range(whole, len(data))]
+    rows += words
+    single.sort()
+    flat = b"".join(struct.pack(">I", a) + v for a, v in rows)
+    flat += struct.pack(">HH", len(single), 0)
+    flat += b"".join(struct.pack(">IB3x", a, v) for a, v in single)
+    return rows, single, zlib.crc32(flat) & 0xFFFFFFFF
+
+
+def smoke_rpcs3_mod_pages(c, pine):
+    """
+    Build 52, revision 1.19: a mod bigger than one frame under RPCS3. The
+    big-cave fixture is uploaded as a client uploads any mod, fetched a page at
+    a time - page 0 with the request a client before 1.19 sends - and put back
+    together; written into the fake emulator and the game restarted, it is what
+    qwark's look calls LOADED. RaC1 is running and stays running at the end.
+    """
+    files = ["patch.txt", "rack.bin"]
+    status, _ = c.call(OP_DIR_CREATE, PAGES_MOD_FOLDER.encode())
+    check(status == ST_OK, "rpcs3 mod pages: big-cave's folder is created", status)
+    ok = True
+    for name in files:
+        with open(os.path.join(PAGES_MOD_SRC, name), "rb") as f:
+            ok = write_console_file(c, PAGES_MOD_FOLDER + "/" + name, f.read()) and ok
+    check(ok, "rpcs3 mod pages: the fixture's patch.txt and 10240-byte rack.bin are uploaded")
+    status, _ = c.call(OP_MOD_RESCAN)
+    check(status == ST_OK, "rpcs3 mod pages: MOD_RESCAN", status)
+    row = mod_row(c, PAGES_MOD_DIR)
+    if not check(row is not None, "rpcs3 mod pages: MOD_LIST has big-cave"):
+        return
+    index = row["index"]
+    row, _ = wait_mod_looked(c, PAGES_MOD_DIR)
+    check(row is not None and row["flags"] & (MOD_FLAG_LOADED | MOD_FLAG_CHECKING) == 0,
+          "rpcs3 mod pages: once looked for, it is not in the game", row)
+
+    want_rows, want_single, want_stamp = unpaged_mod_layout(PAGES_MOD_SRC)
+    check(len(want_rows) + len(want_single) > MOD_PATCH_PAGE_ROWS,
+          "rpcs3 mod pages: its %d rows are more than one frame's %d"
+          % (len(want_rows) + len(want_single), MOD_PATCH_PAGE_ROWS))
+
+    # ------------------------------------------------- page by page
+    status, pages, stamp, rows0, single0, body0 = mod_patch_page(
+        c, index, 0, request=bytes([index, 0, 0, 0]))
+    if not check(status == ST_OK, "rpcs3 mod pages: page 0, asked the way a 1.18 client asks", status):
+        return
+    check(pages == 2, "rpcs3 mod pages: two pages", pages)
+    check(len(rows0) == MOD_PATCH_PAGE_ROWS and single0 == [] and len(body0) <= QWARK_MAX_PAYLOAD,
+          "rpcs3 mod pages: page 0 is a full frame of word rows and no bytes",
+          (len(rows0), len(single0), len(body0)))
+    status, d, s, again, _, _ = mod_patch_page(c, index, 0)
+    check(status == ST_OK and (d, s) == (pages, stamp) and again == rows0,
+          "rpcs3 mod pages: u16 page 0 is the same page", status)
+
+    got_rows, got_single, ok = list(rows0), [], True
+    for page in range(1, pages):
+        status, d, s, rows, single, body = mod_patch_page(c, index, page)
+        if not check(status == ST_OK, "rpcs3 mod pages: page %d answers" % page, status):
+            return
+        check(d == pages and s == stamp,
+              "rpcs3 mod pages: page %d has the same pages and stamp" % page, (d, s))
+        check(len(body) == 8 + len(rows) * 8 + 4 + len(single) * 8 and len(body) <= QWARK_MAX_PAYLOAD,
+              "rpcs3 mod pages: page %d parses to its length, inside a frame" % page, len(body))
+        if page < pages - 1 and single:
+            ok = False
+        got_rows += rows
+        got_single = single
+    check(ok, "rpcs3 mod pages: byte rows only on the last page")
+
+    status, _ = c.call(OP_MOD_PATCH, struct.pack(">BBH", index, 0, pages))
+    check(status == ST_BAD_ARG, "rpcs3 mod pages: page %d, past the last, is BAD_ARG" % pages, status)
+
+    check(got_rows == want_rows,
+          "rpcs3 mod pages: the pages joined are its 2560 cave words, then its 2 words",
+          (len(got_rows), len(want_rows)))
+    check(got_single == want_single, "rpcs3 mod pages: and its byte rows", got_single)
+    check(stamp == want_stamp,
+          "rpcs3 mod pages: the stamp is the CRC-32 of the whole unpaged reply after it",
+          "%08x vs %08x" % (stamp or 0, want_stamp))
+    addrs = [a for a, _ in got_rows] + [a for a, _ in got_single]
+    check(len(addrs) == len(set(addrs)), "rpcs3 mod pages: no address appears twice")
+
+    # ------------------------- written in at load, it is what the look finds
+    for addr, value in got_rows:
+        pine.poke(addr, value)
+    for addr, value in got_single:
+        pine.poke(addr, bytes([value]))
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 mod pages: the game is stopped for the patch to take")
+    del pine.write_log[:]
+    pine.boot("NPEA00385", "Ratchet & Clank")
+    ok, _ = wait_state(c, SESSION_INGAME)
+    check(ok, "rpcs3 mod pages: and comes back with both pages applied at load")
+    row, _ = wait_mod_looked(c, PAGES_MOD_DIR)
+    check(row is not None and row["flags"] == MOD_FLAG_LOADED,
+          "rpcs3 mod pages: and the reassembled mod is LOADED, every cave byte and word of it", row)
+
+    mine = set()
+    for addr, _ in got_rows:
+        mine.update(range(addr, addr + 4))
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in mine for k in range(w))]
+    check(not hits, "rpcs3 mod pages: and qwark wrote none of it into the emulator", hits[:4])
 
 
 def smoke_rpcs3(exe):
@@ -3045,6 +3197,9 @@ def smoke_rpcs3(exe):
 
         # ------------------------------------ a mod by an RPCS3 patch
         smoke_rpcs3_mods(c, pine)
+
+        # ------------------------- a mod past one frame, a page at a time
+        smoke_rpcs3_mod_pages(c, pine)
 
         # ------------------------------ the code switches by an RPCS3 patch
         smoke_rpcs3_switches(c, pine)

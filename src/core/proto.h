@@ -52,6 +52,9 @@
  * Revision 1.18: the three patch ops and the looks behind them are built only
  * with QWARK_EMULATOR (src/plat/plat.h). The PS3 module answers SAVEFILE_PATCH,
  * MOD_PATCH and SWITCH_PATCH UNSUPPORTED and never sets flags bit4.
+ * Revision 1.19: MOD_PATCH is paged, so a mod bigger than one frame can still
+ * be written as an RPCS3 patch. The request is u8 index, u8 pad, u16 page (an
+ * old request's zeros are page 0), and the reply's pad after n is u16 pages.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -67,7 +70,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             51
+#define QWARK_BUILD             52
 
 #define QWARK_PORT              9673
 /*
@@ -183,6 +186,9 @@
  * layout, below, with every cave as consecutive words, then the mod's own
  * words, then the tail bytes of any cave that is not whole words, in address
  * order. See PROTOCOL.md 5.7.1.
+ *
+ * Revision 1.19: a page at a time. The request is u8 index, u8 pad, u16 page,
+ * and the reply's pad after n is u16 pages (MOD_PATCH_PAGE_ROWS, below).
  */
 #define OP_MOD_PATCH         0x0066
 
@@ -262,11 +268,18 @@
 #define SAVEFILE_PATCH_BYTE_ROW    8
 #define SAVEFILE_PATCH_NBYTES      3
 
-/* Revision 1.16. MOD_PATCH's reply is laid out exactly as SAVEFILE_PATCH's. */
+/*
+ * Revision 1.16. MOD_PATCH's reply is laid out exactly as SAVEFILE_PATCH's.
+ * Revision 1.19: paged, the pad after `n` being `u16 pages` (PROTOCOL.md
+ * 5.7.1). A page is one frame, so it carries at most
+ * (16384 - 8 - 4) / 8 = 2046 rows, word rows and byte rows together.
+ */
 #define MOD_PATCH_HEAD             SAVEFILE_PATCH_HEAD
 #define MOD_PATCH_ROW              SAVEFILE_PATCH_ROW
 #define MOD_PATCH_BYTES_HEAD       SAVEFILE_PATCH_BYTES_HEAD
 #define MOD_PATCH_BYTE_ROW         SAVEFILE_PATCH_BYTE_ROW
+#define MOD_PATCH_PAGE_ROWS \
+	((QWARK_MAX_PAYLOAD - MOD_PATCH_HEAD - MOD_PATCH_BYTES_HEAD) / MOD_PATCH_ROW)
 
 /* Revision 1.17. So is SWITCH_PATCH's. */
 #define SWITCH_PATCH_HEAD          SAVEFILE_PATCH_HEAD

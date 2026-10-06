@@ -846,7 +846,7 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 	return ST_OK;
 }
 
-/* ------------------------------------------------ MOD_PATCH, revision 1.16 */
+/* ------------------------------------- MOD_PATCH, revisions 1.16 and 1.19 */
 
 /*
  * MOD_PATCH and the presence look are the emulator builds' alone, to the end of
@@ -864,25 +864,43 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 /* A cave's tail is its last len % 4 bytes: at most three a cave. */
 #define MOD_PATCH_TAILS  (MOD_CAVE_POOL * 3u)
 
+/*
+ * The reply pages, revision 1.19.
+ *
+ * One frame holds at most QWARK_MAX_PAYLOAD bytes, and a page is `u16 n,
+ * u16 pages, u32 stamp`, n word rows, `u16 nb, u16 pad` and nb byte rows, eight
+ * bytes a row either way: MOD_PATCH_PAGE_ROWS, (16384 - 8 - 4) / 8 = 2046 rows
+ * a page in all. The layout depends only on the mod's files, so every call lays
+ * the whole mod out again and keeps the requested page's window of word rows,
+ * while the stamp's CRC runs over every row of the mod.
+ *
+ * With W word rows and B byte rows, pages = ceil((W + B) / 2046), at least 1.
+ * Page k carries word rows [2046 k, min(2046 (k+1), W)); the last page carries
+ * every byte row after its words, so it has at most 2046 - B words and may have
+ * none. B is at most MOD_PATCH_TAILS, far below a page.
+ */
 struct patch_out {
-	u8  *out;
-	u32  cap;
-	u32  off;                           /* where the next row goes */
-	u32  n;                             /* rows so far */
+	u8  *rows;                          /* where the window's word rows go */
+	u32  first;                         /* the mod's index of the window's first row */
+	u32  window;                        /* how many rows the window holds */
+	u32  n;                             /* word rows laid out so far, the whole mod */
+	u32  crc;                           /* CRC-32 state over every word row so far */
 	u32  ntail;
 	u32  tail_addr[MOD_PATCH_TAILS];
 	u8   tail_val[MOD_PATCH_TAILS];
 };
 
-static int patch_row(struct patch_out *p, u32 addr, const u8 value[4])
+/* One word row: into the CRC whatever it is, into the window when it falls there. */
+static void patch_row(struct patch_out *p, u32 addr, const u8 value[4])
 {
-	if (p->off + MOD_PATCH_ROW > p->cap) return ST_FULL;
+	u8 row[MOD_PATCH_ROW];
 
-	be32_put(p->out + p->off, addr);
-	memcpy(p->out + p->off + 4, value, 4);
-	p->off += MOD_PATCH_ROW;
+	be32_put(row, addr);
+	memcpy(row + 4, value, 4);
+	p->crc = qcrc32_update(p->crc, row, MOD_PATCH_ROW);
+	if (p->n >= p->first && p->n - p->first < p->window)
+		memcpy(p->rows + (p->n - p->first) * MOD_PATCH_ROW, row, MOD_PATCH_ROW);
 	p->n++;
-	return ST_OK;
 }
 
 /*
@@ -916,9 +934,8 @@ static int patch_cave(struct patch_out *p, const struct mod_entry *m,
 		if (got == 0) break;
 		have += got;
 
-		for (k = 0; k + 4u <= have && rc == ST_OK; k += 4u)
-			rc = patch_row(p, cave->addr + at + k, buf + k);
-		if (rc != ST_OK) break;
+		for (k = 0; k + 4u <= have; k += 4u)
+			patch_row(p, cave->addr + at + k, buf + k);
 
 		at += k;
 		have -= k;
@@ -929,6 +946,7 @@ static int patch_cave(struct patch_out *p, const struct mod_entry *m,
 	if (rc != ST_OK) return rc;
 	if (at + have == 0) return ST_IO_ERROR;
 
+	/* At most three a cave and MOD_CAVE_POOL caves, so this never refuses. */
 	for (k = 0; k < have; k++) {
 		if (p->ntail >= MOD_PATCH_TAILS) return ST_FULL;
 		p->tail_addr[p->ntail] = cave->addr + at + k;
@@ -938,7 +956,101 @@ static int patch_cave(struct patch_out *p, const struct mod_entry *m,
 	return ST_OK;
 }
 
-int mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len)
+/*
+ * The whole mod, every word row through patch_row (which keeps the rows in p's
+ * window and runs the CRC over all of them) and every byte row into p's tail
+ * table, sorted by address at the end. Everything a MOD_PATCH reply holds comes
+ * from here, whichever page it is.
+ *
+ * Every cave in patch.txt order, then every word in patch.txt order: the order a
+ * console writes them in, caves before the branches into them, and so the order
+ * a patch file lists them in. The dependencies are not folded in; a client walks
+ * "#- depends" itself and writes each mod on its own.
+ */
+static int patch_layout(const struct mod_entry *m, struct patch_out *p)
+{
+	u32 i, j;
+	int rc;
+
+	p->n = 0;
+	p->ntail = 0;
+	p->crc = qcrc32_start();
+
+	for (i = 0; i < m->ncaves; i++) {
+		rc = patch_cave(p, m, &g_caves[m->cave_first + i]);
+		if (rc != ST_OK) return rc;
+	}
+
+	for (i = 0; i < m->def.count; i++) {
+		u8 value[4];
+
+		be32_put(value, m->def.words[i].value);
+		patch_row(p, m->def.words[i].addr, value);
+	}
+
+	/* The tail bytes in address order, which is also the caves' own order within one. */
+	for (i = 1; i < p->ntail; i++) {
+		u32 a = p->tail_addr[i];
+		u8 v = p->tail_val[i];
+
+		for (j = i; j > 0 && p->tail_addr[j - 1] > a; j--) {
+			p->tail_addr[j] = p->tail_addr[j - 1];
+			p->tail_val[j] = p->tail_val[j - 1];
+		}
+		p->tail_addr[j] = a;
+		p->tail_val[j] = v;
+	}
+	return ST_OK;
+}
+
+/* One byte row: u32 addr, u8 value, u8 pad[3]. */
+static void patch_byte_row(u8 *b, u32 addr, u8 value)
+{
+	be32_put(b, addr);
+	b[4] = value;
+	b[5] = 0;
+	b[6] = 0;
+	b[7] = 0;
+}
+
+/*
+ * The stamp: the CRC-32 of what one unbounded reply would hold after it - every
+ * word row (already in p->crc), `u16 nb, u16 pad`, every byte row. For a mod
+ * that fits one page that is exactly the bytes after the stamp, as it was
+ * before paging.
+ */
+static u32 patch_stamp(const struct patch_out *p)
+{
+	u8 b[MOD_PATCH_BYTE_ROW];
+	u32 crc = p->crc;
+	u32 i;
+
+	be16_put(b, (u16)p->ntail);
+	be16_put(b + 2, 0);
+	crc = qcrc32_update(crc, b, MOD_PATCH_BYTES_HEAD);
+	for (i = 0; i < p->ntail; i++) {
+		patch_byte_row(b, p->tail_addr[i], p->tail_val[i]);
+		crc = qcrc32_update(crc, b, MOD_PATCH_BYTE_ROW);
+	}
+	return qcrc32_finish(crc);
+}
+
+/* How many pages `nw` word rows and `nb` byte rows take: at least 1. */
+static u32 patch_pages(u32 nw, u32 nb)
+{
+	u32 rows = nw + nb;
+	return rows == 0 ? 1u : (rows + MOD_PATCH_PAGE_ROWS - 1u) / MOD_PATCH_PAGE_ROWS;
+}
+
+/* How many word rows page `page` carries, from row page * MOD_PATCH_PAGE_ROWS on. */
+static u32 patch_page_count(u32 nw, u32 page)
+{
+	u32 first = page * MOD_PATCH_PAGE_ROWS;
+	u32 count = nw > first ? nw - first : 0u;
+	return count > MOD_PATCH_PAGE_ROWS ? MOD_PATCH_PAGE_ROWS : count;
+}
+
+int mods_patch_encode(u8 index, u16 page, u8 *out, u32 cap, u32 *len)
 {
 	/*
 	 * Static rather than on the stack: 500 bytes that a network thread's stack
@@ -947,7 +1059,7 @@ int mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len)
 	 */
 	static struct patch_out p;
 	const struct mod_entry *m;
-	u32 i, j;
+	u32 pages, count, nb, off, room, i;
 	int rc;
 
 	*len = 0;
@@ -962,70 +1074,66 @@ int mods_patch_encode(u8 index, u8 *out, u32 cap, u32 *len)
 	if (m == NULL) return ST_NOT_FOUND;
 	if (m->flags & MOD_FLAG_PARSE_ERROR) return ST_IO_ERROR;
 	if (m->flags & MOD_FLAG_NEEDS_LUA) return ST_UNSUPPORTED;
-
-	p.out = out;
-	p.cap = cap;
-	p.off = MOD_PATCH_HEAD;
-	p.n = 0;
-	p.ntail = 0;
 	if (cap < MOD_PATCH_HEAD + MOD_PATCH_BYTES_HEAD) return ST_FULL;
 
 	/*
-	 * Every cave in patch.txt order, then every word in patch.txt order: the
-	 * order a console writes them in, caves before the branches into them, and
-	 * so the order a patch file lists them in. The dependencies are not folded
-	 * in; a client walks "#- depends" itself and writes each mod on its own.
+	 * The window is the page's word rows, no more than the buffer has room for.
+	 * On the wire the buffer is a whole frame and always holds a page; a smaller
+	 * one (the tests') is FULL below when the page it asked for does not fit.
 	 */
-	for (i = 0; i < m->ncaves; i++) {
-		rc = patch_cave(&p, m, &g_caves[m->cave_first + i]);
-		if (rc != ST_OK) return rc;
-	}
+	room = (cap - MOD_PATCH_HEAD - MOD_PATCH_BYTES_HEAD) / MOD_PATCH_ROW;
+	p.rows = out + MOD_PATCH_HEAD;
+	p.first = (u32)page * MOD_PATCH_PAGE_ROWS;
+	p.window = room < MOD_PATCH_PAGE_ROWS ? room : MOD_PATCH_PAGE_ROWS;
 
-	for (i = 0; i < m->def.count; i++) {
-		u8 value[4];
+	rc = patch_layout(m, &p);
+	if (rc != ST_OK) return rc;
 
-		be32_put(value, m->def.words[i].value);
-		rc = patch_row(&p, m->def.words[i].addr, value);
-		if (rc != ST_OK) return rc;
-	}
+	/*
+	 * Every byte row goes on the last page, so a mod whose byte rows alone are
+	 * more than a page cannot be paged; MOD_PATCH_TAILS keeps that from ever
+	 * happening. Nor can `pages` pass its u16, short of a cave of 500 MB.
+	 */
+	if (p.ntail > MOD_PATCH_PAGE_ROWS) return ST_FULL;
+	pages = patch_pages(p.n, p.ntail);
+	if (pages > 0xFFFFu) return ST_FULL;
+	if ((u32)page >= pages) return ST_BAD_ARG;
 
-	if (p.n > 0xFFFFu) return ST_FULL;
-	if (p.off + MOD_PATCH_BYTES_HEAD + p.ntail * MOD_PATCH_BYTE_ROW > cap) return ST_FULL;
+	/* The window holds this page's word rows already; the byte rows follow them
+	 * on the last page, where patch_pages left them the room. */
+	count = patch_page_count(p.n, page);
+	nb = ((u32)page == pages - 1u) ? p.ntail : 0u;
+	off = MOD_PATCH_HEAD + count * MOD_PATCH_ROW;
+	if (off + MOD_PATCH_BYTES_HEAD + nb * MOD_PATCH_BYTE_ROW > cap) return ST_FULL;
 
-	/* The tail bytes in address order, which is also the caves' own order within one. */
-	for (i = 1; i < p.ntail; i++) {
-		u32 a = p.tail_addr[i];
-		u8 v = p.tail_val[i];
+	be16_put(out + off, (u16)nb);
+	be16_put(out + off + 2, 0);
+	off += MOD_PATCH_BYTES_HEAD;
+	for (i = 0; i < nb; i++, off += MOD_PATCH_BYTE_ROW)
+		patch_byte_row(out + off, p.tail_addr[i], p.tail_val[i]);
 
-		for (j = i; j > 0 && p.tail_addr[j - 1] > a; j--) {
-			p.tail_addr[j] = p.tail_addr[j - 1];
-			p.tail_val[j] = p.tail_val[j - 1];
-		}
-		p.tail_addr[j] = a;
-		p.tail_val[j] = v;
-	}
+	be16_put(out, (u16)count);
+	be16_put(out + 2, (u16)pages);
+	be32_put(out + 4, patch_stamp(&p));
 
-	be16_put(out + p.off, (u16)p.ntail);
-	be16_put(out + p.off + 2, 0);
-	p.off += MOD_PATCH_BYTES_HEAD;
-
-	for (i = 0; i < p.ntail; i++) {
-		be32_put(out + p.off, p.tail_addr[i]);
-		out[p.off + 4] = p.tail_val[i];
-		out[p.off + 5] = 0;
-		out[p.off + 6] = 0;
-		out[p.off + 7] = 0;
-		p.off += MOD_PATCH_BYTE_ROW;
-	}
-
-	/* The stamp is SAVEFILE_PATCH's: the CRC-32 of everything after it. */
-	be16_put(out, (u16)p.n);
-	be16_put(out + 2, 0);
-	be32_put(out + 4, qcrc32(out + MOD_PATCH_HEAD, p.off - MOD_PATCH_HEAD));
-
-	*len = p.off;
+	*len = off;
 	return ST_OK;
 }
+
+int mods_patch_request(const u8 *req, u32 reqlen, u8 *out, u32 cap, u32 *len)
+{
+	*len = 0;
+	if (reqlen < 4) return ST_BAD_ARG;
+	return mods_patch_encode(req[0], be16_get(req + 2), out, cap, len);
+}
+
+#ifdef QWARK_TEST
+u32 mods_test_page_split(u32 nw, u32 nb, u32 page, u32 *count)
+{
+	if (count != NULL) *count = patch_page_count(nw, page);
+	return patch_pages(nw, nb);
+}
+#endif
 
 /* ----------------------------------------------- the presence look, build 49 */
 
