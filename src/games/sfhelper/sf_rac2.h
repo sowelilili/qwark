@@ -32,11 +32,15 @@
  * functions whose descriptors nothing refers to (0x10C98E0, 0x10C99AC,
  * 0x10C9C04, 0x10C9C6C, 0x10CA168, 0x11456D4), and the one routine that reads
  * their descriptor table (0x1136268) has no caller and no descriptor either. No
- * mod in the library writes there. build.sh fails a helper that would run past
- * its end.
+ * mod in the library writes there.
+ *
+ * The code switches take the far end of the same span, 0x1141400..0x11414FC
+ * (src/games/switches/sw_rac2.ld), so the helper stops where they start:
+ * build.sh fails a helper that would run past SF_CAVE_END, which leaves it
+ * 10,140 bytes to grow into.
  */
 #define SF_CAVE     0x0113EC64
-#define SF_CAVE_END 0x011414FC
+#define SF_CAVE_END 0x01141400
 
 /*
  * The hook site, from the repo's own patch.txt: a `bla` into the helper, which

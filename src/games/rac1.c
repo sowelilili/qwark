@@ -673,6 +673,7 @@ const struct game_api rac1_game = {
 	rac1_fp,
 	rac1_fp_patched,
 	NULL,                 /* fp_switch: the health switch hooks the word after it */
+	NULL,                 /* so no earlier build's branch is there either */
 	sizeof(rac1_fp),
 
 	0,                    /* no quit hook is known for RaC1 yet */

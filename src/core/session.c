@@ -329,9 +329,11 @@ static int fingerprint_matches(const struct game_api *g)
 
 	/*
 	 * Build 50. Or the branch the code switches' RPCS3 patch puts there, which
-	 * is on every boot of a game that has it.
+	 * is on every boot of a game that has it - build 53: this build's, or the
+	 * one an earlier build's patch put there before the trampoline moved.
 	 */
-	return g->fp_switch != NULL && memcmp(buf, g->fp_switch, len) == 0;
+	if (g->fp_switch != NULL && memcmp(buf, g->fp_switch, len) == 0) return 1;
+	return g->fp_switch_old != NULL && memcmp(buf, g->fp_switch_old, len) == 0;
 }
 
 /*

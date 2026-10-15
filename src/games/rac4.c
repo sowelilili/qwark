@@ -846,6 +846,7 @@ const struct game_api rac4_game = {
 	rac4_fp,
 	rac4_fp_patched,
 	GAME_FP_SWITCH(rac4_fp_switch),
+	NULL,                 /* the trampoline has never moved */
 	sizeof(rac4_fp),
 
 	RAC4_QUIT_FLAG,       /* the autosplitter's quit hook, installed on_enter */

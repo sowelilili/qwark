@@ -141,11 +141,19 @@ struct game_api {
 	 * switch leaves its fingerprint alone and it has none. A console never
 	 * has the switch patch, so the games name it through GAME_FP_SWITCH below
 	 * and on the PS3 it is NULL (build 51).
+	 *
+	 * Build 53: or fp_switch_old when that is not NULL, the branch an earlier
+	 * build's switch patch put at the site before this build moved the
+	 * trampoline it goes to. A game with that patch is still the game; its
+	 * switches are from another build, which the switches' own look says
+	 * (src/core/switches.h), and the client offers to write the patch again.
+	 * Named through GAME_FP_SWITCH as well.
 	 */
 	u32 fp_addr;
 	const u8 *fp_bytes;
 	const u8 *fp_alt;
 	const u8 *fp_switch;
+	const u8 *fp_switch_old;
 	u16 fp_len;
 
 	/*
@@ -272,9 +280,10 @@ struct game_api {
 };
 
 /*
- * fp_switch, as a game names it. The branch a code switch puts at a fingerprint
- * site is only ever there under RPCS3, so the PS3 module (no QWARK_EMULATOR,
- * plat.h) has NULL for it and no fingerprint test against it.
+ * fp_switch and fp_switch_old, as a game names them. The branch a code switch
+ * puts at a fingerprint site is only ever there under RPCS3, so the PS3 module
+ * (no QWARK_EMULATOR, plat.h) has NULL for both and no fingerprint test against
+ * either.
  */
 #ifdef QWARK_EMULATOR
 #define GAME_FP_SWITCH(fp) (fp)

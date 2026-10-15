@@ -8920,14 +8920,15 @@ static const struct patch_word g_swt_rac1_toggles[] = {
 	{ 0, 0x009058B0u }, { 1, 0x009058B1u }, { 2, 0x009058B2u }
 };
 
+/* Build 53: at 0x1141400, off Joba's routine (test_switches_rac2_moved). */
 static const struct swt_cave g_swt_rac2_caves[] = {
-	{ 0x00233200u, 6, { 0x3C600131u, 0x88637720u, 0x2C030000u, 0x40820008u, 0x489B60F9u,
-	                    0x489B7690u } },
-	{ 0x00233220u, 6, { 0x3CC00131u, 0x88C67721u, 0x2C060000u, 0x40820008u, 0x7C64292Eu,
-	                    0x488FDA4Cu } }
+	{ 0x01141400u, 6, { 0x3C600131u, 0x88637720u, 0x2C030000u, 0x40820008u, 0x4BAA7EF9u,
+	                    0x4BAA9490u } },
+	{ 0x01141420u, 6, { 0x3CC00131u, 0x88C67721u, 0x2C060000u, 0x40820008u, 0x7C64292Eu,
+	                    0x4B9EF84Cu } }
 };
 static const struct patch_word g_swt_rac2_sites[] = {
-	{ 0x00B30C7Cu, 0x4B7025A4u }, { 0x00BEA8A0u, 0x4B648960u }
+	{ 0x00B30C7Cu, 0x486107A4u }, { 0x00BEA8A0u, 0x48556B60u }
 };
 static const u32 g_swt_rac2_flags[] = { 0x01317720u, 0x01317721u };
 static const struct patch_word g_swt_rac2_toggles[] = {
@@ -9468,7 +9469,7 @@ static void test_switches_fastloads(void)
 	check_eq_u64(switches_state(), 1, "the switches are found");
 	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1,
 	      "and so is the helper, at its new request bytes");
-	check_eq_u64(swt_peek32(0x00BEA8A0u), 0x4B648960u, "the fingerprint site holds the branch");
+	check_eq_u64(swt_peek32(0x00BEA8A0u), 0x48556B60u, "the fingerprint site holds the branch");
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
 	pump(4);
 	host_write_log_reset();
@@ -9531,6 +9532,248 @@ static void test_switches_fastloads(void)
 	check(!swt_wrote_code(sw_desc_for_game(GAME_RAC4)), "with no code word written");
 }
 
+/*
+ * Build 53: RaC2's trampolines moved. Builds 50 to 52, and build 53 until this
+ * move, put them at 0x233200 and 0x233220, the end of the function at
+ * 0x22A368..0x233308, which planet Joba calls every frame (0x205018 at
+ * 0x205254, and 0x1F6E18). They are in the dead library span the savefile
+ * helper starts now, at its far end. These are the words the old placement's
+ * SWITCH_PATCH handed out, which an RPCS3 patch file written by one of those
+ * builds still holds, and the stamp that reply carried.
+ */
+static const struct swt_cave g_swt_rac2_b50_caves[] = {
+	{ 0x00233200u, 6, { 0x3C600131u, 0x88637720u, 0x2C030000u, 0x40820008u, 0x489B60F9u,
+	                    0x489B7690u } },
+	{ 0x00233220u, 6, { 0x3CC00131u, 0x88C67721u, 0x2C060000u, 0x40820008u, 0x7C64292Eu,
+	                    0x488FDA4Cu } }
+};
+static const struct patch_word g_swt_rac2_b50_sites[] = {
+	{ 0x00B30C7Cu, 0x4B7025A4u }, { 0x00BEA8A0u, 0x4B648960u }
+};
+#define SWT_RAC2_B50_STAMP 0x4B325BE2u
+
+/* The SWITCH_PATCH stamps of the other three games, which did not change. */
+#define SWT_RAC1_STAMP 0xB16A9D3Eu
+#define SWT_RAC3_STAMP 0x0C909623u
+#define SWT_RAC4_STAMP 0xEF1A07C3u
+
+/* RaC2's dead span, and the part of it the switches take. */
+#define SWT_R2_SPAN_LO  0x0113EC64u
+#define SWT_R2_SPAN_HI  0x011414FCu
+#define SWT_R2_CAVE_LO  0x01141400u
+#define SWT_R2_JOBA_LO  0x0022A368u
+#define SWT_R2_JOBA_HI  0x00233308u
+
+/*
+ * A SWITCH_PATCH reply laid out from a word table, exactly as switches_patch
+ * lays one out: what a client kept from an earlier build. Returns its length.
+ */
+static u32 swt_reply_of(const struct swt_cave *caves, u8 ncaves,
+                        const struct patch_word *sites, u8 nsites,
+                        const u32 *flags, u8 nflags, u8 *out)
+{
+	u32 off = SWITCH_PATCH_HEAD;
+	u32 n = 0;
+	u8 i, k;
+
+	for (i = 0; i < ncaves; i++) {
+		for (k = 0; k < caves[i].nwords; k++) {
+			be32_put(out + off, caves[i].addr + 4u * k);
+			be32_put(out + off + 4u, caves[i].w[k]);
+			off += SWITCH_PATCH_ROW;
+			n++;
+		}
+	}
+	for (i = 0; i < nsites; i++) {
+		be32_put(out + off, sites[i].addr);
+		be32_put(out + off + 4u, sites[i].value);
+		off += SWITCH_PATCH_ROW;
+		n++;
+	}
+
+	be16_put(out + off, nflags);
+	be16_put(out + off + 2u, 0);
+	off += SWITCH_PATCH_BYTES_HEAD;
+	for (i = 0; i < nflags; i++) {
+		be32_put(out + off, flags[i]);
+		memset(out + off + 4u, 0, 4);
+		off += SWITCH_PATCH_BYTE_ROW;
+	}
+
+	be16_put(out, (u16)n);
+	be16_put(out + 2, 0);
+	be32_put(out + 4, qcrc32(out + SWITCH_PATCH_HEAD, off - SWITCH_PATCH_HEAD));
+	return off;
+}
+
+/* The target of a relative `b` at `site`, or 0 for anything else. */
+static u32 swt_branch_target(u32 site, u32 word)
+{
+	u32 disp = word & 0x03FFFFFCu;
+
+	if ((word & 0xFC000003u) != 0x48000000u) return 0;
+	if (disp & 0x02000000u) disp |= 0xFC000000u;
+	return site + disp;
+}
+
+/* RaC2 booted with `word` at its fingerprint site and nothing else written. */
+static int swt_rac2_boots_with(u32 word)
+{
+	host_boot("NPEA00386");
+	poke32(0x00BEA8A0u, word);
+	return pump_until(SESSION_INGAME, 400) &&
+	       session_game() != NULL && session_game()->game_id == GAME_RAC2;
+}
+
+static void test_switches_rac2_moved(void)
+{
+	const struct sw_desc *d = sw_desc_for_game(GAME_RAC2);
+	const struct sf_desc *f = sf_desc_for_game(GAME_RAC2);
+	const struct game_api *g = game_for_title("NPEA00386");
+	static const u8 w_game[4] = { 0x4B, 0xFF, 0xEA, 0x69 };
+	static const u8 w_nop[4]  = { 0x60, 0x00, 0x00, 0x00 };
+	static const u8 w_new[4]  = { 0x48, 0x55, 0x6B, 0x60 };
+	static const u8 w_old[4]  = { 0x4B, 0x64, 0x89, 0x60 };
+	u32 len = 0, oldlen, rows_ok, i, off;
+	u8 sup = 9, ins = 9, run = 9, pend = 9;
+	u32 size = 0, sflen = 0;
+
+	group("build 53: RaC2's switches moved off Joba's code");
+
+	check(d != NULL && f != NULL && g != NULL, "RaC2 has switches, a helper and a table");
+	if (d == NULL || f == NULL || g == NULL) return;
+
+	rows_ok = 1;
+	for (i = 0; i < d->ncaves; i++) {
+		u32 lo = d->caves[i].addr, hi = lo + d->caves[i].len;
+
+		if (lo < SWT_R2_CAVE_LO || hi > SWT_R2_SPAN_HI) rows_ok = 0;
+		if (lo < SWT_R2_JOBA_HI && hi > SWT_R2_JOBA_LO) rows_ok = 0;
+	}
+	check(rows_ok, "every trampoline is in 0x1141400..0x11414FC, the far end of the dead span, "
+	      "and nowhere in Joba's routine");
+	check(f->caves[0].addr == SWT_R2_SPAN_LO &&
+	      f->caves[0].addr + f->caves[0].len <= d->caves[0].addr,
+	      "and the helper, at the near end, stops short of it");
+	check(d->caves[0].addr - (f->caves[0].addr + f->caves[0].len) >= 0x2000u,
+	      "with room to grow: more than 8 KB between them");
+
+	check_eq_u64(swt_branch_target(d->sites[0].addr, d->sites[0].value), d->caves[1].addr,
+	             "the ammo site, 0xB30C7C, branches to the ammo trampoline");
+	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[0].addr,
+	             "the fast-load site, 0xBEA8A0, to the fast-load one");
+	check_eq_u64(swt_branch_target(d->caves[0].addr + 20u, be32_get(d->caves[0].bytes + 20)),
+	             0x00BEA8A4u, "which branches back to the instruction after its site");
+	check_eq_u64(swt_branch_target(d->caves[1].addr + 20u, be32_get(d->caves[1].bytes + 20)),
+	             0x00B30C80u, "and so does the ammo one");
+	check(d->flags[0] == 0x01317720u && d->flags[1] == 0x01317721u,
+	      "the flag bytes did not move");
+
+	/* ---------------------------------------------- SWITCH_PATCH rows */
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC2");
+	check_eq_u64(be16_get(g_sw_patch), 14, "still fourteen rows: twelve trampoline words, two sites");
+
+	rows_ok = 1;
+	off = SWITCH_PATCH_HEAD;
+	for (i = 0; i < be16_get(g_sw_patch); i++) {
+		u32 a = be32_get(g_sw_patch + off);
+
+		if (i < 12 && (a < SWT_R2_CAVE_LO || a + 4u > SWT_R2_SPAN_HI)) rows_ok = 0;
+		if (i == 12 && (a != 0x00B30C7Cu || be32_get(g_sw_patch + off + 4) != 0x486107A4u)) rows_ok = 0;
+		if (i == 13 && (a != 0x00BEA8A0u || be32_get(g_sw_patch + off + 4) != 0x48556B60u)) rows_ok = 0;
+		off += SWITCH_PATCH_ROW;
+	}
+	check(rows_ok, "every trampoline row lands in the new cave, then b 0x1141420 and b 0x1141400");
+
+	oldlen = swt_reply_of(g_swt_rac2_b50_caves, SWT_N(g_swt_rac2_b50_caves),
+	                      g_swt_rac2_b50_sites, SWT_N(g_swt_rac2_b50_sites),
+	                      d->flags, d->nflags, g_sw_patch2);
+	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC2_B50_STAMP,
+	             "the old placement's reply rebuilt carries the stamp builds 50 to 52 handed out");
+	check_eq_u64(oldlen, len, "and is the same length as this build's");
+	check(be32_get(g_sw_patch + 4) != SWT_RAC2_B50_STAMP,
+	      "this build's stamp is another number, so a client's kept stamp no longer matches");
+
+	/* -------------------------------------------------- the fingerprint */
+
+	group("build 53: RaC2's fingerprint takes the game's word, qwark's nop and both branches");
+
+	check(memcmp(g->fp_bytes, w_game, 4) == 0, "the game's own word, bl 0xBE9308");
+	check(g->fp_alt != NULL && memcmp(g->fp_alt, w_nop, 4) == 0, "the console patch's nop");
+	check(g->fp_switch != NULL && memcmp(g->fp_switch, w_new, 4) == 0, "this build's branch, b 0x1141400");
+	check(g->fp_switch_old != NULL && memcmp(g->fp_switch_old, w_old, 4) == 0,
+	      "and the old one, b 0x233200");
+	check_eq_u64(SW_RAC2_SITE_FAST_LOADS, 0x48556B60u, "fp_switch is the generated site word");
+
+	check(quit_and_wait(), "quit");
+	check(swt_rac2_boots_with(0x4BFFEA69u), "RaC2 with the game's word at 0xBEA8A0 is RaC2");
+	check(quit_and_wait(), "quit");
+	check(swt_rac2_boots_with(0x60000000u), "with the nop");
+	check(quit_and_wait(), "quit");
+	check(swt_rac2_boots_with(0x48556B60u), "with this build's branch");
+	check(quit_and_wait(), "quit");
+	check(swt_rac2_boots_with(0x4B648960u), "and with an earlier build's branch");
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	poke32(0x00BEA8A0u, 0x48556B64u);
+	pump(400);
+	check(session_state() == SESSION_BOOTING, "but a branch anywhere else is not RaC2");
+
+	/* ----------------------- a game still carrying an earlier build's patch */
+
+	group("build 53: RaC2 with an earlier build's switches is RaC2, told to rewrite them");
+
+	check(quit_and_wait(), "quit");
+	host_write_log_reset();
+	check(swt_boot_patched("NPEA00386", g_sw_patch2, oldlen, SF_NO_FLIP),
+	      "RaC2 boots with build 52's switch patch applied at load");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC2,
+	      "the old branch at the fingerprint site still says RaC2");
+	check_eq_u64(swt_peek32(0x00BEA8A0u), 0x4B648960u, "it is that branch");
+	check_eq_u64(switches_state(), 0, "the look finds no switches of this build");
+	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
+	      SESSION_FLAG_NO_CODE_PATCHES,
+	      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK &&
+	      be32_get(g_sw_patch + 4) != be32_get(g_sw_patch2 + 4),
+	      "and SWITCH_PATCH's stamp is not the old patch's: that patch is from another build");
+	check(features_set(SWT_R2_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
+	check(features_set(SWT_R2_AMMO, 1) == ST_UNSUPPORTED, "and so is Infinite ammo");
+	check_eq_u64(swt_peek8(0x01317720u) | swt_peek8(0x01317721u), 0, "no flag was written");
+	check(!swt_wrote_code(d), "and nothing was written into the new caves or the sites");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
+	poke32(0x00BEA8A0u, 0x4B648960u);
+	check(pump_until(SESSION_INGAME, 4000), "this build's caves under the old fast-load branch");
+	pump(6);
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC2, "is RaC2");
+	check_eq_u64(switches_state(), 0, "and not this build's switches either");
+
+	check(quit_and_wait(), "the client wrote the new patch and the game restarts");
+	check(swt_boot_patched("NPEA00386", g_sw_patch, len, SF_NO_FLIP), "with it applied at load");
+	check_eq_u64(switches_state(), 1, "the look finds this build's switches");
+	check((swt_info_flags() & SESSION_FLAG_CODE_SWITCHES) != 0, "bit4 is set");
+	check(features_set(SWT_R2_AMMO, 1) == ST_OK && swt_peek8(0x01317721u) == 1,
+	      "Infinite ammo goes on through its flag");
+	check(features_set(SWT_R2_AMMO, 0) == ST_OK && swt_peek8(0x01317721u) == 0, "and off");
+
+	/* The helper's patch goes in beside it: neither writes the other's bytes. */
+	check(savefile_patch(g_sw_sfpatch, sizeof(g_sw_sfpatch), &sflen) == ST_OK, "the helper's patch");
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
+	sf_poke_patch(g_sw_sfpatch, sflen, SF_NO_FLIP, 1);
+	check(pump_until(SESSION_INGAME, 4000), "RaC2 boots with both in the same dead span");
+	pump(6);
+	check_eq_u64(switches_state(), 1, "the switches are found");
+	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1, "and so is the helper");
+}
+
 /* A console: no look, no bit4, and the toggles patch words as they always have. */
 static void test_switches_console(void)
 {
@@ -9565,7 +9808,7 @@ static void test_switches_console(void)
 	check_eq_u64(swt_peek32(0x00B30C7Cu), 0x60000000u, "patches the word");
 	check_eq_u64(swt_peek8(0x01317721u), 0, "and writes no flag");
 	check(features_set(SWT_R2_AMMO, 0) == ST_OK, "off");
-	check_eq_u64(swt_peek32(0x00B30C7Cu), 0x4B7025A4u, "puts back what was there");
+	check_eq_u64(swt_peek32(0x00B30C7Cu), 0x486107A4u, "puts back what was there");
 }
 
 static void test_switches(void)
@@ -9632,6 +9875,15 @@ static void test_switches(void)
 	check(stamps[0] != stamps[1] && stamps[0] != stamps[2] && stamps[0] != stamps[3] &&
 	      stamps[1] != stamps[2] && stamps[1] != stamps[3] && stamps[2] != stamps[3],
 	      "the four games' stamps are four different numbers");
+
+	/*
+	 * Build 53 moved RaC2's trampolines and nothing else: a patch any earlier
+	 * build wrote for RaC1, RaC3 or Deadlocked still counts.
+	 */
+	check_eq_u64(stamps[0], SWT_RAC1_STAMP, "RaC1's stamp has not changed");
+	check_eq_u64(stamps[2], SWT_RAC3_STAMP, "nor RaC3's");
+	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "nor Deadlocked's");
+	check(stamps[1] != SWT_RAC2_B50_STAMP, "RaC2's has");
 	check_eq_u64(len, SWITCH_PATCH_HEAD + 123u * SWITCH_PATCH_ROW +
 	             SWITCH_PATCH_BYTES_HEAD + 3u * SWITCH_PATCH_BYTE_ROW,
 	             "Deadlocked's, the largest, is 109 cave words, 14 sites and 3 flags");
@@ -9669,6 +9921,7 @@ static void test_switches(void)
 	test_switches_presence();
 	test_switches_apply();
 	test_switches_fastloads();
+	test_switches_rac2_moved();
 
 	/* ------------------------------------------------- put it all back */
 

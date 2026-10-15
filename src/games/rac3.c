@@ -792,6 +792,7 @@ const struct game_api rac3_game = {
 	rac3_fp,
 	rac3_fp_patched,
 	GAME_FP_SWITCH(rac3_fp_switch),
+	NULL,                 /* the trampoline has never moved */
 	sizeof(rac3_fp),
 
 	0,                    /* no quit hook is known for RaC3 yet */

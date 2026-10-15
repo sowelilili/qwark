@@ -3281,6 +3281,9 @@ def smoke_rpcs3(exe):
         # ---------------------------------------------------- planet loads
         smoke_rpcs3_planet_loads(c, pine)
 
+        # ------------------- RaC2 with an earlier build's code switches
+        smoke_rpcs3_rac2_old_switches(c, pine)
+
         sock.close()
         sock = None
 
@@ -3363,6 +3366,102 @@ def smoke_rpcs3_planet_loads(c, pine):
     pine.shutdown_game()
     ok, info = wait_state(c, SESSION_XMB)
     check(ok, "rpcs3: Deadlocked stops", info)
+
+
+# Build 53: RaC2's code switches moved off 0x233200, inside a routine planet Joba
+# runs every frame, to 0x1141400. These are the rows the old placement's
+# SWITCH_PATCH handed out (builds 50 to 52), which an RPCS3 patch file written
+# then still holds; the branch at 0xBEA8A0 is also RaC2's fingerprint site.
+RAC2_SW_OLD_ROWS = [
+    (0x00233200, 0x3C600131), (0x00233204, 0x88637720), (0x00233208, 0x2C030000),
+    (0x0023320C, 0x40820008), (0x00233210, 0x489B60F9), (0x00233214, 0x489B7690),
+    (0x00233220, 0x3CC00131), (0x00233224, 0x88C67721), (0x00233228, 0x2C060000),
+    (0x0023322C, 0x40820008), (0x00233230, 0x7C64292E), (0x00233234, 0x488FDA4C),
+    (0x00B30C7C, 0x4B7025A4), (0x00BEA8A0, 0x4B648960),
+]
+RAC2_SW_FLAGS = [0x01317720, 0x01317721]
+RAC2_SW_AMMO_ID = 1
+RAC2_SW_AMMO_FLAG = 0x01317721
+
+
+def smoke_rpcs3_rac2_old_switches(c, pine):
+    """
+    Build 53: a RaC2 whose RPCS3 patch still carries the switches of an earlier
+    build. The old branch at the fingerprint site must still say RaC2, and the
+    client must be able to tell the switches are from another build - bit2 set
+    and bit4 clear, and a SWITCH_PATCH stamp that is not the one it kept beside
+    the old patch - so it offers to write the patch again. Then the new patch
+    goes in and counts. Starts and ends at XMB.
+    """
+    old_body = b"".join(struct.pack(">II", a, v) for a, v in RAC2_SW_OLD_ROWS)
+    old_body += struct.pack(">HH", len(RAC2_SW_FLAGS), 0)
+    old_body += b"".join(struct.pack(">I", a) + b"\0\0\0\0" for a in RAC2_SW_FLAGS)
+    old_stamp = zlib.crc32(old_body) & 0xFFFFFFFF
+    check(old_stamp == 0x4B325BE2,
+          "rpcs3 rac2 switches: the old patch's stamp is the one builds 50 to 52 handed out",
+          hex(old_stamp))
+
+    for addr, value in RAC2_SW_OLD_ROWS:
+        pine.poke(addr, struct.pack(">I", value))
+    for addr in RAC2_SW_FLAGS:
+        pine.poke(addr, b"\x00")
+    pine.boot("NPEA00386", "Ratchet & Clank: Going Commando")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 2,
+          "rpcs3 rac2 switches: RaC2 with an earlier build's switch patch reaches INGAME as RaC2",
+          info)
+
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, False)
+    check(ok and info["flags"] & SESSION_FLAG_NO_CODE_PATCHES,
+          "rpcs3 rac2 switches: bit2 set and bit4 clear, so the client offers the patch",
+          hex(info["flags"]) if info else None)
+
+    status, stamp, words, single, body = savefile_patch(c, OP_SWITCH_PATCH)
+    check(status == ST_OK and stamp != old_stamp,
+          "rpcs3 rac2 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
+          (status, hex(stamp) if stamp is not None else None))
+    rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
+    check(len(rows) == 14 and all(0x01141400 <= a < 0x011414FC for a, _ in rows[:12]),
+          "rpcs3 rac2 switches: its twelve trampoline words are at 0x1141400 now",
+          [hex(a) for a, _ in rows[:12]])
+    check(rows[12:] == [(0x00B30C7C, 0x486107A4), (0x00BEA8A0, 0x48556B60)],
+          "rpcs3 rac2 switches: and the sites branch there",
+          [(hex(a), hex(v)) for a, v in rows[12:]])
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC2_SW_AMMO_ID, 1))
+    check(status == ST_UNSUPPORTED,
+          "rpcs3 rac2 switches: Infinite ammo is refused until then", status)
+
+    # -------------------------------------- the client rewrites the patch
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac2 switches: the game is stopped for the new patch")
+    for addr, _ in RAC2_SW_OLD_ROWS:
+        pine.poke(addr, b"\0\0\0\0")
+    pine.poke(RAC2_FP_ADDR, RAC2_FP)
+    for addr, value in words:
+        pine.poke(addr, value)
+    for addr, value in single:
+        pine.poke(addr, bytes([value]))
+    pine.boot("NPEA00386", "Ratchet & Clank: Going Commando")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 2, "rpcs3 rac2 switches: RaC2 comes back with the new patch", info)
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, True)
+    check(ok, "rpcs3 rac2 switches: and bit4 CODE_SWITCHES is set",
+          hex(info["flags"]) if info else None)
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC2_SW_AMMO_ID, 1))
+    check(status == ST_OK and pine.peek(RAC2_SW_AMMO_FLAG, 1) == b"\x01",
+          "rpcs3 rac2 switches: Infinite ammo goes on through its flag byte", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC2_SW_AMMO_ID, 0))
+    check(status == ST_OK and pine.peek(RAC2_SW_AMMO_FLAG, 1) == b"\x00",
+          "rpcs3 rac2 switches: and off", status)
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac2 switches: RaC2 stops", info)
+    for addr, _ in words:
+        pine.poke(addr, b"\0\0\0\0")
+    pine.poke(RAC2_FP_ADDR, RAC2_FP)
 
 
 def smoke_rpcs3_held(exe):

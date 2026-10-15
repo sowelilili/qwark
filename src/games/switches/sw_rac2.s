@@ -22,8 +22,20 @@
 # its request bytes in the same gap since build 50 (sf_rac2.h says why they
 # moved), from 0x1317728 up, so the switch flags take its first bytes.
 #
-# The caves are the tail of the dead function at 0x22A368..0x233308, the one
-# whose head holds the savefile helper (0x22A368) and bl-mod's cave (0x22A75C).
+# The caves are at 0x1141400..0x1141438, in the last function (0x11413F8) of
+# the span of library code nothing reaches that the savefile helper starts,
+# 0x113EC64..0x11414FC (src/games/sfhelper/sf_rac2.h says why it is dead). The
+# helper takes the head of the span, 1100 bytes today, and may grow up to here:
+# its SF_CAVE_END is this cave's start.
+#
+# Build 53 moved them here from 0x233200 and 0x233220, the end of the function
+# at 0x22A368..0x233308, which was thought dead. It is not: on Joba (planet 11)
+# the planet setup 0x5BB78 points the per-planet hook at 0x1462DAC to 0x205018,
+# which calls 0x22A368 every frame, at 0x205254 or through 0x1F6E18, so with the
+# switches patched in under RPCS3 Joba could run into the trampolines' bytes as
+# part of that function. Nothing else moved: the trampolines are the same
+# instructions, the flags are where they were, and only the two site words
+# branch somewhere new.
 #
 # build.sh assembles this, links it with sw_rac2.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.
@@ -37,8 +49,11 @@
 #
 # 0xBEA8A0: bl 0xBE9308, the call that runs the load screen. Patched: nop. It is
 # also qwark's RaC2 fingerprint, which accepts this branch as well once the
-# switches are in. r3 is free here: the callee sets it before it reads it, and
-# so does the function called next, whether this call ran or not.
+# switches are in, and, since build 53 moved this trampoline, the branch to
+# 0x233200 that the patch of every earlier build put there (src/games/rac2.c):
+# a game with such a patch is still RaC2, with switches from another build.
+# r3 is free here: the callee sets it before it reads it, and so does the
+# function called next, whether this call ran or not.
 	.section .cave.fast_loads, "ax"
 fast_loads:
 	lis     r3, SW_FLAG_FAST_LOADS@ha

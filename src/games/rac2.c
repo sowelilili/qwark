@@ -22,13 +22,14 @@
 
 #include <string.h>
 
-/* See rac2.h for what these three are and why all three are accepted. */
+/* See rac2.h for what these four are and why all four are accepted. */
 const u8 rac2_fp[4]         = { 0x4B, 0xFF, 0xEA, 0x69 };
 const u8 rac2_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
 const u8 rac2_fp_switch[4]  = {
 	(u8)(SW_RAC2_SITE_FAST_LOADS >> 24), (u8)(SW_RAC2_SITE_FAST_LOADS >> 16),
 	(u8)(SW_RAC2_SITE_FAST_LOADS >> 8),  (u8)SW_RAC2_SITE_FAST_LOADS
 };
+const u8 rac2_fp_switch_old[4] = { 0x4B, 0x64, 0x89, 0x60 };
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -857,6 +858,7 @@ const struct game_api rac2_game = {
 	rac2_fp,
 	rac2_fp_patched,
 	GAME_FP_SWITCH(rac2_fp_switch),
+	GAME_FP_SWITCH(rac2_fp_switch_old),
 	sizeof(rac2_fp),
 
 	0,                    /* no quit hook is known for RaC2 yet */

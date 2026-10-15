@@ -294,11 +294,19 @@
  * Build 50: and the branch into the fast-load trampoline, which is what the site
  * holds on every boot under RPCS3 once the code switches' patch is in
  * (src/games/switches/sw_rac2.s).
+ *
+ * Build 53: and the branch the patch of every earlier build put there,
+ * 0x4B648960 ("b 0x233200"). Build 53 moved the trampolines off 0x233200, which
+ * is in a routine planet Joba runs, so this build's branch is a new word; a game
+ * still carrying an older patch would otherwise never leave BOOTING. With the
+ * old branch in it the game is RaC2 as before, the switches' look finds them
+ * from another build, and the client offers to write the patch again.
  */
 #define RAC2_FP_ADDR RAC2_FASTLOAD_INSTR
 extern const u8 rac2_fp[4];
 extern const u8 rac2_fp_patched[4];
 extern const u8 rac2_fp_switch[4];
+extern const u8 rac2_fp_switch_old[4];
 
 /* ---------------------------------------------------------------- hot block */
 

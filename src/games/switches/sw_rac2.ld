@@ -6,19 +6,21 @@
 OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 
 /*
- * The tail of the dead function at 0x22A368, past the savefile helper and
- * bl-mod's cave in its head.
+ * Build 53: the last function of the dead library span the savefile helper
+ * starts (0x113EC64..0x11414FC, src/games/sfhelper/sf_rac2.h), from its third
+ * instruction to where the span ends. The helper's own limit, SF_CAVE_END, is
+ * where this starts.
  */
-SW_CAVE_START = 0x00233200;
-SW_CAVE_END   = 0x00233308;
+SW_CAVE_START = 0x01141400;
+SW_CAVE_END   = 0x011414FC;
 
 /* The game function the fast-load site calls. */
 rac2_load_screen = 0x00BE9308;
 
 SECTIONS
 {
-	.cave.fast_loads     0x00233200 : { *(.cave.fast_loads) }
-	.cave.infinite_ammo  0x00233220 : { *(.cave.infinite_ammo) }
+	.cave.fast_loads     0x01141400 : { *(.cave.fast_loads) }
+	.cave.infinite_ammo  0x01141420 : { *(.cave.infinite_ammo) }
 
 	.site.infinite_ammo  0x00B30C7C : { *(.site.infinite_ammo) }
 	.site.fast_loads     0x00BEA8A0 : { *(.site.fast_loads) }
