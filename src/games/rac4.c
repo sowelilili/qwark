@@ -14,6 +14,7 @@
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
+#include "../core/manips.h"
 
 #include <string.h>
 
@@ -41,11 +42,15 @@ const u8 rac4_fp_switch[4]  = {
  *   8  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
  *   9  challenge  the challenge currently being run                  every 8th
  *  10  savefile   helper byte and its two request bytes              every 8th
+ *  11  frontend   the main menu's byte                               every tick
+ *  12  restores   the save restore's block counter                   every tick
  *
  * Blocks 4 to 6 are the autosplit watcher's, and the flags block moved from
  * every eighth tick to every tick because the watcher and the softlock fix both
  * read it. Block 7 takes the even ticks and blocks 8 to 10 the odd ones, so a
- * tick costs exactly eight reads and never pays for two slow blocks at once.
+ * tick costs exactly ten reads and never pays for two slow blocks at once.
+ * Blocks 11 and 12 are the manips' file-load trigger (revision 1.21), which
+ * also reads the level word out of block 5 and the tutorial flags out of 3.
  */
 static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_HOT_INPUTS_ADDR, RAC4_HOT_INPUTS_LEN, 1, 0 },
@@ -58,7 +63,9 @@ static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_FRAME_COUNTER,   8,                   2, 0 },
 	{ RAC4_BOLTS,           RAC4_HOT_STATS_LEN,  8, 1 },
 	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 3 },
-	{ RAC4_SF_HELPER,       4,                   8, 5 }
+	{ RAC4_SF_HELPER,       4,                   8, 5 },
+	{ RAC4_IN_FRONTEND,     1,                   1, 0 },
+	{ RAC4_RESTORE_COUNT,   4,                   1, 0 }
 };
 
 #define HOT_INPUTS    0
@@ -72,6 +79,8 @@ static const struct game_hot_block rac4_hot[] = {
 #define HOT_STATS     8
 #define HOT_CHALLENGE 9
 #define HOT_SAVEFILE  10
+#define HOT_FRONTEND  11
+#define HOT_RESTORES  12
 
 #define OFF_ANALOGS   (RAC4_ANALOGS         - RAC4_INPUTS)        /* 0x1DC */
 #define OFF_GAMESTATE (RAC4_GAME_STATE      - RAC4_FRAME_COUNTER) /* 0x04 */
@@ -85,6 +94,18 @@ static const struct game_hot_block rac4_hot[] = {
 /* What the two watchers need and struct game_hot has no room for. */
 static u8 g_game_mode;      /* game state, low byte */
 static u8 g_tutorial;       /* tutorial flags, low byte */
+
+/* And what the manips' file-load trigger needs (revision 1.21). */
+static u32 g_level;         /* RAC4_LEVEL, the whole word */
+static u8  g_frontend;      /* RAC4_IN_FRONTEND */
+static u32 g_restores;      /* RAC4_RESTORE_COUNT */
+
+/* The trigger's own state; see rac4_file_load_watch. */
+static int g_fl_primed;
+static int g_fl_armed;
+static int g_fl_settled;
+static u8  g_fl_tutorial;
+static u32 g_fl_restores;
 
 /*
  * The Deadlocked autosplitter SPRX's GameState, field for field. The names are
@@ -160,8 +181,13 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		g_as.cutscene_ptr = be32_get(l + OFF_CUTSCENE);
 	}
 
-	if (blocks[HOT_ASPLANET] != NULL)
-		g_as.planet = be32_get(blocks[HOT_ASPLANET]) % RAC4_AS_PLANET_MOD;
+	if (blocks[HOT_ASPLANET] != NULL) {
+		g_level = be32_get(blocks[HOT_ASPLANET]);
+		g_as.planet = g_level % RAC4_AS_PLANET_MOD;
+	}
+
+	if (blocks[HOT_FRONTEND] != NULL) g_frontend = blocks[HOT_FRONTEND][0];
+	if (blocks[HOT_RESTORES] != NULL) g_restores = be32_get(blocks[HOT_RESTORES]);
 
 	if (blocks[HOT_VOXHP] != NULL)
 		g_as.vox_hp = bef32_get(blocks[HOT_VOXHP]);
@@ -500,6 +526,12 @@ static void rac4_on_enter(void)
 	g_prev_game_mode = 0;
 	g_game_mode     = 0;
 	g_tutorial      = 0xFF;
+	g_level         = 0;
+	g_frontend      = 0;
+	g_restores      = 0;
+	g_fl_primed     = 0;
+	g_fl_armed      = 0;
+	g_fl_settled    = 0;
 
 	/* The watcher starts over; the pause state deliberately does not. */
 	memset(&g_as, 0, sizeof(g_as));
@@ -537,6 +569,95 @@ static void rac4_on_enter(void)
 	g_loading_hook_on = 1;
 }
 
+/* -------------------------------------- the manips' file-load trigger, 1.21 */
+
+/*
+ * A save loaded or a new game started, for the manip groups (src/core/manips.h).
+ *
+ * The user's rule is the first planet's load, and Deadlocked goes back to its
+ * first planet, DreadZone, all the time, so the spec names the tutorial flags'
+ * low byte dropping to 0, which the softlock fix and the autosplitter's start
+ * watch. That byte is saved with the file, though (save chunk 5,
+ * 0xB1F468..0xB1F473, chunk table 0x9EB90C): the game-data reset 0x3C6970
+ * zeroes it (0x3C6C24) on a new game and on a challenge-mode start, but a load
+ * gives it the save's value, which is 0 only for a save made before the
+ * tutorial got going. A remembered NG+ category would then never see the
+ * load of an ordinary save.
+ *
+ * So the trigger arms on any of three things and fires once the game has
+ * settled into a level:
+ *
+ *   arm   the main menu is up (RAC4_IN_FRONTEND 1): a load from it, or a new
+ *         game, is coming
+ *         the save restore's block counter moved (RAC4_RESTORE_COUNT): a save
+ *         went back into memory, from the menu, the game's own load menu or
+ *         the savefile helper
+ *         the tutorial byte dropped to 0: a new game or a challenge-mode start,
+ *         which resets the game data without a restore
+ *   fire  out of the menu (RAC4_IN_FRONTEND 0), no load requested, ordinary
+ *         play (gameMode 0) and a single-player or co-op level, for two ticks
+ *         running
+ *
+ * Nothing else arms it: planet travel, a death, the pause, a cutscene and the
+ * DreadZone lobby neither restore a save nor reset the game data nor enter
+ * the main menu, and the five act tunings the NG+ group writes are boss
+ * counters in BSS that nothing in a load touches. The two ticks matter on a
+ * challenge-mode start, which zeroes the challenge counter with the rest of
+ * the game data and only then puts the incremented value back (0x3D9E64,
+ * 0x3DA0F8), and a load follows it anyway.
+ *
+ * The first tick of a process only learns where the counters stand; finding
+ * the main menu up there arms, it never fires. A load already under way when
+ * qwark attaches is missed. From the executable; not yet run on hardware.
+ */
+static void rac4_file_load_watch(void)
+{
+	int ready;
+
+	if (!g_fl_primed) {
+		g_fl_primed   = 1;
+		g_fl_armed    = (g_frontend != 0);
+		g_fl_settled  = 0;
+		g_fl_tutorial = g_tutorial;
+		g_fl_restores = g_restores;
+		return;
+	}
+
+	if (g_frontend != 0) g_fl_armed = 1;
+	if (g_restores != g_fl_restores) g_fl_armed = 1;
+	if (g_tutorial == 0 && g_fl_tutorial != 0) g_fl_armed = 1;
+	g_fl_restores = g_restores;
+	g_fl_tutorial = g_tutorial;
+
+	if (!g_fl_armed) return;
+
+	ready = g_frontend == 0 && g_as.request_load == 0 && g_game_mode == 0 &&
+	        (s32)g_level >= 1 && (s32)g_level <= RAC4_LEVEL_SP_CO_OP_MAX;
+	if (!ready) {
+		g_fl_settled = 0;
+		return;
+	}
+	if (++g_fl_settled < 2) return;
+
+	g_fl_armed = 0;
+	g_fl_settled = 0;
+	manips_file_loaded();
+}
+
+/*
+ * Whether a save file is in play, for the manips: out of the main menu and in
+ * a single-player or co-op level. Tick thread.
+ */
+static int rac4_in_file(void)
+{
+	u8 frontend = 1;
+	u32 level = 0;
+
+	if (mem_read_u8(RAC4_IN_FRONTEND, &frontend) != ST_OK) return -1;
+	if (mem_read_u32(RAC4_LEVEL, &level) != ST_OK) return -1;
+	return frontend == 0 && (s32)level >= 1 && (s32)level <= RAC4_LEVEL_SP_CO_OP_MAX;
+}
+
 /*
  * The two watchers RAC4Form kept as memory subscriptions.
  *
@@ -550,6 +671,7 @@ static void rac4_on_tick(const struct game_hot *hot)
 	(void)hot;
 
 	rac4_autosplit_tick();
+	rac4_file_load_watch();
 
 	if (g_tutorial != g_prev_tutorial) {
 		g_prev_tutorial = g_tutorial;
@@ -573,17 +695,24 @@ static void rac4_on_tick(const struct game_hot *hot)
 
 /* -------------------------------------------------------------- describe */
 
+/*
+ * Build 53: "Fixes" is where the crash patches and the softlock fix are
+ * described now. It goes on the end so the other groups keep their indices;
+ * MANIP_LIST's header names the same two ids (protocol 1.21).
+ */
 static const char * const rac4_groups[] = {
 	"Cheats",
 	"Player",
 	"Progress",
-	"Savefile"
+	"Savefile",
+	"Fixes"
 };
 
 #define G_CHEATS   0
 #define G_PLAYER   1
 #define G_PROGRESS 2
 #define G_SAVEFILE 3
+#define G_FIXES    4
 
 /* Indexed by RAC4_RO_*; the order is part of the wire contract for this game. */
 static const char * const rac4_readouts[] = {
@@ -605,8 +734,8 @@ static const char * const rac4_readouts[] = {
 
 static const struct feature_desc rac4_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
-	{ R4_CRASH_PATCHES, FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Crash patches" },
-	{ R4_SOFTLOCK_FIX,  FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Fix reset softlocks" },
+	{ R4_CRASH_PATCHES, FEATURE_TOGGLE, G_FIXES,    0, WC, NO, 0, 0, "Crash patches" },
+	{ R4_SOFTLOCK_FIX,  FEATURE_TOGGLE, G_FIXES,    0, 0,  NO, 0, 0, "Fix reset softlocks" },
 	{ R4_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
 	{ R4_REFILL_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Refill ammo" },
 	{ R4_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
@@ -619,7 +748,7 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_SKIN,          FEATURE_ENUM,   G_PLAYER,   RAC4_SKIN_COUNT, 0, RAC4_RO_SKIN, 0, RAC4_SKIN_COUNT - 1, "Skin" },
 
 	{ R4_UNLOCK_PLANETS, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all planets" },
-	{ R4_ACT_TUNE,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Act tune bosses" },
+	/* Build 53: Act tune bosses is retired, id 12 and all; it is the NG+ group. */
 
 	/*
 	 * The weapon actions. A locked weapon reads level -1, so both pass over
@@ -836,6 +965,48 @@ static int rac4_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *st
 	return ST_OK;
 }
 
+/* ----------------------------------------------------------------- manips */
+
+
+/*
+ * Revision 1.21, build 53: Deadlocked's one manip group (SPEC-manips.md section
+ * 2), RAC4Form.buttonActTune_Click's five act tunings, in its order. The
+ * Reactor's is a word write of 20, so its counter reads 20 (rac4.h). The crash
+ * patches and the softlock fix are not manips of a category: they are listed
+ * in MANIP_LIST's "Fixes" header and stay ordinary toggles, ids, behaviour and
+ * auto flags unchanged.
+ */
+static const struct manip_write r4_act_tune[] = {
+	MW_U8(RAC4_TUNE_SHELLSHOCK, 20),
+	MW_U32(RAC4_TUNE_REACTOR, 20),
+	MW_U8(RAC4_TUNE_EVISCERATOR, 20),
+	MW_U8(RAC4_TUNE_ACE, 20),
+	MW_U8(RAC4_TUNE_VOX, 20)
+};
+
+static const struct manip_group rac4_manip_groups[] = {
+	{ 1, MANIP_FLAG_NGPLUS, "NG+", "NG+ no LC\nNG+",
+	  { { r4_act_tune, (u8)(sizeof(r4_act_tune) / sizeof(r4_act_tune[0])) },
+	    { NULL, 0 } },
+	  { { NULL, 0 }, { NULL, 0 } } }
+};
+
+static const u8 rac4_fixes[] = { R4_CRASH_PATCHES, R4_SOFTLOCK_FIX };
+
+static const struct manip_header rac4_manip_headers[] = {
+	{ "Fixes", rac4_fixes, (u8)(sizeof(rac4_fixes) / sizeof(rac4_fixes[0])) }
+};
+
+static const struct game_manips rac4_manips = {
+	"rac4",
+	rac4_manip_groups,
+	(u8)(sizeof(rac4_manip_groups) / sizeof(rac4_manip_groups[0])),
+	RAC4_CHALLENGE_MODE, 1,    /* the challenge counter, one byte */
+	rac4_manip_headers,
+	(u8)(sizeof(rac4_manip_headers) / sizeof(rac4_manip_headers[0])),
+	rac4_in_file
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac4_game = {
@@ -890,5 +1061,7 @@ const struct game_api rac4_game = {
 	rac4_on_quit,         /* the autosplit PAUSE, on the way out of INGAME */
 	rac4_on_tick,
 
-	rac4_autosplit_describe
+	rac4_autosplit_describe,
+
+	&rac4_manips          /* revision 1.21 */
 };

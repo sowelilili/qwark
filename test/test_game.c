@@ -126,5 +126,7 @@ const struct game_api testgame_game = {
 	NULL,                 /* on_quit */
 	NULL,                 /* on_tick */
 
-	NULL                  /* autosplit_describe: this stub has no watcher */
+	NULL,                 /* autosplit_describe: this stub has no watcher */
+
+	NULL                  /* manips: and no manip groups */
 };

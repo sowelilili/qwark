@@ -12,6 +12,7 @@
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
+#include "../core/manips.h"
 
 #include <string.h>
 
@@ -22,6 +23,8 @@ const u8 rac3_fp_switch[4]  = {
 	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 24), (u8)(SW_RAC3_SITE_FREEZE_AMMO >> 16),
 	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 8),  (u8)SW_RAC3_SITE_FREEZE_AMMO
 };
+
+const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -42,11 +45,14 @@ const u8 rac3_fp_switch[4]  = {
  *  10  file time                                                     every 8th
  *  11  savefile the helper's own byte                                  every 8th
  *  12  chargeboot colour words                                       every 8th
+ *  13  request  the planet load request word                          every tick
  *
  * Blocks 3 to 8 belong to the autosplit watcher and are per-tick because a split
  * has to reach the PC in milliseconds; block 3 also carries the health readout
  * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
- * so a tick costs nine reads plus at most one: 9.5 on average, ten at worst.
+ * so a tick costs ten reads plus at most one: 10.5 on average, eleven at worst.
+ * Block 13 and the load block 4 carry the manips' file-load trigger and the
+ * trophy auto-refresh (revision 1.21).
  */
 static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_HOT_INPUTS_ADDR, RAC3_HOT_INPUTS_LEN, 1, 0 },
@@ -61,7 +67,8 @@ static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
 	{ RAC3_FILE_TIME,       4,                   8, 1 },
 	{ RAC3_SF_HELPER,       1,                   8, 2 },
-	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 }
+	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 },
+	{ RAC3_LOAD_PLANET,     4,                   1, 0 }
 };
 
 #define HOT_INPUTS   0
@@ -77,6 +84,7 @@ static const struct game_hot_block rac3_hot[] = {
 #define HOT_TIME     10
 #define HOT_SAVEFILE 11
 #define HOT_COLOURS  12
+#define HOT_REQUEST  13
 
 #define OFF_ANALOGS   (RAC3_ANALOGS        - RAC3_HOT_INPUTS_ADDR)   /* 0x1DC */
 
@@ -93,6 +101,7 @@ static const struct game_hot_block rac3_hot[] = {
 #define OFF_HEALTH     (RAC3_PLAYER_HEALTH - RAC3_HOT_PSTATE_ADDR)   /* 0x28C */
 #define OFF_NEFFY_PH   (RAC3_NEFFY_PHASE   - RAC3_HOT_PSTATE_ADDR)   /* 0x348 */
 #define OFF_GAMESTATE  (RAC3_GAME_STATE    - RAC3_HOT_LOAD_ADDR)     /* 0x20 */
+#define OFF_MODETIMER  (RAC3_MODE_TIMER    - RAC3_HOT_LOAD_ADDR)     /* 0x1C */
 
 /* What the autosplit watcher reads, named the way rac3-autosplitter.asl names it. */
 struct rac3_as_state {
@@ -108,6 +117,27 @@ struct rac3_as_state {
 };
 
 static struct rac3_as_state g_as;
+
+/*
+ * What the manips' file-load trigger reads (revision 1.21), filled by the
+ * decode: the load request word, the destination and the planet as the signed
+ * words they are, the game mode and its frame count.
+ */
+static u32 g_load_request;
+static u32 g_load_dest;
+static u32 g_planet_word;
+static u32 g_mode;
+static u32 g_mode_timer;
+
+/* The trigger's own state; see rac3_file_load_watch. */
+static int g_fl_primed;
+static int g_fl_armed;
+static int g_fl_edge;
+static u32 g_fl_prev_mode;
+
+/* The trophy auto-refresh's (R3_AUTO_TROPHIES); see rac3_file_load_watch. */
+static int g_auto_trophies;
+static int g_trophies_asked;
 
 static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -129,6 +159,7 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		 * the word, so PLANET_LIST index 0 is a placeholder and index n is the id
 		 * the game reports here.
 		 */
+		g_planet_word = be32_get(state + OFF_PLANET);
 		out->current_planet = state[OFF_PLANET + 3];
 		out->readout[RAC3_RO_BOLTS]     = be32_get(state + OFF_BOLTS);
 		out->readout[RAC3_RO_CHALLENGE] = state[OFF_CHALLENGE];
@@ -177,6 +208,9 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_LOAD] != NULL) {
 		g_as.dest_planet = blocks[HOT_LOAD][3];
+		g_load_dest  = be32_get(blocks[HOT_LOAD]);
+		g_mode_timer = be32_get(blocks[HOT_LOAD] + OFF_MODETIMER);
+		g_mode       = be32_get(blocks[HOT_LOAD] + OFF_GAMESTATE);
 		g_as.game_state  = be32_get(blocks[HOT_LOAD] + OFF_GAMESTATE);
 	}
 
@@ -186,6 +220,8 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_LOADSCR] != NULL)
 		g_as.loading_screen = blocks[HOT_LOADSCR][0];
+
+	if (blocks[HOT_REQUEST] != NULL) g_load_request = be32_get(blocks[HOT_REQUEST]);
 }
 
 /* --------------------------------------------------------------- patches */
@@ -432,6 +468,18 @@ static void rac3_on_enter(void)
 	g_koros_bolts = 0;
 	g_origin_planet = 0;
 	g_long_load_open = 0;
+
+	/* The trophy toggle is qwark's own state and goes with the process. */
+	g_auto_trophies = 0;
+	g_trophies_asked = 0;
+	g_load_request = 0;
+	g_load_dest = 0;
+	g_planet_word = 0;
+	g_mode = 0;
+	g_mode_timer = 0;
+	g_fl_primed = 0;
+	g_fl_armed = 0;
+	g_fl_edge = 0;
 }
 
 /*
@@ -466,6 +514,102 @@ static void rac3_fastload_watch(void)
 	rac3_arm_fast_loads();
 }
 
+/* ---------------------- the manips' file-load trigger and the trophies, 1.21 */
+
+/*
+ * A load of Veldin, for the manip groups (src/core/manips.h): the user's rule
+ * is the end of a planet load whose planet is the first one, which every run
+ * starts on and none comes back to. From the NPEA00387 executable; not yet run
+ * on hardware.
+ *
+ * Every planet load is one routine, 0x275B18, entered from the front end
+ * (0x12528) or from the level loop (0x1D87E8) once the load request word is
+ * set: its first step puts the game mode to 6 (0x27ACCC, at 0x27AD58) and the
+ * planet to the destination (0x275BA0). The request word stays set for the
+ * whole load; main clears it (0x13E10, at 0x13F74) before it starts the level
+ * loop, whose init puts the mode to 0 (0x1D7068) and the mode timer to 0
+ * (0x1D7078), and the timer then counts frames. Every way into a run asks for
+ * Veldin that way: a new game (the front-end menu at 0x11FC4, or new_game
+ * 0x1DFD30 and goto_planet 0x14AA54 through 0x28A76C), a save loaded from the
+ * title (perform_load 0x1E1CF4, the request at 0x1E203C) or from the game
+ * (0x1E2198, the mode-6 handler then calling goto_planet at 0x22A08C, which is
+ * also the savefile helper's way), and a challenge-mode start (0x2EF3BC, then
+ * 0x28A76C).
+ *
+ * So: arm while a load into Veldin is under way (request set, destination 1,
+ * mode 6) - requiring mode 6 keeps out the title's frame where the request is
+ * set and the mode is still 0 - then fire once the mode has left 6 on Veldin
+ * and the level init has run a frame (mode timer 1 or more). Mode 6 also comes
+ * and goes without a load, in ship cutscenes, but never with the request the
+ * arm needs, and Veldin skips the level init's own push (0x1D7298). No death
+ * or respawn writes the request word. The challenge counter is final by then:
+ * the restore, the new-game clear (0x1DF81C) and the challenge start
+ * (0x2EF43C) all write it before the request, and the load never does.
+ *
+ * The first tick of a process only learns the mode, and never fires.
+ */
+/*
+ * Revision 1.21: the trophy auto-refresh, on while R3_AUTO_TROPHIES is. It asks
+ * for the refresh once per run, on the first tick a load into Veldin is seen:
+ * after the last run's trophies and before this run can award one, and before
+ * the run's timer starts at the end of that load, so whatever the refresh
+ * costs the game is not run time. The game registers its trophy context on a
+ * thread of its own and awards nothing until that is done (0x98535C wants the
+ * registered byte), which the load's length leaves room for. Whatever category
+ * is selected, None included. See rac3_trophy_refresh for what the refresh is.
+ */
+static void rac3_file_load_watch(void)
+{
+	if (!g_fl_primed) {
+		g_fl_primed = 1;
+		g_fl_armed = 0;
+		g_fl_edge = 0;
+		g_fl_prev_mode = g_mode;
+		g_trophies_asked = 0;
+		return;
+	}
+
+	if (g_load_request != 0) {
+		g_fl_armed = (g_load_dest == RAC3_PLANET_VELDIN &&
+		              g_mode == RAC3_GAME_STATE_LOAD);
+		g_fl_edge = 0;
+
+		if (g_fl_armed && g_auto_trophies && !g_trophies_asked) {
+			g_trophies_asked = 1;
+			rac3_trophy_refresh();
+		}
+	} else {
+		g_trophies_asked = 0;
+	}
+
+	if (g_fl_armed && g_fl_prev_mode == RAC3_GAME_STATE_LOAD &&
+	    g_mode != RAC3_GAME_STATE_LOAD)
+		g_fl_edge = 1;
+
+	g_fl_prev_mode = g_mode;
+
+	if (g_fl_edge && g_planet_word == RAC3_PLANET_VELDIN &&
+	    (g_mode_timer >= 1 || g_mode != 0)) {
+		g_fl_armed = 0;
+		g_fl_edge = 0;
+		manips_file_loaded();
+	}
+}
+
+/*
+ * Whether a save file is in play, for the manips: the planet word is -1 on the
+ * title (its initial value, and written at 0x1181C and on a quit at 0x27A9F8)
+ * and a planet's number from the frame a save is restored or a new game set up.
+ * Tick thread.
+ */
+static int rac3_in_file(void)
+{
+	u32 planet = 0;
+
+	if (mem_read_u32(RAC3_CURRENT_PLANET, &planet) != ST_OK) return -1;
+	return (s32)planet >= 1;
+}
+
 static void rac3_on_tick(const struct game_hot *hot)
 {
 	static const u8 force[2] = { 0x01, 0x01 };
@@ -474,6 +618,7 @@ static void rac3_on_tick(const struct game_hot *hot)
 
 	rac3_fastload_watch();
 	rac3_autosplit_tick();
+	rac3_file_load_watch();
 
 	if (g_fastload_arm == 0) return;
 	if (--g_fastload_arm != 0) return;
@@ -488,7 +633,8 @@ static const char * const rac3_groups[] = {
 	"Player",
 	"Progress",
 	"Savefile",
-	"Cosmetics"
+	"Cosmetics",
+	"Trophies"
 };
 
 #define G_CHEATS    0
@@ -496,6 +642,8 @@ static const char * const rac3_groups[] = {
 #define G_PROGRESS  2
 #define G_SAVEFILE  3
 #define G_COSMETICS 4
+/* Build 53: the trophy refresh and its auto toggle, MANIP_LIST's "Trophies". */
+#define G_TROPHIES  5
 
 /* Indexed by RAC3_RO_*; the order is part of the wire contract for this game. */
 static const char * const rac3_readouts[] = {
@@ -552,11 +700,13 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_QE_OFFSET,     FEATURE_VALUE,  G_PLAYER,  16, SG, RAC3_RO_QE_OFFSET, 0, 0, "QE offset" },
 	{ R3_VENDOR_QE,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Enable vendor QE" },
 
-	{ R3_SETUP_NGPLUS,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Setup NG+ manips" },
-	{ R3_CC_EARLY,       FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "CC early setup" },
-	{ R3_UNTUNE_BOSSES,  FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Untune bosses" },
-	{ R3_RESET_DROPSHIP, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset dropship health" },
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Refresh trophy state" },
+	/*
+	 * Build 53: Setup NG+ manips, CC early setup, Untune bosses and Reset
+	 * dropship health are retired, ids and all (rac3.h). The first, the second
+	 * and the dropship are the manip groups below now.
+	 */
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Refresh trophy state" },
+	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Auto-refresh trophies" },
 	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
 	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
 	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
@@ -642,6 +792,10 @@ static int rac3_set_toggle(u8 id, int on)
 	case R3_FAST_LOADS:
 		g_fastload_on = (on != 0);
 		return on ? rac3_arm_fast_loads() : ST_OK;
+	/* qwark-side state, read by rac3_file_load_watch. */
+	case R3_AUTO_TROPHIES:
+		g_auto_trophies = (on != 0);
+		return ST_OK;
 	default:               return ST_NOT_FOUND;
 	}
 }
@@ -782,6 +936,73 @@ static int rac3_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *st
 	return ST_OK;
 }
 
+/* ----------------------------------------------------------------- manips */
+
+
+/*
+ * Revision 1.21, build 53: UYA's manip groups (SPEC-manips.md section 2), every
+ * write in the order the spec lists it.
+ *
+ * The five setup writes are rac3.cs SetupFile, the old "Setup NG+ manips"
+ * button: Klunk's two tunings, Neffy's, the vid comic menu cursor (Ende) and
+ * the CC help desk message. NG+ adds Vendor QE after them, and NG+ no QE never
+ * writes it. CC Early refreshes its quit-exploit fake item and the Veldin
+ * dropship health every run. "Untune bosses" belongs to no group and is gone.
+ */
+static const struct manip_write r3_setup[] = {
+	MW_U32(RAC3_KLUNK_TUNING_1, 7),
+	MW_U32(RAC3_KLUNK_TUNING_2, 3),
+	MW_U32(RAC3_NEFFY_TUNING, 0xE),
+	MW_U32(RAC3_VID_COMIC_MENU, 2),
+	MW_U32(RAC3_CC_HELP_DESK, 1)
+};
+
+static const struct manip_write r3_vendor_qe[] = {
+	MW_BYTES(RAC3_QE_OFFSET, rac3_vendor_qe, 2)
+};
+
+static const struct manip_write r3_cc_early[] = {
+	MW_U32(RAC3_CC_FAKE_ITEM_A, 0x00000041u),
+	MW_U32(RAC3_CC_FAKE_ITEM_B, 0x41414141u),
+	MW_U32(RAC3_DROPSHIP_HEALTH, 100)
+};
+
+#define L(a) { a, (u8)(sizeof(a) / sizeof(a[0])) }
+#define NONE { NULL, 0 }
+#define NG   MANIP_FLAG_NGPLUS
+#define EXT  MANIP_FLAG_EXTENSION
+
+static const struct manip_group rac3_manip_groups[] = {
+	{ 1, NG, "NG+ no QE", "NG+ no QE",
+	  { L(r3_setup), NONE }, { NONE, NONE } },
+	{ 2, NG, "NG+", "NG+",
+	  { L(r3_setup), L(r3_vendor_qe) }, { NONE, NONE } },
+	{ 3, NG | EXT, "NG+ CC Early", "NG+ CC Early",
+	  { L(r3_setup), L(r3_vendor_qe) }, { L(r3_cc_early), NONE } }
+};
+
+#undef L
+#undef NONE
+#undef NG
+#undef EXT
+
+/* The trophy refresh and its auto toggle, beside the manips. */
+static const u8 rac3_trophies[] = { R3_RESET_TROPHIES, R3_AUTO_TROPHIES };
+
+static const struct manip_header rac3_manip_headers[] = {
+	{ "Trophies", rac3_trophies, (u8)(sizeof(rac3_trophies) / sizeof(rac3_trophies[0])) }
+};
+
+static const struct game_manips rac3_manips = {
+	"rac3",
+	rac3_manip_groups,
+	(u8)(sizeof(rac3_manip_groups) / sizeof(rac3_manip_groups[0])),
+	RAC3_CHALLENGE_MODE, 1,    /* the challenge counter, one byte */
+	rac3_manip_headers,
+	(u8)(sizeof(rac3_manip_headers) / sizeof(rac3_manip_headers[0])),
+	rac3_in_file
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac3_game = {
@@ -838,5 +1059,7 @@ const struct game_api rac3_game = {
 	NULL,                 /* on_quit */
 	rac3_on_tick,
 
-	rac3_autosplit_describe
+	rac3_autosplit_describe,
+
+	&rac3_manips          /* revision 1.21 */
 };

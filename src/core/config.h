@@ -43,6 +43,8 @@
  * per mod auto flag, and those two are only written when a user ticks the box.
  * The shipped mod library's busiest title has five mods, and a user who
  * auto-flagged a dozen features in each of the four games is still inside 64.
+ * Revision 1.21 adds at most three manip keys per game played, written only
+ * when the user changes a manip option or picks a category.
  */
 #define CONFIG_MAX_ENTRIES 64
 
@@ -100,6 +102,15 @@ int  config_feature_auto_default(const char *title, const char *label, int fallb
 void config_set_feature_auto(const char *title, const char *label, int on);
 int  config_mod_auto(const char *title, const char *dirname);
 void config_set_mod_auto(const char *title, const char *dirname, int on);
+
+/*
+ * Revision 1.21, the manip options of one game: "manip.<game>.<field>", where
+ * <game> is the game's own key (rac1 .. rac4, not the title id, so the disc
+ * trilogy keeps three sets) and <field> is auto_reset, remember or category.
+ * A key the file has never held answers `fallback`.
+ */
+u32  config_manip(const char *game, const char *field, u32 fallback);
+int  config_set_manip(const char *game, const char *field, u32 value);
 
 /* ------------------------------------------------------------- positions */
 

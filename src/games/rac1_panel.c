@@ -615,63 +615,16 @@ int rac1_set_value(u8 id, u32 value)
 	}
 }
 
-/* SetShootSkillPoints, both directions. */
-static int rac1_shoot_skill_points(int setup)
-{
-	u8 sonic[8];
-	u8 block[32];
-	int i;
-	int rc;
-
-	memset(sonic, 0, sizeof(sonic));
-	memset(block, 0, sizeof(block));
-
-	if (setup) {
-		be32_put(sonic, 1);
-		be32_put(sonic + 4, 1);
-		for (i = 0; i < 8; i++) be32_put(block + i * 4, 0x20);
-	}
-
-	rc = mem_write(RAC1_SONIC_SP, sonic, sizeof(sonic));
-	if (rc != ST_OK) return rc;
-
-	return mem_write(RAC1_SHOOT_SP, block, sizeof(block));
-}
-
-/* The resetAllMissionsStuff button: Blarg bridge plus the Rilgar race floats. */
-static int rac1_anypct_reset(void)
-{
-	int rc = mem_write_u32(RAC1_ANYPCT_FLAG, 0);
-
-	if (rc != ST_OK) return rc;
-
-	rc = mem_write_zeros(RAC1_ANYPCT_RACE, 12);
-	if (rc != ST_OK) return rc;
-
-	plat_notify("Blarg bridge and rilgar race reset for any% all missions. "
-	            "Good luck!");
-	return ST_OK;
-}
-
+/*
+ * Build 53: the Drek skip and cutscene, the shooting skill point setup and
+ * reset and the any% all-missions reset are retired here, ids and all. Their
+ * writes are RaC1's manip groups in rac1.c now, applied on file loads.
+ */
 int rac1_trigger(u8 id)
 {
 	switch (id) {
 	case F_DIE:
 		return classic_die_set_z(RAC1_COORDS);
-
-	case F_DREK_SKIP:
-		plat_notify("Drek skip done for non poki skip NG+ runs :)");
-		return mem_write_u8(RAC1_DREK_SKIP, 1);
-
-	case F_DREK_CUTSCENE:
-		plat_notify("Drek cutscene done for NG+ poki skip runs :)");
-		return mem_write_u8(RAC1_DREK_CUTSCENE, 1);
-
-	case F_RESET_SHOOT_SP:
-		return rac1_shoot_skill_points(0);
-
-	case F_SETUP_SHOOT_SP:
-		return rac1_shoot_skill_points(1);
 
 	case F_RESET_GOLDBOLTS:
 		/* Four per planet, twenty planets' worth of slots. */
@@ -685,9 +638,6 @@ int rac1_trigger(u8 id)
 
 	case F_UNLOCK_STYLE:
 		return mem_write_fill(RAC1_STYLE_POINTS, 1, 30);
-
-	case F_ANYPCT_RESET:
-		return rac1_anypct_reset();
 
 	case F_MAX_AMMO:
 		return rac1_max_ammo_all();

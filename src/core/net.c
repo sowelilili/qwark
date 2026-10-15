@@ -8,6 +8,7 @@
 #include "autosplit.h"
 #include "savefile.h"
 #include "switches.h"
+#include "manips.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
@@ -480,6 +481,22 @@ static void put_fixed(u8 *dst, u32 cap, const char *src)
 	while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
 }
 
+/*
+ * Revision 1.21. The four manip ops answer UNSUPPORTED for a game without
+ * groups and outside a game, as DESCRIBE does; MANIP_APPLY, which needs the
+ * game's state, answers NOT_INGAME while a game with groups is not INGAME.
+ */
+static int manip_gate(int needs_state)
+{
+	const struct game_api *g = session_game();
+
+	if (g == NULL || g->manips == NULL) return ST_UNSUPPORTED;
+	if (session_state() != SESSION_INGAME)
+		return needs_state ? ST_NOT_INGAME : ST_UNSUPPORTED;
+	if (!manips_supported()) return ST_UNSUPPORTED;
+	return ST_OK;
+}
+
 /* ------------------------------------------------------ tick-thread handlers */
 
 /*
@@ -855,6 +872,28 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		break;
 	}
 
+	/*
+	 * Revision 1.21, manip categories. All three run here: a selection can put
+	 * a setup into the game straight away, Apply now writes, and the options sit
+	 * beside state the tick thread's trigger reads.
+	 */
+	case OP_MANIP_SELECT:
+		if (reqlen < 1) { cmd->status = ST_BAD_ARG; break; }
+		cmd->status = (u16)manip_gate(0);
+		if (cmd->status == ST_OK) cmd->status = (u16)manips_select(req[0]);
+		break;
+
+	case OP_MANIP_OPTIONS:
+		if (reqlen < 2) { cmd->status = ST_BAD_ARG; break; }
+		cmd->status = (u16)manip_gate(0);
+		if (cmd->status == ST_OK) cmd->status = (u16)manips_options(req[0], req[1]);
+		break;
+
+	case OP_MANIP_APPLY:
+		cmd->status = (u16)manip_gate(1);
+		if (cmd->status == ST_OK) cmd->status = (u16)manips_apply();
+		break;
+
 	default:
 		cmd->status = ST_UNKNOWN_OP;
 		break;
@@ -907,6 +946,9 @@ static int op_needs_ring(u16 op)
 	case OP_SAVEFILE_WRITE:
 	case OP_SAVEFILE_STORE:
 	case OP_SAVEFILE_RESTORE:
+	case OP_MANIP_SELECT:
+	case OP_MANIP_OPTIONS:
+	case OP_MANIP_APPLY:
 		return 1;
 	default:
 		return 0;
@@ -1003,6 +1045,20 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (session_game() == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
 		core_lock();
 		rc = (u16)features_describe(reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+
+	/*
+	 * Revision 1.21. The list reads qwark's own state and config, never game
+	 * memory, so it answers here under the core lock, as DESCRIBE does.
+	 */
+	case OP_MANIP_LIST: {
+		u16 rc;
+
+		core_lock();
+		rc = (u16)manip_gate(0);
+		if (rc == ST_OK) rc = (u16)manips_list(reply, replycap, replylen);
 		core_unlock();
 		return rc;
 	}

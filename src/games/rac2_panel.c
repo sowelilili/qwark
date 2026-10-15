@@ -707,108 +707,13 @@ u8 rac2_savefile_ready(u8 what)
 	}
 }
 
-/* -------------------------------------------------------------- the setups */
-
-/* RAC2Form.resetMenuStorage. */
-int rac2_reset_menu_storage(void)
-{
-	u32 shortcut = rac2_shortcut_index();
-
-	if (shortcut != 0xFFFFFFFFu)
-		mem_write_u32(RAC2_SHORTCUTS_INDEX, shortcut);
-
-	mem_write_u32(RAC2_SAVED_RACE_INDEX, 0);      /* disable race storage */
-	mem_write_u8(RAC2_FELTZIN_OPENING, 1);        /* disable ship openings */
-	mem_write_u32(RAC2_GORN_OPENING, 1);
-	mem_write_u32(RAC2_FELTZIN_MISSION, 0);       /* fix the ship mission menus */
-	mem_write_u32(RAC2_HRUGIS_MISSION, 0);
-	mem_write_u32(RAC2_GORN_MISSION, 0);
-
-	return ST_OK;
-}
+/* ------------------------------------------------------------ the respawn */
 
 /*
- * RAC2Form.resetAnyPercentVars. The widths matter: the old code wrote some of
- * these as a single byte and others as a 32-bit word, and both forms are kept
- * exactly as they were.
+ * Build 53: the any% and NG+ resets, the three NG+ setups and the Maktar slots
+ * are retired here, ids and all. Their writes are RaC2's manip groups in
+ * rac2.c, applied on file loads and by Apply now.
  */
-int rac2_reset_anypct(void)
-{
-	mem_write_u32(RAC2_SAVED_RACE_INDEX, 0);
-	mem_write_u8(RAC2_FELTZIN_OPENING, 0);
-	mem_write_u32(RAC2_GORN_OPENING, 0);
-	mem_write_u32(RAC2_GORN_MANIP, 0);
-	mem_write_u32(RAC2_FELTZIN_MISSION, 0);
-	mem_write_u32(RAC2_HRUGIS_MISSION, 0);
-	mem_write_u32(RAC2_GORN_MISSION, 0);
-
-	mem_write_u32(RAC2_JANKPOT_ACTIVE, 0);
-	mem_write_u32(RAC2_BOLT_DEFICIT, 0);
-
-	mem_write_u32(RAC2_ENDAKO_BOSS_CS, 0);
-	mem_write_u32(RAC2_PYRAMID_BOLT, 0);
-
-	mem_write_u32(RAC2_OLDSKOOL_SP, 0);
-	mem_write_u32(RAC2_BOSS_HEALTHBAR, 0);
-	mem_write_u32(RAC2_CS_STORAGE, 0);
-
-	mem_write_u32(RAC2_FELTZIN_RARI, 0);
-	mem_write_u32(RAC2_LAST_RARITANIUM, 0);
-
-	mem_write_u8(RAC2_DORBIT_OPENING, 0);
-	mem_write_u32(RAC2_MOBY3595_PTR, 0);          /* reset ptr for moby 3595 */
-
-	mem_write_u8(RAC2_SNIV_BOSS, 0);
-	mem_write_u8(RAC2_YEEDIL_BOSS, 0);
-	mem_write_u8(RAC2_SIB_BOSS, 0);
-
-	/* Pad manip back to 13.0f; Snivelak sets it every time it is visited. */
-	mem_write_u32(RAC2_PAD_MANIP, 0x41500000u);
-
-	return ST_OK;
-}
-
-/* RAC2Form.SetupGeneralNGPlusMenus, the tail of all three NG+ buttons. */
-static int rac2_setup_general_ngplus(void)
-{
-	mem_write_u8(RAC2_FELTZIN_OPENING, 1);
-	mem_write_u8(RAC2_SNIV_BOSS, 20);
-	/* 25.0f: Snivelak sets the jump-pad speed, so a NG+ file must have it too. */
-	mem_write_u32(RAC2_PAD_MANIP, 0x41C80000u);
-	mem_write_u8(RAC2_YEEDIL_BOSS, 66);
-	mem_write_u8(RAC2_SIB_BOSS, 20);
-	mem_write_u32(RAC2_GORN_MANIP, 1);
-	mem_write_u32(RAC2_GORN_OPENING, 1);
-	mem_write_u32(RAC2_IM_SHORTCUTS, 1);
-
-	plat_notify("Manips done!");
-	return ST_OK;
-}
-
-static int rac2_setup_ngplus(u32 shortcut)
-{
-	rac2_set_shortcut_index(shortcut);
-	mem_write_u32(RAC2_SHORTCUTS_INDEX, shortcut);
-	return rac2_setup_general_ngplus();
-}
-
-static int rac2_setup_all_missions(void)
-{
-	rac2_set_shortcut_index(7);
-	mem_write_u32(RAC2_SHORTCUTS_INDEX, 7);       /* Museum */
-	mem_write_u32(RAC2_ENDAKO_BOSS_CS, 1);
-	mem_write_u8(RAC2_DORBIT_OPENING, 1);
-	return rac2_setup_general_ngplus();
-}
-
-static int rac2_maktar_slots(void)
-{
-	mem_write_u8(RAC2_SLOTS_HIT, 40);
-	mem_write_u8(RAC2_PBOLTS, 74);
-	mem_write_u8(RAC2_PJACKPOT, 45);
-	plat_notify("Maktar slots done!");
-	return ST_OK;
-}
 
 /* buttonRespawn: the current 32-byte position becomes the respawn point. */
 static int rac2_set_respawn(void)
@@ -864,22 +769,7 @@ int rac2_trigger(u8 id)
 		/* The Swingshot has weapon id 0x0D. */
 		return mem_write_u8(RAC2_PREV_HELD_WEAPON, 0x0D);
 
-	case R2_RESET_ANYPCT:
-		rac2_reset_anypct();
-		plat_notify("Manips cleared, any% ready!");
-		return ST_OK;
-
-	case R2_RESET_MENUS:
-		rac2_reset_menu_storage();
-		plat_notify("Reset menu storage!");
-		return ST_OK;
-
-	case R2_SETUP_NGPLUS:      return rac2_setup_ngplus(7);   /* Museum */
-	case R2_SETUP_NO_IMG:      return rac2_setup_ngplus(1);   /* Barlow */
-	case R2_SETUP_ALL_MISSION: return rac2_setup_all_missions();
-	case R2_MAKTAR_SLOTS:      return rac2_maktar_slots();
-
-	case R2_RESET_PBOLTS:    return mem_write_zeros(RAC2_PLATINUM_BOLTS, 0x70);
+	case R2_RESET_PBOLTS:   return mem_write_zeros(RAC2_PLATINUM_BOLTS, 0x70);
 	case R2_UNLOCK_PBOLTS:   return mem_write_fill(RAC2_PLATINUM_BOLTS, 0xFF, 0x70);
 	case R2_RESET_NANOTECH:  return mem_write_zeros(RAC2_NANOTECH_BOOSTS, 10);
 	case R2_UNLOCK_NANOTECH: return mem_write_fill(RAC2_NANOTECH_BOOSTS, 1, 10);

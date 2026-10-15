@@ -611,39 +611,36 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
 	return ST_NOT_FOUND;
 }
 
-/* -------------------------------------------------------------- the setups */
+/* ---------------------------------------------------------------- trophies */
 
-/* rac3.cs SetupFile, the "Setup NG+ Manips" button. */
-static int rac3_setup_file(void)
+/*
+ * The trophy refresh, behind R3_RESET_TROPHIES and the R3_AUTO_TROPHIES toggle.
+ *
+ * The old button deleted /dev_hdd0/home/<user>/trophy/NPWR02347_00 over the
+ * wire and then wrote this request; the client still owns the delete, with
+ * DIR_DELETE and USER_ID. What answered the request was the old rc3-save mod,
+ * not the game (rac3.h): the game reads its trophies' unlocked flags into a
+ * cache once, when it registers its trophy context at boot (0x984FA0, whose
+ * register thread 0x9856F8 fills obj+0xC+8i at 0x985318, obj = *0xCB150C), and
+ * awards nothing whose cached flag is set (0x2290D8, the unlock worker at
+ * 0x9858BC). Only destroying the context and registering it again against the
+ * deleted folder (0x984E40, then 0x984FA0) makes them unlockable again, and
+ * that has to run on the game's own thread. Build 53's savefile helper does
+ * not carry it, so the write below is the request the old mod took and nothing
+ * else: inert on a retail game until the helper does.
+ */
+int rac3_trophy_refresh(void)
 {
-	mem_write_u32(RAC3_KLUNK_TUNING_1, 7);
-	mem_write_u32(RAC3_KLUNK_TUNING_2, 3);
-	mem_write_u32(RAC3_NEFFY_TUNING, 0xE);
-	mem_write_u32(RAC3_VID_COMIC_MENU, 2);
-	mem_write_u32(RAC3_CC_HELP_DESK, 1);
-
-	plat_notify("Klunk, Neffy, vid comic menu and CC helpdesk set up for runs");
-	return ST_OK;
+	return mem_write_u32(RAC3_TROPHY_REFRESH, 1);
 }
 
-/* rac3.cs UntuneBosses. */
-static int rac3_untune_bosses(void)
-{
-	mem_write_u32(RAC3_DROPSHIP_HEALTH, 100);   /* the Veldin default */
-	mem_write_u32(RAC3_NEFFY_TUNING, 0);
-	mem_write_u32(RAC3_KLUNK_TUNING_1, 0);
-	mem_write_u32(RAC3_KLUNK_TUNING_2, 0);
-	return ST_OK;
-}
+/* --------------------------------------------------------- weapon levels */
 
-/* RAC3Form.ccEarlyButton_Click. */
-static int rac3_cc_early(void)
-{
-	mem_write_u32(RAC3_CC_FAKE_ITEM_A, 0x41);
-	mem_write_u32(RAC3_CC_FAKE_ITEM_B, 0x41414141u);
-	plat_notify("Annihilator V4 fake item has been setup for CC Early runs!");
-	return ST_OK;
-}
+/*
+ * Build 53: Setup NG+ manips, CC early setup, Untune bosses and Reset dropship
+ * health are retired here, ids and all. Their writes are UYA's manip groups in
+ * rac3.c; Untune bosses belongs to no group and is dropped.
+ */
 
 /* UYAUnlocks buttonUpgrade / buttonDowngrade. */
 static int rac3_all_versions(int max)
@@ -718,24 +715,11 @@ int rac3_trigger(u8 id)
 	switch (id) {
 	case R3_DIE:             return classic_die_set_z(RAC3_COORDS);
 
-	case R3_VENDOR_QE: {
+	case R3_VENDOR_QE:
 		/* vendorQeEnableButton wrote the two bytes 00 17. */
-		static const u8 vendor[2] = { 0x00, 0x17 };
-		return mem_write(RAC3_QE_OFFSET, vendor, sizeof(vendor));
-	}
+		return mem_write(RAC3_QE_OFFSET, rac3_vendor_qe, sizeof(rac3_vendor_qe));
 
-	case R3_SETUP_NGPLUS:   return rac3_setup_file();
-	case R3_CC_EARLY:       return rac3_cc_early();
-	case R3_UNTUNE_BOSSES:  return rac3_untune_bosses();
-	case R3_RESET_DROPSHIP: return mem_write_u32(RAC3_DROPSHIP_HEALTH, 100);
-
-	case R3_RESET_TROPHIES:
-		/*
-		 * The old button also deleted /dev_hdd0/home/<user>/trophy/NPWR02347_00
-		 * over the wire before writing this. The client owns the file ops, so it
-		 * does the delete with DIR_DELETE and USER_ID and then fires this.
-		 */
-		return mem_write_u32(RAC3_TROPHY_REFRESH, 1);
+	case R3_RESET_TROPHIES:  return rac3_trophy_refresh();
 
 	case R3_UNLOCK_SKILL:    return mem_write_fill(RAC3_SKILL_POINTS, 1, 30);
 	case R3_RESET_SKILL:     return mem_write_zeros(RAC3_SKILL_POINTS, 30);

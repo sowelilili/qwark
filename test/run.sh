@@ -11,7 +11,7 @@ OUT="test/qwark-test.exe"
 ROOT="test/qwark-host-root"
 
 SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
-     src/core/mods.c src/core/session.c src/core/net.c src/core/autosplit.c \
+     src/core/mods.c src/core/session.c src/core/net.c src/core/autosplit.c src/core/manips.c \
      src/core/savefile.c src/core/switches.c \
      src/games/sfhelper_bins.c src/games/switches_bins.c \
      src/games/classic.c src/games/rac1.c src/games/rac1_panel.c \

@@ -19,6 +19,7 @@
 #include "../core/features.h"
 #include "../core/autosplit.h"
 #include "../core/savefile.h"
+#include "../core/manips.h"
 
 #include <string.h>
 
@@ -214,8 +215,6 @@ static int g_fastload_on;
  * does not flick on for the length of every planet load.
  */
 static int g_fastload_forced;
-static int g_auto_anypct;
-static int g_auto_ngplus;
 static int g_death_bosses;
 static int g_death_pbolts;
 static u8  g_prev_load_count;
@@ -228,16 +227,6 @@ static int g_load_primed;
  * load follows to put them back.
  */
 static u32 g_sf_refusals;
-
-/*
- * RAC2Form's desiredShortcutIndex: the NG+ setups remember which shortcut the
- * menu should come back to, and the menu-storage reset re-applies it. 0xFFFFFFFF
- * means no setup has run this session, which is the C# null.
- */
-static u32 g_shortcut_index = 0xFFFFFFFFu;
-
-void rac2_set_shortcut_index(u32 index) { g_shortcut_index = index; }
-u32  rac2_shortcut_index(void)          { return g_shortcut_index; }
 
 int rac2_death_bosses(void) { return g_death_bosses; }
 int rac2_death_pbolts(void) { return g_death_pbolts; }
@@ -430,20 +419,15 @@ static void rac2_on_enter(void)
 	g_fastload_forced = 0;
 	g_prev_load_count = 0;
 	g_load_primed     = 0;
-	g_shortcut_index  = 0xFFFFFFFFu;
 	g_sf_refusals     = savefile_load_refusals();
 
 	/*
-	 * The four toggles that are qwark's own state rather than game memory go
+	 * The two toggles that are qwark's own state rather than game memory go
 	 * with the process, as their bits in toggle_state do (features_forget_state
-	 * runs just before this). They used to survive it: after a reboot the client
-	 * showed "Auto-reset (any%)" off, the user could decline it in the
-	 * previous-session prompt, and every A1 load still reset the manips. Only
-	 * the auto-apply that follows this call and PREVIOUS_REAPPLY turn them back
-	 * on, both through rac2_set_toggle, so the flag and the checkbox agree.
+	 * runs just before this). Only the auto-apply that follows this call and
+	 * PREVIOUS_REAPPLY turn them back on, both through rac2_set_toggle, so the
+	 * flag and the checkbox agree.
 	 */
-	g_auto_anypct  = 0;
-	g_auto_ngplus  = 0;
 	g_death_bosses = 0;
 	g_death_pbolts = 0;
 
@@ -512,14 +496,27 @@ static void rac2_on_tick(const struct game_hot *hot)
 	/* Everything below is A1-only, exactly as the old handler had it. */
 	if (hot->current_planet != 0) return;
 
-	/* Auto buffer charge for resets. */
-	mem_write_u32(RAC2_CHARGE_BUFFER, 30);
-
 	/* A new file starts without infinite ammo, checkbox and all. */
 	features_set(R2_INFINITE_AMMO, 0);
 
-	if (g_auto_anypct) rac2_reset_anypct();
-	if (g_auto_ngplus) rac2_reset_menu_storage();
+	/*
+	 * Revision 1.21, the manips' file-load trigger: the end of a load screen
+	 * landing on Aranos, the first planet, which every run starts on - a new
+	 * game, a challenge-mode start, the NG+ file a runner loads - and which a
+	 * run never comes back to. It is the timing the old auto-resets had. The
+	 * challenge counter is in place by then (from the NPEA00386 executable):
+	 * the restore 0x81070 writes its block back from inside perform_load
+	 * (0x832DC) before the load is requested (0x83478), a new game's reset
+	 * (0x81224, from 0x817E8) zeroes it at 0x812D4 on the title, and a
+	 * challenge-mode start (0xBBB798) stores the incremented value back at
+	 * 0xBBBBC0, all before the load screen starts. Nothing found in the level
+	 * start after it (0x12244, 0xB4C8E8) writes a manip address.
+	 *
+	 * A load into Aranos from anywhere else in a run also lands here, which is
+	 * the user's rule (2026-10-16): Aranos is not revisited. The buffer charge
+	 * the old watcher wrote here unconditionally is the NG+ per-run list's now.
+	 */
+	manips_file_loaded();
 }
 
 /* -------------------------------------------------------------- describe */
@@ -583,12 +580,11 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_DEATH_BOSSES,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset bosses on death" },
 	{ R2_DEATH_PBOLTS,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset platinum bolts on death" },
 
-	{ R2_RESET_ANYPCT,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset any% manips" },
-	{ R2_RESET_MENUS,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset NG+ manips/menus" },
-	{ R2_SETUP_NGPLUS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "NG+ setup" },
-	{ R2_SETUP_NO_IMG,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "NG+ No IMG setup" },
-	{ R2_SETUP_ALL_MISSION, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "NG+ All Missions setup" },
-	{ R2_MAKTAR_SLOTS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Maktar slots" },
+	/*
+	 * Build 53: the two resets, the three NG+ setups, Maktar slots and the two
+	 * auto-reset toggles are retired, ids 15 to 22 and all (rac2.h). They are
+	 * the manip groups below now.
+	 */
 	/*
 	 * The two weapon actions the other three games have. Both pass over a weapon
 	 * the player does not have rather than handing it out, and the labels are the
@@ -596,8 +592,6 @@ static const struct feature_desc rac2_features[] = {
 	 */
 	{ R2_MAX_LEVELS,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon levels" },
 	{ R2_MAX_AMMO,        FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon ammo" },
-	{ R2_AUTO_ANYPCT,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (any%)" },
-	{ R2_AUTO_NGPLUS,     FEATURE_TOGGLE, G_PROGRESS, 0, 0,  NO, 0, 0, "Auto-reset (NG+)" },
 	/*
 	 * The QE offset is the signed halfword at selectedSaveSlot, and the old
 	 * dialog's default was -1. min and max stay 0: the width is the range.
@@ -717,11 +711,9 @@ static int rac2_set_toggle(u8 id, int on)
 	case R2_INSTA_UPGRADE:  return rac2_insta_upgrade(on);
 	case R2_DEBUG_MODE:     return mem_write_u8(RAC2_DEBUG_FEATURES, on ? 1 : 0);
 
-	/* The last four are qwark-side state, not memory. */
+	/* The last two are qwark-side state, not memory. */
 	case R2_DEATH_BOSSES:   g_death_bosses = on; return ST_OK;
 	case R2_DEATH_PBOLTS:   g_death_pbolts = on; return ST_OK;
-	case R2_AUTO_ANYPCT:    g_auto_anypct  = on; return ST_OK;
-	case R2_AUTO_NGPLUS:    g_auto_ngplus  = on; return ST_OK;
 
 	default:                return ST_NOT_FOUND;
 	}
@@ -841,6 +833,159 @@ static int rac2_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *st
 	return ST_OK;
 }
 
+/* ----------------------------------------------------------------- manips */
+
+/*
+ * Whether a save file is in play: the current planet word is -1 on the title
+ * screen (written at 0x11648; the main loop runs the title while it is
+ * negative, 0x12D50) and a planet's number from then on. A new game puts 0 in
+ * it on the title, just before the Aranos load (0x81898), and a title load the
+ * save's planet, so for that moment the title counts as in a file.
+ */
+static int rac2_in_file(void)
+{
+	u32 planet = 0;
+
+	if (mem_read_u32(RAC2_CURRENT_PLANET, &planet) != ST_OK) return -1;
+	return (planet & 0x80000000u) == 0;
+}
+
+
+/*
+ * Revision 1.21, build 53: RaC2's manip groups (SPEC-manips.md section 2),
+ * every write in the order the spec lists it, at the width the old buttons
+ * wrote. Four of the words sit at odd addresses and so clear the three bytes
+ * after them, as they always did.
+ *
+ * G, the NG+ session block, is RAC2Form.SetupGeneralNGPlusMenus; G' is G
+ * without its last write, the IM in the shortcuts.
+ */
+static const struct manip_write r2_g[] = {
+	MW_U8(RAC2_FELTZIN_OPENING, 1),
+	MW_U8(RAC2_SNIV_BOSS, 20),
+	MW_U32(RAC2_PAD_MANIP, 0x41C80000u),     /* 25.0f, what Snivelak sets */
+	MW_U8(RAC2_YEEDIL_BOSS, 66),
+	MW_U8(RAC2_SIB_BOSS, 20),
+	MW_U32(RAC2_GORN_MANIP, 1),
+	MW_U32(RAC2_GORN_OPENING, 1),
+	MW_U32(RAC2_IM_SHORTCUTS, 1)
+};
+
+#define R2_G_LEN       ((u8)(sizeof(r2_g) / sizeof(r2_g[0])))
+#define R2_G_PRIME_LEN ((u8)(R2_G_LEN - 1))
+
+/* NG+ All Missions' two writes after G. */
+static const struct manip_write r2_all_missions[] = {
+	MW_U32(RAC2_ENDAKO_BOSS_CS, 1),
+	MW_U8(RAC2_DORBIT_OPENING, 1)
+};
+
+/*
+ * M(i), the NG+ per-run block: RAC2Form.resetMenuStorage, with the shortcut
+ * cursor always written because the group carries its own index, and the
+ * charge buffer, which used to be written on every load into Aranos whatever
+ * the category.
+ */
+#define R2_M(i) {                                                            \
+	MW_U32(RAC2_SHORTCUTS_INDEX, (i)),                                   \
+	MW_U32(RAC2_SAVED_RACE_INDEX, 0),                                    \
+	MW_U8(RAC2_FELTZIN_OPENING, 1),                                      \
+	MW_U32(RAC2_GORN_OPENING, 1),                                        \
+	MW_U32(RAC2_FELTZIN_MISSION, 0),                                     \
+	MW_U32(RAC2_HRUGIS_MISSION, 0),                                      \
+	MW_U32(RAC2_GORN_MISSION, 0),                                        \
+	MW_U32(RAC2_CHARGE_BUFFER, 30)                                       \
+}
+
+static const struct manip_write r2_m1[] = R2_M(1);   /* Barlow */
+static const struct manip_write r2_m7[] = R2_M(7);   /* the Museum */
+
+#undef R2_M
+
+/*
+ * A, the any% reset: RAC2Form.resetAnyPercentVars, unchanged and in its order.
+ * It puts the jump pad back to 13.0f, which Snivelak raises on every visit.
+ */
+static const struct manip_write r2_a[] = {
+	MW_U32(RAC2_SAVED_RACE_INDEX, 0),
+	MW_U8(RAC2_FELTZIN_OPENING, 0),
+	MW_U32(RAC2_GORN_OPENING, 0),
+	MW_U32(RAC2_GORN_MANIP, 0),
+	MW_U32(RAC2_FELTZIN_MISSION, 0),
+	MW_U32(RAC2_HRUGIS_MISSION, 0),
+	MW_U32(RAC2_GORN_MISSION, 0),
+	MW_U32(RAC2_JANKPOT_ACTIVE, 0),
+	MW_U32(RAC2_BOLT_DEFICIT, 0),
+	MW_U32(RAC2_ENDAKO_BOSS_CS, 0),
+	MW_U32(RAC2_PYRAMID_BOLT, 0),
+	MW_U32(RAC2_OLDSKOOL_SP, 0),
+	MW_U32(RAC2_BOSS_HEALTHBAR, 0),
+	MW_U32(RAC2_CS_STORAGE, 0),
+	MW_U32(RAC2_FELTZIN_RARI, 0),
+	MW_U32(RAC2_LAST_RARITANIUM, 0),
+	MW_U8(RAC2_DORBIT_OPENING, 0),
+	MW_U32(RAC2_MOBY3595_PTR, 0),
+	MW_U8(RAC2_SNIV_BOSS, 0),
+	MW_U8(RAC2_YEEDIL_BOSS, 0),
+	MW_U8(RAC2_SIB_BOSS, 0),
+	MW_U32(RAC2_PAD_MANIP, 0x41500000u)      /* 13.0f */
+};
+
+/* K, the Maktar slots: a slot-machine RNG manip grandfathered into 100%. */
+static const struct manip_write r2_k[] = {
+	MW_U8(RAC2_SLOTS_HIT, 40),
+	MW_U8(RAC2_PBOLTS, 74),
+	MW_U8(RAC2_PJACKPOT, 45)
+};
+
+#define L(a)    { a, (u8)(sizeof(a) / sizeof(a[0])) }
+#define NONE    { NULL, 0 }
+#define G_FULL  { r2_g, R2_G_LEN }
+#define G_PRIME { r2_g, R2_G_PRIME_LEN }
+#define NG      MANIP_FLAG_NGPLUS
+#define EXT     MANIP_FLAG_EXTENSION
+#define NOCHECK MANIP_FLAG_NO_CHALLENGE
+/* M without its first write, the cursor; the rest of M is the same for any i. */
+#define M_NO_CURSOR { r2_m1 + 1, (u8)(sizeof(r2_m1) / sizeof(r2_m1[0]) - 1) }
+
+/*
+ * NG+ No Specials runs on an overflowed challenge counter, so it skips the
+ * check, and its per-run list is M without the shortcut cursor: the shortcuts
+ * live in the specials menu, which the category never uses.
+ */
+static const struct manip_group rac2_manip_groups[] = {
+	{ 1, NG, "NG+ no IMG", "NG+ no IMG",
+	  { G_PRIME, NONE }, { L(r2_m1), NONE } },
+	{ 2, NG, "NG+", "NG+",
+	  { G_FULL, NONE }, { L(r2_m7), NONE } },
+	{ 3, 0, "Any%", "Any%\nAll Platinum Bolts",
+	  { NONE, NONE }, { L(r2_a), NONE } },
+	{ 4, 0, "100%", "Max%\n100%",
+	  { NONE, NONE }, { L(r2_a), L(r2_k) } },
+	{ 5, NG | EXT, "NG+ All Missions", "NG+ All Missions",
+	  { G_FULL, L(r2_all_missions) }, { L(r2_m7), NONE } },
+	{ 6, NG | EXT | NOCHECK, "NG+ No Specials", "NG+ No Specials",
+	  { G_PRIME, NONE }, { M_NO_CURSOR, NONE } }
+};
+
+#undef L
+#undef NONE
+#undef G_FULL
+#undef G_PRIME
+#undef NG
+#undef EXT
+#undef NOCHECK
+#undef M_NO_CURSOR
+
+static const struct game_manips rac2_manips = {
+	"rac2",
+	rac2_manip_groups,
+	(u8)(sizeof(rac2_manip_groups) / sizeof(rac2_manip_groups[0])),
+	RAC2_CHALLENGE_MODE, 1,    /* the challenge counter, one byte */
+	NULL, 0,                   /* no headers */
+	rac2_in_file
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 /*
@@ -904,5 +1049,7 @@ const struct game_api rac2_game = {
 	NULL,                 /* on_quit */
 	rac2_on_tick,
 
-	rac2_autosplit_describe
+	rac2_autosplit_describe,
+
+	&rac2_manips          /* revision 1.21 */
 };

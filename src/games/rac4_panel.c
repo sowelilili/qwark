@@ -589,18 +589,10 @@ int rac4_get_options(u8 id, const char * const **options, u8 *count)
 
 /* ------------------------------------------------------------ the setups */
 
-/* RAC4Form.buttonActTune_Click. */
-static int rac4_act_tune(void)
-{
-	mem_write_u8(RAC4_TUNE_SHELLSHOCK, 20);
-	mem_write_u8(RAC4_TUNE_REACTOR, 20);
-	mem_write_u8(RAC4_TUNE_EVISCERATOR, 20);
-	mem_write_u8(RAC4_TUNE_ACE, 20);
-	mem_write_u8(RAC4_TUNE_VOX, 20);
-
-	plat_notify("Act tuning done!");
-	return ST_OK;
-}
+/*
+ * Build 53: Act tune bosses is retired here, id and all. Its five writes are
+ * the NG+ manip group's setup in rac4.c.
+ */
 
 /*
  * RAC4Form.unlockPlanetsButton_Click: badges, rank, a million dread points, a
@@ -678,7 +670,6 @@ int rac4_trigger(u8 id)
 	switch (id) {
 	case R4_DIE:            return rac4_die();
 	case R4_UNLOCK_PLANETS: return rac4_unlock_all_planets();
-	case R4_ACT_TUNE:       return rac4_act_tune();
 
 	case R4_MAX_LEVELS:     return rac4_all_max_levels();
 	/* R4_RESET_LEVELS is retired; its id answers NOT_FOUND with every other. */

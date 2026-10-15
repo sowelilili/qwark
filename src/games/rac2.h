@@ -360,14 +360,13 @@ extern const u8 rac2_fp_switch_old[4];
 #define R2_DEATH_BOSSES      13
 #define R2_DEATH_PBOLTS      14
 
-#define R2_RESET_ANYPCT      15
-#define R2_RESET_MENUS       16
-#define R2_SETUP_NGPLUS      17
-#define R2_SETUP_NO_IMG      18
-#define R2_SETUP_ALL_MISSION 19
-#define R2_MAKTAR_SLOTS      20
-#define R2_AUTO_ANYPCT       21
-#define R2_AUTO_NGPLUS       22
+/*
+ * 15 to 22 retired in build 53, never to be reused: the manip buttons and
+ * toggles the manip groups replaced (protocol 1.21). They were 15 "Reset any%
+ * manips", 16 "Reset NG+ manips/menus", 17 "NG+ setup", 18 "NG+ No IMG setup",
+ * 19 "NG+ All Missions setup", 20 "Maktar slots", 21 "Auto-reset (any%)" and
+ * 22 "Auto-reset (NG+)". Their writes are RaC2's manip groups in rac2.c.
+ */
 #define R2_QE_OFFSET         23
 
 #define R2_RESET_PBOLTS      24
@@ -418,10 +417,6 @@ int rac2_unlock_list(const struct game_unlock **list, u8 *count,
 int rac2_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac2_unlock_set(u8 id, u8 field, u32 value);
 
-/* The loading-screen watcher's two optional resets. */
-int rac2_reset_anypct(void);
-int rac2_reset_menu_storage(void);
-
 /* ---------------------------------------------------------- rac2.c exports */
 
 u8  rac2_planet_count(void);
@@ -429,10 +424,6 @@ u8  rac2_planet_count(void);
 /* The fast-load patch, shared with the planet load and the set-aside load. */
 int rac2_fastload_force(void);
 int rac2_fastload_restore(void);
-
-/* RAC2Form's desiredShortcutIndex; 0xFFFFFFFF means no setup has run. */
-void rac2_set_shortcut_index(u32 index);
-u32  rac2_shortcut_index(void);
 
 /* The two "on death" toggles SelfDeathExtended took as arguments. */
 int rac2_death_bosses(void);

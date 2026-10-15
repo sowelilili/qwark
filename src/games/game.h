@@ -118,6 +118,95 @@ struct autosplit_desc {
 	const char *label;  /* at most AUTOSPLIT_LABEL_LEN characters on the wire */
 };
 
+/*
+ * Revision 1.21, build 53: manip categories. A game that has them describes
+ * them in a struct game_manips, which src/core/manips.c drives; the game file
+ * holds every address and value, the core holds none.
+ *
+ * One write is a byte, a big-endian word or a run of bytes, at one address.
+ * A u32 at an odd address writes the three bytes after it too, exactly as the
+ * old buttons did. A run with no bytes writes zeros.
+ */
+#define MANIP_W_U8    0
+#define MANIP_W_U32   1
+#define MANIP_W_BYTES 2
+
+struct manip_write {
+	u32 addr;
+	u32 value;          /* MANIP_W_U8 and MANIP_W_U32 */
+	const u8 *bytes;    /* MANIP_W_BYTES: `len` bytes, or NULL for zeros */
+	u8  kind;
+	u8  len;            /* MANIP_W_BYTES: how many */
+};
+
+#define MW_U8(a, v)       { (a), (v), NULL, MANIP_W_U8, 1 }
+#define MW_U32(a, v)      { (a), (v), NULL, MANIP_W_U32, 4 }
+#define MW_ZEROS(a, n)    { (a), 0, NULL, MANIP_W_BYTES, (n) }
+#define MW_BYTES(a, p, n) { (a), 0, (p), MANIP_W_BYTES, (n) }
+
+/* A run of writes, applied in order. A group's lists are applied in order too. */
+struct manip_list {
+	const struct manip_write *w;
+	u8 n;
+};
+
+#define MANIP_LISTS 2
+
+/*
+ * One group. `id` is 1..31 and stable, 0 being None. `flags` is the wire's
+ * MANIP_FLAG_NGPLUS, EXTENSION and NO_CHALLENGE; PER_RUN is worked out from
+ * `run`. `cats` is the leaderboard categories, joined with '\n'.
+ *
+ * `setup` is what the PS3 port never resets until the game reboots, applied
+ * once per game boot; `run` is put back on every file load while auto-reset
+ * is on. An unused list has n 0.
+ */
+struct manip_group {
+	u8 id;
+	u8 flags;
+	const char *name;
+	const char *cats;
+	struct manip_list setup[MANIP_LISTS];
+	struct manip_list run[MANIP_LISTS];
+};
+
+/*
+ * One of MANIP_LIST's headers: features that are not part of a category but
+ * belong beside the manips, which a client draws under `name` there instead of
+ * in their DESCRIBE groups. Deadlocked's "Fixes", UYA's "Trophies".
+ */
+struct manip_header {
+	const char *name;
+	const u8 *features;
+	u8 nfeatures;
+};
+
+struct game_manips {
+	/* The config.txt key of the game's options: "rac1" .. "rac4". */
+	const char *key;
+
+	const struct manip_group *groups;
+	u8 ngroups;
+
+	/*
+	 * The challenge-mode counter: 0 on a fresh file, 1 and up in challenge
+	 * mode. `challenge_width` is 1 or 4, big-endian.
+	 */
+	u32 challenge_addr;
+	u8  challenge_width;
+
+	/* MANIP_LIST's headers, NULL and 0 where the game has none. */
+	const struct manip_header *headers;
+	u8 nheaders;
+
+	/*
+	 * Whether a save file is in play right now: 1 in a file (play, the pause,
+	 * a cutscene, a load between planets), 0 on the title screen and the menus
+	 * before one is chosen, negative when the read failed. Tick thread only.
+	 */
+	int (*in_file)(void);
+};
+
 /* Build 53: what struct game_api's savefile_ready is asked about. */
 #define GAME_SF_SET_ASIDE 0
 #define GAME_SF_LOAD      1
@@ -278,6 +367,14 @@ struct game_api {
 	 * lock without going through the ring.
 	 */
 	const struct autosplit_desc *(*autosplit_describe)(u8 *count);
+
+	/*
+	 * Revision 1.21. The game's manip groups, or NULL where it has none, which
+	 * is what makes the MANIP_* ops answer UNSUPPORTED. The game's on_tick
+	 * calls manips_file_loaded() (src/core/manips.h) the tick it sees a save
+	 * loaded or a new game started.
+	 */
+	const struct game_manips *manips;
 };
 
 /*

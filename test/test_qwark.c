@@ -16,6 +16,7 @@
 #include "../src/core/autosplit.h"
 #include "../src/core/savefile.h"
 #include "../src/core/switches.h"
+#include "../src/core/manips.h"
 #include "../src/games/game.h"
 #include "../src/games/sfhelper_bins.h"
 #include "../src/games/switches_bins.h"
@@ -1451,7 +1452,7 @@ static void test_rac2_repacks(void)
 	      describe[0] == GAME_RAC2, "DESCRIBE answers with RaC2's table");
 	if (session_game() != NULL) {
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 37, "and every one of RaC2's thirty-seven features");
+		check_eq_u64(d->nfeatures, 29, "and every one of RaC2's twenty-nine features");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -1919,7 +1920,7 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 27, "and twenty-seven features");
+	check_eq_u64(nfeatures, 22, "and twenty-two features (build 53 retired five manip rows)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
@@ -1963,8 +1964,25 @@ static void test_describe(void)
 	/* Id 9, force okay load, is retired: gone from the table, never renumbered. */
 	check(desc_feature(out, len, 9) == NULL, "the retired id 9 is not described");
 	check(features_trigger(9) == ST_NOT_FOUND, "and triggering it is NOT_FOUND");
-	check(desc_feature(out, len, 8) != NULL && desc_feature(out, len, 10) != NULL,
-	      "the ids either side of it kept their numbers");
+	check(desc_feature(out, len, 6) != NULL && desc_feature(out, len, 12) != NULL,
+	      "the ids either side of the retired run 7..11 kept their numbers");
+
+	/*
+	 * Build 53, revision 1.21: the manip buttons are retired the same way, ids
+	 * and all. They are the manip groups now (test_manips).
+	 */
+	{
+		static const u8 retired[] = { 7, 8, 10, 11, 16 };
+		u8 i, found = 0, refused = 0;
+
+		for (i = 0; i < sizeof(retired); i++) {
+			if (desc_feature(out, len, retired[i]) != NULL) found++;
+			if (features_trigger(retired[i]) == ST_NOT_FOUND) refused++;
+		}
+		check_eq_u64(found, 0, "RaC1's five retired manip ids are not described");
+		check_eq_u64(refused, sizeof(retired), "and triggering any of them is NOT_FOUND");
+		check(desc_feature(out, len, 17) != NULL, "id 17 after them kept its number");
+	}
 }
 
 /* ---------------------------------------------------- RaC1: the unlock table */
@@ -3786,7 +3804,6 @@ static void test_combo_enable(void)
 #define F2_BOLTS        7
 #define F2_DEATH_BOSSES 13
 #define F2_DEATH_PBOLTS 14
-#define F2_AUTO_ANYPCT  21
 #define F2_LOAD_ASIDE   30
 #define F2_SET_ASIDE    31
 #define F2_MAX_LEVELS   38
@@ -3888,7 +3905,7 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 37, "RaC2 declares thirty-seven features");
+		check_eq_u64(d->nfeatures, 29, "RaC2 declares twenty-nine features (build 53 retired eight)");
 		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 		check(qstreq(d->readouts[0], "Bolts"), "readout 0 is Bolts");
@@ -4243,30 +4260,38 @@ static void test_rac2(void)
 
 	group("RaC2: the loading-screen watcher");
 
-	/* The final load screen on planet 0 is what the old form watched for. */
+	/*
+	 * The final load screen on planet 0 is what the old form watched for. Build
+	 * 53: the buffer charge and the two auto-resets it used to run there are
+	 * manips now (test_manips), so with no category selected the load writes
+	 * neither.
+	 */
 	host_poke(R2_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x00", 4);
 	host_poke(R2_CHARGE_BUF, (const u8 *)"\x00\x00\x00\x00", 4);
 	host_poke(R2_PAD_MANIP, (const u8 *)"\x00\x00\x00\x00", 4);
-	check(features_set(F2_AUTO_ANYPCT, 1) == ST_OK, "auto-reset any% on");
 	check(features_set(F2_INFINITE_AMMO, 1) == ST_OK, "infinite ammo on");
 
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x01", 1);
 	pump(3);
-	mem_read_u32(R2_CHARGE_BUF, &v);
-	check_eq_u64(v, 0, "an ordinary load screen does nothing");
+	check((features_toggle_state() & ((u64)1 << F2_INFINITE_AMMO)) != 0,
+	      "an ordinary load screen does nothing");
 
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
 	pump(3);
-	mem_read_u32(R2_CHARGE_BUF, &v);
-	check_eq_u64(v, 30, "the final load screen set the buffer charge");
 	check((features_toggle_state() & ((u64)1 << F2_INFINITE_AMMO)) == 0,
-	      "and turned infinite ammo back off");
+	      "the final load screen turned infinite ammo back off");
+	mem_read_u32(R2_CHARGE_BUF, &v);
+	check_eq_u64(v, 0, "and no longer sets the buffer charge by itself");
 	mem_read_u32(R2_PAD_MANIP, &v);
-	check_eq_u64(v, 0x41500000u, "and ran the any% reset");
+	check_eq_u64(v, 0, "nor runs any reset");
 	mem_read_u32(R2_FP_ADDR, &v);
 	check_eq_u64(v, 0x4BFFEA69u, "and put fast loads back to the toggle setting");
 
-	features_set(F2_AUTO_ANYPCT, 0);
+	check(features_set(21, 1) == ST_NOT_FOUND && features_set(22, 1) == ST_NOT_FOUND,
+	      "the two retired auto-reset toggles are NOT_FOUND");
+	check(features_trigger(15) == ST_NOT_FOUND && features_trigger(20) == ST_NOT_FOUND,
+	      "and so are the retired reset and Maktar buttons");
+
 	features_set(F2_DEATH_BOSSES, 0);
 	features_set(F2_DEATH_PBOLTS, 0);
 
@@ -4278,7 +4303,7 @@ static void test_rac2(void)
 	check(features_trigger(F2_BOLTS) == ST_BAD_ARG, "triggering a VALUE is BAD_ARG");
 }
 
-/* ------------------------------------------------- RaC2: the A1 auto-resets */
+/* ----------------------------------- RaC2: the Aranos load, for the manips */
 
 /* A few of the words the two resets write, from rac2.h. */
 #define R2_GORN_MANIP    0x01A99A4Cu   /* any%: 0 */
@@ -4286,9 +4311,6 @@ static void test_rac2(void)
 #define R2_FELTZIN_OPEN  0x01A8495Bu   /* one byte; any%: 0, NG+: 1 */
 #define R2_RACE_INDEX    0x01A4D7E0u   /* both: 0 */
 #define R2_SHORTCUTS     0x01352684u   /* NG+: the setup's shortcut */
-
-#define F2_SETUP_NGPLUS  17
-#define F2_AUTO_NGPLUS   22
 
 #define R2_PAD_13        0x41500000u   /* 13.0f, a fresh console's jump-pad speed */
 #define R2_PAD_25        0x41C80000u   /* 25.0f, what Snivelak leaves behind */
@@ -4370,140 +4392,820 @@ static void r2_load(u8 planet)
 	pump(2);
 }
 
-static void test_rac2_auto_resets(void)
-{
-	const u64 both = R2_BIT(F2_AUTO_ANYPCT) | R2_BIT(F2_AUTO_NGPLUS);
 
-	group("RaC2 auto-resets: both off");
+/* --------------------------------------------- manip categories, rev 1.21 */
+
+/*
+ * Build 53. The manip groups of SPEC-manips.md, written out here a second time
+ * from the spec rather than from the game files, so a table that drifts from
+ * the contract fails here.
+ */
+struct mt_write {
+	u32 addr;
+	u8  len;
+	const char *data;   /* `len` bytes, or NULL for zeros */
+};
+
+#define MT_B(a, v)    { (a), 1, (v) }
+#define MT_W(a, v)    { (a), 4, (v) }
+#define MT_Z(a, n)    { (a), (n), NULL }
+#define MT_D(a, v, n) { (a), (n), (v) }
+
+#define MT_MAX_WRITES 40
+
+struct mt_group {
+	u8 id;
+	u8 flags;               /* the wire's, PER_RUN included */
+	const char *name;
+	const char *cats;
+	u8 nsetup;              /* the first nsetup writes are the setup */
+	u8 n;
+	struct mt_write w[MT_MAX_WRITES];
+};
+
+#define MT_NG   MANIP_FLAG_NGPLUS
+#define MT_EXT  MANIP_FLAG_EXTENSION
+#define MT_RUN  MANIP_FLAG_PER_RUN
+#define MT_NOCH MANIP_FLAG_NO_CHALLENGE
+
+/* ---- RaC1 */
+
+#define R1M_DREK_CS   0x00FACC74u
+#define R1M_DREK_SKIP 0x00FACC78u   /* both flags are words (rac1.h) */
+#define R1M_BRIDGE    0x00A0CD04u
+#define R1M_RACE      0x00E5EFD0u
+#define R1M_SONIC     0x00A15F3Cu
+#define R1M_SHOOT     0x0096C9DCu
+#define R1M_CHALLENGE 0x0096C9FCu
+
+static const struct mt_group mt_rac1[] = {
+	{ 1, MT_NG | MT_RUN, "NG+ (poki skip)", "NG+", 0, 2, {
+		MT_W(R1M_DREK_CS, "\0\0\0\x01"), MT_W(R1M_DREK_SKIP, "\0\0\0\0") } },
+	{ 2, MT_NG | MT_RUN, "NG+ (no poki skip)", "NG+", 0, 2, {
+		MT_W(R1M_DREK_SKIP, "\0\0\0\x01"), MT_W(R1M_DREK_CS, "\0\0\0\0") } },
+	{ 3, MT_RUN, "All Missions", "All Missions", 0, 2, {
+		MT_W(R1M_BRIDGE, "\0\0\0\0"), MT_Z(R1M_RACE, 12) } },
+	{ 4, MT_RUN, "All Checkmarks", "All Checkmarks", 0, 2, {
+		MT_Z(R1M_SONIC, 8), MT_Z(R1M_SHOOT, 32) } },
+	{ 5, MT_NG | MT_EXT | MT_RUN, "NG+ GBSP", "NG+ GBSP", 0, 4, {
+		MT_W(R1M_DREK_SKIP, "\0\0\0\x01"), MT_W(R1M_DREK_CS, "\0\0\0\0"),
+		MT_D(R1M_SONIC, "\0\0\0\x01\0\0\0\x01", 8),
+		MT_D(R1M_SHOOT, "\0\0\0\x20\0\0\0\x20\0\0\0\x20\0\0\0\x20"
+		                "\0\0\0\x20\0\0\0\x20\0\0\0\x20\0\0\0\x20", 32) } }
+};
+
+/* ---- RaC2 */
+
+#define R2M_FELTZIN_OPEN 0x01A8495Bu
+#define R2M_SNIV         0x01A6FB73u
+#define R2M_PAD          0x013185B8u
+#define R2M_YEEDIL       0x01A9DF90u
+#define R2M_SIB          0x01A5A99Fu
+#define R2M_GORN_MANIP   0x01A99A4Cu
+#define R2M_GORN_OPEN    0x01A99A34u
+#define R2M_IM           0x0135268Cu
+#define R2M_CURSOR       0x01352684u
+#define R2M_RACE         0x01A4D7E0u
+#define R2M_FELTZIN_MISS 0x01A84973u
+#define R2M_HRUGIS_MISS  0x0143DB0Fu
+#define R2M_GORN_MISS    0x01A99A5Bu
+#define R2M_CHARGE       0x0145C180u
+#define R2M_ENDAKO_CS    0x01A58158u
+#define R2M_DORBIT_OPEN  0x01A59764u
+#define R2M_CHALLENGE    0x01329AA2u
+
+#define R2M_G_PRIME \
+	MT_B(R2M_FELTZIN_OPEN, "\x01"), MT_B(R2M_SNIV, "\x14"),                  \
+	MT_W(R2M_PAD, "\x41\xC8\x00\x00"), MT_B(R2M_YEEDIL, "\x42"),             \
+	MT_B(R2M_SIB, "\x14"), MT_W(R2M_GORN_MANIP, "\0\0\0\x01"),               \
+	MT_W(R2M_GORN_OPEN, "\0\0\0\x01")
+#define R2M_G  R2M_G_PRIME, MT_W(R2M_IM, "\0\0\0\x01")
+
+#define R2M_M(i) MT_W(R2M_CURSOR, "\0\0\0" i), R2M_M_REST
+#define R2M_M_REST \
+	MT_W(R2M_RACE, "\0\0\0\0"),                                              \
+	MT_B(R2M_FELTZIN_OPEN, "\x01"), MT_W(R2M_GORN_OPEN, "\0\0\0\x01"),       \
+	MT_W(R2M_FELTZIN_MISS, "\0\0\0\0"), MT_W(R2M_HRUGIS_MISS, "\0\0\0\0"),   \
+	MT_W(R2M_GORN_MISS, "\0\0\0\0"), MT_W(R2M_CHARGE, "\0\0\0\x1E")
+
+/* A: RAC2Form.resetAnyPercentVars, as rac2_reset_anypct wrote it until build 53. */
+#define R2M_A \
+	MT_W(0x01A4D7E0u, "\0\0\0\0"), MT_B(0x01A8495Bu, "\0"),                  \
+	MT_W(0x01A99A34u, "\0\0\0\0"), MT_W(0x01A99A4Cu, "\0\0\0\0"),            \
+	MT_W(0x01A84973u, "\0\0\0\0"), MT_W(0x0143DB0Fu, "\0\0\0\0"),            \
+	MT_W(0x01A99A5Bu, "\0\0\0\0"), MT_W(0x015718F8u, "\0\0\0\0"),            \
+	MT_W(0x01329AACu, "\0\0\0\0"), MT_W(0x01A58158u, "\0\0\0\0"),            \
+	MT_W(0x01AAC767u, "\0\0\0\0"), MT_W(0x0133E8A0u, "\0\0\0\0"),            \
+	MT_W(0x015784E8u, "\0\0\0\0"), MT_W(0x01578424u, "\0\0\0\0"),            \
+	MT_W(0x01A30430u, "\0\0\0\0"), MT_W(0x01A849A8u, "\0\0\0\0"),            \
+	MT_B(0x01A59764u, "\0"), MT_W(0x013A2D90u, "\0\0\0\0"),                  \
+	MT_B(0x01A6FB73u, "\0"), MT_B(0x01A9DF90u, "\0"), MT_B(0x01A5A99Fu, "\0"), \
+	MT_W(0x013185B8u, "\x41\x50\x00\x00")
+
+#define R2M_K \
+	MT_B(0x014817AFu, "\x28"), MT_B(0x01390C27u, "\x4A"), MT_B(0x01390C37u, "\x2D")
+
+static const struct mt_group mt_rac2[] = {
+	{ 1, MT_NG | MT_RUN, "NG+ no IMG", "NG+ no IMG", 7, 15, { R2M_G_PRIME, R2M_M("\x01") } },
+	{ 2, MT_NG | MT_RUN, "NG+", "NG+", 8, 16, { R2M_G, R2M_M("\x07") } },
+	{ 3, MT_RUN, "Any%", "Any%\nAll Platinum Bolts", 0, 22, { R2M_A } },
+	{ 4, MT_RUN, "100%", "Max%\n100%", 0, 25, { R2M_A, R2M_K } },
+	{ 5, MT_NG | MT_EXT | MT_RUN, "NG+ All Missions", "NG+ All Missions", 10, 18, {
+		R2M_G, MT_W(R2M_ENDAKO_CS, "\0\0\0\x01"), MT_B(R2M_DORBIT_OPEN, "\x01"),
+		R2M_M("\x07") } },
+	/* No Specials: M without its shortcut cursor, which lives in the specials menu. */
+	{ 6, MT_NG | MT_EXT | MT_RUN | MT_NOCH, "NG+ No Specials", "NG+ No Specials", 7, 14, {
+		R2M_G_PRIME, R2M_M_REST } }
+};
+
+/* ---- UYA */
+
+#define R3M_CHALLENGE 0x00C1E50Eu
+
+#define R3M_S5 \
+	MT_W(0x00C9165Cu, "\0\0\0\x07"), MT_W(0x00C36BCCu, "\0\0\0\x03"),        \
+	MT_W(0x00EF6098u, "\0\0\0\x0E"), MT_W(0x00C4F918u, "\0\0\0\x02"),        \
+	MT_W(0x0148A100u, "\0\0\0\x01")
+#define R3M_VQE MT_D(0x00C1E2C0u, "\x00\x17", 2)
+
+static const struct mt_group mt_rac3[] = {
+	{ 1, MT_NG, "NG+ no QE", "NG+ no QE", 5, 5, { R3M_S5 } },
+	{ 2, MT_NG, "NG+", "NG+", 6, 6, { R3M_S5, R3M_VQE } },
+	{ 3, MT_NG | MT_EXT | MT_RUN, "NG+ CC Early", "NG+ CC Early", 6, 9, {
+		R3M_S5, R3M_VQE,
+		MT_W(0x00C1E660u, "\0\0\0\x41"), MT_W(0x00C1E664u, "\x41\x41\x41\x41"),
+		MT_W(0x00C956A0u, "\0\0\0\x64") } }
+};
+
+/* ---- Deadlocked */
+
+#define R4M_CHALLENGE 0x009C330Eu
+
+static const struct mt_group mt_rac4[] = {
+	{ 1, MT_NG, "NG+", "NG+ no LC\nNG+", 5, 5, {
+		/* The Reactor's is the whole word, so its counter reads 20. */
+		MT_B(0x00A947D3u, "\x14"), MT_W(0x00A94944u, "\0\0\0\x14"), MT_B(0x00A969E3u, "\x14"),
+		MT_B(0x00A96E43u, "\x14"), MT_B(0x00A07C7Fu, "\x14") } }
+};
+
+struct mt_game {
+	const char *title;
+	u8 game_id;
+	const char *name;
+	const struct mt_group *groups;
+	u8 ngroups;
+	u32 challenge;
+	u8 challenge_width;
+};
+
+static const struct mt_game mt_games[] = {
+	{ "NPEA00385", GAME_RAC1, "RaC1", mt_rac1, 5, R1M_CHALLENGE, 4 },
+	{ "NPEA00386", GAME_RAC2, "RaC2", mt_rac2, 6, R2M_CHALLENGE, 1 },
+	{ "NPEA00387", GAME_RAC3, "UYA",  mt_rac3, 3, R3M_CHALLENGE, 1 },
+	{ "NPEA00423", GAME_RAC4, "DL",   mt_rac4, 1, R4M_CHALLENGE, 1 }
+};
+
+static void mt_put_counter(const struct mt_game *g, u32 value)
+{
+	if (g->challenge_width == 4) poke32(g->challenge, value);
+	else { u8 b = (u8)value; host_poke(g->challenge, &b, 1); }
+}
+
+/* A save file in play, or the title screen, as each game's in_file reads it. */
+static void mt_put_in_file(u8 game_id, int in_file);
+
+/* Every byte of every write is where the last write to it put it. */
+static int mt_values_match(const struct mt_group *grp, u8 from, u8 to)
+{
+	u8 i, j, k;
+
+	for (i = from; i < to; i++) {
+		const struct mt_write *w = &grp->w[i];
+
+		for (j = 0; j < w->len; j++) {
+			u32 a = w->addr + j;
+			u8 want = w->data != NULL ? (u8)w->data[j] : 0;
+			u8 got = 0;
+			int later = 0;
+
+			for (k = (u8)(i + 1); k < to && !later; k++) {
+				const struct mt_write *l = &grp->w[k];
+				if (a >= l->addr && a < l->addr + l->len) later = 1;
+			}
+			if (later) continue;
+
+			host_peek(a, &got, 1);
+			if (got != want) {
+				printf("    0x%08X: got %02X want %02X (write %u)\n",
+				       (unsigned)a, got, want, (unsigned)i);
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+/* The write log from `first` on is exactly writes [from, to) of the group. */
+static int mt_log_matches(const struct mt_group *grp, u8 from, u8 to)
+{
+	u32 n = host_write_log_count();
+	u8 i;
+
+	if (n != (u32)(to - from)) {
+		printf("    %u writes logged, %u expected\n", (unsigned)n, (unsigned)(to - from));
+		return 0;
+	}
+	for (i = from; i < to; i++) {
+		u32 a = 0, len = 0;
+		host_write_log_at(i - from, &a, &len);
+		if (a != grp->w[i].addr || len != grp->w[i].len) {
+			printf("    write %u: 0x%08X/%u, expected 0x%08X/%u\n", (unsigned)i,
+			       (unsigned)a, (unsigned)len, (unsigned)grp->w[i].addr,
+			       (unsigned)grp->w[i].len);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* Poison every byte a group writes, so a write that does not happen shows. */
+static void mt_poison(const struct mt_group *grp)
+{
+	static const u8 junk[32] = {
+		0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE,
+		0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE,
+		0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE,
+		0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE
+	};
+	u8 i;
+
+	for (i = 0; i < grp->n; i++) host_poke(grp->w[i].addr, junk, grp->w[i].len);
+}
+
+/* MANIP_LIST, parsed. */
+struct mt_list {
+	u8 selected, auto_reset, remember, ngroups;
+	u16 seq;
+	u8 kind, group;
+	u8 ids[16], flags[16];
+	char names[16][40];
+	char cats[16][64];
+	u8 nheaders;
+	char hnames[4][16];
+	u8 hn[4];
+	u16 hids[4][8];
+	u32 len, consumed;
+};
+
+static int mt_parse(const u8 *b, u32 len, struct mt_list *l)
+{
+	u32 off = 8;
+	u8 i;
+
+	memset(l, 0, sizeof(*l));
+	l->len = len;
+	if (len < 8) return 0;
+	l->selected = b[0]; l->auto_reset = b[1]; l->remember = b[2]; l->ngroups = b[3];
+	l->seq = be16_get(b + 4); l->kind = b[6]; l->group = b[7];
+
+	for (i = 0; i < l->ngroups && i < 16; i++) {
+		u8 n;
+		if (off + 3 > len) return 0;
+		l->ids[i] = b[off]; l->flags[i] = b[off + 1]; n = b[off + 2];
+		off += 3;
+		if (off + n + 1 > len || n >= sizeof(l->names[i])) return 0;
+		memcpy(l->names[i], b + off, n);
+		off += n;
+		n = b[off++];
+		if (off + n > len || n >= sizeof(l->cats[i])) return 0;
+		memcpy(l->cats[i], b + off, n);
+		off += n;
+	}
+	if (off + 1 > len) return 0;
+	l->nheaders = b[off++];
+	for (i = 0; i < l->nheaders && i < 4; i++) {
+		u8 n, j;
+		if (off + 1 > len) return 0;
+		n = b[off++];
+		if (off + n + 1 > len || n >= sizeof(l->hnames[i])) return 0;
+		memcpy(l->hnames[i], b + off, n);
+		off += n;
+		l->hn[i] = b[off++];
+		for (j = 0; j < l->hn[i]; j++) {
+			if (off + 2 > len || j >= 8) return 0;
+			l->hids[i][j] = be16_get(b + off);
+			off += 2;
+		}
+	}
+	l->consumed = off;
+	return off == len;
+}
+
+static int mt_list_now(struct mt_list *l)
+{
+	u8 out[1024];
+	u32 len = 0;
+
+	if (manips_list(out, sizeof(out), &len) != ST_OK) return 0;
+	return mt_parse(out, len, l);
+}
+
+/* Forget whatever a run of the tests left in config.txt for one game. */
+static void mt_reset_options(const char *key)
+{
+	config_set_manip(key, "auto_reset", 1);
+	config_set_manip(key, "remember", 0);
+	config_set_manip(key, "category", 0);
+}
+
+static const char *mt_key(u8 game_id)
+{
+	switch (game_id) {
+	case GAME_RAC1: return "rac1";
+	case GAME_RAC2: return "rac2";
+	case GAME_RAC3: return "rac3";
+	default:        return "rac4";
+	}
+}
+
+/*
+ * Every game's groups against the spec: MANIP_LIST describes them as the spec
+ * does, and Apply now writes the setup and then the per-run list, every write
+ * in order and at its width, with the values the spec gives.
+ */
+static void test_manip_tables(void)
+{
+	u8 gi;
+
+	for (gi = 0; gi < sizeof(mt_games) / sizeof(mt_games[0]); gi++) {
+		const struct mt_game *g = &mt_games[gi];
+		struct mt_list l;
+		char what[128];
+		u8 i;
+
+		snprintf(what, sizeof(what), "manip tables: %s", g->name);
+		group(what);
+
+		check(quit_and_wait(), "quit whatever was running");
+		mt_reset_options(mt_key(g->game_id));
+		check(boot_and_wait(g->title), "the game boots");
+		pump(4);
+
+		check(mt_list_now(&l), "MANIP_LIST encodes and parses exactly");
+		check_eq_u64(l.ngroups, g->ngroups, "with the spec's number of groups");
+		check_eq_u64(l.selected, 0, "None is selected after a boot");
+
+		for (i = 0; i < g->ngroups && i < l.ngroups; i++) {
+			const struct mt_group *grp = &g->groups[i];
+			int ok;
+
+			snprintf(what, sizeof(what), "%s group %u", g->name, (unsigned)grp->id);
+
+			ok = l.ids[i] == grp->id && l.flags[i] == grp->flags &&
+			     qstreq(l.names[i], grp->name) && qstreq(l.cats[i], grp->cats);
+			if (!ok)
+				printf("    listed %u %02X '%s' '%s'\n", l.ids[i], l.flags[i],
+				       l.names[i], l.cats[i]);
+			check(ok, "MANIP_LIST lists it with the spec's id, flags, name and categories");
+
+			/* A compatible file in play: challenge mode for NG+, fresh otherwise. */
+			mt_put_in_file(g->game_id, 1);
+			mt_put_counter(g, (grp->flags & MT_NG) ? 1 : 0);
+
+			check(manips_select(grp->id) == ST_OK, "MANIP_SELECT takes it");
+
+			mt_poison(grp);
+			host_write_log_reset();
+			check(manips_apply() == ST_OK, "Apply now writes it");
+			check(mt_log_matches(grp, 0, grp->n),
+			      "setup then per run, every write in the spec's order and width");
+			check(mt_values_match(grp, 0, grp->n), "with the spec's values");
+		}
+
+		check(manips_select(0) == ST_OK, "back to None");
+		host_write_log_reset();
+		check(manips_apply() == ST_OK && host_write_log_count() == 0,
+		      "and Apply now with None writes nothing");
+		check(manips_select(99) == ST_BAD_ARG, "an unknown group is BAD_ARG");
+
+		/* The headers: Deadlocked's Fixes and UYA's Trophies, none elsewhere. */
+		check(mt_list_now(&l), "MANIP_LIST again");
+		if (g->game_id == GAME_RAC4) {
+			check(l.nheaders == 1 && qstreq(l.hnames[0], "Fixes") && l.hn[0] == 2 &&
+			      l.hids[0][0] == 0 && l.hids[0][1] == 1,
+			      "one header, Fixes: Crash patches (0) and Fix reset softlocks (1)");
+		} else if (g->game_id == GAME_RAC3) {
+			check(l.nheaders == 1 && qstreq(l.hnames[0], "Trophies") && l.hn[0] == 2 &&
+			      l.hids[0][0] == 21 && l.hids[0][1] == 39,
+			      "one header, Trophies: the refresh (21) and its auto toggle (39)");
+		} else {
+			check_eq_u64(l.nheaders, 0, "no header");
+		}
+	}
+}
+
+/*
+ * The setup goes in once per game boot, the per-run list on every file load
+ * while auto-reset is on, and a reboot needs the setup again. RaC2's NG+ has
+ * both, so it carries the whole story.
+ */
+static void test_manip_semantics(void)
+{
+	const struct mt_game *g = &mt_games[1];        /* RaC2 */
+	const struct mt_group *ngp = &mt_rac2[1];      /* NG+: G then M(7) */
+	const struct mt_group *any = &mt_rac2[2];      /* Any%: A */
+	struct mt_list l;
+	u16 seq;
+
+	group("manips: defaults");
 
 	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac2");
+	/* A config.txt that has never heard of manips at all. */
+	config_set("manip.rac2.auto_reset", "");
+	{
+		/* Drop the three keys: rewrite config.txt without them. */
+		plat_file_t f;
+		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+			plat_file_write(f, "combo.enabled = 1\n", 18);
+			plat_file_close(f);
+		}
+		config_load();
+	}
+	check(config_get("manip.rac2.auto_reset") == NULL, "config.txt holds no manip keys");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	mt_put_in_file(GAME_RAC2, 0);
+	pump(4);
+	check(mt_list_now(&l), "MANIP_LIST answers");
+	check(l.auto_reset == 1, "auto-reset defaults to on");
+	check(l.remember == 0, "remember defaults to off");
+	check(l.selected == 0, "and the category to None");
+	check(l.kind == MANIP_EVENT_NONE, "with no event yet this boot");
+
+	group("manips: setup once per boot, per run on every file load");
+
+	mt_poison(ngp);
+	host_write_log_reset();
+	check(manips_select(2) == ST_OK, "NG+ selected on the title screen");
+	check_eq_u64(host_write_log_count(), 0, "writes nothing: no file is in play");
+	check(!manips_setup_done(), "and its setup is still due");
+
+	mt_put_in_file(GAME_RAC2, 1);
+	mt_put_counter(g, 1);
+	seq = manips_event_seq();
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(ngp, 0, ngp->n), "the first file load writes the setup and the per-run list");
+	check(mt_values_match(ngp, 0, ngp->n), "with the right values");
+	check(manips_setup_done(), "the setup is done for this boot");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP &&
+	      manips_event_group() == 2, "one event: setup activated, NG+");
+
+	mt_poison(ngp);
+	seq = manips_event_seq();
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(ngp, ngp->nsetup, ngp->n), "the next file load writes the per-run list alone");
+	check(r2_word(R2M_PAD) == 0xEEEEEEEEu, "and leaves the jump pad, a setup value, alone");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_APPLIED,
+	      "one event: per-run applied");
+
+	group("manips: auto-reset off");
+
+	check(manips_options(0, 0) == ST_OK, "auto-reset off");
+	check(mt_list_now(&l) && l.auto_reset == 0, "MANIP_LIST says so");
+	check(qstreq(config_get("manip.rac2.auto_reset"), "0"), "and config.txt has it");
+	seq = manips_event_seq();
+	host_write_log_reset();
+	manips_file_loaded();
+	check_eq_u64(host_write_log_count(), 0, "a file load writes nothing once the setup is in");
+	check(manips_event_seq() == seq, "and records no event");
+	check(manips_options(2, 0) == ST_BAD_ARG, "an option other than 0 or 1 is BAD_ARG");
+	check(manips_options(1, 0) == ST_OK, "auto-reset back on");
+
+	group("manips: a new selection makes the setup due again");
+
+	check(manips_select(3) == ST_OK, "Any% selected");
+	mt_put_counter(g, 0);
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(any, 0, any->n), "a fresh file load runs the any% reset");
+	check(r2_word(R2M_PAD) == 0x41500000u, "which puts the jump pad back to 13.0");
+
+	check(manips_select(2) == ST_OK, "NG+ selected again, on a fresh file");
+	check(r2_word(R2M_PAD) == 0x41500000u, "nothing is written onto a fresh file");
+	check(manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE && manips_event_group() == 2,
+	      "the selection's setup is refused: not a challenge mode file");
+	mt_put_counter(g, 3);
+	host_write_log_reset();
+	check(manips_select(2) == ST_OK, "selecting the same group again");
+	check_eq_u64(host_write_log_count(), 0, "does nothing at all");
+	check(manips_select(0) == ST_OK && manips_select(2) == ST_OK,
+	      "None and back to NG+ while a challenge-mode file is in play");
+	check(r2_word(R2M_PAD) == 0x41C80000u, "puts the setup in straight away");
+	check(manips_event_kind() == MANIP_EVENT_APPLIED,
+	      "already announced this boot, so it is recorded as applied");
+	host_write_log_reset();
+	check(manips_select(2) == ST_OK, "selecting it once more");
+	check_eq_u64(host_write_log_count(), 0, "still writes nothing");
+
+	group("manips: a reboot needs the setup again");
+
+	check(manips_options(1, 1) == ST_OK, "remember on");
+	check(quit_and_wait(), "the game quits");
+	check(boot_and_wait("NPEA00386"), "and boots again");
+	mt_put_in_file(GAME_RAC2, 0);
+	pump(4);
+	check_eq_u64(manips_selected(), 2, "remember brought NG+ back");
+	check(!manips_setup_done(), "with its setup due");
+	check(mt_list_now(&l) && l.kind == MANIP_EVENT_NONE,
+	      "a boot clears the event kind");
+	mt_put_in_file(GAME_RAC2, 1);
+	mt_put_counter(g, 1);
+	mt_poison(ngp);
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(ngp, 0, ngp->n), "the first file load of the new boot writes the setup again");
+	check(manips_event_kind() == MANIP_EVENT_SETUP, "and announces it again");
+
+	group("manips: remember on and off across a game reboot");
+
+	check(manips_options(1, 0) == ST_OK, "remember off");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "boot");
+	pump(4);
+	check_eq_u64(manips_selected(), 0, "with remember off a new process starts at None");
+	check(qstreq(config_get("manip.rac2.category"), "2"),
+	      "though config.txt still holds the category");
+	check(manips_options(1, 1) == ST_OK, "remember on");
+	check(qstreq(config_get("manip.rac2.category"), "0"),
+	      "which writes the current selection, None");
+	check(manips_select(4) == ST_OK, "100% selected");
+	check(config_load() == ST_OK, "config.txt reloads, as after a power cycle");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "boot");
+	pump(4);
+	check_eq_u64(manips_selected(), 4, "with remember on the category is restored");
+	check(mt_list_now(&l) && l.remember == 1 && l.selected == 4, "MANIP_LIST agrees");
+	config_set_manip("rac2", "category", 9);
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "boot");
+	pump(4);
+	check_eq_u64(manips_selected(), 0, "a category the game does not have comes back as None");
+
+	group("manips: the challenge check, both ways");
+
+	mt_put_in_file(GAME_RAC2, 1);
+	check(manips_select(2) == ST_OK, "NG+ selected");
+	mt_put_counter(g, 0);
+	mt_poison(ngp);
+	seq = manips_event_seq();
+	host_write_log_reset();
+	manips_file_loaded();
+	check_eq_u64(host_write_log_count(), 0, "NG+ on a fresh file writes nothing");
+	check(manips_event_seq() == (u16)(seq + 1) &&
+	      manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE && manips_event_group() == 2,
+	      "and records refusal 3, not a challenge mode file");
+	check(!manips_setup_done(), "the setup stays due");
+	host_write_log_reset();
+	check(manips_apply() == ST_BUSY, "Apply now is refused with BUSY");
+	check_eq_u64(host_write_log_count(), 0, "and writes nothing either");
+	check(manips_event_seq() == (u16)(seq + 2), "with an event of its own");
+
+	check(manips_select(3) == ST_OK, "Any% selected");
+	mt_put_counter(g, 1);
+	seq = manips_event_seq();
+	host_write_log_reset();
+	manips_file_loaded();
+	check_eq_u64(host_write_log_count(), 0, "Any% on a challenge-mode file writes nothing");
+	check(manips_event_seq() == (u16)(seq + 1) &&
+	      manips_event_kind() == MANIP_EVENT_CHALLENGE && manips_event_group() == 3,
+	      "and records refusal 4, a challenge mode file");
+
+	mt_put_counter(g, 0);
+	host_write_log_reset();
+	check(manips_select(6) == ST_OK, "NG+ No Specials selected on a fresh file");
+	check(mt_log_matches(&mt_rac2[5], 0, mt_rac2[5].nsetup),
+	      "No Specials skips the check: its setup goes in on a counter of 0");
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(&mt_rac2[5], mt_rac2[5].nsetup, mt_rac2[5].n),
+	      "and a file load writes M without the shortcut cursor");
+	mt_put_counter(g, 255);
+	host_write_log_reset();
+	manips_file_loaded();
+	check(mt_log_matches(&mt_rac2[5], mt_rac2[5].nsetup, mt_rac2[5].n),
+	      "and on an overflowed one");
+
+	group("manips: Apply now");
+
+	check(manips_select(2) == ST_OK, "NG+ selected");
+	mt_put_counter(g, 2);
+	mt_put_in_file(GAME_RAC2, 0);
+	seq = manips_event_seq();
+	host_write_log_reset();
+	check(manips_apply() == ST_BUSY, "Apply now on the title screen is BUSY");
+	check_eq_u64(host_write_log_count(), 0, "and writes nothing");
+	check(manips_event_seq() == (u16)(seq + 1) &&
+	      manips_event_kind() == MANIP_EVENT_NO_FILE && manips_event_group() == 2,
+	      "refusal 5: not in a file");
+	mt_put_in_file(GAME_RAC2, 1);
+	host_write_log_reset();
+	check(manips_apply() == ST_OK, "Apply now in a challenge-mode file");
+	check(mt_log_matches(ngp, 0, ngp->n), "writes the setup and the per-run list");
+	check(manips_setup_done(), "and counts as this boot's setup");
+	host_write_log_reset();
+	check(manips_apply() == ST_OK, "Apply now again");
+	check(mt_log_matches(ngp, 0, ngp->n), "writes both again");
+	check(manips_event_kind() == MANIP_EVENT_APPLIED, "and records an applied event");
+
+	group("manips: MANIP_LIST layout");
+
+	{
+		u8 out[1024];
+		u32 len = 0;
+		u16 before;
+
+		check(manips_list(out, sizeof(out), &len) == ST_OK, "MANIP_LIST encodes");
+		check(mt_parse(out, len, &l), "and parses to its last byte");
+		check(l.selected == 2 && l.auto_reset == 1 && l.remember == 1,
+		      "selected, auto_reset and remember lead");
+		check(l.seq == manips_event_seq() && l.kind == manips_event_kind() &&
+		      l.group == manips_event_group(), "then the last event");
+		before = l.seq;
+		mt_put_counter(g, 0);
+		manips_apply();
+		check(mt_list_now(&l) && l.seq == (u16)(before + 1) &&
+		      l.kind == MANIP_EVENT_NOT_CHALLENGE, "event_seq moves on with every event");
+		check(manips_list(out, 8, &len) == ST_FULL, "a reply that does not fit is FULL");
+	}
+
+	check(manips_select(0) == ST_OK, "back to None");
+	mt_reset_options("rac2");
+}
+
+/*
+ * The retired features: gone from DESCRIBE, their config.txt auto flags
+ * ignored, and nothing of theirs in the previous-session record.
+ */
+static void test_manip_retired(void)
+{
+	u8 out[4096];
+	u32 len = 0;
+
+	group("manips: the retired RaC2 toggles");
+
+	check(quit_and_wait(), "quit whatever was running");
+	/* What a config.txt from before build 53 can hold. */
+	config_set_feature_auto("NPEA00386", "Auto-reset (any%)", 1);
+	config_set_feature_auto("NPEA00386", "Auto-reset (NG+)", 1);
+	check(config_feature_auto("NPEA00386", "Auto-reset (any%)"),
+	      "config.txt flags the old auto-reset toggle on boot");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	pump(4);
+	check((features_toggle_auto() & (((u64)1 << 21) | ((u64)1 << 22))) == 0,
+	      "the old auto flags are ignored");
+	check((features_toggle_state() & (((u64)1 << 21) | ((u64)1 << 22))) == 0,
+	      "and nothing turned the retired toggles on");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	{
+		u8 id, found = 0;
+		for (id = 15; id <= 22; id++) if (desc_feature(out, len, id) != NULL) found++;
+		check_eq_u64(found, 0, "none of 15 to 22 is described");
+	}
+	check(features_set_auto(21, 1) == ST_NOT_FOUND, "FEATURE_SET_AUTO on one is NOT_FOUND");
+	check(features_set(13, 1) == ST_OK, "the per-death boss reset is still a toggle");
+	check(quit_and_wait(), "quit with it on");
+	check(boot_and_wait("NPEA00386"), "the same game comes back");
+	pump(4);
+	check((session_previous()->toggles & (((u64)1 << 21) | ((u64)1 << 22))) == 0,
+	      "the previous-session record offers no retired toggle");
+	check((session_previous()->toggles & ((u64)1 << 13)) != 0,
+	      "but still offers the per-death reset");
+	session_previous_dismiss();
+	config_set_feature_auto("NPEA00386", "Auto-reset (any%)", 0);
+	config_set_feature_auto("NPEA00386", "Auto-reset (NG+)", 0);
+
+	group("manips: the retired buttons of the other games");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	check(desc_feature(out, len, 12) == NULL, "Act tune bosses (12) is not described");
+	check(features_trigger(12) == ST_NOT_FOUND, "and is NOT_FOUND");
+	{
+		const u8 *row = desc_feature(out, len, 0);
+		const u8 *row1 = desc_feature(out, len, 1);
+		u8 ngroups = out[1];
+		check(ngroups == 5 && memcmp(out + 2 + 4 * 24, "Fixes", 5) == 0,
+		      "DESCRIBE has a fifth group, Fixes");
+		check(row != NULL && row1 != NULL && row[2] == 4 && row1[2] == 4,
+		      "Crash patches and Fix reset softlocks are described under it");
+		check(row != NULL && (row[4] & FEATURE_FLAG_AUTO) != 0 &&
+		      row1 != NULL && (row1[4] & FEATURE_FLAG_AUTO) != 0,
+		      "and both still ship auto-flagged");
+	}
+}
+
+static void test_manip_unsupported(void)
+{
+	group("manips: a game without groups");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("TEST00001"), "the test title boots");
+	check(!manips_supported(), "it has no manip groups");
+	{
+		u8 out[64];
+		u32 len = 0;
+		check(manips_list(out, sizeof(out), &len) == ST_UNSUPPORTED, "MANIP_LIST is UNSUPPORTED");
+		check(manips_select(1) == ST_UNSUPPORTED && manips_options(1, 0) == ST_UNSUPPORTED &&
+		      manips_apply() == ST_UNSUPPORTED, "and so are the other three");
+	}
+	manips_file_loaded();
+	check(1, "and a file load there is nothing");
+}
+
+
+/* --------------------------------------------- the file-load triggers */
+
+#define R4T_FRONTEND 0x00B3C7D4u
+#define R4T_LEVEL    0x009C3240u
+#define R4T_RESTORES 0x011ADF80u
+#define R4T_REQUEST  0x00B36DCCu
+#define R4T_TUTORIAL 0x00B1F46Cu
+
+static void r4t_world(u8 frontend, u32 level, u32 request, u32 mode)
+{
+	host_poke(R4T_FRONTEND, &frontend, 1);
+	poke32(R4T_LEVEL, level);
+	poke32(R4T_REQUEST, request);
+	rac4_modes(mode, R4_MODE_NONE);
+}
+
+/*
+ * RaC2: the end of a load screen landing on Aranos, the old auto-resets'
+ * moment, is the manips' file load. Any% is the group: its A list is easy to
+ * see in memory.
+ */
+static void test_manip_trigger_rac2(void)
+{
+	u16 seq;
+
+	group("manip trigger: RaC2, the end of a load into Aranos");
+
+	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac2");
 	check(boot_and_wait("NPEA00386"), "RaC2 boots");
 	r2_settle_on(3);
-	check((features_toggle_state() & both) == 0, "neither auto-reset is on after a boot");
-
-	r2_dirty();
-	r2_load(0);
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "an A1 load still charges the boots");
-	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "but the any% reset did not run");
-	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "nor the NG+ one");
-	check_eq_u64(r2_word(R2_RACE_INDEX), 5, "and the race storage is as it was");
-
-	group("RaC2 auto-resets: any% fires once, at the end of an A1 load");
-
-	check(features_set(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) on");
-	check((features_toggle_state() & both) == R2_BIT(F2_AUTO_ANYPCT),
-	      "and its bit alone is set");
+	check(manips_select(3) == ST_OK, "Any% selected");
+	mt_put_counter(&mt_games[1], 0);
 
 	r2_dirty();
 	r2_load(2);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "a load into Maktar resets nothing");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "nor charges the boots");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "a load into Maktar is not a file load");
 
 	r2_put_planet(0);
 	r2_put_count(0);
 	pump(3);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nothing while the A1 engine data reads");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nothing while the Aranos engine data reads");
 	r2_put_count(1);
 	pump(1);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nor on the frame the counter reads 1");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "and the boots are not charged yet");
+	seq = manips_event_seq();
 	r2_put_count(2);
 	pump(1);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the final load screen reset the Gorn manip");
-	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "put the jump pads back to 13.0");
-	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 0, "left the Feltzin opening to play");
-	check_eq_u64(r2_word(R2_RACE_INDEX), 0, "cleared the race storage");
-	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "and did not touch the NG+ shortcut");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "and charged the boots, all on that tick");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the end of the load screen runs the any% reset");
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "jump pads and all");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_APPLIED,
+	      "with one per-run event");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "Any% does not charge the boots");
 
 	r2_put_word(R2_GORN_MANIP, 1);
-	r2_put_word(R2_CHARGE_BUF, 0);
 	pump(20);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "the counter staying at 2 does not fire again");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "nor charge the boots again");
 
 	r2_load(0);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "reloading A1 from A1 fires again");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "with the buffer charge");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "loading Aranos again fires again");
 
-	group("RaC2 auto-resets: NG+");
+	group("manip trigger: RaC2 NG+ charges the boots");
 
-	check(features_set(F2_AUTO_ANYPCT, 0) == ST_OK, "Auto-reset (any%) off");
-	check(features_set(F2_AUTO_NGPLUS, 1) == ST_OK, "Auto-reset (NG+) on");
-	check(features_trigger(F2_SETUP_NGPLUS) == ST_OK, "the NG+ setup picks the Museum shortcut");
-
+	check(manips_select(2) == ST_OK, "NG+ selected");
+	mt_put_counter(&mt_games[1], 1);
 	r2_dirty();
 	r2_load(0);
-	check_eq_u64(r2_word(R2_SHORTCUTS), 7, "the A1 load put the setup's shortcut back");
-	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 1, "turned the Feltzin opening off");
-	check_eq_u64(r2_word(R2_GORN_OPENING), 1, "and the Gorn one");
-	check_eq_u64(r2_word(R2_RACE_INDEX), 0, "and cleared the race storage");
-	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "but left the any% manips alone");
-	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_25, "the jump pads included");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 7, "the Aranos load put the Museum shortcut back");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "and charged the boots");
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_25, "with the setup in");
 
-	group("RaC2 auto-resets: both on");
-
-	check(features_set(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) back on");
+	check(manips_select(0) == ST_OK, "None");
 	r2_dirty();
 	r2_load(0);
-	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "the any% reset ran");
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "Gorn manip and all");
-	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 1, "and the NG+ one ran after it, as the old form did");
-	check_eq_u64(r2_word(R2_SHORTCUTS), 7, "shortcut included");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "with None an Aranos load charges nothing");
 
-	group("RaC2 auto-resets: a reboot takes them with it");
+	group("manip trigger: RaC2, attaching on Aranos is not a load");
 
-	check(features_set(F2_DEATH_BOSSES, 1) == ST_OK, "boss reset on death on as well");
-	check(quit_and_wait(), "quit with both auto-resets on");
-	check(boot_and_wait("NPEA00386"), "the same game comes back");
-	r2_settle_on(3);
-
-	check((features_toggle_state() & both) == 0, "the checkboxes come back off");
-	check((session_previous()->toggles & both) == both,
-	      "and both are offered in the previous-session record");
-
-	r2_dirty();
-	r2_load(0);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "so an A1 load resets nothing");
-	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_25, "the jump pads included");
-	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "nor puts a shortcut back");
-
-	host_poke(R2_BOSS_SIB, (const u8 *)"\x07", 1);
-	check(session_die() == ST_OK, "DIE runs");
-	check_eq_u64(r2_byte(R2_BOSS_SIB), 7, "and the boss reset on death went with the process too");
-
-	session_previous_reapply(PREV_TOGGLES);
-	check((features_toggle_state() & both) == both, "PREVIOUS_REAPPLY turns both back on");
-	r2_dirty();
-	r2_load(0);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "and the next A1 load resets again");
-	check_eq_u64(r2_word(R2_SHORTCUTS), 3,
-	             "with no shortcut to put back, the setup was in the old process");
-
-	features_set(F2_DEATH_BOSSES, 0);
-	features_set(F2_AUTO_NGPLUS, 0);
-
-	group("RaC2 auto-resets: flagged on boot");
-
-	check(features_set_auto(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) flagged on boot");
-	check(quit_and_wait(), "quit");
-	check(boot_and_wait("NPEA00386"), "boot");
-	r2_settle_on(3);
-	check((features_toggle_state() & both) == R2_BIT(F2_AUTO_ANYPCT),
-	      "the flagged one comes back on and the other stays off");
-
-	r2_dirty();
-	r2_load(0);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "and the first A1 load resets the manips");
-	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 0, "with no NG+ reset after it");
-
-	group("RaC2 auto-resets: attaching on Aranos writes nothing");
-
-	/*
-	 * The module loaded into a game whose last load, into Aranos, is already
-	 * over: the counter reads 2 from the first tick. That is not a load qwark
-	 * saw end.
-	 */
+	check(manips_options(1, 1) == ST_OK && manips_select(3) == ST_OK,
+	      "Any% remembered");
 	check(quit_and_wait(), "quit");
 	host_boot("NPEA00386");
 	r2_put_planet(0);
@@ -4511,18 +5213,521 @@ static void test_rac2_auto_resets(void)
 	r2_dirty();
 	check(pump_until(SESSION_INGAME, 4000), "INGAME on a game already on Aranos");
 	pump(10);
-	check((features_toggle_state() & R2_BIT(F2_AUTO_ANYPCT)) != 0,
-	      "with the flagged auto-reset on");
+	check_eq_u64(manips_selected(), 3, "with Any% back");
 	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "the first ticks reset nothing");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "and charge nothing");
-
 	r2_load(0);
-	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the next A1 load does");
-	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "buffer charge and all");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the next Aranos load does");
 
-	features_set_auto(F2_AUTO_ANYPCT, 0);
-	features_set(F2_AUTO_ANYPCT, 0);
-	session_previous_dismiss();
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac2");
+}
+
+/*
+ * Deadlocked: armed by the main menu, a save restore or the tutorial byte's
+ * drop, fired once the game is playing a level.
+ */
+static void test_manip_trigger_rac4(void)
+{
+	const struct mt_group *ngp = &mt_rac4[0];
+	u16 seq;
+
+	group("manip trigger: Deadlocked");
+
+	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac4");
+	config_set_manip("rac4", "remember", 1);
+	config_set_manip("rac4", "category", 1);
+
+	host_boot("NPEA00423");
+	r4t_world(1, 0xFFFFFFFFu, 0, 0);          /* the main menu */
+	mt_put_counter(&mt_games[3], 1);
+	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots into its main menu");
+	check_eq_u64(manips_selected(), 1, "NG+ remembered");
+	mt_poison(ngp);
+	pump(6);
+	check(r2_byte(0x00A947D3u) == 0xEE, "the main menu writes nothing");
+
+	r4t_world(0, 1, 1, 6);                    /* out of the menu, loading DreadZone */
+	pump(4);
+	check(r2_byte(0x00A947D3u) == 0xEE, "nothing while the level loads");
+	seq = manips_event_seq();
+	r4t_world(0, 1, 0, 0);
+	pump(1);
+	check(r2_byte(0x00A947D3u) == 0xEE, "nor on the first tick of play");
+	pump(2);
+	check(mt_values_match(ngp, 0, ngp->n), "the second tick of play applies the setup");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP,
+	      "and announces it");
+
+	mt_poison(ngp);
+	r4t_world(0, 1, 1, 6);
+	pump(3);
+	r4t_world(0, 4, 0, 0);
+	pump(6);
+	check(r2_byte(0x00A947D3u) == 0xEE, "planet travel fires nothing");
+	host_poke(0x010D44D8u, (const u8 *)"\xC2\x48\x00\x00", 4);
+	pump(6);
+	check(r2_byte(0x00A947D3u) == 0xEE, "nor does a death");
+
+	/* A load from the game's own menu, or through the helper: the restore counts. */
+	seq = manips_event_seq();
+	r4t_world(0, 4, 0, 3);
+	poke32(R4T_RESTORES, 7);
+	pump(3);
+	r4t_world(0, 1, 1, 6);
+	pump(3);
+	r4t_world(0, 1, 0, 0);
+	pump(4);
+	check(manips_event_seq() == seq,
+	      "a later load writes nothing: NG+ has no per-run list and its setup is in");
+	check(r2_byte(0x00A947D3u) == 0xEE, "and its setup is not written twice in a boot");
+
+	group("manip trigger: Deadlocked, a refusal on a fresh file");
+
+	mt_put_counter(&mt_games[3], 0);
+	check(manips_select(0) == ST_OK && manips_select(1) == ST_OK,
+	      "NG+ selected again, on a fresh file");
+	check(manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
+	      "its setup is refused there straight away");
+	host_poke(R4T_TUTORIAL + 3, (const u8 *)"\x05", 1);
+	pump(3);
+	seq = manips_event_seq();
+	host_poke(R4T_TUTORIAL + 3, (const u8 *)"\x00", 1);  /* a new game's reset */
+	pump(4);
+	check(manips_event_seq() == (u16)(seq + 1) &&
+	      manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
+	      "the tutorial byte's drop is a file load, and NG+ is refused on a fresh file");
+
+	group("manip trigger: Deadlocked, attaching in a level is not a load");
+
+	mt_put_counter(&mt_games[3], 1);
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00423");
+	r4t_world(0, 6, 0, 0);
+	mt_put_counter(&mt_games[3], 1);
+	check(pump_until(SESSION_INGAME, 4000), "INGAME in the middle of a level");
+	mt_poison(ngp);
+	pump(10);
+	check(r2_byte(0x00A947D3u) == 0xEE, "the first ticks fire nothing");
+	check(manips_apply() == ST_OK, "Apply now still works there");
+	check(mt_values_match(ngp, 0, ngp->n), "and writes the setup");
+	r4t_world(1, 0xFFFFFFFFu, 0, 0);
+	host_write_log_reset();
+	check(manips_apply() == ST_BUSY, "in the main menu Apply now is refused");
+	check(manips_event_kind() == MANIP_EVENT_NO_FILE, "not in a file");
+
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac4");
+}
+
+#define R1T_REQUEST  0x00A10700u
+#define R1T_DEST     0x00A10704u
+#define R1T_STATE    0x00A10708u
+#define R1T_PLANET   0x00969C70u
+#define R1T_FRONTEND 0x00A15F38u
+
+static void r1t_world(u8 frontend, u32 planet, u32 state, u32 request)
+{
+	host_poke(R1T_FRONTEND, &frontend, 1);
+	poke32(R1T_PLANET, planet);
+	poke32(R1T_STATE, state);
+	poke32(R1T_REQUEST, request);
+}
+
+/*
+ * One planet load as the NPEA00385 executable runs it (rac1.c has the
+ * addresses): the request word and the destination go up, the transition sets
+ * the state to 6 and the planet, the top loop clears the request, and the
+ * level setup leaves the state at 0 on Veldin or at 6 for another planet's
+ * fly-in, which ends in 0 a while later. The 120 Hz tick sees every step.
+ */
+static void r1t_load(u32 planet, int from_title)
+{
+	poke32(R1T_DEST, planet);
+	poke32(R1T_REQUEST, 1);
+	pump(3);
+	poke32(R1T_STATE, 6);
+	poke32(R1T_PLANET, planet);
+	if (from_title) host_poke(R1T_FRONTEND, (const u8 *)"\x00", 1);
+	pump(3);
+	poke32(R1T_REQUEST, 0);
+	pump(3);
+	if (planet == 0) {
+		poke32(R1T_STATE, 0);
+		pump(3);
+	} else {
+		pump(3);
+		poke32(R1T_STATE, 0);
+		pump(3);
+	}
+}
+
+/* RaC1: the end of a planet load into Veldin. All Missions shows it best. */
+static void test_manip_trigger_rac1(void)
+{
+	const struct mt_group *am = &mt_rac1[2];
+	u16 seq;
+
+	group("manip trigger: RaC1, the end of a load into Veldin");
+
+	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac1");
+	host_boot("NPEA00385");
+	r1t_world(1, 0, 3, 0);                     /* the title's menu */
+	check(pump_until(SESSION_INGAME, 4000), "RaC1 boots to its title");
+	pump(4);
+	check(manips_select(3) == ST_OK, "All Missions selected on the title");
+	mt_put_counter(&mt_games[0], 0);
+	mt_poison(am);
+	pump(6);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "the title writes nothing");
+
+	seq = manips_event_seq();
+	poke32(R1T_DEST, 0);
+	poke32(R1T_REQUEST, 1);
+	pump(3);
+	poke32(R1T_STATE, 6);
+	host_poke(R1T_FRONTEND, (const u8 *)"\x00", 1);
+	pump(3);
+	poke32(R1T_REQUEST, 0);
+	pump(3);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "nothing while the level is set up (state 6)");
+	poke32(R1T_STATE, 0);
+	pump(2);
+	check(mt_values_match(am, 0, am->n), "a new game: the Veldin load's end runs the reset");
+	check(manips_event_seq() == (u16)(seq + 1), "with one event");
+
+	mt_poison(am);
+	r1t_load(3, 0);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "a load of Kerwan is not a file load");
+	poke32(R1T_STATE, 6);
+	pump(3);
+	poke32(R1T_STATE, 0);
+	pump(3);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "nor a ship cutscene's 6 to 0 in a level");
+
+	r1t_load(0, 0);
+	check(mt_values_match(am, 0, am->n), "a load into Veldin from in game fires");
+
+	mt_poison(am);
+	poke32(R1T_STATE, 6);
+	pump(3);
+	poke32(R1T_STATE, 0);
+	pump(3);
+	poke32(0x00969D68u, 0xC2480000u);         /* a death: Z far below */
+	pump(6);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "a cutscene or a death on Veldin is not a load");
+
+	/* Quit to the title: the request goes out with planet -1 and the front end opens. */
+	poke32(R1T_DEST, 0xFFFFFFFFu);
+	poke32(R1T_REQUEST, 1);
+	pump(3);
+	poke32(R1T_STATE, 6);
+	host_poke(R1T_FRONTEND, (const u8 *)"\x01", 1);
+	poke32(R1T_PLANET, 0xFFFFFFFFu);
+	pump(2);
+	poke32(R1T_REQUEST, 0);
+	pump(2);
+	poke32(R1T_PLANET, 0);
+	poke32(R1T_STATE, 3);
+	pump(6);
+	check(r2_byte(R1M_BRIDGE) == 0xEE, "quitting to the title is not a load");
+	check(manips_apply() == ST_BUSY && manips_event_kind() == MANIP_EVENT_NO_FILE,
+	      "and Apply now on the title is refused: not in a file");
+
+	r1t_load(0, 1);
+	check(mt_values_match(am, 0, am->n), "a save of Veldin loaded from the title fires");
+
+	group("manip trigger: RaC1, the challenge check on a Veldin load");
+
+	check(manips_select(2) == ST_OK, "NG+ (no poki skip) selected");
+	mt_put_counter(&mt_games[0], 0);
+	seq = manips_event_seq();
+	r1t_load(0, 0);
+	check(manips_event_seq() == (u16)(seq + 1) &&
+	      manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
+	      "refused on a fresh file");
+	mt_put_counter(&mt_games[0], 1);
+	r1t_load(0, 0);
+	check(r2_word(R1M_DREK_SKIP) == 1 && r2_word(R1M_DREK_CS) == 0,
+	      "applied on a challenge-mode file");
+
+	group("manip trigger: RaC1, attaching");
+
+	check(manips_options(1, 1) == ST_OK, "remember on");
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00385");
+	r1t_world(0, 0, 0, 0);
+	mt_put_counter(&mt_games[0], 1);
+	poke32(R1M_DREK_SKIP, 7);
+	check(pump_until(SESSION_INGAME, 4000), "INGAME on Veldin, at rest");
+	pump(10);
+	check(r2_word(R1M_DREK_SKIP) == 7, "the first ticks fire nothing");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00385");
+	r1t_world(0, 0, 6, 1);
+	mt_put_counter(&mt_games[0], 1);
+	poke32(R1M_DREK_SKIP, 7);
+	check(pump_until(SESSION_INGAME, 4000), "INGAME in the middle of a load");
+	pump(4);
+	check(r2_word(R1M_DREK_SKIP) == 7, "nothing until it ends");
+	poke32(R1T_REQUEST, 0);
+	pump(2);
+	poke32(R1T_STATE, 0);
+	pump(2);
+	check(r2_word(R1M_DREK_SKIP) == 1, "and it fires at the end of a Veldin load it saw");
+
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac1");
+}
+
+/* ---- UYA: the end of a load into Veldin, and the trophy auto-refresh */
+
+#define R3T_REQUEST  0x00EE9310u
+#define R3T_DEST     0x00EE9314u
+#define R3T_TIMER    0x00EE9330u
+#define R3T_MODE     0x00EE9334u
+#define R3T_PLANET   0x00C1E438u
+#define R3T_TROPHY   0x00D9E020u
+
+#define F3_RESET_TROPHIES 21
+#define F3_AUTO_TROPHIES  39
+
+#define R3T_PUT_IN_FILE(in) poke32(R3T_PLANET, (in) ? 1 : 0xFFFFFFFFu)
+
+/*
+ * One planet load as the NPEA00387 executable runs it (rac3.c has the
+ * addresses): the request word and the destination go up, the load routine
+ * puts the mode to 6 and the planet to the destination, main clears the
+ * request, and the level loop's init puts the mode and its frame count to 0,
+ * the count then going up a frame at a time. `title` adds the front end's
+ * frame where the request is up and the mode is still 0.
+ */
+static void r3t_load(u32 planet, int title)
+{
+	poke32(R3T_DEST, planet);
+	poke32(R3T_REQUEST, 1);
+	pump(title ? 3 : 1);
+	poke32(R3T_MODE, 6);
+	poke32(R3T_PLANET, planet);
+	pump(3);
+	poke32(R3T_REQUEST, 0);
+	poke32(R3T_DEST, 0);
+	pump(2);
+	poke32(R3T_TIMER, 0);
+	poke32(R3T_MODE, 0);
+	pump(1);
+	poke32(R3T_TIMER, 3);
+	pump(2);
+}
+
+static void test_manip_trigger_rac3(void)
+{
+	const struct mt_group *cc = &mt_rac3[2];
+	u16 seq;
+
+	group("manip trigger: UYA, the end of a load into Veldin");
+
+	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac3");
+	host_boot("NPEA00387");
+	poke32(R3T_PLANET, 0xFFFFFFFFu);
+	check(pump_until(SESSION_INGAME, 4000), "UYA boots to its title");
+	pump(4);
+	check(manips_select(3) == ST_OK, "NG+ CC Early selected on the title");
+	mt_put_counter(&mt_games[2], 1);
+	mt_poison(cc);
+
+	seq = manips_event_seq();
+	poke32(R3T_DEST, 1);
+	poke32(R3T_REQUEST, 1);
+	pump(3);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "nothing on the title's frame before the load");
+	poke32(R3T_MODE, 6);
+	poke32(R3T_PLANET, 1);
+	pump(3);
+	poke32(R3T_REQUEST, 0);
+	pump(2);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "nothing while Veldin loads");
+	poke32(R3T_TIMER, 0);
+	poke32(R3T_MODE, 0);
+	pump(1);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "nor on the level init's frame");
+	poke32(R3T_TIMER, 1);
+	pump(1);
+	check(mt_values_match(cc, 0, cc->n), "the frame after it applies the setup and the per-run list");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP,
+	      "with one event, the setup activated");
+
+	mt_poison(cc);
+	r3t_load(5, 0);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "a load of another planet is not a file load");
+	r3t_load(1, 0);
+	check(r2_word(0x00C1E660u) == 0x41 && r2_word(0x00C956A0u) == 100,
+	      "a load into Veldin from in the game refreshes the per-run list");
+	check(r2_word(0x00C9165Cu) == 0xEEEEEEEEu, "and leaves the setup, already in, alone");
+
+	mt_poison(cc);
+	poke32(R3T_MODE, 6);
+	pump(3);
+	poke32(R3T_MODE, 0);
+	pump(3);
+	poke32(0x00DA2878u, 0xC2480000u);         /* a death: Z far below */
+	pump(6);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu,
+	      "a cutscene's mode 6 or a death on Veldin is not a load");
+
+	r3t_load(0xFFFFFFFFu, 0);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "quitting to the title is not one either");
+	check(manips_apply() == ST_BUSY && manips_event_kind() == MANIP_EVENT_NO_FILE,
+	      "and on the title Apply now is refused: not in a file");
+
+	group("manip trigger: UYA, attaching on Veldin is not a load");
+
+	check(manips_options(1, 1) == ST_OK, "remember on");
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00387");
+	poke32(R3T_PLANET, 1);
+	poke32(R3T_TIMER, 500);
+	mt_put_counter(&mt_games[2], 1);
+	check(pump_until(SESSION_INGAME, 4000), "INGAME on Veldin, at rest");
+	mt_poison(cc);
+	pump(10);
+	check(r2_word(0x00C1E660u) == 0xEEEEEEEEu, "the first ticks fire nothing");
+	r3t_load(1, 0);
+	check(mt_values_match(cc, 0, cc->n), "the next Veldin load does");
+
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac3");
+}
+
+/*
+ * The Trophies header: the refresh and its auto toggle, which asks for the
+ * refresh once per run as a load into Veldin starts, whatever the category.
+ */
+static void test_manip_trophies(void)
+{
+	u8 out[4096];
+	u32 len = 0;
+	u32 v;
+
+	group("trophies: UYA's Trophies header and auto-refresh");
+
+	check(quit_and_wait(), "quit whatever was running");
+	mt_reset_options("rac3");
+	check(boot_and_wait("NPEA00387"), "UYA boots");
+	pump(4);
+
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	{
+		const u8 *refresh = desc_feature(out, len, F3_RESET_TROPHIES);
+		const u8 *autor = desc_feature(out, len, F3_AUTO_TROPHIES);
+		u8 ngroups = out[1];
+
+		check(ngroups == 6 && memcmp(out + 2 + 5 * 24, "Trophies", 8) == 0,
+		      "DESCRIBE has a sixth group, Trophies");
+		check(refresh != NULL && refresh[1] == FEATURE_ACTION && refresh[2] == 5,
+		      "Refresh trophy state (21) is an ACTION under it");
+		check(autor != NULL && autor[1] == FEATURE_TOGGLE && autor[2] == 5 &&
+		      memcmp(autor + 16, "Auto-refresh trophies", 21) == 0,
+		      "and Auto-refresh trophies (39) a TOGGLE beside it");
+		check(autor != NULL && (autor[4] & FEATURE_FLAG_AUTO) == 0,
+		      "which does not ship auto-flagged");
+	}
+	check((features_toggle_state() & ((u64)1 << F3_AUTO_TROPHIES)) == 0,
+	      "the auto-refresh is off after a boot");
+
+	poke32(R3T_TROPHY, 0);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "the refresh button runs");
+	check_eq_u64(r2_word(R3T_TROPHY), 1, "and writes the old request word");
+
+	poke32(R3T_TROPHY, 0);
+	check_eq_u64(manips_selected(), 0, "None is selected");
+	r3t_load(1, 1);
+	check_eq_u64(r2_word(R3T_TROPHY), 0, "with the toggle off a Veldin load asks for nothing");
+
+	check(features_set(F3_AUTO_TROPHIES, 1) == ST_OK, "auto-refresh on");
+	poke32(R3T_DEST, 1);
+	poke32(R3T_REQUEST, 1);
+	pump(3);
+	check_eq_u64(r2_word(R3T_TROPHY), 0, "not on the title's frame before the load starts");
+	poke32(R3T_MODE, 6);
+	poke32(R3T_PLANET, 1);
+	pump(1);
+	check_eq_u64(r2_word(R3T_TROPHY), 1,
+	             "the first tick of a Veldin load asks for the refresh, with None selected");
+	poke32(R3T_TROPHY, 0);
+	pump(3);
+	check_eq_u64(r2_word(R3T_TROPHY), 0, "once per load");
+	poke32(R3T_REQUEST, 0);
+	pump(2);
+	poke32(R3T_TIMER, 0);
+	poke32(R3T_MODE, 0);
+	pump(1);
+	poke32(R3T_TIMER, 3);
+	pump(4);
+	check_eq_u64(r2_word(R3T_TROPHY), 0, "and not again as the load ends");
+
+	r3t_load(5, 0);
+	check_eq_u64(r2_word(R3T_TROPHY), 0, "a load of another planet asks for nothing");
+	check(manips_select(2) == ST_OK, "NG+ selected");
+	r3t_load(1, 0);
+	v = r2_word(R3T_TROPHY);
+	check_eq_u64(v, 1, "the next run's Veldin load asks again, whatever the category");
+
+	group("trophies: the auto flag keeps the toggle across a boot");
+
+	check(features_set_auto(F3_AUTO_TROPHIES, 1) == ST_OK, "flagged on boot");
+	check(config_feature_auto("NPEA00387", "Auto-refresh trophies"),
+	      "and config.txt has it");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00387"), "boot");
+	pump(4);
+	check((features_toggle_state() & ((u64)1 << F3_AUTO_TROPHIES)) != 0,
+	      "the auto-refresh comes back on");
+	poke32(R3T_TROPHY, 0);
+	r3t_load(1, 0);
+	check_eq_u64(r2_word(R3T_TROPHY), 1, "and asks on the first Veldin load");
+
+	features_set_auto(F3_AUTO_TROPHIES, 0);
+	features_set(F3_AUTO_TROPHIES, 0);
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac3");
+}
+
+/* A save file in play, or the title screen or main menu, as each game reads it. */
+static void mt_put_in_file(u8 game_id, int in_file)
+{
+	switch (game_id) {
+	case GAME_RAC1:
+		host_poke(R1T_FRONTEND, in_file ? (const u8 *)"\x00" : (const u8 *)"\x01", 1);
+		poke32(R1T_PLANET, 0);
+		break;
+	case GAME_RAC2:
+		poke32(R2_PLANET_ADDR, in_file ? 3 : 0xFFFFFFFFu);
+		break;
+	case GAME_RAC3:
+		R3T_PUT_IN_FILE(in_file);
+		break;
+	default:
+		host_poke(R4T_FRONTEND, in_file ? (const u8 *)"\x00" : (const u8 *)"\x01", 1);
+		poke32(R4T_LEVEL, in_file ? 1 : 0xFFFFFFFFu);
+		break;
+	}
+}
+
+static void test_manips(void)
+{
+	test_manip_tables();
+	test_manip_semantics();
+	test_manip_retired();
+	test_manip_unsupported();
+	test_manip_trigger_rac1();
+	test_manip_trigger_rac2();
+	test_manip_trigger_rac3();
+	test_manip_trigger_rac4();
+	test_manip_trophies();
 }
 
 /* ------------------------------------------------------------------ RaC3 */
@@ -4618,21 +5823,28 @@ static void test_rac3(void)
 		int retired = 0;
 		int neighbours = 0;
 
-		check_eq_u64(d->nfeatures, 32, "RaC3 declares thirty-two features");
+		check_eq_u64(d->nfeatures, 29, "RaC3 declares twenty-nine features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
-		check_eq_u64(d->ngroups, 5, "and five groups");
+		check_eq_u64(d->ngroups, 6, "and six groups, Trophies the sixth");
 
-		/* 4, 17, 28, 29 and 30 are retired: gone, but nothing is renumbered. */
+		/*
+		 * 4, 17, 28, 29 and 30 are retired: gone, but nothing is renumbered.
+		 * Build 53 retired the four manip buttons, 16, 18, 19 and 20, the same way.
+		 */
 		for (i = 0; i < d->nfeatures; i++) {
 			u8 id = d->features[i].id;
-			if (id == 4 || id == 17 || id == 28 || id == 29 || id == 30)
+			if (id == 4 || id == 17 || id == 28 || id == 29 || id == 30 ||
+			    id == 16 || id == 18 || id == 19 || id == 20)
 				retired++;
-			if (id == 16 || id == 18) neighbours++;
+			if (id == 15 || id == 21) neighbours++;
 		}
 		check_eq_u64(retired, 0, "and none of the retired ids");
-		check_eq_u64(neighbours, 2, "while 16 and 18 kept their numbers");
+		check_eq_u64(neighbours, 2, "while 15 and 21 kept their numbers");
 		check(features_trigger(17) == ST_NOT_FOUND,
 		      "the retired no-QE action is NOT_FOUND");
+		check(features_trigger(16) == ST_NOT_FOUND && features_trigger(18) == ST_NOT_FOUND &&
+		      features_trigger(19) == ST_NOT_FOUND && features_trigger(20) == ST_NOT_FOUND,
+		      "and so are the four retired manip buttons");
 	}
 
 	{
@@ -5094,7 +6306,7 @@ static void test_rac4(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 17, "Deadlocked declares seventeen features");
+		check_eq_u64(d->nfeatures, 16, "Deadlocked declares sixteen features (build 53 retired act tuning)");
 		check_eq_u64(d->nreadouts, 8, "and eight readouts");
 		check_eq_u64(d->auto_default,
 		             ((u64)1 << F4_CRASH_PATCHES) | ((u64)1 << F4_SOFTLOCK_FIX),
@@ -5779,7 +6991,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 37, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 29, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -11060,7 +12272,7 @@ int main(void)
 	test_combo_suspend();
 	test_combo_enable();
 	test_rac2();
-	test_rac2_auto_resets();
+	test_manips();
 	test_rac3();
 	test_rac4();
 	test_trilogy();

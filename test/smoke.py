@@ -154,6 +154,11 @@ OP_SAVEFILE_RESTORE = 0x00B6
 OP_SAVEFILE_CATEGORY = 0x00B7
 # Revision 1.15: the savefile helper as the words an RPCS3 patch writes.
 OP_SAVEFILE_PATCH = 0x00B8
+# Revision 1.21: manip categories.
+OP_MANIP_LIST = 0x00D0
+OP_MANIP_SELECT = 0x00D1
+OP_MANIP_OPTIONS = 0x00D2
+OP_MANIP_APPLY = 0x00D3
 OP_UNKNOWN = 0x7FFF
 
 ST_OK = 0
@@ -1182,14 +1187,15 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        "features": 37,
+        "features": 29,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h; build 50 moved it
         # out of the executable's code segment.
         "sf_setaside": 0x0131772A,
         # Build 53: a save of the game's own, which a set-aside copies.
         "sf_save": RAC2_SAVE_WRITES,
-        # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
-        "retired": [32, 33],
+        # Retired, never renumbered: 32 and 33, the two tempsave manager rows,
+        # and (build 53) 15 to 22, the manip buttons and auto-reset toggles.
+        "retired": [15, 16, 17, 18, 19, 20, 21, 22, 32, 33],
         "readouts": 9,
         "planets": 27,
         "planet0": "Aranos",
@@ -1285,13 +1291,14 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 32,
+        "features": 29,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
         "sf_setaside": 0x00D9FF02,
         # Build 53: a save of the game's own, which a set-aside copies.
         "sf_save": RAC3_SAVE_WRITES,
-        # Retired, never renumbered: 4, 17, 28, 29, 30 and 33.
-        "retired": [4, 17, 28, 29, 30, 33],
+        # Retired, never renumbered: 4, 17, 28, 29, 30 and 33, and (build 53)
+        # the manip buttons 16, 18, 19 and 20.
+        "retired": [4, 16, 17, 18, 19, 20, 28, 29, 30, 33],
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
@@ -1392,7 +1399,7 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 17,
+        "features": 16,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
         "sf_load": 0x015CD71E,
@@ -1400,8 +1407,9 @@ OTHER_GAMES = [
         # fresh fake process reads as a mode change queued, so it is told so.
         "sf_idle": [(R4_GAME_MODE, R4_MODE_IDLE[0]),
                     (R4_PENDING_GAME_MODE, R4_MODE_IDLE[1])],
-        # Retired, never renumbered: 16, "Reset all weapon levels".
-        "retired": [16],
+        # Retired, never renumbered: 16, "Reset all weapon levels", and (build
+        # 53) 12, "Act tune bosses", which is the NG+ manip group now.
+        "retired": [12, 16],
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
@@ -1433,10 +1441,10 @@ OTHER_GAMES = [
         "blob_main": 32,
         "value_id": 7,
         "value_addr": 0x9C32E8,
-        # "Act tune bosses" writes 20 into five one-byte tuning slots.
-        "action_id": 12,
-        "action_addr": 0xA947D3,
-        "action_expect": 20,
+        # "Unlock all planets" writes the rank, Liberator, as one byte.
+        "action_id": 11,
+        "action_addr": 0x9C331F,
+        "action_expect": 4,
         "planet": 4,
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
@@ -3555,6 +3563,261 @@ def smoke_rpcs3_held(exe):
         pine.stop()
 
 
+
+# --------------------------------------------- manip categories, revision 1.21
+
+MANIP_FLAG_NGPLUS = 0x01
+MANIP_FLAG_EXTENSION = 0x02
+MANIP_FLAG_PER_RUN = 0x04
+MANIP_FLAG_NO_CHALLENGE = 0x08
+
+MANIP_EVENT_SETUP = 1
+MANIP_EVENT_APPLIED = 2
+MANIP_EVENT_NOT_CHALLENGE = 3
+MANIP_EVENT_CHALLENGE = 4
+MANIP_EVENT_NO_FILE = 5
+
+_NG, _EXT, _RUN, _NOCH = (MANIP_FLAG_NGPLUS, MANIP_FLAG_EXTENSION,
+                          MANIP_FLAG_PER_RUN, MANIP_FLAG_NO_CHALLENGE)
+
+# UYA: the planet word, -1 on the title (src/games/rac3.c rac3_in_file).
+UYA_IN_FILE = [(0xC1E438, struct.pack(">I", 1))]
+UYA_TITLE = [(0xC1E438, struct.pack(">I", 0xFFFFFFFF))]
+
+# One row per game: the groups and headers MANIP_LIST must describe, what a
+# save file in play and the title look like in memory, and one group to apply:
+# its compatible challenge counter, and a word it writes.
+MANIP_SPECS = [
+    {
+        "title": "NPEA00385", "name": "RaC1",
+        "groups": [(1, _NG | _RUN, "NG+ (poki skip)", "NG+"),
+                   (2, _NG | _RUN, "NG+ (no poki skip)", "NG+"),
+                   (3, _RUN, "All Missions", "All Missions"),
+                   (4, _RUN, "All Checkmarks", "All Checkmarks"),
+                   (5, _NG | _EXT | _RUN, "NG+ GBSP", "NG+ GBSP")],
+        "headers": [],
+        "in_file": [(0xA15F38, b"\x00"), (0x969C70, struct.pack(">I", 0))],
+        "title_screen": [(0xA15F38, b"\x01")],
+        "challenge": (0x96C9FC, 4),
+        "apply": (3, 0, 0xA0CD04, 0),
+    },
+    {
+        "title": "NPEA00386", "name": "RaC2",
+        "groups": [(1, _NG | _RUN, "NG+ no IMG", "NG+ no IMG"),
+                   (2, _NG | _RUN, "NG+", "NG+"),
+                   (3, _RUN, "Any%", "Any%\nAll Platinum Bolts"),
+                   (4, _RUN, "100%", "Max%\n100%"),
+                   (5, _NG | _EXT | _RUN, "NG+ All Missions", "NG+ All Missions"),
+                   (6, _NG | _EXT | _RUN | _NOCH, "NG+ No Specials", "NG+ No Specials")],
+        "headers": [],
+        "in_file": [(0x1329A3C, struct.pack(">I", 3))],
+        "title_screen": [(0x1329A3C, struct.pack(">I", 0xFFFFFFFF))],
+        "challenge": (0x1329AA2, 1),
+        "apply": (2, 1, 0x145C180, 30),
+    },
+    {
+        "title": "NPEA00387", "name": "UYA",
+        "groups": [(1, _NG, "NG+ no QE", "NG+ no QE"),
+                   (2, _NG, "NG+", "NG+"),
+                   (3, _NG | _EXT | _RUN, "NG+ CC Early", "NG+ CC Early")],
+        "headers": [("Trophies", [21, 39])],
+        "in_file": UYA_IN_FILE,
+        "title_screen": UYA_TITLE,
+        "challenge": (0xC1E50E, 1),
+        "apply": (1, 1, 0xC9165C, 7),
+        # The Trophies header's auto toggle asks for the refresh (the old
+        # request word) once a load into Veldin is under way, whatever the
+        # category: request word, destination, then the load's mode 6.
+        "trophies": {"toggle": 39, "word": 0xD9E020,
+                     "load": [(0xEE9314, struct.pack(">I", 1)),
+                              (0xEE9310, struct.pack(">I", 1)),
+                              (0xEE9334, struct.pack(">I", 6))],
+                     "rest": [(0xEE9310, struct.pack(">I", 0)),
+                              (0xEE9314, struct.pack(">I", 0)),
+                              (0xEE9334, struct.pack(">I", 0))]},
+    },
+    {
+        "title": "NPEA00423", "name": "Deadlocked",
+        "groups": [(1, _NG, "NG+", "NG+ no LC\nNG+")],
+        "headers": [("Fixes", [0, 1])],
+        "in_file": [(0xB3C7D4, b"\x00"), (0x9C3240, struct.pack(">I", 1))],
+        "title_screen": [(0xB3C7D4, b"\x01"), (0x9C3240, struct.pack(">I", 0xFFFFFFFF))],
+        "challenge": (0x9C330E, 1),
+        # A quit to the XMB is an autosplit PAUSE here, and its RESUME waits for
+        # the game's loading hook to say the logo is up: say it, after each boot.
+        "after_boot": [(0x1710000, b"\xFF")],
+        # One byte of the word: the poison around it stays.
+        "apply": (1, 1, 0xA947D0, 0xEEEEEE14),
+    },
+]
+
+
+def parse_manip_list(b):
+    """MANIP_LIST's reply, or None when it does not parse to its last byte."""
+    try:
+        sel, auto_reset, remember, ngroups = b[0], b[1], b[2], b[3]
+        seq, kind, grp = struct.unpack_from(">HBB", b, 4)
+        off = 8
+        groups = []
+        for _ in range(ngroups):
+            gid, flags, n = b[off], b[off + 1], b[off + 2]
+            off += 3
+            name = b[off:off + n].decode()
+            off += n
+            n = b[off]
+            off += 1
+            cats = b[off:off + n].decode()
+            off += n
+            groups.append((gid, flags, name, cats))
+        nheaders = b[off]
+        off += 1
+        headers = []
+        for _ in range(nheaders):
+            n = b[off]
+            off += 1
+            hname = b[off:off + n].decode()
+            off += n
+            nf = b[off]
+            off += 1
+            ids = list(struct.unpack_from(">%dH" % nf, b, off))
+            off += 2 * nf
+            headers.append((hname, ids))
+        if off != len(b):
+            return None
+        return {"selected": sel, "auto_reset": auto_reset, "remember": remember,
+                "seq": seq, "kind": kind, "group": grp,
+                "groups": groups, "headers": headers}
+    except (IndexError, struct.error, UnicodeDecodeError):
+        return None
+
+
+def manip_list(c):
+    status, body = c.call(OP_MANIP_LIST)
+    return status, (parse_manip_list(body) if status == ST_OK else None)
+
+
+def exercise_manips(c, sim, spec):
+    name = spec["name"]
+
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "%s manips: the previous game quit" % name)
+
+    status, _ = c.call(OP_MANIP_LIST)
+    check(status == ST_UNSUPPORTED, "%s manips: MANIP_LIST is UNSUPPORTED at the XMB" % name,
+          status)
+
+    sim.send("boot %s" % spec["title"])
+    ok, _ = wait_state(c, SESSION_INGAME)
+    if not check(ok, "%s manips: %s reaches INGAME" % (name, spec["title"])):
+        return
+    for a, v in spec.get("after_boot", []):
+        mem_write(c, a, v)
+
+    for addr, value in spec["title_screen"]:
+        mem_write(c, addr, value)
+
+    status, l = manip_list(c)
+    if not check(status == ST_OK and l is not None,
+                 "%s manips: MANIP_LIST answers and parses to its last byte" % name, status):
+        return
+    check(l["groups"] == spec["groups"],
+          "%s manips: the groups are the spec's, ids, flags, names and categories" % name,
+          l["groups"])
+    check(l["headers"] == spec["headers"], "%s manips: and so are the headers" % name,
+          l["headers"])
+    check(l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
+          "%s manips: None, auto-reset on and remember off out of the box" % name, l)
+
+    status, _ = c.call(OP_MANIP_SELECT, bytes([99]))
+    check(status == ST_BAD_ARG, "%s manips: an unknown group is BAD_ARG" % name, status)
+    status, _ = c.call(OP_MANIP_SELECT)
+    check(status == ST_BAD_ARG, "%s manips: and so is an empty MANIP_SELECT" % name, status)
+    status, _ = c.call(OP_MANIP_OPTIONS, bytes([2, 0]))
+    check(status == ST_BAD_ARG, "%s manips: an option of 2 is BAD_ARG" % name, status)
+
+    gid, compatible, addr, want = spec["apply"]
+    caddr, cwidth = spec["challenge"]
+    fmt = ">I" if cwidth == 4 else ">B"
+
+    status, _ = c.call(OP_MANIP_SELECT, bytes([gid]))
+    check(status == ST_OK, "%s manips: MANIP_SELECT takes group %d" % (name, gid), status)
+    status, l = manip_list(c)
+    check(l is not None and l["selected"] == gid, "%s manips: and MANIP_LIST says so" % name)
+    seq = l["seq"] if l else 0
+
+    status, _ = c.call(OP_MANIP_APPLY)
+    check(status == ST_BUSY, "%s manips: Apply now on the title is BUSY" % name, status)
+    status, l = manip_list(c)
+    check(l is not None and l["seq"] == (seq + 1) & 0xFFFF and
+          l["kind"] == MANIP_EVENT_NO_FILE and l["group"] == gid,
+          "%s manips: with event 5, not in a file" % name, l and (l["seq"], l["kind"]))
+
+    for a, v in spec["in_file"]:
+        mem_write(c, a, v)
+    mem_write(c, caddr, struct.pack(fmt, 1 - compatible))
+    mem_write(c, addr, b"\xEE\xEE\xEE\xEE")
+    status, _ = c.call(OP_MANIP_APPLY)
+    check(status == ST_BUSY, "%s manips: Apply now on the wrong kind of file is BUSY" % name,
+          status)
+    status, l = manip_list(c)
+    refusal = MANIP_EVENT_NOT_CHALLENGE if compatible else MANIP_EVENT_CHALLENGE
+    check(l is not None and l["kind"] == refusal,
+          "%s manips: with the challenge check's refusal as the event" % name, l and l["kind"])
+    check(mem_read_u32(c, addr) == 0xEEEEEEEE, "%s manips: and nothing written" % name)
+
+    mem_write(c, caddr, struct.pack(fmt, compatible))
+    status, _ = c.call(OP_MANIP_APPLY)
+    check(status == ST_OK, "%s manips: Apply now on a compatible file" % name, status)
+    check(mem_read_u32(c, addr) == want,
+          "%s manips: writes the group" % name, hex(mem_read_u32(c, addr)))
+    status, l = manip_list(c)
+    check(l is not None and l["kind"] in (MANIP_EVENT_SETUP, MANIP_EVENT_APPLIED) and
+          l["group"] == gid, "%s manips: and records it" % name, l and l["kind"])
+
+    status, _ = c.call(OP_MANIP_OPTIONS, bytes([0, 1]))
+    check(status == ST_OK, "%s manips: MANIP_OPTIONS takes auto-reset off, remember on" % name,
+          status)
+    status, l = manip_list(c)
+    check(l is not None and l["auto_reset"] == 0 and l["remember"] == 1,
+          "%s manips: and MANIP_LIST reports both" % name, l)
+
+    # A game reboot: remember brings the category back.
+    sim.send("quit")
+    wait_state(c, SESSION_XMB)
+    sim.send("boot %s" % spec["title"])
+    ok, _ = wait_state(c, SESSION_INGAME)
+    for a, v in spec.get("after_boot", []):
+        mem_write(c, a, v)
+    status, l = manip_list(c)
+    check(ok and l is not None and l["selected"] == gid and l["auto_reset"] == 0,
+          "%s manips: a reboot with remember on keeps the category" % name, l)
+
+    c.call(OP_MANIP_OPTIONS, bytes([1, 0]))
+    c.call(OP_MANIP_SELECT, bytes([0]))
+
+    t = spec.get("trophies")
+    if t:
+        for a, v in t["rest"]:
+            mem_write(c, a, v)
+        mem_write(c, t["word"], struct.pack(">I", 0))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 1))
+        check(status == ST_OK, "%s trophies: the auto-refresh toggle turns on" % name, status)
+        for a, v in t["load"]:
+            mem_write(c, a, v)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and mem_read_u32(c, t["word"]) != 1:
+            time.sleep(0.05)
+        check(mem_read_u32(c, t["word"]) == 1,
+              "%s trophies: a load into Veldin asks for the refresh, with None selected" % name)
+        for a, v in t["rest"]:
+            mem_write(c, a, v)
+        c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 0))
+    status, l = manip_list(c)
+    check(l is not None and l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
+          "%s manips: back to None, auto-reset on, remember off" % name, l)
+
+
 def main():
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "qwark-host.exe")
     if not os.path.exists(exe):
@@ -3685,10 +3948,13 @@ def main():
             by_id = {f["id"]: f for f in features}
             check(consumed == len(body), "DESCRIBE parses exactly", (consumed, len(body)))
             check(game == 1, "DESCRIBE names RaC1")
-            check(len(features) == 27, "twenty-seven features", len(features))
+            check(len(features) == 22, "twenty-two features", len(features))
             check(9 not in by_id, "the retired id 9 is not described", sorted(by_id))
-            check(8 in by_id and 10 in by_id,
-                  "and the ids either side of it kept their numbers")
+            # Build 53: the five manip buttons are retired the same way.
+            check(not any(i in by_id for i in (7, 8, 10, 11, 16)),
+                  "nor the five retired manip ids", sorted(by_id))
+            check(6 in by_id and 12 in by_id and 17 in by_id,
+                  "and the ids around them kept their numbers")
             check(len(groups) <= 16 and len(readouts) <= 16 and len(features) <= 64,
                   "DESCRIBE stays inside its caps", (len(groups), len(readouts)))
             labels = [f["label"] for f in features]
@@ -4369,6 +4635,10 @@ def main():
         for spec in OTHER_GAMES:
             exercise_game(c, sim, spec, udp)
 
+        # ------------------------------- manip categories, revision 1.21
+        for spec in MANIP_SPECS:
+            exercise_manips(c, sim, spec)
+
         # --------------------- Deadlocked's quit to the XMB, revision 1.5
         # PAUSE on the way out, and RESUME only once the game's own loading
         # hook says the SCE logo is up: the process comes back seconds before
@@ -4418,7 +4688,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 32, "with RaC3's thirty-two features",
+            check(len(features) == 29, "with RaC3's twenty-nine features",
                   len(features))
 
         # ------------------------ BLMODYOOO, a repacked PAL Going Commando
@@ -4441,7 +4711,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BLMODYOOO", status):
             game, _groups, _readouts, features, _consumed = parse_describe(body)
             check(game == 2, "and names RaC2", game)
-            check(len(features) == 37, "with RaC2's thirty-seven features",
+            check(len(features) == 29, "with RaC2's twenty-nine features",
                   len(features))
 
         # ------------------------------- a title no game table claims
@@ -4512,6 +4782,10 @@ def main():
         check(status == ST_UNSUPPORTED and len(body) == 0,
               "DESCRIBE is UNSUPPORTED, exactly as it is at the XMB",
               (status, len(body)))
+        status, _ = c.call(OP_MANIP_LIST)
+        check(status == ST_UNSUPPORTED, "MANIP_LIST is UNSUPPORTED: no manip groups", status)
+        status, _ = c.call(OP_MANIP_APPLY)
+        check(status == ST_UNSUPPORTED, "and so is MANIP_APPLY", status)
 
         sim.send("quit")
         ok, info = wait_state(c, SESSION_XMB)

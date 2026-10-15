@@ -336,6 +336,31 @@ void config_set_mod_auto(const char *title, const char *dirname, int on)
 	config_set_u32(key, on ? 1 : 0);
 }
 
+/* ---------------------------------------------------------- manip options */
+
+static void manip_key(const char *game, const char *field, char *out, u32 cap)
+{
+	out[0] = 0;
+	qstrcat(out, cap, "manip.");
+	qstrcat(out, cap, game);
+	qstrcat(out, cap, ".");
+	qstrcat(out, cap, field);
+}
+
+u32 config_manip(const char *game, const char *field, u32 fallback)
+{
+	char key[CONFIG_KEY_MAX];
+	manip_key(game, field, key, sizeof(key));
+	return config_get_u32(key, fallback);
+}
+
+int config_set_manip(const char *game, const char *field, u32 value)
+{
+	char key[CONFIG_KEY_MAX];
+	manip_key(game, field, key, sizeof(key));
+	return config_set_u32(key, value);
+}
+
 /* -------------------------------------------------------------- positions */
 
 /*

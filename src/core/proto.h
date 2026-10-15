@@ -55,6 +55,9 @@
  * Revision 1.19: MOD_PATCH is paged, so a mod bigger than one frame can still
  * be written as an RPCS3 patch. The request is u8 index, u8 pad, u16 page (an
  * old request's zeros are page 0), and the reply's pad after n is u16 pages.
+ * Revision 1.21: manip categories, MANIP_LIST / SELECT / OPTIONS / APPLY in the
+ * 0x00D0 block (src/core/manips.h). The old manip buttons and toggles are
+ * retired, ids and all.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -309,6 +312,39 @@
 /* SAVEFILE_CATEGORY's `op`. */
 #define SAVEFILE_CATEGORY_CREATE 0
 #define SAVEFILE_CATEGORY_DELETE 1
+
+/*
+ * Revision 1.21, build 53: manip categories (src/core/manips.h, PROTOCOL.md
+ * 5.14). A game describes groups of RAM writes speedrunners call manips; the
+ * client picks one, and qwark applies it on its own when a save is loaded or a
+ * new game starts. All four answer UNSUPPORTED for a game without groups or
+ * outside a game.
+ *
+ *   MANIP_LIST     none -> the groups, the selection, the two options and the
+ *                  last event (layout in PROTOCOL.md)
+ *   MANIP_SELECT   u8 group, 0 for None; BAD_ARG for an unknown id
+ *   MANIP_OPTIONS  u8 auto_reset, u8 remember
+ *   MANIP_APPLY    none; the selected group's setup and per-run writes now. A
+ *                  refusal is BUSY, with the reason in the event
+ */
+#define OP_MANIP_LIST         0x00D0
+#define OP_MANIP_SELECT       0x00D1
+#define OP_MANIP_OPTIONS      0x00D2
+#define OP_MANIP_APPLY        0x00D3
+
+/* A group's flags on the wire. */
+#define MANIP_FLAG_NGPLUS       0x01  /* 1 NG+ (challenge mode), 0 new-game */
+#define MANIP_FLAG_EXTENSION    0x02  /* a category extension, shown with less emphasis */
+#define MANIP_FLAG_PER_RUN      0x04  /* the group has per-run writes */
+#define MANIP_FLAG_NO_CHALLENGE 0x08  /* the group skips the challenge-mode check */
+
+/* MANIP_LIST's event_kind. */
+#define MANIP_EVENT_NONE          0
+#define MANIP_EVENT_SETUP         1   /* setup activated, the first time this boot */
+#define MANIP_EVENT_APPLIED       2   /* per-run applied (or a repeat Apply now) */
+#define MANIP_EVENT_NOT_CHALLENGE 3   /* refused: an NG+ group on a non-challenge file */
+#define MANIP_EVENT_CHALLENGE     4   /* refused: a new-game group on a challenge file */
+#define MANIP_EVENT_NO_FILE       5   /* refused: Apply now outside a file */
 
 /* ------------------------------------------------------------- table sizes */
 

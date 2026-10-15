@@ -95,9 +95,15 @@
 #define RAC4_CHALLENGE_SEL     0x011A0AE0u
 #define RAC4_SOFTLOCK          0x011C04C0u  /* written 0 on a fresh file */
 
-/* Act tuning, one byte each. */
+/*
+ * Act tuning. Each is the low byte of a word counter the boss's own code reads
+ * with lwz and adds to (0xA947D0 at 0x38610, 0xA969E0 at 0x70DF4, 0xA96E40 at
+ * 0x809B8, 0xA07C7C at 0x5CA2F0), bar the Reactor's, which is named by the
+ * word itself (lwz at 0x3C444, 0x3CA54, 0x3CAD0): the old button wrote a byte
+ * there, which is the counter's high byte, and build 53 writes the word.
+ */
 #define RAC4_TUNE_SHELLSHOCK   0x00A947D3u
-#define RAC4_TUNE_REACTOR      0x00A94944u
+#define RAC4_TUNE_REACTOR      0x00A94944u  /* the whole word */
 #define RAC4_TUNE_EVISCERATOR  0x00A969E3u
 #define RAC4_TUNE_ACE          0x00A96E43u
 #define RAC4_TUNE_VOX          0x00A07C7Fu
@@ -127,6 +133,33 @@
 #define RAC4_LOADING_HOOK_1    0x00011884u  /* the branch into the trampoline */
 #define RAC4_LOADING_HOOK_2    0x00011904u  /* the trampoline itself, ten words */
 #define RAC4_LOADING_VAL       0x01710000u  /* reads 0xFF once the logo is up */
+
+/* --------------------------------------------- manips' file-load trigger, 1.21 */
+
+/*
+ * What rac4.c's file-load trigger reads, from the NPEA00423 executable.
+ *
+ * RAC4_IN_FRONTEND is the byte that says the main menu (the front end) is up:
+ * startlevel (0x11BC0) sets it to 1 at 0x11C3C, the multiplayer front end at
+ * 0x132F8, and the only thing that clears it is the code that runs as the
+ * front end exits into a level (0x140B8, beside the load request's own
+ * clear). RAC4_LEVEL is the level the game is in, the word the autosplitter
+ * calls its current planet: startlevel sets it to -1 (0x11C70) and main()
+ * runs the front end while it is negative (0x1541C); single-player levels are
+ * 1..20, co-op 21..40, multiplayer 0 and 41..79.
+ *
+ * RAC4_RESTORE_COUNT is a word memcard_RestoreGame (0x3C67A4, called from
+ * memcard_ResetGame 0x3C902C, which every load of a save goes through) adds
+ * one to for each block of the save that differs from what is in memory
+ * (0x3C65F8 memcmp, 0x3C660C..0x3C6614). Nothing else names it. A save always
+ * differs somewhere, because the restore puts the gadget boxes back first, so
+ * the word moves on every load: from the main menu, from the game's own load
+ * menu, and through the savefile helper.
+ */
+#define RAC4_IN_FRONTEND       0x00B3C7D4u  /* u8, 1 while the main menu is up */
+#define RAC4_LEVEL             0x009C3240u  /* s32, -1 on the way to the menu */
+#define RAC4_RESTORE_COUNT     0x011ADF80u  /* u32, moves on every save restore */
+#define RAC4_LEVEL_SP_CO_OP_MAX 40          /* past it is multiplayer */
 
 /* ------------------------------------------------- autosplit watcher, rev 1.5 */
 
@@ -352,7 +385,9 @@ extern const u8 rac4_fp_switch[4];
 
 /*
  * Stable: new features go on the end, a retired one leaves its number behind.
- * Retired, never to be reused: 16 (reset all weapon levels).
+ * Retired, never to be reused: 16 (reset all weapon levels), and since build 53
+ * 12 (act tune bosses), which is the NG+ manip group's setup now (protocol
+ * 1.21).
  */
 #define R4_CRASH_PATCHES   0
 #define R4_SOFTLOCK_FIX    1
@@ -368,7 +403,7 @@ extern const u8 rac4_fp_switch[4];
 #define R4_SKIN            10
 
 #define R4_UNLOCK_PLANETS  11
-#define R4_ACT_TUNE        12
+/* 12 retired: act tune bosses */
 
 #define R4_SET_ASIDE       13
 #define R4_LOAD_ASIDE      14

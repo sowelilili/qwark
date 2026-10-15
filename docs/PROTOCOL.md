@@ -28,6 +28,8 @@ Revision 1.19 (2026-10-06): MOD_PATCH answers a page at a time, so a mod bigger 
 
 Revision 1.20 (2026-10-15): SAVEFILE_INFO's `error` gains 7, NO_SAVE: there was no save to act on. RaC1 and RaC2 have no save until the game has saved or loaded once in the process (on a new game, the first autosave), and a set-aside before then - and a load with nothing set aside, which fills the aside buffer from the game's save - is refused with `BUSY` and error 7 rather than copied from wherever the game's pointer points, address 0 in RaC2; so is a load whose aside buffer holds something that is not a save of the running game, and a RESTORE whose file is not one stops with error 7 after the copy, without raising the load. No opcode, structure or field moved, and a client that does not know the value still gets the `BUSY`. Module build 53, which also makes RaC1's and RaC2's loads wait for the game's pause, moves RaC1's request bytes and aside buffer and RaC2's helper, and so changes both games' SAVEFILE_PATCH words. It moves RaC2's code switches too, out of the same routine planet Joba runs every frame, so RaC2's SWITCH_PATCH words change as well; RaC2's fingerprint goes on accepting the branch an earlier build's patch left at its site, so such a game is still recognised and reads as having switches from another build. See sections 5.12 and 5.12.2.
 
+Revision 1.21 (2026-10-16): manip categories. MANIP_LIST, MANIP_SELECT, MANIP_OPTIONS and MANIP_APPLY at 0x00D0..0x00D3. A game describes groups of the RAM writes speedrunners call manips, each for one or more leaderboard categories; the client picks one, and qwark applies its setup once per game boot and its per-run writes on every file load (a save loaded or a new game started) while auto-reset is on, after checking the file's challenge-mode counter both ways. The options live in qwark's config.txt, so they work without a PC. The old manip buttons and toggles are retired, ids and all: RaC1 7, 8, 10, 11 and 16; RaC2 15 to 22; UYA 16, 18, 19 and 20; Deadlocked 12. MANIP_LIST also carries a list of headers, features that belong beside the manips: Deadlocked's "Fixes" (Crash patches and Fix reset softlocks, ids, behaviour and auto flags unchanged) and UYA's "Trophies" (Refresh trophy state, 21, and a new toggle, 39 Auto-refresh trophies, off by default), each also a DESCRIBE group of the same name. Same module build, 53, which is unreleased. See section 5.14.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -69,7 +71,7 @@ Connected sockets are non-blocking. A payload receive and a reply send each have
 | 5 | FULL | A fixed table is full |
 | 6 | UNKNOWN_OP | |
 | 7 | NOT_FOUND | Handle, mod, slot or path does not exist |
-| 8 | BUSY | Command ring is full, a save transfer is busy, boot is holding the request buffers back, or (revision 1.15) qwark has not yet been able to look for a patched-in savefile helper (section 5.12.1); retry |
+| 8 | BUSY | Command ring is full, a save transfer is busy, boot is holding the request buffers back, or (revision 1.15) qwark has not yet been able to look for a patched-in savefile helper (section 5.12.1); retry. Revision 1.21: also MANIP_APPLY's refusal, whose reason is in MANIP_LIST's event (section 5.14) |
 
 ## 3. Session info block
 
@@ -750,6 +752,142 @@ Deleting a category (`op` 1) removes the folder. It sweeps up any `.sum` files l
 - *Save:* SAVEFILE_STORE, poll INFO to completion showing `done`/`total`, then, if it mirrors, read the file down with FILE_OPEN/FILE_READ in the background.
 - *Load:* if the console has the file and its CRC matches the PC's copy, SAVEFILE_RESTORE. If it is only on the PC, or the two differ, upload it once with FILE_OPEN/FILE_WRITE/FILE_CLOSE and then SAVEFILE_RESTORE. Poll INFO either way.
 
+## 5.14 Manip categories (0x00Dx), revision 1.21
+
+The PS3 ports keep many RAM globals across files and planets that the PS2 originals reset, and speedrunners call the ones that matter **manips**. In a challenge-mode (NG+) category a runner may set them before a run, as long as the values are reachable in game; in a new-game (any%-style) category they must be what a freshly booted game has. qwark owns all of it: the groups, their writes, the file-load trigger, the challenge-mode check and the options. A client renders what MANIP_LIST describes and sends selections; it holds no address and no group table.
+
+| Op | Name | Request | Reply |
+|---|---|---|---|
+| 0x00D0 | MANIP_LIST | none | below |
+| 0x00D1 | MANIP_SELECT | `u8 group` (0 = None) | none. `BAD_ARG` for an id the game does not have. Selecting the group already selected does nothing |
+| 0x00D2 | MANIP_OPTIONS | `u8 auto_reset, u8 remember` (each 0 or 1) | none. `BAD_ARG` for anything else |
+| 0x00D3 | MANIP_APPLY | none | none. Applies the selected group's setup and per-run writes now, after the challenge-mode check. A refusal is `BUSY`, with the reason in the event. With None selected it writes nothing and answers `OK` |
+
+All four answer `UNSUPPORTED` for a game without groups and outside a game (at the XMB, while a game is booting, for a process qwark does not know); MANIP_APPLY answers `NOT_INGAME` while a game that has groups is booting or quitting. MANIP_LIST answers on the network thread, the other three on the tick thread.
+
+**MANIP_LIST reply**, big-endian:
+
+```
+u8   selected       the selected group, 0 = None
+u8   auto_reset     0 or 1
+u8   remember       0 or 1
+u8   ngroups        the groups below; None is not one of them
+u16  event_seq      bumped on every new event; never reset while the module runs
+u8   event_kind     the last event, below; 0 none
+u8   event_group    the group it was about
+group[ngroups]:
+  u8   id           1..31, stable
+  u8   flags        below
+  u8   name_len
+  char name[name_len]
+  u8   cats_len
+  char cats[cats_len]   the leaderboard categories, joined with '\n'
+u8   nheaders
+header[nheaders]:
+  u8   name_len
+  char name[name_len]
+  u8   nfeatures
+  u16  feature_id[nfeatures]
+```
+
+**Headers** are features that belong beside the manips without being part of a category: a client draws each header's features under its name in the manips area rather than in their DESCRIBE groups. Deadlocked has one, "Fixes" (0 Crash patches, 1 Fix reset softlocks); UYA has one, "Trophies" (21 Refresh trophy state, 39 its auto toggle); RaC1 and RaC2 have none. The features keep their ids, kinds and flags, and DESCRIBE lists them under a group of the same name.
+
+The groups are listed in the order a client lists them: challenge-mode groups, then new-game ones, then the extensions.
+
+**Group flags**
+
+| Bit | Name | Meaning |
+|---|---|---|
+| bit0 | NGPLUS | 1 a challenge-mode (NG+) group, 0 a new-game group |
+| bit1 | EXTENSION | a category extension: shown with less emphasis, still selectable |
+| bit2 | PER_RUN | the group has per-run writes |
+| bit3 | NO_CHALLENGE_CHECK | the group skips the challenge-mode check |
+
+**Event kinds.** `event_seq` lets a client toast each event once: it toasts when the number changes, never twice for one number. A client reads only the latest event, and one application of a group records exactly one, so the first setup of a boot, which is also when the console says so, is kind 1 rather than 2.
+
+| Kind | Meaning |
+|---|---|
+| 0 | none (also after a game boot, which clears the kind and the group but not the sequence) |
+| 1 | setup activated, the first time this boot for this group. The console shows `<group> manips activated` |
+| 2 | applied: the per-run writes on a file load, or a setup put in again after it was announced this boot (Apply now, or the group selected again) |
+| 3 | refused: an NG+ group on a file that is not in challenge mode |
+| 4 | refused: a new-game group on a challenge-mode file |
+| 5 | refused: Apply now with no save file in play (the title screen or the menus) |
+
+Kinds 3 to 5 also show a console notification, because the PC may not be connected.
+
+**Setup and per-run.** A group has two lists of writes, each applied in order:
+
+- **Setup** is what the port never resets until the game reboots. It is applied once per game boot: at the first compatible file load after the boot or after the selection, or at once when the group is selected while a compatible file is in play. Selecting another group, or the same one again after another, makes it due again. A game boot is a new game process; quitting to the XMB and starting the game again is one.
+- **Per-run** writes are applied on every file load while auto-reset is on, and by Apply now.
+
+A **file load** is the start of a run: a save loaded or a new game started, from the title screen or from inside the game, including a load through the savefile helper (section 5.12) and a challenge-mode start. Not a planet change, a death or a respawn. Every run starts on its game's first planet and none comes back to it, so RaC1, RaC2 and UYA take the end of a planet load whose planet is the first one; Deadlocked goes back to DreadZone all the time and watches for a save restore, the main menu or a new game's reset instead. The first tick after qwark attaches to a running game never counts as one.
+
+| Game | File load |
+|---|---|
+| RaC1 | the end of a planet load into Veldin (planet 0): the load request word seen set, then clear, the front end closed and the game state out of the transition |
+| RaC2 | the load screen's counter reaching 2 on a load into Aranos (planet 0), the moment the old auto-resets used |
+| UYA | the end of a planet load into Veldin (planet 1): a load seen under way to Veldin (the request word set, destination 1, game mode 6), then the mode leaving 6 on Veldin and the level running a frame |
+| Deadlocked | the game settled in a level (out of the main menu, no load requested, ordinary play, two ticks running) after the main menu was up, a save was restored, or the tutorial flags dropped to 0 (a new game or a challenge-mode start) |
+
+The game files in `src/games/` give the evidence for each.
+
+**The challenge-mode check, both ways.** Nothing is written when it fails, and the refusal is an event. An NG+ group writes only to a file whose challenge counter is 1 or more; a new-game group only to one whose counter is 0. RaC2's NG+ No Specials runs on an overflowed counter and skips the check (bit3). A group with nothing due on a file load is not checked and raises nothing.
+
+| Game | Challenge counter |
+|---|---|
+| RaC1 | 0x96C9FC u32 |
+| RaC2 | 0x1329AA2 u8 |
+| UYA | 0xC1E50E u8 |
+| Deadlocked | 0x9C330E u8 |
+
+**Options**, per game in qwark's own `config.txt`, so they work with no PC connected. The keys are per game rather than per title id, so the disc trilogy keeps three sets:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `manip.<game>.auto_reset` | 1 | per-run writes on every file load |
+| `manip.<game>.remember` | 0 | the category survives a game boot |
+| `manip.<game>.category` | 0 | the selected group, written on every MANIP_SELECT |
+
+`<game>` is `rac1`, `rac2`, `rac3` or `rac4`. With `remember` 0 a new game process starts at None; with 1 the category is restored. Turning `remember` on also writes the current selection, so what comes back is what was selected.
+
+**The groups.** Their writes, in order and big-endian, are in each game's file under `src/games/`; a client never needs them.
+
+| Game | id | Name | Flags | Categories |
+|---|---|---|---|---|
+| RaC1 | 1 | NG+ (poki skip) | NGPLUS, PER_RUN | NG+ |
+| RaC1 | 2 | NG+ (no poki skip) | NGPLUS, PER_RUN | NG+ |
+| RaC1 | 3 | All Missions | PER_RUN | All Missions |
+| RaC1 | 4 | All Checkmarks | PER_RUN | All Checkmarks |
+| RaC1 | 5 | NG+ GBSP | NGPLUS, EXTENSION, PER_RUN | NG+ GBSP |
+| RaC2 | 1 | NG+ no IMG | NGPLUS, PER_RUN | NG+ no IMG |
+| RaC2 | 2 | NG+ | NGPLUS, PER_RUN | NG+ |
+| RaC2 | 3 | Any% | PER_RUN | Any%, All Platinum Bolts |
+| RaC2 | 4 | 100% | PER_RUN | Max%, 100% |
+| RaC2 | 5 | NG+ All Missions | NGPLUS, EXTENSION, PER_RUN | NG+ All Missions |
+| RaC2 | 6 | NG+ No Specials | NGPLUS, EXTENSION, PER_RUN, NO_CHALLENGE_CHECK | NG+ No Specials |
+| UYA | 1 | NG+ no QE | NGPLUS | NG+ no QE |
+| UYA | 2 | NG+ | NGPLUS | NG+ |
+| UYA | 3 | NG+ CC Early | NGPLUS, EXTENSION, PER_RUN | NG+ CC Early |
+| Deadlocked | 1 | NG+ | NGPLUS | NG+ no LC, NG+ |
+
+Deadlocked's "Fixes" header lists feature ids 0 (Crash patches) and 1 (Fix reset softlocks). They are ordinary toggles, with the same ids, behaviour and auto flags as before, described under DESCRIBE's new group "Fixes".
+
+UYA's "Trophies" header lists feature ids 21 (Refresh trophy state, an ACTION) and 39 (Auto-refresh trophies, a TOGGLE, new in this revision), described under DESCRIBE's new group "Trophies". UYA runs use trophy unlocks to lengthen in-game loads, so the trophies have to be unlockable again at the start of every run. Toggle 39 is qwark's own state: off after every boot unless its auto flag (FEATURE_SET_AUTO, config.txt as for any toggle) brings it back, and independent of the selected category, None included. While it is on, qwark asks for the refresh once per run, on the first tick it sees a load into Veldin under way: after the last run's trophies, before this run can award one, and before the run's timer starts at the end of that load. The refresh itself is the old trainer's: the client deletes `/dev_hdd0/home/<user>/trophy/NPWR02347_00` (DIR_DELETE, USER_ID) for the button, and qwark writes 1 to 0xD9E020. **That word is read by no retail code**: it was the request of the old rc3-save mod, which destroyed and re-registered the game's trophy context from its per-frame hook, and build 53's savefile helper, which took that mod's place, does not carry that part. Until it does, both the button and the toggle write a word nothing reads.
+
+RaC2's NG+ No Specials writes M, the NG+ per-run list, without its first write, the shortcut cursor: the shortcuts live in the specials menu, which the category never uses.
+
+**Retired features.** The old manip buttons and toggles are gone from DESCRIBE. Their ids stay spoken for and are never reused, config.txt auto flags for them are ignored, and the previous-session record never offers them.
+
+| Game | Retired ids |
+|---|---|
+| RaC1 | 7 Drek skip, 8 Drek cutscene, 10 Reset shooting skill points, 11 Setup shooting skill points, 16 Any% all-missions reset |
+| RaC2 | 15 Reset any% manips, 16 Reset NG+ manips/menus, 17 NG+ setup, 18 NG+ No IMG setup, 19 NG+ All Missions setup, 20 Maktar slots, 21 Auto-reset (any%), 22 Auto-reset (NG+) |
+| UYA | 16 Setup NG+ manips, 18 CC early setup, 19 Untune bosses, 20 Reset dropship health |
+| Deadlocked | 12 Act tune bosses |
+
+RaC2's charge buffer is no longer written on every load into Aranos: it is part of the NG+ per-run writes. Turning infinite ammo off on a load into Aranos is not a manip and stays. The per-death resets (RaC2 13 and 14) are not manips and stay.
+
 ## 6. Pad mask layout
 
 OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000.
@@ -757,7 +895,7 @@ OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x
 ## 7. Connection lifecycle from the client side
 
 1. Connect, send HELLO, read SessionInfo.
-2. SUBSCRIBE with a bound UDP port, then DESCRIBE, AUTOSPLIT_DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST, SAVEFILE_INFO.
+2. SUBSCRIBE with a bound UDP port, then DESCRIBE, AUTOSPLIT_DESCRIBE, PLANET_LIST, WATCH_LIST, FREEZE_LIST, PATCH_LIST, MOD_LIST, COMBO_LIST, SAVEFILE_INFO, MANIP_LIST (revision 1.21; `UNSUPPORTED` for a game without manip groups).
 3. Render from telemetry. When `game` changes, repeat step 2 from DESCRIBE. When `PREVIOUS_PENDING` appears, PREVIOUS_LIST and prompt.
 4. On any socket error: drop everything, reconnect with backoff, start again at step 1. There is no client state to restore.
 

@@ -35,7 +35,7 @@ The code and the addresses are ported from those mods and from their upstream so
 
 ## What it does without a PC
 
-Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots. The console is the single source of truth; the client only displays and requests.
+Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots, and the manips of the selected category, which qwark applies on its own whenever a save is loaded or a new game starts. The console is the single source of truth; the client only displays and requests.
 
 ## Files on the console
 
@@ -43,7 +43,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, selected slot and planet, `log = 1`, `savefile_helper` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot and planet, `log = 1`, `savefile_helper` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |

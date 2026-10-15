@@ -16,6 +16,7 @@
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
+#include "../core/manips.h"
 
 #include <string.h>
 
@@ -43,11 +44,13 @@ const u8 rac1_fp_patched[4] = { 0x30, 0x64, 0x00, 0x00 };
  *   9  jankpot  timer +0x00, bolts +0x04                           every 8th
  *  10  jankpot  state                                              every 8th
  *  11  savefile helper byte, then its three request bytes          every 8th
+ *  12  frontend the front end's byte, for the manips' trigger         every tick
  *
  * Blocks 2 to 6 are the autosplit watcher's, and are per-tick because a split
  * has to reach the PC in milliseconds and the loading screen bounds the time
- * the client subtracts. The phases are 0..4, so a tick costs seven reads plus at
- * most one: 7.625 reads per tick on average, eight at worst.
+ * the client subtracts. The phases are 0..4, so a tick costs eight reads plus at
+ * most one: 8.625 reads per tick on average, nine at worst. Block 12 and the
+ * load block 3 carry the manips' file-load trigger (revision 1.21).
  */
 static const struct game_hot_block rac1_hot[] = {
 	{ RAC1_HOT_INPUTS_ADDR,   RAC1_HOT_INPUTS_LEN,   1, 0 },
@@ -61,7 +64,8 @@ static const struct game_hot_block rac1_hot[] = {
 	{ RAC1_NGPLUS_STATE,      4,                     8, 1 },
 	{ RAC1_JANKPOT_TIMER,     8,                     8, 2 },
 	{ RAC1_JANKPOT_STATE,     4,                     8, 3 },
-	{ RAC1_SAVEFILE_HELPER,   4,                     8, 4 }
+	{ RAC1_SAVEFILE_HELPER,   4,                     8, 4 },
+	{ RAC1_IN_FRONTEND,       1,                     1, 0 }
 };
 
 #define HOT_INPUTS   0
@@ -76,6 +80,7 @@ static const struct game_hot_block rac1_hot[] = {
 #define HOT_JANKPOT  9
 #define HOT_JKSTATE  10
 #define HOT_SAVEFILE 11
+#define HOT_FRONTEND 12
 
 #define OFF_INPUTS      (RAC1_INPUTS - RAC1_ANALOGS)                  /* 0xB0 */
 #define OFF_BOLTS       (RAC1_BOLTS - RAC1_CURRENT_PLANET)            /* 0x30 */
@@ -116,6 +121,15 @@ struct rac1_as_state {
 
 static struct rac1_as_state g_as;
 
+/*
+ * What the manips' file-load trigger reads (revision 1.21), filled by the
+ * decode: the load request word, the planet as the signed word it is, and the
+ * front end's byte.
+ */
+static u32 g_load_request;
+static u32 g_planet_word;
+static u8  g_frontend;
+
 static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
 	const u8 *inputs = blocks[HOT_INPUTS];
@@ -131,7 +145,8 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	}
 
 	if (player != NULL) {
-		out->current_planet = (u8)be32_get(player);
+		g_planet_word = be32_get(player);
+		out->current_planet = (u8)g_planet_word;
 		out->readout[RAC1_RO_BOLTS] = be32_get(player + OFF_BOLTS);
 		out->readout[RAC1_RO_NGPLUS_GOODIES] = be32_get(player + OFF_NGGOODIES);
 		/*
@@ -182,6 +197,7 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_LOAD] != NULL) {
 		const u8 *l = blocks[HOT_LOAD];
+		g_load_request     = be32_get(l);
 		g_as.dest_planet   = l[OFF_DESTPLANET + 3];
 		g_as.game_state    = be32_get(l + OFF_GAMESTATE);
 		g_as.planet_frames = be32_get(l + OFF_FRAMES);
@@ -200,6 +216,8 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_LOADSCR] != NULL)
 		g_as.loading_screen = blocks[HOT_LOADSCR][0];
+
+	if (blocks[HOT_FRONTEND] != NULL) g_frontend = blocks[HOT_FRONTEND][0];
 }
 
 /* ------------------------------------------------- the autosplit watcher */
@@ -246,11 +264,90 @@ static int rac1_on_a_drek_button(void)
 	return 0;
 }
 
+/* -------------------------------------- the manips' file-load trigger, 1.21 */
+
+/*
+ * A load of Veldin, for the manip groups (src/core/manips.h): the user's rule
+ * is the end of a planet load whose planet is the first one, which every run
+ * starts on and none comes back to. From the NPEA00385 executable; not yet run
+ * on hardware.
+ *
+ * Every planet load starts with the load request word RAC1_LOAD_PLANET set
+ * through 0x15EA84 (which also sets the destination): a new game from the
+ * title (0x14EBF4, 0x14E97C) or the post-game menu, a challenge-mode start
+ * (0x14EB9C), a save loaded from the title or the pause menu (the save-data
+ * dialog, 0x7A1F8, with the restored planet), and qwark's own savefile helper,
+ * which writes the word itself; ship travel sets it at 0x163588. The main loop
+ * and the title loop both run only while it is 0 (0xE1AA0, 0x12744), so the
+ * game leaves for the planet transition 0x164C58, which sets the game state to
+ * 6 (0x164CE4) and the planet to the destination; the top loop then clears the
+ * word (0x13DF4, the only place that does) and enters the main loop, whose
+ * prologue sets the state to 6 again (0xE0FB8), sets the level up and at
+ * 0x15EB34 sets it to 0 for planet 0 - most other planets get 6 for their
+ * fly-in. A death writes none of it.
+ *
+ * So: latch whenever the request word is seen non-zero; when it is back at 0,
+ * the front end is closed (RAC1_IN_FRONTEND 0) and the state has left 6, the
+ * load is over, and it was a load of Veldin if the planet is 0. The latch is
+ * what keeps out the state's other 6-to-0 edges, the ship cutscenes in the
+ * middle of a level (0x15E7E8, 0x15E8A0). The writes land after the level
+ * setup and before the first frame of play (0xE1360), when the challenge
+ * counter is long final: the new-game reset (0xE71FC), a challenge-mode start
+ * (0x13E990) and the restore (0xE6FE4, the counter is block 2 of the global
+ * save table 0x726690) all write it before the request. None of the manip
+ * addresses is written by the restore, the new-game reset, the challenge start
+ * or the transition.
+ *
+ * Fast loads do not move any of this: they patch the loading screen, not the
+ * request word or the state. The first tick of a process only learns whether a
+ * load is under way, and never fires.
+ */
+static int g_fl_primed;
+static int g_fl_latched;
+
+static void rac1_file_load_watch(void)
+{
+	if (!g_fl_primed) {
+		g_fl_primed = 1;
+		g_fl_latched = (g_load_request != 0);
+		return;
+	}
+
+	if (g_load_request != 0) {
+		g_fl_latched = 1;
+		return;
+	}
+
+	if (!g_fl_latched || g_frontend != 0 || g_as.game_state == RAC1_STATE_TRANSITION)
+		return;
+
+	g_fl_latched = 0;
+	if (g_planet_word == 0) manips_file_loaded();
+}
+
+/*
+ * Whether a save file is in play, for the manips: the front end closed and a
+ * planet underfoot. RAC1_IN_FRONTEND is 1 from the front end's start (0x12F00)
+ * until it hands over to the first level (0x13728); the planet is 0 on the
+ * title and -1 during the logos. Tick thread.
+ */
+static int rac1_in_file(void)
+{
+	u8 frontend = 1;
+	u32 planet = 0;
+
+	if (mem_read_u8(RAC1_IN_FRONTEND, &frontend) != ST_OK) return -1;
+	if (mem_read_u32(RAC1_CURRENT_PLANET, &planet) != ST_OK) return -1;
+	return frontend == 0 && planet < RAC1_PLANET_COUNT;
+}
+
 static void rac1_on_tick(const struct game_hot *hot)
 {
 	const struct rac1_as_state *p = &g_as_prev;
 
 	(void)hot;
+
+	rac1_file_load_watch();
 
 	/*
 	 * LiveSplit's first update after init has old == current, so no edge fires
@@ -317,6 +414,12 @@ static void rac1_on_enter(void)
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
 	g_as_primed = 0;
 	g_veldin_fix = 0;
+
+	g_load_request = 0;
+	g_planet_word = 0;
+	g_frontend = 0;
+	g_fl_primed = 0;
+	g_fl_latched = 0;
 
 	/* Removing the embedded collectable hooks fixed the reported RaC1 boot
 	 * black screen. Keep supported read-only events; inject no helper. */
@@ -451,15 +554,15 @@ static const struct feature_desc rac1_features[] = {
 	{ F_BOLTS,           FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC1_RO_BOLTS, 0, 0, "Bolts" },
 	{ F_MAX_AMMO,        FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Max ammo, all weapons" },
 
-	{ F_DREK_SKIP,       FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Drek skip" },
-	{ F_DREK_CUTSCENE,   FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Drek cutscene" },
-	{ F_RESET_SHOOT_SP,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset shooting skill points" },
-	{ F_SETUP_SHOOT_SP,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Setup shooting skill points" },
+	/*
+	 * Build 53: Drek skip, Drek cutscene, the two shooting skill point rows and
+	 * the any% all-missions reset are retired, ids and all (rac1.h). They are
+	 * the manip groups below now.
+	 */
 	{ F_RESET_GOLDBOLTS, FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all gold bolts" },
 	{ F_UNLOCK_GOLDBOLTS,FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
 	{ F_RESET_STYLE,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
 	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
-	{ F_ANYPCT_RESET,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Any% all-missions reset" },
 
 	/* Protocol 1.2: the pair a client's save-file manager drives. */
 	{ F_LOAD_SETASIDE,   FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
@@ -663,6 +766,81 @@ static int rac1_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *st
 	return ST_OK;
 }
 
+/* ----------------------------------------------------------------- manips */
+
+
+/*
+ * Revision 1.21, build 53: RaC1's manip groups (SPEC-manips.md section 2),
+ * every write in the order the spec lists it. RaC1 has no setup writes: the
+ * final-cutscene flags are used up when a run reaches them, so they go back
+ * every run, and each NG+ group clears the other group's flag. Both flags are
+ * words, written whole as the game writes them (rac1.h).
+ */
+static const struct manip_write r1_poki[] = {
+	MW_U32(RAC1_DREK_CUTSCENE, 1),
+	MW_U32(RAC1_DREK_SKIP, 0)
+};
+
+static const struct manip_write r1_no_poki[] = {
+	MW_U32(RAC1_DREK_SKIP, 1),
+	MW_U32(RAC1_DREK_CUTSCENE, 0)
+};
+
+/* The Blarg bridge word and the Rilgar race's three floats. */
+static const struct manip_write r1_all_missions[] = {
+	MW_U32(RAC1_ANYPCT_FLAG, 0),
+	MW_ZEROS(RAC1_ANYPCT_RACE, 12)
+};
+
+/* The Sonic Summoner skill point and the eight shooting skill point counters. */
+static const struct manip_write r1_all_checkmarks[] = {
+	MW_ZEROS(RAC1_SONIC_SP, 8),
+	MW_ZEROS(RAC1_SHOOT_SP, 32)
+};
+
+static const u8 r1_gbsp_sonic[8] = { 0, 0, 0, 1, 0, 0, 0, 1 };
+static const u8 r1_gbsp_shoot[32] = {
+	0, 0, 0, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0x20,
+	0, 0, 0, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0x20
+};
+
+static const struct manip_write r1_gbsp[] = {
+	MW_BYTES(RAC1_SONIC_SP, r1_gbsp_sonic, 8),
+	MW_BYTES(RAC1_SHOOT_SP, r1_gbsp_shoot, 32)
+};
+
+#define L(a) { a, (u8)(sizeof(a) / sizeof(a[0])) }
+#define NONE { NULL, 0 }
+#define NG   MANIP_FLAG_NGPLUS
+#define EXT  MANIP_FLAG_EXTENSION
+
+static const struct manip_group rac1_manip_groups[] = {
+	{ 1, NG, "NG+ (poki skip)", "NG+",
+	  { NONE, NONE }, { L(r1_poki), NONE } },
+	{ 2, NG, "NG+ (no poki skip)", "NG+",
+	  { NONE, NONE }, { L(r1_no_poki), NONE } },
+	{ 3, 0, "All Missions", "All Missions",
+	  { NONE, NONE }, { L(r1_all_missions), NONE } },
+	{ 4, 0, "All Checkmarks", "All Checkmarks",
+	  { NONE, NONE }, { L(r1_all_checkmarks), NONE } },
+	{ 5, NG | EXT, "NG+ GBSP", "NG+ GBSP",
+	  { NONE, NONE }, { L(r1_no_poki), L(r1_gbsp) } }
+};
+
+#undef L
+#undef NONE
+#undef NG
+#undef EXT
+
+static const struct game_manips rac1_manips = {
+	"rac1",
+	rac1_manip_groups,
+	(u8)(sizeof(rac1_manip_groups) / sizeof(rac1_manip_groups[0])),
+	RAC1_NGPLUS_STATE, 4,      /* the challenge counter, a word */
+	NULL, 0,                   /* no headers */
+	rac1_in_file
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac1_game = {
@@ -726,7 +904,9 @@ const struct game_api rac1_game = {
 
 	rac1_on_enter,
 	NULL,                 /* on_quit */
-	rac1_on_tick,         /* the autosplit watcher */
+	rac1_on_tick,         /* the autosplit watcher and the file-load trigger */
 
-	rac1_autosplit_describe
+	rac1_autosplit_describe,
+
+	&rac1_manips          /* revision 1.21 */
 };

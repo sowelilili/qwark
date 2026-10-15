@@ -43,8 +43,18 @@
 #define RAC1_ANYPCT_RACE      0xE5EFD0u   /* three floats, the Rilgar race */
 #define RAC1_DEBUG_UPDATE     0x95C5C8u   /* bit field, see RAC1_DBG_* */
 #define RAC1_DEBUG_MODE       0x95C5D4u   /* 0 normal, 1 freecam, 2 freecam character */
-#define RAC1_DREK_SKIP        0xFACC7Bu   /* one byte */
-#define RAC1_DREK_CUTSCENE    0xFACC74u   /* one byte */
+/*
+ * The two final-cutscene flags, each a word holding 0 or 1, the way the game
+ * writes them (stw: the cutscene's 1 at 0x3D3F54 and 0 at 0x277B88, the skip's
+ * 1 at 0x276AC8 and 0 at 0x279DAC) and reads them (lwz and a test against 0,
+ * at 0x279830 for the cutscene and 0x273A90, 0x276A88, 0x276DF0, 0x27C680 and
+ * 0x27C6BC for the skip). Nothing reads or writes them a byte at a time. The
+ * old buttons wrote one byte, at 0xFACC74 and 0xFACC7B, which set the
+ * cutscene's high byte rather than its value; build 53's manip groups write
+ * both as words.
+ */
+#define RAC1_DREK_SKIP        0xFACC78u   /* u32, 0 or 1 */
+#define RAC1_DREK_CUTSCENE    0xFACC74u   /* u32, 0 or 1 */
 #define RAC1_MOBY_TABLE       0x0A390A0u
 #define RAC1_MOBY_TABLE_END   0x0A390A8u
 #define RAC1_MOBY_STRIDE      0x100u      /* sizeof(Moby) from rac1.cs */
@@ -141,6 +151,17 @@
 #define RAC1_STATE_MOVIE        1u
 #define RAC1_STATE_LAST         7u   /* the states run are -1 .. RAC1_STATE_LAST */
 
+/*
+ * Revision 1.21, the manips' file-load trigger (rac1.c). Game state 6 is the
+ * planet transition and a level's entry, intro and ship cutscenes, not the
+ * title: the title loop runs states 0, 1, 3 and 4. RAC1_IN_FRONTEND is the
+ * game's own front-end byte, 1 from the front end's start (0x12F00, and the
+ * top loop's 0x13DD8 on the way back to it) until it hands over to the first
+ * level (0x13728).
+ */
+#define RAC1_STATE_TRANSITION   6u
+#define RAC1_IN_FRONTEND        0xA15F38u
+
 /* Bits of RAC1_DEBUG_UPDATE, from rac1.cs SetDebugOption. */
 #define RAC1_DBG_RATCHET   0x1u
 #define RAC1_DBG_MOBYS     0x2u
@@ -200,7 +221,10 @@ extern const u8 rac1_fp_patched[4];
 /*
  * Stable: a client may hold on to an id across sessions and versions, so new
  * features go on the end and a retired one leaves its number behind.
- * Retired, never to be reused: 9 (force okay load).
+ * Retired, never to be reused: 9 (force okay load), and since build 53 the
+ * manip buttons the manip groups replaced (protocol 1.21): 7 (Drek skip),
+ * 8 (Drek cutscene), 10 (reset shooting skill points), 11 (setup shooting skill
+ * points) and 16 (any% all-missions reset).
  */
 #define F_FAST_LOADS        0
 #define F_INFINITE_AMMO     1
@@ -209,16 +233,14 @@ extern const u8 rac1_fp_patched[4];
 #define F_DIE               4
 #define F_BOLTS             5
 #define F_GOODIES           6
-#define F_DREK_SKIP         7
-#define F_DREK_CUTSCENE     8
+/* 7 and 8 retired: Drek skip, Drek cutscene */
 /* 9 retired */
-#define F_RESET_SHOOT_SP    10
-#define F_SETUP_SHOOT_SP    11
+/* 10 and 11 retired: reset and setup shooting skill points */
 #define F_RESET_GOLDBOLTS   12
 #define F_UNLOCK_GOLDBOLTS  13
 #define F_RESET_STYLE       14
 #define F_UNLOCK_STYLE      15
-#define F_ANYPCT_RESET      16
+/* 16 retired: any% all-missions reset */
 #define F_MAX_AMMO          17
 #define F_LOAD_SETASIDE     18
 #define F_SET_ASIDE_FILE    19

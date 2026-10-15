@@ -41,7 +41,17 @@
 #define RAC3_KLUNK_TUNING_1    0x00C9165Cu
 #define RAC3_DROPSHIP_HEALTH   0x00C956A0u
 
-#define RAC3_TROPHY_REFRESH    0x00D9E020u  /* write 1 after deleting the folder */
+/*
+ * The old trainer's trophy refresh request, which it wrote after deleting
+ * /dev_hdd0/home/<user>/trophy/NPWR02347_00. No retail code reads it: the
+ * whole stretch 0xD9B3C0..0xDA27C7 is BSS nothing names. The reader was the
+ * old rc3-save mod (Gigahelper), whose per-frame hook took the 1 (rack.bin
+ * 0x980C00) and destroyed and re-created the game's trophy context through
+ * the game's own 0x984E40 and 0x984FA0 (handler 0x980E08). qwark's savefile
+ * helper took that mod's cave and carries none of it, so on a retail game with
+ * qwark the write is inert until the helper does; see rac3_trophy_refresh.
+ */
+#define RAC3_TROPHY_REFRESH    0x00D9E020u
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
@@ -141,6 +151,14 @@
 #define RAC3_KOROS_BOLT_STATE  0x74   /* playerState while a titanium bolt is taken */
 #define RAC3_GAME_STATE_LOAD   6      /* the frame before gameplay resumes */
 
+/*
+ * Revision 1.21, the manips' file-load trigger and the trophy auto-refresh
+ * (rac3.c). RAC3_MODE_TIMER counts the frames spent in the current game mode:
+ * the level loop puts it to 0 as it starts (0x1D7078), adds one a frame
+ * (0x1D82FC) and puts it back to 0 on a mode change (0x1D8604).
+ */
+#define RAC3_MODE_TIMER        0x00EE9330u
+
 /* Reason codes. Code 1 is "planet entered" in every game. */
 #define R3_AS_PLANET        1
 #define R3_AS_LDF           2
@@ -198,7 +216,7 @@ extern const u8 rac3_fp_switch[4];
  */
 #define RAC3_HOT_PSTATE_ADDR  RAC3_PLAYER_STATE
 #define RAC3_HOT_PSTATE_LEN   0x34C
-/* load: destination planet at +0x03, game state at +0x20 */
+/* load: destination planet at +0x00 (+0x03 its low byte), mode timer +0x1C, game state +0x20 */
 #define RAC3_HOT_LOAD_ADDR    RAC3_DEST_PLANET
 #define RAC3_HOT_LOAD_LEN     0x24
 
@@ -224,7 +242,9 @@ extern const u8 rac3_fp_switch[4];
  * Stable: new features go on the end, a retired one leaves its number behind.
  * Retired, never to be reused: 4 (freeze Klunk tuning), 17 (make NG+ no-QE
  * file), 28 (give 1337 ammo), 29 (setup NG+ weapons) and 30 (equip the bomb
- * glove).
+ * glove), and since build 53 the manip buttons the manip groups replaced
+ * (protocol 1.21): 16 (setup NG+ manips), 18 (CC early setup), 19 (untune
+ * bosses) and 20 (reset dropship health).
  */
 #define R3_FREEZE_AMMO       0
 #define R3_FREEZE_HEALTH     1
@@ -244,11 +264,9 @@ extern const u8 rac3_fp_switch[4];
 #define R3_QE_OFFSET         14
 #define R3_VENDOR_QE         15
 
-#define R3_SETUP_NGPLUS      16
+/* 16 retired: setup NG+ manips */
 /* 17 retired */
-#define R3_CC_EARLY          18
-#define R3_UNTUNE_BOSSES     19
-#define R3_RESET_DROPSHIP    20
+/* 18, 19 and 20 retired: CC early setup, untune bosses, reset dropship health */
 #define R3_RESET_TROPHIES    21
 #define R3_UNLOCK_SKILL      22
 #define R3_RESET_SKILL       23
@@ -277,6 +295,13 @@ extern const u8 rac3_fp_switch[4];
  */
 #define R3_FAST_LOADS        38
 
+/*
+ * Build 53, revision 1.21: the trophy refresh's auto toggle, qwark-side state
+ * like the per-death toggles, off by default and kept across boots through its
+ * auto flag. MANIP_LIST's "Trophies" header names it beside R3_RESET_TROPHIES.
+ */
+#define R3_AUTO_TROPHIES     39
+
 /* ENUM option counts, from RAC3Form.Designer.cs. */
 #define RAC3_ARMOUR_COUNT 8
 #define RAC3_SHIP_COUNT   32
@@ -298,6 +323,9 @@ u8  rac3_savefile_ready(u8 what);
 
 int rac3_planet_load(u8 planet, u8 flags);
 
+/* The trophy refresh: R3_RESET_TROPHIES, and the auto toggle's write. */
+int rac3_trophy_refresh(void);
+
 int rac3_levelflags_get(u8 planet, u8 *out, u16 cap, u16 *len);
 int rac3_levelflags_reset(u8 planet);
 int rac3_levelflags_set(u8 planet, u16 offset, u8 value);
@@ -318,5 +346,11 @@ u8  rac3_planet_count(void);
  * toggle is on rac3.c calls it again around every planet load of the game's own.
  */
 int rac3_arm_fast_loads(void);
+
+/*
+ * Vendor QE: the two bytes 00 17 at RAC3_QE_OFFSET. Shared by the "Enable
+ * vendor QE" action and the NG+ manip groups' setup.
+ */
+extern const u8 rac3_vendor_qe[2];
 
 #endif /* QWARK_RAC3_H */

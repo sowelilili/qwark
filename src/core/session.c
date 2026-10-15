@@ -8,6 +8,7 @@
 #include "autosplit.h"
 #include "savefile.h"
 #include "switches.h"
+#include "manips.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -31,18 +32,20 @@
 #define BOOT_QUIET_US  1000000ull
 
 /*
- * Sixteen blocks, which is more than any game needs: RaC3 uses thirteen, nine of
- * them per-tick reads once its autosplit watcher is counted, and four slow ones
- * for ship colour, file time, the savefile helper and the chargeboot colours.
- * The slow blocks carry a period and a phase, so a tick pays for the per-tick
- * reads plus at most one of them.
+ * Sixteen blocks, which is more than any game needs: RaC3 uses fourteen, ten of
+ * them per-tick reads once its autosplit watcher and the manips' file-load
+ * trigger (revision 1.21) are counted, and four slow ones for ship colour, file
+ * time, the savefile helper and the chargeboot colours. The slow blocks carry a
+ * period and a phase, so a tick pays for the per-tick reads plus at most one of
+ * them.
  *
  * The bytes come out of one pool rather than sixteen fixed slots. The longest
  * single block in any game is RaC2's input block at 0x3CC, so HOT_MAX_LEN has to
  * stay at 1024, but no game asks for sixteen of those: the busiest table is
- * RaC3's at 2363 bytes all told, then RaC2 at 1781, RaC1 at 1218 and Deadlocked
- * at 664. A 4 KB pool holds the largest of them with room for another 1.7 KB of
- * blocks, where sixteen fixed 1 KB slots cost 16 KB to hold 2.3 KB.
+ * RaC3's at about 2.4 KB all told, then RaC2 at 1781, RaC1 at about 1.2 KB and
+ * Deadlocked at under 700 bytes. A 4 KB pool holds the largest of them with room
+ * for another 1.6 KB of blocks, where sixteen fixed 1 KB slots cost 16 KB to
+ * hold 2.4 KB.
  *
  * hot_layout hands each block its slice and says whether the table fitted;
  * session_hot_fits is the same answer for one game, which is what the unit tests
@@ -503,6 +506,12 @@ static void enter_ingame(void)
 	g_hot_primed = 0;
 
 	if (g_game != NULL && g_game->on_enter != NULL) g_game->on_enter();
+
+	/*
+	 * Revision 1.21. A new process is a new game boot: every manip setup is to
+	 * be applied again, and the category is the remembered one or None.
+	 */
+	manips_enter(g_game);
 
 	/* Auto-flagged toggles and mods come back silently. */
 	features_apply_mask(features_auto_mask());
