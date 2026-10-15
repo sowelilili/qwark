@@ -217,7 +217,8 @@ static int g_auto_anypct;
 static int g_auto_ngplus;
 static int g_death_bosses;
 static int g_death_pbolts;
-static u8  g_prev_load_count = 0xFF;
+static u8  g_prev_load_count;
+static int g_load_primed;
 
 /*
  * Build 53. savefile_load_refusals as rac2_on_tick last saw it. A set-aside
@@ -426,9 +427,24 @@ static void rac2_on_enter(void)
 	/* A fresh process: nothing is forced, nothing has been seen yet. */
 	g_fastload_on     = 0;
 	g_fastload_forced = 0;
-	g_prev_load_count = 0xFF;
+	g_prev_load_count = 0;
+	g_load_primed     = 0;
 	g_shortcut_index  = 0xFFFFFFFFu;
 	g_sf_refusals     = savefile_load_refusals();
+
+	/*
+	 * The four toggles that are qwark's own state rather than game memory go
+	 * with the process, as their bits in toggle_state do (features_forget_state
+	 * runs just before this). They used to survive it: after a reboot the client
+	 * showed "Auto-reset (any%)" off, the user could decline it in the
+	 * previous-session prompt, and every A1 load still reset the manips. Only
+	 * the auto-apply that follows this call and PREVIOUS_REAPPLY turn them back
+	 * on, both through rac2_set_toggle, so the flag and the checkbox agree.
+	 */
+	g_auto_anypct  = 0;
+	g_auto_ngplus  = 0;
+	g_death_bosses = 0;
+	g_death_pbolts = 0;
 
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
@@ -440,6 +456,23 @@ static void rac2_on_enter(void)
  * loading-screen half fires once per change of the load counter, acts only on
  * the final load screen, and only the A1 (planet 0) part of it is conditional
  * on the planet.
+ *
+ * What the counter is, from the NPEA00386 executable. It is the low byte of the
+ * word at 0x147A258, written by the load-screen code at 0xBE5470, which the
+ * planet transition loop (0xBEA868..0xBEA8FC) calls once a frame.
+ * Early in every load it is set to 0 and held there while the level loader's
+ * stage word (0x147A1D4) is below 2, which is as long as engine.ps3 and
+ * vram.ps3 take to read; then it is 1 for one frame and 2 on the next, and the
+ * transition loop ends. It stays 2 until the next load. The current planet
+ * word is set to the destination before that loop starts (0xBEA6D4), so an A1
+ * load reads planet 0 here.
+ *
+ * Two goes at 2 when the load SCREEN is done, not the load: the loader goes on
+ * to sound.bnk and the chunk banks, and the level is set up after that. The
+ * old client wrote at the same point plus its network round trips, which is
+ * the timing the runners know, and it is kept: moving the resets past the
+ * level setup could land them after a new file's opening cutscene has begun,
+ * and one of them clears the cutscene-storage word.
  */
 static void rac2_on_tick(const struct game_hot *hot)
 {
@@ -451,6 +484,20 @@ static void rac2_on_tick(const struct game_hot *hot)
 	if (savefile_load_refusals() != g_sf_refusals) {
 		g_sf_refusals = savefile_load_refusals();
 		if (g_fastload_forced) rac2_fastload_restore();
+	}
+
+	/*
+	 * The first look of a process only learns where the counter stands. A 2
+	 * here is a load that ended before qwark was watching - the module loaded
+	 * into a game already sitting on Aranos - and treating it as a change wrote
+	 * the A1 block at attach: the buffer charge, infinite ammo off, and the
+	 * manip resets of any toggle flagged on boot. A load that is still under
+	 * way reads 0 or 1 here and fires when it reaches 2, as it always did.
+	 */
+	if (!g_load_primed) {
+		g_prev_load_count = count;
+		g_load_primed = 1;
+		return;
 	}
 
 	if (count == g_prev_load_count) return;

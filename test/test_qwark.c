@@ -4256,6 +4256,253 @@ static void test_rac2(void)
 	check(features_trigger(F2_BOLTS) == ST_BAD_ARG, "triggering a VALUE is BAD_ARG");
 }
 
+/* ------------------------------------------------- RaC2: the A1 auto-resets */
+
+/* A few of the words the two resets write, from rac2.h. */
+#define R2_GORN_MANIP    0x01A99A4Cu   /* any%: 0 */
+#define R2_GORN_OPENING  0x01A99A34u   /* any%: 0, NG+: 1 */
+#define R2_FELTZIN_OPEN  0x01A8495Bu   /* one byte; any%: 0, NG+: 1 */
+#define R2_RACE_INDEX    0x01A4D7E0u   /* both: 0 */
+#define R2_SHORTCUTS     0x01352684u   /* NG+: the setup's shortcut */
+
+#define F2_SETUP_NGPLUS  17
+#define F2_AUTO_NGPLUS   22
+
+#define R2_PAD_13        0x41500000u   /* 13.0f, a fresh console's jump-pad speed */
+#define R2_PAD_25        0x41C80000u   /* 25.0f, what Snivelak leaves behind */
+
+#define R2_BIT(id)       ((u64)1 << (id))
+
+static u32 r2_word(u32 addr)
+{
+	u32 v = 0xDEADBEEFu;
+	mem_read_u32(addr, &v);
+	return v;
+}
+
+static u8 r2_byte(u32 addr)
+{
+	u8 b = 0xEE;
+	host_peek(addr, &b, 1);
+	return b;
+}
+
+static void r2_put_word(u32 addr, u32 value)
+{
+	u8 raw[4];
+	be32_put(raw, value);
+	host_poke(addr, raw, 4);
+}
+
+static void r2_put_planet(u8 planet)
+{
+	r2_put_word(R2_PLANET_ADDR, planet);
+}
+
+static void r2_put_count(u8 count)
+{
+	host_poke(R2_LOADCOUNT, &count, 1);
+}
+
+/*
+ * Memory as a run that has been through Snivelak, Gorn and the Barlow race
+ * leaves it, with the boots' buffer empty. NG+ values where they differ from
+ * the any% ones are chosen so that each reset visibly changes something.
+ */
+static void r2_dirty(void)
+{
+	r2_put_word(R2_GORN_MANIP, 1);
+	r2_put_word(R2_GORN_OPENING, 0);
+	host_poke(R2_FELTZIN_OPEN, (const u8 *)"\x00", 1);
+	r2_put_word(R2_RACE_INDEX, 5);
+	r2_put_word(R2_SHORTCUTS, 3);
+	r2_put_word(R2_PAD_MANIP, R2_PAD_25);
+	r2_put_word(R2_CHARGE_BUF, 0);
+}
+
+/*
+ * The game sitting in a level other than Aranos, its last load long over: the
+ * counter reads 2. A few ticks so the watcher has seen it.
+ */
+static void r2_settle_on(u8 planet)
+{
+	r2_put_planet(planet);
+	r2_put_count(2);
+	pump(4);
+}
+
+/*
+ * One planet load as the executable runs it (src/games/rac2.c has the
+ * addresses): the planet word takes the destination before the transition
+ * loop, the counter drops to 0 while the engine data reads, is 1 for a frame
+ * and 2 when the load screen ends. The 120 Hz tick sees each step at least once.
+ */
+static void r2_load(u8 planet)
+{
+	r2_put_planet(planet);
+	r2_put_count(0);
+	pump(3);
+	r2_put_count(1);
+	pump(1);
+	r2_put_count(2);
+	pump(2);
+}
+
+static void test_rac2_auto_resets(void)
+{
+	const u64 both = R2_BIT(F2_AUTO_ANYPCT) | R2_BIT(F2_AUTO_NGPLUS);
+
+	group("RaC2 auto-resets: both off");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	r2_settle_on(3);
+	check((features_toggle_state() & both) == 0, "neither auto-reset is on after a boot");
+
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "an A1 load still charges the boots");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "but the any% reset did not run");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "nor the NG+ one");
+	check_eq_u64(r2_word(R2_RACE_INDEX), 5, "and the race storage is as it was");
+
+	group("RaC2 auto-resets: any% fires once, at the end of an A1 load");
+
+	check(features_set(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) on");
+	check((features_toggle_state() & both) == R2_BIT(F2_AUTO_ANYPCT),
+	      "and its bit alone is set");
+
+	r2_dirty();
+	r2_load(2);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "a load into Maktar resets nothing");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "nor charges the boots");
+
+	r2_put_planet(0);
+	r2_put_count(0);
+	pump(3);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nothing while the A1 engine data reads");
+	r2_put_count(1);
+	pump(1);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nor on the frame the counter reads 1");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "and the boots are not charged yet");
+	r2_put_count(2);
+	pump(1);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the final load screen reset the Gorn manip");
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "put the jump pads back to 13.0");
+	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 0, "left the Feltzin opening to play");
+	check_eq_u64(r2_word(R2_RACE_INDEX), 0, "cleared the race storage");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "and did not touch the NG+ shortcut");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "and charged the boots, all on that tick");
+
+	r2_put_word(R2_GORN_MANIP, 1);
+	r2_put_word(R2_CHARGE_BUF, 0);
+	pump(20);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "the counter staying at 2 does not fire again");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "nor charge the boots again");
+
+	r2_load(0);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "reloading A1 from A1 fires again");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "with the buffer charge");
+
+	group("RaC2 auto-resets: NG+");
+
+	check(features_set(F2_AUTO_ANYPCT, 0) == ST_OK, "Auto-reset (any%) off");
+	check(features_set(F2_AUTO_NGPLUS, 1) == ST_OK, "Auto-reset (NG+) on");
+	check(features_trigger(F2_SETUP_NGPLUS) == ST_OK, "the NG+ setup picks the Museum shortcut");
+
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_SHORTCUTS), 7, "the A1 load put the setup's shortcut back");
+	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 1, "turned the Feltzin opening off");
+	check_eq_u64(r2_word(R2_GORN_OPENING), 1, "and the Gorn one");
+	check_eq_u64(r2_word(R2_RACE_INDEX), 0, "and cleared the race storage");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "but left the any% manips alone");
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_25, "the jump pads included");
+
+	group("RaC2 auto-resets: both on");
+
+	check(features_set(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) back on");
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "the any% reset ran");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "Gorn manip and all");
+	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 1, "and the NG+ one ran after it, as the old form did");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 7, "shortcut included");
+
+	group("RaC2 auto-resets: a reboot takes them with it");
+
+	check(features_set(F2_DEATH_BOSSES, 1) == ST_OK, "boss reset on death on as well");
+	check(quit_and_wait(), "quit with both auto-resets on");
+	check(boot_and_wait("NPEA00386"), "the same game comes back");
+	r2_settle_on(3);
+
+	check((features_toggle_state() & both) == 0, "the checkboxes come back off");
+	check((session_previous()->toggles & both) == both,
+	      "and both are offered in the previous-session record");
+
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "so an A1 load resets nothing");
+	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_25, "the jump pads included");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 3, "nor puts a shortcut back");
+
+	host_poke(R2_BOSS_SIB, (const u8 *)"\x07", 1);
+	check(session_die() == ST_OK, "DIE runs");
+	check_eq_u64(r2_byte(R2_BOSS_SIB), 7, "and the boss reset on death went with the process too");
+
+	session_previous_reapply(PREV_TOGGLES);
+	check((features_toggle_state() & both) == both, "PREVIOUS_REAPPLY turns both back on");
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "and the next A1 load resets again");
+	check_eq_u64(r2_word(R2_SHORTCUTS), 3,
+	             "with no shortcut to put back, the setup was in the old process");
+
+	features_set(F2_DEATH_BOSSES, 0);
+	features_set(F2_AUTO_NGPLUS, 0);
+
+	group("RaC2 auto-resets: flagged on boot");
+
+	check(features_set_auto(F2_AUTO_ANYPCT, 1) == ST_OK, "Auto-reset (any%) flagged on boot");
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "boot");
+	r2_settle_on(3);
+	check((features_toggle_state() & both) == R2_BIT(F2_AUTO_ANYPCT),
+	      "the flagged one comes back on and the other stays off");
+
+	r2_dirty();
+	r2_load(0);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "and the first A1 load resets the manips");
+	check_eq_u64(r2_byte(R2_FELTZIN_OPEN), 0, "with no NG+ reset after it");
+
+	group("RaC2 auto-resets: attaching on Aranos writes nothing");
+
+	/*
+	 * The module loaded into a game whose last load, into Aranos, is already
+	 * over: the counter reads 2 from the first tick. That is not a load qwark
+	 * saw end.
+	 */
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	r2_put_planet(0);
+	r2_put_count(2);
+	r2_dirty();
+	check(pump_until(SESSION_INGAME, 4000), "INGAME on a game already on Aranos");
+	pump(10);
+	check((features_toggle_state() & R2_BIT(F2_AUTO_ANYPCT)) != 0,
+	      "with the flagged auto-reset on");
+	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "the first ticks reset nothing");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "and charge nothing");
+
+	r2_load(0);
+	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the next A1 load does");
+	check_eq_u64(r2_word(R2_CHARGE_BUF), 30, "buffer charge and all");
+
+	features_set_auto(F2_AUTO_ANYPCT, 0);
+	features_set(F2_AUTO_ANYPCT, 0);
+	session_previous_dismiss();
+}
+
 /* ------------------------------------------------------------------ RaC3 */
 
 #define R3_FP_ADDR      0x00182A88u
@@ -10284,6 +10531,7 @@ int main(void)
 	test_combo_suspend();
 	test_combo_enable();
 	test_rac2();
+	test_rac2_auto_resets();
 	test_rac3();
 	test_rac4();
 	test_trilogy();
