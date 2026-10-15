@@ -888,7 +888,7 @@ const struct game_api rac2_game = {
 	rac2_planet_load,
 	rac2_die,
 	rac2_load_setaside,
-	rac2_savefile_ready,  /* build 53: play or the pause, on a planet; a save */
+	rac2_savefile_ready,  /* build 53: on a planet, not in space; a save */
 
 	rac2_unlock_list,
 	rac2_unlock_read,

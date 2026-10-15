@@ -4,8 +4,12 @@
  */
 OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 
-/* What the savefile helper leaves free of its dead function. */
-SW_CAVE_START = 0x00980C34;
+/*
+ * What the savefile helper leaves free of its dead function. Build 53: the
+ * helper may run up to 0x980F00 (SF_CAVE_END in src/games/sfhelper/sf_rac3.h),
+ * so the switches start there.
+ */
+SW_CAVE_START = 0x00980F00;
 SW_CAVE_END   = 0x00981064;
 
 SECTIONS

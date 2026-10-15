@@ -32,15 +32,24 @@
 /*
  * CODE_CAVE_START in Gigahelper's Makefile, which says the cave runs to
  * 0x983754. It does not: the dead function it starts in ends at 0x981064, and
- * 0x981064..0x983754 is live code. What the helper leaves of the function,
- * 0x980C34..0x981064, holds the Freeze ammo code switch at 0x980F00
- * (src/games/switches/sw_rac3.s).
+ * 0x981064..0x983754 is live code.
+ *
+ * The Freeze ammo code switch has its cave in the same dead function, at
+ * 0x980F00 (src/games/switches/sw_rac3.ld), so the helper stops there: build.sh
+ * fails a helper that would run past SF_CAVE_END. Up to build 52 nothing held
+ * it to that, at 372 bytes it did not need it; the pause made it grow.
  */
-#define SF_CAVE 0x00980AC0
+#define SF_CAVE     0x00980AC0
+#define SF_CAVE_END 0x00980F00
 
 /*
  * The hook site is the cellPadSetActDirect call Gigahelper replaces with a call
  * of its own. Relative, as its `bl hook` is.
+ *
+ * The site is in the pad object's read (0x97C828, the method at 0xB25F70 that
+ * 0x235950 calls for each pad), and 0x235950 is the first thing every mode's
+ * frame runs: the helper runs before that frame's update and render, as RaC1's
+ * does, and once a frame for each pad that reaches the site.
  */
 #define SF_HOOK_ADDR     0x0097CBA4
 #define SF_HOOK_ABSOLUTE 0
@@ -58,6 +67,19 @@
  */
 #define SF_API_I 0x00D9FF08
 
+/*
+ * The pause's two words, as in RaC1 and RaC2: SF_PAUSE_WAIT counts the calls a
+ * load has waited for the pause, 0 while none waits, and SF_PAUSE_FRAME holds
+ * the game's mode timer as the helper read it in the call whose request for the
+ * pause the game took. They follow the Freeze ammo switch's flag byte at
+ * 0xD9FF10 (src/games/switches/sw_rac3.s) in the same stretch of zero-filled
+ * data: nothing in the executable names anything from 0xD9E9E0 to 0xDA0120,
+ * so they are zero at every boot and an RPCS3 patch need not write them.
+ */
+#define SF_PAUSE_WAIT     0x00D9FF14
+#define SF_PAUSE_FRAME    0x00D9FF18
+#define SF_PAUSE_WAIT_MAX 600
+
 /* ------------------------------------------------------- the aside buffer */
 
 #define SF_ASIDE_ADDR 0x01100000
@@ -65,13 +87,95 @@
 
 /* --------------------------------------------------------- game addresses */
 
-/* savedata_buf is the word at +4 of the block savedata_info points at. */
+/*
+ * savedata_buf is the word at +4 of the block savedata_info points at.
+ *
+ * Neither is there from the start, as in RaC2: the block is the save manager
+ * the getter 0x976FE8 allocates, 0 until the first call, and its +4 is 0 until
+ * the game's first save or load through the save-data utility copies the
+ * buffer pointer (+1120) into it (0x977D5C, 0x978F2C, 0x9792A4, 0x9795DC). Up
+ * to this build the helper read through both regardless: a set-aside before
+ * then, or a load with nothing set aside, copied two megabytes from address 0.
+ */
 #define SF_SAVEDATA_INFO  0x00CB0A98
 #define SF_SAVEDATA_FIELD 0x00000004
+
+/*
+ * The first two words of a save are the sizes of its global block and of one
+ * planet's block, computed by the restore (0x1DF5CC, which perform_load calls
+ * at 0x1E1D94) from the field tables at 0xC3CC8C and 0xC3CF2C. The restore
+ * accepts those or the two older values beside them - RaC2's, 0x1CF8 and
+ * 0xCD0 - and refuses anything else without loading. The game's own saves
+ * start 00 00 37 B0 00 00 84 C0.
+ */
+#define SF_SAVE_HEAD_GLOBAL     0x000037B0
+#define SF_SAVE_HEAD_GLOBAL_OLD 0x00001CF8
+#define SF_SAVE_HEAD_PLANET     0x000084C0
+#define SF_SAVE_HEAD_PLANET_OLD 0x00000CD0
+
+/*
+ * The game's modes, RaC2's scheme and Deadlocked's ancestor, whose gameMode_t
+ * names them. gameMode is what the main loop (0x1D6CE0) dispatches on, at
+ * 0x1D7934, and each mode's frame calls the pad routine first:
+ *
+ *   0  ordinary play  update 0x286D08, render 0x1220BC (the world, 0x121610);
+ *                     -1, debug, runs the same, and the mode change traps on
+ *                     leaving it (0x229A8C), so the helper never asks there
+ *   1  movie          0x28A284
+ *   2  scene          0x289008, 0x122154 (the world)
+ *   3  pause          the pause menu: 0x2D2CF8, 0x1223AC
+ *   4  freeze         a message over a stopped game: 0x144DC0 runs it and
+ *                     0x122190 draws it, over the world (0x121610) unless it
+ *                     came up over the pause
+ *   5  vendor         0x2960F8, 0x29B950
+ *   6  space          the transition a planet load runs, 0x271AF8 and 0x273B14
+ *   7..9              0x287CFC/0x12227C, 0x2A9F90/0x2A9E70, 0x1BAB68/0x1BAB8C
+ *  10 and up          the lobby and the other multiplayer modes
+ *
+ * Freeze does not update the world but draws it; the pause alone runs neither
+ * the world's update nor its render, nor anything that reaches them, and the
+ * helper loads from the pause.
+ *
+ * It asks for it the way RaC2's does and for the same reason (sf_rac2.h): the
+ * pause menu is set up by the mode change at the end of the frame (0x229998,
+ * at 0x1D85E0: the leaving mode's exit routine, then the pause's entry 0x2D2464
+ * with the screen asked for), which also puts the mode timer back to 0 when the
+ * mode changed (0x1D8604). mode_requestChange (0x229598: mode, 1 to push it,
+ * the screen, 0, 0) answers 0 when it took the change and refuses while another
+ * change is queued, with eight modes pushed, while the game blocks the pause
+ * (0xEE9318[3]) or, in single player, while the player has no health; the
+ * helper asks again on its next call. The Start button asks for mode 3 with
+ * screen 1, or 5 on the vid comics, planets 30 to 36 (0x28723C, 0x14AD88).
+ * pendingGameMode is -2 when nothing is queued.
+ *
+ * A planet load leaves the main loop at the end of the frame that finds the
+ * load request word set (0x1D86AC); perform_load raises it for the save's
+ * planet (0x1E2048, or through 0x14AA54 for Veldin). The game loop then
+ * clears the mode stack before the next phase (0x13E10, at 0x154F4), and the
+ * main loop starts a single-player planet in ordinary play with nothing queued
+ * (0x1D7058), so the pause ends with the load.
+ */
+#define SF_GAME_MODE         0x00EE9334
+#define SF_PENDING_GAME_MODE 0x00C1E840
+#define SF_MODE_TIMER        0x00EE9330
+#define SF_LOAD_REQUEST      0x00EE9310
+#define SF_CURRENT_PLANET    0x00C1E438
+
+#define SF_MODE_PAUSE     0x00000003
+#define SF_MODE_SPACE     0x00000006
+#define SF_MODE_LAST      0x00000009
+#define SF_MODE_NONE      0xFFFFFFFE
+#define SF_PAUSE_SCREEN   1
+
+/* The vid comics' pause, and the planets that have it. */
+#define SF_PAUSE_SCREEN_COMIC 5
+#define SF_PLANET_COMIC_FIRST 30
+#define SF_PLANET_COMIC_COUNT 7
 
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY       0x0099256C
 #define SF_FN_PERFORM_LOAD 0x001E1CF4
+#define SF_FN_REQUEST_MODE 0x00229598
 
 #endif /* QWARK_SF_RAC3_H */

@@ -77,16 +77,22 @@
  * queued. Deadlocked is the game this is known for; `savefile_ready` in
  * struct game_api is what each game answers with, and a game that does not
  * answer at all is treated as always ready.
+ *
+ * Build 53: in RaC1, RaC2 and RaC3 it is a load the game's pause cannot be
+ * entered for at all - a planet load already on its way, the title screen, a
+ * movie or the space transition, a mode the game's mode change will not leave -
+ * or one whose pause never came within the helper's wait. Their helpers take
+ * the game into the pause themselves from everything else.
  */
 #define SAVEFILE_ERR_NOT_IDLE   6
 
 /*
  * Build 53, revision 1.20. There was no save to act on. A set-aside found the
- * game holding no save yet - RaC1 and RaC2 have none until they have saved or
- * loaded once in this process (on a new game, the first autosave) - and a load
- * found the aside buffer holding something that is not a save of this game, or
- * nothing at all and no save in the game to fill it from. RaC1 and RaC2 answer
- * it; the other two games never do.
+ * game holding no save yet - RaC1, RaC2 and RaC3 have none until they have
+ * saved or loaded once in this process (on a new game, the first autosave) -
+ * and a load found the aside buffer holding something that is not a save of
+ * this game, or nothing at all and no save in the game to fill it from. Those
+ * three answer it; Deadlocked never does.
  */
 #define SAVEFILE_ERR_NO_SAVE    7
 
@@ -102,10 +108,11 @@
  * a load menu that is still up. SF_API_REFUSED in src/games/sfhelper/sfhelper.h
  * is the same number on the other side.
  *
- * Build 53: RaC1's and RaC2's helpers leave SAVEFILE_HELPER_NO_SAVE when there
- * is no save to act on, which qwark reports as SAVEFILE_ERR_NO_SAVE; their
- * loads wait for the game's pause and leave SAVEFILE_HELPER_REFUSED when the
- * game will not pause, or leaves it before the load can go.
+ * Build 53: RaC1's, RaC2's and RaC3's helpers leave SAVEFILE_HELPER_NO_SAVE
+ * when there is no save to act on, which qwark reports as SAVEFILE_ERR_NO_SAVE;
+ * their loads take the game into its pause first and leave
+ * SAVEFILE_HELPER_REFUSED when the game is somewhere the pause cannot be
+ * entered from, or has not come to it within the helper's wait.
  */
 #define SAVEFILE_HELPER_REFUSED 0xFE
 #define SAVEFILE_HELPER_NO_SAVE 0xFD

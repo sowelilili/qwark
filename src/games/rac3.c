@@ -822,7 +822,7 @@ const struct game_api rac3_game = {
 	rac3_planet_load,
 	rac3_die,
 	rac3_load_setaside,
-	NULL,                 /* savefile_ready: build 43, not looked at yet */
+	rac3_savefile_ready,  /* build 53: no planet load; a save to act on */
 
 	rac3_unlock_list,
 	rac3_unlock_read,

@@ -7,9 +7,10 @@
 # keeps its request bytes (0xD9FF00..02) and its copy counter (0xD9FF08): zero
 # at every boot, and nothing in the executable refers to it.
 #
-# The cave is in the savefile helper's dead function, which the helper's 372
-# bytes at 0x980AC0 leave free from 0x980C34 to 0x981064. Past that the
-# functions are live code.
+# The cave is in the savefile helper's dead function, 0x980AC0..0x981064. The
+# helper may run up to 0x980F00 (SF_CAVE_END in src/games/sfhelper/sf_rac3.h;
+# build 53's pause made it grow from 372 bytes), so this has 0x980F00 to
+# 0x981064. Past that the functions are live code.
 #
 # build.sh assembles this, links it with sw_rac3.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.

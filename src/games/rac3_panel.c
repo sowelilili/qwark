@@ -12,6 +12,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/savefile.h"
+#include "sfhelper_bins.h"
 
 #include <string.h>
 
@@ -472,6 +473,77 @@ int rac3_planet_load(u8 planet, u8 flags)
 int rac3_load_setaside(void)
 {
 	return savefile_load_aside();
+}
+
+/*
+ * Build 53. Whether a save starts at `addr`: the two block sizes the game's
+ * restore accepts at its head. 1 yes, 0 no, -1 when the read failed.
+ */
+static int rac3_is_save(u32 addr)
+{
+	u8 head[8];
+	u32 global, planet;
+
+	if (mem_read(addr, head, sizeof(head)) != ST_OK) return -1;
+	global = be32_get(head);
+	planet = be32_get(head + 4);
+	if (global != RAC3_SAVE_HEAD_GLOBAL && global != RAC3_SAVE_HEAD_GLOBAL_OLD) return 0;
+	return planet == RAC3_SAVE_HEAD_PLANET || planet == RAC3_SAVE_HEAD_PLANET_OLD;
+}
+
+/*
+ * Build 53, the savefile_ready seam, which this game answered with NULL - always
+ * ready - until its helper started pausing the game before a load and checking
+ * for a save. It makes the helper's own tests on the tick before a request goes
+ * out, so the client hears why at once.
+ *
+ * A set-aside needs the game's save buffer and a save in it, which there is not
+ * until the game has saved or loaded once in this process: before then the
+ * helper used to copy two megabytes from address 0, or from address 4 when the
+ * save manager itself was not there yet. A load needs no planet load on its way
+ * and a mode the helper can ask the pause from - any but space, debug and the
+ * ones past 9 - and a save to hand over: the aside buffer, or the game's own
+ * when the aside buffer is empty. A RESTORE needs the game state alone; its
+ * file is asked about as a load once it is in the aside buffer.
+ *
+ * A read that fails answers "not idle", as the other games' do.
+ */
+u8 rac3_savefile_ready(u8 what)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC3);
+	u32 info = 0;
+	u32 buf = 0;
+
+	if (d == NULL) return SAVEFILE_ERR_NONE;
+
+	if (what != GAME_SF_SET_ASIDE) {
+		u32 request = 0, mode = 0, first = 0;
+
+		if (mem_read_u32(RAC3_LOAD_PLANET, &request) != ST_OK ||
+		    mem_read_u32(RAC3_GAME_STATE, &mode) != ST_OK)
+			return SAVEFILE_ERR_NOT_IDLE;
+		if (request != 0) return SAVEFILE_ERR_NOT_IDLE;
+		if (mode > RAC3_GAME_MODE_LAST || mode == RAC3_GAME_MODE_SPACE) return SAVEFILE_ERR_NOT_IDLE;
+		if (what == GAME_SF_RESTORE) return SAVEFILE_ERR_NONE;
+
+		if (mem_read_u32(d->aside_addr, &first) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+		if (first != 0) {
+			int save = rac3_is_save(d->aside_addr);
+			if (save < 0) return SAVEFILE_ERR_NOT_IDLE;
+			return save ? SAVEFILE_ERR_NONE : SAVEFILE_ERR_NO_SAVE;
+		}
+	}
+
+	if (mem_read_u32(RAC3_SAVEDATA_INFO, &info) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (info == 0) return SAVEFILE_ERR_NO_SAVE;
+	if (mem_read_u32(info + RAC3_SAVEDATA_FIELD, &buf) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (buf == 0) return SAVEFILE_ERR_NO_SAVE;
+
+	switch (rac3_is_save(buf)) {
+	case 1:  return SAVEFILE_ERR_NONE;
+	case 0:  return SAVEFILE_ERR_NO_SAVE;
+	default: return SAVEFILE_ERR_NOT_IDLE;
+	}
 }
 
 /* ----------------------------------------------------------------- enums */

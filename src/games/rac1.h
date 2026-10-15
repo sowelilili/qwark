@@ -125,9 +125,12 @@
  * save only once the game has saved: the serialiser (0xE7984) writes the two
  * block sizes below at its head, and the restore (0xE6FE4) takes nothing else.
  * The planet the save was made on is the word at RAC1_SAVE_PLANET_OFFSET, one of
- * RAC1_PLANET_COUNT. A load is only asked for in ordinary play, which the helper
- * pauses first, or in the start menu (RAC1_GAME_STATE 0 or 3), with no planet
- * load already on its way.
+ * RAC1_PLANET_COUNT.
+ *
+ * A load goes from the start menu, which the helper enters itself from any of
+ * the states the main loop runs (RAC1_GAME_STATE -1 to 7) but a movie (1), which
+ * plays in a loop of its own until it ends; and not while a planet load is
+ * already on its way. src/games/sfhelper/sf_rac1.h has the states.
  */
 #define RAC1_SAVEDATA_PTR       0xA10928u
 #define RAC1_SAVEDATA_BIAS      0x100000u
@@ -135,8 +138,8 @@
 #define RAC1_SAVE_HEAD_PLANET   0x82A4u
 #define RAC1_SAVE_PLANET_OFFSET 0x18u
 #define RAC1_PLANET_COUNT       20u
-#define RAC1_STATE_PLAY         0u
-#define RAC1_STATE_PAUSE        3u
+#define RAC1_STATE_MOVIE        1u
+#define RAC1_STATE_LAST         7u   /* the states run are -1 .. RAC1_STATE_LAST */
 
 /* Bits of RAC1_DEBUG_UPDATE, from rac1.cs SetDebugOption. */
 #define RAC1_DBG_RATCHET   0x1u

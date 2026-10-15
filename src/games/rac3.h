@@ -84,6 +84,31 @@
  */
 #define RAC3_SF_HELPER         0x00D9FF00u
 
+/*
+ * Build 53: what the savefile's readiness test reads (rac3_savefile_ready).
+ *
+ * The save manager is the block RAC3_SAVEDATA_INFO points at, and its save
+ * buffer is the word at +4 - as in RaC2, the block is not there until the
+ * getter 0x976FE8 first runs, and +4 is 0 until the game's first save or load
+ * through the save-data utility in this process. A save starts with the sizes
+ * of its global block and of one planet's block; the restore (0x1DF5CC) takes
+ * those or the older pair beside them, RaC2's, and nothing else.
+ *
+ * A load goes from the pause, which the helper asks the game for itself from
+ * any single-player mode but space (RAC3_GAME_STATE 6, the transition a planet
+ * load runs) and debug (-1), which the mode change will not leave; with no
+ * planet load already on its way (RAC3_LOAD_PLANET). The modes past 9 are the
+ * lobby and multiplayer. src/games/sfhelper/sf_rac3.h has the modes.
+ */
+#define RAC3_SAVEDATA_INFO          0x00CB0A98u
+#define RAC3_SAVEDATA_FIELD         4u
+#define RAC3_SAVE_HEAD_GLOBAL       0x37B0u
+#define RAC3_SAVE_HEAD_GLOBAL_OLD   0x1CF8u
+#define RAC3_SAVE_HEAD_PLANET       0x84C0u
+#define RAC3_SAVE_HEAD_PLANET_OLD   0x0CD0u
+#define RAC3_GAME_MODE_SPACE        6u
+#define RAC3_GAME_MODE_LAST         9u
+
 #define RAC3_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC3_LF_LEN        0x10        /* level flag bytes per planet */
 
@@ -269,6 +294,7 @@ int rac3_trigger(u8 id);
 int rac3_set_value(u8 id, u32 value);
 int rac3_get_options(u8 id, const char * const **options, u8 *count);
 int rac3_load_setaside(void);
+u8  rac3_savefile_ready(u8 what);
 
 int rac3_planet_load(u8 planet, u8 flags);
 

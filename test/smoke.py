@@ -186,9 +186,9 @@ R4_PENDING_GAME_MODE = 0x009C37F4
 R4_MODE_IDLE = (struct.pack(">I", 0), struct.pack(">i", -2))
 R4_MODE_BUSY = (struct.pack(">I", 6), struct.pack(">i", -2))
 
-# Build 53, revision 1.20: there was no save to act on. RaC1 and RaC2 have none
-# until the game has saved or loaded once, and their helpers load only a save of
-# their own, so a request against a fresh fake process is BUSY with this.
+# Build 53, revision 1.20: there was no save to act on. RaC1, RaC2 and RaC3 have
+# none until the game has saved or loaded once, and their helpers load only a
+# save of their own, so a request against a fresh fake process is BUSY with this.
 SAVEFILE_ERR_NO_SAVE = 7
 
 # RaC1's savefile helper, from src/games/sfhelper_bins.c: its request bytes and
@@ -200,14 +200,16 @@ RAC1_SF_API_LOAD = 0x01080001
 RAC1_SF_API_SETASIDE = 0x01080002
 RAC1_SF_ASIDE = 0x00FC0000
 
-# Build 53. What the two games' readiness tests read, out of src/games/rac1.h
-# and rac2.h, and a save of each put where the game keeps it: RaC1's buffer is
-# the pointer at 0xA10928 plus 0x100000, RaC2's the word at +4 of the block at
-# 0x1410E50. A save is known by its head, the two block sizes the game's
-# restore insists on, and in RaC1 a planet number below 20 at +0x18.
+# Build 53. What the three games' readiness tests read, out of src/games/rac1.h,
+# rac2.h and rac3.h, and a save of each put where the game keeps it: RaC1's
+# buffer is the pointer at 0xA10928 plus 0x100000, RaC2's the word at +4 of the
+# block at 0x1410E50, RaC3's the word at +4 of the block at 0xCB0A98. A save is
+# known by its head, the two block sizes the game's restore insists on, and in
+# RaC1 a planet number below 20 at +0x18.
 RAC1_SAVE_HEAD = (struct.pack(">II", 0x153C, 0x82A4) + bytes(0x10)
                   + struct.pack(">I", 3))
 RAC2_SAVE_HEAD = struct.pack(">II", 0x1D08, 0x84D0)
+RAC3_SAVE_HEAD = struct.pack(">II", 0x37B0, 0x84C0)
 RAC1_SAVE_WRITES = [
     (0x00A10708, struct.pack(">I", 0)),          # game state: ordinary play
     (0x00A10700, struct.pack(">I", 0)),          # no planet load on its way
@@ -221,6 +223,13 @@ RAC2_SAVE_WRITES = [
     (0x01410E50, struct.pack(">I", 0x01A00000)),
     (0x01A00004, struct.pack(">I", 0x01A10000)),
     (0x01A10000, RAC2_SAVE_HEAD),
+]
+RAC3_SAVE_WRITES = [
+    (0x00EE9334, struct.pack(">I", 0)),          # gameMode: ordinary play
+    (0x00EE9310, struct.pack(">I", 0)),          # no planet load on its way
+    (0x00CB0A98, struct.pack(">I", 0x01800000)),
+    (0x01800004, struct.pack(">I", 0x01810000)),
+    (0x01810000, RAC3_SAVE_HEAD),
 ]
 SAVEFILE_NAME_LEN = 32
 SAVEFILE_ROW_SIZE = 40
@@ -1279,6 +1288,8 @@ OTHER_GAMES = [
         "features": 32,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
         "sf_setaside": 0x00D9FF02,
+        # Build 53: a save of the game's own, which a set-aside copies.
+        "sf_save": RAC3_SAVE_WRITES,
         # Retired, never renumbered: 4, 17, 28, 29, 30 and 33.
         "retired": [4, 17, 28, 29, 30, 33],
         "readouts": 12,
@@ -1505,7 +1516,7 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None, sav
     at all without this.
 
     `save` is a save of the game's own put where the game keeps it (build 53):
-    RaC1 and RaC2 set aside and load nothing else, and a fresh fake process,
+    RaC1, RaC2 and RaC3 set aside and load nothing else, and a fresh fake process,
     like a game that has not saved yet, has none.
     """
     if idle:

@@ -52,8 +52,10 @@ typedef unsigned int       sf_u32;
 
 /*
  * Build 43. What the helper puts in a request byte when it drops the request
- * rather than doing the work, which today means one thing: the game was not
- * idle on the frame the request was seen.
+ * rather than doing the work, which means one thing: the game was not
+ * somewhere the request could be met - Deadlocked busy on the frame the request
+ * was seen, or, for a load in the other three, the game somewhere its pause
+ * cannot be entered from or never coming to it.
  *
  * The request byte is the whole interface in both directions, and it already
  * carries more than 0 and 1 - Deadlocked's load parks a 2 in api_load for as
@@ -68,15 +70,15 @@ typedef unsigned int       sf_u32;
 #define SF_API_REFUSED 0xFE
 
 /*
- * Build 53, RaC1 and RaC2. The other reason a request is dropped: there is no
- * save to act on. A set-aside found the game's save buffer missing or holding
- * something that is not a save, which is how either game starts until it has
- * saved or loaded once; a load found the aside buffer holding something that is
- * not a save, or nothing at all and no save in the game to fill it from. Up to
- * build 52 the first copied from wherever the pointer pointed - address 0 in
- * RaC2 - and the second handed the loader whatever was there. qwark reports
- * SAVEFILE_ERR_NO_SAVE. SAVEFILE_HELPER_NO_SAVE in src/core/savefile.h is the
- * same number.
+ * Build 53, RaC1, RaC2 and RaC3. The other reason a request is dropped: there
+ * is no save to act on. A set-aside found the game's save buffer missing or
+ * holding something that is not a save, which is how each of the three starts
+ * until it has saved or loaded once; a load found the aside buffer holding
+ * something that is not a save, or nothing at all and no save in the game to
+ * fill it from. Up to build 52 the first copied from wherever the pointer
+ * pointed - address 0 in RaC2 and RaC3 - and the second handed the loader
+ * whatever was there. qwark reports SAVEFILE_ERR_NO_SAVE.
+ * SAVEFILE_HELPER_NO_SAVE in src/core/savefile.h is the same number.
  */
 #define SF_API_NO_SAVE 0xFD
 
@@ -95,12 +97,15 @@ void sf_perform_load(int unk, void *buf);
 /* RaC1's save, load and autosave menus, which the Force autosave action drives. */
 void sf_save_handler(int mode);
 
-/* Build 53: the start menu's opener, which the Start button calls with 0. */
-void sf_open_pause(int screen);
+/*
+ * The start menu entered by writing the state, with the menu words its update
+ * reads put back as the Start button's opener puts them (sf_rac1.h).
+ */
+void sf_enter_menu(void);
 #endif
 
-#if SF_GAME == SF_RAC2
-/* Build 53: mode_requestChange. 0 when the change was taken. */
+#if SF_GAME == SF_RAC2 || SF_GAME == SF_RAC3
+/* mode_requestChange. 0 when the change was taken. */
 int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
 #endif
 

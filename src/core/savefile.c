@@ -151,7 +151,8 @@ static void request_clear(struct sf_request *r)
 
 /*
  * Build 43. Whether the running game is somewhere a set-aside or a load may
- * happen at all. A game that does not answer - RaC3 today - is always ready.
+ * happen at all. A game that does not answer is always ready; since build 53
+ * every game answers.
  * Tick thread, like everything else that reads the game.
  *
  * Build 53: `what` is one of GAME_SF_SET_ASIDE, GAME_SF_LOAD and
@@ -846,7 +847,7 @@ u32 savefile_load_refusals(void)
 /*
  * How many words a cave takes on the wire. Every cave is whole words today:
  * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
- * RaC1's 116 and 1240 bytes, RaC2's 1100, RaC3's 372 and Deadlocked's 40 and
+ * RaC1's 116 and 920 bytes, RaC2's 964, RaC3's 976 and Deadlocked's 40 and
  * 1004 (build 53) are all multiples of four and none of them is padded. The
  * rounding is there for a cave that one day is not, whose last word then
  * carries its tail and zeroes after it rather than losing the tail.

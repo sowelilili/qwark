@@ -703,7 +703,7 @@ const struct game_api rac1_game = {
 	rac1_planet_load,
 	rac1_die,
 	rac1_load_setaside,
-	rac1_savefile_ready,  /* build 53: the start menu or play; a save to act on */
+	rac1_savefile_ready,  /* build 53: no movie, no planet load; a save to act on */
 
 	rac1_unlock_list,
 	rac1_unlock_read,

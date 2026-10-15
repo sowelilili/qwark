@@ -229,8 +229,9 @@ struct game_api {
 	 * SAVEFILE_ERR_* code the client is told: SAVEFILE_ERR_NOT_IDLE when the
 	 * game is busy, SAVEFILE_ERR_NO_SAVE when there is no save to act on.
 	 *
-	 * NULL where a game has no such notion, and a NULL reads as "always ready",
-	 * so RaC3 behaves exactly as before. Tick thread only: it reads game memory.
+	 * NULL where a game has no such notion, and a NULL reads as "always ready";
+	 * all four games answer since build 53. Tick thread only: it reads game
+	 * memory.
 	 */
 	u8 (*savefile_ready)(u8 what);
 

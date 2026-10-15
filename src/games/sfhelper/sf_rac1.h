@@ -84,10 +84,11 @@
 #define SF_API_I        0x01080004
 
 /*
- * SF_PAUSE_WAIT counts the calls a load has waited for the pause it asked for,
- * 0 while no load waits; SF_PAUSE_FRAME is the game's frames-in-state counter
- * as the helper read it in the call that paused, so the load goes on a later
- * frame. Deadlocked's SF_PAUSE_WAIT_MAX, ten seconds at 60 frames a second.
+ * SF_PAUSE_WAIT counts the calls a load has waited for the pause, 0 while no
+ * load waits; SF_PAUSE_FRAME is the game's frames-in-state counter as the
+ * helper read it in the call that last put the game in the pause, so the load
+ * goes on a later frame. Deadlocked's SF_PAUSE_WAIT_MAX, ten seconds at 60
+ * frames a second.
  */
 #define SF_PAUSE_WAIT     0x01080008
 #define SF_PAUSE_FRAME    0x0108000C
@@ -144,55 +145,68 @@
 #define SF_SHOULD_LOAD 0x00A10700
 
 /*
- * Build 53: the pause. The game state picks what the main loop runs each frame
- * (0xE1438): 0 ordinary play (update 0x166FB0, render 0x6C424), 3 the start
- * menu (update 0x13B838, render 0x6C558), 4 a menu or dialog over the world, 6
- * the title, and so on. Of those, 3 alone neither updates nor renders the world:
- * 0x6C558 never reaches the world render 0x6BB78 and its sky dispatch 0xD93C0.
- * SF_STATE_FRAMES counts the frames spent in the current state; the loop puts it
- * back to 0 at the end of a frame whose state changed.
+ * The game state, which picks what the main loop runs each frame (0xE1438).
+ * Every state calls the pad routine first, and so this helper, except where it
+ * says otherwise:
+ *
+ *   -1  the debug menu      0x627D0, 0x63E68
+ *    0  ordinary play       update 0x166FB0, render 0x6C424 (the world)
+ *    1  a movie             0x16974C plays it in a frame loop of its own, which
+ *                           calls the pad routine on each of its frames and
+ *                           returns when the movie ends
+ *    2  a cutscene          0x168768, 0x6C494 (the world)
+ *    3  the start menu      0x13B838, 0x6C558
+ *    4  a prompt            0x79B18, 0x6C4D8 (the world unless a menu is up)
+ *    5  the Gadgetron vendor 0x16DA88, 0x1744F0
+ *    6  arriving on a planet 0x161788, 0x1639A8 (the world); the main loop
+ *                           starts every planet in it (0xE0FB8)
+ *    7  a cinematic         0x169B88, 0x6D590
+ *
+ * and anything else runs nothing at all, not even the pad routine. This game
+ * has no freeze: the state the Ghidra project calls Menu is the pause, and it
+ * is the only one that neither updates nor draws the world - 0x13B838 and
+ * 0x6C558 never reach the world render 0x6BB78 or its sky dispatch 0xD93C0.
+ * Prompt is the nearest thing to a freeze and draws the world.
+ *
+ * SF_STATE_FRAMES counts the frames spent in the current state; the loop puts
+ * it back to 0 at the end of a frame whose state changed (0xE1600).
  */
 #define SF_GAME_STATE   0x00A10708
 #define SF_STATE_FRAMES 0x00A1070C
-#define SF_STATE_PLAY   0x00000000
+#define SF_STATE_MOVIE  0x00000001
 #define SF_STATE_PAUSE  0x00000003
 
-/*
- * What the game's own Start button tests before it opens the start menu
- * (0x166FB0, the branch at 0x16734C that ends in the call at 0x1673C0), which
- * the helper tests too, so it never opens the menu where the game would not:
- * the state has lasted eight frames, the player is not in states 29, 50 or 114,
- * the three player words below say so, and Start would not open another menu
- * instead (0x96BD6C 22 opens menu 0 at 0x167340, Quartu with 0x96BD84 at 2 opens
- * menu 4 at 0x1671D0). The debug camera makes the opener return without
- * pausing (0x13AC44), so it is tested as well.
- */
-#define SF_PLAYER_STATE     0x0096BD64
-#define SF_PLAYER_STATE_B   0x0096BD6C
-#define SF_PLAYER_FLAG_A    0x0096AD8C
-#define SF_PLAYER_FLAG_B    0x0096BD91
-#define SF_PLAYER_FLAG_C    0x0096BD84
-#define SF_PLAYER_WORD      0x0096BF88
-#define SF_DEBUG_MODE       0x0095C5D4
-#define SF_CURRENT_PLANET   0x00969C70
-#define SF_PLANET_QUARTU    15
+/* The states the main loop runs, -1 to 7, as an unsigned range from -1. */
+#define SF_STATE_FIRST  0xFFFFFFFF
+#define SF_STATE_COUNT  9
 
-#define SF_STATE_FRAMES_MIN 8
-#define SF_PSTATE_NO_PAUSE1 29
-#define SF_PSTATE_NO_PAUSE2 50
-#define SF_PSTATE_NO_PAUSE3 114
-#define SF_PSTATE_B_MENU    22
+/*
+ * The pause has no change function here: the game moves from state to state
+ * by writing the word, from dozens of places. The start menu's update and draw
+ * read the menu's own words, though, and those keep what the menu last did:
+ * after an ordinary close the screen is the closing one with its countdown run
+ * out, and a start menu entered with only the state written closes again on
+ * its first frame and repeats whatever its last close did (the ship's planet
+ * change, after a trip). So the helper enters the pause with 0x13D3E0, a leaf
+ * routine that writes the state and the five menu words the Start button's
+ * opener (0x13ABCC) also resets - the screen, the pending action, the menu's
+ * buffer word, its frame count and the copy of a setting the menu re-applies
+ * when it differs (0xA52E68 from 0xA52E64, which a load also writes) - and
+ * nothing else; the title calls it to open its main menu (0x113B4). The helper
+ * then sets the screen to the one the Start button opens, 0, for the title's 45.
+ *
+ * Unlike the opener, it plays no sound, captures no backdrop (the menu draws
+ * the last one for the frame or two before the load), and has no test that
+ * keeps the menu shut: the opener does nothing under the debug camera.
+ */
+#define SF_FN_ENTER_MENU     0x0013D3E0
+#define SF_MENU_SCREEN       0x00A52BB0
+#define SF_MENU_FIRST_SCREEN 0
 
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY       0x005C5AD0
 #define SF_FN_PERFORM_LOAD 0x000E8CA0
 #define SF_FN_SAVE_HANDLER 0x000E8888
-
-/*
- * Build 53. The start menu's opener, which the Start button calls with 0 for the
- * menu's first screen: it sets the game state to 3 before it returns.
- */
-#define SF_FN_OPEN_PAUSE   0x0013ABCC
 
 #endif /* QWARK_SF_RAC1_H */

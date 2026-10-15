@@ -2173,16 +2173,17 @@ static void rac4_modes(u32 mode, u32 pending)
 }
 
 /*
- * Build 53. RaC1 and RaC2 answer `savefile_ready` too. A set-aside needs a save
- * in the game's save buffer and a load needs one to hand over, and a fresh fake
- * process has none: RaC1's save pointer and RaC2's save manager read 0, as they
- * do on a console until the game has saved or loaded once. RaC2's load also
- * wants pendingGameMode at -2, which an all-zero process does not have.
+ * Build 53. RaC1, RaC2 and RaC3 answer `savefile_ready` too. A set-aside needs
+ * a save in the game's save buffer and a load needs one to hand over, and a
+ * fresh fake process has none: RaC1's save pointer and RaC2's and RaC3's save
+ * managers read 0, as they do on a console until the game has saved or loaded
+ * once.
  *
  * The tests put a save where the game would: RaC1's buffer is the pointer at
  * 0xA10928 plus 0x100000, RaC2's the word at +4 of the block 0x1410E50 points
- * at, and a save is recognised by its head, the two block sizes the game's
- * restore insists on (and, in RaC1, a planet number below 20 at +0x18).
+ * at and RaC3's the word at +4 of the block 0xCB0A98 points at, and a save is
+ * recognised by its head, the two block sizes the game's restore insists on
+ * (and, in RaC1, a planet number below 20 at +0x18).
  */
 #define SF_R1_STATE     0x00A10708u
 #define SF_R1_REQUEST   0x00A10700u
@@ -2196,6 +2197,11 @@ static void rac4_modes(u32 mode, u32 pending)
 #define SF_R2_PENDING   0x01329F90u
 #define SF_R2_PLANET    0x01329A3Cu
 #define SF_R2_REQUEST   0x0156B050u
+#define SF_R3_SAVE_INFO 0x00CB0A98u
+#define SF_R3_SAVE_OBJ  0x01800000u
+#define SF_R3_SAVE_BUF  0x01810000u
+#define SF_R3_MODE      0x00EE9334u
+#define SF_R3_REQUEST   0x00EE9310u
 
 static void poke32(u32 addr, u32 value)
 {
@@ -2205,7 +2211,7 @@ static void poke32(u32 addr, u32 value)
 	host_poke(addr, raw, 4);
 }
 
-/* The head of a save of the game at `addr`; nothing for RaC3 and Deadlocked. */
+/* The head of a save of the game at `addr`; nothing for Deadlocked. */
 static void sf_put_save_head(u8 game_id, u32 addr)
 {
 	u8 head[0x1C];
@@ -2218,6 +2224,9 @@ static void sf_put_save_head(u8 game_id, u32 addr)
 	} else if (game_id == GAME_RAC2) {
 		be32_put(head, 0x1D08u);
 		be32_put(head + 4, 0x84D0u);
+	} else if (game_id == GAME_RAC3) {
+		be32_put(head, 0x37B0u);
+		be32_put(head + 4, 0x84C0u);
 	} else {
 		return;
 	}
@@ -2234,6 +2243,10 @@ static void sf_give_save(u8 game_id)
 		poke32(SF_R2_SAVE_INFO, SF_R2_SAVE_OBJ);
 		poke32(SF_R2_SAVE_OBJ + 4, SF_R2_SAVE_BUF);
 		sf_put_save_head(GAME_RAC2, SF_R2_SAVE_BUF);
+	} else if (game_id == GAME_RAC3) {
+		poke32(SF_R3_SAVE_INFO, SF_R3_SAVE_OBJ);
+		poke32(SF_R3_SAVE_OBJ + 4, SF_R3_SAVE_BUF);
+		sf_put_save_head(GAME_RAC3, SF_R3_SAVE_BUF);
 	}
 }
 
@@ -2257,6 +2270,10 @@ static void savefile_make_idle(u8 game_id)
 		poke32(SF_R2_REQUEST, 0);
 		host_peek(SF_R2_PLANET, planet, 4);
 		if ((planet[0] & 0x80) != 0) poke32(SF_R2_PLANET, 0);
+	}
+	if (game_id == GAME_RAC3) {
+		poke32(SF_R3_MODE, 0);
+		poke32(SF_R3_REQUEST, 0);
 	}
 	sf_give_save(game_id);
 }
@@ -3123,6 +3140,7 @@ static void test_savefile_library(void)
  * it drops a request, and everything qwark does with it.
  */
 #define SAVE_ROOT_R4 "/dev_hdd0/qwark/savefiles/NPEA00423"
+#define SAVE_ROOT_R3 "/dev_hdd0/qwark/savefiles/NPEA00387"
 
 /* The gameMode values that are not somewhere a save may be taken. */
 static const u32 g_r4_busy_modes[] = {
@@ -3321,16 +3339,20 @@ static void test_savefile_not_idle(void)
 	/* -------------------------------------------------- the other games */
 
 	/*
-	 * A game whose vtable has no savefile_ready is always ready, so the one
-	 * that has not been looked at answers exactly as it did before build 43.
-	 * Build 53 looked at RaC1 and RaC2 (test_savefile_no_save).
+	 * Up to build 52 RaC3's vtable had no savefile_ready, which reads as always
+	 * ready. Build 53 gave it one (test_savefile_build53): a game that has not
+	 * saved yet has nothing to set aside, and with a save the set-aside goes
+	 * out from any mode, a set-aside never needing the game to sit still.
 	 */
 	check(quit_and_wait(), "Deadlocked goes away");
 	check(boot_and_wait("NPEA00387"), "RaC3 comes up");
-	check(savefile_set_aside() == ST_OK,
-	      "RaC3 has no idle test, so a set-aside goes straight out");
+	check(savefile_set_aside() == ST_BUSY, "RaC3 with no save yet is BUSY");
+	sf_give_save(GAME_RAC3);
+	poke32(SF_R3_MODE, 6);
+	check(savefile_set_aside() == ST_OK, "and with one the set-aside goes out, even in space");
 	host_poke(sf_desc_for_game(GAME_RAC3)->api_setaside, (const u8 *)"\x00", 1);
 	pump(SAVEFILE_SETTLE_TICKS);
+	poke32(SF_R3_MODE, 0);
 
 	/* ------------------------------------------------------------ tidy up */
 
@@ -4984,6 +5006,8 @@ static void test_rac3(void)
 	group("RaC3: savefile requests");
 
 	host_poke(R3_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	/* Build 53: RaC3 acts only on a save of its own, as RaC1 and RaC2 do. */
+	savefile_make_idle(GAME_RAC3);
 	check(features_trigger(F3_SET_ASIDE) == ST_OK,
 	      "set aside works from a cold process");
 	host_peek(R3_SF_SET_ASIDE, &b, 1);
@@ -10346,26 +10370,34 @@ static void test_command_port(void)
 	      "and takes 127.0.0.1, which is where everything here listens");
 }
 
-/* ----------------------- build 53, RaC1's and RaC2's helpers move and pause */
+/* ------------------- build 53, RaC1's, RaC2's and RaC3's helpers pause to load */
 
 /*
  * What can be checked here, once more: the PowerPC that pauses the game and
  * waits for it runs only in the game, so the pause itself is a console's to
  * answer. What is checked is everything around it - where the generated table
  * puts the caves, the hook words and the request bytes, that SAVEFILE_PATCH
- * hands out exactly those, that RaC3's and Deadlocked's helpers did not move by
- * a byte (an RPCS3 patch for either written by build 52 still counts), and that
- * qwark refuses, with the right error, every request the helper would drop for
- * want of a save or of a game sitting still.
+ * hands out exactly those, that Deadlocked's helper did not move by a byte (an
+ * RPCS3 patch for it written by build 52 still counts), that RaC3's stays clear
+ * of the code switch beside it, and that qwark refuses, with the right error,
+ * every request the helper would drop for want of a save or of a game it can
+ * take into its pause - and lets through every one it no longer drops.
  */
 
 /*
- * SAVEFILE_PATCH's stamps for the two helpers build 53 left alone, pinned: a
- * change to either means every RPCS3 user of that game has to write the patch
- * again, which a build should do on purpose and not by accident.
+ * SAVEFILE_PATCH's stamps, pinned: a change to one means every RPCS3 user of
+ * that game has to write the patch again, which a build should do on purpose
+ * and not by accident. Build 53 changed RaC1's, RaC2's and RaC3's, so a patch
+ * an earlier build wrote for any of the three reads as another build's, and
+ * left Deadlocked's alone.
  */
-#define SF53_STAMP_RAC3 0x038F1389u
+#define SF53_STAMP_RAC1 0x2A9B51FAu
+#define SF53_STAMP_RAC2 0x35EE054Eu
+#define SF53_STAMP_RAC3 0x29AAB370u
 #define SF53_STAMP_RAC4 0x23199E63u
+
+/* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
+#define SF52_STAMP_RAC3 0x038F1389u
 
 /* Whether every word row of a SAVEFILE_PATCH reply lands in [lo, hi) or on `hook`. */
 static int sf53_rows_within(const u8 *reply, u32 len, u32 lo1, u32 hi1, u32 lo2, u32 hi2, u32 hook)
@@ -10453,7 +10485,8 @@ static void test_savefile_build53(void)
 		      sf53_byte_addr(g_sf_patch, 1) == 0x01080001u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x01080002u,
 		      "and the bytes it zeroes are the new request bytes");
-		check_eq_u64(len, 2756, "RaC1's is the largest reply now, 2756 bytes");
+		check_eq_u64(len, 2116, "of 2116 bytes, the helper having shrunk to 920 with the pause");
+		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC1, "and the stamp this build pins for it");
 	}
 
 	/* ------------------------------------------------- RaC2's placement */
@@ -10482,6 +10515,10 @@ static void test_savefile_build53(void)
 		check(sf53_rows_within(g_sf_patch, len, 0x0113EC64u, 0x011414FCu, 0, 0, 0x00B086B0u),
 		      "every word it writes is in the new cave or is the hook word");
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
+		check(d->caves[0].addr + d->caves[0].len <= 0x01141400u,
+		      "and the helper stops short of the code switches at 0x1141400");
+		check_eq_u64(len, 1972, "the reply is 1972 bytes");
+		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC2, "with the stamp this build pins for it");
 
 		/*
 		 * Under RPCS3, a hook word that still branches to build 52's cave reads as
@@ -10508,17 +10545,53 @@ static void test_savefile_build53(void)
 		host_set_emulator(0);
 	}
 
-	group("build 53: RaC3's and Deadlocked's helpers did not change");
+	/* ------------------------------------------------- RaC3's helper */
+
+	group("build 53: RaC3's helper pauses too, and stays out of the code switch");
 	{
-		check(boot_and_wait("NPEA00387"), "RaC3 boots");
-		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK &&
-		      be32_get(g_sf_patch + 4) == SF53_STAMP_RAC3,
-		      "RaC3's patch has build 52's stamp, so a patch from then still counts");
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC3);
+		const struct sw_desc *s = sw_desc_for_game(GAME_RAC3);
+
+		check(d != NULL && d->ncaves == 1, "RaC3 has one cave");
+		if (d == NULL || d->ncaves != 1) return;
+
+		check_eq_u64(d->caves[0].addr, 0x00980AC0u, "it is where it was, 0x980AC0");
+		check(d->caves[0].addr + d->caves[0].len <= 0x00980F00u,
+		      "and ends before the Freeze ammo switch's cave at 0x980F00, its SF_CAVE_END");
+		check(d->caves[0].len > 372u, "having grown past build 52's 372 bytes");
+		check(s != NULL && swt_apart(s, d), "nothing of the switch overlaps anything of the helper");
+		check_eq_u64(d->hooks[0].addr, 0x0097CBA4u, "the hook site has not moved");
+		check_eq_u64(d->hooks[0].value, 0x48003F1Du, "nor has the hook word, bl 0x980AC0");
+		check_eq_u64(d->api_mod, 0x00D9FF00u, "the request bytes have not moved");
+		check_eq_u64(d->api_load, 0x00D9FF01u, "the load byte follows it");
+		check_eq_u64(d->api_setaside, 0x00D9FF02u, "and the set-aside byte");
+		check_eq_u64(d->aside_addr, 0x01100000u, "nor has the aside buffer");
+		check_eq_u64(d->aside_size, 0x00200000u, "nor its size");
+
 		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00387"), "RaC3 boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC3 patch");
+		sf_check_patch_words(d, g_sf_patch, len);
+		check(sf53_rows_within(g_sf_patch, len, 0x00980AC0u, 0x00980F00u, 0, 0, 0x0097CBA4u),
+		      "every word it writes is in the cave, short of the switch, or is the hook word");
+		check(sf53_byte_addr(g_sf_patch, 0) == 0x00D9FF00u &&
+		      sf53_byte_addr(g_sf_patch, 1) == 0x00D9FF01u &&
+		      sf53_byte_addr(g_sf_patch, 2) == 0x00D9FF02u,
+		      "and the bytes it zeroes are the three request bytes");
+		check_eq_u64(len, 1996, "the reply is 1996 bytes");
+		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
+		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
+		      "which is not build 52's, so a patch from then reads as another build's");
+		check(quit_and_wait(), "quit");
+	}
+
+	group("build 53: Deadlocked's helper did not change");
+	{
 		check(boot_and_wait("NPEA00423"), "Deadlocked boots");
 		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK &&
 		      be32_get(g_sf_patch + 4) == SF53_STAMP_RAC4,
-		      "and so has Deadlocked's");
+		      "Deadlocked's patch has build 52's stamp, so a patch from then still counts");
+		check_eq_u64(len, 2132, "and is the largest reply again, 2132 bytes");
 		check(quit_and_wait(), "quit");
 	}
 
@@ -10565,25 +10638,51 @@ static void test_savefile_build53(void)
 		      "and so is a save of a planet the game does not have");
 		poke32(d->aside_addr + 0x18, 3);
 
-		poke32(SF_R1_STATE, 6);
+		/*
+		 * The helper takes the game into the start menu itself from any state
+		 * the main loop runs, so the pre-check refuses only a movie, which plays
+		 * in a loop of its own, a state the loop runs nothing in, and a planet
+		 * load already on its way.
+		 */
+		poke32(SF_R1_STATE, 1);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "a load on the title screen is BUSY, the game not idle");
+		      "a load while a movie plays is BUSY, the game not idle");
 		check(sf53_request(0, &error) == ST_OK,
 		      "while a set-aside, which only copies the last save, still goes out");
 		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
 		pump(SAVEFILE_SETTLE_TICKS);
-		poke32(SF_R1_STATE, 2);
+		poke32(SF_R1_STATE, 8);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "and a load in a cutscene");
+		      "and a load in state 8, which the main loop runs nothing in");
+		poke32(SF_R1_STATE, 0xFFFFFFFEu);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in state -2");
 		poke32(SF_R1_STATE, 0);
 		poke32(SF_R1_REQUEST, 1);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
 		      "and one while a planet load is already on its way");
 		poke32(SF_R1_REQUEST, 0);
-		poke32(SF_R1_STATE, 3);
-		check(sf53_request(1, &error) == ST_OK, "a load from the start menu goes out");
-		host_poke(d->api_load, (const u8 *)"\x00", 1);
-		pump(SAVEFILE_SETTLE_TICKS);
+		{
+			/* Up to the rework a load went out from play and the start menu alone. */
+			static const u32 states[] = { 0xFFFFFFFFu, 2, 3, 4, 5, 6, 7 };
+			static const char * const names[] = {
+				"a load from the debug menu goes out: the helper pauses from anything",
+				"and from a cutscene",
+				"and from the start menu",
+				"and from a prompt",
+				"and from the vendor",
+				"and from a planet's arrival",
+				"and from a cinematic"
+			};
+			u32 k;
+
+			for (k = 0; k < sizeof(states) / sizeof(states[0]); k++) {
+				poke32(SF_R1_STATE, states[k]);
+				check(sf53_request(1, &error) == ST_OK, names[k]);
+				host_poke(d->api_load, (const u8 *)"\x00", 1);
+				pump(SAVEFILE_SETTLE_TICKS);
+			}
+		}
 		poke32(SF_R1_STATE, 0);
 		check(sf53_request(1, &error) == ST_OK, "and so does one from ordinary play");
 		host_peek(d->api_load, &b, 1);
@@ -10644,8 +10743,8 @@ static void test_savefile_build53(void)
 		for (i = 0; i < d->aside_size; i += sizeof(g_pattern)) plat_file_write(f, g_pattern, sizeof(g_pattern));
 		plat_file_close(f);
 
-		poke32(SF_R1_STATE, 6);
-		check(savefile_restore("b53", "junk.sav") == ST_BUSY, "restoring it on the title screen is BUSY");
+		poke32(SF_R1_STATE, 1);
+		check(savefile_restore("b53", "junk.sav") == ST_BUSY, "restoring it while a movie plays is BUSY");
 		savefile_transfer(&done, &total, &error);
 		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the game not idle, checked before the copy");
 		poke32(SF_R1_STATE, 0);
@@ -10701,23 +10800,52 @@ static void test_savefile_build53(void)
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
 		      "a load on the title screen, planet -1, is not idle");
 		poke32(SF_R2_PLANET, 5);
-		poke32(SF_R2_PENDING, 0);
-		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "nor with a mode change queued");
-		poke32(SF_R2_PENDING, R4_MODE_NONE);
-		poke32(SF_R2_MODE, 4);
-		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "nor in a menu");
-		poke32(SF_R2_MODE, 0);
 		poke32(SF_R2_REQUEST, 1);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
 		      "nor with a planet load on its way");
 		poke32(SF_R2_REQUEST, 0);
-		poke32(SF_R2_MODE, 3);
-		check(sf53_request(1, &error) == ST_OK, "from the pause it goes out");
+		poke32(SF_R2_MODE, 6);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in space, the ship between planets");
+		poke32(SF_R2_MODE, 0xFFFFFFFFu);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in debug, which the mode change traps leaving");
+		poke32(SF_R2_MODE, 10);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in a mode the game does not have");
+		{
+			/*
+			 * Up to the rework a load went out from play and the pause alone, with
+			 * nothing queued. The helper asks the game for its pause from any of
+			 * these now, and waits out a change already queued.
+			 */
+			static const u32 modes[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9 };
+			static const char * const names[] = {
+				"from play it goes out",
+				"and from a movie",
+				"and from a scene",
+				"and from the pause",
+				"and from a freeze, a message over the game",
+				"and from the vendor",
+				"and from mode 7",
+				"and from mode 8",
+				"and from mode 9"
+			};
+			u32 k;
+
+			for (k = 0; k < sizeof(modes) / sizeof(modes[0]); k++) {
+				poke32(SF_R2_MODE, modes[k]);
+				check(sf53_request(1, &error) == ST_OK, names[k]);
+				host_poke(d->api_load, (const u8 *)"\x00", 1);
+				pump(SAVEFILE_SETTLE_TICKS);
+			}
+		}
+		poke32(SF_R2_MODE, 0);
+		poke32(SF_R2_PENDING, 0);
+		check(sf53_request(1, &error) == ST_OK, "and with a mode change queued, which it waits for");
 		host_poke(d->api_load, (const u8 *)"\x00", 1);
 		pump(SAVEFILE_SETTLE_TICKS);
-		poke32(SF_R2_MODE, 0);
+		poke32(SF_R2_PENDING, R4_MODE_NONE);
 
 		/* A load the helper drops after the action forced fast loads puts them back. */
 		host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
@@ -10731,6 +10859,154 @@ static void test_savefile_build53(void)
 		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the helper drops it: the game would not pause");
 		mem_read_u32(R2_FP_ADDR, &v);
 		check_eq_u64(v, 0x4BFFEA69u, "and the fast loads it forced are put back");
+
+		check(quit_and_wait(), "quit");
+	}
+
+	/* ----------------------------------------------- RaC3: no save, not idle */
+
+	group("build 53: RaC3 refuses a request with no save, or no pause to go to");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC3);
+		plat_file_t f;
+		u32 i;
+
+		check(boot_and_wait("NPEA00387"), "RaC3 boots: no save manager, no buffer");
+		host_write_log_reset();
+
+		check(sf53_request(0, &error) == ST_BUSY, "a set-aside is BUSY");
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE,
+		             "for want of a save, where it used to read the buffer word through a "
+		             "save manager that was not there");
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "and so is a load with nothing set aside, which used to fill from there");
+		check_eq_u64(host_write_log_count(), 0, "neither wrote into the game");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "nor installed the helper");
+
+		poke32(SF_R3_SAVE_INFO, SF_R3_SAVE_OBJ);
+		check(sf53_request(0, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "a save manager whose buffer word is still 0 has no save either");
+		poke32(SF_R3_SAVE_OBJ + 4, SF_R3_SAVE_BUF);
+		memset(junk, 0x5A, sizeof(junk));
+		host_poke(SF_R3_SAVE_BUF, junk, sizeof(junk));
+		check(sf53_request(0, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "and a buffer that holds something else is no save");
+
+		sf_give_save(GAME_RAC3);
+		check(sf53_request(0, &error) == ST_OK, "with a save the set-aside goes out");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		/* The older pair of block sizes, RaC2's, which the restore also takes. */
+		poke32(SF_R3_SAVE_BUF, 0x1CF8u);
+		poke32(SF_R3_SAVE_BUF + 4, 0x0CD0u);
+		check(sf53_request(0, &error) == ST_OK, "and so does one of the older layout");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		poke32(SF_R3_SAVE_BUF + 4, 0x84D0u);
+		check(sf53_request(0, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "but not with RaC2's planet block, which this game's restore refuses");
+		sf_give_save(GAME_RAC3);
+
+		check(sf53_request(1, &error) == ST_OK,
+		      "a load with nothing set aside goes out: the helper fills it from that save");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 1, "as a 1, which the helper pauses the game for");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		host_poke(d->aside_addr, junk, sizeof(junk));
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "an aside buffer that holds something that is not a save is refused, not replaced");
+		sf_put_save_head(GAME_RAC3, d->aside_addr);
+
+		poke32(SF_R3_REQUEST, 1);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "a load with a planet load on its way is not idle");
+		check(sf53_request(0, &error) == ST_OK,
+		      "while a set-aside, which only copies the last save, still goes out");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		poke32(SF_R3_REQUEST, 0);
+		poke32(SF_R3_MODE, 6);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in space, the transition a planet load runs");
+		poke32(SF_R3_MODE, 0xFFFFFFFFu);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in debug, which the mode change traps leaving");
+		poke32(SF_R3_MODE, 10);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in the lobby");
+		poke32(SF_R3_MODE, 16);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in a memory card command");
+		{
+			static const u32 modes[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9 };
+			static const char * const names[] = {
+				"from play a load goes out",
+				"and from a movie",
+				"and from a scene",
+				"and from the pause",
+				"and from a freeze",
+				"and from the vendor",
+				"and from mode 7",
+				"and from mode 8",
+				"and from mode 9"
+			};
+			u32 k;
+
+			for (k = 0; k < sizeof(modes) / sizeof(modes[0]); k++) {
+				poke32(SF_R3_MODE, modes[k]);
+				check(sf53_request(1, &error) == ST_OK, names[k]);
+				host_poke(d->api_load, (const u8 *)"\x00", 1);
+				pump(SAVEFILE_SETTLE_TICKS);
+			}
+		}
+		poke32(SF_R3_MODE, 0);
+
+		/* The helper's own refusals, the two codes it leaves in the byte. */
+		check(sf53_request(1, &error) == ST_OK, "a load");
+		host_poke(d->api_load, (const u8 *)"\xFD", 1);
+		pump(2);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "the helper's 0xFD is reported as no save");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 0, "and the byte is put back to 0");
+		check(sf53_request(1, &error) == ST_OK, "another load");
+		host_poke(d->api_load, (const u8 *)"\xFE", 1);
+		pump(2);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE,
+		             "and 0xFE, no pause within the helper's wait, as not idle");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(pend, 0, "with nothing left outstanding");
+
+		/* The library asks the same questions. */
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00387"), "RaC3 boots again with no save");
+		check(savefile_category(SAVEFILE_CATEGORY_CREATE, "b53") == ST_OK, "a category");
+		check(savefile_store("b53", "none.sav") == ST_BUSY, "a STORE is BUSY");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "for want of a save");
+		check(plat_file_open(SAVE_ROOT_R3 "/b53/junk.sav", PLAT_OPEN_WRITE, &f) == 0, "a junk file");
+		memset(g_pattern, 0x5A, sizeof(g_pattern));
+		for (i = 0; i < d->aside_size; i += sizeof(g_pattern)) plat_file_write(f, g_pattern, sizeof(g_pattern));
+		plat_file_close(f);
+		poke32(SF_R3_MODE, 6);
+		check(savefile_restore("b53", "junk.sav") == ST_BUSY, "restoring it in space is BUSY");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the game not idle, checked before the copy");
+		poke32(SF_R3_MODE, 0);
+		check(savefile_restore("b53", "junk.sav") == ST_OK, "in play the RESTORE is accepted");
+		check(pump_until_transfer_done(64), "and the copy runs to its end");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "and then it stops: the file is not a save");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 0, "so no load was raised at the game");
+		plat_file_unlink(SAVE_ROOT_R3 "/b53/junk.sav");
+		plat_file_unlink(SAVE_ROOT_R3 "/b53/junk.sav.sum");
+		check(savefile_category(SAVEFILE_CATEGORY_DELETE, "b53") == ST_OK, "the category goes");
 
 		check(quit_and_wait(), "quit");
 	}

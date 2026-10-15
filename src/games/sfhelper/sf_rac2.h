@@ -79,8 +79,9 @@
 
 /*
  * Build 53, as in Deadlocked: SF_PAUSE_FRAME holds the game's mode timer as the
- * helper read it in the call that asked for the pause, and SF_PAUSE_WAIT counts
- * the calls a load has waited for it, 0 while none waits.
+ * helper read it in the call whose request for the pause the game took, and
+ * SF_PAUSE_WAIT counts the calls a load has waited for the pause, 0 while none
+ * waits.
  */
 #define SF_PAUSE_WAIT     0x01317730
 #define SF_PAUSE_FRAME    0x01317734
@@ -118,38 +119,67 @@
 #define SF_SAVE_HEAD_PLANET_OLD 0x00000CD0
 
 /*
- * Build 53: the game's modes, the scheme Deadlocked inherited. gameMode is what
- * the gameplay loop dispatches on (0xB4D1B0): 0 ordinary play, 1 a movie, 2 a
- * scene, 3 the pause, 4 a menu, and so on. A change is asked for with
- * mode_requestChange (0xB8BF48: mode, 1 to push it, the screen, 0, 0), which
- * answers 0 when it took it and refuses while another change is queued, when
- * the mode is blocked or the player has no health; the change is made at the
- * end of the frame (0xB8C320, called at 0xB4DAC0), which puts the mode timer
- * back to 0 when the mode changed. The Start button asks for mode 3, screen 1
- * (0xBF619C). pendingGameMode is -2 when nothing is queued.
+ * The game's modes, the scheme Deadlocked inherited, whose gameMode_t names
+ * them. gameMode is what the gameplay loop dispatches on (0xB4D1B0), and every
+ * mode's frame runs its update, its render and then the pad routine, and so
+ * this helper, last:
+ *
+ *   0  ordinary play  update 0xBF5DB0, render 0xB101D8 (the world, 0xB0F908);
+ *                     -1, debug, runs the same, and the mode change traps on
+ *                     leaving it (0xB8C39C), so the helper never asks there
+ *   1  movie          0xBF849C
+ *   2  scene          0xBF77A8, 0xB10208 (the world)
+ *   3  pause          the pause menu: 0xBB93D0, 0xB105E4 (0xBBA610)
+ *   4  freeze         a message over a stopped game: 0xB23568 runs the message
+ *                     and 0xB10240 draws it, over the world (0xB0F908) unless
+ *                     it came up over the pause (0xB222EC); over the vendor it
+ *                     runs the vendor's two instead
+ *   5  vendor         0xBFEB38, 0xC04DB8
+ *   6  space          the ship between planets, 0xBE7400 and 0xBE9308, which
+ *                     never calls the pad routine
+ *   7..9              0xBF66D0/0xB10338, 0xC1108C/0xC10F70, 0xB3D960/0xB3D984
+ *
+ * and anything else is a trap (0xB4D448). Freeze does not update the world but
+ * draws it, so it would not stop the render that crashed RaC1; the pause alone
+ * runs neither the world's update nor its render, nor anything that reaches
+ * them, and the helper loads from the pause.
+ *
+ * It does not write gameMode itself. The pause's update and render run the
+ * pause menu, which is set up by the mode change (0xB8C320, at the end of the
+ * frame: the leaving mode's exit routine - a movie's 0xBF8304, a scene's
+ * 0xBF6D38, the vendor's 0xBFB9D8 - then the pause's own entry 0xBB70E0 with
+ * the screen asked for), and a gameMode written over another mode would run
+ * that menu from whatever it was left at, and leave the movie or the scene it
+ * replaced half torn down. So the helper asks mode_requestChange (0xB8BF48:
+ * mode, 1 to push it, the screen, 0, 0) for the pause, as the Start button does
+ * (mode 3, screen 1, 0xBF619C), from any mode the helper runs in, without the
+ * Start button's own tests (0xBF6134: eight frames of ordinary play, player
+ * state 111 and so on). mode_requestChange answers 0 when it took the change
+ * and refuses while another change is queued, with eight modes pushed, while
+ * the game blocks the pause (0x156B058[3]) or while the player has no health;
+ * the helper asks again on its next call. The change puts the mode timer back
+ * to 0 when it is made. pendingGameMode is -2 when nothing is queued.
+ *
+ * Leaving for a planet load resets the mode stack to the mode being left
+ * (0xB4DBD8) and the new planet starts in ordinary play (0xB4CA84), so the
+ * pause ends with the load.
  *
  * The current planet is -1 on the title screen (set at 0x11648) and from the
  * planet's number once one has loaded. The load request word is set by the
  * game's loader (perform_load sets it itself, 0x83478) and the gameplay loop
  * leaves for the load at the end of the frame that finds it set.
- *
- * Player state 111 is one the Start button will not pause in (0xBF613C).
  */
 #define SF_GAME_MODE         0x0156B064
 #define SF_PENDING_GAME_MODE 0x01329F90
 #define SF_MODE_TIMER        0x0156B06C
 #define SF_LOAD_REQUEST      0x0156B050
 #define SF_CURRENT_PLANET    0x01329A3C
-#define SF_PLAYER_STATE      0x01481474
 
-#define SF_MODE_NORMAL    0x00000000
 #define SF_MODE_PAUSE     0x00000003
+#define SF_MODE_SPACE     0x00000006
+#define SF_MODE_LAST      0x00000009
 #define SF_MODE_NONE      0xFFFFFFFE
 #define SF_PAUSE_SCREEN   1
-#define SF_PLAYER_NO_PAUSE 111
-
-/* The Start button's own minimum, frames in ordinary play (0xBF6134). */
-#define SF_MODE_FRAMES_MIN 8
 
 /* ---------------------------------------------------------- game functions */
 
