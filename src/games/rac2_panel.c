@@ -12,6 +12,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/savefile.h"
+#include "sfhelper_bins.h"
 
 #include <string.h>
 
@@ -615,8 +616,18 @@ int rac2_die(void)
  */
 int rac2_load_setaside(void)
 {
-	int rc = savefile_install();
+	/*
+	 * Build 53. A load the game will not take is refused before anything is
+	 * done for it - the install, and above all the fast loads forced on below:
+	 * nothing would put those back until the next load the player makes, which
+	 * would then be fast without the checkbox. One the helper drops later, on
+	 * the game's own frame, is caught by rac2_on_tick.
+	 */
+	int rc = savefile_load_ready();
 
+	if (rc != ST_OK) return rc;
+
+	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
 	rc = rac2_fastload_force();
@@ -624,6 +635,78 @@ int rac2_load_setaside(void)
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	return savefile_load_aside();
+}
+
+/*
+ * Build 53. Whether a save starts at `addr`: the two block sizes the game's
+ * restore accepts at its head. 1 yes, 0 no, -1 when the read failed.
+ */
+static int rac2_is_save(u32 addr)
+{
+	u8 head[8];
+	u32 global, planet;
+
+	if (mem_read(addr, head, sizeof(head)) != ST_OK) return -1;
+	global = be32_get(head);
+	planet = be32_get(head + 4);
+	if (global != RAC2_SAVE_HEAD_GLOBAL && global != RAC2_SAVE_HEAD_GLOBAL_OLD) return 0;
+	return planet == RAC2_SAVE_HEAD_PLANET || planet == RAC2_SAVE_HEAD_PLANET_OLD;
+}
+
+/*
+ * Build 53, the savefile_ready seam: the helper's own tests, made on the tick
+ * before a request goes out, so the client hears why at once.
+ *
+ * A set-aside needs the game's save buffer and a save in it, which is how this
+ * game crashed before: until the game has saved or loaded once in this process
+ * there is no buffer at all, and the helper copied two megabytes from address
+ * 0. A load needs a planet under it, no planet load on its way, ordinary play
+ * or the pause with no mode change queued - the helper pauses first - and a
+ * save to hand over: the aside buffer, or the game's own when the aside buffer
+ * is empty. A RESTORE needs the game state alone; its file is asked about as a
+ * load once it is in the aside buffer.
+ *
+ * A read that fails answers "not idle", as Deadlocked's does.
+ */
+u8 rac2_savefile_ready(u8 what)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+	u32 info = 0;
+	u32 buf = 0;
+
+	if (d == NULL) return SAVEFILE_ERR_NONE;
+
+	if (what != GAME_SF_SET_ASIDE) {
+		u32 planet = 0, request = 0, mode = 0, pending = 0, first = 0;
+
+		if (mem_read_u32(RAC2_CURRENT_PLANET, &planet) != ST_OK ||
+		    mem_read_u32(RAC2_LOAD_PLANET, &request) != ST_OK ||
+		    mem_read_u32(RAC2_GAME_MODE, &mode) != ST_OK ||
+		    mem_read_u32(RAC2_PENDING_GAME_MODE, &pending) != ST_OK)
+			return SAVEFILE_ERR_NOT_IDLE;
+		if ((planet & 0x80000000u) != 0 || request != 0) return SAVEFILE_ERR_NOT_IDLE;
+		if (mode != RAC2_GAME_MODE_NORMAL && mode != RAC2_GAME_MODE_PAUSE) return SAVEFILE_ERR_NOT_IDLE;
+		if (pending != RAC2_GAME_MODE_NONE) return SAVEFILE_ERR_NOT_IDLE;
+		if (what == GAME_SF_RESTORE) return SAVEFILE_ERR_NONE;
+
+		if (mem_read_u32(d->aside_addr, &first) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+		if (first != 0) {
+			int save = rac2_is_save(d->aside_addr);
+			if (save < 0) return SAVEFILE_ERR_NOT_IDLE;
+			return save ? SAVEFILE_ERR_NONE : SAVEFILE_ERR_NO_SAVE;
+		}
+	}
+
+	if (mem_read_u32(RAC2_SAVEDATA_INFO, &info) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (info == 0) return SAVEFILE_ERR_NO_SAVE;
+	if (mem_read_u32(info + RAC2_SAVEDATA_FIELD, &buf) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (buf == 0) return SAVEFILE_ERR_NO_SAVE;
+
+	switch (rac2_is_save(buf)) {
+	case 1:  return SAVEFILE_ERR_NONE;
+	case 0:  return SAVEFILE_ERR_NO_SAVE;
+	default: return SAVEFILE_ERR_NOT_IDLE;
+	}
 }
 
 /* -------------------------------------------------------------- the setups */

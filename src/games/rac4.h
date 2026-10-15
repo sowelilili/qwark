@@ -388,7 +388,7 @@ int rac4_trigger(u8 id);
 int rac4_set_value(u8 id, u32 value);
 int rac4_get_options(u8 id, const char * const **options, u8 *count);
 int rac4_load_setaside(void);
-int rac4_savefile_ready(void);
+u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 
 int rac4_planet_load(u8 planet, u8 flags);

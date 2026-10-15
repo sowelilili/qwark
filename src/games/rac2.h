@@ -194,6 +194,33 @@
  */
 #define RAC2_SF_HELPER         0x1317728u
 
+/*
+ * Build 53: what the savefile's readiness test reads (rac2_savefile_ready).
+ *
+ * The save manager is the block RAC2_SAVEDATA_INFO points at, and its save
+ * buffer is the word at +4 - 0 until the game's first save or load through the
+ * save-data utility in this process, which on a new game is the first
+ * autosave. A save starts with the sizes of its global block and of one
+ * planet's block; the restore (0x81070) takes those or the older pair beside
+ * them and nothing else.
+ *
+ * A load goes from ordinary play, which the helper pauses first, or from the
+ * pause (RAC2_GAME_MODE 0 or 3) with no mode change queued
+ * (RAC2_PENDING_GAME_MODE -2), on a planet (RAC2_CURRENT_PLANET is -1 on the
+ * title screen) and with no planet load already on its way.
+ */
+#define RAC2_SAVEDATA_INFO          0x1410E50u
+#define RAC2_SAVEDATA_FIELD         4u
+#define RAC2_SAVE_HEAD_GLOBAL       0x1D08u
+#define RAC2_SAVE_HEAD_GLOBAL_OLD   0x1CF8u
+#define RAC2_SAVE_HEAD_PLANET       0x84D0u
+#define RAC2_SAVE_HEAD_PLANET_OLD   0x0CD0u
+#define RAC2_GAME_MODE              0x156B064u
+#define RAC2_PENDING_GAME_MODE      0x1329F90u
+#define RAC2_GAME_MODE_NORMAL       0u
+#define RAC2_GAME_MODE_PAUSE        3u
+#define RAC2_GAME_MODE_NONE         0xFFFFFFFEu
+
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
 
@@ -367,6 +394,7 @@ extern const u8 rac2_fp_switch[4];
 int rac2_trigger(u8 id);
 int rac2_set_value(u8 id, u32 value);
 int rac2_load_setaside(void);
+u8  rac2_savefile_ready(u8 what);
 int rac2_die(void);
 
 int rac2_planet_load(u8 planet, u8 flags);

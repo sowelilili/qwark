@@ -67,6 +67,19 @@ typedef unsigned int       sf_u32;
  */
 #define SF_API_REFUSED 0xFE
 
+/*
+ * Build 53, RaC1 and RaC2. The other reason a request is dropped: there is no
+ * save to act on. A set-aside found the game's save buffer missing or holding
+ * something that is not a save, which is how either game starts until it has
+ * saved or loaded once; a load found the aside buffer holding something that is
+ * not a save, or nothing at all and no save in the game to fill it from. Up to
+ * build 52 the first copied from wherever the pointer pointed - address 0 in
+ * RaC2 - and the second handed the loader whatever was there. qwark reports
+ * SAVEFILE_ERR_NO_SAVE. SAVEFILE_HELPER_NO_SAVE in src/core/savefile.h is the
+ * same number.
+ */
+#define SF_API_NO_SAVE 0xFD
+
 /* The game's own memcpy, in every game. */
 void sf_memcpy(void *dst, const void *src, int len);
 
@@ -81,6 +94,14 @@ void sf_perform_load(int unk, void *buf);
 #if SF_GAME == SF_RAC1
 /* RaC1's save, load and autosave menus, which the Force autosave action drives. */
 void sf_save_handler(int mode);
+
+/* Build 53: the start menu's opener, which the Start button calls with 0. */
+void sf_open_pause(int screen);
+#endif
+
+#if SF_GAME == SF_RAC2
+/* Build 53: mode_requestChange. 0 when the change was taken. */
+int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
 #endif
 
 #endif /* QWARK_SFHELPER_H */

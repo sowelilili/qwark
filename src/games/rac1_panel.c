@@ -12,6 +12,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/savefile.h"
+#include "sfhelper_bins.h"
 
 #include <string.h>
 
@@ -473,6 +474,74 @@ int rac1_planet_load(u8 planet, u8 flags)
 int rac1_load_setaside(void)
 {
 	return savefile_load_aside();
+}
+
+/*
+ * Build 53. Whether a save starts at `addr`: the two block sizes at its head
+ * that every save of this executable has and the game's restore insists on, and
+ * a planet the game has. 1 yes, 0 no, -1 when the read failed.
+ */
+static int rac1_is_save(u32 addr)
+{
+	u8 head[RAC1_SAVE_PLANET_OFFSET + 4];
+
+	if (mem_read(addr, head, sizeof(head)) != ST_OK) return -1;
+	if (be32_get(head) != RAC1_SAVE_HEAD_GLOBAL) return 0;
+	if (be32_get(head + 4) != RAC1_SAVE_HEAD_PLANET) return 0;
+	return be32_get(head + RAC1_SAVE_PLANET_OFFSET) < RAC1_PLANET_COUNT;
+}
+
+/*
+ * Build 53, the savefile_ready seam: the test the helper makes on the frame it
+ * acts, made on the tick before the request goes out, so the client hears why
+ * at the moment the user pressed the button.
+ *
+ * A set-aside needs a save in the game's save buffer, which there is not until
+ * the game has saved in this process: a new game has none until its first
+ * autosave, and Force autosave makes one. A load needs the game in ordinary
+ * play or in the start menu with no planet load on its way - the helper puts it
+ * in the start menu first - and a save to hand over: the aside buffer, or, when
+ * nothing has been put there, the game's own save. A RESTORE needs only the
+ * first of those: its file fills the aside buffer, and the load it raises after
+ * the copy is asked about as a load.
+ *
+ * A read that fails answers "not idle", as Deadlocked's does.
+ */
+u8 rac1_savefile_ready(u8 what)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+	u32 base = 0;
+
+	if (d == NULL) return SAVEFILE_ERR_NONE;
+
+	if (what != GAME_SF_SET_ASIDE) {
+		u32 state = 0;
+		u32 request = 0;
+		u32 first = 0;
+
+		if (mem_read_u32(RAC1_GAME_STATE, &state) != ST_OK ||
+		    mem_read_u32(RAC1_LOAD_PLANET, &request) != ST_OK)
+			return SAVEFILE_ERR_NOT_IDLE;
+		if (state != RAC1_STATE_PLAY && state != RAC1_STATE_PAUSE) return SAVEFILE_ERR_NOT_IDLE;
+		if (request != 0) return SAVEFILE_ERR_NOT_IDLE;
+		if (what == GAME_SF_RESTORE) return SAVEFILE_ERR_NONE;
+
+		if (mem_read_u32(d->aside_addr, &first) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+		if (first != 0) {
+			int save = rac1_is_save(d->aside_addr);
+			if (save < 0) return SAVEFILE_ERR_NOT_IDLE;
+			return save ? SAVEFILE_ERR_NONE : SAVEFILE_ERR_NO_SAVE;
+		}
+	}
+
+	if (mem_read_u32(RAC1_SAVEDATA_PTR, &base) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (base == 0) return SAVEFILE_ERR_NO_SAVE;
+
+	switch (rac1_is_save(base + RAC1_SAVEDATA_BIAS)) {
+	case 1:  return SAVEFILE_ERR_NONE;
+	case 0:  return SAVEFILE_ERR_NO_SAVE;
+	default: return SAVEFILE_ERR_NOT_IDLE;
+	}
 }
 
 /*

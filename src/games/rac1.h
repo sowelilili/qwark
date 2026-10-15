@@ -106,14 +106,37 @@
 
 /*
  * The savefile helper's request bytes. qwark embeds the helper and installs it
- * on the first request of a session (src/core/savefile.c), so 0xB00070 reads 1
- * as soon as the game has reached the hook once. The set-aside and load bytes
- * beside it are driven through the shared table in src/games/sfhelper_bins.c;
- * the two named here are the ones this game reads for itself - the helper byte
- * feeds the readout, and 0xB00073 is RaC1's alone.
+ * on the first request of a session (src/core/savefile.c), so the helper byte
+ * reads 1 as soon as the game has reached the hook once. The set-aside and load
+ * bytes beside it are driven through the shared table in
+ * src/games/sfhelper_bins.c; the two named here are the ones this game reads for
+ * itself - the helper byte feeds the readout, and the autosave byte is RaC1's
+ * alone.
+ *
+ * Build 53: they were the mod's 0xB00070 and 0xB00073, inside the game's bump
+ * arena; src/games/sfhelper/sf_rac1.h has the move.
  */
-#define RAC1_SAVEFILE_HELPER  0xB00070u
-#define RAC1_SAVEFILE_AUTO    0xB00073u   /* write 3, not 1: the autosave mode */
+#define RAC1_SAVEFILE_HELPER  0x1080000u
+#define RAC1_SAVEFILE_AUTO    0x1080003u  /* write 3, not 1: the autosave mode */
+
+/*
+ * Build 53: what the savefile's readiness test reads (rac1_savefile_ready). The
+ * game's save buffer is *RAC1_SAVEDATA_PTR + RAC1_SAVEDATA_BIAS, and it holds a
+ * save only once the game has saved: the serialiser (0xE7984) writes the two
+ * block sizes below at its head, and the restore (0xE6FE4) takes nothing else.
+ * The planet the save was made on is the word at RAC1_SAVE_PLANET_OFFSET, one of
+ * RAC1_PLANET_COUNT. A load is only asked for in ordinary play, which the helper
+ * pauses first, or in the start menu (RAC1_GAME_STATE 0 or 3), with no planet
+ * load already on its way.
+ */
+#define RAC1_SAVEDATA_PTR       0xA10928u
+#define RAC1_SAVEDATA_BIAS      0x100000u
+#define RAC1_SAVE_HEAD_GLOBAL   0x153Cu
+#define RAC1_SAVE_HEAD_PLANET   0x82A4u
+#define RAC1_SAVE_PLANET_OFFSET 0x18u
+#define RAC1_PLANET_COUNT       20u
+#define RAC1_STATE_PLAY         0u
+#define RAC1_STATE_PAUSE        3u
 
 /* Bits of RAC1_DEBUG_UPDATE, from rac1.cs SetDebugOption. */
 #define RAC1_DBG_RATCHET   0x1u
@@ -217,6 +240,7 @@ int rac1_trigger(u8 id);
 int rac1_set_value(u8 id, u32 value);
 int rac1_get_options(u8 id, const char * const **options, u8 *count);
 int rac1_load_setaside(void);
+u8  rac1_savefile_ready(u8 what);
 
 int rac1_planet_load(u8 planet, u8 flags);
 

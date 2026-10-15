@@ -1620,7 +1620,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 52, "and this module is build 52");
+	check_eq_u64(packet[5], 53, "and this module is build 53");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -2149,10 +2149,123 @@ static void test_planet_load(void)
 
 /* ------------------------------------------- RaC1: the savefile requests */
 
-#define A_HELPER   0xB00070u
-#define A_SF_LOAD  0xB00071u
-#define A_SF_ASIDE 0xB00072u
-#define A_SF_AUTO  0xB00073u
+/*
+ * Build 43. Deadlocked's two mode words, the ones its `savefile_ready` reads:
+ * gameMode (0 ordinary play, 3 the pause, anything else a transition, a menu or
+ * a lobby) and pendingGameMode (-2 when no mode change is queued).
+ *
+ * A fresh fake process is all zeroes, which reads as gameMode 0 and
+ * pendingGameMode 0 - a mode change queued - so Deadlocked is *not* idle when a
+ * test boots it. Every test that wants a request to go out says so first.
+ */
+#define R4_MODE_ADDR         0x00B3C5A0u
+#define R4_PENDING_MODE_ADDR 0x009C37F4u
+#define R4_MODE_NONE         0xFFFFFFFEu
+
+static void rac4_modes(u32 mode, u32 pending)
+{
+	u8 raw[4];
+
+	be32_put(raw, mode);
+	host_poke(R4_MODE_ADDR, raw, 4);
+	be32_put(raw, pending);
+	host_poke(R4_PENDING_MODE_ADDR, raw, 4);
+}
+
+/*
+ * Build 53. RaC1 and RaC2 answer `savefile_ready` too. A set-aside needs a save
+ * in the game's save buffer and a load needs one to hand over, and a fresh fake
+ * process has none: RaC1's save pointer and RaC2's save manager read 0, as they
+ * do on a console until the game has saved or loaded once. RaC2's load also
+ * wants pendingGameMode at -2, which an all-zero process does not have.
+ *
+ * The tests put a save where the game would: RaC1's buffer is the pointer at
+ * 0xA10928 plus 0x100000, RaC2's the word at +4 of the block 0x1410E50 points
+ * at, and a save is recognised by its head, the two block sizes the game's
+ * restore insists on (and, in RaC1, a planet number below 20 at +0x18).
+ */
+#define SF_R1_STATE     0x00A10708u
+#define SF_R1_REQUEST   0x00A10700u
+#define SF_R1_SAVE_PTR  0x00A10928u
+#define SF_R1_SAVE_BASE 0x00D00000u
+#define SF_R1_SAVE_BUF  0x00E00000u   /* SF_R1_SAVE_BASE + 0x100000 */
+#define SF_R2_SAVE_INFO 0x01410E50u
+#define SF_R2_SAVE_OBJ  0x01A00000u
+#define SF_R2_SAVE_BUF  0x01A10000u
+#define SF_R2_MODE      0x0156B064u
+#define SF_R2_PENDING   0x01329F90u
+#define SF_R2_PLANET    0x01329A3Cu
+#define SF_R2_REQUEST   0x0156B050u
+
+static void poke32(u32 addr, u32 value)
+{
+	u8 raw[4];
+
+	be32_put(raw, value);
+	host_poke(addr, raw, 4);
+}
+
+/* The head of a save of the game at `addr`; nothing for RaC3 and Deadlocked. */
+static void sf_put_save_head(u8 game_id, u32 addr)
+{
+	u8 head[0x1C];
+
+	memset(head, 0, sizeof(head));
+	if (game_id == GAME_RAC1) {
+		be32_put(head, 0x153Cu);
+		be32_put(head + 4, 0x82A4u);
+		be32_put(head + 0x18, 3);
+	} else if (game_id == GAME_RAC2) {
+		be32_put(head, 0x1D08u);
+		be32_put(head + 4, 0x84D0u);
+	} else {
+		return;
+	}
+	host_poke(addr, head, sizeof(head));
+}
+
+/* A save in the game's own save buffer, where its set-aside copies from. */
+static void sf_give_save(u8 game_id)
+{
+	if (game_id == GAME_RAC1) {
+		poke32(SF_R1_SAVE_PTR, SF_R1_SAVE_BASE);
+		sf_put_save_head(GAME_RAC1, SF_R1_SAVE_BUF);
+	} else if (game_id == GAME_RAC2) {
+		poke32(SF_R2_SAVE_INFO, SF_R2_SAVE_OBJ);
+		poke32(SF_R2_SAVE_OBJ + 4, SF_R2_SAVE_BUF);
+		sf_put_save_head(GAME_RAC2, SF_R2_SAVE_BUF);
+	}
+}
+
+/*
+ * The state a request may go out in, for the games that have a notion of one:
+ * Deadlocked in ordinary play with nothing queued; RaC1 and RaC2 the same, with
+ * a save of their own to set aside or load (build 53).
+ */
+static void savefile_make_idle(u8 game_id)
+{
+	if (game_id == GAME_RAC4) rac4_modes(0, R4_MODE_NONE);
+	if (game_id == GAME_RAC1) {
+		poke32(SF_R1_STATE, 0);
+		poke32(SF_R1_REQUEST, 0);
+	}
+	if (game_id == GAME_RAC2) {
+		u8 planet[4];
+
+		poke32(SF_R2_MODE, 0);
+		poke32(SF_R2_PENDING, R4_MODE_NONE);
+		poke32(SF_R2_REQUEST, 0);
+		host_peek(SF_R2_PLANET, planet, 4);
+		if ((planet[0] & 0x80) != 0) poke32(SF_R2_PLANET, 0);
+	}
+	sf_give_save(game_id);
+}
+
+/* Build 53: the request bytes moved out of the game's bump arena. */
+#define A_HELPER   0x01080000u
+#define A_SF_LOAD  0x01080001u
+#define A_SF_ASIDE 0x01080002u
+#define A_SF_AUTO  0x01080003u
 
 /*
  * Protocol 1.9. Nobody loads a mod for the helper any more: the first action needing it in
@@ -2166,6 +2279,7 @@ static void test_savefile_requests(void)
 	group("RaC1 savefile requests");
 
 	host_poke(A_HELPER, (const u8 *)"\x00\x00\x00\x00", 4);
+	savefile_make_idle(GAME_RAC1);
 
 	check(features_trigger(18) == ST_OK,
 	      "load set-aside file works with nothing loaded first");
@@ -2380,35 +2494,6 @@ static void test_savefile_flags(void)
 /* ------------------------------------- protocol 1.9, the savefile helper */
 
 /*
- * Build 43. Deadlocked's two mode words, the ones its `savefile_ready` reads:
- * gameMode (0 ordinary play, 3 the pause, anything else a transition, a menu or
- * a lobby) and pendingGameMode (-2 when no mode change is queued).
- *
- * A fresh fake process is all zeroes, which reads as gameMode 0 and
- * pendingGameMode 0 - a mode change queued - so Deadlocked is *not* idle when a
- * test boots it. Every test that wants a request to go out says so first.
- */
-#define R4_MODE_ADDR         0x00B3C5A0u
-#define R4_PENDING_MODE_ADDR 0x009C37F4u
-#define R4_MODE_NONE         0xFFFFFFFEu
-
-static void rac4_modes(u32 mode, u32 pending)
-{
-	u8 raw[4];
-
-	be32_put(raw, mode);
-	host_poke(R4_MODE_ADDR, raw, 4);
-	be32_put(raw, pending);
-	host_poke(R4_PENDING_MODE_ADDR, raw, 4);
-}
-
-/* The idle state, for the games that have a notion of one. */
-static void savefile_make_idle(u8 game_id)
-{
-	if (game_id == GAME_RAC4) rac4_modes(0, R4_MODE_NONE);
-}
-
-/*
  * What can and cannot be checked here.
  *
  * The helper is PowerPC code that runs inside the game, and the fake console
@@ -2529,6 +2614,11 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	savefile_info(&supported, &installed, &running, &pending, &size);
 	check_eq_u64(pending, 0, "and the new window is what clears the bit");
 
+	/*
+	 * Build 53: RaC1 and RaC2 load only a save of their own, and the aside
+	 * buffer still holds the "test" written above, so a save's head goes in.
+	 */
+	sf_put_save_head(game_id, d->aside_addr);
 	check(savefile_load_aside() == ST_OK, "the load request goes out");
 	host_peek(d->api_load, &b, 1);
 	check_eq_u64(b, 1, "as a 1 in the load byte");
@@ -2647,6 +2737,7 @@ static void test_savefile_helper(void)
 		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
 		check(be32_get(word) != sf_desc_for_game(GAME_RAC1)->hooks[0].value,
 		      "the fresh process has no hook word in it");
+		savefile_make_idle(GAME_RAC1);
 		check(savefile_load_aside() == ST_OK, "a cold load action installs it again");
 		host_peek(sf_desc_for_game(GAME_RAC1)->hooks[0].addr, word, 4);
 		check_eq_u64(be32_get(word), sf_desc_for_game(GAME_RAC1)->hooks[0].value,
@@ -2679,6 +2770,16 @@ static u32 fill_aside(const struct sf_desc *d, u8 seed)
 
 		if (n > sizeof(g_pattern)) n = sizeof(g_pattern);
 		for (i = 0; i < n; i++) g_pattern[i] = (u8)((off + i) * 7u + seed);
+
+		/*
+		 * Build 53: in front, the head of a save of the game, which RaC1 and
+		 * RaC2 want to see before a load raised over the buffer goes out.
+		 */
+		if (off == 0) {
+			host_poke(d->aside_addr, g_pattern, n);
+			sf_put_save_head(d->game_id, d->aside_addr);
+			host_peek(d->aside_addr, g_pattern, n);
+		}
 
 		host_poke(d->aside_addr + off, g_pattern, n);
 		crc = qcrc32_update(crc, g_pattern, n);
@@ -2746,6 +2847,7 @@ static void test_savefile_library(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00385"), "RaC1 reaches INGAME");
 	if (d == NULL) { check(0, "RaC1 has a helper table entry"); return; }
+	savefile_make_idle(GAME_RAC1);
 	host_write_log_reset();
 
 	/* ------------------------------------------------------- categories */
@@ -2920,6 +3022,7 @@ static void test_savefile_library(void)
 	      "and the half-written file was not left behind");
 
 	check(boot_and_wait("NPEA00385"), "RaC1 comes back");
+	savefile_make_idle(GAME_RAC1);
 	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
 	host_poke(d->api_load, (const u8 *)"\x00", 1);
 
@@ -3218,19 +3321,20 @@ static void test_savefile_not_idle(void)
 	/* -------------------------------------------------- the other games */
 
 	/*
-	 * A game whose vtable has no savefile_ready is always ready, so the three
-	 * that have not been looked at answer exactly as they did before build 43.
+	 * A game whose vtable has no savefile_ready is always ready, so the one
+	 * that has not been looked at answers exactly as it did before build 43.
+	 * Build 53 looked at RaC1 and RaC2 (test_savefile_no_save).
 	 */
 	check(quit_and_wait(), "Deadlocked goes away");
-	check(boot_and_wait("NPEA00385"), "RaC1 comes up");
+	check(boot_and_wait("NPEA00387"), "RaC3 comes up");
 	check(savefile_set_aside() == ST_OK,
-	      "RaC1 has no idle test, so a set-aside goes straight out");
-	host_poke(sf_desc_for_game(GAME_RAC1)->api_setaside, (const u8 *)"\x00", 1);
+	      "RaC3 has no idle test, so a set-aside goes straight out");
+	host_poke(sf_desc_for_game(GAME_RAC3)->api_setaside, (const u8 *)"\x00", 1);
 	pump(SAVEFILE_SETTLE_TICKS);
 
 	/* ------------------------------------------------------------ tidy up */
 
-	check(quit_and_wait(), "RaC1 goes away");
+	check(quit_and_wait(), "RaC3 goes away");
 	check(boot_and_wait("NPEA00423"), "Deadlocked comes back to clean up after itself");
 	plat_file_unlink(SAVE_ROOT_R4 "/dl/good.sav");
 	plat_file_unlink(SAVE_ROOT_R4 "/dl/good.sav.sum");
@@ -4105,6 +4209,7 @@ static void test_rac2(void)
 	group("RaC2: savefile requests");
 
 	host_poke(R2_SF_HELPER, (const u8 *)"\x00\x00\x00", 3);
+	savefile_make_idle(GAME_RAC2);
 	check(features_trigger(F2_SET_ASIDE) == ST_OK,
 	      "set aside works from a cold process: the helper goes in first");
 	host_peek(R2_SF_SET_ASIDE, &b, 1);
@@ -5502,7 +5607,7 @@ static void test_fingerprint(void)
 
 static void poke8(u32 addr, u8 v)   { host_poke(addr, &v, 1); }
 static void poke16(u32 addr, u16 v) { u8 b[2]; be16_put(b, v); host_poke(addr, b, 2); }
-static void poke32(u32 addr, u32 v) { u8 b[4]; be32_put(b, v); host_poke(addr, b, 4); }
+/* poke32 is defined with the savefile tests, further up. */
 static void pokef32(u32 addr, f32 v) { u8 b[4]; bef32_put(b, v); host_poke(addr, b, 4); }
 
 struct as_event {
@@ -6837,7 +6942,7 @@ static const struct sf_test_game g_sf_games[] = {
 #define SF_NO_FLIP 0xFFFFFFFFu
 
 /* RaC1's fourth request byte, the one Force autosave (feature 20) drives. */
-#define SF_RAC1_SAVEMODE 0x00B00073u
+#define SF_RAC1_SAVEMODE 0x01080003u
 #define F_FORCE_AUTOSAVE_ID 20
 
 /* A SAVEFILE_PATCH reply, and a second one to compare it against. */
@@ -7093,6 +7198,7 @@ static void sf_rpcs3_one_game(const struct sf_test_game *g)
 	      "the save comes back out of the aside buffer");
 
 	check(savefile_write(0, pattern, sizeof(pattern)) == ST_OK, "SAVEFILE_WRITE works");
+	sf_put_save_head(g->game_id, d->aside_addr);   /* build 53: RaC1 and RaC2 load a save */
 	check(features_trigger(g->load_aside_id) == ST_OK, "the LOAD_ASIDE action fires");
 	host_peek(d->api_load, &b, 1);
 	check_eq_u64(b, 1, "and raises the load byte");
@@ -7130,7 +7236,7 @@ static void test_savefile_rpcs3(void)
 		      "SAVEFILE_PATCH answers on a console too");
 		sf_check_patch_words(d, g_sf_patch, len);
 		if (g_sf_games[i].game_id == GAME_RAC4)
-			check_eq_u64(len, 2132, "Deadlocked's, the largest, is 2132 bytes");
+			check_eq_u64(len, 2132, "Deadlocked's is 2132 bytes");
 		check_eq_u64(host_mem_reads() - reads, 0, "it reads nothing out of the game");
 		check_eq_u64(host_write_log_count(), 0, "and writes nothing into it");
 		stamps[i] = be32_get(g_sf_patch + 4);
@@ -7178,6 +7284,7 @@ static void test_savefile_rpcs3(void)
 
 		savefile_info(&sup, &ins, &run, &pend, &size);
 		check_eq_u64(ins, 0, "a console does not look: nothing is installed until an action");
+		savefile_make_idle(GAME_RAC1);
 		host_poke(d->api_mod, (const u8 *)"\x01", 1);
 		host_write_log_reset();
 		check(savefile_set_aside() == ST_OK, "the set-aside installs it");
@@ -7230,6 +7337,7 @@ static void test_savefile_rpcs3(void)
 		check(quit_and_wait(), "quit");
 		check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP),
 		      "RaC1 boots with all of it");
+		savefile_make_idle(GAME_RAC1);
 		savefile_info(&sup, &ins, &run, &pend, &size);
 		check_eq_u64(ins, 1, "which is");
 
@@ -7299,6 +7407,7 @@ static void test_savefile_rpcs3(void)
 		check(quit_and_wait(), "quit");
 		check(sf_boot_seeded("NPEA00386", d, g_sf_rac2_load_bytes, g_sf_patch2, len2, 1),
 		      "RaC2 boots with the whole patch over the same bytes");
+		savefile_make_idle(GAME_RAC2);
 		host_peek(d->api_mod, &mod, 1);
 		host_peek(d->api_load, &load, 1);
 		host_peek(d->api_setaside, &aside, 1);
@@ -7351,6 +7460,7 @@ static void test_savefile_rpcs3(void)
 
 		check(quit_and_wait(), "quit");
 		check(sf_boot_patched("NPEA00385", g_sf_patch, len, SF_NO_FLIP), "RaC1 with the patch");
+		savefile_make_idle(GAME_RAC1);
 		host_write_log_reset();
 
 		check(savefile_category(SAVEFILE_CATEGORY_CREATE, "rpcs3") == ST_OK, "a category");
@@ -9136,6 +9246,7 @@ static void test_switches_fastloads(void)
 
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
 	pump(4);
+	savefile_make_idle(GAME_RAC2);
 	check(session_load_setaside() == ST_OK, "the set-aside load goes ahead");
 	check_eq_u64(swt_peek8(0x01317720u), 1, "forcing fast loads through their flag too");
 	check_eq_u64(swt_peek8(0x01317729u), 1, "and raising the helper's load byte at 0x1317729");
@@ -9735,6 +9846,396 @@ static void test_command_port(void)
 	      "and takes 127.0.0.1, which is where everything here listens");
 }
 
+/* ----------------------- build 53, RaC1's and RaC2's helpers move and pause */
+
+/*
+ * What can be checked here, once more: the PowerPC that pauses the game and
+ * waits for it runs only in the game, so the pause itself is a console's to
+ * answer. What is checked is everything around it - where the generated table
+ * puts the caves, the hook words and the request bytes, that SAVEFILE_PATCH
+ * hands out exactly those, that RaC3's and Deadlocked's helpers did not move by
+ * a byte (an RPCS3 patch for either written by build 52 still counts), and that
+ * qwark refuses, with the right error, every request the helper would drop for
+ * want of a save or of a game sitting still.
+ */
+
+/*
+ * SAVEFILE_PATCH's stamps for the two helpers build 53 left alone, pinned: a
+ * change to either means every RPCS3 user of that game has to write the patch
+ * again, which a build should do on purpose and not by accident.
+ */
+#define SF53_STAMP_RAC3 0x038F1389u
+#define SF53_STAMP_RAC4 0x23199E63u
+
+/* Whether every word row of a SAVEFILE_PATCH reply lands in [lo, hi) or on `hook`. */
+static int sf53_rows_within(const u8 *reply, u32 len, u32 lo1, u32 hi1, u32 lo2, u32 hi2, u32 hook)
+{
+	u32 n = be16_get(reply);
+	u32 off = SAVEFILE_PATCH_HEAD;
+	u32 i;
+
+	for (i = 0; i < n; i++) {
+		u32 a;
+
+		if (off + SAVEFILE_PATCH_ROW > len) return 0;
+		a = be32_get(reply + off);
+		if (!((a >= lo1 && a + 4u <= hi1) || (a >= lo2 && a + 4u <= hi2) || a == hook)) return 0;
+		off += SAVEFILE_PATCH_ROW;
+	}
+	return 1;
+}
+
+/* The address of byte entry `k` of a SAVEFILE_PATCH reply. */
+static u32 sf53_byte_addr(const u8 *reply, u32 k)
+{
+	u32 off = SAVEFILE_PATCH_HEAD + be16_get(reply) * SAVEFILE_PATCH_ROW + SAVEFILE_PATCH_BYTES_HEAD;
+
+	return be32_get(reply + off + k * SAVEFILE_PATCH_BYTE_ROW);
+}
+
+/* Asks for a request and reports the status and the transfer error it left. */
+static int sf53_request(int load, u8 *error)
+{
+	u32 done = 0, total = 0;
+	int rc = load ? savefile_load_aside() : savefile_set_aside();
+
+	savefile_transfer(&done, &total, error);
+	return rc;
+}
+
+static void test_savefile_build53(void)
+{
+	u8 sup = 9, ins = 9, run = 9, pend = 9, error = 9, b = 9;
+	u32 size = 0, len = 0, done = 0, total = 0;
+	u8 junk[0x1C];
+	u32 v = 0;
+
+	/* ------------------------------------------------- RaC1's placement */
+
+	group("build 53: RaC1's helper and its bytes moved");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+
+		check(quit_and_wait(), "quit whatever was running");
+		check(d != NULL && d->ncaves == 2, "RaC1 has its stub cave and its helper cave");
+		if (d == NULL || d->ncaves != 2) return;
+
+		check_eq_u64(d->caves[0].addr, 0x004F6800u, "the stub is where it was, 0x4F6800");
+		check_eq_u64(d->caves[1].addr, 0x004F8000u, "and so is the helper, 0x4F8000");
+		check(d->caves[1].addr + d->caves[1].len <= 0x004F8C68u,
+		      "which ends inside the dead function it sits in (0x4F7EB8..0x4F8C68)");
+		check_eq_u64(d->hooks[0].addr, 0x0011E3A0u, "the hook site is the pad routine's epilogue");
+		check_eq_u64(d->hooks[0].value, 0x484F6803u, "and the hook word is still bla 0x4F6800");
+
+		check_eq_u64(d->api_mod, 0x01080000u, "api_mod is at 0x1080000, out of the bump arena");
+		check_eq_u64(d->api_load, 0x01080001u, "api_load follows it");
+		check_eq_u64(d->api_setaside, 0x01080002u, "and api_setaside");
+		check(d->api_mod >= 0x01054C44u && d->api_setaside < 0x010A0230u,
+		      "in the part of the debug save buffer nothing ever writes");
+		check(d->api_mod < 0x01606310u, "inside the read-write segment, so a patch may write it");
+
+		check_eq_u64(d->aside_addr, 0x00FC0000u, "the aside buffer is at 0xFC0000");
+		check_eq_u64(d->aside_size, 0x000B0000u, "and is still 0xB0000 bytes, so saves keep their size");
+		check(d->aside_addr >= 0x00FB0230u && d->aside_addr + d->aside_size <= 0x010A0230u,
+		      "inside the debug save buffer, clear of the statics from 0x10A0230 on");
+		check(d->api_mod >= d->aside_addr + d->aside_size,
+		      "and the request bytes are past its end");
+		check(d->aside_addr + d->aside_size <= 0x00B00070u || d->aside_addr >= 0x00E572C4u,
+		      "nowhere near the bump arena either");
+
+		check(boot_and_wait("NPEA00385"), "RaC1 boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC1 patch");
+		sf_check_patch_words(d, g_sf_patch, len);
+		check(sf53_rows_within(g_sf_patch, len, 0x004F6800u, 0x004F6874u,
+		                       0x004F8000u, 0x004F8C68u, 0x0011E3A0u),
+		      "every word it writes is in one of the two caves or is the hook word");
+		check(sf53_byte_addr(g_sf_patch, 0) == 0x01080000u &&
+		      sf53_byte_addr(g_sf_patch, 1) == 0x01080001u &&
+		      sf53_byte_addr(g_sf_patch, 2) == 0x01080002u,
+		      "and the bytes it zeroes are the new request bytes");
+		check_eq_u64(len, 2756, "RaC1's is the largest reply now, 2756 bytes");
+	}
+
+	/* ------------------------------------------------- RaC2's placement */
+
+	group("build 53: RaC2's helper moved off Joba's code");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+
+		check(d != NULL && d->ncaves == 1, "RaC2 has one cave");
+		if (d == NULL || d->ncaves != 1) return;
+
+		check_eq_u64(d->caves[0].addr, 0x0113EC64u, "it is at 0x113EC64, in the dead span");
+		check(d->caves[0].addr + d->caves[0].len <= 0x011414FCu, "and ends inside it");
+		check(d->caves[0].addr + d->caves[0].len <= 0x0022A368u || d->caves[0].addr >= 0x00233308u,
+		      "nowhere in Joba's routine at 0x22A368..0x233308");
+		check_eq_u64(d->hooks[0].addr, 0x00B086B0u, "the hook site is the same nop");
+		check_eq_u64(d->hooks[0].value, 0x4913EC67u, "and the hook word is bla 0x113EC64");
+		check(d->caves[0].addr < 0x02000000u, "which an absolute branch reaches");
+		check_eq_u64(d->api_mod, 0x01317728u, "the request bytes have not moved");
+		check_eq_u64(d->aside_addr, 0x01C00000u, "nor has the aside buffer");
+
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00386"), "RaC2 boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC2 patch");
+		sf_check_patch_words(d, g_sf_patch, len);
+		check(sf53_rows_within(g_sf_patch, len, 0x0113EC64u, 0x011414FCu, 0, 0, 0x00B086B0u),
+		      "every word it writes is in the new cave or is the hook word");
+		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
+
+		/*
+		 * Under RPCS3, a hook word that still branches to build 52's cave reads as
+		 * a helper from another build, even with this build's cave beside it: the
+		 * client is told to write the new patch.
+		 */
+		check(quit_and_wait(), "quit");
+		host_set_can_patch_code(0);
+		host_set_emulator(1);
+		host_boot("NPEA00386");
+		sf_poke_patch(g_sf_patch, len, SF_NO_FLIP, 1);
+		poke32(0x00B086B0u, 0x4822A36Bu);
+		check(pump_until(SESSION_INGAME, 4000), "RaC2 boots with build 52's hook word over the patch");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "which is not this build's helper");
+		check(quit_and_wait(), "quit");
+		host_boot("NPEA00386");
+		sf_poke_patch(g_sf_patch, len, SF_NO_FLIP, 1);
+		check(pump_until(SESSION_INGAME, 4000), "RaC2 boots with this build's patch");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 1, "which is");
+		check(quit_and_wait(), "quit");
+		host_set_can_patch_code(1);
+		host_set_emulator(0);
+	}
+
+	group("build 53: RaC3's and Deadlocked's helpers did not change");
+	{
+		check(boot_and_wait("NPEA00387"), "RaC3 boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK &&
+		      be32_get(g_sf_patch + 4) == SF53_STAMP_RAC3,
+		      "RaC3's patch has build 52's stamp, so a patch from then still counts");
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK &&
+		      be32_get(g_sf_patch + 4) == SF53_STAMP_RAC4,
+		      "and so has Deadlocked's");
+		check(quit_and_wait(), "quit");
+	}
+
+	/* --------------------------------------------- RaC1: no save, not idle */
+
+	group("build 53: RaC1 refuses a request with no save or no idle game");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+
+		check(boot_and_wait("NPEA00385"), "RaC1 boots: a fresh process has no save");
+		host_write_log_reset();
+
+		check(sf53_request(0, &error) == ST_BUSY, "a set-aside is BUSY");
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "because there is no save to set aside");
+		check(sf53_request(1, &error) == ST_BUSY, "and a load with nothing set aside is too");
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "for the same reason");
+		check_eq_u64(host_write_log_count(), 0, "neither wrote a byte into the game");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(ins, 0, "nor installed the helper");
+
+		poke32(SF_R1_SAVE_PTR, SF_R1_SAVE_BASE);
+		memset(junk, 0x5A, sizeof(junk));
+		host_poke(SF_R1_SAVE_BUF, junk, sizeof(junk));
+		check(sf53_request(0, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "a save buffer that holds something else is no save either");
+
+		sf_give_save(GAME_RAC1);
+		check(sf53_request(0, &error) == ST_OK, "with a save in it the set-aside goes out");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		check(sf53_request(1, &error) == ST_OK,
+		      "and so does a load with nothing set aside: the helper fills it from that save");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		/* The aside buffer holding something is what a load hands over, or nothing. */
+		host_poke(d->aside_addr, junk, sizeof(junk));
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "an aside buffer that holds something that is not a save is refused, not replaced");
+		sf_put_save_head(GAME_RAC1, d->aside_addr);
+		poke32(d->aside_addr + 0x18, 25);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "and so is a save of a planet the game does not have");
+		poke32(d->aside_addr + 0x18, 3);
+
+		poke32(SF_R1_STATE, 6);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "a load on the title screen is BUSY, the game not idle");
+		check(sf53_request(0, &error) == ST_OK,
+		      "while a set-aside, which only copies the last save, still goes out");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		poke32(SF_R1_STATE, 2);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "and a load in a cutscene");
+		poke32(SF_R1_STATE, 0);
+		poke32(SF_R1_REQUEST, 1);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "and one while a planet load is already on its way");
+		poke32(SF_R1_REQUEST, 0);
+		poke32(SF_R1_STATE, 3);
+		check(sf53_request(1, &error) == ST_OK, "a load from the start menu goes out");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		poke32(SF_R1_STATE, 0);
+		check(sf53_request(1, &error) == ST_OK, "and so does one from ordinary play");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 1, "as a 1, which the helper pauses the game for");
+
+		/* The helper's own refusals, the two codes it leaves in the byte. */
+		host_poke(d->api_load, (const u8 *)"\xFD", 1);
+		pump(2);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "the helper's 0xFD is reported as no save");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 0, "and the byte is put back to 0");
+		savefile_info(&sup, &ins, &run, &pend, &size);
+		check_eq_u64(pend, 0, "with nothing left outstanding");
+
+		check(sf53_request(1, &error) == ST_OK, "another load");
+		host_poke(d->api_load, (const u8 *)"\xFE", 1);
+		pump(2);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE,
+		             "and 0xFE, the game would not pause, as not idle");
+
+		check(sf53_request(0, &error) == ST_OK, "a set-aside");
+		host_poke(d->api_setaside, (const u8 *)"\xFD", 1);
+		pump(2);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "which the helper can drop for no save too");
+
+		/* Force autosave keeps its own byte, at its new address. */
+		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_OK, "Force autosave fires");
+		host_peek(0x01080003u, &b, 1);
+		check_eq_u64(b, 3, "writing its 3 at 0x1080003");
+		host_peek(0x00B00073u, &b, 1);
+		check_eq_u64(b, 0, "and nothing at the bump arena's 0xB00073");
+		host_poke(0x01080003u, (const u8 *)"\x00", 1);
+	}
+
+	/* ------------------------------------------------- the library, RaC1 */
+
+	group("build 53: RaC1's library refuses for the same reasons");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+		plat_file_t f;
+		u32 i;
+
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00385"), "RaC1 boots with no save");
+		check(savefile_category(SAVEFILE_CATEGORY_CREATE, "b53") == ST_OK, "a category");
+
+		check(savefile_store("b53", "none.sav") == ST_BUSY, "a STORE is BUSY");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "for want of a save");
+		check(!plat_path_exists(SAVE_ROOT "/b53/none.sav", NULL, NULL), "and creates no file");
+
+		/* A file of the right size that is not a save. */
+		check(plat_file_open(SAVE_ROOT "/b53/junk.sav", PLAT_OPEN_WRITE, &f) == 0, "a junk file");
+		memset(g_pattern, 0x5A, sizeof(g_pattern));
+		for (i = 0; i < d->aside_size; i += sizeof(g_pattern)) plat_file_write(f, g_pattern, sizeof(g_pattern));
+		plat_file_close(f);
+
+		poke32(SF_R1_STATE, 6);
+		check(savefile_restore("b53", "junk.sav") == ST_BUSY, "restoring it on the title screen is BUSY");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the game not idle, checked before the copy");
+		poke32(SF_R1_STATE, 0);
+
+		check(savefile_restore("b53", "junk.sav") == ST_OK, "in play the RESTORE is accepted");
+		check(pump_until_transfer_done(64), "and the copy runs to its end");
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(done, d->aside_size, "every byte copied");
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "and then it stops: the file is not a save");
+		host_peek(d->api_load, &b, 1);
+		check_eq_u64(b, 0, "so no load was raised at the game");
+
+		plat_file_unlink(SAVE_ROOT "/b53/junk.sav");
+		plat_file_unlink(SAVE_ROOT "/b53/junk.sav.sum");
+		check(savefile_category(SAVEFILE_CATEGORY_DELETE, "b53") == ST_OK, "the category goes");
+	}
+
+	/* ----------------------------------------------- RaC2: no save, not idle */
+
+	group("build 53: RaC2 refuses a request before the game has a save");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00386"), "RaC2 boots: no save manager, no buffer");
+		poke32(SF_R2_PENDING, R4_MODE_NONE);
+		host_write_log_reset();
+
+		check(sf53_request(0, &error) == ST_BUSY, "a set-aside is BUSY");
+		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE,
+		             "for want of a save, where it used to copy two megabytes from address 0");
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "and so is a load with nothing set aside, which used to fill from there");
+		check_eq_u64(host_write_log_count(), 0, "neither wrote into the game");
+
+		poke32(SF_R2_SAVE_INFO, SF_R2_SAVE_OBJ);
+		check(sf53_request(0, &error) == ST_BUSY && error == SAVEFILE_ERR_NO_SAVE,
+		      "a save manager whose buffer word is still 0 has no save either");
+
+		/* The load action forces fast loads, and must not when it is refused. */
+		mem_read_u32(R2_FP_ADDR, &v);
+		check_eq_u64(v, 0x4BFFEA69u, "the load screen's call is the game's own");
+		check(features_trigger(F2_LOAD_ASIDE) == ST_BUSY, "the LOAD_ASIDE action is refused");
+		mem_read_u32(R2_FP_ADDR, &v);
+		check_eq_u64(v, 0x4BFFEA69u, "before it forced fast loads, so nothing is left forced");
+
+		sf_give_save(GAME_RAC2);
+		check(sf53_request(0, &error) == ST_OK, "with a save the set-aside goes out");
+		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		poke32(SF_R2_PLANET, 0xFFFFFFFFu);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "a load on the title screen, planet -1, is not idle");
+		poke32(SF_R2_PLANET, 5);
+		poke32(SF_R2_PENDING, 0);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor with a mode change queued");
+		poke32(SF_R2_PENDING, R4_MODE_NONE);
+		poke32(SF_R2_MODE, 4);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in a menu");
+		poke32(SF_R2_MODE, 0);
+		poke32(SF_R2_REQUEST, 1);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor with a planet load on its way");
+		poke32(SF_R2_REQUEST, 0);
+		poke32(SF_R2_MODE, 3);
+		check(sf53_request(1, &error) == ST_OK, "from the pause it goes out");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+		poke32(SF_R2_MODE, 0);
+
+		/* A load the helper drops after the action forced fast loads puts them back. */
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+		pump(4);
+		check(features_trigger(F2_LOAD_ASIDE) == ST_OK, "the LOAD_ASIDE action goes out from play");
+		mem_read_u32(R2_FP_ADDR, &v);
+		check_eq_u64(v, 0x60000000u, "forcing fast loads for the load");
+		host_poke(d->api_load, (const u8 *)"\xFE", 1);
+		pump(3);
+		savefile_transfer(&done, &total, &error);
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the helper drops it: the game would not pause");
+		mem_read_u32(R2_FP_ADDR, &v);
+		check_eq_u64(v, 0x4BFFEA69u, "and the fast loads it forced are put back");
+
+		check(quit_and_wait(), "quit");
+	}
+}
+
 int main(void)
 {
 	const char *port_env = getenv("QWARK_TEST_PORT");
@@ -9778,6 +10279,7 @@ int main(void)
 	test_savefile_helper();
 	test_savefile_library();
 	test_savefile_not_idle();
+	test_savefile_build53();
 	test_signed_values();
 	test_combo_suspend();
 	test_combo_enable();

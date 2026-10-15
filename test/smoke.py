@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 52
+QWARK_BUILD = 53
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -185,6 +185,43 @@ R4_GAME_MODE = 0x00B3C5A0
 R4_PENDING_GAME_MODE = 0x009C37F4
 R4_MODE_IDLE = (struct.pack(">I", 0), struct.pack(">i", -2))
 R4_MODE_BUSY = (struct.pack(">I", 6), struct.pack(">i", -2))
+
+# Build 53, revision 1.20: there was no save to act on. RaC1 and RaC2 have none
+# until the game has saved or loaded once, and their helpers load only a save of
+# their own, so a request against a fresh fake process is BUSY with this.
+SAVEFILE_ERR_NO_SAVE = 7
+
+# RaC1's savefile helper, from src/games/sfhelper_bins.c: its request bytes and
+# its aside buffer, both moved in build 53 (src/games/sfhelper/sf_rac1.h). The
+# caves and the hook word are not here, because they come off the wire from
+# SAVEFILE_PATCH, which is the point of the op.
+RAC1_SF_API_MOD = 0x01080000
+RAC1_SF_API_LOAD = 0x01080001
+RAC1_SF_API_SETASIDE = 0x01080002
+RAC1_SF_ASIDE = 0x00FC0000
+
+# Build 53. What the two games' readiness tests read, out of src/games/rac1.h
+# and rac2.h, and a save of each put where the game keeps it: RaC1's buffer is
+# the pointer at 0xA10928 plus 0x100000, RaC2's the word at +4 of the block at
+# 0x1410E50. A save is known by its head, the two block sizes the game's
+# restore insists on, and in RaC1 a planet number below 20 at +0x18.
+RAC1_SAVE_HEAD = (struct.pack(">II", 0x153C, 0x82A4) + bytes(0x10)
+                  + struct.pack(">I", 3))
+RAC2_SAVE_HEAD = struct.pack(">II", 0x1D08, 0x84D0)
+RAC1_SAVE_WRITES = [
+    (0x00A10708, struct.pack(">I", 0)),          # game state: ordinary play
+    (0x00A10700, struct.pack(">I", 0)),          # no planet load on its way
+    (0x00A10928, struct.pack(">I", 0x00D00000)),
+    (0x00E00000, RAC1_SAVE_HEAD),
+]
+RAC2_SAVE_WRITES = [
+    (0x0156B064, struct.pack(">I", 0)),          # gameMode: ordinary play
+    (0x01329F90, struct.pack(">i", -2)),         # pendingGameMode: nothing queued
+    (0x0156B050, struct.pack(">I", 0)),          # no planet load on its way
+    (0x01410E50, struct.pack(">I", 0x01A00000)),
+    (0x01A00004, struct.pack(">I", 0x01A10000)),
+    (0x01A10000, RAC2_SAVE_HEAD),
+]
 SAVEFILE_NAME_LEN = 32
 SAVEFILE_ROW_SIZE = 40
 SAVEFILE_CATEGORY_CREATE = 0
@@ -1140,6 +1177,8 @@ OTHER_GAMES = [
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h; build 50 moved it
         # out of the executable's code segment.
         "sf_setaside": 0x0131772A,
+        # Build 53: a save of the game's own, which a set-aside copies.
+        "sf_save": RAC2_SAVE_WRITES,
         # Retired, never renumbered: 32 and 33, the two tempsave manager rows.
         "retired": [32, 33],
         "readouts": 9,
@@ -1446,7 +1485,7 @@ OTHER_GAMES = [
 ]
 
 
-def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None):
+def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None, save=None):
     """
     Protocol 1.9: the savefile block, against whichever game is up.
 
@@ -1464,9 +1503,25 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None):
     be put in first (build 43). A fresh fake process is all zeroes, which for
     Deadlocked reads as a queued mode change, so nothing would be raised at it
     at all without this.
+
+    `save` is a save of the game's own put where the game keeps it (build 53):
+    RaC1 and RaC2 set aside and load nothing else, and a fresh fake process,
+    like a game that has not saved yet, has none.
     """
     if idle:
         for addr, data in idle:
+            mem_write(c, addr, data)
+    if save:
+        # Build 53, revision 1.20: before the game has a save of its own a
+        # set-aside is refused at once, and INFO's error byte says why.
+        status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
+        check(status == ST_BUSY,
+              "%s: a set-aside before the game has a save is BUSY" % name, status)
+        info = savefile_info(c)
+        check(info is not None and info["error"] == SAVEFILE_ERR_NO_SAVE
+              and info["pending"] == 0,
+              "%s: with error 7, no save, and nothing outstanding" % name, info)
+        for addr, data in save:
             mem_write(c, addr, data)
     status, body = c.call(OP_SAVEFILE_INFO)
     if not check(status == ST_OK and len(body) == SAVEFILE_INFO_SIZE,
@@ -1818,7 +1873,7 @@ def write_console_file(c, path, data):
     return True
 
 
-def exercise_savefile_library(c, name, setaside_addr, load_addr):
+def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head=b""):
     """
     Protocol 1.10: the savefile library on the console, over the real wire.
 
@@ -1831,7 +1886,14 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr):
 
     The CRC the console reports is checked against Python's zlib.crc32, because
     the whole point of it is that the two sides agree about a file byte for byte.
+
+    Build 53: `save` puts a save of the game's own where the game keeps it, for
+    the STORE's set-aside, and `head` goes in front of the pattern the buffer is
+    filled with, so the file the RESTORE copies back is a save the game takes.
     """
+    if save:
+        for addr, data in save:
+            mem_write(c, addr, data)
     root = "/dev_hdd0/qwark/savefiles/NPEA00385"
     category = "smoke"
     folder = "%s/%s" % (root, category)
@@ -1865,6 +1927,7 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr):
     # A whole buffer of a known pattern, so the CRC the console computes has
     # something to be right about.
     payload = bytes(((i * 31 + 7) & 0xFF) for i in range(CHUNK))
+    payload = head + payload[len(head):]
     written = b""
     for off in range(0, size, CHUNK):
         chunk = payload[:min(CHUNK, size - off)]
@@ -2070,7 +2133,7 @@ def exercise_game(c, sim, spec, udp=None):
         # Protocol 1.9: that pair, and the block that moves the bytes.
         if save_aside:
             exercise_savefile(c, name, save_aside[0]["id"], spec.get("sf_setaside"),
-                              spec.get("sf_idle"))
+                              spec.get("sf_idle"), spec.get("sf_save"))
             if spec.get("sf_idle"):
                 exercise_savefile_not_idle(c, name, spec["sf_setaside"],
                                            spec["sf_load"], save_aside[0]["id"],
@@ -2501,14 +2564,6 @@ RAC1_FP = bytes([0x30, 0x64, 0x9C, 0xE0])
 RPCS3_PORT = free_port()
 
 
-# RaC1's savefile helper, from src/games/sfhelper_bins.c: its request bytes and
-# its aside buffer. The caves and the hook word are not here, because they come
-# off the wire from SAVEFILE_PATCH, which is the point of the op.
-RAC1_SF_API_MOD = 0x00B00070
-RAC1_SF_API_LOAD = 0x00B00071
-RAC1_SF_API_SETASIDE = 0x00B00072
-RAC1_SF_ASIDE = 0x01000000
-
 
 def wait_savefile_pending_clear(c, timeout=3.0):
     """Polls INFO until no request is outstanding, as a client's save loop does."""
@@ -2584,6 +2639,9 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     pine.boot("NPEA00385", "Ratchet & Clank")
     ok, _ = wait_state(c, SESSION_INGAME)
     check(ok, "rpcs3: and comes back with the whole patch applied at load")
+    # Build 53: a save of the game's own, which RaC1 sets aside and loads alone.
+    for addr, data in RAC1_SAVE_WRITES:
+        pine.poke(addr, data)
     del pine.write_log[:]
 
     check(pine.peek(RAC1_SF_API_MOD, 3) == b"\0\0\0",
@@ -2637,6 +2695,7 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     check(status == ST_OK and body == pattern,
           "rpcs3: SAVEFILE_READ hands the set-aside save back", (status, len(body)))
 
+    pine.poke(RAC1_SF_ASIDE, RAC1_SAVE_HEAD)   # build 53: the load hands over a save
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([load[0]["id"]]))
     check(status == ST_OK, "rpcs3: the LOAD_ASIDE action fires", status)
     check(pine.peek(RAC1_SF_API_LOAD, 1) == b"\x01",
@@ -3558,13 +3617,16 @@ def main():
         save_aside = [f for f in by_id.values()
                       if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
         if check(len(save_aside) == 1, "RaC1 names one SAVE_ASIDE action", save_aside):
-            # SF_API_SETASIDE from src/games/sfhelper/sf_rac1.h.
-            exercise_savefile(c, "RaC1", save_aside[0]["id"], 0x00B00072)
+            # SF_API_SETASIDE from src/games/sfhelper/sf_rac1.h, which build 53
+            # moved out of the game's bump arena.
+            exercise_savefile(c, "RaC1", save_aside[0]["id"], RAC1_SF_API_SETASIDE,
+                              save=RAC1_SAVE_WRITES)
 
         # -------------------------------- the console savefile library, 1.10
         # SF_API_SETASIDE and SF_API_LOAD, the two request bytes this stands in
         # for the helper in clearing.
-        exercise_savefile_library(c, "RaC1", 0x00B00072, 0x00B00071)
+        exercise_savefile_library(c, "RaC1", RAC1_SF_API_SETASIDE, RAC1_SF_API_LOAD,
+                                  save=RAC1_SAVE_WRITES, head=RAC1_SAVE_HEAD)
 
         # --------------------------------------------- a VALUE readout round trip
         c.call(OP_FEATURE_SET, struct.pack(">BI", F_DBG_CAMERA, 2))

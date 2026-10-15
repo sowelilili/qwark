@@ -531,17 +531,24 @@ int rac4_load_setaside(void)
  *
  * A read that fails answers "not ready" rather than "ready": there is no
  * process to ask, and the caller has nothing to lose by waiting.
+ *
+ * Build 53: the seam names what is being asked about and answers with an error
+ * code; Deadlocked asks the same of all three and answers SAVEFILE_ERR_NOT_IDLE
+ * or nothing, exactly as before.
  */
-int rac4_savefile_ready(void)
+u8 rac4_savefile_ready(u8 what)
 {
 	u32 mode = 0;
 	u32 pending = 0;
 
-	if (mem_read_u32(RAC4_GAME_MODE, &mode) != ST_OK) return 0;
-	if (mem_read_u32(RAC4_PENDING_GAME_MODE, &pending) != ST_OK) return 0;
+	(void)what;
 
-	if (mode != RAC4_GAME_MODE_NORMAL && mode != RAC4_GAME_MODE_PAUSE) return 0;
-	return pending == RAC4_GAME_MODE_NONE;
+	if (mem_read_u32(RAC4_GAME_MODE, &mode) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	if (mem_read_u32(RAC4_PENDING_GAME_MODE, &pending) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+
+	if (mode != RAC4_GAME_MODE_NORMAL && mode != RAC4_GAME_MODE_PAUSE) return SAVEFILE_ERR_NOT_IDLE;
+	if (pending != RAC4_GAME_MODE_NONE) return SAVEFILE_ERR_NOT_IDLE;
+	return SAVEFILE_ERR_NONE;
 }
 
 /* ----------------------------------------------------------------- skins */

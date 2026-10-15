@@ -81,6 +81,16 @@
 #define SAVEFILE_ERR_NOT_IDLE   6
 
 /*
+ * Build 53, revision 1.20. There was no save to act on. A set-aside found the
+ * game holding no save yet - RaC1 and RaC2 have none until they have saved or
+ * loaded once in this process (on a new game, the first autosave) - and a load
+ * found the aside buffer holding something that is not a save of this game, or
+ * nothing at all and no save in the game to fill it from. RaC1 and RaC2 answer
+ * it; the other two games never do.
+ */
+#define SAVEFILE_ERR_NO_SAVE    7
+
+/*
  * What the helper leaves in a request byte when it drops a request for the same
  * reason - the belt to qwark's braces, because qwark asks on its own tick and
  * the game gets frames of its own between that and the one the helper runs on.
@@ -91,8 +101,14 @@
  * interface: it already carries 0 idle, 1 requested, and, in Deadlocked, 2 for
  * a load menu that is still up. SF_API_REFUSED in src/games/sfhelper/sfhelper.h
  * is the same number on the other side.
+ *
+ * Build 53: RaC1's and RaC2's helpers leave SAVEFILE_HELPER_NO_SAVE when there
+ * is no save to act on, which qwark reports as SAVEFILE_ERR_NO_SAVE; their
+ * loads wait for the game's pause and leave SAVEFILE_HELPER_REFUSED when the
+ * game will not pause, or leaves it before the load can go.
  */
 #define SAVEFILE_HELPER_REFUSED 0xFE
+#define SAVEFILE_HELPER_NO_SAVE 0xFD
 
 /*
  * How the copy is chunked on the tick thread. A chunk is one mem_read or
@@ -184,7 +200,7 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
  * whether or not the platform patches code. NOT_INGAME outside a game,
  * UNSUPPORTED for a game with no helper or with the helper switched off, FULL
  * for a reply that would not fit `cap` (never, for the four games today:
- * Deadlocked's is the largest, at 2132 bytes).
+ * RaC1's is the largest since build 53, at 2756 bytes).
  *
  * Build 51: only in the emulator builds (QWARK_EMULATOR, plat.h), as is the
  * look for a patched-in helper. The PS3 module answers SAVEFILE_PATCH
@@ -208,10 +224,29 @@ int savefile_write(u32 offset, const u8 *data, u32 len);
 /*
  * The two requests the flagged ACTIONs make. Build 43: either answers ST_BUSY
  * with SAVEFILE_ERR_NOT_IDLE, and raises nothing at the game, when the running
- * game says it is not somewhere a save may be taken or put back.
+ * game says it is not somewhere a save may be taken or put back. Build 53: or
+ * with SAVEFILE_ERR_NO_SAVE, when it has no save to take or the aside buffer
+ * none to give back.
  */
 int savefile_set_aside(void);
 int savefile_load_aside(void);
+
+/*
+ * Build 53. What savefile_load_aside would answer, without raising anything:
+ * ST_OK when a load request would go out now, otherwise its refusal, with the
+ * transfer's `error` set as the request would set it. RaC2 asks first because
+ * its load action forces fast loads on before the request, and a load that is
+ * refused must not leave them forced.
+ */
+int savefile_load_ready(void);
+
+/*
+ * Build 53. How many load requests the helper has dropped in this process: a
+ * count that only goes up, which a game compares with the last value it saw to
+ * undo what it did for a load that never came (RaC2 puts its fast loads back).
+ * Tick thread, like the request watching that counts them.
+ */
+u32 savefile_load_refusals(void);
 
 /*
  * The settle window and the transfer, one tick's worth. The session calls it
@@ -237,6 +272,9 @@ void savefile_tick(void);
  *
  * Build 43: BUSY with SAVEFILE_ERR_NOT_IDLE is the other refusal, for a game
  * that is not sitting still. It is checked before either op touches a file.
+ * Build 53: a STORE is BUSY with SAVEFILE_ERR_NO_SAVE when the game has no save
+ * to set aside, and a RESTORE stops with it after the copy when the file is not
+ * a save of the running game.
  */
 int savefile_store(const char *category, const char *name);
 int savefile_restore(const char *category, const char *name);

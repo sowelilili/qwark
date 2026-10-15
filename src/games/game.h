@@ -118,6 +118,11 @@ struct autosplit_desc {
 	const char *label;  /* at most AUTOSPLIT_LABEL_LEN characters on the wire */
 };
 
+/* Build 53: what struct game_api's savefile_ready is asked about. */
+#define GAME_SF_SET_ASIDE 0
+#define GAME_SF_LOAD      1
+#define GAME_SF_RESTORE   2
+
 struct game_api {
 	/* Up to four title ids, NULL-terminated. */
 	const char *title_ids[4];
@@ -205,16 +210,21 @@ struct game_api {
 
 	/*
 	 * Build 43. Whether the game is somewhere a save may be copied aside or
-	 * handed back right now: 1 when it is, 0 when something in the game owns
-	 * the save data or is about to. src/core/savefile.c asks before it raises a
-	 * set-aside or a load, and refuses with BUSY and SAVEFILE_ERR_NOT_IDLE
-	 * rather than start work the game will walk over.
+	 * handed back right now. src/core/savefile.c asks before it raises a
+	 * set-aside or a load, and refuses with BUSY rather than start work the game
+	 * will walk over.
+	 *
+	 * Build 53: `what` is GAME_SF_SET_ASIDE, GAME_SF_LOAD or GAME_SF_RESTORE
+	 * (a library RESTORE, asked before it copies the file into the aside buffer,
+	 * which is then asked again as a GAME_SF_LOAD), and the answer is
+	 * SAVEFILE_ERR_NONE (0) when the work may start, otherwise the
+	 * SAVEFILE_ERR_* code the client is told: SAVEFILE_ERR_NOT_IDLE when the
+	 * game is busy, SAVEFILE_ERR_NO_SAVE when there is no save to act on.
 	 *
 	 * NULL where a game has no such notion, and a NULL reads as "always ready",
-	 * so the three games that have not been looked at behave exactly as before.
-	 * Tick thread only: it reads game memory.
+	 * so RaC3 behaves exactly as before. Tick thread only: it reads game memory.
 	 */
-	int (*savefile_ready)(void);
+	u8 (*savefile_ready)(u8 what);
 
 	/*
 	 * unlock_list may snapshot the live values so that unlock_read can serve

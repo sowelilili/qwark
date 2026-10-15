@@ -87,6 +87,10 @@ struct sf_request {
 	 * Set when the byte is read back, cleared when the next request goes out,
 	 * and what tells a transfer waiting on this request to stop rather than
 	 * copy a buffer nothing has filled.
+	 *
+	 * Build 53: it holds the reason, the SAVEFILE_ERR_* code the refusal is
+	 * reported with - SAVEFILE_ERR_NOT_IDLE, or SAVEFILE_ERR_NO_SAVE for
+	 * SAVEFILE_HELPER_NO_SAVE - and 0 when the request was not refused.
 	 */
 	u8  refused;
 	u16 settle;
@@ -94,6 +98,9 @@ struct sf_request {
 
 static struct sf_request g_set_aside;
 static struct sf_request g_load;
+
+/* Build 53: see savefile_load_refusals. */
+static u32 g_load_refusals;
 
 /*
  * The one transfer, revision 1.10.
@@ -144,16 +151,25 @@ static void request_clear(struct sf_request *r)
 
 /*
  * Build 43. Whether the running game is somewhere a set-aside or a load may
- * happen at all. A game that does not answer - which is every game but
- * Deadlocked today - is always ready, so nothing outside Deadlocked changes.
+ * happen at all. A game that does not answer - RaC3 today - is always ready.
  * Tick thread, like everything else that reads the game.
+ *
+ * Build 53: `what` is one of GAME_SF_SET_ASIDE, GAME_SF_LOAD and
+ * GAME_SF_RESTORE (src/games/game.h), and the answer is the SAVEFILE_ERR_* code
+ * a refusal is reported with, SAVEFILE_ERR_NONE when the work may start.
  */
-static int game_ready(void)
+static u8 game_ready(u8 what)
 {
 	const struct game_api *g = session_game();
 
-	if (g == NULL || g->savefile_ready == NULL) return 1;
-	return g->savefile_ready() != 0;
+	if (g == NULL || g->savefile_ready == NULL) return SAVEFILE_ERR_NONE;
+	return g->savefile_ready(what);
+}
+
+/* The error a refused request left behind, or NOT_IDLE when it left none. */
+static u8 refusal_error(void)
+{
+	return g_xfer.error != SAVEFILE_ERR_NONE ? g_xfer.error : SAVEFILE_ERR_NOT_IDLE;
 }
 
 /* Drops whatever the transfer was doing, keeping `error` for the client. */
@@ -201,6 +217,7 @@ void savefile_forget(void)
 	present_forget();
 	request_clear(&g_set_aside);
 	request_clear(&g_load);
+	g_load_refusals = 0;
 
 	/*
 	 * A transfer that was in flight belonged to a process that is gone. Say so
@@ -508,12 +525,18 @@ static void request_tick(struct sf_request *r, u32 addr)
 	 * helper leaves the code there for exactly one reader, and let the error
 	 * say why nothing came of it.
 	 */
-	if (byte == SAVEFILE_HELPER_REFUSED) {
+	if (byte == SAVEFILE_HELPER_REFUSED || byte == SAVEFILE_HELPER_NO_SAVE) {
+		u8 why = byte == SAVEFILE_HELPER_REFUSED ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_NO_SAVE;
+
 		mem_write_u8(addr, 0);
 		request_clear(r);
-		r->refused = 1;
-		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
-		plat_log("savefile: the helper refused the request, the game was not idle");
+		r->refused = why;
+		g_xfer.error = why;
+		if (r == &g_load) g_load_refusals++;
+		if (why == SAVEFILE_ERR_NOT_IDLE)
+			plat_log("savefile: the helper refused the request, the game was not idle");
+		else
+			plat_log("savefile: the helper refused the request, there was no save");
 		return;
 	}
 
@@ -566,7 +589,7 @@ static void xfer_tick(const struct sf_desc *d)
 		 * this one's name, which is worse than storing nothing.
 		 */
 		if (g_set_aside.refused) {
-			xfer_stop(SAVEFILE_ERR_NOT_IDLE);
+			xfer_stop(g_set_aside.refused);
 			return;
 		}
 
@@ -653,7 +676,7 @@ static void xfer_tick(const struct sf_desc *d)
 		 */
 		rc = savefile_load_aside();
 		if (rc != ST_OK) {
-			xfer_stop(rc == ST_BUSY ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_IO);
+			xfer_stop(rc == ST_BUSY ? refusal_error() : SAVEFILE_ERR_IO);
 			return;
 		}
 		plat_log("savefile: restored %d bytes, load requested", (int)g_xfer.total);
@@ -663,7 +686,7 @@ static void xfer_tick(const struct sf_desc *d)
 	case SF_RESTORE_LOAD:
 		/* The helper dropped it, so the game never took the buffer. */
 		if (g_load.refused) {
-			xfer_stop(SAVEFILE_ERR_NOT_IDLE);
+			xfer_stop(g_load.refused);
 			return;
 		}
 
@@ -756,6 +779,7 @@ static int request(int load)
 	const struct sf_desc *d;
 	struct sf_request *r;
 	int rc = gate(&d);
+	u8 why;
 
 	if (rc != ST_OK) return rc;
 
@@ -765,9 +789,11 @@ static int request(int load)
 	 * gets frames of its own between this tick and that one, but asking here
 	 * as well is what lets a client say why: a BUSY now, at the moment the user
 	 * pressed the button, instead of a request that quietly comes to nothing.
+	 * Build 53: or that has no save to act on (SAVEFILE_ERR_NO_SAVE).
 	 */
-	if (!game_ready()) {
-		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
+	why = game_ready(load ? GAME_SF_LOAD : GAME_SF_SET_ASIDE);
+	if (why != SAVEFILE_ERR_NONE) {
+		g_xfer.error = why;
 		return ST_BUSY;
 	}
 
@@ -792,6 +818,27 @@ static int request(int load)
 int savefile_set_aside(void) { return request(0); }
 int savefile_load_aside(void) { return request(1); }
 
+int savefile_load_ready(void)
+{
+	const struct sf_desc *d;
+	int rc = gate(&d);
+	u8 why;
+
+	if (rc != ST_OK) return rc;
+
+	why = game_ready(GAME_SF_LOAD);
+	if (why != SAVEFILE_ERR_NONE) {
+		g_xfer.error = why;
+		return ST_BUSY;
+	}
+	return ST_OK;
+}
+
+u32 savefile_load_refusals(void)
+{
+	return g_load_refusals;
+}
+
 /* ------------------------------------------ the RPCS3 patch, revision 1.15 */
 
 #ifdef QWARK_EMULATOR   /* build 51: the PS3 answers SAVEFILE_PATCH UNSUPPORTED */
@@ -799,10 +846,10 @@ int savefile_load_aside(void) { return request(1); }
 /*
  * How many words a cave takes on the wire. Every cave is whole words today:
  * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
- * RaC1's 116 and 452 bytes, RaC2's and RaC3's 372 and Deadlocked's 40 and 1004
- * are all multiples of four and none of them is padded. The rounding is there
- * for a cave that one day is not, whose last word then carries its tail and
- * zeroes after it rather than losing the tail.
+ * RaC1's 116 and 1240 bytes, RaC2's 1100, RaC3's 372 and Deadlocked's 40 and
+ * 1004 (build 53) are all multiples of four and none of them is padded. The
+ * rounding is there for a cave that one day is not, whose last word then
+ * carries its tail and zeroes after it rather than losing the tail.
  */
 static u32 cave_words(const struct sf_cave *c)
 {
@@ -1014,10 +1061,14 @@ static int buffer_busy(void)
 	return g_xfer.state != SF_IDLE || g_set_aside.armed || g_load.armed;
 }
 
-/* The shared front half of STORE and RESTORE. */
-static int transfer_gate(const struct sf_desc **d, const char *category, const char *name)
+/*
+ * The shared front half of STORE and RESTORE. `what` is GAME_SF_SET_ASIDE for a
+ * STORE and GAME_SF_RESTORE for a RESTORE (build 53).
+ */
+static int transfer_gate(const struct sf_desc **d, const char *category, const char *name, u8 what)
 {
 	int rc = gate(d);
+	u8 why;
 
 	if (rc != ST_OK) return rc;
 	if (!savefile_name_ok(category) || !savefile_name_ok(name)) return ST_BAD_ARG;
@@ -1036,10 +1087,12 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 	 * Build 43. Refused here rather than part way in: a STORE that got as far
 	 * as the request and then found the game busy would have created the file
 	 * already, and a RESTORE would have read two megabytes off the disc for a
-	 * load nothing was going to take.
+	 * load nothing was going to take. Build 53: a STORE of a game with no save
+	 * yet is refused here too, with SAVEFILE_ERR_NO_SAVE.
 	 */
-	if (!game_ready()) {
-		g_xfer.error = SAVEFILE_ERR_NOT_IDLE;
+	why = game_ready(what);
+	if (why != SAVEFILE_ERR_NONE) {
+		g_xfer.error = why;
 		return ST_BUSY;
 	}
 
@@ -1060,7 +1113,7 @@ int savefile_store(const char *category, const char *name)
 {
 	const struct sf_desc *d;
 	char path[SAVEFILE_PATH_MAX];
-	int rc = transfer_gate(&d, category, name);
+	int rc = transfer_gate(&d, category, name, GAME_SF_SET_ASIDE);
 
 	if (rc != ST_OK) return rc;
 
@@ -1082,7 +1135,7 @@ int savefile_store(const char *category, const char *name)
 	 */
 	rc = savefile_set_aside();
 	if (rc != ST_OK) {
-		xfer_stop(rc == ST_BUSY ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_IO);
+		xfer_stop(rc == ST_BUSY ? refusal_error() : SAVEFILE_ERR_IO);
 		return rc;
 	}
 
@@ -1097,7 +1150,7 @@ int savefile_restore(const char *category, const char *name)
 	plat_file_t f;
 	u64 size = 0;
 	int is_dir = 0;
-	int rc = transfer_gate(&d, category, name);
+	int rc = transfer_gate(&d, category, name, GAME_SF_RESTORE);
 
 	if (rc != ST_OK) return rc;
 

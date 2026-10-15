@@ -18,6 +18,7 @@
 #include "../core/mem.h"
 #include "../core/features.h"
 #include "../core/autosplit.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -217,6 +218,14 @@ static int g_auto_ngplus;
 static int g_death_bosses;
 static int g_death_pbolts;
 static u8  g_prev_load_count = 0xFF;
+
+/*
+ * Build 53. savefile_load_refusals as rac2_on_tick last saw it. A set-aside
+ * load forces fast loads before its request goes out, and the helper can still
+ * drop the request on the game's frame - the game would not pause - when no
+ * load follows to put them back.
+ */
+static u32 g_sf_refusals;
 
 /*
  * RAC2Form's desiredShortcutIndex: the NG+ setups remember which shortcut the
@@ -419,6 +428,7 @@ static void rac2_on_enter(void)
 	g_fastload_forced = 0;
 	g_prev_load_count = 0xFF;
 	g_shortcut_index  = 0xFFFFFFFFu;
+	g_sf_refusals     = savefile_load_refusals();
 
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
@@ -436,6 +446,12 @@ static void rac2_on_tick(const struct game_hot *hot)
 	u8 count = g_load_count;
 
 	rac2_autosplit_tick();
+
+	/* Build 53: a set-aside load the helper dropped puts the forced fast loads back. */
+	if (savefile_load_refusals() != g_sf_refusals) {
+		g_sf_refusals = savefile_load_refusals();
+		if (g_fastload_forced) rac2_fastload_restore();
+	}
 
 	if (count == g_prev_load_count) return;
 	g_prev_load_count = count;
@@ -823,7 +839,7 @@ const struct game_api rac2_game = {
 	rac2_planet_load,
 	rac2_die,
 	rac2_load_setaside,
-	NULL,                 /* savefile_ready: build 43, not looked at yet */
+	rac2_savefile_ready,  /* build 53: play or the pause, on a planet; a save */
 
 	rac2_unlock_list,
 	rac2_unlock_read,
