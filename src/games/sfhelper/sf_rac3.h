@@ -58,14 +58,25 @@
  * names any of them or their descriptors at 0xBF8148..0xBF817F. No mod racman
  * ever shipped for this game puts anything below 0x980AC0.
  *
- * The reset takes 0x9808C0..0x980AC0, 512 bytes, and is 412 of them. Right
- * under it, 0x980860..0x9808B8, is the console's Fast loads cave
- * (RAC3_FASTLOAD_CAVE in src/games/rac3.h); the rest of the span,
- * 0x980304..0x980860, is left for whatever needs it next. build.sh fails a
- * reset that would run past SF_CAVE_TROPHY_END, the helper's own cave.
+ * The reset takes 0x9808C0..0x980AC0, 512 bytes: the part that runs on the
+ * game's main thread, sf_trophy_reset. Right under it, 0x980860..0x9808B8, is
+ * the console's Fast loads cave (RAC3_FASTLOAD_CAVE in src/games/rac3.h).
+ * build.sh fails a reset that would run past SF_CAVE_TROPHY_END, the helper's
+ * own cave.
+ *
+ * The part that runs on the helper's own thread (sf_trophy_worker, its wait and
+ * its thread descriptor) did not fit beside it, and has a third cave, the
+ * fourth section the link map places: 0x980380..0x980580, 512 bytes, from the
+ * second of the seven dead functions to the top of what the span keeps free
+ * below 0x980580. It starts on an eight-byte boundary, as the descriptor in it
+ * needs: build.sh fails a section the link put anywhere but its cave's first
+ * byte, and one that would run past SF_CAVE_TROPHY_THREAD_END. 0x980304..0x980380
+ * is left for whatever needs it next.
  */
-#define SF_CAVE_TROPHY     0x009808C0
-#define SF_CAVE_TROPHY_END 0x00980AC0
+#define SF_CAVE_TROPHY            0x009808C0
+#define SF_CAVE_TROPHY_END        0x00980AC0
+#define SF_CAVE_TROPHY_THREAD     0x00980380
+#define SF_CAVE_TROPHY_THREAD_END 0x00980580
 
 /*
  * The hook site is the cellPadSetActDirect call Gigahelper replaces with a call
@@ -112,20 +123,32 @@
  * helper's others, so the console install zeroes it with them and a stray write
  * of the old word by an old tool starts nothing.
  *
- *   0  idle
+ *   0  idle, or the reset is done and the game has its trophies back
  *   1  reset now (the Reset trophies button)
  *   2  reset only if the game is in a planet load's transition (the auto toggle,
  *      which asks as a load into Veldin starts, before a run's timer starts at
  *      that load's end)
- *   3  the helper is resetting; it writes 0 when it is done
+ *   3  the reset is running, on the helper's own thread; that thread writes 0
+ *      or 4 when it is done
+ *   4  the reset ran, but the game's trophies did not come back: its last
+ *      registration failed, or a register thread of the game's was still
+ *      running when the helper's thread stopped waiting for it
  *   SF_API_REFUSED  the helper dropped the request: the game's trophy object is
- *      not set up, one of its trophy threads is running, or a 2 found the game
- *      out of the load
+ *      not set up, one of its trophy threads is running, a reset is already
+ *      running, a 2 found the game out of the load, or the helper's thread
+ *      could not be started
+ *
+ * The byte beside it, SF_TROPHY_BUSY, is 1 from the frame the helper takes a
+ * request until its thread has finished, whatever happens to the request byte
+ * in between (the console install zeroes that one): the helper never runs two
+ * resets at once.
  */
-#define SF_API_TROPHY       0x00D9FF1C
-#define SF_TROPHY_NOW       1
-#define SF_TROPHY_IN_LOAD   2
-#define SF_TROPHY_RUNNING   3
+#define SF_API_TROPHY          0x00D9FF1C
+#define SF_TROPHY_BUSY         0x00D9FF1D
+#define SF_TROPHY_NOW          1
+#define SF_TROPHY_IN_LOAD      2
+#define SF_TROPHY_RUNNING      3
+#define SF_TROPHY_UNREGISTERED 4
 
 /* ------------------------------------------------------- the aside buffer */
 
@@ -226,47 +249,100 @@
  * points this word at before anything else runs. Its layout, from the routines
  * that use it:
  *
- *   +4     registered: 1 once the register thread has read the game's trophy
- *          info, 0 after a destroy or a failure. Nothing is awarded while 0
+ *   +4     registered, a byte: 1 once the register thread has read the game's
+ *          trophy info (0x9850E0, after sceNpTrophyGetGameInfo), 0 after a
+ *          destroy or a failure. Nothing is awarded while 0: the award
+ *          (0x98535C) drops the request, it does not queue it
  *   +8+8i  trophy i's id, and +12+8i its unlocked flag: the game's cache of the
  *          console's trophy state, which the register thread fills from
  *          sceNpTrophyGetTrophyInfo (0x9850E0, the flag at 0x985318) and the
  *          unlock thread sets when an unlock succeeds (0x9859E8). The award
  *          routine (0x2290D8, ids 0..32) asks for nothing whose flag is set,
- *          and the unlock thread (0x9858BC) checks it again
- *   +392   1 while the register thread (0x9856F8) runs, 2 while the unlock
- *          thread runs, 0 when neither does
+ *          nor does the skill points' award of trophy 2 (UnlockSkillPoint,
+ *          0x229228), and the unlock thread (0x9858BC) checks it again. Those
+ *          two are the only callers of the award, 0x98535C
+ *   +392   -1 from main's init until the first register thread starts, 1 while
+ *          the register thread (0x9856F8) runs, 2 while the unlock thread
+ *          runs, 0 when neither does
+ *   +400   1 from main's init: trophies are on. The award checks it with +4
  *   +428   the sceNpTrophy context, +432 its handle
  *   +436   SceNpTrophyGameDetails, whose first word is the trophy count, 33
  *
- * 0x984E40 destroys the handle and the context and clears +4. 0x984FA0 makes a
- * new context and handle for the game's NP communication id and starts the
- * register thread, which registers the context (installing the trophy set if
- * the console has none) and fills the cache. Both are the game's own, called at
- * boot (0x15434) and at exit (0x13704), and both run on the calling thread.
+ * 0x984E40 destroys the handle and the context and clears +4. 0x984FA0 calls
+ * sceNpTrophyInit (which answers "already initialised" after boot), makes a new
+ * context and handle for the game's NP communication id and starts the register
+ * thread, "NPTrophyRegister" (priority 1001, 16 KB of stack), and returns. That
+ * thread does the slow part: sceNpTrophyGetRequiredDiskSpace, then
+ * sceNpTrophyRegisterContext, which installs the trophy set when the console
+ * has none, then the game info and a sceNpTrophyGetTrophyInfo per trophy with
+ * 32 ms between them (a second for the 33), and puts +392 back to 0 at the very
+ * end. Both functions are the game's own, called on the main thread at boot
+ * (0x15434) and at exit (0x13704); nothing else in the executable calls an
+ * sceNpTrophy function.
  *
- * What the reset does is rc3-save 1.1's handler, rack.bin 0x980E08, call for
- * call: destroy; mark every trophy unlocked in the cache, then trophies 10 (the
- * RY3NO), 25 (the Metropolis blimp) and 32 (the snowman skin) locked again;
- * wait a second; register; a second; destroy; a second; register. With the
- * cache fill at 0x985318 a nop, which qwark writes before it asks, the
- * registrations leave the cache as the reset set it, so those three are the
- * only trophies the game will try to award in the run that follows, and it
- * does try. Whether the console then shows them, and spends the time doing it
- * that the runs rely on, is the console's trophy data: qwark deletes the game's
- * folder of it first (rac3_panel.c).
+ * What the reset does is rc3-save 1.1's handler, rack.bin 0x980E08: destroy;
+ * mark every trophy unlocked in the cache, then trophies 10 (the RY3NO), 25
+ * (the Metropolis blimp) and 32 (the snowman skin) locked again; register;
+ * destroy; register. With the cache fill at 0x985318 a nop, which qwark writes
+ * before it asks, the registrations leave the cache as the reset set it, so
+ * those three are the only trophies the game will try to award in the run that
+ * follows, and it does try. Whether the console then shows them, and spends the
+ * time doing it that the runs rely on, is the console's trophy data: qwark
+ * deletes the game's folder of it first (rac3_panel.c).
+ *
+ * rc3-save ran it on the game's main thread with a second's sleep before each
+ * register and before the second destroy (lv2 sys_timer_sleep, 1), so the game
+ * stood still for three seconds, and on hardware build 53's port did the same.
+ * Nothing in the game needs that: its boot registers once and goes straight
+ * on, and its own threads do the slow part. The helper now runs the calls on a
+ * thread of its own (sfhelper.c has how), and in place of each sleep it waits
+ * for what the sleep stood in for, the game's register thread being over (+392
+ * back to 0): the second destroy no longer lands while the first registration
+ * is still installing or reading the set, which with a one-second sleep it
+ * could, and which would have that registration's failure path destroy the
+ * second's context (0x9850E0 destroys whatever context the object holds).
+ * The order changes in one place: 10, 25 and 32 go back to locked only once
+ * the last registration is over, so the game awards nothing while the reset
+ * runs, and the game's registered byte goes to 0 on the main thread as the
+ * request is taken (sfhelper.c has why). From the NPEA00387 executable; not yet
+ * run on hardware.
  */
-#define SF_TROPHY_OBJ_PTR   0x00CB150C
-#define SF_TROPHY_FLAGS     0x0000000C
-#define SF_TROPHY_THREAD    0x00000188
-#define SF_TROPHY_COUNT     0x000001B4
-#define SF_TROPHY_MAX       33
-#define SF_TROPHY_KEEP_1    10
-#define SF_TROPHY_KEEP_2    25
-#define SF_TROPHY_KEEP_3    32
+#define SF_TROPHY_OBJ_PTR    0x00CB150C
+#define SF_TROPHY_REGISTERED 0x00000004
+#define SF_TROPHY_FLAGS      0x0000000C
+#define SF_TROPHY_THREAD     0x00000188
+#define SF_TROPHY_COUNT      0x000001B4
+#define SF_TROPHY_MAX        33
+#define SF_TROPHY_KEEP_1     10
+#define SF_TROPHY_KEEP_2     25
+#define SF_TROPHY_KEEP_3     32
 
-/* rc3-save's three waits were a second each (lv2 sys_timer_sleep, 1). */
-#define SF_TROPHY_WAIT_US   1000000
+/*
+ * The helper's thread waits for each register thread in two steps, polling
+ * +392 every 10 ms: for it to start (up to 100 polls, a second, which is what
+ * rc3-save waited; a register thread that failed before the first poll, or was
+ * never started, is over by then either way), then for it to end (up to 2000
+ * polls, twenty seconds, far more than an install takes). A register thread
+ * still running after that is left to finish on its own, and the reset ends
+ * there with SF_TROPHY_UNREGISTERED.
+ */
+#define SF_TROPHY_POLL_US     10000
+#define SF_TROPHY_START_POLLS 100
+#define SF_TROPHY_END_POLLS   2000
+
+/*
+ * The helper's thread, made as the game makes its own trophy threads (0x984FA0,
+ * 0x98535C): the game's priority, 1001 (the main thread's too, from the
+ * process parameters), 16 KB of stack, not joinable, and the register thread's
+ * name, "NPTrophyRegister" at 0xB16ACC, since the helper may carry no string of
+ * its own. Its descriptor's TOC is the game's, 0xC0A4E0, which every
+ * descriptor in the game's .opd carries (0xBF83A8, the register thread's,
+ * among them): the game routines the thread calls run on it.
+ */
+#define SF_TROPHY_THREAD_PRIO  0x000003E9
+#define SF_TROPHY_THREAD_STACK 0x00004000
+#define SF_TROPHY_THREAD_NAME  0x00B16ACC
+#define SF_GAME_TOC            0x00C0A4E0
 
 /* ---------------------------------------------------------- game functions */
 
@@ -277,5 +353,15 @@
 /* Build 53: the trophy object's destroy and register, both taking the object. */
 #define SF_FN_TROPHY_DESTROY  0x00984E40
 #define SF_FN_TROPHY_REGISTER 0x00984FA0
+
+/*
+ * Build 53: the game's import stubs for sysPrxForUser's sys_ppu_thread_create
+ * and sys_ppu_thread_exit, the ones its trophy code calls (0x98509C,
+ * 0x98589C). A stub loads the library's TOC into r2 and leaves the caller to
+ * take its own back from 40(r1), where the stub saved it, as every call to one
+ * in the game does with `ld r2,40(r1)`; sfhelper.c does the same.
+ */
+#define SF_FN_PPU_THREAD_CREATE 0x00AEF604
+#define SF_FN_PPU_THREAD_EXIT   0x00AEF824
 
 #endif /* QWARK_SF_RAC3_H */

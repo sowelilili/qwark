@@ -38,6 +38,7 @@
 typedef unsigned char      sf_u8;
 typedef unsigned short     sf_u16;
 typedef unsigned int       sf_u32;
+typedef unsigned long long sf_u64;
 
 /*
  * The three address widths the helper ever reads or writes. Everything the game
@@ -113,6 +114,16 @@ int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
 /* Build 53: the game's trophy object's destroy and register (sf_rac3.h). */
 void sf_trophy_destroy(sf_u32 obj);
 void sf_trophy_register(sf_u32 obj);
+
+/*
+ * Build 53: the game's import stubs for thread creation and exit (sf_rac3.h).
+ * Every pointer either takes is a 32-bit address in a 64-bit register, as the
+ * game's own calls pass them: `id` is on the caller's stack, which is below
+ * 4 GB. A call to the first clobbers r2; sfhelper.c restores it.
+ */
+int  sf_ppu_thread_create(sf_u64 *id, sf_u32 entry, sf_u64 arg, sf_u32 prio,
+                          sf_u32 stacksize, sf_u64 flags, sf_u32 name);
+void sf_ppu_thread_exit(sf_u64 value) __attribute__((noreturn));
 #endif
 
 #endif /* QWARK_SFHELPER_H */

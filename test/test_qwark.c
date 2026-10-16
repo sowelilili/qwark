@@ -6056,6 +6056,7 @@ static void test_manip_trigger_rac3(void)
  * signed-in user 1 have them (rac3.h, sf_rac3.h).
  */
 #define R3T_TROPHY_BYTE   0x00D9FF1Cu
+#define R3T_BUSY_BYTE     0x00D9FF1Du   /* the helper's: its reset thread runs */
 #define R3T_OBJ_PTR       0x00CB150Cu
 #define R3T_OBJ           0x00D1CC14u
 #define R3T_OBJ_THREAD    (R3T_OBJ + 0x188u)
@@ -6073,7 +6074,11 @@ static void test_manip_trigger_rac3(void)
 /* How long an auto request the helper refused waits to ask again (rac3_panel.c). */
 #define R3T_RETRY_TICKS   30
 
-/* 14 files, so a delete of 8 a tick takes two passes and a third to finish. */
+/*
+ * 14 files, so a delete of 8 a tick takes two passes and a third to find
+ * nothing left but the two .SFM files, which go on a fourth, and the folder on a
+ * fifth.
+ */
 #define R3T_TROPHY_FILES  14
 
 static u8 r3t_byte(void)
@@ -6094,6 +6099,7 @@ static void r3t_trophy_game(void)
 	host_poke(R3T_COMMID_BLK + 4u, id, sizeof(id));
 	poke32(R3T_FILL_SITE, R3T_FILL_WORD);
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	host_poke(R3T_BUSY_BYTE, (const u8 *)"\x00", 1);
 }
 
 static void r3t_write(const char *dir, const char *name, const char *text)
@@ -6131,8 +6137,9 @@ static void r3t_trophy_dir(const char *dir, const char *commid, int subdir)
 	qstrcat(conf, sizeof(conf), commid);
 	qstrcat(conf, sizeof(conf), "</npcommid>\n</trophyconf>\n");
 	r3t_write(dir, "TROPCONF.SFM", conf);
+	r3t_write(dir, "TROP.SFM", conf);
 	r3t_write(dir, "TROPUSR.DAT", "unlocks");
-	for (i = 0; i < R3T_TROPHY_FILES - 2; i++) {
+	for (i = 0; i < R3T_TROPHY_FILES - 3; i++) {
 		name[0] = 0;
 		qstrcat(name, sizeof(name), "TROP0");
 		name[5] = (char)('0' + i / 10);
@@ -6185,6 +6192,18 @@ static u32 r3t_files(const char *dir)
 	}
 	plat_dir_close(&d);
 	return n;
+}
+
+/* Whether the file `name` is in `dir`. */
+static int r3t_file_there(const char *dir, const char *name)
+{
+	char path[160];
+
+	path[0] = 0;
+	qstrcat(path, sizeof(path), dir);
+	qstrcat(path, sizeof(path), "/");
+	qstrcat(path, sizeof(path), name);
+	return plat_path_exists(path, NULL, NULL);
 }
 
 static int r3t_dir_there(const char *dir)
@@ -6242,8 +6261,8 @@ static void test_manip_trophies(void)
 		check(ngroups == 6 && memcmp(out + 2 + 5 * 24, "Trophies", 8) == 0,
 		      "DESCRIBE has a sixth group, Trophies");
 		check(reset != NULL && reset[1] == FEATURE_ACTION && reset[2] == 5 &&
-		      memcmp(reset + 16, "Reset trophies (freezes ~3 s)", 30) == 0,
-		      "Reset trophies (21) is an ACTION under it, and its label says the game freezes");
+		      memcmp(reset + 16, "Reset trophies", 15) == 0,
+		      "Reset trophies (21) is an ACTION under it, and its label no longer warns of a freeze");
 		check(autor != NULL && autor[1] == FEATURE_TOGGLE && autor[2] == 5 &&
 		      memcmp(autor + 16, "Reset trophies on Veldin load", 30) == 0,
 		      "and the auto toggle (39) a TOGGLE beside it that says when it runs");
@@ -6275,9 +6294,24 @@ static void test_manip_trophies(void)
 			check(o != NULL && o->api_trophy == 0, "the other three games' helpers have none");
 		}
 	}
-	check(sd != NULL && sd->ncaves == 2 && sd->caves[1].addr == 0x009808C0u &&
+	check(sd != NULL && sd->ncaves == 3 && sd->caves[1].addr == 0x009808C0u &&
 	      sd->caves[1].addr + sd->caves[1].len <= 0x00980AC0u,
 	      "and the reset is the second cave, inside 0x9808C0..0x980AC0");
+	check(sd != NULL && sd->ncaves == 3 && sd->caves[2].addr == 0x00980380u &&
+	      sd->caves[2].addr + sd->caves[2].len <= 0x00980580u,
+	      "and its thread the third, inside 0x980380..0x980580, short of 0x980580");
+	if (sd != NULL && sd->ncaves == 3) {
+		/*
+		 * The thread's descriptor, at the head of its cave: an entry inside
+		 * that cave and the game's TOC, as the game's own descriptors carry it.
+		 */
+		u32 entry = be32_get(sd->caves[2].bytes);
+
+		check(entry > 0x00980380u && entry < 0x00980580u && (entry & 3u) == 0,
+		      "the thread cave starts with a descriptor whose entry is code in that cave");
+		check_eq_u64(be32_get(sd->caves[2].bytes + 4), 0x00C0A4E0u,
+		             "and whose TOC is the game's, 0xC0A4E0");
+	}
 
 	/* The install zeroes the fourth byte with the other three. */
 	r3t_trophy_game();
@@ -6289,6 +6323,9 @@ static void test_manip_trophies(void)
 		host_peek(0x009808C0u, head, sizeof(head));
 		check(sd != NULL && memcmp(head, sd->caves[1].bytes, sizeof(head)) == 0,
 		      "the reset's cave is written with the helper's");
+		host_peek(0x00980380u, head, sizeof(head));
+		check(sd != NULL && sd->ncaves == 3 && memcmp(head, sd->caves[2].bytes, sizeof(head)) == 0,
+		      "and so is its thread's");
 	}
 
 	/* ------------------------------------------------------- refusals */
@@ -6386,8 +6423,13 @@ static void test_manip_trophies(void)
 	pump(1);
 	check(r3t_files(R3T_TROPHY_DIR) == R3T_TROPHY_FILES - 8,
 	      "eight files go on the first tick");
-	pump(2);
-	check(!r3t_dir_there(R3T_TROPHY_DIR), "then the rest, and the folder");
+	pump(1);
+	check(r3t_files(R3T_TROPHY_DIR) == 2 && r3t_file_there(R3T_TROPHY_DIR, "TROPCONF.SFM") &&
+	      r3t_file_there(R3T_TROPHY_DIR, "TROP.SFM"),
+	      "the rest on the next, but for the two files that say whose set it is, which go last");
+	check_eq_u64(r3t_byte(), 0, "and the game is still not asked");
+	pump(3);
+	check(!r3t_dir_there(R3T_TROPHY_DIR), "then those two, and the folder");
 	check(r3t_dir_there(R3T_OTHER_DIR) && r3t_files(R3T_OTHER_DIR) == R3T_TROPHY_FILES,
 	      "the RaC2 set beside it is untouched");
 	check(r3t_dir_there(R3T_TROPHY_ROOT), "and so is the trophy folder itself");
@@ -6416,6 +6458,115 @@ static void test_manip_trophies(void)
 	pump(2);
 	check_eq_u64(r3t_byte(), 0, "and then withdrawn");
 
+	/*
+	 * The helper's thread answers 4 when the game's register thread had not got
+	 * its trophies back by the end; qwark logs it and the reset is over.
+	 */
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "another reset");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "asks the game");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
+	pump(2);
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x04", 1);
+	pump(1);
+	check_eq_u64(r3t_byte(), 0, "an answer that the game's trophies were not back is put back to 0");
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "and that reset is over: another is accepted");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "which asks again");
+
+	/*
+	 * A reset that outlives qwark's watch, a minute of the helper's thread
+	 * running, is let go. The helper's busy byte holds the next reset off while
+	 * that thread runs; once it is down, whatever the request byte says is over.
+	 */
+	host_poke(R3T_BUSY_BYTE, (const u8 *)"\x01", 1);
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
+	pump(60 * 120 - 10);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
+	      "the helper's thread may run for most of a minute, and qwark waits it out");
+	pump(20);
+	check_eq_u64(r3t_byte(), 3, "after a minute qwark lets it go, leaving the byte to the thread");
+	host_write_log_reset();
+	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
+	      "whose busy byte still holds a new reset off");
+	check_eq_u64(host_write_log_count(), 0, "before anything is looked for or written");
+	host_poke(R3T_BUSY_BYTE, (const u8 *)"\x00", 1);
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x04", 1);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
+	      "until it answers: an answer nobody read does not hold the next reset off");
+	check_eq_u64(r3t_byte(), 0, "and is put back to 0");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "before the game is asked again");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	pump(1);
+
+	/*
+	 * A refusal that lands just as qwark withdraws a request, or a 3 left with no
+	 * thread of the helper's running, is as over.
+	 */
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\xFE", 1);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "a stale refusal does not hold a reset off");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "which asks");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	pump(1);
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "nor does a 3 with the busy byte down");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "which asks too");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	pump(1);
+
+	/* ------------------------------------------- a file that will not go */
+
+	group("trophies: a file that will not go stops the reset before the game is asked");
+
+	r3t_trophy_dir(R3T_TROPHY_DIR, "NPWR02347_00", 0);
+	poke32(R3T_FILL_SITE, R3T_FILL_WORD);
+	{
+		u32 notes = host_notify_count();
+		plat_file_t held;
+		int open = plat_file_open(R3T_TROPHY_DIR "/TROPUSR.DAT", PLAT_OPEN_READ, &held) == 0;
+
+		check(open, "TROPUSR.DAT held open, which the host cannot delete then");
+		check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "the reset is accepted");
+		pump(4);
+		check(r3t_dir_there(R3T_TROPHY_DIR) && r3t_file_there(R3T_TROPHY_DIR, "TROPUSR.DAT"),
+		      "the file stays, and the folder with it");
+		check(r3t_file_there(R3T_TROPHY_DIR, "TROPCONF.SFM") &&
+		      r3t_file_there(R3T_TROPHY_DIR, "TROP.SFM"),
+		      "as do the two files that say whose set it is");
+		check(r3t_files(R3T_TROPHY_DIR) == 3, "the rest are gone");
+		check_eq_u64(r3t_byte(), 0, "the game is not asked");
+		check_eq_u64(r2_word(R3T_FILL_SITE), R3T_FILL_WORD, "and its cache fill is not touched");
+		check(host_notify_count() == notes + 1 &&
+		      qstreq(host_notify_last(), "Trophy reset stopped: a trophy file could not be deleted"),
+		      "the console says the reset stopped");
+		check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
+		      "the reset is over, so another is accepted: the folder is still found as UYA's");
+		pump(4);
+		check(r3t_files(R3T_TROPHY_DIR) == 3 && r3t_byte() == 0,
+		      "and stops at the same file, trying nothing twice");
+		if (open) plat_file_close(held);
+	}
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "with the file free, the next reset");
+	pump(4);
+	check(!r3t_dir_there(R3T_TROPHY_DIR), "deletes what was left, the two .SFM files last");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "and asks the game");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	pump(1);
+
+	plat_dir_create(R3T_TROPHY_DIR);
+	check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
+	      "an empty folder of the set's name is accepted: nothing in it identifies it or can be lost");
+	pump(2);
+	check(!r3t_dir_there(R3T_TROPHY_DIR), "and is removed");
+	pump(1);
+	check_eq_u64(r3t_byte(), 1, "before the game is asked");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+	pump(1);
+
 	/* ----------------------------------------------------- the toggle */
 
 	group("trophies: the auto toggle asks inside the load into Veldin");
@@ -6426,6 +6577,12 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_byte(), 0, "with the toggle off a Veldin load asks for nothing");
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and deletes nothing");
 
+	savefile_set_enabled(0);
+	check(features_set(F3_AUTO_TROPHIES, 1) == ST_UNSUPPORTED,
+	      "with the savefile helper switched off the auto toggle will not turn on");
+	check(features_trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED, "nor the button work");
+	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and nothing is deleted");
+	savefile_set_enabled(1);
 	check(features_set(F3_AUTO_TROPHIES, 1) == ST_OK, "the auto toggle on");
 	poke32(R3T_DEST, 1);
 	poke32(R3T_REQUEST, 1);
@@ -6440,7 +6597,7 @@ static void test_manip_trophies(void)
 	poke32(R3T_OBJ_THREAD, 0);
 	pump(1);
 	check(r3t_files(R3T_TROPHY_DIR) < R3T_TROPHY_FILES, "it starts as soon as that is over, in the load");
-	pump(4);
+	pump(5);
 	check(!r3t_dir_there(R3T_TROPHY_DIR), "the folder goes");
 	check_eq_u64(r3t_byte(), 2, "and the game is asked for the reset only inside the load");
 
@@ -6468,13 +6625,21 @@ static void test_manip_trophies(void)
 	r3t_veldin_loaded();
 
 	r3t_trophy_dir(R3T_TROPHY_DIR, "NPWR02347_00", 0);
-	r3t_veldin_loading();
-	pump(1);
-	poke32(R3T_REQUEST, 0);
-	poke32(R3T_MODE, 0);
-	pump(4);
-	check(!r3t_dir_there(R3T_TROPHY_DIR), "a load that ends during the delete still loses the folder");
-	check_eq_u64(r3t_byte(), 0, "but the game is not asked outside the load");
+	{
+		u32 notes = host_notify_count();
+
+		r3t_veldin_loading();
+		pump(1);
+		poke32(R3T_REQUEST, 0);
+		poke32(R3T_MODE, 0);
+		pump(5);
+		check(!r3t_dir_there(R3T_TROPHY_DIR), "a load that ends during the delete still loses the folder");
+		check_eq_u64(r3t_byte(), 0, "but the game is not asked outside the load");
+		check(host_notify_count() > notes &&
+		      qstreq(host_notify_last(),
+		             "Trophy reset: the Veldin load ended first; the next Veldin load finishes it"),
+		      "and the console says the next load into Veldin finishes the reset");
+	}
 	r3t_veldin_loaded();
 
 	group("trophies: the auto flag keeps the toggle across a boot");
@@ -13703,14 +13868,19 @@ static void test_command_port(void)
  */
 #define SF53_STAMP_RAC1 0x2A9B51FAu
 #define SF53_STAMP_RAC2 0x35EE054Eu
-#define SF53_STAMP_RAC3 0xE167FC1Eu   /* with the trophy reset */
+#define SF53_STAMP_RAC3 0x11999D37u   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
 /* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
 #define SF52_STAMP_RAC3 0x038F1389u
 
-/* Whether every word row of a SAVEFILE_PATCH reply lands in [lo, hi) or on `hook`. */
-static int sf53_rows_within(const u8 *reply, u32 len, u32 lo1, u32 hi1, u32 lo2, u32 hi2, u32 hook)
+/*
+ * Whether every word row of a SAVEFILE_PATCH reply lands in one of the [lo, hi)
+ * ranges or on `hook`. RaC3's helper has three caves since its trophy reset got
+ * a thread; the other games pass 0, 0 for the ranges they do not use.
+ */
+static int sf53_rows_within(const u8 *reply, u32 len, u32 lo1, u32 hi1, u32 lo2, u32 hi2,
+                            u32 lo3, u32 hi3, u32 hook)
 {
 	u32 n = be16_get(reply);
 	u32 off = SAVEFILE_PATCH_HEAD;
@@ -13721,7 +13891,8 @@ static int sf53_rows_within(const u8 *reply, u32 len, u32 lo1, u32 hi1, u32 lo2,
 
 		if (off + SAVEFILE_PATCH_ROW > len) return 0;
 		a = be32_get(reply + off);
-		if (!((a >= lo1 && a + 4u <= hi1) || (a >= lo2 && a + 4u <= hi2) || a == hook)) return 0;
+		if (!((a >= lo1 && a + 4u <= hi1) || (a >= lo2 && a + 4u <= hi2) ||
+		      (a >= lo3 && a + 4u <= hi3) || a == hook)) return 0;
 		off += SAVEFILE_PATCH_ROW;
 	}
 	return 1;
@@ -13789,7 +13960,7 @@ static void test_savefile_build53(void)
 		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC1 patch");
 		sf_check_patch_words(d, g_sf_patch, len);
 		check(sf53_rows_within(g_sf_patch, len, 0x004F6800u, 0x004F6874u,
-		                       0x004F8000u, 0x004F8C68u, 0x0011E3A0u),
+		                       0x004F8000u, 0x004F8C68u, 0, 0, 0x0011E3A0u),
 		      "every word it writes is in one of the two caves or is the hook word");
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01080000u &&
 		      sf53_byte_addr(g_sf_patch, 1) == 0x01080001u &&
@@ -13822,7 +13993,7 @@ static void test_savefile_build53(void)
 		check(boot_and_wait("NPEA00386"), "RaC2 boots");
 		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC2 patch");
 		sf_check_patch_words(d, g_sf_patch, len);
-		check(sf53_rows_within(g_sf_patch, len, 0x0113EC64u, 0x011414FCu, 0, 0, 0x00B086B0u),
+		check(sf53_rows_within(g_sf_patch, len, 0x0113EC64u, 0x011414FCu, 0, 0, 0, 0, 0x00B086B0u),
 		      "every word it writes is in the new cave or is the hook word");
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
 		check(d->caves[0].addr + d->caves[0].len <= 0x01141400u,
@@ -13864,11 +14035,13 @@ static void test_savefile_build53(void)
 
 		/*
 		 * Build 53: and the trophy reset, a second cave of its own at the top
-		 * of the strictly dead 0x980304..0x980AC0 (sf_rac3.h); the helper is
-		 * still the first.
+		 * of the strictly dead 0x980304..0x980AC0 (sf_rac3.h), and a third
+		 * further down for the thread it runs on; the helper is still the
+		 * first.
 		 */
-		check(d != NULL && d->ncaves == 2, "RaC3 has two caves: the helper and the trophy reset");
-		if (d == NULL || d->ncaves != 2) return;
+		check(d != NULL && d->ncaves == 3,
+		      "RaC3 has three caves: the helper, the trophy reset and the reset's thread");
+		if (d == NULL || d->ncaves != 3) return;
 
 		check_eq_u64(d->caves[0].addr, 0x00980AC0u, "it is where it was, 0x980AC0");
 		check(d->caves[0].addr + d->caves[0].len <= 0x00980F00u,
@@ -13878,6 +14051,9 @@ static void test_savefile_build53(void)
 		check_eq_u64(d->caves[1].addr, 0x009808C0u, "the trophy reset is at 0x9808C0");
 		check(d->caves[1].addr >= 0x00980304u && d->caves[1].addr + d->caves[1].len <= 0x00980AC0u,
 		      "inside the dead span and short of the helper, its SF_CAVE_TROPHY_END");
+		check_eq_u64(d->caves[2].addr, 0x00980380u, "the reset's thread is at 0x980380");
+		check(d->caves[2].addr + d->caves[2].len <= 0x00980580u,
+		      "and stops short of 0x980580, its SF_CAVE_TROPHY_THREAD_END, below the reset's");
 		check_eq_u64(d->api_trophy, 0x00D9FF1Cu, "and its request byte follows the pause's words");
 		check_eq_u64(d->hooks[0].addr, 0x0097CBA4u, "the hook site has not moved");
 		check_eq_u64(d->hooks[0].value, 0x48003F1Du, "nor has the hook word, bl 0x980AC0");
@@ -13892,13 +14068,13 @@ static void test_savefile_build53(void)
 		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC3 patch");
 		sf_check_patch_words(d, g_sf_patch, len);
 		check(sf53_rows_within(g_sf_patch, len, 0x00980AC0u, 0x00980F00u,
-		                       0x009808C0u, 0x00980AC0u, 0x0097CBA4u),
-		      "every word it writes is in one of the two caves, short of the switch, or is the hook word");
+		                       0x009808C0u, 0x00980AC0u, 0x00980380u, 0x00980580u, 0x0097CBA4u),
+		      "every word it writes is in one of the three caves, short of the switch, or is the hook word");
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x00D9FF00u &&
 		      sf53_byte_addr(g_sf_patch, 1) == 0x00D9FF01u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x00D9FF02u,
 		      "and the bytes it zeroes are the three request bytes");
-		check_eq_u64(len, 2924, "the reply is 2924 bytes, the trophy reset included");
+		check_eq_u64(len, 3596, "the reply is 3596 bytes, the trophy reset and its thread included");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
 		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
 		      "which is not build 52's, so a patch from then reads as another build's");

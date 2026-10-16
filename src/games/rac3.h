@@ -89,10 +89,16 @@
 #define RAC3_TROPHY_FILL_WORD  0x9087000Cu
 #define RAC3_TROPHY_FILL_NOP   0x60000000u
 
-/* What qwark writes in `api_trophy`; sf_rac3.h has the helper's side. */
-#define RAC3_TROPHY_NOW        1u
-#define RAC3_TROPHY_IN_LOAD    2u
-#define RAC3_TROPHY_RUNNING    3u
+/*
+ * What qwark writes in `api_trophy`, and what the helper answers there;
+ * sf_rac3.h has the helper's side. RUNNING lasts while the helper's own thread
+ * resets the game's trophies, a few seconds the game goes on through, and the
+ * thread answers 0, or UNREGISTERED when the game's trophies did not come back.
+ */
+#define RAC3_TROPHY_NOW          1u
+#define RAC3_TROPHY_IN_LOAD      2u
+#define RAC3_TROPHY_RUNNING      3u
+#define RAC3_TROPHY_UNREGISTERED 4u
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu

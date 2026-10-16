@@ -156,6 +156,22 @@ for g in $GAMES; do
 	fi
 	[ -n "$api_trophy" ] || api_trophy=0
 
+	# Build 53, optional: the reset's thread, in a cave of its own (RaC3's trophy
+	# reset did not fit in one). Only beside a reset cave, below it, and with a
+	# limit of its own.
+	thread_org=$(getdef "$hdr" SF_CAVE_TROPHY_THREAD)
+	thread_end=$(getdef "$hdr" SF_CAVE_TROPHY_THREAD_END)
+	if [ -n "$thread_org" ]; then
+		[ -n "$thread_end" ] && [ -n "$trophy_org" ] || {
+			echo "sfhelper: $hdr has SF_CAVE_TROPHY_THREAD without SF_CAVE_TROPHY_THREAD_END and SF_CAVE_TROPHY" >&2
+			exit 1
+		}
+		[ $((thread_end)) -le $((trophy_org)) ] || {
+			echo "sfhelper: $g trophy thread cave would run into the reset's at $trophy_org" >&2
+			exit 1
+		}
+	fi
+
 	if [ -f "$stub" ]; then
 		stub_org=$(need "$hdr" SF_CAVE_STUB)
 		hook_sym=.sf_input_hook
@@ -182,20 +198,24 @@ for g in $GAMES; do
 	fi
 
 	# A game with no trophy cave puts the empty section where the stub goes,
-	# which is never above the helper's cave, so the map's counter only moves on.
+	# which is never above the helper's cave, so the map's counter only moves on;
+	# one with no thread cave puts that empty section where the reset's goes.
 	trophy_ld=${trophy_org:-$stub_org}
-	sed -e "s/@TROPHY_ORG@/$trophy_ld/" -e "s/@STUB_ORG@/$stub_org/" -e "s/@TEXT_ORG@/$cave/" \
+	thread_ld=${thread_org:-$trophy_ld}
+	sed -e "s/@THREAD_ORG@/$thread_ld/" -e "s/@TROPHY_ORG@/$trophy_ld/" \
+		-e "s/@STUB_ORG@/$stub_org/" -e "s/@TEXT_ORG@/$cave/" \
 		"$DIR/sfhelper.ld.in" > "$OUT/$g.ld"
 
 	# shellcheck disable=SC2086
 	$LD -T "$OUT/$g.ld" $defsyms -o "$OUT/$g.elf" $objs
 
-	# Anything the compiler put outside the two sections the map places would be
+	# Anything the compiler put outside the sections the map places would be
 	# dropped silently by the section-by-section cut below, so refuse it here
 	# instead: a helper that needs .rodata or .data is a helper to rewrite. An
 	# empty section is not a problem; ld leaves an empty long-branch table behind.
 	unexpected=$($OBJDUMP -h "$OUT/$g.elf" | tr -d '\r' |
-		awk '$1 ~ /^[0-9]+$/ && $3 !~ /^0+$/ && $2 != ".text" && $2 != ".text.stub" && $2 != ".text.trophy" { print $2 }')
+		awk '$1 ~ /^[0-9]+$/ && $3 !~ /^0+$/ && $2 != ".text" && $2 != ".text.stub" &&
+		     $2 != ".text.trophy" && $2 != ".text.trophy_thread" { print $2 }')
 	[ -z "$unexpected" ] || {
 		echo "sfhelper: $g put code or data in unexpected sections: $unexpected" >&2
 		exit 1
@@ -203,15 +223,16 @@ for g in $GAMES; do
 
 	caves=""
 	ncaves=0
-	for section in .text.stub .text .text.trophy; do
+	for section in .text.stub .text .text.trophy .text.trophy_thread; do
 		bin=$OUT/$g$(echo "$section" | tr . _).bin
 		$OBJCOPY -O binary --only-section=$section "$OUT/$g.elf" "$bin" 2>/dev/null || true
 		[ -s "$bin" ] || continue
 
 		case "$section" in
-		.text.stub)   addr=$stub_org ;;
-		.text.trophy) addr=$trophy_org ;;
-		*)            addr=$cave ;;
+		.text.stub)          addr=$stub_org ;;
+		.text.trophy)        addr=$trophy_org ;;
+		.text.trophy_thread) addr=$thread_org ;;
+		*)                   addr=$cave ;;
 		esac
 		name="sf_${g}_$(echo "$section" | sed 's/^\.//; s/\./_/g')"
 		size=$(wc -c < "$bin" | tr -d ' ')
@@ -234,6 +255,27 @@ for g in $GAMES; do
 				exit 1
 			fi
 		fi
+		if [ "$section" = ".text.trophy_thread" ]; then
+			[ -n "$thread_org" ] || {
+				echo "sfhelper: $g has trophy thread code but no SF_CAVE_TROPHY_THREAD" >&2
+				exit 1
+			}
+			if [ $((addr + size)) -gt $((thread_end)) ]; then
+				echo "sfhelper: $g trophy thread is $size bytes and runs past $thread_end" >&2
+				exit 1
+			fi
+		fi
+
+		# The bytes are written at the cave's address, so the link must have put
+		# the section exactly there. One that asks for more alignment than its
+		# cave's address has (the trophy thread's descriptor wants eight bytes)
+		# starts further on, and every byte of it would land short of its place.
+		vma=$($OBJDUMP -h "$OUT/$g.elf" | tr -d '\r' |
+			awk -v s="$section" '$2 == s { print "0x" $4 }')
+		[ -n "$vma" ] && [ $((vma)) -eq $((addr)) ] || {
+			echo "sfhelper: $g $section linked at ${vma:-nowhere}, not at its cave $addr" >&2
+			exit 1
+		}
 
 		{
 			echo "/* $g, $section at $addr, $size bytes */"
@@ -312,7 +354,10 @@ cat > "$GEN_H" <<'EOF'
 #include "../core/mem.h"
 #include "../core/proto.h"
 
-/* One run of bytes at one address. A game has one, or two when it needs a stub. */
+/*
+ * One run of bytes at one address. A game has one, or two when it needs a stub;
+ * RaC3 has three, the helper, its trophy reset and the reset's thread.
+ */
 struct sf_cave {
 	u32 addr;
 	const u8 *bytes;
@@ -370,9 +415,10 @@ EOF
  * from the SDK's Cygwin shell.
  *
  * Each array is one code cave: the compiled helper, for RaC1 and Deadlocked the
- * input hook stub that goes in front of it, and for RaC3 the trophy reset. Each
- * hook word is the branch that reaches a cave, computed from the address the
- * helper actually linked at rather than copied out of a mod.
+ * input hook stub that goes in front of it, and for RaC3 the trophy reset and
+ * the thread it runs on. Each hook word is the branch that reaches a cave,
+ * computed from the address the helper actually linked at rather than copied
+ * out of a mod.
  */
 #include "sfhelper_bins.h"
 

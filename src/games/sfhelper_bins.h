@@ -18,7 +18,10 @@
 #include "../core/mem.h"
 #include "../core/proto.h"
 
-/* One run of bytes at one address. A game has one, or two when it needs a stub. */
+/*
+ * One run of bytes at one address. A game has one, or two when it needs a stub;
+ * RaC3 has three, the helper, its trophy reset and the reset's thread.
+ */
 struct sf_cave {
 	u32 addr;
 	const u8 *bytes;

@@ -1,28 +1,35 @@
 /*
- * The savefile helper's link map. build.sh substitutes the three placeholders
+ * The savefile helper's link map. build.sh substitutes the four placeholders
  * below with the game's cave addresses and hands the result to ppu-lv2-ld.
  *
- * Three output sections, because RaC1 needs its input hook at one cave and the
- * compiled helper at another, and RaC3 (build 53) its trophy reset at a third; a
- * game with no stub or no reset gets the stub's address for those and the empty
- * section falls away.
+ * Four output sections, because RaC1 needs its input hook at one cave and the
+ * compiled helper at another, and RaC3 (build 53) its trophy reset at a third and
+ * the reset's thread at a fourth; a game with no stub or no reset gets the
+ * stub's address for those and the empty section falls away.
  *
- * The reset's section comes first. Its cave is below the helper's, so its place
- * in the map keeps the location counter going forward, and the first statement
- * that matches an input section is the one that gets it: placed after .text,
- * .text.trophy would be swallowed by .text's own `.text.*`.
+ * The reset's sections come first, the thread's lowest. Their caves are below
+ * the helper's, the thread's below the reset's, so their place in the map keeps
+ * the location counter going forward, and the first statement that matches an
+ * input section is the one that gets it: placed after .text, .text.trophy would
+ * be swallowed by .text's own `.text.*`.
  *
  * Everything the compiler would normally put beside the code is discarded rather
  * than placed. .opd and .toc are the 64-bit ABI's function descriptors and TOC,
  * which nothing here uses: the helper reaches the game only through symbols the
  * link binds to hard addresses, and it has no global of its own to describe.
- * A section turning up here that is not in this list is a mistake in the helper,
- * not something to make room for, so the build fails on it.
+ * The one descriptor anything needs, the reset thread's, which the game's
+ * sys_ppu_thread_create reads, is written out by hand inside
+ * .text.trophy_thread (sfhelper.c). A section turning up here that is not in
+ * this list is a mistake in the helper, not something to make room for, so the
+ * build fails on it.
  */
 OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 
 SECTIONS
 {
+	. = @THREAD_ORG@;
+	.text.trophy_thread : { *(.text.trophy_thread) }
+
 	. = @TROPHY_ORG@;
 	.text.trophy : { *(.text.trophy) }
 

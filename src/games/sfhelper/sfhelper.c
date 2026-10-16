@@ -34,7 +34,9 @@
  * 52.
  *
  * Build 53 also gives RaC3 a fourth request byte, api_trophy, and a second cave
- * for what it asks for: the trophy reset rc3-save carried (sf_trophy_reset).
+ * for what it asks for: the trophy reset rc3-save carried (sf_trophy_reset),
+ * which since the first hardware test runs on a thread of the helper's own, in
+ * a third cave (sf_trophy_worker).
  *
  * qwark reads and writes the aside buffer with ordinary memory reads, which is
  * the whole point: the save never becomes a file on the console. The mods this
@@ -51,7 +53,9 @@
  *     one eight bytes wide; the game's own pointers are four. Addresses travel
  *     as sf_u32 and are only turned into a pointer at the moment of a call.
  *   - Every game function is an undefined symbol the link binds to a hard
- *     address, so a call is one relative branch and r2 is left alone.
+ *     address, so a call is one relative branch and r2 is left alone. The one
+ *     exception, RaC3's sys_ppu_thread_create, is a call through the game's
+ *     import stub, and the helper takes the game's r2 back right after it.
  *   - The copy counter lives at a fixed address rather than on the stack, as it
  *     does in all four mods this comes from. It costs nothing and it lets qwark
  *     watch a long copy go by.
@@ -277,9 +281,8 @@ static int sf_game_idle(void)
 #if SF_GAME == SF_RAC3
 /*
  * Build 53. lv2's sys_timer_usleep, syscall 141, the call the game's own trophy
- * threads wait with (0x985304, 0x985A84). rc3-save waited with sys_timer_sleep,
- * 142, a second at a time; the wait is the same. The registers the kernel may
- * change are the ones PSL1GHT's syscall macros name.
+ * threads wait with (0x985304, 0x985A84). The registers the kernel may change
+ * are the ones PSL1GHT's syscall macros name.
  */
 static __inline__ void sf_usleep(sf_u32 us) __attribute__((always_inline));
 static __inline__ void sf_usleep(sf_u32 us)
@@ -295,55 +298,162 @@ static __inline__ void sf_usleep(sf_u32 us)
 }
 
 /*
- * Build 53. The trophy reset, rc3-save 1.1's handler (rack.bin 0x980E08) call
- * for call; sf_rac3.h has the object and what each step does. It lives in a cave
- * of its own, at SF_CAVE_TROPHY, because the helper's cave has no room for it.
+ * Build 53. The trophy reset, rc3-save 1.1's handler (rack.bin 0x980E08) made
+ * to run beside the game rather than in it; sf_rac3.h has the object and what
+ * each step does.
  *
- * It runs on the game's main thread, from the pad routine, and it blocks that
- * thread for its three waits: the game stands still for three seconds. That is
- * why the auto toggle's request (SF_TROPHY_IN_LOAD) is refused unless the game
- * is in the transition a planet load runs (mode 6, the load request up), which
- * for a run is the load into Veldin whose end starts the timer: the three
- * seconds go into that load, never into the run.
+ * Up to now the whole reset ran here, on the game's main thread, from the pad
+ * routine, with rc3-save's three one-second sleeps between its calls: the game
+ * stood still for three seconds, which on hardware was the freeze the Reset
+ * trophies button left. Now the helper only takes the request on the main
+ * thread and starts a thread of its own, sf_trophy_worker below, which makes
+ * the game's calls and does the waiting while the game goes on. The two halves
+ * have a cave each: this one at SF_CAVE_TROPHY, the thread's at
+ * SF_CAVE_TROPHY_THREAD; the helper's own cave has no room for either.
  *
- * The request is refused, not held, when the object is not set up yet or one of
- * its threads is running: destroying the context under the register thread or
- * the unlock thread would leave either working on a handle that is gone. The
- * byte reads SF_TROPHY_RUNNING for as long as the reset runs, so qwark can tell
- * a reset under way from one not yet seen.
+ * What stays on the main thread is what has to happen inside one of the game's
+ * frames:
+ *
+ *   - The checks, as before. The request is refused, not held, when the object
+ *     is not set up yet or one of its threads is running (destroying the
+ *     context under the register thread or the unlock thread would leave
+ *     either working on a handle that is gone), when a reset of the helper's is
+ *     still running (SF_TROPHY_BUSY), or for the auto toggle's request
+ *     (SF_TROPHY_IN_LOAD) when the game is not in the transition a planet load
+ *     runs (mode 6, the load request up). That is still where the auto toggle
+ *     wants it: inside the load into Veldin that starts a run, after the last
+ *     run's trophies and before this run can win one.
+ *   - The game's registered byte (+4) put to 0, what the destroy would do. From
+ *     here on the award (0x98535C), which both of the game's ways to award a
+ *     trophy go through, drops every request, so no unlock thread of the
+ *     game's can start under the context the helper's thread is about to
+ *     destroy; the thread marks every trophy won in the cache before a
+ *     registration can put the byte back to 1, and the cache keeps the award
+ *     quiet from then on. A trophy earned while the reset runs is dropped, as
+ *     one earned before the game has registered at boot is.
+ *   - The thread's creation, through the game's own sys_ppu_thread_create stub
+ *     with the game's own settings for its trophy threads (sf_rac3.h). The stub
+ *     leaves r2 holding the library's TOC; the game's code after this call, and
+ *     the rest of the helper, expect the game's, which the stub saved at
+ *     40(r1), so it comes straight back from there. `id`, which the stub fills,
+ *     is on this function's stack, as the game's own calls keep it. If the
+ *     thread cannot be made, nothing has been destroyed: the registered byte
+ *     goes back to what it was and the request is refused.
+ *
+ * The request byte reads SF_TROPHY_RUNNING from this frame until the thread is
+ * done, so qwark can tell a reset under way from one not yet seen; the main
+ * thread's part takes a few microseconds of its frame.
+ *
+ * The thread, its descriptor and the waits are from the NPEA00387 executable;
+ * not yet run on hardware.
  */
+void sf_trophy_worker(sf_u64 arg) __attribute__((noreturn));
+
+/*
+ * The thread's descriptor, laid out as the game's own in its .opd: the entry,
+ * and the TOC it runs with, the game's. In the thread's cave, beside its code,
+ * since the helper has no data of its own; nothing writes it, and the link
+ * resolves the entry's address.
+ */
+#define SF_STR_(x) #x
+#define SF_STR(x)  SF_STR_(x)
+__asm__(
+	"	.pushsection .text.trophy_thread,\"ax\",@progbits\n"
+	"	.align 3\n"
+	"sf_trophy_opd:\n"
+	"	.long .sf_trophy_worker\n"
+	"	.long " SF_STR(SF_GAME_TOC) "\n"
+	"	.popsection\n");
+
 __attribute__((noinline, section(".text.trophy")))
 static void sf_trophy_reset(sf_u32 request)
 {
 	sf_u32 obj = SF_WORD(SF_TROPHY_OBJ_PTR);
-	sf_u32 n, i;
+	sf_u32 code = SF_API_REFUSED;
 
-	if (obj == 0 || SF_WORD(obj + SF_TROPHY_THREAD) != 0 ||
-	    (request == SF_TROPHY_IN_LOAD &&
-	     (SF_WORD(SF_GAME_MODE) != SF_MODE_SPACE || SF_WORD(SF_LOAD_REQUEST) == 0))) {
-		SF_BYTE(SF_API_TROPHY) = SF_API_REFUSED;
-		return;
+	if (obj != 0 && SF_WORD(obj + SF_TROPHY_THREAD) == 0 && SF_BYTE(SF_TROPHY_BUSY) == 0 &&
+	    (request == SF_TROPHY_NOW ||
+	     (SF_WORD(SF_GAME_MODE) == SF_MODE_SPACE && SF_WORD(SF_LOAD_REQUEST) != 0))) {
+		sf_u32 was = SF_BYTE(obj + SF_TROPHY_REGISTERED);
+		sf_u32 opd;
+		sf_u64 id;
+		int rc;
+
+		SF_BYTE(obj + SF_TROPHY_REGISTERED) = 0;
+		SF_BYTE(SF_TROPHY_BUSY) = 1;
+		SF_BYTE(SF_API_TROPHY) = SF_TROPHY_RUNNING;
+
+		__asm__("lis %0,sf_trophy_opd@h\n\tori %0,%0,sf_trophy_opd@l" : "=r"(opd));
+		rc = sf_ppu_thread_create(&id, opd, obj, SF_TROPHY_THREAD_PRIO,
+		                          SF_TROPHY_THREAD_STACK, 0, SF_TROPHY_THREAD_NAME);
+		__asm__ __volatile__("ld 2,40(1)" ::: "memory");
+		if (rc == 0) return;
+
+		SF_BYTE(obj + SF_TROPHY_REGISTERED) = was;
+		SF_BYTE(SF_TROPHY_BUSY) = 0;
 	}
+	SF_BYTE(SF_API_TROPHY) = code;
+}
 
-	SF_BYTE(SF_API_TROPHY) = SF_TROPHY_RUNNING;
+/*
+ * Build 53. The wait for the register thread the call before started; 1 once it
+ * is over, 0 when it is still running at the end of the wait (sf_rac3.h has the
+ * two steps and their limits): the thread word nonzero means it has started,
+ * and zero after that, or after the first step's polls, means it is over.
+ */
+__attribute__((noinline, section(".text.trophy_thread")))
+static int sf_trophy_wait(sf_u32 obj)
+{
+	sf_u32 n, started = 0;
 
-	sf_trophy_destroy(obj);
+	for (n = 0; n < SF_TROPHY_END_POLLS; n++) {
+		if (SF_WORD(obj + SF_TROPHY_THREAD) != 0) started = 1;
+		else if (started || n >= SF_TROPHY_START_POLLS) return 1;
+		sf_usleep(SF_TROPHY_POLL_US);
+	}
+	return 0;
+}
+
+/*
+ * Build 53. The helper's thread, started with the game's trophy object as its
+ * argument: rc3-save's handler, every trophy marked won in the cache, then
+ * destroy, register, destroy, register, each register waited out before the
+ * next step rather than given a second. The reset is done when the last
+ * register thread is, and the game has its trophies back if that thread got as
+ * far as the game info (+4). Then 10, 25 and 32 go back to locked, the busy
+ * byte is let go before the request byte is answered (qwark may ask again the
+ * moment it reads the answer), and the thread ends, as the game's own do,
+ * through sys_ppu_thread_exit. A wait that runs out stops the reset where it
+ * is rather than destroy the context under a registration still going; that
+ * register thread finishes on its own, and the cache is the reset's either way.
+ */
+__attribute__((noinline, section(".text.trophy_thread")))
+void sf_trophy_worker(sf_u64 arg)
+{
+	sf_u32 obj = (sf_u32)arg;
+	sf_u32 code = SF_TROPHY_UNREGISTERED;
+	sf_u32 n, i;
 
 	n = SF_WORD(obj + SF_TROPHY_COUNT);
 	if (n > SF_TROPHY_MAX) n = SF_TROPHY_MAX;
 	for (i = 0; i < n; i++) SF_WORD(obj + SF_TROPHY_FLAGS + i * 8) = 1;
+
+	for (i = 0; i < 2; i++) {
+		sf_trophy_destroy(obj);
+		sf_trophy_register(obj);
+		if (!sf_trophy_wait(obj)) break;
+	}
+	if (i == 2 && SF_BYTE(obj + SF_TROPHY_REGISTERED) != 0) code = 0;
+
 	SF_WORD(obj + SF_TROPHY_FLAGS + SF_TROPHY_KEEP_1 * 8) = 0;
 	SF_WORD(obj + SF_TROPHY_FLAGS + SF_TROPHY_KEEP_2 * 8) = 0;
 	SF_WORD(obj + SF_TROPHY_FLAGS + SF_TROPHY_KEEP_3 * 8) = 0;
 
-	sf_usleep(SF_TROPHY_WAIT_US);
-	sf_trophy_register(obj);
-	sf_usleep(SF_TROPHY_WAIT_US);
-	sf_trophy_destroy(obj);
-	sf_usleep(SF_TROPHY_WAIT_US);
-	sf_trophy_register(obj);
-
-	SF_BYTE(SF_API_TROPHY) = 0;
+	/* Everything above in memory before the answer is, for whoever reads it. */
+	__asm__ __volatile__("sync" ::: "memory");
+	SF_BYTE(SF_TROPHY_BUSY) = 0;
+	SF_BYTE(SF_API_TROPHY) = code;
+	sf_ppu_thread_exit(0);
 }
 #endif
 

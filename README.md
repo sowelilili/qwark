@@ -41,10 +41,12 @@ UYA runs use trophies: a trophy the console has not seen before pops up, and tha
 
 **A reset deletes your console's UYA trophy data.** qwark deletes the game's trophy folder, `/dev_hdd0/home/<user>/trophy/NPWR02347_00`, which is where the console records the trophies you have won: every UYA trophy you have, the platinum included, is gone from the console afterwards. Copy the folder off first if you want them back later. If you are signed in to PSN, the trophy server may give them back.
 
-Then the game re-reads its trophies, which **freezes it for about three seconds**, and in the run that follows it awards three trophies again, the RY3NO, the Metropolis blimp and the snowman skin, and no others, as the old mod did.
+Then the game re-reads its trophies, which takes a few seconds while it keeps running, and in the run that follows it awards three trophies again, the RY3NO, the Metropolis blimp and the snowman skin, and no others, as the old mod did.
 
-- **Reset trophies (freezes ~3 s)** does it now.
-- **Reset trophies on Veldin load**, off by default, does it once per run, inside the load into Veldin that starts every run, so the freeze is before the timer starts.
+- **Reset trophies** does it now.
+- **Reset trophies on Veldin load**, off by default, does it once per run, starting inside the load into Veldin that starts every run, before the timer starts.
+
+If a trophy file cannot be deleted, or the game does not get its trophies back, the console shows a notification.
 
 qwark finds the folder from the game and the signed-in user rather than guessing it, and refuses, deleting nothing, unless the folder's own trophy configuration says it is UYA's. It only ever deletes the files in that one folder, and logs what it did. Under RPCS3 both answer unsupported: the emulator's trophy data is out of qwark's reach. PROTOCOL.md section 5.14 has the details.
 

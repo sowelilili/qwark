@@ -169,6 +169,12 @@ void savefile_forget(void);
 void savefile_set_enabled(int on);
 
 /*
+ * Build 53: the setting above, for a feature that needs the helper and would
+ * rather refuse at once than find out at the install (UYA's trophy reset).
+ */
+int savefile_enabled(void);
+
+/*
  * Writes the caves and the hook words unless this process already has them.
  * ST_OK when qwark has installed it. Called by set-aside/load actions, valid
  * restores and RaC1's Force autosave. Status, metadata and raw buffer I/O never
@@ -207,7 +213,7 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
  * whether or not the platform patches code. NOT_INGAME outside a game,
  * UNSUPPORTED for a game with no helper or with the helper switched off, FULL
  * for a reply that would not fit `cap` (never, for the four games today:
- * RaC3's is the largest since build 53, at 2924 bytes with its trophy reset).
+ * RaC3's is the largest since build 53, at 3596 bytes with its trophy reset and its thread).
  *
  * Build 51: only in the emulator builds (QWARK_EMULATOR, plat.h), as is the
  * look for a patched-in helper. The PS3 module answers SAVEFILE_PATCH

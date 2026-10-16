@@ -663,23 +663,24 @@ static void rac3_fastload_watch(void)
  * the next tick for as long as that load lasts if the game's own trophy thread
  * is running then (BUSY).
  *
- * Why there. The reset stands the game's main thread still for three seconds,
- * so it must not land in a run, and it must be over before the run can win a
- * trophy. A load into Veldin is the start of every run (rac3_file_load_watch's
- * block comment has every way into one), the trophies of the run before are
- * all behind it, and a run's timer starts at its end - the autosplitter's START
- * is Veldin with the mode going from 6 to 0 (rac3_autosplit_tick), LiveSplit's
- * script the same. The helper runs during that load: the transition loop the
- * load starts with (0x27B360, which keeps the mode at 6) calls the pad routine
- * every pass (0x27B464), and so the helper; and the helper's half refuses an
- * auto request it finds outside a load (sf_rac3.h), so the three seconds go
- * into the load and never into the run. The folder's delete runs first, a few
- * files a tick, and is done long before the load is. Nothing the reset leaves
- * the game able to win - the RY3NO, the Metropolis blimp, the snowman skin - is
- * on Veldin, and the register thread the reset starts has finished long before
+ * Why there. The reset must be between runs: after the last run's trophies,
+ * and before this run can win one. A load into Veldin is the start of every run
+ * (rac3_file_load_watch's block comment has every way into one), the trophies
+ * of the run before are all behind it, and a run's timer starts at its end -
+ * the autosplitter's START is Veldin with the mode going from 6 to 0
+ * (rac3_autosplit_tick), LiveSplit's script the same. The helper runs during
+ * that load: the transition loop the load starts with (0x27B360, which keeps
+ * the mode at 6) calls the pad routine every pass (0x27B464), and so the
+ * helper; and the helper refuses an auto request it finds outside a load
+ * (sf_rac3.h), so the reset always starts inside the load. Up to the first
+ * hardware test it also stood the game's main thread still for three seconds,
+ * which the load hid; it runs on a thread of the helper's own now, and the game
+ * goes on through it. The folder's delete runs first, a few files a tick, and
+ * is done long before the load is. Nothing the reset leaves the game able to
+ * win - the RY3NO, the Metropolis blimp, the snowman skin - is on Veldin, and
+ * the reset, a few seconds of the game's register threads, is over long before
  * the run leaves it. The title screen was the other place considered: it would
- * miss a run started from a load in the game, and put the freeze on the menu
- * the runner is starting the run from.
+ * miss a run started from a load in the game.
  */
 static void rac3_file_load_watch(void)
 {
@@ -834,11 +835,12 @@ static const struct feature_desc rac3_features[] = {
 	 */
 	/*
 	 * Build 53: the trophy reset deletes the console's trophy data for this
-	 * game and stands the game still for three seconds (rac3_panel.c). The
-	 * labels say what it does and the freeze, as far as 31 characters go.
+	 * game and has the game re-read its trophies, on a thread of the savefile
+	 * helper's, while it goes on running (rac3_panel.c). Up to the first
+	 * hardware test the game froze for three seconds and the label said so.
 	 * Under RPCS3 both answer UNSUPPORTED.
 	 */
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies (freezes ~3 s)" },
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies" },
 	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies on Veldin load" },
 	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
 	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
@@ -912,10 +914,12 @@ static int rac3_set_toggle(u8 id, int on)
 		return rc;
 	/*
 	 * qwark-side state, read by rac3_file_load_watch. Build 53: the reset it
-	 * asks for is refused under RPCS3 (rac3_panel.c), so turning it on is too.
+	 * asks for is refused under RPCS3 and with the savefile helper switched
+	 * off (rac3_panel.c), so turning it on is too, rather than have it refused
+	 * on every load into Veldin.
 	 */
 	case R3_AUTO_TROPHIES:
-		if (on && !plat_can_patch_code()) return ST_UNSUPPORTED;
+		if (on && (!plat_can_patch_code() || !savefile_enabled())) return ST_UNSUPPORTED;
 		g_auto_trophies = (on != 0);
 		return ST_OK;
 	default:               return ST_NOT_FOUND;

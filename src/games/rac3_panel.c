@@ -662,12 +662,16 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  *      request (RAC3Form.cs DeleteTrophyFolder, commit f987a1c, the same day
  *      Ratchetron's delete command went in for it). qwark deletes it itself.
  *   2. The game forgets and re-reads its trophies: the savefile helper's reset
- *      (sf_trophy_reset, sf_rac3.h), on the game's thread, destroys the game's
- *      trophy context and registers it again - which installs the trophy set
- *      afresh, nothing unlocked - and leaves the game's own cache saying that
- *      trophies 10, 25 and 32 are still to be won and every other one is won,
- *      exactly as rc3-save left it. The game stands still for three seconds
- *      while it does.
+ *      (sf_trophy_reset, sf_rac3.h) destroys the game's trophy context and
+ *      registers it again - which installs the trophy set afresh, nothing
+ *      unlocked - and leaves the game's own cache saying that trophies 10, 25
+ *      and 32 are still to be won and every other one is won, exactly as
+ *      rc3-save left it. Up to the first hardware test it did that on the
+ *      game's main thread with rc3-save's three one-second sleeps, and the game
+ *      froze for three seconds. The helper now takes the request on the main
+ *      thread and runs the calls on a thread of its own, waiting on the game's
+ *      register thread rather than the clock, so the game goes on while it
+ *      runs: a few seconds, most of them the console installing the set.
  *
  * The folder is found, not named. Its name is the communication id the running
  * game registers under, read out of the game (RAC3_TROPHY_COMMID_PTR); its
@@ -677,19 +681,42 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  * before a byte is deleted: no id, a malformed id, no user, no such home or
  * trophy folder, a folder whose files name another set, or a folder holding
  * folders of its own. A folder that is not there at all is a set with nothing
- * to delete, and the reset goes on to the game's half. Only the files directly
- * in that one folder are deleted, a few a tick, then the folder; nothing is
- * walked into, and every step is logged.
+ * to delete, and the reset goes on to the game's half; so is an empty one,
+ * which only the folder itself is deleted of. Only the files directly in that
+ * one folder are deleted, a few a tick, then the folder; nothing is walked into,
+ * and every step is logged.
+ *
+ * The two files that say whose set the folder is, TROPCONF.SFM and TROP.SFM, go
+ * last, and the first file that will not go stops the reset there, before the
+ * game is asked anything: no nop, no request. A folder left half deleted keeps
+ * what identifies it, so the next reset finds it again and finishes the job,
+ * where deleting in directory order could leave the unlock record (TROPUSR.DAT)
+ * with nothing to say it was UYA's and every later reset refused. FEATURE_TRIGGER
+ * has long answered OK by then, so a reset that stops after it says so on the
+ * console's screen (plat_notify) as well as in the log; so does one whose game
+ * half did not end with the game's trophies back, and an auto reset whose load
+ * into Veldin ended before the game could be asked.
+ *
+ * The nop qwark writes over the cache fill (0x985318) is never put back, and it
+ * is not one of PATCH_LIST's patches: it is part of the reset, as it was the
+ * rc3-save mod's third patch word. Nothing but a registration runs that store
+ * (0x9850E0, called only by the register thread 0x9856F8), and nothing starts
+ * a registration but the game's boot (0x15434, the only call to 0x984FA0) and
+ * this reset; a boot loads the executable afresh, word and all. So the nop
+ * changes nothing but the registrations the reset itself starts.
  *
  * Everything here is refused under RPCS3 (UNSUPPORTED). The emulator keeps a
  * trophy set's data in its own dev_hdd0, which qwark-rpcs3 cannot reach - its
  * file ops are rooted in a folder of its own - and nothing in qwark touches
  * RPCS3's files; the game's half alone would leave every earned trophy earned
- * and only freeze the game. The time a console spends showing a trophy, which
- * the runs use, is not something the emulator reproduces either.
+ * and change nothing a run can see. The time a console spends showing a
+ * trophy, which the runs use, is not something the emulator reproduces either.
  *
  * Tick thread throughout: the trigger runs from the command ring and the rest
- * from rac3_on_tick.
+ * from rac3_on_tick. Everything the trigger can refuse for a while (BUSY) is
+ * checked before the folder is looked for, so the auto toggle, which asks again
+ * on every tick of the load while it hears BUSY, costs a few memory reads a
+ * tick and not a directory listing.
  */
 
 #define TR_IDLE   0
@@ -700,7 +727,7 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
 /*
  * Files deleted per tick, and the most unlink attempts one reset makes in all.
  * A trophy set is a few dozen files (UYA's is 42), so the delete is a handful of
- * ticks; the cap only ends a delete that keeps failing.
+ * ticks; the cap only ends a delete on a folder that keeps showing files.
  */
 #define TR_DELETE_PER_TICK 8
 #define TR_DELETE_MAX      256
@@ -708,11 +735,13 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
 /*
  * How long qwark waits for the helper to pick a request up (the pad routine
  * runs every frame, so this only runs out on a game that is not running
- * frames), and for a reset it has started to finish: three seconds of waits,
- * the calls between them, and room to spare. Ticks of the 120 Hz loop.
+ * frames), and for a reset it has started to finish. The helper's thread waits
+ * for two of the game's register threads, each up to a second to start and
+ * twenty seconds to end (sf_rac3.h), so a minute is past anything it can take
+ * before it answers. Ticks of the 120 Hz loop.
  */
 #define TR_SEEN_TICKS (5u * 120u)
-#define TR_RUN_TICKS  (15u * 120u)
+#define TR_RUN_TICKS  (60u * 120u)
 
 /*
  * The auto toggle's request asked again after the helper refused it because a
@@ -732,6 +761,7 @@ static struct {
 	u8   state;
 	u8   request;     /* RAC3_TROPHY_NOW or RAC3_TROPHY_IN_LOAD */
 	u8   retries;
+	u8   conf;        /* TR_DELETE: 1 once only the two .SFM files are left */
 	u16  deleted;
 	u16  failed;
 	u16  attempts;
@@ -745,6 +775,45 @@ static u32 tr_request_addr(void)
 	const struct sf_desc *d = sf_desc_for_game(GAME_RAC3);
 
 	return d != NULL ? d->api_trophy : 0;
+}
+
+/*
+ * The helper's busy byte, the one after the request byte (SF_TROPHY_BUSY in
+ * sf_rac3.h): 1 from the frame the helper takes a request until its thread has
+ * finished, whatever the request byte says meanwhile.
+ */
+static u32 tr_busy_addr(void)
+{
+	return tr_request_addr() + 1u;
+}
+
+/* What the helper would say to a new request, read before anything is looked for. */
+static int tr_helper_idle(int *stale)
+{
+	u8 byte = 0, busy = 0;
+
+	*stale = 0;
+	if (mem_read_u8(tr_request_addr(), &byte) != ST_OK) return ST_IO_ERROR;
+	if (mem_read_u8(tr_busy_addr(), &busy) != ST_OK) return ST_IO_ERROR;
+
+	/* The helper's thread is still at it: the reset before this one is not over. */
+	if (busy != 0) return ST_BUSY;
+
+	/*
+	 * With qwark idle and no thread of the helper's running, whatever the byte
+	 * holds is over: an answer nobody read (a 4, or a refusal that landed just
+	 * as qwark withdrew a request the game had not picked up), or a 3 qwark
+	 * stopped watching. It goes back to 0 once the helper is known to be in;
+	 * until then the install zeroes it.
+	 */
+	*stale = (byte != 0);
+	return ST_OK;
+}
+
+/* The trophy files that say whose set a folder is; they are deleted last. */
+static int tr_is_conf(const char *name)
+{
+	return qstreq(name, "TROPCONF.SFM") || qstreq(name, "TROP.SFM");
 }
 
 static void tr_idle(void)
@@ -878,6 +947,26 @@ static int tr_find_dir(char *dir, u32 cap, int *present, u32 *files)
 		return ST_NOT_FOUND;
 	}
 
+	/*
+	 * An empty folder has nothing to identify and nothing to lose: a delete
+	 * that went as far as the last file and could not take the folder leaves
+	 * one, and it would otherwise refuse every reset after it. Only the folder
+	 * goes.
+	 */
+	if (plat_dir_open(dir, &d) != 0) {
+		plat_log("trophies: refused, %s cannot be read", dir);
+		return ST_NOT_FOUND;
+	}
+	n = 0;
+	while (plat_dir_next(&d, &ent) == 1) {
+		if (!qstreq(ent.name, ".") && !qstreq(ent.name, "..")) n++;
+	}
+	plat_dir_close(&d);
+	if (n == 0) {
+		*present = 1;
+		return ST_OK;
+	}
+
 	/* The set's own configuration has to say it is this set. */
 	tag[0] = 0;
 	qstrcat(tag, sizeof(tag), "<npcommid>");
@@ -948,8 +1037,8 @@ int rac3_trophy_reset(u8 request)
 {
 	u32 addr = tr_request_addr();
 	u32 files = 0;
-	u8 byte = 0;
 	int present = 0;
+	int stale = 0;
 	int rc;
 
 	if (!plat_can_patch_code()) {
@@ -959,9 +1048,15 @@ int rac3_trophy_reset(u8 request)
 	if (request != RAC3_TROPHY_NOW && request != RAC3_TROPHY_IN_LOAD) return ST_BAD_ARG;
 	if (g_tr.state != TR_IDLE) return ST_BUSY;
 	if (addr == 0) return ST_UNSUPPORTED;
+	if (!savefile_enabled()) {
+		plat_log("trophies: refused, the savefile helper is switched off (savefile_helper = 0)");
+		return ST_UNSUPPORTED;
+	}
 	if (request == RAC3_TROPHY_IN_LOAD && !tr_in_load()) return ST_BUSY;
 
 	rc = tr_game_ready();
+	if (rc != ST_OK) return rc;
+	rc = tr_helper_idle(&stale);
 	if (rc != ST_OK) return rc;
 
 	rc = tr_find_dir(g_tr.dir, sizeof(g_tr.dir), &present, &files);
@@ -977,9 +1072,9 @@ int rac3_trophy_reset(u8 request)
 		tr_idle();
 		return rc;
 	}
-	if (mem_read_u8(addr, &byte) != ST_OK || byte != 0) {
+	if (stale && mem_write_u8(addr, 0) != ST_OK) {
 		tr_idle();
-		return byte != 0 ? ST_BUSY : ST_IO_ERROR;
+		return ST_IO_ERROR;
 	}
 
 	g_tr.request = request;
@@ -1004,22 +1099,29 @@ int rac3_trophy_auto(void)
 	return rc == ST_BUSY ? 0 : 1;
 }
 
-/* One tick of the delete: a handful of files out of the one folder. */
+/*
+ * One tick of the delete: a handful of files out of the one folder, everything
+ * but the two .SFM files first and those two after, then the folder.
+ *
+ * A pass that deleted something, or stopped at the tick's share, is followed by
+ * another, so a directory read that skipped an entry under the deletes is
+ * caught; a stage is over when a whole pass finds nothing left for it. The first
+ * file that will not go ends the reset there and then: nothing is tried twice,
+ * and the files after it are not reached.
+ */
 static void tr_delete_step(void)
 {
 	plat_dir_t d;
 	struct plat_dirent ent;
-	u32 tried = 0, gone = 0;
+	u32 tried = 0;
 	int cut = 0;
 
-	if (plat_dir_open(g_tr.dir, &d) != 0) {
-		/* Gone already, or unreadable: there is nothing more to do here either way. */
-		cut = 0;
-	} else {
+	if (plat_dir_open(g_tr.dir, &d) == 0) {
 		while (plat_dir_next(&d, &ent) == 1) {
 			char child[TR_CHILD_MAX];
 
 			if (qstreq(ent.name, ".") || qstreq(ent.name, "..") || ent.is_dir) continue;
+			if (!g_tr.conf && tr_is_conf(ent.name)) continue;
 			if (tried >= TR_DELETE_PER_TICK || g_tr.attempts >= TR_DELETE_MAX) {
 				cut = 1;
 				break;
@@ -1027,38 +1129,49 @@ static void tr_delete_step(void)
 
 			tried++;
 			g_tr.attempts++;
-			if (qstrlen(g_tr.dir) + 1 + qstrlen(ent.name) + 1 > sizeof(child)) {
-				g_tr.failed++;
-				continue;
-			}
 			child[0] = 0;
-			qstrcat(child, sizeof(child), g_tr.dir);
-			qstrcat(child, sizeof(child), "/");
-			qstrcat(child, sizeof(child), ent.name);
+			if (qstrlen(g_tr.dir) + 1 + qstrlen(ent.name) + 1 <= sizeof(child)) {
+				qstrcat(child, sizeof(child), g_tr.dir);
+				qstrcat(child, sizeof(child), "/");
+				qstrcat(child, sizeof(child), ent.name);
+			}
 
-			if (plat_file_unlink(child) == 0) {
-				gone++;
+			if (child[0] != 0 && plat_file_unlink(child) == 0) {
 				g_tr.deleted++;
 			} else {
 				g_tr.failed++;
-				plat_log("trophies: could not delete %s", child);
+				plat_log("trophies: could not delete %s/%s", g_tr.dir, ent.name);
+				break;
 			}
 		}
 		plat_dir_close(&d);
 	}
+	/* A folder that cannot be read now has gone, or will show in the remove below. */
+
+	if (g_tr.failed != 0 || (cut && g_tr.attempts >= TR_DELETE_MAX)) {
+		plat_log("trophies: stopped with %d files of %s deleted; the game was not asked, "
+		         "and the next reset finds the folder again",
+		         (int)g_tr.deleted, g_tr.dir);
+		plat_notify("Trophy reset stopped: a trophy file could not be deleted");
+		tr_idle();
+		return;
+	}
+	if (cut || tried != 0) return;
+	if (!g_tr.conf) {
+		g_tr.conf = 1;
+		return;
+	}
 
 	/*
-	 * Another pass while this one deleted something or was cut short, so a
-	 * directory read that skipped an entry under the deletes is caught; done
-	 * when a whole pass deletes nothing, or the attempts run out.
+	 * Every file is gone, so the set is: a folder that will not go after them is
+	 * empty, which the console fills again as the game registers, and which the
+	 * next reset takes as a set with nothing in it.
 	 */
-	if ((cut || gone != 0) && g_tr.attempts < TR_DELETE_MAX) return;
-
 	if (plat_dir_remove(g_tr.dir) == 0)
 		plat_log("trophies: deleted %s, %d files", g_tr.dir, (int)g_tr.deleted);
 	else if (plat_path_exists(g_tr.dir, NULL, NULL))
-		plat_log("trophies: %s stays, %d files deleted and %d could not be",
-		         g_tr.dir, (int)g_tr.deleted, (int)g_tr.failed);
+		plat_log("trophies: %d files of %s deleted, and the empty folder stays",
+		         (int)g_tr.deleted, g_tr.dir);
 	else
 		plat_log("trophies: %s is gone, %d files deleted", g_tr.dir, (int)g_tr.deleted);
 
@@ -1078,6 +1191,7 @@ static void tr_ask(void)
 	 */
 	if (g_tr.request == RAC3_TROPHY_IN_LOAD && !tr_in_load()) {
 		plat_log("trophies: the load ended before the game could be asked; the next load into Veldin asks again");
+		plat_notify("Trophy reset: the Veldin load ended first; the next Veldin load finishes it");
 		tr_idle();
 		return;
 	}
@@ -1114,6 +1228,15 @@ static void tr_wait(void)
 		return;
 	}
 
+	if (byte == RAC3_TROPHY_UNREGISTERED) {
+		mem_write_u8(addr, 0);
+		plat_log("trophies: the reset ran, but the game had not re-read its trophies when it ended; "
+		         "if none pops, reset again or restart the game");
+		plat_notify("Trophy reset: the game did not re-read its trophies in time");
+		tr_idle();
+		return;
+	}
+
 	if (byte == RAC3_TROPHY_RUNNING) {
 		if (g_tr.ticks > TR_RUN_TICKS) {
 			plat_log("trophies: the game started the reset and has not finished it");
@@ -1131,7 +1254,7 @@ static void tr_wait(void)
 			g_tr.ticks = 0;
 			return;
 		}
-		plat_log("trophies: the game refused the reset: its trophies were not set up, a trophy thread of its own was running, or the load was over");
+		plat_log("trophies: the game refused the reset: its trophies were not set up, a trophy thread of its own or a reset was running, the load was over, or no thread could be started");
 		tr_idle();
 		return;
 	}

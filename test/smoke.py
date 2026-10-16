@@ -4276,7 +4276,7 @@ def exercise_manips(c, sim, spec):
         rows = {}
         if status == ST_OK:
             rows = {f["id"]: f for f in parse_describe(body)[3]}
-        check(rows.get(t["button"], {}).get("label") == "Reset trophies (freezes ~3 s)" and
+        check(rows.get(t["button"], {}).get("label") == "Reset trophies" and
               rows.get(t["toggle"], {}).get("label") == "Reset trophies on Veldin load",
               "%s trophies: DESCRIBE labels the reset and its toggle" % name,
               {i: rows[i]["label"] for i in (t["button"], t["toggle"]) if i in rows})
