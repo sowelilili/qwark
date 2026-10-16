@@ -134,10 +134,12 @@
 #define RAC4_LOADING_HOOK_2    0x00011904u  /* the trampoline itself, ten words */
 #define RAC4_LOADING_VAL       0x01710000u  /* reads 0xFF once the logo is up */
 
-/* --------------------------------------------- manips' file-load trigger, 1.21 */
+/* ------------------------------------------- the manips' in-file test, 1.21 */
 
 /*
- * What rac4.c's file-load trigger reads, from the NPEA00423 executable.
+ * What rac4.c's in-file test for the manips reads, from the NPEA00423
+ * executable. (The file-load trigger itself is the tutorial flags' drop, which
+ * the flags hot block already carries.)
  *
  * RAC4_IN_FRONTEND is the byte that says the main menu (the front end) is up:
  * startlevel (0x11BC0) sets it to 1 at 0x11C3C, the multiplayer front end at
@@ -147,18 +149,9 @@
  * calls its current planet: startlevel sets it to -1 (0x11C70) and main()
  * runs the front end while it is negative (0x1541C); single-player levels are
  * 1..20, co-op 21..40, multiplayer 0 and 41..79.
- *
- * RAC4_RESTORE_COUNT is a word memcard_RestoreGame (0x3C67A4, called from
- * memcard_ResetGame 0x3C902C, which every load of a save goes through) adds
- * one to for each block of the save that differs from what is in memory
- * (0x3C65F8 memcmp, 0x3C660C..0x3C6614). Nothing else names it. A save always
- * differs somewhere, because the restore puts the gadget boxes back first, so
- * the word moves on every load: from the main menu, from the game's own load
- * menu, and through the savefile helper.
  */
 #define RAC4_IN_FRONTEND       0x00B3C7D4u  /* u8, 1 while the main menu is up */
 #define RAC4_LEVEL             0x009C3240u  /* s32, -1 on the way to the menu */
-#define RAC4_RESTORE_COUNT     0x011ADF80u  /* u32, moves on every save restore */
 #define RAC4_LEVEL_SP_CO_OP_MAX 40          /* past it is multiplayer */
 
 /* ------------------------------------------------- autosplit watcher, rev 1.5 */

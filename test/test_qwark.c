@@ -5130,16 +5130,21 @@ static void test_manip_unsupported(void)
 
 #define R4T_FRONTEND 0x00B3C7D4u
 #define R4T_LEVEL    0x009C3240u
-#define R4T_RESTORES 0x011ADF80u
 #define R4T_REQUEST  0x00B36DCCu
-#define R4T_TUTORIAL 0x00B1F46Cu
+#define R4T_TUTORIAL 0x00B1F46Fu   /* the tutorial flags' low byte */
 
+/* The main menu or a level, as the in-file test reads it, and a load or play. */
 static void r4t_world(u8 frontend, u32 level, u32 request, u32 mode)
 {
 	host_poke(R4T_FRONTEND, &frontend, 1);
 	poke32(R4T_LEVEL, level);
 	poke32(R4T_REQUEST, request);
 	rac4_modes(mode, R4_MODE_NONE);
+}
+
+static void r4t_tutorial(u8 value)
+{
+	host_poke(R4T_TUTORIAL, &value, 1);
 }
 
 /*
@@ -5223,15 +5228,15 @@ static void test_manip_trigger_rac2(void)
 }
 
 /*
- * Deadlocked: armed by the main menu, a save restore or the tutorial byte's
- * drop, fired once the game is playing a level.
+ * Deadlocked: the tutorial flags' low byte dropping to 0, which a new game and
+ * a challenge-mode start do, acted on the tick after the drop.
  */
 static void test_manip_trigger_rac4(void)
 {
 	const struct mt_group *ngp = &mt_rac4[0];
 	u16 seq;
 
-	group("manip trigger: Deadlocked");
+	group("manip trigger: Deadlocked, the tutorial flag's drop");
 
 	check(quit_and_wait(), "quit whatever was running");
 	mt_reset_options("rac4");
@@ -5240,6 +5245,7 @@ static void test_manip_trigger_rac4(void)
 
 	host_boot("NPEA00423");
 	r4t_world(1, 0xFFFFFFFFu, 0, 0);          /* the main menu */
+	r4t_tutorial(0x05);                       /* last file's tutorial, done */
 	mt_put_counter(&mt_games[3], 1);
 	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots into its main menu");
 	check_eq_u64(manips_selected(), 1, "NG+ remembered");
@@ -5247,40 +5253,36 @@ static void test_manip_trigger_rac4(void)
 	pump(6);
 	check(r2_byte(0x00A947D3u) == 0xEE, "the main menu writes nothing");
 
-	r4t_world(0, 1, 1, 6);                    /* out of the menu, loading DreadZone */
-	pump(4);
-	check(r2_byte(0x00A947D3u) == 0xEE, "nothing while the level loads");
 	seq = manips_event_seq();
-	r4t_world(0, 1, 0, 0);
+	r4t_tutorial(0x00);                       /* the game-data reset: a challenge start */
 	pump(1);
-	check(r2_byte(0x00A947D3u) == 0xEE, "nor on the first tick of play");
-	pump(2);
-	check(mt_values_match(ngp, 0, ngp->n), "the second tick of play applies the setup");
+	check(r2_byte(0x00A947D3u) == 0xEE, "nothing on the tick the drop is seen");
+	pump(1);
+	check(mt_values_match(ngp, 0, ngp->n), "the tick after it applies the setup");
 	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP,
 	      "and announces it");
 
 	mt_poison(ngp);
+	seq = manips_event_seq();
+	r4t_world(0, 1, 1, 6);                    /* the DreadZone load that follows */
+	pump(4);
+	r4t_world(0, 1, 0, 0);
+	pump(6);
+	check(manips_event_seq() == seq && r2_byte(0x00A947D3u) == 0xEE,
+	      "the load that follows is not a second file load");
+	r4t_tutorial(0x05);                       /* the first mission done */
+	pump(4);
 	r4t_world(0, 1, 1, 6);
 	pump(3);
 	r4t_world(0, 4, 0, 0);
 	pump(6);
-	check(r2_byte(0x00A947D3u) == 0xEE, "planet travel fires nothing");
+	check(r2_byte(0x00A947D3u) == 0xEE, "the tutorial byte rising and planet travel fire nothing");
 	host_poke(0x010D44D8u, (const u8 *)"\xC2\x48\x00\x00", 4);
 	pump(6);
 	check(r2_byte(0x00A947D3u) == 0xEE, "nor does a death");
-
-	/* A load from the game's own menu, or through the helper: the restore counts. */
-	seq = manips_event_seq();
-	r4t_world(0, 4, 0, 3);
-	poke32(R4T_RESTORES, 7);
-	pump(3);
-	r4t_world(0, 1, 1, 6);
-	pump(3);
-	r4t_world(0, 1, 0, 0);
+	r4t_tutorial(0x07);
 	pump(4);
-	check(manips_event_seq() == seq,
-	      "a later load writes nothing: NG+ has no per-run list and its setup is in");
-	check(r2_byte(0x00A947D3u) == 0xEE, "and its setup is not written twice in a boot");
+	check(manips_event_seq() == seq, "a save loaded with its tutorial done is not one either");
 
 	group("manip trigger: Deadlocked, a refusal on a fresh file");
 
@@ -5289,32 +5291,43 @@ static void test_manip_trigger_rac4(void)
 	      "NG+ selected again, on a fresh file");
 	check(manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
 	      "its setup is refused there straight away");
-	host_poke(R4T_TUTORIAL + 3, (const u8 *)"\x05", 1);
-	pump(3);
 	seq = manips_event_seq();
-	host_poke(R4T_TUTORIAL + 3, (const u8 *)"\x00", 1);  /* a new game's reset */
-	pump(4);
+	r4t_tutorial(0x00);                       /* a new game's reset */
+	pump(3);
 	check(manips_event_seq() == (u16)(seq + 1) &&
 	      manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
-	      "the tutorial byte's drop is a file load, and NG+ is refused on a fresh file");
+	      "the drop is a file load, and NG+ is refused on a fresh file");
+	pump(6);
+	check(manips_event_seq() == (u16)(seq + 1), "once per drop");
 
-	group("manip trigger: Deadlocked, attaching in a level is not a load");
+	group("manip trigger: Deadlocked, attaching on a fresh file is not a load");
 
 	mt_put_counter(&mt_games[3], 1);
 	check(quit_and_wait(), "quit");
 	host_boot("NPEA00423");
 	r4t_world(0, 6, 0, 0);
+	r4t_tutorial(0x00);                       /* already 0 when qwark arrives */
 	mt_put_counter(&mt_games[3], 1);
-	check(pump_until(SESSION_INGAME, 4000), "INGAME in the middle of a level");
+	check(pump_until(SESSION_INGAME, 4000), "INGAME in a level, tutorial byte at 0");
 	mt_poison(ngp);
 	pump(10);
 	check(r2_byte(0x00A947D3u) == 0xEE, "the first ticks fire nothing");
-	check(manips_apply() == ST_OK, "Apply now still works there");
-	check(mt_values_match(ngp, 0, ngp->n), "and writes the setup");
+	r4t_tutorial(0x01);
+	pump(2);
+	r4t_tutorial(0x00);
+	pump(2);
+	check(mt_values_match(ngp, 0, ngp->n), "the next drop does");
+
+	group("manip trigger: Deadlocked, Apply now and the in-file test");
+
+	mt_poison(ngp);
+	check(manips_apply() == ST_OK, "Apply now in a level");
+	check(mt_values_match(ngp, 0, ngp->n), "writes the setup");
 	r4t_world(1, 0xFFFFFFFFu, 0, 0);
 	host_write_log_reset();
 	check(manips_apply() == ST_BUSY, "in the main menu Apply now is refused");
 	check(manips_event_kind() == MANIP_EVENT_NO_FILE, "not in a file");
+	check_eq_u64(host_write_log_count(), 0, "and writes nothing");
 
 	check(manips_select(0) == ST_OK, "None");
 	mt_reset_options("rac4");

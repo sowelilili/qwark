@@ -42,15 +42,12 @@ const u8 rac4_fp_switch[4]  = {
  *   8  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
  *   9  challenge  the challenge currently being run                  every 8th
  *  10  savefile   helper byte and its two request bytes              every 8th
- *  11  frontend   the main menu's byte                               every tick
- *  12  restores   the save restore's block counter                   every tick
  *
  * Blocks 4 to 6 are the autosplit watcher's, and the flags block moved from
- * every eighth tick to every tick because the watcher and the softlock fix both
- * read it. Block 7 takes the even ticks and blocks 8 to 10 the odd ones, so a
- * tick costs exactly ten reads and never pays for two slow blocks at once.
- * Blocks 11 and 12 are the manips' file-load trigger (revision 1.21), which
- * also reads the level word out of block 5 and the tutorial flags out of 3.
+ * every eighth tick to every tick because the watcher, the softlock fix and
+ * the manips' file-load trigger (revision 1.21) all read it. Block 7 takes the
+ * even ticks and blocks 8 to 10 the odd ones, so a tick costs exactly eight
+ * reads and never pays for two slow blocks at once.
  */
 static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_HOT_INPUTS_ADDR, RAC4_HOT_INPUTS_LEN, 1, 0 },
@@ -63,9 +60,7 @@ static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_FRAME_COUNTER,   8,                   2, 0 },
 	{ RAC4_BOLTS,           RAC4_HOT_STATS_LEN,  8, 1 },
 	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 3 },
-	{ RAC4_SF_HELPER,       4,                   8, 5 },
-	{ RAC4_IN_FRONTEND,     1,                   1, 0 },
-	{ RAC4_RESTORE_COUNT,   4,                   1, 0 }
+	{ RAC4_SF_HELPER,       4,                   8, 5 }
 };
 
 #define HOT_INPUTS    0
@@ -79,8 +74,6 @@ static const struct game_hot_block rac4_hot[] = {
 #define HOT_STATS     8
 #define HOT_CHALLENGE 9
 #define HOT_SAVEFILE  10
-#define HOT_FRONTEND  11
-#define HOT_RESTORES  12
 
 #define OFF_ANALOGS   (RAC4_ANALOGS         - RAC4_INPUTS)        /* 0x1DC */
 #define OFF_GAMESTATE (RAC4_GAME_STATE      - RAC4_FRAME_COUNTER) /* 0x04 */
@@ -95,17 +88,10 @@ static const struct game_hot_block rac4_hot[] = {
 static u8 g_game_mode;      /* game state, low byte */
 static u8 g_tutorial;       /* tutorial flags, low byte */
 
-/* And what the manips' file-load trigger needs (revision 1.21). */
-static u32 g_level;         /* RAC4_LEVEL, the whole word */
-static u8  g_frontend;      /* RAC4_IN_FRONTEND */
-static u32 g_restores;      /* RAC4_RESTORE_COUNT */
-
-/* The trigger's own state; see rac4_file_load_watch. */
+/* The manips' file-load trigger's own state (revision 1.21); see rac4_file_load_watch. */
 static int g_fl_primed;
-static int g_fl_armed;
-static int g_fl_settled;
+static int g_fl_due;
 static u8  g_fl_tutorial;
-static u32 g_fl_restores;
 
 /*
  * The Deadlocked autosplitter SPRX's GameState, field for field. The names are
@@ -181,13 +167,8 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		g_as.cutscene_ptr = be32_get(l + OFF_CUTSCENE);
 	}
 
-	if (blocks[HOT_ASPLANET] != NULL) {
-		g_level = be32_get(blocks[HOT_ASPLANET]);
-		g_as.planet = g_level % RAC4_AS_PLANET_MOD;
-	}
-
-	if (blocks[HOT_FRONTEND] != NULL) g_frontend = blocks[HOT_FRONTEND][0];
-	if (blocks[HOT_RESTORES] != NULL) g_restores = be32_get(blocks[HOT_RESTORES]);
+	if (blocks[HOT_ASPLANET] != NULL)
+		g_as.planet = be32_get(blocks[HOT_ASPLANET]) % RAC4_AS_PLANET_MOD;
 
 	if (blocks[HOT_VOXHP] != NULL)
 		g_as.vox_hp = bef32_get(blocks[HOT_VOXHP]);
@@ -526,12 +507,8 @@ static void rac4_on_enter(void)
 	g_prev_game_mode = 0;
 	g_game_mode     = 0;
 	g_tutorial      = 0xFF;
-	g_level         = 0;
-	g_frontend      = 0;
-	g_restores      = 0;
 	g_fl_primed     = 0;
-	g_fl_armed      = 0;
-	g_fl_settled    = 0;
+	g_fl_due        = 0;
 
 	/* The watcher starts over; the pause state deliberately does not. */
 	memset(&g_as, 0, sizeof(g_as));
@@ -572,81 +549,56 @@ static void rac4_on_enter(void)
 /* -------------------------------------- the manips' file-load trigger, 1.21 */
 
 /*
- * A save loaded or a new game started, for the manip groups (src/core/manips.h).
+ * The start of a run, for the manip groups (src/core/manips.h): the tutorial
+ * flags' low byte (RAC4_TUTORIAL_FLAGS + 3) dropping to 0, the same edge the
+ * Fix reset softlocks watcher below and the autosplitter's run start already
+ * use. The user's rule for the other three games is the first planet's load,
+ * and Deadlocked goes back to its first planet, DreadZone, all the time; this
+ * byte is the known-good stand-in. It records the first mission's tutorial,
+ * and the game-data reset 0x3C6970 zeroes it (0x3C6C24) on a new game and on a
+ * challenge-mode start (ChallengeMode_Begin 0x3D9E18, through 0x3C6EC0), which
+ * is how every Deadlocked run begins. Nothing else lowers it: the game only
+ * ever sets bits in it (0x570278, 0x57029C), so planet travel, a death, the
+ * pause and the lobby never fire it.
  *
- * The user's rule is the first planet's load, and Deadlocked goes back to its
- * first planet, DreadZone, all the time, so the spec names the tutorial flags'
- * low byte dropping to 0, which the softlock fix and the autosplitter's start
- * watch. That byte is saved with the file, though (save chunk 5,
- * 0xB1F468..0xB1F473, chunk table 0x9EB90C): the game-data reset 0x3C6970
- * zeroes it (0x3C6C24) on a new game and on a challenge-mode start, but a load
- * gives it the save's value, which is 0 only for a save made before the
- * tutorial got going. A remembered NG+ category would then never see the
- * load of an ordinary save.
+ * It is saved with the file (save chunk 5, 0xB1F468..0xB1F473), so loading a
+ * save gives it the save's value: a save made after the first mission does
+ * not fire, and neither does a load that leaves it at 0 when it was 0 already.
  *
- * So the trigger arms on any of three things and fires once the game has
- * settled into a level:
+ * The trigger fires on the tick after the drop rather than on it: a
+ * challenge-mode start zeroes the challenge counter with the rest of the game
+ * data and only then puts the incremented value back (0x3D9E64, 0x3DA0F8), and
+ * the tick after is clear of that window. The five act tunings the NG+ group
+ * writes are boss counters in BSS that nothing in a load or a reset touches.
  *
- *   arm   the main menu is up (RAC4_IN_FRONTEND 1): a load from it, or a new
- *         game, is coming
- *         the save restore's block counter moved (RAC4_RESTORE_COUNT): a save
- *         went back into memory, from the menu, the game's own load menu or
- *         the savefile helper
- *         the tutorial byte dropped to 0: a new game or a challenge-mode start,
- *         which resets the game data without a restore
- *   fire  out of the menu (RAC4_IN_FRONTEND 0), no load requested, ordinary
- *         play (gameMode 0) and a single-player or co-op level, for two ticks
- *         running
- *
- * Nothing else arms it: planet travel, a death, the pause, a cutscene and the
- * DreadZone lobby neither restore a save nor reset the game data nor enter
- * the main menu, and the five act tunings the NG+ group writes are boss
- * counters in BSS that nothing in a load touches. The two ticks matter on a
- * challenge-mode start, which zeroes the challenge counter with the rest of
- * the game data and only then puts the incremented value back (0x3D9E64,
- * 0x3DA0F8), and a load follows it anyway.
- *
- * The first tick of a process only learns where the counters stand; finding
- * the main menu up there arms, it never fires. A load already under way when
- * qwark attaches is missed. From the executable; not yet run on hardware.
+ * The first tick of a process only learns where the byte stands; a 0 there is
+ * not a drop. From the executable; not yet run on hardware.
  */
 static void rac4_file_load_watch(void)
 {
-	int ready;
-
 	if (!g_fl_primed) {
 		g_fl_primed   = 1;
-		g_fl_armed    = (g_frontend != 0);
-		g_fl_settled  = 0;
+		g_fl_due      = 0;
 		g_fl_tutorial = g_tutorial;
-		g_fl_restores = g_restores;
 		return;
 	}
 
-	if (g_frontend != 0) g_fl_armed = 1;
-	if (g_restores != g_fl_restores) g_fl_armed = 1;
-	if (g_tutorial == 0 && g_fl_tutorial != 0) g_fl_armed = 1;
-	g_fl_restores = g_restores;
-	g_fl_tutorial = g_tutorial;
-
-	if (!g_fl_armed) return;
-
-	ready = g_frontend == 0 && g_as.request_load == 0 && g_game_mode == 0 &&
-	        (s32)g_level >= 1 && (s32)g_level <= RAC4_LEVEL_SP_CO_OP_MAX;
-	if (!ready) {
-		g_fl_settled = 0;
-		return;
+	if (g_fl_due) {
+		g_fl_due = 0;
+		manips_file_loaded();
 	}
-	if (++g_fl_settled < 2) return;
 
-	g_fl_armed = 0;
-	g_fl_settled = 0;
-	manips_file_loaded();
+	if (g_tutorial != g_fl_tutorial) {
+		if (g_tutorial == 0) g_fl_due = 1;
+		g_fl_tutorial = g_tutorial;
+	}
 }
 
 /*
  * Whether a save file is in play, for the manips: out of the main menu and in
- * a single-player or co-op level. Tick thread.
+ * a single-player or co-op level. Apply now refuses outside one (event 5), and
+ * a selection puts its setup in at once only inside one; the trigger does not
+ * use it. Tick thread.
  */
 static int rac4_in_file(void)
 {

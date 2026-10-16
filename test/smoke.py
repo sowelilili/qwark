@@ -3646,6 +3646,12 @@ MANIP_SPECS = [
         # A quit to the XMB is an autosplit PAUSE here, and its RESUME waits for
         # the game's loading hook to say the logo is up: say it, after each boot.
         "after_boot": [(0x1710000, b"\xFF")],
+        # The file-load trigger: the tutorial flags' low byte dropping to 0, as a
+        # new game or a challenge start does. After the reboot below the setup
+        # is due again, so the drop puts it in and announces it.
+        "trigger": {"steps": [[(0x9C330E, b"\x01"), (0xB1F46F, b"\x05")],
+                              [(0xB1F46F, b"\x00")]],
+                    "check": (0xA947D3, 20)},
         # One byte of the word: the poison around it stays.
         "apply": (1, 1, 0xA947D0, 0xEEEEEE14),
     },
@@ -3792,6 +3798,27 @@ def exercise_manips(c, sim, spec):
     status, l = manip_list(c)
     check(ok and l is not None and l["selected"] == gid and l["auto_reset"] == 0,
           "%s manips: a reboot with remember on keeps the category" % name, l)
+
+    trig = spec.get("trigger")
+    if trig:
+        seq = l["seq"] if l else 0
+        addr, want = trig["check"]
+        mem_write(c, addr, b"\xEE")
+        for step in trig["steps"]:
+            for a, v in step:
+                mem_write(c, a, v)
+            time.sleep(0.15)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and mem_read_u8(c, addr) != want:
+            time.sleep(0.05)
+        check(mem_read_u8(c, addr) == want,
+              "%s manips: the file-load trigger puts the setup in" % name,
+              mem_read_u8(c, addr))
+        status, l = manip_list(c)
+        check(l is not None and l["seq"] == (seq + 1) & 0xFFFF and
+              l["kind"] == MANIP_EVENT_SETUP and l["group"] == gid,
+              "%s manips: and records one event, the setup activated" % name,
+              l and (l["seq"], l["kind"]))
 
     c.call(OP_MANIP_OPTIONS, bytes([1, 0]))
     c.call(OP_MANIP_SELECT, bytes([0]))

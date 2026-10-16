@@ -821,14 +821,14 @@ Kinds 3 to 5 also show a console notification, because the PC may not be connect
 - **Setup** is what the port never resets until the game reboots. It is applied once per game boot: at the first compatible file load after the boot or after the selection, or at once when the group is selected while a compatible file is in play. Selecting another group, or the same one again after another, makes it due again. A game boot is a new game process; quitting to the XMB and starting the game again is one.
 - **Per-run** writes are applied on every file load while auto-reset is on, and by Apply now.
 
-A **file load** is the start of a run: a save loaded or a new game started, from the title screen or from inside the game, including a load through the savefile helper (section 5.12) and a challenge-mode start. Not a planet change, a death or a respawn. Every run starts on its game's first planet and none comes back to it, so RaC1, RaC2 and UYA take the end of a planet load whose planet is the first one; Deadlocked goes back to DreadZone all the time and watches for a save restore, the main menu or a new game's reset instead. The first tick after qwark attaches to a running game never counts as one.
+A **file load** is the start of a run: a save loaded or a new game started, from the title screen or from inside the game, including a load through the savefile helper (section 5.12) and a challenge-mode start. Not a planet change, a death or a respawn. Every run starts on its game's first planet and none comes back to it, so RaC1, RaC2 and UYA take the end of a planet load whose planet is the first one; Deadlocked goes back to DreadZone all the time and takes the tutorial flag instead, which a new game and a challenge-mode start reset. The first tick after qwark attaches to a running game never counts as one.
 
 | Game | File load |
 |---|---|
 | RaC1 | the end of a planet load into Veldin (planet 0): the load request word seen set, then clear, the front end closed and the game state out of the transition |
 | RaC2 | the load screen's counter reaching 2 on a load into Aranos (planet 0), the moment the old auto-resets used |
 | UYA | the end of a planet load into Veldin (planet 1): a load seen under way to Veldin (the request word set, destination 1, game mode 6), then the mode leaving 6 on Veldin and the level running a frame |
-| Deadlocked | the game settled in a level (out of the main menu, no load requested, ordinary play, two ticks running) after the main menu was up, a save was restored, or the tutorial flags dropped to 0 (a new game or a challenge-mode start) |
+| Deadlocked | the tutorial flags' low byte (0xB1F46F) dropping to 0, the edge the Fix reset softlocks watcher and the autosplitter's run start use, acted on the tick after: a new game or a challenge-mode start. A save keeps its own value of the byte, so loading one counts only when that takes the byte from non-zero to 0 |
 
 The game files in `src/games/` give the evidence for each.
 
