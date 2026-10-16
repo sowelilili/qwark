@@ -1540,19 +1540,21 @@ OTHER_GAMES = [
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
-        # Build 53: Fast loads, which a planet load forces, are two instruction
-        # words: memcard_Save's call goes, and the copy of the transition
-        # update's answer is or'd with the load being almost done. The update's
-        # own call between them, which builds 50 to 52 nopped and which a flight
-        # with a movie to play needs, is never written. The game's mode leaving
-        # the space transition (6) puts a forced pair back.
+        # Build 53: Fast loads, which a planet load forces, are six instruction
+        # words on RaC2's model (src/games/rac4.h): the autosave's call and its
+        # two arguments become FadeToBlack(2, 0), the transition update's call
+        # plays a queued movie instead, the copy of its answer sends the loop
+        # round once, and that one time round draws no frame. The game's mode
+        # leaving the space transition (6) puts a forced set back.
         "code_fastload": {
             "toggle": 2,
             "mode": 0xB3C5A0,
-            "game": [(0x2A8AF4, 0x48120261), (0x2A8C50, 0x4E9E0421),
-                     (0x2A8C5C, 0x607B0000)],
-            "fast": [(0x2A8AF4, 0x60000000), (0x2A8C50, 0x4E9E0421),
-                     (0x2A8C5C, 0x7C7BD378)],
+            "game": [(0x2A8AF4, 0x48120261), (0x2A8AE8, 0x38600000),
+                     (0x2A8AEC, 0x80846DD0), (0x2A8C50, 0x4E9E0421),
+                     (0x2A8C5C, 0x607B0000), (0x2A8CC8, 0x38600001)],
+            "fast": [(0x2A8AF4, 0x4BEAC045), (0x2A8AE8, 0x38600002),
+                     (0x2A8AEC, 0x38800000), (0x2A8C50, 0x480013B5),
+                     (0x2A8C5C, 0x3B600001), (0x2A8CC8, 0x48000020)],
         },
         # Deadlocked splits when a load starts for a real planet while in game,
         # and only once the session has left the main menu: the watcher keeps its
@@ -2649,7 +2651,7 @@ def exercise_game(c, sim, spec, udp=None):
     #
     # The planet load above forced them on, over whatever the fake process held
     # at those words; leaving the space transition puts that back. Then the
-    # game's own three words go in, and the checkbox and a second forced load
+    # game's own six words go in, and the checkbox and a second forced load
     # are watched against them.
     if spec.get("code_fastload"):
         cf = spec["code_fastload"]
@@ -2671,17 +2673,17 @@ def exercise_game(c, sim, spec, udp=None):
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", cf["toggle"], 1))
         if check(status == ST_OK, "%s: the Fast loads checkbox turns on" % name, status):
             check(fl_words() == fast,
-                  "%s: memcard_Save's call goes, the loop's exit word is or'd, "
-                  "and the update's call stays" % name,
+                  "%s: the autosave, the update, the loop's exit and its frame "
+                  "are the patch's six words" % name,
                   [hex(w) for w in fl_words()])
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", cf["toggle"], 0))
         check(status == ST_OK and fl_words() == game,
-              "%s: and off, the game's three words are back" % name,
+              "%s: and off, the game's six words are back" % name,
               [hex(w) for w in fl_words()])
 
         status, _ = c.call(OP_PLANET_LOAD, bytes([spec["planet"], 0]))
         if check(status == ST_OK, "%s: a second PLANET_LOAD" % name, status):
-            check(fl_words() == fast, "%s: forces the same two words on" % name,
+            check(fl_words() == fast, "%s: forces the same six words on" % name,
                   [hex(w) for w in fl_words()])
             mem_write(c, cf["mode"], struct.pack(">I", 6))
             time.sleep(0.15)
@@ -3518,9 +3520,10 @@ RAC2_LEVEL_FLAGS = 0x015625B0
 RAC2_LOAD_PLANET = 0x0156B050
 RAC4_FP_ADDR = 0x001D7D18
 RAC4_FP = bytes([0x41, 0x82, 0x00, 0x0C])
-RAC4_FASTLOAD_1 = 0x002A8AF4
-RAC4_FASTLOAD_2 = 0x002A8C5C   # build 53: off the transition update's call
-RAC4_FASTLOAD_ORIG = bytes([0x48, 0x12, 0x02, 0x61, 0x60, 0x7B, 0x00, 0x00])
+# Build 53: the six words Deadlocked's fast loads patch, and the game's own.
+RAC4_FASTLOAD_ORIG = [(0x002A8AF4, 0x48120261), (0x002A8AE8, 0x38600000),
+                      (0x002A8AEC, 0x80846DD0), (0x002A8C50, 0x4E9E0421),
+                      (0x002A8C5C, 0x607B0000), (0x002A8CC8, 0x38600001)]
 RAC4_LOAD_PLANET2 = 0x00B36DCC
 RAC4_TARGET_PLANET = 0x00B36DD0
 
@@ -3556,8 +3559,8 @@ def smoke_rpcs3_planet_loads(c, pine):
 
     # ------------------------------------------------------- Deadlocked
     pine.poke(RAC4_FP_ADDR, RAC4_FP)
-    pine.poke(RAC4_FASTLOAD_1, RAC4_FASTLOAD_ORIG[:4])
-    pine.poke(RAC4_FASTLOAD_2, RAC4_FASTLOAD_ORIG[4:])
+    for addr, word in RAC4_FASTLOAD_ORIG:
+        pine.poke(addr, struct.pack(">I", word))
     pine.boot("NPEA00423", "Ratchet: Deadlocked")
     ok, info = wait_state(c, SESSION_INGAME)
     check(ok and info["game"] == 4, "rpcs3: Deadlocked reaches INGAME", info)
@@ -3571,9 +3574,10 @@ def smoke_rpcs3_planet_loads(c, pine):
     check(pine.peek(RAC4_LOAD_PLANET2, 4) == struct.pack(">I", 1),
           "rpcs3: and so did the load request",
           pine.peek(RAC4_LOAD_PLANET2, 4).hex())
-    words = pine.peek(RAC4_FASTLOAD_1, 4) + pine.peek(RAC4_FASTLOAD_2, 4)
-    check(words == RAC4_FASTLOAD_ORIG,
-          "rpcs3: both fast-load sites kept their instructions", words.hex())
+    words = [struct.unpack(">I", pine.peek(a, 4))[0] for a, _w in RAC4_FASTLOAD_ORIG]
+    check(words == [w for _a, w in RAC4_FASTLOAD_ORIG],
+          "rpcs3: all six fast-load words kept their instructions",
+          [hex(w) for w in words])
 
     pine.shutdown_game()
     ok, info = wait_state(c, SESSION_XMB)

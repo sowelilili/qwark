@@ -244,15 +244,19 @@ static const struct patch_word rac4_crash_words[] = {
 };
 
 /*
- * The first word skips the autosave every single-player transition makes
- * before it starts (memcard_Save_QE_func(0, level)), as RAC4Form's did; it has
- * nothing to do with the movie, which is queued after it. The second has moved
- * off the transition update's call, which builds up to 52 and RAC4Form skipped:
- * rac4.h says why that hung the game whenever the flight had a movie to play.
+ * Build 53: six words on RaC2's model, where RAC4Form had two (rac4.h says what
+ * each does). The order is the order they go in, and patch_revert takes them
+ * out backwards: FadeToBlack's call before the arguments that would make
+ * memcard_Save force a save, and the movie's call before the loop is cut to
+ * once round.
  */
 static const struct patch_word rac4_fastload_words[] = {
-	{ RAC4_FASTLOAD_INSTR_1, 0x60000000u },          /* do not call memcard_Save */
-	{ RAC4_FASTLOAD_INSTR_2, RAC4_FASTLOAD_WORD_2 }  /* end once the load is almost done */
+	{ RAC4_FASTLOAD_SAVE,    0x4BEAC045u },   /* bl 0x154B38: FadeToBlack, not memcard_Save */
+	{ RAC4_FASTLOAD_FADE_R3, 0x38600002u },   /* li r3, 2 */
+	{ RAC4_FASTLOAD_FADE_R4, 0x38800000u },   /* li r4, 0 */
+	{ RAC4_FASTLOAD_UPDATE,  0x480013B5u },   /* bl 0x2AA004: a queued movie, no flight */
+	{ RAC4_FASTLOAD_EXIT,    0x3B600001u },   /* li r27, 1: once round the loop */
+	{ RAC4_FASTLOAD_FRAME,   0x48000020u }    /* b 0x2A8CE8: with no frame */
 };
 
 static const struct patch_word rac4_ammo_words[] = {
@@ -269,7 +273,7 @@ static struct patch_def rac4_crash = {
 	"Crash patches", PATCH_KIND_FEATURE, rac4_crash_words, 11, NULL
 };
 static struct patch_def rac4_fastload = {
-	"Fast loads", PATCH_KIND_FEATURE, rac4_fastload_words, 2, NULL
+	"Fast loads", PATCH_KIND_FEATURE, rac4_fastload_words, 6, NULL
 };
 static struct patch_def rac4_ammo = {
 	"Refill ammo", PATCH_KIND_FEATURE, rac4_ammo_words, 1, NULL

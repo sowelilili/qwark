@@ -30,8 +30,8 @@ static u32 g_at;
  * At most this many reads a tick. Each is one PINE round trip under RPCS3, and
  * a tick that waits on the emulator for long holds everything else up, so the
  * look is spread over a few ticks the way the mods' look is. Caves that follow
- * one another with no gap between them are one read, so Deadlocked's fifteen,
- * 436 bytes back to back, are one, and its fourteen site words are fourteen:
+ * one another with no gap between them are one read, so Deadlocked's eighteen,
+ * 492 bytes back to back, are one, and its fifteen site words are fifteen:
  * four ticks. RaC1's five trampolines are three runs, and with its five sites
  * that is two ticks; RaC2's four and four (build 53's crash guards) are two
  * as well, and RaC3 takes one.

@@ -12,8 +12,14 @@ OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 SW_CAVE_START = 0x00667BCC;
 SW_CAVE_END   = 0x00667F70;
 
-/* The game function the first fast-load site calls: memcard_Save. */
-rac4_memcard_save = 0x003C8D54;
+/*
+ * The game functions the fast-load trampolines call: memcard_Save, the first
+ * site's own; FadeToBlack, its patched form; and the function the space
+ * flight's post-update plays a queued movie through (rac4.h).
+ */
+rac4_memcard_save  = 0x003C8D54;
+rac4_fade_to_black = 0x00154B38;
+rac4_space_movie   = 0x002AA004;
 
 SECTIONS
 {
@@ -34,10 +40,15 @@ SECTIONS
 	.cave.crash_bot         0x00667D48 : { *(.cave.crash_bot) }
 	/* lvx ignores the low four bits of its address. */
 	.cave.crash_bot_vec     0x00667D70 : { *(.cave.crash_bot_vec) }
+	/* Build 53: after the table, so that nothing above moved. */
+	.cave.fast_loads_1_on   0x00667D80 : { *(.cave.fast_loads_1_on) }
+	.cave.fast_loads_2_on   0x00667D90 : { *(.cave.fast_loads_2_on) }
+	.cave.fast_loads_3      0x00667D9C : { *(.cave.fast_loads_3) }
 
 	.site.refill_ammo       0x001D7D18 : { *(.site.refill_ammo) }
 	.site.fast_loads_1      0x002A8AF4 : { *(.site.fast_loads_1) }
-	.site.fast_loads_2      0x002A8C5C : { *(.site.fast_loads_2) }
+	.site.fast_loads_2      0x002A8C50 : { *(.site.fast_loads_2) }
+	.site.fast_loads_3      0x002A8CC8 : { *(.site.fast_loads_3) }
 	.site.crash_dropship_1  0x0051E1E8 : { *(.site.crash_dropship_1) }
 	.site.crash_dropship_2  0x0051E200 : { *(.site.crash_dropship_2) }
 	.site.crash_dropship_3  0x0051E21C : { *(.site.crash_dropship_3) }

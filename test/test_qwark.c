@@ -7388,13 +7388,21 @@ static void test_rac3(void)
 
 #define R4_QUIT_HOOK    0x00013780u
 #define R4_FP_ADDR      0x001D7D18u
-#define R4_FASTLOAD_1   0x002A8AF4u
-#define R4_FASTLOAD_2   0x002A8C5Cu   /* build 53: off the update's call */
-#define R4_TRANS_UPDATE 0x002A8C50u   /* the bcctrl builds 50 to 52 nopped */
+/* Build 53: Deadlocked's fast loads are six words on RaC2's model (rac4.h). */
+#define R4_FL_FADE_R3   0x002A8AE8u   /* li r3, 0 -> li r3, 2 */
+#define R4_FL_FADE_R4   0x002A8AECu   /* lwz r4, g_newlevelnum -> li r4, 0 */
+#define R4_FASTLOAD_1   0x002A8AF4u   /* bl memcard_Save -> bl FadeToBlack */
+#define R4_TRANS_UPDATE 0x002A8C50u   /* bcctrl -> bl 0x2AA004, a queued movie */
+#define R4_FASTLOAD_2   0x002A8C5Cu   /* ori r27, r3, 0 -> li r27, 1 */
+#define R4_FL_FRAME     0x002A8CC8u   /* li r3, 1 -> b 0x2A8CE8, past the frame */
 #define R4_FL1_GAME     0x48120261u   /* bl memcard_Save */
+#define R4_FL1_FAST     0x4BEAC045u   /* bl 0x154B38, FadeToBlack */
 #define R4_FL2_GAME     0x607B0000u   /* ori r27, r3, 0 */
-#define R4_FL2_FAST     0x7C7BD378u   /* or r27, r3, r26 */
+#define R4_FL2_FAST     0x3B600001u   /* li r27, 1 */
 #define R4_UPDATE_CALL  0x4E9E0421u   /* bcctrl 20, 30 */
+#define R4_MOVIE_CALL   0x480013B5u   /* bl 0x2AA004 */
+#define R4_FRAME_GAME   0x38600001u   /* li r3, 1 */
+#define R4_FRAME_SKIP   0x48000020u   /* b 0x2A8CE8 */
 #define R4_CRASH_FIRST  0x0080883Cu
 #define R4_BOLTS_ADDR   0x009C32E8u
 #define R4_BOTS_SAVE    0x009C3325u
@@ -7427,6 +7435,65 @@ static void test_rac3(void)
 #define F4_MAX_LEVELS    15
 #define F4_RESET_LEVELS  16   /* retired in build 32, never reused */
 #define F4_MAX_AMMO      17
+
+/*
+ * The six fast-load words in the order the patch lists them: where, and the
+ * game's own word or the patch's.
+ */
+static const struct patch_word g_r4_fl_game[6] = {
+	{ R4_FASTLOAD_1, R4_FL1_GAME }, { R4_FL_FADE_R3, 0x38600000u },
+	{ R4_FL_FADE_R4, 0x80846DD0u }, { R4_TRANS_UPDATE, R4_UPDATE_CALL },
+	{ R4_FASTLOAD_2, R4_FL2_GAME }, { R4_FL_FRAME, R4_FRAME_GAME }
+};
+static const struct patch_word g_r4_fl_fast[6] = {
+	{ R4_FASTLOAD_1, R4_FL1_FAST }, { R4_FL_FADE_R3, 0x38600002u },
+	{ R4_FL_FADE_R4, 0x38800000u }, { R4_TRANS_UPDATE, R4_MOVIE_CALL },
+	{ R4_FASTLOAD_2, R4_FL2_FAST }, { R4_FL_FRAME, R4_FRAME_SKIP }
+};
+
+/* The game's own six words, put in the fake process before anything else. */
+static void r4_fl_seed(void)
+{
+	u8 w[4];
+	u32 i;
+
+	for (i = 0; i < 6; i++) {
+		be32_put(w, g_r4_fl_game[i].value);
+		host_poke(g_r4_fl_game[i].addr, w, 4);
+	}
+}
+
+/* 1 when all six words read as the patch's (fast) or as the game's own. */
+static int r4_fl_is(int fast)
+{
+	const struct patch_word *t = fast ? g_r4_fl_fast : g_r4_fl_game;
+	u32 i, v;
+
+	for (i = 0; i < 6; i++) {
+		v = 0;
+		if (mem_read_u32(t[i].addr, &v) != ST_OK || v != t[i].value) return 0;
+	}
+	return 1;
+}
+
+/*
+ * Whether the writes since the last log reset put the words in (in) or took
+ * them out in the order rac4.c promises: memcard_Save's call is never there
+ * with FadeToBlack's arguments, and the loop is never cut to once round while
+ * the update is still the game's.
+ */
+static int r4_fl_order(int in)
+{
+	int save = write_covering(R4_FASTLOAD_1);
+	int r3 = write_covering(R4_FL_FADE_R3);
+	int r4 = write_covering(R4_FL_FADE_R4);
+	int update = write_covering(R4_TRANS_UPDATE);
+	int once = write_covering(R4_FASTLOAD_2);
+
+	if (save < 0 || r3 < 0 || r4 < 0 || update < 0 || once < 0) return 0;
+	if (in) return save < r3 && save < r4 && update < once;
+	return r3 < save && r4 < save && once < update;
+}
 
 static void test_rac4(void)
 {
@@ -7514,52 +7581,44 @@ static void test_rac4(void)
 
 	group("Deadlocked: planet load and the fast-load restore");
 
-	host_poke(R4_FASTLOAD_1, (const u8 *)"\x48\x12\x02\x61", 4);
-	host_poke(R4_FASTLOAD_2, (const u8 *)"\x60\x7B\x00\x00", 4);
-	host_poke(R4_TRANS_UPDATE, (const u8 *)"\x4E\x9E\x04\x21", 4);
+	r4_fl_seed();
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
+	host_write_log_reset();
 	check(session_planet_load(4, 0) == ST_OK, "PLANET_LOAD runs");
 	mem_read_u32(R4_TARGET, &v);
 	check_eq_u64(v, 4, "the target planet was written");
 	mem_read_u32(R4_LOADP2, &v);
 	check_eq_u64(v, 1, "and the load was requested");
+	check(r4_fl_is(1), "fast loads were forced on, all six words of them");
 	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x60000000u, "fast loads were forced on");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_FAST, "build 53: the loop's exit word is or'd with the load being almost done");
+	check_eq_u64(v, R4_FL1_FAST, "build 53: the autosave's call is FadeToBlack's");
 	mem_read_u32(R4_TRANS_UPDATE, &v);
-	check_eq_u64(v, R4_UPDATE_CALL,
-	             "and the transition update is still called, so a movie the flight queued plays");
+	check_eq_u64(v, R4_MOVIE_CALL, "the update's call plays a queued movie instead");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_FAST, "the loop goes round once");
+	mem_read_u32(R4_FL_FRAME, &v);
+	check_eq_u64(v, R4_FRAME_SKIP, "and draws no frame");
+	check(r4_fl_order(1), "the calls went in before the words that lean on them");
 	check(session_planet_load(0, 0) == ST_BAD_ARG, "the unused planet is BAD_ARG");
 
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
 	pump(6);
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x60000000u, "they stay on through the space transition");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_FAST, "both of them");
+	check(r4_fl_is(1), "they stay on through the space transition");
 
+	host_write_log_reset();
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x02", 1);
 	pump(6);
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, R4_FL1_GAME, "and go back to the toggle setting when it ends");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_GAME, "both words restored");
-	mem_read_u32(R4_TRANS_UPDATE, &v);
-	check_eq_u64(v, R4_UPDATE_CALL, "and the update's call was never written");
+	check(r4_fl_is(0), "and go back to the toggle setting when it ends: the game's six words");
+	check(r4_fl_order(0), "taken out in the reverse order");
 
 	group("build 53: Deadlocked's Fast loads checkbox and a forced load");
 
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
-	host_write_log_reset();
 	check(features_set(F4_FAST_LOADS, 1) == ST_OK, "Fast loads turns on");
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x60000000u, "memcard_Save is not called");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_FAST, "and the loop ends once the load is almost done");
+	check(r4_fl_is(1), "all six words are the patch's");
 	check((features_toggle_state() & ((u64)1 << F4_FAST_LOADS)) != 0, "the checkbox reads on");
 
 	check(session_planet_load(5, 0) == ST_OK, "a planet load with the checkbox on");
@@ -7567,17 +7626,11 @@ static void test_rac4(void)
 	pump(6);
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(6);
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_FAST, "leaves them on when it ends: the checkbox has the say");
+	check(r4_fl_is(1), "leaves them on when it ends: the checkbox has the say");
 	check((features_toggle_state() & ((u64)1 << F4_FAST_LOADS)) != 0, "and it still reads on");
 
 	check(features_set(F4_FAST_LOADS, 0) == ST_OK, "Fast loads turns off");
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, R4_FL1_GAME, "memcard_Save is called again");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_GAME, "and the loop waits for the flight again");
-	check(host_write_log_count() > 0 && write_covering(R4_TRANS_UPDATE) < 0,
-	      "the update's call was never written along the way");
+	check(r4_fl_is(0), "the autosave, the update, the copy and the frame are the game's again");
 
 	group("Deadlocked: bot, weapon and gadget unlocks");
 
@@ -9754,9 +9807,7 @@ static void test_no_code_patches_planet_load(void)
 	check(quit_and_wait(), "quit RaC2");
 	check(boot_and_wait("NPEA00423"), "Deadlocked boots with the gate closed");
 
-	host_poke(R4_FASTLOAD_1, (const u8 *)"\x48\x12\x02\x61", 4);
-	host_poke(R4_FASTLOAD_2, (const u8 *)"\x60\x7B\x00\x00", 4);
-	host_poke(R4_TRANS_UPDATE, (const u8 *)"\x4E\x9E\x04\x21", 4);
+	r4_fl_seed();
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
@@ -9765,20 +9816,14 @@ static void test_no_code_patches_planet_load(void)
 	check_eq_u64(v, 4, "the target planet was written");
 	mem_read_u32(R4_LOADP2, &v);
 	check_eq_u64(v, 1, "and the load was requested");
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, R4_FL1_GAME, "while the first fast-load word kept its instruction");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_GAME, "and so did the second");
-	mem_read_u32(R4_TRANS_UPDATE, &v);
-	check_eq_u64(v, R4_UPDATE_CALL, "and the transition update's call");
+	check(r4_fl_is(0), "while all six fast-load words kept their instructions");
 
 	/* Through the space transition and out: the watcher writes nothing. */
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
 	pump(6);
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x02", 1);
 	pump(6);
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x48120261u, "nor does the end of the load write them");
+	check(r4_fl_is(0), "nor does the end of the load write them");
 
 	check(session_planet_load(0, 0) == ST_BAD_ARG,
 	      "the unused planet is still BAD_ARG");
@@ -11798,14 +11843,22 @@ static const struct patch_word g_swt_rac3_toggles[] = {
 	{ 0, 0x00D9FF10u }, { 38, 0x00D9FF11u }
 };
 
+/*
+ * Build 53: Deadlocked's fast loads on RaC2's model (src/games/rac4.h), three
+ * sites. The autosave's and the update's trampolines keep the caves and six
+ * words they always had, and branch to second halves after the bot-crash
+ * table; the frame's trampoline follows those. Read back from the linked
+ * switches instruction by instruction.
+ */
 static const struct swt_cave g_swt_rac4_caves[] = {
 	{ 0x00667BCCu, 7, { 0x40820018u, 0x3C60015Du, 0x8863D782u, 0x2C030000u, 0x40820008u,
 	                    0x4BB70144u, 0x4BB70138u } },
-	{ 0x00667BE8u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x2C050000u, 0x40820008u, 0x4BD6115Du,
+	/* lis r5; lbz r5, flag; cmpwi r5, 0; bne 0x667D80; bl memcard_Save; b 0x2A8AF8 */
+	{ 0x00667BE8u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x2C050000u, 0x4082018Cu, 0x4BD6115Du,
 	                    0x4BC40EFCu } },
-	/* Build 53: lis r5; lbz r5, flag; neg r5, r5; and r5, r5, r26; or r27, r3, r5; b 0x2A8C60. */
-	{ 0x00667C00u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x7CA500D0u, 0x7CA5D038u, 0x7C7B2B78u,
-	                    0x4BC4104Cu } },
+	/* lis r5; lbz r5, flag; cmpwi r5, 0; bne 0x667D90; bcctrl 20, 30; b 0x2A8C54 */
+	{ 0x00667C00u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x2C050000u, 0x40820184u, 0x4E9E0421u,
+	                    0x4BC41040u } },
 	{ 0x00667C18u, 8, { 0x3C80015Du, 0x8884D780u, 0x2C040000u, 0x4082000Cu, 0xECC73028u,
 	                    0x4BEB65C0u, 0xECC33028u, 0x4BEB65B8u } },
 	{ 0x00667C38u, 8, { 0x3C80015Du, 0x8884D780u, 0x2C040000u, 0x4082000Cu, 0x10C5304Au,
@@ -11828,10 +11881,18 @@ static const struct swt_cave g_swt_rac4_caves[] = {
 	                    0x4BFB0334u, 0x7D296078u, 0x4BFB032Cu } },
 	{ 0x00667D48u, 10, { 0x3CA0015Du, 0x88A5D780u, 0x2C050000u, 0x4082000Cu, 0x7CE4F0CEu,
 	                     0x481A0B94u, 0x3CA00066u, 0x38A57D70u, 0x7CE028CEu, 0x481A0B84u } },
-	{ 0x00667D70u, 4, { 0x00010203u, 0x04050607u, 0x10111213u, 0x14151617u } }
+	{ 0x00667D70u, 4, { 0x00010203u, 0x04050607u, 0x10111213u, 0x14151617u } },
+	/* li r3, 2; li r4, 0; bl FadeToBlack; b 0x2A8AF8 */
+	{ 0x00667D80u, 4, { 0x38600002u, 0x38800000u, 0x4BAECDB1u, 0x4BC40D6Cu } },
+	/* bl 0x2AA004; li r3, 1; b 0x2A8C54 */
+	{ 0x00667D90u, 3, { 0x4BC42275u, 0x38600001u, 0x4BC40EBCu } },
+	/* lis r3; lbz r3, flag; cmpwi r3, 0; bne +12; li r3, 1; b 0x2A8CCC; b 0x2A8CE8 */
+	{ 0x00667D9Cu, 7, { 0x3C60015Du, 0x8863D781u, 0x2C030000u, 0x4082000Cu, 0x38600001u,
+	                    0x4BC40F1Cu, 0x4BC40F34u } }
 };
 static const struct patch_word g_swt_rac4_sites[] = {
-	{ 0x001D7D18u, 0x4848FEB4u }, { 0x002A8AF4u, 0x483BF0F4u }, { 0x002A8C5Cu, 0x483BEFA4u },
+	{ 0x001D7D18u, 0x4848FEB4u }, { 0x002A8AF4u, 0x483BF0F4u }, { 0x002A8C50u, 0x483BEFB0u },
+	{ 0x002A8CC8u, 0x483BF0D4u },
 	{ 0x0051E1E8u, 0x48149A30u }, { 0x0051E200u, 0x48149A38u }, { 0x0051E21Cu, 0x48149A3Cu },
 	{ 0x0051E228u, 0x48149A50u }, { 0x0051E240u, 0x48149A58u }, { 0x0051E24Cu, 0x48149A64u },
 	{ 0x00618008u, 0x4804FCC0u }, { 0x00618024u, 0x4804FCC4u }, { 0x00618034u, 0x4804FCD4u },
@@ -12430,10 +12491,9 @@ static void test_switches_fastloads(void)
 
 	check(session_planet_load(4, 0) == ST_OK, "PLANET_LOAD goes ahead");
 	check_eq_u64(swt_peek8(0x015CD781u), 1, "forcing fast loads through their flag");
-	check_eq_u64(swt_peek32(R4_FASTLOAD_1), 0x483BF0F4u, "the first site keeps its branch");
-	check_eq_u64(swt_peek32(R4_FASTLOAD_2), 0x483BEFA4u, "and so does the second, at 0x2A8C5C");
-	check(swt_peek32(R4_TRANS_UPDATE) != 0x483BEFB0u,
-	      "and the update's call at 0x2A8C50 holds no branch: this build's patch leaves it be");
+	check_eq_u64(swt_peek32(R4_FASTLOAD_1), 0x483BF0F4u, "the autosave's site keeps its branch");
+	check_eq_u64(swt_peek32(R4_TRANS_UPDATE), 0x483BEFB0u, "and so does the update's, at 0x2A8C50");
+	check_eq_u64(swt_peek32(R4_FL_FRAME), 0x483BF0D4u, "and the frame's, at 0x2A8CC8");
 	pump(SWT_POLL_TICKS);
 	check((features_toggle_state() & ((u64)1 << SWT_R4_FAST)) == 0,
 	      "the checkbox reads back off");
@@ -12556,11 +12616,14 @@ static const struct patch_word g_swt_rac2_b50_sites[] = {
 #define SWT_RAC1_STAMP 0xB16A9D3Eu
 #define SWT_RAC3_B50_STAMP 0x0C909623u
 /*
- * Deadlocked's: the one builds 50 to 52 handed out, and build 53's, which moved
- * its second fast-load switch (test_switches_rac4_fastload_moved).
+ * Deadlocked's: the one builds 50 to 52 handed out, the one build 53 handed out
+ * while its second fast-load switch sat on the copy of the update's answer, and
+ * this build's, with three fast-load sites on RaC2's model
+ * (test_switches_rac4_fastloads).
  */
-#define SWT_RAC4_B50_STAMP 0xEF1A07C3u
-#define SWT_RAC4_STAMP     0xBB16AF57u
+#define SWT_RAC4_B50_STAMP  0xEF1A07C3u
+#define SWT_RAC4_B53A_STAMP 0xBB16AF57u
+#define SWT_RAC4_STAMP      0xEEC44D7Cu
 
 /* RaC2's dead span, and the part of it the switches take. */
 #define SWT_R2_SPAN_LO  0x0113EC64u
@@ -12842,31 +12905,108 @@ static void test_switches_rac2_moved(void)
 }
 
 /*
- * Build 53: Deadlocked's second fast-load switch moved off the transition
- * update's call at 0x2A8C50, which hung the game whenever the flight had a movie
- * to play, to 0x2A8C5C, where the loop copies the update's answer into the word
- * it ends on (src/games/rac4.h). The trampoline kept its cave and its six words'
- * length, so every other cave and site is where builds 50 to 52, and build 53
- * until this move, put them; only that trampoline's words and that one site
- * differ, and the stamp with them. These are the old ones, which an RPCS3 patch
- * written by those builds holds.
+ * Build 53: Deadlocked's fast-load switches on RaC2's model (src/games/rac4.h).
+ * Builds 50 to 52 had two sites, the autosave's call at 0x2A8AF4 and the
+ * update's call at 0x2A8C50, both nopped; build 53 first moved the second to
+ * 0x2A8C5C, the copy of the update's answer, and has three now: 0x2A8AF4 and
+ * 0x2A8C50 again, with a cave of their own each where they always had one, and
+ * 0x2A8CC8, the first word of the transition's frame. Every other trampoline
+ * and site is where it was. These are the rows the two earlier layouts differ
+ * in, which an RPCS3 patch written by them still holds.
  */
-#define SWT_R4_FL2_OLD_SITE 0x002A8C50u
-#define SWT_R4_FL2_OLD_WORD 0x483BEFB0u   /* b 0x667C00, from 0x2A8C50 */
+#define SWT_R4_B53A_SITE  0x002A8C5Cu   /* build 53 before this: the copy */
+#define SWT_R4_B53A_WORD  0x483BEFA4u   /* b 0x667C00, from 0x2A8C5C */
+#define SWT_R4_FL2_WORD   0x483BEFB0u   /* b 0x667C00, from 0x2A8C50: builds 50 to 52's too */
+#define SWT_R4_SAVE       0x003C8D54u   /* memcard_Save_QE_func */
+#define SWT_R4_FADE       0x00154B38u   /* FadeToBlack */
+#define SWT_R4_MOVIE      0x002AA004u   /* the queued movie's player */
+#define SWT_R4_UPDATE     0x002AA9A0u   /* the space flight's update, through CTR */
+
+/* bne over memcard_Save's call: builds 50 to 52, and build 53 before this. */
+static const u32 g_swt_rac4_old_fl1[6] = {
+	0x3CA0015Du, 0x88A5D781u, 0x2C050000u, 0x40820008u, 0x4BD6115Du, 0x4BC40EFCu
+};
+/* bne over the update's call: builds 50 to 52. */
 static const u32 g_swt_rac4_b50_fl2[6] = {
 	0x3C80015Du, 0x8884D781u, 0x2C040000u, 0x40820008u, 0x4E9E0421u, 0x4BC41040u
 };
+/* lis r5; lbz r5, flag; neg r5, r5; and r5, r5, r26; or r27, r3, r5; b 0x2A8C60. */
+static const u32 g_swt_rac4_b53a_fl2[6] = {
+	0x3CA0015Du, 0x88A5D781u, 0x7CA500D0u, 0x7CA5D038u, 0x7C7B2B78u, 0x4BC4104Cu
+};
 
 /*
- * Just enough of a PowerPC to run a trampoline: lis, lbz, ori, neg, and, or and
- * b, on 64-bit registers as the PPU has them. Memory is the one flag byte.
+ * The game's own words around the three sites, out of the NPEA00423
+ * executable: enough to run each site from where its arguments are set to
+ * where the game goes on.
  */
+static const struct patch_word g_swt_r4_game[] = {
+	{ 0x002A8AE4u, 0x3C8000B3u },   /* lis r4, 0xB3 */
+	{ 0x002A8AE8u, 0x38600000u },   /* li r3, 0 */
+	{ 0x002A8AECu, 0x80846DD0u },   /* lwz r4, 0x6DD0(r4): g_newlevelnum */
+	{ 0x002A8AF0u, 0x7C8407B4u },   /* extsw r4, r4 */
+	{ 0x002A8AF4u, 0x48120261u },   /* bl memcard_Save */
+	{ 0x002A8C50u, 0x4E9E0421u },   /* bcctrl 20, 30 */
+	{ 0x002A8C54u, 0x3C80010Bu },   /* lis r4, 0x10B */
+	{ 0x002A8C58u, 0xE8410028u },   /* ld r2, 40(r1) */
+	{ 0x002A8C5Cu, 0x607B0000u },   /* ori r27, r3, 0 */
+	{ 0x002A8CC8u, 0x38600001u }    /* li r3, 1 */
+};
+
+/*
+ * Just enough of a PowerPC to run a trampoline and the game's words around its
+ * site: li, lis, ori, lbz, lwz, ld, extsw, cmpwi, b, bc, and the two calls, bl
+ * and bcctrl, on 64-bit registers as the PPU has them. A call is not followed:
+ * it is written down with its r3 and r4 and returns at once, with an answer in
+ * r3 that depends only on what was called. Memory is a few words.
+ */
+#define SWT_CPU_MEM   3
+#define SWT_CPU_CALLS 4
+
+struct swt_call {
+	u32 target;
+	u64 r3, r4;
+};
+
 struct swt_cpu {
 	u64 r[32];
+	u64 ctr;
+	u32 cr;
 	u32 pc;
-	u32 flag_addr;
-	u8  flag;
+	u32 mem_addr[SWT_CPU_MEM];
+	u64 mem_val[SWT_CPU_MEM];
+	struct swt_call calls[SWT_CPU_CALLS];
+	u8  ncalls;
+	u64 update_answer;   /* what the update, the call through CTR, answers */
 };
+
+static int swt_cpu_mem(const struct swt_cpu *c, u32 addr, u64 *v)
+{
+	u32 i;
+
+	for (i = 0; i < SWT_CPU_MEM; i++) {
+		if (c->mem_addr[i] == addr) {
+			*v = c->mem_val[i];
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void swt_cpu_call(struct swt_cpu *c, u32 target)
+{
+	if (c->ncalls < SWT_CPU_CALLS) {
+		c->calls[c->ncalls].target = target;
+		c->calls[c->ncalls].r3 = c->r[3];
+		c->calls[c->ncalls].r4 = c->r[4];
+	}
+	c->ncalls++;
+
+	/* The movie's player leaves 0x10B0000 in r3 after a movie (0x2AA064). */
+	if (target == (u32)c->ctr)          c->r[3] = c->update_answer;
+	else if (target == SWT_R4_MOVIE)    c->r[3] = 0x010B0000u;
+	else                                c->r[3] = 0xA0000000u + target;
+}
 
 /* One instruction. 0 for one it does not know, or a load from anywhere else. */
 static int swt_cpu_step(struct swt_cpu *c, u32 w)
@@ -12876,33 +13016,76 @@ static int swt_cpu_step(struct swt_cpu *c, u32 w)
 	u32 xo = (w >> 1) & 0x3FFu;
 	s64 simm = (s64)(s16)(u16)(w & 0xFFFFu);
 	u64 base = ra != 0 ? c->r[ra] : 0;
+	u64 v = 0;
 
 	switch (op) {
+	case 11: { /* cmpwi crD, rA, SIMM */
+		s32 a = (s32)(u32)c->r[ra];
+		u32 shift = 28u - 4u * (rd >> 2);
+		u32 bits = a < (s32)simm ? 8u : a > (s32)simm ? 4u : 2u;
+
+		if (rd & 1u) return 0;   /* cmpdi */
+		c->cr = (c->cr & ~(0xFu << shift)) | (bits << shift);
+		break;
+	}
+	case 14:   /* addi rD, rA, SIMM; li with rA = 0 */
+		c->r[rd] = base + (u64)simm;
+		break;
 	case 15:   /* addis rD, rA, SIMM; lis with rA = 0 */
 		c->r[rd] = base + (u64)(simm * 65536);
 		break;
-	case 34:   /* lbz rD, d(rA) */
-		if ((u32)(base + (u64)simm) != c->flag_addr) return 0;
-		c->r[rd] = c->flag;
-		break;
+	case 16: { /* bc BO, BI: relative, without the link */
+		u32 disp = w & 0xFFFCu;
+		u32 bit = (c->cr >> (31u - ra)) & 1u;
+		int take;
+
+		if (w & 3u) return 0;
+		if (disp & 0x8000u) disp |= 0xFFFF0000u;
+		if (rd == 12)      take = (int)bit;
+		else if (rd == 4)  take = !bit;
+		else if (rd == 20) take = 1;
+		else return 0;
+		c->pc += take ? disp : 4u;
+		return 1;
+	}
+	case 18: { /* b and bl, relative */
+		u32 disp = w & 0x03FFFFFCu;
+
+		if (w & 2u) return 0;
+		if (disp & 0x02000000u) disp |= 0xFC000000u;
+		if (w & 1u) {
+			swt_cpu_call(c, c->pc + disp);
+			c->pc += 4;
+		} else {
+			c->pc += disp;
+		}
+		return 1;
+	}
+	case 19:   /* bcctrl 20, BI: the call through CTR, always taken */
+		if (xo != 528 || (w & 1u) == 0 || rd != 20) return 0;
+		swt_cpu_call(c, (u32)c->ctr);
+		c->pc += 4;
+		return 1;
 	case 24:   /* ori rA, rS, UIMM */
 		c->r[ra] = c->r[rd] | (w & 0xFFFFu);
 		break;
 	case 31:
-		if (w & 1u) return 0;                                  /* no record forms */
-		if (xo == 104 && rb == 0)  c->r[rd] = (u64)0 - c->r[ra];   /* neg */
-		else if (xo == 28)         c->r[ra] = c->r[rd] & c->r[rb]; /* and */
-		else if (xo == 444)        c->r[ra] = c->r[rd] | c->r[rb]; /* or */
-		else return 0;
+		if ((w & 1u) || xo != 986 || rb != 0) return 0;   /* extsw rA, rS only */
+		c->r[ra] = (u64)(s64)(s32)(u32)c->r[rd];
 		break;
-	case 18: { /* b, relative and without the link */
-		u32 disp = w & 0x03FFFFFCu;
-
+	case 32:   /* lwz rD, d(rA) */
+		if (!swt_cpu_mem(c, (u32)(base + (u64)simm), &v)) return 0;
+		c->r[rd] = v & 0xFFFFFFFFu;
+		break;
+	case 34:   /* lbz rD, d(rA) */
+		if (!swt_cpu_mem(c, (u32)(base + (u64)simm), &v)) return 0;
+		c->r[rd] = v & 0xFFu;
+		break;
+	case 58:   /* ld rD, ds(rA) */
 		if (w & 3u) return 0;
-		if (disp & 0x02000000u) disp |= 0xFC000000u;
-		c->pc += disp;
-		return 1;
-	}
+		if (!swt_cpu_mem(c, (u32)(base + (u64)simm), &v)) return 0;
+		c->r[rd] = v;
+		break;
 	default:
 		return 0;
 	}
@@ -12910,168 +13093,271 @@ static int swt_cpu_step(struct swt_cpu *c, u32 w)
 	return 1;
 }
 
-/*
- * From c->pc until it reaches `stop`: `site` holds `site_word`, and the
- * generated caves hold theirs. 0 if it runs anywhere else, or too long.
- */
-static int swt_cpu_run(struct swt_cpu *c, const struct sw_desc *d,
-                       u32 site, u32 site_word, u32 stop)
+/* The word at pc: one of `over` first, then the generated caves, then the game's. */
+static int swt_cpu_word(const struct sw_desc *d, const struct patch_word *over, u32 nover,
+                        u32 pc, u32 *w)
 {
-	int steps;
-	u8 k;
+	u32 i;
 
-	for (steps = 0; steps < 32; steps++) {
-		u32 w = 0;
-		int found = 0;
-
-		if (c->pc == stop) return 1;
-		if (c->pc == site) {
-			w = site_word;
-			found = 1;
+	for (i = 0; i < nover; i++) {
+		if (over[i].addr == pc) {
+			*w = over[i].value;
+			return 1;
 		}
-		for (k = 0; !found && k < d->ncaves; k++) {
-			if (c->pc >= d->caves[k].addr && c->pc + 4u <= d->caves[k].addr + d->caves[k].len) {
-				w = be32_get(d->caves[k].bytes + (c->pc - d->caves[k].addr));
-				found = 1;
-			}
+	}
+	for (i = 0; i < d->ncaves; i++) {
+		if (pc >= d->caves[i].addr && pc + 4u <= d->caves[i].addr + d->caves[i].len) {
+			*w = be32_get(d->caves[i].bytes + (pc - d->caves[i].addr));
+			return 1;
 		}
-		if (!found || !swt_cpu_step(c, w)) return 0;
+	}
+	for (i = 0; i < sizeof(g_swt_r4_game) / sizeof(g_swt_r4_game[0]); i++) {
+		if (g_swt_r4_game[i].addr == pc) {
+			*w = g_swt_r4_game[i].value;
+			return 1;
+		}
 	}
 	return 0;
 }
 
-static void swt_cpu_reset(struct swt_cpu *c, u64 r3, u64 r26, u8 flag)
+/* From c->pc until it reaches one of `stops`. 0 if it runs anywhere else, or too long. */
+static int swt_cpu_run(struct swt_cpu *c, const struct sw_desc *d,
+                       const struct patch_word *over, u32 nover,
+                       const u32 *stops, u32 nstops)
+{
+	int steps;
+	u32 i, w;
+
+	for (steps = 0; steps < 64; steps++) {
+		for (i = 0; i < nstops; i++)
+			if (c->pc == stops[i]) return 1;
+		if (!swt_cpu_word(d, over, nover, c->pc, &w) || !swt_cpu_step(c, w)) return 0;
+	}
+	return 0;
+}
+
+static void swt_cpu_reset(struct swt_cpu *c, u32 pc, u8 flag)
 {
 	u32 i;
 
+	memset(c, 0, sizeof(*c));
 	for (i = 0; i < 32; i++) c->r[i] = 0x0123456700000000ull + 0x1111u * i;
-	c->r[3] = r3;
-	c->r[26] = r26;
-	c->pc = R4_FASTLOAD_2;
-	c->flag_addr = SW_RAC4_FLAG_FAST_LOADS;
-	c->flag = flag;
+	c->r[1] = 0x00D0F000u;             /* the stack */
+	c->r[2] = 0x009BCD58u;             /* the TOC */
+	c->ctr = SWT_R4_UPDATE;
+	c->cr = 0x24442842u;
+	c->pc = pc;
+
+	c->mem_addr[0] = SW_RAC4_FLAG_FAST_LOADS;
+	c->mem_val[0] = flag;
+	c->mem_addr[1] = 0x00B36DD0u;      /* g_newlevelnum */
+	c->mem_val[1] = 7;
+	c->mem_addr[2] = 0x00D0F028u;      /* 40(r1): the TOC the loop saved */
+	c->mem_val[2] = 0x009BCD58u;
 }
 
-static void test_switches_rac4_fastload_moved(void)
+static int swt_cpu_same_calls(const struct swt_cpu *a, const struct swt_cpu *b)
 {
-	static const u64 r3s[3] = { 0, 1, 0x00000000DEADBEEFull };
+	u8 i;
+
+	if (a->ncalls != b->ncalls) return 0;
+	for (i = 0; i < a->ncalls && i < SWT_CPU_CALLS; i++) {
+		if (a->calls[i].target != b->calls[i].target || a->calls[i].r3 != b->calls[i].r3 ||
+		    a->calls[i].r4 != b->calls[i].r4) return 0;
+	}
+	return 1;
+}
+
+static void test_switches_rac4_fastloads(void)
+{
+	static const u32 stop_save[1]  = { 0x002A8AF8u };
+	static const u32 stop_copy[1]  = { 0x002A8C60u };
+	static const u32 stop_frame[2] = { 0x002A8CCCu, 0x002A8CE8u };
 	const struct sw_desc *d = sw_desc_for_game(GAME_RAC4);
 	const struct game_api *g = game_for_title("NPEA00423");
 	struct swt_cave old_caves[15];
 	struct patch_word old_sites[14];
-	u32 len = 0, oldlen, i;
-	int ok, same, ran, kept;
+	u32 len = 0, oldlen = 0, i, k;
+	int ok, ran, same, kept;
+	int b;
 
-	group("build 53: Deadlocked's fast-load switch moved off the transition update's call");
+	group("build 53: Deadlocked's fast-load switches on RaC2's model");
 
 	check(d != NULL && g != NULL, "Deadlocked has switches and a table");
 	if (d == NULL || g == NULL) return;
-	check(d->ncaves == 15 && d->nsites == 14, "still fifteen caves and fourteen sites");
-	if (d->ncaves != 15 || d->nsites != 14) return;
+	check(d->ncaves == 18 && d->nsites == 15, "eighteen caves and fifteen sites");
+	if (d->ncaves != 18 || d->nsites != 15) return;
 
-	check_eq_u64(d->sites[2].addr, R4_FASTLOAD_2,
-	             "the second fast-load site is 0x2A8C5C, where the update's answer is copied");
+	check(d->sites[1].addr == R4_FASTLOAD_1 && d->sites[2].addr == R4_TRANS_UPDATE &&
+	      d->sites[3].addr == R4_FL_FRAME,
+	      "the fast-load sites are the autosave's call, the update's call and the frame");
 	ok = 1;
 	for (i = 0; i < d->nsites; i++)
-		if (d->sites[i].addr == R4_TRANS_UPDATE) ok = 0;
-	check(ok, "and no site is the update's call at 0x2A8C50 any more");
-	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[2].addr,
-	             "it branches to the cave builds 50 to 52 had there, 0x667C00");
-	check_eq_u64(d->caves[2].len, 24, "which is still six words");
-	check_eq_u64(swt_branch_target(d->caves[2].addr + 20u, be32_get(d->caves[2].bytes + 20)),
-	             R4_FASTLOAD_2 + 4u, "and branches back to 0x2A8C60");
+		if (d->sites[i].addr == SWT_R4_B53A_SITE) ok = 0;
+	check(ok, "and the copy of the update's answer at 0x2A8C5C is no site any more");
+	check_eq_u64(d->sites[2].value, SWT_R4_FL2_WORD,
+	             "the update's site branches to 0x667C00 as builds 50 to 52's did");
+	check_eq_u64(d->caves[1].addr, 0x00667BE8u, "the autosave's trampoline is where it was");
+	check_eq_u64(d->caves[2].addr, 0x00667C00u, "and so is the update's");
+	check(d->caves[1].len == 24 && d->caves[2].len == 24, "six words each, as they always were");
+	check(d->caves[15].addr == 0x00667D80u && d->caves[16].addr == 0x00667D90u &&
+	      d->caves[17].addr == 0x00667D9Cu && d->caves[17].addr + d->caves[17].len == 0x00667DB8u,
+	      "their second halves and the frame's trampoline follow the bot-crash table, to 0x667DB8");
+	check(d->caves[17].addr + d->caves[17].len <= 0x00667F70u,
+	      "below the savefile helper's cave");
 	check_eq_u64(d->sites[0].value, 0x4848FEB4u, "the fingerprint site, 0x1D7D18, keeps its branch");
 	check(g->fp_switch != NULL && be32_get(g->fp_switch) == d->sites[0].value && g->fp_switch_old == NULL,
 	      "so the fingerprint takes the same three words as before and needs no fourth");
 
+	/* Every crash trampoline and refill ammo's, and their sites, byte for byte. */
 	same = 1;
 	for (i = 0; i < 15; i++) {
-		u8 k;
-
-		if (i == 2) continue;
+		if (i == 1 || i == 2) continue;
 		if (d->caves[i].addr != g_swt_rac4_caves[i].addr) same = 0;
 		for (k = 0; k < g_swt_rac4_caves[i].nwords; k++)
 			if (be32_get(d->caves[i].bytes + 4u * k) != g_swt_rac4_caves[i].w[k]) same = 0;
 	}
-	for (i = 0; i < 14; i++)
-		if (i != 2 && (d->sites[i].addr != g_swt_rac4_sites[i].addr ||
-		               d->sites[i].value != g_swt_rac4_sites[i].value)) same = 0;
-	check(same, "every other trampoline and site word is build 52's, byte for byte");
+	for (i = 0; i < 15; i++) {
+		if (i >= 1 && i <= 3) continue;
+		if (d->sites[i].addr != g_swt_rac4_sites[i].addr ||
+		    d->sites[i].value != g_swt_rac4_sites[i].value) same = 0;
+	}
+	check(same, "every other trampoline and site word is as before");
 
-	/* -------------------------- what the trampoline computes, both ways */
+	/* ------------- each site, through its trampoline and as a console has it */
 
-	group("build 53: the trampoline leaves r27 as the console's word would");
+	group("build 53: Deadlocked's fast-load trampolines do what the console's six words do");
+
+	ran = 1;
+	same = 1;
+	for (b = 0; b < 2; b++) {
+		struct swt_cpu sw, con;
+
+		swt_cpu_reset(&sw, 0x002A8AE4u, (u8)b);
+		if (!swt_cpu_run(&sw, d, d->sites, d->nsites, stop_save, 1)) ran = 0;
+		swt_cpu_reset(&con, 0x002A8AE4u, (u8)b);
+		if (!swt_cpu_run(&con, d, b ? g_r4_fl_fast : NULL, b ? 6u : 0u, stop_save, 1)) ran = 0;
+
+		if (!swt_cpu_same_calls(&sw, &con) || sw.ncalls != 1) same = 0;
+		else if (b == 0 && (sw.calls[0].target != SWT_R4_SAVE || sw.calls[0].r3 != 0 ||
+		                    sw.calls[0].r4 != 7)) same = 0;
+		else if (b == 1 && (sw.calls[0].target != SWT_R4_FADE || sw.calls[0].r3 != 2 ||
+		                    sw.calls[0].r4 != 0)) same = 0;
+	}
+	check(ran, "the autosave's site runs from its arguments to 0x2A8AF8 both ways");
+	check(same, "memcard_Save(0, the level) with the flag clear, FadeToBlack(2, 0) with it set");
 
 	ran = 1;
 	same = 1;
 	kept = 1;
-	for (i = 0; i < 12; i++) {
+	for (i = 0; i < 8; i++) {
 		struct swt_cpu sw, con;
-		u64 r3 = r3s[i % 3], r26 = (i / 3) & 1u;
-		u8 flag = (u8)(i / 6);
-		u64 want = flag ? (r3 | r26) : r3;
-		u32 k;
+		u8 flag = (u8)(i >> 2);
+		u64 r26 = (i >> 1) & 1u;
+		u64 answer = i & 1u;
+		u32 want_call = flag ? SWT_R4_MOVIE : SWT_R4_UPDATE;
+		u64 want_r27 = flag ? 1u : answer;
+		u32 r;
 
-		swt_cpu_reset(&sw, r3, r26, flag);
-		if (!swt_cpu_run(&sw, d, R4_FASTLOAD_2, d->sites[2].value, R4_FASTLOAD_2 + 4u)) ran = 0;
+		swt_cpu_reset(&sw, R4_TRANS_UPDATE, flag);
+		sw.r[3] = r26;
+		sw.r[26] = r26;
+		sw.update_answer = answer;
+		if (!swt_cpu_run(&sw, d, d->sites, d->nsites, stop_copy, 1)) ran = 0;
 
-		swt_cpu_reset(&con, r3, r26, flag);
-		if (!swt_cpu_run(&con, d, R4_FASTLOAD_2, flag ? R4_FL2_FAST : R4_FL2_GAME,
-		                 R4_FASTLOAD_2 + 4u)) ran = 0;
+		swt_cpu_reset(&con, R4_TRANS_UPDATE, flag);
+		con.r[3] = r26;
+		con.r[26] = r26;
+		con.update_answer = answer;
+		if (!swt_cpu_run(&con, d, flag ? g_r4_fl_fast : NULL, flag ? 6u : 0u, stop_copy, 1)) ran = 0;
 
-		if (sw.r[27] != want || con.r[27] != want) same = 0;
-		for (k = 0; k < 32; k++)
-			if (k != 5 && k != 27 && sw.r[k] != con.r[k]) kept = 0;
+		if (!swt_cpu_same_calls(&sw, &con) || sw.ncalls != 1 || sw.calls[0].target != want_call)
+			same = 0;
+		if (!flag && sw.calls[0].r3 != r26) same = 0;
+		if (sw.r[27] != want_r27 || con.r[27] != want_r27) same = 0;
+		if (sw.r[2] != 0x009BCD58u || sw.r[4] != 0x010B0000u) same = 0;
+
+		/* r3 is dead at 0x2A8C60, which loads it; r5 is the trampoline's scratch. */
+		for (r = 0; r < 32; r++)
+			if (r != 3 && r != 5 && sw.r[r] != con.r[r]) kept = 0;
+		if (sw.ctr != con.ctr) kept = 0;
 	}
-	check(ran, "from the site through the cave and back to 0x2A8C60, and the console's one word");
-	check(same, "r27 is the update's answer with the flag clear, or'd with r26 with it set");
-	check(kept, "and nothing but r5, the scratch, and r27 differs from the console's");
+	check(ran, "the update's site runs to 0x2A8C60 both ways");
+	check(same, "the update and its answer with the flag clear; the movie's player and 1 with it set");
+	check(kept, "and nothing but r3, which the game loads next, and r5 differs from the console's");
 
-	/* ---------------------------------------------- the old patch's stamp */
+	ran = 1;
+	same = 1;
+	for (b = 0; b < 2; b++) {
+		struct swt_cpu sw, con;
 
-	group("build 53: a Deadlocked patch from builds 50 to 52 is from another build");
+		swt_cpu_reset(&sw, R4_FL_FRAME, (u8)b);
+		if (!swt_cpu_run(&sw, d, d->sites, d->nsites, stop_frame, 2)) ran = 0;
+		swt_cpu_reset(&con, R4_FL_FRAME, (u8)b);
+		if (!swt_cpu_run(&con, d, b ? g_r4_fl_fast : NULL, b ? 6u : 0u, stop_frame, 2)) ran = 0;
+
+		if (sw.pc != con.pc || sw.ncalls != 0 || con.ncalls != 0) same = 0;
+		if (sw.pc != (b ? 0x002A8CE8u : 0x002A8CCCu)) same = 0;
+		if (!b && (sw.r[3] != 1 || con.r[3] != 1)) same = 0;
+	}
+	check(ran, "the frame's site runs to the frame or past it");
+	check(same, "BeginFrame's argument with the flag clear, past EndFrame to 0x2A8CE8 with it set");
+
+	/* ---------------------------------------------- the older patches' stamps */
+
+	group("build 53: Deadlocked patches from builds 50 to 52 and from earlier in 53 are from another build");
 
 	for (i = 0; i < 15; i++) old_caves[i] = g_swt_rac4_caves[i];
-	for (i = 0; i < 6; i++) old_caves[2].w[i] = g_swt_rac4_b50_fl2[i];
-	for (i = 0; i < 14; i++) old_sites[i] = g_swt_rac4_sites[i];
-	old_sites[2].addr = SWT_R4_FL2_OLD_SITE;
-	old_sites[2].value = SWT_R4_FL2_OLD_WORD;
-	oldlen = swt_reply_of(old_caves, 15, old_sites, 14, d->flags, d->nflags, g_sw_patch2);
-	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC4_B50_STAMP,
-	             "the old placement's reply rebuilt carries the stamp builds 50 to 52 handed out");
+	for (i = 0; i < 6; i++) old_caves[1].w[i] = g_swt_rac4_old_fl1[i];
+	for (i = 0; i < 4; i++) old_sites[i] = g_swt_rac4_sites[i];
+	for (i = 4; i < 15; i++) old_sites[i - 1] = g_swt_rac4_sites[i];
 
-	check(quit_and_wait(), "quit whatever was running");
-	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
-	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for Deadlocked");
-	check_eq_u64(oldlen, len, "the old reply is the same length as this build's");
-	check(be32_get(g_sw_patch + 4) != SWT_RAC4_B50_STAMP,
-	      "and this build's stamp is another number, so a client's kept stamp no longer matches");
+	for (b = 0; b < 2; b++) {
+		const u32 *fl2 = b ? g_swt_rac4_b53a_fl2 : g_swt_rac4_b50_fl2;
+		u32 stamp = b ? SWT_RAC4_B53A_STAMP : SWT_RAC4_B50_STAMP;
+		u32 site = b ? SWT_R4_B53A_SITE : R4_TRANS_UPDATE;
+		u32 word = b ? SWT_R4_B53A_WORD : SWT_R4_FL2_WORD;
 
-	check(quit_and_wait(), "quit");
-	host_write_log_reset();
-	check(swt_boot_patched("NPEA00423", g_sw_patch2, oldlen, SF_NO_FLIP),
-	      "Deadlocked boots with build 52's switch patch applied at load");
-	check(session_game() != NULL && session_game()->game_id == GAME_RAC4,
-	      "and is Deadlocked: the fingerprint site's branch never moved");
-	check_eq_u64(swt_peek32(SWT_R4_FL2_OLD_SITE), SWT_R4_FL2_OLD_WORD,
-	             "the old branch is over the update's call");
-	check_eq_u64(switches_state(), 0, "the look finds no switches of this build");
-	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
-	      SESSION_FLAG_NO_CODE_PATCHES,
-	      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
-	check(features_set(SWT_R4_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
+		for (i = 0; i < 6; i++) old_caves[2].w[i] = fl2[i];
+		old_sites[2].addr = site;
+		old_sites[2].value = word;
+		oldlen = swt_reply_of(old_caves, 15, old_sites, 14, d->flags, d->nflags, g_sw_patch2);
+		check_eq_u64(be32_get(g_sw_patch2 + 4), stamp,
+		             b ? "build 53's earlier layout rebuilt carries the stamp it handed out"
+		               : "builds 50 to 52's layout rebuilt carries the stamp they handed out");
 
-	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
-	pump(4);
-	check(session_planet_load(4, 0) == ST_OK, "and a planet load goes out without them");
-	check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0,
-	             "writing no flag, which the old trampoline would take to skip the update");
-	check(!swt_wrote_code(d), "and nothing into the caves or the sites");
-	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
-	pump(6);
-	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
-	pump(6);
-	check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0, "nor when the load is over");
+		check(quit_and_wait(), "quit whatever was running");
+		check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+		check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK,
+		      "SWITCH_PATCH for Deadlocked");
+		check(be32_get(g_sw_patch + 4) != stamp,
+		      "and this build's stamp is another number, so a client's kept stamp no longer matches");
+
+		check(quit_and_wait(), "quit");
+		host_write_log_reset();
+		check(swt_boot_patched("NPEA00423", g_sw_patch2, oldlen, SF_NO_FLIP),
+		      "Deadlocked boots with the older switch patch applied at load");
+		check(session_game() != NULL && session_game()->game_id == GAME_RAC4,
+		      "and is Deadlocked: the fingerprint site's branch never moved");
+		check_eq_u64(swt_peek32(site), word, "the older branch is at its site");
+		check_eq_u64(switches_state(), 0, "the look finds no switches of this build");
+		check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
+		      SESSION_FLAG_NO_CODE_PATCHES,
+		      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
+		check(features_set(SWT_R4_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
+
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(4);
+		check(session_planet_load(4, 0) == ST_OK, "and a planet load goes out without them");
+		check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0,
+		             "writing no flag, so the older trampolines run the game's own words");
+		check(!swt_wrote_code(d), "and nothing into this build's caves or sites");
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		pump(6);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(6);
+		check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0, "nor when the load is over");
+	}
 
 	check(quit_and_wait(), "the client wrote the new patch and the game restarts");
 	check(swt_boot_patched("NPEA00423", g_sw_patch, len, SF_NO_FLIP), "with it applied at load");
@@ -13378,10 +13664,11 @@ static void test_switches(void)
 	check(stamps[1] != SWT_RAC2_B50_STAMP, "RaC2's has");
 	check(stamps[2] != SWT_RAC3_B50_STAMP, "and so has RaC3's");
 	check(stamps[3] != SWT_RAC4_B50_STAMP, "and so has Deadlocked's");
+	check(stamps[3] != SWT_RAC4_B53A_STAMP, "twice: its fast loads changed again in build 53");
 	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one build 53 pins");
-	check_eq_u64(len, SWITCH_PATCH_HEAD + 123u * SWITCH_PATCH_ROW +
+	check_eq_u64(len, SWITCH_PATCH_HEAD + 138u * SWITCH_PATCH_ROW +
 	             SWITCH_PATCH_BYTES_HEAD + 3u * SWITCH_PATCH_BYTE_ROW,
-	             "Deadlocked's, the largest, is 109 cave words, 14 sites and 3 flags");
+	             "Deadlocked's, the largest, is 123 cave words, 15 sites and 3 flags");
 
 	check(quit_and_wait(), "the game goes away");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_NOT_INGAME,
@@ -13419,7 +13706,7 @@ static void test_switches(void)
 	test_switches_rac1_fastloads();
 	test_switches_rac1_health();
 	test_switches_rac2_moved();
-	test_switches_rac4_fastload_moved();
+	test_switches_rac4_fastloads();
 	test_switches_rac3_fastloads();
 
 	/* ------------------------------------------------- put it all back */

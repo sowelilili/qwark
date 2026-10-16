@@ -118,41 +118,98 @@
 
 /* The instruction sites RAC4Form patched. */
 #define RAC4_AMMO_INSTR        0x001D7D18u  /* also the fingerprint site */
-#define RAC4_FASTLOAD_INSTR_1  0x002A8AF4u  /* bl memcard_Save */
 
 /*
- * Build 53: the second fast-load site, which RAC4Form had at 0x2A8C50.
+ * Fast loads. RAC4Form patched two of these six words; build 53 patches all
+ * six, on RaC2's model: the screen black from the start of a load to the
+ * level's first frame, no flight, the level read as fast as the disk gives it,
+ * and a movie the flight has queued played first, at once.
  *
- * Every planet load is Transition_DoTransition (0x2A8AA0), a loop that runs
- * once a frame until its exit word r27 is non-zero: the transition's update
- * through g_fnTransitionUpdate (the bcctrl at 0x2A8C50, given
- * g_bLevelLoadAlmostDone at 0x10B7E88 in r26), the transition's draw, a flip,
- * and LoadLevelData (0x1C7120), which moves the level load on a step and is
- * what makes g_bLevelLoadAlmostDone 1 in the end. 0x2A8C5C copies the update's
- * answer into r27. The space flight's update answers 1 only once it has flown
- * two segments and the arrival with the load almost done, which is the load
- * screen's whole length.
+ * Every planet load is Transition_DoTransition (0x2A8AA0). A single-player or
+ * co-op trip out of a level first saves (memcard_Save_QE_func(0, level) at
+ * 0x2A8AF4, the autosave), then calls Transition_Pre (0x2A81D0), which reads
+ * the flight's files and the hero's textures and can queue a movie, and then
+ * loops until its exit word r27 is non-zero. Each time round, the loop
  *
- * Transition_Pre (0x2A81D0) can queue a movie for the flight, in the word at
- * 0x10B7FE0 (0x2A7F98: a movie the save's progress has earned - Dread points,
- * badges and the like - or the first trip to Stygia, that the save has not seen
- * yet; the bits it has seen are at 0xB1F58C). While one is queued the loop
- * leaves LoadLevelData alone (0x2A8D1C), and the space draw plays the movie when
- * the update has flown the first segment (0x2AA004), clears the word, and the
- * load starts. RAC4Form's patch, a nop over the bcctrl, left r26 in r3 as the
- * answer, so the loop ended as soon as the load was almost done - but the update
- * never ran, the first segment never ended, the movie never played,
- * LoadLevelData was never called, and the load never got almost done: a black
- * screen until fast loads went off.
+ *   - calls the transition's update through g_fnTransitionUpdate (the bcctrl
+ *     at 0x2A8C50, given g_bLevelLoadAlmostDone at 0x10B7E88 in r26), copies
+ *     its answer into r27 (0x2A8C5C) and calls the post-update;
+ *   - draws a frame: BeginFrame (0x14A0A8, its argument set at 0x2A8CC8),
+ *     Transition_Draw (0x2A6DA0) and EndFrame (0x14A0FC), which flips. The
+ *     flip is the loop's only wait: sceGsSyncV (0x720238), where the PS2
+ *     waited for the vertical blank, is an empty function on the PS3;
+ *   - takes a step of LoadLevelData (0x1C7120) unless a movie is queued
+ *     (0x2A8D1C), and sets g_bLevelLoadAlmostDone once LevelLoad.state is 10.
  *
- * So the update runs now, the movie with it, and the patch is on the copy:
- * `or r27, r3, r26` for `ori r27, r3, 0`, the update's answer or the load being
- * almost done, which ends the loop on the same frame the nop did.
+ * A load the loop leaves unfinished, the second loop after it (0x2A8DFC)
+ * finishes, calling LoadLevelData until it is done with no frame and no wait.
+ *
+ * The space flight's update (0x2AA9A0) answers 1 only once two segments and
+ * the arrival have been flown with the load almost done, and it counts a
+ * segment in frames (0x2A9908). Transition_SetupMidSceneOrMovie (0x2A7F98)
+ * queues a movie in the word at 0x10B7FE0 when the save's progress has earned
+ * one - Dread points, badges and the like - or on the first trip to Stygia,
+ * and the save has not seen it (the bits at 0xB1F58C). The flight's
+ * post-update (0x2AAB5C) plays it through 0x2AA004 when the first segment ends,
+ * and 0x2AA004 plays it in a loop of its own frames (0x2B571C), fades to black
+ * and clears the word. So a trip with a movie queued flew a whole segment at
+ * the display's pace before the movie, and its load started after the movie.
+ *
+ * RAC4Form nopped the update's call, which left r26 in r3 as the answer: the
+ * loop ended once the load was almost done, but a queued movie never played,
+ * LoadLevelData never ran and the game sat on a black screen until fast loads
+ * went off. Build 53 first let the update run and or'd r26 into the copy: the
+ * movie played, but only after the first segment, so a load with one was slow
+ * until it had, and every load showed the flight until the load cut it off.
+ *
+ * RaC2's fast loads nop its transition's draw, a call that begins a frame,
+ * draws the flight and ends the frame (rac2.h, RAC2_FASTLOAD_INSTR). With it
+ * gone RaC2's loop never flips, so nothing of the flight is shown; nothing in
+ * the loop waits, so the flight, counted in frames, is over at once; and the
+ * load steps as fast as the loop goes round. The six words here:
+ *
+ *   0x2A8AE8  li r3, 0        -> li r3, 2         the autosave's arguments
+ *   0x2A8AEC  lwz r4, level   -> li r4, 0         become FadeToBlack's, and
+ *   0x2A8AF4  bl memcard_Save -> bl 0x154B38      its call FadeToBlack
+ *   0x2A8C50  bcctrl          -> bl 0x2AA004      a queued movie, no flight
+ *   0x2A8C5C  ori r27, r3, 0  -> li r27, 1        once round the loop
+ *   0x2A8CC8  li r3, 1        -> b 0x2A8CE8       and no frame
+ *
+ * FadeToBlack(2, 0) takes the screen black at once, as the game's own
+ * LOADING-screen load does (0x132A8); a load the planet selector starts would
+ * otherwise leave the level's last frame up while Transition_Pre reads. The
+ * autosave goes, as it did in RAC4Form: it has nothing to do with the movie,
+ * and a save written to the disk while the level is read from it is time out
+ * of the load.
+ *
+ * Then the loop goes round once. A queued movie plays first, before anything
+ * of the flight; with none queued 0x2AA004 returns at once. The one time round
+ * takes LoadLevelData's first step, the movie having cleared the word, draws
+ * and flips nothing, and leaves the rest of the level to the second loop,
+ * which reads it with no wait at all: RaC2's load, here. The screen is black
+ * from the fade to the level's first frame, but for a movie, which shows its
+ * own frames and fades out again. Nothing waits on a movie any more: 0x2AA004
+ * always clears the word and the second loop never looks at it, so the hang
+ * cannot come back.
+ *
+ * The game takes the same road itself on that LOADING-screen load: 0x132A8
+ * sets the byte the flight's update answers before anything else (+200 of
+ * *0xA34290), so its transition goes round once and the second loop reads the
+ * whole level.
+ *
+ * rac4.c lists the words in the order they go in: the call before its
+ * arguments, since memcard_Save's first argument forces a save, and the
+ * movie's call before the loop's exit, so the loop is never cut to once round
+ * while a queued movie still waits for the flight to play it.
+ *
+ * From the NPEA00423 executable; not yet run on hardware.
  */
-#define RAC4_FASTLOAD_INSTR_2  0x002A8C5Cu  /* ori r27, r3, 0: the update's answer */
-#define RAC4_FASTLOAD_GAME_2   0x607B0000u  /* ori r27, r3, 0 */
-#define RAC4_FASTLOAD_WORD_2   0x7C7BD378u  /* or r27, r3, r26 */
-#define RAC4_TRANSITION_UPDATE 0x002A8C50u  /* bcctrl: the old site, never written now */
+#define RAC4_FASTLOAD_FADE_R3  0x002A8AE8u  /* li r3, 0 */
+#define RAC4_FASTLOAD_FADE_R4  0x002A8AECu  /* lwz r4, g_newlevelnum */
+#define RAC4_FASTLOAD_SAVE     0x002A8AF4u  /* bl memcard_Save */
+#define RAC4_FASTLOAD_UPDATE   0x002A8C50u  /* bcctrl: the transition's update */
+#define RAC4_FASTLOAD_EXIT     0x002A8C5Cu  /* ori r27, r3, 0: its answer */
+#define RAC4_FASTLOAD_FRAME    0x002A8CC8u  /* li r3, 1: BeginFrame's argument */
 #define RAC4_TRANSITION_MOVIE  0x010B7FE0u  /* the movie the flight plays, 0 for none */
 
 /*
