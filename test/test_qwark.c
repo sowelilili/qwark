@@ -5817,10 +5817,11 @@ static void test_manip_trophies(void)
 		check(reset != NULL && (reset[4] & FEATURE_FLAG_WRITES_CODE) == 0 &&
 		      autor != NULL && (autor[4] & FEATURE_FLAG_WRITES_CODE) == 0,
 		      "neither is a WRITES_CODE row: no code switch stands in for them");
-		check(reset != NULL && reset[4] == FEATURE_FLAG_CONFIRM,
-		      "the reset carries CONFIRM (bit6) and no other flag");
-		check(autor != NULL && (autor[4] & FEATURE_FLAG_CONFIRM) != 0,
-		      "and so does its toggle");
+		/* Flags bit6 (0x40) is unassigned: a client sends both straight away. */
+		check(reset != NULL && reset[4] == 0,
+		      "the reset carries no flag at all, bit6 (0x40) included");
+		check(autor != NULL && (autor[4] & 0x40) == 0,
+		      "and its toggle no bit6 either");
 	}
 	check((features_toggle_state() & ((u64)1 << F3_AUTO_TROPHIES)) == 0,
 	      "the auto toggle is off after a boot");
@@ -6066,174 +6067,6 @@ static void test_manip_trophies(void)
 	mt_reset_options("rac3");
 }
 
-/* Whether `len` bytes at `text` hold the string `needle`. */
-static int r3t_says(const u8 *text, u32 len, const char *needle)
-{
-	u32 n = qstrlen(needle);
-	u32 i;
-
-	for (i = 0; i + n <= len; i++) {
-		if (memcmp(text + i, needle, n) == 0) return 1;
-	}
-	return 0;
-}
-
-/*
- * Revision 1.21: Feature flags bit6 CONFIRM and FEATURE_CONFIRM_TEXT. UYA's two
- * trophy rows carry it and nothing else in any game does; each CONFIRM row has
- * a text that says what the feature costs.
- */
-static void test_feature_confirm(void)
-{
-	static const char * const titles[] = { "NPEA00385", "NPEA00386", "NPEA00387", "NPEA00423" };
-	static u8 out[QWARK_MAX_PAYLOAD];
-	u8 text[FEATURE_CONFIRM_TEXT_MAX + 64];
-	u32 len = 0, tlen = 0;
-	u32 i;
-
-	group("revision 1.21: Feature flags bit6 CONFIRM");
-
-	check(FEATURE_FLAG_CONFIRM == 0x40, "CONFIRM is bit6, 0x40");
-	check(OP_FEATURE_CONFIRM_TEXT == 0x0026, "and FEATURE_CONFIRM_TEXT is op 0x0026");
-	check(FEATURE_CONFIRM_TEXT_MAX == 512, "whose reply is at most 512 bytes");
-
-	for (i = 0; i < sizeof(titles) / sizeof(titles[0]); i++) {
-		u32 off, nconfirm = 0, nfeat, k;
-		int texts_ok = 1, only_trophies = 1;
-
-		check(quit_and_wait(), "quit");
-		check(boot_and_wait(titles[i]), titles[i]);
-		pump(2);
-		if (features_describe(out, sizeof(out), &len) != ST_OK) {
-			check(0, "DESCRIBE encodes");
-			continue;
-		}
-
-		/* Walk to the features: game, groups, readouts. */
-		off = 2u + (u32)out[1] * 24u;
-		off += 1u + (u32)out[off] * 24u;
-		nfeat = out[off++];
-
-		for (k = 0; k < nfeat; k++) {
-			const u8 *row = out + off + k * FEATURE_WIRE_SIZE;
-
-			if ((row[4] & FEATURE_FLAG_CONFIRM) == 0) {
-				/* Every other row answers BAD_ARG. */
-				if (features_confirm_text(row[0], text, sizeof(text), &tlen) != ST_BAD_ARG)
-					texts_ok = 0;
-				continue;
-			}
-			nconfirm++;
-			if (!(i == 2 && (row[0] == F3_RESET_TROPHIES || row[0] == F3_AUTO_TROPHIES)))
-				only_trophies = 0;
-			if (features_confirm_text(row[0], text, sizeof(text), &tlen) != ST_OK ||
-			    tlen == 0 || tlen > FEATURE_CONFIRM_TEXT_MAX || memchr(text, 0, tlen) != NULL)
-				texts_ok = 0;
-		}
-
-		check(only_trophies, "CONFIRM is on UYA's trophy rows and on nothing else");
-		check_eq_u64(nconfirm, i == 2 ? 2 : 0,
-		             i == 2 ? "UYA has two CONFIRM rows, 21 and 39" : "this game has no CONFIRM row");
-		check(texts_ok, "every CONFIRM row has a text of 1..512 bytes with no NUL, "
-		      "and every other row answers BAD_ARG");
-	}
-
-	group("revision 1.21: FEATURE_CONFIRM_TEXT for UYA's trophy reset");
-
-	/* The last game booted above is Deadlocked; UYA again. */
-	check(quit_and_wait(), "quit");
-	check(boot_and_wait("NPEA00387"), "UYA boots");
-	pump(2);
-
-	check(features_confirm_text(F3_RESET_TROPHIES, text, sizeof(text), &tlen) == ST_OK,
-	      "Reset trophies (21) has its text");
-	check(tlen <= FEATURE_CONFIRM_TEXT_MAX && memchr(text, 0, tlen) == NULL,
-	      "at most 512 bytes, and no terminator");
-	check(r3t_says(text, tlen, "deletes Up Your Arsenal's trophy record on this console"),
-	      "it says the console's UYA trophy record is deleted");
-	check(r3t_says(text, tlen, "freezes for about 3 seconds"), "that the game freezes for about 3 s");
-	check(r3t_says(text, tlen, "synced to PSN may come back"), "that trophies synced to PSN may come back");
-	check(r3t_says(text, tlen, "/dev_hdd0/home/<user>/trophy/NPWR02347_00") &&
-	      r3t_says(text, tlen, "restores them"),
-	      "and how a backup of the folder restores them");
-
-	check(features_confirm_text(F3_AUTO_TROPHIES, text, sizeof(text), &tlen) == ST_OK,
-	      "Reset trophies on Veldin load (39) has its text");
-	check(tlen <= FEATURE_CONFIRM_TEXT_MAX && memchr(text, 0, tlen) == NULL,
-	      "at most 512 bytes too");
-	check(r3t_says(text, tlen, "every load into Veldin") &&
-	      r3t_says(text, tlen, "While this is on"),
-	      "it says the delete happens on every Veldin load while the option is on");
-	check(r3t_says(text, tlen, "deletes Up Your Arsenal's trophy record on this console") &&
-	      r3t_says(text, tlen, "freezes for about 3 seconds") &&
-	      r3t_says(text, tlen, "synced to PSN may come back") &&
-	      r3t_says(text, tlen, "restores them"),
-	      "and everything the button's says");
-
-	check(features_confirm_text(22, text, sizeof(text), &tlen) == ST_BAD_ARG,
-	      "an ACTION without CONFIRM (22, Unlock all skill points) is BAD_ARG");
-	check(features_confirm_text(38, text, sizeof(text), &tlen) == ST_BAD_ARG,
-	      "and so is a TOGGLE without it (38, Fast loads)");
-	check(features_confirm_text(200, text, sizeof(text), &tlen) == ST_NOT_FOUND,
-	      "an id the game does not have is NOT_FOUND");
-	check(features_confirm_text(F3_RESET_TROPHIES, text, 16, &tlen) == ST_FULL,
-	      "and a reply that would not fit is FULL");
-
-	/*
-	 * Outside a game the op is UNSUPPORTED on the wire, by the gate it shares
-	 * with DESCRIBE in net.c (session not INGAME); smoke.py asks it over the
-	 * wire. The registry itself keeps the last game's table, as for DESCRIBE.
-	 */
-	check(quit_and_wait(), "the game goes away");
-	check(session_state() != SESSION_INGAME, "the session is out of INGAME, which the op's gate answers UNSUPPORTED");
-	check(boot_and_wait("NPEA00387"), "UYA again, for what follows");
-	pump(2);
-
-	group("revision 1.21: a CONFIRM toggle stays out of the previous-session record");
-	{
-		const u64 auto_bit = (u64)1 << F3_AUTO_TROPHIES;
-		const u64 fast_bit = (u64)1 << 38;   /* Fast loads, an ordinary toggle */
-		const struct previous_record *prev;
-		u8 list[64];
-
-		check((features_confirm_mask() & auto_bit) != 0 &&
-		      (features_confirm_mask() & ~auto_bit) == 0,
-		      "UYA's CONFIRM toggles are 39 and no other");
-
-		check(features_set(F3_AUTO_TROPHIES, 1) == ST_OK, "the trophy reset's toggle goes on");
-		check(features_set(38, 1) == ST_OK, "and so does Fast loads");
-		check(quit_and_wait(), "quit with both on");
-		check(boot_and_wait("NPEA00387"), "the same game comes back");
-		pump(2);
-
-		prev = session_previous();
-		check((prev->toggles & fast_bit) != 0, "the ordinary toggle is in the record");
-		check((prev->toggles & auto_bit) == 0, "the CONFIRM toggle is not");
-		check(prev->pending, "so PREVIOUS_PENDING is up, for Fast loads alone");
-
-		/* PREVIOUS_LIST's first eight bytes are the record's toggles, as net.c sends them. */
-		be64_put(list, prev->toggles);
-		check((be64_get(list) & auto_bit) == 0, "PREVIOUS_LIST does not offer it");
-
-		session_previous_reapply(PREV_TOGGLES);
-		check((features_toggle_state() & fast_bit) != 0, "PREVIOUS_REAPPLY turns Fast loads back on");
-		check((features_toggle_state() & auto_bit) == 0, "and leaves the trophy reset's toggle off");
-
-		check(features_set_auto(F3_AUTO_TROPHIES, 1) == ST_OK,
-		      "an auto flag the user confirmed (FEATURE_SET_AUTO 1)");
-		check(quit_and_wait(), "quit");
-		check(boot_and_wait("NPEA00387"), "boot");
-		pump(2);
-		check((features_toggle_state() & auto_bit) != 0, "still brings it back at INGAME");
-		check((session_previous()->toggles & auto_bit) == 0, "and the record still has none of it");
-
-		features_set_auto(F3_AUTO_TROPHIES, 0);
-		features_set(F3_AUTO_TROPHIES, 0);
-		features_set(38, 0);
-		session_previous_dismiss();
-	}
-}
-
 /* A save file in play, or the title screen or main menu, as each game reads it. */
 static void mt_put_in_file(u8 game_id, int in_file)
 {
@@ -6266,7 +6099,6 @@ static void test_manips(void)
 	test_manip_trigger_rac3();
 	test_manip_trigger_rac4();
 	test_manip_trophies();
-	test_feature_confirm();
 }
 
 /* ------------------------------------------------------------------ RaC3 */

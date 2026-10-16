@@ -686,8 +686,6 @@ static const char * const rac3_readouts[] = {
 #define LV FEATURE_FLAG_LIVE
 /* Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide. */
 #define SG FEATURE_FLAG_SIGNED
-/* Revision 1.21: a client asks the user first, with the text in rac3_confirms. */
-#define CF FEATURE_FLAG_CONFIRM
 
 static const struct feature_desc rac3_features[] = {
 	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
@@ -726,12 +724,11 @@ static const struct feature_desc rac3_features[] = {
 	/*
 	 * Build 53: the trophy reset deletes the console's trophy data for this
 	 * game and stands the game still for three seconds (rac3_panel.c). The
-	 * labels say what it does and the freeze, as far as 31 characters go, and
-	 * CONFIRM has a client ask the user first with the whole of it, delete
-	 * included (rac3_confirms). Under RPCS3 both answer UNSUPPORTED.
+	 * labels say what it does and the freeze, as far as 31 characters go.
+	 * Under RPCS3 both answer UNSUPPORTED.
 	 */
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, CF, NO, 0, 0, "Reset trophies (freezes ~3 s)" },
-	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, CF, NO, 0, 0, "Reset trophies on Veldin load" },
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies (freezes ~3 s)" },
+	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies on Veldin load" },
 	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
 	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
 	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
@@ -762,40 +759,12 @@ static const struct feature_desc rac3_features[] = {
 #undef LA
 #undef LV
 #undef SG
-#undef CF
-
-/*
- * Revision 1.21: what FEATURE_CONFIRM_TEXT answers for the two CONFIRM rows,
- * which a client shows before it triggers the reset or turns its toggle (or the
- * toggle's auto flag) on. At most FEATURE_CONFIRM_TEXT_MAX bytes each; the
- * tests hold them to it. rac3_panel.c has what the reset does.
- */
-static const struct feature_confirm rac3_confirms[] = {
-	{ R3_RESET_TROPHIES,
-	  "This deletes Up Your Arsenal's trophy record on this console: every UYA "
-	  "trophy the signed-in user has won, the platinum included. The game then "
-	  "freezes for about 3 seconds while it reloads its trophies. Trophies "
-	  "synced to PSN may come back the next time the game syncs with "
-	  "PSN. To keep a way back, first copy "
-	  "/dev_hdd0/home/<user>/trophy/NPWR02347_00 off the console; putting that "
-	  "folder back, with the game closed, restores them." },
-	{ R3_AUTO_TROPHIES,
-	  "While this is on, every load into Veldin, which starts every run, "
-	  "deletes Up Your Arsenal's trophy record on this console: every UYA "
-	  "trophy the signed-in user has won, the platinum included. The game "
-	  "freezes for about 3 seconds during that load, before the run's timer "
-	  "starts. Trophies synced to PSN may come back the next time the "
-	  "game syncs with PSN. To keep a way back, first copy "
-	  "/dev_hdd0/home/<user>/trophy/NPWR02347_00 off the console; putting that "
-	  "folder back, with the game closed, restores them." }
-};
 
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
 	rac3_readouts, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0])),
-	0,             /* no toggle ships auto-flagged */
-	rac3_confirms, (u8)(sizeof(rac3_confirms) / sizeof(rac3_confirms[0]))
+	0              /* no toggle ships auto-flagged */
 };
 
 #undef NR

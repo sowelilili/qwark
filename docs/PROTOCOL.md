@@ -28,7 +28,7 @@ Revision 1.19 (2026-10-06): MOD_PATCH answers a page at a time, so a mod bigger 
 
 Revision 1.20 (2026-10-15): SAVEFILE_INFO's `error` gains 7, NO_SAVE: there was no save to act on. RaC1 and RaC2 have no save until the game has saved or loaded once in the process (on a new game, the first autosave), and a set-aside before then - and a load with nothing set aside, which fills the aside buffer from the game's save - is refused with `BUSY` and error 7 rather than copied from wherever the game's pointer points, address 0 in RaC2; so is a load whose aside buffer holds something that is not a save of the running game, and a RESTORE whose file is not one stops with error 7 after the copy, without raising the load. No opcode, structure or field moved, and a client that does not know the value still gets the `BUSY`. Module build 53, which also makes RaC1's and RaC2's loads wait for the game's pause, moves RaC1's request bytes and aside buffer and RaC2's helper, and so changes both games' SAVEFILE_PATCH words. It moves RaC2's code switches too, out of the same routine planet Joba runs every frame, so RaC2's SWITCH_PATCH words change as well; RaC2's fingerprint goes on accepting the branch an earlier build's patch left at its site, so such a game is still recognised and reads as having switches from another build. See sections 5.12 and 5.12.2.
 
-Revision 1.21 (2026-10-16): manip categories. MANIP_LIST, MANIP_SELECT, MANIP_OPTIONS and MANIP_APPLY at 0x00D0..0x00D3. A game describes groups of the RAM writes speedrunners call manips, each for one or more leaderboard categories; the client picks one, and qwark applies its setup once per game boot and its per-run writes on every file load (a save loaded or a new game started) while auto-reset is on, after checking the file's challenge-mode counter both ways. The options live in qwark's config.txt, so they work without a PC. The old manip buttons and toggles are retired, ids and all: RaC1 7, 8, 10, 11 and 16; RaC2 15 to 22; UYA 16, 18, 19 and 20; Deadlocked 12. MANIP_LIST also carries a list of headers, features that belong beside the manips: Deadlocked's "Fixes" (Crash patches and Fix reset softlocks, ids, behaviour and auto flags unchanged) and UYA's "Trophies" (Reset trophies (freezes ~3 s), 21, and a new toggle, 39 Reset trophies on Veldin load, off by default), each also a DESCRIBE group of the same name. UYA's reset deletes the console's trophy data for the game and then has the game re-register its trophies, which freezes it for about three seconds; it is refused under RPCS3. Feature flags gain bit6 CONFIRM, which has a client ask the user before using the feature, and FEATURE_CONFIRM_TEXT at 0x0026 hands out the text to ask with; UYA's two trophy features carry it (section 5.3.3). The same build fixes Deadlocked's Fast loads, which hung the game on a black screen whenever the flight had a movie to play: the movie plays now. Nothing on the wire changes, but the code switch behind that checkbox under RPCS3 moved, so a patch written by an earlier build is asked for again (section 5.12.2). Same module build, 53, which is unreleased. See section 5.14.
+Revision 1.21 (2026-10-16): manip categories. MANIP_LIST, MANIP_SELECT, MANIP_OPTIONS and MANIP_APPLY at 0x00D0..0x00D3. A game describes groups of the RAM writes speedrunners call manips, each for one or more leaderboard categories; the client picks one, and qwark applies its setup once per game boot and its per-run writes on every file load (a save loaded or a new game started) while auto-reset is on, after checking the file's challenge-mode counter both ways. The options live in qwark's config.txt, so they work without a PC. The old manip buttons and toggles are retired, ids and all: RaC1 7, 8, 10, 11 and 16; RaC2 15 to 22; UYA 16, 18, 19 and 20; Deadlocked 12. MANIP_LIST also carries a list of headers, features that belong beside the manips: Deadlocked's "Fixes" (Crash patches and Fix reset softlocks, ids, behaviour and auto flags unchanged) and UYA's "Trophies" (Reset trophies (freezes ~3 s), 21, and a new toggle, 39 Reset trophies on Veldin load, off by default), each also a DESCRIBE group of the same name. UYA's reset deletes the console's trophy data for the game and then has the game re-register its trophies, which freezes it for about three seconds; it is refused under RPCS3. The same build fixes Deadlocked's Fast loads, which hung the game on a black screen whenever the flight had a movie to play: the movie plays now. Nothing on the wire changes, but the code switch behind that checkbox under RPCS3 moved, so a patch written by an earlier build is asked for again (section 5.12.2). Same module build, 53, which is unreleased. See section 5.14.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -189,7 +189,7 @@ The same UDP port also receives 20-byte autosplit datagrams, which start `QE` ra
 When the game exits and the same title comes back:
 
 - Watches are kept and resume automatically; their ids do not change.
-- Every toggle that was on (LIVE toggles excepted: their state is a byte the game and its save file own, so there is nothing for qwark to re-apply; and, revision 1.21, CONFIRM toggles, which only the user's answer to the client's question turns on, section 5.3.3), every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
+- Every toggle that was on (LIVE toggles excepted: their state is a byte the game and its save file own, so there is nothing for qwark to re-apply), every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
 
 When a different title comes back, everything including watches is dropped and the record is empty. The client notices `game` changing in telemetry and re-issues DESCRIBE.
 
@@ -226,7 +226,6 @@ Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 
 | 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
 | 0x0025 | SWITCH_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's code switches as the words and bytes an RPCS3 patch writes (revision 1.17, section 5.12.2). `UNSUPPORTED` from the PS3 module (revision 1.18) |
-| 0x0026 | FEATURE_CONFIRM_TEXT | `u8 id` (a feature flagged CONFIRM) | the text a client asks the user with before using it: UTF-8, at most 512 bytes, no terminator (revision 1.21, section 5.3.3). `BAD_ARG` for a feature without CONFIRM, `NOT_FOUND` for an id the game does not have, `UNSUPPORTED` outside INGAME, as DESCRIBE |
 
 ```
 Feature (48 bytes):
@@ -234,7 +233,7 @@ u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
 u8   aux            ENUM: option count. 0 for every other kind
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2), bit6 CONFIRM (ACTION or TOGGLE: ask the user first, revision 1.21, section 5.3.3)
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. TOGGLE and ACTION: 0xFF
 u8   bits           VALUE: the width in bits of the field behind it, 8, 16 or 32. 0 means 32, so a row that names no width reads as it always did. 0 for every other kind (revision 1.7)
 u8   pad
@@ -290,24 +289,6 @@ The signed VALUEs today:
 | RaC2 | 23 | QE save write-offset | signed 16-bit halfword |
 | RaC3 | 9 | Health XP | signed 32-bit |
 | RaC3 | 14 | QE offset | signed 16-bit halfword |
-
-#### 5.3.3 CONFIRM features (revision 1.21)
-
-Some features do something a user should be asked about first, and the label's 32 bytes cannot say all of it. **flags bit6 CONFIRM** marks them. For such a row the client asks the user, and goes ahead only on a yes:
-
-- before **FEATURE_TRIGGER** of an ACTION;
-- before **FEATURE_SET** with value 1 of a TOGGLE (turning it on), and before **FEATURE_SET_AUTO** with 1 (flagging it to come back on at every boot). Turning either off needs no question.
-
-What to ask with is **FEATURE_CONFIRM_TEXT** (0x0026), request `u8 id`, reply the text: UTF-8, at most 512 bytes, no terminator, written for the user, saying what the feature costs. It is `BAD_ARG` for a feature without CONFIRM, `NOT_FOUND` for an id the running game does not have, and `UNSUPPORTED` outside INGAME, for the reason DESCRIBE is (section 5.3's table). It reads only the game's tables, so it is the same for a game's whole session and a client may keep it with the DESCRIBE it came beside.
-
-qwark does not enforce the question: FEATURE_TRIGGER, FEATURE_SET and FEATURE_SET_AUTO behave as they always have, so the flag is a promise the client keeps. A CONFIRM toggle is kept out of the previous-session record as a LIVE one is (section 4.1): never recorded, never offered in PREVIOUS_LIST, never turned on by PREVIOUS_REAPPLY, while an auto flag the user confirmed with FEATURE_SET_AUTO 1 still brings it back at INGAME as any auto flag does. A client that predates this revision sees a bit it does not know and asks nothing, which is how it behaved before.
-
-The CONFIRM features today:
-
-| Game | Feature id | Label | Why |
-|---|---|---|---|
-| UYA | 21 | Reset trophies (freezes ~3 s) | deletes the console's UYA trophy record and freezes the game for about 3 s (section 5.14) |
-| UYA | 39 | Reset trophies on Veldin load | the same, on every load into Veldin while it is on |
 
 ### 5.4 Memory (0x003x)
 
@@ -911,8 +892,6 @@ That is the old trainer's Reset Trophies button with its rc3-save 1.1 mod loaded
 **The toggle.** Toggle 39 is qwark's own state: off after every boot unless its auto flag (FEATURE_SET_AUTO, config.txt as for any toggle, under the key its label makes) brings it back, and independent of the selected category, None included. While it is on, qwark resets once per run, from the first tick it sees a load into Veldin under way (the load request word set, destination 1, game mode 6), and asks again on the following ticks of that load for as long as the game's trophy threads keep it `BUSY`. The game's half is asked for only inside that load, and the helper refuses it outside one, so the three seconds always fall inside the load into Veldin: after the last run's trophies, before this run can win one, and before the run's timer starts, which is when that load ends (the autosplit START, section 8, is Veldin with the mode going from 6 to 0). The load's opening transition, which keeps the mode at 6, calls the helper every frame, and the delete is over in a few ticks, long before the load is. A load that ends before the game is asked keeps the delete and leaves the game's half to the next load into Veldin.
 
 **Under RPCS3** FEATURE_TRIGGER 21, and FEATURE_SET 39 to on, answer `UNSUPPORTED` (section 3.2). The emulator keeps a trophy set's data in its own `dev_hdd0`, which `qwark-rpcs3` does not reach (its file ops are rooted in a folder of its own, and nothing in qwark touches RPCS3's files), and the game's half alone would leave every won trophy won and only freeze the game. RaC3's SAVEFILE_PATCH carries the reset's cave with the rest of the helper, where nothing ever asks for it.
-
-**Both ask first.** 21 and 39 carry flags bit6 CONFIRM (section 5.3.3): a client asks the user before it triggers 21 and before it turns 39 or 39's auto flag on, with the text FEATURE_CONFIRM_TEXT gives for each. Both texts say that the console's UYA trophy record is deleted, that the game freezes for about 3 seconds, that trophies synced to PSN may come back, and that a copy of the folder restores them; 39's adds that this happens on every load into Veldin while it is on. A yes to 39 is the user's consent to a delete on every run's Veldin load.
 
 RaC2's NG+ No Specials writes M, the NG+ per-run list, without its first write, the shortcut cursor: the shortcuts live in the specials menu, which the category never uses.
 

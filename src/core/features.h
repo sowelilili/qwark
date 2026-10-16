@@ -25,15 +25,6 @@ int  features_trigger(u8 id);
 int  features_set_auto(u8 id, int on);
 int  features_options(u8 id, const char * const **options, u8 *count);
 
-/*
- * Revision 1.21, FEATURE_CONFIRM_TEXT: the text of feature `id`, which has to
- * carry FEATURE_FLAG_CONFIRM (BAD_ARG otherwise), into `out` without a
- * terminator. UNSUPPORTED with no game, NOT_FOUND for an id it does not have
- * or a CONFIRM row its game gave no text, FULL past `cap` or
- * FEATURE_CONFIRM_TEXT_MAX. Reads only the tables.
- */
-int  features_confirm_text(u8 id, u8 *out, u32 cap, u32 *len);
-
 /* Encodes the DESCRIBE reply. */
 int  features_describe(u8 *out, u32 cap, u32 *len);
 
@@ -73,15 +64,6 @@ u64  features_auto_mask(void);
  * into the previous-session record.
  */
 u64  features_live_mask(void);
-
-/*
- * Revision 1.21. The mask of TOGGLEs the current game marks
- * FEATURE_FLAG_CONFIRM. A client asks the user before turning one on, so qwark
- * never turns one back on behind that question: they stay out of the
- * previous-session record, as the LIVE ones do. An auto flag the user set for
- * one, which the client asked about too, still brings it back at INGAME.
- */
-u64  features_confirm_mask(void);
 
 /*
  * Re-reads every LIVE toggle through the game's toggle_read and makes

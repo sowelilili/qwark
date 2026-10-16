@@ -1073,22 +1073,6 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return rc;
 	}
 
-	/*
-	 * Revision 1.21. A table read like DESCRIBE's, so it answers here under the
-	 * core lock, and outside INGAME it is UNSUPPORTED for the reason DESCRIBE
-	 * is: the registry may still hold the last game's table.
-	 */
-	case OP_FEATURE_CONFIRM_TEXT: {
-		u16 rc;
-
-		if (reqlen < 1) return ST_BAD_ARG;
-		if (session_game() == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
-		core_lock();
-		rc = (u16)features_confirm_text(req[0], reply, replycap, replylen);
-		core_unlock();
-		return rc;
-	}
-
 	case OP_FEATURE_OPTIONS: {
 		const char * const *options = NULL;
 		u8 count = 0;

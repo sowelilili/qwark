@@ -44,8 +44,6 @@ Then the game re-reads its trophies, which **freezes it for about three seconds*
 - **Reset trophies (freezes ~3 s)** does it now.
 - **Reset trophies on Veldin load**, off by default, does it once per run, inside the load into Veldin that starts every run, so the freeze is before the timer starts.
 
-Both are marked for confirmation: a client that supports it shows what will be deleted and waits for a yes before it runs the reset, and before it turns the option, or its auto-apply, on.
-
 qwark finds the folder from the game and the signed-in user rather than guessing it, and refuses, deleting nothing, unless the folder's own trophy configuration says it is UYA's. It only ever deletes the files in that one folder, and logs what it did. Under RPCS3 both answer unsupported: the emulator's trophy data is out of qwark's reach. PROTOCOL.md section 5.14 has the details.
 
 ## What it does without a PC

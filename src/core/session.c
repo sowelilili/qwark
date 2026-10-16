@@ -245,14 +245,8 @@ static void prev_build(void)
 	 * A LIVE toggle is a byte in the game and in the save file, not something
 	 * qwark applied, so there is nothing to offer back: it comes into the new
 	 * session already carrying whatever the save says.
-	 *
-	 * Revision 1.21: nor a CONFIRM toggle. A client asks the user before it
-	 * turns one on, and the previous-session prompt is not that question, so
-	 * one is never recorded, never offered and never reapplied. Its auto flag,
-	 * which the client asked about, still brings it back at INGAME.
 	 */
-	g_prev.toggles = features_toggle_state() & ~features_live_mask() &
-	                 ~features_confirm_mask();
+	g_prev.toggles = features_toggle_state() & ~features_live_mask();
 	g_prev.mods    = mods_loaded_mask();
 
 	n = 0;
@@ -287,8 +281,7 @@ void session_previous_reapply(u8 flags)
 {
 	u32 i;
 
-	/* The record never holds a CONFIRM toggle; the reapply would not write one either. */
-	if (flags & PREV_TOGGLES) features_apply_mask(g_prev.toggles & ~features_confirm_mask());
+	if (flags & PREV_TOGGLES) features_apply_mask(g_prev.toggles);
 	if (flags & PREV_MODS)    mods_apply_mask(g_prev.mods);
 
 	if (flags & PREV_FREEZES) {

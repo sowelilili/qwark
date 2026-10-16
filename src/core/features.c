@@ -109,30 +109,6 @@ u64 features_live_mask(void)
 	return mask;
 }
 
-u64 features_confirm_mask(void)
-{
-	const struct game_describe *d;
-	u64 mask = 0;
-	u8 i;
-
-	if (g_game == NULL || g_game->describe == NULL) return 0;
-
-	d = g_game->describe();
-	if (d == NULL) return 0;
-
-	for (i = 0; i < d->nfeatures; i++) {
-		const struct feature_desc *f = &d->features[i];
-
-		if (f->kind != FEATURE_TOGGLE) continue;
-		if (f->id >= QWARK_MAX_FEATURES) continue;
-		if ((f->flags & FEATURE_FLAG_CONFIRM) == 0) continue;
-
-		mask |= (u64)1 << f->id;
-	}
-
-	return mask;
-}
-
 void features_poll_live(void)
 {
 	const struct game_describe *d;
@@ -277,33 +253,6 @@ int features_options(u8 id, const char * const **options, u8 *count)
 	if (g_game->get_options == NULL) return ST_UNSUPPORTED;
 
 	return g_game->get_options(id, options, count);
-}
-
-int features_confirm_text(u8 id, u8 *out, u32 cap, u32 *len)
-{
-	const struct feature_desc *f = find_desc(id);
-	const struct game_describe *d;
-	u32 n;
-	u8 i;
-
-	*len = 0;
-	if (g_game == NULL || g_game->describe == NULL) return ST_UNSUPPORTED;
-	if (f == NULL) return ST_NOT_FOUND;
-	if ((f->flags & FEATURE_FLAG_CONFIRM) == 0) return ST_BAD_ARG;
-
-	d = g_game->describe();
-	if (d == NULL || d->confirms == NULL) return ST_NOT_FOUND;
-
-	for (i = 0; i < d->nconfirms; i++) {
-		if (d->confirms[i].id != id || d->confirms[i].text == NULL) continue;
-
-		n = qstrlen(d->confirms[i].text);
-		if (n > FEATURE_CONFIRM_TEXT_MAX || n > cap) return ST_FULL;
-		memcpy(out, d->confirms[i].text, n);
-		*len = n;
-		return ST_OK;
-	}
-	return ST_NOT_FOUND;
 }
 
 void features_apply_mask(u64 mask)

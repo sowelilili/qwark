@@ -739,8 +739,7 @@ static const struct game_describe rac4_describe_table = {
 	 * The crash patches and the softlock fix ship auto-flagged, which is what the
 	 * Deadlocked autosplitter SPRX does today. Config still overrides either.
 	 */
-	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX),
-	NULL, 0        /* no feature asks for a confirmation */
+	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX)
 };
 
 #undef NR

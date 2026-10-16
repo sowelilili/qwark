@@ -629,8 +629,7 @@ static const struct game_describe rac2_describe_table = {
 	rac2_groups,   (u8)(sizeof(rac2_groups) / sizeof(rac2_groups[0])),
 	rac2_readouts, NR,
 	rac2_features, (u8)(sizeof(rac2_features) / sizeof(rac2_features[0])),
-	0,             /* no toggle ships auto-flagged */
-	NULL, 0        /* no feature asks for a confirmation */
+	0              /* no toggle ships auto-flagged */
 };
 
 #undef NR

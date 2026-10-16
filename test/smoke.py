@@ -122,8 +122,6 @@ OP_MOD_INFO = 0x0065
 OP_MOD_PATCH = 0x0066
 # Revision 1.17: the running game's code switches, in SAVEFILE_PATCH's layout.
 OP_SWITCH_PATCH = 0x0025
-# Revision 1.21: the text a client asks the user with before a CONFIRM feature.
-OP_FEATURE_CONFIRM_TEXT = 0x0026
 
 # One Mod row, and the flag that says the console has this one in the game.
 MOD_WIRE_SIZE = 120
@@ -278,8 +276,6 @@ FEATURE_FLAG_LOAD_ASIDE = 0x08
 FEATURE_FLAG_LIVE = 0x10
 # Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide.
 FEATURE_FLAG_SIGNED = 0x20
-# Revision 1.21: ask the user first, with FEATURE_CONFIRM_TEXT's text.
-FEATURE_FLAG_CONFIRM = 0x40
 
 # Protocol 1.4: the autosplit event stream. 1.5 added the two load kinds, the
 # two timing flags and the param_us that goes with them, and grew EventDesc.
@@ -3955,48 +3951,19 @@ def exercise_manips(c, sim, spec):
         mem_write(c, t["byte"], b"\x00")
         time.sleep(0.1)
 
-        # Revision 1.21: both rows say CONFIRM, and the op hands out the text.
+        # The two rows keep their labels, and no flag asks a client to wait.
         status, body = c.call(OP_DESCRIBE)
-        flags = {}
+        rows = {}
         if status == ST_OK:
-            flags = {f["id"]: f["flags"] for f in parse_describe(body)[3]}
-        check(all(flags.get(i, 0) & FEATURE_FLAG_CONFIRM for i in (t["button"], t["toggle"])) and
-              not any(f & FEATURE_FLAG_CONFIRM for i, f in flags.items()
-                      if i not in (t["button"], t["toggle"])),
-              "%s trophies: DESCRIBE flags the reset and its toggle CONFIRM, and nothing else" % name,
-              {i: hex(f) for i, f in flags.items() if f})
-        for fid, needle in ((t["button"], b"freezes for about 3 seconds"),
-                            (t["toggle"], b"every load into Veldin")):
-            status, text = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([fid]))
-            check(status == ST_OK and 0 < len(text) <= 512 and b"\x00" not in text and
-                  b"trophy record on this console" in text and needle in text,
-                  "%s trophies: FEATURE_CONFIRM_TEXT %d says what it deletes, in at most "
-                  "512 bytes" % (name, fid), (status, len(text)))
-            check(text.decode("utf-8", "replace").isprintable(),
-                  "%s trophies: and it is plain UTF-8 text" % name)
-        status, _ = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([22]))
-        check(status == ST_BAD_ARG,
-              "%s trophies: FEATURE_CONFIRM_TEXT of a feature without CONFIRM is BAD_ARG" % name,
-              status)
-        # The reset's toggle and Fast loads (38) on across a reboot: only Fast
-        # loads goes into the previous-session record.
-        c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 1))
-        c.call(OP_FEATURE_SET, struct.pack(">BI", 38, 1))
-        sim.send("quit")
-        wait_state(c, SESSION_XMB)
-        status, _ = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([t["button"]]))
-        check(status == ST_UNSUPPORTED,
-              "%s trophies: and outside a game it is UNSUPPORTED, as DESCRIBE" % name, status)
-        sim.send("boot %s" % spec["title"])
-        wait_state(c, SESSION_INGAME)
-        for a, v in spec.get("after_boot", []):
-            mem_write(c, a, v)
-        status, body = c.call(OP_PREVIOUS_LIST)
-        toggles = struct.unpack(">Q", body[:8])[0] if status == ST_OK and len(body) >= 8 else 0
-        check(toggles & (1 << 38) and not toggles & (1 << t["toggle"]),
-              "%s trophies: PREVIOUS_LIST offers Fast loads back but not the CONFIRM toggle" % name,
-              hex(toggles))
-        c.call(OP_PREVIOUS_DISMISS)
+            rows = {f["id"]: f for f in parse_describe(body)[3]}
+        check(rows.get(t["button"], {}).get("label") == "Reset trophies (freezes ~3 s)" and
+              rows.get(t["toggle"], {}).get("label") == "Reset trophies on Veldin load",
+              "%s trophies: DESCRIBE labels the reset and its toggle" % name,
+              {i: rows[i]["label"] for i in (t["button"], t["toggle"]) if i in rows})
+        check(not any(f["flags"] & 0x40 for f in rows.values()) and
+              rows.get(t["button"], {}).get("flags") == 0,
+              "%s trophies: and no row carries flags bit6, the reset no flag at all" % name,
+              {i: hex(f["flags"]) for i, f in rows.items() if f["flags"]})
     status, l = manip_list(c)
     check(l is not None and l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
           "%s manips: back to None, auto-reset on, remember off" % name, l)
