@@ -3912,6 +3912,10 @@ def exercise_manips(c, sim, spec):
         check(status == ST_BAD_ARG,
               "%s trophies: FEATURE_CONFIRM_TEXT of a feature without CONFIRM is BAD_ARG" % name,
               status)
+        # The reset's toggle and Fast loads (38) on across a reboot: only Fast
+        # loads goes into the previous-session record.
+        c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 1))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", 38, 1))
         sim.send("quit")
         wait_state(c, SESSION_XMB)
         status, _ = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([t["button"]]))
@@ -3921,6 +3925,12 @@ def exercise_manips(c, sim, spec):
         wait_state(c, SESSION_INGAME)
         for a, v in spec.get("after_boot", []):
             mem_write(c, a, v)
+        status, body = c.call(OP_PREVIOUS_LIST)
+        toggles = struct.unpack(">Q", body[:8])[0] if status == ST_OK and len(body) >= 8 else 0
+        check(toggles & (1 << 38) and not toggles & (1 << t["toggle"]),
+              "%s trophies: PREVIOUS_LIST offers Fast loads back but not the CONFIRM toggle" % name,
+              hex(toggles))
+        c.call(OP_PREVIOUS_DISMISS)
     status, l = manip_list(c)
     check(l is not None and l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
           "%s manips: back to None, auto-reset on, remember off" % name, l)

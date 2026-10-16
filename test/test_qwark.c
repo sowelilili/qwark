@@ -6188,6 +6188,50 @@ static void test_feature_confirm(void)
 	check(session_state() != SESSION_INGAME, "the session is out of INGAME, which the op's gate answers UNSUPPORTED");
 	check(boot_and_wait("NPEA00387"), "UYA again, for what follows");
 	pump(2);
+
+	group("revision 1.21: a CONFIRM toggle stays out of the previous-session record");
+	{
+		const u64 auto_bit = (u64)1 << F3_AUTO_TROPHIES;
+		const u64 fast_bit = (u64)1 << 38;   /* Fast loads, an ordinary toggle */
+		const struct previous_record *prev;
+		u8 list[64];
+
+		check((features_confirm_mask() & auto_bit) != 0 &&
+		      (features_confirm_mask() & ~auto_bit) == 0,
+		      "UYA's CONFIRM toggles are 39 and no other");
+
+		check(features_set(F3_AUTO_TROPHIES, 1) == ST_OK, "the trophy reset's toggle goes on");
+		check(features_set(38, 1) == ST_OK, "and so does Fast loads");
+		check(quit_and_wait(), "quit with both on");
+		check(boot_and_wait("NPEA00387"), "the same game comes back");
+		pump(2);
+
+		prev = session_previous();
+		check((prev->toggles & fast_bit) != 0, "the ordinary toggle is in the record");
+		check((prev->toggles & auto_bit) == 0, "the CONFIRM toggle is not");
+		check(prev->pending, "so PREVIOUS_PENDING is up, for Fast loads alone");
+
+		/* PREVIOUS_LIST's first eight bytes are the record's toggles, as net.c sends them. */
+		be64_put(list, prev->toggles);
+		check((be64_get(list) & auto_bit) == 0, "PREVIOUS_LIST does not offer it");
+
+		session_previous_reapply(PREV_TOGGLES);
+		check((features_toggle_state() & fast_bit) != 0, "PREVIOUS_REAPPLY turns Fast loads back on");
+		check((features_toggle_state() & auto_bit) == 0, "and leaves the trophy reset's toggle off");
+
+		check(features_set_auto(F3_AUTO_TROPHIES, 1) == ST_OK,
+		      "an auto flag the user confirmed (FEATURE_SET_AUTO 1)");
+		check(quit_and_wait(), "quit");
+		check(boot_and_wait("NPEA00387"), "boot");
+		pump(2);
+		check((features_toggle_state() & auto_bit) != 0, "still brings it back at INGAME");
+		check((session_previous()->toggles & auto_bit) == 0, "and the record still has none of it");
+
+		features_set_auto(F3_AUTO_TROPHIES, 0);
+		features_set(F3_AUTO_TROPHIES, 0);
+		features_set(38, 0);
+		session_previous_dismiss();
+	}
 }
 
 /* A save file in play, or the title screen or main menu, as each game reads it. */

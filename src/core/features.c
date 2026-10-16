@@ -109,6 +109,30 @@ u64 features_live_mask(void)
 	return mask;
 }
 
+u64 features_confirm_mask(void)
+{
+	const struct game_describe *d;
+	u64 mask = 0;
+	u8 i;
+
+	if (g_game == NULL || g_game->describe == NULL) return 0;
+
+	d = g_game->describe();
+	if (d == NULL) return 0;
+
+	for (i = 0; i < d->nfeatures; i++) {
+		const struct feature_desc *f = &d->features[i];
+
+		if (f->kind != FEATURE_TOGGLE) continue;
+		if (f->id >= QWARK_MAX_FEATURES) continue;
+		if ((f->flags & FEATURE_FLAG_CONFIRM) == 0) continue;
+
+		mask |= (u64)1 << f->id;
+	}
+
+	return mask;
+}
+
 void features_poll_live(void)
 {
 	const struct game_describe *d;

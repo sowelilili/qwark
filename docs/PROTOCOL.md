@@ -189,7 +189,7 @@ The same UDP port also receives 20-byte autosplit datagrams, which start `QE` ra
 When the game exits and the same title comes back:
 
 - Watches are kept and resume automatically; their ids do not change.
-- Every toggle that was on (LIVE toggles excepted: their state is a byte the game and its save file own, so there is nothing for qwark to re-apply), every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
+- Every toggle that was on (LIVE toggles excepted: their state is a byte the game and its save file own, so there is nothing for qwark to re-apply; and, revision 1.21, CONFIRM toggles, which only the user's answer to the client's question turns on, section 5.3.3), every active freeze, every client patch and every loaded mod is moved into the **previous-session record** and cleared from the live tables. Items flagged auto (toggle_auto, mod_auto) are re-applied silently when the session reaches INGAME and are removed from the record. If anything remains, `flags.PREVIOUS_PENDING` is set; the client is expected to prompt the user (default No) and answer with PREVIOUS_REAPPLY or PREVIOUS_DISMISS.
 
 When a different title comes back, everything including watches is dropped and the record is empty. The client notices `game` changing in telemetry and re-issues DESCRIBE.
 
@@ -300,7 +300,7 @@ Some features do something a user should be asked about first, and the label's 3
 
 What to ask with is **FEATURE_CONFIRM_TEXT** (0x0026), request `u8 id`, reply the text: UTF-8, at most 512 bytes, no terminator, written for the user, saying what the feature costs. It is `BAD_ARG` for a feature without CONFIRM, `NOT_FOUND` for an id the running game does not have, and `UNSUPPORTED` outside INGAME, for the reason DESCRIBE is (section 5.3's table). It reads only the game's tables, so it is the same for a game's whole session and a client may keep it with the DESCRIBE it came beside.
 
-qwark does not enforce the question: FEATURE_TRIGGER, FEATURE_SET and FEATURE_SET_AUTO behave as they always have, so the flag is a promise the client keeps. What a toggle's auto flag brings back at boot, and what PREVIOUS_REAPPLY puts back, is what the user already agreed to; a client that lists a CONFIRM toggle in its previous-session prompt may show the text there too. A client that predates this revision sees a bit it does not know and asks nothing, which is how it behaved before.
+qwark does not enforce the question: FEATURE_TRIGGER, FEATURE_SET and FEATURE_SET_AUTO behave as they always have, so the flag is a promise the client keeps. A CONFIRM toggle is kept out of the previous-session record as a LIVE one is (section 4.1): never recorded, never offered in PREVIOUS_LIST, never turned on by PREVIOUS_REAPPLY, while an auto flag the user confirmed with FEATURE_SET_AUTO 1 still brings it back at INGAME as any auto flag does. A client that predates this revision sees a bit it does not know and asks nothing, which is how it behaved before.
 
 The CONFIRM features today:
 

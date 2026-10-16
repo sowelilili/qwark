@@ -75,6 +75,15 @@ u64  features_auto_mask(void);
 u64  features_live_mask(void);
 
 /*
+ * Revision 1.21. The mask of TOGGLEs the current game marks
+ * FEATURE_FLAG_CONFIRM. A client asks the user before turning one on, so qwark
+ * never turns one back on behind that question: they stay out of the
+ * previous-session record, as the LIVE ones do. An auto flag the user set for
+ * one, which the client asked about too, still brings it back at INGAME.
+ */
+u64  features_confirm_mask(void);
+
+/*
  * Re-reads every LIVE toggle through the game's toggle_read and makes
  * toggle_state agree with what memory says. Reads game memory, so the tick
  * thread is the only caller; it never writes and never fires a hook.
