@@ -10,10 +10,13 @@
  *
  *   setup    once per game boot: at the first compatible file load after the
  *            boot or after the selection, or straight away when the group is
- *            selected while a compatible file is in play. The first time per
- *            boot the console says "<group> manips activated".
+ *            selected while a compatible file is in play.
  *   per-run  on every file load (a save loaded, a new game started) while
  *            auto-reset is on, and by Apply now.
+ *
+ * The first time a group is applied in a boot, setup or per-run, the console
+ * says "<group> manips activated" (build 53: a group with per-run writes alone
+ * used to say nothing).
  *
  * Nothing is written unless the challenge-mode check passes: an NG+ group
  * needs the counter at 1 or more, a new-game group needs it at 0, and a group

@@ -1921,8 +1921,8 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 22,
-	             "and twenty-two features (build 53 retired six rows and added Freeze health)");
+	check_eq_u64(nfeatures, 21,
+	             "and twenty-one features (build 53 retired six rows, and Freeze health is id 2)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
@@ -1986,16 +1986,20 @@ static void test_describe(void)
 	}
 
 	/*
-	 * Build 53: max ammo, all weapons is retired too, and Freeze health takes
-	 * the next free id, 28, in Cheats beside infinite health.
+	 * Build 53: max ammo, all weapons is retired too, and Infinite health,
+	 * id 2, is Freeze health now, held at the game's maximum like the other
+	 * games'. Freeze health's own row, 28, which sat beside it for a while, is
+	 * retired.
 	 */
 	check(desc_feature(out, len, 17) == NULL, "the retired max-ammo id 17 is not described");
 	check(features_trigger(17) == ST_NOT_FOUND, "and triggering it is NOT_FOUND");
 	check(desc_feature(out, len, 18) != NULL, "id 18 after it kept its number");
-	row = desc_feature(out, len, 28);
+	row = desc_feature(out, len, 2);
 	check(row != NULL && row[1] == FEATURE_TOGGLE && row[2] == 0 && row[4] == 0,
-	      "Freeze health is id 28, a TOGGLE in Cheats that writes no code");
+	      "Freeze health is id 2, a TOGGLE in Cheats that writes no code");
 	check(row != NULL && memcmp(row + 16, "Freeze health", 14) == 0, "and its label reads");
+	check(desc_feature(out, len, 28) == NULL, "id 28 is retired and not described");
+	check(features_set(28, 1) == ST_NOT_FOUND, "and FEATURE_SET on it is NOT_FOUND");
 }
 
 /* ---------------------------------------------------- RaC1: the unlock table */
@@ -5166,6 +5170,7 @@ static void r4t_tutorial(u8 value)
 static void test_manip_trigger_rac2(void)
 {
 	u16 seq;
+	u32 notes;
 
 	group("manip trigger: RaC2, the end of a load into Aranos");
 
@@ -5188,20 +5193,32 @@ static void test_manip_trigger_rac2(void)
 	pump(1);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "nor on the frame the counter reads 1");
 	seq = manips_event_seq();
+	notes = host_notify_count();
 	r2_put_count(2);
 	pump(1);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "the end of the load screen runs the any% reset");
 	check_eq_u64(r2_word(R2_PAD_MANIP), R2_PAD_13, "jump pads and all");
-	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_APPLIED,
-	      "with one per-run event");
+	/*
+	 * Build 53: Any% has per-run writes alone, and its first application in
+	 * the boot is announced as a setup's is; until then it never was.
+	 */
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP &&
+	      manips_event_group() == 3, "with one event, Any% activated: its first this boot");
+	check(host_notify_count() == notes + 1 && qstreq(host_notify_last(), "Any% manips activated"),
+	      "and the console says \"Any% manips activated\"");
 	check_eq_u64(r2_word(R2_CHARGE_BUF), 0, "Any% does not charge the boots");
 
 	r2_put_word(R2_GORN_MANIP, 1);
 	pump(20);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 1, "the counter staying at 2 does not fire again");
 
+	seq = manips_event_seq();
+	notes = host_notify_count();
 	r2_load(0);
 	check_eq_u64(r2_word(R2_GORN_MANIP), 0, "loading Aranos again fires again");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_APPLIED,
+	      "as one per-run event");
+	check_eq_u64(host_notify_count(), notes, "which the console does not announce twice");
 
 	group("manip trigger: RaC2 NG+ charges the boots");
 
@@ -5391,6 +5408,7 @@ static void test_manip_trigger_rac1(void)
 {
 	const struct mt_group *am = &mt_rac1[2];
 	u16 seq;
+	u32 notes;
 
 	group("manip trigger: RaC1, the end of a load into Veldin");
 
@@ -5407,6 +5425,7 @@ static void test_manip_trigger_rac1(void)
 	check(r2_byte(R1M_BRIDGE) == 0xEE, "the title writes nothing");
 
 	seq = manips_event_seq();
+	notes = host_notify_count();
 	poke32(R1T_DEST, 0);
 	poke32(R1T_REQUEST, 1);
 	pump(3);
@@ -5419,7 +5438,16 @@ static void test_manip_trigger_rac1(void)
 	poke32(R1T_STATE, 0);
 	pump(2);
 	check(mt_values_match(am, 0, am->n), "a new game: the Veldin load's end runs the reset");
-	check(manips_event_seq() == (u16)(seq + 1), "with one event");
+	/*
+	 * Build 53: RaC1's groups have per-run writes alone, and the first
+	 * application of one in a boot is announced as a setup's is. Until then
+	 * no RaC1 group ever said anything, on the console or on the PC.
+	 */
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_SETUP &&
+	      manips_event_group() == 3, "with one event, All Missions activated");
+	check(host_notify_count() == notes + 1 &&
+	      qstreq(host_notify_last(), "All Missions manips activated"),
+	      "and the console says \"All Missions manips activated\"");
 
 	mt_poison(am);
 	r1t_load(3, 0);
@@ -5430,8 +5458,13 @@ static void test_manip_trigger_rac1(void)
 	pump(3);
 	check(r2_byte(R1M_BRIDGE) == 0xEE, "nor a ship cutscene's 6 to 0 in a level");
 
+	seq = manips_event_seq();
+	notes = host_notify_count();
 	r1t_load(0, 0);
 	check(mt_values_match(am, 0, am->n), "a load into Veldin from in game fires");
+	check(manips_event_seq() == (u16)(seq + 1) && manips_event_kind() == MANIP_EVENT_APPLIED,
+	      "as a per-run event: the group was announced this boot");
+	check_eq_u64(host_notify_count(), notes, "and the console stays quiet");
 
 	mt_poison(am);
 	poke32(R1T_STATE, 6);
@@ -5467,14 +5500,23 @@ static void test_manip_trigger_rac1(void)
 	check(manips_select(2) == ST_OK, "NG+ (no poki skip) selected");
 	mt_put_counter(&mt_games[0], 0);
 	seq = manips_event_seq();
+	notes = host_notify_count();
 	r1t_load(0, 0);
 	check(manips_event_seq() == (u16)(seq + 1) &&
 	      manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
 	      "refused on a fresh file");
+	check(host_notify_count() == notes + 1 &&
+	      qstreq(host_notify_last(),
+	             "NG+ (no poki skip) manips not applied: this is not a challenge mode file"),
+	      "and the console says so");
 	mt_put_counter(&mt_games[0], 1);
+	notes = host_notify_count();
 	r1t_load(0, 0);
 	check(r2_word(R1M_DREK_SKIP) == 1 && r2_word(R1M_DREK_CS) == 0,
 	      "applied on a challenge-mode file");
+	check(manips_event_kind() == MANIP_EVENT_SETUP && host_notify_count() == notes + 1 &&
+	      qstreq(host_notify_last(), "NG+ (no poki skip) manips activated"),
+	      "and, the group's first application this boot, announced");
 
 	group("manip trigger: RaC1, attaching");
 
@@ -7989,7 +8031,7 @@ struct fh_case {
 };
 
 static const struct fh_case fh_cases[] = {
-	{ "NPEA00385", "RaC1",       28, 0x0096BF88u, 0x0071FB28u, 4, 8, 2, 0 },
+	{ "NPEA00385", "RaC1",       2,  0x0096BF88u, 0x0071FB28u, 4, 8, 2, 0 },
 	{ "NPEA00386", "RaC2",       2,  0x014816ACu, 0x01329A98u, 10, 23, 3, 0 },
 	{ "NPEA00387", "UYA",        1,  0x00DA5040u, 0x00C1E4E4u, 30, 200, 7, 0xFFFFFFFFu },
 	/* 15.0, 200.0 and 5.0; -1.0 is no maximum. */
@@ -8177,6 +8219,155 @@ static void test_toggles_retired(void)
 	config_set_feature_auto("NPEA00386", "Weapon insta-upgrades", 0);
 	config_set_feature_auto("NPEA00387", "One-hit KO", 0);
 	config_set_feature_auto("NPEA00385", "Max ammo, all weapons", 0);
+}
+
+/*
+ * Build 53: the four cheats every game has - fast loads, Ghost Ratchet, the
+ * ammo cheat and Freeze health - lead the Cheats group in all four games, in
+ * the same order, and the client draws them in DESCRIBE's order. Each game's
+ * other cheats follow them. The ammo cheat is Infinite ammo but in
+ * Deadlocked, whose Refill ammo fills the ammo at a mission's start on
+ * purpose. The ids are the games' own and never moved: only the rows did.
+ */
+struct alike_case {
+	const char *title;
+	const char *name;
+	u8 ids[4];          /* the four rows' ids, in the order below */
+	const char *ammo;   /* the third row's label */
+	u8 ncheats;         /* every row in Cheats */
+	const char *after;  /* the row after the four, or NULL */
+};
+
+static const struct alike_case g_alike[] = {
+	{ "NPEA00385", "RaC1",       { 0, 3, 1, 2 },  "Infinite ammo", 5, "Goodies menu" },
+	{ "NPEA00386", "RaC2",       { 0, 3, 1, 2 },  "Infinite ammo", 5, "Enable debug mode" },
+	{ "NPEA00387", "UYA",        { 38, 3, 0, 1 }, "Infinite ammo", 5, "Quick-select pause" },
+	{ "NPEA00423", "Deadlocked", { 2, 5, 3, 4 },  "Refill ammo",   4, NULL }
+};
+
+static void test_cheats_alike_one(const struct alike_case *ac)
+{
+	u8 out[4096];
+	u32 len = 0;
+	u32 off;
+	u8 ngroups, nfeatures, cheats = 0xFF, n = 0, i;
+	const u8 *rows[16];
+	const char *labels[4];
+	char what[64];
+
+	labels[0] = "Fast loads";
+	labels[1] = "Ghost Ratchet";
+	labels[2] = ac->ammo;
+	labels[3] = "Freeze health";
+
+	qstrcpy(what, sizeof(what), "the four cheats alike: ");
+	qstrcat(what, sizeof(what), ac->name);
+	group(what);
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait(ac->title), "the game boots");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+
+	ngroups = out[1];
+	for (i = 0; i < ngroups; i++)
+		if (desc_group_is(out, i, "Cheats")) cheats = i;
+	off = 2 + (u32)ngroups * 24;
+	off += 1 + (u32)out[off] * 24;
+	nfeatures = out[off];
+	off += 1;
+
+	for (i = 0; i < nfeatures && off + FEATURE_WIRE_SIZE <= len; i++, off += FEATURE_WIRE_SIZE) {
+		if (out[off + 2] == cheats && n < 16) rows[n++] = out + off;
+	}
+
+	check(cheats != 0xFF, "there is a Cheats group");
+	check_eq_u64(n, ac->ncheats, "with every cheat the game has in it");
+	for (i = 0; i < 4 && i < n; i++) {
+		char line[96];
+
+		qstrcpy(line, sizeof(line), "row ");
+		line[4] = (char)('1' + i);
+		line[5] = 0;
+		qstrcat(line, sizeof(line), " is ");
+		qstrcat(line, sizeof(line), labels[i]);
+		check(rows[i][0] == ac->ids[i] && rows[i][1] == FEATURE_TOGGLE &&
+		      qstreq((const char *)rows[i] + 16, labels[i]), line);
+	}
+	if (ac->after != NULL)
+		check(n > 4 && qstreq((const char *)rows[4] + 16, ac->after), "and the game's own follow");
+}
+
+static void test_cheats_alike(void)
+{
+	u32 i;
+
+	for (i = 0; i < sizeof(g_alike) / sizeof(g_alike[0]); i++)
+		test_cheats_alike_one(&g_alike[i]);
+}
+
+/*
+ * Build 53: two toggles changed label - RaC1's Infinite health is Freeze
+ * health and UYA's Freeze ammo is Infinite ammo - and config.txt keeps an auto
+ * flag under the label's slug. A flag set under the old label still counts
+ * until one is set under the new, which wins. Deadlocked's Refill ammo keeps
+ * its label, and its flag.
+ */
+static void test_toggles_relabelled(void)
+{
+	group("build 53: an auto flag set under a toggle's old label");
+
+	check(quit_and_wait(), "quit whatever was running");
+	/* What a config.txt from before the relabelling can hold. */
+	config_set_feature_auto("NPEA00385", "Infinite health", 1);
+	config_set_feature_auto("NPEA00387", "Freeze ammo", 1);
+	config_set_feature_auto("NPEA00423", "Refill ammo", 1);
+	check(config_get("NPEA00385.auto.freeze_health") == NULL &&
+	      config_get("NPEA00387.auto.infinite_ammo") == NULL,
+	      "and nothing under the new labels");
+
+	host_boot("NPEA00385");
+	poke32(0x0071FB28u, 4);
+	poke32(0x0096BF88u, 1);
+	check(pump_until(SESSION_INGAME, 4000), "RaC1 boots");
+	pump(2);
+	check((features_toggle_auto() & ((u64)1 << 2)) != 0,
+	      "Infinite health's auto flag is Freeze health's");
+	check((features_toggle_state() & ((u64)1 << 2)) != 0 && peek32(0x0096BF88u) == 4,
+	      "so Freeze health came on by itself and holds the hit points");
+	check(features_set_auto(2, 0) == ST_OK, "the box is unticked");
+	check(qstreq(config_get("NPEA00385.auto.freeze_health"), "0"),
+	      "which writes the new key");
+	features_set(2, 0);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again");
+	pump(2);
+	check((features_toggle_auto() & ((u64)1 << 2)) == 0,
+	      "and the new key wins over the old one still in config.txt");
+	check((features_toggle_state() & ((u64)1 << 2)) == 0, "nothing came on");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00387"), "UYA boots");
+	pump(2);
+	check((features_toggle_auto() & ((u64)1 << 0)) != 0,
+	      "Freeze ammo's auto flag is Infinite ammo's");
+	check((features_toggle_state() & ((u64)1 << 0)) != 0 && peek32(0x00182A88u) == 0x60000000u,
+	      "and the ammo store's nop went in at boot, as it always did");
+	features_set(0, 0);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+	pump(2);
+	check((features_toggle_auto() & ((u64)1 << 3)) != 0,
+	      "Refill ammo kept its label and its auto flag");
+	check((features_toggle_state() & ((u64)1 << 3)) != 0, "and it came on at boot");
+	features_set(3, 0);
+
+	check(quit_and_wait(), "quit");
+	config_set_feature_auto("NPEA00385", "Infinite health", 0);
+	config_set_feature_auto("NPEA00387", "Freeze ammo", 0);
+	config_set_feature_auto("NPEA00423", "Refill ammo", 0);
+	config_set_feature_auto("NPEA00385", "Freeze health", 0);
 }
 
 static void test_trilogy(void)
@@ -11386,8 +11577,13 @@ static const struct patch_word g_swt_rac1_sites[] = {
 	{ 0x001641F8u, 0x48392A48u }, { 0x00165490u, 0x48391770u }
 };
 static const u32 g_swt_rac1_flags[] = { 0x009058B0u, 0x009058B1u, 0x009058B2u };
+/*
+ * Build 53: 0x9058B2 is the old Infinite health switch's flag, still in the
+ * patch so its words and stamp do not move, and no toggle's: id 2 is Freeze
+ * health now, which writes no code (test_switches_rac1_health).
+ */
 static const struct patch_word g_swt_rac1_toggles[] = {
-	{ 0, 0x009058B0u }, { 1, 0x009058B1u }, { 2, 0x009058B2u }
+	{ 0, 0x009058B0u }, { 1, 0x009058B1u }
 };
 
 /*
@@ -11501,7 +11697,8 @@ static const struct swt_game g_swt_games[] = {
 /* Feature ids the tests below drive by name. */
 #define SWT_R1_FAST    0
 #define SWT_R1_AMMO    1
-#define SWT_R1_HEALTH  2
+#define SWT_R1_HEALTH  2      /* Freeze health since build 53, no switch of its own */
+#define SWT_R1_HEALTH_FLAG 0x009058B2u
 #define SWT_R2_FAST    0
 #define SWT_R2_AMMO    1
 #define SWT_R4_CRASH   0
@@ -11896,57 +12093,103 @@ static void test_switches_apply(void)
 	check_eq_u64(swt_peek8(0x015CD781u), 0, "nothing else went on");
 	check_eq_u64(swt_peek32(0x0080883Cu), 0, "and the bot-crash table word was not written");
 
+	/*
+	 * Build 53: Infinite ammo is the auto-flagged code toggle here and fast
+	 * loads the reapplied one; this was Infinite health's part until it became
+	 * Freeze health, which writes no code (test_switches_rac1_health).
+	 */
 	group("build 50: RaC1's auto flag and the previous-session record");
 
 	check(quit_and_wait(), "quit");
 	check(boot_and_wait("NPEA00385"), "RaC1 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "the RaC1 words");
-	check(features_set_auto(SWT_R1_HEALTH, 1) == ST_OK, "Infinite health is flagged auto");
+	check(features_set_auto(SWT_R1_AMMO, 1) == ST_OK, "Infinite ammo is flagged auto");
 
 	check(quit_and_wait(), "quit");
 	check(swt_boot_patched("NPEA00385", g_sw_patch, len, SF_NO_FLIP), "RaC1 boots with the patch in");
-	check_eq_u64(swt_peek8(0x009058B2u), 1, "and the auto flag turned health on through its flag");
-	check((features_toggle_state() & ((u64)1 << SWT_R1_HEALTH)) != 0, "with its bit set");
+	check_eq_u64(swt_peek8(0x009058B1u), 1, "and the auto flag turned ammo on through its flag");
+	check((features_toggle_state() & ((u64)1 << SWT_R1_AMMO)) != 0, "with its bit set");
 	check_eq_u64(swt_peek32(0x0007F558u), 0x30649CE0u, "leaving the fingerprint word as it was");
-	check(features_set(SWT_R1_AMMO, 1) == ST_OK && swt_peek8(0x009058B1u) == 1, "ammo on as well");
+	check(features_set(SWT_R1_FAST, 1) == ST_OK && swt_peek8(0x009058B0u) == 1,
+	      "fast loads on as well");
 
 	/*
 	 * A reboot of the same title. The flags are zero again, as they are at every
-	 * boot; ammo goes on the previous-session record, and the reapply comes in
-	 * before the look has finished - RaC1's takes two ticks - so it waits.
+	 * boot; fast loads go on the previous-session record, and the reapply comes
+	 * in before the look has finished - RaC1's takes two ticks - so it waits.
 	 */
 	check(quit_and_wait(), "the game reboots");
 	host_boot("NPEA00385");
 	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
 	check(pump_until(SESSION_INGAME, 4000), "and comes back with the patch in");
-	check((session_previous()->toggles & ((u64)1 << SWT_R1_AMMO)) != 0,
-	      "ammo is on the previous-session record");
-	check((session_previous()->toggles & ((u64)1 << SWT_R1_HEALTH)) == 0,
-	      "health is not: it is auto and comes back on its own");
+	check((session_previous()->toggles & ((u64)1 << SWT_R1_FAST)) != 0,
+	      "fast loads are on the previous-session record");
+	check((session_previous()->toggles & ((u64)1 << SWT_R1_AMMO)) == 0,
+	      "ammo is not: it is auto and comes back on its own");
 	check_eq_u64(switches_state(), -1, "the look is still going");
 	session_previous_reapply(PREV_TOGGLES);
-	check_eq_u64(swt_peek8(0x009058B1u), 0, "so the reapply waits for it");
+	check_eq_u64(swt_peek8(0x009058B0u), 0, "so the reapply waits for it");
 	pump(4);
 	check_eq_u64(switches_state(), 1, "the look finds the switches");
-	check_eq_u64(swt_peek8(0x009058B1u), 1, "and the reapplied ammo goes on through its flag");
-	check_eq_u64(swt_peek8(0x009058B2u), 1, "and so did the auto-flagged health");
-	check((features_toggle_state() & ((u64)1 << SWT_R1_AMMO)) != 0, "with its bit set");
+	check_eq_u64(swt_peek8(0x009058B0u), 1, "and the reapplied fast loads go on through their flag");
+	check_eq_u64(swt_peek8(0x009058B1u), 1, "and so did the auto-flagged ammo");
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) != 0, "with their bit set");
 
-	check(features_set_auto(SWT_R1_HEALTH, 0) == ST_OK, "health's auto flag comes off");
+	check(features_set_auto(SWT_R1_AMMO, 0) == ST_OK, "ammo's auto flag comes off");
+	features_set(SWT_R1_FAST, 0);
 	features_set(SWT_R1_AMMO, 0);
-	features_set(SWT_R1_HEALTH, 0);
 
 	group("build 50: without the switches the auto flag is skipped as before");
 
-	check(features_set_auto(SWT_R1_HEALTH, 1) == ST_OK, "health is flagged auto again");
+	check(features_set_auto(SWT_R1_AMMO, 1) == ST_OK, "ammo is flagged auto again");
 	check(quit_and_wait(), "quit");
 	host_write_log_reset();
 	check(boot_and_wait("NPEA00385"), "RaC1 boots with no patch in it");
 	pump(6);
-	check_eq_u64(swt_peek8(0x009058B2u), 0, "no flag is written");
-	check((features_toggle_state() & ((u64)1 << SWT_R1_HEALTH)) == 0, "and the bit stays clear");
-	check(features_set_auto(SWT_R1_HEALTH, 0) == ST_OK, "and the auto flag comes off");
+	check_eq_u64(swt_peek8(0x009058B1u), 0, "no flag is written");
+	check((features_toggle_state() & ((u64)1 << SWT_R1_AMMO)) == 0, "and the bit stays clear");
+	check(features_set_auto(SWT_R1_AMMO, 0) == ST_OK, "and the auto flag comes off");
 	session_previous_dismiss();
+}
+
+/*
+ * Build 53: RaC1's Freeze health, id 2, was Infinite health, a code patch with a
+ * switch of its own under RPCS3. It is a freeze on the hit points now, which
+ * works with the switches or without them and touches neither the old switch's
+ * flag byte nor the fingerprint word the console patch used to write.
+ */
+static void test_switches_rac1_health(void)
+{
+	u32 len = 0;
+
+	group("build 53: RaC1's Freeze health under RPCS3, switches or none");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots with no patch in it");
+	pump(6);
+	check_eq_u64(switches_state(), 0, "no switches");
+	poke32(0x0071FB28u, 5);
+	poke32(0x0096BF88u, 1);
+	check(features_set(SWT_R1_HEALTH, 1) == ST_OK, "Freeze health is not refused without them");
+	pump(1);
+	check_eq_u64(swt_peek32(0x0096BF88u), 5, "and holds the hit points at the maximum");
+	check(features_set(SWT_R1_HEALTH, 0) == ST_OK, "off");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "the RaC1 words");
+
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched("NPEA00385", g_sw_patch, len, SF_NO_FLIP), "RaC1 boots with the patch in");
+	check_eq_u64(switches_state(), 1, "the old health switch still counts towards the look");
+	poke32(0x0071FB28u, 5);
+	poke32(0x0096BF88u, 1);
+	check(features_set(SWT_R1_HEALTH, 1) == ST_OK, "Freeze health on");
+	pump(1);
+	check_eq_u64(swt_peek32(0x0096BF88u), 5, "holds the hit points");
+	check_eq_u64(swt_peek8(SWT_R1_HEALTH_FLAG), 0, "and leaves the old switch's flag at 0");
+	check_eq_u64(swt_peek32(0x0007F558u), 0x30649CE0u, "and the fingerprint word as it was");
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << SWT_R1_HEALTH)) != 0,
+	      "the flag at 0 does not read the checkbox back off");
+	check(features_set(SWT_R1_HEALTH, 0) == ST_OK, "off");
 }
 
 /* The fast loads qwark forces around a load, on RaC2 and Deadlocked. */
@@ -13009,6 +13252,7 @@ static void test_switches(void)
 	test_switches_apply();
 	test_switches_fastloads();
 	test_switches_rac1_fastloads();
+	test_switches_rac1_health();
 	test_switches_rac2_moved();
 	test_switches_rac4_fastload_moved();
 	test_switches_rac3_fastloads();
@@ -14174,6 +14418,8 @@ int main(void)
 	test_rac4();
 	test_freeze_health();
 	test_toggles_retired();
+	test_cheats_alike();
+	test_toggles_relabelled();
 	test_trilogy();
 	test_autosplit();
 	test_no_code_patches_planet_load();

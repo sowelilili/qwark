@@ -1,15 +1,16 @@
 # Ratchet & Clank (NPEA00385): the code switches.
 #
-# What a switch is. Three of qwark's RaC1 toggles are instruction patches: on a
-# console qwark writes the patched word over the game's own and puts the
-# original back to turn it off. RPCS3 cannot take that - it recompiles PPU code
-# ahead of running it, and once it has loaded the executable it takes write
-# permission away from the code segment altogether - so there the game carries
-# both forms of the instruction instead. An RPCS3 patch, applied as the
-# executable loads, replaces each patched instruction with a branch to a
-# trampoline here; the trampoline reads one flag byte and runs either the
-# patched form or the original, then branches back to the instruction after
-# the site. Turning the toggle on or off is then a byte write to data memory.
+# What a switch is. Three of qwark's RaC1 toggles were instruction patches (two
+# since build 53, see infinite health below): on a console qwark writes the
+# patched word over the game's own and puts the original back to turn it off.
+# RPCS3 cannot take that - it recompiles PPU code ahead of running it, and once
+# it has loaded the executable it takes write permission away from the code
+# segment altogether - so there the game carries both forms of the instruction
+# instead. An RPCS3 patch, applied as the executable loads, replaces each
+# patched instruction with a branch to a trampoline here; the trampoline reads
+# one flag byte and runs either the patched form or the original, then branches
+# back to the instruction after the site. Turning the toggle on or off is then
+# a byte write to data memory.
 #
 # The shape of every trampoline:
 #
@@ -124,6 +125,14 @@ infinite_ammo_ret:
 # again from the trampoline, before the displaced li, leaves r3 and r4 exactly
 # as the console patch does. RaC1's fingerprint therefore reads the same with or
 # without the switches in.
+#
+# Build 53: no toggle uses this switch. Infinite health became Freeze health,
+# a freeze on the hit points that writes no code (rac1.c), and nothing writes
+# SW_FLAG_INFINITE_HEALTH any more, so at 0, as every boot leaves it, this
+# trampoline runs the game's own li and nothing else. It stays, site and flag
+# and all, because taking it out would change RaC1's SWITCH_PATCH words and
+# stamp, and an RPCS3 patch already written would read as one from another
+# build until the client wrote it again, for no gain.
 	.section .cave.infinite_health, "ax"
 infinite_health:
 	lis     r6, SW_FLAG_INFINITE_HEALTH@ha

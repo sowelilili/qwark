@@ -239,8 +239,9 @@ static const struct patch_word rac3_ammo_words[] = {
 	{ RAC3_AMMO_INSTR, 0x60000000u }   /* nop the ammo decrement */
 };
 
+/* Build 53: named as its checkbox is, "Infinite ammo" rather than "Freeze ammo". */
 static struct patch_def rac3_ammo = {
-	"Freeze ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 1, NULL
+	"Infinite ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 1, NULL
 };
 
 /*
@@ -794,16 +795,21 @@ static const char * const rac3_readouts[] = {
 
 static const struct feature_desc rac3_features[] = {
 	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
-	{ R3_FREEZE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Freeze ammo" },
-	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
-	/* Build 53: one-hit KO is retired, id 2 and all (rac3.h). */
-	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
-	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
 	/*
-	 * A code patch now, as RaC1's and RaC2's are (rac3.h, RAC3_FASTLOAD_SITE);
-	 * until build 53 two game words, and no WRITES_CODE.
+	 * Build 53: the four cheats every game has lead Cheats, in the same order
+	 * and spelt alike in all four but for Deadlocked's Refill ammo (the client
+	 * draws them in this order). Fast loads are a code patch now, as RaC1's
+	 * and RaC2's are (rac3.h, RAC3_FASTLOAD_SITE); until build 53 two game
+	 * words, and no WRITES_CODE. Infinite ammo was "Freeze ammo": the label is
+	 * RaC1's and RaC2's, and the patch is the same nop of the ammo store, so
+	 * the ammo still does not go down.
 	 */
 	{ R3_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
+	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
+	{ R3_FREEZE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
+	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
+	/* Build 53: one-hit KO is retired, id 2 and all (rac3.h). */
+	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
 
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R3_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_BOLTS,     0, 0, "Bolts" },
@@ -865,11 +871,17 @@ static const struct feature_desc rac3_features[] = {
 #undef LV
 #undef SG
 
+/* Build 53: an auto flag ticked for Freeze ammo stays with Infinite ammo. */
+static const struct feature_former rac3_former[] = {
+	{ R3_FREEZE_AMMO, "Freeze ammo" }
+};
+
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
 	rac3_readouts, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0])),
-	0              /* no toggle ships auto-flagged */
+	0,             /* no toggle ships auto-flagged */
+	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
 };
 
 #undef NR

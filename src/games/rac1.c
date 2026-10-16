@@ -523,15 +523,26 @@ static const struct patch_word rac1_ammo_words[] = {
 	{ 0x0AA2DCu, 0x60000000u }    /* nop the ammo decrement */
 };
 
-static const struct patch_word rac1_health_words[] = {
-	{ RAC1_FP_ADDR, 0x30640000u } /* addic r3, r4, 0 instead of -25376 */
-};
-
 /*
- * Build 50. Under RPCS3 these three are code switches instead
+ * Build 50. Under RPCS3 these are code switches instead
  * (src/games/switches/sw_rac1.s): the same instructions, both forms of each in
- * a trampoline, chosen by the flag bytes SW_RAC1_FLAG_* name. Infinite health's
- * switch hooks the word after the one patched here, so the fingerprint stays.
+ * a trampoline, chosen by the flag bytes SW_RAC1_FLAG_* name.
+ *
+ * Build 53: Infinite health is gone, the third of them. It was the word at
+ * RAC1_FP_ADDR, 0x7F558, in the routine that takes a hit off the player
+ * (0x7F530, from the NPEA00385 executable): the damage clamped to 1, then the
+ * hit points at 0x969CE0 + 0x22A8, RAC1_PLAYER_HEALTH, less it and floored at
+ * 0. The patched addic r3, r4, 0 moved that base to 0x970000, so the hit points
+ * never went down, and every hit took one off the word at 0x9722A8 instead,
+ * which is not the player's. Id 2 is Freeze health now (rac1.h), a freeze
+ * entry like the other three games' that writes no code; a hit is one point
+ * and the game's maximum at least 4, so the tick puts it back long before a
+ * run of hits could reach 0.
+ *
+ * Its switch stays in sw_rac1.s, trampoline, site and flag byte, so RaC1's
+ * SWITCH_PATCH words and stamp do not move and an RPCS3 patch already written
+ * still reads as in. Nothing writes the flag any more, and at 0, as every boot
+ * leaves it, the trampoline runs the game's own instructions.
  */
 
 static struct patch_def rac1_fastload = {
@@ -539,9 +550,6 @@ static struct patch_def rac1_fastload = {
 };
 static struct patch_def rac1_ammo = {
 	"Infinite ammo", PATCH_KIND_FEATURE, rac1_ammo_words, 1, NULL
-};
-static struct patch_def rac1_health = {
-	"Infinite health", PATCH_KIND_FEATURE, rac1_health_words, 1, NULL
 };
 
 /*
@@ -581,7 +589,6 @@ static void rac1_init(void)
 
 	rac1_fastload.originals = patch_pool_alloc(rac1_fastload.count);
 	rac1_ammo.originals     = patch_pool_alloc(rac1_ammo.count);
-	rac1_health.originals   = patch_pool_alloc(rac1_health.count);
 }
 
 /* -------------------------------------------------------------- describe */
@@ -628,11 +635,16 @@ static const char * const rac1_readouts[] = {
 
 static const struct feature_desc rac1_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
+	/*
+	 * Build 53: the four cheats every game has lead Cheats, in the same order
+	 * and spelt alike in all four but for Deadlocked's Refill ammo (the client
+	 * draws them in this order). Freeze health is id 2, Infinite health until
+	 * build 53, and id 28 is retired (rac1.h).
+	 */
 	{ F_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
-	{ F_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
-	{ F_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite health" },
-	{ F_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ F_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
+	{ F_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
+	{ F_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ F_GOODIES,         FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Goodies menu" },
 
 	/* Build 53: max ammo, all weapons is retired, id 17 and all; infinite ammo covers it. */
@@ -670,11 +682,17 @@ static const struct feature_desc rac1_features[] = {
 #undef LA
 #undef LV
 
+/* Build 53: an auto flag ticked for Infinite health stays with Freeze health. */
+static const struct feature_former rac1_former[] = {
+	{ F_FREEZE_HEALTH, "Infinite health" }
+};
+
 static const struct game_describe rac1_describe_table = {
 	rac1_groups,   (u8)(sizeof(rac1_groups) / sizeof(rac1_groups[0])),
 	rac1_readouts, NR,
 	rac1_features, (u8)(sizeof(rac1_features) / sizeof(rac1_features[0])),
-	0              /* no toggle ships auto-flagged */
+	0,             /* no toggle ships auto-flagged */
+	rac1_former,   (u8)(sizeof(rac1_former) / sizeof(rac1_former[0]))
 };
 
 #undef NR
@@ -720,7 +738,6 @@ static int rac1_set_toggle(u8 id, int on)
 		return rc;
 
 	case F_INFINITE_AMMO:   return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
-	case F_INFINITE_HEALTH: return classic_code_toggle(&rac1_health, SW_RAC1_FLAG_INFINITE_HEALTH, on);
 	case F_FREEZE_HEALTH:   return classic_health_toggle(&rac1_freeze_health, on);
 	case F_GHOST:           return classic_ghost(RAC1_GHOST_TIMER, on);
 	case F_GOODIES:         return mem_write_u8(RAC1_GOODIES_MENU, on ? 1 : 0);
@@ -736,7 +753,8 @@ static int rac1_set_toggle(u8 id, int on)
  * goodies menu flag, which lives in the save file, and the three debug update
  * bits of one word. Read-only, and only ever from the tick thread.
  *
- * Build 50: and the three code switches' flag bytes, while the switches are in.
+ * Build 50: and the code switches' flag bytes, while the switches are in: fast
+ * loads' and infinite ammo's since build 53.
  */
 static u32 rac1_debug_bit_for(u8 id)
 {
@@ -760,7 +778,6 @@ static int rac1_toggle_read(u8 id, int *on)
 		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
 		return rc;
 	case F_INFINITE_AMMO:   return classic_code_read(SW_RAC1_FLAG_INFINITE_AMMO, on);
-	case F_INFINITE_HEALTH: return classic_code_read(SW_RAC1_FLAG_INFINITE_HEALTH, on);
 	default:                break;
 	}
 
@@ -950,7 +967,7 @@ const struct game_api rac1_game = {
 	RAC1_FP_ADDR,
 	rac1_fp,
 	rac1_fp_patched,
-	NULL,                 /* fp_switch: the health switch hooks the word after it */
+	NULL,                 /* fp_switch: the old health switch hooks the word after it */
 	NULL,                 /* so no earlier build's branch is there either */
 	sizeof(rac1_fp),
 

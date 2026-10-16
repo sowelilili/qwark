@@ -15,7 +15,8 @@ static const struct game_manips *g_m;
 
 static u8  g_selected;         /* 0 = None */
 static u8  g_setup_done;       /* the selected group's setup is in this boot */
-static u32 g_announced;        /* bit id: "<group> manips activated" shown this boot */
+static u32 g_announced;        /* bit id: "<group> manips activated" shown this boot,
+                                  on the group's first application in it */
 
 /*
  * The last event, for MANIP_LIST. The sequence number is never reset, so a
@@ -197,10 +198,6 @@ static int attempt(const struct manip_group *g, u8 what)
 	if ((what & DO_SETUP) != 0) {
 		rc = write_lists(g->setup);
 		g_setup_done = 1;
-		if ((g_announced & ((u32)1 << g->id)) == 0) {
-			g_announced |= (u32)1 << g->id;
-			announce = 1;
-		}
 	}
 
 	if ((what & DO_RUN) != 0) {
@@ -209,9 +206,22 @@ static int attempt(const struct manip_group *g, u8 what)
 	}
 
 	/*
+	 * Build 53: the first application of a group in a boot is announced
+	 * whatever it wrote. It used to take a setup, and a group with per-run
+	 * writes alone - all five of RaC1's, RaC2's Any% and 100% - was never
+	 * announced at all, on the console or on the PC. A group with a setup is
+	 * no different: its first application in a boot always has the setup in
+	 * it, since nothing marks the setup done but an application that wrote it.
+	 */
+	if ((g_announced & ((u32)1 << g->id)) == 0) {
+		g_announced |= (u32)1 << g->id;
+		announce = 1;
+	}
+
+	/*
 	 * One event per application. "Activated" takes precedence over "applied",
-	 * because the client sees only the latest event and the first setup of a
-	 * boot is the one worth a toast.
+	 * because the client sees only the latest event and the first application
+	 * of a boot is the one worth a toast.
 	 */
 	if (announce) {
 		event(MANIP_EVENT_SETUP, g->id);

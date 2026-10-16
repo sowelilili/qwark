@@ -704,10 +704,17 @@ static const struct feature_desc rac4_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
 	{ R4_CRASH_PATCHES, FEATURE_TOGGLE, G_FIXES,    0, WC, NO, 0, 0, "Crash patches" },
 	{ R4_SOFTLOCK_FIX,  FEATURE_TOGGLE, G_FIXES,    0, 0,  NO, 0, 0, "Fix reset softlocks" },
+	/*
+	 * Build 53: the four cheats every game has lead Cheats, in the same order
+	 * in all four (the client draws them in this order). The ammo cheat keeps
+	 * its own name here: Refill ammo fills the ammo at a mission's start
+	 * rather than holding it, on purpose, so that it can be used in
+	 * individual-level runs.
+	 */
 	{ R4_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
+	{ R4_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R4_REFILL_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Refill ammo" },
 	{ R4_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
-	{ R4_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 
 	{ R4_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R4_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC4_RO_BOLTS,     0, 0, "Bolts" },
@@ -746,7 +753,8 @@ static const struct game_describe rac4_describe_table = {
 	 * The crash patches and the softlock fix ship auto-flagged, which is what the
 	 * Deadlocked autosplitter SPRX does today. Config still overrides either.
 	 */
-	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX)
+	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX),
+	NULL, 0        /* no toggle was relabelled */
 };
 
 #undef NR

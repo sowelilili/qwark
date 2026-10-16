@@ -315,6 +315,19 @@ int config_feature_auto_default(const char *title, const char *label, int fallba
 	return config_get_u32(key, fallback ? 1 : 0) != 0;
 }
 
+int config_feature_auto_former(const char *title, const char *label, const char *former,
+                               int fallback)
+{
+	char key[CONFIG_KEY_MAX];
+
+	if (former != NULL) {
+		feature_key(title, label, key, sizeof(key));
+		if (config_get(key) == NULL)
+			return config_feature_auto_default(title, former, fallback);
+	}
+	return config_feature_auto_default(title, label, fallback);
+}
+
 void config_set_feature_auto(const char *title, const char *label, int on)
 {
 	char key[CONFIG_KEY_MAX];

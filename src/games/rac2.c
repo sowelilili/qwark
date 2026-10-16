@@ -714,10 +714,15 @@ static const char * const rac2_readouts[] = {
 
 static const struct feature_desc rac2_features[] = {
 	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
+	/*
+	 * Build 53: the four cheats every game has lead Cheats, in the same order
+	 * and spelt alike in all four but for Deadlocked's Refill ammo (the client
+	 * draws them in this order).
+	 */
 	{ R2_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
+	{ R2_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R2_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ R2_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
-	{ R2_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	/* Build 53: weapon insta-upgrades is retired, id 4 and all (rac2.h). */
 	{ R2_DEBUG_MODE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Enable debug mode" },
 
@@ -781,7 +786,8 @@ static const struct game_describe rac2_describe_table = {
 	rac2_groups,   (u8)(sizeof(rac2_groups) / sizeof(rac2_groups[0])),
 	rac2_readouts, NR,
 	rac2_features, (u8)(sizeof(rac2_features) / sizeof(rac2_features[0])),
-	0              /* no toggle ships auto-flagged */
+	0,             /* no toggle ships auto-flagged */
+	NULL, 0        /* and none was relabelled */
 };
 
 #undef NR

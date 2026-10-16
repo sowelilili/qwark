@@ -349,10 +349,27 @@ int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 	return 0;
 }
 
+/* What the console has shown, for the tests (plat_host.h). */
+static u32 g_notify_count;
+static char g_notify_last[128];
+
 void plat_notify(const char *msg)
 {
 	char ts[16];
 	host_stamp(ts, sizeof(ts));
 	fprintf(stderr, "[%s] notify: %s\n", ts, msg);
 	fflush(stderr);
+
+	snprintf(g_notify_last, sizeof(g_notify_last), "%s", msg);
+	g_notify_count++;
+}
+
+u32 host_notify_count(void)
+{
+	return g_notify_count;
+}
+
+const char *host_notify_last(void)
+{
+	return g_notify_last;
 }

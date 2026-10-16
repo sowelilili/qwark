@@ -190,6 +190,10 @@
  * tool (or a previous qwark session that never got to revert) already patched
  * this instruction would otherwise sit in BOOTING for ever. Both forms are the
  * same four bytes at the same address, so either one still proves the map.
+ *
+ * Build 53: qwark no longer patches it. Infinite health became Freeze health
+ * (F_FREEZE_HEALTH below), a freeze on the hit points, and the patched form
+ * stays accepted for the tools and the earlier builds that still write it.
  */
 #define RAC1_FP_ADDR 0x0007F558u
 extern const u8 rac1_fp[4];
@@ -235,11 +239,17 @@ extern const u8 rac1_fp_patched[4];
  * manip buttons the manip groups replaced (protocol 1.21): 7 (Drek skip),
  * 8 (Drek cutscene), 10 (reset shooting skill points), 11 (setup shooting skill
  * points) and 16 (any% all-missions reset); and 17 (max ammo, all weapons),
- * which infinite ammo covers.
+ * which infinite ammo covers, and 28 (below).
+ *
+ * Build 53: 2 was Infinite health, the code patch at RAC1_FP_ADDR, and is
+ * Freeze health now, held at the game's maximum like the other three games'
+ * (classic.h). It keeps the number the previous-session record and a client
+ * already know, and rac1.c names the old label (rac1_former), so an auto flag
+ * ticked under it still counts.
  */
 #define F_FAST_LOADS        0
 #define F_INFINITE_AMMO     1
-#define F_INFINITE_HEALTH   2
+#define F_FREEZE_HEALTH     2
 #define F_GHOST             3
 #define F_DIE               4
 #define F_BOLTS             5
@@ -264,8 +274,10 @@ extern const u8 rac1_fp_patched[4];
 #define F_DBG_PARTICLES     26
 #define F_DBG_CAMERA        27
 
-/* Build 53: the hit points held at the game's maximum (classic.h). */
-#define F_FREEZE_HEALTH     28
+/*
+ * 28 retired: Freeze health's own row, while it sat beside Infinite health
+ * earlier in build 53; it is id 2 now.
+ */
 
 /* -------------------------------------------------------- level flag regions */
 

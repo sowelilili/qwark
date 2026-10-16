@@ -99,6 +99,15 @@ int  config_feature_auto(const char *title, const char *label);
  * still wins.
  */
 int  config_feature_auto_default(const char *title, const char *label, int fallback);
+/*
+ * Build 53: the same for a toggle that was relabelled (game.h, struct
+ * feature_former). The flag under `label` answers whenever the file holds one;
+ * until then the flag under `former` does, and then `fallback`. NULL `former`
+ * is config_feature_auto_default. Nothing is written: the first
+ * FEATURE_SET_AUTO writes the new key, which wins from then on.
+ */
+int  config_feature_auto_former(const char *title, const char *label, const char *former,
+                                int fallback);
 void config_set_feature_auto(const char *title, const char *label, int on);
 int  config_mod_auto(const char *title, const char *dirname);
 void config_set_mod_auto(const char *title, const char *dirname, int on);

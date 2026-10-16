@@ -340,8 +340,8 @@
 
 /* MANIP_LIST's event_kind. */
 #define MANIP_EVENT_NONE          0
-#define MANIP_EVENT_SETUP         1   /* setup activated, the first time this boot */
-#define MANIP_EVENT_APPLIED       2   /* per-run applied (or a repeat Apply now) */
+#define MANIP_EVENT_SETUP         1   /* activated: the group's first application this boot */
+#define MANIP_EVENT_APPLIED       2   /* applied again (per-run, or a repeat Apply now) */
 #define MANIP_EVENT_NOT_CHALLENGE 3   /* refused: an NG+ group on a non-challenge file */
 #define MANIP_EVENT_CHALLENGE     4   /* refused: a new-game group on a challenge file */
 #define MANIP_EVENT_NO_FILE       5   /* refused: Apply now outside a file */

@@ -986,8 +986,23 @@ def read_u32_until(c, addr, want, timeout=1.0):
 # Build 53: Freeze health in every game holds the hit points at the game's own
 # maximum, which the health upgrades move. `full`, `more` and `hurt` are the
 # words as the game stores them: s32 in RaC1 to RaC3, f32 in Deadlocked.
-RAC1_FREEZE_HEALTH = {"id": 28, "health": 0x0096BF88, "max": 0x0071FB28,
+RAC1_FREEZE_HEALTH = {"id": 2, "health": 0x0096BF88, "max": 0x0071FB28,
                       "full": 5, "more": 8, "hurt": 1}
+
+# Build 53: the four cheats every game has lead its Cheats group, in this order,
+# and the client draws them in DESCRIBE's order. The ammo cheat is Infinite
+# ammo but in Deadlocked, whose Refill ammo fills the ammo at a mission's start
+# on purpose.
+FOUR_CHEATS = ["Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health"]
+FOUR_CHEATS_DL = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health"]
+
+
+def cheats_rows(groups, features):
+    """The labels of the Cheats group's rows, in DESCRIBE's order."""
+    if "Cheats" not in groups:
+        return []
+    g = groups.index("Cheats")
+    return [f["label"] for f in features if f["group"] == g]
 
 
 def exercise_freeze_health(c, name, fh):
@@ -1241,6 +1256,7 @@ OTHER_GAMES = [
         "name": "RaC2",
         "game": 2,
         "features": 28,
+        "cheats": FOUR_CHEATS + ["Enable debug mode"],
         # The two crash guards' branches (src/games/rac2.c), written as the
         # session enters over the game's own words: (address, game, guard).
         "entry_code": [(0x00086960, 0x7F24C814, 0x490BAAE0),
@@ -1353,6 +1369,8 @@ OTHER_GAMES = [
         "name": "RaC3",
         "game": 3,
         "features": 28,
+        # Build 53: Infinite ammo was "Freeze ammo".
+        "cheats": FOUR_CHEATS + ["Quick-select pause"],
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
         "sf_setaside": 0x00D9FF02,
         # Build 53: a save of the game's own, which a set-aside copies.
@@ -1467,6 +1485,7 @@ OTHER_GAMES = [
         "name": "Deadlocked",
         "game": 4,
         "features": 16,
+        "cheats": FOUR_CHEATS_DL,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
         "sf_load": 0x015CD71E,
@@ -2225,6 +2244,11 @@ def exercise_game(c, sim, spec, udp=None):
             still_there = [i for i in spec["retired"] if i in by_id]
             check(not still_there,
                   "%s: no retired feature id is described" % name, still_there)
+        if spec.get("cheats"):
+            rows = cheats_rows(groups, features)
+            check(rows == spec["cheats"],
+                  "%s: Cheats leads with the four cheats every game has, in order" % name,
+                  rows)
         check(len(readouts) == spec["readouts"],
               "%s: the readout count matches" % name, len(readouts))
         check(readouts and readouts[0] == "Bolts",
@@ -3928,6 +3952,24 @@ MANIP_SPECS = [
         "title_screen": [(0xA15F38, b"\x01")],
         "challenge": (0x96C9FC, 4),
         "apply": (3, 0, 0xA0CD04, 0),
+        # Build 53: the file-load trigger, the end of a load into Veldin (src/
+        # games/rac1.c): the title, then the request word and destination 0,
+        # the transition's state 6 with the front end closing, the request word
+        # clearing, and the state leaving 6. All Missions has per-run writes
+        # alone, so auto-reset goes back on for it, and its first application
+        # in the boot is announced on the console.
+        "trigger": {"options": [1, 1],
+                    "steps": [[(0x96C9FC, struct.pack(">I", 0)), (0xA15F38, b"\x01"),
+                               (0x969C70, struct.pack(">I", 0)),
+                               (0xA10708, struct.pack(">I", 3)),
+                               (0xA10700, struct.pack(">I", 0))],
+                              [(0xA10704, struct.pack(">I", 0)),
+                               (0xA10700, struct.pack(">I", 1))],
+                              [(0xA10708, struct.pack(">I", 6)), (0xA15F38, b"\x00")],
+                              [(0xA10700, struct.pack(">I", 0))],
+                              [(0xA10708, struct.pack(">I", 0))]],
+                    "check": (0xA0CD07, 0),
+                    "toast": "All Missions manips activated"},
     },
     {
         "title": "NPEA00386", "name": "RaC2",
@@ -3992,7 +4034,8 @@ MANIP_SPECS = [
         # is due again, so the drop puts it in and announces it.
         "trigger": {"steps": [[(0x9C330E, b"\x01"), (0xB1F46F, b"\x05")],
                               [(0xB1F46F, b"\x00")]],
-                    "check": (0xA947D3, 20)},
+                    "check": (0xA947D3, 20),
+                    "toast": "NG+ manips activated"},
         # One byte of the word: the poison around it stays.
         "apply": (1, 1, 0xA947D0, 0xEEEEEE14),
     },
@@ -4142,7 +4185,11 @@ def exercise_manips(c, sim, spec):
 
     trig = spec.get("trigger")
     if trig:
+        if trig.get("options"):
+            status, _ = c.call(OP_MANIP_OPTIONS, bytes(trig["options"]))
+            check(status == ST_OK, "%s manips: MANIP_OPTIONS for the trigger" % name, status)
         seq = l["seq"] if l else 0
+        mark = len(sim.lines)
         addr, want = trig["check"]
         mem_write(c, addr, b"\xEE")
         for step in trig["steps"]:
@@ -4153,13 +4200,24 @@ def exercise_manips(c, sim, spec):
         while time.time() < deadline and mem_read_u8(c, addr) != want:
             time.sleep(0.05)
         check(mem_read_u8(c, addr) == want,
-              "%s manips: the file-load trigger puts the setup in" % name,
+              "%s manips: the file-load trigger applies the group" % name,
               mem_read_u8(c, addr))
         status, l = manip_list(c)
         check(l is not None and l["seq"] == (seq + 1) & 0xFFFF and
               l["kind"] == MANIP_EVENT_SETUP and l["group"] == gid,
-              "%s manips: and records one event, the setup activated" % name,
+              "%s manips: and records one event, the group activated" % name,
               l and (l["seq"], l["kind"]))
+        if trig.get("toast"):
+            deadline = time.time() + 2.0
+            said = []
+            while time.time() < deadline:
+                said = [s for s in sim.lines[mark:] if "notify: " in s]
+                if said:
+                    break
+                time.sleep(0.05)
+            check(len(said) == 1 and said[0].endswith("notify: " + trig["toast"]),
+                  "%s manips: and the console says \"%s\", once" % (name, trig["toast"]),
+                  said)
 
     c.call(OP_MANIP_OPTIONS, bytes([1, 0]))
     c.call(OP_MANIP_SELECT, bytes([0]))
@@ -4361,20 +4419,27 @@ def main():
             by_id = {f["id"]: f for f in features}
             check(consumed == len(body), "DESCRIBE parses exactly", (consumed, len(body)))
             check(game == 1, "DESCRIBE names RaC1")
-            check(len(features) == 22, "twenty-two features", len(features))
+            check(len(features) == 21, "twenty-one features", len(features))
             check(9 not in by_id, "the retired id 9 is not described", sorted(by_id))
             # Build 53: the five manip buttons are retired the same way.
             check(not any(i in by_id for i in (7, 8, 10, 11, 16)),
                   "nor the five retired manip ids", sorted(by_id))
             check(6 in by_id and 12 in by_id and 18 in by_id,
                   "and the ids around them kept their numbers")
-            # Build 53: max ammo, all weapons (17) is retired, and Freeze health
-            # takes 28, in Cheats.
-            check(17 not in by_id, "nor the retired max-ammo id 17", sorted(by_id))
+            # Build 53: max ammo, all weapons (17) is retired, Infinite health
+            # (2) is Freeze health, held at the game's maximum and writing no
+            # code, and Freeze health's own row while it sat beside it, 28, is
+            # retired.
+            check(17 not in by_id and 28 not in by_id,
+                  "nor the retired ids 17 and 28", sorted(by_id))
             fh = by_id.get(RAC1_FREEZE_HEALTH["id"], {})
             check(fh.get("kind") == FEATURE_TOGGLE and fh.get("label") == "Freeze health"
-                  and groups[fh.get("group", 0)] == "Cheats",
-                  "Freeze health is 28, a toggle in Cheats", fh)
+                  and groups[fh.get("group", 0)] == "Cheats"
+                  and not fh.get("flags", 0) & FEATURE_FLAG_WRITES_CODE,
+                  "Freeze health is 2, a toggle in Cheats that writes no code", fh)
+            rows = cheats_rows(groups, features)
+            check(rows == FOUR_CHEATS + ["Goodies menu"],
+                  "Cheats leads with the four cheats every game has, in order", rows)
             check(len(groups) <= 16 and len(readouts) <= 16 and len(features) <= 64,
                   "DESCRIBE stays inside its caps", (len(groups), len(readouts)))
             labels = [f["label"] for f in features]

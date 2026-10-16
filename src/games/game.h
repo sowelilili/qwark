@@ -63,6 +63,18 @@ struct feature_desc {
 	const char *label;
 };
 
+/*
+ * Build 53: a TOGGLE whose label changed, and the label it had. config.txt
+ * keeps a toggle's auto flag under its label (config.h, feature_key), so a
+ * relabelled toggle would otherwise forget the box its user ticked:
+ * features_auto_mask reads the flag under the old label until one has been
+ * written under the new.
+ */
+struct feature_former {
+	u8 id;
+	const char *label;
+};
+
 struct game_describe {
 	const char * const *groups;
 	u8 ngroups;
@@ -77,6 +89,9 @@ struct game_describe {
 	 * other toggle defaults to 0, which is what a zero here means.
 	 */
 	u64 auto_default;
+	/* Build 53: the toggles that were relabelled, NULL and 0 for none. */
+	const struct feature_former *former;
+	u8 nformer;
 };
 
 /* One row of UNLOCK_LIST. Values are read live through unlock_read. */

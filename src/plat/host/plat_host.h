@@ -92,6 +92,14 @@ u32  host_write_log_count(void);
 int  host_write_log_at(u32 index, u32 *addr, u32 *len);
 
 /*
+ * The console notifications plat_notify has shown: how many since the program
+ * started, and the text of the latest ("" before the first). Only
+ * backend_fake.c defines these.
+ */
+u32  host_notify_count(void);
+const char *host_notify_last(void);
+
+/*
  * Test hooks. The fake backend answers 1 and 0 the way the PS3 does; forcing
  * them lets the unit tests drive the core's code-patch gating without a second
  * executable. Only backend_fake.c defines these.

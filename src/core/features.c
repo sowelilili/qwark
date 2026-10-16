@@ -56,6 +56,17 @@ static const struct feature_desc *find_desc(u8 id)
 	return NULL;
 }
 
+/* Build 53: the label a relabelled toggle had (game.h), or NULL. */
+static const char *former_label(const struct game_describe *d, u8 id)
+{
+	u8 i;
+
+	for (i = 0; i < d->nformer; i++) {
+		if (d->former[i].id == id) return d->former[i].label;
+	}
+	return NULL;
+}
+
 u64 features_auto_mask(void)
 {
 	const struct game_describe *d;
@@ -76,9 +87,13 @@ u64 features_auto_mask(void)
 		/* A LIVE toggle is the game's byte, not ours: there is nothing to re-apply. */
 		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
 
-		/* A game may ship a toggle auto-flagged; config still overrides it. */
+		/*
+		 * A game may ship a toggle auto-flagged; config still overrides it. A
+		 * relabelled toggle reads the flag its user set under the old label
+		 * until one is set under the new.
+		 */
 		fallback = (d->auto_default & ((u64)1 << f->id)) != 0;
-		if (config_feature_auto_default(g_title, f->label, fallback))
+		if (config_feature_auto_former(g_title, f->label, former_label(d, f->id), fallback))
 			mask |= (u64)1 << f->id;
 	}
 
