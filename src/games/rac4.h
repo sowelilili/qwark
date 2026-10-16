@@ -111,7 +111,41 @@
 /* The instruction sites RAC4Form patched. */
 #define RAC4_AMMO_INSTR        0x001D7D18u  /* also the fingerprint site */
 #define RAC4_FASTLOAD_INSTR_1  0x002A8AF4u  /* bl memcard_Save */
-#define RAC4_FASTLOAD_INSTR_2  0x002A8C50u  /* bctrl g_fnTransitionUpdate */
+
+/*
+ * Build 53: the second fast-load site, which RAC4Form had at 0x2A8C50.
+ *
+ * Every planet load is Transition_DoTransition (0x2A8AA0), a loop that runs
+ * once a frame until its exit word r27 is non-zero: the transition's update
+ * through g_fnTransitionUpdate (the bcctrl at 0x2A8C50, given
+ * g_bLevelLoadAlmostDone at 0x10B7E88 in r26), the transition's draw, a flip,
+ * and LoadLevelData (0x1C7120), which moves the level load on a step and is
+ * what makes g_bLevelLoadAlmostDone 1 in the end. 0x2A8C5C copies the update's
+ * answer into r27. The space flight's update answers 1 only once it has flown
+ * two segments and the arrival with the load almost done, which is the load
+ * screen's whole length.
+ *
+ * Transition_Pre (0x2A81D0) can queue a movie for the flight, in the word at
+ * 0x10B7FE0 (0x2A7F98: a movie the save's progress has earned - Dread points,
+ * badges and the like - or the first trip to Stygia, that the save has not seen
+ * yet; the bits it has seen are at 0xB1F58C). While one is queued the loop
+ * leaves LoadLevelData alone (0x2A8D1C), and the space draw plays the movie when
+ * the update has flown the first segment (0x2AA004), clears the word, and the
+ * load starts. RAC4Form's patch, a nop over the bcctrl, left r26 in r3 as the
+ * answer, so the loop ended as soon as the load was almost done - but the update
+ * never ran, the first segment never ended, the movie never played,
+ * LoadLevelData was never called, and the load never got almost done: a black
+ * screen until fast loads went off.
+ *
+ * So the update runs now, the movie with it, and the patch is on the copy:
+ * `or r27, r3, r26` for `ori r27, r3, 0`, the update's answer or the load being
+ * almost done, which ends the loop on the same frame the nop did.
+ */
+#define RAC4_FASTLOAD_INSTR_2  0x002A8C5Cu  /* ori r27, r3, 0: the update's answer */
+#define RAC4_FASTLOAD_GAME_2   0x607B0000u  /* ori r27, r3, 0 */
+#define RAC4_FASTLOAD_WORD_2   0x7C7BD378u  /* or r27, r3, r26 */
+#define RAC4_TRANSITION_UPDATE 0x002A8C50u  /* bcctrl: the old site, never written now */
+#define RAC4_TRANSITION_MOVIE  0x010B7FE0u  /* the movie the flight plays, 0 for none */
 
 /*
  * The autosplitter's quit hook: three words replacing some logging inside the

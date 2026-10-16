@@ -53,7 +53,7 @@ refill_ammo_ret:
 
 # ------------------------------------------------------------------ fast loads
 #
-# Two sites on one flag, both patched to nop.
+# Two sites on one flag: the first patched to nop, the second to an or.
 
 # 0x2A8AF4: bl 0x3C8D54, memcard_Save.
 	.section .cave.fast_loads_1, "ax"
@@ -69,16 +69,26 @@ fast_loads_1:
 	b       fast_loads_1
 fast_loads_1_ret:
 
-# 0x2A8C50: bcctrl 20, 30, the call through CTR to g_fnTransitionUpdate. CTR is
-# loaded before the site and the trampoline leaves it alone; r4 is dead here.
+# 0x2A8C5C: ori r27, r3, 0, the transition update's answer copied into the
+# word Transition_DoTransition's loop ends on. Patched: or r27, r3, r26, so the
+# loop also ends once r26, g_bLevelLoadAlmostDone, is 1. Builds 50 to 52, and
+# build 53 until this move, had this switch over the update's own call at
+# 0x2A8C50, which hung the game when the flight had a movie to play; rac4.h has
+# the story.
+#
+# Six words, the length of the trampoline it replaces, so nothing after it moves.
+# The flag is 0 or 1 and r26 is 0 or 1, so -flag & r26 is r26 with the flag set
+# and 0 without, and r27 comes out as either form would leave it. r5 is dead
+# here: the next read of it follows a write or a call. No CR field and no XER
+# bit is touched.
 	.section .cave.fast_loads_2, "ax"
 fast_loads_2:
-	lis     r4, SW_FLAG_FAST_LOADS@ha
-	lbz     r4, SW_FLAG_FAST_LOADS@l(r4)
-	cmpwi   cr0, r4, 0
-	bne     cr0, 1f
-	bcctrl  20, 30
-1:	b       fast_loads_2_ret
+	lis     r5, SW_FLAG_FAST_LOADS@ha
+	lbz     r5, SW_FLAG_FAST_LOADS@l(r5)
+	neg     r5, r5
+	and     r5, r5, r26
+	or      r27, r3, r5
+	b       fast_loads_2_ret
 
 	.section .site.fast_loads_2, "ax"
 	b       fast_loads_2

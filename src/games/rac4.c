@@ -243,9 +243,16 @@ static const struct patch_word rac4_crash_words[] = {
 	{ 0x0061806Cu, 0x7D296078u }
 };
 
+/*
+ * The first word skips the autosave every single-player transition makes
+ * before it starts (memcard_Save_QE_func(0, level)), as RAC4Form's did; it has
+ * nothing to do with the movie, which is queued after it. The second has moved
+ * off the transition update's call, which builds up to 52 and RAC4Form skipped:
+ * rac4.h says why that hung the game whenever the flight had a movie to play.
+ */
 static const struct patch_word rac4_fastload_words[] = {
-	{ RAC4_FASTLOAD_INSTR_1, 0x60000000u },   /* do not call memcard_Save */
-	{ RAC4_FASTLOAD_INSTR_2, 0x60000000u }    /* do not call g_fnTransitionUpdate */
+	{ RAC4_FASTLOAD_INSTR_1, 0x60000000u },          /* do not call memcard_Save */
+	{ RAC4_FASTLOAD_INSTR_2, RAC4_FASTLOAD_WORD_2 }  /* end once the load is almost done */
 };
 
 static const struct patch_word rac4_ammo_words[] = {
@@ -617,6 +624,8 @@ static int rac4_in_file(void)
  *                 loaded file looks like, clear the qualifier softlock.
  *   fast loads:   the planet load forces them on, and they go back to the
  *                 toggle's setting when the game leaves the space transition.
+ *                 A movie the flight plays (rac4.h) does not end it: the game
+ *                 plays it from inside the transition and stays in mode 6.
  */
 static void rac4_on_tick(const struct game_hot *hot)
 {

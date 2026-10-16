@@ -6773,7 +6773,12 @@ static void test_rac3(void)
 #define R4_QUIT_HOOK    0x00013780u
 #define R4_FP_ADDR      0x001D7D18u
 #define R4_FASTLOAD_1   0x002A8AF4u
-#define R4_FASTLOAD_2   0x002A8C50u
+#define R4_FASTLOAD_2   0x002A8C5Cu   /* build 53: off the update's call */
+#define R4_TRANS_UPDATE 0x002A8C50u   /* the bcctrl builds 50 to 52 nopped */
+#define R4_FL1_GAME     0x48120261u   /* bl memcard_Save */
+#define R4_FL2_GAME     0x607B0000u   /* ori r27, r3, 0 */
+#define R4_FL2_FAST     0x7C7BD378u   /* or r27, r3, r26 */
+#define R4_UPDATE_CALL  0x4E9E0421u   /* bcctrl 20, 30 */
 #define R4_CRASH_FIRST  0x0080883Cu
 #define R4_BOLTS_ADDR   0x009C32E8u
 #define R4_BOTS_SAVE    0x009C3325u
@@ -6894,7 +6899,8 @@ static void test_rac4(void)
 	group("Deadlocked: planet load and the fast-load restore");
 
 	host_poke(R4_FASTLOAD_1, (const u8 *)"\x48\x12\x02\x61", 4);
-	host_poke(R4_FASTLOAD_2, (const u8 *)"\x4E\x9E\x04\x21", 4);
+	host_poke(R4_FASTLOAD_2, (const u8 *)"\x60\x7B\x00\x00", 4);
+	host_poke(R4_TRANS_UPDATE, (const u8 *)"\x4E\x9E\x04\x21", 4);
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
@@ -6905,19 +6911,57 @@ static void test_rac4(void)
 	check_eq_u64(v, 1, "and the load was requested");
 	mem_read_u32(R4_FASTLOAD_1, &v);
 	check_eq_u64(v, 0x60000000u, "fast loads were forced on");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_FAST, "build 53: the loop's exit word is or'd with the load being almost done");
+	mem_read_u32(R4_TRANS_UPDATE, &v);
+	check_eq_u64(v, R4_UPDATE_CALL,
+	             "and the transition update is still called, so a movie the flight queued plays");
 	check(session_planet_load(0, 0) == ST_BAD_ARG, "the unused planet is BAD_ARG");
 
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
 	pump(6);
 	mem_read_u32(R4_FASTLOAD_1, &v);
 	check_eq_u64(v, 0x60000000u, "they stay on through the space transition");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_FAST, "both of them");
 
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x02", 1);
 	pump(6);
 	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x48120261u, "and go back to the toggle setting when it ends");
+	check_eq_u64(v, R4_FL1_GAME, "and go back to the toggle setting when it ends");
 	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, 0x4E9E0421u, "both words restored");
+	check_eq_u64(v, R4_FL2_GAME, "both words restored");
+	mem_read_u32(R4_TRANS_UPDATE, &v);
+	check_eq_u64(v, R4_UPDATE_CALL, "and the update's call was never written");
+
+	group("build 53: Deadlocked's Fast loads checkbox and a forced load");
+
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+	host_write_log_reset();
+	check(features_set(F4_FAST_LOADS, 1) == ST_OK, "Fast loads turns on");
+	mem_read_u32(R4_FASTLOAD_1, &v);
+	check_eq_u64(v, 0x60000000u, "memcard_Save is not called");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_FAST, "and the loop ends once the load is almost done");
+	check((features_toggle_state() & ((u64)1 << F4_FAST_LOADS)) != 0, "the checkbox reads on");
+
+	check(session_planet_load(5, 0) == ST_OK, "a planet load with the checkbox on");
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(6);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(6);
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_FAST, "leaves them on when it ends: the checkbox has the say");
+	check((features_toggle_state() & ((u64)1 << F4_FAST_LOADS)) != 0, "and it still reads on");
+
+	check(features_set(F4_FAST_LOADS, 0) == ST_OK, "Fast loads turns off");
+	mem_read_u32(R4_FASTLOAD_1, &v);
+	check_eq_u64(v, R4_FL1_GAME, "memcard_Save is called again");
+	mem_read_u32(R4_FASTLOAD_2, &v);
+	check_eq_u64(v, R4_FL2_GAME, "and the loop waits for the flight again");
+	check(host_write_log_count() > 0 && write_covering(R4_TRANS_UPDATE) < 0,
+	      "the update's call was never written along the way");
 
 	group("Deadlocked: bot, weapon and gadget unlocks");
 
@@ -8735,7 +8779,8 @@ static void test_no_code_patches_planet_load(void)
 	check(boot_and_wait("NPEA00423"), "Deadlocked boots with the gate closed");
 
 	host_poke(R4_FASTLOAD_1, (const u8 *)"\x48\x12\x02\x61", 4);
-	host_poke(R4_FASTLOAD_2, (const u8 *)"\x4E\x9E\x04\x21", 4);
+	host_poke(R4_FASTLOAD_2, (const u8 *)"\x60\x7B\x00\x00", 4);
+	host_poke(R4_TRANS_UPDATE, (const u8 *)"\x4E\x9E\x04\x21", 4);
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
@@ -8745,9 +8790,11 @@ static void test_no_code_patches_planet_load(void)
 	mem_read_u32(R4_LOADP2, &v);
 	check_eq_u64(v, 1, "and the load was requested");
 	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, 0x48120261u, "while the first fast-load word kept its instruction");
+	check_eq_u64(v, R4_FL1_GAME, "while the first fast-load word kept its instruction");
 	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, 0x4E9E0421u, "and so did the second");
+	check_eq_u64(v, R4_FL2_GAME, "and so did the second");
+	mem_read_u32(R4_TRANS_UPDATE, &v);
+	check_eq_u64(v, R4_UPDATE_CALL, "and the transition update's call");
 
 	/* Through the space transition and out: the watcher writes nothing. */
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
@@ -10723,8 +10770,9 @@ static const struct swt_cave g_swt_rac4_caves[] = {
 	                    0x4BB70144u, 0x4BB70138u } },
 	{ 0x00667BE8u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x2C050000u, 0x40820008u, 0x4BD6115Du,
 	                    0x4BC40EFCu } },
-	{ 0x00667C00u, 6, { 0x3C80015Du, 0x8884D781u, 0x2C040000u, 0x40820008u, 0x4E9E0421u,
-	                    0x4BC41040u } },
+	/* Build 53: lis r5; lbz r5, flag; neg r5, r5; and r5, r5, r26; or r27, r3, r5; b 0x2A8C60. */
+	{ 0x00667C00u, 6, { 0x3CA0015Du, 0x88A5D781u, 0x7CA500D0u, 0x7CA5D038u, 0x7C7B2B78u,
+	                    0x4BC4104Cu } },
 	{ 0x00667C18u, 8, { 0x3C80015Du, 0x8884D780u, 0x2C040000u, 0x4082000Cu, 0xECC73028u,
 	                    0x4BEB65C0u, 0xECC33028u, 0x4BEB65B8u } },
 	{ 0x00667C38u, 8, { 0x3C80015Du, 0x8884D780u, 0x2C040000u, 0x4082000Cu, 0x10C5304Au,
@@ -10750,7 +10798,7 @@ static const struct swt_cave g_swt_rac4_caves[] = {
 	{ 0x00667D70u, 4, { 0x00010203u, 0x04050607u, 0x10111213u, 0x14151617u } }
 };
 static const struct patch_word g_swt_rac4_sites[] = {
-	{ 0x001D7D18u, 0x4848FEB4u }, { 0x002A8AF4u, 0x483BF0F4u }, { 0x002A8C50u, 0x483BEFB0u },
+	{ 0x001D7D18u, 0x4848FEB4u }, { 0x002A8AF4u, 0x483BF0F4u }, { 0x002A8C5Cu, 0x483BEFA4u },
 	{ 0x0051E1E8u, 0x48149A30u }, { 0x0051E200u, 0x48149A38u }, { 0x0051E21Cu, 0x48149A3Cu },
 	{ 0x0051E228u, 0x48149A50u }, { 0x0051E240u, 0x48149A58u }, { 0x0051E24Cu, 0x48149A64u },
 	{ 0x00618008u, 0x4804FCC0u }, { 0x00618024u, 0x4804FCC4u }, { 0x00618034u, 0x4804FCD4u },
@@ -11294,7 +11342,9 @@ static void test_switches_fastloads(void)
 	check(session_planet_load(4, 0) == ST_OK, "PLANET_LOAD goes ahead");
 	check_eq_u64(swt_peek8(0x015CD781u), 1, "forcing fast loads through their flag");
 	check_eq_u64(swt_peek32(R4_FASTLOAD_1), 0x483BF0F4u, "the first site keeps its branch");
-	check_eq_u64(swt_peek32(R4_FASTLOAD_2), 0x483BEFB0u, "and so does the second");
+	check_eq_u64(swt_peek32(R4_FASTLOAD_2), 0x483BEFA4u, "and so does the second, at 0x2A8C5C");
+	check(swt_peek32(R4_TRANS_UPDATE) != 0x483BEFB0u,
+	      "and the update's call at 0x2A8C50 holds no branch: this build's patch leaves it be");
 	pump(SWT_POLL_TICKS);
 	check((features_toggle_state() & ((u64)1 << SWT_R4_FAST)) == 0,
 	      "the checkbox reads back off");
@@ -11327,10 +11377,15 @@ static const struct patch_word g_swt_rac2_b50_sites[] = {
 };
 #define SWT_RAC2_B50_STAMP 0x4B325BE2u
 
-/* The SWITCH_PATCH stamps of the other three games, which did not change. */
+/* The SWITCH_PATCH stamps of RaC1 and RaC3, which did not change. */
 #define SWT_RAC1_STAMP 0xB16A9D3Eu
 #define SWT_RAC3_STAMP 0x0C909623u
-#define SWT_RAC4_STAMP 0xEF1A07C3u
+/*
+ * Deadlocked's: the one builds 50 to 52 handed out, and build 53's, which moved
+ * its second fast-load switch (test_switches_rac4_fastload_moved).
+ */
+#define SWT_RAC4_B50_STAMP 0xEF1A07C3u
+#define SWT_RAC4_STAMP     0xBB16AF57u
 
 /* RaC2's dead span, and the part of it the switches take. */
 #define SWT_R2_SPAN_LO  0x0113EC64u
@@ -11549,6 +11604,247 @@ static void test_switches_rac2_moved(void)
 	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1, "and so is the helper");
 }
 
+/*
+ * Build 53: Deadlocked's second fast-load switch moved off the transition
+ * update's call at 0x2A8C50, which hung the game whenever the flight had a movie
+ * to play, to 0x2A8C5C, where the loop copies the update's answer into the word
+ * it ends on (src/games/rac4.h). The trampoline kept its cave and its six words'
+ * length, so every other cave and site is where builds 50 to 52, and build 53
+ * until this move, put them; only that trampoline's words and that one site
+ * differ, and the stamp with them. These are the old ones, which an RPCS3 patch
+ * written by those builds holds.
+ */
+#define SWT_R4_FL2_OLD_SITE 0x002A8C50u
+#define SWT_R4_FL2_OLD_WORD 0x483BEFB0u   /* b 0x667C00, from 0x2A8C50 */
+static const u32 g_swt_rac4_b50_fl2[6] = {
+	0x3C80015Du, 0x8884D781u, 0x2C040000u, 0x40820008u, 0x4E9E0421u, 0x4BC41040u
+};
+
+/*
+ * Just enough of a PowerPC to run a trampoline: lis, lbz, ori, neg, and, or and
+ * b, on 64-bit registers as the PPU has them. Memory is the one flag byte.
+ */
+struct swt_cpu {
+	u64 r[32];
+	u32 pc;
+	u32 flag_addr;
+	u8  flag;
+};
+
+/* One instruction. 0 for one it does not know, or a load from anywhere else. */
+static int swt_cpu_step(struct swt_cpu *c, u32 w)
+{
+	u32 op = w >> 26;
+	u32 rd = (w >> 21) & 31u, ra = (w >> 16) & 31u, rb = (w >> 11) & 31u;
+	u32 xo = (w >> 1) & 0x3FFu;
+	s64 simm = (s64)(s16)(u16)(w & 0xFFFFu);
+	u64 base = ra != 0 ? c->r[ra] : 0;
+
+	switch (op) {
+	case 15:   /* addis rD, rA, SIMM; lis with rA = 0 */
+		c->r[rd] = base + (u64)(simm * 65536);
+		break;
+	case 34:   /* lbz rD, d(rA) */
+		if ((u32)(base + (u64)simm) != c->flag_addr) return 0;
+		c->r[rd] = c->flag;
+		break;
+	case 24:   /* ori rA, rS, UIMM */
+		c->r[ra] = c->r[rd] | (w & 0xFFFFu);
+		break;
+	case 31:
+		if (w & 1u) return 0;                                  /* no record forms */
+		if (xo == 104 && rb == 0)  c->r[rd] = (u64)0 - c->r[ra];   /* neg */
+		else if (xo == 28)         c->r[ra] = c->r[rd] & c->r[rb]; /* and */
+		else if (xo == 444)        c->r[ra] = c->r[rd] | c->r[rb]; /* or */
+		else return 0;
+		break;
+	case 18: { /* b, relative and without the link */
+		u32 disp = w & 0x03FFFFFCu;
+
+		if (w & 3u) return 0;
+		if (disp & 0x02000000u) disp |= 0xFC000000u;
+		c->pc += disp;
+		return 1;
+	}
+	default:
+		return 0;
+	}
+	c->pc += 4;
+	return 1;
+}
+
+/*
+ * From c->pc until it reaches `stop`: `site` holds `site_word`, and the
+ * generated caves hold theirs. 0 if it runs anywhere else, or too long.
+ */
+static int swt_cpu_run(struct swt_cpu *c, const struct sw_desc *d,
+                       u32 site, u32 site_word, u32 stop)
+{
+	int steps;
+	u8 k;
+
+	for (steps = 0; steps < 32; steps++) {
+		u32 w = 0;
+		int found = 0;
+
+		if (c->pc == stop) return 1;
+		if (c->pc == site) {
+			w = site_word;
+			found = 1;
+		}
+		for (k = 0; !found && k < d->ncaves; k++) {
+			if (c->pc >= d->caves[k].addr && c->pc + 4u <= d->caves[k].addr + d->caves[k].len) {
+				w = be32_get(d->caves[k].bytes + (c->pc - d->caves[k].addr));
+				found = 1;
+			}
+		}
+		if (!found || !swt_cpu_step(c, w)) return 0;
+	}
+	return 0;
+}
+
+static void swt_cpu_reset(struct swt_cpu *c, u64 r3, u64 r26, u8 flag)
+{
+	u32 i;
+
+	for (i = 0; i < 32; i++) c->r[i] = 0x0123456700000000ull + 0x1111u * i;
+	c->r[3] = r3;
+	c->r[26] = r26;
+	c->pc = R4_FASTLOAD_2;
+	c->flag_addr = SW_RAC4_FLAG_FAST_LOADS;
+	c->flag = flag;
+}
+
+static void test_switches_rac4_fastload_moved(void)
+{
+	static const u64 r3s[3] = { 0, 1, 0x00000000DEADBEEFull };
+	const struct sw_desc *d = sw_desc_for_game(GAME_RAC4);
+	const struct game_api *g = game_for_title("NPEA00423");
+	struct swt_cave old_caves[15];
+	struct patch_word old_sites[14];
+	u32 len = 0, oldlen, i;
+	int ok, same, ran, kept;
+
+	group("build 53: Deadlocked's fast-load switch moved off the transition update's call");
+
+	check(d != NULL && g != NULL, "Deadlocked has switches and a table");
+	if (d == NULL || g == NULL) return;
+	check(d->ncaves == 15 && d->nsites == 14, "still fifteen caves and fourteen sites");
+	if (d->ncaves != 15 || d->nsites != 14) return;
+
+	check_eq_u64(d->sites[2].addr, R4_FASTLOAD_2,
+	             "the second fast-load site is 0x2A8C5C, where the update's answer is copied");
+	ok = 1;
+	for (i = 0; i < d->nsites; i++)
+		if (d->sites[i].addr == R4_TRANS_UPDATE) ok = 0;
+	check(ok, "and no site is the update's call at 0x2A8C50 any more");
+	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[2].addr,
+	             "it branches to the cave builds 50 to 52 had there, 0x667C00");
+	check_eq_u64(d->caves[2].len, 24, "which is still six words");
+	check_eq_u64(swt_branch_target(d->caves[2].addr + 20u, be32_get(d->caves[2].bytes + 20)),
+	             R4_FASTLOAD_2 + 4u, "and branches back to 0x2A8C60");
+	check_eq_u64(d->sites[0].value, 0x4848FEB4u, "the fingerprint site, 0x1D7D18, keeps its branch");
+	check(g->fp_switch != NULL && be32_get(g->fp_switch) == d->sites[0].value && g->fp_switch_old == NULL,
+	      "so the fingerprint takes the same three words as before and needs no fourth");
+
+	same = 1;
+	for (i = 0; i < 15; i++) {
+		u8 k;
+
+		if (i == 2) continue;
+		if (d->caves[i].addr != g_swt_rac4_caves[i].addr) same = 0;
+		for (k = 0; k < g_swt_rac4_caves[i].nwords; k++)
+			if (be32_get(d->caves[i].bytes + 4u * k) != g_swt_rac4_caves[i].w[k]) same = 0;
+	}
+	for (i = 0; i < 14; i++)
+		if (i != 2 && (d->sites[i].addr != g_swt_rac4_sites[i].addr ||
+		               d->sites[i].value != g_swt_rac4_sites[i].value)) same = 0;
+	check(same, "every other trampoline and site word is build 52's, byte for byte");
+
+	/* -------------------------- what the trampoline computes, both ways */
+
+	group("build 53: the trampoline leaves r27 as the console's word would");
+
+	ran = 1;
+	same = 1;
+	kept = 1;
+	for (i = 0; i < 12; i++) {
+		struct swt_cpu sw, con;
+		u64 r3 = r3s[i % 3], r26 = (i / 3) & 1u;
+		u8 flag = (u8)(i / 6);
+		u64 want = flag ? (r3 | r26) : r3;
+		u32 k;
+
+		swt_cpu_reset(&sw, r3, r26, flag);
+		if (!swt_cpu_run(&sw, d, R4_FASTLOAD_2, d->sites[2].value, R4_FASTLOAD_2 + 4u)) ran = 0;
+
+		swt_cpu_reset(&con, r3, r26, flag);
+		if (!swt_cpu_run(&con, d, R4_FASTLOAD_2, flag ? R4_FL2_FAST : R4_FL2_GAME,
+		                 R4_FASTLOAD_2 + 4u)) ran = 0;
+
+		if (sw.r[27] != want || con.r[27] != want) same = 0;
+		for (k = 0; k < 32; k++)
+			if (k != 5 && k != 27 && sw.r[k] != con.r[k]) kept = 0;
+	}
+	check(ran, "from the site through the cave and back to 0x2A8C60, and the console's one word");
+	check(same, "r27 is the update's answer with the flag clear, or'd with r26 with it set");
+	check(kept, "and nothing but r5, the scratch, and r27 differs from the console's");
+
+	/* ---------------------------------------------- the old patch's stamp */
+
+	group("build 53: a Deadlocked patch from builds 50 to 52 is from another build");
+
+	for (i = 0; i < 15; i++) old_caves[i] = g_swt_rac4_caves[i];
+	for (i = 0; i < 6; i++) old_caves[2].w[i] = g_swt_rac4_b50_fl2[i];
+	for (i = 0; i < 14; i++) old_sites[i] = g_swt_rac4_sites[i];
+	old_sites[2].addr = SWT_R4_FL2_OLD_SITE;
+	old_sites[2].value = SWT_R4_FL2_OLD_WORD;
+	oldlen = swt_reply_of(old_caves, 15, old_sites, 14, d->flags, d->nflags, g_sw_patch2);
+	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC4_B50_STAMP,
+	             "the old placement's reply rebuilt carries the stamp builds 50 to 52 handed out");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00423"), "Deadlocked boots");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for Deadlocked");
+	check_eq_u64(oldlen, len, "the old reply is the same length as this build's");
+	check(be32_get(g_sw_patch + 4) != SWT_RAC4_B50_STAMP,
+	      "and this build's stamp is another number, so a client's kept stamp no longer matches");
+
+	check(quit_and_wait(), "quit");
+	host_write_log_reset();
+	check(swt_boot_patched("NPEA00423", g_sw_patch2, oldlen, SF_NO_FLIP),
+	      "Deadlocked boots with build 52's switch patch applied at load");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC4,
+	      "and is Deadlocked: the fingerprint site's branch never moved");
+	check_eq_u64(swt_peek32(SWT_R4_FL2_OLD_SITE), SWT_R4_FL2_OLD_WORD,
+	             "the old branch is over the update's call");
+	check_eq_u64(switches_state(), 0, "the look finds no switches of this build");
+	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
+	      SESSION_FLAG_NO_CODE_PATCHES,
+	      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
+	check(features_set(SWT_R4_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
+
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+	check(session_planet_load(4, 0) == ST_OK, "and a planet load goes out without them");
+	check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0,
+	             "writing no flag, which the old trampoline would take to skip the update");
+	check(!swt_wrote_code(d), "and nothing into the caves or the sites");
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(6);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(6);
+	check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0, "nor when the load is over");
+
+	check(quit_and_wait(), "the client wrote the new patch and the game restarts");
+	check(swt_boot_patched("NPEA00423", g_sw_patch, len, SF_NO_FLIP), "with it applied at load");
+	check_eq_u64(switches_state(), 1, "the look finds this build's switches");
+	check(features_set(SWT_R4_FAST, 1) == ST_OK && swt_peek8(SW_RAC4_FLAG_FAST_LOADS) == 1,
+	      "Fast loads goes on through its flag");
+	check(features_set(SWT_R4_FAST, 0) == ST_OK && swt_peek8(SW_RAC4_FLAG_FAST_LOADS) == 0,
+	      "and off");
+}
+
 /* A console: no look, no bit4, and the toggles patch words as they always have. */
 static void test_switches_console(void)
 {
@@ -11652,13 +11948,15 @@ static void test_switches(void)
 	      "the four games' stamps are four different numbers");
 
 	/*
-	 * Build 53 moved RaC2's trampolines and nothing else: a patch any earlier
-	 * build wrote for RaC1, RaC3 or Deadlocked still counts.
+	 * Build 53 moved RaC2's trampolines and Deadlocked's second fast-load
+	 * site: a patch any earlier build wrote for RaC1 or RaC3 still counts, and
+	 * one for RaC2 or Deadlocked is from another build.
 	 */
 	check_eq_u64(stamps[0], SWT_RAC1_STAMP, "RaC1's stamp has not changed");
 	check_eq_u64(stamps[2], SWT_RAC3_STAMP, "nor RaC3's");
-	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "nor Deadlocked's");
 	check(stamps[1] != SWT_RAC2_B50_STAMP, "RaC2's has");
+	check(stamps[3] != SWT_RAC4_B50_STAMP, "and so has Deadlocked's");
+	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one build 53 pins");
 	check_eq_u64(len, SWITCH_PATCH_HEAD + 123u * SWITCH_PATCH_ROW +
 	             SWITCH_PATCH_BYTES_HEAD + 3u * SWITCH_PATCH_BYTE_ROW,
 	             "Deadlocked's, the largest, is 109 cave words, 14 sites and 3 flags");
@@ -11697,6 +11995,7 @@ static void test_switches(void)
 	test_switches_apply();
 	test_switches_fastloads();
 	test_switches_rac2_moved();
+	test_switches_rac4_fastload_moved();
 
 	/* ------------------------------------------------- put it all back */
 

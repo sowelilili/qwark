@@ -37,7 +37,7 @@ SECTIONS
 
 	.site.refill_ammo       0x001D7D18 : { *(.site.refill_ammo) }
 	.site.fast_loads_1      0x002A8AF4 : { *(.site.fast_loads_1) }
-	.site.fast_loads_2      0x002A8C50 : { *(.site.fast_loads_2) }
+	.site.fast_loads_2      0x002A8C5C : { *(.site.fast_loads_2) }
 	.site.crash_dropship_1  0x0051E1E8 : { *(.site.crash_dropship_1) }
 	.site.crash_dropship_2  0x0051E200 : { *(.site.crash_dropship_2) }
 	.site.crash_dropship_3  0x0051E21C : { *(.site.crash_dropship_3) }

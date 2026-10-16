@@ -1453,6 +1453,20 @@ OTHER_GAMES = [
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
+        # Build 53: Fast loads, which a planet load forces, are two instruction
+        # words: memcard_Save's call goes, and the copy of the transition
+        # update's answer is or'd with the load being almost done. The update's
+        # own call between them, which builds 50 to 52 nopped and which a flight
+        # with a movie to play needs, is never written. The game's mode leaving
+        # the space transition (6) puts a forced pair back.
+        "code_fastload": {
+            "toggle": 2,
+            "mode": 0xB3C5A0,
+            "game": [(0x2A8AF4, 0x48120261), (0x2A8C50, 0x4E9E0421),
+                     (0x2A8C5C, 0x607B0000)],
+            "fast": [(0x2A8AF4, 0x60000000), (0x2A8C50, 0x4E9E0421),
+                     (0x2A8C5C, 0x7C7BD378)],
+        },
         # Deadlocked splits when a load starts for a real planet while in game,
         # and only once the session has left the main menu: the watcher keeps its
         # own origin planet because the game's word still holds the save's one
@@ -2531,6 +2545,58 @@ def exercise_game(c, sim, spec, udp=None):
                   "%s: the load request word at 0x%X is %d" % (name, addr, want),
                   mem_read_u32(c, addr))
 
+    # ------------------------------- Deadlocked's code fast loads (build 53)
+    #
+    # The planet load above forced them on, over whatever the fake process held
+    # at those words; leaving the space transition puts that back. Then the
+    # game's own three words go in, and the checkbox and a second forced load
+    # are watched against them.
+    if spec.get("code_fastload"):
+        cf = spec["code_fastload"]
+
+        def fl_words():
+            return [mem_read_u32(c, a) for a, _w in cf["game"]]
+
+        game = [w for _a, w in cf["game"]]
+        fast = [w for _a, w in cf["fast"]]
+        mode_was = mem_read_u32(c, cf["mode"])
+
+        mem_write(c, cf["mode"], struct.pack(">I", 6))
+        time.sleep(0.15)
+        mem_write(c, cf["mode"], struct.pack(">I", 0))
+        time.sleep(0.15)
+        for addr, word in cf["game"]:
+            mem_write(c, addr, struct.pack(">I", word))
+
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", cf["toggle"], 1))
+        if check(status == ST_OK, "%s: the Fast loads checkbox turns on" % name, status):
+            check(fl_words() == fast,
+                  "%s: memcard_Save's call goes, the loop's exit word is or'd, "
+                  "and the update's call stays" % name,
+                  [hex(w) for w in fl_words()])
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", cf["toggle"], 0))
+        check(status == ST_OK and fl_words() == game,
+              "%s: and off, the game's three words are back" % name,
+              [hex(w) for w in fl_words()])
+
+        status, _ = c.call(OP_PLANET_LOAD, bytes([spec["planet"], 0]))
+        if check(status == ST_OK, "%s: a second PLANET_LOAD" % name, status):
+            check(fl_words() == fast, "%s: forces the same two words on" % name,
+                  [hex(w) for w in fl_words()])
+            mem_write(c, cf["mode"], struct.pack(">I", 6))
+            time.sleep(0.15)
+            check(fl_words() == fast,
+                  "%s: they stay through the space transition" % name,
+                  [hex(w) for w in fl_words()])
+            mem_write(c, cf["mode"], struct.pack(">I", 0))
+            time.sleep(0.15)
+            check(fl_words() == game,
+                  "%s: and go when the game leaves it" % name,
+                  [hex(w) for w in fl_words()])
+
+        mem_write(c, cf["mode"], struct.pack(">I", mode_was))
+        time.sleep(0.15)
+
     # --------------------------------------------------- fast loads (1.9, build 11)
     #
     # UYA's two fast-load values are game data rather than patched code, and the
@@ -3330,8 +3396,8 @@ RAC2_LOAD_PLANET = 0x0156B050
 RAC4_FP_ADDR = 0x001D7D18
 RAC4_FP = bytes([0x41, 0x82, 0x00, 0x0C])
 RAC4_FASTLOAD_1 = 0x002A8AF4
-RAC4_FASTLOAD_2 = 0x002A8C50
-RAC4_FASTLOAD_ORIG = bytes([0x48, 0x12, 0x02, 0x61, 0x4E, 0x9E, 0x04, 0x21])
+RAC4_FASTLOAD_2 = 0x002A8C5C   # build 53: off the transition update's call
+RAC4_FASTLOAD_ORIG = bytes([0x48, 0x12, 0x02, 0x61, 0x60, 0x7B, 0x00, 0x00])
 RAC4_LOAD_PLANET2 = 0x00B36DCC
 RAC4_TARGET_PLANET = 0x00B36DD0
 
