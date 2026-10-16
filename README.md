@@ -33,6 +33,21 @@ The saves themselves live on the console, under `/dev_hdd0/qwark/savefiles/<TITL
 
 The code and the addresses are ported from those mods and from their upstream sources, which are credited in the per-game headers under `src/games/sfhelper/`. Because it is code, qwark cannot put it into a game under RPCS3 itself; an RPCS3 patch can (see below).
 
+## Trophies (Up Your Arsenal)
+
+UYA runs use trophies: a trophy the console has not seen before pops up, and that holds the next load back. So the trophies a run relies on have to be won again in every run, and qwark can reset them, as the old trainer's Reset Trophies button did with the rc3-save mod.
+
+**A reset deletes your console's UYA trophy data.** qwark deletes the game's trophy folder, `/dev_hdd0/home/<user>/trophy/NPWR02347_00`, which is where the console records the trophies you have won: every UYA trophy you have, the platinum included, is gone from the console afterwards. Copy the folder off first if you want them back later. If you are signed in to PSN, the trophy server may give them back.
+
+Then the game re-reads its trophies, which **freezes it for about three seconds**, and in the run that follows it awards three trophies again, the RY3NO, the Metropolis blimp and the snowman skin, and no others, as the old mod did.
+
+- **Reset trophies (freezes ~3 s)** does it now.
+- **Reset trophies on Veldin load**, off by default, does it once per run, inside the load into Veldin that starts every run, so the freeze is before the timer starts.
+
+Both are marked for confirmation: a client that supports it shows what will be deleted and waits for a yes before it runs the reset, and before it turns the option, or its auto-apply, on.
+
+qwark finds the folder from the game and the signed-in user rather than guessing it, and refuses, deleting nothing, unless the folder's own trophy configuration says it is UYA's. It only ever deletes the files in that one folder, and logs what it did. Under RPCS3 both answer unsupported: the emulator's trophy data is out of qwark's reach. PROTOCOL.md section 5.14 has the details.
+
 ## What it does without a PC
 
 Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots, and the manips of the selected category, which qwark applies on its own whenever a save is loaded or a new game starts. The console is the single source of truth; the client only displays and requests.
@@ -82,6 +97,7 @@ qwark follows RPCS3's own status: a game counts as up while the emulator reports
 - toggles marked "writes code" — fast loads, infinite ammo and infinite health in RaC1, Deadlocked's crash patches and refill ammo, and their equivalents in RaC2 and RaC3 — until qwark's patches are in the game (below)
 - loading or unloading a mod while the game runs: a mod is patch words, code caves, or both (but see below)
 - PATCH_APPLY from the client's own patch panel
+- UYA's trophy reset, either way: it deletes the console's trophy data, and the emulator's is out of qwark's reach
 
 **Save files work once the RPCS3 patch is in the game.** The savefile helper is code too, so qwark cannot write it into a running game here. RPCS3 applies its own patch files as it loads a game, though, before it compiles anything, so the client writes the helper as one: it asks qwark for the helper's words and the three request bytes the patch zeroes at load (SAVEFILE_PATCH), writes them into RPCS3's per-title patch file `patches/<TITLE_ID>_patch.yml`, enables the patch in `patch_config.yml`, and the game is restarted. qwark then finds its own helper in the game and the save-file manager works exactly as on a console. A patch written by an older qwark build no longer matches and reads as not there, so the client writes the new one and the game is restarted again. PROTOCOL.md section 5.12.1 has the details.
 

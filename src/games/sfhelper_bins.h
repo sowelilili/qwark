@@ -49,6 +49,12 @@ struct sf_desc {
 	/* Where the save is parked, and how much of it there is. */
 	u32 aside_addr;
 	u32 aside_size;
+
+	/*
+	 * Build 53: RaC3's trophy reset request byte, which the console install
+	 * zeroes with the three above; 0 for a game whose helper has no reset.
+	 */
+	u32 api_trophy;
 };
 
 /* NULL for a game with no helper, and for GAME_NONE. */

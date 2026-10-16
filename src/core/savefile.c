@@ -396,6 +396,9 @@ int savefile_install(void)
 	    mem_write_u8(d->api_load, 0) != ST_OK ||
 	    mem_write_u8(d->api_setaside, 0) != ST_OK) return ST_IO_ERROR;
 
+	/* Build 53: and RaC3's trophy reset byte, the fourth, where there is one. */
+	if (d->api_trophy != 0 && mem_write_u8(d->api_trophy, 0) != ST_OK) return ST_IO_ERROR;
+
 	/*
 	 * Caves first and hook words second, the order mods.c uses: the words branch
 	 * into the caves, so the target exists before anything can jump to it.

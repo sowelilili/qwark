@@ -52,7 +52,7 @@ const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
  * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
  * so a tick costs ten reads plus at most one: 10.5 on average, eleven at worst.
  * Block 13 and the load block 4 carry the manips' file-load trigger and the
- * trophy auto-refresh (revision 1.21).
+ * trophy auto-reset (revision 1.21).
  */
 static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_HOT_INPUTS_ADDR, RAC3_HOT_INPUTS_LEN, 1, 0 },
@@ -135,7 +135,7 @@ static int g_fl_armed;
 static int g_fl_edge;
 static u32 g_fl_prev_mode;
 
-/* The trophy auto-refresh's (R3_AUTO_TROPHIES); see rac3_file_load_watch. */
+/* The trophy auto-reset's (R3_AUTO_TROPHIES); see rac3_file_load_watch. */
 static int g_auto_trophies;
 static int g_trophies_asked;
 
@@ -472,6 +472,7 @@ static void rac3_on_enter(void)
 	/* The trophy toggle is qwark's own state and goes with the process. */
 	g_auto_trophies = 0;
 	g_trophies_asked = 0;
+	rac3_trophy_forget();
 	g_load_request = 0;
 	g_load_dest = 0;
 	g_planet_word = 0;
@@ -549,14 +550,30 @@ static void rac3_fastload_watch(void)
  * The first tick of a process only learns the mode, and never fires.
  */
 /*
- * Revision 1.21: the trophy auto-refresh, on while R3_AUTO_TROPHIES is. It asks
- * for the refresh once per run, on the first tick a load into Veldin is seen:
- * after the last run's trophies and before this run can award one, and before
- * the run's timer starts at the end of that load, so whatever the refresh
- * costs the game is not run time. The game registers its trophy context on a
- * thread of its own and awards nothing until that is done (0x98535C wants the
- * registered byte), which the load's length leaves room for. Whatever category
- * is selected, None included. See rac3_trophy_refresh for what the refresh is.
+ * Revision 1.21: the trophy auto-reset, on while R3_AUTO_TROPHIES is. Whatever
+ * category is selected, None included, it asks for the reset (rac3_panel.c,
+ * which says what it is) once per run, from the first tick a load into Veldin
+ * is seen - request up, destination 1, mode 6 - and, build 53, asks again on
+ * the next tick for as long as that load lasts if the game's own trophy thread
+ * is running then (BUSY).
+ *
+ * Why there. The reset stands the game's main thread still for three seconds,
+ * so it must not land in a run, and it must be over before the run can win a
+ * trophy. A load into Veldin is the start of every run (rac3_file_load_watch's
+ * block comment has every way into one), the trophies of the run before are
+ * all behind it, and a run's timer starts at its end - the autosplitter's START
+ * is Veldin with the mode going from 6 to 0 (rac3_autosplit_tick), LiveSplit's
+ * script the same. The helper runs during that load: the transition loop the
+ * load starts with (0x27B360, which keeps the mode at 6) calls the pad routine
+ * every pass (0x27B464), and so the helper; and the helper's half refuses an
+ * auto request it finds outside a load (sf_rac3.h), so the three seconds go
+ * into the load and never into the run. The folder's delete runs first, a few
+ * files a tick, and is done long before the load is. Nothing the reset leaves
+ * the game able to win - the RY3NO, the Metropolis blimp, the snowman skin - is
+ * on Veldin, and the register thread the reset starts has finished long before
+ * the run leaves it. The title screen was the other place considered: it would
+ * miss a run started from a load in the game, and put the freeze on the menu
+ * the runner is starting the run from.
  */
 static void rac3_file_load_watch(void)
 {
@@ -574,10 +591,8 @@ static void rac3_file_load_watch(void)
 		              g_mode == RAC3_GAME_STATE_LOAD);
 		g_fl_edge = 0;
 
-		if (g_fl_armed && g_auto_trophies && !g_trophies_asked) {
-			g_trophies_asked = 1;
-			rac3_trophy_refresh();
-		}
+		if (g_fl_armed && g_auto_trophies && !g_trophies_asked)
+			g_trophies_asked = rac3_trophy_auto();
 	} else {
 		g_trophies_asked = 0;
 	}
@@ -619,6 +634,7 @@ static void rac3_on_tick(const struct game_hot *hot)
 	rac3_fastload_watch();
 	rac3_autosplit_tick();
 	rac3_file_load_watch();
+	rac3_trophy_tick();
 
 	if (g_fastload_arm == 0) return;
 	if (--g_fastload_arm != 0) return;
@@ -642,7 +658,7 @@ static const char * const rac3_groups[] = {
 #define G_PROGRESS  2
 #define G_SAVEFILE  3
 #define G_COSMETICS 4
-/* Build 53: the trophy refresh and its auto toggle, MANIP_LIST's "Trophies". */
+/* Build 53: the trophy reset and its auto toggle, MANIP_LIST's "Trophies". */
 #define G_TROPHIES  5
 
 /* Indexed by RAC3_RO_*; the order is part of the wire contract for this game. */
@@ -670,6 +686,8 @@ static const char * const rac3_readouts[] = {
 #define LV FEATURE_FLAG_LIVE
 /* Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide. */
 #define SG FEATURE_FLAG_SIGNED
+/* Revision 1.21: a client asks the user first, with the text in rac3_confirms. */
+#define CF FEATURE_FLAG_CONFIRM
 
 static const struct feature_desc rac3_features[] = {
 	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
@@ -705,8 +723,15 @@ static const struct feature_desc rac3_features[] = {
 	 * dropship health are retired, ids and all (rac3.h). The first, the second
 	 * and the dropship are the manip groups below now.
 	 */
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Refresh trophy state" },
-	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Auto-refresh trophies" },
+	/*
+	 * Build 53: the trophy reset deletes the console's trophy data for this
+	 * game and stands the game still for three seconds (rac3_panel.c). The
+	 * labels say what it does and the freeze, as far as 31 characters go, and
+	 * CONFIRM has a client ask the user first with the whole of it, delete
+	 * included (rac3_confirms). Under RPCS3 both answer UNSUPPORTED.
+	 */
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, CF, NO, 0, 0, "Reset trophies (freezes ~3 s)" },
+	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, CF, NO, 0, 0, "Reset trophies on Veldin load" },
 	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
 	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
 	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
@@ -737,12 +762,40 @@ static const struct feature_desc rac3_features[] = {
 #undef LA
 #undef LV
 #undef SG
+#undef CF
+
+/*
+ * Revision 1.21: what FEATURE_CONFIRM_TEXT answers for the two CONFIRM rows,
+ * which a client shows before it triggers the reset or turns its toggle (or the
+ * toggle's auto flag) on. At most FEATURE_CONFIRM_TEXT_MAX bytes each; the
+ * tests hold them to it. rac3_panel.c has what the reset does.
+ */
+static const struct feature_confirm rac3_confirms[] = {
+	{ R3_RESET_TROPHIES,
+	  "This deletes Up Your Arsenal's trophy record on this console: every UYA "
+	  "trophy the signed-in user has won, the platinum included. The game then "
+	  "freezes for about 3 seconds while it reloads its trophies. Trophies "
+	  "synced to PSN may come back the next time the game syncs with "
+	  "PSN. To keep a way back, first copy "
+	  "/dev_hdd0/home/<user>/trophy/NPWR02347_00 off the console; putting that "
+	  "folder back, with the game closed, restores them." },
+	{ R3_AUTO_TROPHIES,
+	  "While this is on, every load into Veldin, which starts every run, "
+	  "deletes Up Your Arsenal's trophy record on this console: every UYA "
+	  "trophy the signed-in user has won, the platinum included. The game "
+	  "freezes for about 3 seconds during that load, before the run's timer "
+	  "starts. Trophies synced to PSN may come back the next time the "
+	  "game syncs with PSN. To keep a way back, first copy "
+	  "/dev_hdd0/home/<user>/trophy/NPWR02347_00 off the console; putting that "
+	  "folder back, with the game closed, restores them." }
+};
 
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
 	rac3_readouts, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0])),
-	0              /* no toggle ships auto-flagged */
+	0,             /* no toggle ships auto-flagged */
+	rac3_confirms, (u8)(sizeof(rac3_confirms) / sizeof(rac3_confirms[0]))
 };
 
 #undef NR
@@ -792,8 +845,12 @@ static int rac3_set_toggle(u8 id, int on)
 	case R3_FAST_LOADS:
 		g_fastload_on = (on != 0);
 		return on ? rac3_arm_fast_loads() : ST_OK;
-	/* qwark-side state, read by rac3_file_load_watch. */
+	/*
+	 * qwark-side state, read by rac3_file_load_watch. Build 53: the reset it
+	 * asks for is refused under RPCS3 (rac3_panel.c), so turning it on is too.
+	 */
 	case R3_AUTO_TROPHIES:
+		if (on && !plat_can_patch_code()) return ST_UNSUPPORTED;
 		g_auto_trophies = (on != 0);
 		return ST_OK;
 	default:               return ST_NOT_FOUND;
@@ -986,7 +1043,7 @@ static const struct manip_group rac3_manip_groups[] = {
 #undef NG
 #undef EXT
 
-/* The trophy refresh and its auto toggle, beside the manips. */
+/* The trophy reset and its auto toggle, beside the manips. */
 static const u8 rac3_trophies[] = { R3_RESET_TROPHIES, R3_AUTO_TROPHIES };
 
 static const struct manip_header rac3_manip_headers[] = {

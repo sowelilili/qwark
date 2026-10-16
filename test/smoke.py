@@ -122,6 +122,8 @@ OP_MOD_INFO = 0x0065
 OP_MOD_PATCH = 0x0066
 # Revision 1.17: the running game's code switches, in SAVEFILE_PATCH's layout.
 OP_SWITCH_PATCH = 0x0025
+# Revision 1.21: the text a client asks the user with before a CONFIRM feature.
+OP_FEATURE_CONFIRM_TEXT = 0x0026
 
 # One Mod row, and the flag that says the console has this one in the game.
 MOD_WIRE_SIZE = 120
@@ -276,6 +278,8 @@ FEATURE_FLAG_LOAD_ASIDE = 0x08
 FEATURE_FLAG_LIVE = 0x10
 # Protocol 1.7: the field behind this VALUE is two's complement, `bits` wide.
 FEATURE_FLAG_SIGNED = 0x20
+# Revision 1.21: ask the user first, with FEATURE_CONFIRM_TEXT's text.
+FEATURE_FLAG_CONFIRM = 0x40
 
 # Protocol 1.4: the autosplit event stream. 1.5 added the two load kinds, the
 # two timing flags and the param_us that goes with them, and grew EventDesc.
@@ -3625,10 +3629,23 @@ MANIP_SPECS = [
         "title_screen": UYA_TITLE,
         "challenge": (0xC1E50E, 1),
         "apply": (1, 1, 0xC9165C, 7),
-        # The Trophies header's auto toggle asks for the refresh (the old
-        # request word) once a load into Veldin is under way, whatever the
-        # category: request word, destination, then the load's mode 6.
-        "trophies": {"toggle": 39, "word": 0xD9E020,
+        # Build 53: the Trophies header's reset. The auto toggle resets once a
+        # load into Veldin is under way, whatever the category - request word,
+        # destination, then the load's mode 6 - and the button at once: each
+        # deletes the console's folder of UYA's trophy data, found from the
+        # game's NP communication id and user 1's home, makes the game's cache
+        # fill a nop, and asks the savefile helper's fourth byte for the reset,
+        # 2 for "only inside the load" and 1 for "now". "game" is what a booted
+        # UYA holds that the reset reads first.
+        "trophies": {"toggle": 39, "button": 21, "byte": 0xD9FF1C,
+                     "fill": (0x985318, 0x60000000),
+                     "folder": ("home", "00000001", "trophy", "NPWR02347_00"),
+                     "commid": "NPWR02347_00",
+                     "game": [(0xCB150C, struct.pack(">I", 0xD1CC14)),
+                              (0xD1CC14 + 0x188, struct.pack(">I", 0)),
+                              (0xCBAA04, struct.pack(">I", 0xD05CFC)),
+                              (0xD05D00, b"NPWR02347\x00\x00\x00"),
+                              (0x985318, struct.pack(">I", 0x9087000C))],
                      "load": [(0xEE9314, struct.pack(">I", 1)),
                               (0xEE9310, struct.pack(">I", 1)),
                               (0xEE9334, struct.pack(">I", 6))],
@@ -3825,21 +3842,85 @@ def exercise_manips(c, sim, spec):
 
     t = spec.get("trophies")
     if t:
-        for a, v in t["rest"]:
+        folder = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", *t["folder"])
+
+        def make_set():
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "TROPCONF.SFM"), "w") as f:
+                f.write('<trophyconf version="1.1">\n<npcommid>%s</npcommid>\n</trophyconf>\n'
+                        % t["commid"])
+            for n in ("TROPUSR.DAT", "TROPTRNS.DAT", "TROP000.PNG", "TROP001.PNG"):
+                with open(os.path.join(folder, n), "wb") as f:
+                    f.write(b"x")
+
+        def wait_byte(want):
+            deadline = time.time() + 2.0
+            while time.time() < deadline and mem_read_u8(c, t["byte"]) != want:
+                time.sleep(0.05)
+            return mem_read_u8(c, t["byte"]) == want
+
+        for a, v in t["rest"] + t["game"]:
             mem_write(c, a, v)
-        mem_write(c, t["word"], struct.pack(">I", 0))
+        mem_write(c, t["byte"], b"\x00")
+        make_set()
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 1))
-        check(status == ST_OK, "%s trophies: the auto-refresh toggle turns on" % name, status)
+        check(status == ST_OK, "%s trophies: the auto-reset toggle turns on" % name, status)
         for a, v in t["load"]:
             mem_write(c, a, v)
-        deadline = time.time() + 2.0
-        while time.time() < deadline and mem_read_u32(c, t["word"]) != 1:
-            time.sleep(0.05)
-        check(mem_read_u32(c, t["word"]) == 1,
-              "%s trophies: a load into Veldin asks for the refresh, with None selected" % name)
+        check(wait_byte(2),
+              "%s trophies: a load into Veldin asks the game for the reset, inside the load, "
+              "with None selected" % name, mem_read_u8(c, t["byte"]))
+        check(not os.path.exists(folder),
+              "%s trophies: after deleting the console's trophy folder for the game" % name)
+        check(mem_read_u32(c, t["fill"][0]) == t["fill"][1],
+              "%s trophies: and making the game's cache fill a nop" % name)
+        mem_write(c, t["byte"], b"\x00")          # the helper's answer: done
         for a, v in t["rest"]:
             mem_write(c, a, v)
         c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 0))
+
+        make_set()
+        time.sleep(0.1)
+        status, _ = c.call(OP_FEATURE_TRIGGER, bytes([t["button"]]))
+        check(status == ST_OK, "%s trophies: the Reset trophies button is accepted" % name, status)
+        check(wait_byte(1) and not os.path.exists(folder),
+              "%s trophies: and deletes the folder, then asks the game to reset now" % name,
+              mem_read_u8(c, t["byte"]))
+        mem_write(c, t["byte"], b"\x00")
+        time.sleep(0.1)
+
+        # Revision 1.21: both rows say CONFIRM, and the op hands out the text.
+        status, body = c.call(OP_DESCRIBE)
+        flags = {}
+        if status == ST_OK:
+            flags = {f["id"]: f["flags"] for f in parse_describe(body)[3]}
+        check(all(flags.get(i, 0) & FEATURE_FLAG_CONFIRM for i in (t["button"], t["toggle"])) and
+              not any(f & FEATURE_FLAG_CONFIRM for i, f in flags.items()
+                      if i not in (t["button"], t["toggle"])),
+              "%s trophies: DESCRIBE flags the reset and its toggle CONFIRM, and nothing else" % name,
+              {i: hex(f) for i, f in flags.items() if f})
+        for fid, needle in ((t["button"], b"freezes for about 3 seconds"),
+                            (t["toggle"], b"every load into Veldin")):
+            status, text = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([fid]))
+            check(status == ST_OK and 0 < len(text) <= 512 and b"\x00" not in text and
+                  b"trophy record on this console" in text and needle in text,
+                  "%s trophies: FEATURE_CONFIRM_TEXT %d says what it deletes, in at most "
+                  "512 bytes" % (name, fid), (status, len(text)))
+            check(text.decode("utf-8", "replace").isprintable(),
+                  "%s trophies: and it is plain UTF-8 text" % name)
+        status, _ = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([22]))
+        check(status == ST_BAD_ARG,
+              "%s trophies: FEATURE_CONFIRM_TEXT of a feature without CONFIRM is BAD_ARG" % name,
+              status)
+        sim.send("quit")
+        wait_state(c, SESSION_XMB)
+        status, _ = c.call(OP_FEATURE_CONFIRM_TEXT, bytes([t["button"]]))
+        check(status == ST_UNSUPPORTED,
+              "%s trophies: and outside a game it is UNSUPPORTED, as DESCRIBE" % name, status)
+        sim.send("boot %s" % spec["title"])
+        wait_state(c, SESSION_INGAME)
+        for a, v in spec.get("after_boot", []):
+            mem_write(c, a, v)
     status, l = manip_list(c)
     check(l is not None and l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
           "%s manips: back to None, auto-reset on, remember off" % name, l)

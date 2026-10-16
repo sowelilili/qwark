@@ -63,6 +63,16 @@ struct feature_desc {
 	const char *label;
 };
 
+/*
+ * Revision 1.21. What a client shows the user before it uses a feature flagged
+ * FEATURE_FLAG_CONFIRM, which FEATURE_CONFIRM_TEXT hands out: UTF-8, at most
+ * FEATURE_CONFIRM_TEXT_MAX bytes. Every CONFIRM row has one, and only those.
+ */
+struct feature_confirm {
+	u8 id;
+	const char *text;
+};
+
 struct game_describe {
 	const char * const *groups;
 	u8 ngroups;
@@ -77,6 +87,9 @@ struct game_describe {
 	 * other toggle defaults to 0, which is what a zero here means.
 	 */
 	u64 auto_default;
+	/* Revision 1.21: the CONFIRM rows' texts, NULL and 0 for a game with none. */
+	const struct feature_confirm *confirms;
+	u8 nconfirms;
 };
 
 /* One row of UNLOCK_LIST. Values are read live through unlock_read. */

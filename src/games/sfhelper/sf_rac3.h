@@ -17,9 +17,15 @@
  *            are a qwark feature with a checkbox of their own in this game, and
  *            the helper writing them behind the user's back would fight it. The
  *            planet_timer reset that armed the countdown goes with it.
- *   the trophy unlocks and the intro skip  three ASM patch words in that repo's
- *            patch.txt (0x1113C, 0x9027A0, 0x985318) that belong to Gigahelper's
- *            other features, not to the savefile path.
+ *   the intro skip  two ASM patch words in that repo's patch.txt (0x1113C,
+ *            0x9027A0) that belong to Gigahelper's other features, not to the
+ *            savefile path.
+ *
+ * Build 53 carries the trophy reset that racman's rc3-save 1.1 added to the mod
+ * (its rack.bin 0x980E08, and the third ASM word, 0x985318): see "the trophy
+ * reset" below and sf_trophy_reset in sfhelper.c. qwark writes the 0x985318 word
+ * itself, on a console, just before it asks for a reset (src/games/rac3_panel.c),
+ * so it is not one of this helper's patch words.
  *
  * The build.sh parser reads the #define lines below, so each one is a plain name
  * and a hexadecimal literal with nothing else on it.
@@ -41,6 +47,23 @@
  */
 #define SF_CAVE     0x00980AC0
 #define SF_CAVE_END 0x00980F00
+
+/*
+ * Build 53: the trophy reset's own cave, the second of this helper's two
+ * (sf_trophy_reset in sfhelper.c, which the helper's entry calls). It is the top
+ * of 0x980304..0x980AC0, which is strictly dead: the seven functions there
+ * (0x980304, 0x980380, 0x9804C8, 0x98055C, 0x9805C4, 0x98072C, 0x9807CC) are
+ * reached by no branch but from 0x980AC0 and 0x981120, which nothing reaches
+ * either; no word in the executable's data, and no lis/addi pair in its code,
+ * names any of them or their descriptors at 0xBF8148..0xBF817F. No mod racman
+ * ever shipped for this game puts anything below 0x980AC0.
+ *
+ * The reset takes 0x9808C0..0x980AC0, 512 bytes, and is 412 of them; the rest
+ * of the span, 0x980304..0x9808C0, is left for whatever needs it next. build.sh
+ * fails a reset that would run past SF_CAVE_TROPHY_END, the helper's own cave.
+ */
+#define SF_CAVE_TROPHY     0x009808C0
+#define SF_CAVE_TROPHY_END 0x00980AC0
 
 /*
  * The hook site is the cellPadSetActDirect call Gigahelper replaces with a call
@@ -79,6 +102,28 @@
 #define SF_PAUSE_WAIT     0x00D9FF14
 #define SF_PAUSE_FRAME    0x00D9FF18
 #define SF_PAUSE_WAIT_MAX 600
+
+/*
+ * Build 53: the trophy reset's request byte, after the pause's words in the same
+ * zero-filled stretch. The old trainer's request was the word at 0xD9E020, which
+ * nothing in the executable names either; the reset's byte moved here, beside the
+ * helper's others, so the console install zeroes it with them and a stray write
+ * of the old word by an old tool starts nothing.
+ *
+ *   0  idle
+ *   1  reset now (the Reset trophies button)
+ *   2  reset only if the game is in a planet load's transition (the auto toggle,
+ *      which asks as a load into Veldin starts, before a run's timer starts at
+ *      that load's end)
+ *   3  the helper is resetting; it writes 0 when it is done
+ *   SF_API_REFUSED  the helper dropped the request: the game's trophy object is
+ *      not set up, one of its trophy threads is running, or a 2 found the game
+ *      out of the load
+ */
+#define SF_API_TROPHY       0x00D9FF1C
+#define SF_TROPHY_NOW       1
+#define SF_TROPHY_IN_LOAD   2
+#define SF_TROPHY_RUNNING   3
 
 /* ------------------------------------------------------- the aside buffer */
 
@@ -172,10 +217,63 @@
 #define SF_PLANET_COMIC_FIRST 30
 #define SF_PLANET_COMIC_COUNT 7
 
+/* ------------------------------------------------------- the trophy reset */
+
+/*
+ * The game's trophy object, the static at 0xD1CC14 that main's init (0x15914)
+ * points this word at before anything else runs. Its layout, from the routines
+ * that use it:
+ *
+ *   +4     registered: 1 once the register thread has read the game's trophy
+ *          info, 0 after a destroy or a failure. Nothing is awarded while 0
+ *   +8+8i  trophy i's id, and +12+8i its unlocked flag: the game's cache of the
+ *          console's trophy state, which the register thread fills from
+ *          sceNpTrophyGetTrophyInfo (0x9850E0, the flag at 0x985318) and the
+ *          unlock thread sets when an unlock succeeds (0x9859E8). The award
+ *          routine (0x2290D8, ids 0..32) asks for nothing whose flag is set,
+ *          and the unlock thread (0x9858BC) checks it again
+ *   +392   1 while the register thread (0x9856F8) runs, 2 while the unlock
+ *          thread runs, 0 when neither does
+ *   +428   the sceNpTrophy context, +432 its handle
+ *   +436   SceNpTrophyGameDetails, whose first word is the trophy count, 33
+ *
+ * 0x984E40 destroys the handle and the context and clears +4. 0x984FA0 makes a
+ * new context and handle for the game's NP communication id and starts the
+ * register thread, which registers the context (installing the trophy set if
+ * the console has none) and fills the cache. Both are the game's own, called at
+ * boot (0x15434) and at exit (0x13704), and both run on the calling thread.
+ *
+ * What the reset does is rc3-save 1.1's handler, rack.bin 0x980E08, call for
+ * call: destroy; mark every trophy unlocked in the cache, then trophies 10 (the
+ * RY3NO), 25 (the Metropolis blimp) and 32 (the snowman skin) locked again;
+ * wait a second; register; a second; destroy; a second; register. With the
+ * cache fill at 0x985318 a nop, which qwark writes before it asks, the
+ * registrations leave the cache as the reset set it, so those three are the
+ * only trophies the game will try to award in the run that follows, and it
+ * does try. Whether the console then shows them, and spends the time doing it
+ * that the runs rely on, is the console's trophy data: qwark deletes the game's
+ * folder of it first (rac3_panel.c).
+ */
+#define SF_TROPHY_OBJ_PTR   0x00CB150C
+#define SF_TROPHY_FLAGS     0x0000000C
+#define SF_TROPHY_THREAD    0x00000188
+#define SF_TROPHY_COUNT     0x000001B4
+#define SF_TROPHY_MAX       33
+#define SF_TROPHY_KEEP_1    10
+#define SF_TROPHY_KEEP_2    25
+#define SF_TROPHY_KEEP_3    32
+
+/* rc3-save's three waits were a second each (lv2 sys_timer_sleep, 1). */
+#define SF_TROPHY_WAIT_US   1000000
+
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY       0x0099256C
 #define SF_FN_PERFORM_LOAD 0x001E1CF4
 #define SF_FN_REQUEST_MODE 0x00229598
+
+/* Build 53: the trophy object's destroy and register, both taking the object. */
+#define SF_FN_TROPHY_DESTROY  0x00984E40
+#define SF_FN_TROPHY_REGISTER 0x00984FA0
 
 #endif /* QWARK_SF_RAC3_H */

@@ -1,10 +1,16 @@
 /*
- * The savefile helper's link map. build.sh substitutes the two placeholders
+ * The savefile helper's link map. build.sh substitutes the three placeholders
  * below with the game's cave addresses and hands the result to ppu-lv2-ld.
  *
- * Two output sections, because RaC1 needs its input hook at one cave and the
- * compiled helper at another; a game with no stub gets the same address for both
- * and the empty section falls away.
+ * Three output sections, because RaC1 needs its input hook at one cave and the
+ * compiled helper at another, and RaC3 (build 53) its trophy reset at a third; a
+ * game with no stub or no reset gets the stub's address for those and the empty
+ * section falls away.
+ *
+ * The reset's section comes first. Its cave is below the helper's, so its place
+ * in the map keeps the location counter going forward, and the first statement
+ * that matches an input section is the one that gets it: placed after .text,
+ * .text.trophy would be swallowed by .text's own `.text.*`.
  *
  * Everything the compiler would normally put beside the code is discarded rather
  * than placed. .opd and .toc are the 64-bit ABI's function descriptors and TOC,
@@ -17,6 +23,9 @@ OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 
 SECTIONS
 {
+	. = @TROPHY_ORG@;
+	.text.trophy : { *(.text.trophy) }
+
 	. = @STUB_ORG@;
 	.text.stub : { *(.text.stub) }
 

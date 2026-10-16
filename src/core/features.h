@@ -25,6 +25,15 @@ int  features_trigger(u8 id);
 int  features_set_auto(u8 id, int on);
 int  features_options(u8 id, const char * const **options, u8 *count);
 
+/*
+ * Revision 1.21, FEATURE_CONFIRM_TEXT: the text of feature `id`, which has to
+ * carry FEATURE_FLAG_CONFIRM (BAD_ARG otherwise), into `out` without a
+ * terminator. UNSUPPORTED with no game, NOT_FOUND for an id it does not have
+ * or a CONFIRM row its game gave no text, FULL past `cap` or
+ * FEATURE_CONFIRM_TEXT_MAX. Reads only the tables.
+ */
+int  features_confirm_text(u8 id, u8 *out, u32 cap, u32 *len);
+
 /* Encodes the DESCRIBE reply. */
 int  features_describe(u8 *out, u32 cap, u32 *len);
 

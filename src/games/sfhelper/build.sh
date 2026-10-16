@@ -138,6 +138,24 @@ for g in $GAMES; do
 	cave_end=$(tr -d '\r' < "$hdr" |
 		sed -n 's/^#define[ \t][ \t]*SF_CAVE_END[ \t][ \t]*\(0x[0-9A-Fa-f]*\).*$/\1/p')
 
+	# Build 53, optional: RaC3's trophy reset, a cave of its own with a limit of
+	# its own and a fourth request byte. A game that has the cave must say where
+	# it stops, and 0 is the byte of a game that has none.
+	trophy_org=$(getdef "$hdr" SF_CAVE_TROPHY)
+	trophy_end=$(getdef "$hdr" SF_CAVE_TROPHY_END)
+	api_trophy=$(getdef "$hdr" SF_API_TROPHY)
+	if [ -n "$trophy_org" ]; then
+		[ -n "$trophy_end" ] && [ -n "$api_trophy" ] || {
+			echo "sfhelper: $hdr has SF_CAVE_TROPHY without SF_CAVE_TROPHY_END and SF_API_TROPHY" >&2
+			exit 1
+		}
+		[ $((trophy_end)) -le $((cave)) ] || {
+			echo "sfhelper: $g trophy cave would run into the helper's at $cave" >&2
+			exit 1
+		}
+	fi
+	[ -n "$api_trophy" ] || api_trophy=0
+
 	if [ -f "$stub" ]; then
 		stub_org=$(need "$hdr" SF_CAVE_STUB)
 		hook_sym=.sf_input_hook
@@ -163,7 +181,10 @@ for g in $GAMES; do
 		objs="$OUT/$g-stub.o $objs"
 	fi
 
-	sed -e "s/@STUB_ORG@/$stub_org/" -e "s/@TEXT_ORG@/$cave/" \
+	# A game with no trophy cave puts the empty section where the stub goes,
+	# which is never above the helper's cave, so the map's counter only moves on.
+	trophy_ld=${trophy_org:-$stub_org}
+	sed -e "s/@TROPHY_ORG@/$trophy_ld/" -e "s/@STUB_ORG@/$stub_org/" -e "s/@TEXT_ORG@/$cave/" \
 		"$DIR/sfhelper.ld.in" > "$OUT/$g.ld"
 
 	# shellcheck disable=SC2086
@@ -174,7 +195,7 @@ for g in $GAMES; do
 	# instead: a helper that needs .rodata or .data is a helper to rewrite. An
 	# empty section is not a problem; ld leaves an empty long-branch table behind.
 	unexpected=$($OBJDUMP -h "$OUT/$g.elf" | tr -d '\r' |
-		awk '$1 ~ /^[0-9]+$/ && $3 !~ /^0+$/ && $2 != ".text" && $2 != ".text.stub" { print $2 }')
+		awk '$1 ~ /^[0-9]+$/ && $3 !~ /^0+$/ && $2 != ".text" && $2 != ".text.stub" && $2 != ".text.trophy" { print $2 }')
 	[ -z "$unexpected" ] || {
 		echo "sfhelper: $g put code or data in unexpected sections: $unexpected" >&2
 		exit 1
@@ -182,12 +203,16 @@ for g in $GAMES; do
 
 	caves=""
 	ncaves=0
-	for section in .text.stub .text; do
+	for section in .text.stub .text .text.trophy; do
 		bin=$OUT/$g$(echo "$section" | tr . _).bin
 		$OBJCOPY -O binary --only-section=$section "$OUT/$g.elf" "$bin" 2>/dev/null || true
 		[ -s "$bin" ] || continue
 
-		if [ "$section" = ".text.stub" ]; then addr=$stub_org; else addr=$cave; fi
+		case "$section" in
+		.text.stub)   addr=$stub_org ;;
+		.text.trophy) addr=$trophy_org ;;
+		*)            addr=$cave ;;
+		esac
 		name="sf_${g}_$(echo "$section" | sed 's/^\.//; s/\./_/g')"
 		size=$(wc -c < "$bin" | tr -d ' ')
 
@@ -195,6 +220,19 @@ for g in $GAMES; do
 		   [ $((addr + size)) -gt $((cave_end)) ]; then
 			echo "sfhelper: $g helper is $size bytes and runs past $cave_end" >&2
 			exit 1
+		fi
+
+		# The reset's cave has a hard end on every game that has one, and code in
+		# .text.trophy with no SF_CAVE_TROPHY to place it is refused outright.
+		if [ "$section" = ".text.trophy" ]; then
+			[ -n "$trophy_org" ] || {
+				echo "sfhelper: $g has trophy reset code but no SF_CAVE_TROPHY" >&2
+				exit 1
+			}
+			if [ $((addr + size)) -gt $((trophy_end)) ]; then
+				echo "sfhelper: $g trophy reset is $size bytes and runs past $trophy_end" >&2
+				exit 1
+			fi
 		fi
 
 		{
@@ -243,7 +281,8 @@ for g in $GAMES; do
 	} >> "$OUT/arrays.c"
 
 	echo "	{ GAME_$(echo "$g" | tr a-z A-Z), sf_${g}_caves, $ncaves, sf_${g}_hooks, 1," >> "$OUT/descs.txt"
-	echo "	  ${api_mod}u, ${api_load}u, ${api_setaside}u, ${aside_addr}u, ${aside_size}u }," >> "$OUT/descs.txt"
+	echo "	  ${api_mod}u, ${api_load}u, ${api_setaside}u, ${aside_addr}u, ${aside_size}u," >> "$OUT/descs.txt"
+	echo "	  ${api_trophy}u }," >> "$OUT/descs.txt"
 	echo "  $g hook $hook_addr = $word (-> $target)" >> "$OUT/report.txt"
 done
 
@@ -304,6 +343,12 @@ struct sf_desc {
 	/* Where the save is parked, and how much of it there is. */
 	u32 aside_addr;
 	u32 aside_size;
+
+	/*
+	 * Build 53: RaC3's trophy reset request byte, which the console install
+	 * zeroes with the three above; 0 for a game whose helper has no reset.
+	 */
+	u32 api_trophy;
 };
 
 /* NULL for a game with no helper, and for GAME_NONE. */
@@ -324,10 +369,10 @@ EOF
  *
  * from the SDK's Cygwin shell.
  *
- * Each array is one code cave: the compiled helper, and for RaC1 the input hook
- * stub that goes in front of it. Each hook word is the branch that reaches a
- * cave, computed from the address the helper actually linked at rather than
- * copied out of a mod.
+ * Each array is one code cave: the compiled helper, for RaC1 and Deadlocked the
+ * input hook stub that goes in front of it, and for RaC3 the trophy reset. Each
+ * hook word is the branch that reaches a cave, computed from the address the
+ * helper actually linked at rather than copied out of a mod.
  */
 #include "sfhelper_bins.h"
 

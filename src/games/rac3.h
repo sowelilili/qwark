@@ -42,16 +42,49 @@
 #define RAC3_DROPSHIP_HEALTH   0x00C956A0u
 
 /*
- * The old trainer's trophy refresh request, which it wrote after deleting
- * /dev_hdd0/home/<user>/trophy/NPWR02347_00. No retail code reads it: the
- * whole stretch 0xD9B3C0..0xDA27C7 is BSS nothing names. The reader was the
- * old rc3-save mod (Gigahelper), whose per-frame hook took the 1 (rack.bin
- * 0x980C00) and destroyed and re-created the game's trophy context through
- * the game's own 0x984E40 and 0x984FA0 (handler 0x980E08). qwark's savefile
- * helper took that mod's cave and carries none of it, so on a retail game with
- * qwark the write is inert until the helper does; see rac3_trophy_refresh.
+ * Build 53: the trophy reset (rac3_panel.c, and sf_trophy_reset in the savefile
+ * helper, src/games/sfhelper/sf_rac3.h, which has the object's layout).
+ *
+ * The old trainer wrote 1 to the word at 0xD9E020 after deleting
+ * /dev_hdd0/home/<user>/trophy/NPWR02347_00 over Ratchetron; the rc3-save mod
+ * read it. qwark's request is the helper's fourth byte, `api_trophy` in its
+ * table (0xD9FF1C), and qwark does the delete itself, on the console.
+ *
+ * The game's trophy object pointer, and in the object the word that is 1 while
+ * its register thread runs and 2 while its unlock thread does. The reset is
+ * refused while either runs.
  */
-#define RAC3_TROPHY_REFRESH    0x00D9E020u
+#define RAC3_TROPHY_OBJ_PTR    0x00CB150Cu
+#define RAC3_TROPHY_THREAD     0x188u
+
+/*
+ * Where the game keeps the NP communication id it registers its trophies under:
+ * the word here points at a block (0xD05CFC, set at 0x15870) whose +4 is the
+ * SceNpCommunicationId 0x984FA0 hands sceNpTrophyCreateContext, copied there by
+ * 0x984768 out of the executable's table of the four games' ids (UYA's is
+ * NPWR02347, number 0). The console keeps that trophy set's data, the user's
+ * unlocks included, in /dev_hdd0/home/<user>/trophy/<id>_<number>, which is
+ * how qwark finds the one folder it deletes rather than naming it.
+ */
+#define RAC3_TROPHY_COMMID_PTR 0x00CBAA04u
+#define RAC3_TROPHY_COMMID_OFF 4u
+#define RAC3_TROPHY_COMMID_LEN 12u
+
+/*
+ * rc3-save's third ASM word: the register thread's store of each trophy's
+ * unlocked flag into the game's cache (0x9850E0's `stw r4,12(r7)`), made a nop,
+ * so a registration leaves the cache as the reset set it. qwark writes it on a
+ * console just before it asks for a reset, never under RPCS3, and accepts the
+ * site holding either word and nothing else.
+ */
+#define RAC3_TROPHY_FILL_SITE  0x00985318u
+#define RAC3_TROPHY_FILL_WORD  0x9087000Cu
+#define RAC3_TROPHY_FILL_NOP   0x60000000u
+
+/* What qwark writes in `api_trophy`; sf_rac3.h has the helper's side. */
+#define RAC3_TROPHY_NOW        1u
+#define RAC3_TROPHY_IN_LOAD    2u
+#define RAC3_TROPHY_RUNNING    3u
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
@@ -152,7 +185,7 @@
 #define RAC3_GAME_STATE_LOAD   6      /* the frame before gameplay resumes */
 
 /*
- * Revision 1.21, the manips' file-load trigger and the trophy auto-refresh
+ * Revision 1.21, the manips' file-load trigger and the trophy auto-reset
  * (rac3.c). RAC3_MODE_TIMER counts the frames spent in the current game mode:
  * the level loop puts it to 0 as it starts (0x1D7078), adds one a frame
  * (0x1D82FC) and puts it back to 0 on a mode change (0x1D8604).
@@ -296,7 +329,7 @@ extern const u8 rac3_fp_switch[4];
 #define R3_FAST_LOADS        38
 
 /*
- * Build 53, revision 1.21: the trophy refresh's auto toggle, qwark-side state
+ * Build 53, revision 1.21: the trophy reset's auto toggle, qwark-side state
  * like the per-death toggles, off by default and kept across boots through its
  * auto flag. MANIP_LIST's "Trophies" header names it beside R3_RESET_TROPHIES.
  */
@@ -323,8 +356,18 @@ u8  rac3_savefile_ready(u8 what);
 
 int rac3_planet_load(u8 planet, u8 flags);
 
-/* The trophy refresh: R3_RESET_TROPHIES, and the auto toggle's write. */
-int rac3_trophy_refresh(void);
+/*
+ * Build 53: the trophy reset. rac3_trophy_reset is R3_RESET_TROPHIES's handler
+ * (RAC3_TROPHY_NOW) and what rac3_trophy_auto asks with (RAC3_TROPHY_IN_LOAD);
+ * rac3_trophy_auto answers 1 once this load's question is settled and 0 to be
+ * asked again on the next tick. rac3_trophy_tick runs the delete and watches
+ * the request on every INGAME tick, and rac3_trophy_forget drops whatever was
+ * under way when a process ends. All tick thread.
+ */
+int  rac3_trophy_reset(u8 request);
+int  rac3_trophy_auto(void);
+void rac3_trophy_tick(void);
+void rac3_trophy_forget(void);
 
 int rac3_levelflags_get(u8 planet, u8 *out, u16 cap, u16 *len);
 int rac3_levelflags_reset(u8 planet);

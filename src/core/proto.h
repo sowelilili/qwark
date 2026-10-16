@@ -57,7 +57,8 @@
  * old request's zeros are page 0), and the reply's pad after n is u16 pages.
  * Revision 1.21: manip categories, MANIP_LIST / SELECT / OPTIONS / APPLY in the
  * 0x00D0 block (src/core/manips.h). The old manip buttons and toggles are
- * retired, ids and all.
+ * retired, ids and all. Feature flags bit6 CONFIRM, and FEATURE_CONFIRM_TEXT at
+ * 0x0026, the text a client asks the user with before using such a feature.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -144,6 +145,13 @@
  * Request none. See PROTOCOL.md 5.12.2.
  */
 #define OP_SWITCH_PATCH      0x0025
+/*
+ * Revision 1.21. Request u8 id; reply the feature's confirmation text, UTF-8,
+ * at most FEATURE_CONFIRM_TEXT_MAX bytes, no terminator. BAD_ARG for a feature
+ * without FEATURE_FLAG_CONFIRM, NOT_FOUND for an id the game does not have,
+ * UNSUPPORTED outside INGAME, as DESCRIBE.
+ */
+#define OP_FEATURE_CONFIRM_TEXT 0x0026
 
 #define OP_MEM_READ          0x0030
 #define OP_MEM_WRITE         0x0031
@@ -512,6 +520,20 @@
  * and max at 0, because the width already says what the range is.
  */
 #define FEATURE_FLAG_SIGNED      0x20
+/*
+ * Revision 1.21. The client asks the user before it sends FEATURE_TRIGGER of
+ * this ACTION, and before FEATURE_SET 1 or FEATURE_SET_AUTO 1 of this TOGGLE,
+ * showing what FEATURE_CONFIRM_TEXT answers for it. qwark does not enforce it:
+ * it is the row saying the feature does something a user would want to be
+ * asked about first (UYA's trophy reset deletes the console's trophy record).
+ */
+#define FEATURE_FLAG_CONFIRM     0x40
+
+/*
+ * Revision 1.21. FEATURE_CONFIRM_TEXT's reply: UTF-8, no terminator, at most
+ * this many bytes.
+ */
+#define FEATURE_CONFIRM_TEXT_MAX 512
 
 /*
  * Feature, 48 bytes: id, kind, group, aux, flags, readout, bits, pad, u32 min,

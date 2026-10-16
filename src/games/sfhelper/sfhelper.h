@@ -109,4 +109,10 @@ void sf_enter_menu(void);
 int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
 #endif
 
+#if SF_GAME == SF_RAC3
+/* Build 53: the game's trophy object's destroy and register (sf_rac3.h). */
+void sf_trophy_destroy(sf_u32 obj);
+void sf_trophy_register(sf_u32 obj);
+#endif
+
 #endif /* QWARK_SFHELPER_H */
