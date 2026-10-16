@@ -447,14 +447,23 @@ int rac3_planet_load(u8 planet, u8 flags)
 	/* Index 0 is the placeholder that keeps the list aligned with the ids. */
 	if (planet == 0 || planet >= rac3_planet_count()) return ST_BAD_ARG;
 
+	/*
+	 * Fast loads go on first, behind the checkbox, and rac3.c's watcher puts
+	 * the checkbox's setting back when the load is over, as RaC2's planet load
+	 * does. Every planet: rac3.cs LoadPlanetSafe left Aquatos out, and the
+	 * data-word fast loads did hang a trip that owes one of Aquatos's story
+	 * scenes; the patch lets the scene play (rac3.h, RAC3_FASTLOAD_SITE).
+	 *
+	 * Fast loads are a code patch, so a platform that refuses one (RPCS3)
+	 * loads at the game's own pace rather than not at all, unless the code
+	 * switches are in, when forcing them is a write of their flag byte.
+	 */
+	rc = rac3_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
+	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
+
 	rc = classic_planet_request(RAC3_LOAD_PLANET, planet);
 	if (rc != ST_OK) return rc;
-
-	/* rac3.cs LoadPlanetSafe: every planet but Aquatos also gets fast loads. */
-	if (planet != RAC3_PLANET_AQUATOS) {
-		rc = rac3_arm_fast_loads();
-		if (rc != ST_OK) return rc;
-	}
 
 	if (flags & PLANET_FLAG_RESET_LEVELFLAGS) {
 		rc = rac3_levelflags_reset(planet);
@@ -473,6 +482,30 @@ int rac3_planet_load(u8 planet, u8 flags)
  */
 int rac3_load_setaside(void)
 {
+	/*
+	 * Build 53. A set-aside load is fast too, as RaC2's is: fast loads go on
+	 * behind the checkbox before the request, and the end of the load puts the
+	 * checkbox's setting back (rac3.c, rac3_fastload_watch). A load the game
+	 * will not take is refused before anything is done for it - the install,
+	 * and above all the force, which nothing would put back until the next load
+	 * the player makes; one the helper drops later, on the game's own frame, is
+	 * caught by rac3_on_tick.
+	 *
+	 * Under RPCS3 the helper and the code switches are separate patches: with
+	 * the switches in, the force is a write of their flag byte; without them the
+	 * load goes ahead at the game's own pace rather than being refused.
+	 */
+	int rc = savefile_load_ready();
+
+	if (rc != ST_OK) return rc;
+
+	rc = savefile_install();
+	if (rc != ST_OK) return rc;
+
+	rc = rac3_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
+	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
+
 	return savefile_load_aside();
 }
 

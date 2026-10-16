@@ -105,8 +105,9 @@ const struct patch_def *patch_at(u32 index);
 /*
  * The largest def patch_apply will take, and with it the width of the write
  * ordering tables in mem.c. A mod may hold the whole mod word pool on its own,
- * so MOD_WORD_POOL is this number; the games' own defs are eleven words at the
- * most and a client patch is capped at QWARK_MAX_PATCH_WORDS.
+ * so MOD_WORD_POOL is this number; the games' own defs are twenty-three words at
+ * the most (RaC3's fast loads, a cave and its branch) and a client patch is
+ * capped at QWARK_MAX_PATCH_WORDS.
  *
  * It was 2048 until build 35, which cost 14 KB of ordering tables for a library
  * whose busiest title is 279 words.

@@ -1344,17 +1344,20 @@ OTHER_GAMES = [
         "action_expect": 0,
         "planet": 5,
         "load_addr": 0xEE9310,
-        "load_expect": [(0xEE9310, 1), (0xEE9314, 5), (0x134EBD4, 3)],
-        # Build 11: the Fast loads toggle, and the two words it keeps written.
-        # `from` and `to` are Veldin and Tyhrranosis, neither of them Aquatos.
+        "load_expect": [(0xEE9310, 1), (0xEE9314, 5)],
+        # The Fast loads toggle, a code patch since it stopped being two data
+        # words (src/games/rac3.h, RAC3_FASTLOAD_SITE): the transition loop's
+        # test at 0x27B428 becomes a branch to the cave at 0x980860, and the
+        # load request word clearing is the end of a load.
         "fastload": {
             "toggle": 38,
-            "value1": 0x134EBD4,
-            "value2": 0x134EE70,
-            "planet_addr": 0xC1E438,
-            "dest_addr": 0xEE9314,
-            "from": 5,
-            "to": 9,
+            "site": 0x27B428,
+            "site_word": 0x2C1B0000,
+            "branch": 0x48705438,
+            "cave": 0x980860,
+            "cave_first": 0x2C1B0000,
+            "request": 0xEE9310,
+            "planet": 9,
         },
         # RaC3 splits when the destination planet changes to another real planet.
         "autosplit": {
@@ -2614,42 +2617,59 @@ def exercise_game(c, sim, spec, udp=None):
 
     # --------------------------------------------------- fast loads (1.9, build 11)
     #
-    # UYA's two fast-load values are game data rather than patched code, and the
-    # game writes its own over them every time it loads a planet. The toggle
-    # therefore has to arm them again around every load, including one the game
-    # starts on its own: qwark sees that only as the destination planet moving in
-    # the hot block, which is what this pokes.
+    # UYA's fast loads are a code patch now, as RaC1's and RaC2's are: on, the
+    # transition loop's test becomes a branch into a cave; a planet load forces
+    # them behind the checkbox, and the load request word clearing - the end of
+    # the load - puts the checkbox's setting back. The PLANET_LOAD above forced
+    # them over an empty word, so that load is finished first.
     if spec.get("fastload"):
         fl = spec["fastload"]
+        site = struct.pack(">I", fl["site_word"])
 
-        mem_write(c, fl["planet_addr"], struct.pack(">I", fl["from"]))
-        mem_write(c, fl["dest_addr"], struct.pack(">I", fl["from"]))
+        mem_write(c, fl["request"], struct.pack(">I", 0))
         time.sleep(0.15)
-        mem_write(c, fl["value1"], struct.pack(">I", 0))
+        check(mem_read_u32(c, fl["site"]) == 0,
+              "%s: the end of the load above took the forced fast loads out" % name,
+              hex(mem_read_u32(c, fl["site"])))
+
+        mem_write(c, fl["site"], site)
+        status, _ = c.call(OP_PLANET_LOAD, bytes([fl["planet"], 0]))
+        if check(status == ST_OK, "%s: another PLANET_LOAD" % name, status):
+            check(mem_read_u32(c, fl["site"]) == fl["branch"],
+                  "%s: forces fast loads on, a branch at 0x%X" % (name, fl["site"]),
+                  hex(mem_read_u32(c, fl["site"])))
+            check(mem_read_u32(c, fl["cave"]) == fl["cave_first"],
+                  "%s: into the cave at 0x%X" % (name, fl["cave"]),
+                  hex(mem_read_u32(c, fl["cave"])))
+            info = fresh_state(c)
+            check(info is not None and not info["toggle_state"] & (1 << fl["toggle"]),
+                  "%s: while the checkbox stays off" % name,
+                  info["toggle_state"] if info else None)
+            time.sleep(0.15)
+            mem_write(c, fl["request"], struct.pack(">I", 0))
+            time.sleep(0.15)
+            check(mem_read_u32(c, fl["site"]) == fl["site_word"],
+                  "%s: and the request word clearing puts the game's word back" % name,
+                  hex(mem_read_u32(c, fl["site"])))
 
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fl["toggle"], 1))
         if check(status == ST_OK, "%s: the Fast loads toggle turns on" % name, status):
-            check(mem_read_u32(c, fl["value1"]) == 3,
-                  "%s: and arms the fast-load values there and then" % name,
-                  mem_read_u32(c, fl["value1"]))
+            check(mem_read_u32(c, fl["site"]) == fl["branch"],
+                  "%s: and patches the site" % name, hex(mem_read_u32(c, fl["site"])))
 
-        # The game goes somewhere nobody asked qwark for, clearing them on the way.
-        mem_write(c, fl["value1"], struct.pack(">I", 0))
-        mem_write(c, fl["value2"], b"\x00\x00")
-        mem_write(c, fl["dest_addr"], struct.pack(">I", fl["to"]))
-        time.sleep(0.4)
-
-        check(mem_read_u32(c, fl["value1"]) == 3,
-              "%s: a planet load the game started re-arms them" % name,
-              mem_read_u32(c, fl["value1"]))
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", fl["value2"], 2))
-        check(status == ST_OK and body == b"\x01\x01",
-              "%s: second value and all, a fifth of a second later" % name, body)
-
-        # Off again, so the autosplit steps below poke the same words in peace.
-        c.call(OP_FEATURE_SET, struct.pack(">BI", fl["toggle"], 0))
-        mem_write(c, fl["planet_addr"], struct.pack(">I", fl["to"]))
+        # A load the game starts on its own leaves the checkbox's patch in.
+        mem_write(c, fl["request"], struct.pack(">II", 1, fl["planet"]))
         time.sleep(0.15)
+        mem_write(c, fl["request"], struct.pack(">I", 0))
+        time.sleep(0.15)
+        check(mem_read_u32(c, fl["site"]) == fl["branch"],
+              "%s: a load the game started ends with it still on" % name,
+              hex(mem_read_u32(c, fl["site"])))
+
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fl["toggle"], 0))
+        check(status == ST_OK and mem_read_u32(c, fl["site"]) == fl["site_word"],
+              "%s: and off puts the game's word back" % name,
+              (status, hex(mem_read_u32(c, fl["site"]))))
 
     # ------------------------------------------------------ autosplitting
     if udp is not None and spec.get("autosplit"):
@@ -3388,6 +3408,9 @@ def smoke_rpcs3(exe):
         # ------------------- RaC2 with an earlier build's code switches
         smoke_rpcs3_rac2_old_switches(c, pine)
 
+        # --------------- UYA's fast loads, a code switch beside Freeze ammo's
+        smoke_rpcs3_rac3_switches(c, pine)
+
         sock.close()
         sock = None
 
@@ -3568,6 +3591,163 @@ def smoke_rpcs3_rac2_old_switches(c, pine):
     for addr, _ in words:
         pine.poke(addr, b"\0\0\0\0")
     pine.poke(RAC2_FP_ADDR, RAC2_FP)
+
+
+# UYA's fast loads were two data words that worked under RPCS3 with nothing
+# installed; they are a code patch now, so under RPCS3 they are a code switch
+# beside Freeze ammo's (src/games/switches/sw_rac3.s). These are the rows the
+# Freeze-ammo-only SWITCH_PATCH handed out (builds 50 to 53), which an RPCS3 patch
+# file written then still holds; 0x182A88 is also RaC3's fingerprint site, and
+# its branch did not change.
+RAC3_FP_ADDR = 0x00182A88
+RAC3_FP = bytes([0x7C, 0x85, 0x31, 0x2E])
+RAC3_SW_OLD_ROWS = [
+    (0x00980F00, 0x3CE000DA), (0x00980F04, 0x88E7FF10), (0x00980F08, 0x2C070000),
+    (0x00980F0C, 0x40820008), (0x00980F10, 0x7C85312E), (0x00980F14, 0x4B801B78),
+    (0x00182A88, 0x487FE478),
+]
+RAC3_SW_OLD_FLAGS = [0x00D9FF10]
+RAC3_SW_FREEZE_ID = 0
+RAC3_SW_FAST_ID = 38
+RAC3_SW_FAST_FLAG = 0x00D9FF11
+RAC3_FASTLOAD_SITE = 0x0027B428
+RAC3_FASTLOAD_SITE_WORD = bytes([0x2C, 0x1B, 0x00, 0x00])
+RAC3_LOAD_PLANET = 0x00EE9310
+
+
+def smoke_rpcs3_rac3_switches(c, pine):
+    """
+    UYA's Fast loads under RPCS3 now that they are a code switch. A game whose
+    RPCS3 patch still carries the Freeze-ammo-only switches is still UYA (the
+    fingerprint site's branch did not change) and reads as having switches from
+    another build: bit2 set, bit4 clear and a SWITCH_PATCH stamp that is not the
+    old one, so the client offers to write the patch again, and meanwhile a
+    planet load goes at the game's own pace. With the new patch in, Fast loads
+    is a flag byte, and a planet load forces it on and the end of the load (the
+    request word clearing) puts it back, the checkbox reading off throughout.
+    Starts and ends at XMB.
+    """
+    old_body = b"".join(struct.pack(">II", a, v) for a, v in RAC3_SW_OLD_ROWS)
+    old_body += struct.pack(">HH", len(RAC3_SW_OLD_FLAGS), 0)
+    old_body += b"".join(struct.pack(">I", a) + b"\0\0\0\0" for a in RAC3_SW_OLD_FLAGS)
+    old_stamp = zlib.crc32(old_body) & 0xFFFFFFFF
+    check(old_stamp == 0x0C909623,
+          "rpcs3 rac3 switches: the old patch's stamp is the one builds 50 to 53 handed out",
+          hex(old_stamp))
+
+    pine.poke(RAC3_FASTLOAD_SITE, RAC3_FASTLOAD_SITE_WORD)
+    for addr, value in RAC3_SW_OLD_ROWS:
+        pine.poke(addr, struct.pack(">I", value))
+    for addr in RAC3_SW_OLD_FLAGS:
+        pine.poke(addr, b"\x00")
+    pine.poke(RAC3_SW_FAST_FLAG, b"\x00")
+    pine.poke(RAC3_LOAD_PLANET, b"\0" * 8)
+    pine.boot("NPEA00387", "Ratchet & Clank 3")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 3,
+          "rpcs3 rac3 switches: UYA with the Freeze-ammo-only switch patch reaches INGAME as UYA",
+          info)
+
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, False)
+    check(ok and info["flags"] & SESSION_FLAG_NO_CODE_PATCHES,
+          "rpcs3 rac3 switches: bit2 set and bit4 clear, so the client offers the patch",
+          hex(info["flags"]) if info else None)
+
+    status, stamp, words, single, body = savefile_patch(c, OP_SWITCH_PATCH)
+    check(status == ST_OK and stamp != old_stamp,
+          "rpcs3 rac3 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
+          (status, hex(stamp) if stamp is not None else None))
+    rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
+    check(len(rows) == 31 and rows[:6] == RAC3_SW_OLD_ROWS[:6],
+          "rpcs3 rac3 switches: 31 rows, Freeze ammo's trampoline first and unchanged",
+          len(rows))
+    check(all(0x00980F20 <= a < 0x00980F7C for a, _ in rows[6:29]),
+          "rpcs3 rac3 switches: the fast-load trampoline's 23 words at 0x980F20",
+          [hex(a) for a, _ in rows[6:29]])
+    check(rows[29:] == [(0x00182A88, 0x487FE478), (0x0027B428, 0x48705AF8)],
+          "rpcs3 rac3 switches: and the two sites, the fingerprint's branch as it was",
+          [(hex(a), hex(v)) for a, v in rows[29:]])
+    check(sorted(a for a, _ in (single or [])) == [0x00D9FF10, RAC3_SW_FAST_FLAG],
+          "rpcs3 rac3 switches: two flag bytes, 0xD9FF10 and 0xD9FF11",
+          [hex(a) for a, _ in (single or [])])
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC3_SW_FAST_ID, 1))
+    check(status == ST_UNSUPPORTED,
+          "rpcs3 rac3 switches: Fast loads is refused until then", status)
+    status, _ = c.call(OP_PLANET_LOAD, bytes([5, 0]))
+    check(status == ST_OK and pine.peek(RAC3_LOAD_PLANET, 8) == struct.pack(">II", 1, 5),
+          "rpcs3 rac3 switches: and a planet load goes ahead at the game's own pace",
+          (status, pine.peek(RAC3_LOAD_PLANET, 8).hex()))
+    check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x00" and
+          pine.peek(RAC3_FASTLOAD_SITE, 4) == RAC3_FASTLOAD_SITE_WORD,
+          "rpcs3 rac3 switches: writing no flag and no code word",
+          (pine.peek(RAC3_SW_FAST_FLAG, 1).hex(), pine.peek(RAC3_FASTLOAD_SITE, 4).hex()))
+
+    # -------------------------------------- the client rewrites the patch
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac3 switches: the game is stopped for the new patch")
+    pine.poke(RAC3_LOAD_PLANET, b"\0" * 8)
+    for addr, value in words:
+        pine.poke(addr, value)
+    for addr, value in single:
+        pine.poke(addr, bytes([value]))
+    pine.boot("NPEA00387", "Ratchet & Clank 3")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 3, "rpcs3 rac3 switches: UYA comes back with the new patch", info)
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, True)
+    check(ok, "rpcs3 rac3 switches: and bit4 CODE_SWITCHES is set",
+          hex(info["flags"]) if info else None)
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC3_SW_FAST_ID, 1))
+    check(status == ST_OK and pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x01",
+          "rpcs3 rac3 switches: Fast loads goes on through its flag byte", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC3_SW_FAST_ID, 0))
+    check(status == ST_OK and pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x00",
+          "rpcs3 rac3 switches: and off", status)
+
+    # A forced load: the flag goes up, the checkbox stays off, and the end of the
+    # load puts the flag back.
+    del pine.write_log[:]
+    status, _ = c.call(OP_PLANET_LOAD, bytes([8, 0]))
+    check(status == ST_OK and pine.peek(RAC3_LOAD_PLANET, 8) == struct.pack(">II", 1, 8),
+          "rpcs3 rac3 switches: a planet load to Aquatos goes ahead",
+          (status, pine.peek(RAC3_LOAD_PLANET, 8).hex()))
+    check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x01",
+          "rpcs3 rac3 switches: forcing fast loads on through their flag byte",
+          pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
+    time.sleep(0.4)
+    info = fresh_state(c)
+    check(info is not None and not info["toggle_state"] & (1 << RAC3_SW_FAST_ID),
+          "rpcs3 rac3 switches: while the checkbox reads back off",
+          info["toggle_state"] if info else None)
+    check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x01",
+          "rpcs3 rac3 switches: the flag stays up while the request word is",
+          pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
+    pine.poke(RAC3_LOAD_PLANET, b"\0\0\0\0")
+    time.sleep(0.4)
+    check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x00",
+          "rpcs3 rac3 switches: and the request word clearing puts it back",
+          pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
+    info = fresh_state(c)
+    check(info is not None and not info["toggle_state"] & (1 << RAC3_SW_FAST_ID),
+          "rpcs3 rac3 switches: the checkbox still off",
+          info["toggle_state"] if info else None)
+
+    code = set()
+    for addr, _ in words:
+        code.update(range(addr, addr + 4))
+    code.update(range(0x00980860, 0x009808B8))
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
+    check(not hits, "rpcs3 rac3 switches: no trampoline byte, site word or console cave written",
+          hits[:4])
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac3 switches: UYA stops", info)
+    for addr, _ in words:
+        pine.poke(addr, b"\0\0\0\0")
+    pine.poke(RAC3_LOAD_PLANET, b"\0" * 8)
 
 
 def smoke_rpcs3_held(exe):

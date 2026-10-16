@@ -58,9 +58,11 @@
  * names any of them or their descriptors at 0xBF8148..0xBF817F. No mod racman
  * ever shipped for this game puts anything below 0x980AC0.
  *
- * The reset takes 0x9808C0..0x980AC0, 512 bytes, and is 412 of them; the rest
- * of the span, 0x980304..0x9808C0, is left for whatever needs it next. build.sh
- * fails a reset that would run past SF_CAVE_TROPHY_END, the helper's own cave.
+ * The reset takes 0x9808C0..0x980AC0, 512 bytes, and is 412 of them. Right
+ * under it, 0x980860..0x9808B8, is the console's Fast loads cave
+ * (RAC3_FASTLOAD_CAVE in src/games/rac3.h); the rest of the span,
+ * 0x980304..0x980860, is left for whatever needs it next. build.sh fails a
+ * reset that would run past SF_CAVE_TROPHY_END, the helper's own cave.
  */
 #define SF_CAVE_TROPHY     0x009808C0
 #define SF_CAVE_TROPHY_END 0x00980AC0

@@ -54,8 +54,11 @@
 
 /* rac3: its flag bytes, then its sites */
 #define SW_RAC3_FLAG_FREEZE_AMMO 0x00D9FF10u
+#define SW_RAC3_FLAG_FAST_LOADS 0x00D9FF11u
 #define SW_RAC3_SITE_FREEZE_AMMO_ADDR 0x00182A88u
 #define SW_RAC3_SITE_FREEZE_AMMO 0x487FE478u
+#define SW_RAC3_SITE_FAST_LOADS_ADDR 0x0027B428u
+#define SW_RAC3_SITE_FAST_LOADS 0x48705AF8u
 
 /* rac4: its flag bytes, then its sites */
 #define SW_RAC4_FLAG_CRASH_PATCHES 0x015CD780u

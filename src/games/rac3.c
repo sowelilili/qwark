@@ -1,6 +1,6 @@
 /*
  * Ratchet & Clank 3 (NPEA00387, BCES01503): addresses, patch words, planets, the
- * fingerprint and the delayed fast-load arm. The feature handlers, unlocks and
+ * fingerprint and the fast-load patch. The feature handlers, unlocks and
  * level flags live next door in rac3_panel.c; this file owns the numbers, the
  * hot block and the vtable.
  *
@@ -12,6 +12,7 @@
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
+#include "../core/savefile.h"
 #include "../core/manips.h"
 
 #include <string.h>
@@ -235,9 +236,129 @@ static struct patch_def rac3_ammo = {
 };
 
 /*
- * Build 50. Under RPCS3 it is a code switch instead (src/games/switches/
- * sw_rac3.s), chosen by the flag byte SW_RAC3_FLAG_FREEZE_AMMO.
+ * Fast loads: the console's cave at RAC3_FASTLOAD_CAVE and the branch into it
+ * at RAC3_FASTLOAD_SITE, which rac3.h describes; the site goes last, and
+ * patch_apply puts the cave in before it and takes it out after it.
+ *
+ * sw_rac3.s has the same logic behind a flag byte for RPCS3. The console's
+ * differs in how it calls Transition_UnloadSounds: it points the link register
+ * at the site and branches, so the call comes back to RAC3_FASTLOAD_SITE rather
+ * than into the cave. Turning fast loads off mid-load puts the site's own word
+ * back first and the cave's after it, and a PPU inside Transition_UnloadSounds
+ * then - it waits on the sound system - comes back to the game's own
+ * instruction rather than into a cave being taken out from under it. With the
+ * branch still in, it comes back through the cave, finds r27 set and does what
+ * the site does. (RPCS3 never takes its trampoline out, and keeps the ordinary
+ * call its recompiler expects.)
+ *
+ *   0x980860  cmpwi  r27, 0           over on its own: nothing to do
+ *             bne    out
+ *             lis    r3, 0xDA
+ *             lhz    r4, -0x6F22(r3)  RAC3_TRANSITION_ID
+ *             cmplwi r4, 5
+ *             bgt    out              not a transition that plays clips
+ *             lwz    r4, -0x6F6C(r3)  RAC3_LOADER_STAGE
+ *             cmpwi  r4, 2
+ *             blt    out              the level is not read yet
+ *             lwz    r4, -0x6F68(r3)  RAC3_TRANSITION_HOLD
+ *             cmpwi  r4, 0
+ *             beq    out              its banks are gone already
+ *             lis    r3, 0x135
+ *             lis    r4, 0x3F80
+ *             stw    r4, -0x1420(r3)  RAC3_TRANSITION_FADE = 1.0f, black
+ *             li     r27, 1           the transition is over
+ *             lis    r3, 0x28
+ *             addi   r3, r3, -0x4BD8
+ *             mtlr   r3               back to RAC3_FASTLOAD_SITE
+ *             b      0x278A00         Transition_UnloadSounds
+ *   out:      cmpwi  r27, 0           the site's own instruction
+ *             b      0x27B42C
+ *   0x27B428  b      0x980860
+ *
+ * Assembled with the SDK's ppu-lv2-gcc and ld at these addresses.
  */
+static const struct patch_word rac3_fastload_words[] = {
+	{ RAC3_FASTLOAD_CAVE + 0x00, 0x2C1B0000u },
+	{ RAC3_FASTLOAD_CAVE + 0x04, 0x4082004Cu },
+	{ RAC3_FASTLOAD_CAVE + 0x08, 0x3C6000DAu },
+	{ RAC3_FASTLOAD_CAVE + 0x0C, 0xA08390DEu },
+	{ RAC3_FASTLOAD_CAVE + 0x10, 0x28040005u },
+	{ RAC3_FASTLOAD_CAVE + 0x14, 0x4181003Cu },
+	{ RAC3_FASTLOAD_CAVE + 0x18, 0x80839094u },
+	{ RAC3_FASTLOAD_CAVE + 0x1C, 0x2C040002u },
+	{ RAC3_FASTLOAD_CAVE + 0x20, 0x41800030u },
+	{ RAC3_FASTLOAD_CAVE + 0x24, 0x80839098u },
+	{ RAC3_FASTLOAD_CAVE + 0x28, 0x2C040000u },
+	{ RAC3_FASTLOAD_CAVE + 0x2C, 0x41820024u },
+	{ RAC3_FASTLOAD_CAVE + 0x30, 0x3C600135u },
+	{ RAC3_FASTLOAD_CAVE + 0x34, 0x3C803F80u },
+	{ RAC3_FASTLOAD_CAVE + 0x38, 0x9083EBE0u },
+	{ RAC3_FASTLOAD_CAVE + 0x3C, 0x3B600001u },
+	{ RAC3_FASTLOAD_CAVE + 0x40, 0x3C600028u },
+	{ RAC3_FASTLOAD_CAVE + 0x44, 0x3863B428u },
+	{ RAC3_FASTLOAD_CAVE + 0x48, 0x7C6803A6u },
+	{ RAC3_FASTLOAD_CAVE + 0x4C, 0x4B8F8154u },
+	{ RAC3_FASTLOAD_CAVE + 0x50, 0x2C1B0000u },
+	{ RAC3_FASTLOAD_CAVE + 0x54, 0x4B8FAB78u },
+	{ RAC3_FASTLOAD_SITE,        0x48705438u }
+};
+
+#define RAC3_FASTLOAD_WORDS \
+	(u16)(sizeof(rac3_fastload_words) / sizeof(rac3_fastload_words[0]))
+
+static struct patch_def rac3_fastload = {
+	"Fast loads", PATCH_KIND_FEATURE, rac3_fastload_words, RAC3_FASTLOAD_WORDS, NULL
+};
+
+/*
+ * Build 50. Under RPCS3 both are code switches instead (src/games/switches/
+ * sw_rac3.s), chosen by the flag bytes SW_RAC3_FLAG_* name.
+ */
+
+/* What the checkbox holds. */
+static int g_fastload_on;
+
+/*
+ * Fast loads are on because a planet load forced them, not because the
+ * checkbox is: from rac3_fastload_force until the watcher's restore. On a
+ * console that is invisible, since the checkbox is qwark's own bit. With the
+ * code switches in, the checkbox is read back out of the flag byte, and while
+ * this is set the read-back reports the checkbox rather than the force, so it
+ * does not flick on for the length of every planet load. rac2.c's
+ * g_fastload_forced, word for word.
+ */
+static int g_fastload_forced;
+
+/* A planet load has been seen under way and not yet seen out; see rac3_fastload_watch. */
+static int g_fastload_loading;
+
+/*
+ * savefile_load_refusals as rac3_on_tick last saw it, rac2.c's g_sf_refusals:
+ * a set-aside load forces fast loads before its request goes out, and the
+ * helper can still drop the request on the game's frame - the game would not
+ * pause, or there was no save - when no load follows to put them back.
+ */
+static u32 g_sf_refusals;
+
+/*
+ * A planet load and a set-aside load force fast loads on and the watcher puts
+ * the checkbox back when the load is over, as RaC2's do. patch_apply is a no-op when the toggle
+ * already applied it, so nothing is captured twice and nothing is written twice.
+ */
+int rac3_fastload_force(void)
+{
+	int rc = classic_code_force(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS);
+
+	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
+	return rc;
+}
+
+int rac3_fastload_restore(void)
+{
+	g_fastload_forced = 0;
+	if (g_fastload_on) return ST_OK;
+	return classic_code_toggle(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS, 0);
+}
 
 static void rac3_init(void)
 {
@@ -246,46 +367,8 @@ static void rac3_init(void)
 	if (done) return;
 	done = 1;
 
-	rac3_ammo.originals = patch_pool_alloc(rac3_ammo.count);
-}
-
-/*
- * rac3.cs armed fastLoad2 from a 200 ms WinForms timer after writing fastLoad1.
- * Here the countdown is in ticks and on_tick does the second write, so the
- * delay costs nothing until it fires.
- */
-static int g_fastload_arm;
-
-/*
- * The Fast loads toggle, and the planet load it has to survive.
- *
- * The two fast-load values are game data rather than patched code, and the game
- * writes its own over them every time it loads a planet. One arm is therefore
- * good for one trip: rac3.cs never noticed, because the only thing that ever
- * armed them was its own Load planet button and the next click armed them
- * again. A toggle that stays on until the user turns it off cannot work that
- * way, so g_fastload_on is what the checkbox holds and the watcher below puts
- * the values back on every planet load, the ones the client asks for and the
- * ones the game does on its own.
- */
-static int g_fastload_on;
-
-/* Whether the last tick saw a planet load in progress; see rac3_fastload_watch. */
-static int g_fastload_loading;
-
-int rac3_arm_fast_loads(void)
-{
-	int rc = mem_write_u32(RAC3_FAST_LOAD_1, 3);
-
-	if (rc != ST_OK) return rc;
-
-	/*
-	 * rac3.cs guards this with "planetIndex != 26 || planetIndex != 20 ||
-	 * planetIndex != 29", which is true for every planet. The arm is therefore
-	 * unconditional here too, which is what the old client actually did.
-	 */
-	g_fastload_arm = RAC3_FASTLOAD_DELAY_TICKS;
-	return ST_OK;
+	rac3_ammo.originals     = patch_pool_alloc(rac3_ammo.count);
+	rac3_fastload.originals = patch_pool_alloc(rac3_fastload.count);
 }
 
 /* ------------------------------------------------- the autosplit watcher */
@@ -457,9 +540,14 @@ static const struct autosplit_desc *rac3_autosplit_describe(u8 *count)
 
 static void rac3_on_enter(void)
 {
-	g_fastload_arm = 0;
+	/*
+	 * A fresh process: nothing is forced, nothing has been seen yet. The patch
+	 * went with the old process, and a new one starts without it.
+	 */
 	g_fastload_on = 0;
+	g_fastload_forced = 0;
 	g_fastload_loading = 0;
+	g_sf_refusals = savefile_load_refusals();
 
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
@@ -484,35 +572,40 @@ static void rac3_on_enter(void)
 }
 
 /*
- * Fast loads, re-armed around every planet load while the toggle is on.
+ * The end of a planet load, for the fast-load restore: the load request word
+ * (RAC3_LOAD_PLANET) down again, with the game out of mode 6.
  *
- * Two edges of the same trip are watched, and both are worth having. The start
- * is the game's destination planet becoming one other than the planet underfoot,
- * which is where rac3.cs re-applied the values and is what makes *this* load
- * fast. The arrival is the planet underfoot changing, which is what makes the
- * *next* load fast whatever the game wrote over the values on its way out of
- * this one. Aquatos is left alone at both ends, as rac3.cs LoadPlanetSafe left
- * it alone.
+ * Whoever asks for a load - qwark's PLANET_LOAD, the game's ship menu, a save
+ * loaded, the savefile helper - sets the request word, and it stays set through
+ * the whole transition (0x27B360, mode 6) and the finish behind it: main's init
+ * 0x13E10 clears it (at 0x13F74) only once the transition has returned, and the
+ * new level loop's init then puts the mode to 0 (0x1D7068). By then the patched
+ * loop is not running, so the restore can take the patch out from under it;
+ * RaC2's watcher puts its fast loads back at the end of the load screen for the
+ * same reason.
  *
- * Runs before rac3_autosplit_tick, because that is what moves g_as_prev on.
+ * The mode is what keeps one load from ending twice. A request that is pending
+ * when the game goes from the pause to its space flight (the mode change at
+ * 0x22A0C4) is cleared there (0x22A0F4) and turned into the ship leaving the
+ * planet, mode 6, which raises the request again when it is time for the
+ * transition (0x26EF40, then 0x27389C): the word is down for a while in the
+ * middle of that load, but the mode is 6 throughout.
+ *
+ * Every load's end restores, whoever started it, as RaC2's does: with nothing
+ * forced it puts back what the checkbox already says.
  */
 static void rac3_fastload_watch(void)
 {
-	int loading = g_as.dest_planet != 0 && g_as.dest_planet != g_as.planet;
-	int started = loading && !g_fastload_loading;
-	int arrived = g_as.planet != g_as_prev.planet;
-	u8  planet;
+	if (g_load_request != 0) {
+		g_fastload_loading = 1;
+		return;
+	}
 
-	g_fastload_loading = loading;
+	if (!g_fastload_loading || g_mode == RAC3_GAME_STATE_LOAD) return;
 
-	/* g_as_prev is a previous state only once the watcher has primed it. */
-	if (!g_fastload_on || !g_as_primed) return;
-	if (!started && !arrived) return;
-
-	planet = started ? g_as.dest_planet : g_as.planet;
-	if (planet == RAC3_PLANET_AQUATOS) return;
-
-	rac3_arm_fast_loads();
+	/* The load is over: put fast loads back where the toggle wants them. */
+	g_fastload_loading = 0;
+	rac3_fastload_restore();
 }
 
 /* ---------------------- the manips' file-load trigger and the trophies, 1.21 */
@@ -627,19 +720,18 @@ static int rac3_in_file(void)
 
 static void rac3_on_tick(const struct game_hot *hot)
 {
-	static const u8 force[2] = { 0x01, 0x01 };
-
 	(void)hot;
+
+	/* A set-aside load the helper dropped puts the forced fast loads back. */
+	if (savefile_load_refusals() != g_sf_refusals) {
+		g_sf_refusals = savefile_load_refusals();
+		if (g_fastload_forced) rac3_fastload_restore();
+	}
 
 	rac3_fastload_watch();
 	rac3_autosplit_tick();
 	rac3_file_load_watch();
 	rac3_trophy_tick();
-
-	if (g_fastload_arm == 0) return;
-	if (--g_fastload_arm != 0) return;
-
-	mem_write(RAC3_FAST_LOAD_2, force, sizeof(force));
 }
 
 /* -------------------------------------------------------------- describe */
@@ -695,10 +787,10 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
 	/*
-	 * Two game words rather than a patch, which is why this one has no
-	 * WRITES_CODE: see rac3_fastload_watch for what keeps them written.
+	 * A code patch now, as RaC1's and RaC2's are (rac3.h, RAC3_FASTLOAD_SITE);
+	 * until build 53 two game words, and no WRITES_CODE.
 	 */
-	{ R3_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Fast loads" },
+	{ R3_FAST_LOADS,    FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
 
 	{ R3_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ R3_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_BOLTS,     0, 0, "Bolts" },
@@ -799,21 +891,22 @@ static int rac3_health_freeze(u64 value, int on)
 
 static int rac3_set_toggle(u8 id, int on)
 {
+	int rc;
+
 	switch (id) {
 	case R3_FREEZE_AMMO:   return classic_code_toggle(&rac3_ammo, SW_RAC3_FLAG_FREEZE_AMMO, on);
 	case R3_FREEZE_HEALTH: return rac3_health_freeze(200, on);
 	case R3_OHKO:          return rac3_health_freeze(1, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);
-	/*
-	 * On arms the values now and leaves the watcher to put them back around
-	 * every planet load. Off only stops the re-arming: the two values are the
-	 * game's own and the next load writes over them, so there is nothing to
-	 * restore and nothing that would take effect before then anyway.
-	 */
 	case R3_FAST_LOADS:
-		g_fastload_on = (on != 0);
-		return on ? rac3_arm_fast_loads() : ST_OK;
+		rc = classic_code_toggle(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS, on);
+		if (rc == ST_OK) {
+			g_fastload_on = (on != 0);
+			/* Whatever a load forced, the checkbox has the say now. */
+			g_fastload_forced = 0;
+		}
+		return rc;
 	/*
 	 * qwark-side state, read by rac3_file_load_watch. Build 53: the reset it
 	 * asks for is refused under RPCS3 (rac3_panel.c), so turning it on is too.
@@ -837,8 +930,14 @@ static int rac3_toggle_read(u8 id, int *on)
 	u8 b = 0;
 	int rc;
 
-	/* Build 50: the code switch's flag byte, while the switch is in. */
+	/* Build 50: the code switches' flag bytes, while the switches are in. */
 	if (id == R3_FREEZE_AMMO) return classic_code_read(SW_RAC3_FLAG_FREEZE_AMMO, on);
+	if (id == R3_FAST_LOADS) {
+		rc = classic_code_read(SW_RAC3_FLAG_FAST_LOADS, on);
+		/* A load's force is not the checkbox; see g_fastload_forced. */
+		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
+		return rc;
+	}
 
 	if (id != R3_QS_PAUSE) return ST_NOT_FOUND;
 
