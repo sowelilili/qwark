@@ -286,6 +286,11 @@ static int g_softlock_on;
 static u8  g_prev_tutorial  = 0xFF;
 static u8  g_prev_game_mode;
 
+/* Build 53: Freeze health, held at the hero's own maximum (rac4.h). */
+static struct classic_health rac4_freeze_health = {
+	RAC4_PLAYER_HEALTH, RAC4_MAX_HEALTH, 1, 0, 0
+};
+
 int rac4_fastload_force(void)
 {
 	int rc = classic_code_force(&rac4_fastload, SW_RAC4_FLAG_FAST_LOADS);
@@ -516,6 +521,7 @@ static void rac4_on_enter(void)
 	g_tutorial      = 0xFF;
 	g_fl_primed     = 0;
 	g_fl_due        = 0;
+	classic_health_forget(&rac4_freeze_health);
 
 	/* The watcher starts over; the pause state deliberately does not. */
 	memset(&g_as, 0, sizeof(g_as));
@@ -631,6 +637,7 @@ static void rac4_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
 
+	classic_health_tick(&rac4_freeze_health);
 	rac4_autosplit_tick();
 	rac4_file_load_watch();
 
@@ -751,18 +758,6 @@ static const struct game_describe *rac4_describe(void)
 
 /* --------------------------------------------------------------- toggles */
 
-static int rac4_freeze_health(int on)
-{
-	int id;
-
-	/* RAC4Form froze it to 200, with its own "idk why 200 tbh" beside it. */
-	if (on) return freeze_add(RAC4_PLAYER_HEALTH, 4, 200, NULL);
-
-	id = freeze_find(RAC4_PLAYER_HEALTH, 4);
-	if (id < 0) return ST_OK;
-	return freeze_remove((u8)id);
-}
-
 static int rac4_set_toggle(u8 id, int on)
 {
 	int rc;
@@ -786,7 +781,7 @@ static int rac4_set_toggle(u8 id, int on)
 		return rc;
 
 	case R4_REFILL_AMMO:    return classic_code_toggle(&rac4_ammo, SW_RAC4_FLAG_REFILL_AMMO, on);
-	case R4_FREEZE_HEALTH:  return rac4_freeze_health(on);
+	case R4_FREEZE_HEALTH:  return classic_health_toggle(&rac4_freeze_health, on);
 	case R4_GHOST:          return classic_ghost(RAC4_GHOST_TIMER, on);
 	default:                return ST_NOT_FOUND;
 	}

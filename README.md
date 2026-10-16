@@ -4,6 +4,8 @@ qwark is a PS3 VSH plugin (SPRX) that runs the RaCMAN trainer on the console its
 
 Supported games in this release: Ratchet & Clank (NPEA00385), Going Commando (NPEA00386, and the RC2ILYOOO and BLMODYOOO repacks of it), Up Your Arsenal (NPEA00387), Deadlocked (NPEA00423), and the BCES01503 trilogy collection.
 
+Every game has Freeze health under Cheats, which holds health at the player's current maximum, whatever the health upgrades have made it.
+
 Anything else the console runs still gets the memory tools: a game qwark has no table for comes up with its title id and no features, and the memory viewer, watches, freezes and patches work on it.
 
 ## Requirements

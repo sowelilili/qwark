@@ -279,25 +279,6 @@ int rac1_unlock_set(u8 id, u8 field, u32 value)
 	}
 }
 
-/* Every weapon gets its maximum, the "give all ammo" button from NewUnlocks. */
-static int rac1_max_ammo_all(void)
-{
-	u8 i;
-
-	for (i = 0; i < RAC1_UNLOCK_COUNT; i++) {
-		const struct rac1_item *it = &rac1_items[i];
-		int rc;
-
-		if (rac1_unlocks[i].category != CAT_WEAPONS) continue;
-		if (rac1_ammo_addr(it) == 0) continue;
-
-		rc = mem_write_u32(rac1_ammo_addr(it), it->max_ammo);
-		if (rc != ST_OK) return rc;
-	}
-
-	return ST_OK;
-}
-
 /* ------------------------------------------------------------ level flags */
 
 /*
@@ -676,9 +657,6 @@ int rac1_trigger(u8 id)
 
 	case F_UNLOCK_STYLE:
 		return mem_write_fill(RAC1_STYLE_POINTS, 1, 30);
-
-	case F_MAX_AMMO:
-		return rac1_max_ammo_all();
 
 	case F_LOAD_SETASIDE:
 		return rac1_load_setaside();

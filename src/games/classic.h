@@ -25,6 +25,36 @@ int  classic_die_set_z(u32 coords_addr);
 #define CLASSIC_GHOST_VALUE 10
 int  classic_ghost(u32 timer_addr, int on);
 
+/*
+ * Build 53: Freeze health, in all four games. Each keeps the player's maximum
+ * beside the hit points, and the game itself moves it as the health upgrades
+ * come in (RaC1's two nanotech items, the experience levels and nanotech boosts
+ * of the other three), so the toggle holds the hit points at whatever that
+ * maximum is now rather than at a fixed number: a freeze entry carries it, and
+ * classic_health_tick, which the game's on_tick calls, reads the maximum every
+ * CLASSIC_HEALTH_EVERY ticks and moves the entry with it.
+ *
+ * The two words are the same type in every game, a signed word in RaC1 to RaC3
+ * and a float in Deadlocked, so the four bytes are copied as they are. While the
+ * maximum reads as nothing a game would hold (0 before a game sets it, a
+ * negative or a non-finite float) no entry is kept, so the toggle never pins a
+ * player at 0. Off removes the entry and leaves the hit points where they are.
+ */
+struct classic_health {
+	u32 health;     /* the hit points */
+	u32 max;        /* the game's own maximum, the same type */
+	u8  is_float;   /* both are f32 (Deadlocked) rather than s32 */
+	u8  on;         /* the toggle, qwark-side state */
+	u8  wait;       /* ticks to the next look at the maximum */
+};
+
+#define CLASSIC_HEALTH_EVERY 8
+
+int  classic_health_toggle(struct classic_health *h, int on);
+void classic_health_tick(struct classic_health *h);
+/* A new process: the toggle goes with it, as its bit in toggle_state does. */
+void classic_health_forget(struct classic_health *h);
+
 /* Turning a patch off that is already off is not an error. */
 int  classic_patch_toggle(const struct patch_def *def, int on);
 

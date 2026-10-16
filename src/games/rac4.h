@@ -80,6 +80,13 @@
  * the state byte RAC4_PLAYER_STATE names, +0x2E20 the hit points
  * RAC4_PLAYER_HEALTH names and +0x2F04 the three debug-teleport floats
  * RAC4_COORDS2 names.
+ *
+ * Build 53: +0x2F24 is the maximum the hit points are filled to, a float like
+ * them. The hero's setup writes both from the same float (0x3421A0, 0x3421B8),
+ * the game fills the hit points from it (0x17CAC, 0x1A818, 0x1D7C90), and
+ * other code writes maxima of its own to it (50.0 at 0x2EF8FC). Freeze health
+ * holds the hit points at it (classic.h); the old form froze the integer 200
+ * into the float, which reads as 0.
  */
 #define RAC4_COORDS            0x010D44D0u  /* +0x00A0 Vec4 pos then +0x00B0 Vec4 rot */
 #define RAC4_COORDS2           0x010D7334u  /* +0x2F04 cheatX/Y/Z, position only */
@@ -87,7 +94,8 @@
 #define RAC4_CAM_YAW           0x010D5DE0u  /* +0x19B0 f32 camera yaw, left/right */
 #define RAC4_CAMERA_LR         0x010D5DF0u  /* +0x19C0 NOT a rotation, see below */
 #define RAC4_CAMERA_UD         0x010D5E00u  /* +0x19D0 f32 camera pitch, up/down */
-#define RAC4_PLAYER_HEALTH     0x010D7250u
+#define RAC4_PLAYER_HEALTH     0x010D7250u  /* +0x2E20 f32, the hit points */
+#define RAC4_MAX_HEALTH        0x010D7354u  /* +0x2F24 f32, their maximum */
 #define RAC4_PLAYER_STATE      0x010D69FCu
 
 #define RAC4_CURRENT_PLANET    0x0119353Cu  /* 0 in the main menu */

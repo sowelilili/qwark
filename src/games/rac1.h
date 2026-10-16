@@ -55,6 +55,16 @@
  */
 #define RAC1_DREK_SKIP        0xFACC78u   /* u32, 0 or 1 */
 #define RAC1_DREK_CUTSCENE    0xFACC74u   /* u32, 0 or 1 */
+/*
+ * Build 53, Freeze health (classic.h). rac1.cs names the hit points, a word;
+ * the maximum is the game's own word beside its other globals, from the
+ * NPEA00385 executable: 4 from the new-game reset (0xE7190), 5 and 8 when the
+ * Premium and Ultra Nanotech are bought (0x24A940, 0x24AA10) or a save that has
+ * them is loaded (0x13E950, 0x13E970), and the respawn puts the hit points back
+ * to it (0x7F2E0).
+ */
+#define RAC1_PLAYER_HEALTH    0x96BF88u   /* s32 */
+#define RAC1_MAX_HEALTH       0x71FB28u   /* s32: 4, 5 or 8 */
 #define RAC1_MOBY_TABLE       0x0A390A0u
 #define RAC1_MOBY_TABLE_END   0x0A390A8u
 #define RAC1_MOBY_STRIDE      0x100u      /* sizeof(Moby) from rac1.cs */
@@ -224,7 +234,8 @@ extern const u8 rac1_fp_patched[4];
  * Retired, never to be reused: 9 (force okay load), and since build 53 the
  * manip buttons the manip groups replaced (protocol 1.21): 7 (Drek skip),
  * 8 (Drek cutscene), 10 (reset shooting skill points), 11 (setup shooting skill
- * points) and 16 (any% all-missions reset).
+ * points) and 16 (any% all-missions reset); and 17 (max ammo, all weapons),
+ * which infinite ammo covers.
  */
 #define F_FAST_LOADS        0
 #define F_INFINITE_AMMO     1
@@ -241,7 +252,7 @@ extern const u8 rac1_fp_patched[4];
 #define F_RESET_STYLE       14
 #define F_UNLOCK_STYLE      15
 /* 16 retired: any% all-missions reset */
-#define F_MAX_AMMO          17
+/* 17 retired: max ammo, all weapons */
 #define F_LOAD_SETASIDE     18
 #define F_SET_ASIDE_FILE    19
 #define F_FORCE_AUTOSAVE    20
@@ -252,6 +263,9 @@ extern const u8 rac1_fp_patched[4];
 #define F_DBG_MOBYS         25
 #define F_DBG_PARTICLES     26
 #define F_DBG_CAMERA        27
+
+/* Build 53: the hit points held at the game's maximum (classic.h). */
+#define F_FREEZE_HEALTH     28
 
 /* -------------------------------------------------------- level flag regions */
 

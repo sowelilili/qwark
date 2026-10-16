@@ -24,6 +24,14 @@
 #define RAC3_CURRENT_PLANET    0x00C1E438u
 #define RAC3_ITEM_ARRAY        0x00C1E43Cu  /* one byte per item id: its version */
 #define RAC3_BOLTS             0x00C1E4DCu
+/*
+ * Build 53, Freeze health (classic.h): the game's maximum, a word, from the
+ * NPEA00387 executable. The game works it out from the health XP and the ten
+ * bytes at +0x50 beside it, writes it at 0x14EF68 when it changes, with a
+ * message of its own at 200, the most there is, and sets the hit points to it
+ * when it fills them (0x64E58, 0x6AD808).
+ */
+#define RAC3_MAX_HEALTH        0x00C1E4E4u  /* s32, up to 200 */
 #define RAC3_CHALLENGE_MODE    0x00C1E50Eu  /* one byte */
 #define RAC3_HEALTH_XP         0x00C1E510u
 #define RAC3_CURRENT_ARMOR     0x00C1E51Cu  /* u16 */
@@ -89,7 +97,7 @@
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
 #define RAC3_PLAYER_STATE      0x00DA4DB4u
-#define RAC3_PLAYER_HEALTH     0x00DA5040u
+#define RAC3_PLAYER_HEALTH     0x00DA5040u  /* s32, the hit points */
 #define RAC3_SKILL_POINTS      0x00DA521Du  /* 30 bytes */
 #define RAC3_AMMO_ARRAY        0x00DA5240u  /* + (ammo offset - 0x243) */
 #define RAC3_SHIP_COLOUR       0x00DA55E8u  /* one byte */
@@ -334,11 +342,11 @@ extern const u8 rac3_fp_switch[4];
  * file), 28 (give 1337 ammo), 29 (setup NG+ weapons) and 30 (equip the bomb
  * glove), and since build 53 the manip buttons the manip groups replaced
  * (protocol 1.21): 16 (setup NG+ manips), 18 (CC early setup), 19 (untune
- * bosses) and 20 (reset dropship health).
+ * bosses) and 20 (reset dropship health); and 2 (one-hit KO).
  */
 #define R3_FREEZE_AMMO       0
 #define R3_FREEZE_HEALTH     1
-#define R3_OHKO              2
+/* 2 retired in build 53: one-hit KO */
 #define R3_GHOST             3
 /* 4 retired */
 #define R3_QS_PAUSE          5

@@ -973,6 +973,52 @@ def mem_read_u8(c, addr):
     return body[0]
 
 
+def read_u32_until(c, addr, want, timeout=1.0):
+    """Reads the word until it is `want` or the time runs out; returns the last read."""
+    deadline = time.time() + timeout
+    got = mem_read_u32(c, addr)
+    while got != want and time.time() < deadline:
+        time.sleep(0.02)
+        got = mem_read_u32(c, addr)
+    return got
+
+
+# Build 53: Freeze health in every game holds the hit points at the game's own
+# maximum, which the health upgrades move. `full`, `more` and `hurt` are the
+# words as the game stores them: s32 in RaC1 to RaC3, f32 in Deadlocked.
+RAC1_FREEZE_HEALTH = {"id": 28, "health": 0x0096BF88, "max": 0x0071FB28,
+                      "full": 5, "more": 8, "hurt": 1}
+
+
+def exercise_freeze_health(c, name, fh):
+    health, maxw = fh["health"], fh["max"]
+    on = struct.pack(">BI", fh["id"], 1)
+    off = struct.pack(">BI", fh["id"], 0)
+
+    mem_write(c, maxw, struct.pack(">I", fh["full"]))
+    mem_write(c, health, struct.pack(">I", fh["hurt"]))
+    status, _ = c.call(OP_FEATURE_SET, on)
+    if not check(status == ST_OK, "%s: Freeze health turns on" % name, status):
+        return
+    got = read_u32_until(c, health, fh["full"])
+    check(got == fh["full"], "%s: and holds the hit points at the maximum" % name, got)
+
+    mem_write(c, health, struct.pack(">I", fh["hurt"]))
+    got = read_u32_until(c, health, fh["full"])
+    check(got == fh["full"], "%s: a hit is put right" % name, got)
+
+    mem_write(c, maxw, struct.pack(">I", fh["more"]))
+    got = read_u32_until(c, health, fh["more"])
+    check(got == fh["more"], "%s: a health upgrade moves the hold with it" % name, got)
+
+    status, _ = c.call(OP_FEATURE_SET, off)
+    check(status == ST_OK, "%s: Freeze health turns off" % name, status)
+    mem_write(c, health, struct.pack(">I", fh["hurt"]))
+    time.sleep(0.2)
+    got = mem_read_u32(c, health)
+    check(got == fh["hurt"], "%s: and lets go of the hit points" % name, got)
+
+
 # ------------------------------------------------------------- autosplitting
 
 def autosplit_events(c, since=0):
@@ -1194,7 +1240,7 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        "features": 29,
+        "features": 28,
         # The two crash guards' branches (src/games/rac2.c), written as the
         # session enters over the game's own words: (address, game, guard).
         "entry_code": [(0x00086960, 0x7F24C814, 0x490BAAE0),
@@ -1205,8 +1251,12 @@ OTHER_GAMES = [
         # Build 53: a save of the game's own, which a set-aside copies.
         "sf_save": RAC2_SAVE_WRITES,
         # Retired, never renumbered: 32 and 33, the two tempsave manager rows,
-        # and (build 53) 15 to 22, the manip buttons and auto-reset toggles.
-        "retired": [15, 16, 17, 18, 19, 20, 21, 22, 32, 33],
+        # and (build 53) 15 to 22, the manip buttons and auto-reset toggles,
+        # and 4, weapon insta-upgrades.
+        "retired": [4, 15, 16, 17, 18, 19, 20, 21, 22, 32, 33],
+        # Build 53: the hit points and the game's own maximum, both words.
+        "freeze_health": {"id": 2, "health": 0x014816AC, "max": 0x01329A98,
+                          "full": 10, "more": 23, "hurt": 3},
         "readouts": 9,
         "planets": 27,
         "planet0": "Aranos",
@@ -1302,14 +1352,17 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 29,
+        "features": 28,
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
         "sf_setaside": 0x00D9FF02,
         # Build 53: a save of the game's own, which a set-aside copies.
         "sf_save": RAC3_SAVE_WRITES,
         # Retired, never renumbered: 4, 17, 28, 29, 30 and 33, and (build 53)
-        # the manip buttons 16, 18, 19 and 20.
-        "retired": [4, 16, 17, 18, 19, 20, 28, 29, 30, 33],
+        # the manip buttons 16, 18, 19 and 20, and 2, one-hit KO.
+        "retired": [2, 4, 16, 17, 18, 19, 20, 28, 29, 30, 33],
+        # Build 53: the hit points and the game's own maximum, both words.
+        "freeze_health": {"id": 1, "health": 0x00DA5040, "max": 0x00C1E4E4,
+                          "full": 30, "more": 200, "hurt": 7},
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
@@ -1424,6 +1477,11 @@ OTHER_GAMES = [
         # Retired, never renumbered: 16, "Reset all weapon levels", and (build
         # 53) 12, "Act tune bosses", which is the NG+ manip group now.
         "retired": [12, 16],
+        # Build 53: the hero's hit points and maximum, both floats: 15.0, 200.0
+        # and 5.0. The old form froze the integer 200 into the float.
+        "freeze_health": {"id": 4, "health": 0x010D7250, "max": 0x010D7354,
+                          "full": 0x41700000, "more": 0x43480000,
+                          "hurt": 0x40A00000},
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
@@ -2670,6 +2728,9 @@ def exercise_game(c, sim, spec, udp=None):
         check(status == ST_OK and mem_read_u32(c, fl["site"]) == fl["site_word"],
               "%s: and off puts the game's word back" % name,
               (status, hex(mem_read_u32(c, fl["site"]))))
+
+    if spec.get("freeze_health"):
+        exercise_freeze_health(c, name, spec["freeze_health"])
 
     # ------------------------------------------------------ autosplitting
     if udp is not None and spec.get("autosplit"):
@@ -4305,8 +4366,15 @@ def main():
             # Build 53: the five manip buttons are retired the same way.
             check(not any(i in by_id for i in (7, 8, 10, 11, 16)),
                   "nor the five retired manip ids", sorted(by_id))
-            check(6 in by_id and 12 in by_id and 17 in by_id,
+            check(6 in by_id and 12 in by_id and 18 in by_id,
                   "and the ids around them kept their numbers")
+            # Build 53: max ammo, all weapons (17) is retired, and Freeze health
+            # takes 28, in Cheats.
+            check(17 not in by_id, "nor the retired max-ammo id 17", sorted(by_id))
+            fh = by_id.get(RAC1_FREEZE_HEALTH["id"], {})
+            check(fh.get("kind") == FEATURE_TOGGLE and fh.get("label") == "Freeze health"
+                  and groups[fh.get("group", 0)] == "Cheats",
+                  "Freeze health is 28, a toggle in Cheats", fh)
             check(len(groups) <= 16 and len(readouts) <= 16 and len(features) <= 64,
                   "DESCRIBE stays inside its caps", (len(groups), len(readouts)))
             labels = [f["label"] for f in features]
@@ -4340,6 +4408,8 @@ def main():
         status, _ = c.call(OP_FEATURE_OPTIONS, bytes([0]))
         check(status == ST_BAD_ARG,
               "asking a TOGGLE for options is BAD_ARG", status)
+
+        exercise_freeze_health(c, "RaC1", RAC1_FREEZE_HEALTH)
 
         # ------------------------------------------- the savefile block, 1.9
         save_aside = [f for f in by_id.values()
@@ -5069,7 +5139,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 29, "with RaC3's twenty-nine features",
+            check(len(features) == 28, "with RaC3's twenty-eight features",
                   len(features))
 
         # ------------------------ BLMODYOOO, a repacked PAL Going Commando
@@ -5092,7 +5162,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BLMODYOOO", status):
             game, _groups, _readouts, features, _consumed = parse_describe(body)
             check(game == 2, "and names RaC2", game)
-            check(len(features) == 29, "with RaC2's twenty-nine features",
+            check(len(features) == 28, "with RaC2's twenty-eight features",
                   len(features))
 
         # ------------------------------- a title no game table claims

@@ -366,6 +366,14 @@ static int g_load_primed;
  */
 static u32 g_sf_refusals;
 
+/*
+ * Build 53: Freeze health, held at the game's own maximum (rac2.h) rather than
+ * at the old form's 42069.
+ */
+static struct classic_health rac2_freeze_health = {
+	RAC2_PLAYER_HEALTH, RAC2_MAX_HEALTH, 0, 0, 0
+};
+
 int rac2_death_bosses(void) { return g_death_bosses; }
 int rac2_death_pbolts(void) { return g_death_pbolts; }
 
@@ -560,14 +568,16 @@ static void rac2_on_enter(void)
 	g_sf_refusals     = savefile_load_refusals();
 
 	/*
-	 * The two toggles that are qwark's own state rather than game memory go
-	 * with the process, as their bits in toggle_state do (features_forget_state
-	 * runs just before this). Only the auto-apply that follows this call and
-	 * PREVIOUS_REAPPLY turn them back on, both through rac2_set_toggle, so the
-	 * flag and the checkbox agree.
+	 * The toggles that are qwark's own state rather than game memory go with
+	 * the process, as their bits in toggle_state do (features_forget_state
+	 * runs just before this): the two per-death resets and, build 53, Freeze
+	 * health's tracking of the maximum. Only the auto-apply that follows this
+	 * call and PREVIOUS_REAPPLY turn them back on, both through rac2_set_toggle,
+	 * so the flag and the checkbox agree.
 	 */
 	g_death_bosses = 0;
 	g_death_pbolts = 0;
+	classic_health_forget(&rac2_freeze_health);
 
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
@@ -604,6 +614,7 @@ static void rac2_on_tick(const struct game_hot *hot)
 {
 	u8 count = g_load_count;
 
+	classic_health_tick(&rac2_freeze_health);
 	rac2_autosplit_tick();
 
 	/* Build 53: a set-aside load the helper dropped puts the forced fast loads back. */
@@ -707,7 +718,7 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ R2_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ R2_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
-	{ R2_INSTA_UPGRADE,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Weapon insta-upgrades" },
+	/* Build 53: weapon insta-upgrades is retired, id 4 and all (rac2.h). */
 	{ R2_DEBUG_MODE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Enable debug mode" },
 
 	{ R2_DIE,             FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
@@ -805,33 +816,6 @@ static int rac2_infinite_ammo(int on)
 	return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, 1);
 }
 
-/*
- * checkBoxExp froze the experience economy byte to 100 and wrote a 0 on the way
- * out. The freeze table writes unconditionally where the old sub only wrote on
- * change; the value in memory ends up the same either way.
- */
-static int rac2_insta_upgrade(int on)
-{
-	int id;
-
-	if (on) return freeze_add(RAC2_EXP_ECONOMY, 1, 100, NULL);
-
-	id = freeze_find(RAC2_EXP_ECONOMY, 1);
-	if (id >= 0) freeze_remove((u8)id);
-	return mem_write_u8(RAC2_EXP_ECONOMY, 0);
-}
-
-static int rac2_freeze_health(int on)
-{
-	int id;
-
-	if (on) return freeze_add(RAC2_FREEZE_HEALTH, 4, 42069, NULL);
-
-	id = freeze_find(RAC2_FREEZE_HEALTH, 4);
-	if (id < 0) return ST_OK;
-	return freeze_remove((u8)id);
-}
-
 static int rac2_set_toggle(u8 id, int on)
 {
 	int rc;
@@ -847,9 +831,8 @@ static int rac2_set_toggle(u8 id, int on)
 		return rc;
 
 	case R2_INFINITE_AMMO:  return rac2_infinite_ammo(on);
-	case R2_FREEZE_HEALTH:  return rac2_freeze_health(on);
+	case R2_FREEZE_HEALTH:  return classic_health_toggle(&rac2_freeze_health, on);
 	case R2_GHOST:          return classic_ghost(RAC2_GHOST_TIMER, on);
-	case R2_INSTA_UPGRADE:  return rac2_insta_upgrade(on);
 	case R2_DEBUG_MODE:     return mem_write_u8(RAC2_DEBUG_FEATURES, on ? 1 : 0);
 
 	/* The last two are qwark-side state, not memory. */

@@ -140,6 +140,14 @@ static u32 g_fl_prev_mode;
 static int g_auto_trophies;
 static int g_trophies_asked;
 
+/*
+ * Build 53: Freeze health, held at the game's own maximum (rac3.h) rather than
+ * at a flat 200, which is more than a player has until the health XP is full.
+ */
+static struct classic_health rac3_freeze_health = {
+	RAC3_PLAYER_HEALTH, RAC3_MAX_HEALTH, 0, 0, 0
+};
+
 static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
 	const u8 *inputs = blocks[HOT_INPUTS];
@@ -557,9 +565,13 @@ static void rac3_on_enter(void)
 	g_origin_planet = 0;
 	g_long_load_open = 0;
 
-	/* The trophy toggle is qwark's own state and goes with the process. */
+	/*
+	 * The trophy toggle is qwark's own state and goes with the process, and so
+	 * does Freeze health's tracking of the maximum.
+	 */
 	g_auto_trophies = 0;
 	g_trophies_asked = 0;
+	classic_health_forget(&rac3_freeze_health);
 	rac3_trophy_forget();
 	g_load_request = 0;
 	g_load_dest = 0;
@@ -728,6 +740,7 @@ static void rac3_on_tick(const struct game_hot *hot)
 		if (g_fastload_forced) rac3_fastload_restore();
 	}
 
+	classic_health_tick(&rac3_freeze_health);
 	rac3_fastload_watch();
 	rac3_autosplit_tick();
 	rac3_file_load_watch();
@@ -783,7 +796,7 @@ static const struct feature_desc rac3_features[] = {
 	/* id, kind, group, aux (ENUM: options; VALUE: field bits), flags, readout, min, max, label */
 	{ R3_FREEZE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Freeze ammo" },
 	{ R3_FREEZE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
-	{ R3_OHKO,          FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "One-hit KO" },
+	/* Build 53: one-hit KO is retired, id 2 and all (rac3.h). */
 	{ R3_GHOST,         FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ R3_QS_PAUSE,      FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Quick-select pause" },
 	/*
@@ -868,35 +881,13 @@ static const struct game_describe *rac3_describe(void)
 
 /* --------------------------------------------------------------- toggles */
 
-/*
- * Freeze health and one-hit KO drive the same address at the same width, so the
- * freeze table holds one entry for both and turning either on takes the other
- * off. The old client left two subscriptions fighting over the word; this is the
- * same thing said out loud.
- *
- * OHKO was a conditional freeze ("only when health is above 1"). The freeze
- * table writes unconditionally, so this pins health at 1 instead: the same one
- * hit kills, but a pickup can no longer raise it either.
- */
-static int rac3_health_freeze(u64 value, int on)
-{
-	int id;
-
-	if (on) return freeze_add(RAC3_PLAYER_HEALTH, 4, value, NULL);
-
-	id = freeze_find(RAC3_PLAYER_HEALTH, 4);
-	if (id < 0) return ST_OK;
-	return freeze_remove((u8)id);
-}
-
 static int rac3_set_toggle(u8 id, int on)
 {
 	int rc;
 
 	switch (id) {
 	case R3_FREEZE_AMMO:   return classic_code_toggle(&rac3_ammo, SW_RAC3_FLAG_FREEZE_AMMO, on);
-	case R3_FREEZE_HEALTH: return rac3_health_freeze(200, on);
-	case R3_OHKO:          return rac3_health_freeze(1, on);
+	case R3_FREEZE_HEALTH: return classic_health_toggle(&rac3_freeze_health, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);
 	case R3_FAST_LOADS:

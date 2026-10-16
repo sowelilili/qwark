@@ -374,6 +374,11 @@ static int rac1_in_file(void)
 	return frontend == 0 && planet < RAC1_PLANET_COUNT;
 }
 
+/* Build 53: Freeze health, held at the game's own maximum (rac1.h). */
+static struct classic_health rac1_freeze_health = {
+	RAC1_PLAYER_HEALTH, RAC1_MAX_HEALTH, 0, 0, 0
+};
+
 static void rac1_on_tick(const struct game_hot *hot)
 {
 	const struct rac1_as_state *p = &g_as_prev;
@@ -386,6 +391,7 @@ static void rac1_on_tick(const struct game_hot *hot)
 		if (g_fastload_forced) rac1_fastload_restore();
 	}
 
+	classic_health_tick(&rac1_freeze_health);
 	rac1_file_load_watch();
 
 	/*
@@ -467,6 +473,9 @@ static void rac1_on_enter(void)
 	g_fastload_on = 0;
 	g_fastload_forced = 0;
 	g_sf_refusals = savefile_load_refusals();
+
+	/* Freeze health's tracking of the maximum goes with the process too. */
+	classic_health_forget(&rac1_freeze_health);
 
 	/* Removing the embedded collectable hooks fixed the reported RaC1 boot
 	 * black screen. Keep supported read-only events; inject no helper. */
@@ -622,12 +631,13 @@ static const struct feature_desc rac1_features[] = {
 	{ F_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
 	{ F_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ F_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite health" },
+	{ F_FREEZE_HEALTH,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Freeze health" },
 	{ F_GHOST,           FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Ghost Ratchet" },
 	{ F_GOODIES,         FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Goodies menu" },
 
+	/* Build 53: max ammo, all weapons is retired, id 17 and all; infinite ammo covers it. */
 	{ F_DIE,             FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ F_BOLTS,           FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC1_RO_BOLTS, 0, 0, "Bolts" },
-	{ F_MAX_AMMO,        FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Max ammo, all weapons" },
 
 	/*
 	 * Build 53: Drek skip, Drek cutscene, the two shooting skill point rows and
@@ -711,6 +721,7 @@ static int rac1_set_toggle(u8 id, int on)
 
 	case F_INFINITE_AMMO:   return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
 	case F_INFINITE_HEALTH: return classic_code_toggle(&rac1_health, SW_RAC1_FLAG_INFINITE_HEALTH, on);
+	case F_FREEZE_HEALTH:   return classic_health_toggle(&rac1_freeze_health, on);
 	case F_GHOST:           return classic_ghost(RAC1_GHOST_TIMER, on);
 	case F_GOODIES:         return mem_write_u8(RAC1_GOODIES_MENU, on ? 1 : 0);
 	case F_DBG_RATCHET:     return rac1_debug_bit(RAC1_DBG_RATCHET, on);
@@ -993,7 +1004,7 @@ const struct game_api rac1_game = {
 
 	rac1_on_enter,
 	NULL,                 /* on_quit */
-	rac1_on_tick,         /* the autosplit watcher and the file-load trigger */
+	rac1_on_tick,         /* the autosplit watcher, the file-load trigger, Freeze health */
 
 	rac1_autosplit_describe,
 

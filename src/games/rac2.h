@@ -26,10 +26,17 @@
 #define RAC2_CURRENT_PLANET    0x1329A3Cu
 #define RAC2_BOLTS             0x1329A90u
 #define RAC2_RARITANIUM        0x1329A94u
+/*
+ * Build 53, Freeze health (classic.h): the game's maximum, a word, from the
+ * NPEA00386 executable. Every frame the game works it out again - 4, one more
+ * for each experience level the health XP has reached and one more for each
+ * nanotech boost - and when that differs from this word it writes both this
+ * and the hit points (0x8DFA4..0x8E040, inlined in many places).
+ */
+#define RAC2_MAX_HEALTH        0x1329A98u  /* s32 */
 #define RAC2_PREV_HELD_WEAPON  0x1329A9Fu  /* gadget storage; Swingshot is 0x0D */
 #define RAC2_CHALLENGE_MODE    0x1329AA2u  /* one byte */
 #define RAC2_HEALTH_XP         0x1329AA4u
-#define RAC2_EXP_ECONOMY       0x1329AA8u  /* one byte, 100 = insta-upgrades */
 #define RAC2_BOLT_DEFICIT      0x1329AACu
 #define RAC2_NANOTECH_BOOSTS   0x1329AC0u  /* 10 bytes */
 
@@ -37,7 +44,7 @@
 #define RAC2_GHOST_TIMER       0x147F3CEu
 #define RAC2_PLAYER_STATE      0x1481474u
 #define RAC2_HERO_TYPE         0x1481494u
-#define RAC2_FREEZE_HEALTH     0x14816ACu  /* frozen to 42069 by the old form */
+#define RAC2_PLAYER_HEALTH     0x14816ACu  /* s32, the hit points */
 #define RAC2_BOSS_SIBERIUS     0x1481792u  /* one byte, cleared on death */
 #define RAC2_BOSS_SNIVELAK     0x14817A3u  /* one byte, cleared on death */
 #define RAC2_SLOTS_HIT         0x14817AFu
@@ -371,7 +378,10 @@ extern const u8 rac2_fp_switch_old[4];
 #define R2_INFINITE_AMMO     1
 #define R2_FREEZE_HEALTH     2
 #define R2_GHOST             3
-#define R2_INSTA_UPGRADE     4
+/*
+ * 4 retired in build 53, never to be reused: "Weapon insta-upgrades" froze the
+ * experience economy byte, and the Unlocks tab sets weapon levels outright.
+ */
 #define R2_DEBUG_MODE        5
 
 #define R2_DIE               6

@@ -40,6 +40,78 @@ int classic_ghost(u32 timer_addr, int on)
 	return freeze_remove((u8)id);
 }
 
+/* classic.h: a maximum a game could really be holding, as its own type. */
+static int health_max_ok(const struct classic_health *h, u32 bits)
+{
+	/* At least one hit point, and finite: 1.0f up to the infinities. */
+	if (h->is_float) return bits >= 0x3F800000u && bits < 0x7F800000u;
+	return (s32)bits > 0;
+}
+
+/*
+ * Puts the entry where the maximum says, or takes it out while there is none.
+ * A client that removed the entry by hand gets it back here: the toggle is
+ * still on, and the entry is all the toggle is.
+ */
+static int health_refresh(struct classic_health *h)
+{
+	const struct freeze_entry *f;
+	u32 max = 0;
+	int id, rc;
+
+	rc = mem_read_u32(h->max, &max);
+	if (rc != ST_OK) return rc;
+
+	id = freeze_find(h->health, 4);
+	if (!health_max_ok(h, max)) {
+		if (id >= 0) freeze_remove((u8)id);
+		return ST_OK;
+	}
+
+	f = (id >= 0) ? freeze_slot((u8)id) : NULL;
+	if (f != NULL && f->value == (u64)max) return ST_OK;
+	return freeze_add(h->health, 4, max, NULL);
+}
+
+int classic_health_toggle(struct classic_health *h, int on)
+{
+	int id, rc;
+
+	if (on) {
+		h->on = 1;
+		h->wait = CLASSIC_HEALTH_EVERY - 1;
+		rc = health_refresh(h);
+		/* A full freeze table is the client's to hear about; a read the tick retries. */
+		if (rc == ST_FULL) {
+			h->on = 0;
+			return rc;
+		}
+		return ST_OK;
+	}
+
+	h->on = 0;
+	id = freeze_find(h->health, 4);
+	if (id < 0) return ST_OK;          /* already off */
+	return freeze_remove((u8)id);
+}
+
+void classic_health_tick(struct classic_health *h)
+{
+	if (!h->on) return;
+	if (h->wait != 0) {
+		h->wait--;
+		return;
+	}
+	h->wait = CLASSIC_HEALTH_EVERY - 1;
+	health_refresh(h);
+}
+
+void classic_health_forget(struct classic_health *h)
+{
+	h->on = 0;
+	h->wait = 0;
+}
+
 int classic_patch_toggle(const struct patch_def *def, int on)
 {
 	int rc;

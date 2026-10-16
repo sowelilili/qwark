@@ -18,6 +18,7 @@
 #include "../src/core/switches.h"
 #include "../src/core/manips.h"
 #include "../src/games/game.h"
+#include "../src/games/classic.h"
 #include "../src/games/sfhelper_bins.h"
 #include "../src/games/switches_bins.h"
 #include "../src/plat/plat.h"
@@ -1452,7 +1453,7 @@ static void test_rac2_repacks(void)
 	      describe[0] == GAME_RAC2, "DESCRIBE answers with RaC2's table");
 	if (session_game() != NULL) {
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 29, "and every one of RaC2's twenty-nine features");
+		check_eq_u64(d->nfeatures, 28, "and every one of RaC2's twenty-eight features");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -1920,7 +1921,8 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 22, "and twenty-two features (build 53 retired five manip rows)");
+	check_eq_u64(nfeatures, 22,
+	             "and twenty-two features (build 53 retired six rows and added Freeze health)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
@@ -1981,8 +1983,19 @@ static void test_describe(void)
 		}
 		check_eq_u64(found, 0, "RaC1's five retired manip ids are not described");
 		check_eq_u64(refused, sizeof(retired), "and triggering any of them is NOT_FOUND");
-		check(desc_feature(out, len, 17) != NULL, "id 17 after them kept its number");
 	}
+
+	/*
+	 * Build 53: max ammo, all weapons is retired too, and Freeze health takes
+	 * the next free id, 28, in Cheats beside infinite health.
+	 */
+	check(desc_feature(out, len, 17) == NULL, "the retired max-ammo id 17 is not described");
+	check(features_trigger(17) == ST_NOT_FOUND, "and triggering it is NOT_FOUND");
+	check(desc_feature(out, len, 18) != NULL, "id 18 after it kept its number");
+	row = desc_feature(out, len, 28);
+	check(row != NULL && row[1] == FEATURE_TOGGLE && row[2] == 0 && row[4] == 0,
+	      "Freeze health is id 28, a TOGGLE in Cheats that writes no code");
+	check(row != NULL && memcmp(row + 16, "Freeze health", 14) == 0, "and its label reads");
 }
 
 /* ---------------------------------------------------- RaC1: the unlock table */
@@ -2066,11 +2079,8 @@ static void test_unlocks(void)
 	check_eq_u64(values[1], 1, "gold reads back");
 	check_eq_u64(values[3], 7, "ammo reads back");
 
-	/* Max ammo for every weapon. */
-	host_poke(A_BOMB_AMMO, (const u8 *)"\x00\x00\x00\x00", 4);
-	check(features_trigger(17) == ST_OK, "the max-ammo action fires");
-	mem_read_u32(A_BOMB_AMMO, &v);
-	check_eq_u64(v, 40, "and refilled the Bomb Glove");
+	/* Build 53: the max-ammo action is retired; infinite ammo covers it. */
+	check(features_trigger(17) == ST_NOT_FOUND, "the retired max-ammo action is NOT_FOUND");
 }
 
 /* ------------------------------------------------------- RaC1: level flags */
@@ -3905,7 +3915,8 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 29, "RaC2 declares twenty-nine features (build 53 retired eight)");
+		check_eq_u64(d->nfeatures, 28,
+		             "RaC2 declares twenty-eight features (build 53 retired nine)");
 		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 		check(qstreq(d->readouts[0], "Bolts"), "readout 0 is Bolts");
@@ -5823,7 +5834,7 @@ static void test_rac2_crash_guards(void)
 	for (i = 0; i < d->nfeatures; i++) {
 		if (d->features[i].id == 40 || qstreq(d->features[i].label, "Crash patches")) labelled++;
 	}
-	check_eq_u64(d->nfeatures, 29, "DESCRIBE has its twenty-nine features");
+	check_eq_u64(d->nfeatures, 28, "DESCRIBE has its twenty-eight features");
 	check_eq_u64(labelled, 0, "and none of them is the guards");
 	check_eq_u64(d->ngroups, 6, "in its six groups");
 	check_eq_u64(d->auto_default, 0, "and RaC2 ships nothing auto-flagged");
@@ -6673,7 +6684,7 @@ static void r3_fl_check_words(void)
 
 #define F3_FREEZE_AMMO   0
 #define F3_FREEZE_HEALTH 1
-#define F3_OHKO          2
+#define R3_MAX_HEALTH_ADDR 0x00C1E4E4u
 #define F3_DIE           6
 #define F3_BOLTS         7
 #define F3_ARMOUR        11
@@ -6742,18 +6753,19 @@ static void test_rac3(void)
 		int retired = 0;
 		int neighbours = 0;
 
-		check_eq_u64(d->nfeatures, 29, "RaC3 declares twenty-nine features");
+		check_eq_u64(d->nfeatures, 28, "RaC3 declares twenty-eight features");
 		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups, Trophies the sixth");
 
 		/*
 		 * 4, 17, 28, 29 and 30 are retired: gone, but nothing is renumbered.
-		 * Build 53 retired the four manip buttons, 16, 18, 19 and 20, the same way.
+		 * Build 53 retired the four manip buttons, 16, 18, 19 and 20, the same
+		 * way, and one-hit KO, 2.
 		 */
 		for (i = 0; i < d->nfeatures; i++) {
 			u8 id = d->features[i].id;
 			if (id == 4 || id == 17 || id == 28 || id == 29 || id == 30 ||
-			    id == 16 || id == 18 || id == 19 || id == 20)
+			    id == 16 || id == 18 || id == 19 || id == 20 || id == 2)
 				retired++;
 			if (id == 15 || id == 21) neighbours++;
 		}
@@ -6791,24 +6803,21 @@ static void test_rac3(void)
 	check_eq_u64(v, 0x7C85312Eu, "and the original instruction came back");
 
 	/*
-	 * Freeze health and one-hit KO share the freeze entry, so the second one on
-	 * replaces the first and one release clears both.
+	 * Build 53: freeze health holds the hit points at the game's maximum rather
+	 * than at a flat 200 (test_freeze_health has the rest), and one-hit KO,
+	 * which pinned them at 1, is retired.
 	 */
+	poke32(R3_MAX_HEALTH_ADDR, 40);
 	check(features_set(F3_FREEZE_HEALTH, 1) == ST_OK, "freeze health turns on");
 	pump(2);
 	mem_read_u32(R3_HEALTH_ADDR, &v);
-	check_eq_u64(v, 200, "health is pinned at 200");
-	check(features_set(F3_OHKO, 1) == ST_OK, "one-hit KO turns on");
-	pump(2);
-	mem_read_u32(R3_HEALTH_ADDR, &v);
-	check_eq_u64(v, 1, "and health is pinned at 1 instead");
-	check(features_set(F3_OHKO, 0) == ST_OK, "one-hit KO turns off");
-	pump(2);
+	check_eq_u64(v, 40, "health is pinned at the maximum");
+	check(features_set(2, 1) == ST_NOT_FOUND, "the retired one-hit KO is NOT_FOUND");
+	check(features_set(F3_FREEZE_HEALTH, 0) == ST_OK, "freeze health turns off");
 	host_poke(R3_HEALTH_ADDR, (const u8 *)"\x00\x00\x00\x63", 4);
 	pump(2);
 	mem_read_u32(R3_HEALTH_ADDR, &v);
 	check_eq_u64(v, 99, "and nothing writes the word any more");
-	features_set(F3_FREEZE_HEALTH, 0);
 
 	group("RaC3: unlocks with levels, XP and ammo");
 
@@ -7960,6 +7969,216 @@ static void test_rac4(void)
 
 /* ------------------------------------------------- BCES01503, the trilogy */
 
+/* ------------------------------------------------- build 53: the toggle tidy */
+
+/*
+ * Freeze health in each game: the hit points, the game's own maximum beside
+ * them, and two maxima and a hurt value as the game stores them (a word in
+ * RaC1 to RaC3, a float in Deadlocked). `bad` is a maximum no game holds.
+ */
+struct fh_case {
+	const char *title;
+	const char *name;
+	u8  id;
+	u32 health;
+	u32 max;
+	u32 full;
+	u32 more;
+	u32 hurt;
+	u32 bad;
+};
+
+static const struct fh_case fh_cases[] = {
+	{ "NPEA00385", "RaC1",       28, 0x0096BF88u, 0x0071FB28u, 4, 8, 2, 0 },
+	{ "NPEA00386", "RaC2",       2,  0x014816ACu, 0x01329A98u, 10, 23, 3, 0 },
+	{ "NPEA00387", "UYA",        1,  0x00DA5040u, 0x00C1E4E4u, 30, 200, 7, 0xFFFFFFFFu },
+	/* 15.0, 200.0 and 5.0; -1.0 is no maximum. */
+	{ "NPEA00423", "Deadlocked", 4,  0x010D7250u, 0x010D7354u,
+	  0x41700000u, 0x43480000u, 0x40A00000u, 0xBF800000u }
+};
+
+static u32 peek32(u32 addr)
+{
+	u32 v = 0;
+	mem_read_u32(addr, &v);
+	return v;
+}
+
+/* Whether DESCRIBE group `index` is called `name`. */
+static int desc_group_is(const u8 *out, u8 index, const char *name)
+{
+	if (index >= out[1]) return 0;
+	return qstreq((const char *)(out + 2 + (u32)index * 24), name);
+}
+
+static void test_freeze_health_one(const struct fh_case *fc)
+{
+	u8 out[4096];
+	u32 len = 0;
+	const u8 *row;
+	char what[96];
+	u64 bit = (u64)1 << fc->id;
+
+	qstrcpy(what, sizeof(what), "Freeze health: ");
+	qstrcat(what, sizeof(what), fc->name);
+	group(what);
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait(fc->title), "the game boots");
+
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	row = desc_feature(out, len, fc->id);
+	check(row != NULL && row[1] == FEATURE_TOGGLE && memcmp(row + 16, "Freeze health", 14) == 0,
+	      "Freeze health is described under its id");
+	check(row != NULL && desc_group_is(out, row[2], "Cheats") &&
+	      (row[4] & FEATURE_FLAG_WRITES_CODE) == 0,
+	      "in Cheats, and it writes no code");
+
+	poke32(fc->max, fc->full);
+	poke32(fc->health, fc->hurt);
+	check(features_set(fc->id, 1) == ST_OK, "it turns on");
+	pump(1);
+	check_eq_u64(peek32(fc->health), fc->full, "the hit points go to the game's maximum");
+	check(freeze_find(fc->health, 4) >= 0, "held by a freeze entry");
+	check((features_toggle_state() & bit) != 0, "and toggle_state says on");
+
+	poke32(fc->health, fc->hurt);
+	pump(1);
+	check_eq_u64(peek32(fc->health), fc->full, "a hit is undone on the next tick");
+
+	/* A health upgrade: the game raises its maximum and the freeze follows it. */
+	poke32(fc->max, fc->more);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->more, "the hold follows the maximum up");
+	poke32(fc->max, fc->full);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->full, "and back down");
+
+	/* No maximum (a menu before the game has set one): nothing is pinned at 0. */
+	poke32(fc->max, 0);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check(freeze_find(fc->health, 4) < 0, "a maximum of 0 drops the entry");
+	poke32(fc->health, fc->hurt);
+	pump(2);
+	check_eq_u64(peek32(fc->health), fc->hurt, "so the hit points are left alone");
+	if (fc->bad != 0) {
+		poke32(fc->max, fc->bad);
+		pump(CLASSIC_HEALTH_EVERY + 1);
+		check(freeze_find(fc->health, 4) < 0, "and so does a maximum no game holds");
+	}
+	poke32(fc->max, fc->full);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->full, "the hold comes back with the maximum");
+
+	/* A client that removes the entry by hand: the toggle is still on. */
+	{
+		int id = freeze_find(fc->health, 4);
+		check(id >= 0 && freeze_remove((u8)id) == ST_OK, "FREEZE_REMOVE takes the entry out");
+		pump(CLASSIC_HEALTH_EVERY + 1);
+		check(freeze_find(fc->health, 4) >= 0, "and the toggle, still on, puts it back");
+	}
+
+	check(features_set(fc->id, 0) == ST_OK, "it turns off");
+	check(freeze_find(fc->health, 4) < 0, "the entry is gone");
+	check((features_toggle_state() & bit) == 0, "toggle_state says off");
+	poke32(fc->health, fc->hurt);
+	pump(CLASSIC_HEALTH_EVERY * 2);
+	check_eq_u64(peek32(fc->health), fc->hurt, "and the hit points are released");
+
+	/* On across a reboot: the new process starts with it off, and holds nothing. */
+	check(features_set(fc->id, 1) == ST_OK, "on again");
+	pump(1);
+	check(quit_and_wait(), "quit with it on");
+	check(boot_and_wait(fc->title), "the same game comes back");
+	check((features_toggle_state() & bit) == 0, "the new process has it off");
+	check((session_previous()->toggles & bit) != 0,
+	      "and the previous-session record offers it back");
+	/* A fresh process is a fresh memory image: the game sets its maximum again. */
+	poke32(fc->max, fc->full);
+	poke32(fc->health, fc->hurt);
+	pump(CLASSIC_HEALTH_EVERY * 2);
+	check_eq_u64(peek32(fc->health), fc->hurt, "nothing holds the hit points meanwhile");
+	session_previous_reapply(PREV_TOGGLES);
+	pump(1);
+	check_eq_u64(peek32(fc->health), fc->full, "the reapply holds them at the maximum again");
+	check(features_set(fc->id, 0) == ST_OK, "off");
+}
+
+static void test_freeze_health(void)
+{
+	u32 i;
+
+	for (i = 0; i < sizeof(fh_cases) / sizeof(fh_cases[0]); i++)
+		test_freeze_health_one(&fh_cases[i]);
+}
+
+/*
+ * The three rows the tidy retired: RaC1's max ammo, all weapons (17), RaC2's
+ * weapon insta-upgrades (4) and UYA's one-hit KO (2). Gone from DESCRIBE, their
+ * config.txt auto flags ignored, nothing of theirs in the previous-session
+ * record, and the ids never handed to anything else.
+ */
+static void test_toggles_retired(void)
+{
+	u8 out[4096];
+	u32 len = 0;
+
+	group("build 53: the retired toggles");
+
+	check(quit_and_wait(), "quit whatever was running");
+	/* What a config.txt from before the tidy can hold. */
+	config_set_feature_auto("NPEA00386", "Weapon insta-upgrades", 1);
+	config_set_feature_auto("NPEA00387", "One-hit KO", 1);
+	config_set_feature_auto("NPEA00385", "Max ammo, all weapons", 1);
+
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+	pump(4);
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	check(desc_feature(out, len, 17) == NULL, "RaC1's 17 is not described");
+	check(features_trigger(17) == ST_NOT_FOUND && features_set(17, 1) == ST_NOT_FOUND,
+	      "and is NOT_FOUND either way");
+	check((features_toggle_auto() & ((u64)1 << 17)) == 0, "its config line is ignored");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	pump(4);
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	check(desc_feature(out, len, 4) == NULL, "RaC2's 4 is not described");
+	check((features_toggle_auto() & ((u64)1 << 4)) == 0, "its auto flag is ignored");
+	check((features_toggle_state() & ((u64)1 << 4)) == 0, "and nothing turned it on");
+	check(freeze_find(0x01329AA8u, 1) < 0, "nothing freezes the experience economy byte");
+	{
+		u8 economy = 0xFF;
+		mem_read_u8(0x01329AA8u, &economy);
+		check_eq_u64(economy, 0, "which stays as the game left it");
+	}
+	check(features_set(4, 1) == ST_NOT_FOUND, "FEATURE_SET on it is NOT_FOUND");
+	check(features_set_auto(4, 1) == ST_NOT_FOUND, "and so is FEATURE_SET_AUTO");
+	check(features_set(2, 1) == ST_OK, "Freeze health, beside it, still turns on");
+	check(quit_and_wait(), "quit with it on");
+	check(boot_and_wait("NPEA00386"), "the same game comes back");
+	pump(4);
+	check((session_previous()->toggles & ((u64)1 << 4)) == 0,
+	      "the previous-session record offers no retired toggle");
+	check((session_previous()->toggles & ((u64)1 << 2)) != 0, "but does offer Freeze health");
+	session_previous_dismiss();
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00387"), "UYA boots");
+	pump(4);
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	check(desc_feature(out, len, 2) == NULL, "UYA's 2 is not described");
+	check((features_toggle_auto() & ((u64)1 << 2)) == 0, "its auto flag is ignored");
+	check((features_toggle_state() & ((u64)1 << 2)) == 0, "and nothing turned it on");
+	check(freeze_find(0x00DA5040u, 4) < 0, "nothing holds the hit points");
+	check(features_set(2, 1) == ST_NOT_FOUND && features_set_auto(2, 1) == ST_NOT_FOUND,
+	      "and FEATURE_SET and FEATURE_SET_AUTO on it are NOT_FOUND");
+
+	config_set_feature_auto("NPEA00386", "Weapon insta-upgrades", 0);
+	config_set_feature_auto("NPEA00387", "One-hit KO", 0);
+	config_set_feature_auto("NPEA00385", "Max ammo, all weapons", 0);
+}
+
 static void test_trilogy(void)
 {
 	group("BCES01503 fingerprint disambiguation");
@@ -7974,7 +8193,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 29, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 28, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -13953,6 +14172,8 @@ int main(void)
 	test_rac1_fastload_force();
 	test_rac3();
 	test_rac4();
+	test_freeze_health();
+	test_toggles_retired();
 	test_trilogy();
 	test_autosplit();
 	test_no_code_patches_planet_load();
