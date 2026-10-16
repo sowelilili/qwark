@@ -139,6 +139,30 @@
 #define RAC2_AMMO_RESET_INSTR  0x0B30C7Cu
 #define RAC2_FASTLOAD_INSTR    0x00BEA8A0u /* also the fingerprint site */
 
+/*
+ * Build 53, the crash guards (rac2.c says what the crash is). Two sites and a
+ * trampoline for each, in the dead library span the savefile helper starts,
+ * after the code switches' two toggles (src/games/switches/sw_rac2.ld). A
+ * console has them written at the session's entry and the RPCS3 switches'
+ * patch carries the same words at the same addresses, so both put the same
+ * branch at each site.
+ *
+ *   GRID  0x86960, addc r25, r4, r25 in UpdateMobyGrids (0x868B0), once the
+ *         moby's index into the moby table is in r30
+ *   SHIP  0xBDF30C, lhz r3, 52(r31), the head of the ship update's loop over
+ *         its parts (0xBDEF18), with the list entry at r28
+ *
+ * _ORIG is the game's word at each site and _BRANCH the guard's.
+ */
+#define RAC2_GUARD_GRID_SITE    0x00086960u
+#define RAC2_GUARD_SHIP_SITE    0x00BDF30Cu
+#define RAC2_GUARD_GRID_CAVE    0x01141440u
+#define RAC2_GUARD_SHIP_CAVE    0x01141470u
+#define RAC2_GUARD_GRID_ORIG    0x7F24C814u   /* addc r25, r4, r25 */
+#define RAC2_GUARD_SHIP_ORIG    0xA07F0034u   /* lhz r3, 52(r31) */
+#define RAC2_GUARD_GRID_BRANCH  0x490BAAE0u   /* b 0x1141440 */
+#define RAC2_GUARD_SHIP_BRANCH  0x48562164u   /* b 0x1141470 */
+
 #define RAC2_PBOLTS            0x1390C27u  /* Maktar slots */
 #define RAC2_PJACKPOT          0x1390C37u
 

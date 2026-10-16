@@ -5495,6 +5495,388 @@ static void test_manip_trigger_rac1(void)
 	mt_reset_options("rac1");
 }
 
+/* ------------------------------ build 53: RaC1's forced fast loads, console */
+
+#define R1FL_SITE1 0x00165490u   /* bl 0x1639A8, the loading screen */
+#define R1FL_SITE2 0x00160060u   /* clrlwi r3, r3, 30, a sound pick */
+#define R1FL_SITE3 0x001641F8u   /* the same, in the other load path */
+#define F1_LOAD_ASIDE 18
+
+static void r1fl_seed(void)
+{
+	poke32(R1FL_SITE1, 0x4BFFE519u);
+	poke32(R1FL_SITE2, 0x546307BEu);
+	poke32(R1FL_SITE3, 0x546307BEu);
+}
+
+static int r1fl_patched(void)
+{
+	return r2_word(R1FL_SITE1) == 0x60000000u && r2_word(R1FL_SITE2) == 0x38600006u &&
+	       r2_word(R1FL_SITE3) == 0x38600006u;
+}
+
+static int r1fl_original(void)
+{
+	return r2_word(R1FL_SITE1) == 0x4BFFE519u && r2_word(R1FL_SITE2) == 0x546307BEu &&
+	       r2_word(R1FL_SITE3) == 0x546307BEu;
+}
+
+/*
+ * What the game does once a load's request word is up (r1t_load has the whole
+ * of it): the transition's state 6, the top loop clearing the request, and the
+ * level's own state 6 until the state leaves it. `stop` 1 leaves it at the
+ * request cleared and the state still 6.
+ */
+static void r1fl_finish(u32 planet, int stop)
+{
+	pump(3);
+	poke32(R1T_STATE, 6);
+	poke32(R1T_PLANET, planet);
+	pump(3);
+	poke32(R1T_REQUEST, 0);
+	pump(4);
+	if (stop) return;
+	poke32(R1T_STATE, 0);
+	pump(4);
+}
+
+/*
+ * A set-aside load's own way there: the helper takes the request (its byte
+ * back at 0), takes the game into the start menu, and the save-data dialog
+ * raises the planet request with the save's planet.
+ */
+static void r1fl_helper_loads(const struct sf_desc *f, u32 planet)
+{
+	host_poke(f->api_load, (const u8 *)"\x00", 1);
+	pump(2);
+	poke32(R1T_REQUEST, 1);
+	r1fl_finish(planet, 0);
+}
+
+static int r1fl_checkbox(void)
+{
+	return (features_toggle_state() & ((u64)1 << F1_FAST_LOADS)) != 0;
+}
+
+static void test_rac1_fastload_force(void)
+{
+	const struct sf_desc *f = sf_desc_for_game(GAME_RAC1);
+
+	group("build 53: RaC1's planet load forces fast loads, on a console");
+
+	check(quit_and_wait(), "quit whatever was running");
+	host_boot("NPEA00385");
+	r1t_world(0, 3, 0, 0);                     /* on Kerwan, at rest */
+	r1fl_seed();
+	check(pump_until(SESSION_INGAME, 4000), "RaC1 boots");
+	pump(4);
+	check(features_set(F1_FAST_LOADS, 0) == ST_OK && !r1fl_checkbox(), "the checkbox is off");
+	check(r1fl_original(), "and the three fast-load sites hold the game's words");
+
+	check(session_planet_load(5, 0) == ST_OK, "PLANET_LOAD goes ahead");
+	check(r1fl_patched(), "with the three fast-load words patched in");
+	check_eq_u64(r2_word(R1T_REQUEST), 1, "and the request word up");
+	check(!r1fl_checkbox(), "while the checkbox stays off: the force is not the user's");
+
+	r1fl_finish(5, 1);
+	check(r1fl_patched(), "the request word back at 0 is not the end of it: "
+	      "the level's state 6 still runs a fast-load site (0x160060)");
+	poke32(R1T_STATE, 0);
+	pump(4);
+	check(r1fl_original(), "the state leaving 6 ends the load and puts the game's words back");
+	check(!r1fl_checkbox(), "and the checkbox never moved");
+
+	check(features_set(F1_FAST_LOADS, 1) == ST_OK && r1fl_patched(), "the checkbox on patches them");
+	check(session_planet_load(3, 0) == ST_OK, "a load with it on");
+	r1fl_finish(3, 0);
+	check(r1fl_patched() && r1fl_checkbox(), "leaves them patched and the checkbox on");
+	check(features_set(F1_FAST_LOADS, 0) == ST_OK && r1fl_original(), "and off puts them back");
+
+	check(session_planet_load(5, 0) == ST_OK && r1fl_patched(), "a load forces them again");
+	check(features_set(F1_FAST_LOADS, 1) == ST_OK, "and the checkbox goes on in the middle of it");
+	r1fl_finish(5, 0);
+	check(r1fl_patched() && r1fl_checkbox(), "the checkbox has the say: they stay on");
+	check(features_set(F1_FAST_LOADS, 0) == ST_OK && r1fl_original(), "off");
+
+	/* The game's own load writes the request word itself; nothing was forced for it. */
+	r1t_load(3, 0);
+	check(r1fl_original() && !r1fl_checkbox(), "a load qwark did not force changes nothing");
+
+	group("build 53: RaC1's set-aside load forces fast loads too, on a console");
+
+	check(f != NULL, "RaC1 has a savefile helper");
+	if (f == NULL) return;
+	savefile_make_idle(GAME_RAC1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK, "the LOAD_ASIDE action goes out");
+	check(r1fl_patched(), "forcing fast loads for its load");
+	check(!r1fl_checkbox(), "with the checkbox still off");
+	r1fl_helper_loads(f, 3);
+	check(r1fl_original(), "and the end of that load puts the game's words back");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_load_setaside() == ST_OK && r1fl_patched(),
+	      "the combo's way in, session_load_setaside, forces them the same");
+	host_poke(f->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r1fl_original(), "and a load the helper drops on the game's frame puts them back");
+
+	poke32(R1T_STATE, 1);                      /* a movie, which plays on its own loop */
+	check(features_trigger(F1_LOAD_ASIDE) == ST_BUSY, "a load from a movie is refused");
+	check(r1fl_original(), "before anything was forced");
+	poke32(R1T_STATE, 0);
+
+	check(features_set(F1_FAST_LOADS, 1) == ST_OK, "with the checkbox on");
+	savefile_make_idle(GAME_RAC1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK, "a set-aside load");
+	host_poke(f->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r1fl_patched() && r1fl_checkbox(), "that the helper drops leaves them on");
+	check(features_set(F1_FAST_LOADS, 0) == ST_OK && r1fl_original(), "off");
+
+	group("build 53: RaC1's fast loads, attached in the middle of a load");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00385");
+	r1t_world(0, 5, 6, 1);
+	r1fl_seed();
+	check(pump_until(SESSION_INGAME, 4000), "INGAME in the middle of a load");
+	pump(4);
+	check(r1fl_original(), "nothing forced at attach");
+	poke32(R1T_REQUEST, 0);
+	pump(3);
+	poke32(R1T_STATE, 0);
+	pump(4);
+	check(r1fl_original() && !r1fl_checkbox(), "and its end writes no word either");
+}
+
+/* ------------------------------ build 53: RaC2's crash guards, console */
+
+#define R2C_GRID_SITE 0x00086960u
+#define R2C_SHIP_SITE 0x00BDF30Cu
+#define R2C_GRID_CAVE 0x01141440u
+#define R2C_SHIP_CAVE 0x01141470u
+#define R2C_GRID_ORIG 0x7F24C814u   /* addc r25, r4, r25 */
+#define R2C_SHIP_ORIG 0xA07F0034u   /* lhz r3, 52(r31) */
+#define R2C_GRID_B    0x490BAAE0u   /* b 0x1141440 */
+#define R2C_SHIP_B    0x48562164u   /* b 0x1141470 */
+
+/* The guards, assembled with GNU as on their own. */
+static const u32 r2c_grid[6] = {
+	0x7FC00734u, 0x7F80F000u, 0x409E000Cu, 0x7F24C814u, 0x4AF45514u, 0x4AF4577Cu
+};
+static const u32 r2c_ship[11] = {
+	0x807C0000u, 0x3C800159u, 0x80A427B0u, 0x7F832840u, 0x419C0018u, 0x80A427B8u,
+	0x7F832840u, 0x409C000Cu, 0xA07F0034u, 0x4BA9DE7Cu, 0x4BA9E0D8u
+};
+
+/* Where a relative b or bc at `at` lands; 0 for anything else. */
+static u32 r2c_target(u32 at, u32 word)
+{
+	u32 op = word >> 26;
+	u32 disp;
+
+	if (word & 2u) return 0;
+	if (op == 18) {
+		disp = word & 0x03FFFFFCu;
+		if (disp & 0x02000000u) disp |= 0xFC000000u;
+	} else if (op == 16) {
+		disp = word & 0x0000FFFCu;
+		if (disp & 0x00008000u) disp |= 0xFFFF0000u;
+	} else {
+		return 0;
+	}
+	return at + disp;
+}
+
+static int r2c_words_are(u32 addr, const u32 *w, u32 n)
+{
+	u32 i;
+
+	for (i = 0; i < n; i++)
+		if (r2_word(addr + 4u * i) != w[i]) return 0;
+	return 1;
+}
+
+static void r2c_poke_words(u32 addr, const u32 *w, u32 n)
+{
+	u32 i;
+
+	for (i = 0; i < n; i++) poke32(addr + 4u * i, w[i]);
+}
+
+/* The game's own words at both sites, and a pattern in the two caves. */
+static void r2c_seed(u32 grid_site, u32 ship_site)
+{
+	u32 i;
+
+	poke32(R2C_GRID_SITE, grid_site);
+	poke32(R2C_SHIP_SITE, ship_site);
+	for (i = 0; i < 6; i++)  poke32(R2C_GRID_CAVE + 4u * i, 0xD0D00000u | i);
+	for (i = 0; i < 11; i++) poke32(R2C_SHIP_CAVE + 4u * i, 0xD1D10000u | i);
+}
+
+static int r2c_caves_seeded(void)
+{
+	u32 i;
+
+	for (i = 0; i < 6; i++)  if (r2_word(R2C_GRID_CAVE + 4u * i) != (0xD0D00000u | i)) return 0;
+	for (i = 0; i < 11; i++) if (r2_word(R2C_SHIP_CAVE + 4u * i) != (0xD1D10000u | i)) return 0;
+	return 1;
+}
+
+/* The index in the write log of the first write touching [addr, addr + len), or -1. */
+static int r2c_first_write(u32 addr, u32 len)
+{
+	u32 i;
+
+	for (i = 0; ; i++) {
+		u32 a = 0, n = 0;
+
+		if (host_write_log_at(i, &a, &n) != 0) return -1;
+		if (a < addr + len && a + n > addr) return (int)i;
+	}
+}
+
+static int r2c_any_write(void)
+{
+	return r2c_first_write(R2C_GRID_SITE, 4) >= 0 || r2c_first_write(R2C_SHIP_SITE, 4) >= 0 ||
+	       r2c_first_write(R2C_GRID_CAVE, 24) >= 0 || r2c_first_write(R2C_SHIP_CAVE, 44) >= 0;
+}
+
+/* RaC2 booted with the given words at the two sites, the write log reset first. */
+static int r2c_boot(u32 grid_site, u32 ship_site)
+{
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	r2c_seed(grid_site, ship_site);
+	host_write_log_reset();
+	if (!pump_until(SESSION_INGAME, 4000)) return 0;
+	pump(4);
+	return 1;
+}
+
+static void test_rac2_crash_guards(void)
+{
+	const struct game_describe *d = NULL;
+	const struct sw_desc *s = sw_desc_for_game(GAME_RAC2);
+	const struct sf_desc *f = sf_desc_for_game(GAME_RAC2);
+	int same = 1, listed = 0, labelled = 0;
+	int site, cave;
+	u32 i, k;
+
+	group("build 53: RaC2's crash guards go in on a console as the session enters");
+
+	check(r2c_boot(R2C_GRID_ORIG, R2C_SHIP_ORIG), "RaC2 boots with the game's own words");
+	check(r2c_words_are(R2C_GRID_CAVE, r2c_grid, 6), "the grid guard is at 0x1141440");
+	check(r2c_words_are(R2C_SHIP_CAVE, r2c_ship, 11), "the part filter at 0x1141470");
+	check_eq_u64(r2_word(R2C_GRID_SITE), R2C_GRID_B, "0x86960 holds b 0x1141440");
+	check_eq_u64(r2_word(R2C_SHIP_SITE), R2C_SHIP_B, "and 0xBDF30C b 0x1141470");
+	site = r2c_first_write(R2C_GRID_SITE, 4);
+	cave = r2c_first_write(R2C_GRID_CAVE, 24);
+	check(cave >= 0 && site > cave, "the grid site went in after the code it branches to");
+	site = r2c_first_write(R2C_SHIP_SITE, 4);
+	cave = r2c_first_write(R2C_SHIP_CAVE, 44);
+	check(cave >= 0 && site > cave, "and so did the ship-part site");
+
+	check_eq_u64(r2c_target(R2C_GRID_SITE, R2C_GRID_B), R2C_GRID_CAVE,
+	             "the grid site's branch lands on the guard");
+	check_eq_u64(r2c_target(R2C_SHIP_SITE, R2C_SHIP_B), R2C_SHIP_CAVE,
+	             "the ship site's on the filter");
+	check_eq_u64(r2c_target(R2C_GRID_CAVE + 8u, r2c_grid[2]), R2C_GRID_CAVE + 20u,
+	             "an index that does not fit a grid entry goes to the last branch");
+	check_eq_u64(r2c_target(R2C_GRID_CAVE + 16u, r2c_grid[4]), 0x00086964u,
+	             "the guard otherwise runs the site's own addc and goes back after it");
+	check_eq_u64(r2c_target(R2C_GRID_CAVE + 20u, r2c_grid[5]), 0x00086BD0u,
+	             "and the last branch is UpdateMobyGrids' epilogue");
+	check_eq_u64(r2c_target(R2C_SHIP_CAVE + 16u, r2c_ship[4]), R2C_SHIP_CAVE + 40u,
+	             "a part below the moby table goes to the last branch");
+	check_eq_u64(r2c_target(R2C_SHIP_CAVE + 28u, r2c_ship[7]), R2C_SHIP_CAVE + 40u,
+	             "and so does one at or past its end");
+	check_eq_u64(r2c_target(R2C_SHIP_CAVE + 36u, r2c_ship[9]), 0x00BDF310u,
+	             "the filter otherwise runs the site's own lhz and goes back after it");
+	check_eq_u64(r2c_target(R2C_SHIP_CAVE + 40u, r2c_ship[10]), 0x00BDF570u,
+	             "and the last branch is the loop's step to the next part");
+
+	/* The same words as the RPCS3 switches' rows, at the same addresses. */
+	if (s != NULL && s->ncaves == 4 && s->nsites == 4) {
+		if (s->caves[2].addr != R2C_GRID_CAVE || s->caves[2].len != 24u) same = 0;
+		if (s->caves[3].addr != R2C_SHIP_CAVE || s->caves[3].len != 44u) same = 0;
+		for (i = 0; same && i < 6; i++)
+			if (be32_get(s->caves[2].bytes + 4u * i) != r2c_grid[i]) same = 0;
+		for (i = 0; same && i < 11; i++)
+			if (be32_get(s->caves[3].bytes + 4u * i) != r2c_ship[i]) same = 0;
+		if (s->sites[0].addr != R2C_GRID_SITE || s->sites[0].value != R2C_GRID_B) same = 0;
+		if (s->sites[2].addr != R2C_SHIP_SITE || s->sites[2].value != R2C_SHIP_B) same = 0;
+	} else {
+		same = 0;
+	}
+	check(same, "they are word for word the RPCS3 switches' guard rows, from the same sites");
+	check(f != NULL && f->ncaves >= 1 && f->caves[0].addr + f->caves[0].len <= R2C_GRID_CAVE &&
+	      R2C_SHIP_CAVE + 44u <= 0x011414FCu,
+	      "both lie past the savefile helper and inside the dead span, which ends at 0x11414FC");
+
+	group("build 53: RaC2's crash guards are no feature");
+
+	if (session_game() != NULL) d = session_game()->describe();
+	check(d != NULL, "RaC2 has its descriptor table");
+	if (d == NULL) return;
+	for (i = 0; i < d->nfeatures; i++) {
+		if (d->features[i].id == 40 || qstreq(d->features[i].label, "Crash patches")) labelled++;
+	}
+	check_eq_u64(d->nfeatures, 29, "DESCRIBE has its twenty-nine features");
+	check_eq_u64(labelled, 0, "and none of them is the guards");
+	check_eq_u64(d->ngroups, 6, "in its six groups");
+	check_eq_u64(d->auto_default, 0, "and RaC2 ships nothing auto-flagged");
+	for (i = 0; i < patch_count(); i++) {
+		const struct patch_def *p = patch_at(i);
+
+		for (k = 0; p != NULL && k < p->count; k++) {
+			u32 a = p->words[k].addr;
+			if (a == R2C_GRID_SITE || a == R2C_SHIP_SITE ||
+			    (a >= R2C_GRID_CAVE && a < R2C_SHIP_CAVE + 44u)) listed++;
+		}
+	}
+	check_eq_u64(listed, 0, "no patch the patch list shows holds a word of them");
+	check(features_set(40, 1) == ST_NOT_FOUND, "and there is no toggle to turn them off with");
+
+	group("build 53: RaC2's crash guards go in once, and only over the game's own words");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00386");
+	r2c_poke_words(R2C_GRID_CAVE, r2c_grid, 6);
+	r2c_poke_words(R2C_SHIP_CAVE, r2c_ship, 11);
+	poke32(R2C_GRID_SITE, R2C_GRID_B);
+	poke32(R2C_SHIP_SITE, R2C_SHIP_B);
+	host_write_log_reset();
+	check(pump_until(SESSION_INGAME, 4000), "a process that has them already, entered again");
+	pump(4);
+	check(!r2c_any_write(), "is left be: not a word is written");
+
+	check(r2c_boot(0x60000000u, R2C_SHIP_ORIG), "a nop at 0x86960, where the game has an addc");
+	check(!r2c_any_write() && r2_word(R2C_GRID_SITE) == 0x60000000u &&
+	      r2_word(R2C_SHIP_SITE) == R2C_SHIP_ORIG && r2c_caves_seeded(),
+	      "gets nothing: not the guards, not their caves");
+	check(r2c_boot(R2C_GRID_ORIG, 0x4BFFFFF0u), "nor does a game with something else at 0xBDF30C");
+	check(!r2c_any_write() && r2c_caves_seeded(), "not a word");
+
+	check(r2c_boot(R2C_GRID_B, R2C_SHIP_ORIG), "half in: the grid guard's branch alone");
+	check(r2c_words_are(R2C_SHIP_CAVE, r2c_ship, 11) && r2_word(R2C_SHIP_SITE) == R2C_SHIP_B &&
+	      r2c_first_write(R2C_GRID_SITE, 4) < 0,
+	      "the rest goes in around it, and the branch already there is not written again");
+
+	group("build 53: RaC2's crash guards are not written where code cannot be patched");
+
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(r2c_boot(R2C_GRID_ORIG, R2C_SHIP_ORIG), "RaC2 boots under RPCS3 with no patch in it");
+	check(!r2c_any_write() && r2_word(R2C_GRID_SITE) == R2C_GRID_ORIG &&
+	      r2_word(R2C_SHIP_SITE) == R2C_SHIP_ORIG && r2c_caves_seeded(),
+	      "qwark writes nothing: there the switches' patch carries the guards");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+	check(quit_and_wait(), "quit");
+}
+
 /* ---- UYA: the end of a load into Veldin, and the trophy auto-refresh */
 
 #define R3T_REQUEST  0x00EE9310u
@@ -10536,7 +10918,7 @@ static void test_mod_previous(void)
 struct swt_cave {
 	u32 addr;
 	u8  nwords;
-	u32 w[10];
+	u32 w[16];
 };
 
 struct swt_game {
@@ -10574,15 +10956,25 @@ static const struct patch_word g_swt_rac1_toggles[] = {
 	{ 0, 0x009058B0u }, { 1, 0x009058B1u }, { 2, 0x009058B2u }
 };
 
-/* Build 53: at 0x1141400, off Joba's routine (test_switches_rac2_moved). */
+/*
+ * Build 53: at 0x1141400, off Joba's routine (test_switches_rac2_moved), and
+ * the two crash guards after them, which have no flag byte (rac2.c), assembled
+ * with GNU as on their own and placed by hand at the same addresses.
+ */
 static const struct swt_cave g_swt_rac2_caves[] = {
 	{ 0x01141400u, 6, { 0x3C600131u, 0x88637720u, 0x2C030000u, 0x40820008u, 0x4BAA7EF9u,
 	                    0x4BAA9490u } },
 	{ 0x01141420u, 6, { 0x3CC00131u, 0x88C67721u, 0x2C060000u, 0x40820008u, 0x7C64292Eu,
-	                    0x4B9EF84Cu } }
+	                    0x4B9EF84Cu } },
+	{ 0x01141440u, 6, { 0x7FC00734u, 0x7F80F000u, 0x409E000Cu, 0x7F24C814u, 0x4AF45514u,
+	                    0x4AF4577Cu } },
+	{ 0x01141470u, 11, { 0x807C0000u, 0x3C800159u, 0x80A427B0u, 0x7F832840u, 0x419C0018u,
+	                     0x80A427B8u, 0x7F832840u, 0x409C000Cu, 0xA07F0034u, 0x4BA9DE7Cu,
+	                     0x4BA9E0D8u } }
 };
 static const struct patch_word g_swt_rac2_sites[] = {
-	{ 0x00B30C7Cu, 0x486107A4u }, { 0x00BEA8A0u, 0x48556B60u }
+	{ 0x00086960u, 0x490BAAE0u }, { 0x00B30C7Cu, 0x486107A4u }, { 0x00BDF30Cu, 0x48562164u },
+	{ 0x00BEA8A0u, 0x48556B60u }
 };
 static const u32 g_swt_rac2_flags[] = { 0x01317720u, 0x01317721u };
 static const struct patch_word g_swt_rac2_toggles[] = {
@@ -10659,6 +11051,7 @@ static const struct swt_game g_swt_games[] = {
 };
 
 /* Feature ids the tests below drive by name. */
+#define SWT_R1_FAST    0
 #define SWT_R1_AMMO    1
 #define SWT_R1_HEALTH  2
 #define SWT_R2_FAST    0
@@ -11190,6 +11583,87 @@ static void test_switches_fastloads(void)
 }
 
 /*
+ * Build 53: RaC1's planet load and set-aside load force fast loads too, and
+ * under RPCS3 with the switches in that is a write of their flag byte; the end
+ * of the load (the state leaving 6 once the request word is back at 0) puts it
+ * back.
+ */
+static void test_switches_rac1_fastloads(void)
+{
+	const struct sw_desc *s = sw_desc_for_game(GAME_RAC1);
+	const struct sf_desc *f = sf_desc_for_game(GAME_RAC1);
+	u8 sup = 9, ins = 9, run = 9, pend = 9;
+	u32 size = 0, len = 0, sflen = 0;
+
+	group("build 53: RaC1's forced fast loads write the flag");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "the switch words");
+	check(savefile_patch(g_sw_sfpatch, sizeof(g_sw_sfpatch), &sflen) == ST_OK, "and the helper's");
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00385");
+	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
+	sf_poke_patch(g_sw_sfpatch, sflen, SF_NO_FLIP, 1);
+	r1t_world(0, 3, 0, 0);                     /* on Kerwan, at rest */
+	check(pump_until(SESSION_INGAME, 4000), "RaC1 boots with both patches in");
+	pump(6);
+	check_eq_u64(switches_state(), 1, "the switches are found");
+	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1,
+	      "and so is the helper");
+	check(features_set(SWT_R1_FAST, 0) == ST_OK && swt_peek8(0x009058B0u) == 0, "fast loads off");
+	host_write_log_reset();
+
+	check(session_planet_load(5, 0) == ST_OK, "PLANET_LOAD goes ahead");
+	check_eq_u64(swt_peek8(0x009058B0u), 1, "forcing fast loads through their flag");
+	check_eq_u64(r2_word(R1T_REQUEST), 1, "with the request word up");
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) == 0,
+	      "while the checkbox reads back off: the force is not the user's");
+
+	r1fl_finish(5, 1);
+	pump(SWT_POLL_TICKS);
+	check_eq_u64(swt_peek8(0x009058B0u), 1,
+	             "the request word back at 0 leaves it on: the level's state 6 is still loading");
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) == 0,
+	      "and the checkbox still reads back off");
+	poke32(R1T_STATE, 0);
+	pump(4);
+	check_eq_u64(swt_peek8(0x009058B0u), 0, "the state leaving 6 puts the flag back");
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) == 0, "and the checkbox never moved");
+
+	check(features_set(SWT_R1_FAST, 1) == ST_OK, "fast loads on");
+	check(session_planet_load(3, 0) == ST_OK, "another load");
+	r1fl_finish(3, 0);
+	check_eq_u64(swt_peek8(0x009058B0u), 1, "leaves the flag on for a checkbox that is on");
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) != 0, "which reads back on");
+	check(features_set(SWT_R1_FAST, 0) == ST_OK && swt_peek8(0x009058B0u) == 0, "fast loads off");
+
+	r1t_load(3, 0);
+	check_eq_u64(swt_peek8(0x009058B0u), 0, "a load qwark did not force leaves the flag at the checkbox's");
+
+	group("build 53: RaC1's set-aside load forces them through the flag too");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_load_setaside() == ST_OK, "the set-aside load goes ahead");
+	check_eq_u64(swt_peek8(0x009058B0u), 1, "forcing fast loads through their flag");
+	check(f != NULL && swt_peek8(f->api_load) == 1, "and raising the helper's load byte");
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << SWT_R1_FAST)) == 0, "the checkbox reads back off");
+	if (f != NULL) r1fl_helper_loads(f, 3);
+	check_eq_u64(swt_peek8(0x009058B0u), 0, "and the end of the load puts the flag back");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_load_setaside() == ST_OK && swt_peek8(0x009058B0u) == 1, "another forces it");
+	if (f != NULL) host_poke(f->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check_eq_u64(swt_peek8(0x009058B0u), 0, "and one the helper drops puts it back");
+	check(!swt_wrote_code(s), "no cave byte and no site word was written");
+}
+
+/*
  * Build 53: RaC2's trampolines moved. Builds 50 to 52, and build 53 until this
  * move, put them at 0x233200 and 0x233220, the end of the function at
  * 0x22A368..0x233308, which planet Joba calls every frame (0x205018 at
@@ -11296,7 +11770,7 @@ static void test_switches_rac2_moved(void)
 	static const u8 w_nop[4]  = { 0x60, 0x00, 0x00, 0x00 };
 	static const u8 w_new[4]  = { 0x48, 0x55, 0x6B, 0x60 };
 	static const u8 w_old[4]  = { 0x4B, 0x64, 0x89, 0x60 };
-	u32 len = 0, oldlen, rows_ok, i, off;
+	u32 len = 0, oldlen, toglen, rows_ok, i, off;
 	u8 sup = 9, ins = 9, run = 9, pend = 9;
 	u32 size = 0, sflen = 0;
 
@@ -11320,9 +11794,13 @@ static void test_switches_rac2_moved(void)
 	check(d->caves[0].addr - (f->caves[0].addr + f->caves[0].len) >= 0x2000u,
 	      "with room to grow: more than 8 KB between them");
 
-	check_eq_u64(swt_branch_target(d->sites[0].addr, d->sites[0].value), d->caves[1].addr,
+	check(d->ncaves == 4 && d->nsites == 4 && d->nflags == 2,
+	      "four trampolines and four sites, the crash guards' two with no flag byte");
+	if (d->ncaves != 4 || d->nsites != 4 || d->nflags != 2) return;
+
+	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[1].addr,
 	             "the ammo site, 0xB30C7C, branches to the ammo trampoline");
-	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[0].addr,
+	check_eq_u64(swt_branch_target(d->sites[3].addr, d->sites[3].value), d->caves[0].addr,
 	             "the fast-load site, 0xBEA8A0, to the fast-load one");
 	check_eq_u64(swt_branch_target(d->caves[0].addr + 20u, be32_get(d->caves[0].bytes + 20)),
 	             0x00BEA8A4u, "which branches back to the instruction after its site");
@@ -11331,31 +11809,53 @@ static void test_switches_rac2_moved(void)
 	check(d->flags[0] == 0x01317720u && d->flags[1] == 0x01317721u,
 	      "the flag bytes did not move");
 
+	/* The crash guards, after the two toggles' trampolines. */
+	check_eq_u64(swt_branch_target(d->sites[0].addr, d->sites[0].value), d->caves[2].addr,
+	             "the grid site, 0x86960, branches to the grid guard at 0x1141440");
+	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[3].addr,
+	             "the ship-part site, 0xBDF30C, to the part filter at 0x1141470");
+	check_eq_u64(swt_branch_target(d->caves[2].addr + 16u, be32_get(d->caves[2].bytes + 16)),
+	             0x00086964u, "the guard goes back to the instruction after its site");
+	check_eq_u64(swt_branch_target(d->caves[2].addr + 20u, be32_get(d->caves[2].bytes + 20)),
+	             0x00086BD0u, "or on to UpdateMobyGrids' epilogue");
+	check_eq_u64(swt_branch_target(d->caves[3].addr + 36u, be32_get(d->caves[3].bytes + 36)),
+	             0x00BDF310u, "the filter goes back to the instruction after its site");
+	check_eq_u64(swt_branch_target(d->caves[3].addr + 40u, be32_get(d->caves[3].bytes + 40)),
+	             0x00BDF570u, "or on to the ship update's next part");
+	check(d->caves[2].addr >= d->caves[1].addr + d->caves[1].len &&
+	      d->caves[3].addr >= d->caves[2].addr + d->caves[2].len,
+	      "none of the four overlaps the one before it");
+
 	/* ---------------------------------------------- SWITCH_PATCH rows */
 
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00386"), "RaC2 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC2");
-	check_eq_u64(be16_get(g_sw_patch), 14, "still fourteen rows: twelve trampoline words, two sites");
+	check_eq_u64(be16_get(g_sw_patch), 33,
+	             "thirty-three rows: twenty-nine trampoline words with the guards', four sites");
 
 	rows_ok = 1;
 	off = SWITCH_PATCH_HEAD;
 	for (i = 0; i < be16_get(g_sw_patch); i++) {
 		u32 a = be32_get(g_sw_patch + off);
+		u32 v = be32_get(g_sw_patch + off + 4);
 
-		if (i < 12 && (a < SWT_R2_CAVE_LO || a + 4u > SWT_R2_SPAN_HI)) rows_ok = 0;
-		if (i == 12 && (a != 0x00B30C7Cu || be32_get(g_sw_patch + off + 4) != 0x486107A4u)) rows_ok = 0;
-		if (i == 13 && (a != 0x00BEA8A0u || be32_get(g_sw_patch + off + 4) != 0x48556B60u)) rows_ok = 0;
+		if (i < 29 && (a < SWT_R2_CAVE_LO || a + 4u > SWT_R2_SPAN_HI)) rows_ok = 0;
+		if (i == 29 && (a != 0x00086960u || v != 0x490BAAE0u)) rows_ok = 0;
+		if (i == 30 && (a != 0x00B30C7Cu || v != 0x486107A4u)) rows_ok = 0;
+		if (i == 31 && (a != 0x00BDF30Cu || v != 0x48562164u)) rows_ok = 0;
+		if (i == 32 && (a != 0x00BEA8A0u || v != 0x48556B60u)) rows_ok = 0;
 		off += SWITCH_PATCH_ROW;
 	}
-	check(rows_ok, "every trampoline row lands in the new cave, then b 0x1141420 and b 0x1141400");
+	check(rows_ok, "every trampoline row lands in the cave, then b 0x1141440, b 0x1141420, "
+	      "b 0x1141470 and b 0x1141400");
 
 	oldlen = swt_reply_of(g_swt_rac2_b50_caves, SWT_N(g_swt_rac2_b50_caves),
 	                      g_swt_rac2_b50_sites, SWT_N(g_swt_rac2_b50_sites),
 	                      d->flags, d->nflags, g_sw_patch2);
 	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC2_B50_STAMP,
 	             "the old placement's reply rebuilt carries the stamp builds 50 to 52 handed out");
-	check_eq_u64(oldlen, len, "and is the same length as this build's");
+	check(oldlen < len, "and is shorter than this build's, which carries the crash guards too");
 	check(be32_get(g_sw_patch + 4) != SWT_RAC2_B50_STAMP,
 	      "this build's stamp is another number, so a client's kept stamp no longer matches");
 
@@ -11434,6 +11934,42 @@ static void test_switches_rac2_moved(void)
 	pump(6);
 	check_eq_u64(switches_state(), 1, "the switches are found");
 	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1, "and so is the helper");
+	check_eq_u64(swt_peek32(0x00086960u), 0x490BAAE0u, "the grid guard's branch is at 0x86960");
+	check_eq_u64(swt_peek32(0x00BDF30Cu), 0x48562164u, "and the part filter's at 0xBDF30C");
+
+	/* ------------------------------- the look counts the crash guards */
+
+	group("build 53: RaC2's switches without the crash guards do not count");
+
+	/*
+	 * The two toggles' rows alone, as the switches were before the guards
+	 * joined them: every word of them right, the guards' four rows missing.
+	 */
+	{
+		static const struct patch_word toggle_sites[] = {
+			{ 0x00B30C7Cu, 0x486107A4u }, { 0x00BEA8A0u, 0x48556B60u }
+		};
+
+		toglen = swt_reply_of(g_swt_rac2_caves, 2, toggle_sites, SWT_N(toggle_sites),
+		                      d->flags, d->nflags, g_sw_patch2);
+	}
+	check(be32_get(g_sw_patch2 + 4) != be32_get(g_sw_patch + 4),
+	      "such a patch has another stamp");
+
+	check(quit_and_wait(), "quit");
+	host_write_log_reset();
+	check(swt_boot_patched("NPEA00386", g_sw_patch2, toglen, SF_NO_FLIP),
+	      "RaC2 boots with the toggles' switches alone");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC2,
+	      "the fast-load branch is this build's, so the fingerprint says RaC2");
+	check_eq_u64(switches_state(), 0, "but the look counts no switches without the guards");
+	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
+	      SESSION_FLAG_NO_CODE_PATCHES,
+	      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
+	check(features_set(SWT_R2_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
+	check_eq_u64(swt_peek32(0x00086960u) | swt_peek32(0x00BDF30Cu), 0,
+	             "and qwark wrote no guard itself: code cannot be patched here");
+	check(!swt_wrote_code(d), "nor any other code word");
 }
 
 /*
@@ -11826,6 +12362,7 @@ static void test_switches(void)
 	test_switches_presence();
 	test_switches_apply();
 	test_switches_fastloads();
+	test_switches_rac1_fastloads();
 	test_switches_rac2_moved();
 	test_switches_rac4_fastload_moved();
 
@@ -12952,7 +13489,9 @@ int main(void)
 	test_combo_suspend();
 	test_combo_enable();
 	test_rac2();
+	test_rac2_crash_guards();
 	test_manips();
+	test_rac1_fastload_force();
 	test_rac3();
 	test_rac4();
 	test_trilogy();

@@ -204,6 +204,144 @@ static struct patch_def rac2_ammo = {
 	"Infinite ammo", PATCH_KIND_FEATURE, rac2_ammo_words, 1, NULL
 };
 
+/* ---------------------------------------------------------- crash guards */
+
+/*
+ * Build 53, the crash guards: the user's crash going from a level with an
+ * in-space cutscene to the Jamming Array, read off a console that had faulted
+ * at 0x86A18 with r5 = 0x2390000.
+ *
+ * The transition (0xBEA188) picks the space wad the load plays in from the two
+ * planets: Dobbo Orbit and Damosel Orbit (22, 23) take wad 1, the Jamming Array
+ * (26) wad 2, either way round, and Aranos 2 (14) wad 3 while a story flag is
+ * clear. Only the ordinary trip's branch, wad 0's (0xBEA7B0), empties the list
+ * of the ship's part mobys at 0x15D46B0 and builds them afresh in the wad's
+ * moby table (0xBDEA8C); the other three create a model of their own (class
+ * 4748, 4749 or 4930) and leave the list as it was. A story cutscene queued
+ * for the trip (0x15D4670, 0xBEA2A8..0xBEA400) still plays, from 0xBE5470
+ * inside the load, and its scene update (0xBE32C0) hands its ship actor, class
+ * 3412, to the ship update (0xBDEF18), which moves every part in the list
+ * (0x871D8 -> 0x86C18 -> UpdateMobyGrids at 0x868B0).
+ *
+ * Those parts are the last level's. In the crash, the part at 0x43B6E680 was
+ * moby 474 of its own table and had been moved twice; against the space wad's
+ * table, some 41 MB further up, its index came to -160611 (r30 0xFFFD8C9D).
+ * UpdateMobyGrids keeps a 16-bit moby index per entry of each grid cell: the
+ * first move stored it as 0x8C9D, and the second, taking the part out of the
+ * cell it was in, looked for 0xFFFD8C9D among sign-extended halfwords. Its
+ * search (0x86A10..0x86A24) has no bound, never matched, and read on through
+ * the zeroes after the grid's pool until it reached an unmapped page.
+ *
+ * Fast loads have no part in it: the cutscene runs from 0xBE7400, which the
+ * transition calls before the load screen fast loads take out. The Insomniac
+ * Museum takes wad 0 like any other planet, so this is not its crash, if it
+ * has one.
+ *
+ * Only a planet change qwark makes gets there - the story never sends the
+ * player to those planets with such a cutscene queued - so the guards are no
+ * feature: like the savefile helper they are qwark's own, always in and out
+ * of DESCRIBE. A console has them written when the session enters the game
+ * (rac2_guards_install, from rac2_on_enter); under RPCS3 they are rows of the
+ * code switches' patch with no flag byte (src/games/switches/sw_rac2.s), these
+ * same words at these same addresses, and the switches' look counts them.
+ *
+ * Two guards, each a trampoline in the dead span after the code switches':
+ *
+ *   GRID  UpdateMobyGrids leaves the grid alone for a moby whose index does
+ *         not fit a cell's 16-bit entry: one that is not in the moby table,
+ *         which it could only ever have half put into the grid and never got
+ *         out again. Every moby the table holds is unaffected.
+ *   SHIP  the ship update passes over a part that is not inside the moby
+ *         table, [*0x15927B0, *0x15927B8), rather than writing its position
+ *         and matrix into memory the next level is loading into. Parts the
+ *         game built are always inside it.
+ *
+ * GRID is the one that stops this crash, and the same crash in the parts'
+ * later deletion (DeleteMoby at 0xB575EC calls UpdateMobyGrids too) whenever
+ * the game next empties the list; SHIP keeps the dead parts from being
+ * written to at all.
+ */
+static const u32 rac2_guard_grid[] = {
+	0x7FC00734u,   /* extsh  r0, r30 */
+	0x7F80F000u,   /* cmpw   cr7, r0, r30 */
+	0x409E000Cu,   /* bne    cr7, 1f */
+	0x7F24C814u,   /* addc   r25, r4, r25: the site's own */
+	0x4AF45514u,   /* b      0x86964 */
+	0x4AF4577Cu    /* 1: b   0x86BD0, the epilogue */
+};
+
+static const u32 rac2_guard_ship[] = {
+	0x807C0000u,   /* lwz    r3, 0(r28): the part */
+	0x3C800159u,   /* lis    r4, 0x159 */
+	0x80A427B0u,   /* lwz    r5, 0x27B0(r4): the table */
+	0x7F832840u,   /* cmplw  cr7, r3, r5 */
+	0x419C0018u,   /* blt    cr7, 1f */
+	0x80A427B8u,   /* lwz    r5, 0x27B8(r4): its end */
+	0x7F832840u,   /* cmplw  cr7, r3, r5 */
+	0x409C000Cu,   /* bge    cr7, 1f */
+	0xA07F0034u,   /* lhz    r3, 52(r31): the site's own */
+	0x4BA9DE7Cu,   /* b      0xBDF310 */
+	0x4BA9E0D8u    /* 1: b   0xBDF570, the next part */
+};
+
+#define RAC2_GUARD_GRID_WORDS ((u32)(sizeof(rac2_guard_grid) / sizeof(rac2_guard_grid[0])))
+#define RAC2_GUARD_SHIP_WORDS ((u32)(sizeof(rac2_guard_ship) / sizeof(rac2_guard_ship[0])))
+
+/* One trampoline as the big-endian words it is, in a single write. */
+static int rac2_guard_cave(u32 addr, const u32 *words, u32 n)
+{
+	u8 buf[4 * RAC2_GUARD_SHIP_WORDS];
+	u32 i;
+
+	if (n > RAC2_GUARD_SHIP_WORDS) return ST_BAD_ARG;
+	for (i = 0; i < n; i++) be32_put(buf + 4u * i, words[i]);
+	return mem_write(addr, buf, 4u * n);
+}
+
+/*
+ * The guards on a console, once a process, as the session enters it. The
+ * trampolines go in first and the branches to them after, so nothing can jump
+ * to code that is not there yet, and a trampoline that fails to go in leaves
+ * its site alone. Nothing takes them out again, as nothing takes the savefile
+ * helper out: a branch the game may be running at any moment is not something
+ * to pull from under it, and with no stale part about neither changes a thing.
+ * They are written with plain writes rather than as a patch, so no patch list
+ * shows them.
+ *
+ * Nothing is written where code cannot be patched - under RPCS3 the switches'
+ * patch put them in at load or did not - nor when either site holds neither the
+ * game's own word nor the guard's branch: another executable, or a mod that has
+ * the spot. A process qwark entered before already has them, and is left be.
+ */
+static void rac2_guards_install(void)
+{
+	u32 grid = 0, ship = 0;
+
+	if (!plat_can_patch_code()) return;
+
+	if (mem_read_u32(RAC2_GUARD_GRID_SITE, &grid) != ST_OK ||
+	    mem_read_u32(RAC2_GUARD_SHIP_SITE, &ship) != ST_OK) return;
+
+	if (grid == RAC2_GUARD_GRID_BRANCH && ship == RAC2_GUARD_SHIP_BRANCH) return;
+
+	if ((grid != RAC2_GUARD_GRID_ORIG && grid != RAC2_GUARD_GRID_BRANCH) ||
+	    (ship != RAC2_GUARD_SHIP_ORIG && ship != RAC2_GUARD_SHIP_BRANCH)) {
+		plat_log("rac2: crash guards left out, 0x86960 or 0xBDF30C is not the game's own word");
+		return;
+	}
+
+	if (rac2_guard_cave(RAC2_GUARD_GRID_CAVE, rac2_guard_grid, RAC2_GUARD_GRID_WORDS) != ST_OK ||
+	    rac2_guard_cave(RAC2_GUARD_SHIP_CAVE, rac2_guard_ship, RAC2_GUARD_SHIP_WORDS) != ST_OK)
+		return;
+
+	if (grid != RAC2_GUARD_GRID_BRANCH &&
+	    mem_write_u32(RAC2_GUARD_GRID_SITE, RAC2_GUARD_GRID_BRANCH) != ST_OK) return;
+	if (ship != RAC2_GUARD_SHIP_BRANCH &&
+	    mem_write_u32(RAC2_GUARD_SHIP_SITE, RAC2_GUARD_SHIP_BRANCH) != ST_OK) return;
+
+	plat_log("rac2: crash guards in");
+}
+
 /* Live toggle state the watcher and the planet load need to see. */
 static int g_fastload_on;
 /*
@@ -434,6 +572,9 @@ static void rac2_on_enter(void)
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
 	g_as_primed = 0;
+
+	/* Build 53: the crash guards, on a console; see rac2_guards_install. */
+	rac2_guards_install();
 }
 
 /*

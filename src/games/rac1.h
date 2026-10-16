@@ -284,4 +284,12 @@ int rac1_unlock_set(u8 id, u8 field, u32 value);
 u8  rac1_planet_count(void);
 int rac1_debug_bit(u32 bit, int on);
 
+/*
+ * Build 53: the fast-load patch, forced around a planet load and a set-aside
+ * load as RaC2's is. rac1_fastload_forced is 1 while a load's force is on.
+ */
+int rac1_fastload_force(void);
+int rac1_fastload_forced(void);
+int rac1_fastload_restore(void);
+
 #endif /* QWARK_RAC1_H */

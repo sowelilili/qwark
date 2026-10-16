@@ -33,7 +33,8 @@ static u32 g_at;
  * one another with no gap between them are one read, so Deadlocked's fifteen,
  * 436 bytes back to back, are one, and its fourteen site words are fourteen:
  * four ticks. RaC1's five trampolines are three runs, and with its five sites
- * that is two ticks; RaC2 and RaC3 take one.
+ * that is two ticks; RaC2's four and four (build 53's crash guards) are two
+ * as well, and RaC3 takes one.
  */
 #define SW_LOOK_READS 4u
 

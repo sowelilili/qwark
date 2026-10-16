@@ -17,6 +17,7 @@
 #include "../core/mem.h"
 #include "../core/autosplit.h"
 #include "../core/manips.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -301,9 +302,40 @@ static int rac1_on_a_drek_button(void)
  * Fast loads do not move any of this: they patch the loading screen, not the
  * request word or the state. The first tick of a process only learns whether a
  * load is under way, and never fires.
+ *
+ * Build 53: the same moment ends every load for fast loads too, whatever the
+ * planet, and puts back what a load forced (rac1_fastload_restore). It
+ * is the first moment all three fast-load sites are behind the game: the
+ * loading screen's call (0x165490) and one sound pick (0x1641F8, in 0x163AA0,
+ * from 0x165434) are in the transition, but the other (0x160060, in 0x15FE00)
+ * is reached from the main loop's state 6 (0xE15C0 -> 0x161788 -> 0x1638B8),
+ * which the level runs after the request word is cleared - so the word's going
+ * back to 0 alone is too early. A fly-in keeps the state at 6 for its length,
+ * and the patch with it, which is what the checkbox being on does anyway.
  */
 static int g_fl_primed;
 static int g_fl_latched;
+
+/*
+ * Build 53. g_fastload_on is what the Fast loads checkbox holds.
+ * g_fastload_forced says they are on because a load - a planet load or a
+ * set-aside load - forced them and not because of it: from rac1_fastload_force
+ * until the watch below restores them. On a console that is invisible, since
+ * the checkbox is qwark's own bit. With the code switches in, the checkbox is
+ * read back out of the flag byte, and while this is set the read-back reports
+ * the checkbox rather than the force, so it does not flick on for the length
+ * of every load.
+ */
+static int g_fastload_on;
+static int g_fastload_forced;
+
+/*
+ * Build 53. savefile_load_refusals as rac1_on_tick last saw it, as on RaC2. A
+ * set-aside load forces fast loads before its request goes out, and the helper
+ * can still drop the request on the game's frame, when no load follows to put
+ * them back.
+ */
+static u32 g_sf_refusals;
 
 static void rac1_file_load_watch(void)
 {
@@ -322,6 +354,7 @@ static void rac1_file_load_watch(void)
 		return;
 
 	g_fl_latched = 0;
+	rac1_fastload_restore();
 	if (g_planet_word == 0) manips_file_loaded();
 }
 
@@ -346,6 +379,12 @@ static void rac1_on_tick(const struct game_hot *hot)
 	const struct rac1_as_state *p = &g_as_prev;
 
 	(void)hot;
+
+	/* Build 53: a set-aside load the helper dropped puts the forced fast loads back. */
+	if (savefile_load_refusals() != g_sf_refusals) {
+		g_sf_refusals = savefile_load_refusals();
+		if (g_fastload_forced) rac1_fastload_restore();
+	}
 
 	rac1_file_load_watch();
 
@@ -421,6 +460,14 @@ static void rac1_on_enter(void)
 	g_fl_primed = 0;
 	g_fl_latched = 0;
 
+	/*
+	 * Nothing forced, and the checkbox off until the auto-apply after this call
+	 * or PREVIOUS_REAPPLY turns it on through rac1_set_toggle, as on RaC2.
+	 */
+	g_fastload_on = 0;
+	g_fastload_forced = 0;
+	g_sf_refusals = savefile_load_refusals();
+
 	/* Removing the embedded collectable hooks fixed the reported RaC1 boot
 	 * black screen. Keep supported read-only events; inject no helper. */
 }
@@ -487,6 +534,34 @@ static struct patch_def rac1_ammo = {
 static struct patch_def rac1_health = {
 	"Infinite health", PATCH_KIND_FEATURE, rac1_health_words, 1, NULL
 };
+
+/*
+ * Build 53: a planet load and a set-aside load force fast loads on, as RaC2's
+ * always have, and the end of the load puts the checkbox's setting back
+ * (rac1_file_load_watch, or rac1_on_tick for a set-aside load the helper
+ * dropped). g_fastload_on and g_fastload_forced, beside that watch, say why
+ * they are on. patch_apply is a no-op when the toggle already applied the
+ * patch, so nothing is captured twice and nothing is written twice.
+ */
+int rac1_fastload_force(void)
+{
+	int rc = classic_code_force(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS);
+
+	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
+	return rc;
+}
+
+int rac1_fastload_forced(void)
+{
+	return g_fastload_forced;
+}
+
+int rac1_fastload_restore(void)
+{
+	g_fastload_forced = 0;
+	if (g_fastload_on) return ST_OK;
+	return classic_code_toggle(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS, 0);
+}
 
 static void rac1_init(void)
 {
@@ -622,8 +697,18 @@ int rac1_debug_bit(u32 bit, int on)
 
 static int rac1_set_toggle(u8 id, int on)
 {
+	int rc;
+
 	switch (id) {
-	case F_FAST_LOADS:      return classic_code_toggle(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS, on);
+	case F_FAST_LOADS:
+		rc = classic_code_toggle(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS, on);
+		if (rc == ST_OK) {
+			g_fastload_on = on;
+			/* Whatever a load forced, the checkbox has the say now. */
+			g_fastload_forced = 0;
+		}
+		return rc;
+
 	case F_INFINITE_AMMO:   return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
 	case F_INFINITE_HEALTH: return classic_code_toggle(&rac1_health, SW_RAC1_FLAG_INFINITE_HEALTH, on);
 	case F_GHOST:           return classic_ghost(RAC1_GHOST_TIMER, on);
@@ -658,7 +743,11 @@ static int rac1_toggle_read(u8 id, int *on)
 	int rc;
 
 	switch (id) {
-	case F_FAST_LOADS:      return classic_code_read(SW_RAC1_FLAG_FAST_LOADS, on);
+	case F_FAST_LOADS:
+		rc = classic_code_read(SW_RAC1_FLAG_FAST_LOADS, on);
+		/* Build 53: a load's force is not the checkbox; see g_fastload_forced. */
+		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
+		return rc;
 	case F_INFINITE_AMMO:   return classic_code_read(SW_RAC1_FLAG_INFINITE_AMMO, on);
 	case F_INFINITE_HEALTH: return classic_code_read(SW_RAC1_FLAG_INFINITE_HEALTH, on);
 	default:                break;

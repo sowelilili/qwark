@@ -442,6 +442,20 @@ int rac1_planet_load(u8 planet, u8 flags)
 	if (planet >= rac1_planet_count()) return ST_BAD_ARG;
 
 	/*
+	 * Build 53: fast loads forced on before the request, and put back to the
+	 * checkbox's setting when the load is over (rac1.c, rac1_file_load_watch),
+	 * exactly as RaC2's planet load has always done.
+	 *
+	 * A platform that refuses code patches (RPCS3) loads at the game's own pace
+	 * rather than not at all: the request and the resets are data writes, and
+	 * the load is what was asked for. With the code switches in, forcing them is
+	 * a write of their flag byte, and the end of the load puts that back too.
+	 */
+	rc = rac1_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
+	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
+
+	/*
 	 * IGame.LoadPlanet writes the request first and only then resets, so the
 	 * flags land while the game is already on its way out of the level. Kept in
 	 * that order deliberately: it is what runners' muscle memory is built on.
@@ -470,10 +484,34 @@ int rac1_planet_load(u8 planet, u8 flags)
  * the helper if this process has not had it yet. Nobody loads a mod for it any
  * more, so there is nothing left to refuse: what used to be UNSUPPORTED without
  * the helper is now UNSUPPORTED only where code cannot be patched at all.
+ *
+ * Build 53: the load forces fast loads on first, as RaC2's rac2_load_setaside
+ * and the planet load do, and the end of the load puts the checkbox's setting
+ * back (rac1.c). A load the game will not take is refused before anything is
+ * done for it - the install and above all the force: nothing would put fast
+ * loads back until the next load. One the helper drops later, on the game's own
+ * frame, is caught by rac1_on_tick, and one the request itself refuses here is
+ * put back at once, unless an earlier load's force is still running. A platform
+ * that refuses code patches loads at the game's own pace; with the code switches
+ * in, the force is a write of their flag byte.
  */
 int rac1_load_setaside(void)
 {
-	return savefile_load_aside();
+	int was, rc = savefile_load_ready();
+
+	if (rc != ST_OK) return rc;
+
+	rc = savefile_install();
+	if (rc != ST_OK) return rc;
+
+	was = rac1_fastload_forced();
+	rc = rac1_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
+	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
+
+	rc = savefile_load_aside();
+	if (rc != ST_OK && !was) rac1_fastload_restore();
+	return rc;
 }
 
 /*
@@ -643,7 +681,7 @@ int rac1_trigger(u8 id)
 		return rac1_max_ammo_all();
 
 	case F_LOAD_SETASIDE:
-		return savefile_load_aside();
+		return rac1_load_setaside();
 
 	case F_SET_ASIDE_FILE:
 		return savefile_set_aside();

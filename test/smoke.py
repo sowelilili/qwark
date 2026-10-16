@@ -305,6 +305,13 @@ RAC1_LEVEL_FLAGS = 0xA0CA84
 RAC1_MISC_FLAGS = 0xA0CD1C
 RAC1_GOLD_BOLTS = 0xA0CA34
 RAC1_LOAD_PLANET = 0xA10700
+# Build 53: what a planet load reads to see its end, and the three words fast
+# loads patch: (address, the game's word, the patched word). src/games/rac1.c.
+RAC1_GAME_STATE = 0xA10708
+RAC1_IN_FRONTEND = 0xA15F38
+RAC1_FASTLOAD_SITES = [(0x165490, 0x4BFFE519, 0x60000000),
+                       (0x160060, 0x546307BE, 0x38600006),
+                       (0x1641F8, 0x546307BE, 0x38600006)]
 RAC1_DEBUG_MODE = 0x95C5D4
 RAC1_JANKPOT_BOLTS = 0xA0FD18
 RAC1_GOODIES_MENU = 0x969CD3
@@ -1188,6 +1195,10 @@ OTHER_GAMES = [
         "name": "RaC2",
         "game": 2,
         "features": 29,
+        # The two crash guards' branches (src/games/rac2.c), written as the
+        # session enters over the game's own words: (address, game, guard).
+        "entry_code": [(0x00086960, 0x7F24C814, 0x490BAAE0),
+                       (0x00BDF30C, 0xA07F0034, 0x48562164)],
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac2.h; build 50 moved it
         # out of the executable's code segment.
         "sf_setaside": 0x0131772A,
@@ -2125,12 +2136,20 @@ def exercise_game(c, sim, spec, udp=None):
     check(ok, "%s: the previous game quit" % name)
 
     sim.send("boot %s" % spec["title"])
+    # The game's own words wherever qwark writes code of its own as it enters.
+    for addr, word, _want in spec.get("entry_code", []):
+        sim.send("poke 0x%08X %08x" % (addr, word))
     ok, info = wait_state(c, SESSION_INGAME)
     check(ok, "%s: %s reaches INGAME" % (name, spec["title"]), info)
     if not ok:
         return
     check(info["game"] == spec["game"],
           "%s: the game byte is right" % name, info["game"])
+    if spec.get("entry_code"):
+        got = [mem_read_u32(c, a) for a, _w, _want in spec["entry_code"]]
+        check(got == [want for _a, _w, want in spec["entry_code"]],
+              "%s: the session put its own code in as it entered" % name,
+              [hex(v) for v in got])
 
     # ------------------------------------------------------------ describe
     status, body = c.call(OP_DESCRIBE)
@@ -3506,12 +3525,14 @@ def smoke_rpcs3_rac2_old_switches(c, pine):
           "rpcs3 rac2 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
           (status, hex(stamp) if stamp is not None else None))
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    check(len(rows) == 14 and all(0x01141400 <= a < 0x011414FC for a, _ in rows[:12]),
-          "rpcs3 rac2 switches: its twelve trampoline words are at 0x1141400 now",
-          [hex(a) for a, _ in rows[:12]])
-    check(rows[12:] == [(0x00B30C7C, 0x486107A4), (0x00BEA8A0, 0x48556B60)],
+    # Twenty-nine trampoline words, the crash guards' with them, and four sites.
+    check(len(rows) == 33 and all(0x01141400 <= a < 0x011414FC for a, _ in rows[:29]),
+          "rpcs3 rac2 switches: its twenty-nine trampoline words are at 0x1141400 on",
+          [hex(a) for a, _ in rows[:29]])
+    check(rows[29:] == [(0x00086960, 0x490BAAE0), (0x00B30C7C, 0x486107A4),
+                        (0x00BDF30C, 0x48562164), (0x00BEA8A0, 0x48556B60)],
           "rpcs3 rac2 switches: and the sites branch there",
-          [(hex(a), hex(v)) for a, v in rows[12:]])
+          [(hex(a), hex(v)) for a, v in rows[29:]])
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC2_SW_AMMO_ID, 1))
     check(status == ST_UNSUPPORTED,
           "rpcs3 rac2 switches: Infinite ammo is refused until then", status)
@@ -4259,12 +4280,41 @@ def main():
                + struct.pack(">I", 0xFFFFFFFF))
         c.call(OP_MEM_WRITE, struct.pack(">I", 0x96C142) + b"\x01")   # Heli-Pack
 
+        # Build 53: the load forces fast loads on, as RaC2's does (rac1.c).
+        for addr, word, _patched in RAC1_FASTLOAD_SITES:
+            mem_write(c, addr, struct.pack(">I", word))
+        mem_write(c, RAC1_GAME_STATE, struct.pack(">I", 0))
+        mem_write(c, RAC1_IN_FRONTEND, b"\x00")
+
         status, _ = c.call(OP_PLANET_LOAD, bytes([3, 0]))
         check(status == ST_OK, "PLANET_LOAD with no flags", status)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_LOAD_PLANET, 8))
         check(body == struct.pack(">II", 1, 3), "the planet request went out", body)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_LEVEL_FLAGS + 3 * 0x10, 1))
         check(body == b"\x11", "the level flags were left alone", body)
+        check([mem_read_u32(c, a) for a, _w, _p in RAC1_FASTLOAD_SITES]
+              == [p for _a, _w, p in RAC1_FASTLOAD_SITES],
+              "fast loads were forced on for it",
+              [hex(mem_read_u32(c, a)) for a, _w, _p in RAC1_FASTLOAD_SITES])
+
+        # The game's end of the load: the request word back at 0, then the
+        # level's state 6 left. Only then do the game's words come back.
+        mem_write(c, RAC1_GAME_STATE, struct.pack(">I", 6))
+        time.sleep(0.1)
+        mem_write(c, RAC1_LOAD_PLANET, struct.pack(">II", 0, 0))
+        time.sleep(0.1)
+        check(mem_read_u32(c, RAC1_FASTLOAD_SITES[1][0]) == RAC1_FASTLOAD_SITES[1][2],
+              "still forced while the level's state 6 runs",
+              hex(mem_read_u32(c, RAC1_FASTLOAD_SITES[1][0])))
+        mem_write(c, RAC1_GAME_STATE, struct.pack(">I", 0))
+        deadline = time.time() + 2.0
+        while time.time() < deadline and \
+                mem_read_u32(c, RAC1_FASTLOAD_SITES[0][0]) != RAC1_FASTLOAD_SITES[0][1]:
+            time.sleep(0.02)
+        check([mem_read_u32(c, a) for a, _w, _p in RAC1_FASTLOAD_SITES]
+              == [w for _a, w, _p in RAC1_FASTLOAD_SITES],
+              "and the end of the load put the game's words back",
+              [hex(mem_read_u32(c, a)) for a, _w, _p in RAC1_FASTLOAD_SITES])
 
         status, _ = c.call(OP_PLANET_LOAD,
                            bytes([3, PLANET_FLAG_RESET_LEVELFLAGS
