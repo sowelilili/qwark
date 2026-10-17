@@ -435,9 +435,10 @@ void sf_trophy_worker(sf_u64 arg) __attribute__((noreturn));
 
 /*
  * The thread's descriptor, laid out as the game's own in its .opd: the entry,
- * and the TOC it runs with, the game's. In the thread's cave, beside its code,
- * since the helper has no data of its own; nothing writes it, and the link
- * resolves the entry's address.
+ * and the TOC it runs with, the game's; and the same for the status callback
+ * the thread hands sceNpTrophyRegisterContext (sf_trophy_status below). In the
+ * thread's cave, beside its code, since the helper has no data of its own;
+ * nothing writes them, and the link resolves the entries' addresses.
  */
 #define SF_STR_(x) #x
 #define SF_STR(x)  SF_STR_(x)
@@ -446,6 +447,9 @@ __asm__(
 	"	.align 3\n"
 	"sf_trophy_opd:\n"
 	"	.long .sf_trophy_worker\n"
+	"	.long " SF_STR(SF_GAME_TOC) "\n"
+	"sf_trophy_status_opd:\n"
+	"	.long .sf_trophy_status\n"
 	"	.long " SF_STR(SF_GAME_TOC) "\n"
 	"	.popsection\n");
 
@@ -459,12 +463,16 @@ static void sf_trophy_reset(sf_u32 request)
 	    (request == SF_TROPHY_NOW ||
 	     (SF_WORD(SF_GAME_MODE) == SF_MODE_SPACE && SF_WORD(SF_LOAD_REQUEST) != 0))) {
 		sf_u32 was = SF_BYTE(obj + SF_TROPHY_REGISTERED);
-		sf_u32 opd;
+		sf_u32 opd, a;
 		sf_u64 id;
 		int rc;
 
 		SF_BYTE(obj + SF_TROPHY_REGISTERED) = 0;
 		SF_BYTE(SF_TROPHY_BUSY) = 1;
+		/* What the thread leaves for qwark's log, cleared before it starts. */
+		SF_BYTE(SF_TROPHY_TRIES) = 0;
+		SF_BYTE(SF_TROPHY_PHASE) = 0;
+		for (a = SF_TROPHY_DESTROY_ST; a < SF_TROPHY_LAST_DESTROY_ST + 8; a += 4) SF_WORD(a) = 0;
 		SF_BYTE(SF_API_TROPHY) = SF_TROPHY_RUNNING;
 
 		__asm__("lis %0,sf_trophy_opd@h\n\tori %0,%0,sf_trophy_opd@l" : "=r"(opd));
@@ -480,76 +488,159 @@ static void sf_trophy_reset(sf_u32 request)
 }
 
 /*
- * Build 53. The wait for the register thread the call before started (sf_rac3.h
- * has the two steps and their limits): the thread word nonzero means it has
- * started, and zero after that, or after the first step's polls, means it is
- * over. How it ended is one of SF_TROPHY_REG_*, in the low byte; above it, how
- * long the wait took in quarters of a second, at most 255.
+ * Build 53. After every call through one of the game's import stubs: the stub
+ * left the library's TOC in r2 and the game's at 40(r1), in this function's
+ * own frame, where the next call to a game routine expects it.
+ */
+#define SF_TOC_BACK() __asm__ __volatile__("ld 2,40(1)" ::: "memory")
+
+/*
+ * Build 53. The status callback the thread hands sceNpTrophyRegisterContext,
+ * which calls it on the thread with the install's progress: it counts the
+ * calls and keeps the last one's status, completed and total for qwark's log,
+ * and lets the install go on (0), as the game's own (0x985B60) does; that one
+ * only works out a progress value for the boot screen.
  */
 __attribute__((noinline, section(".text.trophy_thread")))
-static sf_u32 sf_trophy_wait(sf_u32 obj)
+int sf_trophy_status(sf_u32 context, int status, int completed, int total, sf_u32 arg)
 {
-	sf_u32 n, started = 0, seen = 0, result;
+	/* One address in a register for the four bytes; it is never stored. */
+	volatile sf_u8 *cb = &SF_BYTE(SF_TROPHY_CB);
 
-	for (n = 0; n < SF_TROPHY_END_POLLS; n++) {
-		if (SF_BYTE(obj + SF_TROPHY_REGISTERED) != 0) seen = 1;
-		if (SF_WORD(obj + SF_TROPHY_THREAD) != 0) started = 1;
-		else if (started || n >= SF_TROPHY_START_POLLS) break;
-		sf_usleep(SF_TROPHY_POLL_US);
+	(void)context;
+	(void)arg;
+	cb[0] = cb[0] + 1;
+	cb[1] = (sf_u8)status;
+	cb[2] = (sf_u8)completed;
+	cb[3] = (sf_u8)total;
+	return 0;
+}
+
+/*
+ * Build 53. The game's destroy (0x984E40), with what DestroyHandle and
+ * DestroyContext answered kept at `st` and `st` + 4 (0 for a call not made):
+ * the handle, the context, the registered byte; and then both ids put to 0,
+ * which the game's own leaves as they were.
+ */
+__attribute__((noinline, section(".text.trophy_thread")))
+static void sf_trophy_destroy(sf_u32 obj, sf_u32 st)
+{
+	sf_u32 handle = SF_WORD(obj + SF_TROPHY_HANDLE);
+	sf_u32 context = SF_WORD(obj + SF_TROPHY_CONTEXT);
+	int rh = 0, rc = 0;
+
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_DESTROY;
+	if (handle != 0) {
+		rh = sf_np_trophy_destroy_handle(handle);
+		SF_TOC_BACK();
 	}
+	if (context != 0) {
+		rc = sf_np_trophy_destroy_context(context);
+		SF_TOC_BACK();
+	}
+	SF_WORD(st) = (sf_u32)rh;
+	SF_WORD(st + 4) = (sf_u32)rc;
+	SF_BYTE(obj + SF_TROPHY_REGISTERED) = 0;
+	SF_WORD(obj + SF_TROPHY_HANDLE) = 0;
+	SF_WORD(obj + SF_TROPHY_CONTEXT) = 0;
+}
 
-	if (n >= SF_TROPHY_END_POLLS) result = SF_TROPHY_REG_RUNNING;
-	else if (SF_BYTE(obj + SF_TROPHY_REGISTERED) != 0) result = SF_TROPHY_REG_OK;
-	else result = seen ? SF_TROPHY_REG_LOST : SF_TROPHY_REG_FAILED;
+/*
+ * Build 53. Registration `i`, the calls the game's register thread makes after
+ * 0x984FA0 has made the context and the handle (sf_rac3.h has what is left
+ * out): how far it got is one of SF_TROPHY_STEP_*, kept with the failing
+ * call's answer. +392 is 1 for as long as it runs, as it is while the game's
+ * register thread does.
+ */
+__attribute__((noinline, section(".text.trophy_thread")))
+static sf_u32 sf_trophy_register(sf_u32 obj, sf_u32 i)
+{
+	sf_u32 blk = SF_WORD(SF_TROPHY_COMMID_PTR);
+	sf_u32 cb, step;
+	sf_u64 space = 0;
+	int rc = -1;
 
-	n /= 25;
-	if (n > 255) n = 255;
-	return result | (n << 8);
+	SF_WORD(obj + SF_TROPHY_THREAD) = 1;
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_CREATE;
+	step = SF_TROPHY_STEP_CONTEXT_FAILED;
+	if (blk == 0) goto out;
+	rc = sf_np_trophy_create_context(obj + SF_TROPHY_CONTEXT, blk + SF_TROPHY_COMMID_ID,
+	                                 blk + SF_TROPHY_COMMID_SIGN, 0);
+	SF_TOC_BACK();
+	if (rc != 0) goto out;
+
+	step = SF_TROPHY_STEP_HANDLE_FAILED;
+	rc = sf_np_trophy_create_handle(obj + SF_TROPHY_HANDLE);
+	SF_TOC_BACK();
+	if (rc != 0) goto out;
+
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_SPACE;
+	rc = sf_np_trophy_disk_space(SF_WORD(obj + SF_TROPHY_CONTEXT),
+	                             SF_WORD(obj + SF_TROPHY_HANDLE), &space, 0);
+	SF_TOC_BACK();
+	SF_WORD(SF_TROPHY_SPACE_ST + 4 * i) = (sf_u32)rc;
+
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_REGISTER;
+	step = SF_TROPHY_STEP_REGISTER_FAILED;
+	__asm__("lis %0,sf_trophy_status_opd@h\n\tori %0,%0,sf_trophy_status_opd@l" : "=r"(cb));
+	rc = sf_np_trophy_register_context(SF_WORD(obj + SF_TROPHY_CONTEXT),
+	                                   SF_WORD(obj + SF_TROPHY_HANDLE), cb, 0, 0);
+	SF_TOC_BACK();
+	if (rc != 0) goto out;
+
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_INFO;
+	sf_trophy_read_info(obj);
+	step = SF_BYTE(obj + SF_TROPHY_REGISTERED) != 0 ? SF_TROPHY_STEP_REGISTERED
+	                                               : SF_TROPHY_STEP_INFO_FAILED;
+out:
+	SF_WORD(SF_TROPHY_STATUS + 4 * i) = (sf_u32)rc;
+	SF_BYTE(SF_TROPHY_STEPS + i) = step;
+	SF_WORD(obj + SF_TROPHY_THREAD) = 0;
+	return step;
 }
 
 /*
  * Build 53. The helper's thread, started with the game's trophy object as its
  * argument (sf_rac3.h has the why of each step): every trophy marked won in
- * the cache; then destroy, the ids put to 0, a second's wait, register, and the
- * register thread waited out; again, up to SF_TROPHY_TRIES_MAX times in all,
- * for as long as a registration fails. Then what each registration did goes
- * where qwark reads it, 10, 25 and 32 go back to locked, the busy byte is let
+ * the cache; the game's context destroyed; qwark asked to delete the folder
+ * now (6) and waited for (7); then, up to SF_TROPHY_TRIES_MAX times for as long
+ * as a registration fails, a second's wait and a registration, with a destroy
+ * of the failed one's context before the next. What each step did goes where
+ * qwark reads it as it happens. Then 10, 25 and 32 go back to locked, the busy byte is let
  * go before the request byte is answered (qwark may ask again the moment it
  * reads the answer), and the thread ends, as the game's own do, through
- * sys_ppu_thread_exit. A wait that runs out stops the reset where it is rather
- * than destroy the context under a registration still going; that register
- * thread finishes on its own, and the cache is the reset's either way.
+ * sys_ppu_thread_exit.
  */
 __attribute__((noinline, section(".text.trophy_thread")))
 void sf_trophy_worker(sf_u64 arg)
 {
 	sf_u32 obj = (sf_u32)arg;
 	sf_u32 code = SF_TROPHY_UNREGISTERED;
-	sf_u32 results = 0, r, n, i;
+	sf_u32 n, i;
 
-	n = SF_WORD(obj + SF_TROPHY_COUNT);
-	if (n > SF_TROPHY_MAX) n = SF_TROPHY_MAX;
-	for (i = 0; i < n; i++) SF_WORD(obj + SF_TROPHY_FLAGS + i * 8) = 1;
-	SF_WORD(SF_TROPHY_TIMES) = 0;
+	/* Every id the award routine takes (0x2290D8: 0..32), whatever the count. */
+	for (i = 0; i < SF_TROPHY_MAX; i++) SF_WORD(obj + SF_TROPHY_FLAGS + i * 8) = 1;
 
-	for (i = 0; i < SF_TROPHY_TRIES_MAX; ) {
-		sf_trophy_destroy(obj);
-		SF_WORD(obj + SF_TROPHY_CONTEXT) = 0;
-		SF_WORD(obj + SF_TROPHY_HANDLE) = 0;
+	sf_trophy_destroy(obj, SF_TROPHY_DESTROY_ST);
+
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_DELETE;
+	SF_BYTE(SF_API_TROPHY) = SF_TROPHY_DESTROYED;
+	for (n = 0; n < SF_TROPHY_DELETE_POLLS && SF_BYTE(SF_API_TROPHY) != SF_TROPHY_DELETED; n++)
+		sf_usleep(SF_TROPHY_POLL_US);
+	SF_BYTE(SF_API_TROPHY) = SF_TROPHY_RUNNING;
+
+	for (i = 0; ; ) {
+		SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_SETTLE;
 		sf_usleep(SF_TROPHY_SETTLE_US);
-		sf_trophy_register(obj);
-		r = sf_trophy_wait(obj);
-
-		SF_BYTE(SF_TROPHY_TIMES + i) = r >> 8;
-		r &= 3;
-		results |= r << (2 * i);
-		i++;
-		if (r == SF_TROPHY_REG_OK) code = 0;
-		if (r == SF_TROPHY_REG_RUNNING) code = SF_TROPHY_STILL;
-		if (code != SF_TROPHY_UNREGISTERED) break;
+		SF_BYTE(SF_TROPHY_TRIES) = i + 1;
+		if (sf_trophy_register(obj, i) == SF_TROPHY_STEP_REGISTERED) {
+			code = 0;
+			break;
+		}
+		if (++i == SF_TROPHY_TRIES_MAX) break;
+		sf_trophy_destroy(obj, SF_TROPHY_LAST_DESTROY_ST);
 	}
-	SF_BYTE(SF_TROPHY_TRIES) = i;
-	SF_BYTE(SF_TROPHY_RESULTS) = results;
+	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_DONE;
 
 	SF_WORD(obj + SF_TROPHY_FLAGS + SF_TROPHY_KEEP_1 * 8) = 0;
 	SF_WORD(obj + SF_TROPHY_FLAGS + SF_TROPHY_KEEP_2 * 8) = 0;

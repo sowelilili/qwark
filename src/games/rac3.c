@@ -786,11 +786,11 @@ static void rac3_fastload_watch(void)
  * (sf_rac3.h), so the reset always starts inside the load. Up to the first
  * hardware test it also stood the game's main thread still for three seconds,
  * which the load hid; it runs on a thread of the helper's own now, and the game
- * goes on through it. The folder's delete runs first, a few files a tick, and
- * is done long before the load is. Nothing the reset leaves the game able to
- * win - the RY3NO, the Metropolis blimp, the snowman skin - is on Veldin, and
- * the reset, a few seconds of the game's register threads, is over long before
- * the run leaves it. The title screen was the other place considered: it would
+ * goes on through it. The folder's delete comes once the helper's thread has
+ * destroyed the game's context, a few files a tick. Nothing the reset leaves
+ * the game able to win - the RY3NO, the Metropolis blimp, the snowman skin - is
+ * on Veldin, and the reset, a few seconds of the console's registration, is
+ * over long before the run leaves it. The title screen was the other place considered: it would
  * miss a run started from a load in the game.
  */
 static void rac3_file_load_watch(void)

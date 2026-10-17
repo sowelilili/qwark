@@ -93,31 +93,42 @@
  * What qwark writes in `api_trophy`, and what the helper answers there;
  * sf_rac3.h has the helper's side. RUNNING lasts while the helper's own thread
  * resets the game's trophies, a few seconds the game goes on through, and the
- * thread answers 0; UNREGISTERED when every registration it made failed, STILL
- * when the last was still going when it stopped waiting.
+ * thread answers 0, or UNREGISTERED when every registration it made failed.
+ * Between the two, once it has destroyed the game's context, it writes
+ * DESTROYED and waits for qwark to delete the folder and write DELETED.
  *
  * After the request byte, the helper's own: its busy byte, and then what the
- * thread leaves of the last reset for the log (SF_TROPHY_TRIES and on in
- * sf_rac3.h): how many registrations it made, how each ended (RAC3_TROPHY_REG_*,
- * two bits each, the first in the low bits), and how long each took in quarters
- * of a second, a byte each. Offsets from the request byte.
+ * thread leaves of the reset for the log as it goes (SF_TROPHY_TRIES and on in
+ * sf_rac3.h), RAC3_TROPHY_DIAG_LEN bytes from RAC3_TROPHY_DIAG_OFF: the
+ * registrations started, the phase it is in (RAC3_TROPHY_PHASE_*), the first
+ * destroy's two answers, each registration's failing answer, how far each got
+ * (RAC3_TROPHY_STEP_*), each one's GetRequiredDiskSpace answer, the install's
+ * progress callbacks, and the last destroy's answers. Offsets from the request
+ * byte, and within that block.
  */
 #define RAC3_TROPHY_NOW          1u
 #define RAC3_TROPHY_IN_LOAD      2u
 #define RAC3_TROPHY_RUNNING      3u
 #define RAC3_TROPHY_UNREGISTERED 4u
-#define RAC3_TROPHY_STILL        5u
+#define RAC3_TROPHY_DESTROYED    6u
+#define RAC3_TROPHY_DELETED      7u
 
 #define RAC3_TROPHY_BUSY_OFF     1u
-#define RAC3_TROPHY_TRIES_OFF    2u
-#define RAC3_TROPHY_RESULTS_OFF  3u
-#define RAC3_TROPHY_TIMES_OFF    4u
+#define RAC3_TROPHY_DIAG_OFF     2u
+#define RAC3_TROPHY_DIAG_LEN     0x32u
 #define RAC3_TROPHY_TRIES_MAX    3u
 
-#define RAC3_TROPHY_REG_OK       0u
-#define RAC3_TROPHY_REG_FAILED   1u
-#define RAC3_TROPHY_REG_LOST     2u
-#define RAC3_TROPHY_REG_RUNNING  3u
+#define RAC3_TD_TRIES            0x00u
+#define RAC3_TD_PHASE            0x01u
+#define RAC3_TD_DESTROY          0x02u   /* two u32 */
+#define RAC3_TD_STATUS           0x0Au   /* three u32 */
+#define RAC3_TD_STEPS            0x16u   /* three u8 */
+#define RAC3_TD_SPACE            0x1Au   /* three u32 */
+#define RAC3_TD_CB               0x26u   /* count, status, completed, total */
+#define RAC3_TD_LAST_DESTROY     0x2Au   /* two u32 */
+
+#define RAC3_TROPHY_PHASE_DONE   8u
+#define RAC3_TROPHY_STEP_REGISTERED 5u
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
@@ -300,8 +311,8 @@
  * Where the console writes the cave: 0x9807F0..0x9808B0, forty-eight words at
  * the top of what the trophy reset left of the strictly dead 0x980304..0x980AC0
  * (src/games/sfhelper/sf_rac3.h), under its cave at SF_CAVE_TROPHY (0x9808C0)
- * and above its thread's at 0x980380..0x980700; 0x980304..0x980380 and
- * 0x980700..0x9807F0 stay free. Not the savefile helper's dead function at
+ * and right above its thread's at 0x980308..0x9807F0; only 0x980304..0x980308
+ * stays free. Not the savefile helper's dead function at
  * 0x980AC0, where the Infinite ammo and Fast loads code switches are: the rack
  * mods racman shipped for this game (COOLCAM, SUCKMAN, rc3-save) load their
  * code there, and a console runs Fast loads beside them, which it never had to

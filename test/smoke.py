@@ -4379,10 +4379,15 @@ def exercise_manips(c, sim, spec):
         check(wait_byte(2),
               "%s trophies: a load into Veldin asks the game for the reset, inside the load, "
               "with None selected" % name, mem_read_u8(c, t["byte"]))
-        check(not os.path.exists(folder),
-              "%s trophies: after deleting the console's trophy folder for the game" % name)
+        check(os.path.exists(folder),
+              "%s trophies: and leaves the console's trophy folder until the game has let go of "
+              "its context" % name)
         check(mem_read_u32(c, t["fill"][0]) == t["fill"][1],
-              "%s trophies: and making the game's cache fill a nop" % name)
+              "%s trophies: having made the game's cache fill a nop" % name)
+        mem_write(c, t["byte"], b"\x06")          # the helper's thread: context down
+        check(wait_byte(7) and not os.path.exists(folder),
+              "%s trophies: then deletes the folder and lets the thread go on" % name,
+              mem_read_u8(c, t["byte"]))
         mem_write(c, t["byte"], b"\x00")          # the helper's answer: done
         for a, v in t["rest"]:
             mem_write(c, a, v)
@@ -4392,8 +4397,12 @@ def exercise_manips(c, sim, spec):
         time.sleep(0.1)
         status, _ = c.call(OP_FEATURE_TRIGGER, bytes([t["button"]]))
         check(status == ST_OK, "%s trophies: the Reset trophies button is accepted" % name, status)
-        check(wait_byte(1) and not os.path.exists(folder),
-              "%s trophies: and deletes the folder, then asks the game to reset now" % name,
+        check(wait_byte(1) and os.path.exists(folder),
+              "%s trophies: and asks the game to reset now, the folder still there" % name,
+              mem_read_u8(c, t["byte"]))
+        mem_write(c, t["byte"], b"\x06")
+        check(wait_byte(7) and not os.path.exists(folder),
+              "%s trophies: which goes once the game's context is down" % name,
               mem_read_u8(c, t["byte"]))
         mem_write(c, t["byte"], b"\x00")
         time.sleep(0.1)

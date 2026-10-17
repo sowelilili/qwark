@@ -64,20 +64,21 @@
  * build.sh fails a reset that would run past SF_CAVE_TROPHY_END, the helper's
  * own cave.
  *
- * The part that runs on the helper's own thread (sf_trophy_worker, its wait and
- * its thread descriptor) did not fit beside it, and has a third cave, the
- * fourth section the link map places: 0x980380..0x980700, 896 bytes, from the
- * second of the seven dead functions; it was 512 bytes, to 0x980580, until the
- * thread learnt to make a registration again and keep what each one did. It
- * starts on an eight-byte boundary, as the descriptor in it
+ * The part that runs on the helper's own thread (sf_trophy_worker, what it
+ * calls, and its two descriptors) did not fit beside it, and has a third cave,
+ * the fourth section the link map places: 0x980308..0x9807F0, 1256 bytes, from
+ * the first eight-byte boundary of the span to the console's Fast loads cave.
+ * It was 512 bytes at 0x980380 until the thread learnt to make a registration
+ * again and keep what each one did, 896 until it made the registration's
+ * calls itself. It starts on an eight-byte boundary, as the descriptors in it
  * needs: build.sh fails a section the link put anywhere but its cave's first
- * byte, and one that would run past SF_CAVE_TROPHY_THREAD_END. 0x980304..0x980380
- * is left for whatever needs it next.
+ * byte, and one that would run past SF_CAVE_TROPHY_THREAD_END. Of the span only
+ * 0x980304..0x980308 is left.
  */
 #define SF_CAVE_TROPHY            0x009808C0
 #define SF_CAVE_TROPHY_END        0x00980AC0
-#define SF_CAVE_TROPHY_THREAD     0x00980380
-#define SF_CAVE_TROPHY_THREAD_END 0x00980700
+#define SF_CAVE_TROPHY_THREAD     0x00980308
+#define SF_CAVE_TROPHY_THREAD_END 0x009807F0
 
 /*
  * The hook site is the cellPadSetActDirect call Gigahelper replaces with a call
@@ -130,17 +131,21 @@
  *   2  reset only if the game is in a planet load's transition (the auto toggle,
  *      which asks as a load into Veldin starts, before a run's timer starts at
  *      that load's end)
- *   3  the reset is running, on the helper's own thread; that thread writes 0,
- *      4 or 5 when it is done
+ *   3  the reset is running, on the helper's own thread; that thread writes 0
+ *      or 4 when it is done
  *   4  the reset ran, but the game's trophies did not come back: every one of
  *      its registrations failed
- *   5  the reset ran, but its last registration was still going when the
- *      helper's thread stopped waiting for it; the game's register thread
- *      finishes on its own, and the trophies come back if it succeeds
+ *   6  the helper's thread has destroyed the game's trophy context and waits
+ *      for qwark to delete the console's trophy data for the game
+ *   7  qwark is done with that folder, deleted or not (qwark writes it); the
+ *      thread writes 3 again and registers
  *   SF_API_REFUSED  the helper dropped the request: the game's trophy object is
  *      not set up, one of its trophy threads is running, a reset is already
  *      running, a 2 found the game out of the load, or the helper's thread
  *      could not be started
+ *
+ * 5 is not used: it was "a registration still running when the helper stopped
+ * waiting", which the helper's own registration (below) cannot leave behind.
  *
  * The byte beside it, SF_TROPHY_BUSY, is 1 from the frame the helper takes a
  * request until its thread has finished, whatever happens to the request byte
@@ -153,20 +158,56 @@
 #define SF_TROPHY_IN_LOAD      2
 #define SF_TROPHY_RUNNING      3
 #define SF_TROPHY_UNREGISTERED 4
-#define SF_TROPHY_STILL        5
+#define SF_TROPHY_DESTROYED    6
+#define SF_TROPHY_DELETED      7
 
 /*
- * What the helper's thread leaves of each reset for qwark's log, written before
- * it answers, in the same zero-filled stretch: how many registrations it made
- * (SF_TROPHY_TRIES), how each ended (SF_TROPHY_RESULTS, two bits each, the
- * first registration's in the low bits: one of SF_TROPHY_REG_* below), and how
- * long each took, from the register call to the end of the game's register
- * thread, in quarters of a second (SF_TROPHY_TIMES, a byte each, the first at
- * 0xD9FF20).
+ * What the helper's thread leaves of each reset for qwark's log, in the same
+ * zero-filled stretch, kept up to date as it goes, so that qwark can log each
+ * step as it happens and a reset that never finishes still shows where it is:
+ *
+ *   0xD9FF1E  the registrations it has started (SF_TROPHY_TRIES)
+ *   0xD9FF1F  what it is doing now (SF_TROPHY_PHASE, SF_TROPHY_PHASE_*)
+ *   0xD9FF20  what the first destroy's sceNpTrophyDestroyHandle and
+ *             sceNpTrophyDestroyContext answered, a word each
+ *             (SF_TROPHY_DESTROY_ST); 0 for a call not made
+ *   0xD9FF28  for each registration, a word: what its call that failed
+ *             answered, or 0 (SF_TROPHY_STATUS)
+ *   0xD9FF34  for each registration, a byte: how far it got
+ *             (SF_TROPHY_STEPS, SF_TROPHY_STEP_*)
+ *   0xD9FF38  for each registration, a word: what its
+ *             sceNpTrophyGetRequiredDiskSpace answered (SF_TROPHY_SPACE_ST)
+ *   0xD9FF44  four bytes: how many times sceNpTrophyRegisterContext called back
+ *             with the install's progress, and the last call's status,
+ *             completed and total (SF_TROPHY_CB), each at most 255
+ *   0xD9FF48  what the last destroy before a later registration answered, as
+ *             at 0xD9FF20 (SF_TROPHY_LAST_DESTROY_ST)
+ *
+ * 0xD9FF37 stays 0. Nothing in the executable names 0xD9E9E0..0xDA0120.
  */
 #define SF_TROPHY_TRIES        0x00D9FF1E
-#define SF_TROPHY_RESULTS      0x00D9FF1F
-#define SF_TROPHY_TIMES        0x00D9FF20
+#define SF_TROPHY_PHASE        0x00D9FF1F
+#define SF_TROPHY_DESTROY_ST   0x00D9FF20
+#define SF_TROPHY_STATUS       0x00D9FF28
+#define SF_TROPHY_STEPS        0x00D9FF34
+#define SF_TROPHY_SPACE_ST     0x00D9FF38
+#define SF_TROPHY_CB           0x00D9FF44
+#define SF_TROPHY_LAST_DESTROY_ST 0x00D9FF48
+
+#define SF_TROPHY_PHASE_DESTROY  1
+#define SF_TROPHY_PHASE_DELETE   2
+#define SF_TROPHY_PHASE_SETTLE   3
+#define SF_TROPHY_PHASE_CREATE   4
+#define SF_TROPHY_PHASE_SPACE    5
+#define SF_TROPHY_PHASE_REGISTER 6
+#define SF_TROPHY_PHASE_INFO     7
+#define SF_TROPHY_PHASE_DONE     8
+
+#define SF_TROPHY_STEP_CONTEXT_FAILED  1
+#define SF_TROPHY_STEP_HANDLE_FAILED   2
+#define SF_TROPHY_STEP_REGISTER_FAILED 3
+#define SF_TROPHY_STEP_INFO_FAILED     4
+#define SF_TROPHY_STEP_REGISTERED      5
 
 /* ------------------------------------------------------- the aside buffer */
 
@@ -313,42 +354,65 @@
  * What the reset does comes from rc3-save 1.1's handler, rack.bin 0x980E08:
  * destroy; mark every trophy unlocked in the cache, then trophies 10 (the
  * RY3NO), 25 (the Metropolis blimp) and 32 (the snowman skin) locked again;
- * register; destroy; register. With the cache fill at 0x985318 a nop, which qwark writes
- * before it asks, the registrations leave the cache as the reset set it, so
- * those three are the only trophies the game will try to award in the run that
- * follows, and it does try. Whether the console then shows them, and spends the
- * time doing it that the runs rely on, is the console's trophy data: qwark
- * deletes the game's folder of it first (rac3_panel.c).
+ * register; destroy; register. With the cache fill at 0x985318 a nop, which
+ * qwark writes before it asks, the registrations leave the cache as the reset
+ * set it, so those three are the only trophies the game will try to award in
+ * the run that follows, and it does try. Whether the console then shows them,
+ * and spends the time doing it that the runs rely on, is the console's trophy
+ * data, which qwark deletes (rac3_panel.c).
  *
  * rc3-save ran it on the game's main thread with a second's sleep before each
  * register and before the second destroy (lv2 sys_timer_sleep, 1), so the game
  * stood still for three seconds, and on hardware build 53's port did the same.
- * The helper now runs the calls on a thread of its own (sfhelper.c has how).
+ * The helper runs it on a thread of its own (sfhelper.c has how).
  *
- * Its first version on that thread kept rc3-save's two registrations but
- * dropped the sleeps: it registered the moment it had destroyed, and destroyed
- * the first registration's context the moment its register thread was over.
- * On hardware that reset said "not back" about every other time. What it
- * checked was right - the second registration's register thread had ended
- * with +4 down, and with +4 down the award drops every trophy - so it was the
- * registration that failed, and nothing else in the reset differs from what
- * worked with rc3-save. rc3-save gave the console a second between every
- * destroy and the register after it; and its second destroy came a second
- * after the first register, while that registration was still installing or
- * reading the set, so the registration that counted was the second, made a
- * second after a destroy. The reset now follows the game's own boot, which on a
- * console with no trophy data (the folder deleted) installs and registers
- * once: destroy, a second's wait, register, wait for the register thread, and
- * check +4. Only a registration that fails is made again, the same way, up to
- * three in all, so a second registration happens just where rc3-save's was
- * the one that mattered. The helper keeps how many it made and how each ended
- * for qwark's log (SF_TROPHY_TRIES above).
+ * What the hardware tests of that thread showed, and what the reset does now:
  *
- * The order changes in one place: 10, 25 and 32 go back to locked only once
- * the last registration is over, so the game awards nothing while the reset
- * runs, and the game's registered byte goes to 0 on the main thread as the
- * request is taken (sfhelper.c has why). From the NPEA00387 executable; not yet
- * run on hardware.
+ *   - qwark deleted the folder first, under the game's live, registered
+ *     context, as the old trainer did, and the helper then destroyed that
+ *     context and had the game's register thread register a new one. With no
+ *     sleeps (destroy, register, wait, destroy, register) two resets of one
+ *     boot worked and the four of the next all failed; with a second's sleep
+ *     before each register, every reset of six went the same way: the first
+ *     registration's thread ended about a second in with +4 never up, and the
+ *     next one's was still running forty-five seconds on. Every way out of the
+ *     register thread puts +392 back to 0 (0x985898, right before its
+ *     sys_ppu_thread_exit: a failed GetRequiredDiskSpace is only printed, a
+ *     failed RegisterContext skips the game info, and 0x9850E0 returns from
+ *     each of its failures), nothing else writes +392 but main's init (-1) and
+ *     the unlock thread (2, then 0), and no unlock thread can start while a
+ *     reset runs; so that thread was still inside one of its calls. The game
+ *     did not award anything meanwhile: a reset holds every award off until it
+ *     is over.
+ *   - So the order is the one a console expects: the helper's thread destroys
+ *     the context first, and only then does qwark delete the folder (request
+ *     byte 6, then qwark's 7), so the system never sees a registered set's
+ *     files go from under a live context; and then it registers, which with
+ *     no data for the set on the console installs it afresh, as on a console
+ *     that never had the game.
+ *   - The thread makes the registration's calls itself, the ones the game's
+ *     register thread makes, from the same stubs: CreateContext and
+ *     CreateHandle into the object, as 0x984FA0 does,
+ *     GetRequiredDiskSpace, and RegisterContext with a status callback of the
+ *     helper's own, then the game's own 0x9850E0 for the game info and the
+ *     trophies. It leaves out the game's boot check (0x97EC94:
+ *     cellGameBootCheck and cellGameContentPermit, which the game means to call
+ *     once, at boot, and the register thread calls on every registration) and
+ *     sceNpTrophyInit, which answers "already initialised". Each call's answer
+ *     goes where qwark logs it, so the next log says exactly which call fails
+ *     and with what, and the registration is over when the call returns: no
+ *     thread word to watch, and no register thread left behind to share +392
+ *     with the next or destroy another's context on its failure path. +392 is
+ *     1 while it registers, as it is while the game's register thread does.
+ *   - Before each registration it waits a second after the destroy, as
+ *     rc3-save did (SF_TROPHY_SETTLE_US), and it makes up to three, stopping
+ *     at the first that leaves the game registered.
+ *
+ * The order changes in one place against rc3-save: 10, 25 and 32 go back to
+ * locked only once the last registration is over, so the game awards nothing
+ * while the reset runs, and the game's registered byte goes to 0 on the main
+ * thread as the request is taken (sfhelper.c has why). From the NPEA00387
+ * executable; not yet run on hardware.
  */
 #define SF_TROPHY_OBJ_PTR    0x00CB150C
 #define SF_TROPHY_REGISTERED 0x00000004
@@ -361,45 +425,34 @@
 #define SF_TROPHY_KEEP_3     32
 
 /*
- * The context's id and the handle's, which 0x984FA0 makes and 0x984E40
- * destroys. The destroy leaves both words as they were; the helper's thread
- * puts them to 0 after it, so nothing destroys a dead id a second time and a
- * context that was not made reads as none.
+ * The context's id and the handle's, which CreateContext and CreateHandle write
+ * into the object and every trophy call of the game's reads from it. The
+ * game's destroy (0x984E40) leaves both as they were; the helper's thread puts
+ * them to 0 after its own, so nothing destroys a dead id a second time and a
+ * context that was not made reads as none, as the game's destroy and failure
+ * paths take a 0.
  */
 #define SF_TROPHY_CONTEXT    0x000001AC
 #define SF_TROPHY_HANDLE     0x000001B0
 
 /*
- * The helper's thread waits for each register thread in two steps, polling
- * +392 and +4 every 10 ms: for it to start (up to 100 polls, a second; a
- * register thread that failed before the first poll, or was never started, is
- * over by then either way), then for it to end (up to 4500 polls, forty-five
- * seconds, far more than an install has been seen to take). A register thread
- * still running after that is left to finish on its own, and the reset ends
- * there with SF_TROPHY_STILL.
- *
- * Before each registration it waits a second after the destroy, as rc3-save
- * did between every destroy and register (SF_TROPHY_SETTLE_US), and it makes
- * up to three, stopping at the first that leaves the game registered.
+ * The game's NP communication id block (rac3.h has where it comes from): its +4
+ * is the SceNpCommunicationId and its +16 the signature, which 0x984FA0 hands
+ * sceNpTrophyCreateContext.
  */
-#define SF_TROPHY_POLL_US     10000
-#define SF_TROPHY_START_POLLS 100
-#define SF_TROPHY_END_POLLS   4500
-#define SF_TROPHY_SETTLE_US   1000000
-#define SF_TROPHY_TRIES_MAX   3
+#define SF_TROPHY_COMMID_PTR  0x00CBAA04
+#define SF_TROPHY_COMMID_ID   0x00000004
+#define SF_TROPHY_COMMID_SIGN 0x00000010
 
 /*
- * How one registration ended, as SF_TROPHY_RESULTS keeps it: the game
- * registered (+4 up when its register thread ended); its register thread ended
- * without ever putting +4 up (CreateContext, RegisterContext or GetGameInfo
- * failed); it put +4 up and took it down again (a GetTrophyInfo failed, and
- * 0x9850E0 destroyed the context itself); or it was still running at the end
- * of the wait.
+ * The thread's waits: a second after each destroy, and up to thirty seconds
+ * (3000 polls of 10 ms) for qwark to answer 6 with 7; past that it registers
+ * anyway, the game's trophies before anything.
  */
-#define SF_TROPHY_REG_OK      0
-#define SF_TROPHY_REG_FAILED  1
-#define SF_TROPHY_REG_LOST    2
-#define SF_TROPHY_REG_RUNNING 3
+#define SF_TROPHY_POLL_US     10000
+#define SF_TROPHY_DELETE_POLLS 3000
+#define SF_TROPHY_SETTLE_US   1000000
+#define SF_TROPHY_TRIES_MAX   3
 
 /*
  * The helper's thread, made as the game makes its own trophy threads (0x984FA0,
@@ -421,9 +474,20 @@
 #define SF_FN_PERFORM_LOAD 0x001E1CF4
 #define SF_FN_REQUEST_MODE 0x00229598
 
-/* Build 53: the trophy object's destroy and register, both taking the object. */
-#define SF_FN_TROPHY_DESTROY  0x00984E40
-#define SF_FN_TROPHY_REGISTER 0x00984FA0
+/*
+ * Build 53: the game's import stubs for the sceNpTrophy calls the reset makes
+ * (the module's stub table at 0xBD2034, FNIDs at 0xAEFCC4), and the game's own
+ * routine that reads the game info and each trophy's into the object after a
+ * registration (0x9850E0, which the register thread calls). The stubs take
+ * the game's r2 as the thread-create stub below does.
+ */
+#define SF_FN_NP_TROPHY_REGISTER_CONTEXT 0x00AEE484
+#define SF_FN_NP_TROPHY_CREATE_HANDLE    0x00AEE4A4
+#define SF_FN_NP_TROPHY_DISK_SPACE       0x00AEE4C4
+#define SF_FN_NP_TROPHY_DESTROY_CONTEXT  0x00AEE4E4
+#define SF_FN_NP_TROPHY_DESTROY_HANDLE   0x00AEE544
+#define SF_FN_NP_TROPHY_CREATE_CONTEXT   0x00AEE584
+#define SF_FN_TROPHY_READ_INFO           0x009850E0
 
 /*
  * Build 53: the game's import stubs for sysPrxForUser's sys_ppu_thread_create
