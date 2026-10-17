@@ -244,20 +244,41 @@ static const struct patch_word rac4_crash_words[] = {
 };
 
 /*
- * Build 53: six words on RaC2's model, where RAC4Form had two (rac4.h says what
- * each does). The order is the order they go in, and patch_revert takes them
- * out backwards: FadeToBlack's call before the arguments that would make
- * memcard_Save force a save, and the movie's call before the loop is cut to
- * once round.
+ * Build 53: six words on RaC2's model, where RAC4Form had two, and the routine
+ * that plays a queued movie the way the flight's post-update does (rac4.h says
+ * what each does). The order is the order they go in, and patch_revert takes
+ * them out backwards: FadeToBlack's call before the arguments that would make
+ * memcard_Save force a save, the routine before the call into it, and the
+ * movie's call before the loop is cut to once round.
+ *
+ * The routine's words are the code switches' cave of the same name, byte for
+ * byte (src/games/switches/sw_rac4.s, fast_loads_movie), assembled and linked
+ * there at this address.
  */
 static const struct patch_word rac4_fastload_words[] = {
 	{ RAC4_FASTLOAD_SAVE,    0x4BEAC045u },   /* bl 0x154B38: FadeToBlack, not memcard_Save */
 	{ RAC4_FASTLOAD_FADE_R3, 0x38600002u },   /* li r3, 2 */
 	{ RAC4_FASTLOAD_FADE_R4, 0x38800000u },   /* li r4, 0 */
-	{ RAC4_FASTLOAD_UPDATE,  0x480013B5u },   /* bl 0x2AA004: a queued movie, no flight */
+	{ RAC4_FASTLOAD_MOVIE + 0x00, 0x3CA0010Bu },   /* lis r5, 0x10B */
+	{ RAC4_FASTLOAD_MOVIE + 0x04, 0x80A57FE0u },   /* lwz r5, 0x7FE0(r5): the queued movie */
+	{ RAC4_FASTLOAD_MOVIE + 0x08, 0x2C050000u },   /* cmpwi r5, 0 */
+	{ RAC4_FASTLOAD_MOVIE + 0x0C, 0x4D820020u },   /* beqlr: none */
+	{ RAC4_FASTLOAD_MOVIE + 0x10, 0xF821FF91u },   /* stdu r1, -112(r1) */
+	{ RAC4_FASTLOAD_MOVIE + 0x14, 0x7C0802A6u },   /* mflr r0 */
+	{ RAC4_FASTLOAD_MOVIE + 0x18, 0xF8010080u },   /* std r0, 128(r1) */
+	{ RAC4_FASTLOAD_MOVIE + 0x1C, 0x4BC3EBC1u },   /* bl 0x2A6994: the segment's actors */
+	{ RAC4_FASTLOAD_MOVIE + 0x20, 0x4BC4222Du },   /* bl 0x2AA004: the movie */
+	{ RAC4_FASTLOAD_MOVIE + 0x24, 0xE8010080u },   /* ld r0, 128(r1) */
+	{ RAC4_FASTLOAD_MOVIE + 0x28, 0x7C0803A6u },   /* mtlr r0 */
+	{ RAC4_FASTLOAD_MOVIE + 0x2C, 0x38210070u },   /* addi r1, r1, 112 */
+	{ RAC4_FASTLOAD_MOVIE + 0x30, 0x4E800020u },   /* blr */
+	{ RAC4_FASTLOAD_UPDATE,  0x483BF169u },   /* bl 0x667DB8: a queued movie, no flight */
 	{ RAC4_FASTLOAD_EXIT,    0x3B600001u },   /* li r27, 1: once round the loop */
 	{ RAC4_FASTLOAD_FRAME,   0x48000020u }    /* b 0x2A8CE8: with no frame */
 };
+
+#define RAC4_FASTLOAD_WORDS \
+	(u16)(sizeof(rac4_fastload_words) / sizeof(rac4_fastload_words[0]))
 
 static const struct patch_word rac4_ammo_words[] = {
 	{ RAC4_AMMO_INSTR, 0x60000000u }
@@ -273,7 +294,7 @@ static struct patch_def rac4_crash = {
 	"Crash patches", PATCH_KIND_FEATURE, rac4_crash_words, 11, NULL
 };
 static struct patch_def rac4_fastload = {
-	"Fast loads", PATCH_KIND_FEATURE, rac4_fastload_words, 6, NULL
+	"Fast loads", PATCH_KIND_FEATURE, rac4_fastload_words, RAC4_FASTLOAD_WORDS, NULL
 };
 static struct patch_def rac4_ammo = {
 	"Refill ammo", PATCH_KIND_FEATURE, rac4_ammo_words, 1, NULL

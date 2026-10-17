@@ -10,13 +10,15 @@
 # helper's scratch (0x15CD71D..0x15CD773): zero at every boot, and nothing in
 # the executable refers to them.
 #
-# The caves run 0x667BCC..0x667DB8, over string helpers of the shipped lobby
+# The caves run 0x667BCC..0x667DEC, over string helpers of the shipped lobby
 # code that nothing reaches, directly below the savefile helper's own cave at
-# 0x667F70; 0x667DB8..0x667F70 is spare. Each cave follows the last with no
+# 0x667F70; 0x667DEC..0x667F70 is spare. Each cave follows the last with no
 # gap. The table the bot-crash trampoline loads is the one piece of data,
 # sixteen bytes on a sixteen-byte boundary, and build 53's fast loads put the
-# second halves of two trampolines and a third one after it, in what was the
-# spare span, so that nothing before them moved (below).
+# second halves of two trampolines, a third trampoline and the routine that
+# plays a queued movie after it, in what was the spare span, so that nothing
+# before them moved (below). A console's fast loads write that routine too, at
+# the same address and byte for byte (rac4.c).
 #
 # Nothing reaches the span: its eight functions (0x667BCC, 0x667C4C, 0x667CCC,
 # 0x667D4C, 0x667DCC, 0x667E4C, 0x667ECC and 0x667F68) are branched to only
@@ -60,10 +62,10 @@ refill_ammo_ret:
 
 # ------------------------------------------------------------------ fast loads
 #
-# Build 53, on RaC2's model: rac4.h says what the six words a console writes do
-# and why. Here they are three sites on one flag, one for each group of them
-# that runs together, so a flag that changes between two of them can never
-# leave half the patch running:
+# Build 53, on RaC2's model: rac4.h says what the words a console writes do and
+# why. Here they are three sites on one flag, one for each group of them that
+# runs together, so a flag that changes between two of them can never leave
+# half the patch running:
 #
 #   0x2A8AF4  the autosave's call, and with it its two argument words before it
 #             (0x2A8AE8, 0x2A8AEC), which the trampoline sets itself
@@ -99,10 +101,11 @@ fast_loads_1:
 fast_loads_1_ret:
 
 # 0x2A8C50: bcctrl 20, 30, the call through CTR to g_fnTransitionUpdate.
-# Patched: play the movie the flight has queued, if there is one, and answer 1
-# (fast_loads_2_on). The trampoline leaves CTR, r3 (the update's argument) and
-# r2 as the game loaded them; r5 is dead, holding the mode the loop has already
-# stored, and cr0 with it, which the call clobbers either way.
+# Patched: play the movie the flight has queued, if there is one, the way the
+# flight's post-update plays it, and answer 1 (fast_loads_2_on). The trampoline
+# leaves CTR, r3 (the update's argument) and r2 as the game loaded them; r5 is
+# dead, holding the mode the loop has already stored, and cr0 with it, which
+# the call clobbers either way.
 	.section .cave.fast_loads_2, "ax"
 fast_loads_2:
 	lis     r5, SW_FLAG_FAST_LOADS@ha
@@ -339,12 +342,12 @@ fast_loads_1_on:
 	bl      rac4_fade_to_black
 	b       fast_loads_1_ret
 
-# The movie, if the flight has one queued: 0x2AA004 plays it in a loop of its
-# own frames and clears the word, or returns at once. Then 1 for the answer,
-# which the game copies into r27 at 0x2A8C5C, so the loop goes round once.
+# The movie, if the flight has one queued (fast_loads_movie, below), then 1 for
+# the answer, which the game copies into r27 at 0x2A8C5C, so the loop goes round
+# once.
 	.section .cave.fast_loads_2_on, "ax"
 fast_loads_2_on:
-	bl      rac4_space_movie
+	bl      fast_loads_movie
 	li      r3, 1
 	b       fast_loads_2_ret
 
@@ -366,3 +369,34 @@ fast_loads_3:
 	.section .site.fast_loads_3, "ax"
 	b       fast_loads_3
 fast_loads_3_ret:
+
+# The movie the flight has queued, played the way the flight's post-update plays
+# it when a segment ends (0x2AAB90..0x2AABA8): first 0x2A6994, which deletes the
+# segment's actors (the mobys the scene at 0xADCDD0 spawned, in its slots at
+# 0xADCFB8), then 0x2AA004, which plays the movie and clears the word. The movie
+# takes the memory the joint cache keeps its table in, and 0x2AA004 empties the
+# table (0x2AA050, JointCacheNumEntries = 0); an actor deleted after that, as
+# the transition's post (0x2AB43C) deletes the last segment's, looks its entry
+# up in the empty table (0x1DCC50, from DeleteMoby at 0x1DDB80), and the search
+# there has no end for an entry that is not in it. So the actors go first, as
+# the game sends them. With no movie queued it returns at once and the actors
+# are left for the post, as the game leaves them.
+#
+# Called with bl, from the second half above and from a console's patched
+# 0x2A8C50. r5 and cr0 are the scratch; it keeps nothing of its own across the
+# two calls but the return address, in the frame it makes.
+	.section .cave.fast_loads_movie, "ax"
+fast_loads_movie:
+	lis     r5, rac4_space_scene@ha
+	lwz     r5, rac4_space_scene@l(r5)
+	cmpwi   cr0, r5, 0
+	beqlr   cr0
+	stdu    r1, -112(r1)
+	mflr    r0
+	std     r0, 128(r1)
+	bl      rac4_flight_actors_delete
+	bl      rac4_space_movie
+	ld      r0, 128(r1)
+	mtlr    r0
+	addi    r1, r1, 112
+	blr

@@ -14,12 +14,16 @@ SW_CAVE_END   = 0x00667F70;
 
 /*
  * The game functions the fast-load trampolines call: memcard_Save, the first
- * site's own; FadeToBlack, its patched form; and the function the space
- * flight's post-update plays a queued movie through (rac4.h).
+ * site's own; FadeToBlack, its patched form; and the two the space flight's
+ * post-update calls when a segment ends, the one that deletes the segment's
+ * actors and the one that plays a queued movie (rac4.h). Then the word the
+ * movie is queued in, g_SpaceScene.
  */
-rac4_memcard_save  = 0x003C8D54;
-rac4_fade_to_black = 0x00154B38;
-rac4_space_movie   = 0x002AA004;
+rac4_memcard_save         = 0x003C8D54;
+rac4_fade_to_black        = 0x00154B38;
+rac4_flight_actors_delete = 0x002A6994;
+rac4_space_movie          = 0x002AA004;
+rac4_space_scene          = 0x010B7FE0;
 
 SECTIONS
 {
@@ -44,6 +48,8 @@ SECTIONS
 	.cave.fast_loads_1_on   0x00667D80 : { *(.cave.fast_loads_1_on) }
 	.cave.fast_loads_2_on   0x00667D90 : { *(.cave.fast_loads_2_on) }
 	.cave.fast_loads_3      0x00667D9C : { *(.cave.fast_loads_3) }
+	/* And the routine a console's fast loads write at the same address (rac4.c). */
+	.cave.fast_loads_movie  0x00667DB8 : { *(.cave.fast_loads_movie) }
 
 	.site.refill_ammo       0x001D7D18 : { *(.site.refill_ammo) }
 	.site.fast_loads_1      0x002A8AF4 : { *(.site.fast_loads_1) }

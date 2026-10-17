@@ -166,12 +166,13 @@
  * draws the flight and ends the frame (rac2.h, RAC2_FASTLOAD_INSTR). With it
  * gone RaC2's loop never flips, so nothing of the flight is shown; nothing in
  * the loop waits, so the flight, counted in frames, is over at once; and the
- * load steps as fast as the loop goes round. The six words here:
+ * load steps as fast as the loop goes round. The six words here, and a
+ * routine of thirteen in a cave:
  *
  *   0x2A8AE8  li r3, 0        -> li r3, 2         the autosave's arguments
  *   0x2A8AEC  lwz r4, level   -> li r4, 0         become FadeToBlack's, and
  *   0x2A8AF4  bl memcard_Save -> bl 0x154B38      its call FadeToBlack
- *   0x2A8C50  bcctrl          -> bl 0x2AA004      a queued movie, no flight
+ *   0x2A8C50  bcctrl          -> bl 0x667DB8      a queued movie, no flight
  *   0x2A8C5C  ori r27, r3, 0  -> li r27, 1        once round the loop
  *   0x2A8CC8  li r3, 1        -> b 0x2A8CE8       and no frame
  *
@@ -183,14 +184,51 @@
  * of the load.
  *
  * Then the loop goes round once. A queued movie plays first, before anything
- * of the flight; with none queued 0x2AA004 returns at once. The one time round
- * takes LoadLevelData's first step, the movie having cleared the word, draws
- * and flips nothing, and leaves the rest of the level to the second loop,
- * which reads it with no wait at all: RaC2's load, here. The screen is black
- * from the fade to the level's first frame, but for a movie, which shows its
- * own frames and fades out again. Nothing waits on a movie any more: 0x2AA004
- * always clears the word and the second loop never looks at it, so the hang
- * cannot come back.
+ * of the flight (RAC4_FASTLOAD_MOVIE, below); with none queued the routine
+ * returns at once. The one time round takes LoadLevelData's first step, the
+ * movie having cleared the word, draws and flips nothing, and leaves the rest
+ * of the level to the second loop, which reads it with no wait at all: RaC2's
+ * load, here. The screen is black from the fade to the level's first frame,
+ * but for a movie, which shows its own frames and fades out again. Nothing
+ * waits on a movie any more: 0x2AA004 always clears the word and the second
+ * loop never looks at it, so the hang cannot come back.
+ *
+ * The movie is played the way the flight's post-update plays it when a
+ * segment ends (0x2AAB90..0x2AABA8): 0x2A6994 first, which deletes the
+ * segment's actors - the mobys the scene at 0xADCDD0 spawned (0x1CCAF8), in its
+ * slots at 0xADCFB8 - and then 0x2AA004. The movie takes the memory the joint
+ * cache keeps its table in (JointCacheEntryList, *0xC76890), and 0x2AA004
+ * empties the table as it starts it (0x2AA050, JointCacheNumEntries at
+ * 0xC76894 = 0). The first segment's actors are spawned by Transition_Pre
+ * (0x2AA60C -> 0x2A9C40) with entries in that table. Build 53 as it shipped
+ * called 0x2AA004 straight from 0x2A8C50, so they were still there when the
+ * movie emptied it, and the transition's post (0x2AB43C -> 0x2A6994) deleted
+ * them after it: DeleteMoby (0x1DDA50) hands each to 0x1DCC50, which marks the
+ * moby's entry deleted, and its binary search (0x1DCCA0..0x1DCCD0) has no end
+ * for an entry the table does not hold. That was the hang on hardware after a
+ * movie, skipped or watched to the end: 0x2AA004 empties the table before the
+ * movie's first frame. The routine:
+ *
+ *   0x667DB8  lis   r5, 0x10B
+ *             lwz   r5, 0x7FE0(r5)       the queued movie, RAC4_TRANSITION_MOVIE
+ *             cmpwi r5, 0
+ *             beqlr                      none: back at once, actors and all
+ *             stdu  r1, -112(r1)
+ *             mflr  r0
+ *             std   r0, 128(r1)
+ *             bl    0x2A6994             the segment's actors go first
+ *             bl    0x2AA004             then the movie
+ *             ld    r0, 128(r1)
+ *             mtlr  r0
+ *             addi  r1, r1, 112
+ *             blr
+ *
+ * With no movie queued the actors are left for the post to delete, as the
+ * game leaves them, with the table whole. In a multiplayer transition the
+ * pre (0x2AD448) clears the word, so the routine never touches a scene that
+ * multiplayer does not use. Under RPCS3 the code switches carry the same
+ * routine at the same address (src/games/switches/sw_rac4.s), in the dead
+ * lobby span they already use; a console's fast loads write it there too.
  *
  * The game takes the same road itself on that LOADING-screen load: 0x132A8
  * sets the byte the flight's update answers before anything else (+200 of
@@ -198,9 +236,10 @@
  * whole level.
  *
  * rac4.c lists the words in the order they go in: the call before its
- * arguments, since memcard_Save's first argument forces a save, and the
- * movie's call before the loop's exit, so the loop is never cut to once round
- * while a queued movie still waits for the flight to play it.
+ * arguments, since memcard_Save's first argument forces a save, the routine
+ * before the call into it, and the movie's call before the loop's exit, so
+ * the loop is never cut to once round while a queued movie still waits for
+ * the flight to play it.
  *
  * From the NPEA00423 executable; not yet run on hardware.
  */
@@ -210,6 +249,7 @@
 #define RAC4_FASTLOAD_UPDATE   0x002A8C50u  /* bcctrl: the transition's update */
 #define RAC4_FASTLOAD_EXIT     0x002A8C5Cu  /* ori r27, r3, 0: its answer */
 #define RAC4_FASTLOAD_FRAME    0x002A8CC8u  /* li r3, 1: BeginFrame's argument */
+#define RAC4_FASTLOAD_MOVIE    0x00667DB8u  /* the routine, 13 words */
 #define RAC4_TRANSITION_MOVIE  0x010B7FE0u  /* the movie the flight plays, 0 for none */
 
 /*

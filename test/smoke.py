@@ -313,6 +313,17 @@ RAC1_FASTLOAD_SITES = [(0x165490, 0x4BFFE519, 0x60000000),
                        (0x160060, 0x546307BE, 0x38600006),
                        (0x1641F8, 0x546307BE, 0x38600006)]
 RAC1_DEBUG_MODE = 0x95C5D4
+# Build 53: the thirteen words of the routine Deadlocked's fast loads write at
+# 0x667DB8 to play a queued movie the way the flight's post-update does
+# (src/games/rac4.h), and the dead lobby code the game has there.
+RAC4_FL_MOVIE_GAME = list(zip(range(0x667DB8, 0x667DEC, 4), [
+    0x7C0803A6, 0xEBC10090, 0xEBE10098, 0x382100A0, 0x4E800020, 0xF821FF61,
+    0x7C0802A6, 0xF80100B0, 0xFBE10098, 0x607F0000, 0x38600000, 0xFBC10090,
+    0x2C1F0000]))
+RAC4_FL_MOVIE_FAST = list(zip(range(0x667DB8, 0x667DEC, 4), [
+    0x3CA0010B, 0x80A57FE0, 0x2C050000, 0x4D820020, 0xF821FF91, 0x7C0802A6,
+    0xF8010080, 0x4BC3EBC1, 0x4BC4222D, 0xE8010080, 0x7C0803A6, 0x38210070,
+    0x4E800020]))
 RAC1_JANKPOT_BOLTS = 0xA0FD18
 RAC1_GOODIES_MENU = 0x969CD3
 
@@ -1547,20 +1558,24 @@ OTHER_GAMES = [
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
         # Build 53: Fast loads, which a planet load forces, are six instruction
-        # words on RaC2's model (src/games/rac4.h): the autosave's call and its
-        # two arguments become FadeToBlack(2, 0), the transition update's call
-        # plays a queued movie instead, the copy of its answer sends the loop
-        # round once, and that one time round draws no frame. The game's mode
-        # leaving the space transition (6) puts a forced set back.
+        # words on RaC2's model (src/games/rac4.h) and a routine in a cave: the
+        # autosave's call and its two arguments become FadeToBlack(2, 0), the
+        # transition update's call becomes the routine, which plays a queued
+        # movie after the segment's actors are deleted, as the flight's
+        # post-update does, the copy of its answer sends the loop round once,
+        # and that one time round draws no frame. The game's mode leaving the
+        # space transition (6) puts a forced set back.
         "code_fastload": {
             "toggle": 2,
             "mode": 0xB3C5A0,
             "game": [(0x2A8AF4, 0x48120261), (0x2A8AE8, 0x38600000),
-                     (0x2A8AEC, 0x80846DD0), (0x2A8C50, 0x4E9E0421),
-                     (0x2A8C5C, 0x607B0000), (0x2A8CC8, 0x38600001)],
+                     (0x2A8AEC, 0x80846DD0)] + RAC4_FL_MOVIE_GAME +
+                    [(0x2A8C50, 0x4E9E0421), (0x2A8C5C, 0x607B0000),
+                     (0x2A8CC8, 0x38600001)],
             "fast": [(0x2A8AF4, 0x4BEAC045), (0x2A8AE8, 0x38600002),
-                     (0x2A8AEC, 0x38800000), (0x2A8C50, 0x480013B5),
-                     (0x2A8C5C, 0x3B600001), (0x2A8CC8, 0x48000020)],
+                     (0x2A8AEC, 0x38800000)] + RAC4_FL_MOVIE_FAST +
+                    [(0x2A8C50, 0x483BF169), (0x2A8C5C, 0x3B600001),
+                     (0x2A8CC8, 0x48000020)],
         },
         # Deadlocked splits when a load starts for a real planet while in game,
         # and only once the session has left the main menu: the watcher keeps its
@@ -2657,7 +2672,7 @@ def exercise_game(c, sim, spec, udp=None):
     #
     # The planet load above forced them on, over whatever the fake process held
     # at those words; leaving the space transition puts that back. Then the
-    # game's own six words go in, and the checkbox and a second forced load
+    # game's own words go in, and the checkbox and a second forced load
     # are watched against them.
     if spec.get("code_fastload"):
         cf = spec["code_fastload"]
@@ -2680,16 +2695,16 @@ def exercise_game(c, sim, spec, udp=None):
         if check(status == ST_OK, "%s: the Fast loads checkbox turns on" % name, status):
             check(fl_words() == fast,
                   "%s: the autosave, the update, the loop's exit and its frame "
-                  "are the patch's six words" % name,
+                  "are the patch's words" % name,
                   [hex(w) for w in fl_words()])
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", cf["toggle"], 0))
         check(status == ST_OK and fl_words() == game,
-              "%s: and off, the game's six words are back" % name,
+              "%s: and off, the game's own words are back" % name,
               [hex(w) for w in fl_words()])
 
         status, _ = c.call(OP_PLANET_LOAD, bytes([spec["planet"], 0]))
         if check(status == ST_OK, "%s: a second PLANET_LOAD" % name, status):
-            check(fl_words() == fast, "%s: forces the same six words on" % name,
+            check(fl_words() == fast, "%s: forces the same words on" % name,
                   [hex(w) for w in fl_words()])
             mem_write(c, cf["mode"], struct.pack(">I", 6))
             time.sleep(0.15)
@@ -3547,10 +3562,11 @@ RAC2_LEVEL_FLAGS = 0x015625B0
 RAC2_LOAD_PLANET = 0x0156B050
 RAC4_FP_ADDR = 0x001D7D18
 RAC4_FP = bytes([0x41, 0x82, 0x00, 0x0C])
-# Build 53: the six words Deadlocked's fast loads patch, and the game's own.
-RAC4_FASTLOAD_ORIG = [(0x002A8AF4, 0x48120261), (0x002A8AE8, 0x38600000),
-                      (0x002A8AEC, 0x80846DD0), (0x002A8C50, 0x4E9E0421),
-                      (0x002A8C5C, 0x607B0000), (0x002A8CC8, 0x38600001)]
+# Build 53: the words Deadlocked's fast loads patch, and the game's own.
+RAC4_FASTLOAD_ORIG = ([(0x002A8AF4, 0x48120261), (0x002A8AE8, 0x38600000),
+                       (0x002A8AEC, 0x80846DD0)] + RAC4_FL_MOVIE_GAME +
+                      [(0x002A8C50, 0x4E9E0421), (0x002A8C5C, 0x607B0000),
+                       (0x002A8CC8, 0x38600001)])
 RAC4_LOAD_PLANET2 = 0x00B36DCC
 RAC4_TARGET_PLANET = 0x00B36DD0
 
@@ -3603,7 +3619,7 @@ def smoke_rpcs3_planet_loads(c, pine):
           pine.peek(RAC4_LOAD_PLANET2, 4).hex())
     words = [struct.unpack(">I", pine.peek(a, 4))[0] for a, _w in RAC4_FASTLOAD_ORIG]
     check(words == [w for _a, w in RAC4_FASTLOAD_ORIG],
-          "rpcs3: all six fast-load words kept their instructions",
+          "rpcs3: every fast-load word kept its instruction",
           [hex(w) for w in words])
 
     pine.shutdown_game()
