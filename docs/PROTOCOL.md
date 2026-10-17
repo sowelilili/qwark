@@ -38,6 +38,8 @@ Revision 1.21, the review's follow-ups (2026-10-17, same build 53): a load of an
 
 Revision 1.21, planets (2026-10-17, same build 53): PLANET_LIST carries one more byte per planet after the names, the order a menu lists the planets in, which is the order the game visits them rather than the order it numbers them; the index a name sits at is still the planet's id, and every request still carries the id. UYA's and Deadlocked's orders are the old client's combo boxes, the others' are their ids in turn, and a client before this build reads the names and stops, so it sees no change. UYA's PLANET_LOAD now acts on bit1 of the planet flags, reset special bolts, which it ignored: it takes back the titanium bolts collected on the destination planet, as RaC1's takes back its gold bolts, so a client offers the box for UYA against a module of this build or later and not against one before it. UYA's Unlock all titanium bolts (24) and Reset all titanium bolts (25) cover the game's whole bolt table, 296 bytes from 0xECE54D, where they wrote 128 bytes from sixteen bytes before it and missed every planet from Koros on. No opcode, id or status changed. See section 5.5.
 
+Revision 1.21, the planet selection per game (2026-10-17, same build 53): the planet PLANET_SELECT picks and the planet flags beside it, the two reset boxes, are one game's rather than one setting for the console, as the manip options are. config.txt keeps them as `selected.<game>.planet` and `selected.<game>.planet_flags`, `<game>` being `rac1` to `rac4` as in the manips' keys, and a game with no key of its own yet reads the console-wide `selected.planet` and `selected.planet_flags` an earlier build wrote, which are never written again, so a selection made before this build is not lost. SessionInfo's `selected_planet` and `planet_flags` are the running game's, PLANET_SELECT sets the running game's, and a PLANET_LOAD of 0xFF, the load-planet combo's among them, loads the running game's: a box ticked in RaC1 is no longer ticked in UYA. Outside a game - at the XMB, through the next boot, and in a title no game table claims - both fields and PLANET_SELECT are the last game's that was INGAME, which is the game a client goes on drawing there; the first block that says a game is INGAME carries that game's selection. Before any game has run since the module loaded both fields are 0 and PLANET_SELECT answers `UNSUPPORTED`. No opcode, structure or field moved; only what the two fields and the two ops mean did. See sections 3, 5.5 and 5.10.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -104,9 +106,11 @@ u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is wait
                              so its WRITES_CODE toggles work on a platform that sets bit2 (section 5.12.2).
                              Never set by the PS3 module
 u8   selected_slot      0..7, used by the save/load combos
-u8   selected_planet    used by the load-planet combo
+u8   selected_planet    used by the load-planet combo. Since build 53 the running game's, and
+                        outside a game the last game's (section 5.5)
 u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used by the load-planet combo.
-                        Which bits a game's load acts on is in section 5.5
+                        Which bits a game's load acts on is in section 5.5. The same game's as
+                        selected_planet
 u8   current_planet     game planet index, 0 when unknown
 u8   pad[3]
 f32  pos[3]             player x, y, z
@@ -179,7 +183,7 @@ Two side effects a client should know about, both inside qwark rather than on th
 A title id no game table claims still reaches INGAME. `state` is 2, `game` is 0 NONE, and `title_id` is the id the console reported. It is a real session against a real process: the memory tools work on it exactly as they do on a game.
 
 - **MEM_READ, MEM_WRITE, WATCH_\*, FREEZE_\* and PATCH_\*** work, under the same rules as always. A watch reads live and its value travels in every telemetry packet; PATCH_APPLY is still refused where `flags` bit2 says the platform cannot patch code.
-- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS.
+- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS. PLANET_SELECT, and the planet selection in this block, are the last game's that was INGAME, as at the XMB (build 53, section 5.5).
 - **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the pad is not read.
 
 Everything else about the session is unchanged: the launch is quiet for its second (section 1.1), `generation` advances, QUITTING and the return to the XMB happen when the process goes away, and a same-title reboot keeps its watches and builds the previous-session record (section 4.1) out of what is actually there, which is freezes and client patches.
@@ -332,7 +336,9 @@ All of these except the LIST ops return NOT_INGAME outside INGAME. Watches and f
 
 Eight slots per planet per game. Slot contents are opaque game-defined blobs of at most 64 bytes.
 
-POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the selection is remembered across a client restart and across a console reboot; no CONFIG_SAVE is needed. It comes back in `SessionInfo.selected_slot`.
+POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the selection is remembered across a client restart and across a console reboot; no CONFIG_SAVE is needed. It comes back in `SessionInfo.selected_slot`, and in `selected_planet` and `planet_flags`.
+
+**Whose planet selection it is (build 53).** The slot is one for the console. The planet and its flags are one game's, the way the manip options are (section 5.14): a planet id means something only inside its own game, and so do the resets beside it. PLANET_SELECT sets the running game's, SessionInfo reports the running game's, and a PLANET_LOAD of 0xFF, which is what the load-planet combo sends, takes the running game's, so a box ticked in one game is not ticked in the next. Outside a game - at the XMB, while the next game boots, and in a title no game table claims (section 3.3) - the selection is the last game's that was INGAME: that is the game a client goes on showing, greyed, until another arrives, so its boxes neither empty at the XMB nor fill again when it comes back. The first block that says a new game is INGAME is the first that carries its selection; a BOOTING block whose `game` already names a candidate still carries the last game's. Before any game has run since the module loaded there is no game to keep one for: both fields are 0 and PLANET_SELECT answers `UNSUPPORTED`. A game that has never had a selection of its own reads the console-wide pair from before build 53 (section 5.10), and 0 when there is none.
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
@@ -342,8 +348,8 @@ POS_SELECT and PLANET_SELECT write straight through to `config.txt`, so the sele
 | 0x0043 | POS_LIST | none | `u8 planet, u8 nslots, { u8 filled, u8 pad[3], f32 x, f32 y, f32 z }[nslots]` for the current planet |
 | 0x0044 | POS_CLEAR | `u8 slot` | none |
 | 0x0045 | PLANET_LIST | none | `u8 count, char[24] name[count], u8 order[count]`; index is the game's planet index. `order` since build 53, see below |
-| 0x0046 | PLANET_SELECT | `u8 planet, u8 flags` (bit0 reset level flags, bit1 reset special bolts; which a game acts on, see below) | none |
-| 0x0047 | PLANET_LOAD | `u8 planet` 0xFF = selected, `u8 flags` 0xFF = selected | none. The planet request goes out first, then the flags act on the planet being loaded. Build 53: RaC2 under RPCS3 without the code switches' patch answers `UNSUPPORTED` for a trip its crash guards are for (section 5.12.2) |
+| 0x0046 | PLANET_SELECT | `u8 planet, u8 flags` (bit0 reset level flags, bit1 reset special bolts; which a game acts on, see below) | none. Build 53: the running game's selection, or the last game's; `UNSUPPORTED` before any game has run (above) |
+| 0x0047 | PLANET_LOAD | `u8 planet` 0xFF = selected, `u8 flags` 0xFF = selected, the running game's selection since build 53 | none. The planet request goes out first, then the flags act on the planet being loaded. Build 53: RaC2 under RPCS3 without the code switches' patch answers `UNSUPPORTED` for a trip its crash guards are for (section 5.12.2) |
 | 0x0048 | DIE | none | none |
 | 0x0049 | MOBY_TABLE | none | `u32 table_ptr_addr, u32 table_end_ptr_addr, u16 stride, u16 pad`. The client reads the pointers and the entries with MEM_READ |
 | 0x004A | POS_EDIT | `u8 slot, u8 pad[3], f32 x, f32 y, f32 z` | none. Revision 1.13 |
@@ -567,7 +573,7 @@ The switch and the hold are independent, and either one on its own holds every c
 
 Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console.
 
-Keys a client's own ops write, all of them console-wide rather than per title: the five combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet` and `combo.setaside` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it) and `selected.slot`, `selected.planet` and `selected.planet_flags` (POS_SELECT and PLANET_SELECT). Each is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart.
+Keys a client's own ops write. Console-wide rather than per title: the five combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet` and `combo.setaside` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it) and `selected.slot` (POS_SELECT). Per game since build 53: `selected.<game>.planet` and `selected.<game>.planet_flags` (PLANET_SELECT), `<game>` being `rac1`, `rac2`, `rac3` or `rac4` as in the manips' keys (section 5.14), so the disc trilogy keeps three. Until build 53 the planet selection was one pair for the console, `selected.planet` and `selected.planet_flags`; qwark never writes those two again, and a game whose own key the file does not hold yet reads the old one in its place, so the first PLANET_SELECT in each game is where its own pair begins (section 5.5). Each key is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart.
 
 ### 5.11 Autosplitting (0x00Ax)
 

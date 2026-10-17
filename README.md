@@ -60,7 +60,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot and planet, `log = 1`, `savefile_helper` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot, per-game selected planet and its reset flags (`selected.<game>.*`), `log = 1`, `savefile_helper` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |

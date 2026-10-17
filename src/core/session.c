@@ -74,6 +74,20 @@ static char g_last_title[16];
 static u8   g_last_game_id;
 
 /*
+ * Build 53. The game whose planet selection SessionInfo reports and
+ * PLANET_SELECT sets: the running one, and from the moment it leaves, the last
+ * game qwark was INGAME in, through the XMB, the next boot and a title no game
+ * table claims, until another game reaches INGAME. That is the game a client
+ * goes on drawing, greyed, at the XMB, so its boxes do not empty there and fill
+ * again when the same game comes back; and the first block that says a new game
+ * is INGAME is the first to carry that game's selection, never a BOOTING block
+ * that only names a candidate. GAME_NONE until a game has run since the module
+ * loaded: there is no selection to report then, and nothing to keep one for.
+ * Set under the core lock, which every reader holds.
+ */
+static u8   g_select_game = GAME_NONE;
+
+/*
  * The running game, or NULL. NULL while INGAME is a real session against a
  * process no game table claims: the memory, watch, freeze and patch ops work
  * against it and everything game-specific answers UNSUPPORTED. See step_state's
@@ -423,8 +437,12 @@ static void enter_quitting(void)
  * save_blob there is no coordinate to store, and pointing it here rather than
  * leaving the last game's file loaded keeps POS_LIST from offering slots that
  * belong to something else.
+ *
+ * Build 53 keys the planet loader's selection on the same word, in config.txt
+ * (session_planet_select, below), and for the same reason: a planet id and the
+ * resets beside it mean something only inside one game.
  */
-static const char *pos_key_for(u8 game_id)
+static const char *game_key_for(u8 game_id)
 {
 	switch (game_id) {
 	case GAME_RAC1: return "rac1";
@@ -447,6 +465,9 @@ static void enter_ingame(void)
 	            g_last_game_id == game_id);
 
 	core_lock();
+
+	/* The planet selection is this game's from the first block that says INGAME. */
+	if (g_game != NULL) g_select_game = game_id;
 
 	if (same) {
 		/* Watches survive and resume; everything that writes goes on the record. */
@@ -487,7 +508,7 @@ static void enter_ingame(void)
 		 */
 		features_set_game(g_game, g_title);
 		mods_set_title(g_title);
-		pos_use_title(pos_key_for(game_id));
+		pos_use_title(game_key_for(game_id));
 	}
 
 	/*
@@ -851,15 +872,43 @@ int session_position_store(u8 slot, const u8 *blob, u8 len)
 	return pos_store(g_hot.current_planet, slot, blob, len);
 }
 
+/*
+ * Build 53. 0xFF is the running game's own selection, never another game's:
+ * the combo, and a client that asks for "the selected planet", get the planet
+ * and the boxes that were picked in this game.
+ */
 int session_planet_load(u8 planet, u8 flags)
 {
+	const char *game;
+
 	if (g_game == NULL || g_game->planet_load == NULL) return ST_UNSUPPORTED;
 	if (g_state != SESSION_INGAME) return ST_NOT_INGAME;
 
-	if (planet == 0xFF) planet = config_selected_planet();
-	if (flags == 0xFF)  flags = config_selected_planet_flags();
+	game = game_key_for(g_game->game_id);
+	if (planet == 0xFF) planet = config_selected_planet(game);
+	if (flags == 0xFF)  flags = config_selected_planet_flags(game);
 
 	return g_game->planet_load(planet, flags);
+}
+
+/* The config.txt key of the selection's game (g_select_game), or NULL for none. */
+static const char *select_key(void)
+{
+	return g_select_game != GAME_NONE ? game_key_for(g_select_game) : NULL;
+}
+
+/*
+ * Build 53, PLANET_SELECT: the selection of the game g_select_game names, which
+ * at the XMB, in a boot and in a title qwark has no table for is the last game
+ * that ran, the one a client is still drawing. UNSUPPORTED before any game has
+ * run since the module loaded. Caller holds the core lock.
+ */
+int session_planet_select(u8 planet, u8 flags)
+{
+	const char *game = select_key();
+
+	if (game == NULL) return ST_UNSUPPORTED;
+	return config_set_selected_planet(game, planet, flags);
 }
 
 int session_die(void)
@@ -1022,8 +1071,13 @@ static u32 encode_info(u8 *out, u32 cap)
 
 	out[24] = flags;
 	out[25] = config_selected_slot();
-	out[26] = config_selected_planet();
-	out[27] = config_selected_planet_flags();
+	/*
+	 * Build 53. The selection of the game g_select_game names, the running one
+	 * or the last one, and 0 before any game has run: the old console-wide
+	 * pair is only ever read on a game's behalf.
+	 */
+	out[26] = config_selected_planet(select_key());
+	out[27] = config_selected_planet_flags(select_key());
 	out[28] = g_hot.current_planet;
 	/* out[29..31] pad */
 

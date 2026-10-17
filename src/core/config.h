@@ -44,7 +44,10 @@
  * The shipped mod library's busiest title has five mods, and a user who
  * auto-flagged a dozen features in each of the four games is still inside 64.
  * Revision 1.21 adds at most three manip keys per game played, written only
- * when the user changes a manip option or picks a category.
+ * when the user changes a manip option or picks a category. Build 53 keeps the
+ * selected planet and its flags per game, two keys per game played and eight
+ * at most, and a file from before then keeps the console's old pair beside
+ * them: the four games' manips and selections together are twenty of the 64.
  */
 #define CONFIG_MAX_ENTRIES 64
 
@@ -86,10 +89,26 @@ int  config_combo_enabled(void);
 int  config_set_combo_enabled(u8 on);
 
 u8   config_selected_slot(void);
-u8   config_selected_planet(void);
-u8   config_selected_planet_flags(void);
 void config_set_selected_slot(u8 slot);
-void config_set_selected_planet(u8 planet, u8 flags);
+
+/*
+ * Build 53, the planet loader's selection of one game: the planet and the
+ * PlanetFlags bits, "selected.<game>.planet" and "selected.<game>.planet_flags",
+ * where <game> is the manips' and the position files' key, rac1 .. rac4. A
+ * planet id means something only inside its own game, and so do the boxes
+ * beside it.
+ *
+ * Until build 53 both were one pair for the console, "selected.planet" and
+ * "selected.planet_flags". Those two are never written again, but a game whose
+ * own key the file does not hold yet answers the old one, so a selection made
+ * before the split is not lost; the first PLANET_SELECT in the game writes its
+ * own pair, which wins from then on, and leaves the old pair alone for the
+ * games that have none yet. A NULL `game` answers 0, and the setter refuses it
+ * with ST_BAD_ARG.
+ */
+u8   config_selected_planet(const char *game);
+u8   config_selected_planet_flags(const char *game);
+int  config_set_selected_planet(const char *game, u8 planet, u8 flags);
 
 /* Per-game auto flags. `label` is slugged, `dirname` is used verbatim. */
 int  config_feature_auto(const char *title, const char *label);

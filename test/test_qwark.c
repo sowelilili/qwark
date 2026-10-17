@@ -14594,6 +14594,218 @@ static void test_planet_order(void)
 	}
 }
 
+/* ------------------------------------- build 53: the planet selection per game */
+
+/* What the info block says the selection is, once a publish has run. */
+static void ps_info(u8 *planet, u8 *flags)
+{
+	u8 info[SESSION_INFO_SIZE];
+
+	pump(8);   /* a publish is every fourth tick */
+	session_info_copy(info, sizeof(info));
+	*planet = info[26];
+	*flags = info[27];
+}
+
+/* config.txt as `text`, read back as CONFIG_RELOAD reads a hand edit. */
+static void ps_config(const char *text)
+{
+	plat_file_t f;
+
+	if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+		plat_file_write(f, text, qstrlen(text));
+		plat_file_close(f);
+	}
+	config_load();
+}
+
+/* PLANET_SELECT as net.c answers it. */
+static int ps_select(u8 planet, u8 flags)
+{
+	int rc;
+
+	core_lock();
+	rc = session_planet_select(planet, flags);
+	core_unlock();
+	return rc;
+}
+
+/*
+ * Boots `title` a tick at a time and reads every info block published on the
+ * way: each one before the session is INGAME has to carry the selection of the
+ * game that was there before (`was`, planet << 8 | flags), each one after it
+ * the new game's (`now`), from the very first. Returns how many blocks got that
+ * wrong, or -1 when the game never reached INGAME.
+ *
+ * `stall` fails that many of the fingerprint's reads, which holds the session
+ * in BOOTING with the title's candidate already in the game byte, the way a
+ * console that has not mapped the executable yet does; `named` counts the
+ * BOOTING blocks that named the new game, so a caller knows that window was
+ * looked at.
+ */
+static int ps_switch(const char *title, u8 game, u16 was, u16 now, u32 stall, int *named)
+{
+	u8 info[SESSION_INFO_SIZE];
+	int wrong = 0;
+	int ingame = 0;
+	int i;
+
+	*named = 0;
+	host_boot(title);
+	if (stall != 0) host_fail_reads(stall);
+
+	for (i = 0; i < 4000 && ingame < 8; i++) {
+		u16 sel;
+
+		pump(1);
+		session_info_copy(info, sizeof(info));
+		sel = (u16)((info[26] << 8) | info[27]);
+
+		if (info[2] == SESSION_INGAME) {
+			ingame++;
+			if (info[3] != game || sel != now) wrong++;
+		} else {
+			if (info[2] == SESSION_BOOTING && info[3] == game) (*named)++;
+			if (sel != was) wrong++;
+		}
+	}
+	host_fail_reads(0);
+
+	return ingame > 0 ? wrong : -1;
+}
+
+/*
+ * Before any game has run since the module loaded there is no game for a
+ * selection to belong to: the info block says planet 0 and no flags whatever
+ * config.txt holds, the console-wide pair from before build 53 included, and
+ * PLANET_SELECT is UNSUPPORTED rather than written anywhere. This runs before
+ * anything has booted a game, and leaves no config.txt behind, as it found none.
+ */
+static void test_planet_select_before_a_game(void)
+{
+	u8 planet = 0xEE, flags = 0xEE;
+
+	group("planet selection: before any game has run");
+
+	check_eq_u64(session_state(), SESSION_XMB, "the session is at the XMB");
+	ps_config("selected.planet = 4\nselected.planet_flags = 3\n");
+	ps_info(&planet, &flags);
+	check_eq_u64(planet, 0, "the info block reports planet 0");
+	check_eq_u64(flags, 0, "and no flags, though config.txt holds the old pair");
+	check(ps_select(5, PLANET_FLAG_RESET_LEVELFLAGS) == ST_UNSUPPORTED,
+	      "PLANET_SELECT is UNSUPPORTED: there is no game to keep it for");
+	check(config_get("selected.rac1.planet") == NULL &&
+	      qstreq(config_get("selected.planet"), "4"),
+	      "and wrote nothing, the old pair included");
+
+	plat_file_unlink(QWARK_CONFIG);
+	config_load();
+	check(config_get("selected.planet") == NULL, "config.txt is gone again");
+}
+
+/*
+ * The planet loader's selection is one game's, kept in config.txt as
+ * selected.<game>.planet and selected.<game>.planet_flags. A game with no pair
+ * of its own answers the pair the console shared before build 53; a selection
+ * writes the game's own pair and never the old one; the info block and a 0xFF
+ * load are the running game's, and outside a game the last game's.
+ */
+static void test_planet_select(void)
+{
+	u8 planet = 0, flags = 0;
+	u8 b = 0;
+	u32 v = 0;
+	int named = 0;
+
+	group("planet selection: per game, the old pair until a game has its own");
+
+	check(quit_and_wait(), "quit whatever was running");
+	/* A config.txt from before build 53: one pair for the console. */
+	ps_config("combo.enabled = 1\nselected.planet = 4\nselected.planet_flags = 1\n");
+	ps_info(&planet, &flags);
+	check(planet == 4 && flags == 1,
+	      "at the XMB the last game, with no pair of its own, answers the old pair");
+
+	check(boot_and_wait("NPEA00385"), "RaC1 boots");
+	ps_info(&planet, &flags);
+	check(planet == 4 && flags == 1, "RaC1 has no pair yet either, so it reads the old one");
+
+	check(ps_select(3, PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS) == ST_OK,
+	      "PLANET_SELECT in RaC1");
+	ps_info(&planet, &flags);
+	check(planet == 3 && flags == 3, "the info block reports it");
+	check(qstreq(config_get("selected.rac1.planet"), "3") &&
+	      qstreq(config_get("selected.rac1.planet_flags"), "3"),
+	      "written as RaC1's own pair");
+	check(qstreq(config_get("selected.planet"), "4") &&
+	      qstreq(config_get("selected.planet_flags"), "1"),
+	      "and the old pair is left as it was, for the games with none");
+	check(config_load() == ST_OK, "config.txt reloads");
+	ps_info(&planet, &flags);
+	check(planet == 3 && flags == 3, "and RaC1's pair was in the file, with no CONFIG_SAVE");
+
+	group("planet selection: a 0xFF load is the running game's");
+
+	host_poke(A_LEVEL_FLAGS + 3 * 0x10, (const u8 *)"\x11", 1);
+	host_poke(A_GOLD_BOLTS + 3 * 4, (const u8 *)"\xFF\xFF\xFF\xFF", 4);
+	check(session_planet_load(0xFF, 0xFF) == ST_OK, "RaC1 loads the selection");
+	mem_read_u32(A_LOAD_PLANET + 4, &v);
+	check_eq_u64(v, 3, "to RaC1's planet, 3");
+	host_peek(A_LEVEL_FLAGS + 3 * 0x10, &b, 1);
+	check_eq_u64(b, 0, "with RaC1's bit0, which reset the level flags");
+	mem_read_u32(A_GOLD_BOLTS + 3 * 4, &v);
+	check_eq_u64(v, 0, "and its bit1, which took back the gold bolts");
+
+	group("planet selection: outside a game, the last game's");
+
+	check(quit_and_wait(), "quit RaC1");
+	ps_info(&planet, &flags);
+	check(planet == 3 && flags == 3, "the XMB's info block keeps RaC1's selection");
+	check(ps_select(3, PLANET_FLAG_RESET_BOLTS) == ST_OK,
+	      "and a PLANET_SELECT there is RaC1's too");
+	check(qstreq(config_get("selected.rac1.planet_flags"), "2"),
+	      "written into RaC1's pair");
+	ps_info(&planet, &flags);
+	check(planet == 3 && flags == 2, "and reported");
+
+	group("planet selection: a game switch shows that game's");
+
+	check_eq_u64(ps_switch("NPEA00386", GAME_RAC2, 0x0302, 0x0401, 40, &named), 0,
+	             "every block of RaC2's boot is RaC1's until INGAME and RaC2's from then on");
+	check(named > 0, "BOOTING blocks that already named RaC2 among them");
+	check(ps_select(5, 0) == ST_OK, "PLANET_SELECT in RaC2, neither box");
+	ps_info(&planet, &flags);
+	check(planet == 5 && flags == 0, "RaC2 reports its own");
+	check(qstreq(config_get("selected.rac1.planet_flags"), "2"),
+	      "and RaC1's pair is untouched");
+
+	host_poke(R2_LEVELFLAGS + 5 * 0x10 + 2, (const u8 *)"\xAA", 1);
+	check(session_planet_load(0xFF, 0xFF) == ST_OK, "RaC2 loads the selection");
+	mem_read_u32(R2_LOADPLANET + 4, &v);
+	check_eq_u64(v, 5, "to RaC2's planet, 5");
+	host_peek(R2_LEVELFLAGS + 5 * 0x10 + 2, &b, 1);
+	check_eq_u64(b, 0xAA,
+	             "and leaves the level flags: RaC2's flags are 0, not the old pair's bit0");
+
+	check(quit_and_wait(), "quit RaC2");
+	check_eq_u64(ps_switch("NPEA00385", GAME_RAC1, 0x0500, 0x0302, 40, &named), 0,
+	             "and RaC1's boot goes from RaC2's selection straight to RaC1's own");
+	check(named > 0, "through BOOTING blocks that named RaC1");
+
+	check(quit_and_wait(), "quit RaC1");
+	check_eq_u64(ps_switch("BLUS99999", GAME_NONE, 0x0302, 0x0302, 0, &named), 0,
+	             "a title no game table claims leaves the last game's selection in place");
+	check(quit_and_wait(), "quit the unknown title");
+
+	check_eq_u64(ps_switch("NPEA00423", GAME_RAC4, 0x0302, 0x0401, 0, &named), 0,
+	             "and Deadlocked, still with no pair of its own, reads the old one");
+
+	/* Back to a small config for whatever runs after this. */
+	ps_config("combo.enabled = 1\n");
+	ps_info(&planet, &flags);
+	check(planet == 0 && flags == 0, "with neither pair in the file, Deadlocked's is 0");
+}
+
 static void test_reply_sizes(void)
 {
 	static u8 reply[QWARK_MAX_PAYLOAD];
@@ -16504,6 +16716,7 @@ int main(void)
 	test_command_port();
 	test_endian();
 	test_framing();
+	test_planet_select_before_a_game();
 	test_patches();
 	test_patch_order();
 	test_patch_pool();
@@ -16554,6 +16767,7 @@ int main(void)
 	test_switches();
 	test_reply_sizes();
 	test_planet_order();
+	test_planet_select();
 	test_config();
 	test_hot_tables();
 	test_fingerprint();

@@ -103,6 +103,8 @@ OP_POS_LOAD = 0x0042
 OP_POS_LIST = 0x0043
 OP_POS_CLEAR = 0x0044
 OP_PLANET_LIST = 0x0045
+# Build 53: the selection it sets is the running game's, or the last one's.
+OP_PLANET_SELECT = 0x0046
 OP_PLANET_LOAD = 0x0047
 OP_MOBY_TABLE = 0x0049
 # Protocol 1.13: the two ways a client writes a slot it is not standing in.
@@ -5359,6 +5361,73 @@ def main():
             check(len(features) == 28, "with RaC2's twenty-eight features",
                   len(features))
 
+        # ------------------------- the planet selection per game, build 53
+        # The planet and the reset boxes are one game's, selected.<game>.* in
+        # config.txt. A game with no pair of its own reads the pair the console
+        # shared before build 53, PLANET_SELECT writes only the game's own, and
+        # at the XMB the info block keeps the last game's.
+        cfg_path = "/dev_hdd0/qwark/config.txt"
+        cfg = read_console_file(c, cfg_path) or b""
+        cfg = b"".join(line + b"\n" for line in cfg.splitlines()
+                       if not line.startswith(b"selected.planet")
+                       and not line.startswith(b"selected.rac"))
+        check(write_console_file(c, cfg_path,
+                                 cfg + b"selected.planet = 4\nselected.planet_flags = 2\n"),
+              "a config.txt holding the old console-wide pair is written")
+        status, _ = c.call(OP_CONFIG_RELOAD)
+        check(status == ST_OK, "and CONFIG_RELOAD reads it", status)
+
+        def selection():
+            got = fresh_state(c)
+            return (got["planet_sel"], got["planet_flags"]) if got else None
+
+        check(selection() == (4, 2),
+              "RaC2, with no pair of its own, reports the old pair", selection())
+        status, _ = c.call(OP_PLANET_SELECT, bytes([5, PLANET_FLAG_RESET_LEVELFLAGS]))
+        check(status == ST_OK, "PLANET_SELECT in RaC2", status)
+        check(selection() == (5, 1), "and RaC2 reports its own", selection())
+        text = read_console_file(c, cfg_path) or b""
+        check(b"selected.rac2.planet = 5\n" in text
+              and b"selected.rac2.planet_flags = 1\n" in text,
+              "written as selected.rac2.planet and selected.rac2.planet_flags", text)
+        check(b"selected.planet = 4\n" in text and b"selected.planet_flags = 2\n" in text,
+              "and the old pair left as it was", text)
+
+        # 0xFF is the running game's selection: RaC2's bit0, not the old pair's bit1.
+        RAC2_LEVEL_FLAGS = 0x15625B0
+        mem_write(c, RAC2_LEVEL_FLAGS + 5 * 0x10 + 2, b"\xAA")
+        mem_write(c, 0x156B050, struct.pack(">II", 0, 0))
+        status, _ = c.call(OP_PLANET_LOAD, bytes([0xFF, 0xFF]))
+        check(status == ST_OK, "PLANET_LOAD 0xFF 0xFF in RaC2", status)
+        check(mem_read_u32(c, 0x156B054) == 5, "goes to RaC2's planet",
+              mem_read_u32(c, 0x156B054))
+        check(mem_read_u8(c, RAC2_LEVEL_FLAGS + 5 * 0x10 + 2) == 0,
+              "with RaC2's bit0, which reset the level flags",
+              mem_read_u8(c, RAC2_LEVEL_FLAGS + 5 * 0x10 + 2))
+
+        sim.send("quit")
+        ok, info = wait_state(c, SESSION_XMB)
+        check(ok and (info["planet_sel"], info["planet_flags"]) == (5, 1),
+              "at the XMB the info block keeps RaC2's selection", info)
+
+        sim.send("boot BCES01503 rac3")
+        ok, info = wait_state(c, SESSION_INGAME)
+        check(ok and info["game"] == 3, "UYA boots under BCES01503", info)
+        check(info and (info["planet_sel"], info["planet_flags"]) == (4, 2),
+              "and its first INGAME block carries UYA's selection, the old pair, not RaC2's",
+              info)
+        status, _ = c.call(OP_PLANET_SELECT,
+                           bytes([9, PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS]))
+        check(status == ST_OK and selection() == (9, 3),
+              "a PLANET_SELECT in UYA is UYA's", (status, selection()))
+
+        sim.send("quit")
+        ok, _ = wait_state(c, SESSION_XMB)
+        sim.send("boot BLMODYOOO")
+        ok, info = wait_state(c, SESSION_INGAME)
+        check(ok and info["game"] == 2 and (info["planet_sel"], info["planet_flags"]) == (5, 1),
+              "and RaC2 comes back with its own selection, not UYA's", info)
+
         # ------------------------------- a title no game table claims
         # Build 36, PROTOCOL.md section 3.3: it reaches INGAME with game 0, the
         # memory tools work on it and everything else answers UNSUPPORTED.
@@ -5382,6 +5451,9 @@ def main():
         check(hello and hello["planet"] == 0 and hello["pad_mask"] == 0
               and hello["pos"] == (0.0, 0.0, 0.0) and not any(hello["readout"]),
               "and no planet, position, pad or readout is filled in", hello)
+        # Build 53: the planet selection is the last game's, as at the XMB.
+        check(hello and (hello["planet_sel"], hello["planet_flags"]) == (5, 1),
+              "and the planet selection is still the last game's, RaC2's", hello)
 
         # The memory panel is the whole point: write, read it back, watch it.
         check(mem_write(c, 0x00820000, struct.pack(">I", 0xC0FFEE00)) == ST_OK,

@@ -141,6 +141,12 @@ int  session_position_load(u8 slot);
 int  session_position_edit(u8 slot, const f32 xyz[3]);
 int  session_position_store(u8 slot, const u8 *blob, u8 len);
 int  session_planet_load(u8 planet, u8 flags);
+/*
+ * Build 53, PLANET_SELECT: stores the planet and its flags for the running
+ * game, or the last one outside a game; UNSUPPORTED before any game has run.
+ * Caller holds the core lock. See g_select_game in session.c.
+ */
+int  session_planet_select(u8 planet, u8 flags);
 int  session_die(void);
 int  session_load_setaside(void);
 u8   session_current_planet(void);

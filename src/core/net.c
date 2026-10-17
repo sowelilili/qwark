@@ -1329,10 +1329,19 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 	}
 
-	case OP_PLANET_SELECT:
+	case OP_PLANET_SELECT: {
+		u16 rc;
 		if (reqlen < 2) return ST_BAD_ARG;
-		config_set_selected_planet(req[0], req[1]);
-		return ST_OK;
+		/*
+		 * Build 53: one game's selection, the running game's or the last
+		 * one's, rather than the console's. Under the core lock, which the
+		 * tick thread holds to read it into the info block.
+		 */
+		core_lock();
+		rc = (u16)session_planet_select(req[0], req[1]);
+		core_unlock();
+		return rc;
+	}
 
 	case OP_MOBY_TABLE: {
 		const struct game_api *g = session_game();

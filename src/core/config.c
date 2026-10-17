@@ -259,25 +259,70 @@ u8 config_selected_slot(void)
 	return (u8)(v < QWARK_POS_SLOTS ? v : 0);
 }
 
-u8 config_selected_planet(void)
-{
-	return (u8)config_get_u32("selected.planet", 0);
-}
-
-u8 config_selected_planet_flags(void)
-{
-	return (u8)config_get_u32("selected.planet_flags", 0);
-}
-
 void config_set_selected_slot(u8 slot)
 {
 	config_set_u32("selected.slot", slot);
 }
 
-void config_set_selected_planet(u8 planet, u8 flags)
+/*
+ * Build 53. "selected.<game>.<field>", beside the manips' "manip.<game>.*": the
+ * longest is "selected.rac4.planet_flags", 26 of CONFIG_KEY_MAX.
+ */
+static void selected_key(const char *game, const char *field, char *out, u32 cap)
 {
-	config_set_u32("selected.planet", planet);
-	config_set_u32("selected.planet_flags", flags);
+	out[0] = 0;
+	qstrcat(out, cap, "selected.");
+	qstrcat(out, cap, game);
+	qstrcat(out, cap, ".");
+	qstrcat(out, cap, field);
+}
+
+/*
+ * The game's own key whenever the file holds one, as a relabelled toggle's auto
+ * flag answers from its new label (config_feature_auto_former): a value that
+ * does not parse is 0 then, not the old key's. Until then the key the console
+ * shared before build 53, `former`, and 0 where neither is there.
+ */
+static u8 selected_get(const char *game, const char *field, const char *former)
+{
+	char key[CONFIG_KEY_MAX];
+
+	if (game == NULL) return 0;
+
+	selected_key(game, field, key, sizeof(key));
+	if (config_get(key) != NULL) return (u8)config_get_u32(key, 0);
+	return (u8)config_get_u32(former, 0);
+}
+
+u8 config_selected_planet(const char *game)
+{
+	return selected_get(game, "planet", "selected.planet");
+}
+
+u8 config_selected_planet_flags(const char *game)
+{
+	return selected_get(game, "planet_flags", "selected.planet_flags");
+}
+
+/*
+ * Both of the game's own keys, every time, so a game that has made one
+ * selection never reads either half of it from the old pair again. The old pair
+ * is left as it is: it is what the games with no selection of their own still
+ * answer.
+ */
+int config_set_selected_planet(const char *game, u8 planet, u8 flags)
+{
+	char key[CONFIG_KEY_MAX];
+	int rc;
+
+	if (game == NULL) return ST_BAD_ARG;
+
+	selected_key(game, "planet", key, sizeof(key));
+	rc = config_set_u32(key, planet);
+	if (rc != ST_OK) return rc;
+
+	selected_key(game, "planet_flags", key, sizeof(key));
+	return config_set_u32(key, flags);
 }
 
 /* ------------------------------------------------------------- auto flags */
