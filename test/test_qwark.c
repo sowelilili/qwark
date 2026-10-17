@@ -6723,23 +6723,35 @@ static void test_manips(void)
 #define R3_DEST_PLANET  0x00EE9314u
 
 /*
- * Fast loads, a code patch (src/games/rac3.h, RAC3_FASTLOAD_SITE): the
- * transition loop's "is it over" test at 0x27B428, cmpwi r27, 0, becomes a
- * branch to the console's cave at 0x980860, twenty-two words at the top of the
- * strictly dead 0x980304..0x980AC0 that the trophy reset's cave (0x9808C0) left
- * free. R3_FL_DEAD stands in for that dead code's own words, which the fake
- * console does not have.
+ * Fast loads, a code patch (src/games/rac3.h, RAC3_FASTLOAD_SITE), on RaC2's
+ * model since build 53 made them over: two sites in a pass of the transition
+ * loop - the frame's head at 0x27B550, bl 0x11AD44, and the update's argument
+ * at 0x27B49C, ori r3, r26, 0 - become branches to the console's cave at
+ * 0x9807F0, forty-eight words at the top of the strictly dead 0x980304..0x980AC0
+ * that the trophy reset's cave (0x9808C0) left free. R3_FL_DEAD stands in for
+ * that dead code's own words, which the fake console does not have.
  */
-#define R3_FL_SITE        0x0027B428u
-#define R3_FL_SITE_WORD   0x2C1B0000u
-#define R3_FL_BRANCH      0x48705438u
-#define R3_FL_CAVE        0x00980860u
-#define R3_FL_CAVE_WORDS  22u
+#define R3_FL_SITE        0x0027B49Cu
+#define R3_FL_SITE_WORD   0x63430000u
+#define R3_FL_BRANCH      0x48705354u
+#define R3_FL_DRAW        0x0027B550u
+#define R3_FL_DRAW_WORD   0x4BE9F7F5u
+#define R3_FL_DRAW_BRANCH 0x4870533Cu
+#define R3_FL_CAVE        0x009807F0u
+#define R3_FL_CAVE_WORDS  48u
 #define R3_FL_CAVE_END    (R3_FL_CAVE + 4u * R3_FL_CAVE_WORDS)
 #define R3_FL_DEAD(i)     (0xD0E00000u | (u32)(i))
-#define R3_FL_UNLOAD      0x00278A00u   /* Transition_UnloadSounds */
-#define R3_FL_SPAN_LO     0x00980304u   /* the strictly dead span */
+#define R3_FL_SPAN_LO     0x00980580u   /* the dead span, past the trophy reset's thread cave */
 #define R3_FL_SPAN_HI     0x009808C0u   /* up to the trophy reset's cave */
+
+/* Where the caves go back into the game, and the game code they call. */
+#define R3_FL_UPDATE      0x0027B4A0u   /* the site's own way on: the update */
+#define R3_FL_RESUME      0x0027B538u   /* the pass after the transition's routines */
+#define R3_FL_DRAW_RET    0x0027B554u   /* the frame, after the draw site */
+#define R3_FL_SKIP        0x0027B570u   /* the pass after the frame */
+#define R3_FL_UNLOAD      0x00278A00u   /* Transition_UnloadSounds */
+#define R3_FL_FADE        0x00123988u   /* the screen fade, frames in r3 */
+#define R3_FL_BEGIN       0x0011AD44u   /* the draw site's own call */
 
 static u32 r3_peek32(u32 addr)
 {
@@ -6749,7 +6761,7 @@ static u32 r3_peek32(u32 addr)
 	return be32_get(w);
 }
 
-/* The game's own words where the patch goes: the site's and the dead code's. */
+/* The game's own words where the patch goes: the sites' and the dead code's. */
 static void r3_fl_seed(void)
 {
 	u8 raw[4];
@@ -6757,6 +6769,8 @@ static void r3_fl_seed(void)
 
 	be32_put(raw, R3_FL_SITE_WORD);
 	host_poke(R3_FL_SITE, raw, 4);
+	be32_put(raw, R3_FL_DRAW_WORD);
+	host_poke(R3_FL_DRAW, raw, 4);
 	for (i = 0; i < R3_FL_CAVE_WORDS; i++) {
 		be32_put(raw, R3_FL_DEAD(i));
 		host_poke(R3_FL_CAVE + 4u * i, raw, 4);
@@ -6769,23 +6783,25 @@ static int r3_fl_original(void)
 	u32 i;
 
 	if (r3_peek32(R3_FL_SITE) != R3_FL_SITE_WORD) return 0;
+	if (r3_peek32(R3_FL_DRAW) != R3_FL_DRAW_WORD) return 0;
 	for (i = 0; i < R3_FL_CAVE_WORDS; i++)
 		if (r3_peek32(R3_FL_CAVE + 4u * i) != R3_FL_DEAD(i)) return 0;
 	return 1;
 }
 
-/* The patch is in: the branch at the site, and a cave that is not the dead code. */
+/* The patch is in: a branch at each site, and a cave that is not the dead code. */
 static int r3_fl_patched(void)
 {
 	u32 i;
 
 	if (r3_peek32(R3_FL_SITE) != R3_FL_BRANCH) return 0;
+	if (r3_peek32(R3_FL_DRAW) != R3_FL_DRAW_BRANCH) return 0;
 	for (i = 0; i < R3_FL_CAVE_WORDS; i++)
 		if (r3_peek32(R3_FL_CAVE + 4u * i) == R3_FL_DEAD(i)) return 0;
 	return 1;
 }
 
-/* Whether a write since the last log reset touched the site or the cave. */
+/* Whether a write since the last log reset touched a site or the cave. */
 static int r3_fl_wrote(void)
 {
 	u32 i;
@@ -6795,6 +6811,7 @@ static int r3_fl_wrote(void)
 
 		if (host_write_log_at(i, &a, &len) != 0) break;
 		if (a < R3_FL_SITE + 4u && a + len > R3_FL_SITE) return 1;
+		if (a < R3_FL_DRAW + 4u && a + len > R3_FL_DRAW) return 1;
 		if (a < R3_FL_CAVE_END && a + len > R3_FL_CAVE) return 1;
 	}
 	return 0;
@@ -6818,56 +6835,298 @@ static u32 r3_branch_target(u32 at, u32 word)
 	return 0;
 }
 
-/* lis rX, hi then a D-form at `lo_word`: the address the pair names. */
-static u32 r3_dform_addr(u32 lis_word, u32 lo_word)
+/*
+ * Just enough of a PowerPC to run UYA's fast-load caves, the console's and the
+ * switch's: lis, li, addi and ori; lhz, lwz, lbz and stw against the handful of
+ * game words they touch; cmpwi and cmplwi into cr0, bc on cr0, b, bl and mtlr.
+ * A branch out of the cave into one of the three game routines they call is
+ * taken as a call: noted with its r3 and link register, and returned from at
+ * once. Any other way out ends the run, and r3c_run answers where.
+ */
+struct r3c_cpu {
+	u64 r[32];
+	u32 pc, lr;
+	int lt, gt, eq;
+
+	/* The game's words the caves read and write. */
+	u16 id, frame;
+	u32 stage, hold, owed, fade, held;
+	u8  flag;
+	int fade_written, held_written;
+
+	/* The calls made on the way, in order. */
+	u32 call[4], call_r3[4], call_lr[4];
+	int ncalls;
+};
+
+#define R3C_RENDERER     0x30000000u   /* the renderer object, as the cave finds it */
+
+/* The code: one cave's or the switch's caves and sites. */
+static int (*g_r3c_fetch)(u32 addr, u32 *word);
+
+static int r3c_fetch_console(u32 addr, u32 *word)
 {
-	return ((lis_word & 0xFFFFu) << 16) + (u32)(s32)(s16)(lo_word & 0xFFFFu);
+	if (addr == R3_FL_SITE || addr == R3_FL_DRAW ||
+	    (addr >= R3_FL_CAVE && addr < R3_FL_CAVE_END)) {
+		*word = r3_peek32(addr);
+		return 1;
+	}
+	return 0;
+}
+
+static int r3c_fetch_switch(u32 addr, u32 *word)
+{
+	const struct sw_desc *d = sw_desc_for_game(GAME_RAC3);
+	u8 k;
+
+	if (d == NULL) return 0;
+	for (k = 0; k < d->nsites; k++) {
+		if (d->sites[k].addr == addr) {
+			*word = d->sites[k].value;
+			return 1;
+		}
+	}
+	for (k = 0; k < d->ncaves; k++) {
+		if (addr >= d->caves[k].addr && addr + 4u <= d->caves[k].addr + d->caves[k].len) {
+			*word = be32_get(d->caves[k].bytes + (addr - d->caves[k].addr));
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int r3c_load(struct r3c_cpu *c, u32 ea, u32 size, u64 *out)
+{
+	if (size == 2 && ea == 0x00D990DEu) { *out = c->id; return 1; }
+	if (size == 2 && ea == 0x00D990D2u) { *out = c->frame; return 1; }
+	if (size == 4 && ea == 0x00D99094u) { *out = c->stage; return 1; }
+	if (size == 4 && ea == 0x00D99098u) { *out = c->hold; return 1; }
+	if (size == 4 && ea == 0x00F44E90u) { *out = c->owed; return 1; }
+	if (size == 4 && ea == 0x00CB09BCu) { *out = R3C_RENDERER; return 1; }
+	if (size == 1 && ea == SW_RAC3_FLAG_FAST_LOADS) { *out = c->flag; return 1; }
+	return 0;
+}
+
+static int r3c_store(struct r3c_cpu *c, u32 ea, u32 value)
+{
+	if (ea == 0x0134EBE0u) { c->fade = value; c->fade_written = 1; return 1; }
+	if (ea == R3C_RENDERER + 0x1720u) { c->held = value; c->held_written = 1; return 1; }
+	return 0;
+}
+
+static void r3c_cmp(struct r3c_cpu *c, int sgn, u32 a, u32 b)
+{
+	if (sgn) {
+		c->lt = (s32)a < (s32)b;
+		c->gt = (s32)a > (s32)b;
+	} else {
+		c->lt = a < b;
+		c->gt = a > b;
+	}
+	c->eq = a == b;
+}
+
+/* One instruction. 0 for one it does not know. */
+static int r3c_step(struct r3c_cpu *c, u32 w)
+{
+	u32 op = w >> 26;
+	u32 rd = (w >> 21) & 31u, ra = (w >> 16) & 31u;
+	s64 simm = (s64)(s16)(u16)(w & 0xFFFFu);
+	u64 base = ra != 0 ? c->r[ra] : 0;
+	u64 v = 0;
+
+	switch (op) {
+	case 15:   /* addis, lis */
+		c->r[rd] = base + (u64)(simm * 65536);
+		break;
+	case 14:   /* addi, li */
+		c->r[rd] = base + (u64)simm;
+		break;
+	case 24:   /* ori */
+		c->r[ra] = c->r[rd] | (w & 0xFFFFu);
+		break;
+	case 32:   /* lwz */
+	case 34:   /* lbz */
+	case 40:   /* lhz */
+		if (!r3c_load(c, (u32)(base + (u64)simm), op == 32 ? 4u : op == 40 ? 2u : 1u, &v)) return 0;
+		c->r[rd] = v;
+		break;
+	case 36:   /* stw */
+		if (!r3c_store(c, (u32)(base + (u64)simm), (u32)c->r[rd])) return 0;
+		break;
+	case 11:   /* cmpi cr0, rA, SIMM: cmpwi */
+	case 10:   /* cmpli cr0, rA, UIMM: cmplwi */
+		if (rd != 0) return 0;               /* cr0, 32-bit */
+		r3c_cmp(c, op == 11, (u32)c->r[ra], op == 11 ? (u32)(s32)simm : (w & 0xFFFFu));
+		break;
+	case 16: { /* bc on cr0, no link, relative */
+		u32 bo = rd, bi = ra;
+		int bit;
+
+		if ((w & 3u) || bi > 2 || (bo != 12 && bo != 4)) return 0;
+		bit = bi == 0 ? c->lt : bi == 1 ? c->gt : c->eq;
+		if (bo == 12 ? bit : !bit) {
+			c->pc = r3_branch_target(c->pc, w);
+			return 1;
+		}
+		break;
+	}
+	case 18:   /* b, bl */
+		if (w & 2u) return 0;
+		if (w & 1u) c->lr = c->pc + 4u;
+		c->pc = r3_branch_target(c->pc, w);
+		return 1;
+	case 31:   /* mtspr LR, rS: mtlr */
+		if (((w >> 1) & 0x3FFu) != 467u || ((w >> 11) & 0x3FFu) != (8u << 5)) return 0;
+		c->lr = (u32)c->r[rd];
+		break;
+	default:
+		return 0;
+	}
+	c->pc += 4;
+	return 1;
+}
+
+static void r3c_reset(struct r3c_cpu *c, u16 id, u16 frame, u32 owed, u32 stage, u32 hold)
+{
+	u32 i;
+
+	memset(c, 0, sizeof(*c));
+	for (i = 0; i < 32; i++) c->r[i] = 0x0123456700000000ull + 0x1111u * i;
+	c->r[26] = 1;            /* the "level read" byte the update is handed */
+	c->r[27] = 0;            /* the transition is not over */
+	c->id = id;
+	c->frame = frame;
+	c->owed = owed;
+	c->stage = stage;
+	c->hold = hold;
+	c->held = 2;             /* as the black-screen card's init leaves it */
+	c->flag = 1;
+}
+
+/* From `site` until the PPU is back in the game proper. 0 when it got lost. */
+static u32 r3c_run(struct r3c_cpu *c, u32 site)
+{
+	int steps;
+
+	c->pc = site;
+	for (steps = 0; steps < 64; steps++) {
+		u32 w = 0;
+
+		if (!g_r3c_fetch(c->pc, &w)) {
+			if (c->pc != R3_FL_UNLOAD && c->pc != R3_FL_FADE && c->pc != R3_FL_BEGIN)
+				return c->pc;
+			if (c->ncalls == 4) return 0;
+			c->call[c->ncalls] = c->pc;
+			c->call_r3[c->ncalls] = (u32)c->r[3];
+			c->call_lr[c->ncalls] = c->lr;
+			c->ncalls++;
+			c->pc = c->lr;
+			continue;
+		}
+		if (!r3c_step(c, w)) return 0;
+	}
+	return 0;
 }
 
 /*
- * The cave as the toggle wrote it, instruction by instruction, against what
- * rac3.h says it does: the words were assembled by the SDK, and this is the
- * check that they mean what the comment beside them says.
+ * Every road through the caves, `what` naming whose: the console's, as the
+ * toggle wrote them, or the switch's, with its flag up. `console` also asks that
+ * every call come back to the game's own code rather than into the cave.
+ */
+static void r3c_paths(const char *what, int console)
+{
+	struct r3c_cpu c;
+	char msg[160];
+	u16 id;
+
+#define R3C_CHECK(cond, text) \
+	do { snprintf(msg, sizeof(msg), "%s: %s", what, text); check((cond), msg); } while (0)
+
+	r3c_reset(&c, 7, 3, 0, 1, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_UPDATE && c.r[3] == c.r[26] &&
+	          c.ncalls == 0 && !c.fade_written && c.r[27] == 0,
+	          "a multiplayer load (7) runs the site's own instruction and goes on to the update");
+	r3c_reset(&c, 7, 3, 0, 1, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_DRAW) == R3_FL_DRAW_RET && c.ncalls == 1 &&
+	          c.call[0] == R3_FL_BEGIN,
+	          "and draws its frame: the draw site's own call, then the frame");
+	if (console)
+		R3C_CHECK(c.call_lr[0] == R3_FL_DRAW_RET, "that call comes back to the game at 0x27B554");
+
+	r3c_reset(&c, 5, 0, 0, 0, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.ncalls == 1 &&
+	          c.call[0] == R3_FL_FADE && c.call_r3[0] == 6 && c.r[27] == 0 && !c.fade_written,
+	          "the first pass fades the screen to black, six frames, and skips the update");
+	R3C_CHECK(c.held_written && c.held == 0,
+	          "after letting every flip show again (the renderer's held count to 0)");
+	if (console)
+		R3C_CHECK(c.call_lr[0] == R3_FL_RESUME, "and the fade comes back to the game at 0x27B538");
+
+	r3c_reset(&c, 5, 3, 17, 0, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_UPDATE && c.r[3] == c.r[26] &&
+	          c.ncalls == 0 && c.r[27] == 0,
+	          "with a scene owed the transition runs, to play it at its first clip's end");
+
+	r3c_reset(&c, 5, 3, 0, 1, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.ncalls == 0 && c.r[27] == 0 &&
+	          !c.fade_written && !c.held_written,
+	          "with none, below stage 2 the pass skips the transition: it stands still");
+
+	r3c_reset(&c, 5, 9, 0, 2, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.r[27] == 1 &&
+	          c.fade_written && c.fade == 0x3F800000u && c.ncalls == 1 &&
+	          c.call[0] == R3_FL_UNLOAD,
+	          "at stage 2 the space flight is over: fade at black, its banks unloaded, r27 = 1");
+	if (console)
+		R3C_CHECK(c.call_lr[0] == R3_FL_RESUME,
+		          "and Transition_UnloadSounds comes back to the game at 0x27B538");
+
+	r3c_reset(&c, 0, 9, 0, 3, 0);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.r[27] == 1 &&
+	          c.fade_written && c.ncalls == 0,
+	          "a transition whose banks are already gone ends without unloading them again");
+
+	r3c_reset(&c, 6, 9, 0, 2, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.r[27] == 1 && c.ncalls == 1 &&
+	          c.call[0] == R3_FL_UNLOAD,
+	          "a vid comic's card, which loads banks of its own, unloads them as it ends");
+
+	r3c_reset(&c, 8, 9, 0, 2, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.r[27] == 1 && c.fade_written &&
+	          c.ncalls == 0,
+	          "Holostar's line and the black card (8) load none, and end with no unload");
+
+	r3c_reset(&c, 8, 0, 18, 0, 1);
+	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.ncalls == 1 &&
+	          c.call[0] == R3_FL_FADE && c.held == 0,
+	          "the first pass fades whatever transition it is, a scene owed or not");
+
+	for (id = 0; id <= 8; id++) {
+		if (id == 7) continue;
+		r3c_reset(&c, id, 4, 0, 0, 1);
+		if (r3c_run(&c, R3_FL_DRAW) != R3_FL_SKIP || c.ncalls != 0) break;
+	}
+	R3C_CHECK(id == 9, "every transition but multiplayer goes past its frame: nothing drawn, no flip");
+
+#undef R3C_CHECK
+}
+
+/*
+ * The cave as the toggle wrote it, run: the words were assembled by the SDK, and
+ * this is the check that they do what rac3.h says they do.
  */
 static void r3_fl_check_words(void)
 {
-	u32 w[R3_FL_CAVE_WORDS];
-	u32 out = R3_FL_CAVE + 0x50u;
-	u32 i;
-
-	for (i = 0; i < R3_FL_CAVE_WORDS; i++) w[i] = r3_peek32(R3_FL_CAVE + 4u * i);
-
 	check_eq_u64(r3_branch_target(R3_FL_SITE, r3_peek32(R3_FL_SITE)), R3_FL_CAVE,
-	             "the site branches to the cave, without a link");
-	check_eq_u64(r3_peek32(R3_FL_SITE) & 3u, 0, "(no link, no absolute address)");
-	check(w[0] == R3_FL_SITE_WORD && w[20] == R3_FL_SITE_WORD,
-	      "the cave opens with the site's own test and ends with it, at its exit");
-	check((w[1] >> 16) == 0x4082u && r3_branch_target(R3_FL_CAVE + 0x04u, w[1]) == out,
-	      "a transition that is over on its own goes straight to the exit (bne)");
-	check(r3_dform_addr(w[2], w[3]) == 0x00D990DEu && (w[3] >> 26) == 40u,
-	      "it reads the transition's number as a halfword at 0xD990DE (lhz)");
-	check(w[4] == 0x28040005u && (w[5] >> 16) == 0x4181u &&
-	      r3_branch_target(R3_FL_CAVE + 0x14u, w[5]) == out,
-	      "and leaves transitions past 5, the ones without clips, alone (cmplwi 5, bgt)");
-	check(r3_dform_addr(w[2], w[6]) == 0x00D99094u && (w[6] >> 26) == 32u &&
-	      w[7] == 0x2C040002u && (w[8] >> 16) == 0x4180u &&
-	      r3_branch_target(R3_FL_CAVE + 0x20u, w[8]) == out,
-	      "it waits for the loader's stage at 0xD99094 to reach 2 (lwz, cmpwi 2, blt)");
-	check(r3_dform_addr(w[2], w[9]) == 0x00D99098u && (w[9] >> 26) == 32u &&
-	      w[10] == 0x2C040000u && (w[11] >> 16) == 0x4182u &&
-	      r3_branch_target(R3_FL_CAVE + 0x2Cu, w[11]) == out,
-	      "and does nothing once the transition's sound banks at 0xD99098 are gone (beq)");
-	check(r3_dform_addr(w[12], w[14]) == 0x0134EBE0u && (w[14] >> 26) == 36u &&
-	      w[13] == 0x3C803F80u,
-	      "it puts 1.0f, black, into the fade at 0x134EBE0 (stw)");
-	check_eq_u64(w[15], 0x3B600001u, "says the transition is over (li r27, 1)");
-	check(r3_dform_addr(w[16], w[17]) == R3_FL_SITE && (w[17] >> 26) == 14u &&
-	      w[18] == 0x7C6803A6u,
-	      "points the link register at the site (lis, addi, mtlr)");
-	check(r3_branch_target(R3_FL_CAVE + 0x4Cu, w[19]) == R3_FL_UNLOAD && (w[19] & 3u) == 0,
-	      "and branches to Transition_UnloadSounds, 0x278A00, which returns to the site");
-	check(r3_branch_target(R3_FL_CAVE + 0x54u, w[21]) == R3_FL_SITE + 4u && (w[21] & 3u) == 0,
-	      "the exit goes back to the instruction after the site");
+	             "the pass site branches to the cave's head, without a link");
+	check_eq_u64(r3_branch_target(R3_FL_DRAW, r3_peek32(R3_FL_DRAW)), R3_FL_CAVE + 0x9Cu,
+	             "and the draw site to its second half");
+	check_eq_u64((r3_peek32(R3_FL_SITE) | r3_peek32(R3_FL_DRAW)) & 3u, 0,
+	             "(no link, no absolute address)");
+
+	g_r3c_fetch = r3c_fetch_console;
+	r3c_paths("console", 1);
 
 	/* Where it lives: in dead code no other cave of qwark's and no shipped mod uses. */
 	{
@@ -6884,7 +7143,7 @@ static void r3_fl_check_words(void)
 			    s->caves[k].addr < R3_FL_CAVE_END) apart = 0;
 		check(apart, "the cave shares no byte with the helper's caves or any code switch");
 		check(R3_FL_CAVE >= R3_FL_SPAN_LO && R3_FL_CAVE_END <= R3_FL_SPAN_HI,
-		      "and sits in 0x980304..0x9808C0, below the trophy reset's cave");
+		      "and sits in 0x980580..0x9808C0, between the trophy reset's two caves");
 		check(R3_FL_CAVE_END <= 0x00980AC0u,
 		      "clear of 0x980AC0, where the rack mods racman shipped for UYA load");
 	}
@@ -7240,24 +7499,25 @@ static void test_rac3(void)
 
 	/*
 	 * Fast loads are a code patch now (rac3.h, RAC3_FASTLOAD_SITE): a cave in
-	 * the savefile helper's dead function and a branch at the transition loop's
-	 * "is it over" test. The fake console's memory is empty, so the game's own
-	 * words go where the patch will, to see them come back.
+	 * dead code and a branch at two sites of a pass of the transition loop. The
+	 * fake console's memory is empty, so the game's own words go where the patch
+	 * will, to see them come back.
 	 */
 	group("RaC3: the fast-load patch words");
 
 	r3_fl_seed();
 	check(r3_fl_original(), "the game's own words are in place");
 	check(features_set(F3_FAST_LOADS, 1) == ST_OK, "the Fast loads toggle turns on");
-	check(r3_fl_patched(), "and patches the site and writes the cave");
+	check(r3_fl_patched(), "and patches both sites and writes the cave");
 	r3_fl_check_words();
 	check((features_toggle_state() & ((u64)1 << F3_FAST_LOADS)) != 0, "its bit is set");
 	check(features_set(F3_FAST_LOADS, 0) == ST_OK, "the toggle turns off");
-	check(r3_fl_original(), "and every word the patch took comes back, site and cave");
+	check(r3_fl_original(), "and every word the patch took comes back, sites and cave");
 
 	group("RaC3: a planet load forces fast loads, and its end puts them back");
 
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(3);
 	check(session_planet_load(5, 0) == ST_OK, "PLANET_LOAD runs");
 	mem_read_u32(R3_LOADPLANET, &v);
@@ -7268,23 +7528,27 @@ static void test_rac3(void)
 	check((features_toggle_state() & ((u64)1 << F3_FAST_LOADS)) == 0,
 	      "while the checkbox stays off: the force is not the user's");
 	pump(4);
-	check(r3_fl_patched(), "they stay on while the request word is up, the whole transition");
+	check(r3_fl_patched(), "they stay on while the request word is up");
 
 	/*
-	 * A request pending when the game goes from the pause to its space flight is
-	 * taken down there and raised again when the ship is away (0x22A0F4,
-	 * 0x27389C): the word drops in the middle of the load while the mode is 6.
+	 * The galactic map's way: a request pending as the game leaves the pause is
+	 * taken down there (0x22A0F4) while the mode still reads 3, the pause, and
+	 * the ship leaving saves the game before the mode moves on (0x26EF40); the
+	 * ship then leaves in mode 6 and raises the request again for the
+	 * transition (0x27389C). None of that is the end of the load.
 	 */
-	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
-	pump(2);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x03", 4);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(4);
+	check(r3_fl_patched(), "the request word dropping in the pause, before any load ran, is not the end");
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(3);
-	check(r3_fl_patched(), "the request word dropping in mode 6 is not the end of the load");
+	check(r3_fl_patched(), "nor is the ship leaving in mode 6 with the word down");
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01", 4);
 	pump(3);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(3);
-	check(r3_fl_patched(), "nor is main clearing it while the mode is still 6");
+	check(r3_fl_patched(), "nor main clearing it while the mode is still 6");
 	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_original(),
@@ -7292,54 +7556,93 @@ static void test_rac3(void)
 
 	/*
 	 * rac3.cs LoadPlanetSafe left Aquatos out, because its data-word fast loads
-	 * hung the trip that owes Aquatos's story scene. The patch leaves the loader
-	 * alone until the transition has played that scene, so Aquatos is forced too.
+	 * hung the trip that owes Aquatos's story scene. The patch lets the
+	 * transition play that scene, so Aquatos is forced too.
 	 */
 	check(session_planet_load(8, 0) == ST_OK, "PLANET_LOAD to Aquatos runs");
 	check(r3_fl_patched(), "and forces fast loads like any other planet");
 	pump(3);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(3);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_original(), "and the end of that load puts them back");
+
+	/*
+	 * A request the game never takes up, the mode never reaching 6, leaves the
+	 * force in for the load that does run: the request word down on its own
+	 * says nothing.
+	 */
+	check(session_planet_load(5, 0) == ST_OK && r3_fl_patched(), "a load");
+	pump(3);
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(4);
+	check(r3_fl_patched(), "whose word goes down with no mode 6 seen keeps its force");
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(3);
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(2);
+	check(r3_fl_original(), "until a load has run and ended");
+
+	/* A request that fails takes its force back. */
+	host_fail_writes(R3_LOADPLANET, 1);
+	check(session_planet_load(5, 0) != ST_OK, "a PLANET_LOAD whose request cannot be written fails");
+	host_fail_writes(0, 0);
+	check(r3_fl_original(), "and leaves no fast loads forced behind it");
 
 	group("RaC3: the Fast loads checkbox has the say over a load's force");
 
 	check(features_set(F3_FAST_LOADS, 1) == ST_OK && r3_fl_patched(), "the toggle turns on");
 	check(session_planet_load(5, 0) == ST_OK, "a load");
 	pump(3);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(2);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_patched(), "leaves them on for a checkbox that is on");
 
-	/* A load the game starts on its own goes past the same watcher. */
+	/* A load the game starts on its own forced nothing, and its end writes nothing. */
+	host_write_log_reset();
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01\x00\x00\x00\x09", 8);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(3);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
-	check(r3_fl_patched(), "and so does one the game started");
+	check(r3_fl_patched() && !r3_fl_wrote(), "and so does one the game started, writing nothing");
 	check(features_set(F3_FAST_LOADS, 0) == ST_OK && r3_fl_original(),
 	      "the toggle turns off and puts the words back");
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01\x00\x00\x00\x09", 8);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(3);
 	host_write_log_reset();
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_original() && !r3_fl_wrote(), "off, the end of a load writes nothing");
 
 	check(session_planet_load(5, 0) == ST_OK && r3_fl_patched(), "a forced load");
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(3);
 	check(features_set(F3_FAST_LOADS, 1) == ST_OK, "the user turns fast loads on during it");
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_patched(), "and its end leaves them on: the force was forgotten");
 	check(features_set(F3_FAST_LOADS, 0) == ST_OK && r3_fl_original(), "off again");
 
 	check(session_planet_load(5, 0) == ST_OK && r3_fl_patched(), "another forced load");
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(3);
 	check(features_set(F3_FAST_LOADS, 0) == ST_OK && r3_fl_original(),
 	      "turning the checkbox off during it takes them out at once");
 	host_write_log_reset();
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_original() && !r3_fl_wrote(), "and its end has nothing left to put back");
 
@@ -11754,7 +12057,7 @@ static void test_mod_previous(void)
 struct swt_cave {
 	u32 addr;
 	u8  nwords;
-	u32 w[24];
+	u32 w[40];
 };
 
 struct swt_game {
@@ -11823,21 +12126,29 @@ static const struct patch_word g_swt_rac2_toggles[] = {
 };
 
 /*
- * Fast loads joined Freeze ammo when they became a code patch: a trampoline that
- * ends a clip transition once the level is read (src/games/rac3.h,
- * RAC3_FASTLOAD_SITE), behind the flag at 0xD9FF11.
+ * Fast loads joined Freeze ammo (the Infinite ammo checkbox) when they became a
+ * code patch, behind the flag at 0xD9FF11, and build 53 made them over on RaC2's
+ * model (src/games/rac3.h, RAC3_FASTLOAD_SITE): two trampolines, one for the
+ * transition's work in a pass of its loop and one that takes the pass past its
+ * frame, at 0x980F80 and 0x981020, clear of 0x980F20 where the first was.
  */
 static const struct swt_cave g_swt_rac3_caves[] = {
 	{ 0x00980F00u, 6, { 0x3CE000DAu, 0x88E7FF10u, 0x2C070000u, 0x40820008u, 0x7C85312Eu,
 	                    0x4B801B78u } },
-	{ 0x00980F20u, 23, { 0x2C1B0000u, 0x40820050u, 0x3C6000DAu, 0x8863FF11u, 0x2C030000u,
-	                     0x41820040u, 0x3C6000DAu, 0xA08390DEu, 0x28040005u, 0x41810030u,
-	                     0x80839094u, 0x2C040002u, 0x41800024u, 0x80839098u, 0x2C040000u,
-	                     0x41820018u, 0x4B8F7AA1u, 0x3C600135u, 0x3C803F80u, 0x9083EBE0u,
-	                     0x3B600001u, 0x2C1B0000u, 0x4B8FA4B4u } }
+	{ 0x00980F80u, 38, { 0x3CA000DAu, 0x88C5FF11u, 0x2C060000u, 0x41820084u, 0x3CA000DAu,
+	                     0xA0C590DEu, 0x28060007u, 0x41820074u, 0xA06590D2u, 0x2C030000u,
+	                     0x4182004Cu, 0x3C6000F4u, 0x80634E90u, 0x2C030000u, 0x40820058u,
+	                     0x80659094u, 0x2C030002u, 0x41800048u, 0x3B600001u, 0x3C600135u,
+	                     0x3C003F80u, 0x9003EBE0u, 0x28060006u, 0x41810030u, 0x80659098u,
+	                     0x2C030000u, 0x41820024u, 0x4B8F7A15u, 0x4800001Cu, 0x3CA000CBu,
+	                     0x80A509BCu, 0x38000000u, 0x90051720u, 0x38600006u, 0x4B7A2981u,
+	                     0x4B8FA52Cu, 0x63430000u, 0x4B8FA48Cu } },
+	{ 0x00981020u, 11, { 0x3C6000DAu, 0x8863FF11u, 0x2C030000u, 0x41820014u, 0x3C6000DAu,
+	                     0xA06390DEu, 0x28030007u, 0x4082000Cu, 0x4B799D05u, 0x4B8FA510u,
+	                     0x4B8FA528u } }
 };
 static const struct patch_word g_swt_rac3_sites[] = {
-	{ 0x00182A88u, 0x487FE478u }, { 0x0027B428u, 0x48705AF8u }
+	{ 0x00182A88u, 0x487FE478u }, { 0x0027B49Cu, 0x48705AE4u }, { 0x0027B550u, 0x48705AD0u }
 };
 static const u32 g_swt_rac3_flags[] = { 0x00D9FF10u, 0x00D9FF11u };
 static const struct patch_word g_swt_rac3_toggles[] = {
@@ -12240,21 +12551,25 @@ static void test_switches_presence(void)
 	 * neither the game's instruction, qwark's nop nor this build's branch is not
 	 * RaC3 at all as far as BOOTING can tell. That is the one thing a later build
 	 * that moves that trampoline has to keep in mind: the old branch must stay
-	 * accepted. The sites come in address order, so that one is the second last
-	 * row and the fast-load site, 0x27B428, the last.
+	 * accepted. The sites come in address order, so that one is the third last
+	 * row, and the fast-load sites, 0x27B49C and 0x27B550, the last two.
 	 */
 	check(quit_and_wait(), "quit");
 	host_boot("NPEA00387");
-	sf_poke_patch(g_sw_patch, len, n - 2u, 1);
+	sf_poke_patch(g_sw_patch, len, n - 3u, 1);
 	pump(400);
 	check(session_state() == SESSION_BOOTING,
 	      "RaC3 with its Freeze ammo site word one bit off never passes the fingerprint");
 
-	/* The fast-load site is not the fingerprint: there the look says no. */
+	/* The fast-load sites are not the fingerprint: there the look says no. */
 	check(quit_and_wait(), "quit");
 	check(swt_boot_patched("NPEA00387", g_sw_patch, len, n - 1u),
-	      "RaC3 with its fast-load site word one bit off boots as RaC3");
+	      "RaC3 with its fast-load draw site word one bit off boots as RaC3");
 	check_eq_u64(switches_state(), 0, "and is not the switches: a site from another build");
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched("NPEA00387", g_sw_patch, len, n - 2u),
+	      "and so does RaC3 with its other fast-load site word one bit off");
+	check_eq_u64(switches_state(), 0, "which is not the switches either");
 
 	/* RaC1's sites are not its fingerprint, so there the look says no. */
 	check(quit_and_wait(), "quit");
@@ -13386,45 +13701,80 @@ static const u32 g_swt_rac3_b50_flags[] = { 0x00D9FF10u };
 #define SWT_R3_FAST_FLAG   0x00D9FF11u
 
 /*
+ * Build 53's first fast-load switch: one site, the transition loop's test at
+ * 0x27B428, and its trampoline at 0x980F20. It never shipped in a release, but an
+ * RPCS3 patch file written by that build still holds it; such a game is RaC3,
+ * with switches from another build.
+ */
+static const struct swt_cave g_swt_rac3_b53a_caves[] = {
+	{ 0x00980F00u, 6, { 0x3CE000DAu, 0x88E7FF10u, 0x2C070000u, 0x40820008u, 0x7C85312Eu,
+	                    0x4B801B78u } },
+	{ 0x00980F20u, 23, { 0x2C1B0000u, 0x40820050u, 0x3C6000DAu, 0x8863FF11u, 0x2C030000u,
+	                     0x41820040u, 0x3C6000DAu, 0xA08390DEu, 0x28040005u, 0x41810030u,
+	                     0x80839094u, 0x2C040002u, 0x41800024u, 0x80839098u, 0x2C040000u,
+	                     0x41820018u, 0x4B8F7AA1u, 0x3C600135u, 0x3C803F80u, 0x9083EBE0u,
+	                     0x3B600001u, 0x2C1B0000u, 0x4B8FA4B4u } }
+};
+static const struct patch_word g_swt_rac3_b53a_sites[] = {
+	{ 0x00182A88u, 0x487FE478u }, { 0x0027B428u, 0x48705AF8u }
+};
+
+/*
  * RaC3's fast loads under RPCS3. Until they became a code patch they were two
- * data words and needed nothing installed; now they are a code switch, and a
- * patch from before has Freeze ammo's alone.
+ * data words and needed nothing installed; now they are a code switch, two
+ * trampolines on one flag, and a patch from before has Freeze ammo's alone, or
+ * build 53's first fast-load trampoline beside it.
  */
 static void test_switches_rac3_fastloads(void)
 {
 	const struct sw_desc *d = sw_desc_for_game(GAME_RAC3);
 	u32 len = 0, oldlen;
 
-	group("RaC3: the fast-load switch, beside Freeze ammo's");
+	group("RaC3: the fast-load switch, beside Infinite ammo's");
 
-	check(d != NULL && d->ncaves == 2 && d->nsites == 2 && d->nflags == 2,
-	      "RaC3 has two trampolines, two sites and two flag bytes");
-	if (d == NULL || d->ncaves != 2 || d->nsites != 2) return;
+	check(d != NULL && d->ncaves == 3 && d->nsites == 3 && d->nflags == 2,
+	      "RaC3 has three trampolines, three sites and two flag bytes");
+	if (d == NULL || d->ncaves != 3 || d->nsites != 3) return;
 	check(d->caves[0].addr == 0x00980F00u && d->caves[0].len == 24u,
-	      "Freeze ammo's trampoline did not move or change size");
+	      "the ammo trampoline did not move or change size");
 	check_eq_u64(d->sites[0].value, SW_RAC3_SITE_FREEZE_AMMO,
 	             "so its site word, the fingerprint's third form, is the one it was");
 	check_eq_u64(d->sites[0].value, 0x487FE478u, "b 0x980F00");
-	check_eq_u64(d->sites[1].addr, R3_FL_SITE, "the fast-load site is the loop's test at 0x27B428");
+	check_eq_u64(d->sites[1].addr, R3_FL_SITE, "the pass site is the update's argument at 0x27B49C");
+	check_eq_u64(d->sites[2].addr, R3_FL_DRAW, "the draw site the frame's head at 0x27B550");
 	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[1].addr,
-	             "and branches to the fast-load trampoline at 0x980F20");
-	check(d->caves[1].addr + d->caves[1].len <= 0x00981064u &&
-	      (d->caves[1].addr >= R3_FL_CAVE_END || d->caves[1].addr + d->caves[1].len <= R3_FL_CAVE),
-	      "inside the helper's dead function, and apart from the console's cave at 0x980860");
-	check_eq_u64(be32_get(d->caves[1].bytes + d->caves[1].len - 8u), R3_FL_SITE_WORD,
-	             "its exit does what the site did");
-	check_eq_u64(swt_branch_target(d->caves[1].addr + d->caves[1].len - 4u,
-	                               be32_get(d->caves[1].bytes + d->caves[1].len - 4u)),
-	             R3_FL_SITE + 4u, "and goes back to the instruction after it");
-	check_eq_u64(r3_branch_target(d->caves[1].addr + 0x40u, be32_get(d->caves[1].bytes + 0x40u)),
-	             R3_FL_UNLOAD, "it calls Transition_UnloadSounds at 0x278A00");
-	check_eq_u64(be32_get(d->caves[1].bytes + 0x40u) & 3u, 1u,
-	             "as an ordinary call, bl, which RPCS3's recompiler expects");
-	check_eq_u64(r3_dform_addr(be32_get(d->caves[1].bytes + 0x08u),
-	                           be32_get(d->caves[1].bytes + 0x0Cu)), SWT_R3_FAST_FLAG,
-	             "and runs the fast-load logic only with the flag at 0xD9FF11 set");
+	             "the pass site branches to the trampoline at 0x980F80");
+	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[2].addr,
+	             "the draw site to the one at 0x981020");
+	check(d->caves[1].addr >= 0x00980F7Cu &&
+	      d->caves[2].addr + d->caves[2].len <= 0x00981064u &&
+	      (d->caves[1].addr >= R3_FL_CAVE_END || d->caves[2].addr + d->caves[2].len <= R3_FL_CAVE),
+	      "inside the helper's dead function, past build 53's first trampoline at "
+	      "0x980F20..0x980F7C and apart from the console's cave");
 	check(d->flags[0] == SWT_R3_FREEZE_FLAG && d->flags[1] == SWT_R3_FAST_FLAG,
-	      "Freeze ammo's flag stayed at 0xD9FF10, fast loads' is 0xD9FF11");
+	      "the ammo flag stayed at 0xD9FF10, fast loads' is 0xD9FF11");
+
+	/* The trampolines run, with the flag up and with it down. */
+	g_r3c_fetch = r3c_fetch_switch;
+	r3c_paths("switch", 0);
+	{
+		struct r3c_cpu c;
+
+		r3c_reset(&c, 5, 0, 0, 2, 1);
+		c.flag = 0;
+		check(r3c_run(&c, R3_FL_SITE) == R3_FL_UPDATE && c.r[3] == c.r[26] && c.ncalls == 0 &&
+		      !c.fade_written && !c.held_written && c.r[27] == 0,
+		      "switch, flag down: the pass site runs the game's own instruction, first pass or not");
+		r3c_reset(&c, 5, 3, 0, 2, 1);
+		c.flag = 0;
+		check(r3c_run(&c, R3_FL_DRAW) == R3_FL_DRAW_RET && c.ncalls == 1 && c.call[0] == R3_FL_BEGIN,
+		      "and the draw site its call and the frame, drawn as ever");
+
+		r3c_reset(&c, 5, 9, 0, 2, 1);
+		check(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.ncalls == 1 &&
+		      c.call_lr[0] > d->caves[1].addr && c.call_lr[0] < d->caves[1].addr + d->caves[1].len,
+		      "switch: its calls are ordinary ones, bl, which RPCS3's recompiler expects");
+	}
 
 	/* ------------------------------------------- an earlier build's patch */
 
@@ -13433,20 +13783,33 @@ static void test_switches_rac3_fastloads(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00387"), "RaC3 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC3");
-	check_eq_u64(be16_get(g_sw_patch), 31, "thirty-one rows: twenty-nine trampoline words, two sites");
+	check_eq_u64(be16_get(g_sw_patch), 58, "fifty-eight rows: fifty-five trampoline words, three sites");
+
+	oldlen = swt_reply_of(g_swt_rac3_b53a_caves, SWT_N(g_swt_rac3_b53a_caves),
+	                      g_swt_rac3_b53a_sites, SWT_N(g_swt_rac3_b53a_sites),
+	                      g_swt_rac3_flags, SWT_N(g_swt_rac3_flags), g_sw_patch2);
+	check(be32_get(g_sw_patch2 + 4) != be32_get(g_sw_patch + 4),
+	      "build 53's first fast-load patch has another stamp");
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched("NPEA00387", g_sw_patch2, oldlen, SF_NO_FLIP),
+	      "RaC3 boots with that patch applied at load");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC3,
+	      "and is RaC3: its fingerprint site holds the same branch");
+	check_eq_u64(switches_state(), 0, "the look does not find this build's switches");
+	check(features_set(F3_FAST_LOADS, 1) == ST_UNSUPPORTED, "so Fast loads is refused until the new one is in");
 
 	oldlen = swt_reply_of(g_swt_rac3_b50_caves, SWT_N(g_swt_rac3_b50_caves),
 	                      g_swt_rac3_b50_sites, SWT_N(g_swt_rac3_b50_sites),
 	                      g_swt_rac3_b50_flags, SWT_N(g_swt_rac3_b50_flags), g_sw_patch2);
 	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC3_B50_STAMP,
-	             "Freeze ammo's patch rebuilt carries the stamp builds 50 to 53 handed out");
+	             "the ammo-only patch rebuilt carries the stamp builds 50 to 53 handed out");
 	check(be32_get(g_sw_patch + 4) != SWT_RAC3_B50_STAMP,
 	      "this build's stamp is another number, so a client's kept stamp no longer matches");
 
 	check(quit_and_wait(), "quit");
 	host_write_log_reset();
 	check(swt_boot_patched("NPEA00387", g_sw_patch2, oldlen, SF_NO_FLIP),
-	      "RaC3 boots with the Freeze-ammo-only patch applied at load");
+	      "RaC3 boots with the ammo-only patch applied at load");
 	check(session_game() != NULL && session_game()->game_id == GAME_RAC3,
 	      "and is RaC3: its fingerprint site holds the same branch it always did");
 	check_eq_u64(switches_state(), 0, "the look does not find this build's switches");
@@ -13454,7 +13817,7 @@ static void test_switches_rac3_fastloads(void)
 	      SESSION_FLAG_NO_CODE_PATCHES,
 	      "SessionInfo has bit2 set and bit4 clear: the client offers to write the patch");
 	check(features_set(F3_FAST_LOADS, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
-	check(features_set(0, 1) == ST_UNSUPPORTED, "and so is Freeze ammo, until the new patch is in");
+	check(features_set(0, 1) == ST_UNSUPPORTED, "and so is the ammo cheat, until the new patch is in");
 	check(session_planet_load(5, 0) == ST_OK, "a planet load goes ahead at the game's own pace");
 	check_eq_u64(swt_peek8(SWT_R3_FREEZE_FLAG) | swt_peek8(SWT_R3_FAST_FLAG), 0, "no flag was written");
 	check(!swt_wrote_code(d) && !r3_fl_wrote(), "and no code word, switch or console cave");
@@ -13467,8 +13830,10 @@ static void test_switches_rac3_fastloads(void)
 	check(swt_boot_patched("NPEA00387", g_sw_patch, len, SF_NO_FLIP), "with it applied at load");
 	check_eq_u64(switches_state(), 1, "the look finds both switches");
 	check((swt_info_flags() & SESSION_FLAG_CODE_SWITCHES) != 0, "bit4 is set");
-	check_eq_u64(swt_peek32(R3_FL_SITE), 0x48705AF8u, "the loop's test holds the branch to 0x980F20");
+	check_eq_u64(swt_peek32(R3_FL_SITE), 0x48705AE4u, "the pass site holds the branch to 0x980F80");
+	check_eq_u64(swt_peek32(R3_FL_DRAW), 0x48705AD0u, "and the draw site the one to 0x981020");
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(4);
 	host_write_log_reset();
 
@@ -13478,32 +13843,66 @@ static void test_switches_rac3_fastloads(void)
 	check((features_toggle_state() & ((u64)1 << F3_FAST_LOADS)) == 0,
 	      "while the checkbox reads back off: the force is not the user's");
 	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(2);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(4);
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "the flag stays up while the mode is 6");
 	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(4);
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 0,
-	             "and the load's end, request down and mode 0, puts it back");
+	             "and the load's end, request down and mode 0 after mode 6, puts it back");
 
 	check(session_planet_load(8, 0) == ST_OK, "a load to Aquatos");
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "is forced the same way");
 	pump(4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(2);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(4);
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 0, "and put back the same way");
 
 	check(features_set(F3_FAST_LOADS, 1) == ST_OK, "fast loads on");
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "writes 1 into their flag");
 	check(session_planet_load(5, 0) == ST_OK, "another load");
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 	pump(4);
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(SWT_POLL_TICKS);
 	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "leaves the flag on for a checkbox that is on");
 	check((features_toggle_state() & ((u64)1 << F3_FAST_LOADS)) != 0, "which reads back on");
 	check(features_set(F3_FAST_LOADS, 0) == ST_OK && swt_peek8(SWT_R3_FAST_FLAG) == 0,
 	      "fast loads off");
-	check_eq_u64(swt_peek8(SWT_R3_FREEZE_FLAG), 0, "Freeze ammo's flag was never touched");
+
+	/*
+	 * The flag outlives qwark: a qwark-rpcs3 started against a running game finds
+	 * it as the last one left it, while its own idea of the checkbox starts off.
+	 * A 1 there is the user's, and no load's end may put it down.
+	 */
+	poke8(SWT_R3_FAST_FLAG, 1);
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << F3_FAST_LOADS)) != 0,
+	      "a flag an earlier qwark left up reads back as the checkbox on");
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01\x00\x00\x00\x09", 8);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(4);
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(4);
+	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "the end of a load the game made leaves it up");
+	check(session_planet_load(5, 0) == ST_OK, "and so, a PLANET_LOAD");
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+	pump(4);
+	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+	pump(4);
+	check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1,
+	             "does its force's end: the force took the flag for the user's");
+	check(features_set(F3_FAST_LOADS, 0) == ST_OK && swt_peek8(SWT_R3_FAST_FLAG) == 0,
+	      "and the checkbox still turns it off");
+
+	check_eq_u64(swt_peek8(SWT_R3_FREEZE_FLAG), 0, "the ammo flag was never touched");
 	check(!swt_wrote_code(d), "no cave byte and no site word was written");
 	check(!r3_fl_wrote(), "and nothing went into the console's cave either");
 
@@ -13544,11 +13943,36 @@ static void test_switches_rac3_fastloads(void)
 		      "another set-aside load forces them again");
 		host_poke(f->api_load, (const u8 *)"\x00", 1);
 		host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01", 4);
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
 		pump(SAVEFILE_SETTLE_TICKS);
 		check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1, "the helper takes it, and the load is under way");
+
+		/*
+		 * The load ends, and in the very tick that first shows it the user asks
+		 * for another set-aside load: the command runs before the tick reads the
+		 * game, so that read is the old load's end, and the new force must
+		 * outlast it until its own load has run.
+		 */
 		host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+		check(session_load_setaside() == ST_OK, "a set-aside load asked for as the last one ends");
 		pump(4);
-		check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 0, "and its end puts the flag back");
+		check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 1,
+		             "keeps its force through the end of the load before it");
+		host_poke(f->api_load, (const u8 *)"\x00", 1);
+		host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x01", 4);
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+		pump(SAVEFILE_SETTLE_TICKS);
+		host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+		pump(4);
+		check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 0, "and its own load's end puts the flag back");
+
+		/* A request that cannot go out takes its force back at once. */
+		host_fail_writes(f->api_load, 1);
+		check(session_load_setaside() != ST_OK, "a set-aside load whose request cannot be written fails");
+		host_fail_writes(0, 0);
+		check_eq_u64(swt_peek8(SWT_R3_FAST_FLAG), 0, "and leaves no flag up behind it");
 		check(!swt_wrote_code(d) && !r3_fl_wrote(), "with no code word written");
 	}
 }
@@ -14887,11 +15311,20 @@ static void test_savefile_build53(void)
 		      "another LOAD_ASIDE forces them again");
 		host_poke(d->api_load, (const u8 *)"\x00", 1);
 		poke32(SF_R3_REQUEST, 1);
+		poke32(SF_R3_MODE, 6);
 		pump(SAVEFILE_SETTLE_TICKS);
 		check(r3_fl_patched(), "the helper takes it and the game's load is under way: still on");
 		poke32(SF_R3_REQUEST, 0);
+		poke32(SF_R3_MODE, 0);
 		pump(3);
 		check(r3_fl_original(), "and the end of that load puts the game's words back");
+
+		/* A request that cannot go out takes its force back at once. */
+		host_fail_writes(d->api_load, 1);
+		check(features_trigger(F3_LOAD_ASIDE) != ST_OK,
+		      "a LOAD_ASIDE whose request cannot be written fails");
+		host_fail_writes(0, 0);
+		check(r3_fl_original(), "and leaves no fast loads forced behind it");
 
 		/* The library asks the same questions. */
 		check(quit_and_wait(), "quit");

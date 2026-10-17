@@ -59,7 +59,7 @@
  * ever shipped for this game puts anything below 0x980AC0.
  *
  * The reset takes 0x9808C0..0x980AC0, 512 bytes: the part that runs on the
- * game's main thread, sf_trophy_reset. Right under it, 0x980860..0x9808B8, is
+ * game's main thread, sf_trophy_reset. Right under it, 0x9807F0..0x9808B0, is
  * the console's Fast loads cave (RAC3_FASTLOAD_CAVE in src/games/rac3.h).
  * build.sh fails a reset that would run past SF_CAVE_TROPHY_END, the helper's
  * own cave.

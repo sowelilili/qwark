@@ -37,7 +37,7 @@ const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
  *               challenge +0x24E, health XP +0x250, armour +0x25C
  *   2  player   the coordinate Vec4 and the rotation behind it        every tick
  *   3  pstate   player state +0x002, health +0x28C, Neffy phase +0x348 every tick
- *   4  load     destination planet +0x03, game state +0x20            every tick
+ *   4  load     request +0x00, destination planet +0x07, mode +0x24   every tick
  *   5  neffy    the Biobliterator's health bar                        every tick
  *   6  chunk    the loaded chunk                                      every tick
  *   7  guise    the Tyhrraguise unlock byte                           every tick
@@ -46,14 +46,16 @@ const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
  *  10  file time                                                     every 8th
  *  11  savefile the helper's own byte                                  every 8th
  *  12  chargeboot colour words                                       every 8th
- *  13  request  the planet load request word                          every tick
  *
  * Blocks 3 to 8 belong to the autosplit watcher and are per-tick because a split
  * has to reach the PC in milliseconds; block 3 also carries the health readout
  * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
- * so a tick costs ten reads plus at most one: 10.5 on average, eleven at worst.
- * Block 13 and the load block 4 carry the manips' file-load trigger and the
- * trophy auto-reset (revision 1.21).
+ * so a tick costs nine reads plus at most one: 9.5 on average, ten at worst.
+ * The load block 4 also carries the manips' file-load trigger, the trophy
+ * auto-reset (revision 1.21) and the fast-load watcher. Build 53: the load
+ * request word was a block of its own, 13, read after this one; it is the head
+ * of block 4 now, so the request and the mode beside it always come out of the
+ * same read and never straddle a change (rac3_fastload_watch).
  */
 static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_HOT_INPUTS_ADDR, RAC3_HOT_INPUTS_LEN, 1, 0 },
@@ -68,8 +70,7 @@ static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
 	{ RAC3_FILE_TIME,       4,                   8, 1 },
 	{ RAC3_SF_HELPER,       1,                   8, 2 },
-	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 },
-	{ RAC3_LOAD_PLANET,     4,                   1, 0 }
+	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 }
 };
 
 #define HOT_INPUTS   0
@@ -85,7 +86,6 @@ static const struct game_hot_block rac3_hot[] = {
 #define HOT_TIME     10
 #define HOT_SAVEFILE 11
 #define HOT_COLOURS  12
-#define HOT_REQUEST  13
 
 #define OFF_ANALOGS   (RAC3_ANALOGS        - RAC3_HOT_INPUTS_ADDR)   /* 0x1DC */
 
@@ -101,8 +101,9 @@ static const struct game_hot_block rac3_hot[] = {
 
 #define OFF_HEALTH     (RAC3_PLAYER_HEALTH - RAC3_HOT_PSTATE_ADDR)   /* 0x28C */
 #define OFF_NEFFY_PH   (RAC3_NEFFY_PHASE   - RAC3_HOT_PSTATE_ADDR)   /* 0x348 */
-#define OFF_GAMESTATE  (RAC3_GAME_STATE    - RAC3_HOT_LOAD_ADDR)     /* 0x20 */
-#define OFF_MODETIMER  (RAC3_MODE_TIMER    - RAC3_HOT_LOAD_ADDR)     /* 0x1C */
+#define OFF_DEST       (RAC3_DEST_PLANET   - RAC3_HOT_LOAD_ADDR)     /* 0x04 */
+#define OFF_GAMESTATE  (RAC3_GAME_STATE    - RAC3_HOT_LOAD_ADDR)     /* 0x24 */
+#define OFF_MODETIMER  (RAC3_MODE_TIMER    - RAC3_HOT_LOAD_ADDR)     /* 0x20 */
 
 /* What the autosplit watcher reads, named the way rac3-autosplitter.asl names it. */
 struct rac3_as_state {
@@ -216,8 +217,9 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	}
 
 	if (blocks[HOT_LOAD] != NULL) {
-		g_as.dest_planet = blocks[HOT_LOAD][3];
-		g_load_dest  = be32_get(blocks[HOT_LOAD]);
+		g_load_request   = be32_get(blocks[HOT_LOAD]);
+		g_as.dest_planet = blocks[HOT_LOAD][OFF_DEST + 3];
+		g_load_dest  = be32_get(blocks[HOT_LOAD] + OFF_DEST);
 		g_mode_timer = be32_get(blocks[HOT_LOAD] + OFF_MODETIMER);
 		g_mode       = be32_get(blocks[HOT_LOAD] + OFF_GAMESTATE);
 		g_as.game_state  = be32_get(blocks[HOT_LOAD] + OFF_GAMESTATE);
@@ -229,8 +231,6 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_LOADSCR] != NULL)
 		g_as.loading_screen = blocks[HOT_LOADSCR][0];
-
-	if (blocks[HOT_REQUEST] != NULL) g_load_request = be32_get(blocks[HOT_REQUEST]);
 }
 
 /* --------------------------------------------------------------- patches */
@@ -245,71 +245,127 @@ static struct patch_def rac3_ammo = {
 };
 
 /*
- * Fast loads: the console's cave at RAC3_FASTLOAD_CAVE and the branch into it
- * at RAC3_FASTLOAD_SITE, which rac3.h describes; the site goes last, and
- * patch_apply puts the cave in before it and takes it out after it.
+ * Fast loads: the console's cave at RAC3_FASTLOAD_CAVE and the branches into it
+ * at RAC3_FASTLOAD_DRAW_SITE and RAC3_FASTLOAD_SITE, which rac3.h describes. The
+ * sites go last, and patch_apply puts the cave in before them and takes it out
+ * after them; the pass site goes in after the draw site and comes out before it.
+ * Either alone, as a load sees the patch go in or out under it, is harmless: the
+ * draw site alone spins the transition undrawn as RaC2's does, the pass site
+ * alone holds it still and drawn.
  *
  * sw_rac3.s has the same logic behind a flag byte for RPCS3. The console's
- * differs in how it calls Transition_UnloadSounds: it points the link register
- * at the site and branches, so the call comes back to RAC3_FASTLOAD_SITE rather
- * than into the cave. Turning fast loads off mid-load puts the site's own word
- * back first and the cave's after it, and a PPU inside Transition_UnloadSounds
- * then - it waits on the sound system - comes back to the game's own
- * instruction rather than into a cave being taken out from under it. With the
- * branch still in, it comes back through the cave, finds r27 set and does what
- * the site does. (RPCS3 never takes its trampoline out, and keeps the ordinary
- * call its recompiler expects.)
+ * differs in how it calls the game: it points the link register at the loop
+ * and branches, so a call comes back to the game's own code rather than into
+ * the cave - the fade and Transition_UnloadSounds to RAC3_FASTLOAD_RESUME, the
+ * draw site's own call to the word after it. The fade takes six frames, and
+ * turning fast loads off in the middle of one takes the cave out from under
+ * nothing. (RPCS3 never takes its trampolines out, and keeps the ordinary call
+ * its recompiler expects.)
  *
- *   0x980860  cmpwi  r27, 0           over on its own: nothing to do
- *             bne    out
- *             lis    r3, 0xDA
- *             lhz    r4, -0x6F22(r3)  RAC3_TRANSITION_ID
- *             cmplwi r4, 5
- *             bgt    out              not a transition that plays clips
- *             lwz    r4, -0x6F6C(r3)  RAC3_LOADER_STAGE
- *             cmpwi  r4, 2
- *             blt    out              the level is not read yet
- *             lwz    r4, -0x6F68(r3)  RAC3_TRANSITION_HOLD
- *             cmpwi  r4, 0
- *             beq    out              its banks are gone already
+ *   0x9807F0  lis    r5, 0xDA
+ *             lhz    r6, -0x6F22(r5)  RAC3_TRANSITION_ID
+ *             cmplwi r6, 7
+ *             beq    run              multiplayer: the game's own
+ *             lhz    r3, -0x6F2E(r5)  RAC3_TRANSITION_FRAME
+ *             cmpwi  r3, 0
+ *             beq    first
+ *             lis    r3, 0xF4
+ *             lwz    r3, 0x4E90(r3)   RAC3_SCENE_OWED
+ *             cmpwi  r3, 0
+ *             bne    run              the transition plays it, undrawn
+ *             lwz    r3, -0x6F6C(r5)  RAC3_LOADER_STAGE
+ *             cmpwi  r3, 2
+ *             blt    resume           not read yet: the transition stands still
+ *             li     r27, 1           read: the transition is over
  *             lis    r3, 0x135
- *             lis    r4, 0x3F80
- *             stw    r4, -0x1420(r3)  RAC3_TRANSITION_FADE = 1.0f, black
- *             li     r27, 1           the transition is over
+ *             lis    r0, 0x3F80
+ *             stw    r0, -0x1420(r3)  RAC3_TRANSITION_FADE = 1.0f, black
+ *             cmplwi r6, 6
+ *             bgt    resume           no banks of its own
+ *             lwz    r3, -0x6F68(r5)  RAC3_TRANSITION_HOLD
+ *             cmpwi  r3, 0
+ *             beq    resume           its banks are gone already
  *             lis    r3, 0x28
- *             addi   r3, r3, -0x4BD8
- *             mtlr   r3               back to RAC3_FASTLOAD_SITE
+ *             addi   r3, r3, -0x4AC8
+ *             mtlr   r3               back to RAC3_FASTLOAD_RESUME
  *             b      0x278A00         Transition_UnloadSounds
- *   out:      cmpwi  r27, 0           the site's own instruction
- *             b      0x27B42C
- *   0x27B428  b      0x980860
+ *   first:    lis    r5, 0xCB
+ *             lwz    r5, 0x9BC(r5)    RAC3_RENDERER
+ *             li     r0, 0
+ *             stw    r0, 0x1720(r5)   RAC3_RENDERER_HELD = 0: every flip shows
+ *             lis    r5, 0x28
+ *             addi   r5, r5, -0x4AC8
+ *             mtlr   r5               back to RAC3_FASTLOAD_RESUME
+ *             li     r3, 6
+ *             b      0x123988         RAC3_SCREEN_FADE, six frames
+ *   resume:   b      0x27B538
+ *   run:      ori    r3, r26, 0       the site's own instruction
+ *             b      0x27B4A0
+ *   0x98088C  lis    r3, 0xDA
+ *             lhz    r3, -0x6F22(r3)  RAC3_TRANSITION_ID
+ *             cmplwi r3, 7
+ *             beq    1f
+ *             b      0x27B570         past the frame: nothing drawn, no flip
+ *   1:        lis    r3, 0x28
+ *             addi   r3, r3, -0x4AAC
+ *             mtlr   r3               back to 0x27B554
+ *             b      0x11AD44         the draw site's own call
+ *   0x27B49C  b      0x9807F0
+ *   0x27B550  b      0x98088C
  *
  * Assembled with the SDK's ppu-lv2-gcc and ld at these addresses.
  */
 static const struct patch_word rac3_fastload_words[] = {
-	{ RAC3_FASTLOAD_CAVE + 0x00, 0x2C1B0000u },
-	{ RAC3_FASTLOAD_CAVE + 0x04, 0x4082004Cu },
-	{ RAC3_FASTLOAD_CAVE + 0x08, 0x3C6000DAu },
-	{ RAC3_FASTLOAD_CAVE + 0x0C, 0xA08390DEu },
-	{ RAC3_FASTLOAD_CAVE + 0x10, 0x28040005u },
-	{ RAC3_FASTLOAD_CAVE + 0x14, 0x4181003Cu },
-	{ RAC3_FASTLOAD_CAVE + 0x18, 0x80839094u },
-	{ RAC3_FASTLOAD_CAVE + 0x1C, 0x2C040002u },
-	{ RAC3_FASTLOAD_CAVE + 0x20, 0x41800030u },
-	{ RAC3_FASTLOAD_CAVE + 0x24, 0x80839098u },
-	{ RAC3_FASTLOAD_CAVE + 0x28, 0x2C040000u },
-	{ RAC3_FASTLOAD_CAVE + 0x2C, 0x41820024u },
-	{ RAC3_FASTLOAD_CAVE + 0x30, 0x3C600135u },
-	{ RAC3_FASTLOAD_CAVE + 0x34, 0x3C803F80u },
-	{ RAC3_FASTLOAD_CAVE + 0x38, 0x9083EBE0u },
-	{ RAC3_FASTLOAD_CAVE + 0x3C, 0x3B600001u },
-	{ RAC3_FASTLOAD_CAVE + 0x40, 0x3C600028u },
-	{ RAC3_FASTLOAD_CAVE + 0x44, 0x3863B428u },
-	{ RAC3_FASTLOAD_CAVE + 0x48, 0x7C6803A6u },
-	{ RAC3_FASTLOAD_CAVE + 0x4C, 0x4B8F8154u },
-	{ RAC3_FASTLOAD_CAVE + 0x50, 0x2C1B0000u },
-	{ RAC3_FASTLOAD_CAVE + 0x54, 0x4B8FAB78u },
-	{ RAC3_FASTLOAD_SITE,        0x48705438u }
+	{ RAC3_FASTLOAD_CAVE + 0x00, 0x3CA000DAu },
+	{ RAC3_FASTLOAD_CAVE + 0x04, 0xA0C590DEu },
+	{ RAC3_FASTLOAD_CAVE + 0x08, 0x28060007u },
+	{ RAC3_FASTLOAD_CAVE + 0x0C, 0x41820088u },
+	{ RAC3_FASTLOAD_CAVE + 0x10, 0xA06590D2u },
+	{ RAC3_FASTLOAD_CAVE + 0x14, 0x2C030000u },
+	{ RAC3_FASTLOAD_CAVE + 0x18, 0x41820054u },
+	{ RAC3_FASTLOAD_CAVE + 0x1C, 0x3C6000F4u },
+	{ RAC3_FASTLOAD_CAVE + 0x20, 0x80634E90u },
+	{ RAC3_FASTLOAD_CAVE + 0x24, 0x2C030000u },
+	{ RAC3_FASTLOAD_CAVE + 0x28, 0x4082006Cu },
+	{ RAC3_FASTLOAD_CAVE + 0x2C, 0x80659094u },
+	{ RAC3_FASTLOAD_CAVE + 0x30, 0x2C030002u },
+	{ RAC3_FASTLOAD_CAVE + 0x34, 0x4180005Cu },
+	{ RAC3_FASTLOAD_CAVE + 0x38, 0x3B600001u },
+	{ RAC3_FASTLOAD_CAVE + 0x3C, 0x3C600135u },
+	{ RAC3_FASTLOAD_CAVE + 0x40, 0x3C003F80u },
+	{ RAC3_FASTLOAD_CAVE + 0x44, 0x9003EBE0u },
+	{ RAC3_FASTLOAD_CAVE + 0x48, 0x28060006u },
+	{ RAC3_FASTLOAD_CAVE + 0x4C, 0x41810044u },
+	{ RAC3_FASTLOAD_CAVE + 0x50, 0x80659098u },
+	{ RAC3_FASTLOAD_CAVE + 0x54, 0x2C030000u },
+	{ RAC3_FASTLOAD_CAVE + 0x58, 0x41820038u },
+	{ RAC3_FASTLOAD_CAVE + 0x5C, 0x3C600028u },
+	{ RAC3_FASTLOAD_CAVE + 0x60, 0x3863B538u },
+	{ RAC3_FASTLOAD_CAVE + 0x64, 0x7C6803A6u },
+	{ RAC3_FASTLOAD_CAVE + 0x68, 0x4B8F81A8u },
+	{ RAC3_FASTLOAD_CAVE + 0x6C, 0x3CA000CBu },
+	{ RAC3_FASTLOAD_CAVE + 0x70, 0x80A509BCu },
+	{ RAC3_FASTLOAD_CAVE + 0x74, 0x38000000u },
+	{ RAC3_FASTLOAD_CAVE + 0x78, 0x90051720u },
+	{ RAC3_FASTLOAD_CAVE + 0x7C, 0x3CA00028u },
+	{ RAC3_FASTLOAD_CAVE + 0x80, 0x38A5B538u },
+	{ RAC3_FASTLOAD_CAVE + 0x84, 0x7CA803A6u },
+	{ RAC3_FASTLOAD_CAVE + 0x88, 0x38600006u },
+	{ RAC3_FASTLOAD_CAVE + 0x8C, 0x4B7A310Cu },
+	{ RAC3_FASTLOAD_CAVE + 0x90, 0x4B8FACB8u },
+	{ RAC3_FASTLOAD_CAVE + 0x94, 0x63430000u },
+	{ RAC3_FASTLOAD_CAVE + 0x98, 0x4B8FAC18u },
+	{ RAC3_FASTLOAD_CAVE + 0x9C, 0x3C6000DAu },
+	{ RAC3_FASTLOAD_CAVE + 0xA0, 0xA06390DEu },
+	{ RAC3_FASTLOAD_CAVE + 0xA4, 0x28030007u },
+	{ RAC3_FASTLOAD_CAVE + 0xA8, 0x41820008u },
+	{ RAC3_FASTLOAD_CAVE + 0xAC, 0x4B8FACD4u },
+	{ RAC3_FASTLOAD_CAVE + 0xB0, 0x3C600028u },
+	{ RAC3_FASTLOAD_CAVE + 0xB4, 0x3863B554u },
+	{ RAC3_FASTLOAD_CAVE + 0xB8, 0x7C6803A6u },
+	{ RAC3_FASTLOAD_CAVE + 0xBC, 0x4B79A498u },
+	{ RAC3_FASTLOAD_DRAW_SITE,   0x4870533Cu },
+	{ RAC3_FASTLOAD_SITE,        0x48705354u }
 };
 
 #define RAC3_FASTLOAD_WORDS \
@@ -338,8 +394,14 @@ static int g_fastload_on;
  */
 static int g_fastload_forced;
 
-/* A planet load has been seen under way and not yet seen out; see rac3_fastload_watch. */
+/*
+ * What rac3_fastload_watch has seen since the force: the load request word up
+ * (loading), and the game in mode 6 with it (ran). Both start again at every
+ * force, so the end of a load that was under way before it cannot pass for the
+ * end of the load it is for.
+ */
 static int g_fastload_loading;
+static int g_fastload_ran;
 
 /*
  * savefile_load_refusals as rac3_on_tick last saw it, rac2.c's g_sf_refusals:
@@ -351,22 +413,50 @@ static u32 g_sf_refusals;
 
 /*
  * A planet load and a set-aside load force fast loads on and the watcher puts
- * the checkbox back when the load is over, as RaC2's do. patch_apply is a no-op when the toggle
- * already applied it, so nothing is captured twice and nothing is written twice.
+ * the checkbox back when the load is over, as RaC2's do. patch_apply is a no-op
+ * when the toggle already applied it, so nothing is captured twice and nothing
+ * is written twice.
+ *
+ * Under RPCS3 the flag byte outlives qwark: a qwark-rpcs3 started against a game
+ * that is already running finds it however the last one left it, and the
+ * checkbox reads it back as it is. A flag at 1 that this process did not force
+ * is the user's setting, so the force takes it for the checkbox's rather than
+ * its own, and the end of the load leaves it up. On a console the read is
+ * NOT_FOUND: the patch is qwark's own, and a new process starts without it.
  */
 int rac3_fastload_force(void)
 {
-	int rc = classic_code_force(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS);
+	int on = 0;
+	int rc;
 
+	if (!g_fastload_forced &&
+	    classic_code_read(SW_RAC3_FLAG_FAST_LOADS, &on) == ST_OK && on)
+		g_fastload_on = 1;
+
+	rc = classic_code_force(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS);
 	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
+
+	/*
+	 * The commands run before the tick reads the game, so this tick's read may
+	 * still show the end of the load before: the watch starts over from here.
+	 */
+	g_fastload_loading = 0;
+	g_fastload_ran = 0;
 	return rc;
 }
 
 int rac3_fastload_restore(void)
 {
 	g_fastload_forced = 0;
+	g_fastload_loading = 0;
+	g_fastload_ran = 0;
 	if (g_fastload_on) return ST_OK;
 	return classic_code_toggle(&rac3_fastload, SW_RAC3_FLAG_FAST_LOADS, 0);
+}
+
+int rac3_fastload_forced(void)
+{
+	return g_fastload_forced;
 }
 
 static void rac3_init(void)
@@ -556,6 +646,7 @@ static void rac3_on_enter(void)
 	g_fastload_on = 0;
 	g_fastload_forced = 0;
 	g_fastload_loading = 0;
+	g_fastload_ran = 0;
 	g_sf_refusals = savefile_load_refusals();
 
 	memset(&g_as, 0, sizeof(g_as));
@@ -585,39 +676,59 @@ static void rac3_on_enter(void)
 }
 
 /*
- * The end of a planet load, for the fast-load restore: the load request word
- * (RAC3_LOAD_PLANET) down again, with the game out of mode 6.
+ * The end of a forced load, for the fast-load restore: the load request word
+ * (RAC3_LOAD_PLANET) down again with the game out of mode 6, after the load has
+ * been seen to run - request and mode 6 - since the force.
  *
- * Whoever asks for a load - qwark's PLANET_LOAD, the game's ship menu, a save
- * loaded, the savefile helper - sets the request word, and it stays set through
- * the whole transition (0x27B360, mode 6) and the finish behind it: main's init
- * 0x13E10 clears it (at 0x13F74) only once the transition has returned, and the
- * new level loop's init then puts the mode to 0 (0x1D7068). By then the patched
- * loop is not running, so the restore can take the patch out from under it;
- * RaC2's watcher puts its fast loads back at the end of the load screen for the
- * same reason.
+ * Whoever asks for a load - qwark's PLANET_LOAD, the galactic map, a save
+ * loaded, the savefile helper - sets the request word. The load itself runs in
+ * mode 6: the transition (0x27B360) and the finish behind it, during which the
+ * word stays set; main's init 0x13E10 clears it (at 0x13F74) only once the
+ * transition has returned, and the new level loop's init then puts the mode to
+ * 0 (0x1D7068). By then the patched loop is not running, so the restore can take
+ * the patch out from under it; RaC2's watcher puts its fast loads back at the
+ * end of the load screen for the same reason.
  *
- * The mode is what keeps one load from ending twice. A request that is pending
- * when the game goes from the pause to its space flight (the mode change at
- * 0x22A0C4) is cleared there (0x22A0F4) and turned into the ship leaving the
- * planet, mode 6, which raises the request again when it is time for the
- * transition (0x26EF40, then 0x27389C): the word is down for a while in the
- * middle of that load, but the mode is 6 throughout.
+ * The word goes down before the end, too. A request pending as the game leaves
+ * the pause for mode 6 - the galactic map's way of going - is cleared at
+ * 0x22A0F4 and turned into the ship leaving the planet (0x26EF40, which saves
+ * the game first, 0x1E17B8), and the mode reads 3, the pause, until 0x22A274
+ * stores the new one after that; the ship leaves in mode 6 and raises the
+ * request again for the transition (0x27389C). So the word down with the mode
+ * out of 6 is the end only once mode 6 has been seen: before that it is this,
+ * or a request no load has taken up yet. Seeing the request and the mode out of
+ * one read (block 4) is what keeps a tick from pairing one moment's word with
+ * another's mode.
  *
- * Every load's end restores, whoever started it, as RaC2's does: with nothing
- * forced it puts back what the checkbox already says.
+ * Only a load that was forced has anything to put back. The force starts the
+ * watch over (rac3_fastload_force), because a command runs before the tick's
+ * read: the load before it may be ending in the very read that follows, and its
+ * end is not this load's.
  */
 static void rac3_fastload_watch(void)
 {
-	if (g_load_request != 0) {
-		g_fastload_loading = 1;
+	if (!g_fastload_forced) {
+		g_fastload_loading = 0;
+		g_fastload_ran = 0;
 		return;
 	}
 
-	if (!g_fastload_loading || g_mode == RAC3_GAME_STATE_LOAD) return;
+	if (g_load_request != 0) {
+		g_fastload_loading = 1;
+		if (g_mode == RAC3_GAME_STATE_LOAD) g_fastload_ran = 1;
+		return;
+	}
+
+	if (!g_fastload_loading) return;
+
+	if (g_mode == RAC3_GAME_STATE_LOAD) {
+		g_fastload_ran = 1;
+		return;
+	}
+
+	if (!g_fastload_ran) return;
 
 	/* The load is over: put fast loads back where the toggle wants them. */
-	g_fastload_loading = 0;
 	rac3_fastload_restore();
 }
 

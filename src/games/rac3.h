@@ -128,69 +128,152 @@
 #define RAC3_AMMO_INSTR        0x00182A88u  /* the ammo decrement; the fingerprint */
 
 /*
- * Fast loads, a code patch since build 53. From the NPEA00387 executable.
+ * Fast loads, a code patch since build 53, and in the same build made over on
+ * RaC2's model: the screen stays black from the start of the load until the new
+ * level's first frame, and the load takes as long as the disk does. From the
+ * NPEA00386 and NPEA00387 executables; not yet run on hardware.
  *
- * Every planet load runs the transition routine 0x27B360 (from 0x275B18): its
- * setup 0x27ACCC picks a transition from the from/to table at 0xC488BC - the
- * number at RAC3_TRANSITION_ID, rc3/ps3data/global/transitionN - puts the planet
- * word to the destination, resets the level loader (RAC3_LOADER_STAGE 0) and
- * sets RAC3_TRANSITION_HOLD; then a frame loop runs the transition's own update
- * and draw until the update says it is over, stepping the loader 0x1D27B8 every
- * frame. Transitions 0 to 5 - Aquatos's sub and pipe (0, 1), the three ranger
- * dropships (2 to 4) and the ordinary space flight (5), which is every trip but
- * the vid comics (6), multiplayer (7) and Holostar Clank's way back (8, also
- * the fallback for a pair the table does not list) - play clips: each clip end
- * bumps a count (0x134EBD4, zeroed before every level by 0x13E10), and the
- * transition only goes for its closing clip once that count has reached 3 and
- * the loader has read the level (stage 2), and only ends when that clip does.
- * At stage 2 the loader waits for RAC3_TRANSITION_HOLD to clear, which the
- * transition's Transition_UnloadSounds (RAC3_TRANSITION_UNLOAD) does at the clip
- * end where it starts the closing clip. So a trip is the opening clip, two more
- * at least, and the closing one, however soon the level was read.
+ * RaC2's, the model (src/games/rac2.h, RAC2_FASTLOAD_INSTR). Every planet load
+ * there runs 0xBEA188. Its setup, 0xBE9588, fades the screen to black with the
+ * game's own fade, 0xB111C0, which shows the last frame six more times, darker
+ * each time, and leaves black behind; then a frame loop (0xBEA868) runs the
+ * transition's update (0xBE7400, for a load 0xBE5470), whose answer ends the
+ * loop, its draw (0xBE9308: begin the frame, draw the space scene, end the frame
+ * and flip it, which is where a pass waits for the vblank), and a step of the
+ * level loader (0xB4A600) unless a story scene is owed (0x15D4670). The
+ * transition plays frame-counted segments, a random one at each segment end
+ * while the loader is below stage 2 (0x147A1D4), a closing one once the loader
+ * has read the level - releasing the loader's hold at stage 2 (0x147A1D8) as
+ * that one starts - and is over when the closing one is. Fast loads nop the
+ * draw's call at 0xBEA8A0. Nothing is drawn and nothing flips, so the screen
+ * keeps the setup's black, and a pass no longer waits for a vblank: every
+ * segment's frames run out in no time and the transition lasts as long as the
+ * loader takes to read the level. An owed scene still holds the loader until
+ * the first segment's end plays it (0xBE402C) in frame loops of its own, which
+ * draw and flip; that first segment is over at once, so the scene is up almost
+ * at once. The rest of the load runs behind the same black after the loop
+ * (0xBEA900), and the new level's init draws its first frame as it does after
+ * any load.
  *
- * The patch replaces the loop's "is it over" test, cmpwi r27, 0 at
- * RAC3_FASTLOAD_SITE, with a branch to a cave that ends a clip transition the
- * frame the loader reaches stage 2 while the banks are still held: it puts the
- * fade at black, as a clip end leaves it, and calls Transition_UnloadSounds, and
- * the game's own finish runs the rest of the load behind a black screen. A story
- * scene the trip owes (0xF44E90, set by 0x27AB84: 17 on the first trip into
- * Aquatos, 18 on the first trip out of it once its sewers have been visited)
- * keeps the loader from stepping until the transition has played the scene at
- * its first clip end (count 1, 0x27C890), so it still plays, and no planet has
- * to be left out.
+ * UYA's transition is the same machine. Every planet load runs 0x27B360 (from
+ * 0x275B18). Its setup, 0x27ACCC, picks a transition from the from/to table at
+ * 0xC488BC - the number at RAC3_TRANSITION_ID, rc3/ps3data/global/transitionN -
+ * puts the planet word to the destination, resets the level loader
+ * (RAC3_LOADER_STAGE 0), sets RAC3_TRANSITION_HOLD, notes the story scene the
+ * trip owes (RAC3_SCENE_OWED, 0x27AB84: 17 on the first trip into Aquatos, 18
+ * on the first trip out of it once its sewers have been visited) and runs the
+ * transition's init, which loads its files and sound banks and starts its first
+ * clip. Then a frame loop, a pass a frame: the pads (0x235950, which is where
+ * the savefile helper runs), the pass count (RAC3_TRANSITION_FRAME), mode 6,
+ * the transition's update (*0xC48D00), whose answer ends the loop, and its
+ * second routine (*0xC48D04), where the space flight and the sub keep their
+ * clip logic; then the frame itself, 0x27B550..0x27B56C (begin it, 0x11AD44 and
+ * 0x11B434; draw the transition, 0x27A014; end it and flip, 0x11B4EC); then a
+ * loader step (0x1D27B8) unless a scene is owed. The clip transitions, 0 to 5 -
+ * Aquatos's sub and pipe (0, 1), the three ranger dropships (2 to 4) and the
+ * ordinary space flight (5) - count clip ends at 0x134EBD4, play the owed scene
+ * at the first (0x27C890), pick clips at random until that count is 3 and the
+ * loader has read the level (stage 2, where it waits for the hold), then play a
+ * closing clip whose start unloads the transition's sound banks
+ * (Transition_UnloadSounds, RAC3_TRANSITION_UNLOAD, which also clears the hold)
+ * and are over when it ends. The rest are timed cards: the vid comics (6, a
+ * title card going in and a results card coming out), Holostar Clank's way back
+ * (8, a line of text), and any pair the table does not list - the planet
+ * selector makes those - which is a black screen of 300 frames (8 as well, a
+ * table row of its own). Multiplayer is 7.
+ *
+ * What RaC2 has and UYA does not: nothing fades the screen at the start of a
+ * load (the galactic map does, at 0x27388C, before it raises the request; a
+ * request qwark writes comes straight out of play), and a clip's end does not
+ * stop the sound the clip started, where each of RaC2's segment ends stops every
+ * sound (0x11E0B88). Undrawn and spun at the CPU's pace, UYA's clips would start
+ * a whoosh apiece, dozens in one load. So the patch is two sites and a cave:
+ *
+ *   RAC3_FASTLOAD_DRAW_SITE, the head of the frame: every pass goes past the
+ *   frame to RAC3_FASTLOAD_SKIP. That is RaC2's nop.
+ *
+ *   RAC3_FASTLOAD_SITE, just before the update's call, with the pads read and
+ *   the mode set:
+ *   - the first pass fades the screen to black, RAC3_SCREEN_FADE for six
+ *     frames as RaC2's setup does (the game's own calls ask for 6.5 times the
+ *     word at 0xC1D598, 1.0 in the executable), and runs no update. It puts the
+ *     renderer's count of flips not to show (RAC3_RENDERER_HELD, which the
+ *     flip counts down at 0x96E178) to 0 first: the black card's init leaves
+ *     it at 2, and the fade does nothing while it is not 0;
+ *   - while a scene is owed the transition runs as the game runs it, undrawn:
+ *     the first clip's frames run out at once, and its end plays the scene,
+ *     which draws itself, fades to black when it is over and clears the word;
+ *   - otherwise, while the loader is below stage 2, a pass skips the
+ *     transition's two routines and goes on at RAC3_FASTLOAD_RESUME: no clip
+ *     moves and none starts a sound, while the pads, the loader and the rest
+ *     of the pass run as they do;
+ *   - once the loader has read the level the transition is over: the fade word
+ *     at black, as a clip's end leaves it; Transition_UnloadSounds, when the
+ *     transition is one that loads banks of its own (0 to 6) and still holds
+ *     them; and the game's own finish (0x27B430) runs the rest of the load
+ *     behind the black, as it does after any transition.
+ *
+ * So every planet and every trip is fast but multiplayer's, which the patch
+ * leaves to the game (7): qwark has no business in a networked load, and nothing
+ * here was looked at with one under way. The vid comics' cards and Holostar's
+ * line are not shown, as the clips are not. Story scenes still play, and a
+ * load's other cutscenes are not the transition's to skip: a new game's opening
+ * films play in the setup (0x275678), before the loop, and a planet's arrival
+ * scene is the new level's. The one sound a fast load makes is the first clip's
+ * on a trip that owes a scene, which goes on under the scene's start.
+ *
+ * Why the cave does not play an owed scene itself and skip the clip: the clip's
+ * end deletes the clip's mobys (0x279BAC) before the scene clears the cinematic
+ * state they are listed in (0xD79310, at 0x274BB0), so the game's own path is
+ * the one that leaves nothing behind.
  *
  * Before build 53 fast loads were the two data words beside the count:
- * 0x134EBD4 = 3 (the count, so the closing clip came after the opening one) and,
- * a fifth of a second into the trip, 0x134EE70 = 01 01 (the space flight's
- * "clip ended" and "closing clip started" bytes, which its init zeroes, so it
- * ended at the opening clip's end). Writing 3 took the count past 1, where an
- * owed story scene plays and lets the loader go, so a trip owing one waited for
- * the loader forever: in the space flight, behind the black of the opening
- * clip's end. That was the black screen. qwark armed the words on every trip
- * but one to Aquatos, so it hung the first trip out of Aquatos after the sewers;
- * a trip into Aquatos owing scene 17 would have hung the same way, which is what
- * rac3.cs LoadPlanetSafe's Aquatos exception kept it from.
+ * 0x134EBD4 = 3 and, a fifth of a second into the trip, 0x134EE70 = 01 01 (the
+ * space flight's "clip ended" and "closing clip started" bytes), so it ended at
+ * the first clip's end. Writing 3 took the count past 1, where an owed scene
+ * plays and lets the loader go, so a trip owing one waited for the loader
+ * forever, behind the black of that clip's end: the Aquatos hang rac3.cs
+ * LoadPlanetSafe's exception kept away from trips into Aquatos. Build 53's first
+ * patch ended a clip transition the frame the loader reached stage 2, from the
+ * loop's "is it over" test at 0x27B428: fast, and the scenes played, but the
+ * first clip showed until then, and the cards were not fast at all.
  */
-#define RAC3_FASTLOAD_SITE       0x0027B428u  /* cmpwi r27, 0 in 0x27B360's loop */
-#define RAC3_FASTLOAD_SITE_WORD  0x2C1B0000u
+#define RAC3_FASTLOAD_SITE       0x0027B49Cu  /* ori r3, r26, 0: the update's argument */
+#define RAC3_FASTLOAD_SITE_WORD  0x63430000u
+#define RAC3_FASTLOAD_UPDATE     0x0027B4A0u  /* the update's call, after the site */
+#define RAC3_FASTLOAD_RESUME     0x0027B538u  /* the pass after the transition's routines */
+#define RAC3_FASTLOAD_DRAW_SITE  0x0027B550u  /* bl 0x11AD44: the head of the frame */
+#define RAC3_FASTLOAD_DRAW_WORD  0x4BE9F7F5u
+#define RAC3_FASTLOAD_DRAW_RET   0x0027B554u
+#define RAC3_FASTLOAD_SKIP       0x0027B570u  /* the pass after the frame */
+#define RAC3_FRAME_BEGIN         0x0011AD44u  /* the draw site's own call */
+#define RAC3_SCREEN_FADE         0x00123988u  /* RaC2's 0xB111C0; frames in r3 */
+#define RAC3_SCREEN_FADE_FRAMES  6u
 #define RAC3_TRANSITION_UNLOAD   0x00278A00u  /* Transition_UnloadSounds */
 #define RAC3_TRANSITION_ID       0x00D990DEu  /* u16, the transitionN folder */
-#define RAC3_TRANSITION_LAST_CLIP 5u          /* 0..5 play clips */
+#define RAC3_TRANSITION_FRAME    0x00D990D2u  /* u16, 0xFFFF at setup, 0 on the first pass */
+#define RAC3_TRANSITION_LAST_BANKS  6u        /* 0..6 load sound banks of their own */
+#define RAC3_TRANSITION_MULTIPLAYER 7u
 #define RAC3_LOADER_STAGE        0x00D99094u  /* u32, 0x1D27B8's stage */
 #define RAC3_TRANSITION_HOLD     0x00D99098u  /* u32, the transition's banks are in */
+#define RAC3_SCENE_OWED          0x00F44E90u  /* u32, 17, 18 or 0 */
 #define RAC3_TRANSITION_FADE     0x0134EBE0u  /* f32, 1.0 is black */
+#define RAC3_RENDERER            0x00CB09BCu  /* the renderer object's pointer */
+#define RAC3_RENDERER_HELD       0x1720u      /* in it: flips that will not show */
 
 /*
- * Where the console writes the cave: the top of what the trophy reset left of
- * the strictly dead 0x980304..0x980AC0 (src/games/sfhelper/sf_rac3.h), right
- * under its cave at SF_CAVE_TROPHY (0x9808C0). Twenty-two words, 0x980860 to
- * 0x9808B8. Not the savefile helper's dead function at 0x980AC0, where the
- * Freeze ammo and Fast loads code switches are: the rack mods racman shipped
- * for this game (COOLCAM, SUCKMAN, rc3-save) load their code there, and a
- * console runs Fast loads beside them, which it never had to before.
+ * Where the console writes the cave: 0x9807F0..0x9808B0, forty-eight words at
+ * the top of what the trophy reset left of the strictly dead 0x980304..0x980AC0
+ * (src/games/sfhelper/sf_rac3.h), under its cave at SF_CAVE_TROPHY (0x9808C0)
+ * and above its thread's at 0x980380..0x980580; 0x980304..0x980380 and
+ * 0x980580..0x9807F0 stay free. Not the savefile helper's dead function at
+ * 0x980AC0, where the Infinite ammo and Fast loads code switches are: the rack
+ * mods racman shipped for this game (COOLCAM, SUCKMAN, rc3-save) load their
+ * code there, and a console runs Fast loads beside them, which it never had to
+ * before.
  */
-#define RAC3_FASTLOAD_CAVE       0x00980860u
-#define RAC3_FASTLOAD_CAVE_WORDS 22
+#define RAC3_FASTLOAD_CAVE       0x009807F0u
+#define RAC3_FASTLOAD_CAVE_WORDS 48
 
 /*
  * The savefile helper's byte. qwark embeds the helper and installs it on the
@@ -320,9 +403,14 @@ extern const u8 rac3_fp_switch[4];
  */
 #define RAC3_HOT_PSTATE_ADDR  RAC3_PLAYER_STATE
 #define RAC3_HOT_PSTATE_LEN   0x34C
-/* load: destination planet at +0x00 (+0x03 its low byte), mode timer +0x1C, game state +0x20 */
-#define RAC3_HOT_LOAD_ADDR    RAC3_DEST_PLANET
-#define RAC3_HOT_LOAD_LEN     0x24
+/*
+ * load: the load request word at +0x00, the destination planet +0x04 (+0x07
+ * its low byte), mode timer +0x20, game state +0x24. Build 53: the request word
+ * joined the block, which used to start at the destination, so the fast-load
+ * watcher reads it and the mode out of the same read (rac3_fastload_watch).
+ */
+#define RAC3_HOT_LOAD_ADDR    RAC3_LOAD_PLANET
+#define RAC3_HOT_LOAD_LEN     0x28
 
 /* ----------------------------------------------------------- readout slots */
 
@@ -457,15 +545,19 @@ u8  rac3_planet_count(void);
 
 /*
  * The fast loads a planet load and a set-aside load force on behind the
- * checkbox, and their undoing, exactly as RaC2's rac2_fastload_force and
+ * checkbox, and their undoing, as RaC2's rac2_fastload_force and
  * rac2_fastload_restore: the force applies the patch (or, under RPCS3 with the
  * code switches in, writes their flag) and remembers that the checkbox did not;
  * rac3.c puts the checkbox's setting back when the load is over, which is the
- * load request word down again with the game out of mode 6
- * (rac3_fastload_watch), or at once when the helper drops a set-aside load.
+ * load request word down again with the game out of mode 6 after the load has
+ * been seen to run (rac3_fastload_watch), or at once when the helper drops a
+ * set-aside load. rac3_fastload_forced says whether a force is outstanding, so
+ * a request that fails after its force can take back only its own, as RaC1's
+ * do (rac1_panel.c).
  */
 int rac3_fastload_force(void);
 int rac3_fastload_restore(void);
+int rac3_fastload_forced(void);
 
 /*
  * Vendor QE: the two bytes 00 17 at RAC3_QE_OFFSET. Shared by the "Enable

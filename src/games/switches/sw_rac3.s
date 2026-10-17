@@ -1,8 +1,8 @@
 # Ratchet & Clank 3, Up Your Arsenal (NPEA00387): the code switches.
 #
 # sw_rac1.s says what a switch is and why it exists. RaC3 has two instruction
-# patches, Freeze ammo and (since fast loads became a code patch) Fast loads,
-# and so two switches.
+# patches, Freeze ammo (the Infinite ammo checkbox) and, since fast loads became
+# a code patch, Fast loads, and so two switches; Fast loads' has two sites.
 #
 # The flags are at 0xD9FF10 and 0xD9FF11, in the zero-filled data where the
 # savefile helper keeps its request bytes (0xD9FF00..02), its copy counter
@@ -12,8 +12,11 @@
 # The caves are in the savefile helper's dead function, 0x980AC0..0x981064. The
 # helper may run up to 0x980F00 (SF_CAVE_END in src/games/sfhelper/sf_rac3.h;
 # build 53's pause made it grow from 372 bytes), so the switches start there.
-# Past 0x981064 the functions are live code. (A console's own fast-load cave is
-# elsewhere, at RAC3_FASTLOAD_CAVE in src/games/rac3.h.)
+# The two functions after it, 0x981064 and 0x981120, are dead too - nothing
+# names their descriptors, 0xBF8188 and 0xBF8190 - and the code is live again
+# from 0x981224 (called from 0x9028FC); the switches stop at 0x981064 all the
+# same. (A console's own fast-load cave is elsewhere, at RAC3_FASTLOAD_CAVE in
+# src/games/rac3.h.)
 #
 # build.sh assembles this, links it with sw_rac3.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.
@@ -23,12 +26,17 @@
 	.globl  SW_FLAG_FREEZE_AMMO
 	.globl  SW_FLAG_FAST_LOADS
 
-# The transition's state, from the NPEA00387 executable (src/games/rac3.h has
-# the whole story under RAC3_FASTLOAD_SITE).
-	.set    RAC3_TRANSITION_ID,   0x00D990DE   # u16, the transitionN folder
-	.set    RAC3_LOADER_STAGE,    0x00D99094   # u32, the level loader's stage
-	.set    RAC3_TRANSITION_HOLD, 0x00D99098   # u32, its sound banks are loaded
-	.set    RAC3_TRANSITION_FADE, 0x0134EBE0   # f32, how black the screen is
+# The transition's state and the renderer's, from the NPEA00387 executable
+# (src/games/rac3.h has the whole story under RAC3_FASTLOAD_SITE). The first five
+# share their high half, 0xDA, so one lis serves them.
+	.set    RAC3_TRANSITION_ID,    0x00D990DE  # u16, the transitionN folder
+	.set    RAC3_TRANSITION_FRAME, 0x00D990D2  # u16, the pass count, 0 on the first
+	.set    RAC3_LOADER_STAGE,     0x00D99094  # u32, the level loader's stage
+	.set    RAC3_TRANSITION_HOLD,  0x00D99098  # u32, its sound banks are loaded
+	.set    RAC3_SCENE_OWED,       0x00F44E90  # u32, the story scene the trip owes
+	.set    RAC3_TRANSITION_FADE,  0x0134EBE0  # f32, how black the screen is
+	.set    RAC3_RENDERER,         0x00CB09BC  # the renderer object
+	.set    RAC3_RENDERER_HELD,    0x1720      # in it: flips that will not show
 
 # ----------------------------------------------------------------- freeze ammo
 #
@@ -50,50 +58,93 @@ freeze_ammo_ret:
 
 # ------------------------------------------------------------------ fast loads
 #
-# 0x27B428: cmpwi r27, 0, at the top of the planet transition's frame loop
-# (0x27B360), which asks whether the transition is over. Not a single patched
-# word as on RaC1 and RaC2: a console writes the cave at 0x980860 and a branch
-# here (rac3.c rac3_fastload_words), and this is the same logic behind the flag.
+# Two sites in a pass of the planet transition's frame loop (0x27B360), where a
+# console writes a branch each into its cave at RAC3_FASTLOAD_CAVE (rac3.c,
+# rac3_fastload_words); these are the same logic behind the flag, with ordinary
+# calls where the console's cave points the link register at the loop. With the
+# flag clear, or in a multiplayer load (transition 7), both run the game's own
+# instruction and go back.
 #
-# With the flag set, a transition that plays clips (transitions 0 to 5, every
-# planet trip but the vid comics, Holostar Clank's way back and multiplayer)
-# ends the moment the level loader has read the level (stage 2) while the
-# transition still holds its sound banks: it unloads them the way the game does
-# at a clip end (Transition_UnloadSounds, 0x278A00, which lets the loader go
-# on), puts the fade at black, as a clip end leaves it, and says the transition
-# is over. The game's own finish then runs the rest of the load behind a black
-# screen. A story scene the trip owes (Aquatos's two, 0xF44E90) holds the loader
-# below stage 2 until the transition has played it, so it still plays.
-#
-# Either way the trampoline ends by doing what the site did, cmpwi r27, 0, for
-# the beq after it. r3 and r4 are free here: the call before the site returned
-# nothing anyone reads, and the code after it sets both before reading them.
+# 0x27B49C: ori r3, r26, 0, the update's argument, with the pads read and the
+# mode set. With the flag up:
+#   - the first pass (RAC3_TRANSITION_FRAME 0) lets every flip show again and
+#     fades the screen to black over six frames (0x123988), as RaC2's load does
+#     before its loop, and goes on without the update;
+#   - while a story scene is owed (RAC3_SCENE_OWED), the update runs: the first
+#     clip's end plays the scene, which draws itself;
+#   - otherwise, below loader stage 2, the pass goes on without the
+#     transition's two routines (0x27B538): the transition stands still, starts
+#     no clip and no sound, while the pads and the loader run;
+#   - at stage 2 the transition is over: the fade at black, its sound banks
+#     unloaded as the game does when its closing clip starts (Transition_
+#     UnloadSounds, 0x278A00) if it is one with banks of its own (0 to 6) and
+#     still holds them, r27 = 1, and the game's finish runs the rest behind the
+#     black.
+# r3, r5, r6 and r0 are free at the site; r4, the update's descriptor, is only
+# needed on the way to the update, which every path that skips it leaves alone.
 	.section .cave.fast_loads, "ax"
 fast_loads:
-	cmpwi   cr0, r27, 0
-	bne     cr0, 1f
-	lis     r3, SW_FLAG_FAST_LOADS@ha
-	lbz     r3, SW_FLAG_FAST_LOADS@l(r3)
+	lis     r5, SW_FLAG_FAST_LOADS@ha
+	lbz     r6, SW_FLAG_FAST_LOADS@l(r5)
+	cmpwi   cr0, r6, 0
+	beq     cr0, 9f
+	lis     r5, RAC3_TRANSITION_ID@ha
+	lhz     r6, RAC3_TRANSITION_ID@l(r5)
+	cmplwi  cr0, r6, 7
+	beq     cr0, 9f
+	lhz     r3, RAC3_TRANSITION_FRAME@l(r5)
 	cmpwi   cr0, r3, 0
-	beq     cr0, 1f
-	lis     r3, RAC3_TRANSITION_ID@ha
-	lhz     r4, RAC3_TRANSITION_ID@l(r3)
-	cmplwi  cr0, r4, 5
-	bgt     cr0, 1f
-	lwz     r4, RAC3_LOADER_STAGE@l(r3)
-	cmpwi   cr0, r4, 2
-	blt     cr0, 1f
-	lwz     r4, RAC3_TRANSITION_HOLD@l(r3)
-	cmpwi   cr0, r4, 0
-	beq     cr0, 1f
-	bl      rac3_transition_unload_sounds
-	lis     r3, RAC3_TRANSITION_FADE@ha
-	lis     r4, 0x3F80
-	stw     r4, RAC3_TRANSITION_FADE@l(r3)
+	beq     cr0, 2f
+	lis     r3, RAC3_SCENE_OWED@ha
+	lwz     r3, RAC3_SCENE_OWED@l(r3)
+	cmpwi   cr0, r3, 0
+	bne     cr0, 9f
+	lwz     r3, RAC3_LOADER_STAGE@l(r5)
+	cmpwi   cr0, r3, 2
+	blt     cr0, 3f
 	li      r27, 1
-1:	cmpwi   cr0, r27, 0
+	lis     r3, RAC3_TRANSITION_FADE@ha
+	lis     r0, 0x3F80
+	stw     r0, RAC3_TRANSITION_FADE@l(r3)
+	cmplwi  cr0, r6, 6
+	bgt     cr0, 3f
+	lwz     r3, RAC3_TRANSITION_HOLD@l(r5)
+	cmpwi   cr0, r3, 0
+	beq     cr0, 3f
+	bl      rac3_transition_unload_sounds
+	b       3f
+2:	lis     r5, RAC3_RENDERER@ha
+	lwz     r5, RAC3_RENDERER@l(r5)
+	li      r0, 0
+	stw     r0, RAC3_RENDERER_HELD(r5)
+	li      r3, 6
+	bl      rac3_screen_fade
+3:	b       rac3_fastload_resume
+9:	ori     r3, r26, 0
 	b       fast_loads_ret
 
 	.section .site.fast_loads, "ax"
 	b       fast_loads
 fast_loads_ret:
+
+# 0x27B550: bl 0x11AD44, the head of the pass's frame (0x11AD44 and 0x11B434
+# begin it, 0x27A014 draws the transition, 0x11B4EC ends it and flips). With the
+# flag up the pass goes past all of it to 0x27B570, RaC2's nop at 0xBEA8A0:
+# nothing is drawn, nothing flips, and no pass waits for a vblank.
+	.section .cave.fast_loads_draw, "ax"
+fast_loads_draw:
+	lis     r3, SW_FLAG_FAST_LOADS@ha
+	lbz     r3, SW_FLAG_FAST_LOADS@l(r3)
+	cmpwi   cr0, r3, 0
+	beq     cr0, 1f
+	lis     r3, RAC3_TRANSITION_ID@ha
+	lhz     r3, RAC3_TRANSITION_ID@l(r3)
+	cmplwi  cr0, r3, 7
+	bne     cr0, 2f
+1:	bl      rac3_frame_begin
+	b       fast_loads_draw_ret
+2:	b       rac3_fastload_skip
+
+	.section .site.fast_loads_draw, "ax"
+	b       fast_loads_draw
+fast_loads_draw_ret:

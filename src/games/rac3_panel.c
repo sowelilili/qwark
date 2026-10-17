@@ -442,7 +442,7 @@ int rac3_levelflags_reset(u8 planet)
 
 int rac3_planet_load(u8 planet, u8 flags)
 {
-	int rc;
+	int was, rc;
 
 	/* Index 0 is the placeholder that keeps the list aligned with the ids. */
 	if (planet == 0 || planet >= rac3_planet_count()) return ST_BAD_ARG;
@@ -457,13 +457,21 @@ int rac3_planet_load(u8 planet, u8 flags)
 	 * Fast loads are a code patch, so a platform that refuses one (RPCS3)
 	 * loads at the game's own pace rather than not at all, unless the code
 	 * switches are in, when forcing them is a write of their flag byte.
+	 *
+	 * A request that fails takes back its own force and nobody else's, as
+	 * RaC1's set-aside load does: one still outstanding from a load before
+	 * stays.
 	 */
+	was = rac3_fastload_forced();
 	rc = rac3_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = classic_planet_request(RAC3_LOAD_PLANET, planet);
-	if (rc != ST_OK) return rc;
+	if (rc != ST_OK) {
+		if (!was) rac3_fastload_restore();
+		return rc;
+	}
 
 	if (flags & PLANET_FLAG_RESET_LEVELFLAGS) {
 		rc = rac3_levelflags_reset(planet);
@@ -494,19 +502,26 @@ int rac3_load_setaside(void)
 	 * Under RPCS3 the helper and the code switches are separate patches: with
 	 * the switches in, the force is a write of their flag byte; without them the
 	 * load goes ahead at the game's own pace rather than being refused.
+	 *
+	 * A request that fails as it goes out takes back its own force, as RaC1's
+	 * does (rac1_panel.c, rac1_load_setaside), and leaves one an earlier load
+	 * still has outstanding.
 	 */
-	int rc = savefile_load_ready();
+	int was, rc = savefile_load_ready();
 
 	if (rc != ST_OK) return rc;
 
 	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
+	was = rac3_fastload_forced();
 	rc = rac3_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
-	return savefile_load_aside();
+	rc = savefile_load_aside();
+	if (rc != ST_OK && !was) rac3_fastload_restore();
+	return rc;
 }
 
 /*
