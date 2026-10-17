@@ -83,6 +83,15 @@ typedef unsigned long long sf_u64;
  */
 #define SF_API_NO_SAVE 0xFD
 
+/*
+ * Build 53, RaC1 and RaC3: how long a load waits for the game's pause before
+ * it is dropped with SF_API_REFUSED, ten seconds of the timebase. The console
+ * runs it at 79.8 MHz, which is what lv2 answers the games' own question for
+ * it with (syscall 147, sys_time_get_timebase_frequency, RaC1 0x52CA84) and
+ * what RPCS3 runs it at too; ten seconds fit the low word with room to spare.
+ */
+#define SF_PAUSE_WAIT_TICKS 798000000u
+
 /* The game's own memcpy, in every game. */
 void sf_memcpy(void *dst, const void *src, int len);
 
@@ -105,9 +114,20 @@ void sf_save_handler(int mode);
 void sf_enter_menu(void);
 #endif
 
-#if SF_GAME == SF_RAC2 || SF_GAME == SF_RAC3
+#if SF_GAME == SF_RAC3
 /* mode_requestChange. 0 when the change was taken. */
 int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
+#endif
+
+#if SF_GAME == SF_RAC2
+/*
+ * Build 53: RaC2 enters its pause by writing the mode, as RaC1 does, and puts
+ * away what a cutscene leaves behind the way the Start button's skip does
+ * (sf_rac2.h): the movie player's Bink file closed, the cutscene's queue of
+ * movies and scenes emptied. Both take the game's object.
+ */
+void sf_movie_stop(sf_u32 player);
+void sf_scene_clear(sf_u32 queue);
 #endif
 
 #if SF_GAME == SF_RAC3

@@ -104,17 +104,18 @@
 #define SF_API_I 0x00D9FF08
 
 /*
- * The pause's two words, as in RaC1 and RaC2: SF_PAUSE_WAIT counts the calls a
- * load has waited for the pause, 0 while none waits, and SF_PAUSE_FRAME holds
- * the game's mode timer as the helper read it in the call whose request for the
- * pause the game took. They follow the Freeze ammo switch's flag byte at
- * 0xD9FF10 (src/games/switches/sw_rac3.s) in the same stretch of zero-filled
- * data: nothing in the executable names anything from 0xD9E9E0 to 0xDA0120,
- * so they are zero at every boot and an RPCS3 patch need not write them.
+ * The pause's two words, as in RaC1: SF_PAUSE_WAIT holds the low word of the
+ * timebase when a load began to wait for the pause, with bit 0 set, and 0 while
+ * none waits (the wait runs out after SF_PAUSE_WAIT_TICKS, sfhelper.h, ten
+ * seconds), and SF_PAUSE_FRAME holds the game's mode timer as the helper read
+ * it in the call whose request for the pause the game took. They follow the
+ * Freeze ammo switch's flag byte at 0xD9FF10 (src/games/switches/sw_rac3.s) in
+ * the same stretch of zero-filled data: nothing in the executable names
+ * anything from 0xD9E9E0 to 0xDA0120, so they are zero at every boot and an
+ * RPCS3 patch need not write them.
  */
 #define SF_PAUSE_WAIT     0x00D9FF14
 #define SF_PAUSE_FRAME    0x00D9FF18
-#define SF_PAUSE_WAIT_MAX 600
 
 /*
  * Build 53: the trophy reset's request byte, after the pause's words in the same
@@ -206,16 +207,28 @@
  * the world's update nor its render, nor anything that reaches them, and the
  * helper loads from the pause.
  *
- * It asks for it the way RaC2's does and for the same reason (sf_rac2.h): the
- * pause menu is set up by the mode change at the end of the frame (0x229998,
- * at 0x1D85E0: the leaving mode's exit routine, then the pause's entry 0x2D2464
- * with the screen asked for), which also puts the mode timer back to 0 when the
- * mode changed (0x1D8604). mode_requestChange (0x229598: mode, 1 to push it,
- * the screen, 0, 0) answers 0 when it took the change and refuses while another
- * change is queued, with eight modes pushed, while the game blocks the pause
- * (0xEE9318[3]) or, in single player, while the player has no health; the
- * helper asks again on its next call. The Start button asks for mode 3 with
- * screen 1, or 5 on the vid comics, planets 30 to 36 (0x28723C, 0x14AD88).
+ * It asks the game for it, as RaC2's did until build 53 changed that
+ * (sf_rac2.h): the pause menu is set up by the mode change at the end of the
+ * frame (0x229998, at 0x1D85E0: the leaving mode's exit routine, then the
+ * pause's entry 0x2D2464 with the screen asked for), which also puts the mode
+ * timer back to 0 when the mode changed (0x1D8604). RaC2's helper writes the
+ * mode now, which is enough there because it runs last in its frame. This one
+ * runs first: the frame then runs the update and render of the mode it began
+ * in whatever the helper writes, the dispatch having picked them already, so a
+ * pause written here would need the pause menu's entry run by hand, outside
+ * the mode change whose target it reads (0x2298B0), and the old mode's update
+ * in the same frame could queue a change that takes the pause away again
+ * before the load. It stays with the mode change, and with what sf_rac2.h
+ * found that costs a load during a cutscene: here too a movie's exit
+ * (0x28A0A4) runs the cutscene's callback (0xC1E984) on the way into the
+ * pause. From the NPEA00387 executable; not yet run on hardware.
+ *
+ * mode_requestChange (0x229598: mode, 1 to push it, the screen, 0, 0) answers
+ * 0 when it took the change and refuses while another change is queued, with
+ * eight modes pushed, while the game blocks the pause (0xEE9318[3]) or, in
+ * single player, while the player has no health; the helper asks again on its
+ * next call. The Start button asks for mode 3 with screen 1, or 5 on the vid
+ * comics, planets 30 to 36 (0x28723C, 0x14AD88).
  * pendingGameMode is -2 when nothing is queued.
  *
  * A planet load leaves the main loop at the end of the frame that finds the

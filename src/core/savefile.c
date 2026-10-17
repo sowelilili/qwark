@@ -855,7 +855,7 @@ u32 savefile_load_refusals(void)
 /*
  * How many words a cave takes on the wire. Every cave is whole words today:
  * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
- * RaC1's 116 and 920 bytes, RaC2's 964, RaC3's 1028 and Deadlocked's 40 and
+ * RaC1's 116 and 952 bytes, RaC2's 1036, RaC3's 1060 and Deadlocked's 40 and
  * 1004 (build 53) are all multiples of four and none of them is padded; so are
  * RaC3's two trophy caves, 300 bytes of code and 448 of code and the thread's
  * eight-byte descriptor. The rounding is there for a cave that one day is not,

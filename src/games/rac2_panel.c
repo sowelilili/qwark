@@ -660,11 +660,13 @@ static int rac2_is_save(u32 addr)
  * A set-aside needs the game's save buffer and a save in it, which is how this
  * game crashed before: until the game has saved or loaded once in this process
  * there is no buffer at all, and the helper copied two megabytes from address
- * 0. A load needs a planet under it, no planet load on its way and a mode the
- * helper can ask the pause from - any but space, debug and the ones past 9 -
- * and a save to hand over: the aside buffer, or the game's own when the aside
- * buffer is empty. A RESTORE needs the game state alone; its file is asked
- * about as a load once it is in the aside buffer.
+ * 0. A load needs a planet under it, no planet load on its way - nor a trip
+ * queued, the ship's mode 6 waiting for the end of the frame - the console not
+ * holding the game in its freeze, a mode the helper can write the pause over -
+ * any the gameplay loop runs, debug included, but space - and a save to hand
+ * over: the aside buffer, or the game's own when the aside buffer is empty. A
+ * RESTORE needs the game state alone; its file is asked about as a load once
+ * it is in the aside buffer.
  *
  * A read that fails answers "not idle", as Deadlocked's does.
  */
@@ -677,14 +679,20 @@ u8 rac2_savefile_ready(u8 what)
 	if (d == NULL) return SAVEFILE_ERR_NONE;
 
 	if (what != GAME_SF_SET_ASIDE) {
-		u32 planet = 0, request = 0, mode = 0, first = 0;
+		u32 planet = 0, request = 0, mode = 0, pending = 0, first = 0;
+		u8 frozen = 0;
 
 		if (mem_read_u32(RAC2_CURRENT_PLANET, &planet) != ST_OK ||
 		    mem_read_u32(RAC2_LOAD_PLANET, &request) != ST_OK ||
-		    mem_read_u32(RAC2_GAME_MODE, &mode) != ST_OK)
+		    mem_read_u32(RAC2_GAME_MODE, &mode) != ST_OK ||
+		    mem_read_u32(RAC2_PENDING_GAME_MODE, &pending) != ST_OK ||
+		    mem_read_u8(RAC2_CONSOLE_FREEZE, &frozen) != ST_OK)
 			return SAVEFILE_ERR_NOT_IDLE;
 		if ((planet & 0x80000000u) != 0 || request != 0) return SAVEFILE_ERR_NOT_IDLE;
-		if (mode > RAC2_GAME_MODE_LAST || mode == RAC2_GAME_MODE_SPACE) return SAVEFILE_ERR_NOT_IDLE;
+		if (pending == RAC2_GAME_MODE_SPACE || frozen != 0) return SAVEFILE_ERR_NOT_IDLE;
+		/* -1 (debug) to 9, as an unsigned range from -1. */
+		if (mode + 1u > RAC2_GAME_MODE_LAST + 1u || mode == RAC2_GAME_MODE_SPACE)
+			return SAVEFILE_ERR_NOT_IDLE;
 		if (what == GAME_SF_RESTORE) return SAVEFILE_ERR_NONE;
 
 		if (mem_read_u32(d->aside_addr, &first) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;

@@ -235,13 +235,18 @@
  * planet's block; the restore (0x81070) takes those or the older pair beside
  * them and nothing else.
  *
- * A load goes from the pause, which the helper asks the game for itself from
- * any mode but space (RAC2_GAME_MODE 6, the ship between planets, which never
- * runs the helper) and the ones the mode change will not leave or does not know
- * (debug, -1, and anything past 9); on a planet (RAC2_CURRENT_PLANET is -1 on
- * the title screen) and with no planet load already on its way. A mode change
- * already queued is no reason to refuse any more: the helper waits for it.
- * src/games/sfhelper/sf_rac2.h has the modes.
+ * A load goes from the pause, which the helper puts the game in itself by
+ * writing the mode, and loads in the same call (build 53, after a load during a
+ * cutscene still failed on hardware the way the helper used to ask for it).
+ * That works from any mode the gameplay loop runs, -1 (debug) to 9, but space
+ * (RAC2_GAME_MODE 6, the ship's trip between planets, which has already picked
+ * the planet it flies to); on a planet (RAC2_CURRENT_PLANET is -1 on the title
+ * screen), with no planet load already on its way, no trip queued
+ * (RAC2_PENDING_GAME_MODE 6, the frame the ship sets off in) and the console
+ * not holding the game in its own freeze (RAC2_CONSOLE_FREEZE, the PS button's
+ * menu or a lost controller, whose latch only the game's own release clears).
+ * Any other mode change queued is no reason to refuse: the helper drops it.
+ * src/games/sfhelper/sf_rac2.h has the modes and the why.
  */
 #define RAC2_SAVEDATA_INFO          0x1410E50u
 #define RAC2_SAVEDATA_FIELD         4u
@@ -250,6 +255,8 @@
 #define RAC2_SAVE_HEAD_PLANET       0x84D0u
 #define RAC2_SAVE_HEAD_PLANET_OLD   0x0CD0u
 #define RAC2_GAME_MODE              0x156B064u
+#define RAC2_PENDING_GAME_MODE      0x1329F90u
+#define RAC2_CONSOLE_FREEZE         0x157CEDCu  /* u8 */
 #define RAC2_GAME_MODE_SPACE        6u
 #define RAC2_GAME_MODE_LAST         9u
 

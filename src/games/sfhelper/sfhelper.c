@@ -28,10 +28,10 @@
  *
  * Build 53 gives RaC1, RaC2 and RaC3 a load that goes from the game's pause,
  * which neither updates nor draws the world (sf_entry below has the why): the
- * helper puts the game there itself, from whatever it is doing, waits for a
- * frame that runs in it, and loads. It drops a request with SF_API_NO_SAVE when
- * there is no save to act on. Deadlocked compiles exactly as it did in build
- * 52.
+ * helper puts the game there itself, from whatever it is doing, and loads -
+ * RaC1 and RaC3 on a later frame that runs in it, RaC2 in the same call. It
+ * drops a request with SF_API_NO_SAVE when there is no save to act on.
+ * Deadlocked compiles exactly as it did in build 52.
  *
  * Build 53 also gives RaC3 a fourth request byte, api_trophy, and a second cave
  * for what it asks for: the trophy reset rc3-save carried (sf_trophy_reset),
@@ -183,28 +183,111 @@ static void sf_load(sf_u32 src)
  * cannot be made safe by pausing first:
  *
  *   - a planet load already on its way, which the load would be raced against
- *     (RaC1's should-load word, the others' load request word);
+ *     (RaC1's should-load word, the others' load request word), and in RaC2 a
+ *     trip already decided: the ship queued (pendingGameMode 6) or under way;
  *   - RaC2's title screen, planet -1, where no planet is loaded to pause;
  *   - a mode the pause cannot be entered from. RaC1's movie (state 1) plays in a
  *     frame loop of its own that ignores the state until the movie is over, so
  *     a pause asked for there would come at whatever moment it ended; a state
- *     outside -1..7 runs nothing, not even this helper. In RaC2 and RaC3, debug
- *     (-1) traps in the mode change on the way out, space (6) is the transition
- *     a planet load runs, and anything past 9 is the lobby and multiplayer.
+ *     outside -1..7 runs nothing, not even this helper. In RaC3, debug (-1)
+ *     traps in the mode change on the way out, space (6) is the transition a
+ *     planet load runs, and anything past 9 is the lobby and multiplayer.
+ *
+ * Build 53, RaC2: its helper writes the mode rather than asking the mode change
+ * for it (sf_rac2.h), so the mode it leaves is never run out through the mode
+ * change and none of the modes the gameplay loop runs, -1 to 9, is refused for
+ * what leaving it would do - debug's trap included - but space (6), the ship's
+ * trip, whose entry has already picked the planet it flies to and saved the
+ * game on the way out (0xBE029C, through 0x83060), and which leaves for that
+ * load when the flight is over: the trip is a planet load under way in all but
+ * its request word. RaC2 has no lobby. It also refuses while the console holds
+ * the game in its freeze (SF_CONSOLE_FREEZE), until the console lets go.
  */
 static int sf_may_pause(sf_u32 mode)
 {
 #if SF_GAME == SF_RAC1
 	if (SF_WORD(SF_SHOULD_LOAD) != 0) return 0;
 	return mode - SF_STATE_FIRST < SF_STATE_COUNT && mode != SF_STATE_MOVIE;
-#else
-#if SF_GAME == SF_RAC2
+#elif SF_GAME == SF_RAC2
 	if ((int)SF_WORD(SF_CURRENT_PLANET) < 0) return 0;
-#endif
+	if (SF_WORD(SF_LOAD_REQUEST) != 0) return 0;
+	if (SF_WORD(SF_PENDING_GAME_MODE) == SF_MODE_SPACE) return 0;
+	if (SF_BYTE(SF_CONSOLE_FREEZE) != 0) return 0;
+	return mode - SF_MODE_FIRST < SF_MODE_COUNT && mode != SF_MODE_SPACE;
+#else
 	if (SF_WORD(SF_LOAD_REQUEST) != 0) return 0;
 	return mode <= SF_MODE_LAST && mode != SF_MODE_SPACE;
 #endif
 }
+
+#if SF_GAME == SF_RAC2
+/*
+ * Build 53. Whether the game is in the vendor, or in a freeze over it: the
+ * mode under a freeze is the mode stack's top, or the slot past it, as the
+ * gameplay loop reads them to run the vendor under its freeze (sf_rac2.h).
+ */
+static int sf_in_vendor(sf_u32 mode)
+{
+	sf_u32 depth;
+
+	if (mode == SF_MODE_VENDOR) return 1;
+	if (mode != SF_MODE_FREEZE) return 0;
+
+	depth = SF_WORD(SF_MODE_DEPTH);
+	if (depth == 0) return 0;
+	return SF_WORD(SF_MODE_STACK + depth * 4 - 4) == SF_MODE_VENDOR ||
+	       SF_WORD(SF_MODE_STACK + depth * 4) == SF_MODE_VENDOR;
+}
+
+/*
+ * Build 53. RaC2's pause, entered the way RaC1's helper enters its own, by
+ * writing the mode (sf_rac2.h has the why and what follows): first what a
+ * cutscene leaves behind is put away as the Start button's skip puts it - the
+ * movie's Bink file closed, the cutscene's queue emptied, the callback its end
+ * would run dropped, a movie held under the console's freeze let go - and the
+ * renderer's word the vendor keeps is given back, and then the pause goes into
+ * gameMode with nothing queued behind it, so the mode change at the end of the
+ * frame has nothing to make.
+ */
+static void sf_enter_pause(sf_u32 mode)
+{
+	sf_u32 player = SF_WORD(SF_MOVIE_PLAYER);
+
+	if (player != 0) sf_movie_stop(player);
+	sf_scene_clear(SF_SCENE_QUEUE);
+	SF_WORD(SF_SCENE_DONE_FN) = 0;
+	SF_WORD(SF_SCENE_DONE_ARG) = 0;
+	SF_BYTE(SF_MOVIE_HELD) = 0;
+
+	if (sf_in_vendor(mode)) {
+		sf_u32 renderer = SF_WORD(SF_RENDERER_PTR);
+
+		if (renderer != 0)
+			SF_WORD(renderer + SF_RENDERER_VENDOR) = SF_WORD(SF_VENDOR_KEPT);
+	}
+
+	SF_WORD(SF_PENDING_GAME_MODE) = SF_MODE_NONE;
+	SF_WORD(SF_MODE_CHANGE_FLAG) = 0;
+	SF_WORD(SF_GAME_MODE) = SF_MODE_PAUSE;
+}
+#else
+/*
+ * Build 53, RaC1 and RaC3. The low word of the timebase, which the console runs
+ * at 79.8 MHz whatever the game is doing (SF_PAUSE_WAIT_TICKS). The games read
+ * all of it (RaC1 0x5069B4, RaC3 0x998FBC) and read again while its low word is
+ * 0, the Cell's guard for a read across the low word's wrap. The helper keeps
+ * the low word alone and subtracts, unsigned, so the wrap costs it nothing, and
+ * a wait ten seconds long does not mind a read one tick off.
+ */
+static __inline__ sf_u32 sf_ticks(void) __attribute__((always_inline));
+static __inline__ sf_u32 sf_ticks(void)
+{
+	unsigned long long tb;
+
+	__asm__ __volatile__("mftb %0" : "=r"(tb));
+	return (sf_u32)tb;
+}
+#endif
 #else
 /*
  * The game's save buffer into the aside buffer, one 32 KB chunk at a time. The
@@ -657,29 +740,50 @@ void sf_entry(void)
 	 *   1. A request finds the game somewhere it may be paused (sf_may_pause)
 	 *      and a save to hand over (sf_load_source), or is dropped with
 	 *      SF_API_REFUSED or SF_API_NO_SAVE.
-	 *   2. Already in the pause - the player's own, nothing queued - it loads at
-	 *      once: the frame it runs in is a pause frame.
-	 *   3. Otherwise the helper puts the game in the pause, from whatever mode it
-	 *      is in and without any of the Start button's tests. RaC1 changes state
-	 *      by writing it, and the helper does too (sf_enter_menu, which also puts
-	 *      the start menu's own words back, sf_rac1.h); RaC2 and RaC3 change
-	 *      mode through mode_requestChange, which runs the leaving mode's exit
-	 *      and the pause menu's entry at the end of the frame, and the helper
-	 *      asks it (sf_rac2.h). Where the game refuses for now - a mode change
-	 *      already queued, the player with no health - it asks again on the
-	 *      next call, and RaC1's state put back by the rest of the frame is
-	 *      written again.
-	 *   4. It loads on the first call from a later frame that runs in the
+	 *   2. RaC2's helper runs last in its frame, after the frame's update and
+	 *      render, and everything after it in the frame reads gameMode afresh.
+	 *      So it puts the game in the pause by writing the mode, as RaC1's does,
+	 *      with nothing queued behind it (sf_enter_pause), and loads in the same
+	 *      call: what is left of the frame is the pause's, and the planet load
+	 *      follows at its end (sf_rac2.h). There is nothing to wait for, and a
+	 *      request it does not refuse at once it always loads.
+	 *   3. RaC1's and RaC3's run first in theirs, and the frame then runs the
+	 *      update and render of the mode it began in whatever the helper writes,
+	 *      so they wait for a frame of the pause. Already in the pause - the
+	 *      player's own, nothing queued - they load at once: the frame they run
+	 *      in is a pause frame. Otherwise they put the game in the pause, from
+	 *      whatever mode it is in and without any of the Start button's tests.
+	 *      RaC1 changes state by writing it, and the helper does too
+	 *      (sf_enter_menu, which also puts the start menu's own words back,
+	 *      sf_rac1.h); RaC3 changes mode through mode_requestChange, which runs
+	 *      the leaving mode's exit and the pause menu's entry at the end of the
+	 *      frame, and the helper asks it (sf_rac3.h). Where the game refuses for
+	 *      now - a mode change already queued, the player with no health - it
+	 *      asks again on the next call, and RaC1's state put back by the rest of
+	 *      the frame is written again.
+	 *   4. They load on the first call from a later frame that runs in the
 	 *      pause: the state or mode reads the pause and the game's frame counter
-	 *      for it - RaC1's frames in state, the others' mode timer, both put back
-	 *      to 0 when it changes - has moved since the call that entered it. The
-	 *      pad routine can run twice in a frame, and RaC1's state is the pause
-	 *      from the moment the helper writes it, part way through a frame that
-	 *      still runs the old state's update and render.
-	 *   5. A request still waiting after SF_PAUSE_WAIT_MAX calls is dropped with
-	 *      SF_API_REFUSED, and so is one that finds the game somewhere it may not
-	 *      be paused while it waits. The pause the helper entered stays: it is
-	 *      the game's own, and the player leaves it as any other.
+	 *      for it - RaC1's frames in state, RaC3's mode timer, both put back to 0
+	 *      when it changes - has moved since the call that entered it. The pad
+	 *      routine can run twice in a frame, and RaC1's state is the pause from
+	 *      the moment the helper writes it, part way through a frame that still
+	 *      runs the old state's update and render.
+	 *   5. A request still waiting ten seconds after it was first seen is
+	 *      dropped with SF_API_REFUSED, and so is one that finds the game
+	 *      somewhere it may not be paused while it waits. The pause the helper
+	 *      entered stays: it is the game's own, and the player leaves it as any
+	 *      other.
+	 *
+	 * The ten seconds are the console's timebase (sf_ticks), the time the wait
+	 * began kept in SF_PAUSE_WAIT. They were 600 calls of the helper, which is
+	 * not ten seconds: RaC3's pad routine reaches the hook once for every pad
+	 * (0x235950), and RaC1's states 0 and 2 and RaC3's ordinary play read the
+	 * pads a second time on a slow frame (RaC1 0xE18FC and 0xE1920, RaC3
+	 * 0x1D7A60), so with two controllers in it was five seconds or less. The
+	 * frame counters above would not do in place of the timebase: they go back
+	 * to 0 whenever the state or mode changes, and a game going in and out of
+	 * the pause every frame - the case the wait runs out for - reads 0 at every
+	 * call.
 	 *
 	 * The planet load the loader starts begins the new planet in its ordinary
 	 * opening mode, whatever the old one was left in: RaC1's main loop starts
@@ -689,15 +793,32 @@ void sf_entry(void)
 	 *
 	 * RaC1's and RaC3's helpers run at the top of a frame, before its update;
 	 * RaC2's at the end, after its render. In RaC1 and RaC3 the load is the
-	 * first thing in its pause frame, and in RaC2 it follows a pause frame's
-	 * update and render; either way, what is left of the frame is the pause's,
-	 * and the planet load follows it.
+	 * first thing in its pause frame, and in RaC2 it follows the frame's update
+	 * and render with the pause already in the mode word; either way, what is
+	 * left of the frame is the pause's, and the planet load follows it.
 	 */
 	{
 		sf_u32 load = SF_BYTE(SF_API_LOAD);
-		sf_u32 wait = SF_WORD(SF_PAUSE_WAIT);
 
-		if (load != 1) wait = 0;
+#if SF_GAME == SF_RAC2
+		if (load == 1) {
+			sf_u32 mode = SF_WORD(SF_GAME_MODE);
+			sf_u32 src;
+
+			if (!sf_may_pause(mode)) {
+				SF_BYTE(SF_API_LOAD) = SF_API_REFUSED;
+			} else if ((src = sf_load_source()) == 0) {
+				SF_BYTE(SF_API_LOAD) = SF_API_NO_SAVE;
+			} else {
+				sf_enter_pause(mode);
+				sf_load(src);
+			}
+		}
+#else
+		/* The tick the wait began at, bit 0 set; 0 while no load waits. */
+		sf_u32 since = SF_WORD(SF_PAUSE_WAIT);
+
+		if (load != 1) since = 0;
 
 		if (load == 1) {
 #if SF_GAME == SF_RAC1
@@ -719,37 +840,40 @@ void sf_entry(void)
 				code = SF_API_REFUSED;
 			} else if ((src = sf_load_source()) == 0) {
 				code = SF_API_NO_SAVE;
-			} else if (paused && (wait == 0 || frame != SF_WORD(SF_PAUSE_FRAME))) {
-				wait = 0;
+			} else if (paused && (since == 0 || frame != SF_WORD(SF_PAUSE_FRAME))) {
+				since = 0;
 				sf_load(src);
-			} else if (++wait > SF_PAUSE_WAIT_MAX) {
+			} else if (since != 0 && sf_ticks() - since > SF_PAUSE_WAIT_TICKS) {
 				code = SF_API_REFUSED;
-			} else if (mode != pause) {
-#if SF_GAME == SF_RAC1
-				sf_enter_menu();
-				SF_WORD(SF_MENU_SCREEN) = SF_MENU_FIRST_SCREEN;
-				SF_WORD(SF_PAUSE_FRAME) = frame;
-#else
-				sf_u32 screen = SF_PAUSE_SCREEN;
+			} else {
+				if (since == 0) since = sf_ticks() | 1;
 
-#if SF_GAME == SF_RAC3
-				/* The vid comics have a pause of their own, as Start opens it. */
-				if (SF_WORD(SF_CURRENT_PLANET) - SF_PLANET_COMIC_FIRST <
-				    SF_PLANET_COMIC_COUNT)
-					screen = SF_PAUSE_SCREEN_COMIC;
-#endif
-				if (sf_request_mode((int)pause, 1, (int)screen, 0, 0) == 0)
+				if (mode != pause) {
+#if SF_GAME == SF_RAC1
+					sf_enter_menu();
+					SF_WORD(SF_MENU_SCREEN) = SF_MENU_FIRST_SCREEN;
 					SF_WORD(SF_PAUSE_FRAME) = frame;
+#else
+					sf_u32 screen = SF_PAUSE_SCREEN;
+
+					/* The vid comics have a pause of their own, as Start opens it. */
+					if (SF_WORD(SF_CURRENT_PLANET) - SF_PLANET_COMIC_FIRST <
+					    SF_PLANET_COMIC_COUNT)
+						screen = SF_PAUSE_SCREEN_COMIC;
+					if (sf_request_mode((int)pause, 1, (int)screen, 0, 0) == 0)
+						SF_WORD(SF_PAUSE_FRAME) = frame;
 #endif
+				}
 			}
 
 			if (code != 0) {
 				SF_BYTE(SF_API_LOAD) = code;
-				wait = 0;
+				since = 0;
 			}
 		}
 
-		SF_WORD(SF_PAUSE_WAIT) = wait;
+		SF_WORD(SF_PAUSE_WAIT) = since;
+#endif
 	}
 #endif
 

@@ -84,15 +84,14 @@
 #define SF_API_I        0x01080004
 
 /*
- * SF_PAUSE_WAIT counts the calls a load has waited for the pause, 0 while no
- * load waits; SF_PAUSE_FRAME is the game's frames-in-state counter as the
- * helper read it in the call that last put the game in the pause, so the load
- * goes on a later frame. Deadlocked's SF_PAUSE_WAIT_MAX, ten seconds at 60
- * frames a second.
+ * SF_PAUSE_WAIT holds the low word of the timebase when a load began to wait
+ * for the pause, with bit 0 set, and 0 while no load waits; the wait runs out
+ * after SF_PAUSE_WAIT_TICKS (sfhelper.h), ten seconds. SF_PAUSE_FRAME is the
+ * game's frames-in-state counter as the helper read it in the call that last
+ * put the game in the pause, so the load goes on a later frame.
  */
 #define SF_PAUSE_WAIT     0x01080008
 #define SF_PAUSE_FRAME    0x0108000C
-#define SF_PAUSE_WAIT_MAX 600
 
 /* ------------------------------------------------------- the aside buffer */
 

@@ -2229,6 +2229,7 @@ static void rac4_modes(u32 mode, u32 pending)
 #define SF_R2_PENDING   0x01329F90u
 #define SF_R2_PLANET    0x01329A3Cu
 #define SF_R2_REQUEST   0x0156B050u
+#define SF_R2_CONSOLE_FREEZE 0x0157CEDCu
 #define SF_R3_SAVE_INFO 0x00CB0A98u
 #define SF_R3_SAVE_OBJ  0x01800000u
 #define SF_R3_SAVE_BUF  0x01810000u
@@ -14153,9 +14154,9 @@ static void test_command_port(void)
  * an earlier build wrote for any of the three reads as another build's, and
  * left Deadlocked's alone.
  */
-#define SF53_STAMP_RAC1 0x2A9B51FAu
-#define SF53_STAMP_RAC2 0x35EE054Eu
-#define SF53_STAMP_RAC3 0x11999D37u   /* with the trophy reset and its thread */
+#define SF53_STAMP_RAC1 0xD28627B7u
+#define SF53_STAMP_RAC2 0xA6C6BFCFu
+#define SF53_STAMP_RAC3 0x30B71F34u   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
 /* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
@@ -14201,6 +14202,47 @@ static int sf53_request(int load, u8 *error)
 
 	savefile_transfer(&done, &total, error);
 	return rc;
+}
+
+/*
+ * Build 53. How many times a game's helper calls `target`: every word of every
+ * cave that is a relative `bl` (primary opcode 18, AA clear, LK set) whose
+ * target is `target`. The helper reaches the game's functions only that way
+ * (src/games/sfhelper/sfhelper.h), so this is what it calls.
+ */
+static u32 sf53_calls(const struct sf_desc *d, u32 target)
+{
+	u32 n = 0;
+	u8 c;
+
+	for (c = 0; c < d->ncaves; c++) {
+		u32 at;
+
+		for (at = 0; at + 4u <= d->caves[c].len; at += 4u) {
+			u32 word = be32_get(d->caves[c].bytes + at);
+			u32 disp = word & 0x03FFFFFCu;
+
+			if ((word & 0xFC000003u) != 0x48000001u) continue;
+			if (disp & 0x02000000u) disp |= 0xFC000000u;
+			if (d->caves[c].addr + at + disp == target) n++;
+		}
+	}
+	return n;
+}
+
+/* Build 53. Whether a game's helper reads the timebase: an `mftb rD` anywhere. */
+static int sf53_reads_timebase(const struct sf_desc *d)
+{
+	u8 c;
+
+	for (c = 0; c < d->ncaves; c++) {
+		u32 at;
+
+		for (at = 0; at + 4u <= d->caves[c].len; at += 4u) {
+			if ((be32_get(d->caves[c].bytes + at) & 0xFC1FFFFFu) == 0x7C0C42E6u) return 1;
+		}
+	}
+	return 0;
 }
 
 static void test_savefile_build53(void)
@@ -14253,7 +14295,7 @@ static void test_savefile_build53(void)
 		      sf53_byte_addr(g_sf_patch, 1) == 0x01080001u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x01080002u,
 		      "and the bytes it zeroes are the new request bytes");
-		check_eq_u64(len, 2116, "of 2116 bytes, the helper having shrunk to 920 with the pause");
+		check_eq_u64(len, 2180, "of 2180 bytes, the helper at 952 with the pause and its timed wait");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC1, "and the stamp this build pins for it");
 	}
 
@@ -14285,7 +14327,7 @@ static void test_savefile_build53(void)
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
 		check(d->caves[0].addr + d->caves[0].len <= 0x01141400u,
 		      "and the helper stops short of the code switches at 0x1141400");
-		check_eq_u64(len, 1972, "the reply is 1972 bytes");
+		check_eq_u64(len, 2116, "the reply is 2116 bytes, the helper at 1036 with the pause written");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC2, "with the stamp this build pins for it");
 
 		/*
@@ -14361,7 +14403,7 @@ static void test_savefile_build53(void)
 		      sf53_byte_addr(g_sf_patch, 1) == 0x00D9FF01u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x00D9FF02u,
 		      "and the bytes it zeroes are the three request bytes");
-		check_eq_u64(len, 3596, "the reply is 3596 bytes, the trophy reset and its thread included");
+		check_eq_u64(len, 3660, "the reply is 3660 bytes, the trophy reset and its thread included");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
 		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
 		      "which is not build 52's, so a patch from then reads as another build's");
@@ -14589,24 +14631,36 @@ static void test_savefile_build53(void)
 		poke32(SF_R2_REQUEST, 0);
 		poke32(SF_R2_MODE, 6);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "nor in space, the ship between planets");
-		poke32(SF_R2_MODE, 0xFFFFFFFFu);
+		      "nor in space, the ship's trip between planets");
+		poke32(SF_R2_MODE, 3);
+		poke32(SF_R2_PENDING, 6);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
-		      "nor in debug, which the mode change traps leaving");
+		      "nor with the trip queued, in the frame the ship sets off");
+		poke32(SF_R2_PENDING, R4_MODE_NONE);
+		poke32(SF_R2_MODE, 1);
+		host_poke(SF_R2_CONSOLE_FREEZE, (const u8 *)"\x01", 1);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor while the console holds the game in its freeze, a movie held under it");
+		host_poke(SF_R2_CONSOLE_FREEZE, (const u8 *)"\x00", 1);
 		poke32(SF_R2_MODE, 10);
 		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
 		      "nor in a mode the game does not have");
+		poke32(SF_R2_MODE, 0xFFFFFFFEu);
+		check(sf53_request(1, &error) == ST_BUSY && error == SAVEFILE_ERR_NOT_IDLE,
+		      "nor in -2, below debug, which the gameplay loop traps on");
 		{
 			/*
 			 * Up to the rework a load went out from play and the pause alone, with
-			 * nothing queued. The helper asks the game for its pause from any of
-			 * these now, and waits out a change already queued.
+			 * nothing queued. The helper writes the pause over any of these now,
+			 * debug included: it never leaves a mode through the mode change, so
+			 * debug's trap there is not in its way.
 			 */
-			static const u32 modes[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9 };
+			static const u32 modes[] = { 0xFFFFFFFFu, 0, 1, 2, 3, 4, 5, 7, 8, 9 };
 			static const char * const names[] = {
-				"from play it goes out",
-				"and from a movie",
-				"and from a scene",
+				"from debug it goes out now",
+				"and from play",
+				"and from a movie, a story cutscene",
+				"and from a scene, a cutscene the engine runs",
 				"and from the pause",
 				"and from a freeze, a message over the game",
 				"and from the vendor",
@@ -14623,9 +14677,10 @@ static void test_savefile_build53(void)
 				pump(SAVEFILE_SETTLE_TICKS);
 			}
 		}
-		poke32(SF_R2_MODE, 0);
-		poke32(SF_R2_PENDING, 0);
-		check(sf53_request(1, &error) == ST_OK, "and with a mode change queued, which it waits for");
+		poke32(SF_R2_MODE, 1);
+		poke32(SF_R2_PENDING, 2);
+		check(sf53_request(1, &error) == ST_OK,
+		      "and with a change queued, a movie's next scene, which the helper drops");
 		host_poke(d->api_load, (const u8 *)"\x00", 1);
 		pump(SAVEFILE_SETTLE_TICKS);
 		poke32(SF_R2_PENDING, R4_MODE_NONE);
@@ -14639,11 +14694,53 @@ static void test_savefile_build53(void)
 		host_poke(d->api_load, (const u8 *)"\xFE", 1);
 		pump(3);
 		savefile_transfer(&done, &total, &error);
-		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the helper drops it: the game would not pause");
+		check_eq_u64(error, SAVEFILE_ERR_NOT_IDLE, "the helper drops it, the game somewhere it may not load");
 		mem_read_u32(R2_FP_ADDR, &v);
 		check_eq_u64(v, 0x4BFFEA69u, "and the fast loads it forced are put back");
 
 		check(quit_and_wait(), "quit");
+	}
+
+	/* --------------------------- RaC2: the pause written, not asked for */
+
+	/*
+	 * Build 53. A load during a cutscene still failed on hardware while RaC2's
+	 * helper asked mode_requestChange for the pause and waited for it. It writes
+	 * the mode now, as RaC1's does, puts away what a cutscene leaves behind as the
+	 * Start button's skip does, and loads in the same call (sf_rac2.h). The
+	 * helper's own code never runs on a PC, but what it calls is in its bytes:
+	 * every call into the game is a relative bl the link computed.
+	 */
+	group("build 53: RaC2's helper writes the pause and loads at once");
+	{
+		const struct sf_desc *d2 = sf_desc_for_game(GAME_RAC2);
+		const struct sf_desc *d1 = sf_desc_for_game(GAME_RAC1);
+		const struct sf_desc *d3 = sf_desc_for_game(GAME_RAC3);
+
+		check(d2 != NULL && d2->ncaves == 1 && d2->caves[0].addr == 0x0113EC64u,
+		      "RaC2's helper is still the one cave at 0x113EC64");
+		check(d2->caves[0].addr + d2->caves[0].len <= 0x01141400u,
+		      "and ends before the code switches' caves at 0x1141400");
+		check_eq_u64(sf53_calls(d2, 0x00B8BF48u), 0,
+		             "it never calls mode_requestChange (0xB8BF48) any more");
+		check_eq_u64(sf53_calls(d2, 0x00083250u), 1, "it calls the loader, perform_load, once");
+		check_eq_u64(sf53_calls(d2, 0x010A7990u), 1,
+		             "and the movie player's stop (0x10A7990), as Start's skip does");
+		check_eq_u64(sf53_calls(d2, 0x00B28534u), 1,
+		             "and the cutscene queue's clear (0xB28534), as both skips do");
+		check(!sf53_reads_timebase(d2), "and waits for nothing, so it reads no clock");
+
+		/*
+		 * RaC1's and RaC3's still wait for a frame of the pause, and their wait
+		 * runs out by the console's timebase, ten seconds, rather than after 600
+		 * calls, which were fewer seconds the more pads the game read.
+		 */
+		check(sf53_reads_timebase(d1), "RaC1's helper times its wait by the timebase");
+		check(sf53_reads_timebase(d3), "and so does RaC3's");
+		check_eq_u64(sf53_calls(d1, 0x0013D3E0u), 1,
+		             "RaC1's still enters its start menu through 0x13D3E0");
+		check_eq_u64(sf53_calls(d3, 0x00229598u), 1,
+		             "and RaC3's still asks mode_requestChange (0x229598)");
 	}
 
 	/* ----------------------------------------------- RaC3: no save, not idle */
