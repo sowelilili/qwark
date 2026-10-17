@@ -146,7 +146,7 @@ static int g_trophies_asked;
  * at a flat 200, which is more than a player has until the health XP is full.
  */
 static struct classic_health rac3_freeze_health = {
-	RAC3_PLAYER_HEALTH, RAC3_MAX_HEALTH, 0, 0, 0
+	RAC3_PLAYER_HEALTH, RAC3_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
 static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
@@ -944,15 +944,6 @@ static const struct feature_desc rac3_features[] = {
 	 * dropship health are retired, ids and all (rac3.h). The first, the second
 	 * and the dropship are the manip groups below now.
 	 */
-	/*
-	 * Build 53: the trophy reset deletes the console's trophy data for this
-	 * game and has the game re-read its trophies, on a thread of the savefile
-	 * helper's, while it goes on running (rac3_panel.c). Up to the first
-	 * hardware test the game froze for three seconds and the label said so.
-	 * Under RPCS3 both answer UNSUPPORTED.
-	 */
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies" },
-	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies on Veldin load" },
 	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
 	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
 	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
@@ -974,8 +965,24 @@ static const struct feature_desc rac3_features[] = {
 
 	{ R3_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_FRONT,  0, 0, "Chargeboots primary front" },
 	{ R3_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_BACK,   0, 0, "Chargeboots primary back" },
-	{ R3_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_TINT,   0, 0, "Chargeboots tint" }
+	{ R3_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_TINT,   0, 0, "Chargeboots tint" },
+
+	/*
+	 * Build 53: the trophy reset deletes the console's trophy data for this
+	 * game and has the game re-read its trophies, on a thread of the savefile
+	 * helper's, while it goes on running (rac3_panel.c). Up to the first
+	 * hardware test the game froze for three seconds and the label said so.
+	 *
+	 * Last, and RAC3_TROPHY_ROWS of them, so that DESCRIBE can leave both out
+	 * where they can never work (rac3_describe): they are the only rows of the
+	 * Trophies group, so where to put them in the table changes nothing a
+	 * client draws.
+	 */
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies" },
+	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies on Veldin load" }
 };
+
+#define RAC3_TROPHY_ROWS 2
 
 #undef NO
 #undef WC
@@ -997,11 +1004,40 @@ static const struct game_describe rac3_describe_table = {
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
 };
 
+/* Build 53: the same, without the trophy rows at the end of the table. */
+static const struct game_describe rac3_describe_no_trophies = {
+	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
+	rac3_readouts, NR,
+	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0]) - RAC3_TROPHY_ROWS),
+	0,
+	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
+};
+
 #undef NR
 
+/*
+ * Build 53. Whether the trophy reset can work in this process at all: it needs
+ * a platform that patches code - RPCS3 keeps its trophy data where qwark cannot
+ * reach it, and the helper's thread is code (rac3_panel.c) - and the savefile
+ * helper, which config.txt can switch off.
+ */
+static int rac3_trophies_offered(void)
+{
+	return plat_can_patch_code() && savefile_enabled();
+}
+
+/*
+ * Build 53: where the trophy reset can never work, DESCRIBE leaves out its
+ * button and its toggle rather than offer two rows that always answer
+ * UNSUPPORTED, and that a client drew as usable: no feature flag says "never
+ * here" short of WRITES_CODE, which a client offers again under RPCS3 once the
+ * code switches are in. A client draws a group, and MANIP_LIST's Trophies
+ * header, only around features DESCRIBE has, so both go with them; FEATURE_SET
+ * and FEATURE_TRIGGER answer NOT_FOUND for ids DESCRIBE does not list.
+ */
 static const struct game_describe *rac3_describe(void)
 {
-	return &rac3_describe_table;
+	return rac3_trophies_offered() ? &rac3_describe_table : &rac3_describe_no_trophies;
 }
 
 /* --------------------------------------------------------------- toggles */
@@ -1030,7 +1066,7 @@ static int rac3_set_toggle(u8 id, int on)
 	 * on every load into Veldin.
 	 */
 	case R3_AUTO_TROPHIES:
-		if (on && (!plat_can_patch_code() || !savefile_enabled())) return ST_UNSUPPORTED;
+		if (on && !rac3_trophies_offered()) return ST_UNSUPPORTED;
 		g_auto_trophies = (on != 0);
 		return ST_OK;
 	default:               return ST_NOT_FOUND;

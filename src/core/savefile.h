@@ -64,6 +64,12 @@
  * SAVEFILE_INFO's `error`, revision 1.10. Set when a transfer stops early, and
  * kept until the next STORE or RESTORE starts, so a client that polls after the
  * pending bit has gone still learns why nothing happened.
+ *
+ * Build 43 made it the reason a set-aside or a load was refused too. Build 53:
+ * a set-aside or a load clears it as it starts, as a STORE or a RESTORE always
+ * has, so it is the reason for the last of the four, and a request that is
+ * refused for a reason with no code here, or goes out, leaves no earlier
+ * refusal's reason behind it.
  */
 #define SAVEFILE_ERR_NONE       0
 #define SAVEFILE_ERR_MISSING    1  /* RESTORE: no such file on the console */
@@ -71,6 +77,11 @@
 #define SAVEFILE_ERR_SHORT      3  /* the file is not exactly the buffer's size */
 #define SAVEFILE_ERR_NO_HELPER  4  /* the game went away underneath the copy */
 #define SAVEFILE_ERR_BUSY       5  /* the aside buffer was already spoken for */
+/*
+ * 5 is also, since build 53, a set-aside or a load asked for while a STORE or a
+ * RESTORE is running: the set-aside would write over the save being stored,
+ * and the load would hand the game a buffer the RESTORE is still filling.
+ */
 /*
  * Build 43. The game was not somewhere a save could be taken or put back: it
  * was in a cutscene, a transition, a menu or a lobby, or a mode change was
@@ -92,7 +103,12 @@
  * saved or loaded once in this process (on a new game, the first autosave) -
  * and a load found the aside buffer holding something that is not a save of
  * this game, or nothing at all and no save in the game to fill it from. Those
- * three answer it; Deadlocked never does.
+ * three answer it.
+ *
+ * All four answer it for a load of a buffer qwark filled itself, by a RESTORE
+ * or SAVEFILE_WRITE, whose first word is 0: every helper reads that as an empty
+ * buffer and loads the game's own save instead, so a RESTORE of such a file
+ * stops with it after the copy, raising nothing (savefile.c, g_aside_ours).
  */
 #define SAVEFILE_ERR_NO_SAVE    7
 
@@ -226,7 +242,8 @@ int savefile_patch(u8 *out, u32 cap, u32 *len);
 /*
  * The transfer half of SAVEFILE_INFO, revision 1.10. `done` and `total` are the
  * bytes of the copy that is running, both 0 when none is; `error` is why the
- * last one stopped early and survives until the next one starts.
+ * last one stopped early and survives until the next one starts - or, build 53,
+ * until the next set-aside or load is asked for.
  */
 void savefile_transfer(u32 *done, u32 *total, u8 *error);
 
@@ -239,7 +256,8 @@ int savefile_write(u32 offset, const u8 *data, u32 len);
  * with SAVEFILE_ERR_NOT_IDLE, and raises nothing at the game, when the running
  * game says it is not somewhere a save may be taken or put back. Build 53: or
  * with SAVEFILE_ERR_NO_SAVE, when it has no save to take or the aside buffer
- * none to give back.
+ * none to give back; or with SAVEFILE_ERR_BUSY while a STORE or a RESTORE is
+ * running. Either clears `error` as it starts.
  */
 int savefile_set_aside(void);
 int savefile_load_aside(void);
@@ -247,17 +265,20 @@ int savefile_load_aside(void);
 /*
  * Build 53. What savefile_load_aside would answer, without raising anything:
  * ST_OK when a load request would go out now, otherwise its refusal, with the
- * transfer's `error` set as the request would set it. RaC2 asks first because
- * its load action forces fast loads on before the request, and a load that is
- * refused must not leave them forced.
+ * transfer's `error` set as the request would set it. RaC1, RaC2 and RaC3 ask
+ * first because their load actions force fast loads on before the request, and
+ * a load that is refused must not leave them forced.
  */
 int savefile_load_ready(void);
 
 /*
  * Build 53. How many load requests the helper has dropped in this process: a
  * count that only goes up, which a game compares with the last value it saw to
- * undo what it did for a load that never came (RaC2 puts its fast loads back).
- * Tick thread, like the request watching that counts them.
+ * undo what it did for a load that never came (RaC1, RaC2 and RaC3 put back the
+ * fast loads their load actions forced). Only savefile_load_aside's loads are
+ * counted: a RESTORE's does nothing a game would undo, and one dropped while a
+ * planet load runs must not put back the fast loads that load forced. Tick
+ * thread, like the request watching that counts them.
  */
 u32 savefile_load_refusals(void);
 

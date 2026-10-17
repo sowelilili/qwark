@@ -3806,6 +3806,19 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: two flag bytes, 0xD9FF10 and 0xD9FF11",
           [hex(a) for a, _ in (single or [])])
 
+    # Build 53: the trophy reset can never work here, so DESCRIBE leaves out its
+    # button (21) and its toggle (39) rather than offer two rows that always
+    # answer UNSUPPORTED.
+    status, body = c.call(OP_DESCRIBE)
+    ids = set()
+    if status == ST_OK:
+        ids = {f["id"] for f in parse_describe(body)[3]}
+    check(status == ST_OK and 21 not in ids and 39 not in ids and RAC3_SW_FAST_ID in ids,
+          "rpcs3 rac3 switches: DESCRIBE leaves out the trophy reset and its toggle",
+          (status, sorted(ids)))
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([21]))
+    check(status == ST_NOT_FOUND, "rpcs3 rac3 switches: and the reset's id is NOT_FOUND", status)
+
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC3_SW_FAST_ID, 1))
     check(status == ST_UNSUPPORTED,
           "rpcs3 rac3 switches: Fast loads is refused until then", status)

@@ -471,23 +471,28 @@ static int rac4_all_max_ammo(void)
  * loads at the game's own pace rather than not at all. Build 50: unless the
  * code switches are in the game, when forcing them is a write of their flag
  * byte and the watcher puts that back as it would the patch.
+ *
+ * Build 53: a request that fails takes back its own force and nobody else's,
+ * as the other three games' loads do: one an earlier load still has
+ * outstanding stays.
  */
 int rac4_planet_load(u8 planet, u8 flags)
 {
-	int rc;
+	int was, rc;
 
 	(void)flags;   /* Deadlocked has no level flag region and no special bolts. */
 
 	if (planet == 0 || planet >= rac4_planet_count()) return ST_BAD_ARG;
 
+	was = rac4_fastload_forced();
 	rc = rac4_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = mem_write_u32(RAC4_TARGET_PLANET, planet);
-	if (rc != ST_OK) return rc;
-
-	return mem_write_u32(RAC4_LOAD_PLANET2, 1);
+	if (rc == ST_OK) rc = mem_write_u32(RAC4_LOAD_PLANET2, 1);
+	if (rc != ST_OK && !was) rac4_fastload_restore();
+	return rc;
 }
 
 /* -------------------------------------------------------------------- die */

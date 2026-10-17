@@ -108,6 +108,26 @@ static struct sf_request g_load;
 static u32 g_load_refusals;
 
 /*
+ * Build 53. Whether qwark has written into the aside buffer in this process: a
+ * RESTORE's copy, or SAVEFILE_WRITE.
+ *
+ * Every game's helper reads a first word of 0 in the aside buffer as "nothing
+ * has been set aside" and loads the game's own save instead (sf_load_source in
+ * RaC1 to RaC3, sf_fill_if_empty in Deadlocked), which is what every mod it
+ * comes from did for a load asked for before any set-aside. Once qwark has put
+ * something there itself, though, the buffer is not empty: it holds what the
+ * user asked to load, and a first word of 0 says that is no save. A RESTORE of
+ * such a file used to load the game's last save and report success. So while
+ * this is set a load of a buffer whose first word is 0 is refused with
+ * SAVEFILE_ERR_NO_SAVE before it goes out (aside_ready), and the helper's
+ * fallback is never reached. Every save of the four executables starts with the
+ * size of its first block, which is never 0.
+ *
+ * A new process has its own aside buffer, so savefile_forget puts this back.
+ */
+static u8 g_aside_ours;
+
+/*
  * The one transfer, revision 1.10.
  *
  * A save is up to 2 MB and the tick thread owes the rest of the module a tick
@@ -224,6 +244,7 @@ void savefile_forget(void)
 	request_clear(&g_set_aside);
 	request_clear(&g_load);
 	g_load_refusals = 0;
+	g_aside_ours = 0;
 
 	/*
 	 * A transfer that was in flight belonged to a process that is gone. Say so
@@ -541,7 +562,16 @@ static void request_tick(struct sf_request *r, u32 addr)
 		request_clear(r);
 		r->refused = why;
 		g_xfer.error = why;
-		if (r == &g_load) g_load_refusals++;
+		/*
+		 * Build 53: a load a RESTORE raised is not counted. The count is how a
+		 * game undoes what its own load action did for a load that never came
+		 * (savefile_load_refusals), and a RESTORE does nothing for its load: a
+		 * RESTORE dropped while a planet load is under way would otherwise put
+		 * back the fast loads that planet load forced. While a transfer runs no
+		 * other load can be raised (asked), so a load refused in SF_RESTORE_LOAD
+		 * is the RESTORE's.
+		 */
+		if (r == &g_load && g_xfer.state != SF_RESTORE_LOAD) g_load_refusals++;
 		if (why == SAVEFILE_ERR_NOT_IDLE)
 			plat_log("savefile: the helper refused the request, the game was not idle");
 		else
@@ -574,6 +604,8 @@ static void sum_write(const char *path, u32 crc)
 	plat_file_write(f, text, 8);
 	plat_file_close(f);
 }
+
+static int request(int load, int own);
 
 /*
  * One tick of the copy. Called from savefile_tick with the running game's
@@ -664,6 +696,8 @@ static void xfer_tick(const struct sf_desc *d)
 				xfer_stop(SAVEFILE_ERR_SHORT);
 				return;
 			}
+			/* Build 53: what is in the buffer is the file's from here on (g_aside_ours). */
+			g_aside_ours = 1;
 			if (mem_write(d->aside_addr + g_xfer.done, copy, got) != ST_OK) {
 				xfer_stop(SAVEFILE_ERR_IO);
 				return;
@@ -682,8 +716,13 @@ static void xfer_tick(const struct sf_desc *d)
 		 * game is still somewhere it may take it. The copy took ticks, and the
 		 * game had frames of its own in them, so this is asked again here
 		 * rather than taken on trust from when the RESTORE was accepted.
+		 *
+		 * Build 53: and the file is asked about, as any load of what qwark put in
+		 * the buffer is (aside_ready): a file whose first word is 0 stops here
+		 * with SAVEFILE_ERR_NO_SAVE rather than have the helper load the game's
+		 * own save in its place.
 		 */
-		rc = savefile_load_aside();
+		rc = request(1, 1);
 		if (rc != ST_OK) {
 			xfer_stop(rc == ST_BUSY ? refusal_error() : SAVEFILE_ERR_IO);
 			return;
@@ -780,16 +819,78 @@ int savefile_write(u32 offset, const u8 *data, u32 len)
 	 * client sending more than the buffer holds has the wrong file. */
 	if (len > d->aside_size - offset) return ST_BAD_ARG;
 
-	return mem_write(d->aside_addr + offset, data, len);
+	rc = mem_write(d->aside_addr + offset, data, len);
+	/* Build 53: the buffer holds the client's bytes now (g_aside_ours). */
+	if (rc == ST_OK) g_aside_ours = 1;
+	return rc;
 }
 
-static int request(int load)
+/*
+ * Build 53. What a load of the aside buffer would be refused for once the game
+ * has said it may load: SAVEFILE_ERR_NO_SAVE when qwark filled the buffer itself
+ * and its first word is 0, which the helper would take for an empty buffer and
+ * load the game's own save in place of (g_aside_ours); NOT_IDLE when the read
+ * fails, as the games' own tests answer.
+ */
+static u8 aside_ready(const struct sf_desc *d)
+{
+	u32 first = 0;
+
+	if (!g_aside_ours) return SAVEFILE_ERR_NONE;
+	if (mem_read_u32(d->aside_addr, &first) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
+	return first == 0 ? SAVEFILE_ERR_NO_SAVE : SAVEFILE_ERR_NONE;
+}
+
+/* Build 53: the game's test for a load, then aside_ready's. */
+static u8 load_ready(const struct sf_desc *d)
+{
+	u8 why = game_ready(GAME_SF_LOAD);
+
+	return why != SAVEFILE_ERR_NONE ? why : aside_ready(d);
+}
+
+/*
+ * Build 53. The front of a set-aside or load somebody asked for - the two
+ * actions, the combo, a game's own load path - rather than one a STORE or a
+ * RESTORE raises for itself. Two things are true of those that are not of a
+ * transfer's own:
+ *
+ *   - `error` describes the request, so it starts at 0. Up to now only a STORE
+ *     or a RESTORE put it back, and a request that went out after a refusal, or
+ *     was refused for a reason that sets no error, left the earlier refusal's
+ *     reason there for the client to report.
+ *   - Nothing is raised while a transfer has the aside buffer: a set-aside would
+ *     write over the save a STORE is copying out, and a load would hand the game
+ *     a buffer a RESTORE is still copying in. BUSY, with SAVEFILE_ERR_BUSY, the
+ *     error a second STORE or RESTORE gets.
+ *
+ * ST_OK when the request may go on, otherwise BUSY.
+ */
+static int asked(void)
+{
+	g_xfer.error = SAVEFILE_ERR_NONE;
+
+	if (g_xfer.state != SF_IDLE) {
+		g_xfer.error = SAVEFILE_ERR_BUSY;
+		return ST_BUSY;
+	}
+	return ST_OK;
+}
+
+/*
+ * `own` is 1 for the request a STORE or a RESTORE raises itself, which already
+ * holds the aside buffer, and 0 for every other (asked).
+ */
+static int request(int load, int own)
 {
 	const struct sf_desc *d;
 	struct sf_request *r;
-	int rc = gate(&d);
+	int rc = own ? ST_OK : asked();
 	u8 why;
 
+	if (rc != ST_OK) return rc;
+
+	rc = gate(&d);
 	if (rc != ST_OK) return rc;
 
 	/*
@@ -800,7 +901,7 @@ static int request(int load)
 	 * pressed the button, instead of a request that quietly comes to nothing.
 	 * Build 53: or that has no save to act on (SAVEFILE_ERR_NO_SAVE).
 	 */
-	why = game_ready(load ? GAME_SF_LOAD : GAME_SF_SET_ASIDE);
+	why = load ? load_ready(d) : game_ready(GAME_SF_SET_ASIDE);
 	if (why != SAVEFILE_ERR_NONE) {
 		g_xfer.error = why;
 		return ST_BUSY;
@@ -824,18 +925,21 @@ static int request(int load)
 	return ST_OK;
 }
 
-int savefile_set_aside(void) { return request(0); }
-int savefile_load_aside(void) { return request(1); }
+int savefile_set_aside(void) { return request(0, 0); }
+int savefile_load_aside(void) { return request(1, 0); }
 
 int savefile_load_ready(void)
 {
 	const struct sf_desc *d;
-	int rc = gate(&d);
+	int rc = asked();
 	u8 why;
 
 	if (rc != ST_OK) return rc;
 
-	why = game_ready(GAME_SF_LOAD);
+	rc = gate(&d);
+	if (rc != ST_OK) return rc;
+
+	why = load_ready(d);
 	if (why != SAVEFILE_ERR_NONE) {
 		g_xfer.error = why;
 		return ST_BUSY;
@@ -1078,9 +1182,16 @@ static int buffer_busy(void)
  */
 static int transfer_gate(const struct sf_desc **d, const char *category, const char *name, u8 what)
 {
-	int rc = gate(d);
+	int rc;
 	u8 why;
 
+	/*
+	 * Build 53: a refusal describes this request, not whichever one came before
+	 * it (asked has the why). xfer_begin clears it again for one that starts.
+	 */
+	g_xfer.error = SAVEFILE_ERR_NONE;
+
+	rc = gate(d);
 	if (rc != ST_OK) return rc;
 	if (!savefile_name_ok(category) || !savefile_name_ok(name)) return ST_BAD_ARG;
 	/*
@@ -1144,7 +1255,7 @@ int savefile_store(const char *category, const char *name)
 	 * inside the game is over: a file created now and filled later is a file
 	 * that exists and is empty for the length of the wait.
 	 */
-	rc = savefile_set_aside();
+	rc = request(0, 1);
 	if (rc != ST_OK) {
 		xfer_stop(rc == ST_BUSY ? refusal_error() : SAVEFILE_ERR_IO);
 		return rc;

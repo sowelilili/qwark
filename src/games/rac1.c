@@ -304,7 +304,7 @@ static int rac1_on_a_drek_button(void)
  * load is under way, and never fires.
  *
  * Build 53: the same moment ends every load for fast loads too, whatever the
- * planet, and puts back what a load forced (rac1_fastload_restore). It
+ * planet, and puts back what a load forced (rac1_fastload_watch, below). It
  * is the first moment all three fast-load sites are behind the game: the
  * loading screen's call (0x165490) and one sound pick (0x1641F8, in 0x163AA0,
  * from 0x165434) are in the transition, but the other (0x160060, in 0x15FE00)
@@ -328,6 +328,31 @@ static int g_fl_latched;
  */
 static int g_fastload_on;
 static int g_fastload_forced;
+
+/*
+ * Build 53. What the restore needs to know about the force beside it, which
+ * the manips' latch above cannot tell it:
+ *
+ *   g_fastload_loading  the request word has been seen up since the load the
+ *                       force is for was asked for. The end of a load is only
+ *                       the end of that load once its request word has been
+ *                       seen: a set-aside load asked for in a planet's fly-in,
+ *                       the state still 6 after the planet load and the latch
+ *                       up from it, is taken by the helper into the start menu,
+ *                       state 3, which read as that planet load's end and put
+ *                       the patch back before the set-aside load had even been
+ *                       raised. Every load that goes out starts this over
+ *                       (rac1_fastload_claim), as every force does on RaC3.
+ *   g_fastload_aside    the force is a set-aside load's (rac1_load_setaside),
+ *                       whose request the helper can still drop on the game's
+ *                       frame, when no load follows to end it; rac1_on_tick
+ *                       then puts it back. A planet load's request is the
+ *                       game's own word and is never dropped, so a set-aside
+ *                       load's refusal leaves a planet load's force to the end
+ *                       of that load.
+ */
+static int g_fastload_loading;
+static int g_fastload_aside;
 
 /*
  * Build 53. savefile_load_refusals as rac1_on_tick last saw it, as on RaC2. A
@@ -354,8 +379,31 @@ static void rac1_file_load_watch(void)
 		return;
 
 	g_fl_latched = 0;
-	rac1_fastload_restore();
 	if (g_planet_word == 0) manips_file_loaded();
+}
+
+/*
+ * Build 53. The end of a forced load, for the fast-load restore: the moment
+ * rac1_file_load_watch takes for the end of a load (the request word back at 0,
+ * the front end closed, the state out of 6), once the request word has been
+ * seen up since the load the force is for went out (g_fastload_loading). Only
+ * a forced load has anything to put back: the end of a load nothing forced
+ * writes nothing, which under RPCS3 would otherwise put the fast-load flag down
+ * under a checkbox that reads it as on.
+ */
+static void rac1_fastload_watch(void)
+{
+	if (!g_fastload_forced) return;
+
+	if (g_load_request != 0) {
+		g_fastload_loading = 1;
+		return;
+	}
+
+	if (!g_fastload_loading || g_frontend != 0 || g_as.game_state == RAC1_STATE_TRANSITION)
+		return;
+
+	rac1_fastload_restore();
 }
 
 /*
@@ -376,7 +424,7 @@ static int rac1_in_file(void)
 
 /* Build 53: Freeze health, held at the game's own maximum (rac1.h). */
 static struct classic_health rac1_freeze_health = {
-	RAC1_PLAYER_HEALTH, RAC1_MAX_HEALTH, 0, 0, 0
+	RAC1_PLAYER_HEALTH, RAC1_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
 static void rac1_on_tick(const struct game_hot *hot)
@@ -385,14 +433,18 @@ static void rac1_on_tick(const struct game_hot *hot)
 
 	(void)hot;
 
-	/* Build 53: a set-aside load the helper dropped puts the forced fast loads back. */
+	/*
+	 * Build 53: a set-aside load the helper dropped puts the forced fast loads
+	 * back - its own force, not a planet load's (g_fastload_aside).
+	 */
 	if (savefile_load_refusals() != g_sf_refusals) {
 		g_sf_refusals = savefile_load_refusals();
-		if (g_fastload_forced) rac1_fastload_restore();
+		if (g_fastload_forced && g_fastload_aside) rac1_fastload_restore();
 	}
 
 	classic_health_tick(&rac1_freeze_health);
 	rac1_file_load_watch();
+	rac1_fastload_watch();
 
 	/*
 	 * LiveSplit's first update after init has old == current, so no edge fires
@@ -472,6 +524,8 @@ static void rac1_on_enter(void)
 	 */
 	g_fastload_on = 0;
 	g_fastload_forced = 0;
+	g_fastload_loading = 0;
+	g_fastload_aside = 0;
 	g_sf_refusals = savefile_load_refusals();
 
 	/* Freeze health's tracking of the maximum goes with the process too. */
@@ -559,13 +613,43 @@ static struct patch_def rac1_ammo = {
  * dropped). g_fastload_on and g_fastload_forced, beside that watch, say why
  * they are on. patch_apply is a no-op when the toggle already applied the
  * patch, so nothing is captured twice and nothing is written twice.
+ *
+ * Under RPCS3 the flag byte outlives qwark: a qwark-rpcs3 started against a game
+ * that is already running finds it however the last one left it, and the
+ * checkbox reads it back as it is. A flag at 1 that this process did not force
+ * is the user's setting, so the force takes it for the checkbox's rather than
+ * its own and the end of the load leaves it up, as RaC3's does. On a console
+ * the read is NOT_FOUND: the patch is qwark's own, and a new process starts
+ * without it.
+ *
+ * The load the force is for claims it once its request is out
+ * (rac1_fastload_claim): a request that fails leaves the watch as it was, and
+ * an earlier load's force with it.
  */
 int rac1_fastload_force(void)
 {
-	int rc = classic_code_force(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS);
+	int on = 0;
+	int rc;
 
+	if (!g_fastload_forced &&
+	    classic_code_read(SW_RAC1_FLAG_FAST_LOADS, &on) == ST_OK && on)
+		g_fastload_on = 1;
+
+	rc = classic_code_force(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS);
 	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
 	return rc;
+}
+
+/*
+ * Build 53. The load is asked for: the force is its from here on, whoever's it
+ * was before, and the watch for the end of a load starts over, since the commands
+ * run before the tick reads the game and the end of an earlier load is not this
+ * one's. `aside` says whose (g_fastload_aside).
+ */
+void rac1_fastload_claim(int aside)
+{
+	g_fastload_loading = 0;
+	g_fastload_aside = aside;
 }
 
 int rac1_fastload_forced(void)
@@ -576,6 +660,8 @@ int rac1_fastload_forced(void)
 int rac1_fastload_restore(void)
 {
 	g_fastload_forced = 0;
+	g_fastload_loading = 0;
+	g_fastload_aside = 0;
 	if (g_fastload_on) return ST_OK;
 	return classic_code_toggle(&rac1_fastload, SW_RAC1_FLAG_FAST_LOADS, 0);
 }
@@ -734,6 +820,8 @@ static int rac1_set_toggle(u8 id, int on)
 			g_fastload_on = on;
 			/* Whatever a load forced, the checkbox has the say now. */
 			g_fastload_forced = 0;
+			g_fastload_loading = 0;
+			g_fastload_aside = 0;
 		}
 		return rc;
 

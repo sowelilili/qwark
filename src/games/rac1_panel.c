@@ -418,20 +418,25 @@ int rac1_levelflags_reset(u8 planet)
 
 int rac1_planet_load(u8 planet, u8 flags)
 {
-	int rc;
+	int was, rc;
 
 	if (planet >= rac1_planet_count()) return ST_BAD_ARG;
 
 	/*
 	 * Build 53: fast loads forced on before the request, and put back to the
-	 * checkbox's setting when the load is over (rac1.c, rac1_file_load_watch),
+	 * checkbox's setting when the load is over (rac1.c, rac1_fastload_watch),
 	 * exactly as RaC2's planet load has always done.
 	 *
 	 * A platform that refuses code patches (RPCS3) loads at the game's own pace
 	 * rather than not at all: the request and the resets are data writes, and
 	 * the load is what was asked for. With the code switches in, forcing them is
 	 * a write of their flag byte, and the end of the load puts that back too.
+	 *
+	 * A request that fails takes back its own force and nobody else's, as the
+	 * set-aside load below does: one an earlier load still has outstanding
+	 * stays.
 	 */
+	was = rac1_fastload_forced();
 	rc = rac1_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
@@ -442,7 +447,11 @@ int rac1_planet_load(u8 planet, u8 flags)
 	 * that order deliberately: it is what runners' muscle memory is built on.
 	 */
 	rc = classic_planet_request(RAC1_LOAD_PLANET, planet);
-	if (rc != ST_OK) return rc;
+	if (rc != ST_OK) {
+		if (!was) rac1_fastload_restore();
+		return rc;
+	}
+	rac1_fastload_claim(0);
 
 	if (flags & PLANET_FLAG_RESET_LEVELFLAGS) {
 		rc = rac1_reset_level_flags(planet);
@@ -475,6 +484,11 @@ int rac1_planet_load(u8 planet, u8 flags)
  * put back at once, unless an earlier load's force is still running. A platform
  * that refuses code patches loads at the game's own pace; with the code switches
  * in, the force is a write of their flag byte.
+ *
+ * Once the request is out the force is this load's (rac1_fastload_claim), even
+ * when an earlier one's was still running - a set-aside load asked for in a
+ * planet's fly-in - and the watch for the end of a load starts over: the end of
+ * this load puts it back, or the helper dropping this load's request.
  */
 int rac1_load_setaside(void)
 {
@@ -491,8 +505,12 @@ int rac1_load_setaside(void)
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = savefile_load_aside();
-	if (rc != ST_OK && !was) rac1_fastload_restore();
-	return rc;
+	if (rc != ST_OK) {
+		if (!was) rac1_fastload_restore();
+		return rc;
+	}
+	rac1_fastload_claim(1);
+	return ST_OK;
 }
 
 /*

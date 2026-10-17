@@ -170,6 +170,35 @@
 #define RAC2_GUARD_GRID_BRANCH  0x490BAAE0u   /* b 0x1141440 */
 #define RAC2_GUARD_SHIP_BRANCH  0x48562164u   /* b 0x1141470 */
 
+/*
+ * Build 53. What the transition (0xBEA188) reads to decide the two things the
+ * crash the guards stop needs, for rac2_planet_load to ask under RPCS3 when the
+ * guards are not in (rac2_panel.c, rac2_trip_unguarded). From the NPEA00386
+ * executable; not yet run on hardware.
+ *
+ *   the space wad   1 for Dobbo Orbit or Damosel Orbit, 2 for the Jamming
+ *                   Array, at either end of the trip (0xBEA1F0..0xBEA248); 3
+ *                   for a trip to Aranos 2 while the byte RAC2_TRIP_A2_FLAG is
+ *                   0 (0xBEA24C..0xBEA26C). Every other trip is wad 0's, the
+ *                   one that empties the parts list.
+ *   the cutscene    RAC2_TRIP_SCENE, the story cutscene the trip plays, 0 for
+ *                   none: the load screen plays and clears it (0xBE5618), and a
+ *                   new game and a restore zero it (0x812FC, 0x83AC8). Before
+ *                   that the transition may queue one itself (0xBEA270..
+ *                   0xBEA400), the first of seven rules that holds: a story
+ *                   byte set and a seen bit clear, below.
+ *
+ * The destination is the planet the request names, RAC2_LOAD_PLANET + 4.
+ */
+#define RAC2_PLANET_DOBBO_ORBIT   22
+#define RAC2_PLANET_DAMOSEL_ORBIT 23
+#define RAC2_PLANET_JAMMING_ARRAY 26
+#define RAC2_TRIP_A2_FLAG       0x0148174Bu   /* 0x1481720 + 43 */
+#define RAC2_TRIP_SCENE         0x015D4670u
+#define RAC2_TRIP_STORY         0x01482512u   /* two bytes at +0, then 0x1482524.. at +0x12 */
+#define RAC2_TRIP_STORY_LEN     0x23u
+#define RAC2_TRIP_SEEN          0x01481980u   /* the seen words are at +20, +24, +168, +172 */
+
 #define RAC2_PBOLTS            0x1390C27u  /* Maktar slots */
 #define RAC2_PJACKPOT          0x1390C37u
 
@@ -462,9 +491,17 @@ int rac2_unlock_set(u8 id, u8 field, u32 value);
 
 u8  rac2_planet_count(void);
 
-/* The fast-load patch, shared with the planet load and the set-aside load. */
-int rac2_fastload_force(void);
-int rac2_fastload_restore(void);
+/*
+ * The fast-load patch, shared with the planet load and the set-aside load.
+ * Build 53: rac2_fastload_forced is 1 while a load's force is on, and
+ * rac2_fastload_claim follows a load's request once it is out, as RaC1's does:
+ * `aside` is 1 for a set-aside load, whose force a refusal of its request puts
+ * back, and 0 for a planet load, whose force only the end of the load does.
+ */
+int  rac2_fastload_force(void);
+void rac2_fastload_claim(int aside);
+int  rac2_fastload_forced(void);
+int  rac2_fastload_restore(void);
 
 /* The two "on death" toggles SelfDeathExtended took as arguments. */
 int rac2_death_bosses(void);

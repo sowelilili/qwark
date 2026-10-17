@@ -12,6 +12,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/savefile.h"
+#include "../core/switches.h"
 #include "sfhelper_bins.h"
 
 #include <string.h>
@@ -541,11 +542,118 @@ int rac2_levelflags_reset(u8 planet)
 
 /* ---------------------------------------------------------------- planets */
 
+#ifdef QWARK_EMULATOR
+/*
+ * Build 53. The transition's seven rules for the story cutscene a trip owes
+ * (0xBEA270..0xBEA400), in the order it tries them; the first that holds queues
+ * its scene. Five have one shape: a story byte for planet `planet` set, a trip
+ * that is not to that planet, and a bit of a seen word clear. The other two,
+ * scenes 26 and 27, are written out in rac2_trip_unguarded.
+ */
+struct rac2_trip_rule {
+	u8  planet;   /* the story byte is RAC2_TRIP_STORY + 0x12 + planet */
+	u8  seen;     /* the seen word's offset from RAC2_TRIP_SEEN */
+	u32 bit;      /* the bit of it that says the scene has played */
+};
+
+static const struct rac2_trip_rule rac2_trip_rules[] = {
+	{  0, 168, 0x00000200u },   /* scene 169 */
+	{  1,  20, 0x00800000u },   /* scene 23 */
+	{  5, 168, 0x00000800u },   /* scene 171 */
+	{  8, 172, 0x00002000u }    /* scene 173; then 26 and 27, then 175: */
+};
+static const struct rac2_trip_rule rac2_trip_last = { 16, 172, 0x00008000u };
+
+static int rac2_trip_rule_holds(const u8 *story, const struct rac2_trip_rule *r, u8 dest)
+{
+	u32 seen = 0;
+
+	if (story[0x12 + r->planet] == 0 || dest == r->planet) return 0;
+	if (mem_read_u32(RAC2_TRIP_SEEN + r->seen, &seen) != ST_OK) return -1;
+	return (seen & r->bit) == 0;
+}
+
+/*
+ * Build 53. Whether a trip to `dest` is the one the crash guards are for (rac2.c
+ * has the crash): a space wad of its own, which leaves the last level's ship
+ * parts in their list, and a story cutscene that moves them. 1 yes, 0 no, -1
+ * when a read failed. rac2.h has the addresses.
+ *
+ * Under RPCS3 the guards come in with the code switches' patch, and a game
+ * without it has none; rac2_planet_load refuses such a trip there rather than
+ * crash the game. A console writes them as the session enters RaC2.
+ */
+static int rac2_trip_unguarded(u8 dest)
+{
+	u8 story[RAC2_TRIP_STORY_LEN];
+	u32 cur = 0, scene = 0, seen = 0;
+	u8 a2 = 1;
+	int wad = 0;
+	u32 i;
+	int held;
+
+	if (mem_read_u32(RAC2_CURRENT_PLANET, &cur) != ST_OK) return -1;
+
+	if (dest == RAC2_PLANET_DOBBO_ORBIT || dest == RAC2_PLANET_DAMOSEL_ORBIT ||
+	    dest == RAC2_PLANET_JAMMING_ARRAY || cur == RAC2_PLANET_DOBBO_ORBIT ||
+	    cur == RAC2_PLANET_DAMOSEL_ORBIT || cur == RAC2_PLANET_JAMMING_ARRAY)
+		wad = 1;
+	if (dest == RAC2_PLANET_ARANOS2) {
+		if (mem_read_u8(RAC2_TRIP_A2_FLAG, &a2) != ST_OK) return -1;
+		if (a2 == 0) wad = 1;
+	}
+	if (!wad) return 0;
+
+	if (mem_read_u32(RAC2_TRIP_SCENE, &scene) != ST_OK) return -1;
+	if (scene != 0) return 1;
+
+	if (mem_read(RAC2_TRIP_STORY, story, sizeof(story)) != ST_OK) return -1;
+
+	for (i = 0; i < sizeof(rac2_trip_rules) / sizeof(rac2_trip_rules[0]); i++) {
+		held = rac2_trip_rule_holds(story, &rac2_trip_rules[i], dest);
+		if (held != 0) return held;
+	}
+
+	/* Scene 26: either of the two bytes at 0x1482512, and 0x04000000 of +24 clear. */
+	if (story[0] != 0 || story[1] != 0) {
+		if (mem_read_u32(RAC2_TRIP_SEEN + 24, &seen) != ST_OK) return -1;
+		if ((seen & 0x04000000u) == 0) return 1;
+	}
+
+	/* Scene 27: a trip to Boldan (13), and 0x08000000 of +24 clear. */
+	if (dest == 13) {
+		if (mem_read_u32(RAC2_TRIP_SEEN + 24, &seen) != ST_OK) return -1;
+		if ((seen & 0x08000000u) == 0) return 1;
+	}
+
+	return rac2_trip_rule_holds(story, &rac2_trip_last, dest);
+}
+#endif /* QWARK_EMULATOR */
+
 int rac2_planet_load(u8 planet, u8 flags)
 {
-	int rc;
+	int was, rc;
 
 	if (planet >= rac2_planet_count()) return ST_BAD_ARG;
+
+#ifdef QWARK_EMULATOR
+	/*
+	 * Build 53. Under RPCS3 the crash guards are rows of the code switches'
+	 * patch (rac2.c), so a game without that patch - or before the look has
+	 * found it - has none, and a trip to or from Dobbo Orbit, Damosel Orbit or
+	 * the Jamming Array, or to Aranos 2 while it takes a wad of its own, with a
+	 * story cutscene to play crashes the game. Refused, UNSUPPORTED, rather than
+	 * made: the client offers that patch, and the trip goes once it is in.
+	 */
+	if (!plat_can_patch_code() && !switches_present()) {
+		rc = rac2_trip_unguarded(planet);
+		if (rc != 0) {
+			plat_log("rac2: planet load refused, the trip plays a cutscene the crash guards are for, "
+			         "and under RPCS3 they need the code switches' patch");
+			return rc < 0 ? ST_IO_ERROR : ST_UNSUPPORTED;
+		}
+	}
+#endif
 
 	/*
 	 * The old load button forced fast loads on before the request and let the
@@ -558,13 +666,22 @@ int rac2_planet_load(u8 planet, u8 flags)
 	 * The set-aside load below makes the same call. Build 50: unless the code
 	 * switches are in the game, when forcing them is a write of their flag byte
 	 * and the watcher puts that back as it would the patch.
+	 *
+	 * Build 53: a request that fails takes back its own force and nobody
+	 * else's, as RaC1's loads do: one an earlier load still has outstanding
+	 * stays.
 	 */
+	was = rac2_fastload_forced();
 	rc = rac2_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
 	rc = classic_planet_request(RAC2_LOAD_PLANET, planet);
-	if (rc != ST_OK) return rc;
+	if (rc != ST_OK) {
+		if (!was) rac2_fastload_restore();
+		return rc;
+	}
+	rac2_fastload_claim(0);
 
 	if (flags & PLANET_FLAG_RESET_LEVELFLAGS) {
 		rc = rac2_levelflags_reset(planet);
@@ -621,20 +738,30 @@ int rac2_load_setaside(void)
 	 * done for it - the install, and above all the fast loads forced on below:
 	 * nothing would put those back until the next load the player makes, which
 	 * would then be fast without the checkbox. One the helper drops later, on
-	 * the game's own frame, is caught by rac2_on_tick.
+	 * the game's own frame, is caught by rac2_on_tick, and one the request
+	 * itself refuses here takes back its own force at once, as RaC1's does
+	 * (rac1_panel.c, rac1_load_setaside), leaving one an earlier load still has
+	 * outstanding.
 	 */
-	int rc = savefile_load_ready();
+	int was, rc = savefile_load_ready();
 
 	if (rc != ST_OK) return rc;
 
 	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
+	was = rac2_fastload_forced();
 	rc = rac2_fastload_force();
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
-	return savefile_load_aside();
+	rc = savefile_load_aside();
+	if (rc != ST_OK) {
+		if (!was) rac2_fastload_restore();
+		return rc;
+	}
+	rac2_fastload_claim(1);
+	return ST_OK;
 }
 
 /*

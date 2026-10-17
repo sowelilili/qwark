@@ -39,6 +39,15 @@ int  classic_ghost(u32 timer_addr, int on);
  * maximum reads as nothing a game would hold (0 before a game sets it, a
  * negative or a non-finite float) no entry is kept, so the toggle never pins a
  * player at 0. Off removes the entry and leaves the hit points where they are.
+ *
+ * Build 53: the entry is only ever the toggle's own. The freeze table keys an
+ * entry by its address and size, so a freeze the user sets on the hit points
+ * in the Memory panel is the same entry, and the toggle used to write its value
+ * over the user's, take it out while the maximum read as nothing, and take it
+ * out when it went off. Now an entry the toggle did not put there, or whose
+ * value someone else has changed since (`held`), is the user's: the toggle
+ * leaves it as it is, its value and all, for as long as it is there, and puts
+ * its own back once the user removes theirs.
  */
 struct classic_health {
 	u32 health;     /* the hit points */
@@ -46,6 +55,8 @@ struct classic_health {
 	u8  is_float;   /* both are f32 (Deadlocked) rather than s32 */
 	u8  on;         /* the toggle, qwark-side state */
 	u8  wait;       /* ticks to the next look at the maximum */
+	u8  owned;      /* build 53: the entry on `health` is the toggle's */
+	u32 held;       /* build 53: the value the toggle last gave it */
 };
 
 #define CLASSIC_HEALTH_EVERY 8

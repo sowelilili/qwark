@@ -49,33 +49,62 @@ static int health_max_ok(const struct classic_health *h, u32 bits)
 }
 
 /*
+ * Build 53. The entry on the hit points, and whether it is the toggle's own
+ * (classic.h): one it put there whose value is still the one it gave it. *id is
+ * the entry's slot, or -1 when there is none.
+ */
+static const struct freeze_entry *health_entry(const struct classic_health *h, int *id, int *ours)
+{
+	const struct freeze_entry *f;
+
+	*id = freeze_find(h->health, 4);
+	f = (*id >= 0) ? freeze_slot((u8)*id) : NULL;
+	*ours = f != NULL && h->owned && f->value == (u64)h->held;
+	return f;
+}
+
+/*
  * Puts the entry where the maximum says, or takes it out while there is none.
  * A client that removed the entry by hand gets it back here: the toggle is
  * still on, and the entry is all the toggle is.
+ *
+ * Build 53: an entry that is not the toggle's own is the user's freeze, and is
+ * left alone, value and all, until it is gone.
  */
 static int health_refresh(struct classic_health *h)
 {
 	const struct freeze_entry *f;
 	u32 max = 0;
-	int id, rc;
+	int id, ours, rc;
 
 	rc = mem_read_u32(h->max, &max);
 	if (rc != ST_OK) return rc;
 
-	id = freeze_find(h->health, 4);
-	if (!health_max_ok(h, max)) {
-		if (id >= 0) freeze_remove((u8)id);
+	f = health_entry(h, &id, &ours);
+	if (f != NULL && !ours) {
+		h->owned = 0;
 		return ST_OK;
 	}
 
-	f = (id >= 0) ? freeze_slot((u8)id) : NULL;
+	if (!health_max_ok(h, max)) {
+		if (f != NULL) freeze_remove((u8)id);
+		h->owned = 0;
+		return ST_OK;
+	}
+
 	if (f != NULL && f->value == (u64)max) return ST_OK;
-	return freeze_add(h->health, 4, max, NULL);
+	rc = freeze_add(h->health, 4, max, NULL);
+	if (rc == ST_OK) {
+		h->owned = 1;
+		h->held = max;
+	}
+	return rc;
 }
 
 int classic_health_toggle(struct classic_health *h, int on)
 {
-	int id, rc;
+	const struct freeze_entry *f;
+	int id, ours, rc;
 
 	if (on) {
 		h->on = 1;
@@ -90,8 +119,10 @@ int classic_health_toggle(struct classic_health *h, int on)
 	}
 
 	h->on = 0;
-	id = freeze_find(h->health, 4);
-	if (id < 0) return ST_OK;          /* already off */
+	f = health_entry(h, &id, &ours);
+	h->owned = 0;
+	/* Already off, or the entry is the user's own freeze, which stays. */
+	if (f == NULL || !ours) return ST_OK;
 	return freeze_remove((u8)id);
 }
 
@@ -110,6 +141,8 @@ void classic_health_forget(struct classic_health *h)
 {
 	h->on = 0;
 	h->wait = 0;
+	h->owned = 0;
+	h->held = 0;
 }
 
 int classic_patch_toggle(const struct patch_def *def, int on)

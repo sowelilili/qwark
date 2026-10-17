@@ -66,10 +66,15 @@
  * the game's bump arena (0xA572C4..0xE572C4), and the counter sat at 0xFFFFFC.
  * They live in the tail of a static buffer of the game's now: 0xFB0230 is a
  * 0xF0000-byte buffer (the next address the executable names is 0x10A0230)
- * that only the debug menu's save-to-memory command (0x2B1D98, through
- * 0x13EA48) ever serialises a save into, and a save is 0xA4A14 bytes, so not
- * even that command writes past 0x1054C44. No code or data word in the
- * executable names anything in 0x1054C44..0x10A0230.
+ * that one routine writes: 0x2B1D98, the update function of moby class 1750
+ * (0x6D6, which the class map at 0x2A3B8 registers with the descriptor at
+ * 0x70AE40), serialises a save into it through 0x13EA48 and the serialiser
+ * 0xE7984 on every frame such a moby updates. Nothing else calls 0x13EA48. A
+ * save is 0xA4A14 bytes, so not even that writes past 0x1054C44, and no code
+ * or data word in the executable names anything in 0x1054C44..0x10A0230.
+ * Until build 53 this comment called 0x2B1D98 a debug menu's command; what
+ * class 1750 is, and which levels place one, is level data the executable does
+ * not hold.
  *
  * It is inside the read-write segment's memory size, so an RPCS3 patch may
  * write it (the segment ends at 0x1606310), and it is BSS, so it is zero when
@@ -100,8 +105,14 @@
  * are game variables: from 0x10A0230 on the executable names statics that the
  * moby code at 0x2B3468..0x2C9xxx reads and writes, so a set-aside wrote the tail
  * of a save over them and the game wrote back into the tail of the save. It is
- * in the same debug-only buffer as the request bytes now, below them, clear of
- * both. The size is unchanged, so every save file is still the same length.
+ * in the same buffer as the request bytes now, below them, clear of both. The
+ * size is unchanged, so every save file is still the same length.
+ *
+ * It is not clear of class 1750's serialisation (above), which writes
+ * 0xFB0230..0x1054C44 over its first 0x94C44 bytes on every frame such a moby
+ * updates: in a level with one, what was set aside becomes that level's own
+ * save from 0xFDD0 on. The mod's buffer had the same exposure, over its first
+ * 0x54C44 bytes. From the NPEA00385 executable; not seen on hardware.
  */
 #define SF_ASIDE_ADDR 0x00FC0000
 #define SF_ASIDE_SIZE 0x000B0000

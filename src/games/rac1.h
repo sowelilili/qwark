@@ -313,9 +313,13 @@ int rac1_debug_bit(u32 bit, int on);
 /*
  * Build 53: the fast-load patch, forced around a planet load and a set-aside
  * load as RaC2's is. rac1_fastload_forced is 1 while a load's force is on.
+ * rac1_fastload_claim follows a load's request once it is out: `aside` is 1
+ * for a set-aside load, whose force a refusal of its request puts back, and 0
+ * for a planet load, whose force only the end of the load does.
  */
-int rac1_fastload_force(void);
-int rac1_fastload_forced(void);
-int rac1_fastload_restore(void);
+int  rac1_fastload_force(void);
+void rac1_fastload_claim(int aside);
+int  rac1_fastload_forced(void);
+int  rac1_fastload_restore(void);
 
 #endif /* QWARK_RAC1_H */

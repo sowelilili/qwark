@@ -570,7 +570,14 @@ int rac4_unlock_set(u8 id, u8 field, u32 value);
 
 u8  rac4_planet_count(void);
 
-/* The fast-load patch, forced on for a planet load and restored when it ends. */
+/*
+ * The fast-load patch, forced on for a planet load and restored when it ends.
+ * Build 53: rac4_fastload_forced is 1 while a load's force is on, and
+ * rac4_fastload_restore puts the checkbox's setting back, for a planet load
+ * whose request fails as well as for the end of one.
+ */
 int rac4_fastload_force(void);
+int rac4_fastload_forced(void);
+int rac4_fastload_restore(void);
 
 #endif /* QWARK_RAC4_H */

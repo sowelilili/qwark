@@ -353,6 +353,14 @@ static int g_fastload_on;
  * does not flick on for the length of every planet load.
  */
 static int g_fastload_forced;
+/*
+ * Build 53. The force is a set-aside load's (rac2_load_setaside), whose request
+ * the helper can still drop, when no load follows to end it: rac2_on_tick then
+ * puts it back. A planet load's request is the game's own word and is never
+ * dropped, so a set-aside load's refusal leaves a planet load's force to the
+ * end of that load. rac1.c's g_fastload_aside.
+ */
+static int g_fastload_aside;
 static int g_death_bosses;
 static int g_death_pbolts;
 static u8  g_prev_load_count;
@@ -371,7 +379,7 @@ static u32 g_sf_refusals;
  * at the old form's 42069.
  */
 static struct classic_health rac2_freeze_health = {
-	RAC2_PLAYER_HEALTH, RAC2_MAX_HEALTH, 0, 0, 0
+	RAC2_PLAYER_HEALTH, RAC2_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
 int rac2_death_bosses(void) { return g_death_bosses; }
@@ -382,18 +390,43 @@ int rac2_death_pbolts(void) { return g_death_pbolts; }
  * on in the old client and let the loading-screen watcher put the checkbox back.
  * patch_apply is a no-op when the toggle already applied it, so nothing is
  * captured twice and nothing is written twice.
+ *
+ * Build 53. Under RPCS3 the flag byte outlives qwark: a qwark-rpcs3 started
+ * against a game that is already running finds it however the last one left
+ * it, and the checkbox reads it back as it is. A flag at 1 that this process did
+ * not force is the user's setting, so the force takes it for the checkbox's
+ * rather than its own and the end of the load leaves it up, as RaC1's and
+ * RaC3's do. On a console the read is NOT_FOUND.
  */
 int rac2_fastload_force(void)
 {
-	int rc = classic_code_force(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS);
+	int on = 0;
+	int rc;
 
+	if (!g_fastload_forced &&
+	    classic_code_read(SW_RAC2_FLAG_FAST_LOADS, &on) == ST_OK && on)
+		g_fastload_on = 1;
+
+	rc = classic_code_force(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS);
 	if (rc == ST_OK && !g_fastload_on) g_fastload_forced = 1;
 	return rc;
+}
+
+/* Build 53: the load is asked for, and the force is its (g_fastload_aside). */
+void rac2_fastload_claim(int aside)
+{
+	g_fastload_aside = aside;
+}
+
+int rac2_fastload_forced(void)
+{
+	return g_fastload_forced;
 }
 
 int rac2_fastload_restore(void)
 {
 	g_fastload_forced = 0;
+	g_fastload_aside = 0;
 	if (g_fastload_on) return ST_OK;
 	return classic_code_toggle(&rac2_fastload, SW_RAC2_FLAG_FAST_LOADS, 0);
 }
@@ -563,6 +596,7 @@ static void rac2_on_enter(void)
 	/* A fresh process: nothing is forced, nothing has been seen yet. */
 	g_fastload_on     = 0;
 	g_fastload_forced = 0;
+	g_fastload_aside  = 0;
 	g_prev_load_count = 0;
 	g_load_primed     = 0;
 	g_sf_refusals     = savefile_load_refusals();
@@ -617,10 +651,13 @@ static void rac2_on_tick(const struct game_hot *hot)
 	classic_health_tick(&rac2_freeze_health);
 	rac2_autosplit_tick();
 
-	/* Build 53: a set-aside load the helper dropped puts the forced fast loads back. */
+	/*
+	 * Build 53: a set-aside load the helper dropped puts the forced fast loads
+	 * back - its own force, not a planet load's (g_fastload_aside).
+	 */
 	if (savefile_load_refusals() != g_sf_refusals) {
 		g_sf_refusals = savefile_load_refusals();
-		if (g_fastload_forced) rac2_fastload_restore();
+		if (g_fastload_forced && g_fastload_aside) rac2_fastload_restore();
 	}
 
 	/*
@@ -642,8 +679,13 @@ static void rac2_on_tick(const struct game_hot *hot)
 
 	if (count != 2) return;
 
-	/* The load is over: put fast loads back where the toggle wants them. */
-	rac2_fastload_restore();
+	/*
+	 * The load is over: put fast loads back where the toggle wants them. Build
+	 * 53: only when a load forced them. The end of a load nothing forced writes
+	 * nothing, which under RPCS3 put the fast-load flag down under a checkbox
+	 * that reads it as on.
+	 */
+	if (g_fastload_forced) rac2_fastload_restore();
 
 	/* Everything below is A1-only, exactly as the old handler had it. */
 	if (hot->current_planet != 0) return;
@@ -833,6 +875,7 @@ static int rac2_set_toggle(u8 id, int on)
 			g_fastload_on = on;
 			/* Whatever a load forced, the checkbox has the say now. */
 			g_fastload_forced = 0;
+			g_fastload_aside = 0;
 		}
 		return rc;
 

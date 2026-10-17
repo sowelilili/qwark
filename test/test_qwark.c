@@ -6392,8 +6392,10 @@ static void test_manip_trophies(void)
 	poke32(R3T_FILL_SITE, R3T_FILL_WORD);
 
 	savefile_set_enabled(0);
-	check(features_trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED,
-	      "with the savefile helper switched off it is UNSUPPORTED");
+	check(features_trigger(F3_RESET_TROPHIES) == ST_NOT_FOUND,
+	      "with the savefile helper switched off DESCRIBE leaves the reset out: NOT_FOUND");
+	check(session_game()->trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED,
+	      "and its handler, asked straight, is UNSUPPORTED");
 	savefile_set_enabled(1);
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES,
 	             "and the folder is untouched by every refusal: the helper goes in first");
@@ -6402,17 +6404,41 @@ static void test_manip_trophies(void)
 
 	/* ------------------------------------------------------- RPCS3 */
 
-	group("trophies: UNSUPPORTED under RPCS3");
+	/*
+	 * Build 53: and left out of DESCRIBE there, rather than offered as two rows
+	 * that always answer UNSUPPORTED and a client draws as usable. A client
+	 * draws the Trophies group and header only around rows DESCRIBE has.
+	 */
+	group("trophies: UNSUPPORTED under RPCS3, and left out of DESCRIBE");
 
 	host_set_can_patch_code(0);
 	host_set_emulator(1);
-	check(features_trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED,
-	      "the reset is UNSUPPORTED where code cannot be patched");
-	check(features_set(F3_AUTO_TROPHIES, 1) == ST_UNSUPPORTED, "and so is turning the toggle on");
-	check(features_set(F3_AUTO_TROPHIES, 0) == ST_OK, "while turning it off is fine");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	check(desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
+	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL,
+	      "without the reset or its toggle where code cannot be patched");
+	check(desc_feature(out, len, 32) != NULL && desc_feature(out, len, 1) != NULL,
+	      "while the other rows, Load set-aside file (32) and Freeze health (1) among them, are still there");
+	check(features_trigger(F3_RESET_TROPHIES) == ST_NOT_FOUND, "so the reset is NOT_FOUND");
+	check(features_set(F3_AUTO_TROPHIES, 1) == ST_NOT_FOUND, "and so is its toggle");
+	check(session_game()->trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED,
+	      "the reset's handler, asked straight, is UNSUPPORTED where code cannot be patched");
+	check(session_game()->set_toggle(F3_AUTO_TROPHIES, 1) == ST_UNSUPPORTED,
+	      "and so is turning the toggle on");
+	check(session_game()->set_toggle(F3_AUTO_TROPHIES, 0) == ST_OK, "while turning it off is fine");
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and no file goes");
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
+	savefile_set_enabled(0);
+	check(features_describe(out, sizeof(out), &len) == ST_OK &&
+	      desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
+	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL,
+	      "a console with the savefile helper switched off leaves them out too");
+	savefile_set_enabled(1);
+	check(features_describe(out, sizeof(out), &len) == ST_OK &&
+	      desc_feature(out, len, F3_RESET_TROPHIES) != NULL &&
+	      desc_feature(out, len, F3_AUTO_TROPHIES) != NULL,
+	      "and with it on they are back");
 
 	/* ----------------------------------------------------- the button */
 
@@ -6579,9 +6605,9 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and deletes nothing");
 
 	savefile_set_enabled(0);
-	check(features_set(F3_AUTO_TROPHIES, 1) == ST_UNSUPPORTED,
+	check(session_game()->set_toggle(F3_AUTO_TROPHIES, 1) == ST_UNSUPPORTED,
 	      "with the savefile helper switched off the auto toggle will not turn on");
-	check(features_trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED, "nor the button work");
+	check(session_game()->trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED, "nor the button work");
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and nothing is deleted");
 	savefile_set_enabled(1);
 	check(features_set(F3_AUTO_TROPHIES, 1) == ST_OK, "the auto toggle on");
@@ -10911,6 +10937,12 @@ static void test_savefile_rpcs3(void)
 		host_write_log_reset();
 
 		check(savefile_category(SAVEFILE_CATEGORY_CREATE, "rpcs3") == ST_OK, "a category");
+		/*
+		 * Build 53: a save in the aside buffer, as the helper's set-aside would
+		 * leave it. The fake console runs no helper, and a file of zeroes is
+		 * no save: its RESTORE stops with error 7 (test_fu_aside_zero).
+		 */
+		fill_aside(d, 5);
 		check(savefile_store("rpcs3", "one.sav") == ST_OK, "SAVEFILE_STORE is accepted");
 		host_poke(d->api_setaside, (const u8 *)"\x00", 1);
 		check(pump_until_transfer_done(400), "and the store finishes");
@@ -14836,13 +14868,13 @@ static void test_savefile_build53(void)
 		check_eq_u64(d->api_load, 0x01080001u, "api_load follows it");
 		check_eq_u64(d->api_setaside, 0x01080002u, "and api_setaside");
 		check(d->api_mod >= 0x01054C44u && d->api_setaside < 0x010A0230u,
-		      "in the part of the debug save buffer nothing ever writes");
+		      "in the part of the buffer at 0xFB0230 that nothing ever writes");
 		check(d->api_mod < 0x01606310u, "inside the read-write segment, so a patch may write it");
 
 		check_eq_u64(d->aside_addr, 0x00FC0000u, "the aside buffer is at 0xFC0000");
 		check_eq_u64(d->aside_size, 0x000B0000u, "and is still 0xB0000 bytes, so saves keep their size");
 		check(d->aside_addr >= 0x00FB0230u && d->aside_addr + d->aside_size <= 0x010A0230u,
-		      "inside the debug save buffer, clear of the statics from 0x10A0230 on");
+		      "inside the buffer at 0xFB0230, clear of the statics from 0x10A0230 on");
 		check(d->api_mod >= d->aside_addr + d->aside_size,
 		      "and the request bytes are past its end");
 		check(d->aside_addr + d->aside_size <= 0x00B00070u || d->aside_addr >= 0x00E572C4u,
@@ -15495,6 +15527,701 @@ static void test_savefile_build53(void)
 	}
 }
 
+/* ---------------------- build 53: the follow-ups to the review of build 53 */
+
+/* A save file of `size` bytes on the fake console: zeroes, or a RaC1 save's head. */
+static void fu_write_file(const char *path, u32 size, int rac1_head)
+{
+	plat_file_t f;
+	u32 off;
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) {
+		check(0, "the test file opens");
+		return;
+	}
+	for (off = 0; off < size; off += sizeof(g_pattern)) {
+		u32 n = size - off;
+
+		if (n > sizeof(g_pattern)) n = sizeof(g_pattern);
+		memset(g_pattern, 0, sizeof(g_pattern));
+		if (off == 0 && rac1_head) {
+			be32_put(g_pattern, 0x153Cu);
+			be32_put(g_pattern + 4, 0x82A4u);
+			be32_put(g_pattern + 0x18, 3);
+		}
+		plat_file_write(f, g_pattern, n);
+	}
+	plat_file_close(f);
+}
+
+static u8 fu_error(void)
+{
+	u32 done = 0, total = 0;
+	u8 error = 9;
+
+	savefile_transfer(&done, &total, &error);
+	return error;
+}
+
+static u8 fu_byte(u32 addr)
+{
+	u8 b = 0;
+
+	host_peek(addr, &b, 1);
+	return b;
+}
+
+/* Pumps until the helper's load byte goes up, as a RESTORE's copy ends. */
+static int fu_until_load(const struct sf_desc *d, int max_ticks)
+{
+	int t;
+
+	for (t = 0; t < max_ticks; t++) {
+		if (fu_byte(d->api_load) == 1) return 1;
+		pump(1);
+	}
+	return fu_byte(d->api_load) == 1;
+}
+
+struct fu_game {
+	const char *title;
+	u8 game_id;
+	const char *root;
+};
+
+static const struct fu_game fu_games[] = {
+	{ "NPEA00385", GAME_RAC1, "/dev_hdd0/qwark/savefiles/NPEA00385" },
+	{ "NPEA00386", GAME_RAC2, "/dev_hdd0/qwark/savefiles/NPEA00386" },
+	{ "NPEA00387", GAME_RAC3, "/dev_hdd0/qwark/savefiles/NPEA00387" },
+	{ "NPEA00423", GAME_RAC4, "/dev_hdd0/qwark/savefiles/NPEA00423" }
+};
+
+#define FU_CAT "fu53"
+
+/*
+ * A RESTORE of a file whose first word is 0 loaded the game's own last save and
+ * reported success: every helper reads that word as "nothing set aside" and
+ * fills the buffer from the game. A load of anything qwark has put in the aside
+ * buffer is asked about first now, and such a file stops with error 7.
+ */
+static void test_fu_aside_zero(void)
+{
+	u32 i;
+
+	for (i = 0; i < sizeof(fu_games) / sizeof(fu_games[0]); i++) {
+		const struct fu_game *g = &fu_games[i];
+		const struct sf_desc *d = sf_desc_for_game(g->game_id);
+		char path[160];
+		char what[96];
+
+		qstrcpy(what, sizeof(what), "build 53: a RESTORE of a file that starts with 0, ");
+		qstrcat(what, sizeof(what), g->title);
+		group(what);
+
+		check(quit_and_wait(), "quit whatever was running");
+		check(boot_and_wait(g->title), "the game boots");
+		if (d == NULL) { check(0, "it has a helper"); continue; }
+		savefile_make_idle(g->game_id);    /* with a save of its own to fall back on */
+		check(savefile_category(SAVEFILE_CATEGORY_CREATE, FU_CAT) == ST_OK, "a category");
+
+		qstrcpy(path, sizeof(path), g->root);
+		qstrcat(path, sizeof(path), "/" FU_CAT "/zero.sav");
+		fu_write_file(path, d->aside_size, 0);
+
+		check(savefile_restore(FU_CAT, "zero.sav") == ST_OK,
+		      "the RESTORE is accepted: the file is the right size");
+		check(pump_until_transfer_done(200), "the copy runs to its end");
+		check_eq_u64(fu_error(), SAVEFILE_ERR_NO_SAVE,
+		             "and stops with error 7: the file is no save, and the game's own is not loaded instead");
+		check_eq_u64(fu_byte(d->api_load), 0, "no load was raised at the game");
+
+		check(savefile_load_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_NO_SAVE,
+		      "a load of what the RESTORE left there is refused the same way");
+		check_eq_u64(fu_byte(d->api_load), 0, "and raises nothing either");
+
+		plat_file_unlink(path);
+		qstrcat(path, sizeof(path), ".sum");
+		plat_file_unlink(path);
+		check(savefile_category(SAVEFILE_CATEGORY_DELETE, FU_CAT) == ST_OK, "the category goes");
+	}
+
+	group("build 53: a raw SAVEFILE_WRITE then a load, RaC1");
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+		u8 head[0x1C];
+
+		check(quit_and_wait(), "quit");
+		host_boot("NPEA00385");
+		r1t_world(0, 3, 0, 0);
+		r1fl_seed();
+		check(pump_until(SESSION_INGAME, 4000), "RaC1 boots");
+		pump(4);
+		savefile_make_idle(GAME_RAC1);
+
+		check(savefile_load_aside() == ST_OK,
+		      "before qwark has written anything an empty buffer is still filled from the game's save");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		memset(head, 0, sizeof(head));
+		check(savefile_write(0, head, sizeof(head)) == ST_OK, "SAVEFILE_WRITE puts zeroes at the head");
+		check(savefile_load_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_NO_SAVE,
+		      "and a load of it is refused with error 7");
+		check(features_trigger(F1_LOAD_ASIDE) == ST_BUSY && fu_error() == SAVEFILE_ERR_NO_SAVE,
+		      "the LOAD_ASIDE action too");
+		check(r1fl_original(), "before it forced fast loads");
+		check_eq_u64(fu_byte(d->api_load), 0, "with nothing raised");
+
+		be32_put(head, 0x153Cu);
+		be32_put(head + 4, 0x82A4u);
+		be32_put(head + 0x18, 3);
+		check(savefile_write(0, head, sizeof(head)) == ST_OK, "a save's head written over it");
+		check(savefile_load_aside() == ST_OK && fu_error() == SAVEFILE_ERR_NONE, "loads");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+
+		check(quit_and_wait(), "the game restarts");
+		check(boot_and_wait("NPEA00385"), "a new process");
+		savefile_make_idle(GAME_RAC1);
+		host_poke(d->aside_addr, (const u8 *)"\x00\x00\x00\x00", 4);
+		check(savefile_load_aside() == ST_OK,
+		      "whose empty buffer is filled from the game's save again: qwark has written nothing into it");
+		host_poke(d->api_load, (const u8 *)"\x00", 1);
+		pump(SAVEFILE_SETTLE_TICKS);
+	}
+}
+
+/*
+ * SAVEFILE_INFO's error is the reason for the request asked for last; nothing
+ * is raised at the aside buffer while a transfer has it; and RaC1's forces
+ * belong to the load that made them.
+ */
+static void test_fu_requests(void)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC1);
+	char path[160];
+	u8 b = 9;
+
+	group("build 53: a set-aside or load clears the last refusal's reason");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00385");
+	r1t_world(0, 3, 0, 0);
+	r1fl_seed();
+	check(pump_until(SESSION_INGAME, 4000), "RaC1 boots");
+	pump(4);
+	if (d == NULL) { check(0, "RaC1 has a helper"); return; }
+	savefile_make_idle(GAME_RAC1);
+
+	poke32(SF_R1_STATE, 1);                    /* a movie */
+	check(savefile_load_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_NOT_IDLE,
+	      "a load during a movie is refused, error 6");
+	poke32(SF_R1_STATE, 0);
+	check(savefile_set_aside() == ST_OK, "a set-aside goes out after it");
+	check_eq_u64(fu_error(), SAVEFILE_ERR_NONE, "and the error no longer says the game was not idle");
+	host_poke(d->api_setaside, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+
+	poke32(SF_R1_STATE, 1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_BUSY && fu_error() == SAVEFILE_ERR_NOT_IDLE,
+	      "the LOAD_ASIDE action is refused in the movie");
+	poke32(SF_R1_STATE, 0);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK && fu_error() == SAVEFILE_ERR_NONE,
+	      "and once it goes out the error is 0 again");
+	r1fl_helper_loads(d, 3);
+	pump(SAVEFILE_SETTLE_TICKS);
+
+	poke32(SF_R1_STATE, 1);
+	check(savefile_load_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_NOT_IDLE, "another refusal");
+	poke32(SF_R1_STATE, 0);
+	check(savefile_category(SAVEFILE_CATEGORY_CREATE, FU_CAT) == ST_OK, "a category");
+	check(savefile_store(FU_CAT, "bad.txt") == ST_BAD_ARG, "a STORE refused for its name");
+	check_eq_u64(fu_error(), SAVEFILE_ERR_NONE, "leaves no earlier refusal's reason behind it");
+
+	group("build 53: nothing is raised at the aside buffer while a transfer has it");
+
+	qstrcpy(path, sizeof(path), "/dev_hdd0/qwark/savefiles/NPEA00385/" FU_CAT "/good.sav");
+	fu_write_file(path, d->aside_size, 1);
+	savefile_make_idle(GAME_RAC1);
+	check(r1fl_original(), "fast loads are not forced");
+
+	check(savefile_restore(FU_CAT, "good.sav") == ST_OK, "a RESTORE starts copying");
+	check(savefile_load_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_BUSY,
+	      "a load while it copies is BUSY, error 5: the buffer is spoken for");
+	check(savefile_set_aside() == ST_BUSY && fu_error() == SAVEFILE_ERR_BUSY,
+	      "and so is a set-aside, which would write over it");
+	check(features_trigger(F1_LOAD_ASIDE) == ST_BUSY && fu_error() == SAVEFILE_ERR_BUSY,
+	      "the LOAD_ASIDE action is refused the same way");
+	check(session_load_setaside() == ST_BUSY, "and the combo's");
+	check(r1fl_original(), "before either forced fast loads");
+	host_peek(d->api_load, &b, 1);
+	check_eq_u64(b, 0, "nothing was raised at the game");
+	check_eq_u64(fu_byte(d->api_setaside), 0, "not even a set-aside");
+
+	check(fu_until_load(d, 64), "the RESTORE raises its own load once the copy is in");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	check(pump_until_transfer_done(SAVEFILE_SETTLE_TICKS + 8), "and settles");
+	check_eq_u64(fu_error(), SAVEFILE_ERR_NONE, "with no error: the refusals in the middle left none");
+	check(savefile_load_aside() == ST_OK, "a load after it goes out again");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);
+	pump(SAVEFILE_SETTLE_TICKS);
+
+	group("build 53: a RaC1 load whose request fails takes back its own force");
+
+	savefile_make_idle(GAME_RAC1);
+	host_fail_writes(R1T_REQUEST, 1);
+	check(session_planet_load(5, 0) != ST_OK, "a PLANET_LOAD whose request cannot be written fails");
+	host_fail_writes(0, 0);
+	check(r1fl_original(), "and leaves no fast loads forced behind it");
+
+	check(session_planet_load(5, 0) == ST_OK && r1fl_patched(), "a load that goes out forces them");
+	r1fl_finish(5, 1);                         /* its fly-in: request 0, state 6 */
+	host_fail_writes(R1T_REQUEST, 1);
+	check(session_planet_load(3, 0) != ST_OK, "a second whose request fails");
+	host_fail_writes(0, 0);
+	check(r1fl_patched(), "leaves the first one's force, which was not its own to take back");
+	poke32(R1T_STATE, 0);
+	pump(4);
+	check(r1fl_original(), "and the first one's end still puts it back");
+
+	group("build 53: a RaC1 set-aside load in a planet's fly-in keeps its force");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_planet_load(5, 0) == ST_OK && r1fl_patched(), "a planet load forces fast loads");
+	r1fl_finish(5, 1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK, "a LOAD_ASIDE in its fly-in, the state still 6");
+	poke32(R1T_STATE, 3);                      /* the helper takes the game into the start menu */
+	pump(4);
+	check(r1fl_patched(),
+	      "the start menu is not the end of the planet load: the set-aside load's force stays");
+	r1fl_helper_loads(d, 3);
+	check(r1fl_original(), "and the end of the set-aside load puts the game's words back");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_planet_load(5, 0) == ST_OK, "the same again");
+	r1fl_finish(5, 1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK, "a LOAD_ASIDE in the fly-in");
+	poke32(R1T_STATE, 3);
+	pump(4);
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r1fl_original(), "that the helper drops puts the force back, the set-aside load's own");
+
+	group("build 53: RaC1, a dropped load undoes only the force it caused");
+
+	savefile_make_idle(GAME_RAC1);
+	check(session_planet_load(5, 0) == ST_OK, "a planet load");
+	r1fl_finish(5, 1);
+	check(savefile_restore(FU_CAT, "good.sav") == ST_OK, "a RESTORE in its fly-in");
+	check(fu_until_load(d, 64), "raises its load once the copy is in");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	check(pump_until_transfer_done(8), "which the helper drops");
+	check_eq_u64(fu_error(), SAVEFILE_ERR_NOT_IDLE, "error 6");
+	check(r1fl_patched(), "and the planet load's force stays: a RESTORE forced nothing");
+	poke32(R1T_STATE, 0);
+	pump(4);
+	check(r1fl_original(), "until that load ends");
+
+	savefile_make_idle(GAME_RAC1);
+	check(features_trigger(F1_LOAD_ASIDE) == ST_OK && r1fl_patched(), "a LOAD_ASIDE forces fast loads");
+	check(session_planet_load(5, 0) == ST_OK, "a PLANET_LOAD goes out while it waits");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r1fl_patched(), "and the set-aside load's drop leaves the planet load's force");
+	r1fl_finish(5, 0);
+	check(r1fl_original(), "which the planet load's end puts back");
+
+	plat_file_unlink(path);
+	qstrcat(path, sizeof(path), ".sum");
+	plat_file_unlink(path);
+	check(savefile_category(SAVEFILE_CATEGORY_DELETE, FU_CAT) == ST_OK, "the category goes");
+}
+
+/* RaC2 and Deadlocked: a load whose request fails takes back its own force. */
+static void test_fu_failed_requests(void)
+{
+	const struct sf_desc *f = sf_desc_for_game(GAME_RAC2);
+	u32 v = 0;
+
+	group("build 53: RaC2 loads whose request fails force nothing");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+	pump(4);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "the load screen's call is the game's own");
+
+	host_fail_writes(0x0156B050u, 1);
+	check(session_planet_load(5, 0) != ST_OK, "a PLANET_LOAD whose request cannot be written fails");
+	host_fail_writes(0, 0);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "and leaves no fast loads forced behind it");
+
+	savefile_make_idle(GAME_RAC2);
+	check(savefile_install() == ST_OK, "the helper is in, so the request is the only write left");
+	if (f != NULL) host_fail_writes(f->api_load, 1);
+	check(features_trigger(F2_LOAD_ASIDE) != ST_OK, "a LOAD_ASIDE whose request cannot be written fails");
+	host_fail_writes(0, 0);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "and forces nothing either");
+
+	check(session_planet_load(5, 0) == ST_OK, "a load that goes out");
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+	pump(4);
+	host_fail_writes(0x0156B050u, 1);
+	check(session_planet_load(3, 0) != ST_OK, "and a second, in the middle of it, that fails");
+	host_fail_writes(0, 0);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x60000000u, "leaves the first one's force");
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+	pump(4);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "until that load's end");
+
+	group("build 53: RaC2, a dropped set-aside load leaves a planet load's force");
+
+	savefile_make_idle(GAME_RAC2);
+	check(features_trigger(F2_LOAD_ASIDE) == ST_OK, "a LOAD_ASIDE forces fast loads");
+	check(session_planet_load(5, 0) == ST_OK, "a PLANET_LOAD goes out before the helper answers");
+	if (f != NULL) host_poke(f->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x60000000u, "the helper drops the set-aside load: the planet load's force stays");
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+	pump(4);
+	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+	pump(4);
+	mem_read_u32(R2_FP_ADDR, &v);
+	check_eq_u64(v, 0x4BFFEA69u, "and the load's end puts it back");
+
+	group("build 53: a Deadlocked PLANET_LOAD whose request fails forces nothing");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00423");
+	r4_fl_seed();
+	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots");
+	pump(4);
+	check(r4_fl_is(0), "fast loads are the game's own");
+	host_fail_writes(0x00B36DD0u, 1);          /* the planet, written first */
+	check(session_planet_load(4, 0) != ST_OK, "a PLANET_LOAD whose request cannot be written fails");
+	host_fail_writes(0, 0);
+	check(r4_fl_is(0), "and leaves no fast loads forced behind it");
+	check(session_planet_load(4, 0) == ST_OK && r4_fl_is(1), "one that goes out forces them");
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(4);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+	check(r4_fl_is(0), "and its end puts them back");
+}
+
+/*
+ * Under RPCS3 the fast-load flag outlives qwark. A qwark-rpcs3 started against
+ * a running game found it up and its own idea of the checkbox off, and the end
+ * of the first load wrote it down: RaC1, RaC2 and Deadlocked now write nothing
+ * at the end of a load nothing forced, and a force that finds the flag up takes
+ * it for the user's, as RaC3's does.
+ */
+static void fu_flag_left_up(const char *title, u32 flag, u8 id, int game)
+{
+	u32 len = 0;
+	char what[96];
+
+	qstrcpy(what, sizeof(what), "build 53: a fast-load flag an earlier qwark left up, ");
+	qstrcat(what, sizeof(what), title);
+	group(what);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait(title), "the game boots");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "the switch words");
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched(title, g_sw_patch, len, SF_NO_FLIP), "the game with them in, under RPCS3");
+	if (game == GAME_RAC1) r1t_world(0, 3, 0, 0);
+	if (game == GAME_RAC2) host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+	if (game == GAME_RAC4) host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(6);
+	check_eq_u64(switches_state(), 1, "the switches are found");
+
+	poke8(flag, 1);
+	pump(SWT_POLL_TICKS);
+	check((features_toggle_state() & ((u64)1 << id)) != 0,
+	      "a flag left up reads back as the checkbox on");
+
+	/* A load the game makes itself: nothing forced it. */
+	if (game == GAME_RAC1) r1t_load(3, 0);
+	if (game == GAME_RAC2) {
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+		pump(4);
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+		pump(4);
+	}
+	if (game == GAME_RAC4) {
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		pump(4);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(4);
+	}
+	check_eq_u64(swt_peek8(flag), 1, "the end of a load the game made leaves it up");
+
+	check(session_planet_load(4, 0) == ST_OK, "a PLANET_LOAD");
+	if (game == GAME_RAC1) r1fl_finish(4, 0);
+	if (game == GAME_RAC2) {
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+		pump(4);
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+		pump(4);
+	}
+	if (game == GAME_RAC4) {
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		pump(4);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(4);
+	}
+	check_eq_u64(swt_peek8(flag), 1, "and so does its end: the force took the flag for the user's");
+	check(features_set(id, 0) == ST_OK && swt_peek8(flag) == 0, "the checkbox still turns it off");
+
+	check(session_planet_load(4, 0) == ST_OK && swt_peek8(flag) == 1, "a load forces it again");
+	if (game == GAME_RAC1) r1fl_finish(4, 0);
+	if (game == GAME_RAC2) {
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x00", 1);
+		pump(4);
+		host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
+		pump(4);
+	}
+	if (game == GAME_RAC4) {
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		pump(4);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(4);
+	}
+	check_eq_u64(swt_peek8(flag), 0, "and with the checkbox off the end of that one puts it down");
+}
+
+static void test_fu_flag_left_up(void)
+{
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	fu_flag_left_up("NPEA00385", 0x009058B0u, SWT_R1_FAST, GAME_RAC1);
+	fu_flag_left_up("NPEA00386", 0x01317720u, SWT_R2_FAST, GAME_RAC2);
+	fu_flag_left_up("NPEA00423", 0x015CD781u, SWT_R4_FAST, GAME_RAC4);
+	check(quit_and_wait(), "quit");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+}
+
+/*
+ * Deadlocked's trigger acts on the tick after the tutorial byte drops to 0, and
+ * only if it still reads 0 then.
+ */
+static void test_fu_rac4_trigger(void)
+{
+	const struct mt_group *ngp = &mt_rac4[0];
+	u16 seq;
+
+	group("build 53: Deadlocked, a drop to 0 that does not last a tick fires nothing");
+
+	check(quit_and_wait(), "quit");
+	mt_reset_options("rac4");
+	config_set_manip("rac4", "remember", 1);
+	config_set_manip("rac4", "category", 1);
+	host_boot("NPEA00423");
+	r4t_world(1, 0xFFFFFFFFu, 0, 0);          /* the main menu */
+	r4t_tutorial(0x05);
+	mt_put_counter(&mt_games[3], 1);
+	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots, NG+ remembered");
+	pump(4);
+	mt_poison(ngp);
+	seq = manips_event_seq();
+
+	r4t_tutorial(0x00);                       /* a reset... */
+	pump(1);
+	r4t_tutorial(0x05);                       /* ...that a save's data fills in again */
+	pump(4);
+	check(manips_event_seq() == seq && r2_byte(0x00A947D3u) == 0xEE,
+	      "a 0 gone again on the next tick fires nothing");
+
+	r4t_tutorial(0x00);
+	pump(3);
+	check(mt_values_match(ngp, 0, ngp->n), "a drop that stays fires, the tick after it");
+	check_eq_u64(manips_event_seq(), (u16)(seq + 1), "once");
+
+	check(manips_select(0) == ST_OK, "None");
+	mt_reset_options("rac4");
+}
+
+/*
+ * Freeze health and a freeze the user set on the hit points themselves. The
+ * freeze table has one entry per address and size, so the two are one entry.
+ */
+static void test_fu_freeze_health_one(const struct fh_case *fc)
+{
+	const struct freeze_entry *e;
+	int id;
+	char what[96];
+
+	qstrcpy(what, sizeof(what), "build 53: Freeze health beside a freeze of the user's, ");
+	qstrcat(what, sizeof(what), fc->name);
+	group(what);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait(fc->title), "the game boots");
+	poke32(fc->max, fc->full);
+	poke32(fc->health, fc->full);
+
+	check(freeze_add(fc->health, 4, fc->hurt, NULL) == ST_OK, "the user freezes the hit points");
+	check(features_set(fc->id, 1) == ST_OK, "Freeze health goes on beside it");
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->hurt, "the user's value holds, not the maximum");
+	poke32(fc->max, 0);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check(freeze_find(fc->health, 4) >= 0, "a maximum of 0 does not take the user's freeze out");
+	poke32(fc->max, fc->full);
+	check(features_set(fc->id, 0) == ST_OK, "Freeze health goes off");
+	id = freeze_find(fc->health, 4);
+	e = (id >= 0) ? freeze_slot((u8)id) : NULL;
+	check(e != NULL && e->value == (u64)fc->hurt, "and the user's freeze is still there, at its value");
+	if (id >= 0) freeze_remove((u8)id);
+
+	check(features_set(fc->id, 1) == ST_OK, "Freeze health on first");
+	pump(1);
+	check_eq_u64(peek32(fc->health), fc->full, "holding the maximum");
+	check(freeze_add(fc->health, 4, fc->hurt, NULL) == ST_OK, "then the user freezes them at a value of their own");
+	poke32(fc->max, fc->more);
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->hurt, "which the toggle no longer moves with the maximum");
+	check(features_set(fc->id, 0) == ST_OK, "off");
+	check(freeze_find(fc->health, 4) >= 0, "leaves it");
+	check(features_set(fc->id, 1) == ST_OK, "on again");
+	id = freeze_find(fc->health, 4);
+	check(id >= 0 && freeze_remove((u8)id) == ST_OK, "the user takes their freeze out");
+	pump(CLASSIC_HEALTH_EVERY + 1);
+	check_eq_u64(peek32(fc->health), fc->more, "and the toggle's own comes back, at the maximum");
+	check(features_set(fc->id, 0) == ST_OK && freeze_find(fc->health, 4) < 0,
+	      "which off takes out, as it always did");
+}
+
+static void test_fu_freeze_health(void)
+{
+	u32 i;
+
+	for (i = 0; i < sizeof(fh_cases) / sizeof(fh_cases[0]); i++)
+		test_fu_freeze_health_one(&fh_cases[i]);
+}
+
+/*
+ * RaC2 under RPCS3 without the code switches' patch, which carries the crash
+ * guards there: a trip they are for is refused rather than made.
+ */
+#define FU_R2_CUR     0x01329A3Cu
+#define FU_R2_REQUEST 0x0156B050u
+#define FU_R2_SCENE   0x015D4670u
+#define FU_R2_A2      0x0148174Bu
+#define FU_R2_STORY   0x01482524u   /* + planet */
+#define FU_R2_SEEN    0x01481980u
+
+static void fu_r2_quiet(u32 cur)
+{
+	u8 zero[0x23];
+
+	memset(zero, 0, sizeof(zero));
+	host_poke(0x01482512u, zero, sizeof(zero));
+	poke32(FU_R2_SEEN + 20, 0);
+	poke32(FU_R2_SEEN + 24, 0);
+	poke32(FU_R2_SEEN + 168, 0);
+	poke32(FU_R2_SEEN + 172, 0);
+	poke32(FU_R2_SCENE, 0);
+	poke8(FU_R2_A2, 1);
+	poke32(FU_R2_CUR, cur);
+	poke32(FU_R2_REQUEST, 0);
+}
+
+static void test_fu_rac2_unguarded(void)
+{
+	u32 len = 0;
+
+	group("build 53: RaC2 under RPCS3 without the guards refuses a trip they are for");
+
+	check(quit_and_wait(), "quit");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(boot_and_wait("NPEA00386"), "RaC2 boots with no patch in");
+	pump(6);
+	check_eq_u64(switches_state(), 0, "the look finds no switches, so no guards");
+
+	fu_r2_quiet(5);
+	check(session_planet_load(26, 0) == ST_OK, "a trip to the Jamming Array with no cutscene owed goes");
+	fu_r2_quiet(5);
+	poke32(FU_R2_SCENE, 169);
+	check(session_planet_load(26, 0) == ST_UNSUPPORTED, "with one queued it is refused, UNSUPPORTED");
+	check_eq_u64(r2_word(FU_R2_REQUEST), 0, "before the request is written");
+	check(session_planet_load(22, 0) == ST_UNSUPPORTED, "and so is one to Dobbo Orbit");
+	check(session_planet_load(23, 0) == ST_UNSUPPORTED, "or Damosel Orbit");
+	check(session_planet_load(9, 0) == ST_OK, "a trip between two ordinary planets goes, cutscene or not");
+	fu_r2_quiet(22);
+	poke32(FU_R2_SCENE, 169);
+	check(session_planet_load(5, 0) == ST_UNSUPPORTED, "and one from Dobbo Orbit is refused too");
+
+	fu_r2_quiet(5);
+	poke8(FU_R2_STORY + 0, 1);
+	check(session_planet_load(26, 0) == ST_UNSUPPORTED,
+	      "a cutscene the transition would queue itself (169, its story byte set) counts");
+	poke32(FU_R2_SEEN + 168, 0x00000200u);
+	check(session_planet_load(26, 0) == ST_OK, "and not once it has played");
+	fu_r2_quiet(5);
+	poke8(FU_R2_STORY + 16, 1);
+	check(session_planet_load(26, 0) == ST_UNSUPPORTED, "the last rule's scene, 175, counts");
+	fu_r2_quiet(26);
+	poke8(FU_R2_STORY + 16, 1);
+	check(session_planet_load(16, 0) == ST_OK, "but not on a trip to its own planet");
+	fu_r2_quiet(26);
+	check(session_planet_load(13, 0) == ST_UNSUPPORTED, "a trip to Boldan owes scene 27 until it is seen");
+	fu_r2_quiet(26);
+	poke32(FU_R2_SEEN + 24, 0x08000000u);
+	check(session_planet_load(13, 0) == ST_OK, "and goes once it has been");
+
+	fu_r2_quiet(5);
+	poke32(FU_R2_SCENE, 169);
+	poke8(FU_R2_A2, 0);
+	check(session_planet_load(14, 0) == ST_UNSUPPORTED,
+	      "a trip to Aranos 2 that takes its own wad, with a cutscene, is refused");
+	poke8(FU_R2_A2, 1);
+	check(session_planet_load(14, 0) == ST_OK, "and goes with the story flag that keeps it on wad 0");
+
+	group("build 53: with the guards in, RaC2 makes the same trip");
+
+	check(quit_and_wait(), "quit");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+	check(boot_and_wait("NPEA00386"), "RaC2 on a console");
+	fu_r2_quiet(5);
+	poke32(FU_R2_SCENE, 169);
+	check(session_planet_load(26, 0) == ST_OK, "goes: the session wrote the guards in");
+	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "the switch words");
+	check(quit_and_wait(), "quit");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(swt_boot_patched("NPEA00386", g_sw_patch, len, SF_NO_FLIP), "RaC2 under RPCS3 with the switches in");
+	pump(4);
+	check_eq_u64(switches_state(), 1, "which carry the guards");
+	fu_r2_quiet(5);
+	poke32(FU_R2_SCENE, 169);
+	check(session_planet_load(26, 0) == ST_OK, "and the trip goes there too");
+	check(quit_and_wait(), "quit");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+}
+
+static void test_followups_b53(void)
+{
+	test_fu_aside_zero();
+	test_fu_requests();
+	test_fu_failed_requests();
+	test_fu_flag_left_up();
+	test_fu_rac4_trigger();
+	test_fu_freeze_health();
+	test_fu_rac2_unguarded();
+}
+
 int main(void)
 {
 	const char *port_env = getenv("QWARK_TEST_PORT");
@@ -15539,6 +16266,7 @@ int main(void)
 	test_savefile_library();
 	test_savefile_not_idle();
 	test_savefile_build53();
+	test_followups_b53();
 	test_signed_values();
 	test_combo_suspend();
 	test_combo_enable();
