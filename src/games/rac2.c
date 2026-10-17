@@ -1224,5 +1224,6 @@ const struct game_api rac2_game = {
 
 	rac2_autosplit_describe,
 
-	&rac2_manips          /* revision 1.21 */
+	&rac2_manips,         /* revision 1.21 */
+	NULL                  /* planet_order: the ids run in the game's order */
 };

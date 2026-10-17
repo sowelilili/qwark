@@ -131,7 +131,23 @@
 #define RAC3_VID_COMICS        0x00DA650Bu  /* five bytes, also in the unlock array */
 #define RAC3_FILE_TIME         0x00DA64E0u  /* the IGT the old form edited */
 
-#define RAC3_TITANIUM_BOLTS    0x00ECE53Du  /* 128 bytes */
+/*
+ * Build 53. The titanium bolts are one byte each, 1 when collected, in a table
+ * of eight bytes per planet id: id 0 to 36, 296 bytes. RaC1's gold bolts are
+ * the same thing at four bytes a planet. A new game clears exactly this much
+ * (0x1DF938: 296 bytes from here, then the 592 = 37 x 16 bytes of the level
+ * flags), the total is counted over the same 37 x 8 bytes (0x21798C, capped at
+ * 40), and a bolt sets table[current planet * 8 + its own index] when it is
+ * taken (0x37733C). rac3.cs had the table at 0xECE53D, sixteen bytes early,
+ * and 128 bytes long, so its unlock-all and reset-all wrote over sixteen bytes
+ * that are not bolts (the game reads a byte table at 0xECE548, 0x2FF158 and
+ * 0x8A37B8) and never reached Koros or any planet numbered after it. Which
+ * byte is which bolt is rac3_panel.c's rac3_ti_bolts. From the NPEA00387
+ * executable; not yet run on hardware.
+ */
+#define RAC3_TITANIUM_BOLTS    0x00ECE54Du
+#define RAC3_TI_STRIDE         8u           /* bytes per planet id */
+#define RAC3_TI_LEN            296u         /* 37 planet ids */
 #define RAC3_LEVEL_FLAGS       0x00ECE675u  /* 0x10 per planet, planet ids are 1-based */
 #define RAC3_LOAD_PLANET       0x00EE9310u  /* request word, then the planet id */
 #define RAC3_DEST_PLANET       0x00EE9314u

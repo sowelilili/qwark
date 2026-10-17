@@ -1311,11 +1311,20 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 		names = g->planet_names(&count);
 		if (names == NULL) return ST_UNSUPPORTED;
-		if (1u + (u32)count * 24u > replycap) return ST_FULL;
+		if (1u + (u32)count * 25u > replycap) return ST_FULL;
 
 		reply[0] = count;
 		off = 1;
 		for (i = 0; i < count; i++) { put_fixed(reply + off, 24, names[i]); off += 24; }
+
+		/*
+		 * Build 53, revision 1.21: then the order a menu lists them in, one
+		 * index per planet. A client from before reads the names and stops,
+		 * so the bytes after them are new to nobody.
+		 */
+		for (i = 0; i < count; i++)
+			reply[off++] = g->planet_order != NULL ? g->planet_order[i] : i;
+
 		*replylen = off;
 		return ST_OK;
 	}

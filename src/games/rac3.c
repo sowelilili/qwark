@@ -1191,6 +1191,34 @@ static const char * const rac3_planets[] = {
 	"Vid Comic 1 SE"
 };
 
+/*
+ * Build 53. The planets in the order the game visits them, for a menu: the old
+ * client's RAC3Form combo box, which listed them that way and parsed each name
+ * back into its id, rather than rac3.cs planetsList, which is the numbering
+ * above. Each mission level sits after the planet it belongs to (Aquatos's
+ * Clank and sewer levels after Aquatos, Holostar's Clank level after
+ * Holostar), the arena and ranger levels follow the story, and the vid comics
+ * go by their own number. The combo box named Zeldrin Starport twice, after
+ * Tyhrranosis and again after Obani Draco; it is listed once, at the first.
+ * The placeholders go last, where the client's combo leaves them out anyway.
+ */
+static const u8 rac3_planet_order[] = {
+	1,  2,  3,  4,  5,      /* Veldin, Florana, Starship Phoenix, Marcadia, Daxx */
+	11, 12,                 /* Obani Gemini, Blackwater City */
+	7,                      /* Annihilation Nation */
+	8,  27, 28,             /* Aquatos, Aquatos Clank, Aquatos Sewers */
+	9,  10,                 /* Tyhrranosis, Zeldrin Starport */
+	13, 23,                 /* Holostar, Holostar Clank */
+	21,                     /* Obani Draco */
+	16, 17, 18, 19,         /* Metropolis, Crash Site, Aridia, Qwark's Hideout */
+	6,  14, 22, 20,         /* Phoenix Rescue, Koros, Command Center, Launch Site */
+	24,                     /* Insomniac Museum */
+	29, 26,                 /* Tyhrranosis Rangers, Metropolis Rangers */
+	31, 33, 34, 32, 35, 30, /* Vid Comics 1 to 6 */
+	36,                     /* Vid Comic 1 SE */
+	15, 25, 0               /* the two gaps and the placeholder */
+};
+
 u8 rac3_planet_count(void)
 {
 	return (u8)(sizeof(rac3_planets) / sizeof(rac3_planets[0]));
@@ -1340,5 +1368,6 @@ const struct game_api rac3_game = {
 
 	rac3_autosplit_describe,
 
-	&rac3_manips          /* revision 1.21 */
+	&rac3_manips,         /* revision 1.21 */
+	rac3_planet_order     /* build 53 */
 };

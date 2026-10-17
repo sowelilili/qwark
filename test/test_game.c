@@ -129,5 +129,6 @@ const struct game_api testgame_game = {
 
 	NULL,                 /* autosplit_describe: this stub has no watcher */
 
-	NULL                  /* manips: and no manip groups */
+	NULL,                 /* manips: and no manip groups */
+	NULL                  /* planet_order: its planets in id order */
 };

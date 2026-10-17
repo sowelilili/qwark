@@ -390,6 +390,17 @@ struct game_api {
 	 * loaded or a new game started.
 	 */
 	const struct game_manips *manips;
+
+	/*
+	 * Build 53, revision 1.21. The order a planet menu lists this game's
+	 * planets in, which is the order the game visits them rather than the
+	 * order it numbers them: planet_names' count entries, every index from 0
+	 * to count - 1 exactly once, placeholders last. PLANET_LIST sends it after
+	 * the names, and the index a name sits at is still the planet's id. NULL
+	 * where the numbering already is the game's order (RaC1, RaC2), and
+	 * PLANET_LIST then sends 0 to count - 1.
+	 */
+	const u8 *planet_order;
 };
 
 /*

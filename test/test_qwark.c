@@ -6772,6 +6772,8 @@ static void test_manips(void)
 #define R3_AMMO_ARRAY   0x00DA5240u
 #define R3_VID_COMICS   0x00DA650Bu
 #define R3_LEVELFLAGS   0x00ECE675u
+#define R3_TI_BASE      0x00ECE54Du   /* the titanium bolts, 8 per planet id */
+#define R3_TI_LEN       296u
 #define R3_LOADPLANET   0x00EE9310u
 #define R3_DEST_PLANET  0x00EE9314u
 
@@ -7698,6 +7700,134 @@ static void test_rac3(void)
 	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(2);
 	check(r3_fl_original() && !r3_fl_wrote(), "and its end has nothing left to put back");
+
+	/*
+	 * Build 53. The titanium bolt table is eight bytes per planet id from
+	 * 0xECE54D, 296 bytes up to the level flags (rac3.h); bit1 of a planet
+	 * load takes back the bolts collected on the destination and nothing
+	 * else, and the two whole-table actions cover the table and only it.
+	 */
+	group("RaC3: titanium bolts, and the special-bolts bit of a planet load");
+	{
+		u8 table[R3_TI_LEN];
+		u8 before[16];
+		u8 i, ones;
+		/* Bolts per slot as a file with all forty holds them, ids 0..36. */
+		static const u8 per_slot[37] = {
+			0, 0, 2, 7, 3, 2, 0, 2, 3, 2, 2, 2, 0, 3, 2, 0, 2, 1, 2, 1,
+			0, 0, 1, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0
+		};
+
+		memset(table, 1, sizeof(table));
+		memset(before, 0xAA, sizeof(before));
+		host_poke(R3_TI_BASE, table, sizeof(table));
+		host_poke(R3_TI_BASE - 16, before, sizeof(before));
+		host_poke(R3_LEVELFLAGS + 13 * 0x10, (const u8 *)"\x33", 1);
+		host_poke(R3_LEVELFLAGS + 14 * 0x10, (const u8 *)"\x44", 1);
+
+		check(session_planet_load(13, 0) == ST_OK, "a Holostar load with neither flag");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0x69] == 1 && table[0x6A] == 1 && table[0x6B] == 1,
+		      "leaves its bolts alone");
+
+		check(session_planet_load(13, PLANET_FLAG_RESET_BOLTS) == ST_OK,
+		      "a Holostar load with the special-bolts bit");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0x69] == 0 && table[0x6A] == 0 && table[0x6B] == 0,
+		      "takes back Holostar's three bolts, bytes 0x69 to 0x6B");
+		check(table[0x68] == 1 && table[0x6C] == 1 && table[0x6F] == 1,
+		      "and leaves the bytes of its slot that are no bolt");
+		check(table[23 * 8 + 1] == 1, "and Holostar Clank's slot");
+		host_peek(R3_LEVELFLAGS + 13 * 0x10, &b, 1);
+		check_eq_u64(b, 0x33, "and, without bit0, the level flags");
+
+		check(session_planet_load(3, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a Phoenix load");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0x18] == 0 && table[0x19] == 0, "takes back the Phoenix's own two");
+		check(table[0x1A] == 1 && table[0x1B] == 1 && table[0x1C] == 1 &&
+		      table[0x1D] == 1 && table[0x1E] == 1,
+		      "and leaves the five vid comic bolts kept in its slot");
+
+		check(session_planet_load(32, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a Vid Comic 4 load");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0x1B] == 0, "takes back that comic's bolt, byte 3 of the Phoenix's slot");
+		check(table[0x1A] == 1 && table[0x1C] == 1, "and no other comic's");
+		check(table[32 * 8] == 1 && table[32 * 8 + 7] == 1, "and writes nothing in the comic's own slot");
+
+		check(session_planet_load(28, PLANET_FLAG_RESET_BOLTS) == ST_OK, "an Aquatos Sewers load");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0xE1] == 0 && table[0xE2] == 0, "takes back the sewers' two");
+		check(table[0x41] == 1 && table[0x42] == 1 && table[0x43] == 1,
+		      "and leaves Aquatos's three");
+
+		host_write_log_reset();
+		check(session_planet_load(1, PLANET_FLAG_RESET_BOLTS) == ST_OK,
+		      "a Veldin load with the bit is no error");
+		{
+			u32 w, a = 0, wlen = 0, into = 0;
+			for (w = 0; w < host_write_log_count(); w++) {
+				if (host_write_log_at(w, &a, &wlen) != 0) break;
+				if (a < R3_TI_BASE + R3_TI_LEN && a + wlen > R3_TI_BASE) into++;
+			}
+			check_eq_u64(into, 0, "and writes nothing into the table: Veldin has none");
+		}
+
+		check(session_planet_load(14, PLANET_FLAG_RESET_LEVELFLAGS |
+		                              PLANET_FLAG_RESET_BOLTS) == ST_OK,
+		      "a Koros load with both bits");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		check(table[0x71] == 0 && table[0x72] == 0, "takes back Koros's two");
+		host_peek(R3_LEVELFLAGS + 14 * 0x10, &b, 1);
+		check_eq_u64(b, 0, "and resets its level flags");
+
+		host_peek(R3_TI_BASE - 16, before, sizeof(before));
+		for (i = 0; i < 16 && before[i] == 0xAA; i++) { }
+		check_eq_u64(i, 16, "and nothing wrote below the table");
+
+		host_poke(R3_LEVELFLAGS, (const u8 *)"\x5A", 1);
+		check(features_trigger(24) == ST_OK, "Unlock all titanium bolts fires");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		ones = 0;
+		for (i = 0; i < 37; i++) {
+			u8 k, n = 0;
+			for (k = 0; k < 8; k++) {
+				if (table[i * 8 + k] == 1) n++;
+				else if (table[i * 8 + k] != 0) n = 0xFF;
+			}
+			if (n != per_slot[i]) break;
+			ones = (u8)(ones + n);
+		}
+		check_eq_u64(i, 37, "every slot holds its own planet's bolts, as 0 and 1");
+		check_eq_u64(ones, 40, "forty in all");
+		check(table[0x6B] == 1 && table[0x1E] == 1 && table[0xE2] == 1,
+		      "Holostar's third, Vid Comic 5's and the sewers' second among them");
+		host_peek(R3_TI_BASE - 16, before, sizeof(before));
+		check(before[0] == 0xAA && before[15] == 0xAA,
+		      "and the sixteen bytes below the table rac3.cs wrote over are left alone");
+		host_peek(R3_LEVELFLAGS, &b, 1);
+		check_eq_u64(b, 0x5A, "as are the level flags just above it");
+
+		check(features_trigger(25) == ST_OK, "Reset all titanium bolts fires");
+		host_peek(R3_TI_BASE, table, sizeof(table));
+		for (i = 0; i < 37; i++) {
+			u8 k;
+			for (k = 0; k < 8 && table[i * 8 + k] == 0; k++) { }
+			if (k != 8) break;
+		}
+		check_eq_u64(i, 37, "and empties all 296 bytes, Koros onwards included");
+		host_peek(R3_TI_BASE - 16, before, sizeof(before));
+		host_peek(R3_LEVELFLAGS, &b, 1);
+		check(before[15] == 0xAA && b == 0x5A, "and nothing either side");
+		host_poke(R3_LEVELFLAGS, (const u8 *)"\x00", 1);
+
+		/* The loads above forced fast loads; the end of one puts them back. */
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x06", 4);
+		pump(3);
+		host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
+		host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
+		pump(2);
+		check(r3_fl_original(), "and the end of the load puts fast loads back");
+	}
 
 	group("RaC3: positions and values");
 
@@ -14360,6 +14490,110 @@ static void check_fits(u32 bytes, const char *what)
 		printf("        %u bytes, cap %u\n", (unsigned)bytes, (unsigned)QWARK_MAX_PAYLOAD);
 }
 
+/*
+ * Build 53. Every game's PLANET_LIST order is each of its indices exactly once,
+ * and UYA's and Deadlocked's are the old client's combo boxes: the game's own
+ * order, not its numbering, with the placeholders last.
+ */
+static int order_is_permutation(const u8 *order, u8 count)
+{
+	u8 seen[QWARK_MAX_PLANETS];
+	u8 i;
+
+	if (count > QWARK_MAX_PLANETS) return 0;
+	memset(seen, 0, sizeof(seen));
+	for (i = 0; i < count; i++) {
+		if (order[i] >= count || seen[order[i]]) return 0;
+		seen[order[i]] = 1;
+	}
+	return 1;
+}
+
+static u8 order_position(const u8 *order, u8 count, u8 planet)
+{
+	u8 i;
+
+	for (i = 0; i < count; i++) {
+		if (order[i] == planet) return i;
+	}
+	return 0xFF;
+}
+
+static void test_planet_order(void)
+{
+	static const char * const titles[] = {
+		"NPEA00385", "NPEA00386", "NPEA00387", "NPEA00423"
+	};
+	/* RAC3Form's combo box, Zeldrin Starport once, then the placeholders. */
+	static const u8 uya[] = {
+		1, 2, 3, 4, 5, 11, 12, 7, 8, 27, 28, 9, 10, 13, 23, 21, 16, 17, 18, 19,
+		6, 14, 22, 20, 24, 29, 26, 31, 33, 34, 32, 35, 30, 36, 15, 25, 0
+	};
+	u32 i;
+
+	group("PLANET_LIST: every game's menu order");
+
+	for (i = 0; i < sizeof(titles) / sizeof(titles[0]); i++) {
+		const struct game_api *g;
+		const char * const *names;
+		u8 count = 0;
+		u8 k;
+		char what[96];
+
+		if (!quit_and_wait()) { check(0, "quit before the next game"); return; }
+		if (!boot_and_wait(titles[i])) { check(0, titles[i]); continue; }
+		g = session_game();
+		if (g == NULL || g->planet_names == NULL) { check(0, "the game has planets"); continue; }
+
+		names = g->planet_names(&count);
+		what[0] = 0;
+		qstrcat(what, sizeof(what), titles[i]);
+
+		if (g->planet_order == NULL) {
+			qstrcat(what, sizeof(what), ": no order of its own, so the ids are the order");
+			check(g->game_id == GAME_RAC1 || g->game_id == GAME_RAC2, what);
+			continue;
+		}
+
+		qstrcat(what, sizeof(what), ": the order is every planet exactly once");
+		check(order_is_permutation(g->planet_order, count), what);
+
+		/* The placeholders, every "(...)" name, come after every real planet. */
+		for (k = 0; k < count; k++) {
+			const char *name = names[g->planet_order[k]];
+			if (name[0] == '(') break;
+		}
+		for (; k < count; k++) {
+			if (names[g->planet_order[k]][0] != '(') break;
+		}
+		what[0] = 0;
+		qstrcat(what, sizeof(what), titles[i]);
+		qstrcat(what, sizeof(what), ": and the placeholders are last");
+		check_eq_u64(k, count, what);
+
+		if (g->game_id == GAME_RAC3) {
+			check_eq_u64(count, sizeof(uya), "UYA orders all 37 ids");
+			check(memcmp(g->planet_order, uya, sizeof(uya)) == 0,
+			      "in RAC3Form's order");
+			check(qstreq(names[g->planet_order[5]], "Obani Gemini"),
+			      "Obani Gemini sixth, after Daxx");
+			check(order_position(g->planet_order, count, 10) <
+			      order_position(g->planet_order, count, 21),
+			      "Zeldrin Starport once, before Obani Draco");
+			check(qstreq(names[g->planet_order[27]], "Vid Comic 1") &&
+			      qstreq(names[g->planet_order[32]], "Vid Comic 6"),
+			      "and the vid comics by their own number");
+		} else if (g->game_id == GAME_RAC4) {
+			check(order_position(g->planet_order, count, 8) + 1 ==
+			      order_position(g->planet_order, count, 7),
+			      "Deadlocked lists Orxon just before Valix, as RAC4Form did");
+			check(qstreq(names[g->planet_order[0]], "DreadZone") &&
+			      qstreq(names[g->planet_order[11]], "Interior"),
+			      "from DreadZone to Interior");
+		}
+	}
+}
+
 static void test_reply_sizes(void)
 {
 	static u8 reply[QWARK_MAX_PAYLOAD];
@@ -14381,7 +14615,8 @@ static void test_reply_sizes(void)
 	check_fits(2u + (u32)QWARK_MAX_GROUPS * 24u + 1u + (u32)QWARK_MAX_READOUTS * 24u
 	           + 1u + (u32)QWARK_MAX_FEATURES * FEATURE_WIRE_SIZE,
 	           "DESCRIBE with 16 groups, 16 readouts and 64 features");
-	check_fits(1u + (u32)QWARK_MAX_PLANETS * 24u, "PLANET_LIST with 64 planets");
+	/* A name of 24 bytes and, since build 53, a byte of the menu order each. */
+	check_fits(1u + (u32)QWARK_MAX_PLANETS * 25u, "PLANET_LIST with 64 planets");
 	check_fits(13u + QWARK_MAX_FREEZES * 16u + 1u + 16u * 8u,
 	           "PREVIOUS_LIST with 64 freezes and 16 client patches");
 	check_fits(5u + (u32)AUTOSPLIT_RING_SLOTS * AUTOSPLIT_EVENT_SIZE,
@@ -14430,7 +14665,7 @@ static void test_reply_sizes(void)
 			what[0] = 0;
 			qstrcat(what, sizeof(what), titles[i]);
 			qstrcat(what, sizeof(what), ": PLANET_LIST fits a frame");
-			check_fits(1u + (u32)count * 24u, what);
+			check_fits(1u + (u32)count * 25u, what);
 		}
 
 		if (g->unlock_list != NULL) {
@@ -16318,6 +16553,7 @@ int main(void)
 	test_mod_previous();
 	test_switches();
 	test_reply_sizes();
+	test_planet_order();
 	test_config();
 	test_hot_tables();
 	test_fingerprint();

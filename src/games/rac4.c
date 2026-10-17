@@ -970,6 +970,19 @@ static const char * const rac4_planets[] = {
 	"Interior"
 };
 
+/*
+ * Build 53. The planets in the order the old client's RAC4Form combo box listed
+ * them, for a menu. It is the numbering above but for one pair: the combo had
+ * Orxon before Valix, where the ids run Valix (7) then Orxon (8). The
+ * placeholders go last, where the client's combo leaves them out anyway.
+ */
+static const u8 rac4_planet_order[] = {
+	1,  2,  4,  5,  6,      /* DreadZone, Catacrom, Sarathos, Kronos, Shaar */
+	8,  7,                  /* Orxon, Valix */
+	10, 11, 13, 14, 15,     /* Torval, Stygia, Maraxus, Ghost Station, Interior */
+	0,  3,  9,  12          /* the unused slot and the three infinite loops */
+};
+
 u8 rac4_planet_count(void)
 {
 	return (u8)(sizeof(rac4_planets) / sizeof(rac4_planets[0]));
@@ -1087,5 +1100,6 @@ const struct game_api rac4_game = {
 
 	rac4_autosplit_describe,
 
-	&rac4_manips          /* revision 1.21 */
+	&rac4_manips,         /* revision 1.21 */
+	rac4_planet_order     /* build 53 */
 };

@@ -438,6 +438,98 @@ int rac3_levelflags_reset(u8 planet)
 	return mem_write_zeros(RAC3_LEVEL_FLAGS + (u32)planet * RAC3_LF_LEN, RAC3_LF_LEN);
 }
 
+/* --------------------------------------------------------- titanium bolts */
+
+/*
+ * Build 53. The forty titanium bolts, each with the planet it is collected on
+ * and its byte in the table (rac3.h, RAC3_TITANIUM_BOLTS: eight bytes per
+ * planet id), given as the slot it is in and its index there. They are the
+ * community address list's NTSC PS2 column, one row per bolt in the list's
+ * order, less that table's base 0x201BBB18; the column lays the bolts out by
+ * planet id and index exactly as this executable does. Holostar's third bolt
+ * (slot 13, index 3) is byte 0x6B, which 0x1DD1AC reads, and its first 0x69,
+ * read at 0x1DD344; Phoenix's first (3, 0) is byte 0x18, read at 0x640470 and
+ * 0x642320; and the game's own per-planet totals (0xC3FC58, an s32 per id,
+ * which its map adds up with each planet's mission levels at 0x2CFE68) are
+ * these rows counted, forty in all.
+ *
+ * The five vid comic bolts are kept in Starship Phoenix's slot, bytes 2 to 6,
+ * in comic order 1, 4, 2, 3, 5, which is the order of their planet ids 31 to
+ * 35, and the game counts them as Phoenix's seven. A bolt here belongs to the
+ * level it is found in, so each is listed under its comic: a Phoenix load
+ * takes back Phoenix's own two, and a comic's load the comic's one. The
+ * mission levels (Aquatos's sewers, the Metropolis rangers mission) have slots
+ * of their own and are listed under themselves. From the NPEA00387 executable;
+ * not yet run on hardware.
+ */
+struct rac3_ti_bolt {
+	u8 planet;
+	u8 byte;     /* offset into RAC3_TITANIUM_BOLTS */
+};
+
+/* A bolt's byte: its slot's planet id, and its index within the slot. */
+#define TI_AT(slot, index) ((u8)((slot) * RAC3_TI_STRIDE + (index)))
+
+static const struct rac3_ti_bolt rac3_ti_bolts[] = {
+	{  2, TI_AT(2, 1) },  {  2, TI_AT(2, 2) },                        /* Florana */
+	{  3, TI_AT(3, 0) },  {  3, TI_AT(3, 1) },                        /* Starship Phoenix */
+	{ 31, TI_AT(3, 2) },  { 32, TI_AT(3, 3) },  { 33, TI_AT(3, 4) },  /* Vid Comics 1, 4, 2 */
+	{ 34, TI_AT(3, 5) },  { 35, TI_AT(3, 6) },                        /* Vid Comics 3, 5 */
+	{  4, TI_AT(4, 1) },  {  4, TI_AT(4, 2) },  {  4, TI_AT(4, 3) },  /* Marcadia */
+	{  5, TI_AT(5, 1) },  {  5, TI_AT(5, 2) },                        /* Daxx */
+	{  7, TI_AT(7, 1) },  {  7, TI_AT(7, 2) },                        /* Annihilation Nation */
+	{  8, TI_AT(8, 1) },  {  8, TI_AT(8, 2) },  {  8, TI_AT(8, 3) },  /* Aquatos */
+	{  9, TI_AT(9, 1) },  {  9, TI_AT(9, 2) },                        /* Tyhrranosis */
+	{ 10, TI_AT(10, 1) }, { 10, TI_AT(10, 2) },                       /* Zeldrin Starport */
+	{ 11, TI_AT(11, 1) }, { 11, TI_AT(11, 2) },                       /* Obani Gemini */
+	{ 13, TI_AT(13, 1) }, { 13, TI_AT(13, 2) }, { 13, TI_AT(13, 3) }, /* Holostar */
+	{ 14, TI_AT(14, 1) }, { 14, TI_AT(14, 2) },                       /* Koros */
+	{ 16, TI_AT(16, 1) }, { 16, TI_AT(16, 2) },                       /* Metropolis */
+	{ 17, TI_AT(17, 1) },                                             /* Crash Site */
+	{ 18, TI_AT(18, 1) }, { 18, TI_AT(18, 2) },                       /* Aridia */
+	{ 19, TI_AT(19, 1) },                                             /* Qwark's Hideout */
+	{ 22, TI_AT(22, 1) },                                             /* Command Center */
+	{ 26, TI_AT(26, 1) },                                             /* Metropolis Rangers */
+	{ 28, TI_AT(28, 1) }, { 28, TI_AT(28, 2) }                        /* Aquatos Sewers */
+};
+
+#undef TI_AT
+
+#define RAC3_TI_BOLTS ((u8)(sizeof(rac3_ti_bolts) / sizeof(rac3_ti_bolts[0])))
+
+/*
+ * "Reset special bolts" for one planet: every bolt collected there back to not
+ * collected, as RaC1's gold bolt reset does for its planet. A planet with none
+ * has nothing to write and that is not an error.
+ */
+static int rac3_reset_titanium(u8 planet)
+{
+	u8 i;
+	int rc;
+
+	for (i = 0; i < RAC3_TI_BOLTS; i++) {
+		if (rac3_ti_bolts[i].planet != planet) continue;
+		rc = mem_write_u8(RAC3_TITANIUM_BOLTS + rac3_ti_bolts[i].byte, 0);
+		if (rc != ST_OK) return rc;
+	}
+	return ST_OK;
+}
+
+/*
+ * "Unlock all titanium bolts": the table exactly as a file with every bolt
+ * collected holds it, the forty bytes at 1 and every other byte 0, so the
+ * game's per-planet counts read 2 of 2 rather than 8 of 2. One write.
+ */
+static int rac3_unlock_titanium(void)
+{
+	u8 table[RAC3_TI_LEN];
+	u8 i;
+
+	memset(table, 0, sizeof(table));
+	for (i = 0; i < RAC3_TI_BOLTS; i++) table[rac3_ti_bolts[i].byte] = 1;
+	return mem_write(RAC3_TITANIUM_BOLTS, table, sizeof(table));
+}
+
 /* ---------------------------------------------------------------- planets */
 
 int rac3_planet_load(u8 planet, u8 flags)
@@ -478,7 +570,18 @@ int rac3_planet_load(u8 planet, u8 flags)
 		if (rc != ST_OK) return rc;
 	}
 
-	/* RaC3 has no per-planet special bolt, so PLANET_FLAG_RESET_BOLTS is a no-op. */
+	/*
+	 * Build 53: the titanium bolts are UYA's special bolts, and bit1 takes the
+	 * destination's back the way RaC1's takes back its gold bolts - after the
+	 * request has gone out, with the level flags, and only when it has. Until
+	 * this build the bit did nothing here. A data write, so it works under
+	 * RPCS3 with or without the code switches.
+	 */
+	if (flags & PLANET_FLAG_RESET_BOLTS) {
+		rc = rac3_reset_titanium(planet);
+		if (rc != ST_OK) return rc;
+	}
+
 	return ST_OK;
 }
 
@@ -1440,8 +1543,8 @@ int rac3_trigger(u8 id)
 
 	case R3_UNLOCK_SKILL:    return mem_write_fill(RAC3_SKILL_POINTS, 1, 30);
 	case R3_RESET_SKILL:     return mem_write_zeros(RAC3_SKILL_POINTS, 30);
-	case R3_UNLOCK_TITANIUM: return mem_write_fill(RAC3_TITANIUM_BOLTS, 1, 128);
-	case R3_RESET_TITANIUM:  return mem_write_zeros(RAC3_TITANIUM_BOLTS, 128);
+	case R3_UNLOCK_TITANIUM: return rac3_unlock_titanium();
+	case R3_RESET_TITANIUM:  return mem_write_zeros(RAC3_TITANIUM_BOLTS, RAC3_TI_LEN);
 
 	case R3_UPGRADE_ALL:     return rac3_all_versions(1);
 	case R3_DOWNGRADE_ALL:   return rac3_all_versions(0);

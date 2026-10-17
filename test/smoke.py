@@ -1287,6 +1287,8 @@ OTHER_GAMES = [
         "readouts": 9,
         "planets": 27,
         "planet0": "Aranos",
+        # Build 53: PLANET_LIST's menu order. RaC2's ids are its own order.
+        "order_head": [0, 1, 2, 3, 4],
         "unlocks": 44,
         "categories": 3,
         "unlock0": "Lancer",
@@ -1395,6 +1397,19 @@ OTHER_GAMES = [
         "readouts": 12,
         "planets": 37,
         "planet0": "(none)",
+        # Build 53: the menu order is RAC3Form's combo box, the game's order:
+        # Daxx, then Obani Gemini (11) and Blackwater City (12), then
+        # Annihilation Nation (7). The placeholders go last.
+        "order_head": [1, 2, 3, 4, 5, 11, 12, 7],
+        "order_tail": [15, 25, 0],
+        # Build 53: bit1 of a planet load takes back the destination's titanium
+        # bolts, eight bytes a planet id from 0xECE54D: Holostar (13) has three
+        # at bytes 0x69..0x6B. Its slot's other bytes and Holostar Clank's slot
+        # are not Holostar's bolts and stay.
+        "special_bolts": {"planet": 13,
+                          "reset": [0xECE54D + 0x69, 0xECE54D + 0x6A, 0xECE54D + 0x6B],
+                          "kept": [0xECE54D + 0x68, 0xECE54D + 0x6C,
+                                   0xECE54D + 23 * 8 + 1]},
         "unlocks": 40,
         "categories": 3,
         "unlock0": "Heli Pack",
@@ -1420,9 +1435,10 @@ OTHER_GAMES = [
         "value_addr": 0xC1E4DC,
         "signed": [("QE offset", 16), ("Health XP", 32)],
         "signed_qe": (14, 0xC1E2C0, 6),
-        # "Reset all titanium bolts".
+        # "Reset all titanium bolts", from the table's first byte, 0xECE54D
+        # since build 53 (rac3.cs had it sixteen bytes early).
         "action_id": 25,
-        "action_addr": 0xECE53D,
+        "action_addr": 0xECE54D,
         "action_expect": 0,
         "planet": 5,
         "load_addr": 0xEE9310,
@@ -1521,6 +1537,9 @@ OTHER_GAMES = [
         "readouts": 8,
         "planets": 16,
         "planet0": "(unused)",
+        # Build 53: RAC4Form's combo box had Orxon (8) before Valix (7).
+        "order_head": [1, 2, 4, 5, 6, 8, 7, 10],
+        "order_tail": [0, 3, 9, 12],
         "unlocks": 28,
         "categories": 3,
         "unlock0": "Dual Vipers",
@@ -2334,6 +2353,19 @@ def exercise_game(c, sim, spec, udp=None):
               "%s: the planet count matches" % name, count)
         check(first == spec["planet0"],
               "%s: index 0 is the game's own planet 0" % name, first)
+        # Build 53, revision 1.21: one byte per planet after the names, the
+        # order a menu lists them in, every index exactly once.
+        order = list(body[1 + count * 24:])
+        check(len(order) == count and sorted(order) == list(range(count)),
+              "%s: the menu order after the names is every planet once" % name,
+              order)
+        head = spec.get("order_head", [])
+        check(order[:len(head)] == head,
+              "%s: and starts in the game's own order" % name, order[:len(head)])
+        tail = spec.get("order_tail", [])
+        if tail:
+            check(order[-len(tail):] == tail,
+                  "%s: with the placeholders last" % name, order[-len(tail):])
 
     # -------------------------------------------------------- unlock list
     status, body = c.call(OP_UNLOCK_LIST)
@@ -2667,6 +2699,21 @@ def exercise_game(c, sim, spec, udp=None):
             check(mem_read_u32(c, addr) == want,
                   "%s: the load request word at 0x%X is %d" % (name, addr, want),
                   mem_read_u32(c, addr))
+
+    if spec.get("special_bolts"):
+        sb = spec["special_bolts"]
+        for addr in sb["reset"] + sb["kept"]:
+            mem_write(c, addr, b"\x01")
+        status, _ = c.call(OP_PLANET_LOAD,
+                           bytes([sb["planet"], PLANET_FLAG_RESET_BOLTS]))
+        if check(status == ST_OK,
+                 "%s: PLANET_LOAD with the special-bolts bit" % name, status):
+            got = [mem_read_u8(c, a) for a in sb["reset"]]
+            check(got == [0] * len(sb["reset"]),
+                  "%s: takes back the destination's special bolts" % name, got)
+            got = [mem_read_u8(c, a) for a in sb["kept"]]
+            check(got == [1] * len(sb["kept"]),
+                  "%s: and nothing that is not one of them" % name, got)
 
     # ------------------------------- Deadlocked's code fast loads (build 53)
     #
@@ -3831,6 +3878,18 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: writing no flag and no code word",
           (pine.peek(RAC3_SW_FAST_FLAG, 1).hex(), pine.peek(RAC3_FASTLOAD_SITE, 4).hex()))
 
+    # Build 53: the special-bolts bit is a data write, so it reaches the
+    # emulator with or without the switches: Daxx's two titanium bolts, bytes
+    # 0x29 and 0x2A of the table at 0xECE54D.
+    daxx = [0xECE54D + 0x29, 0xECE54D + 0x2A]
+    for addr in daxx:
+        pine.poke(addr, b"\x01")
+    status, _ = c.call(OP_PLANET_LOAD, bytes([5, PLANET_FLAG_RESET_BOLTS]))
+    got = [pine.peek(a, 1) for a in daxx]
+    check(status == ST_OK and got == [b"\x00", b"\x00"],
+          "rpcs3 rac3 switches: and its special-bolts bit takes back Daxx's titanium bolts",
+          (status, [g.hex() for g in got]))
+
     # -------------------------------------- the client rewrites the patch
     pine.shutdown_game()
     ok, _ = wait_state(c, SESSION_XMB)
@@ -4590,6 +4649,10 @@ def main():
             check(count == 19, "RaC1 has 19 planets", count)
             check(names[0] == "Veldin" and names[3] == "Kerwan",
                   "the planet names line up", names[:4])
+            # Build 53: the menu order after the names. RaC1's ids are its order.
+            check(list(body[1 + count * 24:]) == list(range(count)),
+                  "and the menu order after them is the ids in turn",
+                  list(body[1 + count * 24:]))
 
         # ----------------------------------------------------------- unlocks
         status, body = c.call(OP_UNLOCK_LIST)
