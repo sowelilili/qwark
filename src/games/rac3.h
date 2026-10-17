@@ -93,12 +93,31 @@
  * What qwark writes in `api_trophy`, and what the helper answers there;
  * sf_rac3.h has the helper's side. RUNNING lasts while the helper's own thread
  * resets the game's trophies, a few seconds the game goes on through, and the
- * thread answers 0, or UNREGISTERED when the game's trophies did not come back.
+ * thread answers 0; UNREGISTERED when every registration it made failed, STILL
+ * when the last was still going when it stopped waiting.
+ *
+ * After the request byte, the helper's own: its busy byte, and then what the
+ * thread leaves of the last reset for the log (SF_TROPHY_TRIES and on in
+ * sf_rac3.h): how many registrations it made, how each ended (RAC3_TROPHY_REG_*,
+ * two bits each, the first in the low bits), and how long each took in quarters
+ * of a second, a byte each. Offsets from the request byte.
  */
 #define RAC3_TROPHY_NOW          1u
 #define RAC3_TROPHY_IN_LOAD      2u
 #define RAC3_TROPHY_RUNNING      3u
 #define RAC3_TROPHY_UNREGISTERED 4u
+#define RAC3_TROPHY_STILL        5u
+
+#define RAC3_TROPHY_BUSY_OFF     1u
+#define RAC3_TROPHY_TRIES_OFF    2u
+#define RAC3_TROPHY_RESULTS_OFF  3u
+#define RAC3_TROPHY_TIMES_OFF    4u
+#define RAC3_TROPHY_TRIES_MAX    3u
+
+#define RAC3_TROPHY_REG_OK       0u
+#define RAC3_TROPHY_REG_FAILED   1u
+#define RAC3_TROPHY_REG_LOST     2u
+#define RAC3_TROPHY_REG_RUNNING  3u
 
 #define RAC3_COORDS            0x00DA2870u  /* f32 x, y, z (Vec4) */
 #define RAC3_GHOST_TIMER       0x00DA29DEu
@@ -265,8 +284,8 @@
  * Where the console writes the cave: 0x9807F0..0x9808B0, forty-eight words at
  * the top of what the trophy reset left of the strictly dead 0x980304..0x980AC0
  * (src/games/sfhelper/sf_rac3.h), under its cave at SF_CAVE_TROPHY (0x9808C0)
- * and above its thread's at 0x980380..0x980580; 0x980304..0x980380 and
- * 0x980580..0x9807F0 stay free. Not the savefile helper's dead function at
+ * and above its thread's at 0x980380..0x980700; 0x980304..0x980380 and
+ * 0x980700..0x9807F0 stay free. Not the savefile helper's dead function at
  * 0x980AC0, where the Infinite ammo and Fast loads code switches are: the rack
  * mods racman shipped for this game (COOLCAM, SUCKMAN, rc3-save) load their
  * code there, and a console runs Fast loads beside them, which it never had to

@@ -229,7 +229,7 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
  * whether or not the platform patches code. NOT_INGAME outside a game,
  * UNSUPPORTED for a game with no helper or with the helper switched off, FULL
  * for a reply that would not fit `cap` (never, for the four games today:
- * RaC3's is the largest since build 53, at 3596 bytes with its trophy reset and its thread).
+ * RaC3's is the largest since build 53, at 4108 bytes with its trophy reset and its thread).
  *
  * Build 51: only in the emulator builds (QWARK_EMULATOR, plat.h), as is the
  * look for a patched-in helper. The PS3 module answers SAVEFILE_PATCH

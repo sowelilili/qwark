@@ -6299,8 +6299,8 @@ static void test_manip_trophies(void)
 	      sd->caves[1].addr + sd->caves[1].len <= 0x00980AC0u,
 	      "and the reset is the second cave, inside 0x9808C0..0x980AC0");
 	check(sd != NULL && sd->ncaves == 3 && sd->caves[2].addr == 0x00980380u &&
-	      sd->caves[2].addr + sd->caves[2].len <= 0x00980580u,
-	      "and its thread the third, inside 0x980380..0x980580, short of 0x980580");
+	      sd->caves[2].addr + sd->caves[2].len <= 0x00980700u,
+	      "and its thread the third, inside 0x980380..0x980700");
 	if (sd != NULL && sd->ncaves == 3) {
 		/*
 		 * The thread's descriptor, at the head of its cave: an entry inside
@@ -6308,7 +6308,7 @@ static void test_manip_trophies(void)
 		 */
 		u32 entry = be32_get(sd->caves[2].bytes);
 
-		check(entry > 0x00980380u && entry < 0x00980580u && (entry & 3u) == 0,
+		check(entry > 0x00980380u && entry < 0x00980700u && (entry & 3u) == 0,
 		      "the thread cave starts with a descriptor whose entry is code in that cave");
 		check_eq_u64(be32_get(sd->caves[2].bytes + 4), 0x00C0A4E0u,
 		             "and whose TOC is the game's, 0xC0A4E0");
@@ -6486,33 +6486,60 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_byte(), 0, "and then withdrawn");
 
 	/*
-	 * The helper's thread answers 4 when the game's register thread had not got
-	 * its trophies back by the end; qwark logs it and the reset is over.
+	 * The helper's thread answers 4 when every registration it made failed, and
+	 * 5 when the last was still going when it stopped waiting; either way it
+	 * leaves how many it made and how each ended, which qwark logs, and the
+	 * reset is over.
 	 */
-	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "another reset");
-	pump(1);
-	check_eq_u64(r3t_byte(), 1, "asks the game");
-	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
-	pump(2);
-	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x04", 1);
-	pump(1);
-	check_eq_u64(r3t_byte(), 0, "an answer that the game's trophies were not back is put back to 0");
-	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "and that reset is over: another is accepted");
-	pump(1);
-	check_eq_u64(r3t_byte(), 1, "which asks again");
+	{
+		static const u8 tries[6] = { 3, 0x15, 2, 1, 160, 0 };   /* failed, failed, failed */
+		static const u8 still[6] = { 2, 0x0D, 3, 180, 0, 0 };   /* failed, still going */
+		u32 notes;
+
+		check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "another reset");
+		pump(1);
+		check_eq_u64(r3t_byte(), 1, "asks the game");
+		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
+		pump(2);
+		notes = host_notify_count();
+		host_poke(R3T_TROPHY_BYTE + 2u, tries, sizeof(tries));
+		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x04", 1);
+		pump(1);
+		check_eq_u64(r3t_byte(), 0, "an answer that every registration failed is put back to 0");
+		check(host_notify_count() == notes + 1 &&
+		      qstreq(host_notify_last(), "Trophy reset failed: the game could not re-register its trophies"),
+		      "and the console says the reset failed");
+		check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "and that reset is over: another is accepted");
+		pump(1);
+		check_eq_u64(r3t_byte(), 1, "which asks again");
+		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
+		pump(2);
+		notes = host_notify_count();
+		host_poke(R3T_TROPHY_BYTE + 2u, still, sizeof(still));
+		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x05", 1);
+		pump(1);
+		check_eq_u64(r3t_byte(), 0, "an answer that the last registration was still going is put back too");
+		check(host_notify_count() == notes + 1 &&
+		      qstreq(host_notify_last(), "Trophy reset: the game is still re-reading its trophies"),
+		      "and the console says the game is still at it");
+		check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "that reset is over as well");
+		pump(1);
+		check_eq_u64(r3t_byte(), 1, "which asks again");
+		host_poke(R3T_TROPHY_BYTE + 2u, (const u8 *)"\x00\x00\x00\x00\x00\x00", 6);
+	}
 
 	/*
-	 * A reset that outlives qwark's watch, a minute of the helper's thread
+	 * A reset that outlives qwark's watch, three minutes of the helper's thread
 	 * running, is let go. The helper's busy byte holds the next reset off while
 	 * that thread runs; once it is down, whatever the request byte says is over.
 	 */
 	host_poke(R3T_BUSY_BYTE, (const u8 *)"\x01", 1);
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
-	pump(60 * 120 - 10);
+	pump(180 * 120 - 10);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
-	      "the helper's thread may run for most of a minute, and qwark waits it out");
+	      "the helper's thread may run for most of three minutes, and qwark waits it out");
 	pump(20);
-	check_eq_u64(r3t_byte(), 3, "after a minute qwark lets it go, leaving the byte to the thread");
+	check_eq_u64(r3t_byte(), 3, "after three minutes qwark lets it go, leaving the byte to the thread");
 	host_write_log_reset();
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
 	      "whose busy byte still holds a new reset off");
@@ -6767,7 +6794,7 @@ static void test_manips(void)
 #define R3_FL_CAVE_WORDS  48u
 #define R3_FL_CAVE_END    (R3_FL_CAVE + 4u * R3_FL_CAVE_WORDS)
 #define R3_FL_DEAD(i)     (0xD0E00000u | (u32)(i))
-#define R3_FL_SPAN_LO     0x00980580u   /* the dead span, past the trophy reset's thread cave */
+#define R3_FL_SPAN_LO     0x00980700u   /* the dead span, past the trophy reset's thread cave */
 #define R3_FL_SPAN_HI     0x009808C0u   /* up to the trophy reset's cave */
 
 /* Where the caves go back into the game, and the game code they call. */
@@ -7169,7 +7196,7 @@ static void r3_fl_check_words(void)
 			    s->caves[k].addr < R3_FL_CAVE_END) apart = 0;
 		check(apart, "the cave shares no byte with the helper's caves or any code switch");
 		check(R3_FL_CAVE >= R3_FL_SPAN_LO && R3_FL_CAVE_END <= R3_FL_SPAN_HI,
-		      "and sits in 0x980580..0x9808C0, between the trophy reset's two caves");
+		      "and sits in 0x980700..0x9808C0, between the trophy reset's two caves");
 		check(R3_FL_CAVE_END <= 0x00980AC0u,
 		      "clear of 0x980AC0, where the rack mods racman shipped for UYA load");
 	}
@@ -14751,7 +14778,7 @@ static void test_command_port(void)
  */
 #define SF53_STAMP_RAC1 0xD28627B7u
 #define SF53_STAMP_RAC2 0xA6C6BFCFu
-#define SF53_STAMP_RAC3 0x30B71F34u   /* with the trophy reset and its thread */
+#define SF53_STAMP_RAC3 0x49424C5Fu   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
 /* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
@@ -14976,8 +15003,8 @@ static void test_savefile_build53(void)
 		check(d->caves[1].addr >= 0x00980304u && d->caves[1].addr + d->caves[1].len <= 0x00980AC0u,
 		      "inside the dead span and short of the helper, its SF_CAVE_TROPHY_END");
 		check_eq_u64(d->caves[2].addr, 0x00980380u, "the reset's thread is at 0x980380");
-		check(d->caves[2].addr + d->caves[2].len <= 0x00980580u,
-		      "and stops short of 0x980580, its SF_CAVE_TROPHY_THREAD_END, below the reset's");
+		check(d->caves[2].addr + d->caves[2].len <= 0x00980700u,
+		      "and stops short of 0x980700, its SF_CAVE_TROPHY_THREAD_END, below the reset's");
 		check_eq_u64(d->api_trophy, 0x00D9FF1Cu, "and its request byte follows the pause's words");
 		check_eq_u64(d->hooks[0].addr, 0x0097CBA4u, "the hook site has not moved");
 		check_eq_u64(d->hooks[0].value, 0x48003F1Du, "nor has the hook word, bl 0x980AC0");
@@ -14992,13 +15019,13 @@ static void test_savefile_build53(void)
 		check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC3 patch");
 		sf_check_patch_words(d, g_sf_patch, len);
 		check(sf53_rows_within(g_sf_patch, len, 0x00980AC0u, 0x00980F00u,
-		                       0x009808C0u, 0x00980AC0u, 0x00980380u, 0x00980580u, 0x0097CBA4u),
+		                       0x009808C0u, 0x00980AC0u, 0x00980380u, 0x00980700u, 0x0097CBA4u),
 		      "every word it writes is in one of the three caves, short of the switch, or is the hook word");
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x00D9FF00u &&
 		      sf53_byte_addr(g_sf_patch, 1) == 0x00D9FF01u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x00D9FF02u,
 		      "and the bytes it zeroes are the three request bytes");
-		check_eq_u64(len, 3660, "the reply is 3660 bytes, the trophy reset and its thread included");
+		check_eq_u64(len, 4108, "the reply is 4108 bytes, the trophy reset and its thread included");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
 		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
 		      "which is not build 52's, so a patch from then reads as another build's");

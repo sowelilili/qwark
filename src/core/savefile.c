@@ -961,7 +961,7 @@ u32 savefile_load_refusals(void)
  * build.sh cuts .text and .text.stub, which hold nothing but instructions, so
  * RaC1's 116 and 952 bytes, RaC2's 1036, RaC3's 1060 and Deadlocked's 40 and
  * 1004 (build 53) are all multiples of four and none of them is padded; so are
- * RaC3's two trophy caves, 300 bytes of code and 448 of code and the thread's
+ * RaC3's two trophy caves, 300 bytes of code and 672 of code and the thread's
  * eight-byte descriptor. The rounding is there for a cave that one day is not,
  * whose last word then carries its tail and zeroes after it rather than losing
  * the tail.

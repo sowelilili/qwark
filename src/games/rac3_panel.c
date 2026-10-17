@@ -684,9 +684,13 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  *      rc3-save left it. Up to the first hardware test it did that on the
  *      game's main thread with rc3-save's three one-second sleeps, and the game
  *      froze for three seconds. The helper now takes the request on the main
- *      thread and runs the calls on a thread of its own, waiting on the game's
- *      register thread rather than the clock, so the game goes on while it
- *      runs: a few seconds, most of them the console installing the set.
+ *      thread and runs the calls on a thread of its own, so the game goes on
+ *      while it runs: a few seconds, most of them the console installing the
+ *      set. Since the second hardware test, which said "not back" about every
+ *      other reset, it registers as the game's boot does - once, a second after
+ *      the destroy - checks that the registration took, and makes it again when
+ *      it did not, up to three times (sf_rac3.h has the why). Each reset logs
+ *      what every registration did.
  *
  * The folder is found, not named. Its name is the communication id the running
  * game registers under, read out of the game (RAC3_TROPHY_COMMID_PTR); its
@@ -750,13 +754,14 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
 /*
  * How long qwark waits for the helper to pick a request up (the pad routine
  * runs every frame, so this only runs out on a game that is not running
- * frames), and for a reset it has started to finish. The helper's thread waits
- * for two of the game's register threads, each up to a second to start and
- * twenty seconds to end (sf_rac3.h), so a minute is past anything it can take
- * before it answers. Ticks of the 120 Hz loop.
+ * frames), and for a reset it has started to finish. The helper's thread makes
+ * up to three registrations, each a second's wait, up to a second for the
+ * game's register thread to start and forty-five for it to end (sf_rac3.h), so
+ * three minutes are past anything it can take before it answers. Ticks of the
+ * 120 Hz loop.
  */
 #define TR_SEEN_TICKS (5u * 120u)
-#define TR_RUN_TICKS  (60u * 120u)
+#define TR_RUN_TICKS  (180u * 120u)
 
 /*
  * The auto toggle's request asked again after the helper refused it because a
@@ -799,7 +804,7 @@ static u32 tr_request_addr(void)
  */
 static u32 tr_busy_addr(void)
 {
-	return tr_request_addr() + 1u;
+	return tr_request_addr() + RAC3_TROPHY_BUSY_OFF;
 }
 
 /* What the helper would say to a new request, read before anything is looked for. */
@@ -816,7 +821,7 @@ static int tr_helper_idle(int *stale)
 
 	/*
 	 * With qwark idle and no thread of the helper's running, whatever the byte
-	 * holds is over: an answer nobody read (a 4, or a refusal that landed just
+	 * holds is over: an answer nobody read (a 4 or a 5, or a refusal that landed just
 	 * as qwark withdrew a request the game had not picked up), or a 3 qwark
 	 * stopped watching. It goes back to 0 once the helper is known to be in;
 	 * until then the install zeroes it.
@@ -1225,6 +1230,33 @@ static void tr_ask(void)
 	g_tr.ticks = 0;
 }
 
+/*
+ * What each registration of the reset just answered did, from the bytes the
+ * helper's thread leaves after its busy byte (rac3.h), one log line each.
+ */
+static void tr_log_tries(void)
+{
+	static const char * const how[4] = {
+		"the game registered",
+		"failed before the game info (the context, its registration or the game info)",
+		"failed after the game info (a trophy's info), and the game dropped the context",
+		"was still going when the helper stopped waiting"
+	};
+	u32 addr = tr_request_addr();
+	u8 tries = 0, results = 0, times[RAC3_TROPHY_TRIES_MAX];
+	u8 i;
+
+	if (mem_read_u8(addr + RAC3_TROPHY_TRIES_OFF, &tries) != ST_OK ||
+	    mem_read_u8(addr + RAC3_TROPHY_RESULTS_OFF, &results) != ST_OK ||
+	    mem_read(addr + RAC3_TROPHY_TIMES_OFF, times, sizeof(times)) != ST_OK) return;
+	if (tries > RAC3_TROPHY_TRIES_MAX) tries = RAC3_TROPHY_TRIES_MAX;
+
+	for (i = 0; i < tries; i++) {
+		plat_log("trophies: registration %d of %d: %s, %d ms after the register call",
+		         (int)i + 1, (int)tries, how[(results >> (2 * i)) & 3u], (int)times[i] * 250);
+	}
+}
+
 /* Watches the request byte until the helper has answered it. */
 static void tr_wait(void)
 {
@@ -1238,6 +1270,7 @@ static void tr_wait(void)
 	}
 
 	if (byte == 0) {
+		tr_log_tries();
 		plat_log("trophies: reset; the game re-read its trophies, and 10, 25 and 32 can be won again");
 		tr_idle();
 		return;
@@ -1245,9 +1278,20 @@ static void tr_wait(void)
 
 	if (byte == RAC3_TROPHY_UNREGISTERED) {
 		mem_write_u8(addr, 0);
-		plat_log("trophies: the reset ran, but the game had not re-read its trophies when it ended; "
-		         "if none pops, reset again or restart the game");
-		plat_notify("Trophy reset: the game did not re-read its trophies in time");
+		tr_log_tries();
+		plat_log("trophies: the reset ran, but every registration failed and the game has no trophies "
+		         "to award; reset again or restart the game");
+		plat_notify("Trophy reset failed: the game could not re-register its trophies");
+		tr_idle();
+		return;
+	}
+
+	if (byte == RAC3_TROPHY_STILL) {
+		mem_write_u8(addr, 0);
+		tr_log_tries();
+		plat_log("trophies: the reset ran, but the game was still registering its trophies when the "
+		         "helper stopped waiting; they come back if that registration succeeds");
+		plat_notify("Trophy reset: the game is still re-reading its trophies");
 		tr_idle();
 		return;
 	}
