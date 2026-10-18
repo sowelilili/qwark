@@ -473,6 +473,39 @@ extern const u8 rac3_fp_switch[4];
 #define RAC3_RO_CB_BACK    10
 /* Tint front and back mirror each other; one readout and one control cover both. */
 #define RAC3_RO_CB_TINT    11
+/*
+ * Build 53, revision 1.21: the trophy reset's state, rac3_trophy_status's
+ * word, which the Reset trophies row names as its status readout. Last, so
+ * that DESCRIBE can leave its name out with the row where the reset can never
+ * work (rac3_describe).
+ */
+#define RAC3_RO_TROPHIES   12
+
+/*
+ * That word, as PROTOCOL.md section 5.14 lays it out: the state in bits
+ * 28..31; the step a running reset is at, or why a failed one failed, in
+ * 24..27; the registration the game is making, or the status a refused reset
+ * was answered with, in 20..23; the seconds since the request went out, or
+ * that the reset took, in 8..19; and in 0..7 how many resets have ended since
+ * the module started, which a boot does not put back.
+ */
+#define RAC3_TS_NONE     0u   /* no reset this boot */
+#define RAC3_TS_RUNNING  1u
+#define RAC3_TS_READY    2u   /* the game has its trophies back: they can be won */
+#define RAC3_TS_FAILED   3u
+
+#define RAC3_TS_STARTING    1u   /* the game is asked, and lets go of its trophies */
+#define RAC3_TS_DELETING    2u   /* qwark deletes the console's trophy data */
+#define RAC3_TS_REGISTERING 3u   /* the game registers its trophies again */
+
+#define RAC3_TS_DELETE_STOPPED 1u   /* a trophy file would not go */
+#define RAC3_TS_UNREGISTERED   2u   /* every registration failed */
+#define RAC3_TS_NO_ANSWER      3u   /* ten minutes and the console had not answered */
+#define RAC3_TS_LOAD_ENDED     4u   /* the auto reset's Veldin load ended first */
+#define RAC3_TS_GAME_REFUSED   5u   /* the helper refused the request */
+#define RAC3_TS_NOT_TAKEN      6u   /* the game never picked the request up */
+#define RAC3_TS_REFUSED        7u   /* qwark refused it before anything was done */
+#define RAC3_TS_STOPPED        8u   /* the game changed under the reset */
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -568,12 +601,14 @@ int rac3_planet_load(u8 planet, u8 flags);
  * rac3_trophy_auto answers 1 once this load's question is settled and 0 to be
  * asked again on the next tick. rac3_trophy_tick runs the delete and watches
  * the request on every INGAME tick, and rac3_trophy_forget drops whatever was
- * under way when a process ends. All tick thread.
+ * under way when a process ends, and the last reset's result with it.
+ * rac3_trophy_status is the RAC3_RO_TROPHIES word. All tick thread.
  */
 int  rac3_trophy_reset(u8 request);
 int  rac3_trophy_auto(void);
 void rac3_trophy_tick(void);
 void rac3_trophy_forget(void);
+u32  rac3_trophy_status(void);
 
 int rac3_levelflags_get(u8 planet, u8 *out, u16 cap, u16 *len);
 int rac3_levelflags_reset(u8 planet);

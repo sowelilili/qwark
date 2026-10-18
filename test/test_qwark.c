@@ -6082,6 +6082,49 @@ static void test_manip_trigger_rac3(void)
  */
 #define R3T_TROPHY_FILES  14
 
+/*
+ * Revision 1.21: the reset's status, UYA's readout 12, the word PROTOCOL.md
+ * 5.14 lays out: state in bits 28..31, step or reason in 24..27, the
+ * registration or the refusal's status in 20..23, seconds in 8..19, and the
+ * count of ended resets in 0..7. The test reads it from the game's own
+ * function between ticks, since a SessionInfo publish takes four of them and
+ * the reset counts ticks, and from SessionInfo where the timing allows.
+ */
+u32 rac3_trophy_status(void);
+
+#define R3T_RO_TROPHIES   12
+
+#define R3T_TS_RUNNING    1u
+#define R3T_TS_READY      2u
+#define R3T_TS_FAILED     3u
+
+#define R3T_STARTING      1u
+#define R3T_DELETING      2u
+#define R3T_REGISTERING   3u
+
+#define R3T_DELETE_STOPPED 1u
+#define R3T_UNREGISTERED   2u
+#define R3T_NO_ANSWER      3u
+#define R3T_LOAD_ENDED     4u
+#define R3T_GAME_REFUSED   5u
+#define R3T_NOT_TAKEN      6u
+#define R3T_REFUSED        7u
+
+#define R3T_TS(state, detail, arg, secs)                                    \
+	(((u32)(state) << 28) | ((u32)(detail) << 24) | ((u32)(arg) << 20) | \
+	 ((u32)(secs) << 8))
+
+/* The status without its count, and the count. */
+static u32 r3t_ts(void)
+{
+	return rac3_trophy_status() & 0xFFFFFF00u;
+}
+
+static u8 r3t_seq(void)
+{
+	return (u8)rac3_trophy_status();
+}
+
 static u8 r3t_byte(void)
 {
 	u8 b = 0xEE;
@@ -6245,6 +6288,7 @@ static void test_manip_trophies(void)
 	u8 out[4096];
 	u32 len = 0;
 	u32 i;
+	u8 seq;
 
 	group("trophies: UYA's Trophies header");
 
@@ -6277,9 +6321,45 @@ static void test_manip_trophies(void)
 		      "the reset carries no flag at all, bit6 (0x40) included");
 		check(autor != NULL && (autor[4] & 0x40) == 0,
 		      "and its toggle no bit6 either");
+
+		/* Revision 1.21: the reset's status readout, the thirteenth, last. */
+		{
+			u32 roff = 2 + (u32)ngroups * 24;
+
+			check(out[roff] == 13 &&
+			      memcmp(out + roff + 1 + R3T_RO_TROPHIES * 24, "Trophy reset", 13) == 0,
+			      "DESCRIBE names a thirteenth readout, Trophy reset");
+		}
+		check(reset != NULL && reset[5] == R3T_RO_TROPHIES,
+		      "which the reset's row names as its status readout");
+		check(autor != NULL && autor[5] == 0xFF, "while its toggle, a TOGGLE, names none");
+	}
+	{
+		static const char * const titles[4] = { "NPEA00385", "NPEA00386", "NPEA00387", "NPEA00423" };
+		u32 plain = 0, status = 0, stray = 0;
+
+		for (i = 0; i < 4; i++) {
+			const struct game_api *g = game_for_title(titles[i]);
+			const struct game_describe *d = g != NULL && g->describe != NULL ? g->describe() : NULL;
+			u8 k;
+
+			if (d == NULL) continue;
+			for (k = 0; k < d->nfeatures; k++) {
+				const struct feature_desc *f = &d->features[k];
+
+				if (f->kind != FEATURE_ACTION) continue;
+				if (f->readout == FEATURE_NO_READOUT) plain++;
+				else if (g->game_id == GAME_RAC3 && f->id == F3_RESET_TROPHIES &&
+				         f->readout < d->nreadouts) status++;
+				else stray++;
+			}
+		}
+		check(plain > 20 && status == 1 && stray == 0,
+		      "of the four games' ACTIONs only UYA's Reset trophies names a readout");
 	}
 	check((features_toggle_state() & ((u64)1 << F3_AUTO_TROPHIES)) == 0,
 	      "the auto toggle is off after a boot");
+	check_eq_u64(r3t_ts(), 0, "and the reset's status is NONE: no reset this boot");
 
 	/* ------------------------------------------------ the helper's table */
 
@@ -6339,9 +6419,13 @@ static void test_manip_trophies(void)
 	r3t_trophy_game();
 	host_write_log_reset();
 
+	seq = r3t_seq();
 	check(features_trigger(F3_RESET_TROPHIES) == ST_NOT_FOUND,
 	      "with no home folder for user 1 the reset is NOT_FOUND");
 	check_eq_u64(host_write_log_count(), 0, "and nothing was written into the game");
+	check(r3t_ts() == R3T_TS(R3T_TS_FAILED, R3T_REFUSED, ST_NOT_FOUND, 0) &&
+	      r3t_seq() == (u8)(seq + 1),
+	      "the status says the reset failed, refused with NOT_FOUND, as a new result");
 
 	plat_dir_create("/dev_hdd0/home");
 	plat_dir_create(R3T_HOME);
@@ -6376,6 +6460,7 @@ static void test_manip_trophies(void)
 	r3t_trophy_rm(R3T_TROPHY_DIR);
 	r3t_trophy_dir(R3T_TROPHY_DIR, "NPWR02347_00", 0);
 
+	seq = r3t_seq();
 	poke32(R3T_OBJ_THREAD, 1);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
 	      "while the game's register thread runs it is BUSY");
@@ -6385,10 +6470,14 @@ static void test_manip_trophies(void)
 	poke32(R3T_OBJ_PTR, 0);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY, "and before its trophy object is set up");
 	poke32(R3T_OBJ_PTR, R3T_OBJ);
+	check(r3t_seq() == seq && r3t_ts() == R3T_TS(R3T_TS_FAILED, R3T_REFUSED, ST_NOT_FOUND, 0),
+	      "a BUSY is no result: the status is the last refusal's still");
 
 	poke32(R3T_FILL_SITE, 0x38600000u);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_UNSUPPORTED,
 	      "a cache-fill site holding neither word is another executable: UNSUPPORTED");
+	check(r3t_ts() == R3T_TS(R3T_TS_FAILED, R3T_REFUSED, ST_UNSUPPORTED, 0),
+	      "which the status gives as the refusal's code");
 	poke32(R3T_FILL_SITE, R3T_FILL_WORD);
 
 	savefile_set_enabled(0);
@@ -6417,6 +6506,9 @@ static void test_manip_trophies(void)
 	check(desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
 	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL,
 	      "without the reset or its toggle where code cannot be patched");
+	check_eq_u64(out[2 + (u32)out[1] * 24], 12,
+	             "and without the reset's status readout: twelve readouts, Trophy reset not among them");
+	seq = r3t_seq();
 	check(desc_feature(out, len, 32) != NULL && desc_feature(out, len, 1) != NULL,
 	      "while the other rows, Load set-aside file (32) and Freeze health (1) among them, are still there");
 	check(features_trigger(F3_RESET_TROPHIES) == ST_NOT_FOUND, "so the reset is NOT_FOUND");
@@ -6427,17 +6519,20 @@ static void test_manip_trophies(void)
 	      "and so is turning the toggle on");
 	check(session_game()->set_toggle(F3_AUTO_TROPHIES, 0) == ST_OK, "while turning it off is fine");
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and no file goes");
+	check_eq_u64(r3t_seq(), seq, "nor is a refusal there a result: there is no reset to report on");
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
 	savefile_set_enabled(0);
 	check(features_describe(out, sizeof(out), &len) == ST_OK &&
 	      desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
-	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL,
-	      "a console with the savefile helper switched off leaves them out too");
+	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL &&
+	      out[2 + (u32)out[1] * 24] == 12,
+	      "a console with the savefile helper switched off leaves them out too, status readout and all");
 	savefile_set_enabled(1);
 	check(features_describe(out, sizeof(out), &len) == ST_OK &&
 	      desc_feature(out, len, F3_RESET_TROPHIES) != NULL &&
-	      desc_feature(out, len, F3_AUTO_TROPHIES) != NULL,
+	      desc_feature(out, len, F3_AUTO_TROPHIES) != NULL &&
+	      out[2 + (u32)out[1] * 24] == 13,
 	      "and with it on they are back");
 
 	/* ----------------------------------------------------- the button */
@@ -6445,6 +6540,8 @@ static void test_manip_trophies(void)
 	group("trophies: the game lets go of its context, then the set is deleted");
 
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "the reset is accepted");
+	check_eq_u64(r3t_ts(), R3T_TS(R3T_TS_RUNNING, R3T_STARTING, 0, 0),
+	             "and the status says it is running, starting");
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY, "and a second one while it runs is BUSY");
 	pump(1);
 	check_eq_u64(r3t_byte(), 1, "the game is asked to reset now, at once");
@@ -6454,11 +6551,14 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
 	pump(5);
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "nor while the helper's thread starts");
+	check_eq_u64(r3t_ts(), R3T_TS(R3T_TS_RUNNING, R3T_STARTING, 0, 0),
+	             "which is still the reset starting");
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x06", 1);
 	pump(2);
 	check(r3t_files(R3T_TROPHY_DIR) == R3T_TROPHY_FILES - 8,
 	      "once the thread says the context is down (6), eight files go a tick");
 	check_eq_u64(r3t_byte(), 6, "while the thread waits");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_RUNNING << 4) | R3T_DELETING, "and the status says deleting");
 	pump(1);
 	check(r3t_files(R3T_TROPHY_DIR) == 2 && r3t_file_there(R3T_TROPHY_DIR, "TROPCONF.SFM") &&
 	      r3t_file_there(R3T_TROPHY_DIR, "TROP.SFM"),
@@ -6469,20 +6569,37 @@ static void test_manip_trophies(void)
 	      "the RaC2 set beside it is untouched");
 	check(r3t_dir_there(R3T_TROPHY_ROOT), "and so is the trophy folder itself");
 	check_eq_u64(r3t_byte(), 7, "and the thread is told to go on and register (7)");
+	check_eq_u64(r3t_ts() >> 20, (R3T_TS_RUNNING << 8) | (R3T_REGISTERING << 4) | 0,
+	             "and the status says registering, none started yet");
 
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
 	pump(10);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY, "a reset the helper is running is still BUSY");
-	pump(1189);
+	host_poke(R3T_TROPHY_BYTE + 2u, (const u8 *)"\x02", 1);   /* the diagnostics: two started */
+	pump(1);
+	check_eq_u64(r3t_ts() >> 20, (R3T_TS_RUNNING << 8) | (R3T_REGISTERING << 4) | 2,
+	             "and once the helper says so, the second registration");
+	pump(1188);
 	{
 		u32 notes = host_notify_count();
 
+		seq = r3t_seq();
 		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
 		pump(1);
-		check(host_notify_count() == notes + 1 &&
-		      qstreq(host_notify_last(), "Trophies reset: ready to win (10 s)"),
-		      "the helper's answer that the game is registered is shown with how long the "
-		      "trophies were out, ten seconds after the request here");
+		check_eq_u64(host_notify_count(), notes,
+		             "the helper's answer that the game is registered puts nothing on the console's screen");
+		check(r3t_ts() == R3T_TS(R3T_TS_READY, 0, 0, 10) && r3t_seq() == (u8)(seq + 1),
+		      "the status says the trophies are ready, ten seconds after the request here, "
+		      "as a new result");
+	}
+	host_poke(R3T_TROPHY_BYTE + 2u, (const u8 *)"\x00", 1);
+	pump(4);
+	{
+		u8 info[SESSION_INFO_SIZE];
+
+		session_info_copy(info, sizeof(info));
+		check_eq_u64(be32_get(info + 64 + 4 * R3T_RO_TROPHIES), rac3_trophy_status(),
+		             "and SessionInfo carries the same word as readout 12");
 	}
 
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
@@ -6492,8 +6609,13 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x06", 1);
 	pump(1);
 	check_eq_u64(r3t_byte(), 7, "and with nothing to delete tells the thread to go on at once");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_RUNNING << 4) | R3T_REGISTERING,
+	             "the status going straight from starting to registering");
+	seq = r3t_seq();
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
 	pump(1);
+	check(r3t_ts() == R3T_TS(R3T_TS_READY, 0, 0, 0) && r3t_seq() == (u8)(seq + 1),
+	      "ready again, a new result with the same words");
 
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "another reset");
 	pump(1);
@@ -6501,6 +6623,8 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\xFE", 1);
 	pump(1);
 	check_eq_u64(r3t_byte(), 0, "a refusal from the helper is put back to 0");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_GAME_REFUSED,
+	             "and the status says the game refused it");
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "and the reset is over: another is accepted");
 	pump(1);
 	check_eq_u64(r3t_byte(), 1, "which asks again");
@@ -6508,6 +6632,8 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_byte(), 1, "a request the game has not picked up is left for five seconds");
 	pump(2);
 	check_eq_u64(r3t_byte(), 0, "and then withdrawn");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_NOT_TAKEN,
+	             "which the status says: the game did not take it");
 
 	/*
 	 * The helper's thread answers 4 when every registration it made failed,
@@ -6541,6 +6667,8 @@ static void test_manip_trophies(void)
 		check(host_notify_count() == notes + 1 &&
 		      qstreq(host_notify_last(), "Trophy reset failed: the game could not re-register its trophies"),
 		      "and the console says the reset failed");
+		check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_UNREGISTERED,
+		             "as does the status: every registration failed");
 		check(features_trigger(F3_RESET_TROPHIES) == ST_OK, "and that reset is over: another is accepted");
 		pump(1);
 		check_eq_u64(r3t_byte(), 1, "which asks again");
@@ -6571,6 +6699,8 @@ static void test_manip_trophies(void)
 		check(host_notify_count() == notes + 1 &&
 		      qstreq(host_notify_last(), "Trophy reset: the console has not answered the game; restart the game"),
 		      "and the console says so");
+		check_eq_u64(r3t_ts(), R3T_TS(R3T_TS_FAILED, R3T_NO_ANSWER, 0, 600),
+		             "and the status, with the ten minutes it ran");
 	}
 	host_write_log_reset();
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY,
@@ -6628,8 +6758,14 @@ static void test_manip_trophies(void)
 		      qstreq(host_notify_last(), "Trophy reset stopped: a trophy file could not be deleted"),
 		      "the console says the delete stopped");
 		check_eq_u64(r3t_byte(), 7, "and the thread is told to go on: the game's context is down");
+		check_eq_u64(r3t_ts() >> 24, (R3T_TS_RUNNING << 4) | R3T_REGISTERING,
+		             "the status says the game registers");
+		notes = host_notify_count();
 		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
 		pump(1);
+		check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_DELETE_STOPPED,
+		             "and once it has, that the reset failed: a trophy won before is still won");
+		check_eq_u64(host_notify_count(), notes, "which the screen said once already");
 		check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
 		      "the reset is over, so another is accepted: the folder is still found as UYA's");
 		pump(1);
@@ -6649,6 +6785,7 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_byte(), 7, "and lets the thread go on");
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
 	pump(1);
+	check_eq_u64(r3t_ts() >> 24, R3T_TS_READY << 4, "and the trophies are ready this time");
 
 	plat_dir_create(R3T_TROPHY_DIR);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
@@ -6694,6 +6831,8 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\xFE", 1);
 	pump(1);
 	check_eq_u64(r3t_byte(), 0, "a refusal inside the load is put back");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_RUNNING << 4) | R3T_STARTING,
+	             "and the status still says starting: it asks again");
 	pump(R3T_RETRY_TICKS + 1);
 	check_eq_u64(r3t_byte(), 2, "and asked again a moment later, the load still on");
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
@@ -6705,6 +6844,7 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
 	pump(3);
 	check_eq_u64(r3t_byte(), 0, "once per load");
+	check_eq_u64(r3t_ts() >> 24, R3T_TS_READY << 4, "and the status says the trophies are ready");
 	r3t_veldin_loaded();
 	check_eq_u64(r3t_byte(), 0, "and not again as the load ends");
 
@@ -6734,16 +6874,61 @@ static void test_manip_trophies(void)
 	check_eq_u64(r3t_byte(), 0, "the helper's refusal outside the load ends it");
 	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES,
 	             "with the folder untouched, for the next load into Veldin");
+	check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_LOAD_ENDED,
+	             "and the status says the Veldin load ended first");
 	r3t_veldin_loaded();
+
+	/*
+	 * The same, the load ending while a refused request waits to be asked
+	 * again: qwark gives up before it asks, and the console says so. None
+	 * selected, so that no manip has anything to say as the load ends.
+	 */
+	check(manips_select(0) == ST_OK, "None");
+	r3t_veldin_loading();
+	pump(1);
+	check_eq_u64(r3t_byte(), 2, "a Veldin load asks");
+	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\xFE", 1);
+	pump(1);
+	check_eq_u64(r3t_byte(), 0, "the helper refuses it inside the load, and qwark waits to ask again");
+	poke32(R3T_REQUEST, 0);
+	poke32(R3T_MODE, 0);
+	{
+		u32 notes = host_notify_count();
+
+		pump(R3T_RETRY_TICKS + 2);
+		check(r3t_byte() == 0 && host_notify_count() == notes + 1 &&
+		      qstreq(host_notify_last(), "Trophy reset: the Veldin load ended first; the next Veldin load finishes it"),
+		      "the load is over by then: nothing is asked, and the console says so");
+		check_eq_u64(r3t_ts() >> 24, (R3T_TS_FAILED << 4) | R3T_LOAD_ENDED, "as does the status");
+	}
+	check_eq_u64(r3t_files(R3T_TROPHY_DIR), R3T_TROPHY_FILES, "and the folder is untouched");
+	r3t_veldin_loaded();
+
+	/* A refusal of the toggle's own reset has nobody to answer but the status. */
+	r3t_trophy_rm(R3T_TROPHY_DIR);
+	r3t_trophy_dir(R3T_TROPHY_DIR, "NPWR02346_00", 0);
+	seq = r3t_seq();
+	r3t_veldin_loading();
+	pump(2);
+	check(r3t_byte() == 0 && r3t_files(R3T_TROPHY_DIR) == R3T_TROPHY_FILES,
+	      "a Veldin load with another set's folder in UYA's place asks nothing and deletes nothing");
+	check(r3t_ts() == R3T_TS(R3T_TS_FAILED, R3T_REFUSED, ST_NOT_FOUND, 0) && r3t_seq() == (u8)(seq + 1),
+	      "and the status says the reset was refused, NOT_FOUND, once for the load");
+	r3t_veldin_loaded();
+	r3t_trophy_rm(R3T_TROPHY_DIR);
+	r3t_trophy_dir(R3T_TROPHY_DIR, "NPWR02347_00", 0);
 
 	group("trophies: the auto flag keeps the toggle across a boot");
 
 	check(features_set_auto(F3_AUTO_TROPHIES, 1) == ST_OK, "flagged on boot");
 	check(config_feature_auto("NPEA00387", "Reset trophies on Veldin load"),
 	      "and config.txt has it under the new label");
+	seq = r3t_seq();
 	check(quit_and_wait(), "quit");
 	check(boot_and_wait("NPEA00387"), "boot");
 	pump(4);
+	check(r3t_ts() == 0 && r3t_seq() == seq,
+	      "a boot puts the status back to NONE, and keeps the count of resets that ended");
 	r3t_trophy_game();
 	check((features_toggle_state() & ((u64)1 << F3_AUTO_TROPHIES)) != 0,
 	      "the auto toggle comes back on");
@@ -7316,7 +7501,7 @@ static void test_rac3(void)
 		int neighbours = 0;
 
 		check_eq_u64(d->nfeatures, 28, "RaC3 declares twenty-eight features");
-		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
+		check_eq_u64(d->nreadouts, 13, "and thirteen readouts, the trophy reset's status the last");
 		check_eq_u64(d->ngroups, 6, "and six groups, Trophies the sixth");
 
 		/*

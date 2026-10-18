@@ -57,7 +57,7 @@ struct feature_desc {
 	 */
 	u8  aux;
 	u8  flags;      /* FEATURE_FLAG_WRITES_CODE, SIGNED; AUTO is added by the core */
-	u8  readout;    /* VALUE, ENUM, COLOR: mirroring readout index, else 0xFF */
+	u8  readout;    /* VALUE, ENUM, COLOR: mirroring readout index; ACTION (1.21): status readout; else 0xFF */
 	u32 min;
 	u32 max;
 	const char *label;

@@ -381,8 +381,14 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		    (g_toggle_auto & ((u64)1 << f->id)) != 0)
 			flags |= FEATURE_FLAG_AUTO;
 
-		/* Toggle state travels in toggle_state, so those rows never name one. */
-		if (f->kind == FEATURE_TOGGLE || f->kind == FEATURE_ACTION)
+		/*
+		 * Toggle state travels in toggle_state, so those rows never name one.
+		 * Revision 1.21: an ACTION may, the readout that reports what it is
+		 * doing and how it last ended (PROTOCOL.md 5.3); until then it never
+		 * did, and a client before it only takes one from a VALUE, an ENUM or
+		 * a COLOR, so it reads the row as it always has.
+		 */
+		if (f->kind == FEATURE_TOGGLE)
 			readout = FEATURE_NO_READOUT;
 		else if (readout >= QWARK_MAX_READOUTS)
 			readout = FEATURE_NO_READOUT;

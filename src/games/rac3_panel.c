@@ -802,8 +802,9 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  *      minute of reading back the game and trophy info, which the reset needs
  *      none of (sf_rac3.h has the why), so the trophies are back about
  *      thirteen seconds after the request. Each reset logs every step as it
- *      happens and every call's answer, and the console says when the
- *      trophies can be won again: until then the game awards nothing.
+ *      happens and every call's answer, and UYA's readout RAC3_RO_TROPHIES
+ *      says when the trophies can be won again (rac3_trophy_status): until
+ *      then the game awards nothing.
  *
  * The folder is found, not named. Its name is the communication id the running
  * game registers under, read out of the game (RAC3_TROPHY_COMMID_PTR); its
@@ -832,7 +833,12 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  * on the console's screen (plat_notify) as well as in the log; so does a reset
  * whose game half did not end with the game's trophies back, one that does not
  * end at all, and an auto reset whose load into Veldin ended before the game
- * could be asked.
+ * could be asked: each of those leaves a run whose trophies will not pop. A
+ * reset that ends well says nothing on the screen. Build 53 showed "Trophies
+ * reset: ready to win (N s)" then, which helped the hardware tests and would
+ * only distract a runner mid-attempt; the readout carries it now, for a client
+ * to show beside the button, with where a reset under way has got to and why
+ * the last one failed (rac3_trophy_status).
  *
  * The nop qwark writes over the cache fill (0x985318) is never put back, and it
  * is not one of PATCH_LIST's patches: it is part of the reset, as it was the
@@ -906,6 +912,7 @@ static struct {
 	u8   delete_failed;
 	u8   seen_tries;  /* the helper's step qwark last logged */
 	u8   seen_phase;
+	u8   registering; /* the folder is done with: the helper's thread registers */
 	u16  deleted;
 	u16  failed;
 	u16  attempts;
@@ -913,6 +920,20 @@ static struct {
 	u32  elapsed;     /* ticks since the request went out */
 	char dir[TR_DIR_MAX];
 } g_tr;
+
+/*
+ * Revision 1.21: how the last reset ended, for RAC3_RO_TROPHIES once g_tr is
+ * idle again. A boot forgets it (rac3_trophy_forget) but for `seq`, the count
+ * of resets that have ended since the module started, so that a client can
+ * tell a new result from the one it saw before, the same words or not.
+ */
+static struct {
+	u8  state;    /* RAC3_TS_NONE, READY or FAILED */
+	u8  reason;   /* FAILED: RAC3_TS_DELETE_STOPPED.. */
+	u8  arg;      /* REFUSED: the status the reset was refused with */
+	u8  seq;
+	u16 secs;
+} g_trs;
 
 /* The helper's request byte, or 0 when this build's table has none. */
 static u32 tr_request_addr(void)
@@ -966,6 +987,29 @@ static void tr_idle(void)
 	memset(&g_tr, 0, sizeof(g_tr));
 }
 
+/* Whole seconds since the request went out, rounded, as the log's milliseconds are. */
+static u32 tr_secs(void)
+{
+	return (g_tr.elapsed + 60u) / 120u;
+}
+
+/*
+ * The reset is over, one way or the other: what RAC3_RO_TROPHIES says until
+ * the next one starts or the game boots. Every place that ends a reset that
+ * was under way, or refuses one that would otherwise have started, calls this
+ * before it lets g_tr go.
+ */
+static void tr_end(u8 state, u8 reason, u8 arg)
+{
+	u32 secs = tr_secs();
+
+	g_trs.state  = state;
+	g_trs.reason = reason;
+	g_trs.arg    = arg;
+	g_trs.secs   = (u16)(secs > 0xFFFu ? 0xFFFu : secs);
+	g_trs.seq++;
+}
+
 void rac3_trophy_forget(void)
 {
 	if (g_tr.state == TR_DELETE)
@@ -974,6 +1018,49 @@ void rac3_trophy_forget(void)
 	else if (g_tr.state != TR_IDLE)
 		plat_log("trophies: the game went away before its trophies were re-read");
 	tr_idle();
+
+	/* A new boot has had no reset yet; the count goes on. */
+	g_trs.state  = RAC3_TS_NONE;
+	g_trs.reason = 0;
+	g_trs.arg    = 0;
+	g_trs.secs   = 0;
+}
+
+/*
+ * Revision 1.21: the RAC3_RO_TROPHIES word (rac3.h has the layout, PROTOCOL.md
+ * 5.14 the contract). A reset under way is RUNNING at the step g_tr is at: the
+ * game asked and letting go of its trophies, then the delete, then the helper's
+ * registrations, whose count is the one tr_log_progress last read out of the
+ * helper's diagnostics (0 in the second's wait before the first). Otherwise it
+ * is the last reset's result this boot, or NONE. Read by rac3_hot_decode on
+ * every tick, so it is a few fields and no memory read.
+ */
+u32 rac3_trophy_status(void)
+{
+	u32 state, detail, arg, secs;
+
+	if (g_tr.state != TR_IDLE) {
+		state = RAC3_TS_RUNNING;
+		arg = 0;
+		if (g_tr.state == TR_DELETE) {
+			detail = RAC3_TS_DELETING;
+		} else if (g_tr.registering) {
+			detail = RAC3_TS_REGISTERING;
+			arg = g_tr.seen_tries;
+		} else {
+			detail = RAC3_TS_STARTING;
+		}
+		secs = tr_secs();
+	} else {
+		state  = g_trs.state;
+		detail = g_trs.reason;
+		arg    = g_trs.arg;
+		secs   = g_trs.secs;
+	}
+
+	if (arg > 15u) arg = 15u;
+	if (secs > 0xFFFu) secs = 0xFFFu;
+	return (state << 28) | ((detail & 15u) << 24) | (arg << 20) | (secs << 8) | g_trs.seq;
 }
 
 /* Whether `hay` (len bytes, not terminated) holds the string `needle`. */
@@ -1178,7 +1265,7 @@ static int tr_in_load(void)
 	return request != 0 && mode == RAC3_GAME_STATE_LOAD;
 }
 
-int rac3_trophy_reset(u8 request)
+static int tr_start(u8 request)
 {
 	u32 addr = tr_request_addr();
 	u32 files = 0;
@@ -1233,6 +1320,25 @@ int rac3_trophy_reset(u8 request)
 	return ST_OK;
 }
 
+int rac3_trophy_reset(u8 request)
+{
+	int rc = tr_start(request);
+
+	/*
+	 * Revision 1.21. A refusal that leaves this reset undone is the newest
+	 * result, and RAC3_RO_TROPHIES says so with the status it was answered
+	 * with: the button's status code says it once, but the auto toggle's
+	 * refusal, inside a Veldin load, has nobody to say it to, and a READY left
+	 * over from the last run would say the trophies were ready when they are
+	 * not. BUSY is not one: a reset under way, or a game not ready yet, which
+	 * the auto toggle asks again about on the next tick. Under RPCS3 there is
+	 * no reset to report on, and the readout stays NONE.
+	 */
+	if (rc != ST_OK && rc != ST_BUSY && rc != ST_BAD_ARG && plat_can_patch_code())
+		tr_end(RAC3_TS_FAILED, RAC3_TS_REFUSED, (u8)rc);
+	return rc;
+}
+
 int rac3_trophy_auto(void)
 {
 	int rc;
@@ -1249,6 +1355,7 @@ static void tr_delete_done(void)
 {
 	mem_write_u8(tr_request_addr(), RAC3_TROPHY_DELETED);
 	g_tr.state = TR_WAIT;
+	g_tr.registering = 1;
 }
 
 /*
@@ -1346,6 +1453,7 @@ static void tr_ask(void)
 	if (g_tr.request == RAC3_TROPHY_IN_LOAD && !tr_in_load()) {
 		plat_log("trophies: the load ended before the game could be asked; the next load into Veldin asks again");
 		plat_notify("Trophy reset: the Veldin load ended first; the next Veldin load finishes it");
+		tr_end(RAC3_TS_FAILED, RAC3_TS_LOAD_ENDED, 0);
 		tr_idle();
 		return;
 	}
@@ -1355,6 +1463,7 @@ static void tr_ask(void)
 		if (mem_write_u32(RAC3_TROPHY_FILL_SITE, RAC3_TROPHY_FILL_NOP) != ST_OK) return;
 	} else if (word != RAC3_TROPHY_FILL_NOP) {
 		plat_log("trophies: 0x985318 changed under the reset, nothing asked of the game");
+		tr_end(RAC3_TS_FAILED, RAC3_TS_STOPPED, 0);
 		tr_idle();
 		return;
 	}
@@ -1461,30 +1570,31 @@ static void tr_wait(void)
 	g_tr.ticks++;
 	g_tr.elapsed++;
 	if (mem_read_u8(addr, &byte) != ST_OK) {
-		if (g_tr.ticks > TR_RUN_TICKS) tr_idle();
+		if (g_tr.ticks > TR_RUN_TICKS) {
+			tr_end(RAC3_TS_FAILED, RAC3_TS_STOPPED, 0);
+			tr_idle();
+		}
 		return;
 	}
 	if (byte != g_tr.request) tr_log_progress();
 
 	if (byte == 0) {
-		char msg[64];
-		char num[12];
-		u32 secs = (g_tr.elapsed + 60u) / 120u;
-
 		tr_log_result();
 		plat_log("trophies: reset; the game has its trophies back %d ms after the request, and 10, "
 		         "25 and 32 can be won again", (int)(g_tr.elapsed * 25u / 3u));
 
 		/*
-		 * The console says when the trophies can be won again: until then the
-		 * game awards nothing, and a trophy earned in that time is lost.
+		 * Until now the game awarded nothing, and a trophy earned in that time
+		 * is lost, so this is the moment a client says the trophies are ready.
+		 * Revision 1.21: the readout says it, and the console's screen no
+		 * longer does. A delete that stopped earlier leaves the trophies won
+		 * before it still won, so that reset is a failure for all that the
+		 * game registered again: it said so on the screen when it stopped.
 		 */
-		qfmt_u32(num, sizeof(num), secs);
-		msg[0] = 0;
-		qstrcat(msg, sizeof(msg), "Trophies reset: ready to win (");
-		qstrcat(msg, sizeof(msg), num);
-		qstrcat(msg, sizeof(msg), " s)");
-		plat_notify(msg);
+		if (g_tr.delete_failed)
+			tr_end(RAC3_TS_FAILED, RAC3_TS_DELETE_STOPPED, 0);
+		else
+			tr_end(RAC3_TS_READY, 0, 0);
 		tr_idle();
 		return;
 	}
@@ -1495,6 +1605,7 @@ static void tr_wait(void)
 		plat_log("trophies: the reset ran, but every registration failed and the game has no trophies "
 		         "to award; reset again or restart the game");
 		plat_notify("Trophy reset failed: the game could not re-register its trophies");
+		tr_end(RAC3_TS_FAILED, RAC3_TS_UNREGISTERED, 0);
 		tr_idle();
 		return;
 	}
@@ -1515,14 +1626,17 @@ static void tr_wait(void)
 			plat_log("trophies: the reset has run for ten minutes without an answer, and qwark "
 			         "stops watching it; restart the game");
 			plat_notify("Trophy reset: the console has not answered the game; restart the game");
+			tr_end(RAC3_TS_FAILED, RAC3_TS_NO_ANSWER, 0);
 			tr_idle();
 		}
 		return;
 	}
 
 	if (byte == SAVEFILE_HELPER_REFUSED) {
+		int in_load = tr_in_load();
+
 		mem_write_u8(addr, 0);
-		if (g_tr.request == RAC3_TROPHY_IN_LOAD && g_tr.retries < TR_RETRIES && tr_in_load()) {
+		if (g_tr.request == RAC3_TROPHY_IN_LOAD && g_tr.retries < TR_RETRIES && in_load) {
 			/* A trophy thread of the game's was running; it ends in moments. */
 			g_tr.retries++;
 			g_tr.state = TR_ASK;
@@ -1530,6 +1644,10 @@ static void tr_wait(void)
 			return;
 		}
 		plat_log("trophies: the game refused the reset: its trophies were not set up, a trophy thread of its own or a reset was running, the load was over, or no thread could be started");
+		/* The auto toggle's request outside its load is refused for that alone. */
+		tr_end(RAC3_TS_FAILED,
+		       g_tr.request == RAC3_TROPHY_IN_LOAD && !in_load ? RAC3_TS_LOAD_ENDED
+		                                                       : RAC3_TS_GAME_REFUSED, 0);
 		tr_idle();
 		return;
 	}
@@ -1538,6 +1656,7 @@ static void tr_wait(void)
 		if (g_tr.ticks > TR_SEEN_TICKS) {
 			mem_write_u8(addr, 0);
 			plat_log("trophies: the game never picked the reset up, and it is withdrawn");
+			tr_end(RAC3_TS_FAILED, RAC3_TS_NOT_TAKEN, 0);
 			tr_idle();
 		}
 		return;
@@ -1545,6 +1664,7 @@ static void tr_wait(void)
 
 	/* Something else wrote the byte: put it back and stop. */
 	mem_write_u8(addr, 0);
+	tr_end(RAC3_TS_FAILED, RAC3_TS_STOPPED, 0);
 	tr_idle();
 }
 

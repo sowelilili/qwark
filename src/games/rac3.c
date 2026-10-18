@@ -207,6 +207,12 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC3_RO_CB_TINT]  = classic_cb_to_rgb(be32_get(c + OFF_CB_TINT_F));
 	}
 
+	/*
+	 * Revision 1.21: the trophy reset's state, qwark's own and no memory read
+	 * (rac3_panel.c), so a client can show it under the button.
+	 */
+	out->readout[RAC3_RO_TROPHIES] = rac3_trophy_status();
+
 	/* --------------------------------------------- the autosplit watcher's view */
 
 	g_as.planet = out->current_planet;
@@ -892,7 +898,9 @@ static const char * const rac3_readouts[] = {
 	"Ship colour",
 	"Chargeboot front",
 	"Chargeboot back",
-	"Chargeboot tint"
+	"Chargeboot tint",
+	/* Revision 1.21: Reset trophies' status readout; last, see RAC3_RO_TROPHIES. */
+	"Trophy reset"
 };
 
 #define NR (u8)(sizeof(rac3_readouts) / sizeof(rac3_readouts[0]))
@@ -977,8 +985,13 @@ static const struct feature_desc rac3_features[] = {
 	 * where they can never work (rac3_describe): they are the only rows of the
 	 * Trophies group, so where to put them in the table changes nothing a
 	 * client draws.
+	 *
+	 * Revision 1.21: the reset names RAC3_RO_TROPHIES as its status readout,
+	 * the only ACTION that names one, so a client can say under the button
+	 * what the reset is doing and how the last one ended without a label or a
+	 * readout index of its own (PROTOCOL.md 5.3 and 5.14).
 	 */
-	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies" },
+	{ R3_RESET_TROPHIES, FEATURE_ACTION, G_TROPHIES, 0, 0, RAC3_RO_TROPHIES, 0, 0, "Reset trophies" },
 	{ R3_AUTO_TROPHIES,  FEATURE_TOGGLE, G_TROPHIES, 0, 0, NO, 0, 0, "Reset trophies on Veldin load" }
 };
 
@@ -1004,10 +1017,14 @@ static const struct game_describe rac3_describe_table = {
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
 };
 
-/* Build 53: the same, without the trophy rows at the end of the table. */
+/*
+ * Build 53: the same, without the trophy rows at the end of the table, and
+ * (revision 1.21) without the reset's status readout at the end of the
+ * readouts, which would only ever read NONE there.
+ */
 static const struct game_describe rac3_describe_no_trophies = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
-	rac3_readouts, NR,
+	rac3_readouts, (u8)(NR - 1),
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0]) - RAC3_TROPHY_ROWS),
 	0,
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))

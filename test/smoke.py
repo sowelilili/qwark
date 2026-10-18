@@ -1396,7 +1396,10 @@ OTHER_GAMES = [
         # Build 53: the hit points and the game's own maximum, both words.
         "freeze_health": {"id": 1, "health": 0x00DA5040, "max": 0x00C1E4E4,
                           "full": 30, "more": 200, "hurt": 7},
-        "readouts": 12,
+        # Revision 1.21: the thirteenth is the trophy reset's status, which
+        # Reset trophies (21) names.
+        "readouts": 13,
+        "action_status": {21: 12},
         "planets": 37,
         "planet0": "(none)",
         # Build 53: the menu order is RAC3Form's combo box, the game's order:
@@ -2299,9 +2302,14 @@ def exercise_game(c, sim, spec, udp=None):
               "%s: readout 0 is Bolts" % name, readouts)
         check(len(groups) <= 16 and len(readouts) <= 16 and len(features) <= 64,
               "%s: DESCRIBE stays inside its caps" % name)
-        check(all(f["readout"] == 0xFF for f in features
-                  if f["kind"] in (FEATURE_TOGGLE, FEATURE_ACTION)),
-              "%s: every TOGGLE and ACTION names readout 0xFF" % name)
+        # Revision 1.21: an ACTION may name its status readout; UYA's Reset
+        # trophies (21) is the one that does.
+        statuses = spec.get("action_status", {})
+        check(all(f["readout"] == (statuses.get(f["id"], 0xFF) if f["kind"] == FEATURE_ACTION else 0xFF)
+                  for f in features if f["kind"] in (FEATURE_TOGGLE, FEATURE_ACTION)),
+              "%s: every TOGGLE names readout 0xFF, and every ACTION but a status readout's"
+              % name, [(f["id"], f["readout"]) for f in features
+                       if f["kind"] in (FEATURE_TOGGLE, FEATURE_ACTION) and f["readout"] != 0xFF])
 
         # Protocol 1.2: exactly one of each savefile flag, both on ACTIONs.
         save_aside = [f for f in features if f["flags"] & 0x04]
@@ -3860,11 +3868,15 @@ def smoke_rpcs3_rac3_switches(c, pine):
     # answer UNSUPPORTED.
     status, body = c.call(OP_DESCRIBE)
     ids = set()
+    names = []
     if status == ST_OK:
-        ids = {f["id"] for f in parse_describe(body)[3]}
+        _g, _gr, names, drows, _n = parse_describe(body)
+        ids = {f["id"] for f in drows}
     check(status == ST_OK and 21 not in ids and 39 not in ids and RAC3_SW_FAST_ID in ids,
           "rpcs3 rac3 switches: DESCRIBE leaves out the trophy reset and its toggle",
           (status, sorted(ids)))
+    check(len(names) == 12 and "Trophy reset" not in names,
+          "rpcs3 rac3 switches: and the reset's status readout (revision 1.21)", names)
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([21]))
     check(status == ST_NOT_FOUND, "rpcs3 rac3 switches: and the reset's id is NOT_FOUND", status)
 
@@ -4130,7 +4142,8 @@ MANIP_SPECS = [
         # fill a nop, and asks the savefile helper's fourth byte for the reset,
         # 2 for "only inside the load" and 1 for "now". "game" is what a booted
         # UYA holds that the reset reads first.
-        "trophies": {"toggle": 39, "button": 21, "byte": 0xD9FF1C,
+        # "status" is the reset's status readout (revision 1.21).
+        "trophies": {"toggle": 39, "button": 21, "byte": 0xD9FF1C, "status": 12,
                      "fill": (0x985318, 0x60000000),
                      "folder": ("home", "00000001", "trophy", "NPWR02347_00"),
                      "commid": "NPWR02347_00",
@@ -4395,11 +4408,17 @@ def exercise_manips(c, sim, spec):
 
         make_set()
         time.sleep(0.1)
+        mark = len(sim.lines)
         status, _ = c.call(OP_FEATURE_TRIGGER, bytes([t["button"]]))
         check(status == ST_OK, "%s trophies: the Reset trophies button is accepted" % name, status)
         check(wait_byte(1) and os.path.exists(folder),
               "%s trophies: and asks the game to reset now, the folder still there" % name,
               mem_read_u8(c, t["byte"]))
+        info = fresh_state(c)
+        word = info["readout"][t["status"]] if info else None
+        check(word is not None and word >> 24 == 0x11,
+              "%s trophies: the status readout says running, starting" % name,
+              word is not None and hex(word))
         mem_write(c, t["byte"], b"\x06")
         check(wait_byte(7) and not os.path.exists(folder),
               "%s trophies: which goes once the game's context is down" % name,
@@ -4407,11 +4426,23 @@ def exercise_manips(c, sim, spec):
         mem_write(c, t["byte"], b"\x00")
         time.sleep(0.1)
 
+        # Revision 1.21: the readout says the trophies are ready, and the
+        # console's screen says nothing, where build 53 said "Trophies reset".
+        info = fresh_state(c)
+        word = info["readout"][t["status"]] if info else None
+        check(word is not None and word >> 24 == 0x20,
+              "%s trophies: and once the game is registered, ready" % name,
+              word is not None and hex(word))
+        said = [s for s in sim.lines[mark:] if "notify: " in s]
+        check(not said, "%s trophies: with no notification on the console's screen" % name, said)
+
         # The two rows keep their labels, and no flag asks a client to wait.
         status, body = c.call(OP_DESCRIBE)
         rows = {}
+        readouts = []
         if status == ST_OK:
-            rows = {f["id"]: f for f in parse_describe(body)[3]}
+            _g, _gr, readouts, features, _n = parse_describe(body)
+            rows = {f["id"]: f for f in features}
         check(rows.get(t["button"], {}).get("label") == "Reset trophies" and
               rows.get(t["toggle"], {}).get("label") == "Reset trophies on Veldin load",
               "%s trophies: DESCRIBE labels the reset and its toggle" % name,
@@ -4420,6 +4451,11 @@ def exercise_manips(c, sim, spec):
               rows.get(t["button"], {}).get("flags") == 0,
               "%s trophies: and no row carries flags bit6, the reset no flag at all" % name,
               {i: hex(f["flags"]) for i, f in rows.items() if f["flags"]})
+        check(rows.get(t["button"], {}).get("readout") == t["status"] and
+              len(readouts) > t["status"] and readouts[t["status"]] == "Trophy reset",
+              "%s trophies: the reset's row names readout %d, Trophy reset, as its status"
+              % (name, t["status"]),
+              (rows.get(t["button"], {}).get("readout"), readouts))
     status, l = manip_list(c)
     check(l is not None and l["selected"] == 0 and l["auto_reset"] == 1 and l["remember"] == 0,
           "%s manips: back to None, auto-reset on, remember off" % name, l)
