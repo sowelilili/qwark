@@ -138,14 +138,11 @@ for g in $RENDERERS; do
 	site_frame=$(need "$hdr" MH_SITE_FRAME)
 	site_screen=$(need "$hdr" MH_SITE_SCREEN)
 	site_inject=$(need "$hdr" MH_SITE_INJECT)
-	site_options=$(need "$hdr" MH_SITE_OPTIONS)
 	orig_frame=$(need "$hdr" MH_ORIG_FRAME)
 	orig_screen=$(need "$hdr" MH_ORIG_SCREEN)
 	orig_inject=$(need "$hdr" MH_ORIG_INJECT)
-	orig_options=$(need "$hdr" MH_ORIG_OPTIONS)
 	orig_start=$(need "$hdr" MH_ORIG_SLOT_START)
 	handle_input=$(need "$hdr" GAME_HANDLE_MENU_INPUT)
-	set_buttons=$(need "$hdr" GAME_SET_MENU_BUTTONS)
 	mode_addr=$(need "$hdr" DL_GAME_MODE)
 	mode_paused=$(need "$hdr" DL_MODE_PAUSE)
 	pending_addr=$(need "$hdr" DL_PENDING_MODE)
@@ -163,7 +160,6 @@ for g in $RENDERERS; do
 	sed -e "s/@TEXT_ORG@/$cave/" -e "s/@DATA_ORG@/$data/" "$DIR/mh.ld.in" > "$obj/mh.ld"
 	$LD --fatal-warnings -T "$obj/mh.ld" -Map "$obj/mh.map" -o "$obj/mh.elf" \
 		--defsym game_handle_menu_input=$handle_input \
-		--defsym game_set_menu_buttons=$set_buttons \
 		"$obj/stubs.o" "$obj/mh.o" "$obj/state.o"
 
 	# name size vma, one line per section
@@ -199,9 +195,8 @@ for g in $RENDERERS; do
 	frame_stub=$(sym "$obj/mh.elf" mh_frame_stub)
 	screen_stub=$(sym "$obj/mh.elf" mh_screen_stub)
 	inject_stub=$(sym "$obj/mh.elf" mh_inject_stub)
-	options_stub=$(sym "$obj/mh.elf" mh_options_stub)
 	[ -n "$start_desc" ] && [ -n "$stop_desc" ] && [ -n "$frame_stub" ] && [ -n "$screen_stub" ] &&
-		[ -n "$inject_stub" ] && [ -n "$options_stub" ] || fail "$g: a symbol is missing"
+		[ -n "$inject_stub" ] || fail "$g: a symbol is missing"
 	# The descriptors must be data.bin's, the stubs code.bin's.
 	for d in $start_desc $stop_desc; do
 		[ $((d)) -ge $((data)) ] && [ $((d)) -lt $((data + data_size)) ] || fail "$g: descriptor $d is not in data.bin"
@@ -210,7 +205,6 @@ for g in $RENDERERS; do
 	w_frame=$(blword "$site_frame" "$frame_stub")
 	w_screen=$(blword "$site_screen" "$screen_stub")
 	w_inject=$(blword "$site_inject" "$inject_stub")
-	w_options=$(blword "$site_options" "$options_stub")
 
 	{
 		echo "/* $g: the data image, $data_size bytes at $data: mailbox, state, rodata, TOC, descriptors */"
@@ -236,14 +230,13 @@ for g in $RENDERERS; do
 		printf '\t{ 0x%08Xu, %su, 0x00000000u },   /* fcStop: mh_stop */\n' $((slot + 12)) "$stop_desc"
 		printf '\t{ %su, %su, %su },   /* bl mh_frame_stub (%s) */\n' "$site_frame" "$w_frame" "$orig_frame" "$frame_stub"
 		printf '\t{ %su, %su, %su },   /* bl mh_screen_stub (%s) */\n' "$site_screen" "$w_screen" "$orig_screen" "$screen_stub"
-		printf '\t{ %su, %su, %su },   /* bl mh_inject_stub (%s) */\n' "$site_inject" "$w_inject" "$orig_inject" "$inject_stub"
-		printf '\t{ %su, %su, %su }    /* bl mh_options_stub (%s) */\n' "$site_options" "$w_options" "$orig_options" "$options_stub"
+		printf '\t{ %su, %su, %su }    /* bl mh_inject_stub (%s) */\n' "$site_inject" "$w_inject" "$orig_inject" "$inject_stub"
 		echo "};"
 		echo
 	} >> "$OUT/arrays.c"
 
 	{
-		echo "	{ $((game)), mh_${g}_caves, 2, mh_${g}_hooks, 8,"
+		echo "	{ $((game)), mh_${g}_caves, 2, mh_${g}_hooks, 7,"
 		echo "	  ${data}u, ${mbox_size}u, ${state}u,"
 		echo "	  ${mode_addr}u, ${mode_paused}u, ${pending_addr}u, ${pending_none}u,"
 		echo "	  ${screen_addr}u, ${screen_id}u },"
@@ -255,7 +248,6 @@ for g in $RENDERERS; do
 		echo "  $site_frame -> $w_frame  bl mh_frame_stub ($frame_stub)"
 		echo "  $site_screen -> $w_screen  bl mh_screen_stub ($screen_stub)"
 		echo "  $site_inject -> $w_inject  bl mh_inject_stub ($inject_stub)"
-		echo "  $site_options -> $w_options  bl mh_options_stub ($options_stub)"
 	} >> "$OUT/report.txt"
 done
 

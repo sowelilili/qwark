@@ -540,7 +540,7 @@ static void enter_ingame(void)
 
 	/*
 	 * Revision 1.22. The console menu starts over: the root page, and on a
-	 * console a renderer that goes in a few seconds into the session.
+	 * console a renderer that goes in on the session's first menu combo.
 	 */
 	menu_enter(g_game);
 
@@ -1038,9 +1038,10 @@ static void step_combos(void)
 	}
 
 	/*
-	 * Revision 1.22. With the switch off only the menu combo fires: a console
-	 * with no PC may have no other way into the menu, so the switch that stops
-	 * a run's combos does not stop it. The switch coming back on under a held
+	 * Revision 1.22. With the switch off only the menu combo fires: it is the
+	 * menu's only way in, and a console with no PC may have no other way to
+	 * switch the combos back on, so the switch that stops a run's combos does
+	 * not stop it. The switch coming back on under a held
 	 * pad disarms, exactly as before.
 	 */
 	if (g_combos_enabled && !g_combos_enabled_seen) g_combo_armed = 0;
@@ -1314,9 +1315,9 @@ static void session_step(void)
 		 */
 		if (switches_tick()) features_apply_waiting();
 		/*
-		 * Revision 1.22. The console menu: its renderer's install, and its
-		 * mailbox, read every fourth tick while the menu is down and every
-		 * tick while it is up.
+		 * Revision 1.22. The console menu: once the combo has put its
+		 * renderer in, its mailbox, read every fourth tick while the menu is
+		 * down and every tick while it is up.
 		 */
 		menu_tick();
 	} else {

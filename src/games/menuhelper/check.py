@@ -14,10 +14,14 @@ For Deadlocked's renderer it checks:
      each stub starts the way that stub does;
   3. screen 36's start and stop are descriptors in the data image, each
      {code in the code image, the renderer's TOC};
-  4. the code decodes as it should: every branch stays inside it but the two
-     tail branches into the game's own functions, no sc, no vector
+  4. the code decodes as it should: every branch stays inside it but the one
+     tail branch into the game's own HandleMenuInput, no sc, no vector
      instruction, no write to r13, and every indirect call switches r2 through
      one of the game's descriptors the header names and back;
+  4a. the game's own menus are left as they are: no hook word or cave in
+     MenuMain_StartOptions, where round 1 added its RaCMAN row, and no
+     address in MenuMain_PlayerData, where Options keeps its rows, built
+     anywhere in the code;
   5. each of those descriptors is {the code the header names, TOC 0x9BCD58};
   6. the code area is in the text segment's last page past its end, the data
      area in the read-write segment's last page past its end, both inside the
@@ -76,10 +80,18 @@ ACCEPTED = {
 # The stubs' first words (mh_rac4_stubs.S).
 STUB_FIRST = {
     "mh_frame_stub": (0xFFFFFFFF, 0xF821FF81, "stdu r1,-0x80(r1)"),
-    "mh_options_stub": (0xFFFFFFFF, 0xF821FF71, "stdu r1,-0x90(r1)"),
     "mh_inject_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
     "mh_screen_stub": (0xFFFFFFFF, 0x38800001, "li r4,1"),
 }
+
+# The game's own menus, which the renderer must leave as the game has them
+# (the user's call: a row added to a list a player knows moves its buttons).
+# MenuMain_StartOptions builds the Options list; its `bl SetMenuButtons` at
+# 0x3A6F2C (word 0x4BFC456D) is where round 1 put its RaCMAN row.
+DL_START_OPTIONS = (0x003A6858, 0x003A6F74)
+DL_OPTIONS_SETBUTTONS = (0x003A6F2C, 0x4BFC456D)
+# MenuMain_PlayerData, 0x1F8 bytes a player for four: Options' rows and cursor.
+DL_MENU_PLAYER = (0x0119F9A8, 0x0119F9A8 + 4 * 0x1F8)
 
 
 # ------------------------------------------------------------------ inputs
@@ -258,6 +270,29 @@ def mod_pointers(roots, title, lo, hi):
                                 v = ((lis[ra] << 16) | imm) if op == 24 else                                     (lis[ra] << 16) + (imm - 0x10000 if imm & 0x8000 else imm)
                                 if lo <= (v & 0xFFFFFFFF) < hi:
                                     found.append("%s/%s %s: 0x%08X" % (label, m, f, v & 0xFFFFFFFF))
+    return found
+
+
+def code_pointers(code, base, lo, hi):
+    """
+    Every lis/addi, lis/ori or lis/load-store pair in the code that names [lo, hi),
+    and every addis/load-store pair whose two immediates do: an array indexed at
+    run time comes out as `addis rD,rIndex,hi` and `stw rS,lo(rD)`.
+    """
+    found, lis = [], {}
+    for i in range(0, len(code) - 3, 4):
+        w = struct.unpack(">I", code[i:i + 4])[0]
+        op = w >> 26
+        if op == 15:
+            lis[(w >> 21) & 31] = w & 0xFFFF
+        elif op in (14, 24, 32, 34, 36, 38, 40, 44, 48, 52, 58, 62):
+            ra = (w >> 21) & 31 if op == 24 else (w >> 16) & 31
+            if ra in lis:
+                imm = w & 0xFFFF
+                v = ((lis[ra] << 16) | imm) if op == 24 else \
+                    (lis[ra] << 16) + (imm - 0x10000 if imm & 0x8000 else imm)
+                if lo <= (v & 0xFFFFFFFF) < hi:
+                    found.append("0x%08X: 0x%08X" % (base + i, v & 0xFFFFFFFF))
     return found
 
 
@@ -480,13 +515,12 @@ def check_rac4(ok, elf, roots):
         hdr["MH_SITE_FRAME"]: ("mh_frame_stub", hdr["MH_ORIG_FRAME"]),
         hdr["MH_SITE_SCREEN"]: ("mh_screen_stub", hdr["MH_ORIG_SCREEN"]),
         hdr["MH_SITE_INJECT"]: ("mh_inject_stub", hdr["MH_ORIG_INJECT"]),
-        hdr["MH_SITE_OPTIONS"]: ("mh_options_stub", hdr["MH_ORIG_OPTIONS"]),
     }
     slot = hdr["MH_SCREEN_SLOT"]
-    ok(len(hooks) == 8 and [h[0] for h in hooks] ==
+    ok(len(hooks) == 7 and [h[0] for h in hooks] ==
        [slot, slot + 4, slot + 8, slot + 12, hdr["MH_SITE_FRAME"], hdr["MH_SITE_SCREEN"],
-        hdr["MH_SITE_INJECT"], hdr["MH_SITE_OPTIONS"]],
-       "eight words: screen 36's slot, then the frame, screen, inject and Options hooks")
+        hdr["MH_SITE_INJECT"]],
+       "seven words: screen 36's slot, then the frame, screen and inject hooks")
     for a, value, orig, what in hooks:
         ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
 
@@ -496,8 +530,30 @@ def check_rac4(ok, elf, roots):
     ok(elf.word(hdr["MH_SITE_FRAME"] + 4) == 0x480000BC and
        branch_target(hdr["MH_SITE_FRAME"], hdr["MH_ORIG_FRAME"]) == hdr["GAME_HANDLE_MENU_INPUT"],
        "the frame site calls HandleMenuInput and goes on to UpdateMenus' end")
-    ok(branch_target(hdr["MH_SITE_OPTIONS"], hdr["MH_ORIG_OPTIONS"]) == hdr["GAME_SET_MENU_BUTTONS"],
-       "the Options site calls SetMenuButtons")
+    # The Start path: GoToScreen(0, r4) then PushState(0, 2), whose menu thread
+    # init (0x36270C) empties the screen stack, so triangle at the root closes.
+    ok(elf.word(hdr["MH_SITE_SCREEN"] + 4) == 0x48003EA5 and
+       branch_target(hdr["MH_SITE_SCREEN"] + 4, elf.word(hdr["MH_SITE_SCREEN"] + 4)) == 0x00361F1C and
+       elf.word(hdr["MH_SITE_SCREEN"] + 12) == 0x38600000 and
+       elf.word(hdr["MH_SITE_SCREEN"] + 16) == 0x38800002 and
+       branch_target(hdr["MH_SITE_SCREEN"] + 20, elf.word(hdr["MH_SITE_SCREEN"] + 20)) == 0x0035FF48,
+       "the screen site feeds GuiMenu_GoToScreen (0x361F1C), then GuiMain_PushState(0, 2) (0x35FF48)")
+
+    # 4a. the game's own menus
+    lo, hi = DL_START_OPTIONS
+    inside = [h for h in hooks if lo <= h[0] < hi] + \
+             [c for c in caves if c[0] < hi and c[0] + len(code if c[2] else data) > lo]
+    ok(not inside and elf.word(DL_OPTIONS_SETBUTTONS[0]) == DL_OPTIONS_SETBUTTONS[1],
+       "nothing goes into MenuMain_StartOptions (0x%08X..0x%08X): the Options list stays the "
+       "game's, its call to SetMenuButtons at 0x%08X untouched" % (lo, hi, DL_OPTIONS_SETBUTTONS[0]))
+    lo, hi = DL_MENU_PLAYER
+    named = code_pointers(code, cave, lo, hi) + \
+        ["data +0x%X: 0x%08X" % (i, struct.unpack(">I", data[i:i + 4])[0])
+         for i in range(0, len(data) - 3, 4) if lo <= struct.unpack(">I", data[i:i + 4])[0] < hi]
+    ok(not named, "nothing in the renderer names MenuMain_PlayerData (0x%08X..0x%08X), "
+       "where Options keeps its rows" % (lo, hi))
+    for x in named[:12]:
+        print("        " + x)
 
     stub_at = {}
     for a, value, orig, what in hooks:
@@ -525,15 +581,16 @@ def check_rac4(ok, elf, roots):
             ok(False, "its %s 0x%08X is in the data image" % (what, desc))
 
     # 4. the code, 5. the descriptors
-    allowed = (hdr["GAME_HANDLE_MENU_INPUT"], hdr["GAME_SET_MENU_BUTTONS"])
+    allowed = (hdr["GAME_HANDLE_MENU_INPUT"],)
     bad = lint_code(code, cave, allowed=allowed)
-    ok(not bad, "the code: no branch out but the two tail branches, no sc, no vector instruction, no write to r13")
+    ok(not bad, "the code: no branch out but the frame stub's tail branch, no sc, no vector instruction, "
+       "no write to r13")
     for b in bad[:12]:
         print("        " + b)
     outs = [cave + i for i in range(0, len(code), 4)
             if branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0]) in allowed]
-    ok(len(outs) == 2 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 1) == 0 for o in outs),
-       "exactly two ways out, both plain branches (no link): the stubs' tail calls")
+    ok(len(outs) == 1 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 1) == 0 for o in outs),
+       "exactly one way out, a plain branch (no link): the frame stub's tail call to HandleMenuInput")
 
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
     bad, seen = calls_via_descriptors(code, cave, set(opds))

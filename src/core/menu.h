@@ -13,10 +13,11 @@
  *                 (features_set, features_trigger), so config, auto flags and
  *                 the previous-session record behave exactly as when a client
  *                 does it;
- *   the driver    the game's renderer: installing it (src/games/menuhelper_bins.c),
- *                 polling the mailbox it shares with qwark (menubox.h), posting
- *                 pages into it and applying the events it posts back, and the
- *                 OPEN_MENU combo.
+ *   the driver    the game's renderer: installing it (src/games/menuhelper_bins.c)
+ *                 on the first OPEN_MENU combo of a session, which is the menu's
+ *                 only way in, polling the mailbox it shares with qwark
+ *                 (menubox.h), posting pages into it and applying the events it
+ *                 posts back.
  *
  * Tick thread only, under the core lock, like everything that touches game
  * memory: session.c calls menu_tick from its INGAME pass and menu_combo from
@@ -113,13 +114,17 @@ u8   menu_model_depth(void);
 
 /* -------------------------------------------------------------- the driver */
 
-/* Where the driver is in a session. */
+/*
+ * Where the driver is in a session. The renderer goes into the game on the
+ * first combo press, not before: the combo is the menu's only way in, so qwark
+ * sees every open coming, and a session in which nobody opens the menu has
+ * none of it in the game.
+ */
 #define MENU_OFF         0     /* no renderer here: not a console, not a game that has one */
-#define MENU_WAITING     1     /* a renderer goes in a few seconds into the session */
+#define MENU_IDLE        1     /* nothing in the game; the next combo press installs it */
 #define MENU_READY       2     /* installed, and serving the mailbox */
-#define MENU_REFUSED     3     /* a hook site holds a word that is not the game's or ours */
+#define MENU_REFUSED     3     /* the last press found a hook word not the game's or ours */
 #define MENU_REMOVING    4     /* menu.enabled went to 0: the hooks come out once it is safe */
-#define MENU_REMOVED     5     /* menu.enabled is 0 and the hooks are out */
 
 /* The session reached INGAME with `game` (NULL for a title qwark does not know). */
 void menu_enter(const struct game_api *game);
@@ -127,18 +132,17 @@ void menu_enter(const struct game_api *game);
 /* The session is leaving the game: everything about this process goes. */
 void menu_forget(void);
 
-/* Every INGAME tick, after the game's own watchers. */
+/* Every INGAME tick, after the game's own watchers. Nothing to do until the combo. */
 void menu_tick(void);
 
-/* The OPEN_MENU combo: open the menu, or close it if it is up. */
+/*
+ * The OPEN_MENU combo: open the menu, or close it if it is up. The first press
+ * of a session installs the renderer first, in the same tick.
+ */
 void menu_combo(void);
 
 int  menu_state(void);
-/* The mailbox's game address while a renderer is in, 0 otherwise. */
+/* The mailbox's game address while a renderer is in and served, 0 otherwise. */
 u32  menu_mailbox(void);
-
-/* Delay between INGAME and the install, microseconds. A test may shorten it. */
-u64  menu_install_delay_us(void);
-void menu_set_install_delay_us(u64 us);
 
 #endif /* QWARK_MENU_H */

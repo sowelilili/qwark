@@ -13,11 +13,13 @@
  * Built as the probes were, and N0 before it: ppu-lv2-gcc, a TOC of its own,
  * the game called through its own descriptors (src/games/menuhelper/build.sh).
  * The game reaches it through
- *   mh_options_stub  the Options hook, which calls mh_options_hook;
- *   mh_inject_stub, mh_screen_stub  GuiHud's Start path (assembler only);
+ *   mh_inject_stub, mh_screen_stub  GuiHud's Start path (assembler only), the
+ *                    one way in: qwark's combo asks, the stubs press Start;
  *   mh_frame_stub    UpdateMenus' input call, which calls mh_frame;
  *   mh_start, mh_stop  screen 36's fcStart and fcStop, through descriptors;
- *   mh_open, mh_row, mh_close  the callbacks the rows and the list carry.
+ *   mh_row, mh_close  the callbacks the rows and the list carry.
+ * Nothing of it is in the game's own menus: Options and the rest keep their
+ * rows and their buttons as the game has them.
  *
  * Everything the game keeps a pointer to - the rows, their text, the title -
  * lives in the renderer's state at MH_STATE, which stays put for as long as the
@@ -38,21 +40,17 @@
 
 void mh_row(int arg);
 void mh_close(int arg);
-void mh_open(int arg);
 void mh_start(int p);
 void mh_stop(int p);
 int  mh_frame(int p);
-int  mh_options_hook(int p, int n, u32 rows);
 
 /* The descriptors of this renderer's own callbacks, as the game will hold them. */
 #ifdef MH_HOST
 #define MH_FN_ROW   1u
 #define MH_FN_CLOSE 2u
-#define MH_FN_OPEN  3u
 #else
 #define MH_FN_ROW   ((u32)mh_row)
 #define MH_FN_CLOSE ((u32)mh_close)
-#define MH_FN_OPEN  ((u32)mh_open)
 #endif
 
 typedef int  (*fn_i_v)(void);
@@ -67,7 +65,6 @@ typedef void (*fn_v_iffff)(int, float, float, float, float);
 
 #define get_canvas     GAME_FN(fn_i_v,     OPD_GET_CANVAS,     mock_get_canvas)
 #define get_cursor     GAME_FN(fn_i_i,     OPD_GET_CURSOR,     mock_get_cursor)
-#define push_screen    GAME_FN(fn_v_ii,    OPD_PUSH_SCREEN,    mock_push_screen)
 #define get_screen     GAME_FN(fn_i_i,     OPD_GET_SCREEN,     mock_get_screen)
 #define set_cursor     GAME_FN(fn_v_ii,    OPD_SET_CURSOR,     mock_set_cursor)
 #define set_title      GAME_FN(fn_v_iu,    OPD_SET_TITLE,      mock_set_title)
@@ -362,51 +359,6 @@ static int steps(int p)
 /* ---------------------------------------------------------- the entries */
 
 /*
- * The RaCMAN row: what Settings' callback does for screen 12, for 36. The
- * Options cursor is kept so Triangle comes back to the row.
- */
-void mh_open(int arg)
-{
-	int p = get_canvas();
-
-	(void)arg;
-	inc(ST_OPENS);
-	w32(DL_MENU_PLAYER + (u32)p * DL_MENU_PLAYER_SZ + DL_MENU_OPT_CURSOR, (u32)get_cursor(p));
-	push_screen(p, MH_SCREEN_ID);
-}
-
-/*
- * From mh_options_stub, with the arguments MenuMain_StartOptions is about to
- * hand GuiSupport_SetMenuButtons: the player, the row count and the rows,
- * MenuMain_PlayerData[p].vButtons, whose count follows them at +0x60. The last
- * row is "Go back"; the RaCMAN row goes in front of it. Not in multiplayer,
- * whose pause does not stop the game. The answer is the count the stub passes on.
- */
-int mh_options_hook(int p, int n, u32 rows)
-{
-	u32 at;
-	u32 i;
-
-	(void)p;
-	if (r32(ST(ST_MAGIC)) != MH_MAGIC) return n;
-	if (r32(DL_GAME_TYPE) == 1) return n;
-	if (n < 1 || n >= 8) {
-		inc(ST_OPTIONS_FULL);
-		return n;
-	}
-
-	w8(put_lit(ST(ST_OPTION_LABEL), ST(ST_OPTION_LABEL) + 16, "RaCMAN"), 0);
-	at = rows + (u32)(n - 1) * MH_BUTTON_SIZE;
-	for (i = 0; i < MH_BUTTON_SIZE; i += 4) w32(at + MH_BUTTON_SIZE + i, r32(at + i));
-	w32(at, 0x01000000u);
-	w32(at + 4, ST(ST_OPTION_LABEL));
-	w32(at + 8, MH_FN_OPEN);
-	w32(rows + DL_ROWS_COUNT_OFF, (u32)(n + 1));
-	inc(ST_OPTIONS_ROWS);
-	return n + 1;
-}
-
-/*
  * Screen 36's fcStart: MenuMain_StartOptions' shape, with qwark's page. A
  * request still in the mailbox is spent: the menu is up.
  */
@@ -461,8 +413,9 @@ void mh_row(int arg)
 /*
  * The list's close callback: 1 for Start or Select, which closes the menu, 0
  * for Triangle, which goes back. At the root, and before any page, back is the
- * game's own (Options again, or out of the pause); anywhere else qwark goes
- * back a page. Start always works, whatever qwark is doing.
+ * game's own, which with nothing under screen 36 closes the menu and unpauses
+ * (OPD_GO_BACK_CB in mh_rac4.h); anywhere else qwark goes back a page. Start
+ * always works, whatever qwark is doing.
  */
 void mh_close(int arg)
 {

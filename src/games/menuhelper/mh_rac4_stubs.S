@@ -1,5 +1,5 @@
 /*
- * Deadlocked menu renderer: the four hook stubs (mh_rac4.h says where each
+ * Deadlocked menu renderer: the three hook stubs (mh_rac4.h says where each
  * hook goes). Preprocessed, so the offsets come from the same headers the C
  * uses, and commented C-style for the same reason. Screen 36 start and stop
  * and the row callbacks need no stub: the game calls them through descriptors
@@ -17,47 +17,16 @@
 	.align	2
 
 /*
- * MH_SITE_OPTIONS, 0x3A6F2C in MenuMain_StartOptions: the call to
- * GuiSupport_SetMenuButtons becomes a call to mh_options_stub. In: r3 = player,
- * r4 = row count, r5 = the rows, r2 the game TOC, LR = 0x3A6F30.
- * mh_options_hook may add a row and answers the new count; the stub then puts
- * the game r2 and LR back and branches on to SetMenuButtons with r3, the new r4
- * and r5, which returns to 0x3A6F30 as the original call would have. Probe N0
- * stub, as proven on hardware.
- *
- * Frame 0x90: 0x00..0x6F the ABI header and the C callee parameter save area,
- * 0x70 r3, 0x78 r5, 0x80 the game r2; LR into the caller slot, 0xA0.
- */
-	.globl	mh_options_stub
-mh_options_stub:
-	stdu	%r1,-0x90(%r1)
-	mflr	%r0
-	std	%r0,0xA0(%r1)
-	std	%r3,0x70(%r1)
-	std	%r5,0x78(%r1)
-	std	%r2,0x80(%r1)
-	lis	%r2,_toc_base@ha
-	addi	%r2,%r2,_toc_base@l
-	bl	.mh_options_hook
-	nop
-	extsw	%r4,%r3
-	ld	%r3,0x70(%r1)
-	ld	%r5,0x78(%r1)
-	ld	%r2,0x80(%r1)
-	ld	%r0,0xA0(%r1)
-	mtlr	%r0
-	addi	%r1,%r1,0x90
-	b	game_set_menu_buttons
-
-/*
  * MH_SITE_FRAME, 0x368620 in GuiSupport_UpdateMenus: the call to
  * HandleMenuInput becomes a call to mh_frame_stub, every frame a list menu is
  * fully shown. In: r3 = the player, r2 the game TOC, LR = 0x368624. mh_frame
  * answers 1 when it took this frame input for screen 36, and the stub returns;
  * on 0 it puts r3, r2 and LR back and branches on to HandleMenuInput, which
- * returns to 0x368624 as the original call would have.
+ * returns to 0x368624 as the original call would have. Built on the shape of
+ * probe N0's Options stub, which ran on hardware and is gone with the row.
  *
- * Frame 0x80: 0x00..0x6F as above, 0x70 r3, 0x78 the game r2; LR at 0x90.
+ * Frame 0x80: 0x00..0x6F the ABI header and the C callee parameter save area,
+ * 0x70 r3, 0x78 the game r2; LR into the caller slot, 0x90.
  */
 	.globl	mh_frame_stub
 mh_frame_stub:

@@ -305,7 +305,16 @@ COMBO_MENU_DEFAULT = 0x060F
 MENU_BOX = 0x017DF200
 MENU_MAGIC = 0x514D4E55
 MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
-              0x0035DFBC: 0x60000000, 0x003A6F2C: 0x4BFC456D}
+              0x0035DFBC: 0x60000000}
+MENU_CODE = (0x0097D000, 0x0097F000)
+MENU_DATA = (0x017DF200, 0x017DFF00)
+# The call in MenuMain_StartOptions where round 1 put a RaCMAN row, with the
+# game's own word: the menu's only way in is the combo, and Options stays the
+# game's own list.
+DL_OPTIONS_SITE = 0x003A6F2C
+DL_OPTIONS_WORD = 0x4BFC456D
+# Deadlocked's pad mask (src/games/rac4.h RAC4_INPUTS), for a combo under RPCS3.
+RAC4_PAD_MASK = 0x00B11F30
 MBOX_OFF_HSTATE = 0x0C
 MBOX_OFF_REQUEST = 0x0D
 MBOX_OFF_EV_SEQ = 0x14
@@ -2319,17 +2328,45 @@ def bl_target(a, w):
 
 
 def exercise_console_menu(c, sim):
-    """Revision 1.22 over the wire: the install, the mailbox, the combo, menu.enabled."""
-    deadline = time.time() + 8.0
-    while time.time() < deadline and mem_read_u32(c, MENU_BOX) != MENU_MAGIC:
-        time.sleep(0.2)
+    """Revision 1.22 over the wire: the install on the first combo, the mailbox,
+    the combo, menu.enabled."""
+
+    # The menu combo, as a player presses it. `clear` first takes back any
+    # request left in the mailbox, which is only there once the renderer is.
+    def combo(clear=True):
+        if clear:
+            mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+        sim.send("pad 0x0")
+        time.sleep(0.15)
+        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
+        time.sleep(0.25)
+        sim.send("pad 0x0")
+        time.sleep(0.1)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX + MBOX_OFF_REQUEST, 1))
+        return body[0] if status == ST_OK else None
+
+    # Nothing of the menu goes into the game before the combo: well past the
+    # three seconds after which round 1 installed it, the areas are empty.
+    mem_write(c, DL_OPTIONS_SITE, struct.pack(">I", DL_OPTIONS_WORD))
+    time.sleep(3.5)
+    check(mem_read_u32(c, MENU_BOX) != MENU_MAGIC and mem_read_u32(c, MENU_CODE[0]) == 0 and
+          menu_hooks(c) == MENU_SITES,
+          "Deadlocked menu: three and a half seconds into the session, nothing of it is in the game",
+          dict((hex(a), hex(w)) for a, w in menu_hooks(c).items()))
+
+    check(combo(clear=False) == 1,
+          "Deadlocked menu: the first menu combo installs the renderer and asks it to open")
     check(mem_read_u32(c, MENU_BOX) == MENU_MAGIC,
-          "Deadlocked menu: a few seconds in, the renderer's mailbox is in the game")
+          "Deadlocked menu: its mailbox is in the game")
     hooks = menu_hooks(c)
-    check(all((w >> 26) == 18 and 0x0097D000 <= bl_target(a, w) < 0x0097F000
+    check(all((w >> 26) == 18 and MENU_CODE[0] <= bl_target(a, w) < MENU_CODE[1]
               for a, w in hooks.items()),
           "Deadlocked menu: every hook site branches into the renderer's code",
           dict((hex(a), hex(w)) for a, w in hooks.items()))
+    check(mem_read_u32(c, DL_OPTIONS_SITE) == DL_OPTIONS_WORD,
+          "Deadlocked menu: and Options' call to SetMenuButtons keeps the game's word",
+          hex(mem_read_u32(c, DL_OPTIONS_SITE)))
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
 
     page = menu_page(c)
     check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
@@ -2349,18 +2386,7 @@ def exercise_console_menu(c, sim):
           page[2] if page else None)
 
     # The combo asks the renderer to open, also with every combo switched off.
-    def combo():
-        mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
-        sim.send("pad 0x0")
-        time.sleep(0.15)
-        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
-        time.sleep(0.25)
-        sim.send("pad 0x0")
-        time.sleep(0.1)
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX + MBOX_OFF_REQUEST, 1))
-        return body[0] if status == ST_OK else None
-
-    check(combo() == 1, "Deadlocked menu: the menu combo asks the renderer to open")
+    check(combo() == 1, "Deadlocked menu: the menu combo asks the renderer to open again")
     status, _ = c.call(OP_COMBO_ENABLE, bytes([0]))
     check(status == ST_OK and combo() == 1,
           "Deadlocked menu: and still does with every combo switched off")
@@ -2384,14 +2410,17 @@ def exercise_console_menu(c, sim):
     check(status == ST_OK and menu_hooks(c) == MENU_SITES,
           "Deadlocked menu: CONFIG_RELOAD takes every hook out",
           dict((hex(a), hex(w)) for a, w in menu_hooks(c).items()))
-    check(combo() == 0, "Deadlocked menu: the combo asks nothing")
+    check(combo() == 0 and menu_hooks(c) == MENU_SITES,
+          "Deadlocked menu: the combo asks nothing and installs nothing")
     check(write_console_file(c, cfg_path, cfg), "Deadlocked menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and menu_hooks(c) == MENU_SITES:
-        time.sleep(0.1)
-    check(menu_hooks(c) != MENU_SITES and combo() == 1,
-          "Deadlocked menu: and the menu is back, the combo with it")
+    time.sleep(0.5)
+    check(menu_hooks(c) == MENU_SITES,
+          "Deadlocked menu: menu.enabled = 1 writes nothing by itself")
+    check(combo() == 1 and menu_hooks(c) != MENU_SITES,
+          "Deadlocked menu: the next combo puts the renderer back and asks it to open")
+    check(mem_read_u32(c, DL_OPTIONS_SITE) == DL_OPTIONS_WORD,
+          "Deadlocked menu: Options' word through all of it is the game's")
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
 
 
@@ -3819,13 +3848,26 @@ def smoke_rpcs3_planet_loads(c, pine):
           "rpcs3: every fast-load word kept its instruction",
           [hex(w) for w in words])
 
-    # Revision 1.22: no console menu under RPCS3. Its renderer would have gone
-    # in three seconds into the session; nothing of it is there after four.
-    time.sleep(4.0)
-    check(pine.peek(MENU_BOX, 4) == b"\0\0\0\0" and
+    # Revision 1.22: no console menu under RPCS3. Its renderer goes in on the
+    # menu combo on a console; pressed here, nothing of it is written.
+    pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
+    time.sleep(0.2)
+    logged = len(pine.write_log)
+    pine.poke(RAC4_PAD_MASK, struct.pack(">I", COMBO_MENU_DEFAULT))
+    time.sleep(0.4)
+    status, body = c.call(OP_GET_STATE)
+    held = parse_telemetry(body)[0]["pad_mask"] if status == ST_OK else None
+    pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
+    time.sleep(0.2)
+    check(held == COMBO_MENU_DEFAULT, "rpcs3: qwark sees the menu combo held",
+          hex(held) if held is not None else None)
+    menu_writes = [(hex(a), n) for a, n in pine.write_log[logged:]
+                   if MENU_CODE[0] <= a < MENU_CODE[1] or MENU_DATA[0] <= a < MENU_DATA[1] or
+                   a in MENU_SITES or 0x009E8B58 <= a < 0x009E8B68]
+    check(not menu_writes and pine.peek(MENU_BOX, 4) == b"\0\0\0\0" and
           all(pine.peek(a, 4) in (b"\0\0\0\0", struct.pack(">I", w)) for a, w in MENU_SITES.items()),
-          "rpcs3: no console menu renderer is written into the game",
-          pine.peek(MENU_BOX, 4).hex())
+          "rpcs3: the menu combo writes no console menu renderer into the game",
+          menu_writes)
 
     pine.shutdown_game()
     ok, info = wait_state(c, SESSION_XMB)

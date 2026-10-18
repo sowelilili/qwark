@@ -1,11 +1,14 @@
 /*
- * Deadlocked's console menu renderer (NPEA00423): where it lives, the five
+ * Deadlocked's console menu renderer (NPEA00423): where it lives, the four
  * places it hooks, and the game it calls. See mh_rac4.c for what it does and
  * src/core/menubox.h for the mailbox it shares with qwark.
  *
  * The renderer is the native screen of rewrite/REPORT-dl-ui-framework.md, the
  * one probe N0 proved on hardware, grown into a renderer: screen slot 36 of
  * GuiMenu_Screens shows qwark's current page with GuiSupport's button list.
+ * The only way in is qwark's menu combo, through GuiHud's own Start path: the
+ * game's own menus are left exactly as they are, so no button the player knows
+ * there moves.
  *
  * Plain #defines and nothing else: build.sh reads the MH_* and OPD_* lines, and
  * the assembler includes this file through the C preprocessor. Each line that
@@ -61,34 +64,30 @@
  * MH_SITE_INJECT   the nop after `bl GB_GetLocalHeroFromSlot` in GuiHud's update,
  *                  just before it tests Start: the frame that takes an open
  *                  request presses Start there for the game.
- * MH_SITE_OPTIONS  MenuMain_StartOptions' `bl GuiSupport_SetMenuButtons`: the
- *                  RaCMAN row in front of "Go back", as N0 had it.
  * MH_SCREEN_SLOT   GuiMenu_Screens[36], {fcInit, fcReset, fcStart, fcStop}: no
  *                  init and no reset, the renderer's start and stop.
+ *
+ * Round 1 also hooked MenuMain_StartOptions' `bl GuiSupport_SetMenuButtons`
+ * (0x3A6F2C) for a RaCMAN row in Options. That row is gone: a row added to a
+ * list the player knows moves the rows under it. check.py holds the install to
+ * no word in that function and no address in MenuMain_PlayerData.
  */
 #define MH_SITE_FRAME       0x00368620   /* bl 0x368304, word 0x4BFFFCE5 */
 #define MH_SITE_SCREEN      0x0035E074   /* li r4,1, word 0x38800001 */
 #define MH_SITE_INJECT      0x0035DFBC   /* nop, word 0x60000000 */
-#define MH_SITE_OPTIONS     0x003A6F2C   /* bl 0x36B498, word 0x4BFC456D */
 #define MH_SCREEN_SLOT      0x009E8B58   /* 0, 0, 0x991D40, 0 */
 #define MH_SCREEN_ID        0x00000024   /* 36 */
 
 #define MH_ORIG_FRAME       0x4BFFFCE5
 #define MH_ORIG_SCREEN      0x38800001
 #define MH_ORIG_INJECT      0x60000000
-#define MH_ORIG_OPTIONS     0x4BFC456D
 #define MH_ORIG_SLOT_START  0x00991D40   /* GuiMain_StartNextState's descriptor, which nothing calls there */
 
-/* Where the two stubs that are not calls go on to. */
+/* Where the one stub that is not a call goes on to. */
 #define GAME_HANDLE_MENU_INPUT 0x00368304   /* GuiSupport_HandleMenuInput */
-#define GAME_SET_MENU_BUTTONS  0x0036B498   /* GuiSupport_SetMenuButtons */
 
 /* --------------------------------------------------------------- game data */
 
-#define DL_MENU_PLAYER      0x0119F9A8   /* MenuMain_PlayerData, 0x1F8 a player */
-#define DL_MENU_PLAYER_SZ   0x000001F8
-#define DL_MENU_OPT_CURSOR  0x00000004   /* its Options cursor */
-#define DL_ROWS_COUNT_OFF   0x00000060   /* vButtons + 0x60 = iButtons */
 #define DL_MENU_VSCREENS    0x009EAE3C   /* MenuMain_vScreens: {x, y, w, h} per screen mode */
 #define DL_GAME_TYPE        0x00B36DF4   /* g_gameType: 1 multiplayer */
 #define DL_PAD0_PTR         0x009C28CC   /* the word holding port 0's PAD */
@@ -134,7 +133,6 @@
  */
 #define OPD_GET_CANVAS      0x00986328   /* GetCurrentCanvas()                  0x0B2244 */
 #define OPD_GET_CURSOR      0x00992278   /* GuiSupport_GetMenuCursor(p)         0x368490 */
-#define OPD_PUSH_SCREEN     0x00992018   /* GuiMenu_PushScreen(p, id)           0x362308 */
 #define OPD_GET_SCREEN      0x00992008   /* GuiMenu_GetScreen(p)                0x3622C0 */
 #define OPD_SET_CURSOR      0x009923B8   /* GuiSupport_SetMenuCursor(p, i)      0x36B6A4 */
 #define OPD_SET_TITLE       0x009923A8   /* GuiSupport_SetMenuTitle(p, s)       0x36B638 */
@@ -150,6 +148,18 @@
 #define OPD_GO_BACK_CB      0x00993F80   /* MenuMain_OptionsCMDGoBackCB(arg)    0x3A809C */
 #define OPD_MENU_STOP       0x00993F50   /* MenuMain_Stop(p)                    0x3A7E48 */
 
+/*
+ * OPD_GO_BACK_CB is Options' back callback, and the menu has no Options under
+ * it: arg 0 (triangle) plays sound 8 and calls GuiMenu_PopScreen, arg 1 (Start,
+ * Select) calls GuiMenu_CloseMenu(p, 5). PopScreen with an empty stack calls
+ * CloseMenu(p, -1), and the stack is always empty under screen 36: GuiHud's
+ * Start path does GoToScreen(0, 36) and PushState(0, 2), and the menu thread's
+ * init (0x36270C) zeroes the stack depth every time the menu state starts.
+ * CloseMenu pops GuiMain's state; leaving the menu state runs screen 36's stop
+ * and, from the pause, PIB_RescuePause and mode_pop (0x35E3FC). So both close
+ * the menu and unpause, as the main menu's own back does.
+ */
+
 /* ------------------------------------------------ the renderer's own state */
 
 /*
@@ -158,36 +168,32 @@
  */
 #define ST_MAGIC            0x00   /* u32 MH_MAGIC */
 #define ST_STARTS           0x04   /* u32 times screen 36 started */
-#define ST_OPTIONS_ROWS     0x08   /* u32 times the RaCMAN row went into Options */
-#define ST_OPTIONS_FULL     0x0C   /* u32 times Options had no room for it */
-#define ST_OPENS            0x10   /* u32 times the RaCMAN row was pressed */
-#define ST_INJECTS          0x14   /* u32 open requests taken (Start pressed for the game) */
-#define ST_COMBO_OPENS      0x18   /* u32 times the Start path answered 36 */
-#define ST_EVENTS           0x1C   /* u32 events posted */
-#define ST_PAGES            0x20   /* u32 pages taken */
-#define ST_RETRIES          0x24   /* u32 pages read while qwark was writing them */
-#define ST_DROPPED          0x28   /* u32 presses dropped, an event already in flight */
-#define ST_SHOWN_SEQ        0x2C   /* u32 page_seq of the page shown */
-#define ST_SHOWN_KEY        0x30   /* u32 its key */
-#define ST_BUSY_SINCE       0x34   /* u32 MBOX frames when the event in flight went out */
-#define ST_FORCE36          0x38   /* u8 the Start path answers 36 this frame (the stubs) */
-#define ST_HAVE_PAGE        0x39   /* u8 a page has been taken */
-#define ST_NROWS            0x3A   /* u8 rows shown */
-#define ST_CURSOR_HINT      0x3B   /* u8 the page's cursor */
-#define ST_PFLAGS           0x3C   /* u8 the page's flags */
-#define ST_WAITING          0x3D   /* u8 the title says qwark is not answering */
-#define ST_LAST_CURSOR      0x3E   /* u8 the cursor when the screen last stopped */
-#define ST_NEW_KEY          0x3F   /* u8 the page taken has a key not shown before */
-#define ST_KIND             0x40   /* u8[8] */
-#define ST_FLAGS            0x48   /* u8[8] */
-#define ST_ID               0x50   /* u16[8] */
-#define ST_BUTTONS          0x60   /* MenuButton_s[8], 12 bytes: u8 enabled, pad, char *label, cb */
-#define ST_TITLE            0xC0   /* char[32] */
-#define ST_OPTION_LABEL     0xE0   /* char[16] "RaCMAN" */
-#define ST_WAIT_TITLE       0xF0   /* char[32] */
-#define ST_TEXT             0x110  /* char[8][64]: label and value, as the list shows them */
-#define ST_STAGE            0x310  /* a copy of the mailbox's page: key .. rows */
-#define ST_SIZE             0x568  /* ST_STAGE + MH_MBOX_SIZE - MBOX_OFF_PAGE_KEY */
+#define ST_INJECTS          0x08   /* u32 open requests taken (Start pressed for the game) */
+#define ST_COMBO_OPENS      0x0C   /* u32 times the Start path answered 36 */
+#define ST_EVENTS           0x10   /* u32 events posted */
+#define ST_PAGES            0x14   /* u32 pages taken */
+#define ST_RETRIES          0x18   /* u32 pages read while qwark was writing them */
+#define ST_DROPPED          0x1C   /* u32 presses dropped, an event already in flight */
+#define ST_SHOWN_SEQ        0x20   /* u32 page_seq of the page shown */
+#define ST_SHOWN_KEY        0x24   /* u32 its key */
+#define ST_BUSY_SINCE       0x28   /* u32 MBOX frames when the event in flight went out */
+#define ST_FORCE36          0x2C   /* u8 the Start path answers 36 this frame (the stubs) */
+#define ST_HAVE_PAGE        0x2D   /* u8 a page has been taken */
+#define ST_NROWS            0x2E   /* u8 rows shown */
+#define ST_CURSOR_HINT      0x2F   /* u8 the page's cursor */
+#define ST_PFLAGS           0x30   /* u8 the page's flags */
+#define ST_WAITING          0x31   /* u8 the title says qwark is not answering */
+#define ST_LAST_CURSOR      0x32   /* u8 the cursor when the screen last stopped */
+#define ST_NEW_KEY          0x33   /* u8 the page taken has a key not shown before */
+#define ST_KIND             0x34   /* u8[8] */
+#define ST_FLAGS            0x3C   /* u8[8] */
+#define ST_ID               0x44   /* u16[8] */
+#define ST_BUTTONS          0x54   /* MenuButton_s[8], 12 bytes: u8 enabled, pad, char *label, cb */
+#define ST_TITLE            0xB4   /* char[32] */
+#define ST_WAIT_TITLE       0xD4   /* char[32] */
+#define ST_TEXT             0xF4   /* char[8][64]: label and value, as the list shows them */
+#define ST_STAGE            0x2F4  /* a copy of the mailbox's page: key .. rows */
+#define ST_SIZE             0x54C  /* ST_STAGE + MH_MBOX_SIZE - MBOX_OFF_PAGE_KEY */
 
 #define MH_TEXT_LEN         0x40
 #define MH_BUTTON_SIZE      0x0C

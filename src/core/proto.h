@@ -594,8 +594,8 @@
 /*
  * Revision 1.22. Opens the console menu, or closes it when it is up. The one
  * combo with a mask of its own out of the box (COMBO_MENU_DEFAULT, L1 + R1 +
- * L2 + R2 + L3 + R3), and the one the COMBO_ENABLE switch does not hold off: a
- * console without a PC may have no other way into the menu. COMBO_SUSPEND
+ * L2 + R2 + L3 + R3), and the one the COMBO_ENABLE switch does not hold off: it
+ * is the menu's only way in, which a console without a PC may need. COMBO_SUSPEND
  * still holds it, so a client can capture it.
  */
 #define COMBO_OPEN_MENU     5

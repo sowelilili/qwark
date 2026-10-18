@@ -7,13 +7,18 @@
  *                 renderers of every shape: pages, windows, every event kind,
  *                 stale events, and every row doing what the protocol op does;
  *   the mailbox   the driver against a renderer simulated at the byte level: the
- *                 install and its refusals, the page seqlock, events and acks, the
- *                 open and close requests and the combo, menu.enabled, taking a
- *                 renderer over, a CLOSES action, RPCS3 and a game with none;
+ *                 install on the session's first menu combo and its refusals,
+ *                 the page seqlock, events and acks, the open and close requests
+ *                 and the combo, menu.enabled, taking a renderer over, a CLOSES
+ *                 action, RPCS3 and a game with none;
  *   the renderer  Deadlocked's renderer itself, src/games/menuhelper/mh_rac4.c,
  *                 compiled for the PC (MH_HOST) and run on the same fake memory
  *                 qwark writes, against mocks of the game's menu functions, the
- *                 way the probes' host tests stepped N0.
+ *                 way the probes' host tests stepped N0. The combo is its only
+ *                 way in, and the mocks follow the game's own Start path, back
+ *                 and close (mh_rac4.h, OPD_GO_BACK_CB) closely enough to show
+ *                 that triangle at the root, Start and Select close the menu
+ *                 and unpause.
  *
  * The renderer's hook stubs are assembler and do not run here;
  * src/games/menuhelper/check.py steps those against a model of the game.
@@ -45,12 +50,13 @@ u8 *mh_host_ptr(u32 addr)
 
 /*
  * The game's menu, as far as the renderer can see it: one player, a screen
- * stack, the list GuiSupport shows and what the renderer asked of it.
+ * stack, the pause, the list GuiSupport shows and what the renderer asked of it.
  */
 static struct {
-	int screen;              /* GuiMenu screen: 0 none, 6 Options, 36 the menu */
+	int screen;              /* GuiMenu screen: 0 none, 36 the menu */
 	int stack[10];
-	int depth;
+	int depth;               /* GuiMenu_PlayerData.iDepth, 0x110D78C */
+	int paused;              /* gameMode 3, the menu's pause */
 	int shown;
 	int cursor;
 	int nbuttons;
@@ -61,6 +67,7 @@ static struct {
 	int selects;
 	int widgets;
 	int stops;
+	int closes;
 	int input_ok;
 } G;
 
@@ -83,35 +90,54 @@ static int mock_takes_input(int p, int kind) { (void)p; (void)kind; return G.inp
 static void mock_play_sound(int id) { G.sound = id; }
 static void mock_menu_stop(int p) { (void)p; G.shown = 0; G.stops++; }
 static void mock_go_back(int arg);
-static void mock_push_screen(int p, int id);
 
 #include "../src/games/menuhelper/mh_rac4.c"
 
-/* GuiMenu_PushScreen: the screen before goes on the stack; 36's fcStart runs. */
-static void mock_push_screen(int p, int id)
+/*
+ * GuiMenu_CloseMenu(p, sound) (0x36249C): the sound unless -1, then
+ * GuiMain_PopState. Leaving the menu state stops the screen (its fcStop, here
+ * the renderer's mh_stop), clears the pad ring and, from the pause, runs
+ * PIB_RescuePause and mode_pop (0x35E3FC): the game plays again.
+ */
+static void mock_close_menu(int sound)
 {
-	(void)p;
-	if (G.depth < 10) G.stack[G.depth++] = G.screen;
-	G.screen = id;
+	if (sound >= 0) G.sound = sound;
+	if (G.screen == MH_SCREEN_ID) mh_stop(0);
+	G.screen = 0;
 	G.shown = 0;
-	if (id == MH_SCREEN_ID) mh_start(0);
+	G.paused = 0;
+	G.closes++;
 }
 
-/* MenuMain_OptionsCMDGoBackCB: 0 back a screen (PopScreen), 1 out of the menu. */
+/*
+ * MenuMain_OptionsCMDGoBackCB (0x3A809C), the list's back as the renderer
+ * hands it on: 1 closes the menu with sound 5; 0 plays sound 8 and calls
+ * GuiMenu_PopScreen (0x362584), which takes the screen under this one off the
+ * stack, or with nothing under it closes the menu with no sound of its own.
+ */
 static void mock_go_back(int arg)
 {
-	G.sound = arg == 0 ? SND_BACK : G.sound;
-	if (G.screen == MH_SCREEN_ID) mh_stop(0);
-	if (arg == 0 && G.depth > 0) {
-		G.screen = G.stack[--G.depth];
-	} else {
-		G.screen = 0;
-		G.depth = 0;
+	if (arg != 0) {
+		mock_close_menu(5);
+		return;
 	}
-	G.shown = G.screen != 0;
+	G.sound = SND_BACK;
+	if (G.depth < 1) {
+		mock_close_menu(-1);
+		return;
+	}
+	if (G.screen == MH_SCREEN_ID) mh_stop(0);
+	G.screen = G.stack[--G.depth];
+	G.shown = 1;
 }
 
-/* GuiHud's Start path with the menu asked to open: the two stubs' logic, in C. */
+/*
+ * One frame of GuiHud with the menu asked to open: the two stubs' logic in C
+ * (check.py steps the real ones), then the game's own Start path, which is
+ * GuiMenu_GoToScreen(0, 36) and GuiMain_PushState(0, 2). The menu state's
+ * thread init (0x36270C) zeroes the screen stack's depth, whatever an earlier
+ * pause menu left there; once the game is paused the thread starts screen 36.
+ */
 static void game_hud_frame(void)
 {
 	u8 req = r8(BOX(MBOX_OFF_REQUEST));
@@ -129,8 +155,9 @@ static void game_hud_frame(void)
 	if (force && r8(ST(ST_FORCE36))) {
 		w8(ST(ST_FORCE36), 0);
 		inc(ST_COMBO_OPENS);
-		G.depth = 0;
 		G.screen = MH_SCREEN_ID;
+		G.depth = 0;
+		G.paused = 1;
 		mh_start(0);
 	}
 }
@@ -140,7 +167,6 @@ static void call_token(u32 token, int arg)
 {
 	if (token == MH_FN_ROW) mh_row(arg);
 	else if (token == MH_FN_CLOSE) mh_close(arg);
-	else if (token == MH_FN_OPEN) mh_open(arg);
 }
 
 #define PAD0 0x00B11E80u
@@ -388,18 +414,36 @@ static void press(u32 mask)
 	tick(2);
 }
 
-/* Deadlocked, up and its menu installed (the delay cut to nothing). */
-static int dl_ready(void)
+/*
+ * The menu combo, for its install: the first press of a session puts the
+ * renderer in. The open request it also leaves is taken back, as if the game
+ * had been somewhere the menu cannot open. Answers whether the menu serves.
+ */
+static int combo_install(void)
 {
-	int i;
+	press(COMBO_MENU_DEFAULT);
+	if (menu_mailbox() != 0) poke8(menu_mailbox() + MBOX_OFF_REQUEST, 0);
+	tick(2);
+	return menu_state() == MENU_READY;
+}
 
-	menu_set_install_delay_us(0);
+/*
+ * The call in MenuMain_StartOptions where round 1 put its RaCMAN row, with the
+ * game's own word, which the fake console does not seed: the tests put it
+ * there and watch that nothing changes it.
+ */
+#define DL_OPTIONS_SITE 0x003A6F2Cu
+#define DL_OPTIONS_WORD 0x4BFC456Du
+
+/* Deadlocked up, in play, and nothing of the menu in it yet. */
+static int dl_boot(void)
+{
 	if (!boot("NPEA00423")) return 0;
-	for (i = 0; i < 20 && menu_state() != MENU_READY; i++) tick(1);
 	/* The game's pause and pending-mode words as a game at play has them. */
 	poke32(0x00B3C5A0u, 0);
 	poke32(0x009C37F4u, 0xFFFFFFFEu);
-	return menu_state() == MENU_READY;
+	poke32(DL_OPTIONS_SITE, DL_OPTIONS_WORD);
+	return menu_state() == MENU_IDLE;
 }
 
 /* ------------------------------------------------------------- the model */
@@ -702,23 +746,65 @@ static void test_mailbox(void)
 
 	group("console menu: the install and the mailbox");
 
-	check(d != NULL && d->mailbox == MH_DATA && d->nhooks == 8 && d->ncaves == 2,
-	      "Deadlocked has a renderer: a data image, the code, eight hook words");
+	check(d != NULL && d->mailbox == MH_DATA && d->nhooks == 7 && d->ncaves == 2,
+	      "Deadlocked has a renderer: a data image, the code, seven hook words");
 	check(mh_desc_for_game(GAME_RAC1) == NULL && mh_desc_for_game(GAME_NONE) == NULL,
 	      "RaC1 has none yet, and no game none");
 	if (d == NULL) return;
+	for (i = 0; i < d->nhooks; i++) {
+		if (d->hooks[i].addr >= 0x003A6858u && d->hooks[i].addr < 0x003A6F74u) break;
+	}
+	check(i == d->nhooks, "none of them in MenuMain_StartOptions: Options is the game's own list");
 
-	/* The default delay: nothing for three seconds. */
-	menu_set_install_delay_us(3000000ull);
-	check(boot("NPEA00423"), "Deadlocked boots");
-	poke32(0x00B3C5A0u, 0);
-	poke32(0x009C37F4u, 0xFFFFFFFEu);
-	check(menu_state() == MENU_WAITING && hooks_are(d, 0), "the renderer waits, every hook word the game's");
-	tick(340);
-	check(menu_state() == MENU_WAITING && peek32(MH_DATA) == 0,
-	      "nothing written two and a half seconds in");
-	for (i = 0; i < 40 && menu_state() != MENU_READY; i++) tick(1);
-	check(menu_state() == MENU_READY && hooks_are(d, 1), "three seconds in every hook is the renderer's");
+	/* Nothing in the game until the combo. */
+	check(dl_boot(), "Deadlocked boots");
+	check(menu_state() == MENU_IDLE && hooks_are(d, 0) && peek32(MH_DATA) == 0,
+	      "the session starts with nothing of the menu in the game");
+	tick(10 * 120);
+	check(menu_state() == MENU_IDLE && hooks_are(d, 0) && peek32(MH_DATA) == 0 && peek32(MH_CAVE) == 0,
+	      "and ten seconds of play write nothing: the menu waits for its combo");
+
+	/* The first press: the install, the page and the request, in the tick that sees it. */
+	host_set_pad(0);
+	tick(2);
+	host_write_log_reset();
+	host_set_pad(COMBO_MENU_DEFAULT);
+	tick(1);
+	check(menu_state() == MENU_READY && hooks_are(d, 1),
+	      "the first press of the menu combo installs the renderer, in the tick that saw it");
+	check(peek8(MH_DATA + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "and asks it to open in the same tick");
+	{
+		u32 k, a = 0, l = 0, n = host_write_log_count(), bytes = 0;
+		u32 at_data = 999, at_code = 999, at_req = 999, hook_first = 999, hook_last = 0;
+		u32 at_page = 999;
+		u8 h;
+
+		for (k = 0; k < n && k < 64; k++) {
+			host_write_log_at(k, &a, &l);
+			bytes += l;
+			if (a == MH_DATA && l > MBOX_HEAD_SIZE) at_data = k;
+			else if (a == MH_DATA + MBOX_OFF_PAGE_KEY && at_page == 999) at_page = k;
+			else if (a == MH_CAVE) at_code = k;
+			else if (a == MH_DATA + MBOX_OFF_REQUEST && l == 1) at_req = k;
+			for (h = 0; h < d->nhooks; h++) {
+				if (a != d->hooks[h].addr) continue;
+				if (k < hook_first) hook_first = k;
+				hook_last = k;
+			}
+		}
+		check(at_data < at_page && at_page < at_code && at_code < hook_first &&
+		      hook_last < at_req && at_req == n - 1,
+		      "in the order that keeps the game off a half-written renderer: the data image, "
+		      "the first page, the code, the hook words, and the request last");
+		check(n <= 12 && bytes <= 8u * 1024u, "a dozen writes at most, under 8 KB in all");
+		printf("    (the first press wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
+	}
+	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD,
+	      "Options' call to SetMenuButtons keeps the game's word");
+	host_set_pad(0);
+	tick(62);
+	check(peek8(MH_DATA + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "a request the game never takes is withdrawn half a second on");
 
 	mb = menu_mailbox();
 	check(mb == MH_DATA && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_VERSION + 1) == 1 &&
@@ -908,25 +994,28 @@ static void test_mailbox(void)
 	check(menu_state() == MENU_REMOVING && hooks_are(d, 1), "and with screen 36 the current one");
 	poke32(0x0110D784u, 0);
 	tick(8);
-	check(menu_state() == MENU_REMOVED && hooks_are(d, 0), "the menu down, the game in play: every word back");
+	check(menu_state() == MENU_IDLE && hooks_are(d, 0), "the menu down, the game in play: every word back");
 	n0 = host_notify_count();
 	press(COMBO_MENU_DEFAULT);
-	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "menu.enabled") != NULL,
-	      "the combo says the menu is switched off");
+	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "menu.enabled") != NULL &&
+	      hooks_are(d, 0), "the combo says the menu is switched off, and installs nothing");
 	press(COMBO_MENU_DEFAULT);
 	check(host_notify_count() == n0 + 1, "once a session");
 	config_set_u32("menu.enabled", 1);
 	tick(4);
-	check(menu_state() == MENU_READY && hooks_are(d, 1), "menu.enabled = 1 puts it back");
+	check(menu_state() == MENU_IDLE && hooks_are(d, 0), "menu.enabled = 1 writes nothing by itself");
+	check(combo_install() && hooks_are(d, 1), "the next combo puts it back");
 
 	/* Taken over: what a module loaded again into a running game finds. */
-	menu_set_install_delay_us(0);
 	poke32(MH_STATE + ST_STARTS, 7);
 	poke32(mb + MBOX_OFF_EV_SEQ, peek32(mb + MBOX_OFF_EV_ACK) + 1);
 	menu_enter(session_game());
 	tick(4);
-	check(menu_state() == MENU_READY && peek32(MH_STATE + ST_STARTS) == 7,
-	      "a renderer of this build already in is taken over, its state as it was");
+	check(menu_state() == MENU_IDLE && hooks_are(d, 1) &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
+	      "a module loaded again leaves a renderer it finds alone until the combo");
+	check(combo_install() && peek32(MH_STATE + ST_STARTS) == 7,
+	      "which takes a renderer of this build over, its state as it was");
 	check(box_acked(), "an event left from before is answered unread");
 
 	/*
@@ -937,7 +1026,7 @@ static void test_mailbox(void)
 	poke8(mb + MBOX_OFF_ROW_SIZE, MBOX_ROW_SIZE_DESC);
 	poke8(mb + MBOX_OFF_MAX_ROWS, 4);
 	menu_enter(session_game());
-	tick(4);
+	combo_install();
 	{
 		u8 row[MBOX_ROW_SIZE_DESC];
 		u8 rec[8];
@@ -962,35 +1051,36 @@ static void test_mailbox(void)
 	}
 	poke8(mb + MBOX_OFF_ROW_SIZE, 0x50);
 	menu_enter(session_game());
-	tick(4);
+	combo_install();
 	check(menu_state() == MENU_REFUSED, "a row size this build does not know is refused");
 	poke8(mb + MBOX_OFF_ROW_CAP, 8);
 	poke8(mb + MBOX_OFF_ROW_SIZE, MBOX_ROW_SIZE);
 	poke8(mb + MBOX_OFF_MAX_ROWS, 8);
-	menu_enter(session_game());
-	tick(4);
-	check(menu_state() == MENU_READY, "and the renderer's own shape is taken over again");
+	check(combo_install(), "and the renderer's own shape is taken over again, on the next press");
 
 	/* Refused: another mod at a site. */
 	check(quit(), "quit");
 	host_boot("NPEA00423");
-	poke32(MH_SITE_OPTIONS, 0x48000001u);
+	poke32(MH_SITE_INJECT, 0x48000001u);
 	for (i = 0; i < 4000 && session_state() != SESSION_INGAME; i++) tick(1);
 	tick(4);
-	check(menu_state() == MENU_REFUSED && peek32(MH_DATA) == 0 && peek32(MH_SITE_FRAME) == MH_ORIG_FRAME,
-	      "a hook site holding another mod's word: nothing written at all");
+	check(menu_state() == MENU_IDLE, "a session starts without looking");
 	n0 = host_notify_count();
 	press(COMBO_MENU_DEFAULT);
+	check(menu_state() == MENU_REFUSED && peek32(MH_DATA) == 0 && peek32(MH_SITE_FRAME) == MH_ORIG_FRAME &&
+	      peek32(MH_CAVE) == 0,
+	      "the combo finds a hook site holding another mod's word, and writes nothing at all");
 	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "another mod") != NULL,
-	      "the combo says why");
-	poke32(MH_SITE_OPTIONS, MH_ORIG_OPTIONS);
+	      "and says why");
 	tick(10 * 120 + 10);
-	check(menu_state() == MENU_READY && hooks_are(d, 1), "ten seconds after the word is the game's again, it goes in");
+	check(menu_state() == MENU_REFUSED && peek32(MH_DATA) == 0, "nothing retries on its own");
+	poke32(MH_SITE_INJECT, MH_ORIG_INJECT);
+	check(combo_install() && hooks_are(d, 1), "the next press once the word is the game's again puts it in");
 
 	/* Refused: a renderer of another build. */
 	poke8(MH_CAVE + 0x100, (u8)(peek8(MH_CAVE + 0x100) ^ 0xFF));
 	menu_enter(session_game());
-	tick(4);
+	combo_install();
 	check(menu_state() == MENU_REFUSED, "hooks that are ours over code that is not this build's are left alone");
 
 	check(quit(), "quit Deadlocked");
@@ -1003,8 +1093,9 @@ static void test_mailbox(void)
 	      "the menu is off and writes nothing");
 	n0 = host_notify_count();
 	press(COMBO_MENU_DEFAULT);
-	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "RPCS3") != NULL,
-	      "the combo says it is not available under RPCS3");
+	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "RPCS3") != NULL &&
+	      peek32(MH_DATA) == 0 && hooks_are(d, 0),
+	      "the combo says it is not available under RPCS3, and writes nothing");
 	check(quit(), "quit");
 	host_set_can_patch_code(1);
 
@@ -1017,8 +1108,6 @@ static void test_mailbox(void)
 	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "not available in this game") != NULL,
 	      "the combo says so");
 	check(quit(), "quit RaC1");
-
-	menu_set_install_delay_us(3000000ull);
 }
 
 /* ----------------------------------------------------------- the renderer */
@@ -1026,7 +1115,6 @@ static void test_mailbox(void)
 static void test_renderer(void)
 {
 	char text[80], title[40];
-	u32 rows = 0x0119F9A8u + 0x194u;    /* MenuMain_PlayerData[0].vButtons */
 	u32 mb;
 	int i, n;
 
@@ -1034,33 +1122,26 @@ static void test_renderer(void)
 
 	memset(&G, 0, sizeof(G));
 	G.input_ok = 1;
-	check(dl_ready(), "Deadlocked up, the renderer installed");
+	check(dl_boot(), "Deadlocked up, nothing of the menu in it");
 	poke32(DL_PAD0_PTR, PAD0);
+
+	/*
+	 * The first combo: the install, the request, and the next GuiHud frame
+	 * opens screen 36 through the game's own Start path. A screen stack left
+	 * over from an earlier pause menu does not matter: the menu state's init
+	 * empties it.
+	 */
+	G.depth = 2;
+	G.stack[0] = 1;
+	G.stack[1] = 13;
+	press(COMBO_MENU_DEFAULT);
 	mb = menu_mailbox();
-
-	/* Options: the RaCMAN row in front of Go back. */
-	for (i = 0; i < 6; i++) {
-		poke32(rows + 12u * (u32)i, 0x01000000u);
-		poke32(rows + 12u * (u32)i + 4, 0x1000u + (u32)i);
-		poke32(rows + 12u * (u32)i + 8, i == 5 ? OPD_GO_BACK_CB : 0x2000u + (u32)i);
-	}
-	poke32(rows + 0x60, 6);
-	n = mh_options_hook(0, 6, rows);
-	check(n == 7 && peek32(rows + 0x60) == 7, "Options' six rows become seven, iButtons with them");
-	check(peek32(rows + 12 * 6 + 8) == OPD_GO_BACK_CB && peek32(rows + 12 * 5 + 8) == MH_FN_OPEN,
-	      "Go back last, the RaCMAN row before it");
-	check(mh_options_hook(0, 8, rows) == 8 && peek32(MH_STATE + ST_OPTIONS_FULL) == 1,
-	      "a full list is left alone, and counted");
-	poke32(DL_GAME_TYPE, 1);
-	check(mh_options_hook(0, 6, rows) == 6, "no row in multiplayer");
-	poke32(DL_GAME_TYPE, 0);
-
-	/* The row: screen 36 starts with qwark's page. */
-	G.screen = 6;
-	G.cursor = 5;
-	call_token(MH_FN_OPEN, 0);
-	check(G.screen == MH_SCREEN_ID && G.shown && peek32(0x0119F9A8u + 4) == 5,
-	      "the RaCMAN row pushes screen 36, the Options cursor kept");
+	check(mb == MH_DATA && peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN,
+	      "the first combo installs the renderer and asks it to open");
+	game_hud_frame();
+	check(G.screen == MH_SCREEN_ID && G.shown && G.paused && G.depth == 0 &&
+	      peek8(mb + MBOX_OFF_REQUEST) == 0 && peek32(MH_STATE + ST_COMBO_OPENS) == 1,
+	      "and the next GuiHud frame opens screen 36 through the Start path, paused, nothing under it");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && G.sound == SND_SCREEN,
 	      "the mailbox says open, with the screen's sound");
 	check(strcmp(shown_title(title, sizeof(title)), "RaCMAN") == 0 && G.nbuttons == 6,
@@ -1070,6 +1151,7 @@ static void test_renderer(void)
 	      peek8(G.buttons + 5 * 12) == 0 && peek32(G.buttons + 5 * 12 + 8) == 0,
 	      "Cheats first, the build last, grey and with no callback");
 	check(G.close_cb == MH_FN_CLOSE, "the list's close callback is the renderer's");
+	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options is the game's own list, untouched");
 
 	tick(4);
 
@@ -1124,17 +1206,22 @@ static void test_renderer(void)
 	game_frame(0);
 	check(strcmp(shown_title(title, sizeof(title)), "RaCMAN") == 0 && G.cursor == 0,
 	      "the root again, the cursor on Cheats");
+	n = G.closes;
 	game_frame(PADB_TRIANGLE);
-	check(G.screen == 6 && G.stops == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
-	      "triangle at the root is the game's own: back to Options, the mailbox closed");
-
-	/* The combo: qwark asks, the Start path opens screen 36. */
-	G.screen = 0;
+	check(G.screen == 0 && !G.paused && G.closes == n + 1 && G.stops == 1 && G.sound == SND_BACK &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "triangle at the root is the game's own back: with nothing under screen 36 it closes "
+	      "the menu and unpauses, the mailbox closed");
 	tick(8);
+
+	/* The combo again: the renderer is in, so it only asks. */
 	press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "the combo asks again");
 	game_hud_frame();
-	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_REQUEST) == 0 &&
-	      peek32(MH_STATE + ST_COMBO_OPENS) == 1, "the combo opens the menu through the Start path");
+	check(G.screen == MH_SCREEN_ID && G.shown && G.paused && peek8(mb + MBOX_OFF_REQUEST) == 0 &&
+	      peek32(MH_STATE + ST_COMBO_OPENS) == 2, "and the Start path opens the menu again");
+	check(strcmp(shown_title(title, sizeof(title)), "RaCMAN") == 0 && G.cursor == 0,
+	      "on the root, the cursor where it was left");
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "and again asks it to close");
@@ -1143,11 +1230,19 @@ static void test_renderer(void)
 	      "which the next frame does, before the frame's cross");
 	tick(4);
 
-	/* Start closes from anywhere, whatever qwark is doing. */
+	/* Start and Select close from anywhere, whatever qwark is doing. */
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
 	game_frame(PADB_START);
-	check(G.screen == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "Start closes the menu");
+	check(G.screen == 0 && !G.paused && G.sound == 5 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "Start closes the menu and unpauses");
+	tick(4);
+	press(COMBO_MENU_DEFAULT);
+	game_hud_frame();
+	game_frame(PADB_SELECT);
+	check(G.screen == 0 && !G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "so does Select");
+	tick(4);
 
 	/* Values and a choice list, opened again on the page it was left on. */
 	press(COMBO_MENU_DEFAULT);
@@ -1222,14 +1317,15 @@ static void test_renderer(void)
 	poke8(MH_STATE + ST_HAVE_PAGE, 0);
 	poke32(mb + MBOX_OFF_PAGE_SEQ, 0);
 	G.screen = MH_SCREEN_ID;
+	G.depth = 0;
+	G.paused = 1;
 	mh_start(0);
 	check(G.nbuttons == 1 && strcmp(shown_text(0, text, sizeof(text)), "Waiting for qwark") == 0,
 	      "with no page yet the menu says it waits");
 	game_frame(PADB_TRIANGLE);
-	check(G.screen == 0, "and triangle leaves it");
+	check(G.screen == 0 && !G.paused, "and triangle leaves it, unpaused");
 
 	check(quit(), "quit Deadlocked");
-	menu_set_install_delay_us(3000000ull);
 }
 
 void test_menu(void)

@@ -917,25 +917,19 @@ static u8 take_deferred(void)
 #define BUILD_CLOSED     120
 /* An open or close request nobody took is withdrawn after half a second. */
 #define REQUEST_US       500000ull
-/* A refused install is tried again every ten seconds. */
-#define RETRY_US         10000000ull
 /* A CLOSES action waits this long for the menu to close and the game to play. */
 #define DEFER_US         5000000ull
 
 /* Notified once a session, per reason. */
 #define WHY_NO_RENDERER  0x01
-#define WHY_STARTING     0x02
-#define WHY_REFUSED      0x04
-#define WHY_OFF          0x08
+#define WHY_REFUSED      0x02
+#define WHY_OFF          0x04
 
 static int  g_state = MENU_OFF;
 static const struct mh_desc *g_mh;
 /* The block as the renderer laid it out: row slots and the size of one. */
 static u8   g_row_cap;
 static u8   g_row_size;
-static u64  g_install_delay = 3000000ull;
-static u64  g_install_at;
-static u64  g_retry_at;
 static int  g_logged_refusal;
 
 static u32  g_page_seq;
@@ -955,9 +949,12 @@ static int  g_enabled = 1;
 static u32  g_enabled_version = 0xFFFFFFFFu;
 
 int menu_state(void) { return g_state; }
-u32 menu_mailbox(void) { return (g_mh != NULL && g_state >= MENU_READY) ? g_mh->mailbox : 0; }
-u64 menu_install_delay_us(void) { return g_install_delay; }
-void menu_set_install_delay_us(u64 us) { g_install_delay = us; }
+
+u32 menu_mailbox(void)
+{
+	if (g_mh == NULL || (g_state != MENU_READY && g_state != MENU_REMOVING)) return 0;
+	return g_mh->mailbox;
+}
 
 /* config.txt `menu.enabled`, 1 unless it says 0 (PROTOCOL.md 5.10). */
 static int enabled(void)
@@ -1002,8 +999,13 @@ void menu_enter(const struct game_api *game)
 		g_mh = NULL;
 		return;
 	}
-	g_state = MENU_WAITING;
-	g_install_at = plat_time_us() + g_install_delay;
+
+	/*
+	 * Nothing goes into the game yet. The combo is the menu's only way in, so
+	 * qwark sees every open coming, and the first press installs the renderer
+	 * (menu_combo): a session in which nobody opens the menu has none of it.
+	 */
+	g_state = MENU_IDLE;
 }
 
 /*
@@ -1079,6 +1081,14 @@ static int code_matches(const struct mh_cave *c)
  * code must be this build's to the byte; the rest goes in around it and the
  * mailbox is taken over as it stands. Anything else at a site is another mod's,
  * and nothing is written.
+ *
+ * It runs in the tick that saw the menu combo, the first in a session: some
+ * twenty reads and eleven writes, the data image and the code one write each,
+ * 7.5 KB in all for Deadlocked. The combo's request goes out right after it,
+ * as the savefile helper's first request follows its install, so the first
+ * open waits for nothing the others do not. Nothing can branch into a cave
+ * before its hook word, every hook word goes in after the caves, and the
+ * request byte goes in last of all.
  */
 static int install(void)
 {
@@ -1205,6 +1215,28 @@ static int uninstall(void)
 }
 
 /*
+ * install(), and the state it leaves: READY, REFUSED for another mod's word or
+ * another build's renderer, IDLE for a write that failed. Nothing retries on
+ * its own; the next combo press tries again. Answers 1 when the menu serves.
+ */
+static int try_install(void)
+{
+	int rc = install();
+
+	if (rc == ST_OK) {
+		g_state = MENU_READY;
+		return 1;
+	}
+	if (rc == INSTALL_REFUSED) {
+		g_state = MENU_REFUSED;
+	} else {
+		plat_log("menu: install failed (%d); the next press tries again", rc);
+		g_state = MENU_IDLE;
+	}
+	return 0;
+}
+
+/*
  * Whether the hooks may come out: never while the menu is up or the game is
  * paused, since the menu's code is running then, and not while a mode change
  * is queued either.
@@ -1288,10 +1320,13 @@ static void serve(void)
 	if (mem_read(g_mh->mailbox, head, sizeof(head)) != ST_OK) return;
 	if (be32_get(head + MBOX_OFF_MAGIC) != MBOX_MAGIC ||
 	    be16_get(head + MBOX_OFF_VERSION) != MBOX_VERSION) {
-		/* Something wrote over the mailbox. Install again, which looks first. */
+		/*
+		 * Something wrote over the mailbox, and with it maybe the renderer's
+		 * TOC and descriptors, under hook words that are still in. Install
+		 * again at once, which looks first and puts the data image back.
+		 */
 		plat_log("menu: the mailbox at 0x%08X is gone; installing again", (int)g_mh->mailbox);
-		g_state = MENU_WAITING;
-		g_install_at = plat_time_us();
+		try_install();
 		return;
 	}
 
@@ -1340,58 +1375,25 @@ static void serve(void)
 
 void menu_tick(void)
 {
-	int on;
-
-	if (g_state == MENU_OFF || g_mh == NULL) return;
-	on = enabled();
+	if (g_mh == NULL) return;
 
 	switch (g_state) {
-	case MENU_WAITING:
-		if (!on) { g_state = MENU_REMOVED; return; }
-		if (plat_time_us() < g_install_at) return;
-		{
-			int rc = install();
-			if (rc == ST_OK) {
-				g_state = MENU_READY;
-			} else {
-				if (rc != INSTALL_REFUSED)
-					plat_log("menu: install failed (%d), trying again", rc);
-				g_state = MENU_REFUSED;
-				g_retry_at = plat_time_us() + RETRY_US;
-			}
-		}
-		return;
-
-	case MENU_REFUSED:
-		if (!on) { g_state = MENU_REMOVED; return; }
-		if (plat_time_us() >= g_retry_at) {
-			g_state = MENU_WAITING;
-			g_install_at = plat_time_us();
-		}
-		return;
-
 	case MENU_READY:
-		if (on) { serve(); return; }
+		if (enabled()) { serve(); return; }
 		g_state = MENU_REMOVING;
 		/* fall through */
 	case MENU_REMOVING:
-		if (on) { g_state = MENU_READY; serve(); return; }
+		if (enabled()) { g_state = MENU_READY; serve(); return; }
 		/* The menu keeps working until it is closed; then the hooks come out. */
 		serve();
 		if (g_state == MENU_REMOVING && safe_to_remove() && uninstall() == ST_OK) {
-			g_state = MENU_REMOVED;
+			g_state = MENU_IDLE;
 			g_deferred = 0xFF;
 		}
 		return;
 
-	case MENU_REMOVED:
-		if (on) {
-			g_state = MENU_WAITING;
-			g_install_at = plat_time_us();
-		}
-		return;
-
 	default:
+		/* Nothing of the menu is in the game: there is nothing to do until the combo. */
 		return;
 	}
 }
@@ -1405,23 +1407,27 @@ static void unavailable(u8 why, const char *msg)
 
 void menu_combo(void)
 {
-	switch (g_state) {
-	case MENU_READY:
-		break;
-	case MENU_WAITING:
-		unavailable(WHY_STARTING, "RaCMAN menu: still starting, try again in a moment");
-		return;
-	case MENU_REFUSED:
-		unavailable(WHY_REFUSED, "RaCMAN menu: another mod holds the menu's hooks");
-		return;
-	case MENU_REMOVING:
-	case MENU_REMOVED:
-		unavailable(WHY_OFF, "RaCMAN menu: switched off (menu.enabled = 0 in config.txt)");
-		return;
-	default:
+	if (g_state == MENU_OFF || g_mh == NULL) {
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
 		            ? "RaCMAN menu: not available in this game yet"
 		            : "RaCMAN menu: not available under RPCS3");
+		return;
+	}
+	if (!enabled()) {
+		unavailable(WHY_OFF, "RaCMAN menu: switched off (menu.enabled = 0 in config.txt)");
+		return;
+	}
+	if (g_state == MENU_REMOVING) g_state = MENU_READY;
+
+	/*
+	 * The first press of a session puts the renderer in, here in the tick that
+	 * saw it, and asks it to open straight after (install() has the cost). So
+	 * does the first press after a refusal, or after menu.enabled went to 0
+	 * and back: no timer retries in between.
+	 */
+	if (g_state != MENU_READY && !try_install()) {
+		if (g_state == MENU_REFUSED)
+			unavailable(WHY_REFUSED, "RaCMAN menu: another mod holds the menu's hooks");
 		return;
 	}
 
