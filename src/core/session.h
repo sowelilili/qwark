@@ -150,6 +150,8 @@ int  session_planet_select(u8 planet, u8 flags);
 int  session_die(void);
 int  session_load_setaside(void);
 u8   session_current_planet(void);
+/* Revision 1.22: readout[index] as the last hot pass decoded it, 0 past the end. */
+u32  session_readout(u8 index);
 
 /* ----------------------------------------------------------------- combos */
 

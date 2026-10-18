@@ -58,6 +58,12 @@
  * Revision 1.21: manip categories, MANIP_LIST / SELECT / OPTIONS / APPLY in the
  * 0x00D0 block (src/core/manips.h). The old manip buttons and toggles are
  * retired, ids and all.
+ * Revision 1.22: the console menu (src/core/menu.h). Combo action 5 OPEN_MENU,
+ * the first combo with a default mask, which COMBO_LIST therefore reports as a
+ * sixth entry; config keys combo.menu and menu.enabled. No opcode or structure
+ * changed: the menu's mailbox lives in game memory, between qwark and the
+ * renderer it writes into the game, and is described in PROTOCOL.md section 9
+ * for information only.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -73,7 +79,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             53
+#define QWARK_BUILD             54
 
 #define QWARK_PORT              9673
 /*
@@ -585,7 +591,16 @@
 #define COMBO_DIE           2
 #define COMBO_LOAD_PLANET   3
 #define COMBO_LOAD_SETASIDE 4
-#define COMBO_COUNT         5
+/*
+ * Revision 1.22. Opens the console menu, or closes it when it is up. The one
+ * combo with a mask of its own out of the box (COMBO_MENU_DEFAULT, L1 + R1 +
+ * L2 + R2 + L3 + R3), and the one the COMBO_ENABLE switch does not hold off: a
+ * console without a PC may have no other way into the menu. COMBO_SUSPEND
+ * still holds it, so a client can capture it.
+ */
+#define COMBO_OPEN_MENU     5
+#define COMBO_COUNT         6
+#define COMBO_MENU_DEFAULT  0x060Fu
 
 /* Planet flags, PLANET_SELECT / PLANET_LOAD */
 #define PLANET_FLAG_RESET_LEVELFLAGS 0x01

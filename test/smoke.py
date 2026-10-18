@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 53
+QWARK_BUILD = 54
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -296,6 +296,29 @@ DF, RT, FL, NM = (AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_ROUTE,
                   AUTOSPLIT_FLAG_FLAT, AUTOSPLIT_FLAG_NORMALISE)
 
 COMBO_SAVE_POSITION = 0
+# Revision 1.22: the console menu's combo, the one with a mask out of the box.
+COMBO_OPEN_MENU = 5
+COMBO_MENU_DEFAULT = 0x060F
+
+# Revision 1.22: Deadlocked's console menu renderer (src/games/menuhelper/mh_rac4.h)
+# and its mailbox (src/core/menubox.h), read and written here as a renderer would.
+MENU_BOX = 0x017DF200
+MENU_MAGIC = 0x514D4E55
+MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
+              0x0035DFBC: 0x60000000, 0x003A6F2C: 0x4BFC456D}
+MBOX_OFF_HSTATE = 0x0C
+MBOX_OFF_REQUEST = 0x0D
+MBOX_OFF_EV_SEQ = 0x14
+MBOX_OFF_EV_KIND = 0x18
+MBOX_OFF_EV_ACK = 0x20
+MBOX_OFF_PAGE_SEQ = 0x24
+MBOX_OFF_PAGE_KEY = 0x28
+MBOX_OFF_NROWS = 0x2C
+MBOX_OFF_TITLE = 0x30
+MBOX_OFF_ROWS = 0x80
+MBOX_ROW_SIZE = 0x40
+MBOX_EV_ACTIVATE = 1
+MBOX_EV_BACK = 4
 
 PLANET_FLAG_RESET_LEVELFLAGS = 0x01
 PLANET_FLAG_RESET_BOLTS = 0x02
@@ -2255,6 +2278,123 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head
           "%s: and it is out of the categories" % name, names)
 
 
+# ------------------------------------------------- the console menu, 1.22
+
+def menu_page(c):
+    """The page in Deadlocked's mailbox: (page_seq, key, title, [labels], raw)."""
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX, 0x280))
+    if status != ST_OK:
+        return None
+    seq, key = struct.unpack(">II", body[MBOX_OFF_PAGE_SEQ:MBOX_OFF_PAGE_SEQ + 8])
+    n = body[MBOX_OFF_NROWS]
+    title = body[MBOX_OFF_TITLE:MBOX_OFF_TITLE + 32].split(b"\0")[0].decode()
+    labels = []
+    for i in range(min(n, 8)):
+        r = body[MBOX_OFF_ROWS + i * MBOX_ROW_SIZE:MBOX_OFF_ROWS + (i + 1) * MBOX_ROW_SIZE]
+        labels.append(r[4:44].split(b"\0")[0].decode())
+    return seq, key, title, labels, body
+
+
+def menu_event(c, kind, row):
+    """What a renderer does: the record, then ev_seq; then wait for the ack."""
+    page = menu_page(c)
+    body = page[4]
+    at = MBOX_OFF_ROWS + row * MBOX_ROW_SIZE
+    seq = struct.unpack(">I", body[MBOX_OFF_EV_SEQ:MBOX_OFF_EV_SEQ + 4])[0]
+    mem_write(c, MENU_BOX + MBOX_OFF_EV_KIND,
+              bytes([kind, row]) + body[at + 2:at + 4] + struct.pack(">I", page[1]))
+    mem_write(c, MENU_BOX + MBOX_OFF_EV_SEQ, struct.pack(">I", seq + 1))
+    return read_u32_until(c, MENU_BOX + MBOX_OFF_EV_ACK, seq + 1, timeout=2.0) == seq + 1
+
+
+def menu_hooks(c):
+    return dict((a, mem_read_u32(c, a)) for a in MENU_SITES)
+
+
+def bl_target(a, w):
+    d = w & 0x03FFFFFC
+    if d & 0x02000000:
+        d -= 0x04000000
+    return (a + d) & 0xFFFFFFFF
+
+
+def exercise_console_menu(c, sim):
+    """Revision 1.22 over the wire: the install, the mailbox, the combo, menu.enabled."""
+    deadline = time.time() + 8.0
+    while time.time() < deadline and mem_read_u32(c, MENU_BOX) != MENU_MAGIC:
+        time.sleep(0.2)
+    check(mem_read_u32(c, MENU_BOX) == MENU_MAGIC,
+          "Deadlocked menu: a few seconds in, the renderer's mailbox is in the game")
+    hooks = menu_hooks(c)
+    check(all((w >> 26) == 18 and 0x0097D000 <= bl_target(a, w) < 0x0097F000
+              for a, w in hooks.items()),
+          "Deadlocked menu: every hook site branches into the renderer's code",
+          dict((hex(a), hex(w)) for a, w in hooks.items()))
+
+    page = menu_page(c)
+    check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
+          page[3][:2] == ["Cheats", "Player"],
+          "Deadlocked menu: the root page is posted", page[:4] if page else None)
+
+    check(menu_event(c, MBOX_EV_ACTIVATE, 0),
+          "Deadlocked menu: an event written into the mailbox is acked")
+    time.sleep(0.1)
+    page = menu_page(c)
+    check(page is not None and page[2] == "Cheats" and "Ghost Ratchet" in page[3],
+          "Deadlocked menu: and the Cheats page is posted for it", page[:4] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back is acked")
+    time.sleep(0.1)
+    page = menu_page(c)
+    check(page is not None and page[2] == "RaCMAN", "Deadlocked menu: and the root is back",
+          page[2] if page else None)
+
+    # The combo asks the renderer to open, also with every combo switched off.
+    def combo():
+        mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+        sim.send("pad 0x0")
+        time.sleep(0.15)
+        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
+        time.sleep(0.25)
+        sim.send("pad 0x0")
+        time.sleep(0.1)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX + MBOX_OFF_REQUEST, 1))
+        return body[0] if status == ST_OK else None
+
+    check(combo() == 1, "Deadlocked menu: the menu combo asks the renderer to open")
+    status, _ = c.call(OP_COMBO_ENABLE, bytes([0]))
+    check(status == ST_OK and combo() == 1,
+          "Deadlocked menu: and still does with every combo switched off")
+    c.call(OP_COMBO_ENABLE, bytes([1]))
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_OPEN_MENU, 0))
+    check(status == ST_OK and combo() == 0, "Deadlocked menu: combo.menu 0 turns it off")
+    c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_OPEN_MENU, COMBO_MENU_DEFAULT))
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+
+    # menu.enabled = 0, by hand in config.txt: the hooks come out with the game in play.
+    mem_write(c, 0x009C37F4, struct.pack(">I", 0xFFFFFFFE))
+    cfg_path = "/dev_hdd0/qwark/config.txt"
+    cfg = read_console_file(c, cfg_path) or b""
+    cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
+    check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"),
+          "Deadlocked menu: config.txt says menu.enabled = 0")
+    status, _ = c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and menu_hooks(c) != MENU_SITES:
+        time.sleep(0.1)
+    check(status == ST_OK and menu_hooks(c) == MENU_SITES,
+          "Deadlocked menu: CONFIG_RELOAD takes every hook out",
+          dict((hex(a), hex(w)) for a, w in menu_hooks(c).items()))
+    check(combo() == 0, "Deadlocked menu: the combo asks nothing")
+    check(write_console_file(c, cfg_path, cfg), "Deadlocked menu: menu.enabled taken out again")
+    c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and menu_hooks(c) == MENU_SITES:
+        time.sleep(0.1)
+    check(menu_hooks(c) != MENU_SITES and combo() == 1,
+          "Deadlocked menu: and the menu is back, the combo with it")
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+
+
 def exercise_game(c, sim, spec, udp=None):
     name = spec["name"]
 
@@ -3679,6 +3819,14 @@ def smoke_rpcs3_planet_loads(c, pine):
           "rpcs3: every fast-load word kept its instruction",
           [hex(w) for w in words])
 
+    # Revision 1.22: no console menu under RPCS3. Its renderer would have gone
+    # in three seconds into the session; nothing of it is there after four.
+    time.sleep(4.0)
+    check(pine.peek(MENU_BOX, 4) == b"\0\0\0\0" and
+          all(pine.peek(a, 4) in (b"\0\0\0\0", struct.pack(">I", w)) for a, w in MENU_SITES.items()),
+          "rpcs3: no console menu renderer is written into the game",
+          pine.peek(MENU_BOX, 4).hex())
+
     pine.shutdown_game()
     ok, info = wait_state(c, SESSION_XMB)
     check(ok, "rpcs3: Deadlocked stops", info)
@@ -5001,6 +5149,15 @@ def main():
                 combos[body[off]] = struct.unpack(">I", body[off + 4:off + 8])[0]
         check(combos.get(COMBO_SAVE_POSITION) == 0x1005,
               "COMBO_LIST reports it back", combos)
+        # Revision 1.22: six actions, the sixth the console menu's, which has a
+        # mask before anybody sets one.
+        check(status == ST_OK and body[0] == 6 and sorted(combos) == [0, 1, 2, 3, 4, 5],
+              "COMBO_LIST reports six actions", combos)
+        check(combos.get(COMBO_OPEN_MENU) == COMBO_MENU_DEFAULT,
+              "the open-menu combo is L1 + R1 + L2 + R2 + L3 + R3 out of the box",
+              hex(combos.get(COMBO_OPEN_MENU, 0)))
+        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 6, 0x1))
+        check(status == ST_BAD_ARG, "COMBO_SET of a seventh action is BAD_ARG", status)
 
         # Move somewhere recognisable, then press the combo.
         coords2 = struct.pack(">fff", 9.0, 8.0, 7.0) + b"\x00" * 18
@@ -5361,6 +5518,8 @@ def main():
                  "Deadlocked: the loading hook's 0xFF emits RESUME with code 3"):
             check(mem_read_u32(c, 0x1710000) >> 24 == 0,
                   "Deadlocked: and the byte is cleared for the next quit")
+
+        exercise_console_menu(c, sim)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

@@ -63,6 +63,12 @@ int  host_set_pad(u32 mask);
 int  host_poke(u32 addr, const u8 *data, u32 len);
 int  host_peek(u32 addr, u8 *out, u32 len);
 
+/*
+ * One byte of the fake game, to read or write in place (the page is made if it
+ * is not there). For the console menu's renderer under test; backend_fake.c only.
+ */
+u8  *host_mem_ptr(u32 addr);
+
 /* How many reads the core has made of the fake process, for the boot-window test. */
 u32  host_mem_reads(void);
 

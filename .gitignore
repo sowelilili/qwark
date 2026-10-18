@@ -319,6 +319,9 @@ src/games/sfhelper/out/
 # The same for the code switches and src/games/switches_bins.c.
 src/games/switches/out/
 
+# And for the console menu's renderers and src/games/menuhelper_bins.c.
+src/games/menuhelper/out/
+
 # dist/ carries the built module and the RPCS3 helper for the PC client's release
 # workflow, so the blanket ignores above do not apply to those two files.
 !dist/qwark.sprx

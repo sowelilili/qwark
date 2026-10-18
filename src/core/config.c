@@ -49,7 +49,8 @@ static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.load",
 	"combo.die",
 	"combo.planet",
-	"combo.setaside"
+	"combo.setaside",
+	"combo.menu"        /* revision 1.22, COMBO_OPEN_MENU */
 };
 
 /* Revision 1.12. The switch under those five, and in the same scope as them. */
@@ -215,10 +216,16 @@ int config_init(void)
 
 /* ----------------------------------------------------------------- combos */
 
+/*
+ * Revision 1.22: the menu combo is the one with a mask of its own when the file
+ * has never named it, COMBO_MENU_DEFAULT. A 0 written there turns it off like
+ * any other, and stays off.
+ */
 u32 config_combo(u8 action)
 {
 	if (action >= COMBO_COUNT) return 0;
-	return config_get_u32(g_combo_key[action], 0);
+	return config_get_u32(g_combo_key[action],
+	                      action == COMBO_OPEN_MENU ? COMBO_MENU_DEFAULT : 0);
 }
 
 int config_set_combo(u8 action, u32 mask)
@@ -249,6 +256,16 @@ int config_set_combo_enabled(u8 on)
 {
 	if (on > 1) return ST_BAD_ARG;
 	return config_set_u32(g_combo_enabled_key, on);
+}
+
+/*
+ * Revision 1.22. `menu.enabled`, the console menu's own switch: 1 for a file
+ * that has never mentioned it. Nothing on the wire writes it; a user edits it,
+ * and CONFIG_RELOAD or a console reboot picks it up.
+ */
+int config_menu_enabled(void)
+{
+	return config_get_u32("menu.enabled", 1) != 0;
 }
 
 /* -------------------------------------------------------------- selection */

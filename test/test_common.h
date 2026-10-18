@@ -14,4 +14,7 @@ void check_eq_u64(u64 got, u64 want, const char *what);
 /* test_pine.c: the PINE backend against a fake PINE server. */
 void test_pine(void);
 
+/* test_menu.c: the console menu, its model, its mailbox and Deadlocked's renderer. */
+void test_menu(void);
+
 #endif /* QWARK_TEST_COMMON_H */

@@ -31,8 +31,8 @@ PPU_SRCS  = src/plat/ps3/libc.c src/plat/ps3/printf.c src/plat/ps3/plat_ps3.c
 PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
 PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
-PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c
-PPU_SRCS += src/games/sfhelper_bins.c
+PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/menu.c
+PPU_SRCS += src/games/sfhelper_bins.c src/games/menuhelper_bins.c
 PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
 PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
 PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c
@@ -63,7 +63,7 @@ ifeq ($(BUILD_TYPE), debug)
 PPU_CFLAGS += -DDEBUG -DDEBUG_FILE
 endif
 
-all: sfhelper-if-stale switches-if-stale
+all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
 	$(MAKE) $(PPU_OBJS_DEPENDS)
 	$(PPU_PRX_STRIP) --strip-debug --strip-section-header $(PPU_PRX_TARGET)
 	./scetool -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000 -c SPRX --self-ctrl-flags 4000000000000000000000000000000000000000000000000000000000000002 -e $(PPU_PRX_TARGET) $(PPU_SPRX_TARGET)
@@ -82,6 +82,18 @@ sfhelper:
 
 sfhelper-if-stale:
 	@sh src/games/sfhelper/build.sh --if-stale
+
+#
+# The console menu's renderers (revision 1.22) are the same kind of thing again:
+# PowerPC code that runs inside the game, built by src/games/menuhelper/build.sh
+# and committed as src/games/menuhelper_bins.c, which the SPRX and the host
+# builds both compile.
+#
+menuhelper:
+	sh src/games/menuhelper/build.sh
+
+menuhelper-if-stale:
+	@sh src/games/menuhelper/build.sh --if-stale
 
 #
 # The code switches (build 50) are the same kind of thing: PowerPC trampolines
@@ -107,6 +119,6 @@ dist:
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
 	@ls -l dist
 
-.PHONY: all sfhelper sfhelper-if-stale switches switches-if-stale dist
+.PHONY: all sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale dist
 
 include $(CELL_MK_DIR)/sdk.target.mk

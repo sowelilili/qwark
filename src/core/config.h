@@ -37,7 +37,7 @@
 /*
  * What one config.txt holds. It was 128 until build 37.
  *
- * What a title actually writes: the five combo masks, the combo switch, the
+ * What a title actually writes: the six combo masks, the combo switch, the
  * selected slot, the selected planet and its flags, and `log` and
  * `savefile_helper` - eleven keys - plus one key per feature auto flag and one
  * per mod auto flag, and those two are only written when a user ticks the box.
@@ -87,6 +87,12 @@ int  config_set_combo(u8 action, u32 mask);
  */
 int  config_combo_enabled(void);
 int  config_set_combo_enabled(u8 on);
+
+/*
+ * Revision 1.22, the console menu's switch: `menu.enabled`, 1 when the file has
+ * never mentioned it, 0 turns the whole menu off (src/core/menu.h).
+ */
+int  config_menu_enabled(void);
 
 u8   config_selected_slot(void);
 void config_set_selected_slot(u8 slot);

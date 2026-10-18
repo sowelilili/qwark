@@ -9,6 +9,7 @@
 #include "savefile.h"
 #include "switches.h"
 #include "manips.h"
+#include "menu.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -146,6 +147,7 @@ const char *session_title(void) { return g_title; }
 const struct game_api *session_game(void) { return g_game; }
 int  session_running(void)    { return g_running; }
 u8   session_current_planet(void) { return g_hot.current_planet; }
+u32  session_readout(u8 index) { return index < QWARK_MAX_READOUTS ? g_hot.readout[index] : 0; }
 
 const struct previous_record *session_previous(void) { return &g_prev; }
 
@@ -399,6 +401,8 @@ static void enter_quitting(void)
 	 */
 	core_lock();
 	mods_presence_stop();
+	/* Revision 1.22. The menu's renderer went with the process. */
+	menu_forget();
 	core_unlock();
 
 	if (g_state == SESSION_INGAME && g_game != NULL && g_game->on_quit != NULL)
@@ -533,6 +537,12 @@ static void enter_ingame(void)
 	 * be applied again, and the category is the remembered one or None.
 	 */
 	manips_enter(g_game);
+
+	/*
+	 * Revision 1.22. The console menu starts over: the root page, and on a
+	 * console a renderer that goes in a few seconds into the session.
+	 */
+	menu_enter(g_game);
 
 	/* Auto-flagged toggles and mods come back silently. */
 	features_apply_mask(features_auto_mask());
@@ -935,6 +945,7 @@ static void run_combo(u8 action)
 	case COMBO_DIE:           session_die(); break;
 	case COMBO_LOAD_PLANET:   session_planet_load(0xFF, 0xFF); break;
 	case COMBO_LOAD_SETASIDE: session_load_setaside(); break;
+	case COMBO_OPEN_MENU:     menu_combo(); break;
 	default: break;
 	}
 }
@@ -943,6 +954,13 @@ static void run_combo(u8 action)
 static u32 g_combo_mask[COMBO_COUNT];
 static int g_combos_enabled = 1;
 static u32 g_combo_cfg_version = 0xFFFFFFFFu;
+/*
+ * Revision 1.22. The switch as the last tick with buttons down saw it: the
+ * switch coming on under a held pad disarms, so a combo still held then waits
+ * for the pad to empty, as it always has. It used to be the disarming every
+ * tick the switch was off that did it, which would also hold the menu combo off.
+ */
+static int g_combos_enabled_seen = 1;
 
 static void refresh_combos(void)
 {
@@ -987,10 +1005,15 @@ static void step_combos(void)
 
 	refresh_combos();
 
-	if (g_state != SESSION_INGAME) { g_combo_armed = 1; return; }
+	if (g_state != SESSION_INGAME) {
+		g_combo_armed = 1;
+		g_combos_enabled_seen = g_combos_enabled;
+		return;
+	}
 
 	if (g_hot.pad_mask == 0) {
 		g_combo_armed = 1;
+		g_combos_enabled_seen = g_combos_enabled;
 		return;
 	}
 
@@ -1000,23 +1023,35 @@ static void step_combos(void)
 	 * COMBO_SUSPEND that set it and is dropped when the session leaves the game,
 	 * and the user's COMBO_ENABLE switch (revision 1.12), which never expires
 	 * and never changes on its own. Either one is enough; combos fire only when
-	 * neither applies.
+	 * neither applies. Since revision 1.22 the switch spares the menu combo,
+	 * and the hold does not.
 	 *
 	 * The arming rule above is untouched, so a pad still full when a hold ends
 	 * or the switch comes back on stays disarmed: the buttons the user was
 	 * pressing do not fire a combo the instant the combos return, they wait for
 	 * the pad to go empty like any other press.
 	 */
-	if (!g_combos_enabled || combos_suspended()) {
+	if (combos_suspended()) {
 		g_combo_armed = 0;
+		g_combos_enabled_seen = g_combos_enabled;
 		return;
 	}
+
+	/*
+	 * Revision 1.22. With the switch off only the menu combo fires: a console
+	 * with no PC may have no other way into the menu, so the switch that stops
+	 * a run's combos does not stop it. The switch coming back on under a held
+	 * pad disarms, exactly as before.
+	 */
+	if (g_combos_enabled && !g_combos_enabled_seen) g_combo_armed = 0;
+	g_combos_enabled_seen = g_combos_enabled;
 
 	if (!g_combo_armed) return;
 
 	for (a = 0; a < COMBO_COUNT; a++) {
 		u32 mask = g_combo_mask[a];
 		if (mask == 0) continue;
+		if (!g_combos_enabled && a != COMBO_OPEN_MENU) continue;
 		if (g_hot.pad_mask != mask) continue;
 
 		run_combo(a);
@@ -1278,6 +1313,12 @@ static void session_step(void)
 		 * reapply set aside go on through their flag bytes, or are skipped.
 		 */
 		if (switches_tick()) features_apply_waiting();
+		/*
+		 * Revision 1.22. The console menu: its renderer's install, and its
+		 * mailbox, read every fourth tick while the menu is down and every
+		 * tick while it is up.
+		 */
+		menu_tick();
 	} else {
 		watch_invalidate();
 	}

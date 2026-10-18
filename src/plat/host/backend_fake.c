@@ -11,6 +11,7 @@
 #include "../plat.h"
 #include "plat_host.h"
 #include "../../games/game.h"
+#include "../../games/menuhelper_bins.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,6 +145,22 @@ void host_boot_as(const char *title, const char *which)
 		mem_access(game->fp_addr, (void *)game->fp_bytes, game->fp_len, 1);
 	}
 
+	/*
+	 * Revision 1.22. And the game's own words at every place its console menu
+	 * renderer hooks, which a real executable has there: qwark's install looks
+	 * at each before it writes anything, and refuses a word it does not know.
+	 */
+	if (game != NULL) {
+		const struct mh_desc *mh = mh_desc_for_game(game->game_id);
+		u8 w;
+
+		for (w = 0; mh != NULL && w < mh->nhooks; w++) {
+			u8 raw[4];
+			be32_put(raw, mh->hooks[w].original);
+			mem_access(mh->hooks[w].addr, raw, 4, 1);
+		}
+	}
+
 	pthread_mutex_unlock(&g_mem_lock);
 
 	plat_log("host: booted %s as pid %d%s", g_game_title, (int)g_game_pid,
@@ -196,6 +213,21 @@ int host_peek(u32 addr, u8 *out, u32 len)
 	mem_access(addr, out, len, 0);
 	pthread_mutex_unlock(&g_mem_lock);
 	return 0;
+}
+
+/*
+ * Revision 1.22. A pointer to one byte of the fake game, the page made if it is
+ * not there yet, so the console menu's renderer, compiled for the PC
+ * (test/test_menu.c), runs on the bytes qwark reads and writes.
+ */
+u8 *host_mem_ptr(u32 addr)
+{
+	u8 *page;
+
+	pthread_mutex_lock(&g_mem_lock);
+	page = page_for(addr >> HOST_PAGE_SHIFT, 1);
+	pthread_mutex_unlock(&g_mem_lock);
+	return page != NULL ? page + (addr & (HOST_PAGE_SIZE - 1)) : NULL;
 }
 
 void host_set_can_patch_code(int on)

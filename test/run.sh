@@ -12,8 +12,8 @@ ROOT="test/qwark-host-root"
 
 SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/core/mods.c src/core/session.c src/core/net.c src/core/autosplit.c src/core/manips.c \
-     src/core/savefile.c src/core/switches.c \
-     src/games/sfhelper_bins.c src/games/switches_bins.c \
+     src/core/savefile.c src/core/switches.c src/core/menu.c \
+     src/games/sfhelper_bins.c src/games/switches_bins.c src/games/menuhelper_bins.c \
      src/games/classic.c src/games/rac1.c src/games/rac1_panel.c \
      src/games/rac2.c src/games/rac2_panel.c \
      src/games/rac3.c src/games/rac3_panel.c \
@@ -21,7 +21,7 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/games/games.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
-     test/test_game.c test/test_pine.c test/test_qwark.c"
+     test/test_game.c test/test_pine.c test/test_menu.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
 # built without its own set and the PINE tests drive its pine_* half directly.
