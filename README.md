@@ -48,7 +48,7 @@ The game lets go of its trophies first, qwark deletes the folder, and then the g
 
 If a trophy file cannot be deleted, or the game does not get its trophies back, the console shows a notification, and the client says what went wrong under the button.
 
-qwark finds the folder from the game and the signed-in user rather than guessing it, and refuses, deleting nothing, unless the folder's own trophy configuration says it is UYA's. It only ever deletes the files in that one folder, and logs what it did. Under RPCS3 both answer unsupported: the emulator's trophy data is out of qwark's reach. PROTOCOL.md section 5.14 has the details.
+qwark finds the folder from the game and the signed-in user rather than guessing it, and refuses, deleting nothing, unless the folder's own trophy configuration says it is UYA's. It only ever deletes the files in that one folder, and logs what it did. Under RPCS3, and with the savefile helper turned off, neither is offered: the emulator's trophy data is out of qwark's reach. PROTOCOL.md section 5.14 has the details.
 
 ## What it does without a PC
 
