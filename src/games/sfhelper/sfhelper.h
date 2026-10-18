@@ -132,8 +132,7 @@ void sf_scene_clear(sf_u32 queue);
 
 #if SF_GAME == SF_RAC3
 /*
- * Build 53: the sceNpTrophy stubs the reset calls, and the game's info reader
- * (sf_rac3.h). Every address is a 32-bit one in a 64-bit register, as the
+ * Build 53: the sceNpTrophy stubs the reset calls (sf_rac3.h). Every address is a 32-bit one in a 64-bit register, as the
  * game's own calls pass them; `space` is on the caller's stack. Each stub call
  * clobbers r2, and sfhelper.c restores it.
  */
@@ -145,7 +144,6 @@ int  sf_np_trophy_destroy_handle(sf_u32 handle);
 int  sf_np_trophy_disk_space(sf_u32 context, sf_u32 handle, sf_u64 *space, sf_u64 options);
 int  sf_np_trophy_register_context(sf_u32 context, sf_u32 handle, sf_u32 callback,
                                    sf_u32 arg, sf_u64 options);
-void sf_trophy_read_info(sf_u32 obj);
 
 /*
  * Build 53: the game's import stubs for thread creation and exit (sf_rac3.h).

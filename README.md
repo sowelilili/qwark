@@ -41,7 +41,7 @@ UYA runs use trophies: a trophy the console has not seen before pops up, and tha
 
 **A reset deletes your console's UYA trophy data.** qwark deletes the game's trophy folder, `/dev_hdd0/home/<user>/trophy/NPWR02347_00`, which is where the console records the trophies you have won: every UYA trophy you have, the platinum included, is gone from the console afterwards. Copy the folder off first if you want them back later. If you are signed in to PSN, the trophy server may give them back.
 
-The game lets go of its trophies first, qwark deletes the folder, and then the game re-reads its trophies, which takes a few seconds while it keeps running; in the run that follows it awards three trophies again, the RY3NO, the Metropolis blimp and the snowman skin, and no others, as the old mod did.
+The game lets go of its trophies first, qwark deletes the folder, and then the game re-reads its trophies, which takes about a quarter of a minute while it keeps running; the console says "Trophies reset: ready to win" when it is done, and a trophy earned before that is lost. In the run that follows the game awards three trophies again, the RY3NO, the Metropolis blimp and the snowman skin, and no others, as the old mod did.
 
 - **Reset trophies** does it now.
 - **Reset trophies on Veldin load**, off by default, does it once per run, starting inside the load into Veldin that starts every run, before the timer starts.

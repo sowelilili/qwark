@@ -548,9 +548,10 @@ static void sf_trophy_destroy(sf_u32 obj, sf_u32 st)
 /*
  * Build 53. Registration `i`, the calls the game's register thread makes after
  * 0x984FA0 has made the context and the handle (sf_rac3.h has what is left
- * out): how far it got is one of SF_TROPHY_STEP_*, kept with the failing
- * call's answer. +392 is 1 for as long as it runs, as it is while the game's
- * register thread does.
+ * out, the game's info reader among it): how far it got is one of
+ * SF_TROPHY_STEP_*, kept with the failing call's answer, and the game is
+ * registered (+4) the moment RegisterContext answers 0. +392 is 1 for as long
+ * as it runs, as it is while the game's register thread does.
  */
 __attribute__((noinline, section(".text.trophy_thread")))
 static sf_u32 sf_trophy_register(sf_u32 obj, sf_u32 i)
@@ -588,10 +589,9 @@ static sf_u32 sf_trophy_register(sf_u32 obj, sf_u32 i)
 	SF_TOC_BACK();
 	if (rc != 0) goto out;
 
-	SF_BYTE(SF_TROPHY_PHASE) = SF_TROPHY_PHASE_INFO;
-	sf_trophy_read_info(obj);
-	step = SF_BYTE(obj + SF_TROPHY_REGISTERED) != 0 ? SF_TROPHY_STEP_REGISTERED
-	                                               : SF_TROPHY_STEP_INFO_FAILED;
+	/* What the game's info reader would end on, without its half minute. */
+	SF_BYTE(obj + SF_TROPHY_REGISTERED) = 1;
+	step = SF_TROPHY_STEP_REGISTERED;
 out:
 	SF_WORD(SF_TROPHY_STATUS + 4 * i) = (sf_u32)rc;
 	SF_BYTE(SF_TROPHY_STEPS + i) = step;

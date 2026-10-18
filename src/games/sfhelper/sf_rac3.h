@@ -200,13 +200,16 @@
 #define SF_TROPHY_PHASE_CREATE   4
 #define SF_TROPHY_PHASE_SPACE    5
 #define SF_TROPHY_PHASE_REGISTER 6
-#define SF_TROPHY_PHASE_INFO     7
 #define SF_TROPHY_PHASE_DONE     8
 
+/*
+ * Phase 7 and step 4 were the game's own reader of the game and trophy info
+ * (0x9850E0) and its failure, which the reset no longer calls (below); qwark
+ * still names them, for a log from the build before.
+ */
 #define SF_TROPHY_STEP_CONTEXT_FAILED  1
 #define SF_TROPHY_STEP_HANDLE_FAILED   2
 #define SF_TROPHY_STEP_REGISTER_FAILED 3
-#define SF_TROPHY_STEP_INFO_FAILED     4
 #define SF_TROPHY_STEP_REGISTERED      5
 
 /* ------------------------------------------------------- the aside buffer */
@@ -394,8 +397,7 @@
  *     register thread makes, from the same stubs: CreateContext and
  *     CreateHandle into the object, as 0x984FA0 does,
  *     GetRequiredDiskSpace, and RegisterContext with a status callback of the
- *     helper's own, then the game's own 0x9850E0 for the game info and the
- *     trophies. It leaves out the game's boot check (0x97EC94:
+ *     helper's own. It leaves out the game's boot check (0x97EC94:
  *     cellGameBootCheck and cellGameContentPermit, which the game means to call
  *     once, at boot, and the register thread calls on every registration) and
  *     sceNpTrophyInit, which answers "already initialised". Each call's answer
@@ -407,6 +409,32 @@
  *   - Before each registration it waits a second after the destroy, as
  *     rc3-save did (SF_TROPHY_SETTLE_US), and it makes up to three, stopping
  *     at the first that leaves the game registered.
+ *
+ * The console's log of that order, two resets alike: the first registration
+ * after the delete always fails, its RegisterContext answering 0x80022D1E
+ * (not one of the documented SCE_NP_TROPHY_ERROR codes, 0x800229xx) a second
+ * in, and the second, a destroy and a second later, installs the set in about
+ * ten seconds and registers; so rc3-save's second registration was the one
+ * that counted all along, and the retry stays. What took the time after that
+ * was the game's own reader of the game and trophy info (0x9850E0, which the
+ * register thread calls next): about thirty-five seconds, its
+ * GetGameInfo and each of its 33 GetTrophyInfo calls taking a second each on
+ * the freshly installed set, where at boot all 33 take one. For all that time
+ * the game awarded nothing, and a trophy earned a quarter of a minute after
+ * the reset never popped.
+ *
+ * The reset does not call it any more. With the cache fill at 0x985318 a nop
+ * it writes nothing the reset keeps: each trophy's id at +8+8i, which it
+ * writes again with the same number, and the game details at +436, which
+ * hold the same set's numbers since boot. What it does that counts is put +4
+ * up once the game info has been read, and the thread does that itself the
+ * moment RegisterContext has answered 0. Nothing the award needs comes from
+ * it: the award (0x98535C) reads +4, +400 (which only the save code at
+ * 0x9786E8..0x97AC30 writes), the count at +436, the cache flags and its queue
+ * at +404; the unlock thread (0x9858BC) the context and handle at +428 and
+ * +432, which CreateContext and CreateHandle have just written, and the
+ * flags. So the trophies are back as soon as the set is installed, about
+ * thirteen seconds after the request.
  *
  * The order changes in one place against rc3-save: 10, 25 and 32 go back to
  * locked only once the last registration is over, so the game awards nothing
@@ -476,9 +504,7 @@
 
 /*
  * Build 53: the game's import stubs for the sceNpTrophy calls the reset makes
- * (the module's stub table at 0xBD2034, FNIDs at 0xAEFCC4), and the game's own
- * routine that reads the game info and each trophy's into the object after a
- * registration (0x9850E0, which the register thread calls). The stubs take
+ * (the module's stub table at 0xBD2034, FNIDs at 0xAEFCC4). The stubs take
  * the game's r2 as the thread-create stub below does.
  */
 #define SF_FN_NP_TROPHY_REGISTER_CONTEXT 0x00AEE484
@@ -487,7 +513,6 @@
 #define SF_FN_NP_TROPHY_DESTROY_CONTEXT  0x00AEE4E4
 #define SF_FN_NP_TROPHY_DESTROY_HANDLE   0x00AEE544
 #define SF_FN_NP_TROPHY_CREATE_CONTEXT   0x00AEE584
-#define SF_FN_TROPHY_READ_INFO           0x009850E0
 
 /*
  * Build 53: the game's import stubs for sysPrxForUser's sys_ppu_thread_create

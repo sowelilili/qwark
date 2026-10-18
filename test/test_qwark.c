@@ -6473,8 +6473,17 @@ static void test_manip_trophies(void)
 	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x03", 1);
 	pump(10);
 	check(features_trigger(F3_RESET_TROPHIES) == ST_BUSY, "a reset the helper is running is still BUSY");
-	host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
-	pump(1);
+	pump(1189);
+	{
+		u32 notes = host_notify_count();
+
+		host_poke(R3T_TROPHY_BYTE, (const u8 *)"\x00", 1);
+		pump(1);
+		check(host_notify_count() == notes + 1 &&
+		      qstreq(host_notify_last(), "Trophies reset: ready to win (10 s)"),
+		      "the helper's answer that the game is registered is shown with how long the "
+		      "trophies were out, ten seconds after the request here");
+	}
 
 	check(features_trigger(F3_RESET_TROPHIES) == ST_OK,
 	      "once it is done another is accepted, with no folder left to delete");
@@ -15256,7 +15265,7 @@ static void test_command_port(void)
  */
 #define SF53_STAMP_RAC1 0xD28627B7u
 #define SF53_STAMP_RAC2 0xA6C6BFCFu
-#define SF53_STAMP_RAC3 0xEBB23628u   /* with the trophy reset and its thread */
+#define SF53_STAMP_RAC3 0x79AA19AFu   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
 /* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
@@ -15503,7 +15512,7 @@ static void test_savefile_build53(void)
 		      sf53_byte_addr(g_sf_patch, 1) == 0x00D9FF01u &&
 		      sf53_byte_addr(g_sf_patch, 2) == 0x00D9FF02u,
 		      "and the bytes it zeroes are the three request bytes");
-		check_eq_u64(len, 5348, "the reply is 5348 bytes, the trophy reset and its thread included");
+		check_eq_u64(len, 5300, "the reply is 5300 bytes, the trophy reset and its thread included");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
 		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
 		      "which is not build 52's, so a patch from then reads as another build's");

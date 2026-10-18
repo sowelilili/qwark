@@ -797,8 +797,13 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
  *      the set - once, a second after the destroy and the delete - making the
  *      registration's calls itself rather than through the game's register
  *      thread, checks that it took, and makes it again when it did not, up to
- *      three times (sf_rac3.h has the why). Each reset logs every step as it
- *      happens and every call's answer.
+ *      three times; the first after the delete fails on every console log so
+ *      far, and the second installs the set. It leaves out the game's half
+ *      minute of reading back the game and trophy info, which the reset needs
+ *      none of (sf_rac3.h has the why), so the trophies are back about
+ *      thirteen seconds after the request. Each reset logs every step as it
+ *      happens and every call's answer, and the console says when the
+ *      trophies can be won again: until then the game awards nothing.
  *
  * The folder is found, not named. Its name is the communication id the running
  * game registers under, read out of the game (RAC3_TROPHY_COMMID_PTR); its
@@ -1373,7 +1378,7 @@ static const char *tr_phase_name(u8 phase)
 		"making a context and a handle",
 		"in sceNpTrophyGetRequiredDiskSpace",
 		"in sceNpTrophyRegisterContext",
-		"reading the game's and each trophy's info",
+		"reading the game's and each trophy's info (the build before)",
 		"done"
 	};
 
@@ -1419,7 +1424,7 @@ static void tr_log_result(void)
 		"sceNpTrophyCreateContext failed",
 		"sceNpTrophyCreateHandle failed",
 		"sceNpTrophyRegisterContext failed",
-		"registered, but the game's or a trophy's info could not be read and the game dropped the context",
+		"registered, but the game's or a trophy's info could not be read (the build before)",
 		"registered"
 	};
 	u8 diag[RAC3_TROPHY_DIAG_LEN];
@@ -1462,8 +1467,24 @@ static void tr_wait(void)
 	if (byte != g_tr.request) tr_log_progress();
 
 	if (byte == 0) {
+		char msg[64];
+		char num[12];
+		u32 secs = (g_tr.elapsed + 60u) / 120u;
+
 		tr_log_result();
-		plat_log("trophies: reset; the game re-read its trophies, and 10, 25 and 32 can be won again");
+		plat_log("trophies: reset; the game has its trophies back %d ms after the request, and 10, "
+		         "25 and 32 can be won again", (int)(g_tr.elapsed * 25u / 3u));
+
+		/*
+		 * The console says when the trophies can be won again: until then the
+		 * game awards nothing, and a trophy earned in that time is lost.
+		 */
+		qfmt_u32(num, sizeof(num), secs);
+		msg[0] = 0;
+		qstrcat(msg, sizeof(msg), "Trophies reset: ready to win (");
+		qstrcat(msg, sizeof(msg), num);
+		qstrcat(msg, sizeof(msg), " s)");
+		plat_notify(msg);
 		tr_idle();
 		return;
 	}
