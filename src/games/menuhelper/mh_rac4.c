@@ -1,317 +1,506 @@
 /*
- * Deadlocked's console menu renderer: qwark's current page, drawn with the
- * game's own pause-menu list. mh_rac4.h says where it lives and what it hooks;
- * src/core/menubox.h is the mailbox it shares with qwark; src/core/menu.c is
- * the other end.
+ * Deadlocked's console menu shim: qwark's pages on the TV with the game's own
+ * pause-menu widgets. mh_rac4.h says where it lives, what it hooks and what
+ * it calls; mh_shim.h is the interface to the core (mh_core.c), which reads
+ * the mailbox, composes the text and posts the events. This file only talks
+ * to the game:
  *
- * It is a renderer and nothing else. It never decides what a row does: it
- * shows the page qwark posted, moves the cursor the way the game moves it, and
- * posts what the player pressed on which row. qwark answers by posting the next
- * page. The game does the rest - the pause, the drawing, the sounds, gameplay
- * input held off - because screen 36 is one of its own menu screens.
+ *   MAIN    a page of links and buttons, in GuiSupport's button list, the one
+ *           Options uses: MenuButton_s rows whose text is the core's;
+ *   CONFIG  a page of labels and controls, in a CtlList on the Cheats screen's
+ *           templates, run by a GuiState thread of the shim's own the way the
+ *           Cheats screen runs one (MenuCheats_* in the PS2 v6 symbols).
  *
- * Built as the probes were, and N0 before it: ppu-lv2-gcc, a TOC of its own,
- * the game called through its own descriptors (src/games/menuhelper/build.sh).
  * The game reaches it through
- *   mh_inject_stub, mh_screen_stub  GuiHud's Start path (assembler only), the
- *                    one way in: qwark's combo asks, the stubs press Start;
+ *   mh_inject_stub, mh_screen_stub  GuiHud's Start path (assembler), the combo:
+ *                    qwark asks, the stubs press Start and open screen 36;
+ *   mh_help_label    the pause main menu's Help row, whose label it gives;
+ *                    the row's own callback pushes screen 36 instead of Help's
+ *                    (a word of the install, mh_rac4.h);
  *   mh_frame_stub    UpdateMenus' input call, which calls mh_frame;
  *   mh_start, mh_stop  screen 36's fcStart and fcStop, through descriptors;
- *   mh_row, mh_close  the callbacks the rows and the list carry.
- * Nothing of it is in the game's own menus: Options and the rest keep their
- * rows and their buttons as the game has them.
+ *   mh_row, mh_close  the callbacks a MAIN page's rows and list carry;
+ *   mh_cfg_*         the CONFIG page's thread, its row callback and validator.
  *
- * Everything the game keeps a pointer to - the rows, their text, the title -
- * lives in the renderer's state at MH_STATE, which stays put for as long as the
- * game runs, and only this code changes it, on the game's thread, just before it
- * hands the rows over again: GuiSupport's text widgets keep the char * they are
- * given and read it at every draw, and the mailbox is written by qwark from
- * another thread whenever it likes, so the game is never pointed into it. Every access to game memory goes through r8..w32 (mh_common.h), so
- * the host tests run this file on qwark's fake console with the real bytes.
+ * Everything the game keeps a pointer to - the rows, their text, the title, the
+ * thread, the list - is in the renderer's state, which stays put for as long
+ * as the game runs and changes only on the game's thread. Every access to game
+ * memory goes through r8..w32 (mh_common.h), so the host tests run this file
+ * on qwark's fake console with the real bytes.
  */
 #include "mh_common.h"
-#include "mh_rac4.h"
-#include "../../core/menubox.h"
+#include "mh_shim.h"
 
-#define BOX(o)   ((u32)MH_DATA + (u32)(o))
-#define ST(o)    ((u32)MH_STATE + (u32)(o))
-/* A mailbox offset from MBOX_OFF_PAGE_KEY on, in the renderer's copy of the page. */
-#define STAGE(o) (ST(ST_STAGE) + (u32)(o) - MBOX_OFF_PAGE_KEY)
+#define SH(o)    ((u32)MH_SHIM + (u32)(o))
+#define LIST     SH(SH_LIST)
+#define ITEMS    SH(SH_ITEMS)
+#define GS       SH(SH_GS)
+
+/* The shim's state starts where the core's ends. */
+typedef char mh_rac4_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
+                             MH_SHIM + SH_SIZE <= MH_DATA_END) ? 1 : -1];
 
 void mh_row(int arg);
 void mh_close(int arg);
 void mh_start(int p);
 void mh_stop(int p);
 int  mh_frame(int p);
+void mh_cfg_init(u32 gs);
+void mh_cfg_deinit(u32 gs);
+void mh_cfg_update(u32 gs);
+void mh_cfg_item(u32 list, u32 item, int index);
+int  mh_cfg_valid(int index);
 
-/* The descriptors of this renderer's own callbacks, as the game will hold them. */
+/* The descriptors of the shim's own callbacks, as the game will hold them. */
 #ifdef MH_HOST
-#define MH_FN_ROW   1u
-#define MH_FN_CLOSE 2u
+#define MH_FN_ROW        1u
+#define MH_FN_CLOSE      2u
+#define MH_FN_CFG_INIT   3u
+#define MH_FN_CFG_DEINIT 4u
+#define MH_FN_CFG_UPDATE 5u
+#define MH_FN_CFG_ITEM   6u
+#define MH_FN_CFG_VALID  7u
 #else
-#define MH_FN_ROW   ((u32)mh_row)
-#define MH_FN_CLOSE ((u32)mh_close)
+#define MH_FN_ROW        ((u32)mh_row)
+#define MH_FN_CLOSE      ((u32)mh_close)
+#define MH_FN_CFG_INIT   ((u32)mh_cfg_init)
+#define MH_FN_CFG_DEINIT ((u32)mh_cfg_deinit)
+#define MH_FN_CFG_UPDATE ((u32)mh_cfg_update)
+#define MH_FN_CFG_ITEM   ((u32)mh_cfg_item)
+#define MH_FN_CFG_VALID  ((u32)mh_cfg_valid)
 #endif
 
 typedef int  (*fn_i_v)(void);
 typedef int  (*fn_i_i)(int);
 typedef int  (*fn_i_ii)(int, int);
+typedef int  (*fn_i_u)(u32);
+typedef u32  (*fn_u_i)(int);
+typedef u32  (*fn_u_ui)(u32, int);
 typedef void (*fn_v_v)(void);
 typedef void (*fn_v_i)(int);
+typedef void (*fn_v_u)(u32);
 typedef void (*fn_v_ii)(int, int);
 typedef void (*fn_v_iu)(int, u32);
+typedef void (*fn_v_uu)(u32, u32);
+typedef void (*fn_v_ui)(u32, int);
 typedef void (*fn_v_iiu)(int, int, u32);
+typedef void (*fn_v_uii)(u32, int, int);
+typedef void (*fn_v_uui)(u32, u32, int);
+typedef void (*fn_v_ufi)(u32, float, int);
+typedef void (*fn_v_iiuu)(int, int, u32, u32);
+typedef void (*fn_v_iiuui)(int, int, u32, u32, int);
+typedef void (*fn_v_iiui)(int, int, u32, int);
+typedef void (*fn_v_uuiuii)(u32, u32, int, u32, int, int);
 typedef void (*fn_v_iffff)(int, float, float, float, float);
+typedef void (*fn_v_iiffffi)(int, int, float, float, float, float, int);
+typedef void (*fn_v_uffff)(u32, float *, float *, float *, float *);
 
-#define get_canvas     GAME_FN(fn_i_v,     OPD_GET_CANVAS,     mock_get_canvas)
-#define get_cursor     GAME_FN(fn_i_i,     OPD_GET_CURSOR,     mock_get_cursor)
-#define get_screen     GAME_FN(fn_i_i,     OPD_GET_SCREEN,     mock_get_screen)
-#define set_cursor     GAME_FN(fn_v_ii,    OPD_SET_CURSOR,     mock_set_cursor)
-#define set_title      GAME_FN(fn_v_iu,    OPD_SET_TITLE,      mock_set_title)
-#define screen_mode    GAME_FN(fn_i_i,     OPD_SCREEN_MODE,    mock_screen_mode)
-#define set_target     GAME_FN(fn_v_iffff, OPD_SET_TARGET,     mock_set_target)
-#define set_header     GAME_FN(fn_v_ii,    OPD_SET_HEADER,     mock_set_header)
-#define set_buttons    GAME_FN(fn_v_iiu,   OPD_SET_BUTTONS,    mock_set_buttons)
-#define show_menu      GAME_FN(fn_v_iu,    OPD_SHOW_MENU,      mock_show_menu)
-#define select_row     GAME_FN(fn_v_v,     OPD_SELECT,         mock_select_row)
-#define update_widgets GAME_FN(fn_v_i,     OPD_UPDATE_WIDGETS, mock_update_widgets)
-#define takes_input    GAME_FN(fn_i_ii,    OPD_TAKES_INPUT,    mock_takes_input)
-#define play_sound     GAME_FN(fn_v_i,     OPD_PLAY_SOUND,     mock_play_sound)
-#define go_back        GAME_FN(fn_v_i,     OPD_GO_BACK_CB,     mock_go_back)
-#define menu_stop      GAME_FN(fn_v_i,     OPD_MENU_STOP,      mock_menu_stop)
+#define get_canvas     GAME_FN(fn_i_v,      OPD_GET_CANVAS,    mock_get_canvas)
+#define set_canvas     GAME_FN(fn_v_i,      OPD_SET_CANVAS,    mock_set_canvas)
+#define get_cursor     GAME_FN(fn_i_i,      OPD_GET_CURSOR,    mock_get_cursor)
+#define get_screen     GAME_FN(fn_i_i,      OPD_GET_SCREEN,    mock_get_screen)
+#define set_cursor     GAME_FN(fn_v_ii,     OPD_SET_CURSOR,    mock_set_cursor)
+#define set_title      GAME_FN(fn_v_iu,     OPD_SET_TITLE,     mock_set_title)
+#define screen_mode    GAME_FN(fn_i_i,      OPD_SCREEN_MODE,   mock_screen_mode)
+#define set_target     GAME_FN(fn_v_iffff,  OPD_SET_TARGET,    mock_set_target)
+#define set_header     GAME_FN(fn_v_ii,     OPD_SET_HEADER,    mock_set_header)
+#define set_buttons    GAME_FN(fn_v_iiu,    OPD_SET_BUTTONS,   mock_set_buttons)
+#define show_menu      GAME_FN(fn_v_iu,     OPD_SHOW_MENU,     mock_show_menu)
+#define select_row     GAME_FN(fn_v_v,      OPD_SELECT,        mock_select_row)
+#define takes_input    GAME_FN(fn_i_ii,     OPD_TAKES_INPUT,   mock_takes_input)
+#define play_sound     GAME_FN(fn_v_i,      OPD_PLAY_SOUND,    mock_play_sound)
+#define go_back        GAME_FN(fn_v_i,      OPD_GO_BACK_CB,    mock_go_back)
+#define menu_stop      GAME_FN(fn_v_i,      OPD_MENU_STOP,     mock_menu_stop)
+#define go_to_screen   GAME_FN(fn_v_ii,     OPD_GO_TO_SCREEN,  mock_go_to_screen)
+#define start_next     GAME_FN(fn_v_i,      OPD_START_NEXT,    mock_start_next)
+#define get_command    GAME_FN(fn_i_i,      OPD_GET_COMMAND,   mock_get_command)
+#define base_frame     GAME_FN(fn_i_i,      OPD_BASE_FRAME,    mock_base_frame)
+#define reset_state    GAME_FN(fn_v_u,      OPD_RESET_STATE,   mock_reset_state)
+#define exit_state     GAME_FN(fn_v_u,      OPD_EXIT_STATE,    mock_exit_state)
+#define start_thread   GAME_FN(fn_i_u,      OPD_START_THREAD,  mock_start_thread)
+#define panel_create   GAME_FN(fn_v_uii,    OPD_PANEL_CREATE,  mock_panel_create)
+#define panel_frame    GAME_FN(fn_v_ufi,    OPD_PANEL_FRAME,   mock_panel_frame)
+#define canvas_layer   GAME_FN(fn_v_iu,     OPD_CANVAS_LAYER,  mock_canvas_layer)
+#define clear_layer    GAME_FN(fn_v_i,      OPD_CLEAR_LAYER,   mock_clear_layer)
+#define add_frame      GAME_FN(fn_v_uu,     OPD_ADD_FRAME,     mock_add_frame)
+#define set_text       GAME_FN(fn_v_uu,     OPD_SET_TEXT,      mock_set_text)
+#define set_color      GAME_FN(fn_v_uu,     OPD_SET_COLOR,     mock_set_color)
+#define set_texture    GAME_FN(fn_v_ui,     OPD_SET_TEXTURE,   mock_set_texture)
+#define rect_source    GAME_FN(fn_v_uu,     OPD_RECT_SOURCE,   mock_rect_source)
+#define msg_string     GAME_FN(fn_u_i,      OPD_MSG_STRING,    mock_msg_string)
+#define image_get      GAME_FN(fn_u_ui,     OPD_IMAGE_GET,     mock_image_get)
+#define image_drop     GAME_FN(fn_v_u,      OPD_IMAGE_DROP,    mock_image_drop)
+#define list_create    GAME_FN(fn_v_uuiuii, OPD_LIST_CREATE,   mock_list_create)
+#define list_clear     GAME_FN(fn_v_u,      OPD_LIST_CLEAR,    mock_list_clear)
+#define list_focus     GAME_FN(fn_v_ui,     OPD_LIST_FOCUS,    mock_list_focus)
+#define list_next      GAME_FN(fn_v_u,      OPD_LIST_NEXT,     mock_list_next)
+#define list_prev      GAME_FN(fn_v_u,      OPD_LIST_PREV,     mock_list_prev)
+#define list_rect      GAME_FN(fn_v_uffff,  OPD_LIST_RECT,     mock_list_rect)
+#define list_insert    GAME_FN(fn_v_uui,    OPD_LIST_INSERT,   mock_list_insert)
+#define list_update    GAME_FN(fn_i_u,      OPD_LIST_UPDATE,   mock_list_update)
+#define list_validator GAME_FN(fn_v_uu,     OPD_LIST_VALID,    mock_list_validator)
+#define box_target     GAME_FN(fn_v_uui,    OPD_BOX_TARGET,    mock_box_target)
+#define box_shown      GAME_FN(fn_v_ui,     OPD_BOX_SHOWN,     mock_box_shown)
+#define frame_target   GAME_FN(fn_v_iiu,    OPD_FRAME_TARGET,  mock_frame_target)
+#define show_frames    GAME_FN(fn_v_ii,     OPD_SHOW_FRAMES,   mock_show_frames)
+#define attach_cursor  GAME_FN(fn_v_iiuui,  OPD_ATTACH_CURSOR, mock_attach_cursor)
+#define show_cursors   GAME_FN(fn_v_ii,     OPD_SHOW_CURSORS,  mock_show_cursors)
+#define detach_cursor  GAME_FN(fn_v_iiui,   OPD_DETACH_CURSOR, mock_detach_cursor)
+#define cursor_target  GAME_FN(fn_v_iiffffi, OPD_CURSOR_TARGET, mock_cursor_target)
 
-/* ------------------------------------------------------------- small things */
-
-static void inc(u32 off)
+static u32 shown(void)
 {
-	w32(ST(off), r32(ST(off)) + 1);
+	return r8(MH_STATE + ST_SHOWN);
 }
+
+static u32 panel(void)
+{
+	return r32(SH(SH_PANEL));
+}
+
+/* ------------------------------------------------------- the MAIN widget */
 
 /*
- * Game bytes from `src` (at most `len`, up to a NUL) to `dst`, never at or past
- * `end - 1`. Plain ASCII only: the game's font reads 0x10..0x1F as button glyphs
- * and a byte from 0x80 up as the first of a double-byte glyph, so anything
- * outside 0x20..0x7E shows as a question mark instead.
+ * The core's rows as GuiSupport's buttons: MenuButton_s is {u8 enabled; char
+ * *label; cb}, and a row the cursor cannot land on carries no callback.
  */
-static u32 put_mem(u32 dst, u32 end, u32 src, u32 len)
+static void main_buttons(void)
 {
-	u32 i;
+	u32 n = mh_nrows(), i, b, on;
 
-	for (i = 0; i < len && dst < end - 1; i++) {
-		u32 c = r8(src + i);
-		if (c == 0) break;
-		if (c < 0x20 || c > 0x7E) c = '?';
-		w8(dst, c);
-		dst++;
-	}
-	return dst;
-}
-
-/* The same from one of this file's own strings. */
-static u32 put_lit(u32 dst, u32 end, const char *s)
-{
-	while (*s != 0 && dst < end - 1) {
-		w8(dst, (u8)*s);
-		dst++;
-		s++;
-	}
-	return dst;
-}
-
-static u32 nrows(void)
-{
-	return r8(ST(ST_NROWS));
-}
-
-static u32 row_flags(u32 i)
-{
-	return r8(ST(ST_FLAGS) + i);
-}
-
-/* -------------------------------------------------------------- the page */
-
-/*
- * Row i of the copied page as the list shows it: one text, the label and then
- * the value after a colon, the current option of a pick-one list marked with a
- * star. MenuButton_s is {u8 enabled; char *label; cb}; a row the cursor cannot
- * land on carries no callback.
- */
-static void compose(u32 i)
-{
-	u32 src = STAGE(MBOX_OFF_ROWS) + i * MBOX_ROW_SIZE;
-	u32 text = ST(ST_TEXT) + i * MH_TEXT_LEN;
-	u32 end = text + MH_TEXT_LEN;
-	u32 kind = r8(src + MROW_OFF_KIND);
-	u32 flags = r8(src + MROW_OFF_FLAGS);
-	u32 button = ST(ST_BUTTONS) + i * MH_BUTTON_SIZE;
-	u32 p;
-
-	p = put_mem(text, end, src + MROW_OFF_LABEL, MROW_LABEL_LEN);
-	if (kind == MROW_OPTION && (flags & MROWF_ON) != 0) p = put_lit(p, end, " *");
-	if (r8(src + MROW_OFF_VALUE) != 0) {
-		p = put_lit(p, end, ": ");
-		p = put_mem(p, end, src + MROW_OFF_VALUE, MROW_VALUE_LEN);
-	}
-	w8(p, 0);
-
-	w8(ST(ST_KIND) + i, kind);
-	w8(ST(ST_FLAGS) + i, flags);
-	w16(ST(ST_ID) + 2 * i, r16(src + MROW_OFF_ID));
-
-	w32(button, (flags & MROWF_ENABLED) != 0 ? 0x01000000u : 0);
-	w32(button + 4, text);
-	w32(button + 8, (flags & MROWF_ENABLED) != 0 ? MH_FN_ROW : 0);
-}
-
-/*
- * Takes the page qwark last posted, if there is one this renderer has not
- * shown: page_seq is a seqlock, odd while qwark is writing, so the page is
- * copied whole and kept only if page_seq read the same even number before and
- * after. A page caught half written is left for the next frame. Answers 1 when
- * a page was taken.
- */
-static int take_page(void)
-{
-	u32 s1 = r32(BOX(MBOX_OFF_PAGE_SEQ));
-	u32 n, len, i, key;
-
-	if (s1 == 0 || (s1 & 1) != 0) return 0;
-	if (r8(ST(ST_HAVE_PAGE)) != 0 && s1 == r32(ST(ST_SHOWN_SEQ))) return 0;
-
-	mh_sync();
-	n = r8(BOX(MBOX_OFF_NROWS));
-	if (n > MH_ROWS) n = MH_ROWS;
-	len = MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY + n * MBOX_ROW_SIZE;
-	for (i = 0; i < len; i += 4)
-		w32(ST(ST_STAGE) + i, r32(BOX(MBOX_OFF_PAGE_KEY) + i));
-	mh_sync();
-
-	if (r32(BOX(MBOX_OFF_PAGE_SEQ)) != s1) {
-		inc(ST_RETRIES);
-		return 0;
-	}
-
-	/* A page of no rows is none qwark posts; show one blank row rather than divide by 0. */
-	if (n == 0) {
-		n = 1;
-		for (i = 0; i < MBOX_ROW_SIZE; i += 4) w32(STAGE(MBOX_OFF_ROWS) + i, 0);
-	}
-
-	key = r32(STAGE(MBOX_OFF_PAGE_KEY));
-	w8(ST(ST_NEW_KEY), r8(ST(ST_HAVE_PAGE)) == 0 || key != r32(ST(ST_SHOWN_KEY)) ||
-	                   r8(ST(ST_NEW_KEY)) != 0);
-	w32(ST(ST_SHOWN_SEQ), s1);
-	w32(ST(ST_SHOWN_KEY), key);
-	w8(ST(ST_NROWS), n);
-	w8(ST(ST_CURSOR_HINT), r8(STAGE(MBOX_OFF_CURSOR)));
-	w8(ST(ST_PFLAGS), r8(STAGE(MBOX_OFF_PFLAGS)));
-
-	w8(put_mem(ST(ST_TITLE), ST(ST_TITLE) + MBOX_TITLE_LEN, STAGE(MBOX_OFF_TITLE),
-	           MBOX_TITLE_LEN), 0);
-	for (i = 0; i < n; i++) compose(i);
-
-	w8(ST(ST_HAVE_PAGE), 1);
-	inc(ST_PAGES);
-	return 1;
-}
-
-/* Before qwark has posted anything: one grey row, and Triangle leaves. */
-static void placeholder(void)
-{
-	u32 text = ST(ST_TEXT);
-	u32 button = ST(ST_BUTTONS);
-
-	w8(put_lit(ST(ST_TITLE), ST(ST_TITLE) + MBOX_TITLE_LEN, "RaCMAN"), 0);
-	w8(put_lit(text, text + MH_TEXT_LEN, "Waiting for qwark"), 0);
-	w8(ST(ST_KIND), MROW_INFO);
-	w8(ST(ST_FLAGS), 0);
-	w16(ST(ST_ID), 0);
-	w32(button, 0);
-	w32(button + 4, text);
-	w32(button + 8, 0);
-	w8(ST(ST_NROWS), 1);
-	w8(ST(ST_CURSOR_HINT), 0);
-	w8(ST(ST_PFLAGS), MBOX_PAGE_ROOT);
-}
-
-/* `c` moved onto the page, and off a row the cursor cannot land on. */
-static u32 pick_cursor(u32 c)
-{
-	u32 n = nrows();
-	u32 i;
-
-	if (c >= n) c = n - 1;
-	if ((row_flags(c) & MROWF_ENABLED) != 0) return c;
 	for (i = 0; i < n; i++) {
-		if ((row_flags(i) & MROWF_ENABLED) != 0) return i;
+		b = SH(SH_BUTTONS) + i * MH_BUTTON_SIZE;
+		on = (mh_row_flags(i) & MROWF_ENABLED) != 0;
+		w32(b, on ? 0x01000000u : 0);
+		w32(b + 4, mh_text(i));
+		w32(b + 8, on ? MH_FN_ROW : 0);
 	}
-	return c;
-}
-
-/* Where the cursor goes: the page's own row for a page not shown before, else `keep`. */
-static u32 cursor_for(u32 keep)
-{
-	u32 c = r8(ST(ST_NEW_KEY)) != 0 ? r8(ST(ST_CURSOR_HINT)) : keep;
-
-	w8(ST(ST_NEW_KEY), 0);
-	return pick_cursor(c);
 }
 
 /*
- * A new page while the list is up: the rows handed over again and the
- * highlight put back, as N0's toggle did, and the list laid out again when it
- * has a different number of rows.
+ * The list's place and size, MenuMain_vScreens' rectangle for the screen
+ * mode. While the list is shown SetMenuTarget also lays the rows out again and
+ * fits the frame round them (GetMenuRect, SetFrameTarget), the way the game
+ * sizes the frame of each list it opens, so a page with fewer rows has a
+ * smaller frame.
  */
-static void redraw(int p, u32 old_n)
+static void main_target(int p)
 {
-	u32 n = nrows();
+	int mode = screen_mode(p);
+	u32 r;
 
-	set_cursor(p, (int)cursor_for((u32)get_cursor(p)));
-	set_title(p, ST(ST_TITLE));
-	set_buttons(p, (int)n, ST(ST_BUTTONS));
-	if (n != old_n) update_widgets(p);
+	if (mode < 0 || mode > 4) mode = 0;
+	r = DL_MENU_VSCREENS + 16u * (u32)mode;
+	set_target(p, rf32(r), rf32(r + 4), rf32(r + 8), rf32(r + 12));
+}
+
+/* Screen 36 as MenuMain_StartOptions starts Options, with the core's page. */
+static void main_start(int p)
+{
+	set_cursor(p, (int)mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
+	set_title(p, mh_title());
+	main_target(p);
+	/* The game's own expression: the header unless this is multiplayer. */
+	set_header(p, r32(DL_GAME_TYPE) != 1);
+	main_buttons();
+	set_buttons(p, (int)mh_nrows(), SH(SH_BUTTONS));
+	show_menu(p, MH_FN_CLOSE);
+	play_sound(SND_SCREEN);
+}
+
+/* ----------------------------------------------------- the CONFIG widget */
+
+/*
+ * The rows into the list: Clear, then Insert each one, as UpdateStatsList and
+ * the Cheats screen fill theirs, and its two texts into the row's panel, which
+ * Insert makes on a row's first use. The scroll offset survives the Clear.
+ */
+static void cfg_fill(u32 cursor)
+{
+	u32 n = mh_nrows(), i, row;
+
+	list_clear(LIST);
+	for (i = 0; i < n; i++) {
+		list_insert(LIST, i, -1);
+		row = r32(ITEMS + i * DL_ITEM_SIZE + DL_ITEM_PANEL);
+		set_text(row + DL_ROW_LABEL, mh_label(i));
+		set_text(row + DL_ROW_VALUE, mh_value(i));
+	}
+	list_focus(LIST, (int)cursor);
+	w8(SH(SH_CFG_CURSOR), 1);
+}
+
+/* An image of the game's plates, `from`, onto element `el` of the screen. */
+static void plate(u32 n, u32 from, u32 el)
+{
+	u32 img = image_get(from, -1);
+
+	w32(SH(SH_IMAGES) + 4 * n, img);
+	set_texture(panel() + el, 1);
+	rect_source(panel() + el, img);
+}
+
+/* The thread, as MenuCheats_Start starts the Cheats screen's: GuiState.cpp's Init comes next frame. */
+static void cfg_start(int p)
+{
+	int c;
+
+	w32(GS, 0);
+	w32(GS + 4, MH_FN_CFG_INIT);
+	w32(GS + 8, MH_FN_CFG_DEINIT);
+	w32(GS + 12, MH_FN_CFG_UPDATE);
+	w32(GS + 16, 0);
+	w32(GS + 20, 0);
+	c = get_canvas();
+	set_canvas(p);
+	reset_state(GS);
+	start_thread(GS);
+	set_canvas(c);
+	play_sound(SND_SCREEN);
+}
+
+/* The Cheats screen's CreateWidgets and Init, with the core's page. */
+void mh_cfg_init(u32 gs)
+{
+	int p = get_canvas();
+	u32 l = SH(SH_LEGEND), e = l + 40, s;
+
+	(void)gs;
+	panel_create(SH(SH_PANEL), DL_TPL_SCREEN, -1);
+	canvas_layer(DL_LAYER, panel());
+	panel_frame(SH(SH_PANEL), (float)base_frame(p), -1);
+
+	/* "\x10 SELECT \x12 BACK", glyphs and all, as the Cheats screen writes it. */
+	s = msg_string(DL_MSG_SELECT);
+	while (r8(s) != 0 && l < e - 2) { w8(l, r8(s)); l++; s++; }
+	w8(l++, ' ');
+	s = msg_string(DL_MSG_BACK);
+	while (r8(s) != 0 && l < e - 1) { w8(l, r8(s)); l++; s++; }
+	w8(l, 0);
+
+	w8(SH(SH_EMPTY), 0);
+	set_text(panel() + DL_EL_LEGEND, SH(SH_LEGEND));
+	set_text(panel() + DL_EL_HEAD_L, SH(SH_EMPTY));
+	set_text(panel() + DL_EL_HEAD_R, SH(SH_EMPTY));
+	set_text(panel() + DL_EL_TITLE, mh_title());
+	w8(mh_desc(), 0);
+	set_text(panel() + DL_EL_DESC, mh_desc());
+
+	/* CtlList::CtlList writes the vtable and nothing else (mh_rac4.h). */
+	w32(LIST, DL_CTLLIST_VTABLE);
+	list_create(LIST, ITEMS, MH_CFG_ROWS, MH_FN_CFG_ITEM, DL_TPL_ROW, 1);
+	add_frame(panel(), r32(LIST + DL_LIST_HANDLE));
+	box_target(LIST, panel() + DL_EL_LIST, 1);
+	box_shown(LIST, 1);
+	list_validator(LIST, MH_FN_CFG_VALID);
+	cfg_fill(mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
+
+	frame_target(p, 0, panel() + DL_EL_CURSOR);
+	show_frames(p, 1);
+	attach_cursor(p, 0, panel(), panel() + DL_EL_CURSOR, 0);
+	show_cursors(p, 1);
+
+	plate(0, DL_PLATE_TOP, DL_EL_PLATE_TOP);
+	plate(1, DL_PLATE_BOTTOM, DL_EL_PLATE_BOTTOM);
+	plate(2, DL_PLATE_FOOT, DL_EL_PLATE_FOOT);
+
+	w8(SH(SH_CFG_STATE), 1);
+}
+
+/* The input, as MenuCheats_HandleInput reads it: one command a frame. */
+static void cfg_input(int p)
+{
+	int cmd = get_command(6);
+	u32 c = shim_cursor(p);
+
+	switch (cmd) {
+	case DL_CMD_CROSS:    mh_core_press(p, MH_BTN_CROSS, c); return;
+	case DL_CMD_LEFT:     mh_core_press(p, MH_BTN_LEFT, c); return;
+	case DL_CMD_RIGHT:    mh_core_press(p, MH_BTN_RIGHT, c); return;
+	case DL_CMD_L1:       mh_core_press(p, MH_BTN_L1, c); return;
+	case DL_CMD_R1:       mh_core_press(p, MH_BTN_R1, c); return;
+	case DL_CMD_TRIANGLE: mh_core_press(p, MH_BTN_BACK, c); return;
+	case DL_CMD_CLOSE:    mh_core_press(p, MH_BTN_CLOSE, c); return;
+	case DL_CMD_UP:
+	case DL_CMD_DOWN:
+		if (mh_nrows() < 2) return;
+		if (cmd == DL_CMD_UP) list_prev(LIST);
+		else list_next(LIST);
+		play_sound(SND_MOVE);
+		w8(SH(SH_CFG_CURSOR), 1);
+		return;
+	default:
+		return;
+	}
+}
+
+/* Every frame of the thread: the Cheats screen's Update. */
+void mh_cfg_update(u32 gs)
+{
+	int p = get_canvas();
+	u32 st = r8(SH(SH_CFG_STATE));
+	float x, y, w, h;
+
+	if (st == 2) {
+		exit_state(gs);
+	} else if (st == 1) {
+		w8(SH(SH_CFG_STATE), 0);
+	} else if (mh_core_frame(p) != MH_GONE) {
+		cfg_input(p);
+	}
+
+	list_update(LIST);
+	if (r8(SH(SH_CFG_CURSOR)) != 0) {
+		list_rect(LIST, &x, &y, &w, &h);
+		cursor_target(p, 0, x, y, w, h, 0);
+		w8(SH(SH_CFG_CURSOR), 0);
+	}
+}
+
+/* The thread's end: the Cheats screen's Deinit, then the next screen. */
+void mh_cfg_deinit(u32 gs)
+{
+	int p = get_canvas();
+	u32 i, img;
+
+	(void)gs;
+	detach_cursor(p, 0, panel(), 0);
+	clear_layer(DL_LAYER);
+	for (i = 0; i < 3; i++) {
+		img = r32(SH(SH_IMAGES) + 4 * i);
+		if (img != 0) image_drop(img);
+		w32(SH(SH_IMAGES) + 4 * i, 0);
+	}
+	start_next(p);
+}
+
+/* A visible row that changed: MenuCheats_UpdateCheatCB's colours, by the core's flags. */
+void mh_cfg_item(u32 list, u32 item, int index)
+{
+	u32 row = r32(item + DL_ITEM_PANEL), f = mh_row_flags(index), c;
+
+	if (index == (int)r32(list + DL_LIST_FOCUS)) c = DL_RGBA_FOCUS;
+	else if ((f & MROWF_ENABLED) == 0) c = DL_RGBA_LOCKED;
+	else if ((f & MROWF_ON) != 0) c = DL_RGBA_ACTIVE;
+	else c = DL_RGBA_OFF;
+	set_color(row + DL_ROW_LABEL, c);
+	set_color(row + DL_ROW_VALUE, c);
+}
+
+/* The rows the cursor may land on. */
+int mh_cfg_valid(int index)
+{
+	return index >= 0 && (u32)index < mh_nrows() && (mh_row_flags(index) & MROWF_ENABLED) != 0;
+}
+
+/* ------------------------------------------------------- the shim, for the core */
+
+MH_API void shim_show(int p, u32 how)
+{
+	if (shown() == MBOX_PTYPE_CONFIG) {
+		cfg_fill(mh_core_cursor(shim_cursor(p)));
+		set_text(panel() + DL_EL_TITLE, mh_title());
+		return;
+	}
+	/*
+	 * A new page while the list is up: the rows handed over again and the
+	 * highlight put back, as N0's toggle did; with another number of rows the
+	 * list is laid out again and its frame fitted round them.
+	 */
+	set_cursor(p, (int)mh_core_cursor((u32)get_cursor(p)));
+	set_title(p, mh_title());
+	main_buttons();
+	set_buttons(p, (int)mh_nrows(), SH(SH_BUTTONS));
+	if ((how & MH_SHOW_ROWS) != 0) main_target(p);
 	select_row();
 }
 
-/* ------------------------------------------------------------ the events */
-
 /*
- * One event in flight at a time: the record, then ev_seq. A press while qwark
- * has not answered the last one is dropped, which is what keeps a slow answer
- * from turning into a queue of stale presses. Answers 1 when it went out.
+ * The other widget: GoToScreen(36) again stops this one (mh_stop) and the game
+ * starts the screen anew (mh_start), at once for the list and once the thread
+ * has ended for the CONFIG page. GoToScreen pushes nothing, so back goes where
+ * it went before.
  */
-static int post(u32 kind, u32 row)
+MH_API void shim_switch(int p)
 {
-	u32 seq = r32(BOX(MBOX_OFF_EV_SEQ));
-
-	if (r8(ST(ST_HAVE_PAGE)) == 0) return 0;
-	if (seq != r32(BOX(MBOX_OFF_EV_ACK))) {
-		inc(ST_DROPPED);
-		return 0;
-	}
-
-	w8(BOX(MBOX_OFF_EV_KIND), kind);
-	w8(BOX(MBOX_OFF_EV_ROW), row);
-	w16(BOX(MBOX_OFF_EV_ID), row < nrows() ? r16(ST(ST_ID) + 2 * row) : 0);
-	w32(BOX(MBOX_OFF_EV_KEY), r32(ST(ST_SHOWN_KEY)));
-	mh_sync();
-	w32(BOX(MBOX_OFF_EV_SEQ), seq + 1);
-
-	w32(ST(ST_BUSY_SINCE), r32(BOX(MBOX_OFF_FRAMES)));
-	inc(ST_EVENTS);
-	return 1;
+	go_to_screen(p, MH_SCREEN_ID);
 }
 
-/* Whether the page has a row of `kind`. */
-static int has_kind(u32 kind)
+/* Back from the root, or Start: Options' own callback (mh_rac4.h, OPD_GO_BACK_CB). */
+MH_API void shim_close(int p, u32 how)
 {
-	u32 n = nrows();
-	u32 i;
+	(void)p;
+	go_back(how == MH_CLOSE_BACK ? 0 : 1);
+}
 
-	for (i = 0; i < n; i++) {
-		if (r8(ST(ST_KIND) + i) == kind) return 1;
+MH_API void shim_title(int p)
+{
+	if (shown() == MBOX_PTYPE_CONFIG) set_text(panel() + DL_EL_TITLE, mh_title());
+	else set_title(p, mh_title());
+}
+
+MH_API void shim_desc(int p)
+{
+	(void)p;
+	if (shown() == MBOX_PTYPE_CONFIG) set_text(panel() + DL_EL_DESC, mh_desc());
+}
+
+MH_API u32 shim_cursor(int p)
+{
+	int c;
+
+	if (shown() == MBOX_PTYPE_CONFIG) c = (int)r32(LIST + DL_LIST_FOCUS);
+	else c = get_cursor(p);
+	return c < 0 ? 0 : (u32)c;
+}
+
+MH_API void shim_sound(u32 snd)
+{
+	static const u8 sounds[] = { SND_MOVE, SND_FORWARD, SND_BACK, SND_CHANGE };
+
+	/* On the Cheats screen's page the cross changes a row too, with the same sound. */
+	if (snd == MH_SND_FORWARD && shown() == MBOX_PTYPE_CONFIG) snd = MH_SND_STEP;
+	if (snd < sizeof(sounds)) play_sound(sounds[snd]);
+}
+
+/* ------------------------------------------------------------ the entries */
+
+/* Screen 36's fcStart: the page qwark posted, with the widget it asks for. */
+void mh_start(int p)
+{
+	if (mh_core_start(p) == MBOX_PTYPE_CONFIG) cfg_start(p);
+	else main_start(p);
+}
+
+/* Screen 36's fcStop: the list's own stop, or the thread told to end, as Cheats' Stop does. */
+void mh_stop(int p)
+{
+	u32 was = shown();
+
+	mh_core_stop(p);
+	if (was == MBOX_PTYPE_CONFIG) {
+		w8(SH(SH_CFG_STATE), 2);
+		play_sound(SND_SCREEN_CLOSE);
+	} else {
+		menu_stop(p);
 	}
-	return 0;
+}
+
+/* A MAIN row: the cross on whatever the cursor is on. */
+void mh_row(int arg)
+{
+	int p = get_canvas();
+
+	(void)arg;
+	mh_core_press(p, MH_BTN_CROSS, (u32)get_cursor(p));
+}
+
+/* The list's close callback: 1 for Start or Select, 0 for Triangle. */
+void mh_close(int arg)
+{
+	int p = get_canvas();
+
+	mh_core_press(p, arg != 0 ? MH_BTN_CLOSE : MH_BTN_BACK, (u32)get_cursor(p));
 }
 
 /*
@@ -324,7 +513,7 @@ static int has_kind(u32 kind)
  */
 static int steps(int p)
 {
-	u32 pad, bits, kind, c;
+	u32 pad, bits, button;
 
 	if (p != 0) return 0;
 	pad = r32(DL_PAD0_PTR);
@@ -335,147 +524,30 @@ static int steps(int p)
 	             PADB_UP | PADB_DOWN)) != 0)
 		return 0;
 
-	if ((bits & PADB_LEFT) != 0)       kind = MBOX_EV_LEFT;
-	else if ((bits & PADB_RIGHT) != 0) kind = MBOX_EV_RIGHT;
-	else if ((bits & PADB_L1) != 0)    kind = MBOX_EV_PAGE_PREV;
+	if ((bits & PADB_LEFT) != 0)       button = MH_BTN_LEFT;
+	else if ((bits & PADB_RIGHT) != 0) button = MH_BTN_RIGHT;
+	else if ((bits & PADB_L1) != 0)    button = MH_BTN_L1;
 	else if ((bits & PADB_L2) != 0)    return 0;
-	else if ((bits & PADB_R1) != 0)    kind = MBOX_EV_PAGE_NEXT;
+	else if ((bits & PADB_R1) != 0)    button = MH_BTN_R1;
 	else return 0;
 
 	if (!takes_input(p, 6)) return 0;
 	w32(pad + DL_PAD_HUDBITS, 0);
-
-	c = (u32)get_cursor(p);
-	if (kind == MBOX_EV_LEFT || kind == MBOX_EV_RIGHT) {
-		if (c >= nrows() || (row_flags(c) & MROWF_STEPS) == 0) return 1;
-	} else if (!has_kind(kind == MBOX_EV_PAGE_PREV ? MROW_PREV : MROW_MORE)) {
-		return 1;
-	}
-
-	if (post(kind, c)) play_sound(SND_MOVE);
+	mh_core_press(p, button, (u32)get_cursor(p));
 	return 1;
-}
-
-/* ---------------------------------------------------------- the entries */
-
-/*
- * Screen 36's fcStart: MenuMain_StartOptions' shape, with qwark's page. A
- * request still in the mailbox is spent: the menu is up.
- */
-void mh_start(int p)
-{
-	int mode;
-	u32 r;
-
-	if (r32(ST(ST_MAGIC)) != MH_MAGIC) w32(ST(ST_MAGIC), MH_MAGIC);
-	inc(ST_STARTS);
-	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_OPEN);
-	w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
-	w8(ST(ST_WAITING), 0);
-
-	if (!take_page() && r8(ST(ST_HAVE_PAGE)) == 0) placeholder();
-
-	set_cursor(p, (int)cursor_for(r8(ST(ST_LAST_CURSOR))));
-	set_title(p, ST(ST_TITLE));
-
-	mode = screen_mode(p);
-	if (mode < 0 || mode > 4) mode = 0;
-	r = DL_MENU_VSCREENS + 16u * (u32)mode;
-	set_target(p, rf32(r), rf32(r + 4), rf32(r + 8), rf32(r + 12));
-
-	/* The game's own expression: the header unless this is multiplayer. */
-	set_header(p, r32(DL_GAME_TYPE) != 1);
-	set_buttons(p, (int)nrows(), ST(ST_BUTTONS));
-	show_menu(p, MH_FN_CLOSE);
-	play_sound(SND_SCREEN);
-}
-
-/* Screen 36's fcStop: the game's MenuMain_Stop, once the mailbox says closed. */
-void mh_stop(int p)
-{
-	w8(ST(ST_LAST_CURSOR), get_cursor(p));
-	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_CLOSED);
-	w8(ST(ST_WAITING), 0);
-	menu_stop(p);
-}
-
-/* A row: the cross on whatever the cursor is on. */
-void mh_row(int arg)
-{
-	int p = get_canvas();
-	u32 c = (u32)get_cursor(p);
-
-	(void)arg;
-	if (c >= nrows() || (row_flags(c) & MROWF_ENABLED) == 0) return;
-	if (post(MBOX_EV_ACTIVATE, c)) play_sound(SND_FORWARD);
-}
-
-/*
- * The list's close callback: 1 for Start or Select, which closes the menu, 0
- * for Triangle, which goes back. At the root, and before any page, back is the
- * game's own, which with nothing under screen 36 closes the menu and unpauses
- * (OPD_GO_BACK_CB in mh_rac4.h); anywhere else qwark goes back a page. Start
- * always works, whatever qwark is doing.
- */
-void mh_close(int arg)
-{
-	int p = get_canvas();
-
-	if (arg != 0 || r8(ST(ST_HAVE_PAGE)) == 0 ||
-	    (r8(ST(ST_PFLAGS)) & MBOX_PAGE_ROOT) != 0) {
-		go_back(arg);
-		return;
-	}
-	if (post(MBOX_EV_BACK, (u32)get_cursor(p))) play_sound(SND_BACK);
 }
 
 /*
  * From mh_frame_stub, every frame any list menu is fully shown, in place of
  * GuiSupport_HandleMenuInput. Another screen's list answers 0 at once and the
- * stub goes on to the game's input. For screen 36: count the frame, take a
- * request, take a new page, say so in the title when qwark is not answering,
- * and take Left, Right, L1 and R1. Answers 1 when the game's input is to be
- * skipped this frame.
+ * stub goes on to the game's input. For screen 36's MAIN page the core takes
+ * its frame, and the shim Left, Right, L1 and R1. Answers 1 when the game's
+ * input is to be skipped this frame.
  */
 int mh_frame(int p)
 {
-	u32 req, old_n, frames, ev, ack;
-
 	if (get_screen(p) != MH_SCREEN_ID) return 0;
-	if (r32(ST(ST_MAGIC)) != MH_MAGIC) return 0;
-
-	frames = r32(BOX(MBOX_OFF_FRAMES)) + 1;
-	w32(BOX(MBOX_OFF_FRAMES), frames);
-	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_OPEN);
-
-	req = r8(BOX(MBOX_OFF_REQUEST));
-	if (req != MBOX_REQ_NONE) {
-		w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
-		if (req == MBOX_REQ_CLOSE) {
-			go_back(1);
-			return 1;
-		}
-	}
-
-	old_n = nrows();
-	if (take_page()) {
-		w8(ST(ST_WAITING), 0);
-		redraw(p, old_n);
-	} else {
-		ev = r32(BOX(MBOX_OFF_EV_SEQ));
-		ack = r32(BOX(MBOX_OFF_EV_ACK));
-		if (r8(ST(ST_WAITING)) != 0) {
-			if (ev == ack) {
-				w8(ST(ST_WAITING), 0);
-				set_title(p, ST(ST_TITLE));
-			}
-		} else if (ev != ack && frames - r32(ST(ST_BUSY_SINCE)) >= MH_WAIT_FRAMES) {
-			w8(put_lit(ST(ST_WAIT_TITLE), ST(ST_WAIT_TITLE) + MBOX_TITLE_LEN,
-			           "Waiting for qwark..."), 0);
-			w8(ST(ST_WAITING), 1);
-			set_title(p, ST(ST_WAIT_TITLE));
-		}
-	}
-
+	if (r32(MH_STATE + ST_MAGIC) != MH_MAGIC || shown() != MBOX_PTYPE_MAIN) return 0;
+	if (mh_core_frame(p) == MH_GONE) return 1;
 	return steps(p);
 }

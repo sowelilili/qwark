@@ -399,6 +399,11 @@ int manips_apply(void)
 	return attempt(g, DO_SETUP | DO_RUN);
 }
 
+u8 manips_options_now(void)
+{
+	return (u8)(opt_auto_reset() | (opt_remember() << 1));
+}
+
 /* ------------------------------------------------------------- the tests */
 
 u8  manips_selected(void)    { return g_selected; }

@@ -1,14 +1,18 @@
 /*
- * The start of the renderer data image, at MH_DATA: the mailbox as an install
- * leaves it (menubox.h: the header filled in, no event, no page yet) and the
- * renderer state, all zero but its magic. qwark writes this before anything
- * else, and posts the first page into it before a hook goes in.
+ * The renderer's data images: the mailbox at MH_BOX as an install leaves it
+ * (menubox.h: the header filled in, no event, no page yet), and at MH_STATE
+ * the core's state and the shim's, all zero but the core's magic. qwark writes
+ * both before anything else, and posts the first page before a hook goes in.
+ *
+ * Each is a few bytes and then zeros, in sections of their own (.mh_box and
+ * .mh_box_zero, .mh_state and .mh_state_zero), so the module carries the bytes
+ * and only the length of the zeros (build.sh, struct mh_cave's `zeros`).
  */
 
 #include "mh_rac4.h"
-#include "../../core/menubox.h"
+#include "mh_shim.h"
 
-	.section ".mh_state","aw"
+	.section ".mh_box","aw"
 	.align	3
 	.globl	mh_box
 mh_box:
@@ -16,16 +20,26 @@ mh_box:
 	.short	MBOX_VERSION                /* 0x04 version */
 	.short	MH_MBOX_SIZE                /* 0x06 size */
 	.byte	MH_ROWS                     /* 0x08 row_cap */
-	.byte	MBOX_ROW_SIZE               /* 0x09 row_size */
-	.byte	MH_ROWS                     /* 0x0A max_rows */
+	.byte	MH_ROW_BYTES                /* 0x09 row_size */
+	.byte	MH_MAIN_ROWS                /* 0x0A max_rows */
 	.byte	MH_CAPS                     /* 0x0B caps */
 	.byte	MBOX_HSTATE_CLOSED          /* 0x0C hstate */
 	.byte	MBOX_REQ_NONE               /* 0x0D request */
 	.byte	MH_GAME_ID                  /* 0x0E renderer */
-	.byte	0                           /* 0x0F */
-	.space	MH_STATE_OFF - 0x10         /* frames .. the rows, and padding to the state */
+	.byte	MH_CFG_ROWS                 /* 0x0F cfg_rows */
 
+	.section ".mh_box_zero","aw"
+	.space	MH_MBOX_SIZE - 0x10         /* frames .. the rows */
+
+	.section ".mh_state","aw"
+	.align	3
 	.globl	mh_state
 mh_state:
 	.long	MH_MAGIC                    /* ST_MAGIC */
-	.space	ST_SIZE - 4
+	.long	0                           /* ST_STARTS: the zeros start 8-aligned */
+
+	.section ".mh_state_zero","aw"
+	.space	MH_CORE_SIZE - 8
+	.globl	mh_shim
+mh_shim:
+	.space	SH_SIZE

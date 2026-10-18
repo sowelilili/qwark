@@ -342,4 +342,13 @@ int savefile_category(u8 op, const char *name);
 /* Whether a name off the wire is one qwark will put in a path. */
 int savefile_name_ok(const char *name);
 
+/*
+ * Revision 1.22, round 2: the console menu's view of the library, tick thread.
+ * With `category` NULL the categories, otherwise the saves in that category,
+ * in the order the directory lists them, neither summed nor sized: how many
+ * there are, and the `index`-th name in `out` (empty past the end). A save's
+ * name keeps its ".sav", as SAVEFILE_RESTORE wants it.
+ */
+u8 savefile_menu_entry(const char *category, u8 index, char *out, u32 cap);
+
 #endif /* QWARK_SAVEFILE_H */

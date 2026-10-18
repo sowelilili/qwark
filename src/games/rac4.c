@@ -1044,6 +1044,68 @@ static const struct game_manips rac4_manips = {
 	rac4_in_file
 };
 
+/* ----------------------------------------------------------- console menu */
+
+/*
+ * Revision 1.22, round 2: the console menu's pages for Deadlocked
+ * (src/core/menu.c), after rewrite/console-ui-framework.md. Game is the quick
+ * block and the values of the client's Game panel; Cheats the four cheats
+ * every game has and the Game panel's other actions. Skin is a cosmetic, which
+ * the menu leaves out, and the crash patches and the softlock fix are the
+ * "Fixes" header the Manips page lists, as the client's Manips panel does.
+ */
+static const u8 rac4_menu_game[] = {
+	R4_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	R4_SET_ASIDE, R4_LOAD_ASIDE,
+	R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE
+};
+
+static const u8 rac4_menu_cheats[] = {
+	R4_FAST_LOADS, R4_GHOST, R4_REFILL_AMMO, R4_FREEZE_HEALTH,
+	R4_UNLOCK_PLANETS
+};
+
+static const struct menu_section rac4_menu_sections[] = {
+	{ "Game",   rac4_menu_game,   (u8)sizeof(rac4_menu_game) },
+	{ "Cheats", rac4_menu_cheats, (u8)sizeof(rac4_menu_cheats) }
+};
+
+/* The client's Unlocks panel draws these two above its table. */
+static const u8 rac4_menu_unlock_actions[] = { R4_MAX_LEVELS, R4_MAX_AMMO };
+
+/* A weapon is locked, or owned at the game's V1, V10 or V99 (unlock field 1). */
+static const char * const rac4_unlock_names[] = { "LOCKED", "V1", "V10", "V99" };
+static const u32 rac4_unlock_values[] = { 0, 1, 10, RAC4_MAX_LEVEL };
+
+/*
+ * Deadlocked crashes loading a planet the save has not unlocked, so the menu
+ * lists only the unlocked ones. The test is the Worlds screen's own
+ * (MenuPlanet_UpdatePlanets, PS2 v6 0x4BF1D8): bit 1 of the status byte at the
+ * end of the planet's MF_LevelSave, entry `planet - 1` of RAC4_LEVEL_SAVES.
+ */
+#define RAC4_LEVEL_STATUS   0x300u
+#define RAC4_LEVEL_UNLOCKED 0x02u
+
+static int rac4_planet_ok(u8 planet)
+{
+	u8 status = 0;
+
+	if (planet == 0 || planet > RAC4_PLANET_SAVES || rac4_planets[planet][0] == '(') return 0;
+	if (mem_read_u8(RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE + RAC4_LEVEL_STATUS,
+	                &status) != ST_OK)
+		return 0;
+	return (status & RAC4_LEVEL_UNLOCKED) != 0;
+}
+
+static const struct game_menu rac4_menu = {
+	rac4_menu_sections, (u8)(sizeof(rac4_menu_sections) / sizeof(rac4_menu_sections[0])),
+	rac4_menu_unlock_actions, (u8)sizeof(rac4_menu_unlock_actions),
+	rac4_unlock_names, rac4_unlock_values,
+	(u8)(sizeof(rac4_unlock_names) / sizeof(rac4_unlock_names[0])),
+	1, "V",
+	rac4_planet_ok
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac4_game = {
@@ -1101,5 +1163,6 @@ const struct game_api rac4_game = {
 	rac4_autosplit_describe,
 
 	&rac4_manips,         /* revision 1.21 */
-	rac4_planet_order     /* build 53 */
+	rac4_planet_order,    /* build 53 */
+	&rac4_menu            /* revision 1.22, round 2 */
 };

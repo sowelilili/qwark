@@ -7,7 +7,14 @@ SDK. From the qwark checkout:
 
     python -I src/games/menuhelper/check.py [--eboots DIR] [--mods LABEL=DIR ...]
 
-For Deadlocked's renderer it checks:
+A renderer is the shared core (mh_core.c) and a game's shim; the core is
+checked once, as part of every renderer, and the shim against its game.
+
+For the core, in every renderer:
+  0. it names no game address: no indirect call at all, and no constant it
+     builds outside the renderer's own mailbox and data areas.
+
+For Deadlocked's renderer:
   1. every word the install replaces holds, in the shipped executable, the
      original the table carries (the install refuses anything else);
   2. each hook word is a bl from its site to the stub its comment names, and
@@ -18,17 +25,22 @@ For Deadlocked's renderer it checks:
      tail branch into the game's own HandleMenuInput, no sc, no vector
      instruction, no write to r13, and every indirect call switches r2 through
      one of the game's descriptors the header names and back;
-  4a. the game's own menus are left as they are: no hook word or cave in
-     MenuMain_StartOptions, where round 1 added its RaCMAN row, and no
-     address in MenuMain_PlayerData, where Options keeps its rows, built
-     anywhere in the code;
+  4a. the game's own menus are left as they are but for the Help row: no hook
+     word or cave in MenuMain_StartOptions, where round 1 added its RaCMAN row,
+     no address in MenuMain_PlayerData built anywhere in the code, and the two
+     Help words are the main menu's Help row's label call and its callback's
+     screen, a callback nothing else names (so multiplayer, whose main menu
+     has no Help, keeps every word);
+  4b. what the shim takes from the game is what the Cheats screen uses: its
+     templates, its plates, CtlList's vtable;
   5. each of those descriptors is {the code the header names, TOC 0x9BCD58};
-  6. the code area is in the text segment's last page past its end, the data
-     area in the read-write segment's last page past its end, both inside the
-     areas the header gives, and nothing in the executable names either;
-  7. the data image starts with the mailbox as menubox.h lays it out and the
-     renderer state with its magic;
-  8. the two leaf stubs, stepped instruction by instruction on a model of the
+  6. the code area is in the text segment's last page past its end, the
+     mailbox and data areas in the read-write segment's last page past its
+     end, all inside the areas the header gives, and nothing in the executable
+     names any of them;
+  7. the mailbox image is the header menubox.h lays out, and the data image
+     starts with the core's state and its magic;
+  8. the leaf stubs, stepped instruction by instruction on a model of the
      game's memory, do what the C in test/test_menu.c assumes of them;
   9. none of the caves or hook words overlaps a word or a cave of any mod in
      the libraries (the client's shipped mods, the old racman library, the
@@ -46,6 +58,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QWARK = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))   # the qwark checkout
 GEN_C = os.path.join(QWARK, "src", "games", "menuhelper_bins.c")
 MENUBOX = os.path.join(QWARK, "src", "core", "menubox.h")
+SHIM_H = os.path.join(HERE, "mh_shim.h")
 
 DL_TOC = 0x009BCD58
 
@@ -82,6 +95,7 @@ STUB_FIRST = {
     "mh_frame_stub": (0xFFFFFFFF, 0xF821FF81, "stdu r1,-0x80(r1)"),
     "mh_inject_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
     "mh_screen_stub": (0xFFFFFFFF, 0x38800001, "li r4,1"),
+    "mh_help_label": (0xFFFF0000, 0x3C600000, "lis r3,..."),
 }
 
 # The game's own menus, which the renderer must leave as the game has them
@@ -120,8 +134,12 @@ def parse_bins(path, g):
             return None
         return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
 
-    data = array("mh_%s_data" % g)
+    box = array("mh_%s_box" % g)
+    state = array("mh_%s_state" % g)
+    rest = array("mh_%s_data" % g)
     code = array("mh_%s_code" % g)
+    m = re.search(r"/\* %s: the code, .*?the core \((0x[0-9A-Fa-f]+)\.\.(0x[0-9A-Fa-f]+)\)" % g, text)
+    core = (int(m.group(1), 16), int(m.group(2), 16)) if m else None
     m = re.search(r"static const struct mh_word mh_%s_hooks\[\] = \{(.*?)\};" % g, text, re.S)
     hooks = []
     if m:
@@ -132,9 +150,16 @@ def parse_bins(path, g):
     m = re.search(r"static const struct mh_cave mh_%s_caves\[\] = \{(.*?)\};" % g, text, re.S)
     caves = []
     if m:
-        for c in re.finditer(r"\{ (0x[0-9A-Fa-f]+)u, (\w+), \(u32\)sizeof\(\w+\), (\d) \}", m.group(1)):
-            caves.append((int(c.group(1), 16), c.group(2), int(c.group(3))))
-    return data, code, hooks, caves
+        for c in re.finditer(r"\{ (0x[0-9A-Fa-f]+)u, (\w+), \(u32\)sizeof\(\w+\), (\d), (\d+)u \}", m.group(1)):
+            caves.append((int(c.group(1), 16), c.group(2), int(c.group(3)), int(c.group(4))))
+    # The images as the game holds them: each cave's bytes, then its zeros.
+    zeros = dict((name, z) for _, name, _, z in caves)
+    data = None
+    if box is not None:
+        box = box + bytes(zeros.get("mh_%s_box" % g, 0))
+    if state is not None and rest is not None:
+        data = state + bytes(zeros.get("mh_%s_state" % g, 0)) + rest
+    return box, data, code, hooks, caves, core
 
 
 class Elf:
@@ -320,7 +345,15 @@ def lint_code(code, base, allowed=()):
     return bad
 
 
-def calls_via_descriptors(code, base, known):
+def calls_via_descriptors(code, base, known, elf):
+    """
+    Every bctrl switches r2 through a descriptor (lwz r2,4(rB) after std r2,40(r1))
+    and takes it back after (ld r2,40(r1)). The compiler hoists a descriptor's
+    address out of a loop and merges two calls into one bctrl, so which
+    descriptor a bctrl uses is not read off the words before it; instead every
+    address the code builds that is one of the game's descriptors ({code, the
+    game's TOC}) must be one the header names, and those are what it can call.
+    """
     words = [struct.unpack(">I", code[i:i + 4])[0] for i in range(0, len(code) - 3, 4)]
     bad, seen = [], set()
     for i, w in enumerate(words):
@@ -333,20 +366,30 @@ def calls_via_descriptors(code, base, known):
         after = words[i + 1] if i + 1 < len(words) else 0
         if not lwz_toc or not std_toc or after != 0xE8410028:   # ld r2,40(r1)
             bad.append("0x%08X: bctrl without the r2 switch and restore" % a)
+    # Every lis rB,hi then ori/addi rB,rB,lo: the addresses the code builds.
+    lis = {}
+    for i, w in enumerate(words):
+        op, rd, ra = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+        if op == 15 and ra == 0:
+            lis[rd] = w & 0xFFFF
             continue
-        base_reg = (lwz_toc[-1] >> 16) & 31
-        hi = lo = None
-        for x in window:
-            op = x >> 26
-            if op == 15 and ((x >> 21) & 31) == base_reg and ((x >> 16) & 31) == 0:
-                hi, lo = x & 0xFFFF, None
-            elif op == 24 and ((x >> 16) & 31) == base_reg and ((x >> 21) & 31) == base_reg and hi is not None:
-                lo = x & 0xFFFF
-        if hi is not None and lo is not None:
-            d = (hi << 16) | lo
-            seen.add(d)
-            if d not in known:
-                bad.append("0x%08X: calls through 0x%08X, not a descriptor the header names" % (a, d))
+        if op == 24 and rd in lis and ra == rd:               # ori rB,rB,lo
+            v = (lis.pop(rd) << 16) | (w & 0xFFFF)
+        elif op == 14 and ra in lis and rd == ra:             # addi rB,rB,lo
+            imm = w & 0xFFFF
+            v = ((lis.pop(ra) << 16) + (imm - 0x10000 if imm & 0x8000 else imm)) & 0xFFFFFFFF
+        else:
+            if op in (14, 15, 24, 31) and rd in lis:
+                lis.pop(rd)
+            continue
+        c = elf.word(v)
+        if c is None or elf.word(v + 4) != DL_TOC or not 0x10000 <= c < 0x980000:
+            continue
+        if v in known:
+            seen.add(v)
+        else:
+            bad.append("0x%08X: builds the game's descriptor 0x%08X, which the header does not name" %
+                       (base + 4 * i, v))
     return bad, seen
 
 
@@ -405,12 +448,17 @@ class Ppc:
         raise ValueError("the stub did not return")
 
 
-def check_stubs(ok, code, cave, hdr, box_defs, stub_at):
-    mbox = hdr["MH_DATA"]
-    force = mbox + hdr["MH_STATE_OFF"] + hdr["ST_FORCE36"]
-    injects = mbox + hdr["MH_STATE_OFF"] + hdr["ST_INJECTS"]
-    opens = mbox + hdr["MH_STATE_OFF"] + hdr["ST_COMBO_OPENS"]
-    request = mbox + box_defs["MBOX_OFF_REQUEST"]
+def parse_rest(path, g):
+    text = open(path, encoding="utf-8").read()
+    m = re.search(r"static const u8 mh_%s_data\[\] = \{(.*?)\};" % g, text, re.S)
+    return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+
+
+def check_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
+    force = hdr["MH_SHIM"] + hdr["SH_FORCE36"]
+    injects = hdr["MH_STATE"] + shim_defs["ST_OPEN_REQS"]
+    opens = hdr["MH_STATE"] + shim_defs["ST_OPENS"]
+    request = hdr["MH_BOX"] + box_defs["MBOX_OFF_REQUEST"]
     gtype = hdr["DL_GAME_TYPE"]
     hero, pad = 0x010D4430, 0x00B11E80
     hud = pad + hdr["DL_PAD_HUDBITS"]
@@ -455,27 +503,69 @@ def check_stubs(ok, code, cave, hdr, box_defs, stub_at):
            "screen stub, FORCE36 %d: r4 = %d, r3 kept, the flag down%s" %
            (f, want, ", counted" if f else ""))
 
+    cpu = Ppc(code, cave, {})
+    cpu.r = [0x1000 + i for i in range(32)]
+    keep = list(cpu.r)
+    cpu.run(stub_at["mh_help_label"])
+    lab = cpu.r[3]
+    text = b""
+    if hdr["MH_DATA"] <= lab < hdr["MH_DATA"] + len(data):
+        text = data[lab - hdr["MH_DATA"]:].split(b"\0")[0]
+    ok(text == b"RACMAN" and all(cpu.r[i] == keep[i] for i in range(32) if i != 3),
+       "help label stub: r3 = 0x%08X, \"%s\" in the data image, every other register kept" %
+       (lab, text.decode("ascii", "replace")))
+
 
 # --------------------------------------------------------------- the checks
 
 def check_rac4(ok, elf, roots):
     hdr = header_defs(os.path.join(HERE, "mh_rac4.h"))
     box_defs = header_defs(MENUBOX)
-    data, code, hooks, caves = parse_bins(GEN_C, "rac4")
+    shim_defs = header_defs(SHIM_H)
+    box, data, code, hooks, caves, core = parse_bins(GEN_C, "rac4")
     print("\nNPEA00423 console menu renderer")
-    if data is None or code is None:
-        ok(False, "menuhelper_bins.c has rac4's data and code")
+    if box is None or data is None or code is None or core is None:
+        ok(False, "menuhelper_bins.c has rac4's mailbox, data, code and the core's place in it")
         return
 
     cave, cave_end = hdr["MH_CAVE"], hdr["MH_CAVE_END"]
+    mbx, mbx_end = hdr["MH_BOX"], hdr["MH_BOX_END"]
     dat, dat_end = hdr["MH_DATA"], hdr["MH_DATA_END"]
     tv, tfs, tms, _, _ = elf.text
     rv, rfs, rms, _, _ = elf.rw
 
-    ok(caves == [(dat, "mh_rac4_data", 0), (cave, "mh_rac4_code", 1)],
-       "two caves, the data image at 0x%08X then the code at 0x%08X" % (dat, cave))
-    ok(cave + len(code) <= cave_end and dat + len(data) <= dat_end,
-       "code %d bytes (of %d), data %d bytes (of %d)" % (len(code), cave_end - cave, len(data), dat_end - dat))
+    ok(len(caves) == 4 and [c[:3] for c in caves] ==
+       [(mbx, "mh_rac4_box", 0), (dat, "mh_rac4_state", 0), (caves[2][0], "mh_rac4_data", 0),
+        (cave, "mh_rac4_code", 1)] and caves[2][3] == 0 and caves[3][3] == 0,
+       "four caves: the mailbox at 0x%08X, the state at 0x%08X, the read-only data, then the code at 0x%08X" %
+       (mbx, dat, cave))
+    rest = parse_rest(GEN_C, "rac4")
+    ok(caves[0][3] > 0 and caves[1][3] > 0 and caves[2][0] == dat + len(data) - len(rest),
+       "the mailbox and the state are a few bytes and then zeros, %d and %d of them, which the module "
+       "carries as counts; the read-only data follows the state" % (caves[0][3], caves[1][3]))
+    ok(cave + len(code) <= cave_end and mbx + len(box) <= mbx_end and dat + len(data) <= dat_end,
+       "code %d bytes (of %d), mailbox %d bytes (of %d), data %d bytes (of %d)" %
+       (len(code), cave_end - cave, len(box), mbx_end - mbx, len(data), dat_end - dat))
+
+    # 0. the core
+    cs, ce = core
+    ok(cave <= cs <= ce <= cave + len(code), "the core is 0x%08X..0x%08X, %d bytes of the code" % (cs, ce, ce - cs))
+    body = code[cs - cave:ce - cave]
+    words = [struct.unpack(">I", body[i:i + 4])[0] for i in range(0, len(body) - 3, 4)]
+    ok(0x4E800421 not in words,
+       "the core calls no function through a pointer: it reaches the game only through the shim")
+    # The core does arithmetic on its own areas' addresses: an array indexed at
+    # run time comes out as `addis rD,rIndex,hi` and a load with the rest, and
+    # `end - 1` as the page's start less one, so a value in or just under the
+    # areas' page is the core's own. Its magic ('QM..') is a number, not an
+    # address. Anything else inside the game's segments would be a game address.
+    page_lo, page_hi = (mbx & 0xFFFF0000) - 0x10000, (dat_end + 0xFFFF) & 0xFFFF0000
+    named = [x for x in code_pointers(body, cs, 0x00010000, 0xFFFFFFFF)
+             if not page_lo <= int(x.split(": ")[1], 16) <= page_hi and
+             (int(x.split(": ")[1], 16) >> 16) != (hdr["MH_MAGIC"] >> 16)]
+    ok(not named, "and builds no address but its own areas'")
+    for x in named[:12]:
+        print("        " + x)
 
     # 6. the areas
     ok(cave >= tv + tms and cave_end <= page_end(tv + tms),
@@ -489,26 +579,30 @@ def check_rac4(ok, elf, roots):
     # word of data in the text segment that happens to decode as a branch into
     # one is not code. What would matter is a pointer to one, as a word or as a
     # lis/addi pair, and there is none.
-    for lo, hi, what in ((cave, cave_end, "code"), (dat, dat_end, "data")):
+    ok(mbx >= rv + rms and mbx_end <= page_end(rv + rms),
+       "mailbox area 0x%08X..0x%08X is past the read-write segment's end, in its last page" % (mbx, mbx_end))
+    for lo, hi, what in ((cave, cave_end, "code"), (mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
         br, wd, pr = refs_into(elf, lo, hi)
         ok(not wd and not pr, "no word and no lis/addi pair in the executable names the %s area%s" %
            (what, "" if not br else " (%d data words decode as branches into it)" % len(br)))
 
-    # 7. the data image
-    magic, version, size = struct.unpack(">IHH", data[0:8])
-    ok(magic == box_defs["MBOX_MAGIC"] and version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
-       "the data image starts with the mailbox: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(data[8] == hdr["MH_ROWS"] and data[9] == box_defs["MBOX_ROW_SIZE"] and data[10] == hdr["MH_ROWS"] and
-       data[11] == hdr["MH_CAPS"] and data[12] == 0 and data[13] == 0 and data[14] == hdr["MH_GAME_ID"],
-       "row_cap 8, row_size 0x40, max_rows 8, caps 0x%02X, closed, no request, renderer 4" % data[11])
-    ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * box_defs["MBOX_ROW_SIZE"] == hdr["MH_MBOX_SIZE"] and
-       hdr["MH_MBOX_SIZE"] <= hdr["MH_STATE_OFF"], "the mailbox's eight rows end before the renderer state")
-    ok(struct.unpack(">I", data[hdr["MH_STATE_OFF"]:hdr["MH_STATE_OFF"] + 4])[0] == hdr["MH_MAGIC"] and
-       all(b == 0 for b in data[16:hdr["MH_STATE_OFF"]]),
-       "the state at MH_STATE with its magic 'QMH4', everything else zero")
-    ok(hdr["MH_STATE_OFF"] + hdr["ST_SIZE"] <= len(data) and
-       hdr["ST_STAGE"] + hdr["MH_MBOX_SIZE"] - box_defs["MBOX_OFF_PAGE_KEY"] == hdr["ST_SIZE"],
-       "the state, %d bytes, is all in the image and holds a whole page" % hdr["ST_SIZE"])
+    # 7. the mailbox and the data image
+    magic, version, size = struct.unpack(">IHH", box[0:8])
+    ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
+       version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
+       "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
+    ok(box[8] == hdr["MH_ROWS"] and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE_DESC"] and
+       box[10] == hdr["MH_MAIN_ROWS"] and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
+       box[14] == hdr["MH_GAME_ID"] and box[15] == hdr["MH_CFG_ROWS"],
+       "row_cap %d, rows of 0x%02X with descriptions, %d rows a MAIN page, %d a CONFIG page, caps 0x%02X, "
+       "closed, no request, renderer 4" % (box[8], box[9], box[10], box[15], box[11]))
+    ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
+       all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+    shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
+    ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]),
+       "the data image: the core's state at MH_STATE with its magic 'QMH4', the shim's at MH_SHIM "
+       "(+0x%X), everything else zero" % shim_off)
+    ok(shim_off + hdr["SH_SIZE"] <= len(data), "the shim's state, %d bytes, is all in the image" % hdr["SH_SIZE"])
 
     # 1. the originals, and 2. the hook words
     sites = {
@@ -517,10 +611,11 @@ def check_rac4(ok, elf, roots):
         hdr["MH_SITE_INJECT"]: ("mh_inject_stub", hdr["MH_ORIG_INJECT"]),
     }
     slot = hdr["MH_SCREEN_SLOT"]
-    ok(len(hooks) == 7 and [h[0] for h in hooks] ==
+    sites[hdr["MH_SITE_HELP_LABEL"]] = ("mh_help_label", hdr["MH_ORIG_HELP_LABEL"])
+    ok(len(hooks) == 9 and [h[0] for h in hooks] ==
        [slot, slot + 4, slot + 8, slot + 12, hdr["MH_SITE_FRAME"], hdr["MH_SITE_SCREEN"],
-        hdr["MH_SITE_INJECT"]],
-       "seven words: screen 36's slot, then the frame, screen and inject hooks")
+        hdr["MH_SITE_INJECT"], hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]],
+       "nine words: screen 36's slot, then the frame, screen and inject hooks, then the Help row's two")
     for a, value, orig, what in hooks:
         ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
 
@@ -539,6 +634,29 @@ def check_rac4(ok, elf, roots):
        branch_target(hdr["MH_SITE_SCREEN"] + 20, elf.word(hdr["MH_SITE_SCREEN"] + 20)) == 0x0035FF48,
        "the screen site feeds GuiMenu_GoToScreen (0x361F1C), then GuiMain_PushState(0, 2) (0x35FF48)")
 
+    # 4a. the Help row: the label call and the callback's screen, nothing else
+    hl, hs = hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]
+    ok(branch_target(hl, elf.word(hl)) == 0x00198A5C and (elf.word(hl - 4) >> 26) == 31 and
+       (elf.word(hl - 8) >> 26) == 40,
+       "0x%08X is MenuMain_StartMain's call to msg_string for a row's label (lhz, extsh, bl)" % hl)
+    near = [elf.word(hl + 4 * i) for i in range(1, 12)]
+    ok(any((w >> 16) == 0x3CA0 and (w & 0xFFFF) == hdr["DL_HELP_CB_OPD"] >> 16 for w in near) and
+       any((w >> 16) == 0x30A5 and (w & 0xFFFF) == hdr["DL_HELP_CB_OPD"] & 0xFFFF for w in near),
+       "the row it labels is the one whose callback is MenuMain_MainCMDHelpCB's descriptor 0x%08X" %
+       hdr["DL_HELP_CB_OPD"])
+    ok(elf.word(hdr["DL_HELP_CB_OPD"]) == hdr["DL_HELP_CB"] and elf.word(hdr["DL_HELP_CB_OPD"] + 4) == DL_TOC and
+       hdr["DL_HELP_CB"] < hs < hdr["DL_HELP_CB"] + 0x80 and
+       branch_target(hs + 16, elf.word(hs + 16)) == 0x00362308,
+       "0x%08X is the Help callback's li r4,30 before GuiMenu_PushScreen (0x362308)" % hs)
+    br, wd, pr = refs_into(elf, hdr["DL_HELP_CB_OPD"], hdr["DL_HELP_CB_OPD"] + 8)
+    ok(not wd and len(pr) == 1 and hl < pr[0][0] < hl + 0x40,
+       "nothing but that row names the Help callback: the multiplayer main menu has no Help, "
+       "and keeps every word")
+    ok(not [a for a, _ in refs_into(elf, hdr["DL_HELP_CB"], hdr["DL_HELP_CB"] + 4)[0]],
+       "and no code branches into the callback")
+    ok(hooks[8][1] == hdr["MH_HELP_SCREEN_WORD"] == 0x38800000 | hdr["MH_SCREEN_ID"],
+       "the callback's word becomes li r4,%d" % hdr["MH_SCREEN_ID"])
+
     # 4a. the game's own menus
     lo, hi = DL_START_OPTIONS
     inside = [h for h in hooks if lo <= h[0] < hi] + \
@@ -554,6 +672,19 @@ def check_rac4(ok, elf, roots):
        "where Options keeps its rows" % (lo, hi))
     for x in named[:12]:
         print("        " + x)
+
+    # 4b. the CONFIG page's game knowledge, against the Cheats screen's own code
+    cw = [elf.word(0x00395C38 + 4 * i) for i in range(0, 0x700 // 4)]
+    ok(0x38800000 | hdr["DL_TPL_SCREEN"] in cw and 0x38E00000 | hdr["DL_TPL_ROW"] in cw,
+       "MenuCheats_CreateWidgets (0x395C38) makes its screen from template %d and its rows from %d" %
+       (hdr["DL_TPL_SCREEN"], hdr["DL_TPL_ROW"]))
+    plates = [v for a, v in refs_into(elf, 0x00ACA360, 0x00ACA3A0)[2] if 0x00396F04 <= a < 0x0039710C]
+    ok(set(plates) >= {hdr["DL_PLATE_TOP"], hdr["DL_PLATE_BOTTOM"], hdr["DL_PLATE_FOOT"]},
+       "its thread's Init (0x396F04) loads the three plates the shim loads")
+    vt = [v for a, v in refs_into(elf, hdr["DL_CTLLIST_VTABLE"], hdr["DL_CTLLIST_VTABLE"] + 4)[2]
+          if 0x00633618 <= a < 0x00633650]
+    ok(vt == [hdr["DL_CTLLIST_VTABLE"]] and elf.word(0x0063363C) == 0x907F0000,
+       "CtlList::CtlList (0x633618) writes the vtable 0x%08X at +0, as the shim does" % hdr["DL_CTLLIST_VTABLE"])
 
     stub_at = {}
     for a, value, orig, what in hooks:
@@ -573,7 +704,7 @@ def check_rac4(ok, elf, roots):
     ok(words[slot] == 0 and words[slot + 4] == 0, "screen 36 has no init and no reset")
     for off, what in ((8, "start"), (12, "stop")):
         desc = words[slot + off]
-        if dat <= desc < dat + len(data) - 8:
+        if dat <= desc <= dat + len(data) - 8:
             c, t = struct.unpack(">II", data[desc - dat:desc - dat + 8])
             ok(cave <= c < cave + len(code) and dat + 0x8000 <= t <= dat + len(data) + 0x8000,
                "its %s 0x%08X is a descriptor {0x%08X in the code, TOC 0x%08X}" % (what, desc, c, t))
@@ -593,11 +724,12 @@ def check_rac4(ok, elf, roots):
        "exactly one way out, a plain branch (no link): the frame stub's tail call to HandleMenuInput")
 
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
-    bad, seen = calls_via_descriptors(code, cave, set(opds))
+    bad, seen = calls_via_descriptors(code, cave, set(opds), elf)
     ok(not bad, "every indirect call switches r2 through one of the header's descriptors and back")
     for b in bad[:12]:
         print("        " + b)
-    ok(seen == set(opds), "and every descriptor the header names is called (%d of %d)" % (len(seen), len(opds)))
+    ok(seen == set(opds), "and every descriptor the header names is one the code calls (%d of %d)" %
+       (len(seen), len(opds)))
     for name in sorted(opds.values()):
         a = hdr[name]
         m = re.search(r"(0x[0-9A-Fa-f]+)\s*$", hdr.get(name + "#comment", ""))
@@ -606,14 +738,15 @@ def check_rac4(ok, elf, roots):
            "%s 0x%08X = {0x%08X, TOC 0x%08X}" % (name, a, fn or 0, DL_TOC))
 
     # 8. the leaf stubs, stepped
-    if "mh_inject_stub" in stub_at and "mh_screen_stub" in stub_at:
+    if "mh_inject_stub" in stub_at and "mh_screen_stub" in stub_at and "mh_help_label" in stub_at:
         try:
-            check_stubs(ok, code, cave, hdr, box_defs, stub_at)
+            check_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data)
         except ValueError as e:
             ok(False, "the leaf stubs step: %s" % e)
 
     # 9. overlaps
-    ours = [(cave, cave + len(code), "renderer code"), (dat, dat + len(data), "renderer data")]
+    ours = [(cave, cave + len(code), "renderer code"), (mbx, mbx + len(box), "renderer mailbox"),
+            (dat, dat + len(data), "renderer data")]
     ours += [(a, a + 4, "renderer word") for a, _, _, _ in hooks]
     known = mod_entries(roots, "NPEA00423")
     clashes, accepted = [], []
@@ -633,6 +766,7 @@ def check_rac4(ok, elf, roots):
     # there (the display mods at 0x17DD000..0x17DD600, Stereo Music at
     # 0x17DF000..0x17DF0A8): every address a mod's code builds in either area.
     named = [x for x in mod_pointers(roots, "NPEA00423", cave, cave_end) +
+             mod_pointers(roots, "NPEA00423", mbx, mbx_end) +
              mod_pointers(roots, "NPEA00423", dat, dat_end)
              if not any(x.startswith("%s/%s " % (l, a)) for l, _ in roots for a in ACCEPTED)]
     ok(not named, "no mod's code names an address in either area")

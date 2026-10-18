@@ -1476,6 +1476,29 @@ int savefile_list(const char *category, u8 *out, u32 cap, u32 *len)
 	return ST_OK;
 }
 
+u8 savefile_menu_entry(const char *category, u8 index, char *out, u32 cap)
+{
+	char path[SAVEFILE_PATH_MAX];
+	plat_dir_t dir;
+	struct plat_dirent ent;
+	u8 n = 0;
+
+	out[0] = 0;
+	if (category != NULL && !savefile_name_ok(category)) return 0;
+	save_path(path, sizeof(path), category, NULL);
+	if (plat_dir_open(path, &dir) != 0) return 0;
+
+	while (n < 0xFF && plat_dir_next(&dir, &ent) == 1) {
+		if (!savefile_name_ok(ent.name)) continue;
+		if (category == NULL ? !ent.is_dir : (ent.is_dir || !has_sav_ext(ent.name))) continue;
+		if (n == index) qstrcpy(out, cap, ent.name);
+		n++;
+	}
+
+	plat_dir_close(&dir);
+	return n;
+}
+
 int savefile_category(u8 op, const char *name)
 {
 	char path[SAVEFILE_PATH_MAX];

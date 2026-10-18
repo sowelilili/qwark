@@ -1,17 +1,18 @@
 /*
- * Deadlocked menu renderer: the three hook stubs (mh_rac4.h says where each
+ * Deadlocked menu renderer: the four hook stubs (mh_rac4.h says where each
  * hook goes). Preprocessed, so the offsets come from the same headers the C
  * uses, and commented C-style for the same reason. Screen 36 start and stop
- * and the row callbacks need no stub: the game calls them through descriptors
- * that carry this module TOC.
+ * and the callbacks need no stub: the game calls them through descriptors
+ * that carry this module's TOC.
  */
 
 #include "mh_rac4.h"
-#include "../../core/menubox.h"
+#include "mh_shim.h"
 
-#define FORCE36  (MH_STATE_OFF + ST_FORCE36)
-#define INJECTS  (MH_STATE_OFF + ST_INJECTS)
-#define OPENS36  (MH_STATE_OFF + ST_COMBO_OPENS)
+#define FORCE36   (MH_SHIM + SH_FORCE36)
+#define REQUEST   (MH_BOX + MBOX_OFF_REQUEST)
+#define OPEN_REQS (MH_STATE + ST_OPEN_REQS)
+#define OPENS     (MH_STATE + ST_OPENS)
 
 	.section ".text.entry","ax"
 	.align	2
@@ -23,7 +24,7 @@
  * answers 1 when it took this frame input for screen 36, and the stub returns;
  * on 0 it puts r3, r2 and LR back and branches on to HandleMenuInput, which
  * returns to 0x368624 as the original call would have. Built on the shape of
- * probe N0's Options stub, which ran on hardware and is gone with the row.
+ * probe N0's Options stub, which ran on hardware.
  *
  * Frame 0x80: 0x00..0x6F the ABI header and the C callee parameter save area,
  * 0x70 r3, 0x78 the game r2; LR into the caller slot, 0x90.
@@ -64,15 +65,16 @@ mh_frame_stub:
  */
 	.globl	mh_inject_stub
 mh_inject_stub:
-	lis	%r11,mh_box@ha
-	addi	%r11,%r11,mh_box@l
+	lis	%r11,FORCE36@ha
 	li	%r0,0
-	stb	%r0,FORCE36(%r11)
-	lbz	%r12,MBOX_OFF_REQUEST(%r11)
-	cmpwi	%r12,0
+	stb	%r0,FORCE36@l(%r11)
+	lis	%r12,REQUEST@ha
+	lbz	%r0,REQUEST@l(%r12)
+	cmpwi	%r0,0
 	beqlr
-	stb	%r0,MBOX_OFF_REQUEST(%r11)
-	cmpwi	%r12,MBOX_REQ_OPEN
+	cmpwi	%r0,MBOX_REQ_OPEN
+	li	%r0,0
+	stb	%r0,REQUEST@l(%r12)
 	bnelr
 	lis	%r12,DL_GAME_TYPE@ha
 	lwz	%r12,DL_GAME_TYPE@l(%r12)
@@ -85,10 +87,11 @@ mh_inject_stub:
 	ori	%r0,%r0,PADB_START
 	stw	%r0,DL_PAD_HUDBITS(%r12)
 	li	%r0,1
-	stb	%r0,FORCE36(%r11)
-	lwz	%r12,INJECTS(%r11)
+	stb	%r0,FORCE36@l(%r11)
+	lis	%r11,OPEN_REQS@ha
+	lwz	%r12,OPEN_REQS@l(%r11)
 	addi	%r12,%r12,1
-	stw	%r12,INJECTS(%r11)
+	stw	%r12,OPEN_REQS@l(%r11)
 	blr
 
 /*
@@ -102,15 +105,36 @@ mh_inject_stub:
 	.globl	mh_screen_stub
 mh_screen_stub:
 	li	%r4,1
-	lis	%r11,mh_box@ha
-	addi	%r11,%r11,mh_box@l
-	lbz	%r12,FORCE36(%r11)
+	lis	%r11,FORCE36@ha
+	lbz	%r12,FORCE36@l(%r11)
 	cmpwi	%r12,0
 	beqlr
 	li	%r12,0
-	stb	%r12,FORCE36(%r11)
+	stb	%r12,FORCE36@l(%r11)
 	li	%r4,MH_SCREEN_ID
-	lwz	%r12,OPENS36(%r11)
+	lis	%r11,OPENS@ha
+	lwz	%r12,OPENS@l(%r11)
 	addi	%r12,%r12,1
-	stw	%r12,OPENS36(%r11)
+	stw	%r12,OPENS@l(%r11)
 	blr
+
+/*
+ * MH_SITE_HELP_LABEL, 0x3A649C in MenuMain_StartMain: the pause main menu's
+ * Help row takes its label from `bl msg_string` with the row's text id; the
+ * call becomes a call to mh_help_label, a leaf that answers the menu's label
+ * instead, "RACMAN" in the capitals of that list. msg_string is a pure lookup
+ * and the code after it reloads every register but r3 (the label), so nothing
+ * else is missed. The row's callback is the game's Help callback, whose
+ * `li r4,30` (MH_SITE_HELP_SCREEN) the install makes 36: it saves the main
+ * menu's cursor and pushes screen 36 instead of the Help screen.
+ */
+	.globl	mh_help_label
+mh_help_label:
+	lis	%r3,mh_help_text@ha
+	addi	%r3,%r3,mh_help_text@l
+	blr
+
+	.section ".rodata","a"
+	.globl	mh_help_text
+mh_help_text:
+	.asciz	"RACMAN"

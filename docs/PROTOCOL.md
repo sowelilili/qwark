@@ -42,7 +42,7 @@ Revision 1.21, the planet selection per game (2026-10-17, same build 53): the pl
 
 Revision 1.21, the trophy status (2026-10-18, same build 53): an ACTION's `readout`, always 0xFF until now, may name a **status readout**, a word that says what the action is doing and how it last ended (section 5.3). UYA's Reset trophies (21) is the only one, and names readout 12, "Trophy reset", new and last in UYA's list: whether a reset is running and at which step (starting, deleting, registering, and which registration), whether the trophies are ready and how many seconds the reset took, or why it failed, with a count of the resets that have ended so a client can tell a new result from an old one (section 5.14). A boot puts it back to "no reset this boot". Where the reset can never work, under RPCS3 and with `savefile_helper = 0`, DESCRIBE leaves the readout's name out with the two rows, so UYA describes twelve readouts there and thirteen elsewhere. A reset that ends well no longer shows "Trophies reset: ready to win (N s)" on the console's screen, which would distract a runner mid-attempt; the failures still show theirs. A client before this revision takes a readout only from a VALUE, an ENUM or a COLOR, so it reads Reset trophies' row as it always did and sees one more readout name. No opcode or structure changed.
 
-Revision 1.22 (2026-10-18, module build 54): the console menu, a menu on the TV for a console with no PC beside it (section 9). Combo action 5, OPEN_MENU, opens it, and closes it when it is up. It is the first combo with a mask of its own, L1 + R1 + L2 + R2 + L3 + R3 (0x060F), the one combo COMBO_ENABLE does not hold off, and COMBO_LIST's sixth entry (section 5.9). Two config.txt keys come with it, `combo.menu` and `menu.enabled` (section 5.10). The menu is drawn by a renderer qwark writes into the game on the first press of that combo, the menu's only way in, and the two talk through a mailbox in game memory; neither is on the wire, and section 9 describes both for information. Deadlocked is the one game with a renderer so far, and only on a console. No opcode, structure or status changed. A client that predates this revision reads the sixth COMBO_LIST entry as an action it does not know.
+Revision 1.22 (2026-10-18, module build 54): the console menu, a menu on the TV for a console with no PC beside it (section 9). Combo action 5, OPEN_MENU, opens it, and closes it when it is up. It is the first combo with a mask of its own, L1 + R1 + L2 + R2 + L3 + R3 (0x060F), the one combo COMBO_ENABLE does not hold off, and COMBO_LIST's sixth entry (section 5.9). Two config.txt keys come with it, `combo.menu` and `menu.enabled` (section 5.10). The menu is drawn by a renderer qwark writes into the game a few seconds into a session, which also makes the game's own Help row in its pause menu the menu's way in, and the two talk through a mailbox in game memory; neither is on the wire, and section 9 describes both for information. Deadlocked is the one game with a renderer so far, and only on a console. No opcode, structure or status changed. A client that predates this revision reads the sixth COMBO_LIST entry as an action it does not know.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -556,8 +556,8 @@ Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE
 
 **OPEN_MENU** (revision 1.22) differs from the other five in three ways:
 
-- It has a mask before anybody sets one: **0x060F**, L1 + R1 + L2 + R2 + L3 + R3, which a hand cannot press by accident in play. COMBO_LIST reports it whether or not config.txt names it, and COMBO_SET of 0 turns it off for good, like any other combo. It is the menu's only way in, so with it at 0 the menu cannot be opened at all.
-- **COMBO_ENABLE does not hold it off.** The combo is the only way into the menu, and a user who switched the combos off for a run must still be able to reach the menu that would switch them back on. COMBO_SUSPEND does hold it off, so a client can capture it like any other.
+- It has a mask before anybody sets one: **0x060F**, L1 + R1 + L2 + R2 + L3 + R3, which a hand cannot press by accident in play. COMBO_LIST reports it whether or not config.txt names it, and COMBO_SET of 0 turns it off for good, like any other combo. It is a shortcut: with it at 0 the menu still opens from the Help row of the game's pause menu (section 9.2).
+- **COMBO_ENABLE does not hold it off.** A user who switched the combos off for a run keeps the quick way into the menu that would switch them back on. COMBO_SUSPEND does hold it off, so a client can capture it like any other.
 - Where the session has no menu - a game with no renderer, RPCS3, `menu.enabled = 0`, or another mod on the renderer's hooks - it shows a console notification saying why, once a session per reason, and does nothing else.
 
 COMBO_LIST therefore has **six** entries since revision 1.22, where it had five. A client reads `n` and takes what it knows: the client shipped before this revision draws its five rows and looks each one up, so the sixth is simply not drawn.
@@ -586,7 +586,7 @@ The switch and the hold are independent, and either one on its own holds every c
 | 0x0090 | CONFIG_RELOAD | none | none. Re-reads `/dev_hdd0/qwark/config.txt` after a user edited it |
 | 0x0091 | CONFIG_SAVE | none | none. Config is also written on every change |
 
-Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up.
+Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment, the game's Help row its own again (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up.
 
 Keys a client's own ops write. Console-wide rather than per title: the six combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside` and, since revision 1.22, `combo.menu` (COMBO_SET; 0x060F when the file does not name it), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it) and `selected.slot` (POS_SELECT). Per game since build 53: `selected.<game>.planet` and `selected.<game>.planet_flags` (PLANET_SELECT), `<game>` being `rac1`, `rac2`, `rac3` or `rac4` as in the manips' keys (section 5.14), so the disc trilogy keeps three. Until build 53 the planet selection was one pair for the console, `selected.planet` and `selected.planet_flags`; qwark never writes those two again, and a game whose own key the file does not hold yet reads the old one in its place, so the first PLANET_SELECT in each game is where its own pair begins (section 5.5). Each key is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart.
 
@@ -1163,41 +1163,67 @@ Deadlocked is the only game with a renderer in build 54, and only on a console (
 
 ### 9.1 What the menu shows
 
-The **root page** lists the running game's DESCRIBE groups that have at least one feature, in DESCRIBE order, and then a grey row with the module's build. A **group page** lists the group's features in DESCRIBE order:
+Pages come in two **types**, which the mailbox carries with each page (section 9.4):
 
-| Feature | Row | What it does |
+- **MAIN**, a short list of links and buttons, drawn with the game's own list of links. Each row is one line, "label: value".
+- **CONFIG**, a list of labels and controls in two columns with a line of description under it, drawn with the two-column list of the game's Cheats screen. It scrolls, so a CONFIG page shows more rows at once.
+
+A renderer says which it has; one with only MAIN is sent every page as MAIN.
+
+The pages, for a game with a menu table (Deadlocked; `struct game_menu` in src/games/game.h):
+
+| Page | Type | Rows |
 |---|---|---|
-| TOGGLE | a toggle showing ON or OFF | select flips it; Left turns it off, Right on |
-| ACTION | an action | select runs it. A LOAD_ASIDE action closes the menu first and runs once the game is back in play (below) |
-| VALUE | a stepper, where the renderer can send Left and Right; a read-only number where it cannot | Left and Right step it by the row's step; select changes the step, 1, 10, 100 and so on up to 1,000,000 but never past the field's range, then back to 1 |
-| ENUM | a choice showing the current option | Left and Right go to the previous or next option, wrapping; select opens the options as a page of their own, the cursor on the current one, and picking one sets it and goes back |
-| COLOR | read-only, `#RRGGBB` | nothing yet |
+| The root | MAIN | the game's sections (Game, Cheats), then Planets, Manips, Unlocks and Save files where the game has them, then a grey row with the module's build |
+| Game | CONFIG | the quick block of the client's Game panel - Die, the position slot, Save position, Load position, Set aside file, Load set-aside file - then the game's values |
+| Cheats | CONFIG | the four cheats every game has, then the game's other cheats and actions (Deadlocked: Unlock all planets) |
+| Planets | MAIN | the planets in the game's order, each a button that loads it once the menu has closed. Deadlocked lists only the planets the save has unlocked (bit 1 of the status byte of the planet's level save), since loading one it has not crashes the game |
+| Manips | CONFIG | the category (None or a group), Auto-reset, Remember and Apply now, as MANIP_SELECT, MANIP_OPTIONS and MANIP_APPLY have them (section 5.14), then the features of MANIP_LIST's headers (Deadlocked's Fixes, UYA's trophies) |
+| Unlocks | MAIN | UNLOCK_LIST's categories that have rows, each a link, then the game's actions on the whole table (Deadlocked: Max all weapon levels, Max all weapon ammo) |
+| An unlock category | CONFIG | each unlock a selector: LOCKED or UNLOCKED, or for a row with the game's level field the game's own values (Deadlocked LOCKED, V1, V10, V99; the tables also hold RaC1's LOCKED, UNLOCKED, GOLD and RaC2's and UYA's LOCKED, UNLOCKED, MAX). A version off the list shows as itself ("V5") and steps to the next on it |
+| Save files | MAIN | the console library's categories (section 5.13), each a link |
+| A save category | MAIN | its saves, each a button: SAVEFILE_RESTORE once the menu has closed, which leaves the save in the aside buffer, so Load set-aside file loads it again |
 
-Every change goes through the code FEATURE_SET and FEATURE_TRIGGER go through, so `toggle_state`, the auto flags and the previous-session record (section 4.1) are exactly what they would be had a client made it, and a client connected at the time sees it in the next telemetry packet. A VALUE's range is its `min` and `max`, or the whole width of its field when both are 0, and a SIGNED value steps as the signed number it is (section 5.3.2). A VALUE or ENUM row shows what the menu last wrote until the readout behind it agrees, at most a quarter of a second, so quick presses step from each other rather than from a readout that has not caught up.
+Cosmetics are left out, and so are mods and combos for now. A game with no menu table gets round 1's root of DESCRIBE groups, each a page of its features, before Planets and the rest.
 
-A row's answer stands in place of its value for two seconds, and as a sentence in the page's hint line: "done" for an action that ran, and for a refusal its reason ("busy", "not in game", "not available", "refused", "failed", "not found", "full"). A LOAD_ASIDE action says "after closing": qwark asks the renderer to close the menu, and runs the action once the menu is down and the game is in ordinary play with no mode change queued. If that has not happened in five seconds the action is dropped, and the console shows a notification saying so; one that runs and is refused shows its reason the same way.
+The controls:
 
-**Navigation.** qwark keeps the stack of pages, eight deep. Select on a group opens it; back goes up a page, the cursor on the row the page was opened from; back on the root leaves the menu, which the renderer does itself. The stack lasts for the session: the menu opens again on the page it was closed on, and a new game process starts at the root.
+| Control | Row | What it does |
+|---|---|---|
+| Checkbox | TOGGLE: Off, On, and Auto for a toggle that has an auto flag (all but LIVE ones) | the cross and Right go to the next, Left to the one before, wrapping. Auto is on with its auto flag ticked, the client's "A" box; Off clears both. Through FEATURE_SET and FEATURE_SET_AUTO's own code |
+| Selector | CHOICE: the current option | Left and Right go to the previous or next, wrapping; the cross goes to the next on a CONFIG page, as the game's Cheats screen does, and opens the options as a page of their own on a MAIN page |
+| Button | ACTION | the cross runs it. Its answer stands in place of its value for two seconds: "done", or the refusal ("busy", "not in game", "not available", "refused", "failed", "not found", "full"), and in the page's hint as a sentence. A renderer may show "..." for a button with nothing to say. A button flagged CLOSES (a load: the set-aside file, a planet, a save) says "after closing": qwark asks the renderer to close the menu and runs it once the game is back in ordinary play, or drops it five seconds on with a console notification |
+| Value | VALUE, a stepper | Left and Right step it; the cross changes the step, 1, 10, 100 up to 1,000,000 but never past the field's range. A renderer without Left and Right shows the number only |
+| Text | INFO | nothing |
 
-**Pages longer than the screen** are cut into windows by qwark, so a renderer never has more rows than it can show. The first window has as many rows as fit and a **More** row last; a middle one a **Previous** row first and More last; the last a Previous row and the rest. The title ends in the window's number, "Skin 2/4". Select on More or Previous turns the window, the cursor on the first row of the next window or the last of the one before; a renderer that sends PAGE_PREV and PAGE_NEXT (Deadlocked's on L1 and R1) turns it from any row. A renderer with no back control of its own gets a **Back** row at the end of every page but the root, and one row fewer for the page's own.
+Every change goes through the code the protocol's ops go through, so `toggle_state`, the auto flags, the manip options and the previous-session record (section 4.1) are exactly what they would be had a client made the change, and a connected client sees it in its next packet. A VALUE or ENUM row shows what the menu last wrote until the readout agrees, at most a quarter of a second.
+
+qwark sends text as it is written ("Ghost Ratchet", "Off"); a game's renderer cases it the way that game cases its own menus (section 9.6).
+
+**Navigation.** qwark keeps the stack of pages, eight deep. Select on a link opens its page; back goes up a page, the cursor on the row the page was opened from; back on the root leaves the menu, which the renderer does itself. The stack lasts for the session: the menu opens again on the page it was closed on, however it is opened, and a new game process starts at the root.
+
+**Pages longer than the screen** are cut into windows by qwark, a page of each type into windows of as many rows as the renderer takes of that type. The first window has as many rows as fit and a **More** row last; a middle one a **Previous** row first and More last; the last a Previous row and the rest. The title ends in the window's number, "Skin 2/4". Select on More or Previous turns the window; a renderer that sends PAGE_PREV and PAGE_NEXT (Deadlocked's on L1 and R1) turns it from any row. A renderer with no back control of its own gets a **Back** row at the end of every page but the root, and one row fewer for the page's own.
 
 ### 9.2 Opening, closing and switching off
 
-The OPEN_MENU combo (section 5.9) is the menu's only way in. No renderer adds a row or a button to the game's own menus, so nothing the player knows there moves. The combo asks the renderer through the mailbox's request byte: 1 to open while the menu is down, 2 to close while it is up. The renderer takes the request on the game's next frame that can act on it and clears the byte. A request it has not taken half a second later is withdrawn - the game was somewhere the menu cannot open, a cutscene, a load, the game's own pause - so the menu never opens later on its own. The first press of a session puts the renderer into the game before it asks (section 9.3), in the same tick, so the first open is no slower than any other.
+There are two ways in, and no renderer adds a row to any of the game's own lists:
 
-`menu.enabled = 0` in config.txt (section 5.10) switches the menu off. No renderer goes into a game, and one already in has its hook words put back at the first moment it is safe: the menu down, the game not paused, no mode change queued, and the game's current menu screen not the menu's. A menu in use stays usable until the player closes it. With the switch at 0 the combo installs nothing and only says so; at 1 again, the next press of the combo installs the renderer.
+- **The game's own Help row.** Each game's pause menu has a Help entry with the basic controls, which a RaCMAN user has no use for. The renderer takes it over: it keeps its place, says RACMAN in the casing of its list, and opens the menu instead of Help. Back from the menu's root returns to the pause menu with the cursor on it, and Start or Select closes both.
+- **The OPEN_MENU combo** (section 5.9), a shortcut from play. It asks the renderer through the mailbox's request byte: 1 to open while the menu is down, 2 to close while it is up. The renderer takes the request on the game's next frame that can act on it and clears the byte. A request it has not taken half a second later is withdrawn - the game was somewhere the menu cannot open, a cutscene, a load, the game's own pause - so the menu never opens later on its own. With the combo at 0 the Help row still opens the menu.
+
+`menu.enabled = 0` in config.txt (section 5.10) switches the menu off. No renderer goes into a game, and one already in has its hook words put back - the Help row's too, which is the game's own Help again - at the first moment it is safe: the menu down, the game not paused, no mode change queued, and the game's current menu screen not the menu's. A menu in use stays usable until the player closes it. With the switch at 0 the combo installs nothing and only says so; at 1 again, the renderer goes back in at the next moment the game is in ordinary play.
 
 ### 9.3 The renderer's install
 
-On a console, qwark writes a game's renderer in on the first press of the menu combo in a session, and not before: the combo is the only way in, so qwark sees every open coming, and a session in which nobody opens the menu has nothing of it in the game. The install runs in the tick that saw the press, and the open request goes out right after it: for Deadlocked eleven writes, 7.5 KB, the way the savefile helper goes in on its first use and takes its request in the same tick (section 5.12). Before it writes anything it reads every word the renderer replaces (section 9.5 lists them). Each must hold the game's own word or the renderer's:
+On a console qwark writes a game's renderer in a few seconds into each session (three for Deadlocked), at the first tick after that with the game in ordinary play - in Deadlocked gameMode 0 and no mode change queued - so nothing is written while one of the game's menus is up, and the Help row is the menu's before the player first opens the pause. A press of the menu combo before then installs at once, in the tick that saw it, and its open request goes out right after the install. Before it writes anything it reads every word the renderer replaces (section 9.5 lists them). Each must hold the game's own word or the renderer's:
 
-- **All the game's own**: the data image goes in (the mailbox and the renderer's state, section 9.4), then the first page, then the code, then the hook words, in the order the table gives, so nothing can branch into a half-written cave.
-- **Some already the renderer's**: this module was loaded again into a running game, or an install was cut short. The code in the game must be this build's renderer to the byte. If it is, qwark takes the mailbox over as it stands, answers any event left in it unread, writes the hook words still missing, and carries on; if it is not, the install is refused, since rewriting code the game may be running is a crash. Such a game gets its menu back with a restart.
-- **Anything else** at any of them is another mod's: nothing at all is written, the log says which word, the combo shows a notification (once a session), and the next press tries again, so the menu comes once the other mod is unloaded. Nothing retries on its own.
+- **All the game's own**: the data images go in (the mailbox, the renderer's state and its read-only data, section 9.4), then the first page, then the code, then the hook words, in the order the table gives, so nothing can branch into a half-written cave and the Help row can only open a screen that is already the menu's. For Deadlocked that is sixteen writes, 17 KB.
+- **Some already the renderer's**: this module was loaded again into a running game, or an install was cut short. The code in the game must be this build's renderer to the byte. If it is, qwark takes the mailbox over as it stands, answers any event left in it unread, writes the hook words still missing, and carries on; if it is not, the install is refused, since rewriting code the game may be running is a crash. Such a game gets its menu back with a restart. A qwark and a renderer always come from the same build, so they always speak the same mailbox version.
+- **Anything else** at any of them is another mod's: nothing at all is written and the log says which word. qwark tries again every ten seconds, so the menu comes once the other mod is unloaded; a press of the combo tries at once and shows a notification saying why, once a session.
 
 A renderer's caves are never taken out, and its hook words only for `menu.enabled = 0`, as above. A process that ends takes them with it, and the next session installs afresh.
 
-qwark carries the renderers inside the module in build 54 (`src/games/menuhelper_bins.c`, built from `src/games/menuhelper/`); a later build may load them from a file on the HDD instead.
+qwark carries the renderers inside the module in build 54 (`src/games/menuhelper_bins.c`, built from `src/games/menuhelper/`), the zeros of the mailbox and the state as counts rather than bytes; a later build may load them from a file on the HDD instead.
 
 ### 9.4 The mailbox
 
@@ -1206,16 +1232,16 @@ A block at a fixed address per game, big-endian, laid out the same for every ren
 | Offset | Field | Writer |
 |---|---|---|
 | 0x00 | u32 magic, `QMNU` | install |
-| 0x04 | u16 version, 1 | install |
+| 0x04 | u16 version, 2 | install |
 | 0x06 | u16 size of the whole block | install |
 | 0x08 | u8 `row_cap`, the row slots in the block | install |
 | 0x09 | u8 `row_size`, 0x40, or 0x80 for rows with a description | install |
-| 0x0A | u8 `max_rows`, the rows the renderer takes at once, at most `row_cap` | renderer |
+| 0x0A | u8 `max_rows`, the rows the renderer takes at once on a MAIN page, at most `row_cap` | renderer |
 | 0x0B | u8 `caps`, below | renderer |
 | 0x0C | u8 `hstate`: 0 closed, 1 open | renderer |
 | 0x0D | u8 `request`: 0 none, 1 open, 2 close | qwark sets, renderer clears (qwark clears to withdraw) |
 | 0x0E | u8 the renderer's game id | install |
-| 0x0F | u8 0 | |
+| 0x0F | u8 `cfg_rows`, the rows it takes at once on a CONFIG page; 0 for a renderer with no CONFIG page | renderer |
 | 0x10 | u32 `frames`: frames the menu has been up | renderer |
 | 0x14 | u32 `ev_seq`: bumped after the event record below | renderer |
 | 0x18 | u8 `ev_kind`, below | renderer |
@@ -1228,37 +1254,46 @@ A block at a fixed address per game, big-endian, laid out the same for every ren
 | 0x2C | u8 `nrows`, 1 .. `row_cap` | qwark |
 | 0x2D | u8 `cursor`: the row the cursor goes to on a new key | qwark |
 | 0x2E | u8 `pflags`: bit0 ROOT, back here leaves the menu | qwark |
-| 0x2F | u8 0 | |
+| 0x2F | u8 `ptype`: 0 MAIN, 1 CONFIG | qwark |
 | 0x30 | char `title`[32] | qwark |
 | 0x50 | char `hint`[48]: a line about the page, the last answer as a sentence | qwark |
 | 0x80 | rows[`row_cap`], `row_size` bytes each | qwark |
+
+Version 2 (round 2, still revision 1.22 and build 54) added `cfg_rows` and `ptype` in what were two reserved bytes; version 1 never left a console with a PC beside it.
 
 A row:
 
 | Offset | Field |
 |---|---|
 | +0x00 | u8 kind: 0 INFO, 1 LINK, 2 TOGGLE, 3 ACTION, 4 CHOICE, 5 VALUE, 6 OPTION, 7 MORE, 8 PREV, 9 BACK |
-| +0x01 | u8 flags: bit0 ENABLED (the cursor may land on it), bit1 ON (active: a toggle that is on, the current option), bit2 STEPS (Left and Right do something on it), bit3 CLOSES (the menu closes before it acts) |
+| +0x01 | u8 flags: bit0 ENABLED (the cursor may land on it), bit1 ON (active: a toggle that is on or Auto, an owned unlock, the current option), bit2 STEPS (Left and Right do something on it), bit3 CLOSES (the menu closes before it acts) |
 | +0x02 | u16 id, opaque to the renderer and echoed in its events |
 | +0x04 | char label[40] |
 | +0x2C | char value[20] |
 | +0x40 | char description[64], in rows of 0x80 bytes only |
 
-Every string is a fixed slot, NUL-padded and not necessarily terminated when full, so a renderer finds row i's label, value and description at the same place whatever draws them: a text call, a widget that keeps a `char *`, or a hook that maps a text id to row i.
+Every string is a fixed slot, NUL-padded and not necessarily terminated when full, so a renderer finds row i's label, value and description at the same place whatever draws them.
 
 `caps`: bit0 STEPS, it posts LEFT and RIGHT; bit1 PAGE_KEYS, it posts PAGE_PREV and PAGE_NEXT; bit2 BACK, it has a back control of its own; bit3 REQUEST, it opens and closes the menu when asked. Event kinds: 1 ACTIVATE, 2 LEFT, 3 RIGHT, 4 BACK (on a page that is not the root), 5 PAGE_PREV, 6 PAGE_NEXT.
 
 **A page** goes in as three writes: `page_seq` made odd, the page from `page_key` to its last row, `page_seq` made even. A renderer copies a page whole and keeps the copy only if `page_seq` read the same even number before and after it; otherwise it tries again on its next frame. It never hands the game a pointer into the mailbox: the games' text widgets keep the pointer they are given and read it at every draw, while qwark writes the mailbox from another thread whenever it likes. It draws from its own copy, which only it changes, on the game's thread.
 
-**The page key** is the page's id in the top sixteen bits, the first row of the window in the next eight, and a count of qwark's moves between pages and windows in the low eight. A renderer that sees a key it has not shown puts the cursor on `cursor`; the same key again is the same page refreshed, and the cursor stays where the player left it. Event ids and keys mean nothing to a renderer beyond that.
+**The page key** is the page's id in the top sixteen bits, the first row of the window in the next eight, and a count of qwark's moves between pages and windows in the low eight. A renderer that sees a key it has not shown puts the cursor on `cursor`; the same key again is the same page refreshed, and the cursor stays where the player left it.
 
-**An event** is the record and then `ev_seq` one higher, with a barrier between, and one at a time: a press while `ev_seq` differs from `ev_ack` is dropped by the renderer. qwark reads the header, `magic` to `page_seq`, every tick while the menu is up and every fourth tick while it is down, so an event is answered within a tick or four. It acts on an event only if `ev_key` is the page it last posted and `ev_id` is the id of row `ev_row` on it; anything else is stale and changes nothing. Either way it writes `ev_ack`, and then the next page, which for a refused or stale event is the same page.
+**An event** is the record and then `ev_seq` one higher, with a barrier between, and one at a time: a press while `ev_seq` differs from `ev_ack` is dropped by the renderer. qwark reads the header every tick while the menu is up and every fourth tick while it is down. It acts on an event only if `ev_key` is the page it last posted and `ev_id` is the id of row `ev_row` on it; anything else is stale and changes nothing. Either way it writes `ev_ack`, and then the next page, which for a refused or stale event is the same page.
 
-**Live values.** qwark builds the current page after every event, ten times a second while the menu is up and once a second while it is down, and writes it only when its bytes changed, so a menu that is down costs one 40-byte read every fourth tick and no write, and a session in which nobody pressed the combo costs nothing at all. The page is in the mailbox before the menu opens, so a renderer has something to draw on its first frame.
+**Live values.** qwark builds a page of features, manips or unlocks after every event, ten times a second while the menu is up and once a second while it is down, and writes it only when its bytes changed. A page of links, planets or saves is built only after an event, since nothing on it moves while the game is paused; Save files reads the console's library once per event, not ten times a second. The page is in the mailbox before the menu opens, so a renderer has something to draw on its first frame.
 
 ### 9.5 Deadlocked's renderer (NPEA00423)
 
-It shows qwark's page as a screen of the game's own pause menu: screen slot 36 of GuiMenu_Screens, which the game leaves empty, drawn with GuiSupport's button list, the list Options and Extras use. The game pauses itself for it, draws it in its pause, holds gameplay input off and plays its own sounds. The list shows up to eight rows, so `max_rows` and `row_cap` are 8 and `row_size` 0x40; `caps` is all four bits. A row shows as "label: value", the current option of a pick-one list as "label *", and a row that is not ENABLED in the game's grey with no callback.
+It shows qwark's pages as screen slot 36 of GuiMenu_Screens, which the game leaves empty, so the game pauses itself for it, draws it in its pause, holds gameplay input off and plays its own sounds:
+
+- **MAIN** pages with GuiSupport's button list, the list Options and Extras use: up to eight rows, `max_rows` 8. A row is "label: value" in the capitals of the game's lists, the current option of a pick-one list marked "*", a row that is not ENABLED grey with no callback. When a page has another number of rows the renderer calls SetMenuTarget again, the call the game uses to place a list, which lays the rows out again and fits the frame round them, so a page of three rows has the frame of three rows.
+- **CONFIG** pages with a CtlList on the Cheats screen's templates (27 for the screen, 28 for a row), in a GuiState thread of the renderer's own, built the way MenuCheats builds its screen: up to sixteen rows, `cfg_rows` 16, scrolling, the label in title case on the left, the value in capitals on the right, an action with nothing to say "...", the cursor row lit, an active row (ON) in the Cheats screen's gold, a row that is not ENABLED grey and skipped by the cursor, and the description line under the list, which is the cursor row's description or the page's hint while it has one. The title is in capitals, the button legend the Cheats screen's own.
+
+Moving between the two is the game's own way between screens: GuiMenu_GoToScreen to screen 36 again, whose stop ends the one widget (the list closes; the thread is told to end and clears its canvas layer on the way out) and whose start begins the other. GoToScreen pushes nothing, so back goes where it would have gone.
+
+`row_cap` is 16, `row_size` 0x80, `caps` all four bits.
 
 | Address | Replaces | Becomes |
 |---|---|---|
@@ -1266,17 +1301,28 @@ It shows qwark's page as a screen of the game's own pause menu: screen slot 36 o
 | 0x368620 | `bl HandleMenuInput` in GuiSupport's UpdateMenus | a call to the renderer's frame, which goes on to HandleMenuInput unless it took the frame's input |
 | 0x35E074 | `li r4,1` before GuiMenu_GoToScreen in GuiHud's single-player and co-op Start path | 36 in the frame the renderer pressed Start for an open request, 1 otherwise |
 | 0x35DFBC | the nop after GuiHud's call to GB_GetLocalHeroFromSlot, before it tests Start | the open request taken, and Start pressed for the game in that frame |
+| 0x3A649C | `bl msg_string` for the label of the pause main menu's fifth row, Help, in MenuMain_StartMain | a call that answers "RACMAN" |
+| 0x3A8584 | `li r4,30` in MenuMain_MainCMDHelpCB, the Help row's callback, before GuiMenu_PushScreen | `li r4,36`: the row pushes the menu's screen over the main menu |
 
-The code is at 0x97D000..0x97F000, in the empty tail of the executable's code segment, and the data at 0x17DF200..0x17DFF00, past the end of its read-write segment: the mailbox, 0x280 bytes, then the renderer's state at 0x17DF480, then its read-only data, its TOC and its descriptors. Neither area overlaps any mod known to the client, nor qwark's own writes, and both keep clear of probe A's and probe N0's caves; N0 hooks screen 36's slot and the Start path too, by design, so the install refuses while it is loaded. Nothing goes into the game's own menus: MenuMain_StartOptions, whose call to SetMenuButtons at 0x3A6F2C round 1 hooked for a RaCMAN row in Options, keeps every word, and Options keeps its rows.
+The Help callback's descriptor (0x993FD0) is named by that one row and nothing else, so no other list changes; the multiplayer pause menu builds rows of its own with no Help, and keeps every word. The main menu keeps its eight rows in their order.
 
-The controls are the game's: the cross selects, triangle goes back, and on the root page triangle is the game's own back, which closes the menu and unpauses the game; Start or Select closes the menu from any page, whatever qwark is doing. Circle does nothing, as in the game's own lists (a Japanese copy swaps the cross and the circle, as the game does everywhere). Up and Down move the game's own cursor. Left, Right, L1 and R1, which the game's list ignores, the renderer takes from player one's presses of the frame (`hudBitsOn`), only when nothing the game ranks higher is pressed in the same frame (the cross, triangle, square, circle, Up or Down), and clears them as the game clears the ones it takes. Presses are edges: holding a direction steps once.
+The code is at 0x97B000..0x97F000, in the empty tail of the executable's code segment, the mailbox at 0x17DD600..0x17DDF00 and the state, read-only data, TOC and descriptors at 0x17DF0C0..0x17DFFC0, past the end of its read-write segment. None of them overlaps any mod known to the client, nor qwark's own writes, and all keep clear of probe A's and probe N0's caves; N0 hooks screen 36's slot and the Start path too, by design, so the install refuses while it is loaded. MenuMain_StartOptions keeps every word.
 
-**Opening.** Only with the combo, from play: the renderer takes the open request in the next frame of ordinary play the game would take Start in, presses Start for it and has the Start path open screen 36 instead of the main menu, so the game's own gate applies - ordinary play, no mode change queued, the player not dying - and nothing happens in multiplayer. A request it cannot take is withdrawn as section 9.2 says.
+The controls are the game's. On a MAIN page: the cross selects, triangle goes back, and on the root triangle is the game's own back (to the pause main menu when the menu was opened from Help, out of the pause when from the combo); Start or Select closes the menu from any page. Left, Right, L1 and R1, which the game's list ignores, the renderer takes from player one's presses of the frame (`hudBitsOn`), only when nothing the game ranks higher is pressed in the same frame, and clears them as the game clears the ones it takes. On a CONFIG page all of them come from GuiMain_GetMenuCommand, one a frame, as the Cheats screen reads them: Up and Down move the list's focus with the game's tick, Left, Right and the cross change a row with the Cheats screen's sound. Presses are edges: holding a direction steps once. A Japanese copy swaps the cross and the circle, as the game does everywhere.
 
-**Closing.** The Start path is GuiMenu_GoToScreen(0, 36) and then GuiMain_PushState(0, 2), whose menu thread empties the GuiMenu screen stack as it starts (0x36270C), so nothing is ever under screen 36. Its back is Options' own callback (0x3A809C): triangle plays the back sound and pops the screen stack, which, empty, closes the menu (GuiMenu_PopScreen 0x362584, GuiMenu_CloseMenu 0x36249C); Start and Select close it directly. Closing pops GuiMain's menu state, which stops screen 36, clears the pad ring and ends the pause (0x35E3FC), the way the main menu's own back does.
+**Opening from the combo.** The renderer takes the open request in the next frame of ordinary play the game would take Start in, presses Start for it and has the Start path open screen 36 instead of the main menu, so the game's own gate applies, and nothing happens in multiplayer. GuiHud's Start path is GoToScreen(0, 36) and then PushState(0, 2), whose menu thread empties the screen stack as it starts (0x36270C), so nothing is under screen 36 and back at the root closes the menu (Options' own back callback 0x3A809C: PopScreen 0x362584, with nothing under, calls CloseMenu 0x36249C). Closing pops GuiMain's menu state, which stops screen 36, clears the pad ring and ends the pause (0x35E3FC).
 
-**When qwark does not answer.** An event unanswered for half a second turns the title into "Waiting for qwark..." until the answer comes. Before qwark has posted any page the menu shows one grey row, "Waiting for qwark", and back leaves it.
+**When qwark does not answer.** An event unanswered for half a second turns the title into "WAITING FOR QWARK..." until the answer comes. Before qwark has posted any page the menu shows one grey row, "WAITING FOR QWARK", and back leaves it.
 
-The renderer's state begins with counters, for whoever reads them with the memory tools: +0x04 the times the screen started, +0x08 open requests taken, +0x0C the times the Start path answered 36, +0x10 events posted, +0x14 pages taken, +0x18 pages caught half written, +0x1C presses dropped with an event in flight.
+The renderer's state begins with the core's counters (section 9.6), for whoever reads them with the memory tools at 0x17DF0C0: +0x04 the times the screen started, +0x08 open requests taken, +0x0C the times the Start path answered 36, +0x10 events posted, +0x14 pages taken, +0x18 pages caught half written, +0x1C presses dropped with an event in flight.
 
-From the NPEA00423 executable and probe N0 on hardware; the rest of the renderer has not yet run on a console.
+From the NPEA00423 executable and probe N0 on hardware, and round 1's MAIN page on hardware; the CONFIG page and the Help row have not yet run on a console.
+
+### 9.6 A renderer's core and its shim
+
+Every game's renderer is two parts, built together for each game the way the savefile helper's one source serves four (`src/games/menuhelper/build.sh`):
+
+- **The core**, `mh_core.c`, the same source for every game: reading the mailbox into buffers that stay put, the page, cursor and description state, casing and decorating the text, the presses into events with one in flight, the "waiting" title, the requests, which widget a page is drawn with (a CONFIG page goes to a game with no CONFIG widget as MAIN), and the counters. It names no game address and calls no game function, which `check.py` holds it to.
+- **The shim**, `mh_<game>.c` with its stubs and its header `mh_<game>.h`: only what talks to that game's menus. It shows what the core composed with the game's widgets, reads the game's input and hands the core presses, plays the game's sounds, opens and closes the menu the game's way, and says through its header how the game cases its menus.
+
+`mh_shim.h` is the interface between them, and `rewrite/SPEC-console-ui.md` section 3.5 describes it for whoever writes the next shim.

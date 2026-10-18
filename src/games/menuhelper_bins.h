@@ -19,12 +19,17 @@
 
 #include "../core/proto.h"
 
-/* One run of bytes at one address: the data image, or the code. */
+/*
+ * One run of bytes at one address - the mailbox, the state, the read-only
+ * data, or the code - and then `zeros` bytes of 0, which the module carries as
+ * a count rather than as bytes.
+ */
 struct mh_cave {
 	u32 addr;
 	const u8 *bytes;
 	u32 len;
 	u8  code;      /* 1 for the code, which an install compares before adopting */
+	u32 zeros;
 };
 
 /* One word a renderer replaces, with the game's own word there. */
@@ -37,7 +42,7 @@ struct mh_word {
 struct mh_desc {
 	u8 game_id;
 
-	/* The data image first, then the code: both before any hook. */
+	/* The mailbox, the state and the read-only data first, then the code: all before any hook. */
 	const struct mh_cave *caves;
 	u8 ncaves;
 

@@ -62,6 +62,9 @@ int  manips_select(u8 id);
 int  manips_options(u8 auto_reset, u8 remember);
 int  manips_apply(void);
 
+/* Revision 1.22, round 2, for the console menu: bit0 auto-reset, bit1 remember. */
+u8   manips_options_now(void);
+
 /* For the tests: the selection and whether this boot's setup has been applied. */
 u8   manips_selected(void);
 int  manips_setup_done(void);

@@ -1046,6 +1046,26 @@ static const struct game_manips rac1_manips = {
 	rac1_in_file
 };
 
+/* ----------------------------------------------------------- console menu */
+
+/*
+ * Revision 1.22, round 2: what the console menu knows of RaC1 so far. It has
+ * no renderer yet, and until it has, no sections either (round 1's page per
+ * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED
+ * and GOLD, on the gold flag, field 1.
+ */
+static const char * const rac1_unlock_names[] = { "LOCKED", "UNLOCKED", "GOLD" };
+static const u32 rac1_unlock_values[] = { 0, 0, 1 };
+
+static const struct game_menu rac1_menu = {
+	NULL, 0,
+	NULL, 0,
+	rac1_unlock_names, rac1_unlock_values,
+	(u8)(sizeof(rac1_unlock_names) / sizeof(rac1_unlock_names[0])),
+	1, NULL,
+	NULL
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac1_game = {
@@ -1114,5 +1134,6 @@ const struct game_api rac1_game = {
 	rac1_autosplit_describe,
 
 	&rac1_manips,         /* revision 1.21 */
-	NULL                  /* planet_order: the ids run in the game's order */
+	NULL,                 /* planet_order: the ids run in the game's order */
+	&rac1_menu            /* revision 1.22, round 2 */
 };

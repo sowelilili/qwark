@@ -1,20 +1,24 @@
 /*
  * A menu renderer's link map. build.sh puts the code cave's address in for
- * @TEXT_ORG@ and the data area's for @DATA_ORG@ and hands the result to
- * ppu-lv2-ld. The layout is the probes' and N0's, which ran on hardware:
+ * @TEXT_ORG@, the mailbox's for @BOX_ORG@ and the data area's for @DATA_ORG@,
+ * and hands the result to ppu-lv2-ld. The layout is the probes' and N0's,
+ * which ran on hardware:
  *
- *   code  at the code cave: the hook stubs, then the C. Only this part needs
- *         executable memory.
- *   data  at the data area, in the game's free read-write memory: the mailbox
- *         and the renderer state as they start (mh_<game>_state.S), read-only
- *         data, the renderer's own TOC (the stubs load _toc_base, the start of
- *         .toc plus 0x8000, which ppu-lv2-ld resolves TOC16 relocations against
- *         when there is no .got) and the descriptors of its functions, three of
- *         which the game calls (screen 36's start and stop, the callbacks).
+ *   code     at the code cave: the hook stubs, then the core (mh_core.o, between
+ *            _core_start and _core_end, which check.py holds to naming no game
+ *            address), then the shim. Only this part needs executable memory.
+ *   mailbox  at its own span of the game's free read-write memory, as the
+ *            install leaves it (mh_<game>_state.S): its header, then zeros.
+ *   data     at the data area: the core's and the shim's state as they start
+ *            (a magic, then zeros), read-only data, the renderer's own TOC
+ *            (the stubs load _toc_base, the start of .toc plus 0x8000, which
+ *            ppu-lv2-ld resolves TOC16 relocations against when there is no
+ *            .got) and the descriptors of its functions, which the game calls
+ *            (screen 36's start and stop, the callbacks, the thread).
  *
  * .data and .bss are placed only so build.sh can see them and refuse the build:
- * the renderer keeps no variables of its own. Its state is at an absolute
- * address, the start of the data image.
+ * the renderer keeps no variables of its own. Its state is at absolute
+ * addresses, the start of the data area.
  */
 OUTPUT_FORMAT("elf64-powerpc-celloslv2")
 ENTRY(mh_frame_stub)
@@ -22,11 +26,23 @@ ENTRY(mh_frame_stub)
 SECTIONS
 {
 	. = @TEXT_ORG@;
-	.text : { *(.text.entry) *(.text) *(.text.*) }
+	.text : {
+		*(.text.entry)
+		_core_start = .;
+		*mh_core.o(.text) *mh_core.o(.text.*)
+		_core_end = .;
+		*(.text) *(.text.*)
+	}
 	_text_end = .;
+
+	. = @BOX_ORG@;
+	.mh_box : { KEEP(*(.mh_box)) }
+	.mh_box_zero : { KEEP(*(.mh_box_zero)) }
+	_box_end = .;
 
 	. = @DATA_ORG@;
 	.mh_state : { KEEP(*(.mh_state)) }
+	.mh_state_zero : { KEEP(*(.mh_state_zero)) }
 	.rodata : { *(.rodata) *(.rodata.*) *(.data.rel.ro*) }
 	. = ALIGN(8);
 	.toc : { *(.toc) *(.toc1) *(.got) }

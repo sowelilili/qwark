@@ -17,4 +17,7 @@ void test_pine(void);
 /* test_menu.c: the console menu, its model, its mailbox and Deadlocked's renderer. */
 void test_menu(void);
 
+/* test_menu_core.c: the renderers' shared core, against a fake shim. */
+void test_menu_core(void);
+
 #endif /* QWARK_TEST_COMMON_H */

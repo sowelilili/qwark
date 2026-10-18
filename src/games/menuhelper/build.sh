@@ -1,8 +1,11 @@
 #!/bin/sh
 #
 # Builds the console menu's renderers and regenerates the committed source qwark
-# carries them in, src/games/menuhelper_bins.c and .h. Deadlocked's is the only
-# one so far (mh_rac4.*).
+# carries them in, src/games/menuhelper_bins.c and .h. A renderer is the shared
+# core (mh_core.c) and a game's shim (mh_<game>.c, its stubs and its state
+# image), both compiled with the game's header (mh_<game>.h) included first,
+# like the savefile helper's one source for four games. Deadlocked's is the
+# only one so far.
 #
 # Run it from a Cygwin login shell that has the Sony SDK on its PATH, the shell
 # `make` runs in:
@@ -14,12 +17,12 @@
 # to date or the SDK is not on the PATH, so the host builds and the tests, which
 # compile the committed file, never need the SDK.
 #
-# Per renderer: compile its C (warnings are errors), assemble its stubs and its
-# starting state through the C preprocessor, link both images at the game's
-# addresses (mh.ld.in), cut the code and the data out as bytes, compute every
-# hook word from the linked addresses, and check the result against the
-# header: nothing in .data or .bss, nothing past either area, the state where
-# the C looks for it, every branch within reach. Then python -I
+# Per renderer: compile the core and the shim (warnings are errors), assemble
+# its stubs and its starting state through the C preprocessor, link it at the
+# game's addresses (mh.ld.in), cut the code, the mailbox and the data out as
+# bytes, compute every hook word from the linked addresses, and check the
+# result against the header: nothing in .data or .bss, nothing past any area,
+# the state where the C looks for it, every branch within reach. Then python -I
 # src/games/menuhelper/check.py checks it against the game's executable and
 # every mod known (it reads the generated file, so it runs without the SDK).
 set -e
@@ -37,7 +40,7 @@ NM=ppu-lv2-nm
 OBJCOPY=ppu-lv2-objcopy
 OBJDUMP=ppu-lv2-objdump
 
-CFLAGS="-O2 -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
+CFLAGS="-Os -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
 
 RENDERERS="rac4"
 
@@ -48,7 +51,7 @@ fail() {
 
 # ---------------------------------------------------------------- staleness
 
-sources="$DIR/build.sh $DIR/mh.ld.in $DIR/mh_common.h src/core/menubox.h"
+sources="$DIR/build.sh $DIR/mh.ld.in $DIR/mh_common.h $DIR/mh_shim.h $DIR/mh_core.c src/core/menubox.h"
 for g in $RENDERERS; do
 	sources="$sources $DIR/mh_$g.h $DIR/mh_$g.c $DIR/mh_${g}_stubs.S $DIR/mh_${g}_state.S"
 done
@@ -128,10 +131,12 @@ for g in $RENDERERS; do
 	game=$(need "$hdr" MH_GAME_ID)
 	cave=$(need "$hdr" MH_CAVE)
 	cave_end=$(need "$hdr" MH_CAVE_END)
+	mbox=$(need "$hdr" MH_BOX)
+	mbox_end=$(need "$hdr" MH_BOX_END)
 	data=$(need "$hdr" MH_DATA)
 	data_end=$(need "$hdr" MH_DATA_END)
 	state=$(need "$hdr" MH_STATE)
-	state_off=$(need "$hdr" MH_STATE_OFF)
+	shim=$(need "$hdr" MH_SHIM)
 	mbox_size=$(need "$hdr" MH_MBOX_SIZE)
 	slot=$(need "$hdr" MH_SCREEN_SLOT)
 	screen_id=$(need "$hdr" MH_SCREEN_ID)
@@ -142,6 +147,11 @@ for g in $RENDERERS; do
 	orig_screen=$(need "$hdr" MH_ORIG_SCREEN)
 	orig_inject=$(need "$hdr" MH_ORIG_INJECT)
 	orig_start=$(need "$hdr" MH_ORIG_SLOT_START)
+	site_help_label=$(need "$hdr" MH_SITE_HELP_LABEL)
+	site_help_screen=$(need "$hdr" MH_SITE_HELP_SCREEN)
+	orig_help_label=$(need "$hdr" MH_ORIG_HELP_LABEL)
+	orig_help_screen=$(need "$hdr" MH_ORIG_HELP_SCREEN)
+	w_help_screen=$(need "$hdr" MH_HELP_SCREEN_WORD)
 	handle_input=$(need "$hdr" GAME_HANDLE_MENU_INPUT)
 	mode_addr=$(need "$hdr" DL_GAME_MODE)
 	mode_paused=$(need "$hdr" DL_MODE_PAUSE)
@@ -149,37 +159,68 @@ for g in $RENDERERS; do
 	pending_none=$(need "$hdr" DL_MODE_NONE)
 	screen_addr=$(need "$hdr" DL_MENU_SCREEN)
 
-	[ $((data + state_off)) -eq $((state)) ] || fail "$hdr: MH_STATE is not MH_DATA + MH_STATE_OFF"
+	[ $((data)) -eq $((state)) ] || fail "$hdr: MH_STATE is not MH_DATA"
 
-	$CC $CFLAGS -c -o "$obj/mh.o" "$DIR/mh_$g.c"
+	# The core and the shim, each with the game's header first.
+	$CC $CFLAGS -include "$hdr" -c -o "$obj/mh_core.o" "$DIR/mh_core.c"
+	$CC $CFLAGS -include "$hdr" -c -o "$obj/shim.o" "$DIR/mh_$g.c"
 	# Through the driver, which runs the preprocessor for .S and stamps the
 	# CellOS Lv-2 ABI on the object; the linker refuses to mix objects otherwise.
 	$CC -I$DIR -c -o "$obj/stubs.o" "$DIR/mh_${g}_stubs.S"
 	$CC -I$DIR -c -o "$obj/state.o" "$DIR/mh_${g}_state.S"
 
-	sed -e "s/@TEXT_ORG@/$cave/" -e "s/@DATA_ORG@/$data/" "$DIR/mh.ld.in" > "$obj/mh.ld"
+	sed -e "s/@TEXT_ORG@/$cave/" -e "s/@BOX_ORG@/$mbox/" -e "s/@DATA_ORG@/$data/" \
+		"$DIR/mh.ld.in" > "$obj/mh.ld"
 	$LD --fatal-warnings -T "$obj/mh.ld" -Map "$obj/mh.map" -o "$obj/mh.elf" \
 		--defsym game_handle_menu_input=$handle_input \
-		"$obj/stubs.o" "$obj/mh.o" "$obj/state.o"
+		"$obj/stubs.o" "$obj/mh_core.o" "$obj/shim.o" "$obj/state.o"
 
 	# name size vma, one line per section
 	$OBJDUMP -h "$obj/mh.elf" | tr -d '\r' |
 		awk '$1 ~ /^[0-9]+$/ { print $2, $3, $4 }' > "$obj/sections.txt"
-	bad=$(awk '$2 !~ /^0+$/ && $1 != ".text" && $1 != ".mh_state" && $1 != ".rodata" &&
+	bad=$(awk '$2 !~ /^0+$/ && $1 != ".text" && $1 != ".mh_box" && $1 != ".mh_box_zero" &&
+	           $1 != ".mh_state" && $1 != ".mh_state_zero" && $1 != ".rodata" &&
 	           $1 != ".toc" && $1 != ".opd" { print $1 }' "$obj/sections.txt")
 	[ -z "$bad" ] || fail "$g: sections that must be empty are not: $bad"
 
 	text_vma=0x$(awk '$1 == ".text" { print $3 }' "$obj/sections.txt")
+	box_vma=0x$(awk '$1 == ".mh_box" { print $3 }' "$obj/sections.txt")
 	state_vma=0x$(awk '$1 == ".mh_state" { print $3 }' "$obj/sections.txt")
 	[ $((text_vma)) -eq $((cave)) ] || fail "$g: .text starts at $text_vma, not $cave"
+	[ $((box_vma)) -eq $((mbox)) ] || fail "$g: the mailbox starts at $box_vma, not $mbox"
 	[ $((state_vma)) -eq $((data)) ] || fail "$g: the state starts at $state_vma, not $data"
+	[ "$(sym "$obj/mh.elf" mh_box)" = "$(printf '0x%08X' $((mbox)))" ] ||
+		fail "$g: mh_box is not at MH_BOX"
 	[ "$(sym "$obj/mh.elf" mh_state)" = "$(printf '0x%08X' $((state)))" ] ||
 		fail "$g: mh_state is not at MH_STATE"
+	[ "$(sym "$obj/mh.elf" mh_shim)" = "$(printf '0x%08X' $((shim)))" ] ||
+		fail "$g: mh_shim is at $(sym "$obj/mh.elf" mh_shim), not MH_SHIM: the core's state changed size"
 
 	$OBJCOPY -O binary -j .text "$obj/mh.elf" "$obj/code.bin"
-	$OBJCOPY -O binary -j .mh_state -j .rodata -j .toc -j .opd "$obj/mh.elf" "$obj/data.bin"
+	$OBJCOPY -O binary -j .mh_box "$obj/mh.elf" "$obj/box.bin"
+	$OBJCOPY -O binary -j .mh_state "$obj/mh.elf" "$obj/state.bin"
+	$OBJCOPY -O binary -j .rodata -j .toc -j .opd "$obj/mh.elf" "$obj/rest.bin"
+	# The images as the game will hold them, for the checks below and check.py's.
+	$OBJCOPY -O binary -j .mh_box -j .mh_box_zero "$obj/mh.elf" "$obj/box-full.bin"
+	$OBJCOPY -O binary -j .mh_state -j .mh_state_zero -j .rodata -j .toc -j .opd "$obj/mh.elf" "$obj/data.bin"
 	code_size=$(wc -c < "$obj/code.bin" | tr -d ' ')
+	box_head=$(wc -c < "$obj/box.bin" | tr -d ' ')
+	box_size=$(wc -c < "$obj/box-full.bin" | tr -d ' ')
+	box_zeros=$((box_size - box_head))
+	state_head=$(wc -c < "$obj/state.bin" | tr -d ' ')
+	state_zeros=$((0x$(awk '$1 == ".mh_state_zero" { print $2 }' "$obj/sections.txt")))
+	rest_vma=$(printf '0x%08X' $((0x$(awk '$1 == ".rodata" { print $3 }' "$obj/sections.txt"))))
+	rest_size=$(wc -c < "$obj/rest.bin" | tr -d ' ')
 	data_size=$(wc -c < "$obj/data.bin" | tr -d ' ')
+	[ $((data + state_head + state_zeros)) -eq $((rest_vma)) ] ||
+		fail "$g: the read-only data does not follow the state ($rest_vma)"
+	[ $((state_head + state_zeros + rest_size)) -eq $((data_size)) ] ||
+		fail "$g: the data image is not the state, its zeros and the read-only data"
+	core_start=$(sym "$obj/mh.elf" _core_start)
+	core_end=$(sym "$obj/mh.elf" _core_end)
+	[ $((box_size)) -eq $((mbox_size)) ] && [ $((mbox + box_size)) -eq $(($(sym "$obj/mh.elf" _box_end))) ] ||
+		fail "$g: box.bin is $box_size bytes, not the mailbox's $mbox_size"
+	[ $((mbox + box_size)) -le $((mbox_end)) ] || fail "$g: the mailbox runs past $mbox_end"
 	[ $((cave + code_size)) -eq $(($(sym "$obj/mh.elf" _text_end))) ] ||
 		fail "$g: code.bin is $code_size bytes, the link ends elsewhere"
 	[ $((data + data_size)) -eq $(($(sym "$obj/mh.elf" _data_end))) ] ||
@@ -195,8 +236,10 @@ for g in $RENDERERS; do
 	frame_stub=$(sym "$obj/mh.elf" mh_frame_stub)
 	screen_stub=$(sym "$obj/mh.elf" mh_screen_stub)
 	inject_stub=$(sym "$obj/mh.elf" mh_inject_stub)
+	help_stub=$(sym "$obj/mh.elf" mh_help_label)
 	[ -n "$start_desc" ] && [ -n "$stop_desc" ] && [ -n "$frame_stub" ] && [ -n "$screen_stub" ] &&
-		[ -n "$inject_stub" ] || fail "$g: a symbol is missing"
+		[ -n "$inject_stub" ] && [ -n "$help_stub" ] && [ -n "$core_start" ] && [ -n "$core_end" ] ||
+		fail "$g: a symbol is missing"
 	# The descriptors must be data.bin's, the stubs code.bin's.
 	for d in $start_desc $stop_desc; do
 		[ $((d)) -ge $((data)) ] && [ $((d)) -lt $((data + data_size)) ] || fail "$g: descriptor $d is not in data.bin"
@@ -205,21 +248,34 @@ for g in $RENDERERS; do
 	w_frame=$(blword "$site_frame" "$frame_stub")
 	w_screen=$(blword "$site_screen" "$screen_stub")
 	w_inject=$(blword "$site_inject" "$inject_stub")
+	w_help_label=$(blword "$site_help_label" "$help_stub")
 
 	{
-		echo "/* $g: the data image, $data_size bytes at $data: mailbox, state, rodata, TOC, descriptors */"
-		echo "static const u8 mh_${g}_data[] = {"
-		emit_bytes "$obj/data.bin"
+		echo "/* $g: the mailbox, $box_size bytes at $mbox as the install leaves it: the header, then $box_zeros zeros */"
+		echo "static const u8 mh_${g}_box[] = {"
+		emit_bytes "$obj/box.bin"
 		echo "};"
 		echo
-		echo "/* $g: the code, $code_size bytes at $cave: the stubs, then the C */"
+		echo "/* $g: the core's and the shim's state at $data: the core's magic, then $state_zeros zeros */"
+		echo "static const u8 mh_${g}_state[] = {"
+		emit_bytes "$obj/state.bin"
+		echo "};"
+		echo
+		echo "/* $g: the read-only data, the TOC and the descriptors, $rest_size bytes at $rest_vma */"
+		echo "static const u8 mh_${g}_data[] = {"
+		emit_bytes "$obj/rest.bin"
+		echo "};"
+		echo
+		echo "/* $g: the code, $code_size bytes at $cave: the stubs, then the core ($core_start..$core_end), then the shim */"
 		echo "static const u8 mh_${g}_code[] = {"
 		emit_bytes "$obj/code.bin"
 		echo "};"
 		echo
 		echo "static const struct mh_cave mh_${g}_caves[] = {"
-		echo "	{ ${data}u, mh_${g}_data, (u32)sizeof(mh_${g}_data), 0 },"
-		echo "	{ ${cave}u, mh_${g}_code, (u32)sizeof(mh_${g}_code), 1 }"
+		echo "	{ ${mbox}u, mh_${g}_box, (u32)sizeof(mh_${g}_box), 0, ${box_zeros}u },"
+		echo "	{ ${data}u, mh_${g}_state, (u32)sizeof(mh_${g}_state), 0, ${state_zeros}u },"
+		echo "	{ ${rest_vma}u, mh_${g}_data, (u32)sizeof(mh_${g}_data), 0, 0u },"
+		echo "	{ ${cave}u, mh_${g}_code, (u32)sizeof(mh_${g}_code), 1, 0u }"
 		echo "};"
 		echo
 		echo "/* In the order they go in; they come out in the reverse order. */"
@@ -230,24 +286,28 @@ for g in $RENDERERS; do
 		printf '\t{ 0x%08Xu, %su, 0x00000000u },   /* fcStop: mh_stop */\n' $((slot + 12)) "$stop_desc"
 		printf '\t{ %su, %su, %su },   /* bl mh_frame_stub (%s) */\n' "$site_frame" "$w_frame" "$orig_frame" "$frame_stub"
 		printf '\t{ %su, %su, %su },   /* bl mh_screen_stub (%s) */\n' "$site_screen" "$w_screen" "$orig_screen" "$screen_stub"
-		printf '\t{ %su, %su, %su }    /* bl mh_inject_stub (%s) */\n' "$site_inject" "$w_inject" "$orig_inject" "$inject_stub"
+		printf '\t{ %su, %su, %su },   /* bl mh_inject_stub (%s) */\n' "$site_inject" "$w_inject" "$orig_inject" "$inject_stub"
+		printf '\t{ %su, %su, %su },   /* bl mh_help_label (%s) */\n' "$site_help_label" "$w_help_label" "$orig_help_label" "$help_stub"
+		printf '\t{ %su, %su, %su }    /* li r4,36: the Help row opens screen 36 */\n' "$site_help_screen" "$w_help_screen" "$orig_help_screen"
 		echo "};"
 		echo
 	} >> "$OUT/arrays.c"
 
 	{
-		echo "	{ $((game)), mh_${g}_caves, 2, mh_${g}_hooks, 7,"
-		echo "	  ${data}u, ${mbox_size}u, ${state}u,"
+		echo "	{ $((game)), mh_${g}_caves, 4, mh_${g}_hooks, 9,"
+		echo "	  ${mbox}u, ${mbox_size}u, ${state}u,"
 		echo "	  ${mode_addr}u, ${mode_paused}u, ${pending_addr}u, ${pending_none}u,"
 		echo "	  ${screen_addr}u, ${screen_id}u },"
 	} >> "$OUT/descs.txt"
 
 	{
-		echo "$g: code $code_size bytes at $cave ($((cave_end - cave - code_size)) left), data $data_size bytes at $data ($((data_end - data - data_size)) left)"
+		echo "$g: code $code_size bytes at $cave ($((cave_end - cave - code_size)) left), mailbox $box_size bytes at $mbox, data $data_size bytes at $data ($((data_end - data - data_size)) left); the core is $((core_end - core_start)) bytes of the code"
 		echo "  $(printf '0x%08X' $((slot)))..+16 -> {0, 0, $start_desc, $stop_desc}"
 		echo "  $site_frame -> $w_frame  bl mh_frame_stub ($frame_stub)"
 		echo "  $site_screen -> $w_screen  bl mh_screen_stub ($screen_stub)"
 		echo "  $site_inject -> $w_inject  bl mh_inject_stub ($inject_stub)"
+		echo "  $site_help_label -> $w_help_label  bl mh_help_label ($help_stub)"
+		echo "  $site_help_screen -> $w_help_screen  li r4,36"
 	} >> "$OUT/report.txt"
 done
 
@@ -277,12 +337,17 @@ cat > "$GEN_H" <<'EOF'
 
 #include "../core/proto.h"
 
-/* One run of bytes at one address: the data image, or the code. */
+/*
+ * One run of bytes at one address - the mailbox, the state, the read-only
+ * data, or the code - and then `zeros` bytes of 0, which the module carries as
+ * a count rather than as bytes.
+ */
 struct mh_cave {
 	u32 addr;
 	const u8 *bytes;
 	u32 len;
 	u8  code;      /* 1 for the code, which an install compares before adopting */
+	u32 zeros;
 };
 
 /* One word a renderer replaces, with the game's own word there. */
@@ -295,7 +360,7 @@ struct mh_word {
 struct mh_desc {
 	u8 game_id;
 
-	/* The data image first, then the code: both before any hook. */
+	/* The mailbox, the state and the read-only data first, then the code: all before any hook. */
 	const struct mh_cave *caves;
 	u8 ncaves;
 

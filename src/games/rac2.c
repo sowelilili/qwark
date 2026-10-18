@@ -1159,6 +1159,27 @@ static const struct game_manips rac2_manips = {
 	rac2_in_file
 };
 
+/* ----------------------------------------------------------- console menu */
+
+/*
+ * Revision 1.22, round 2: what the console menu knows of RaC2 so far. It has
+ * no renderer yet, and until it has, no sections either (round 1's page per
+ * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED and
+ * MAX, on the level, field 1, which UNLOCK_SET holds to the weapon's own last
+ * version.
+ */
+static const char * const rac2_unlock_names[] = { "LOCKED", "UNLOCKED", "MAX" };
+static const u32 rac2_unlock_values[] = { 0, 1, RAC2_MAX_LEVELS };
+
+static const struct game_menu rac2_menu = {
+	NULL, 0,
+	NULL, 0,
+	rac2_unlock_names, rac2_unlock_values,
+	(u8)(sizeof(rac2_unlock_names) / sizeof(rac2_unlock_names[0])),
+	1, "V",
+	NULL
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 /*
@@ -1225,5 +1246,6 @@ const struct game_api rac2_game = {
 	rac2_autosplit_describe,
 
 	&rac2_manips,         /* revision 1.21 */
-	NULL                  /* planet_order: the ids run in the game's order */
+	NULL,                 /* planet_order: the ids run in the game's order */
+	&rac2_menu            /* revision 1.22, round 2 */
 };

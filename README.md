@@ -52,7 +52,7 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 ## Console menu
 
-On a console, Deadlocked has a RaCMAN menu on the TV: press L1 + R1 + L2 + R2 + L3 + R3 in play. The combo is the only way in; the game's own menus are left as they are. The Combos panel can change it, and clearing it leaves no way in. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
+On a console, Deadlocked has a RaCMAN menu on the TV, with the game's cheats, values, planets, manips, unlocks and save files. Open it from Help in the pause menu, which it replaces, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
 
 ## What it does without a PC
 

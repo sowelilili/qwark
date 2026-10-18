@@ -1327,6 +1327,27 @@ static const struct game_manips rac3_manips = {
 	rac3_in_file
 };
 
+/* ----------------------------------------------------------- console menu */
+
+/*
+ * Revision 1.22, round 2: what the console menu knows of UYA so far. It has no
+ * renderer yet, and until it has, no sections either (round 1's page per
+ * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED and
+ * MAX, on the level, field 1, which UNLOCK_SET holds to the weapon's own last
+ * version.
+ */
+static const char * const rac3_unlock_names[] = { "LOCKED", "UNLOCKED", "MAX" };
+static const u32 rac3_unlock_values[] = { 0, 1, RAC3_MAX_LEVELS };
+
+static const struct game_menu rac3_menu = {
+	NULL, 0,
+	NULL, 0,
+	rac3_unlock_names, rac3_unlock_values,
+	(u8)(sizeof(rac3_unlock_names) / sizeof(rac3_unlock_names[0])),
+	1, "V",
+	NULL
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac3_game = {
@@ -1386,5 +1407,6 @@ const struct game_api rac3_game = {
 	rac3_autosplit_describe,
 
 	&rac3_manips,         /* revision 1.21 */
-	rac3_planet_order     /* build 53 */
+	rac3_planet_order,    /* build 53 */
+	&rac3_menu            /* revision 1.22, round 2 */
 };

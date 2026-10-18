@@ -222,6 +222,56 @@ struct game_manips {
 	int (*in_file)(void);
 };
 
+/*
+ * Revision 1.22, round 2: what the console menu (src/core/menu.c) needs to
+ * know about a game beyond its DESCRIBE table. A game without one gets round
+ * 1's menu, a page per DESCRIBE group. How the menu is cased is the game's
+ * renderer's business (src/games/menuhelper/), not this table's.
+ *
+ * A section is a page of rows the game lists in order: its own features by
+ * id, and the position rows, which are not features, by the MENU_ITEM_*
+ * numbers below (no feature id reaches them).
+ */
+#define MENU_ITEM_SLOT      0xF0   /* the position slot Save and Load use */
+#define MENU_ITEM_POS_SAVE  0xF1
+#define MENU_ITEM_POS_LOAD  0xF2
+
+struct menu_section {
+	const char *title;
+	const u8 *items;
+	u8 nitems;
+};
+
+struct game_menu {
+	/* The pages the root links to first, in order (Game, Cheats). */
+	const struct menu_section *sections;
+	u8 nsections;
+
+	/* Actions listed on the Unlocks page under its categories. */
+	const u8 *unlock_actions;
+	u8 nunlock_actions;
+
+	/*
+	 * The values an unlock row cycles through, for the rows that declare
+	 * `unlock_field`: names[0] is the locked one, and names[i] owns the item
+	 * with `unlock_field` set to values[i]. A field value that is not on the
+	 * list shows as `unlock_prefix` and the number, or as the name below it
+	 * when there is no prefix. Rows without the field are LOCKED or UNLOCKED.
+	 */
+	const char * const *unlock_names;
+	const u32 *unlock_values;
+	u8 nunlock;
+	u8 unlock_field;
+	const char *unlock_prefix;
+
+	/*
+	 * 1 when the planet may be loaded from the menu, NULL for every named
+	 * one. Deadlocked crashes loading a planet the save has not unlocked.
+	 * Tick thread: it may read the game.
+	 */
+	int (*planet_ok)(u8 planet);
+};
+
 /* Build 53: what struct game_api's savefile_ready is asked about. */
 #define GAME_SF_SET_ASIDE 0
 #define GAME_SF_LOAD      1
@@ -401,6 +451,9 @@ struct game_api {
 	 * PLANET_LIST then sends 0 to count - 1.
 	 */
 	const u8 *planet_order;
+
+	/* Revision 1.22, round 2: the console menu's table, NULL for round 1's menu. */
+	const struct game_menu *menu;
 };
 
 /*

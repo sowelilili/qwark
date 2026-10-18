@@ -9,7 +9,7 @@
  * the bytes qwark writes and the bytes the renderer writes are the bytes a
  * console would hold. Game functions are the test's mocks there.
  *
- * Nothing here is game-specific; mh_<game>.c includes it.
+ * Nothing here is game-specific; mh_core.c and mh_<game>.c include it.
  */
 #ifndef QWARK_MH_COMMON_H
 #define QWARK_MH_COMMON_H
@@ -24,7 +24,8 @@ typedef signed int         s32;
 
 #ifdef MH_HOST
 
-u8 *mh_host_ptr(u32 addr);
+/* Each test file that builds a renderer supplies its own. */
+static u8 *mh_host_ptr(u32 addr);
 
 static u32 r8(u32 a)  { return *mh_host_ptr(a); }
 static u32 r16(u32 a) { return ((u32)*mh_host_ptr(a) << 8) | *mh_host_ptr(a + 1); }
@@ -36,7 +37,7 @@ static u32 r32(u32 a)
 static void w8(u32 a, u32 v)  { *mh_host_ptr(a) = (u8)v; }
 static void w16(u32 a, u32 v) { w8(a, v >> 8); w8(a + 1, v); }
 static void w32(u32 a, u32 v) { w8(a, v >> 24); w8(a + 1, v >> 16); w8(a + 2, v >> 8); w8(a + 3, v); }
-static float rf32(u32 a)
+static __attribute__((unused)) float rf32(u32 a)
 {
 	union { u32 u; float f; } x;
 	x.u = r32(a);

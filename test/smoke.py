@@ -301,13 +301,18 @@ COMBO_OPEN_MENU = 5
 COMBO_MENU_DEFAULT = 0x060F
 
 # Revision 1.22: Deadlocked's console menu renderer (src/games/menuhelper/mh_rac4.h)
-# and its mailbox (src/core/menubox.h), read and written here as a renderer would.
-MENU_BOX = 0x017DF200
+# and its mailbox (src/core/menubox.h, version 2), read and written here as a
+# renderer would. The last two sites are the pause main menu's Help row, which
+# the renderer makes the menu's way in.
+MENU_BOX = 0x017DD600
 MENU_MAGIC = 0x514D4E55
 MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
-              0x0035DFBC: 0x60000000}
-MENU_CODE = (0x0097D000, 0x0097F000)
-MENU_DATA = (0x017DF200, 0x017DFF00)
+              0x0035DFBC: 0x60000000, 0x003A649C: 0x4BDF25C1,
+              0x003A8584: 0x3880001E}
+MENU_HELP_SCREEN = (0x003A8584, 0x38800024)
+MENU_CODE = (0x0097B000, 0x0097F000)
+MENU_DATA = (0x017DF0C0, 0x017DFFC0)
+MENU_BOX_SPAN = (0x017DD600, 0x017DDF00)
 # The call in MenuMain_StartOptions where round 1 put a RaCMAN row, with the
 # game's own word: the menu's only way in is the combo, and Options stays the
 # game's own list.
@@ -323,9 +328,11 @@ MBOX_OFF_EV_ACK = 0x20
 MBOX_OFF_PAGE_SEQ = 0x24
 MBOX_OFF_PAGE_KEY = 0x28
 MBOX_OFF_NROWS = 0x2C
+MBOX_OFF_PTYPE = 0x2F
 MBOX_OFF_TITLE = 0x30
 MBOX_OFF_ROWS = 0x80
-MBOX_ROW_SIZE = 0x40
+MBOX_ROW_SIZE = 0x80
+MBOX_PTYPE_CONFIG = 1
 MBOX_EV_ACTIVATE = 1
 MBOX_EV_BACK = 4
 
@@ -2290,18 +2297,18 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head
 # ------------------------------------------------- the console menu, 1.22
 
 def menu_page(c):
-    """The page in Deadlocked's mailbox: (page_seq, key, title, [labels], raw)."""
-    status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX, 0x280))
+    """The page in Deadlocked's mailbox: (page_seq, key, title, [labels], raw, type)."""
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX, 0x880))
     if status != ST_OK:
         return None
     seq, key = struct.unpack(">II", body[MBOX_OFF_PAGE_SEQ:MBOX_OFF_PAGE_SEQ + 8])
     n = body[MBOX_OFF_NROWS]
     title = body[MBOX_OFF_TITLE:MBOX_OFF_TITLE + 32].split(b"\0")[0].decode()
     labels = []
-    for i in range(min(n, 8)):
+    for i in range(min(n, 16)):
         r = body[MBOX_OFF_ROWS + i * MBOX_ROW_SIZE:MBOX_OFF_ROWS + (i + 1) * MBOX_ROW_SIZE]
         labels.append(r[4:44].split(b"\0")[0].decode())
-    return seq, key, title, labels, body
+    return seq, key, title, labels, body, body[MBOX_OFF_PTYPE]
 
 
 def menu_event(c, kind, row):
@@ -2328,8 +2335,8 @@ def bl_target(a, w):
 
 
 def exercise_console_menu(c, sim):
-    """Revision 1.22 over the wire: the install on the first combo, the mailbox,
-    the combo, menu.enabled."""
+    """Revision 1.22 over the wire: the install a few seconds into the session,
+    the Help row, the mailbox, the combo, menu.enabled."""
 
     # The menu combo, as a player presses it. `clear` first takes back any
     # request left in the mailbox, which is only there once the renderer is.
@@ -2345,24 +2352,23 @@ def exercise_console_menu(c, sim):
         status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX + MBOX_OFF_REQUEST, 1))
         return body[0] if status == ST_OK else None
 
-    # Nothing of the menu goes into the game before the combo: well past the
-    # three seconds after which round 1 installed it, the areas are empty.
+    # The renderer goes in a few seconds into the session, once the game is in
+    # ordinary play (gameMode 0, no mode change queued), for the Help row.
     mem_write(c, DL_OPTIONS_SITE, struct.pack(">I", DL_OPTIONS_WORD))
-    time.sleep(3.5)
-    check(mem_read_u32(c, MENU_BOX) != MENU_MAGIC and mem_read_u32(c, MENU_CODE[0]) == 0 and
-          menu_hooks(c) == MENU_SITES,
-          "Deadlocked menu: three and a half seconds into the session, nothing of it is in the game",
-          dict((hex(a), hex(w)) for a, w in menu_hooks(c).items()))
-
-    check(combo(clear=False) == 1,
-          "Deadlocked menu: the first menu combo installs the renderer and asks it to open")
+    mem_write(c, 0x009C37F4, struct.pack(">I", 0xFFFFFFFE))
+    deadline = time.time() + 6.0
+    while time.time() < deadline and mem_read_u32(c, MENU_BOX) != MENU_MAGIC:
+        time.sleep(0.2)
     check(mem_read_u32(c, MENU_BOX) == MENU_MAGIC,
-          "Deadlocked menu: its mailbox is in the game")
+          "Deadlocked menu: a few seconds into the session its mailbox is in the game")
     hooks = menu_hooks(c)
     check(all((w >> 26) == 18 and MENU_CODE[0] <= bl_target(a, w) < MENU_CODE[1]
-              for a, w in hooks.items()),
-          "Deadlocked menu: every hook site branches into the renderer's code",
+              for a, w in hooks.items() if a != MENU_HELP_SCREEN[0]) and
+          hooks[MENU_HELP_SCREEN[0]] == MENU_HELP_SCREEN[1],
+          "Deadlocked menu: every hook site branches into the renderer's code, and Help's callback opens screen 36",
           dict((hex(a), hex(w)) for a, w in hooks.items()))
+    check(combo(clear=False) == 1,
+          "Deadlocked menu: the menu combo asks the renderer to open")
     check(mem_read_u32(c, DL_OPTIONS_SITE) == DL_OPTIONS_WORD,
           "Deadlocked menu: and Options' call to SetMenuButtons keeps the game's word",
           hex(mem_read_u32(c, DL_OPTIONS_SITE)))
@@ -2370,15 +2376,16 @@ def exercise_console_menu(c, sim):
 
     page = menu_page(c)
     check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
-          page[3][:2] == ["Cheats", "Player"],
+          page[3][:3] == ["Game", "Cheats", "Planets"],
           "Deadlocked menu: the root page is posted", page[:4] if page else None)
 
-    check(menu_event(c, MBOX_EV_ACTIVATE, 0),
+    check(menu_event(c, MBOX_EV_ACTIVATE, 1),
           "Deadlocked menu: an event written into the mailbox is acked")
     time.sleep(0.1)
     page = menu_page(c)
-    check(page is not None and page[2] == "Cheats" and "Ghost Ratchet" in page[3],
-          "Deadlocked menu: and the Cheats page is posted for it", page[:4] if page else None)
+    check(page is not None and page[2] == "Cheats" and "Ghost Ratchet" in page[3] and
+          page[5] == MBOX_PTYPE_CONFIG,
+          "Deadlocked menu: and the Cheats page is posted for it, a CONFIG page", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back is acked")
     time.sleep(0.1)
     page = menu_page(c)
@@ -2415,10 +2422,12 @@ def exercise_console_menu(c, sim):
     check(write_console_file(c, cfg_path, cfg), "Deadlocked menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
     time.sleep(0.5)
-    check(menu_hooks(c) == MENU_SITES,
-          "Deadlocked menu: menu.enabled = 1 writes nothing by itself")
-    check(combo() == 1 and menu_hooks(c) != MENU_SITES,
-          "Deadlocked menu: the next combo puts the renderer back and asks it to open")
+    deadline = time.time() + 3.0
+    while time.time() < deadline and menu_hooks(c) == MENU_SITES:
+        time.sleep(0.1)
+    check(menu_hooks(c) != MENU_SITES,
+          "Deadlocked menu: menu.enabled = 1 puts the renderer back, the game being in play")
+    check(combo() == 1, "Deadlocked menu: and the combo asks it to open")
     check(mem_read_u32(c, DL_OPTIONS_SITE) == DL_OPTIONS_WORD,
           "Deadlocked menu: Options' word through all of it is the game's")
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
@@ -3848,8 +3857,9 @@ def smoke_rpcs3_planet_loads(c, pine):
           "rpcs3: every fast-load word kept its instruction",
           [hex(w) for w in words])
 
-    # Revision 1.22: no console menu under RPCS3. Its renderer goes in on the
-    # menu combo on a console; pressed here, nothing of it is written.
+    # Revision 1.22: no console menu under RPCS3. Its renderer goes in a few
+    # seconds into a session on a console; here nothing of it is written, the
+    # combo pressed or not.
     pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
     time.sleep(0.2)
     logged = len(pine.write_log)
@@ -3863,7 +3873,8 @@ def smoke_rpcs3_planet_loads(c, pine):
           hex(held) if held is not None else None)
     menu_writes = [(hex(a), n) for a, n in pine.write_log[logged:]
                    if MENU_CODE[0] <= a < MENU_CODE[1] or MENU_DATA[0] <= a < MENU_DATA[1] or
-                   a in MENU_SITES or 0x009E8B58 <= a < 0x009E8B68]
+                   MENU_BOX_SPAN[0] <= a < MENU_BOX_SPAN[1] or a in MENU_SITES or
+                   0x009E8B58 <= a < 0x009E8B68]
     check(not menu_writes and pine.peek(MENU_BOX, 4) == b"\0\0\0\0" and
           all(pine.peek(a, 4) in (b"\0\0\0\0", struct.pack(">I", w)) for a, w in MENU_SITES.items()),
           "rpcs3: the menu combo writes no console menu renderer into the game",

@@ -1,7 +1,15 @@
 /*
- * The console menu's mailbox, version 1: the block of game memory that qwark
+ * The console menu's mailbox, version 2: the block of game memory that qwark
  * and a game's menu renderer talk through (PROTOCOL.md section 9.4 says the
  * same in prose).
+ *
+ * Version 2 (round 2, still revision 1.22) adds the page type: a MAIN page is
+ * a short list of links and buttons, the game's own button list; a CONFIG page
+ * is a two-column list of labels and controls, the kind the game's Cheats
+ * screen draws. A renderer says how many rows it takes on a CONFIG page
+ * (cfg_rows), and one that has no CONFIG page says 0 and is sent every page as
+ * MAIN. A qwark and a renderer of different versions never meet: the install
+ * refuses a renderer that is not this build's.
  *
  * qwark owns the menu (src/core/menu.c): the pages, the navigation, what a row
  * does. A renderer is a small piece of code qwark writes into the game, one per
@@ -37,7 +45,7 @@
 #define QWARK_MENUBOX_H
 
 #define MBOX_MAGIC          0x514D4E55   /* 'QMNU' */
-#define MBOX_VERSION        1
+#define MBOX_VERSION        2
 
 /* --------------------------------------------------------------- the header */
 
@@ -46,12 +54,12 @@
 #define MBOX_OFF_SIZE       0x06   /* u16 bytes in the whole block            install */
 #define MBOX_OFF_ROW_CAP    0x08   /* u8 row slots in the block               install */
 #define MBOX_OFF_ROW_SIZE   0x09   /* u8 MBOX_ROW_SIZE                        install */
-#define MBOX_OFF_MAX_ROWS   0x0A   /* u8 rows the renderer shows at once      renderer */
+#define MBOX_OFF_MAX_ROWS   0x0A   /* u8 rows the renderer shows at once on a MAIN page  renderer */
 #define MBOX_OFF_CAPS       0x0B   /* u8 MBOX_CAP_* bits                      renderer */
 #define MBOX_OFF_HSTATE     0x0C   /* u8 MBOX_HSTATE_*                        renderer */
 #define MBOX_OFF_REQUEST    0x0D   /* u8 MBOX_REQ_*            qwark sets, renderer clears */
 #define MBOX_OFF_RENDERER   0x0E   /* u8 the renderer's game id (4 Deadlocked) install */
-#define MBOX_OFF_RES0F      0x0F   /* u8 0 */
+#define MBOX_OFF_CFG_ROWS   0x0F   /* u8 the same on a CONFIG page, 0 for none  renderer */
 #define MBOX_OFF_FRAMES     0x10   /* u32 frames the menu has been up         renderer */
 #define MBOX_OFF_EV_SEQ     0x14   /* u32 bumped after the record below       renderer */
 #define MBOX_OFF_EV_KIND    0x18   /* u8 MBOX_EV_*                            renderer */
@@ -66,7 +74,7 @@
 #define MBOX_OFF_NROWS      0x2C   /* u8 rows in use, 1..row_cap                qwark */
 #define MBOX_OFF_CURSOR     0x2D   /* u8 the row the cursor goes to on a new key qwark */
 #define MBOX_OFF_PFLAGS     0x2E   /* u8 MBOX_PAGE_*                            qwark */
-#define MBOX_OFF_RES2F      0x2F   /* u8 0 */
+#define MBOX_OFF_PTYPE      0x2F   /* u8 MBOX_PTYPE_*                           qwark */
 #define MBOX_OFF_TITLE      0x30   /* char[32], NUL-padded                      qwark */
 #define MBOX_OFF_HINT       0x50   /* char[48], a line about the page: the last result qwark */
 #define MBOX_OFF_ROWS       0x80   /* rows[row_cap], row_size each              qwark */
@@ -140,5 +148,12 @@
 
 /* pflags. */
 #define MBOX_PAGE_ROOT      0x01   /* back here leaves the menu, which the renderer does itself */
+
+/*
+ * ptype: the widget a page is drawn with. A renderer whose cfg_rows is 0 is
+ * only ever sent MAIN pages.
+ */
+#define MBOX_PTYPE_MAIN     0      /* a short list: links and buttons, "label: value" */
+#define MBOX_PTYPE_CONFIG   1      /* labels and controls in two columns, a line of description */
 
 #endif /* QWARK_MENUBOX_H */
