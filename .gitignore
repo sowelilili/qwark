@@ -295,6 +295,7 @@ $RECYCLE.BIN/
 objs/
 qwark.prx
 qwark.sym
+qwark.map
 qwark-host.exe
 qwark-host-root/
 qwark-rpcs3.exe
