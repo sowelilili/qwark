@@ -59,6 +59,19 @@ CHEATS'; the label, inject, combo and rows stubs, stepped, do what the C and
 the tests assume; and nothing overlaps the mods, the probes or qwark's own
 writes (the trophy caves and the fast-load cave at 0x9807F0..0x9808B0), but
 for probes N3 and N3b, the prototypes, whose words are the same by design.
+
+For Going Commando's renderer, the same again, and for its six words: the
+label hook, the Start test, the pause reason and the root the pause manager
+opens on, each a branch to the stub its comment names, and the root's Help
+entry's screen and label, a screen of the renderer's and the text id 0xF000;
+the code round each site is what the stubs assume (the msg_string entry, the
+Start test and path, the manager's state 1 and its screen changes); the six
+screens in the data image are copies of the root's and Cheats', with the
+renderer's item; Cheats' draw has the layout the shim copies; the root's setup
+asks the six questions the inject asks; the label, inject, combo and root stubs,
+stepped, do what the C and the tests assume; and nothing overlaps the mods, the
+probes or qwark's own writes, but for probes N2 to N2c, whose words are the
+same by design.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -493,6 +506,8 @@ class Ppc:
                 self.set(rd, base + (simm << 16))
             elif op == 14:                                  # addi / li
                 self.set(rd, base + simm)
+            elif op == 12:                                  # addic (rA is never 0; CA not kept)
+                self.set(rd, self.r[ra] + simm)
             elif op == 7:                                   # mulli
                 self.set(rd, signed(self.r[ra]) * simm)
             elif op == 24:                                  # ori (rS, rA swapped)
@@ -1325,6 +1340,432 @@ def check_rac3(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
+# ------------------------------------------------------------- Going Commando
+
+RAC2_TOC = 0x0131D0F0
+
+# qwark's own writes into RaC2, build 54: src/games/rac2*.{c,h},
+# src/games/sfhelper/sf_rac2.h, src/games/switches/sw_rac2.ld. (lo, hi, what).
+QWARK_RAC2 = [
+    (0x0113EC64, 0x01141400, "the savefile helper's cave"),
+    (0x01141400, 0x011414FC, "code switches (RPCS3) and the crash guards' caves"),
+    (0x00B086B0, 0x00B086B4, "savefile helper hook"),
+    (0x01317728, 0x01317730, "savefile helper request bytes"),
+    (0x01C00000, 0x01E00000, "savefile aside buffer"),
+    (0x00BEA8A0, 0x00BEA8A4, "fast loads, also the fingerprint"),
+    (0x00B30C7C, 0x00B30C80, "infinite ammo"),
+    (0x00086960, 0x00086964, "the grid crash guard's site"),
+    (0x00BDF30C, 0x00BDF310, "the ship crash guard's site"),
+    (0x015B3070, 0x015B3071, "the debug mode byte"),
+]
+
+# Overlaps that are by design: (mod folder) -> why.
+ACCEPTED_RAC2 = {
+    "probe-n2": "probe N2 is this renderer's first prototype and hooks the same label, combo and root "
+                "words; the install refuses while it is loaded",
+    "probe-n2b": "probe N2b is a prototype and hooks the same words but the Start test; the install "
+                 "refuses while it is loaded",
+    "probe-n2c": "probe N2c is this renderer's prototype and hooks the same words but the Start test; "
+                 "the install refuses while it is loaded",
+}
+
+# The stubs' first words (mh_rac2_stubs.S), by the symbol in the hook's comment.
+STUB_FIRST_RAC2 = {
+    "mh_msg_stub": (0xFFFFFFFF, 0x54650036, "rlwinm r5,r3,0,0,27"),
+    "mh_inject_stub": (0xFFFFFFFF, 0x54840528, "rlwinm r4,r4,0,20,20, the game's own test"),
+    "mh_combo_stub": (0xFFFFFFFF, 0x38A00001, "li r5,1"),
+    "mh_root_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
+}
+
+# The root's seven labels (0x135211C; the fifth, Help's, is the label word) and
+# the four label tables of the special roots after it, which have no Help.
+R2_ROOT_LABELS = (0x0135211C, (0x2D51, 0x2D52, 0x2D53, 0x2D54, 0x2D55, 0x2D56, 0x2DB3))
+R2_OTHER_LABELS = (0x01352138, 0x0135214C, 0x01352160, 0x0135216C)
+
+
+def check_rac2_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
+    shim, state, box = hdr["MH_SHIM"], hdr["MH_STATE"], hdr["MH_BOX"]
+    pressed, force = shim + hdr["SH_PRESSED"], shim + hdr["SH_FORCE"]
+    request = box + box_defs["MBOX_OFF_REQUEST"]
+    opens = state + shim_defs["ST_OPENS"]
+    front = state + shim_defs["ST_FRONT"]
+    text0, set_size = shim_set_layout(shim_defs, hdr["MH_ROWS"])
+    text0 += state
+    text_len = shim_defs["MH_TEXT_LEN"]
+    screens = hdr["MH_SCREENS"]
+
+    def run(name, regs, mem=None):
+        cpu = Ppc(code, cave, {})
+        for (a, n), v in (mem or {}).items():
+            cpu.st(a, v, n)
+        for k, v in regs.items():
+            cpu.r[k] = v
+        return cpu, cpu.run(stub_at[name])
+
+    def cstr(a):
+        if not hdr["MH_DATA"] <= a < hdr["MH_DATA"] + len(data):
+            return None
+        return data[a - hdr["MH_DATA"]:].split(b"\0")[0].decode("latin1")
+
+    # The label hook: Trainer, the rows of the set on show, and everything else on into msg_string.
+    msg_ok = {"r3", "r4", "r5", "cr0"}
+    cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_HELP"], 4: 0x1234})
+    ok(how == ("blr", None) and cstr(cpu.r[3]) == hdr["MH_ENTRY_LABEL"] == "Trainer" and cpu.written <= msg_ok,
+       "msg stub, 0xF000: \"%s\", in the data image, back to msg_string's caller" % hdr["MH_ENTRY_LABEL"])
+    for f in (0, 1):
+        good = True
+        for i in range(hdr["MH_MAIN_ROWS"]):
+            cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_ROW0"] + i}, {(front, 1): f})
+            good = good and how == ("blr", None) and cpu.r[3] == text0 + f * set_size + i * text_len and \
+                cpu.written <= msg_ok
+        ok(good, "msg stub, 0xF001 + i for each of the %d MAIN rows: row i of text set %d, the one on show "
+           "(mh_text(i))" % (hdr["MH_MAIN_ROWS"], f))
+    for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, 0xF010, 0xEFFF, 0x2D55, 0x2D4E):
+        cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234})
+        ok(how == ("b", hdr["GAME_MSG_EXIT"]) and cpu.r[3] == idn and cpu.r[4] == 0x01340000 and
+           cpu.written <= msg_ok,
+           "msg stub, 0x%X: on into msg_string with r4 = 0x1340000 (its first instruction), r3 kept" % idn)
+
+    # The inject, with no request: the game's own test, a leaf.
+    inject_ok = {"r0", "r4", "r11", "r12", "cr0"}
+    for edges, want in ((0x40, 0), (0x840, 0x800)):
+        cpu, how = run("mh_inject_stub", {3: 0x333, 4: edges, 29: 0x29},
+                       {(request, 1): 0, (pressed, 1): 1})
+        ok(how == ("blr", None) and cpu.r[4] == want and cpu.r[3] == 0x333 and cpu.ld(pressed, 1) == 0 and
+           cpu.written <= inject_ok,
+           "inject, no request, presses 0x%X: r4 = 0x%X (the game's test), r3 kept, PRESSED down" % (edges, want))
+
+    # The Start path tells the root stub.
+    for p in (0, 1):
+        cpu, how = run("mh_combo_stub", {3: 3, 4: 1, 6: 0x66}, {(pressed, 1): p, (force, 1): 1 - p})
+        ok(how == ("blr", None) and cpu.r[5] == 1 and cpu.ld(force, 1) == p and cpu.r[3] == 3 and
+           cpu.r[4] == 1 and cpu.r[6] == 0x66 and cpu.written <= {"r5", "r11", "r12"},
+           "combo stub, PRESSED %d: r5 = 1, FORCE %d" % (p, p))
+
+    # The root stub: the game's root, or the combo's screen over the ordinary root's bars.
+    ui = 0x44000000
+    pos = ui + hdr["R2_BARS_OFF"] + hdr["R2_R_POS"]
+    combo = screens + hdr["MS_COMBO"] * hdr["R2_SCREEN_SIZE"]
+    root_ok = {"r3", "r11", "r12", "cr0"}
+    for f, mgr, table, want, what in (
+            (0, ui, hdr["R2_POS_NORMAL"], hdr["R2_ROOT_SCREEN"], "FORCE down: the game's root"),
+            (1, ui, hdr["R2_POS_NORMAL"], combo, "FORCE up over the ordinary root: the combo's screen, counted"),
+            (1, ui, 0x01352174, hdr["R2_ROOT_SCREEN"], "FORCE up over a hoverbike root's bars: the game's root"),
+            (1, ui, 0x01352258, hdr["R2_ROOT_SCREEN"], "FORCE up over an orbit root's bars: the game's root"),
+            (1, ui, 0x0135218D, hdr["R2_ROOT_SCREEN"], "FORCE up, a table one byte off: the game's root"),
+            (1, ui, 0x0136218C, hdr["R2_ROOT_SCREEN"], "FORCE up, a table 64 KB off: the game's root"),
+            (1, 0, hdr["R2_POS_NORMAL"], hdr["R2_ROOT_SCREEN"], "FORCE up, no UI manager: the game's root")):
+        mem = {(force, 1): f, (hdr["R2_UI_MANAGER"], 4): mgr, (pos, 4): table, (opens, 4): 7}
+        cpu, how = run("mh_root_stub", {3: 0x01340000, 31: 0x015B2F50}, mem)
+        counted = 8 if want == combo else 7
+        ok(how == ("blr", None) and cpu.r[3] == want and cpu.ld(force, 1) == 0 and
+           cpu.ld(opens, 4) == counted and cpu.r[31] == 0x015B2F50 and cpu.written <= root_ok,
+           "root stub, %s (r3 = 0x%08X)" % (what, cpu.r[3]))
+
+
+def check_rac2(ok, elf, roots):
+    hdr = header_defs(os.path.join(HERE, "mh_rac2.h"))
+    box_defs = header_defs(MENUBOX)
+    shim_defs = header_defs(SHIM_H)
+    box, data, code, hooks, caves, core = parse_bins(GEN_C, "rac2")
+    print("\nNPEA00386 console menu renderer")
+    if box is None or data is None or code is None or core is None:
+        ok(False, "menuhelper_bins.c has rac2's mailbox, data, code and the core's place in it")
+        return
+
+    cave, cave_end = hdr["MH_CAVE"], hdr["MH_CAVE_END"]
+    mbx, mbx_end = hdr["MH_BOX"], hdr["MH_BOX_END"]
+    dat, dat_end = hdr["MH_DATA"], hdr["MH_DATA_END"]
+    tv, tfs, tms, _, _ = elf.text
+    rv, rfs, rms, _, _ = elf.rw
+    W = elf.word
+
+    ok(len(caves) == 4 and [c[:3] for c in caves] ==
+       [(mbx, "mh_rac2_box", 0), (dat, "mh_rac2_state", 0), (caves[2][0], "mh_rac2_data", 0),
+        (cave, "mh_rac2_code", 1)] and caves[2][3] == 0 and caves[3][3] == 0,
+       "four caves: the mailbox at 0x%08X, the state at 0x%08X, the screens and read-only data, then the code at "
+       "0x%08X" % (mbx, dat, cave))
+    rest = parse_rest(GEN_C, "rac2")
+    ok(caves[0][3] > 0 and caves[1][3] > 0 and caves[2][0] == dat + len(data) - len(rest),
+       "the mailbox and the state are a few bytes and then zeros, %d and %d of them, carried as counts; "
+       "the read-only data follows the state" % (caves[0][3], caves[1][3]))
+    ok(cave + len(code) <= cave_end and mbx + len(box) <= mbx_end and dat + len(data) <= dat_end,
+       "code %d bytes (of %d), mailbox %d bytes (of %d), data %d bytes (of %d)" %
+       (len(code), cave_end - cave, len(box), mbx_end - mbx, len(data), dat_end - dat))
+
+    # 0. the core
+    check_core(ok, hdr, code, cave, core)
+
+    # 6. the areas
+    ok(cave >= tv + tms and cave_end <= page_end(tv + tms),
+       "code area 0x%08X..0x%08X is past the text segment's end (0x%08X), in its last page" %
+       (cave, cave_end, tv + tms))
+    for lo, hi, what in ((mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+        ok(lo >= rv + rms and hi <= page_end(rv + rms),
+           "%s area 0x%08X..0x%08X is past the read-write segment's end (0x%08X), in its last page" %
+           (what, lo, hi, rv + rms))
+    for lo, hi, what in ((cave, cave_end, "code"), (mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+        br, wd, pr = refs_into(elf, lo, hi)
+        ok(not wd and not pr, "no word and no lis/addi pair in the executable names the %s area%s" %
+           (what, "" if not br else " (%d data words decode as branches into it)" % len(br)))
+
+    # 7. the mailbox and the data image
+    magic, version, size = struct.unpack(">IHH", box[0:8])
+    ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
+       version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
+       "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
+    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
+       box[10] == hdr["MH_MAIN_ROWS"] == 7 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
+       box[14] == 2 and box[15] == hdr["MH_CFG_ROWS"] == 16,
+       "row_cap 16, rows of 0x40 (no description line), 7 rows a MAIN page, 16 a CONFIG page, caps 0x%02X, "
+       "closed, no request, renderer 2" % box[11])
+    ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
+       all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+    shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
+    ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and
+       all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]),
+       "the data image: the core's state at MH_STATE with its magic 'QMH2', the shim's at MH_SHIM "
+       "(+0x%X), everything else zero" % shim_off)
+
+    # 7a. the screens, the first of the read-only data
+    scr = hdr["MH_SCREENS"]
+    so = scr - dat
+    ok(scr == hdr["MH_SHIM"] + hdr["SH_SIZE"] == caves[2][0] and scr % 16 == 0 and so + hdr["MS_SIZE"] <= len(data) and
+       hdr["MH_SHIM"] - hdr["MH_STATE"] == (shim_defs["ST_SET0"] + 2 * shim_set_layout(shim_defs, hdr["MH_ROWS"])[1] + 7) & ~7,
+       "the screens at 0x%08X, right after the shim's state (after the core's, with its two text sets): the first "
+       "bytes of the read-only data" % scr)
+
+    def dw(a):
+        return struct.unpack(">I", data[a - dat:a - dat + 4])[0]
+
+    item = scr + hdr["MS_ITEM"]
+    size = hdr["R2_SCREEN_SIZE"]
+    root_rects = [W(hdr["R2_ROOT_SCREEN"] + 4 * i) for i in range(56)]
+    cheat_rects = [W(hdr["R2_CHEATS_SCREEN"] + 4 * i) for i in range(56)]
+    ok(W(hdr["R2_ROOT_SCREEN"] + 0xE4) == 2 and W(hdr["R2_ROOT_SCREEN"] + 0xE8) == 0x013468A4 and
+       W(hdr["R2_CHEATS_SCREEN"] + 0xE4) == 9 and W(hdr["R2_CHEATS_SCREEN"] + 0xE8) == 0x0134A404,
+       "the root (0x13460E4) is id 2 with its item 0x13468A4, Cheats (0x134A2D4) id 9 with its item 0x134A404")
+    for k, name, rects, parent, idn in ((hdr["MS_HELP"], "the Help entry's", root_rects, hdr["R2_ROOT_SCREEN"], 2),
+                                        (hdr["MS_COMBO"], "the combo's", root_rects, 0, 2),
+                                        (hdr["MS_MAIN_A"], "MAIN A", root_rects, 0, 2),
+                                        (hdr["MS_MAIN_B"], "MAIN B", root_rects, 0, 2),
+                                        (hdr["MS_CFG_A"], "CONFIG A", cheat_rects, 0, 9),
+                                        (hdr["MS_CFG_B"], "CONFIG B", cheat_rects, 0, 9)):
+        s = scr + k * size
+        mine = [dw(s + 4 * i) for i in range(size // 4)]
+        ok(mine[:56] == rects and mine[56] == parent and mine[57] == idn and mine[58] == item and
+           mine[59] == item and all(w == 0 for w in mine[60:]),
+           "screen %d, %s: the %s rects, parent 0x%08X, id %d, its focus and only item the shim's" %
+           (k, name, "root's" if idn == 2 else "Cheats'", parent, idn))
+    words = [dw(item + 4 * i) for i in range(hdr["R2_ITEM_SIZE"] // 4)]
+    descs_ok = True
+    for d in words[:4]:
+        if not dat <= d <= dat + len(data) - 8:
+            descs_ok = False
+            continue
+        c, t = struct.unpack(">II", data[d - dat:d - dat + 8])
+        descs_ok = descs_ok and cave <= c < cave + len(code) and dat + 0x8000 <= t <= dat + len(data) + 0x8000
+    ok(descs_ok and len(set(words[:4])) == 4 and words[4] == 1 and all(w == 0 for w in words[5:]) and
+       W(0x013468B4) == 1 and W(0x0134A414) == 1,
+       "the item: update, draw, enter and exit, four descriptors {code in the image, the renderer's TOC}, then "
+       "the 1 the root's and Cheats' items have at +0x10")
+    ids = [dw(scr + hdr["MS_IDS"] + 4 * i) for i in range(hdr["MH_MAIN_ROWS"] + 1)]
+    ok(ids == [hdr["MH_MSG_ROW0"] + i for i in range(hdr["MH_MAIN_ROWS"])] + [0],
+       "the MAIN rows' text ids, 0xF001 .. 0x%X" % (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"] - 1))
+    strs = data[so + hdr["MS_TRAINER"]:so + hdr["MS_SIZE"]]
+    ok(strs == hdr["MH_ENTRY_LABEL"].encode() + b"\0...\0",
+       "\"%s\" and \"...\" after them" % hdr["MH_ENTRY_LABEL"])
+
+    # 1. the originals, 2. the hook words
+    order = ["MH_SITE_MSG", "MH_SITE_INJECT", "MH_SITE_COMBO", "MH_SITE_ROOT", "MH_SITE_HELP_SCREEN",
+             "MH_SITE_HELP_LABEL"]
+    ok(len(hooks) == 6 and [h[0] for h in hooks] == [hdr[k] for k in order],
+       "six words: the label hook, the Start path's three, then the root's Help entry's two")
+    for a, value, orig, what in hooks:
+        ok(W(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
+
+    stub_at = {}
+    for a, value, orig, what in hooks:
+        m = re.match(r"(b|bl) (mh_\w+_stub)", what)
+        if m:
+            link = m.group(1) == "bl"
+            t = branch_target(a, value) if (value >> 26) == 18 and (value & 3) == (1 if link else 0) else None
+            first = struct.unpack(">I", code[t - cave:t - cave + 4])[0] \
+                if t is not None and cave <= t < cave + len(code) else None
+            mask, want, name = STUB_FIRST_RAC2[m.group(2)]
+            good = first is not None and (first & mask) == want
+            ok(good, "0x%08X: %08X = %s 0x%08X, %s (%s)" % (a, value, m.group(1), t or 0, m.group(2), name))
+            if good:
+                stub_at[m.group(2)] = t
+        elif a == hdr["MH_SITE_HELP_SCREEN"]:
+            ok(value == scr + hdr["MS_HELP"] * size,
+               "0x%08X: the Help entry's screen 0x%08X becomes the menu's Help screen 0x%08X" % (a, orig, value))
+        elif a == hdr["MH_SITE_HELP_LABEL"]:
+            ok(value == hdr["MH_MSG_HELP"], "0x%08X: the Help label 0x%X becomes 0x%X, \"Trainer\"" % (a, orig, value))
+
+    # The sites in the game's code, and around them.
+    ctx = [
+        (0x012FA7F8, 0x00B28F38, "msg_string's descriptor names 0xB28F38, the label hook's site"),
+        (0x00B28F3C, 0x38E00000, "li r7,0 after it, where the stub goes on"),
+        (0x00BF60EC, 0x4BF95D7D, "the mode 0 update calls 0xB8BE68 before the Start test (volatiles dead)"),
+        (0x00BF60F8, 0x807E2294, "r3 = the player's state, which the gate reads after the test"),
+        (0x00BF6104, 0x3C800148, "the pad 0x147A380 ..."),
+        (0x00BF6108, 0x3084A380, "..."),
+        (0x00BF610C, 0x808400A4, "... and its presses, +0xA4, before the inject site"),
+        (0x00BF6114, 0x2C040000, "cmpwi r4,0 after it"),
+        (0x00BF6118, 0x40820014, "bne 0xBF612C, the Start path"),
+        (0x00BF6130, 0x8084B06C, "the gate: the frame count 0x156B06C ..."),
+        (0x00BF613C, 0x2C03006F, "... and r3, the player's state"),
+        (0x00BF6188, 0x38600003, "the Start path: li r3,3"),
+        (0x00BF618C, 0x38800001, "li r4,1"),
+        (0x00BF6194, 0x38C00000, "li r6,0 after the combo site"),
+        (0x00BF6198, 0x38E00000, "li r7,0"),
+        (0x00BF619C, 0x4BF95DAD, "bl 0xB8BF48, mode_requestChange(3, 1, 1, 0, 0)"),
+        (0x00BB8804, 0x93DF00E0, "the manager's state 1 puts 0 in its previous screen"),
+        (0x00BB8954, 0x3C600134, "reason 1: lis r3,0x134 before the root site"),
+        (0x00BB895C, 0x907F0014, "after it: stw r3, the current screen"),
+        (0x00BB8960, 0x907F0018, "stw r3, the next"),
+        (0x00BB903C, 0x80830008, "state 4 calls each item's enter on its first frame"),
+        (0x00BB92D4, 0x7C851800, "a next screen: cmpw cr1, the current one ..."),
+        (0x00BB92F8, 0x38600012, "... sound 18 for another screen"),
+        (0x00BB932C, 0x8083000C, "then each item's exit"),
+        (0x00BB937C, 0x90DF00E0, "and the old screen kept as the previous"),
+        (0x00BB97A4, 0x2C03000A, "a close waits for the pause's tenth frame ..."),
+        (0x00BB97FC, 0x8083000C, "... and calls each item's exit"),
+        (0x013467F4, 0x2D550003, "the root's entry 4: text 11605, kind 3 (open the screen at +4)"),
+        (0x012FD150, 0x00BBEE54, "the root item's draw descriptor"),
+        (0x013468A8, 0x012FD150, "the root's item draws with it"),
+        (0x00BBEE6C, 0x4BF953C9, "which draws the bars (0xB54234) between Cheats' begin and end"),
+        (0x00BC1A44, 0x43500000, "Cheats' draw: the frame at y 208.0 ..."),
+        (0x00BC1A48, 0x3F800000, "... 1.0 ..."),
+        (0x00BC1A4C, 0x3F570A3D, "... 0.84"),
+        (0x00BC1AC4, 0x3880008B, "sprite 139 ..."),
+        (0x00BC1AE8, 0x3CC06044, "... in 0x60442D00"),
+        (0x00BC1AEC, 0x60C62D00, ""),
+        (0x00BC1B10, 0xC09B5698, "its scale from 0x1A25698"),
+        (0x00BC1B50, 0x3CC055F0, "sprites 140, 141 in 0x55F0C070"),
+        (0x00BC1B60, 0x60C6C070, ""),
+        (0x00BC1C14, 0x38800041, "the title at y 65"),
+        (0x00BC1C30, 0x38602D4E, "hint 11598 ..."),
+        (0x00BC1C4C, 0x38800141, "... at y 321"),
+        (0x00BC1C68, 0x38602D4F, "hint 11599 ..."),
+        (0x00BC1C88, 0x3880015A, "... at y 346"),
+        (0x00BC1CBC, 0x3AA00070, "the rows from y 112"),
+        (0x00BC1D04, 0x3C807029, "the cursor's row in 0x7029A1FF"),
+        (0x00BC1D0C, 0x6084A1FF, ""),
+        (0x00BC1D44, 0x3860002B, "the label at x 43"),
+        (0x00BC1DBC, 0x38A00195, "the value centred on x 405"),
+    ]
+    for a, want, what in ctx:
+        ok(W(a) == want, "0x%08X holds 0x%08X%s" % (a, want, (": " + what) if what else ""))
+    ok(branch_target(hdr["MH_SITE_COMBO"] + 12, W(hdr["MH_SITE_COMBO"] + 12)) == 0x00B8BF48,
+       "the combo site's call is mode_requestChange 0xB8BF48")
+
+    # 4a. the root's Help entry and its labels: Help's two words and nothing else
+    lab_at, labels = R2_ROOT_LABELS
+    ok([W(lab_at + 4 * i) for i in range(7)] == list(labels) and lab_at + 16 == hdr["MH_SITE_HELP_LABEL"],
+       "the root's seven labels at 0x%08X, Help's the fifth (0x%08X)" % (lab_at, hdr["MH_SITE_HELP_LABEL"]))
+    others = [W(t + 4 * i) for t in R2_OTHER_LABELS for i in range(5)]
+    ok(hdr["MH_ORIG_HELP_LABEL"] not in others,
+       "the label tables of the hoverbike, ship and orbit roots after it have no Help: the menu has no way in there")
+    setup = [a for a, v in refs_into(elf, 0x0135211C, 0x01352120)[2] if 0x00BB6970 <= a < 0x00BB70E0] + \
+            [a for a, v in refs_into(elf, 0x0135218C, 0x01352190)[2] if 0x00BB6970 <= a < 0x00BB70E0]
+    ok(len(setup) >= 2, "the root's setup (0xBB6970) names the seven labels and the table 0x%08X the root stub "
+       "tests" % hdr["R2_POS_NORMAL"])
+    # The entry is a row {text, kind, screen}: what names it reads the screen in the word.
+    row = hdr["MH_SITE_HELP_SCREEN"] - 4
+    br, wd, pr = refs_into(elf, row, row + 0x18)
+    ok(len(pr) == 1 and 0x00BBA194 <= pr[0][0] < 0x00BBA300 and [a for a, _ in wd] == [0x013469F8] and
+       W(0x013469C4) == 0x012FD138 and W(0x012FD138) == 0x00BBE528 and
+       not refs_into(elf, 0x013469C4, 0x013469C8)[2],
+       "Help's row (0x%08X) is read by the root's confirm of bar 4 (0xBBA194) and named by the PS2 list's item "
+       "for it (0x13469C4, rows +0x34), which no code names: either way the row opens the screen in the word" % row)
+    br, wd, pr = refs_into(elf, hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_LABEL"] + 4)
+    ok(not wd and not pr, "nothing names the Help label's word but its table")
+
+    # 4. the code, 5. the descriptors
+    allowed = (hdr["GAME_MSG_EXIT"],)
+    bad = lint_code(code, cave, allowed=allowed)
+    ok(not bad, "the code: no branch out but the label stub's, no sc, no vector instruction, no write to r13")
+    for b in bad[:12]:
+        print("        " + b)
+    outs = [cave + i for i in range(0, len(code), 4)
+            if branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0]) in allowed]
+    ok(len(outs) == 1 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 for o in outs),
+       "exactly one way out, a plain branch: the label stub on into msg_string")
+    inject = stub_at.get("mh_inject_stub")
+    if inject is not None:
+        iw = [struct.unpack(">I", code[inject - cave + 4 * i:inject - cave + 4 * i + 4])[0] for i in range(25)]
+        t = branch_target(inject + 4 * 16, iw[16])
+        ok(iw[7] == 0x4D820020 and iw[8] == 0xF821FF81 and iw[9] == 0x7C0802A6 and iw[10] == 0xF8010090 and
+           iw[11] == 0xF8410078 and iw[12] == 0xF8610070 and iw[13] == 0x60830000 and
+           (iw[16] >> 26) == 18 and (iw[16] & 3) == 1 and t is not None and cave <= t < cave + len(code) and
+           iw[17] == 0x60000000 and iw[18] == 0x60640000 and iw[19] == 0xE8610070 and iw[20] == 0xE8410078 and
+           iw[21] == 0xE8010090 and iw[22] == 0x7C0803A6 and iw[23] == 0x38210080 and iw[24] == 0x4E800020,
+           "the inject stub, with a request: a frame of 0x80, LR, r2 and r3 kept, mh_inject(r4) with the "
+           "renderer's TOC, its answer in r4, all three back")
+
+    opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
+    bad, seen = calls_via_descriptors(code, cave, set(opds), elf, toc=RAC2_TOC, code_hi=0x12D6668)
+    ok(not bad, "every indirect call switches r2 through one of the header's descriptors and back")
+    for b in bad[:12]:
+        print("        " + b)
+    ok(seen == set(opds), "and every descriptor the header names is one the code calls (%d of %d)" %
+       (len(seen), len(opds)))
+    for name in sorted(opds.values()):
+        a = hdr[name]
+        m = re.search(r"(0x[0-9A-Fa-f]+)\s*$", hdr.get(name + "#comment", ""))
+        fn = int(m.group(1), 16) if m else None
+        ok(fn is not None and W(a) == fn and W(a + 4) == RAC2_TOC,
+           "%s 0x%08X = {0x%08X, TOC 0x%08X}" % (name, a, fn or 0, RAC2_TOC))
+    lv = [hdr[k] for k in ("OPD_LV_RACE", "OPD_LV_SHIP", "OPD_LV_SHIP_ON", "OPD_LV_ORBIT", "OPD_LV_OTHER",
+                           "OPD_LV_PSTATE")]
+    lv_fn = [W(d) for d in lv]
+    asked = [branch_target(a, W(a)) for a in range(0x00BB6970, 0x00BB70E0, 4)
+             if (W(a) >> 26) == 18 and (W(a) & 3) == 1]
+    ok(all(f in asked for f in lv_fn), "the root's setup (0xBB6970) asks all six questions mh_inject asks")
+
+    # 8. the leaf stubs, stepped
+    if all(k in stub_at for k in ("mh_msg_stub", "mh_inject_stub", "mh_combo_stub", "mh_root_stub")):
+        try:
+            check_rac2_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data)
+        except ValueError as e:
+            ok(False, "the leaf stubs step: %s" % e)
+    else:
+        ok(False, "every stub found to step")
+
+    # 9. overlaps
+    ours = [(cave, cave + len(code), "renderer code"), (mbx, mbx + len(box), "renderer mailbox"),
+            (dat, dat + len(data), "renderer data")]
+    ours += [(a, a + 4, "renderer word") for a, _, _, _ in hooks]
+    known = mod_entries(roots, "NPEA00386")
+    clashes, accepted = [], []
+    for lo, hi, what in ours:
+        for a, b, label, mod, kind in known:
+            if a < hi and b > lo:
+                text = "%s 0x%08X..0x%08X vs %s/%s %s 0x%08X..0x%08X" % (what, lo, hi, label, mod, kind, a, b)
+                (accepted if mod in ACCEPTED_RAC2 and what == "renderer word" else clashes).append((text, mod))
+        for a, b, w in QWARK_RAC2:
+            if a < hi and b > lo:
+                clashes.append(("%s 0x%08X..0x%08X vs qwark %s 0x%08X..0x%08X" % (what, lo, hi, w, a, b), None))
+    ok(not clashes, "no overlap with %d mod words and caves (the probes' among them), nor with qwark's %d own "
+       "(the savefile helper's and the switches' caves, the aside buffer among them)" % (len(known), len(QWARK_RAC2)))
+    for c, _ in clashes:
+        print("        " + c)
+    named = [x for x in mod_pointers(roots, "NPEA00386", cave, cave_end) +
+             mod_pointers(roots, "NPEA00386", mbx, mbx_end) +
+             mod_pointers(roots, "NPEA00386", dat, dat_end)]
+    ok(not named, "no mod's code names an address in any of the three areas")
+    for x in named[:12]:
+        print("        " + x)
+    seen_acc = set()
+    for c, mod in accepted:
+        if mod not in seen_acc:
+            print("        known: %s/...: %s" % (mod, ACCEPTED_RAC2[mod]))
+            seen_acc.add(mod)
+    print("        (%d words shared with the prototypes by design)" % len(accepted))
+
+
 def shim_set_layout(shim_defs, rows):
     """Text set 0's first row, from the state, and a set's size, for `rows` mailbox rows (mh_shim.h)."""
     set_flags = shim_defs["SET_KIND"] + rows
@@ -1391,6 +1832,7 @@ def main():
     print("mod libraries: " + (", ".join("%s (%s)" % (l, p) for l, p in roots) or "none"))
     check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots)
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
+    check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
 
     print("\n%s" % ("all checks passed" if failures == 0 else "%d check(s) FAILED" % failures))
     return 0 if failures == 0 else 1

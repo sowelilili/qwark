@@ -1084,42 +1084,28 @@ static void test_model_dl(void)
 }
 
 /*
- * Every group of every window of RaC2's longest page, and nothing twice: round
- * 1's pages, which a game with no menu table still gets (UYA has had one since
- * its renderer).
+ * Every row of every window of a page longer than the screen, and nothing
+ * twice: RaC2's planets, twenty-seven of them, eight rows a window. (Round 1's
+ * pages, a page per DESCRIBE group, were tested on RaC2 until it had a menu
+ * table of its own.)
  */
 static void test_model_paging(void)
 {
 	struct menu_view v;
-	const struct game_describe *d;
-	u8 g, best = 0, bestn = 0, seen, k;
+	u8 count, seen, k;
 	u16 ids[64];
 	int guard;
 
-	group("console menu: the model, paging RaC2's groups (round 1's pages, no menu table yet)");
+	group("console menu: the model, paging RaC2's planets");
 
 	check(boot("NPEA00386"), "RaC2 boots");
-	d = session_game()->describe();
-	for (g = 0; g < d->ngroups; g++) {
-		u8 n = 0, i;
-		for (i = 0; i < d->nfeatures; i++) if (d->features[i].group == g) n++;
-		if (n > bestn) { bestn = n; best = g; }
-	}
-	check(bestn > 8, "RaC2 has a group longer than a screen");
+	session_game()->planet_names(&count);
+	check(count > 8, "RaC2 has more planets than a screen has rows");
 
 	menu_model_reset(8, 0, MBOX_CAP_STEPS | MBOX_CAP_BACK);
 	menu_model_view(&v);
-	check(view_row(&v, d->groups[0]) != NULL, "its root: its DESCRIBE groups first");
-	for (guard = 0; guard < 4 && view_row(&v, "Unlocks") == NULL && v.rows[v.nrows - 1].kind == MROW_MORE; guard++)
-		act(&v, MBOX_EV_ACTIVATE, "More");
-	check(view_row(&v, "Unlocks") != NULL && view_row(&v, "Save files") != NULL,
-	      "then the pages every game has, Unlocks and Save files among them");
-	menu_model_reset(8, 0, MBOX_CAP_STEPS | MBOX_CAP_BACK);
-	menu_model_view(&v);
-	while (view_row(&v, d->groups[best]) == NULL && v.rows[v.nrows - 1].kind == MROW_MORE)
-		act(&v, MBOX_EV_ACTIVATE, "More");
-	act(&v, MBOX_EV_ACTIVATE, d->groups[best]);
-	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_GROUP, best), "its page opens");
+	act(&v, MBOX_EV_ACTIVATE, "Planets");
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), "its Planets page opens");
 
 	seen = 0;
 	for (guard = 0; guard < 20; guard++) {
@@ -1127,13 +1113,14 @@ static void test_model_paging(void)
 		u8 i;
 		for (i = 0; i < v.nrows; i++) {
 			if (v.rows[i].kind == MROW_MORE) more = 1;
-			else if (v.rows[i].kind != MROW_PREV && seen < 64) ids[seen++] = v.rows[i].id;
+			else if (v.rows[i].kind != MROW_PREV && v.rows[i].kind != MROW_BACK && seen < 64)
+				ids[seen++] = v.rows[i].id;
 		}
 		check(v.nrows <= 8, "a window never has more rows than the screen");
 		if (!more) break;
 		act(&v, MBOX_EV_ACTIVATE, "More");
 	}
-	check(seen == bestn, "the windows show every feature of the group");
+	check(seen == count, "the windows show every planet");
 	for (k = 1; k < seen; k++) {
 		if (ids[k] == ids[k - 1]) break;
 	}
@@ -1775,4 +1762,5 @@ void test_menu(void)
 	test_renderer();
 	test_menu_core();
 	test_menu_uya();
+	test_menu_rac2();
 }

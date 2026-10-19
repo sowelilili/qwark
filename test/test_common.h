@@ -23,4 +23,7 @@ void test_menu_core(void);
 /* test_menu_uya.c: UYA's pages, install and renderer. */
 void test_menu_uya(void);
 
+/* test_menu_rac2.c: RaC2's pages, install and renderer. */
+void test_menu_rac2(void);
+
 #endif /* QWARK_TEST_COMMON_H */

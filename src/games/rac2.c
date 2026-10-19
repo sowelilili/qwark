@@ -1162,24 +1162,60 @@ static const struct game_manips rac2_manips = {
 /* ----------------------------------------------------------- console menu */
 
 /*
- * Revision 1.22, round 2: what the console menu knows of RaC2 so far. It has
- * no renderer yet, and until it has, no sections either (round 1's page per
- * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED and
- * MAX, on the level, field 1, which UNLOCK_SET holds to the weapon's own last
- * version.
+ * Revision 1.22: the console menu's pages for RaC2 (src/core/menu.c), after
+ * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac2",
+ * as Deadlocked's and UYA's are. Game is the quick block and the client's
+ * Values; Cheats the four cheats every game has, then the rest of the Game
+ * panel, its Player section: Set respawn point, Store Swingshot and the two
+ * resets on death. Debug mode and the QE offset are the client's Debug page and
+ * the chargeboot colours its Cosmetics, which the menu leaves out. The weapon
+ * buttons are the client's Unlocks panel buttons and the platinum bolt,
+ * nanotech and skill point ones its Collectables tab, beside the unlock table:
+ * all eight go on a page of their own, Collectables, one row after the
+ * Unlocks page's categories (round 3, as UYA's six). RaC2 has no manip header,
+ * so Manips is the category and its options.
  */
-static const char * const rac2_unlock_names[] = { "LOCKED", "UNLOCKED", "MAX" };
+static const u8 rac2_menu_game[] = {
+	R2_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	R2_SET_ASIDE, R2_LOAD_ASIDE,
+	R2_BOLTS, R2_RARITANIUM, R2_CHALLENGE, R2_HEALTH_XP
+};
+
+static const u8 rac2_menu_cheats[] = {
+	R2_FAST_LOADS, R2_GHOST, R2_INFINITE_AMMO, R2_FREEZE_HEALTH,
+	R2_SET_RESPAWN, R2_STORE_SWINGSHOT, R2_DEATH_BOSSES, R2_DEATH_PBOLTS
+};
+
+static const struct menu_section rac2_menu_sections[] = {
+	{ "Game",   rac2_menu_game,   (u8)sizeof(rac2_menu_game) },
+	{ "Cheats", rac2_menu_cheats, (u8)sizeof(rac2_menu_cheats) }
+};
+
+static const u8 rac2_menu_unlock_actions[] = {
+	R2_MAX_LEVELS, R2_MAX_AMMO,
+	R2_UNLOCK_PBOLTS, R2_RESET_PBOLTS, R2_UNLOCK_NANOTECH, R2_RESET_NANOTECH,
+	R2_UNLOCK_SKILL, R2_RESET_SKILL
+};
+
+/*
+ * An unlock row cycles through Locked, Unlocked and Max, on the level, field
+ * 1, which UNLOCK_SET holds to the weapon's own last version; a gadget or an
+ * item, which have no level, is Locked or Unlocked, the first two names. The
+ * game's menus are in title case, and so is the renderer, which keeps capitals
+ * as they are, so the names are written so.
+ */
+static const char * const rac2_unlock_names[] = { "Locked", "Unlocked", "Max" };
 static const u32 rac2_unlock_values[] = { 0, 1, RAC2_MAX_LEVELS };
 
 static const struct game_menu rac2_menu = {
-	NULL, 0,
-	NULL, 0,
+	rac2_menu_sections, (u8)(sizeof(rac2_menu_sections) / sizeof(rac2_menu_sections[0])),
+	rac2_menu_unlock_actions, (u8)sizeof(rac2_menu_unlock_actions),
 	rac2_unlock_names, rac2_unlock_values,
 	(u8)(sizeof(rac2_unlock_names) / sizeof(rac2_unlock_names[0])),
 	1, "V",
-	NULL,
+	NULL,                 /* every planet with a name: the plain list, in the ids' order, the game's */
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
-	NULL                  /* no Unlocks actions yet */
+	"Collectables"        /* the eight buttons on a page of their own (round 3, as UYA's) */
 };
 
 /* ---------------------------------------------------------------- vtable */

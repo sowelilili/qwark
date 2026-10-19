@@ -713,6 +713,21 @@ static u32 unlock_value(const struct game_menu *gm, const struct game_unlock *u,
 	return gm->unlock_values[i];
 }
 
+/*
+ * What an owned item with no value field shows: the set's own name for the
+ * first owned value (RaC2's "Unlocked", in its title case), but where that is
+ * a version (Deadlocked's "V1"), UNLOCKED. A locked one shows the set's first.
+ */
+static const char *owned_name(const struct game_menu *gm)
+{
+	const char *p;
+
+	if (gm == NULL || gm->nunlock < 2) return "UNLOCKED";
+	p = gm->unlock_prefix;
+	if (p != NULL && p[0] != 0 && qstrneq(gm->unlock_names[1], p, qstrlen(p))) return "UNLOCKED";
+	return gm->unlock_names[1];
+}
+
 /* An unlock row's value: its place in the game's value set, and that value's name. */
 static u8 unlock_now(const struct game_unlock *u, char *out, u32 cap)
 {
@@ -722,11 +737,11 @@ static u8 unlock_now(const struct game_unlock *u, char *out, u32 cap)
 
 	g_game->unlock_read(u, v);
 	if (v[0] == 0) {
-		qstrcpy(out, cap, "LOCKED");
+		qstrcpy(out, cap, gm != NULL && gm->nunlock != 0 ? gm->unlock_names[0] : "LOCKED");
 		return 0;
 	}
 	if (gm == NULL || gm->nunlock < 2 || (u->fields & (1u << gm->unlock_field)) == 0) {
-		qstrcpy(out, cap, "UNLOCKED");
+		qstrcpy(out, cap, owned_name(gm));
 		return 1;
 	}
 	/*

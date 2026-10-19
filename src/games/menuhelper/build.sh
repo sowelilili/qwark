@@ -4,8 +4,8 @@
 # carries them in, src/games/menuhelper_bins.c and .h. A renderer is the shared
 # core (mh_core.c) and a game's shim (mh_<game>.c, its stubs and its state
 # image), both compiled with the game's header (mh_<game>.h) included first,
-# like the savefile helper's one source for four games: Deadlocked's (rac4)
-# and Up Your Arsenal's (rac3) so far. What differs between them - the linker's
+# like the savefile helper's one source for four games: Deadlocked's (rac4),
+# Up Your Arsenal's (rac3) and Going Commando's (rac2) so far. What differs between them - the linker's
 # entry and the game addresses it is given, the hook words and what qwark reads
 # to know the menu is down - is a few functions per game below
 # (<game>_entry, <game>_ldflags, <game>_hooks, <game>_query).
@@ -45,7 +45,7 @@ OBJDUMP=ppu-lv2-objdump
 
 CFLAGS="-Os -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
 
-RENDERERS="rac4 rac3"
+RENDERERS="rac4 rac3 rac2"
 
 fail() {
 	echo "menuhelper: $*" >&2
@@ -211,6 +211,40 @@ rac3_hooks() {
 
 rac3_query() {
 	echo "$(need "$1" U_GAME_MODE) $(need "$1" U_MODE_PAUSE) $(need "$1" U_PENDING_MODE) $(need "$1" U_MODE_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" U_SCREEN_UP)"
+}
+
+# ------------------------------------------------- per game: Going Commando
+
+rac2_entry() { echo mh_msg_stub; }
+
+rac2_ldflags() {
+	echo "--defsym game_msg_exit=$(need "$1" GAME_MSG_EXIT)"
+}
+
+# The label hook, the Start path's three, then the root's Help entry: its
+# screen, one of the screens at MH_SCREENS (the first of the data image's
+# read-only data), and its label.
+rac2_hooks() {
+	hdr=$1; elf=$2
+	screens=$(needsym "$elf" mh_screens)
+	[ "$screens" = "$(printf '0x%08X' $(($(need "$hdr" MH_SCREENS))))" ] ||
+		fail "rac2: mh_screens is at $screens, not MH_SCREENS: the stubs' read-only data is not the first"
+	[ $((screens)) -ge $((data)) ] && [ $((screens + $(need "$hdr" MS_SIZE))) -le $((data + data_size)) ] ||
+		fail "rac2: the screens are not in data.bin"
+	for r in MSG:mh_msg_stub:b INJECT:mh_inject_stub:bl COMBO:mh_combo_stub:bl ROOT:mh_root_stub:bl; do
+		name=$(echo "$r" | cut -d: -f1); stub=$(echo "$r" | cut -d: -f2); op=$(echo "$r" | cut -d: -f3)
+		site=$(need "$hdr" MH_SITE_$name)
+		at=$(needsym "$elf" "$stub")
+		if [ "$op" = "b" ]; then word=$(bword "$site" "$at"); else word=$(blword "$site" "$at"); fi
+		echo "$site $word $(need "$hdr" MH_ORIG_$name) $op $stub ($at)"
+	done
+	help=$(printf '0x%08X' $((screens + $(need "$hdr" MS_HELP) * $(need "$hdr" R2_SCREEN_SIZE))))
+	echo "$(need "$hdr" MH_SITE_HELP_SCREEN) $help $(need "$hdr" MH_ORIG_HELP_SCREEN) the root's Help entry: the menu's Help screen"
+	echo "$(need "$hdr" MH_SITE_HELP_LABEL) $(printf '0x%08X' $(($(need "$hdr" MH_MSG_HELP)))) $(need "$hdr" MH_ORIG_HELP_LABEL) the root's Help label: 0xF000, Trainer"
+}
+
+rac2_query() {
+	echo "$(need "$1" R2_GAME_MODE) $(need "$1" R2_MODE_PAUSE) $(need "$1" R2_PENDING_MODE) $(need "$1" R2_MODE_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" R2_SCREEN_UP)"
 }
 
 rm -rf "$OUT"
