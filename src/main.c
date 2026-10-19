@@ -85,6 +85,13 @@ static void qwark_boot_thread(void *arg)
 	}
 	plat_trace("qwark: net_init ok");
 
+	/*
+	 * Build 54. The VSH's free memory either side of the tick thread: the step
+	 * between the two is its 16 KB stack, which shows the reading sees qwark's
+	 * own allocations (PROTOCOL.md 5.1.1).
+	 */
+	session_vsh_memory_read(VSHMEM_AT_START);
+
 	if (plat_thread_create(&g_tick, session_tick_thread, NULL,
 	                       QWARK_STACK_TICK, THREAD_NAME_TICK) != 0) {
 		plat_trace("qwark: tick thread create FAILED");
@@ -93,6 +100,8 @@ static void qwark_boot_thread(void *arg)
 		qwark_thread_tick = (sys_ppu_thread_t)g_tick;
 		plat_trace("qwark: tick thread ok");
 	}
+
+	session_vsh_memory_read(VSHMEM_AT_TICK_THREAD);
 
 	plat_trace("qwark: entering accept loop");
 	// show_msg("qwark loaded and listening."); // duplicated inside net_accept_thread

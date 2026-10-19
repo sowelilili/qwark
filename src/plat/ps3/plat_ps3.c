@@ -507,6 +507,21 @@ u32 plat_user_id(void)
 	return (u32)xusers()->GetCurrentUserNumber();
 }
 
+/*
+ * Build 54. Syscall 352, the SDK's inline in <sys/memory.h>: the VSH's user
+ * memory, total and available, in bytes. webMAN's /cpursx.ps3 shows the same
+ * number.
+ */
+int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
+{
+	sys_memory_info_t mi;
+
+	if (sys_memory_get_user_memory_size(&mi) != CELL_OK) return -1;
+	*free_bytes = (u32)mi.available_user_memory;
+	*total_bytes = (u32)mi.total_user_memory;
+	return 0;
+}
+
 /* ---------------------------------------------------------------- sockets */
 
 int plat_socket_close(int s)

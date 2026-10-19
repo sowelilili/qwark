@@ -113,4 +113,10 @@ const char *host_notify_last(void);
 void host_set_can_patch_code(int on);
 void host_set_emulator(int on);
 
+/*
+ * Build 54. The figure plat_vsh_memory answers in the simulator, in bytes; a
+ * total of 0 (the start) answers -1, as under RPCS3. backend_fake.c only.
+ */
+void host_set_vsh_memory(u32 free_bytes, u32 total_bytes);
+
 #endif /* QWARK_PLAT_HOST_H */

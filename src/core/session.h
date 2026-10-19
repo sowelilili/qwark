@@ -95,6 +95,25 @@ int  session_hot_fits(const struct game_api *g);
 u32  session_info_copy(u8 *out, u32 cap);
 u32  session_telemetry_copy(u8 *out, u32 cap);
 
+/*
+ * Build 54. A reading of the VSH's free memory, taken at `at` (VSHMEM_AT_*,
+ * proto.h), kept for VSH_MEMORY and logged; nothing where the platform cannot
+ * read it. The session takes its own at a game's arrival, at the menu's install
+ * and every ten seconds; the module entry takes the two either side of the tick
+ * thread's creation. Never with the core lock held.
+ */
+void session_vsh_memory_read(u8 at);
+
+/* VSH_MEMORY's reply (VSH_MEMORY_SIZE bytes), or 0 before any reading succeeded. */
+u32  session_vsh_memory(u8 *out, u32 cap);
+
+#ifdef QWARK_TEST
+/* How many "vsh mem:" lines have been logged, the KB the last one carried, and a fresh start. */
+u32  session_vsh_memory_lines(void);
+u32  session_vsh_memory_line_kb(void);
+void session_vsh_memory_forget(void);
+#endif
+
 /* ------------------------------------------------- the previous-session record */
 
 struct prev_freeze {

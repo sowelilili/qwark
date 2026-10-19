@@ -21,7 +21,7 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/games/games.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
-     test/test_game.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_qwark.c"
+     test/test_game.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
 # built without its own set and the PINE tests drive its pine_* half directly.

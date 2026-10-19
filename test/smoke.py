@@ -82,6 +82,8 @@ OP_HEARTBEAT = 0x0002
 OP_PREVIOUS_LIST = 0x0004
 OP_PREVIOUS_REAPPLY = 0x0005
 OP_PREVIOUS_DISMISS = 0x0006
+# Build 54, revision 1.22: the VSH's free memory, a control op (PROTOCOL.md 5.1.1).
+OP_VSH_MEMORY = 0x0007
 OP_SUBSCRIBE = 0x0010
 OP_UNSUBSCRIBE = 0x0011
 OP_GET_STATE = 0x0012
@@ -256,6 +258,12 @@ SESSION_FLAG_COMBOS_OFF = 0x08
 # Revision 1.17: the running game's code switches are in it, so the WRITES_CODE
 # rows work after all. Only ever beside NO_CODE_PATCHES.
 SESSION_FLAG_CODE_SWITCHES = 0x10
+# Build 54: the module has read the VSH's free memory, so VSH_MEMORY answers.
+SESSION_FLAG_VSH_MEMORY = 0x20
+
+# VSH_MEMORY's reply, and what its lowest_at says the lowest was taken at.
+VSH_MEMORY_SIZE = 28
+VSHMEM_AT_START, VSHMEM_AT_TICK_THREAD, VSHMEM_AT_GAME, VSHMEM_AT_MENU, VSHMEM_AT_PERIODIC = 1, 2, 3, 4, 5
 
 # Protocol 1.1: sixteen readouts, so SessionInfo is 164 bytes.
 SESSION_INFO_SIZE = 164
@@ -900,6 +908,136 @@ def parse_session_info(b):
     info["mod_auto"] = struct.unpack(">I", b[156:160])[0]
     info["mod_previous"] = struct.unpack(">I", b[160:164])[0]
     return info
+
+
+def parse_vsh_memory(b):
+    """VSH_MEMORY's 28 bytes (PROTOCOL.md 5.1.1)."""
+    free, total, low, start, age, low_age, low_at, low_game, pad = \
+        struct.unpack(">6IBBH", b[:VSH_MEMORY_SIZE])
+    return {"free": free, "total": total, "low": low, "start": start, "age": age,
+            "low_age": low_age, "low_at": low_at, "low_game": low_game, "pad": pad}
+
+
+def vsh_memory(c):
+    """(status, the reply decoded or None)."""
+    status, body = c.call(OP_VSH_MEMORY)
+    if status != ST_OK or len(body) != VSH_MEMORY_SIZE:
+        return status, None
+    return status, parse_vsh_memory(body)
+
+
+def test_vsh_memory(sim, c):
+    """Build 54: VSH_MEMORY and flags bit5 over the wire, against the fake VSH.
+
+    The simulator cannot read a VSH's memory until its `vshmem` command gives it
+    a figure, which is how qwark-rpcs3 always is: bit5 clear and UNSUPPORTED.
+    The command then takes a reading at once, as the ten-second one would.
+    """
+    KB = 1024
+    takes = sim_arena_takes(sim)
+
+    info = fresh_state(c)
+    check(info and (info["flags"] & SESSION_FLAG_VSH_MEMORY) == 0,
+          "vsh memory: flags bit5 is clear while the simulator has no figure",
+          hex(info["flags"]) if info else None)
+    status, body = c.call(OP_VSH_MEMORY)
+    check(status == ST_UNSUPPORTED and body == b"",
+          "vsh memory: VSH_MEMORY is UNSUPPORTED then", (status, body))
+
+    sim.send("vshmem 2048 32768")
+    check(sim_line(sim, "ok vshmem 2048 32768") is not None, "vsh memory: the simulator takes a figure")
+    status, v = vsh_memory(c)
+    check(status == ST_OK and v is not None, "vsh memory: VSH_MEMORY answers 28 bytes", status)
+    if v:
+        check(v["free"] == 2048 * KB and v["total"] == 32768 * KB,
+              "vsh memory: free and total, in bytes", v)
+        check(v["low"] == 2048 * KB and v["low_at"] == VSHMEM_AT_PERIODIC and v["low_game"] == 0,
+              "vsh memory: the reading is the lowest, a ten-second one at the XMB", v)
+        check(v["start"] == 0, "vsh memory: no figure at module start, so start is 0", v)
+        check(v["age"] <= 1 and v["low_age"] <= 1 and v["pad"] == 0,
+              "vsh memory: both readings are fresh and the pad is 0", v)
+    info = fresh_state(c)
+    check(info and (info["flags"] & SESSION_FLAG_VSH_MEMORY) != 0,
+          "vsh memory: flags bit5 is set once a reading has succeeded",
+          hex(info["flags"]) if info else None)
+    check(not any("vsh mem:" in l for l in sim.lines),
+          "vsh memory: a reading above 1 MB is not logged",
+          [l for l in sim.lines if "vsh mem:" in l])
+
+    sim.send("vshmem 900 32768")
+    line = sim_line(sim, "vsh mem: 900 KB free of 32768 KB (low, ")
+    check(line is not None, "vsh memory: a reading under 1 MB is logged as a low", line)
+    sim.send("vshmem 3000 32768")
+    sim_line(sim, "ok vshmem 3000 32768")
+    status, v = vsh_memory(c)
+    check(v and v["free"] == 3000 * KB and v["low"] == 900 * KB,
+          "vsh memory: free follows the figure, the lowest stays", v)
+
+    # A launch: the fingerprint held back, so BOOTING outlasts its quiet second.
+    sim.send("boot NPEA00385")
+    sim.send("poke 0x%X 00000000" % RAC1_FP_ADDR)
+    check(wait_state(c, SESSION_BOOTING)[0], "vsh memory: a launch is held in BOOTING")
+    time.sleep(1.2)
+    status, v = vsh_memory(c)
+    check(status == ST_OK and v and v["free"] == 3000 * KB,
+          "vsh memory: VSH_MEMORY is a control op and answers in BOOTING", status)
+    status, _ = c.call(OP_MEM_READ, struct.pack(">II", RAC1_FP_ADDR, 4))
+    check(status == ST_BUSY, "vsh memory: where a bulk op is BUSY", status)
+
+    sim.send("vshmem 2500 32768")
+    sim.send("poke 0x%X %s" % (RAC1_FP_ADDR, RAC1_FP.hex()))
+    check(wait_state(c, SESSION_INGAME)[0], "vsh memory: the game comes up")
+    line = sim_line(sim, "vsh mem: 2500 KB free of 32768 KB (NPEA00385, ")
+    check(line is not None, "vsh memory: its arrival is read and logged", line)
+    sim.send("vshmem 700 32768")
+    sim_line(sim, "ok vshmem 700 32768")
+    status, v = vsh_memory(c)
+    check(v and v["low"] == 700 * KB and v["low_game"] == 1 and v["low_at"] == VSHMEM_AT_PERIODIC,
+          "vsh memory: a low in the game is the lowest, in RaC1", v)
+    sim.send("quit")
+    check(wait_state(c, SESSION_XMB)[0], "vsh memory: the game goes")
+    line = sim_line(sim, "vsh mem: lowest 700 KB free in NPEA00385")
+    check(line is not None, "vsh memory: and its QUITTING logs the game's lowest", line)
+
+    check(sim_arena_takes(sim) == takes, "vsh memory: VSH_MEMORY never takes the request arena",
+          (takes, sim_arena_takes(sim)))
+    sim.send("vshmem off")
+    sim_line(sim, "ok vshmem off")
+
+
+def smoke_vshmem_start(exe):
+    """Build 54: the simulator with a VSH figure from the start, as a console is."""
+    port = free_port()
+    sim = Sim(exe, ["--port", str(port), "--vshmem", "20480,40960"])
+    sock = None
+    try:
+        sock = connect(port=port)
+        c = Client(sock)
+        status, body = c.call(OP_HELLO, bytes([1]))
+        info = parse_session_info(body) if status == ST_OK else None
+        check(info and (info["flags"] & SESSION_FLAG_VSH_MEMORY) != 0,
+              "vsh memory, from start: HELLO already has flags bit5",
+              hex(info["flags"]) if info else None)
+        status, v = vsh_memory(c)
+        check(status == ST_OK and v and v["start"] == 20480 * 1024 and v["low"] == 20480 * 1024
+              and v["low_at"] == VSHMEM_AT_START and v["total"] == 40960 * 1024,
+              "vsh memory, from start: the start's reading is the start figure and the lowest", v)
+        check(sim_line(sim, "vsh mem: 20480 KB free of 40960 KB (start, ") is not None
+              and sim_line(sim, "vsh mem: 20480 KB free of 40960 KB (tick thread, ") is not None,
+              "vsh memory, from start: both start readings are logged",
+              [l for l in sim.lines if "vsh mem:" in l])
+    except Exception as exc:  # noqa: BLE001
+        check(False, "vsh memory, from start: the run completed without an exception", repr(exc))
+    finally:
+        if sock is not None:
+            sock.close()
+        sim.stop()
+
+    bad = subprocess.run([exe, "--port", str(free_port()), "--vshmem", "5000,4000"],
+                         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    check(bad.returncode == 2 and "--vshmem" in bad.stdout,
+          "vsh memory, from start: a free figure over the total is refused with the usage",
+          (bad.returncode, bad.stdout[:80]))
 
 
 def parse_telemetry(b):
@@ -4156,6 +4294,14 @@ def smoke_rpcs3(exe):
               "rpcs3: with no game up the session is in XMB",
               info["state"] if info else None)
 
+        # Build 54: RPCS3's memory is not a VSH's, so nothing to read.
+        check(info and (info["flags"] & SESSION_FLAG_VSH_MEMORY) == 0,
+              "rpcs3: flags bit5 VSH_MEMORY is clear",
+              hex(info["flags"]) if info else None)
+        status, body = c.call(OP_VSH_MEMORY)
+        check(status == ST_UNSUPPORTED and body == b"",
+              "rpcs3: VSH_MEMORY is UNSUPPORTED", (status, body))
+
         # ------------------------------------------------------------- boot
         # The fake emulator answers Running with a title id, and serves the
         # fingerprint, which is everything the session machine needs.
@@ -5269,6 +5415,9 @@ def main():
         check(status == ST_OK, "HEARTBEAT answers", status)
         check(telemetry_within(udp, 1.0), "and its next frame brings the telemetry back")
 
+        # ------------------------------------------------------ VSH memory
+        test_vsh_memory(sim, c)
+
         # ------------------------------------------------------------ boot
         test_boot_buffers(sim, c, udp_port, udp)
         sim.send("boot NPEA00385")
@@ -6341,6 +6490,8 @@ def main():
     finally:
         udp.close()
         sim.stop()
+
+    smoke_vshmem_start(exe)
 
     # The RPCS3 half: the same core over PINE, against a fake RPCS3.
     print()

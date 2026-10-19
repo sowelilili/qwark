@@ -31,8 +31,8 @@
  * holding session_activity_lock and without becoming uncancellable, so a game
  * launch still closes it and the tick thread is never held up by it.
  *
- * The control ops (HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE) keep
- * their own small per-connection buffers and never come near this, so they are
+ * The control ops (HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE and,
+ * since build 54, VSH_MEMORY) keep their own small per-connection buffers and never come near this, so they are
  * answered while another client holds the arena, exactly as they are answered
  * during a boot.
  */
@@ -1026,6 +1026,11 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		*replylen = session_telemetry_copy(reply, replycap);
 		return *replylen ? ST_OK : ST_FULL;
 
+	/* Build 54. The session's last reading of the VSH's memory (PROTOCOL.md 5.1.1). */
+	case OP_VSH_MEMORY:
+		*replylen = session_vsh_memory(reply, replycap);
+		return *replylen ? ST_OK : ST_UNSUPPORTED;
+
 	case OP_DESCRIBE: {
 		u16 rc;
 		/*
@@ -1746,6 +1751,7 @@ static int control_request(u16 op, u32 len)
 	case OP_SUBSCRIBE:
 	case OP_UNSUBSCRIBE:
 	case OP_GET_STATE:
+	case OP_VSH_MEMORY:   /* build 54: launches are when it matters most */
 		return 1;
 	default: return 0;
 	}

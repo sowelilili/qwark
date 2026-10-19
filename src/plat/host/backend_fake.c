@@ -281,6 +281,36 @@ int plat_can_patch_code(void)
 	return g_can_patch_code;
 }
 
+/*
+ * Build 54. The fake VSH's memory, in bytes. A total of 0 is "cannot be read",
+ * which is what the simulator answers until the `vshmem` command (or a test)
+ * gives it a figure, as qwark-rpcs3 always does.
+ */
+static u32 g_vsh_free;
+static u32 g_vsh_total;
+
+void host_set_vsh_memory(u32 free_bytes, u32 total_bytes)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	g_vsh_free = free_bytes;
+	g_vsh_total = total_bytes;
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
+{
+	int rc = -1;
+
+	pthread_mutex_lock(&g_mem_lock);
+	if (g_vsh_total != 0) {
+		*free_bytes = g_vsh_free;
+		*total_bytes = g_vsh_total;
+		rc = 0;
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+	return rc;
+}
+
 int plat_is_emulator(void)
 {
 	return g_is_emulator;

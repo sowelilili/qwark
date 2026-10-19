@@ -64,6 +64,8 @@
  * changed: the menu's mailbox lives in game memory, between qwark and the
  * renderer it writes into the game, and is described in PROTOCOL.md section 9
  * for information only.
+ * Revision 1.22, build 54: VSH_MEMORY at 0x0007 and SessionInfo flags bit5,
+ * the VSH's free memory as the module reads it (PROTOCOL.md 5.1.1).
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -130,6 +132,24 @@
 #define OP_PREVIOUS_LIST     0x0004
 #define OP_PREVIOUS_REAPPLY  0x0005
 #define OP_PREVIOUS_DISMISS  0x0006
+/*
+ * Revision 1.22, build 54. The VSH's free memory as the module last read it:
+ * the latest reading, the lowest since the module started with when, where and
+ * in which game, and the reading at module start. Request none, reply
+ * VSH_MEMORY_SIZE bytes: u32 free, total, lowest, start (bytes), u32 age_s,
+ * lowest_age_s, u8 lowest_at (below), u8 lowest_game, u8 pad[2]. Answers
+ * UNSUPPORTED where the platform cannot read it (SessionInfo flags bit5 says
+ * whether it can). A control op, so a launch does not hold it up. PROTOCOL.md 5.1.1.
+ */
+#define OP_VSH_MEMORY        0x0007
+#define VSH_MEMORY_SIZE      28
+
+/* VSH_MEMORY's lowest_at: the moment a reading was taken at. */
+#define VSHMEM_AT_START       1   /* module start, just before the tick thread */
+#define VSHMEM_AT_TICK_THREAD 2   /* just after the tick thread was created */
+#define VSHMEM_AT_GAME        3   /* a game reached INGAME */
+#define VSHMEM_AT_MENU        4   /* the console menu's renderer went into the game */
+#define VSHMEM_AT_PERIODIC    5   /* the ten-second reading */
 
 #define OP_SUBSCRIBE         0x0010
 #define OP_UNSUBSCRIBE       0x0011
@@ -477,6 +497,13 @@
  * and never before qwark has looked this session.
  */
 #define SESSION_FLAG_CODE_SWITCHES    0x10
+/*
+ * Revision 1.22, build 54. bit5 is set once the module has read the VSH's free
+ * memory, so VSH_MEMORY answers with it: from module start on a console, never
+ * under RPCS3. A client asks VSH_MEMORY only while it is set, which keeps an
+ * older module (UNKNOWN_OP) and RPCS3 (UNSUPPORTED) from ever being asked.
+ */
+#define SESSION_FLAG_VSH_MEMORY       0x20
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

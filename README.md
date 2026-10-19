@@ -68,7 +68,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
-| `qwark.log` | state transitions, when `log = 1` |
+| `qwark.log` | state transitions and the VSH's free memory (`vsh mem:` lines, PROTOCOL.md 5.1.1), when `log = 1` |
 
 The log is there for working out why a console is crashing. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
 
@@ -125,7 +125,7 @@ The savefile helper is built separately, because it is PowerPC code that runs in
 
 `make dist` copies the built `qwark.sprx` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes both from there rather than from a working tree that may or may not have been built.
 
-`qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
+`qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `vshmem <free KB> <total KB>` (a figure for the VSH's memory, which it otherwise cannot read), `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 
 ## Licence
 

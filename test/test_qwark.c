@@ -17097,6 +17097,7 @@ int main(void)
 	test_net_stop_with_client();
 	test_menu();
 	test_pine();
+	test_vshmem();
 
 	printf("\n%d checks, %d failures\n", g_checks, g_failures);
 	printf("%s\n", g_failures == 0 ? "ALL PASS" : "FAILURES");

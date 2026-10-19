@@ -152,6 +152,151 @@ u32  session_readout(u8 index) { return index < QWARK_MAX_READOUTS ? g_hot.reado
 
 const struct previous_record *session_previous(void) { return &g_prev; }
 
+/* ------------------------------------------------------------- VSH memory */
+
+/*
+ * Build 54 (PROTOCOL.md 5.1.1, VSH_MEMORY). The VSH's free memory, read at the
+ * moments that matter - module start either side of the tick thread's
+ * creation, a game's arrival, the console menu's install - and every ten
+ * seconds at the XMB and in a game, never in a launch's BOOTING or a QUITTING.
+ * A reading is one read-only syscall (352) and two clock reads; each line says
+ * how long the syscall took. Logged as:
+ *
+ *   vsh mem: 21312 KB free of 39936 KB (start, 9 us)
+ *   vsh mem: 21296 KB free of 39936 KB (tick thread, 8 us)
+ *   vsh mem: 1880 KB free of 31744 KB (NPEA00423, 8 us)   a game reached INGAME
+ *   vsh mem: 1864 KB free of 31744 KB (menu, 8 us)        its menu went in
+ *   vsh mem: 960 KB free of 31744 KB (low, 8 us)          a ten-second reading
+ *   vsh mem: lowest 960 KB free in NPEA00423              the game's QUITTING
+ *
+ * A ten-second reading is logged only as a low: under VSHMEM_LOW, and at least
+ * a 64 KB page under every figure logged before it, so a VSH that sits near the
+ * edge writes a handful of lines rather than one every ten seconds. 1 MB is
+ * four times the 256 KB under which webMAN stops serving pages, which a PRX
+ * load or an XMB notification can each take a good part of.
+ */
+#define VSHMEM_EVERY     1200u                /* ticks: ten seconds */
+#define VSHMEM_LOW       (1024u * 1024u)
+#define VSHMEM_LOW_STEP  (64u * 1024u)
+
+/*
+ * VSH_MEMORY's six words, in its order. The two times are the console's clock
+ * in seconds here and ages on the wire.
+ */
+#define VM_FREE   0
+#define VM_TOTAL  1
+#define VM_LOW    2      /* the lowest free since the module started */
+#define VM_START  3      /* free at module start */
+#define VM_AT     4      /* the latest reading */
+#define VM_LOW_AT 5      /* the lowest */
+
+/*
+ * Under the core lock, but for `game_low` and `menu`, which only the tick
+ * thread touches once a game can be running. `logged` and `game_low` are
+ * 0xFFFFFFFF for none from the first reading on.
+ */
+static struct {
+	u32 w[6];
+	u32 game_low;     /* the lowest free in the game running now */
+	u32 logged;       /* the lowest figure a log line has carried */
+	int menu;         /* menu_state() as the last tick saw it */
+	u8  known;        /* a reading has succeeded */
+	u8  low_at;       /* VSHMEM_AT_* of the lowest */
+	u8  low_game;     /* the game byte then */
+} g_vm;
+
+/* What a line says it was taken at; a game's arrival says the title instead. */
+static const char g_vm_at[5][12] = { "start", "tick thread", "", "menu", "low" };
+
+#ifdef QWARK_TEST
+static u32 g_vm_lines, g_vm_line_kb;
+u32  session_vsh_memory_lines(void)   { return g_vm_lines; }
+u32  session_vsh_memory_line_kb(void) { return g_vm_line_kb; }
+void session_vsh_memory_forget(void)  { core_lock(); memset(&g_vm, 0, sizeof(g_vm)); core_unlock(); }
+#endif
+
+void session_vsh_memory_read(u8 at)
+{
+	u64 t0 = plat_time_us(), t1;
+	u32 fr, total;
+	int line;
+
+	if (plat_vsh_memory(&fr, &total) != 0) return;
+	t1 = plat_time_us();
+
+	core_lock();
+	if (!g_vm.known) {
+		g_vm.known = 1;
+		g_vm.game_low = g_vm.logged = 0xFFFFFFFFu;
+		g_vm.w[VM_LOW] = fr + 1u;
+	}
+	g_vm.w[VM_AT] = (u32)(t1 / 1000000u);
+	if (fr < g_vm.w[VM_LOW]) {
+		g_vm.w[VM_LOW] = fr;
+		g_vm.w[VM_LOW_AT] = g_vm.w[VM_AT];
+		g_vm.low_at = at;
+		g_vm.low_game = g_game != NULL ? g_game->game_id : GAME_NONE;
+	}
+	if (g_state == SESSION_INGAME && fr < g_vm.game_low) g_vm.game_low = fr;
+	if (at == VSHMEM_AT_START) g_vm.w[VM_START] = fr;
+	g_vm.w[VM_FREE] = fr;
+	g_vm.w[VM_TOTAL] = total;
+	line = at != VSHMEM_AT_PERIODIC || (fr < VSHMEM_LOW && fr + VSHMEM_LOW_STEP <= g_vm.logged);
+	if (line && fr < g_vm.logged) g_vm.logged = fr;
+	core_unlock();
+
+	if (!line) return;
+#ifdef QWARK_TEST
+	g_vm_lines++;
+	g_vm_line_kb = fr >> 10;
+#endif
+	plat_log("vsh mem: %d KB free of %d KB (%s, %d us)", (int)(fr >> 10), (int)(total >> 10),
+	         at == VSHMEM_AT_GAME ? g_title : g_vm_at[at - 1], (int)(t1 - t0));
+}
+
+/* The game is leaving: its lowest, once. Tick thread. */
+static void vm_game_over(void)
+{
+	if (g_vm.known && g_vm.game_low != 0xFFFFFFFFu) {
+#ifdef QWARK_TEST
+		g_vm_lines++;
+		g_vm_line_kb = g_vm.game_low >> 10;
+#endif
+		plat_log("vsh mem: lowest %d KB free in %s", (int)(g_vm.game_low >> 10), g_title);
+	}
+	g_vm.game_low = 0xFFFFFFFFu;
+}
+
+/* Every tick, outside the core lock: the menu's install, and the ten-second reading. */
+static void vm_tick(void)
+{
+	int m = menu_state();
+
+	if (m == MENU_READY && g_vm.menu != MENU_READY && g_vm.menu != MENU_REMOVING)
+		session_vsh_memory_read(VSHMEM_AT_MENU);
+	g_vm.menu = m;
+
+	if ((g_tick % VSHMEM_EVERY) == 0 && (g_state == SESSION_XMB || g_state == SESSION_INGAME))
+		session_vsh_memory_read(VSHMEM_AT_PERIODIC);
+}
+
+u32 session_vsh_memory(u8 *out, u32 cap)
+{
+	u32 i, now;
+
+	if (cap < VSH_MEMORY_SIZE || !g_vm.known) return 0;
+
+	core_lock();
+	now = (u32)(plat_time_us() / 1000000u);
+	for (i = 0; i < 6; i++) be32_put(out + 4 * i, i < VM_AT ? g_vm.w[i] : now - g_vm.w[i]);
+	out[24] = g_vm.low_at;
+	out[25] = g_vm.low_game;
+	out[26] = 0;
+	out[27] = 0;
+	core_unlock();
+	return VSH_MEMORY_SIZE;
+}
+
 /* -------------------------------------------------------- the command ring */
 
 #define RING_FREE    0
@@ -432,6 +577,7 @@ static void enter_quitting(void)
 
 	g_state = SESSION_QUITTING;
 	plat_log("qwark: session QUITTING (%s)", g_title);
+	vm_game_over();
 }
 
 /*
@@ -560,6 +706,7 @@ static void enter_ingame(void)
 	net_set_booting(0);
 	plat_log("qwark: session INGAME (%s) game %d gen %d", g_title,
 	         (int)game_id, (int)g_generation);
+	session_vsh_memory_read(VSHMEM_AT_GAME);
 }
 
 static void enter_booting(void)
@@ -1092,6 +1239,8 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * tick has looked this session.
 	 */
 	if (switches_present())      flags |= SESSION_FLAG_CODE_SWITCHES;
+	/* Build 54. VSH_MEMORY has a reading to give. */
+	if (g_vm.known)              flags |= SESSION_FLAG_VSH_MEMORY;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
@@ -1325,6 +1474,9 @@ static void session_step(void)
 		watch_invalidate();
 	}
 	core_unlock();
+
+	/* Build 54. The menu's install and the ten-second reading of the VSH's memory. */
+	vm_tick();
 
 	/*
 	 * Protocol 1.4. Autosplit datagrams go out every tick, not every fourth:

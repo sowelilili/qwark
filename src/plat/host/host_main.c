@@ -11,15 +11,20 @@
  *   pad <hex mask>        write the running game's pad mask (drives combos)
  *   poke <addr> <hex>     write bytes into the fake process memory
  *   peek <addr> <len>     print bytes from the fake process memory
+ *   vshmem <free> <total> the fake VSH's memory, in KB, and a reading of it
+ *                         now; `vshmem off` makes it unreadable again
  *   status                one line of session state
  *   exit                  shut down
  *
- * Usage: qwark-host.exe [--port 9673] [--bind 127.0.0.1]
+ * Usage: qwark-host.exe [--port 9673] [--bind 127.0.0.1] [--vshmem FREE,TOTAL]
  *
- *   --port  the port qwark itself listens on for the client, 9673
- *   --bind  the address the listener binds. Loopback by default, so Windows
- *           Firewall is never asked about the simulator; pass 0.0.0.0 to make
- *           it reachable from another machine, and answer the prompt once.
+ *   --port    the port qwark itself listens on for the client, 9673
+ *   --bind    the address the listener binds. Loopback by default, so Windows
+ *             Firewall is never asked about the simulator; pass 0.0.0.0 to make
+ *             it reachable from another machine, and answer the prompt once.
+ *   --vshmem  the fake VSH's memory from the start, in KB, so the module start's
+ *             readings have something to read. Without it, and until the
+ *             `vshmem` command, the VSH's memory cannot be read, as under RPCS3
  */
 #include "../plat.h"
 #include "plat_host.h"
@@ -161,6 +166,36 @@ static void handle_line(char *line, int *keep_running)
 		       (unsigned)net_telemetry_sends());
 		session_activity_unlock();
 
+	} else if (qstreq(cmd, "vshmem")) {
+		/*
+		 * Build 54. The figure, and a reading at once rather than at the next
+		 * ten-second one, under the lock the tick thread changes the session
+		 * state under, so the reading sees one state.
+		 */
+		char *free_s = next_token(&cursor);
+		char *total_s = (free_s != NULL) ? next_token(&cursor) : NULL;
+		int ok1 = 0, ok2 = 0;
+		u32 free_kb = 0, total_kb = 0;
+
+		if (free_s != NULL && qstreq(free_s, "off")) {
+			host_set_vsh_memory(0, 0);
+			printf("ok vshmem off\n");
+			fflush(stdout);
+			return;
+		}
+		if (free_s != NULL) free_kb = qparse_u32(free_s, &ok1);
+		if (total_s != NULL) total_kb = qparse_u32(total_s, &ok2);
+		if (!ok1 || !ok2 || total_kb == 0 || free_kb > total_kb || total_kb > 4194303u) {
+			printf("usage: vshmem <free KB> <total KB> | vshmem off\n");
+			fflush(stdout);
+			return;
+		}
+		host_set_vsh_memory(free_kb * 1024u, total_kb * 1024u);
+		session_activity_lock();
+		session_vsh_memory_read(VSHMEM_AT_PERIODIC);
+		session_activity_unlock();
+		printf("ok vshmem %u %u\n", (unsigned)free_kb, (unsigned)total_kb);
+
 	} else if (qstreq(cmd, "status")) {
 		print_status();
 		return;
@@ -192,11 +227,29 @@ static int parse_int(const char *s, int *out)
 
 static void usage(void)
 {
-	printf("usage: qwark-host [--port N] [--bind ADDR]\n");
+	printf("usage: qwark-host [--port N] [--bind ADDR] [--vshmem FREE,TOTAL]\n");
 	printf("  --port N     the port to listen on, %d by default\n", QWARK_PORT);
 	printf("  --bind ADDR  the address to listen on, 127.0.0.1 by default;\n");
 	printf("               0.0.0.0 to be reachable from another machine\n");
+	printf("  --vshmem F,T the fake VSH's free and total memory, KB, from the start\n");
 	fflush(stdout);
+}
+
+/* "FREE,TOTAL" in KB, as --vshmem takes it. */
+static int parse_vshmem(const char *s, u32 *free_kb, u32 *total_kb)
+{
+	char *end = NULL;
+	unsigned long f, t;
+
+	if (s == NULL) return 0;
+	f = strtoul(s, &end, 10);
+	if (end == s || *end != ',') return 0;
+	s = end + 1;
+	t = strtoul(s, &end, 10);
+	if (end == s || *end != 0 || t == 0 || f > t || t > 4194303ul) return 0;
+	*free_kb = (u32)f;
+	*total_kb = (u32)t;
+	return 1;
 }
 
 int main(int argc, char **argv)
@@ -214,6 +267,10 @@ int main(int argc, char **argv)
 			if (!parse_int(argv[++i], &port)) { usage(); return 2; }
 		} else if (qstreq(argv[i], "--bind") && i + 1 < argc) {
 			bind_addr = argv[++i];
+		} else if (qstreq(argv[i], "--vshmem") && i + 1 < argc) {
+			u32 free_kb, total_kb;
+			if (!parse_vshmem(argv[++i], &free_kb, &total_kb)) { usage(); return 2; }
+			host_set_vsh_memory(free_kb * 1024u, total_kb * 1024u);
 		} else {
 			usage();
 			return 2;
@@ -241,10 +298,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	/* The two readings the module entry takes, either side of the tick thread. */
+	session_vsh_memory_read(VSHMEM_AT_START);
+
 	if (plat_thread_create(&g_tick, session_tick_thread, NULL, 49152, "qwark_tick") != 0) {
 		fprintf(stderr, "qwark-host: cannot start the tick thread\n");
 		return 1;
 	}
+
+	session_vsh_memory_read(VSHMEM_AT_TICK_THREAD);
 
 	if (plat_thread_create(&g_net, net_accept_thread, NULL, 16384, "qwark_net") != 0) {
 		fprintf(stderr, "qwark-host: cannot start the accept thread\n");

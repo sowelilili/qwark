@@ -229,6 +229,18 @@ void plat_dir_close(plat_dir_t *d);
 
 u32  plat_user_id(void);
 
+/*
+ * Build 54. The VSH's own memory, in bytes: what is free of its user memory,
+ * and the total. On the PS3 it is lv2 syscall 352,
+ * sys_memory_get_user_memory_size, read-only, which answers for the calling
+ * process, and a VSH plugin's thread is the VSH's: the memory qwark's image and
+ * stacks, every other plugin and the XMB all come out of. Fills both and
+ * answers 0, or answers -1 where there is nothing to read: under RPCS3, and in
+ * the simulator until its `vshmem` command gives it a figure. The session reads
+ * it (session.c, PROTOCOL.md 5.1.1 VSH_MEMORY).
+ */
+int  plat_vsh_memory(u32 *free_bytes, u32 *total_bytes);
+
 /* ------------------------------------------------------- big-endian helpers */
 
 /*

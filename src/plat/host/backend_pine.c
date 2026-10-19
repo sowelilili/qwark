@@ -1034,6 +1034,14 @@ int plat_game_title(char out[16]) { return pine_game_title(out); }
 int plat_can_patch_code(void) { return 0; }
 int plat_is_emulator(void)    { return 1; }
 
+/* Build 54. The PC's memory is not the VSH's, and PINE has nothing to say about RPCS3's. */
+int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
+{
+	(void)free_bytes;
+	(void)total_bytes;
+	return -1;
+}
+
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 {
 	(void)pid;

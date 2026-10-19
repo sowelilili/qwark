@@ -29,4 +29,7 @@ void test_menu_rac2(void);
 /* test_menu_rac1.c: RaC1's pages, install and renderer. */
 void test_menu_rac1(void);
 
+/* test_vshmem.c: the VSH's free memory, build 54. */
+void test_vshmem(void);
+
 #endif /* QWARK_TEST_COMMON_H */

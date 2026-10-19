@@ -46,6 +46,8 @@ Revision 1.22 (2026-10-18, module build 54): the console menu, a menu on the TV 
 
 Revision 1.22, the console menu's round 3 (2026-10-19, same build 54): MANIP_SELECT writes nothing any more, whatever is in play: a group's setup goes in at the next start of a run that passes its check, with its per-run writes, or by MANIP_APPLY (section 5.14). Build 53 put the setup in at once when a compatible file was in play, so stepping through the categories on the console menu applied, or refused, each group on the way. On the console menu, which is not on the wire (section 9): the root and the pause-menu row that opens it say Trainer; the menu opens on its root, the cursor on its first row, whenever it was closed; a choice shows its bare value; a game may put the Unlocks page's actions on a page of their own (UYA's Collectables); a VALUE row with bounds carries its numbers for a native slider; and the renderer's core keeps two text sets so a screen going keeps its own text to its last frame. No opcode or structure changed.
 
+Revision 1.22, the VSH's memory (2026-10-19, same build 54): VSH_MEMORY at 0x0007 and SessionInfo `flags` bit5 VSH_MEMORY. The module reads how much of the VSH's own memory is free - the memory its image and stacks, every other plugin and the XMB come out of - at module start, at each game's arrival, when the console menu's renderer goes in and every ten seconds, keeps the latest reading, the lowest since it started and the reading at start, and logs them to qwark.log. VSH_MEMORY hands them to a client; bit5 says the module has a reading to hand, so a client asks only then, and a module before this one (which answers `UNKNOWN_OP`) and RPCS3 (`UNSUPPORTED`) are never asked. It is a control op, answered through a launch. Nothing else changed: SessionInfo is still 164 bytes and bit5 was always 0. See sections 1.1, 3 and 5.1.1.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -69,7 +71,7 @@ Reply:    u32 length | u16 seq | u16 status | payload[length]
 
 The moment the console reports a game process, qwark leaves it alone for one second, measured by the clock rather than counted in ticks. Nothing reads the process, the XMB is not asked for its title, and nothing moves on the network: existing connections neither receive nor reply, and the telemetry and autosplit datagrams stop. Frames sent into that second are answered, in order, once it ends; nothing is buffered for them beyond what the socket holds. The OS still acknowledges TCP by itself, and other plugins are outside this. Ratchetron and the old autosplitter modules kept the same silence, and the consoles that crashed at launch without it are why. None of this depends on which game is starting, because none of it knows yet: the title is not asked for until the second is over, so a process qwark turns out not to know (section 3.3) is launched through exactly the same silence and reaches INGAME the same way.
 
-For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE and GET_STATE, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
+For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE and, since build 54, VSH_MEMORY, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
 
 Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. A second client's bulk request therefore waits for the first to finish rather than being refused, and the five control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
 
@@ -111,6 +113,9 @@ u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is wait
                         bit4 CODE_SWITCHES (revision 1.17): the running game's code switches are in it,
                              so its WRITES_CODE toggles work on a platform that sets bit2 (section 5.12.2).
                              Never set by the PS3 module
+                        bit5 VSH_MEMORY (build 54): the module has read the VSH's free memory,
+                             so VSH_MEMORY answers with it (section 5.1.1). Set from module
+                             start on a console; never by qwark-rpcs3
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo. Since build 53 the running game's, and
                         outside a game the last game's (section 5.5)
@@ -235,6 +240,56 @@ When a different title comes back, everything including watches is dropped and t
 | 0x0004 | PREVIOUS_LIST | none | `u64 toggles, u32 mods, u8 nfreeze, { u8 size, u8 pad[3], u32 addr, u64 value }[nfreeze], u8 npatch, { u32 first_addr, u16 nwords, u16 pad }[npatch]` |
 | 0x0005 | PREVIOUS_REAPPLY | `u8 flags` bit0 toggles, bit1 mods, bit2 freezes, bit3 patches | none. Re-applies the chosen categories, then clears the record |
 | 0x0006 | PREVIOUS_DISMISS | none | none. Clears the record |
+| 0x0007 | VSH_MEMORY | none | 28 bytes, the VSH's free memory as the module last read it (build 54, section 5.1.1). `UNSUPPORTED` where it cannot be read |
+
+### 5.1.1 VSH_MEMORY, the VSH's free memory (build 54)
+
+A VSH plugin lives in the VSH's own memory: its image and its thread stacks come out of the same pool as every other plugin's and the XMB's, and when that pool runs dry the console says "VSH out of memory" or reboots. The module reads how much of it is free with lv2 syscall 352, `sys_memory_get_user_memory_size`, which is read-only and answers for the calling process (webMAN's `/cpursx.ps3` shows the same number). It allocates nothing to do so.
+
+**When it reads.** Each reading is one syscall.
+
+| `at` | When |
+|---|---|
+| 1 START | module start, once its tables and sockets are up, just before the tick thread is created |
+| 2 TICK_THREAD | just after the tick thread is created; the step from START is the thread's 16 KB stack, which shows the reading sees the module's own allocations |
+| 3 GAME | a game reaches INGAME |
+| 4 MENU | the console menu's renderer has gone into the game (section 9.3) |
+| 5 PERIODIC | every ten seconds (1200 ticks) at the XMB and in a game. Never in BOOTING, its quiet second included, and never in QUITTING: a launch is left alone |
+
+It keeps the latest reading, the lowest since the module started (with when, at what and in which game), and START's figure.
+
+**The reply**, all big-endian:
+
+```
+u32 free           bytes free at the latest reading
+u32 total          the VSH's user memory, in bytes, at that reading
+u32 lowest         the lowest free since the module started, in bytes
+u32 start          bytes free at START; 0 when that reading failed
+u32 age_s          seconds since the latest reading (at most about ten at the XMB and in a game)
+u32 lowest_age_s   seconds since the lowest reading
+u8  lowest_at      what the lowest reading was taken at, the table above
+u8  lowest_game    SessionInfo's `game` byte at the lowest reading: 0 at the XMB, or in a title no game table claims
+u8  pad[2]         0
+```
+
+Ages are counted in whole seconds of the console's clock. A client reads `n` bytes and takes the fields it knows; a later revision only ever adds at the end.
+
+**When it answers.** `OK` with the 28 bytes once a reading has succeeded, which is what SessionInfo `flags` bit5 VSH_MEMORY says (section 3): on a console from module start. `UNSUPPORTED` where nothing can be read: `qwark-rpcs3.exe` always, since RPCS3's memory is not a VSH's, and the `qwark-host.exe` simulator until it is given a figure (below). A module before build 54 answers `UNKNOWN_OP` and never sets bit5, so a client that asks only while bit5 is set never meets either refusal. VSH_MEMORY is a control op (section 1.1): it takes none of the shared request buffers and is answered in every session state, BOOTING and QUITTING included. It reads what the module kept and makes no syscall itself, so a client may poll it; every ten seconds matches the readings.
+
+**qwark.log.** Every line starts `vsh mem:`, so `grep "vsh mem"` finds them all:
+
+```
+vsh mem: 21312 KB free of 39936 KB (start, 9 us)
+vsh mem: 21296 KB free of 39936 KB (tick thread, 8 us)
+vsh mem: 1880 KB free of 31744 KB (NPEA00423, 8 us)     a game reached INGAME
+vsh mem: 1864 KB free of 31744 KB (menu, 8 us)          its menu went in
+vsh mem: 960 KB free of 31744 KB (low, 8 us)            a ten-second reading, below
+vsh mem: lowest 960 KB free in NPEA00423                the game's QUITTING: its own lowest
+```
+
+KB is 1024 bytes, rounded down. The microseconds are how long the syscall took. START, TICK_THREAD, GAME and MENU are always logged. A ten-second reading is logged only as a **low**: when it is under **1 MB** free, and at least 64 KB (one page) under every figure a line has carried before, so a VSH that sits near the edge writes a handful of lines and not one every ten seconds. 1 MB is four times the 256 KB under which webMAN stops serving pages; a module load or an XMB notification can each take a good part of it. The QUITTING line is the lowest of the readings taken while that game was INGAME, its arrival included. `log = 0` silences these as it does every line (section 5.10).
+
+**The simulator.** `qwark-host.exe` has nothing to read until it is given a figure: `--vshmem FREE,TOTAL` on its command line, in KB, gives START and TICK_THREAD one, and the stdin command `vshmem <free KB> <total KB>` sets it and takes a reading at once, as a ten-second one; `vshmem off` makes it unreadable again (what it has kept stays).
 
 ### 5.2 Telemetry (0x001x)
 
