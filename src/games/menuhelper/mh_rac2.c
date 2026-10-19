@@ -429,12 +429,6 @@ MH_API void shim_title(int p)
 	(void)p;
 }
 
-/* Neither look has a line for a description. */
-MH_API void shim_desc(int p)
-{
-	(void)p;
-}
-
 MH_API u32 shim_cursor(int p)
 {
 	u32 r;
@@ -446,17 +440,16 @@ MH_API u32 shim_cursor(int p)
 }
 
 /*
- * The cross on a row that goes to another page or window, or closes the
- * menu, has the sound the manager plays as the screen changes, and so do back
- * and a window turned with L1 or R1; a change in place has Cheats' change
- * sound.
+ * The cross on a row that goes to another page, or closes the menu, has the
+ * sound the manager plays as the screen changes, and so do back and a window
+ * moved with L1 or R1; a change in place has Cheats' change sound.
  */
 MH_API void shim_sound(u32 snd)
 {
 	u32 row = r8(SH(SH_PRESS_ROW)), kind = mh_row_kind(row);
 
 	if (snd == MH_SND_FORWARD) {
-		if (kind == MROW_LINK || kind == MROW_MORE || kind == MROW_PREV || kind == MROW_BACK ||
+		if (kind == MROW_LINK || kind == MROW_BACK ||
 		    (mh_row_flags(row) & MROWF_CLOSES) != 0 ||
 		    (type() == MBOX_PTYPE_MAIN && (kind == MROW_CHOICE || kind == MROW_OPTION)))
 			return;

@@ -493,7 +493,7 @@ static void test_model_rac1(void)
 	group("console menu: the model, RaC1's pages");
 
 	check(boot("NPEA00385"), "RaC1 boots");
-	menu_model_reset(7, 16, CAPS_ALL);
+	menu_model_reset(7, 24, CAPS_ALL);
 	menu_model_view(&v);
 	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && v.rows[6].kind == MROW_INFO &&
 	      (v.rows[6].flags & MROWF_ENABLED) == 0 && strcmp(v.title, "Trainer") == 0,
@@ -527,15 +527,14 @@ static void test_model_rac1(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list, in the game's order, seven a window. */
+	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4: the panes do not scroll). */
 	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_MAIN && v.nrows == 7 && strcmp(v.rows[0].label, "Veldin") == 0 &&
-	      strcmp(v.rows[5].label, "Rilgar") == 0 && v.rows[6].kind == MROW_MORE,
-	      "Planets: Veldin, Novalis, Aridia, Kerwan, Eudora, Rilgar and More");
-	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION, "each a button that closes the menu first");
-	for (i = 0; i < 6 && v.rows[v.nrows - 1].kind == MROW_MORE; i++) act(&v, MBOX_EV_ACTIVATE, "More");
-	check(view_row(&v, "Veldin2") != NULL && v.rows[v.nrows - 1].kind != MROW_MORE,
-	      "the last window ends with Veldin2: all nineteen planets");
+	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 19 && strcmp(v.rows[0].label, "Veldin") == 0 &&
+	      strcmp(v.rows[5].label, "Rilgar") == 0 && strcmp(v.rows[18].label, "Veldin2") == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0 && strcmp(v.title, "Planets") == 0,
+	      "Planets: a CONFIG page of all nineteen, Veldin .. Veldin2, no More row");
+	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION && v.rows[0].value[0] == 0,
+	      "each a button, blank, that closes the menu first");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -645,15 +644,15 @@ static void test_install_rac1(void)
 			if ((a == MH_CAVE || a == MH_CAVE2 || a == MH_CAVE3 || a == MH_CAVE4) && first_code == 999) first_code = k;
 			if (a == MH_SITE_TEXT && first_hook == 999) first_hook = k;
 		}
-		check(first_code < first_hook && n <= 20 && bytes <= 22u * 1024u,
-		      "the caves before the words: under twenty writes, under 22 KB");
+		check(first_code < first_hook && n <= 20 && bytes <= 23u * 1024u,
+		      "the caves before the words: under twenty writes, under 23 KB (round 4: 24 rows)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
-	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 16 &&
+	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 24 &&
 	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 && peek8(mb + MBOX_OFF_MAX_ROWS) == 7 &&
-	      peek8(mb + MBOX_OFF_CFG_ROWS) == 16 && peek8(mb + MBOX_OFF_RENDERER) == 1,
-	      "the mailbox: sixteen rows of 0x40, seven a MAIN page, sixteen a CONFIG page, renderer 1");
+	      peek8(mb + MBOX_OFF_CFG_ROWS) == 24 && peek8(mb + MBOX_OFF_RENDERER) == 1,
+	      "the mailbox (round 4): 24 rows of 0x40, seven a MAIN page, 24 a CONFIG page, renderer 1");
 	check(peek32(MH_SITE_HELP_TEXT) == 0x7E000003u && peek32(MH_SITE_HELP_PAGE) == MH_SHIM + SH_PAGE_LIST,
 	      "the main page's Help entry: text 0x7E00, kind 3, the menu's MAIN page");
 

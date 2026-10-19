@@ -490,7 +490,7 @@ static void test_model_rac2(void)
 	group("console menu: the model, RaC2's pages");
 
 	check(boot("NPEA00386"), "RaC2 boots");
-	menu_model_reset(7, 16, CAPS_ALL);
+	menu_model_reset(7, 32, CAPS_ALL);
 	menu_model_view(&v);
 	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && v.rows[6].kind == MROW_INFO,
 	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey: the design's, "
@@ -521,15 +521,13 @@ static void test_model_rac2(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list in the ids' order, which is the game's, seven a window. */
+	/* Planets: the plain list in the ids' order, which is the game's, on a CONFIG page (round 4). */
 	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_MAIN && v.nrows == 7 && strcmp(v.rows[0].label, "Aranos") == 0 &&
-	      strcmp(v.rows[5].label, "Feltzin") == 0 && v.rows[6].kind == MROW_MORE,
-	      "Planets: Aranos, Oozla, Maktar, Endako, Barlow, Feltzin and More");
+	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 27 && strcmp(v.rows[0].label, "Aranos") == 0 &&
+	      strcmp(v.rows[5].label, "Feltzin") == 0 && strcmp(v.rows[26].label, "Jamming Array") == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0,
+	      "Planets: a CONFIG page of all 27, Aranos .. the Jamming Array, no More row");
 	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION, "each a button that closes the menu first");
-	for (i = 0; i < 8 && v.rows[v.nrows - 1].kind == MROW_MORE; i++) act(&v, MBOX_EV_ACTIVATE, "More");
-	check(view_row(&v, "Jamming Array") != NULL && v.rows[v.nrows - 1].kind != MROW_MORE,
-	      "the last window ends with the Jamming Array");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -551,8 +549,8 @@ static void test_model_rac2(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Weapons");
-	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 16 && v.rows[15].kind == MROW_MORE &&
-	      strcmp(v.title, "Weapons 1/2") == 0, "Weapons: twenty-four, fifteen and More in a page of sixteen");
+	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 24 && v.rows[23].kind == MROW_CHOICE &&
+	      strcmp(v.title, "Weapons") == 0, "Weapons: all twenty-four on one page (round 4: no More, no \"1/2\")");
 	poke8(RAC2_OWNED_ARRAY + R2_LANCER_ITEM, 0);
 	poke8(RAC2_ITEM_ARRAY + R2_LANCER_ITEM, R2_LANCER_ITEM);
 	menu_model_view(&v);
@@ -624,15 +622,15 @@ static void test_install_rac2(void)
 			if (a == MH_CAVE) at_code = k;
 			if (a == MH_SITE_MSG && first_hook == 999) first_hook = k;
 		}
-		check(at_code < first_hook && n <= 16 && bytes <= 18u * 1024u,
-		      "the caves before the words: fifteen writes, under 18 KB");
+		check(at_code < first_hook && n <= 16 && bytes <= 21u * 1024u,
+		      "the caves before the words: fifteen writes, under 21 KB (round 4: 32 rows)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
-	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 16 &&
+	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 32 &&
 	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 && peek8(mb + MBOX_OFF_MAX_ROWS) == 7 &&
-	      peek8(mb + MBOX_OFF_CFG_ROWS) == 16 && peek8(mb + MBOX_OFF_RENDERER) == 2,
-	      "the mailbox: sixteen rows of 0x40, seven a MAIN page, sixteen a CONFIG page, renderer 2");
+	      peek8(mb + MBOX_OFF_CFG_ROWS) == 32 && peek8(mb + MBOX_OFF_RENDERER) == 2,
+	      "the mailbox (round 4): 32 rows of 0x40, seven a MAIN page, 32 a CONFIG page, renderer 2");
 	check(peek32(MH_SITE_HELP_LABEL) == 0xF000 && peek32(MH_SITE_HELP_SCREEN) == SCREEN(MS_HELP) &&
 	      peek32(SCREEN(MS_HELP) + 0xEC) == OUR_ITEM && peek32(SCREEN(MS_HELP) + 0xE0) == R2_ROOT_SCREEN,
 	      "the root's Help entry: label 0xF000 (Trainer), its screen the menu's, which the data image brought");
@@ -869,12 +867,16 @@ static void test_renderer_rac2(void)
 	check(current() == SCREEN(MS_MAIN_A) && bars_are(root, 7) && r32(BARS + R2_R_CURSOR) == 1,
 	      "Triangle: MAIN A, the root's bars, the cursor on Cheats");
 
-	/* Game: ten rows, all on screen. */
+	/* Game: ten rows; round 4, nine lines in the frame: eight on screen and "..." on the ninth. */
 	w32(BARS + R2_R_CURSOR, 0);
 	pframe(0x40);
 	settle();
-	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 10 && strcmp(G.lab[9], "Health XP") == 0 &&
-	      !G.more_top && !G.more_bottom, "Game: ten rows, all in the frame");
+	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 8 && strcmp(G.lab[7], "Raritanium") == 0 &&
+	      !G.more_top && G.more_bottom == CFG_Y_ROW0 + 8 * CFG_DY && CFG_Y_ROW0 + 8 * CFG_DY == 264,
+	      "Game: ten rows, eight on screen and \"...\" at y 264, the frame's ninth and last line (round 4)");
+	for (i = 0; i < 9; i++) pframe(PADB_DOWN);
+	check(r8(MH_SHIM + SH_CCUR) == 9 && r8(MH_SHIM + SH_CTOP) == 2 && G.more_top && !G.more_bottom &&
+	      strcmp(G.lab[7], "Health XP") == 0, "Down to Health XP: the last eight, \"...\" over them");
 	pframe(PADB_TRIANGLE);
 	settle();
 
@@ -886,15 +888,15 @@ static void test_renderer_rac2(void)
 	      strcmp(bar_text(3, a), "Collectables") == 0, "Unlocks: four bars, Weapons .. Collectables, on MAIN B");
 	pframe(0x40);
 	settle();
-	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 10 && !G.more_top &&
-	      G.more_bottom == CFG_Y_ROW0 + 10 * CFG_DY && strcmp(G.title, "Weapons 1/2") == 0,
-	      "Weapons: ten of sixteen rows, \"...\" under the last");
+	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 8 && !G.more_top &&
+	      G.more_bottom == CFG_Y_ROW0 + 8 * CFG_DY && strcmp(G.title, "Weapons") == 0 && mh_nrows() == 24,
+	      "Weapons: all twenty-four on the page, eight on screen, \"...\" under the last (round 4: no More)");
 	for (i = 0; i < 12; i++) pframe(PADB_DOWN);
-	check(r8(MH_SHIM + SH_CCUR) == 12 && r8(MH_SHIM + SH_CTOP) == 3 && G.more_top && G.more_bottom &&
-	      G.colour[9] == CFG_COLOR_CURSOR, "Down to the thirteenth: the page scrolled by three, \"...\" over and under");
-	for (i = 0; i < 3; i++) pframe(PADB_DOWN);
-	check(r8(MH_SHIM + SH_CCUR) == 15 && r8(MH_SHIM + SH_CTOP) == 6 && G.more_top && !G.more_bottom &&
-	      strcmp(G.lab[9], "More") == 0, "to the last, More: the last ten on screen");
+	check(r8(MH_SHIM + SH_CCUR) == 12 && r8(MH_SHIM + SH_CTOP) == 5 && G.more_top && G.more_bottom &&
+	      G.colour[7] == CFG_COLOR_CURSOR, "Down to the thirteenth: the page scrolled by five, \"...\" over and under");
+	for (i = 0; i < 11; i++) pframe(PADB_DOWN);
+	check(r8(MH_SHIM + SH_CCUR) == 23 && r8(MH_SHIM + SH_CTOP) == 16 && G.more_top && !G.more_bottom &&
+	      strcmp(G.lab[7], "Clank Zapper") == 0, "to the last weapon, the Clank Zapper: the last eight on screen");
 	pframe(PADB_DOWN);
 	check(r8(MH_SHIM + SH_CCUR) == 0 && r8(MH_SHIM + SH_CTOP) == 0, "Down wraps to the first");
 

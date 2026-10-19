@@ -1,6 +1,6 @@
 /*
  * The console menu's renderers: the interface between the shared core and a
- * game's shim (revision 1.22, mailbox version 2).
+ * game's shim (revision 1.22, mailbox version 3).
  *
  * A renderer is two pieces of PowerPC code that qwark writes into the game,
  * built together for each game like the savefile helper (build.sh):
@@ -18,7 +18,7 @@
  *              widgets, reads the game's input and hands the core presses, plays
  *              the game's sounds, and opens and closes the menu the game's way.
  *
- * The core calls the shim through the seven shim_* functions below; the shim
+ * The core calls the shim through the six shim_* functions below; the shim
  * calls the core through the mh_core_* functions and reads what the core
  * composed through the mh_* macros. Both are compiled with the game's header
  * (mh_<game>.h) included first, which defines the numbers in the first table.
@@ -41,14 +41,16 @@
  *   MH_STATE         the core's state (below), MH_CORE_SIZE bytes
  *   MH_SHIM          the shim's own state, after the core's
  *   MH_ROWS          the mailbox's row slots: the larger of the two below
- *   MH_ROW_BYTES     MBOX_ROW_SIZE, or MBOX_ROW_SIZE_DESC to get descriptions
+ *   MH_ROW_BYTES     MBOX_ROW_SIZE (round 4: rows have no description any more)
  *   MH_MAIN_ROWS     rows a MAIN page has at most (the mailbox's max_rows)
- *   MH_CFG_ROWS      rows a CONFIG page has at most, 0 for a shim without one
+ *   MH_CFG_ROWS      rows a CONFIG page has at most, 0 for a shim without one:
+ *                    a window of a longer page, which slides under the cursor
+ *                    (round 4, below)
  *   MH_CAPS          MBOX_CAP_* (Left and Right, page keys, back, requests)
  *   MH_CASE_MAIN     MH_CASE_* for a MAIN page's title and rows
  *   MH_CASE_HEAD     the same for a CONFIG page's title,
  *   MH_CASE_LABEL    its labels,
- *   MH_CASE_VALUE    and its values (descriptions are left as qwark wrote them)
+ *   MH_CASE_VALUE    and its values
  *   MH_STYLE         MH_STYLE_* bits
  *   MH_MAIN_SEP      the string between a MAIN row's label and value, ": "
  *   MH_WAIT_FRAMES   frames an event may go unanswered before the title says so
@@ -99,9 +101,6 @@
  *     would need it again (a further switch) waits in the mailbox, while a
  *     page taken in place is written straight into the set on show. Keep it as
  *     short as the game allows: every frame of it delays a quick second switch.
- *   - The description line (mh_desc) is one buffer, written only for the screen
- *     on show, after mh_core_start; a shim whose outgoing screen keeps drawing
- *     its description line blanks it at stop.
  *   - Whenever the menu closes (mh_core_stop that is not a switch) the core
  *     forgets where the cursor was, and qwark puts its root back in the
  *     mailbox: the next open shows the root, the cursor on its first row.
@@ -112,17 +111,32 @@
  * distances along the bar whatever the field's sign. MROWF_SLIDER marks the
  * rows whose range is short enough for a bar to mean something. The text of
  * such a row stays as it is; a shim that draws a bar may draw the text too.
+ *
+ * ------------------------------------------------------ the sliding window
+ *
+ * (Round 4.) A page longer than the window qwark posts (MH_CFG_ROWS rows on
+ * a CONFIG page, MH_MAIN_ROWS on a MAIN one) has no More and no Previous
+ * row: the page's flags say it goes on above or below the window
+ * (MBOX_PAGE_MORE_*). The core watches shim_cursor every frame, and when the
+ * cursor comes to the window's last row it can stand on with the page going
+ * on below (its first, going on above), it asks qwark for the window that
+ * continues it (MBOX_EV_SCROLL_*); that comes as a new page, the cursor on the
+ * same row of the page, never on an edge the page goes on past. L1 and R1 jump
+ * a window up or down on such a page (PAGE_PREV, PAGE_NEXT), and do nothing on
+ * one that fits. A shim needs nothing for it but a shim_cursor that answers
+ * the widget's cursor every frame; every game's CONFIG look scrolls its window
+ * natively.
  */
 
 #define MH_CASE_AS_IS       0
 #define MH_CASE_UPPER       1
 #define MH_CASE_TITLE       2      /* the first letter of every word */
 
-#define MH_STYLE_DOTS       0x01   /* an action with nothing to say shows "..." on a CONFIG page */
+#define MH_STYLE_DOTS       0x01   /* retired in round 4: an action is blank until it answers, in every game */
 #define MH_STYLE_ARROWS     0x02   /* retired in round 3: a choice shows its bare value in every game */
 #define MH_STYLE_LINKS      0x04   /* a link shows ">" as its value */
 #define MH_STYLE_STAR       0x08   /* the current option of a MAIN list ends in " *" */
-#define MH_STYLE_COLON      0x10   /* a CONFIG label with a value ends in ":" (Deadlocked's GAME SETTINGS) */
+#define MH_STYLE_COLON      0x10   /* a CONFIG label with a value ends in ":" (no game since round 4) */
 
 /* --------------------------------------------------------- the core's state */
 
@@ -154,15 +168,14 @@
 #define ST_PTYPE            0x33   /* u8 the type the page last taken is drawn with (after the fallback) */
 #define ST_SHOWN            0x34   /* u8 the type on screen now, MH_NONE when none */
 #define ST_SWITCHING        0x35   /* u8 the screen is being started again; the other set holds its page */
-#define ST_DESC_ROW         0x36   /* u8 the row the description line is about, MH_NONE */
+#define ST_SEEN_ROW         0x36   /* u8 the cursor's row the window's edge was last checked at, MH_NONE (round 4) */
 #define ST_HOLD             0x37   /* u8 frames the other set stays on show by a screen that is going */
-#define ST_DESC             0x38   /* char[MH_DESC_LEN] the description line */
+/* 0x38..0x7B: round 3's description line, unused since round 4 (the sets keep their offset). */
 #define ST_SET0             0x7C   /* the two text sets, MH_SET_SIZE each */
 
 #define MH_NONE             0xFF
 
 #define MH_TITLE_LEN        0x24   /* a title, terminated */
-#define MH_DESC_LEN         0x44   /* a description, terminated */
 #define MH_TEXT_LEN         0x44   /* a row: MAIN, one string; CONFIG, the label, then the value */
 #define MH_LABEL_LEN        0x2C
 #define MH_VALUE_LEN        0x18   /* MH_TEXT_LEN - MH_LABEL_LEN */
@@ -185,8 +198,8 @@
 #define MH_BTN_CROSS        1      /* select */
 #define MH_BTN_LEFT         2
 #define MH_BTN_RIGHT        3
-#define MH_BTN_L1           4      /* the window before */
-#define MH_BTN_R1           5      /* the window after */
+#define MH_BTN_L1           4      /* a window up, on a page that goes on above */
+#define MH_BTN_R1           5      /* a window down, on a page that goes on below */
 #define MH_BTN_BACK         6      /* triangle */
 #define MH_BTN_CLOSE        7      /* Start or Select */
 
@@ -259,8 +272,9 @@ MH_API void mh_core_stop(int p);
 /*
  * Every frame the screen is up, before the shim reads its input: counts the
  * frame, acts on a close request (shim_close), takes a new page (shim_show,
- * or shim_switch for the other widget), keeps the title and the description
- * line. Answers MH_GONE when the shim must do nothing more this frame. While a
+ * or shim_switch for the other widget), keeps the title, and asks for the
+ * next window when the cursor is at the window's edge (round 4). Answers
+ * MH_GONE when the shim must do nothing more this frame. While a
  * switch is under way (the screen asked to start again and not started yet) it
  * takes no page, and presses but Start and Select are ignored.
  */
@@ -298,7 +312,6 @@ MH_API void mh_core_hold(u32 frames);
 #define mh_row_flags(i)     r8(mh_set() + SET_FLAGS + (u32)(i))
 #define mh_root()           ((r8(MH_STATE + ST_PFLAGS) & MBOX_PAGE_ROOT) != 0)
 #define mh_title()          (mh_set() + SET_TITLE)
-#define mh_desc()           ((u32)MH_STATE + ST_DESC)
 #define mh_text(i)          mh_set_text(mh_set(), i)                             /* MAIN */
 #define mh_label(i)         mh_text(i)                                           /* CONFIG */
 #define mh_value(i)         (mh_text(i) + MH_LABEL_LEN)                          /* CONFIG */
@@ -325,11 +338,8 @@ MH_API void shim_switch(int p);
 /* Close the menu, or go back from its root (MH_CLOSE_*), the game's way. */
 MH_API void shim_close(int p, u32 how);
 
-/* mh_title() changed. */
+/* mh_title() changed. (Round 4: shim_desc is gone with the description line.) */
 MH_API void shim_title(int p);
-
-/* mh_desc() changed. A shim with no line for it does nothing. */
-MH_API void shim_desc(int p);
 
 /* The row the game's cursor is on. */
 MH_API u32  shim_cursor(int p);

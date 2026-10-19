@@ -1,5 +1,5 @@
 /*
- * The console menu's mailbox, version 2: the block of game memory that qwark
+ * The console menu's mailbox, version 3: the block of game memory that qwark
  * and a game's menu renderer talk through (PROTOCOL.md section 9.4 says the
  * same in prose).
  *
@@ -10,6 +10,13 @@
  * (cfg_rows), and one that has no CONFIG page says 0 and is sent every page as
  * MAIN. A qwark and a renderer of different versions never meet: the install
  * refuses a renderer that is not this build's.
+ *
+ * Version 3 (round 4, still revision 1.22): no renderer shows a description,
+ * so a row is 0x40 bytes and nothing else; and a page longer than the window
+ * qwark posts has no More and no Previous row: the page's flags say it goes
+ * on above or below the window (MBOX_PAGE_MORE_*), and the renderer asks for
+ * the window that continues it when the cursor comes to its edge
+ * (MBOX_EV_SCROLL_*), so the window slides under the cursor.
  *
  * qwark owns the menu (src/core/menu.c): the pages, the navigation, what a row
  * does. A renderer is a small piece of code qwark writes into the game, one per
@@ -28,11 +35,10 @@
  * the request, and qwark clears it itself to withdraw one nobody took.
  *
  * Every string is a fixed slot, NUL-padded and not necessarily terminated when
- * full: the title, the hint, and per row its label, its value and, in a block
- * whose rows are MBOX_ROW_SIZE_DESC long, its description. A renderer finds
- * row i's strings at a fixed place whatever it draws them with, the game's own
- * text calls, a widget that keeps a char *, or a hook that resolves a text id
- * to row i's label.
+ * full: the title, the hint, and per row its label and its value. A renderer
+ * finds row i's strings at a fixed place whatever it draws them with, the
+ * game's own text calls, a widget that keeps a char *, or a hook that resolves
+ * a text id to row i's label.
  *
  * qwark writes the page while the game runs, from another thread. So a
  * renderer never hands the game a pointer into the mailbox: the games' text
@@ -45,7 +51,7 @@
 #define QWARK_MENUBOX_H
 
 #define MBOX_MAGIC          0x514D4E55   /* 'QMNU' */
-#define MBOX_VERSION        2
+#define MBOX_VERSION        3
 
 /* --------------------------------------------------------------- the header */
 
@@ -87,21 +93,18 @@
 /* --------------------------------------------------------------------- a row */
 
 /*
- * A row is MBOX_ROW_SIZE bytes, or MBOX_ROW_SIZE_DESC for a renderer that shows
- * a description line (the Cheats screen's kind of list): the block's row_size
- * says which, and qwark writes the description only where there is room.
+ * A row is MBOX_ROW_SIZE bytes, the block's row_size. (Version 2 had rows of
+ * 0x80 as well, with a description of 64 characters at +0x40 for a renderer
+ * that showed one; round 4 dropped them, no renderer showing any.)
  */
 #define MBOX_ROW_SIZE       0x40
-#define MBOX_ROW_SIZE_DESC  0x80
 #define MROW_OFF_KIND       0x00   /* u8 MROW_* */
 #define MROW_OFF_FLAGS      0x01   /* u8 MROWF_* */
 #define MROW_OFF_ID         0x02   /* u16 opaque to the renderer, echoed in events */
 #define MROW_OFF_LABEL      0x04   /* char[40], NUL-padded */
 #define MROW_OFF_VALUE      0x2C   /* char[20], NUL-padded */
-#define MROW_OFF_DESC       0x40   /* char[64], NUL-padded, rows of MBOX_ROW_SIZE_DESC only */
 #define MROW_LABEL_LEN      40
 #define MROW_VALUE_LEN      20
-#define MROW_DESC_LEN       64
 
 /*
  * Round 3: a VALUE row flagged MROWF_RANGE has a label of 23 characters at
@@ -122,8 +125,8 @@
 #define MROW_CHOICE         4      /* one of a list; activating opens the list */
 #define MROW_VALUE          5      /* a number; Left/Right step it */
 #define MROW_OPTION         6      /* one entry of a pick-one list; ON is the current one */
-#define MROW_MORE           7      /* the next part of a page too long for the screen */
-#define MROW_PREV           8      /* the part before */
+#define MROW_MORE           7      /* retired in round 4: never sent (the window slides instead) */
+#define MROW_PREV           8      /* retired in round 4: never sent */
 #define MROW_BACK           9      /* the page before, for a renderer with no back button */
 
 /* Row flags. */
@@ -156,17 +159,21 @@
 #define MBOX_EV_LEFT        2
 #define MBOX_EV_RIGHT       3
 #define MBOX_EV_BACK        4      /* back on a page that is not the root */
-#define MBOX_EV_PAGE_PREV   5
-#define MBOX_EV_PAGE_NEXT   6
+#define MBOX_EV_PAGE_PREV   5      /* L1: a window up, on a page that goes on above */
+#define MBOX_EV_PAGE_NEXT   6      /* R1: a window down, on a page that goes on below */
+#define MBOX_EV_SCROLL_UP   7      /* round 4: the cursor came to the window's first row, the page going on above */
+#define MBOX_EV_SCROLL_DOWN 8      /* round 4: to its last row, the page going on below */
 
 /* pflags. */
 #define MBOX_PAGE_ROOT      0x01   /* back here leaves the menu, which the renderer does itself */
+#define MBOX_PAGE_MORE_UP   0x02   /* round 4: the page goes on above this window */
+#define MBOX_PAGE_MORE_DOWN 0x04   /* round 4: and below it */
 
 /*
  * ptype: the widget a page is drawn with. A renderer whose cfg_rows is 0 is
  * only ever sent MAIN pages.
  */
 #define MBOX_PTYPE_MAIN     0      /* a short list: links and buttons, "label: value" */
-#define MBOX_PTYPE_CONFIG   1      /* labels and controls in two columns, a line of description */
+#define MBOX_PTYPE_CONFIG   1      /* labels and controls in two columns, scrolled */
 
 #endif /* QWARK_MENUBOX_H */

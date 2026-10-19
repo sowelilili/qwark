@@ -11,15 +11,16 @@
  *           N0, round 1): up to eight rows of "label: value";
  *   CONFIG  the look of Options > GAME SETTINGS (screen 12, MenuAudioVisual):
  *           its screen panel (template 37: its plates, separators, frame,
- *           title and legend), its capitals with a colon ("MUSIC VOLUME:"),
- *           its colours and sounds and its sliders, in a GuiState thread of the
- *           shim's own as that screen runs one. Its eight fixed rows hold five
- *           value texts and three sliders in fixed places, so the rows are a
- *           CtlList of the game's two-column row (template 28, the same font
- *           and size as GAME SETTINGS' rows) over the screen's own row area,
- *           eight rows on screen and scrolling to sixteen; a slider is drawn in
- *           a row with the row's own outline and swatch rectangles, at GAME
- *           SETTINGS' place and size (round 3).
+ *           title and legend), its capitals (round 4: without its colons, the
+ *           user's call), its colours and sounds and its sliders, in a GuiState
+ *           thread of the shim's own as that screen runs one. Its eight fixed
+ *           rows hold five value texts and three sliders in fixed places, so
+ *           the rows are a CtlList of the game's two-column row (template 28,
+ *           the same font and size as GAME SETTINGS' rows) over the screen's own
+ *           row area, eight rows on screen and scrolling to sixteen, a window of
+ *           a longer page that slides under the cursor (round 4); a slider is
+ *           drawn in a row with the row's own outline and swatch rectangles, at
+ *           GAME SETTINGS' place and size (round 3).
  *
  * Every new page is the game's own way between screens: GoToScreen to slot
  * 36 again, whose stop ends the widget shown (the list's MenuMain_Stop, or the
@@ -64,12 +65,18 @@
 #define MH_DATA             0x017DF0C0
 #define MH_DATA_END         0x017DFFC0
 
-/* The mailbox (menubox.h): sixteen rows of 0x80 bytes, with descriptions. */
+/*
+ * The mailbox (menubox.h): sixteen rows of 0x40 bytes (round 4: no
+ * descriptions, 1 KB less of the span). Sixteen rows hold every list of
+ * Deadlocked's whole (the bot upgrades, the planets, the weapons); a longer
+ * one, a save category of the console's library, slides sixteen at a time.
+ * The data span has no room for more (sizes in SPEC 9.19).
+ */
 #define MH_ROWS             0x00000010
-#define MH_ROW_BYTES        0x00000080
+#define MH_ROW_BYTES        0x00000040
 #define MH_MAIN_ROWS        0x00000008   /* GuiSupport's list has eight */
 #define MH_CFG_ROWS         0x00000010
-#define MH_MBOX_SIZE        0x00000880   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
+#define MH_MBOX_SIZE        0x00000480   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
 #define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
 
 /*
@@ -77,14 +84,15 @@
  * links are in capitals ("OPTIONS"); GAME SETTINGS has its title in capitals
  * ("GAME SETTINGS"), its labels in capitals ending in a colon ("SOUND:",
  * "MUSIC VOLUME:", "HELP TEXT:") and its values in capitals ("STEREO", "ON").
- * An action with nothing to say shows "...", and the current option of a
- * list is marked with a star.
+ * Round 4, the user's call: the labels without the colon, and an action
+ * with nothing to say blank (round 3 had "SOUND:" and "..."). The current
+ * option of a list is marked with a star.
  */
 #define MH_CASE_MAIN        0x00000001   /* MH_CASE_UPPER */
 #define MH_CASE_HEAD        0x00000001   /* MH_CASE_UPPER */
 #define MH_CASE_LABEL       0x00000001   /* MH_CASE_UPPER */
 #define MH_CASE_VALUE       0x00000001   /* MH_CASE_UPPER */
-#define MH_STYLE            0x00000019   /* MH_STYLE_DOTS | MH_STYLE_STAR | MH_STYLE_COLON */
+#define MH_STYLE            0x00000008   /* MH_STYLE_STAR */
 #define MH_MAIN_SEP         ": "
 
 /*

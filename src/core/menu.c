@@ -283,6 +283,35 @@ static void value_range(const struct feature_desc *f, s64 *lo, s64 *hi)
 static const u32 g_pow10[] = { 1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u };
 #define STEP_LEVELS 7
 
+/*
+ * Whether a VALUE suits a slider: a range of MENU_SLIDER_SPAN steps of 1 or
+ * fewer (Challenge mode's 0..255, not Bolts'), on a renderer that steps it.
+ */
+static int value_slider(const struct feature_desc *f)
+{
+	s64 lo, hi;
+
+	value_range(f, &lo, &hi);
+	return hi - lo <= MENU_SLIDER_SPAN && (g_caps & MBOX_CAP_STEPS) != 0;
+}
+
+/*
+ * What Left and Right move a VALUE by. A stepper: 1, 10, 100 ..., which the
+ * cross cycles through. Round 4, a slider: a tenth of its range, rounded up,
+ * so ten presses cross it, or 1, the fine step the cross switches to and back.
+ */
+static u32 value_step(const struct feature_desc *f)
+{
+	s64 lo, hi;
+	u8 k = f->id < QWARK_MAX_FEATURES ? g_step[f->id] : 0;
+
+	if (!value_slider(f)) return g_pow10[k];
+	if (k != 0) return 1;
+	value_range(f, &lo, &hi);
+	if (hi - lo < MENU_SLIDER_STEPS) return 1;
+	return (u32)((hi - lo + MENU_SLIDER_STEPS - 1) / MENU_SLIDER_STEPS);
+}
+
 static void value_text(const struct feature_desc *f, char *out, u32 cap)
 {
 	char step[16];
@@ -294,10 +323,11 @@ static void value_text(const struct feature_desc *f, char *out, u32 cap)
 		v = -v;
 	}
 	qfmt_u32(out + n, cap - n, (u32)v);
+	/* A step other than the first shows: "[10]" on a stepper, "[1]" on a slider's fine step. */
 	if (f->id < QWARK_MAX_FEATURES && g_step[f->id] != 0 && (g_caps & MBOX_CAP_STEPS) != 0) {
 		step[0] = ' ';
 		step[1] = '[';
-		qfmt_u32(step + 2, sizeof(step) - 3, g_pow10[g_step[f->id]]);
+		qfmt_u32(step + 2, sizeof(step) - 3, value_step(f));
 		qstrcat(step, sizeof(step), "]");
 		qstrcat(out, cap, step);
 	}
@@ -360,14 +390,23 @@ static u8 cycle(u8 cur, u8 n, int dir)
 static u8 page_kind(u16 page) { return (u8)(page >> 8); }
 static u8 page_arg(u16 page)  { return (u8)page; }
 
-/* The widget a page is drawn with: a list of features is a CONFIG page where the renderer has one. */
+/*
+ * The widget a page is drawn with: a list of features is a CONFIG page where
+ * the renderer has one. Round 4: so is any list that can be longer than a
+ * MAIN look holds, since no game's MAIN look scrolls (UYA's main pause holds
+ * nine, RaC1's panes and RaC2's bars seven) and every CONFIG look does: the
+ * planets (until the native picker) and the save library's categories and
+ * saves, as lists of buttons. Only the root and Unlocks are MAIN, and each
+ * fits its game's MAIN look.
+ */
 static u8 page_type(u16 page)
 {
 	u8 k = page_kind(page);
 
 	if (g_cfg_rows == 0) return MBOX_PTYPE_MAIN;
 	return (k == MENU_PAGE_GROUP || k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS ||
-	        k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_UNLOCK_ACTIONS) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
+	        k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_UNLOCK_ACTIONS || k == MENU_PAGE_PLANETS ||
+	        k == MENU_PAGE_SAVES || k == MENU_PAGE_SAVE_CAT) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
 }
 
 /*
@@ -604,14 +643,12 @@ static void page_title(u16 page, char *out, u32 cap)
 
 /* ---------------------------------------------------------------- rows */
 
-static void row(struct menu_row *r, u8 kind, u8 flags, const char *label, const char *value,
-                const char *text)
+static void row(struct menu_row *r, u8 kind, u8 flags, const char *label, const char *value)
 {
 	r->kind = kind;
 	r->flags = flags;
 	set_text(r->label, sizeof(r->label), label);
 	if (value != NULL) set_text(r->value, sizeof(r->value), value);
-	set_text(r->desc, sizeof(r->desc), text);
 }
 
 static u8 steps(void)
@@ -639,7 +676,7 @@ static void value_range_row(const struct feature_desc *f, struct menu_row *r)
 	r->range[0] = (u32)value_number(f, feature_value(f));
 	r->range[1] = (u32)lo;
 	r->range[2] = (u32)hi;
-	r->range[3] = g_pow10[f->id < QWARK_MAX_FEATURES ? g_step[f->id] : 0];
+	r->range[3] = value_step(f);
 	memset(r->label + MROW_RANGE_LABEL - 1, 0, sizeof(r->label) - (MROW_RANGE_LABEL - 1));
 }
 
@@ -651,9 +688,7 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 	switch (f->kind) {
 	case FEATURE_TOGGLE: {
 		int st = toggle_now(f);
-		row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (st != 0 ? MROWF_ON : 0), f->label,
-		    g_toggle_text[st], toggle_auto(f) ? "Auto also turns it on whenever the game starts."
-		                                      : "On or off.");
+		row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (st != 0 ? MROWF_ON : 0), f->label, g_toggle_text[st]);
 		break;
 	}
 	case FEATURE_ACTION:
@@ -663,9 +698,9 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 		 * the menu to close and the game to be back in play.
 		 */
 		if ((f->flags & FEATURE_FLAG_LOAD_ASIDE) != 0)
-			row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, f->label, "", "Closes the menu, then runs.");
+			row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, f->label, "");
 		else
-			row(r, MROW_ACTION, MROWF_ENABLED, f->label, "", "Runs it.");
+			row(r, MROW_ACTION, MROWF_ENABLED, f->label, "");
 		break;
 	case FEATURE_VALUE:
 		/*
@@ -674,25 +709,23 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 		 * shows the number and nothing more.
 		 */
 		if (steps() != 0)
-			row(r, MROW_VALUE, MROWF_ENABLED | MROWF_STEPS, f->label, NULL,
-			    "Left and Right step it; select changes the step.");
+			row(r, MROW_VALUE, MROWF_ENABLED | MROWF_STEPS, f->label, NULL);
 		else
-			row(r, MROW_INFO, 0, f->label, NULL, NULL);
+			row(r, MROW_INFO, 0, f->label, NULL);
 		value_text(f, r->value, sizeof(r->value));
 		if (r->kind == MROW_VALUE) value_range_row(f, r);
 		break;
 	case FEATURE_ENUM:
 		count = enum_options(f, &opts);
 		row(r, MROW_CHOICE, MROWF_ENABLED | steps(), f->label,
-		    count != 0 && opts[enum_index(f, count)] != NULL ? opts[enum_index(f, count)] : "",
-		    "Left and Right change it.");
+		    count != 0 && opts[enum_index(f, count)] != NULL ? opts[enum_index(f, count)] : "");
 		break;
 	case FEATURE_COLOR:
-		row(r, MROW_INFO, 0, f->label, "#", NULL);
+		row(r, MROW_INFO, 0, f->label, "#");
 		qfmt_hex(r->value + 1, sizeof(r->value) - 1, feature_value(f) & 0x00FFFFFFu, 6);
 		break;
 	default:
-		row(r, MROW_INFO, 0, f->label, NULL, NULL);
+		row(r, MROW_INFO, 0, f->label, NULL);
 		break;
 	}
 }
@@ -795,23 +828,23 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 
 	switch ((u8)(id >> 8)) {
 	case MENU_ROW_GROUP:
-		row(r, MROW_LINK, MROWF_ENABLED, d != NULL && arg < d->ngroups ? d->groups[arg] : "", "", NULL);
+		row(r, MROW_LINK, MROWF_ENABLED, d != NULL && arg < d->ngroups ? d->groups[arg] : "", "");
 		break;
 	case MENU_ROW_SECTION:
-		row(r, MROW_LINK, MROWF_ENABLED, gm->sections[arg].title, "", NULL);
+		row(r, MROW_LINK, MROWF_ENABLED, gm->sections[arg].title, "");
 		break;
 	case MENU_ROW_PAGE:
-		row(r, MROW_LINK, MROWF_ENABLED, page_name(arg), "", NULL);
+		row(r, MROW_LINK, MROWF_ENABLED, page_name(arg), "");
 		break;
 	case MENU_ROW_UCAT:
-		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "", NULL);
+		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "");
 		break;
 	case MENU_ROW_SCAT:
 		save_category(arg, text);
-		row(r, MROW_LINK, MROWF_ENABLED, text, "", NULL);
+		row(r, MROW_LINK, MROWF_ENABLED, text, "");
 		break;
 	case MENU_ROW_TEXT:
-		row(r, MROW_INFO, 0, arg == 0 ? "qwark build " : "Nothing here", "", NULL);
+		row(r, MROW_INFO, 0, arg == 0 ? "qwark build " : "Nothing here", "");
 		if (arg == 0) qfmt_u32(r->label + qstrlen(r->label), 8, QWARK_BUILD);
 		break;
 
@@ -825,24 +858,21 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		if (f == NULL) break;
 		count = enum_options(f, &opts);
 		row(r, MROW_OPTION, MROWF_ENABLED | (enum_index(f, count) == arg ? MROWF_ON : 0),
-		    arg < count && opts[arg] != NULL ? opts[arg] : "", "", "Select picks it.");
+		    arg < count && opts[arg] != NULL ? opts[arg] : "", "");
 		break;
 
 	case MENU_ROW_POS:
 		if (arg == MENU_ITEM_SLOT) {
-			row(r, MROW_CHOICE, MROWF_ENABLED | steps(), "Position slot", "",
-			    "The slot Save position and Load position use.");
+			row(r, MROW_CHOICE, MROWF_ENABLED | steps(), "Position slot", "");
 			qfmt_u32(r->value, sizeof(r->value), (u32)config_selected_slot() + 1u);
 		} else {
-			row(r, MROW_ACTION, MROWF_ENABLED, arg == MENU_ITEM_POS_SAVE ? "Save position" : "Load position",
-			    "", arg == MENU_ITEM_POS_SAVE ? "Keeps where you stand in the slot."
-			                                  : "Puts you back where the slot says.");
+			row(r, MROW_ACTION, MROWF_ENABLED, arg == MENU_ITEM_POS_SAVE ? "Save position" : "Load position", "");
 		}
 		break;
 
 	case MENU_ROW_PLANET: {
 		const char * const *names = g_game->planet_names(&count);
-		row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, arg < count ? names[arg] : "", "", NULL);
+		row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, arg < count ? names[arg] : "", "");
 		break;
 	}
 
@@ -851,8 +881,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		u8 sel = manips_selected(), opts_now = manips_options_now(), on;
 		switch (arg) {
 		case MENU_MANIP_CATEGORY:
-			row(r, MROW_CHOICE, MROWF_ENABLED | steps(), "Category", "None",
-			    "Whose manips are applied.");
+			row(r, MROW_CHOICE, MROWF_ENABLED | steps(), "Category", "None");
 			for (count = 0; count < m->ngroups; count++) {
 				if (m->groups[count].id == sel) set_text(r->value, sizeof(r->value), m->groups[count].name);
 			}
@@ -861,12 +890,10 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		case MENU_MANIP_REMEMBER:
 			on = (opts_now >> (arg - MENU_MANIP_AUTO)) & 1u;
 			row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (on ? MROWF_ON : 0),
-			    arg == MENU_MANIP_AUTO ? "Auto-reset" : "Remember", g_toggle_text[on],
-			    arg == MENU_MANIP_AUTO ? "Applies them again at every file load."
-			                           : "Keeps the category when the game starts again.");
+			    arg == MENU_MANIP_AUTO ? "Auto-reset" : "Remember", g_toggle_text[on]);
 			break;
 		default:
-			row(r, MROW_ACTION, MROWF_ENABLED, "Apply now", "", "Applies the category's manips now.");
+			row(r, MROW_ACTION, MROWF_ENABLED, "Apply now", "");
 			break;
 		}
 		break;
@@ -876,7 +903,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		/* An ACTION's status readout, as the game words it (UYA's trophy reset). */
 		f = feature(arg);
 		if (f == NULL || gm == NULL || gm->action_status == NULL || f->readout >= QWARK_MAX_READOUTS) break;
-		row(r, MROW_INFO, 0, f->readout < d->nreadouts ? d->readouts[f->readout] : f->label, "", NULL);
+		row(r, MROW_INFO, 0, f->readout < d->nreadouts ? d->readouts[f->readout] : f->label, "");
 		gm->action_status(arg, session_readout(f->readout), r->value, sizeof(r->value));
 		r->value[sizeof(r->value) - 1] = 0;
 		break;
@@ -884,8 +911,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 	case MENU_ROW_UNLOCK:
 		u = unlock_row(arg);
 		if (u == NULL) break;
-		row(r, MROW_CHOICE, MROWF_ENABLED | steps(), u->name, "",
-		    unlock_count(u) == 2 ? "Locked or unlocked." : "Locked, or which version it is.");
+		row(r, MROW_CHOICE, MROWF_ENABLED | steps(), u->name, "");
 		if (unlock_now(u, r->value, sizeof(r->value)) != 0) r->flags |= MROWF_ON;
 		break;
 
@@ -895,7 +921,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		/* The name without its ".sav". */
 		count = (u8)qstrlen(text);
 		if (count > 4) text[count - 4] = 0;
-		row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, text, "", NULL);
+		row(r, MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, text, "");
 		break;
 
 	default:
@@ -909,11 +935,16 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 /* ----------------------------------------------------------- the windows */
 
 /*
- * A page longer than the renderer's screen is cut into windows of `m` rows.
- * The first has as many of the page's rows as fit and a MORE row last; a
- * middle one a PREV row first and a MORE row last; the last a PREV row and the
- * rest. With a renderer that has no back control every page but the root ends
- * in a BACK row as well, and the screen is one row shorter for the page's own.
+ * Round 4: a page longer than the renderer takes at once is posted a window
+ * of `m` of its rows, with no More and no Previous row: the page's flags say
+ * it goes on above or below (MBOX_PAGE_MORE_*), and when the cursor comes to
+ * the window's edge the renderer asks for the window that continues it
+ * (MBOX_EV_SCROLL_*), with the cursor on the same row. Every game's CONFIG
+ * look scrolls its rows natively, so a window is as many rows as the
+ * renderer's mailbox holds, and it only slides on a page longer than that (a
+ * save category of the console's library, RaC1's and UYA's planets). With a
+ * renderer that has no back control every page but the root ends in a BACK
+ * row as well, and the window is one row shorter for the page's own.
  */
 static u8 screen_rows(u16 page, u8 depth)
 {
@@ -923,78 +954,26 @@ static u8 screen_rows(u16 page, u8 depth)
 	return m;
 }
 
-static void window(u8 n, u8 start, u8 m, u8 *content, int *prev, int *more)
+/* The last window's start: 0 for a page that fits. */
+static u8 last_start(u8 n, u8 m)
 {
-	u8 avail;
-
-	*prev = 0;
-	*more = 0;
-	if (n <= m) {
-		*content = n;
-		return;
-	}
-	*prev = start > 0;
-	avail = (u8)(m - (*prev ? 1 : 0));
-	if (n - start <= avail) {
-		*content = (u8)(n - start);
-	} else {
-		*content = (u8)(avail - 1);
-		*more = 1;
-	}
+	return n > m ? (u8)(n - m) : 0;
 }
 
-/* Where the window before `start` begins. */
-static u8 window_prev(u8 start, u8 m)
+/*
+ * The window that shows the page's row `a`, never with the cursor on an edge
+ * the page goes on past: going down, `a` second from the window's top; going
+ * up, second from its bottom (as far as the page's own ends allow).
+ */
+static u8 window_at(u8 n, u8 m, u8 a, int down)
 {
-	if (start <= (u8)(m - 1)) return 0;
-	return (u8)(start - (m - 2));
-}
+	int s;
 
-/* The window that shows row `index` of a page of n rows, and that row's place in it. */
-static u8 window_of(u8 n, u8 index, u8 m, u8 *pos)
-{
-	u8 start = 0, content;
-	int prev, more;
-
-	for (;;) {
-		window(n, start, m, &content, &prev, &more);
-		if (index < start + content || !more) break;
-		start = (u8)(start + content);
-	}
-	*pos = (u8)((prev ? 1 : 0) + (index - start));
-	return start;
-}
-
-/* Which window `start` is, and how many there are, counted from 1. */
-static void window_number(u8 n, u8 start, u8 m, u8 *k, u8 *total)
-{
-	u8 s = 0, content;
-	int prev, more;
-
-	*k = 1;
-	*total = 1;
-	for (;;) {
-		window(n, s, m, &content, &prev, &more);
-		if (s < start) (*k)++;
-		if (!more) break;
-		s = (u8)(s + content);
-		(*total)++;
-	}
-	if (*k > *total) *k = *total;
-}
-
-/* A start that is no window's (the page got shorter) goes back to the first. */
-static u8 valid_start(u8 n, u8 start, u8 m)
-{
-	u8 s = 0, content;
-	int prev, more;
-
-	for (;;) {
-		if (s == start) return start;
-		window(n, s, m, &content, &prev, &more);
-		if (!more || s > start) return 0;
-		s = (u8)(s + content);
-	}
+	if (n <= m) return 0;
+	s = down ? (int)a - 1 : (int)a - (int)m + 2;
+	if (s < 0) s = 0;
+	if (s > (int)last_start(n, m)) s = last_start(n, m);
+	return (u8)s;
 }
 
 /* ------------------------------------------------------------ navigation */
@@ -1029,28 +1008,33 @@ static int nav_pop(void)
 	return ST_OK;
 }
 
-/* The next or the previous window of the current page; `cursor_end` puts the cursor last. */
-static int nav_turn(int forward, int cursor_end)
+/*
+ * The window moved on the current page from the cursor's `row` of it: a slide
+ * (the cursor at the window's edge, SCROLL_UP and SCROLL_DOWN), the cursor
+ * staying on its row of the page, or a jump (L1 and R1, PAGE_PREV and
+ * PAGE_NEXT), the cursor going m - 2 rows up or down. Refused on a page that
+ * does not go on that way.
+ */
+static int nav_move(u8 row, int down, int jump)
 {
 	struct menu_nav *cur = &g_nav[g_depth - 1];
 	u16 ids[MENU_ITEMS_MAX];
 	u8 n = page_items(cur->page, ids);
 	u8 m = screen_rows(cur->page, g_depth);
-	u8 content;
-	int prev, more;
+	u8 start = cur->start;
+	int a = (int)start + (int)row, step = m > 2 ? m - 2 : 1;
+	u8 next;
 
-	window(n, cur->start, m, &content, &prev, &more);
-	if (forward) {
-		if (!more) return ST_BAD_ARG;
-		cur->start = (u8)(cur->start + content);
-	} else {
-		if (!prev) return ST_BAD_ARG;
-		cur->start = window_prev(cur->start, m);
-	}
-
-	window(n, cur->start, m, &content, &prev, &more);
-	cur->cursor = (u8)(prev ? 1 : 0);
-	if (cursor_end && content != 0) cur->cursor = (u8)(cur->cursor + content - 1);
+	if (n <= m || (down ? start >= last_start(n, m) : start == 0)) return ST_BAD_ARG;
+	if (a >= n) a = n - 1;
+	if (jump) a = down ? (a + step < n ? a + step : n - 1) : (a > step ? a - step : 0);
+	next = window_at(n, m, (u8)a, down);
+	/* A slide always moves: the cursor's row may be the window's only one it can stand on. */
+	if (down && next <= start) next = (u8)(start + 1);
+	if (!down && next >= start) next = (u8)(start - 1);
+	cur->start = next;
+	a -= next;
+	cur->cursor = (u8)(a < 0 ? 0 : a >= m ? m - 1 : a);
 	g_visit++;
 	return ST_OK;
 }
@@ -1111,8 +1095,7 @@ static void nav_row(struct menu_view *v, u8 which, const char *label)
 
 	memset(&r, 0, sizeof(r));
 	r.id = MENU_ROW_ID(MENU_ROW_NAV, which);
-	row(&r, which == MENU_NAV_MORE ? MROW_MORE : which == MENU_NAV_PREV ? MROW_PREV : MROW_BACK,
-	    MROWF_ENABLED, label, "", NULL);
+	row(&r, MROW_BACK, MROWF_ENABLED, label, "");
 	push_row(v, &r);
 }
 
@@ -1121,9 +1104,7 @@ void menu_model_view(struct menu_view *v)
 	struct menu_nav *cur;
 	struct menu_row r;
 	u16 ids[MENU_ITEMS_MAX];
-	u8 n, m, content, i, k, total;
-	int prev, more;
-	char of[12];
+	u8 n, m, content, i;
 
 	memset(v, 0, sizeof(*v));
 	g_game = session_game();
@@ -1132,31 +1113,21 @@ void menu_model_view(struct menu_view *v)
 
 	n = page_items(cur->page, ids);
 	m = screen_rows(cur->page, g_depth);
-	cur->start = valid_start(n, cur->start, m);
-	window(n, cur->start, m, &content, &prev, &more);
-	window_number(n, cur->start, m, &k, &total);
+	/* A start past the last window (the page got shorter) comes back to it. */
+	if (cur->start > last_start(n, m)) cur->start = last_start(n, m);
+	content = n - cur->start < m ? (u8)(n - cur->start) : m;
 
 	v->key = ((u32)cur->page << 16) | ((u32)cur->start << 8) | g_visit;
-	v->pflags = g_depth == 1 ? MBOX_PAGE_ROOT : 0;
+	v->pflags = (g_depth == 1 ? MBOX_PAGE_ROOT : 0) | (cur->start > 0 ? MBOX_PAGE_MORE_UP : 0) |
+	            (cur->start + content < n ? MBOX_PAGE_MORE_DOWN : 0);
 	v->ptype = page_type(cur->page);
 	page_title(cur->page, v->title, sizeof(v->title));
 	note_hint(v->hint, sizeof(v->hint));
 
-	if (total > 1) {
-		of[0] = ' ';
-		qfmt_u32(of + 1, 4, k);
-		qstrcat(of, sizeof(of), "/");
-		qfmt_u32(of + qstrlen(of), 4, total);
-		if (qstrlen(v->title) + qstrlen(of) < sizeof(v->title))
-			qstrcat(v->title, sizeof(v->title), of);
-	}
-
-	if (prev) nav_row(v, MENU_NAV_PREV, "Previous");
 	for (i = 0; i < content; i++) {
 		build_row(cur->page, ids[cur->start + i], &r);
 		push_row(v, &r);
 	}
-	if (more) nav_row(v, MENU_NAV_MORE, "More");
 	if ((g_caps & MBOX_CAP_BACK) == 0 && g_depth > 1) nav_row(v, MENU_NAV_BACK, "Back");
 
 	/* A page with nothing on it still has a row, which says so. */
@@ -1195,7 +1166,7 @@ static int step_feature(const struct feature_desc *f, int dir)
 		return rc;
 	case FEATURE_VALUE:
 		value_range(f, &lo, &hi);
-		step = g_pow10[f->id < QWARK_MAX_FEATURES ? g_step[f->id] : 0];
+		step = value_step(f);
 		v = value_number(f, feature_value(f)) + (dir > 0 ? step : -step);
 		if (v < lo) v = lo;
 		if (v > hi) v = hi;
@@ -1208,13 +1179,20 @@ static int step_feature(const struct feature_desc *f, int dir)
 	}
 }
 
-/* The cross on a VALUE row: the next step, back to 1 past the field's range. */
+/*
+ * The cross on a VALUE row: the next step, back to 1 past the field's range;
+ * on a slider (round 4) the fine step of 1 and back to the tenth.
+ */
 static void cycle_step(const struct feature_desc *f)
 {
 	s64 lo, hi;
 	u8 next;
 
 	if (f->id >= QWARK_MAX_FEATURES) return;
+	if (value_slider(f)) {
+		g_step[f->id] = g_step[f->id] == 0;
+		return;
+	}
 	value_range(f, &lo, &hi);
 	next = (u8)(g_step[f->id] + 1);
 	if (next >= STEP_LEVELS || (s64)g_pow10[next] > hi - lo) next = 0;
@@ -1254,9 +1232,10 @@ static int act_feature(u8 row, u16 id, const struct feature_desc *f, int dir)
 		if (dir == 0 && page_type(g_nav[g_depth - 1].page) == MBOX_PTYPE_MAIN) {
 			count = enum_options(f, &opts);
 			if (count == 0) return ST_UNSUPPORTED;
-			start = window_of(count, enum_index(f, count),
-			                  screen_rows(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), (u8)(g_depth + 1)), &pos);
-			return nav_push(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), row, start, pos);
+			pos = enum_index(f, count);
+			start = window_at(count, screen_rows(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), (u8)(g_depth + 1)),
+			                  pos, 1);
+			return nav_push(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), row, start, (u8)(pos - start));
 		}
 		return answer(id, step_feature(f, dir), f->label);
 	case FEATURE_TOGGLE:
@@ -1365,8 +1344,6 @@ static int act(u8 row, u16 id, int dir)
 
 	case MENU_ROW_NAV:
 		if (dir != 0) return ST_OK;
-		if (arg == MENU_NAV_MORE) return nav_turn(1, 0);
-		if (arg == MENU_NAV_PREV) return nav_turn(0, 1);
 		if (arg == MENU_NAV_BACK) return nav_pop();
 		return ST_BAD_ARG;
 
@@ -1383,9 +1360,13 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 	case MBOX_EV_BACK:
 		return nav_pop();
 	case MBOX_EV_PAGE_PREV:
-		return nav_turn(0, 0);
+		return nav_move(row, 0, 1);
 	case MBOX_EV_PAGE_NEXT:
-		return nav_turn(1, 0);
+		return nav_move(row, 1, 1);
+	case MBOX_EV_SCROLL_UP:
+		return nav_move(row, 0, 0);
+	case MBOX_EV_SCROLL_DOWN:
+		return nav_move(row, 1, 0);
 	default:
 		break;
 	}
@@ -1517,7 +1498,7 @@ void menu_enter(const struct game_api *game)
  */
 static void post(int force)
 {
-	/* The view and the page it becomes, in the tick's scratch: 2.2 KB and 2.1 KB at most. */
+	/* The view and the page it becomes, in the tick's scratch: 2.7 KB and 2.1 KB at most (32 rows). */
 	struct menu_view *v = (struct menu_view *)qscratch();
 	u8 *img = qscratch() + 4096;
 	u8 cap = g_row_cap;
@@ -1547,8 +1528,6 @@ static void post(int force)
 			for (k = 0; k < 4; k++) be32_put(r + MROW_OFF_RANGE + 4u * k, v->rows[i].range[k]);
 		}
 		memcpy(r + MROW_OFF_VALUE, v->rows[i].value, MROW_VALUE_LEN);
-		if (g_row_size >= MBOX_ROW_SIZE_DESC)
-			memcpy(r + MROW_OFF_DESC, v->rows[i].desc, MROW_DESC_LEN);
 	}
 
 	crc = qcrc32(img, len);
@@ -1561,6 +1540,10 @@ static void post(int force)
 	g_posted_crc = crc;
 	g_posted = 1;
 }
+
+/* The view and the page image fit the tick's scratch, as post() lays them out. */
+typedef char menu_scratch_fits[(sizeof(struct menu_view) <= 4096 &&
+                                MBOX_OFF_ROWS + MENU_VIEW_MAX * MBOX_ROW_SIZE <= QSCRATCH_BYTES - 4096) ? 1 : -1];
 
 /* Whether the code cave holds this build's renderer, byte for byte. */
 static int code_matches(const struct mh_cave *c)
@@ -1664,11 +1647,11 @@ static int install(void)
 	}
 
 	/*
-	 * The block's shape, as the renderer declared it: rows of 0x40 or 0x80
-	 * bytes, at least three of them, all inside the block. A renderer that
-	 * says otherwise is one this build cannot serve.
+	 * The block's shape, as the renderer declared it: rows of 0x40 bytes (round
+	 * 4: no longer 0x80, with descriptions), at least three of them, all inside
+	 * the block. A renderer that says otherwise is one this build cannot serve.
 	 */
-	if ((head[MBOX_OFF_ROW_SIZE] != MBOX_ROW_SIZE && head[MBOX_OFF_ROW_SIZE] != MBOX_ROW_SIZE_DESC) ||
+	if (head[MBOX_OFF_ROW_SIZE] != MBOX_ROW_SIZE ||
 	    head[MBOX_OFF_ROW_CAP] < 3 || be16_get(head + MBOX_OFF_VERSION) != MBOX_VERSION ||
 	    MBOX_OFF_ROWS + (u32)head[MBOX_OFF_ROW_CAP] * head[MBOX_OFF_ROW_SIZE] >
 	    be16_get(head + MBOX_OFF_SIZE)) {

@@ -518,12 +518,6 @@ MH_API void shim_title(int p)
 	if (r1_at() == AT_CONF) r1_copy_str(SH(SH_TITLE_TEXT), mh_title(), MH_TITLE_LEN);
 }
 
-/* Cheats' layout has no description line. */
-MH_API void shim_desc(int p)
-{
-	(void)p;
-}
-
 MH_API u32 shim_cursor(int p)
 {
 	(void)p;

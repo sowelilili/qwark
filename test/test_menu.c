@@ -664,8 +664,7 @@ struct box_page {
 	u32 seq, key;
 	u8 n, cursor, pflags, ptype;
 	char title[MBOX_TITLE_LEN + 1];
-	struct { u8 kind, flags; u16 id; char label[MROW_LABEL_LEN + 1]; char value[MROW_VALUE_LEN + 1];
-	         char desc[MROW_DESC_LEN + 1]; } rows[16];
+	struct { u8 kind, flags; u16 id; char label[MROW_LABEL_LEN + 1]; char value[MROW_VALUE_LEN + 1]; } rows[32];
 };
 
 static void read_box(struct box_page *p)
@@ -683,14 +682,13 @@ static void read_box(struct box_page *p)
 	p->pflags = buf[MBOX_OFF_PFLAGS];
 	p->ptype = buf[MBOX_OFF_PTYPE];
 	memcpy(p->title, buf + MBOX_OFF_TITLE, MBOX_TITLE_LEN);
-	for (i = 0; i < p->n && i < 16; i++) {
+	for (i = 0; i < p->n && i < MH_ROWS; i++) {
 		const u8 *r = buf + MBOX_OFF_ROWS + i * MH_ROW_BYTES;
 		p->rows[i].kind = r[MROW_OFF_KIND];
 		p->rows[i].flags = r[MROW_OFF_FLAGS];
 		p->rows[i].id = be16_get(r + MROW_OFF_ID);
 		memcpy(p->rows[i].label, r + MROW_OFF_LABEL, MROW_LABEL_LEN);
 		memcpy(p->rows[i].value, r + MROW_OFF_VALUE, MROW_VALUE_LEN);
-		memcpy(p->rows[i].desc, r + MROW_OFF_DESC, MROW_DESC_LEN);
 	}
 }
 
@@ -893,8 +891,7 @@ static void test_model_dl(void)
 	      "the four cheats in their order, then Unlock all planets");
 	r = view_row(&v, "Ghost Ratchet");
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == (MROWF_ENABLED | MROWF_STEPS) &&
-	      strcmp(r->value, "Off") == 0 && strstr(r->desc, "Auto") != NULL,
-	      "Ghost Ratchet: Off, a three-way checkbox that says what Auto is");
+	      strcmp(r->value, "Off") == 0, "Ghost Ratchet: Off, a three-way checkbox");
 	check(act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet") == ST_OK && strcmp(value_of(&v, "Ghost Ratchet"), "On") == 0 &&
 	      (features_toggle_state() & ((u64)1 << R4_GHOST)) != 0 && (features_toggle_auto() & ((u64)1 << R4_GHOST)) == 0,
 	      "the cross: On, the cheat on and not on its own at boot");
@@ -963,21 +960,28 @@ static void test_model_dl(void)
 	check(strcmp(value_of(&v, "Bolts"), "1 [10]") == 0, "the cross makes the step 10");
 	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC4_BOLTS) == 11, "and Right adds ten");
 	while (strcmp(value_of(&v, "Bolts"), "11") != 0) act(&v, MBOX_EV_ACTIVATE, "Bolts");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
-	check(strcmp(value_of(&v, "Challenge mode"), "0") == 0, "Challenge mode's step stops at 100, its range 0..255");
 	r = view_row(&v, "Challenge mode");
 	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
-	      r->range[0] == 0 && r->range[1] == 0 && r->range[2] == 255 && r->range[3] == 1,
-	      "round 3: Challenge mode carries its slider's numbers, 0 in 0..255 by 1, and suits a slider");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	      r->range[0] == 0 && r->range[1] == 0 && r->range[2] == 255 && r->range[3] == 26 &&
+	      strcmp(r->value, "0") == 0,
+	      "Challenge mode carries its slider's numbers, 0 in 0..255, and (round 4) a step of a tenth, 26");
+	for (i = 0; i < 9; i++) act(&v, MBOX_EV_RIGHT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "234") == 0 && peek8(RAC4_CHALLENGE_MODE) == 234,
+	      "nine presses of Right: 234");
 	act(&v, MBOX_EV_RIGHT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "255") == 0 && peek8(RAC4_CHALLENGE_MODE) == 255,
+	      "the tenth: the top, 255, ten presses from end to end");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
 	r = view_row(&v, "Challenge mode");
-	check(r != NULL && r->range[0] == 10 && r->range[3] == 10 && strcmp(r->value, "10 [10]") == 0,
-	      "the cross and Right: 10, the step 10, in the numbers as in the text");
+	check(r != NULL && r->range[3] == 1 && strcmp(r->value, "255 [1]") == 0,
+	      "the cross: the fine step, 1, which the value shows");
 	act(&v, MBOX_EV_LEFT, "Challenge mode");
-	while (strcmp(value_of(&v, "Challenge mode"), "0") != 0) act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	check(peek8(RAC4_CHALLENGE_MODE) == 254, "Left by one");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->range[3] == 26 && strcmp(r->value, "254") == 0, "the cross again: back to the tenth");
+	for (i = 0; i < 12; i++) act(&v, MBOX_EV_LEFT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "0") == 0, "and Left to the bottom, where it stops");
 	r = view_row(&v, "Bolts");
 	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == 0,
 	      "Bolts, a whole 32-bit counter, has no bounds to carry and no slider");
@@ -991,8 +995,8 @@ static void test_model_dl(void)
 	dl_planet(5, 1);
 	dl_planet(3, 1);
 	check(act(&v, MBOX_EV_ACTIVATE, "Planets") == ST_OK && strcmp(v.title, "Planets") == 0 &&
-	      v.ptype == MBOX_PTYPE_MAIN && v.nrows == 3,
-	      "Planets is a MAIN page of the three the save has unlocked");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 3,
+	      "Planets is a CONFIG page (round 4: no MAIN look scrolls) of the three the save has unlocked");
 	check(strcmp(v.rows[0].label, "DreadZone") == 0 && strcmp(v.rows[1].label, "Catacrom") == 0 &&
 	      strcmp(v.rows[2].label, "Kronos") == 0,
 	      "DreadZone, Catacrom, Kronos, in the game's order, the unlocked placeholder left out");
@@ -1085,13 +1089,15 @@ static void test_model_dl(void)
 	/* Save files: the library's categories, then their saves, each a button that loads it. */
 	save_put("menu-test", "first.sav", 16);
 	save_put("menu-test", "second.sav", 16);
-	check(act(&v, MBOX_EV_ACTIVATE, "Save files") == ST_OK && v.ptype == MBOX_PTYPE_MAIN &&
-	      view_row(&v, "menu-test") != NULL, "Save files lists the library's categories, menu-test among them");
+	check(act(&v, MBOX_EV_ACTIVATE, "Save files") == ST_OK && v.ptype == MBOX_PTYPE_CONFIG &&
+	      view_row(&v, "menu-test") != NULL && view_row(&v, "menu-test")->kind == MROW_LINK,
+	      "Save files is a CONFIG page (round 4) of the library's categories, menu-test among them, links");
 	check(act(&v, MBOX_EV_ACTIVATE, "menu-test") == ST_OK && strcmp(v.title, "menu-test") == 0 && v.nrows == 2 &&
-	      view_row(&v, "first") != NULL && view_row(&v, "second") != NULL,
-	      "its page lists its two saves by name, without the .sav");
+	      v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "first") != NULL && view_row(&v, "second") != NULL,
+	      "its page, CONFIG too, lists its two saves by name, without the .sav");
 	r = view_row(&v, "first");
-	check(r != NULL && r->kind == MROW_ACTION && (r->flags & MROWF_CLOSES) != 0, "each loads once the menu is closed");
+	check(r != NULL && r->kind == MROW_ACTION && (r->flags & MROWF_CLOSES) != 0 && r->value[0] == 0,
+	      "each a button, blank, that loads once the menu is closed");
 	check(act(&v, MBOX_EV_ACTIVATE, "first") == ST_OK && strcmp(value_of(&v, "first"), "after closing") == 0,
 	      "the cross on one: it waits");
 	save_drop("menu-test", "first.sav");
@@ -1106,9 +1112,15 @@ static void test_model_dl(void)
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(v.ptype == MBOX_PTYPE_MAIN, "with no CONFIG page every page is MAIN");
-	check(v.nrows == 8 && v.rows[6].kind == MROW_MORE && v.rows[7].kind == MROW_BACK,
-	      "nine rows on screens of eight with a Back row: six, More, Back");
-	act(&v, MBOX_EV_ACTIVATE, "More");
+	check(v.nrows == 8 && strcmp(v.rows[6].label, "Bolts") == 0 && v.rows[7].kind == MROW_BACK &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
+	      "nine rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
+	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 5, v.rows[5].id, v.key) == ST_OK,
+	      "the slide from the sixth, Load set-aside file, the last the cursor may stand on (Bolts is text here)");
+	menu_model_view(&v);
+	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Load set-aside file") == 0 && v.rows[7].kind == MROW_BACK &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP,
+	      "the last window, the cursor still on Load set-aside file, the Back row last again");
 	r = view_row(&v, "Bolts");
 	check(r != NULL && r->kind == MROW_INFO && r->flags == 0, "and with no Left and Right a value is shown and nothing more");
 	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
@@ -1117,51 +1129,91 @@ static void test_model_dl(void)
 }
 
 /*
- * Every row of every window of a page longer than the screen, and nothing
- * twice: RaC2's planets, twenty-seven of them, eight rows a window. (Round 1's
- * pages, a page per DESCRIBE group, were tested on RaC2 until it had a menu
- * table of its own.)
+ * Round 4: a page longer than its window has no More or Previous row; the
+ * window slides under the cursor. Every row of RaC2's planets, twenty-seven of
+ * them, through windows of eight: down the page by the slides at each window's
+ * last row and back up by those at its first, the cursor on the same planet
+ * each time, never on an edge the page goes on past; L1 and R1 a window; the
+ * title the page's own.
  */
 static void test_model_paging(void)
 {
 	struct menu_view v;
-	u8 count, seen, k;
-	u16 ids[64];
-	int guard;
+	u8 count, seen, k, i, start, at;
+	u16 ids[64], cur;
+	int guard, rows_ok = 1, kinds_ok = 1, same_ok = 1, cursor_ok = 1, title_ok = 1, slides = 0;
 
-	group("console menu: the model, paging RaC2's planets");
+	group("console menu: the model, a page longer than its window (round 4: RaC2's planets, sliding)");
 
 	check(boot("NPEA00386"), "RaC2 boots");
 	session_game()->planet_names(&count);
-	check(count > 8, "RaC2 has more planets than a screen has rows");
+	check(count > 8 && count <= 64, "RaC2 has more planets than a window of eight has rows");
 
 	menu_model_reset(8, 0, MBOX_CAP_STEPS | MBOX_CAP_BACK);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), "its Planets page opens");
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0) && v.nrows == 8 && v.cursor == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
+	      "its Planets page opens on a window of eight, the page going on below");
+	check(menu_model_event(MBOX_EV_SCROLL_UP, 0, v.rows[0].id, v.key) == ST_BAD_ARG &&
+	      menu_model_event(MBOX_EV_PAGE_PREV, 0, v.rows[0].id, v.key) == ST_BAD_ARG,
+	      "nothing above the first window: SCROLL_UP and L1 refused");
+	menu_model_view(&v);
 
+	/* Down: the cursor to the window's last row, and the slide. */
 	seen = 0;
-	for (guard = 0; guard < 20; guard++) {
-		int more = 0;
-		u8 i;
+	for (guard = 0; guard < 40; guard++) {
+		start = (u8)(v.key >> 8);
+		if (v.nrows > 8) rows_ok = 0;
+		if (strchr(v.title, '/') != NULL || strcmp(v.title, "Planets") != 0) title_ok = 0;
 		for (i = 0; i < v.nrows; i++) {
-			if (v.rows[i].kind == MROW_MORE) more = 1;
-			else if (v.rows[i].kind != MROW_PREV && v.rows[i].kind != MROW_BACK && seen < 64)
-				ids[seen++] = v.rows[i].id;
+			if (v.rows[i].kind == MROW_MORE || v.rows[i].kind == MROW_PREV) kinds_ok = 0;
+			if (start + i < seen && ids[start + i] != v.rows[i].id) same_ok = 0;
+			if (start + i == seen && seen < 64) ids[seen++] = v.rows[i].id;
 		}
-		check(v.nrows <= 8, "a window never has more rows than the screen");
-		if (!more) break;
-		act(&v, MBOX_EV_ACTIVATE, "More");
+		if ((v.pflags & MBOX_PAGE_MORE_DOWN) == 0) break;
+		cur = v.rows[v.nrows - 1].id;
+		if (menu_model_event(MBOX_EV_SCROLL_DOWN, (u8)(v.nrows - 1), cur, v.key) != ST_OK) break;
+		menu_model_view(&v);
+		slides++;
+		if (v.rows[v.cursor].id != cur) cursor_ok = 0;
+		if (v.cursor == v.nrows - 1 && (v.pflags & MBOX_PAGE_MORE_DOWN) != 0) cursor_ok = 0;
 	}
-	check(seen == count, "the windows show every planet");
+	check(rows_ok && kinds_ok && title_ok, "every window eight rows at most, no More or Previous row, titled Planets");
+	check(slides >= 3 && cursor_ok, "each slide keeps the cursor on the planet it was on, off the window's edge");
+	check(seen == count && same_ok, "the windows show every planet, each at its own place");
 	for (k = 1; k < seen; k++) {
-		if (ids[k] == ids[k - 1]) break;
+		for (i = 0; i < k; i++) {
+			if (ids[i] == ids[k]) break;
+		}
+		if (i < k) break;
 	}
 	check(k == seen, "each once");
-	for (guard = 0; guard < 20 && v.rows[0].kind == MROW_PREV; guard++)
-		act(&v, MBOX_EV_ACTIVATE, "Previous");
-	check(v.rows[0].kind != MROW_PREV && v.rows[v.nrows - 1].kind == MROW_MORE,
-	      "and Previous walks back to the first");
+	check((v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP &&
+	      menu_model_event(MBOX_EV_SCROLL_DOWN, (u8)(v.nrows - 1), v.rows[v.nrows - 1].id, v.key) == ST_BAD_ARG,
+	      "the last window: the page goes on above only, and a slide down is refused");
+	menu_model_view(&v);
+
+	/* Up again. */
+	cursor_ok = 1;
+	for (guard = 0; guard < 40 && (v.pflags & MBOX_PAGE_MORE_UP) != 0; guard++) {
+		cur = v.rows[0].id;
+		if (menu_model_event(MBOX_EV_SCROLL_UP, 0, cur, v.key) != ST_OK) break;
+		menu_model_view(&v);
+		if (v.rows[v.cursor].id != cur || (v.cursor == 0 && (v.pflags & MBOX_PAGE_MORE_UP) != 0)) cursor_ok = 0;
+	}
+	check((v.key >> 8 & 0xFF) == 0 && cursor_ok && v.rows[v.cursor].id == ids[v.cursor],
+	      "and the slides at each window's first row walk back to the first, the cursor on its planet");
+
+	/* L1 and R1: the cursor a window on, the window after it. */
+	menu_model_event(MBOX_EV_PAGE_NEXT, 0, v.rows[0].id, v.key);
+	menu_model_view(&v);
+	at = (u8)((v.key >> 8 & 0xFF) + v.cursor);
+	check(at == 6 && v.cursor == 1 && v.rows[v.cursor].id == ids[6],
+	      "R1 on the first planet: the seventh, second in its window");
+	menu_model_event(MBOX_EV_PAGE_PREV, v.cursor, v.rows[v.cursor].id, v.key);
+	menu_model_view(&v);
+	check((v.key >> 8 & 0xFF) == 0 && v.rows[v.cursor].id == ids[0], "L1: back to the first");
 
 	check(quit(), "quit RaC2");
 }
@@ -1180,7 +1232,7 @@ static void test_mailbox(void)
 
 	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 9 && d->ncaves == 4,
 	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, nine hook words");
-	check(d != NULL && d->caves[0].zeros > 2000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
+	check(d != NULL && d->caves[0].zeros > 1000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
 	      d->caves[1].len < 64, "the mailbox and the state are carried as a few bytes and a count of zeros");
 	check(mh_desc_for_game(GAME_RAC1) != NULL && mh_desc_for_game(GAME_RAC2) != NULL &&
 	      mh_desc_for_game(GAME_RAC3) != NULL && mh_desc_for_game(GAME_NONE) == NULL,
@@ -1238,11 +1290,12 @@ static void test_mailbox(void)
 	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options' call to SetMenuButtons keeps the game's word");
 
 	mb = menu_mailbox();
-	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek16(mb + MBOX_OFF_VERSION) == 2 &&
-	      peek8(mb + MBOX_OFF_ROW_CAP) == 16 && peek8(mb + MBOX_OFF_ROW_SIZE) == 0x80 &&
+	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek16(mb + MBOX_OFF_VERSION) == 3 &&
+	      peek8(mb + MBOX_OFF_ROW_CAP) == 16 && peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 &&
 	      peek8(mb + MBOX_OFF_MAX_ROWS) == 8 && peek8(mb + MBOX_OFF_CFG_ROWS) == 16 &&
-	      peek8(mb + MBOX_OFF_CAPS) == MH_CAPS,
-	      "the mailbox: magic, version 2, sixteen rows of 0x80, eight a MAIN page, sixteen a CONFIG page");
+	      peek8(mb + MBOX_OFF_CAPS) == MH_CAPS && peek16(mb + MBOX_OFF_SIZE) == 0x480,
+	      "the mailbox: magic, version 3, sixteen rows of 0x40 (round 4: no descriptions), eight a MAIN page, "
+	      "sixteen a CONFIG page");
 	check(peek32(MH_STATE) == MH_MAGIC, "the renderer's state, its magic in place");
 
 	read_box(&p);
@@ -1257,8 +1310,8 @@ static void test_mailbox(void)
 	read_box(&p);
 	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 5 && p.ptype == MBOX_PTYPE_CONFIG,
 	      "within a poll it is acked, and the Cheats page is posted as a CONFIG page");
-	check(strcmp(p.rows[1].desc, "Auto also turns it on whenever the game starts.") == 0,
-	      "each row with its description at +0x40");
+	check(strcmp(p.rows[1].label, "Ghost Ratchet") == 0 && peek8(mb + MBOX_OFF_ROWS + 0x40 + MROW_OFF_LABEL) == 'G',
+	      "each row 0x40 bytes, the next row's label where round 3's description was");
 	seq0 = p.seq;
 	tick(20);
 	read_box(&p);
@@ -1378,9 +1431,9 @@ static void test_mailbox(void)
 		host_peek(mb + MBOX_OFF_ROWS + (u32)i * MH_ROW_BYTES, raw, sizeof(raw));
 		check(i >= 0 && (p.rows[i].flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
 		      raw[MROW_OFF_LABEL + 23] == 0 && be32_get(raw + MROW_OFF_RANGE + 8) == 255 &&
-		      be32_get(raw + MROW_OFF_RANGE + 4) == 0 && be32_get(raw + MROW_OFF_RANGE + 12) == 1 &&
+		      be32_get(raw + MROW_OFF_RANGE + 4) == 0 && be32_get(raw + MROW_OFF_RANGE + 12) == 26 &&
 		      be32_get(raw + MROW_OFF_RANGE) == peek8(RAC4_CHALLENGE_MODE),
-		      "round 3: Challenge mode's row carries value, 0, 255 and step 1 at +0x1C, past its label's NUL");
+		      "Challenge mode's row carries value, 0, 255 and (round 4) step 26 at +0x1C, past its label's NUL");
 	}
 	box_activate("Load set-aside file");
 	read_box(&p);
@@ -1416,6 +1469,54 @@ static void test_mailbox(void)
 	      "closed and in play: Catacrom loads, as PLANET_LOAD loads it");
 	poke32(RAC4_LOAD_PLANET2, 0);
 	tick(40);
+
+	/* Round 4: a save category longer than the sixteen rows: the window slides, through the mailbox. */
+	{
+		char name[16];
+		int k;
+
+		for (k = 0; k < 20; k++) {
+			name[0] = 's';
+			name[1] = (char)('0' + k / 10);
+			name[2] = (char)('0' + k % 10);
+			qstrcpy(name + 3, sizeof(name) - 3, ".sav");
+			save_put("menu-long", name, 16);
+		}
+		poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+		tick(4);
+		box_event(MBOX_EV_BACK, 0);
+		tick(2);
+		box_activate("Save files");
+		box_activate("menu-long");
+		read_box(&p);
+		check(p.ptype == MBOX_PTYPE_CONFIG && p.n == 16 && strcmp(p.title, "menu-long") == 0 &&
+		      (p.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN &&
+		      strcmp(p.rows[0].label, "s00") == 0 && strcmp(p.rows[15].label, "s15") == 0,
+		      "twenty saves: the first sixteen, the page going on below, no More row, the title its own");
+		box_event(MBOX_EV_SCROLL_DOWN, 15);
+		tick(2);
+		read_box(&p);
+		check(box_acked() && p.n == 16 && (p.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP &&
+		      strcmp(p.rows[0].label, "s04") == 0 && strcmp(p.rows[p.cursor].label, "s15") == 0,
+		      "the renderer's slide from the sixteenth: the last window, s04 .. s19, the cursor still on s15");
+		box_event(MBOX_EV_SCROLL_UP, 0);
+		tick(2);
+		read_box(&p);
+		check(strcmp(p.rows[0].label, "s00") == 0 && strcmp(p.rows[p.cursor].label, "s04") == 0 &&
+		      (p.pflags & MBOX_PAGE_MORE_DOWN) != 0, "and up from s04: the first window again, the cursor on s04");
+		for (k = 0; k < 20; k++) {
+			name[0] = 's';
+			name[1] = (char)('0' + k / 10);
+			name[2] = (char)('0' + k % 10);
+			qstrcpy(name + 3, sizeof(name) - 3, ".sav");
+			save_drop("menu-long", name);
+		}
+		save_drop("menu-long", NULL);
+		box_event(MBOX_EV_BACK, 0);
+		tick(2);
+		box_event(MBOX_EV_BACK, 0);
+		tick(2);
+	}
 
 	save_put("menu-test", "only.sav", 0x00100000u);
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
@@ -1594,27 +1695,30 @@ static void test_renderer(void)
 	      "with the pause's own sound, as the main menu plays it after a close, and its flag taken");
 	tick(4);
 
-	/* A new page of the same type is the game's screen change: the list stops and starts again. */
+	/*
+	 * A new page of the same type is the game's screen change: the list stops and starts again.
+	 * (Round 4: Planets is a CONFIG page now; Unlocks is the MAIN page after the root.)
+	 */
 	n = G.targets;
 	i = G.stops;
-	G.cursor = 2;
+	G.cursor = 4;
 	game_frame(PADB_CROSS);
-	check(G.sound == SND_FORWARD && !box_acked(), "the cross on PLANETS posts an event, with the forward sound");
+	check(G.sound == SND_FORWARD && !box_acked(), "the cross on UNLOCKS posts an event, with the forward sound");
 	tick(2);
 	G.sound = -1;
 	game_frame(0);
-	check(strcmp(read_str(G.title, title, sizeof(title)), "PLANETS") == 0 && G.targets == n + 1 && G.stops == i + 1 &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "UNLOCKS") == 0 && G.targets == n + 1 && G.stops == i + 1 &&
 	      G.shown && G.screen == MH_SCREEN_ID,
-	      "the next frame stops the list (MenuMain_Stop) and starts screen 36 again on PLANETS, the frame fitted to it");
+	      "the next frame stops the list (MenuMain_Stop) and starts screen 36 again on UNLOCKS, the frame fitted to it");
 	check(G.sound == -1, "the start again is silent, as Options' is after the main menu's 7");
 	n = G.nbuttons;
 	i = G.stops;
 	game_frame(PADB_TRIANGLE);
-	check(G.sound == SND_BACK, "triangle on PLANETS: a list's back sound");
+	check(G.sound == SND_BACK, "triangle on UNLOCKS: a list's back sound");
 	tick(2);
 	game_frame(0);
-	check(G.nbuttons == 7 && G.stops == i + 1 && G.cursor == 2,
-	      "back to the root through the same stop and start: seven rows, the cursor on PLANETS");
+	check(G.nbuttons == 7 && G.stops == i + 1 && G.cursor == 4,
+	      "back to the root through the same stop and start: seven rows, the cursor on UNLOCKS");
 	n = G.targets;
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
 	tick(30);
@@ -1656,9 +1760,9 @@ static void test_renderer(void)
 	check(strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "CHEATS") == 0 &&
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_LEGEND, text, sizeof(text)), "\x10 SELECT \x12 BACK") == 0,
 	      "titled CHEATS, with GAME SETTINGS' own button legend");
-	check(strcmp(cfg_label(1, text), "GHOST RATCHET:") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
-	      strcmp(cfg_label(4, text), "UNLOCK ALL PLANETS:") == 0 && strcmp(cfg_value(4, title), "...") == 0,
-	      "labels in GAME SETTINGS' capitals with its colon, values in its capitals, a button's \"...\"");
+	check(strcmp(cfg_label(1, text), "GHOST RATCHET") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
+	      strcmp(cfg_label(4, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(4, title), "") == 0,
+	      "labels in GAME SETTINGS' capitals without its colon, values in its capitals, a button blank (round 4)");
 	check(focus() == 0 && cfg_color(0) == DL_RGBA_FOCUS && cfg_color(1) == DL_RGBA_OFF,
 	      "the cursor on the first row, which is lit; the others the game's grey");
 	check(recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_A) == 2 &&
@@ -1719,7 +1823,7 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	check(G.sound == SND_SCREEN_CLOSE, "the panel's stop sound as the screen goes");
-	check(r8(MH_SHIM + SH_CFG_STATE) == 2 && strcmp(cfg_label(1, text), "GHOST RATCHET:") == 0 &&
+	check(r8(MH_SHIM + SH_CFG_STATE) == 2 && strcmp(cfg_label(1, text), "GHOST RATCHET") == 0 &&
 	      strcmp(cfg_value(1, title), "OFF") == 0 &&
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "CHEATS") == 0,
 	      "round 3: the Cheats page ending still reads its own rows and title, not the root's");
@@ -1835,8 +1939,8 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	game_frame(0);
-	check(G.thread == 2 && G.count == 9 && strcmp(cfg_label(8, text), "CHALLENGE MODE:") == 0,
-	      "GAME: nine rows, the last CHALLENGE MODE:");
+	check(G.thread == 2 && G.count == 9 && strcmp(cfg_label(8, text), "CHALLENGE MODE") == 0,
+	      "GAME: nine rows, the last CHALLENGE MODE");
 	{
 		u32 row = r32(item(8) + DL_ITEM_PANEL), bolts = r32(item(6) + DL_ITEM_PANEL);
 		float *fill = NULL, *track = NULL, *outline = NULL;
@@ -1866,8 +1970,8 @@ static void test_renderer(void)
 		check(G.sound == SND_SLIDE, "Right on it: GAME SETTINGS' slider sound");
 		tick(2);
 		game_frame(0);
-		check(peek8(RAC4_CHALLENGE_MODE) == 52 && fill[2] - fill[0] > DL_TRACK_W * 0.203f &&
-		      fill[2] - fill[0] < DL_TRACK_W * 0.205f, "52, the fill a step longer");
+		check(peek8(RAC4_CHALLENGE_MODE) == 77 && fill[2] - fill[0] > DL_TRACK_W * 0.301f &&
+		      fill[2] - fill[0] < DL_TRACK_W * 0.303f, "77, the fill a tenth longer (round 4: a step of 26)");
 		poke8(RAC4_CHALLENGE_MODE, 255);
 		tick(40);
 		game_frame(0);

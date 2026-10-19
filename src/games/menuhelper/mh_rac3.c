@@ -11,11 +11,11 @@
  *           N3b, on hardware);
  *   CONFIG  a page of labels and controls in the look of Options' AUDIO /
  *           VISUAL screen: the submenu frame with the title fitted to its
- *           banner, the picture panel above the list (here the description
- *           line), and the grid list of raw strings in two columns with that
- *           screen's configuration and font, eight rows on screen and the rest
- *           scrolled to, "LABEL:" left and the value right, and its sliders for
- *           a value the core marks as one.
+ *           banner, the picture panel above the list with one of that screen's
+ *           pictures in it (round 4), and the grid list of raw strings in two
+ *           columns with that screen's configuration and font, eight rows on
+ *           screen and the rest scrolled to, the label left and the value
+ *           right, and its sliders for a value the core marks as one.
  *
  * The menu's screen is one of two GuiStates of the shim's own, whose init,
  * update and deinit are the three entries below whatever the page is: the init
@@ -35,9 +35,9 @@
  *   mh_row           a MAIN row's callback, which the main pause's update calls on the cross.
  *
  * Everything the game keeps a pointer to - the GuiStates, the rows, their text,
- * the title, the grid's cells, the description - is in the renderer's state,
- * which stays put for as long as the game runs and changes only on the game's
- * thread. Every access to game memory goes through r8..w32 (mh_common.h), so
+ * the title, the grid's cells - is in the renderer's state or its cells' span
+ * (round 4), which stay put for as long as the game runs and change only on
+ * the game's thread. Every access to game memory goes through r8..w32 (mh_common.h), so
  * the host tests run this file on qwark's fake console with the real bytes.
  */
 #include "mh_common.h"
@@ -47,14 +47,17 @@
 #define GSA(k)   SH(SH_GS + (u32)(k) * MH_GS_SIZE)
 #define ROWS     SH(SH_ROWS)
 #define CFG      SH(SH_GRIDCFG)
-#define CELLS    SH(SH_CELLS)
+#define CELLS    ((u32)U_CELLS)
 
-/* The shim's state starts where the core's ends, and the cells hold a CONFIG page. */
+/* The shim's state starts where the core's ends, and the cells' span holds a CONFIG page. */
 typedef char mh_rac3_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
                              MH_SHIM + SH_SIZE <= MH_DATA_END &&
-                             SH_CELLS + SH_CELLS_SIZE <= SH_SIZE &&
-                             MH_CFG_ROWS * U_GRID_COLS * U_CELL_SIZE < SH_CELLS_SIZE &&
+                             U_CELLS + U_CELLS_SIZE <= U_CELLS_END && (U_CELLS & 3) == 0 &&
+                             MH_CFG_ROWS * U_GRID_COLS * U_CELL_SIZE < U_CELLS_SIZE &&
                              SH_ROWS + MH_MAIN_ROWS * U_ROW_SIZE <= SH_GRIDCFG &&
+                             SH_GRIDCFG + 24 * 4 <= SH_TITLE_SCALE &&
+                             SH_SLOT_ROW + U_GRID_VISIBLE <= SH_PIC_WAIT &&
+                             SH_SLOT_KNOB + 4 * U_GRID_VISIBLE <= SH_PIC_BUF && SH_PIC_BUF + 8 <= SH_SIZE &&
                              SH_GS + 2 * MH_GS_SIZE <= SH_ROWS) ? 1 : -1];
 
 /* The entries the game reaches; file-local in the host tests, which build two renderers. */
@@ -99,7 +102,8 @@ typedef void (*fn_v_uff)(u32, float, float);
 typedef void (*fn_v_uufff)(u32, u32, float, float, float);
 typedef void (*fn_rrect)(u32, u32, float, float, float, float, float, float);
 typedef void (*fn_rect)(u32, u32, float, float, float, float, u32);
-typedef void (*fn_text)(u32, u32, u32, float, float, float, float);
+typedef int  (*fn_i_uuuuu)(u32, u32, u32, u32, u32);
+typedef int  (*fn_i_i)(int);
 
 #define swap_to         GAME_FN(fn_v_u,    OPD_SWAP_TO,         mock_swap_to)
 #define reset_state     GAME_FN(fn_v_u,    OPD_RESET_STATE,     mock_reset_state)
@@ -138,11 +142,17 @@ typedef void (*fn_text)(u32, u32, u32, float, float, float, float);
 #define add_frame       GAME_FN(fn_v_uu,   OPD_ADD_FRAME,       mock_add_frame)
 #define round_rect      GAME_FN(fn_rrect,  OPD_ROUND_RECT,      mock_round_rect)
 #define rect            GAME_FN(fn_rect,   OPD_RECT,            mock_rect)
-#define text_widget     GAME_FN(fn_text,   OPD_TEXT,            mock_text_widget)
 #define text_box        GAME_FN(fn_v_uff,  OPD_TEXT_BOX,        mock_text_box)
 #define text_fit        GAME_FN(fn_v_uu,   OPD_TEXT_FIT,        mock_text_fit)
-#define text_style      GAME_FN(fn_v_uuu,  OPD_TEXT_STYLE,      mock_text_style)
-#define text_font       GAME_FN(fn_v_uu,   OPD_TEXT_FONT,       mock_text_font)
+#define pic_buffer      GAME_FN(fn_u_i,    OPD_PIC_BUFFER,      mock_pic_buffer)
+#define pic_buffer_drop GAME_FN(fn_i_u,    OPD_PIC_BUFFER_DROP, mock_pic_buffer_drop)
+#define pic_source      GAME_FN(fn_u_i,    OPD_PIC_SOURCE,      mock_pic_source)
+#define pic_source_set  GAME_FN(fn_i_uuuuu, OPD_PIC_SOURCE_SET, mock_pic_source_set)
+#define pic_source_stop GAME_FN(fn_i_u,    OPD_PIC_SOURCE_STOP, mock_pic_source_stop)
+#define pic_tie         GAME_FN(fn_v_uu,   OPD_PIC_TIE,         mock_pic_tie)
+#define pic_show        GAME_FN(fn_v_uu,   OPD_PIC_SHOW,        mock_pic_show)
+#define pic_fade        GAME_FN(fn_v_uii,  OPD_PIC_FADE,        mock_pic_fade)
+#define disc_wait       GAME_FN(fn_i_i,    OPD_DISC_WAIT,       mock_disc_wait)
 
 /*
  * AUDIO / VISUAL's grid configuration, as its list builds it on the stack
@@ -152,7 +162,7 @@ typedef void (*fn_text)(u32, u32, u32, float, float, float, float);
  * size and the rows are the shim's.
  */
 static const u32 cfg_template[24] = {
-	SH_CELLS_SIZE, 0, U_GRID_LAYER, 0, 0, U_GRID_COLS, 0x3F800000, AV_ROW_Y0,
+	U_CELLS_SIZE, 0, U_GRID_LAYER, 0, 0, U_GRID_COLS, 0x3F800000, AV_ROW_Y0,
 	AV_ROW_PITCH, AV_COL0_X, AV_COL1_X, 0x3F800000, 0x3F800000, AV_COL0_W, AV_COL1_W, 0,
 	0, 0, 0, 0, 0, 0, 0, 0
 };
@@ -373,11 +383,12 @@ static u32 cell_put(u32 c, u32 n, u32 s, const char *tail)
 
 /*
  * The rows into the grid's cells, as AUDIO / VISUAL fills its own (0x2DC0B0):
- * the label left, with the colon the core gives a label that has a value
- * beside it (MH_STYLE_COLON: "SUBTITLES:"), and the value right; a slider's
- * value cell a blank, as that screen's, the bar there, and its number after
- * the label ("CHALLENGE MODE: 51"), which a trainer's slider owes its user and
- * the label's box has room for. The colours by the core's flags.
+ * the label left and the value right; a slider's value cell a blank, as that
+ * screen's, the bar there, and its number after the label ("CHALLENGE MODE
+ * 51"), which a trainer's slider owes its user and the label's box has room
+ * for. Every row in the list's own colour but one the cursor may not land on,
+ * grey (round 4: round 3 drew a row that was on white, and the user would
+ * rather not; round 4 has no colon either).
  */
 static void cfg_fill(u32 g)
 {
@@ -394,16 +405,41 @@ static void cfg_fill(u32 g)
 			cell_put(grid_cell(g, 1, (int)i), 0, mh_value(i), "");
 		}
 		f = mh_row_flags(i);
-		grid_color(g, (int)i, (f & MROWF_ENABLED) == 0 ? U_COLOR_SKIP :
-		                      (f & MROWF_ON) != 0 ? U_COLOR_ON : U_COLOR_OFF);
+		grid_color(g, (int)i, (f & MROWF_ENABLED) == 0 ? U_COLOR_SKIP : U_COLOR_OFF);
 	}
+}
+
+/*
+ * Round 4: the picture source, as AUDIO / VISUAL's init sets its own up
+ * before it builds anything (0x2DD320 .. 0x2DD370): two of the pause screens'
+ * picture buffers, and source 1 reading AUDIO / VISUAL's set out of the
+ * hud.wad. The game takes neither answer back; the shim does, and without
+ * both buffers or with the source busy it shows no picture, the buffers given
+ * back.
+ */
+static void pic_open(void)
+{
+	u32 a = pic_buffer(0), b = pic_buffer(0);
+
+	w8(SH(SH_PIC_ON), 0);
+	w8(SH(SH_PIC_WAIT), 0);
+	w32(SH(SH_PIC_BUF), a);
+	w32(SH(SH_PIC_BUF) + 4, b);
+	if (a != 0 && b != 0 && pic_source_set(pic_source(U_PIC_SOURCE), a, b, r32(U_PIC_HUD_WAD), U_PIC_SET) != 0) {
+		w8(SH(SH_PIC_ON), 1);
+		return;
+	}
+	if (a != 0) pic_buffer_drop(a);
+	if (b != 0) pic_buffer_drop(b);
+	w32(SH(SH_PIC_BUF), 0);
+	w32(SH(SH_PIC_BUF) + 4, 0);
 }
 
 /*
  * The picture panel above the list, as AUDIO / VISUAL's widget table builds it
  * (0xC4FC60 through 0x2DCE60): the root on layer 17 with the panel's container
- * and its rounded box; in it, where that screen shows a row's picture, the
- * description line, in the cells' font, shrinking to fit the box.
+ * and its rounded box, and in it the picture, a rectangle (round 3 had the
+ * description line there).
  */
 static void cfg_panel(void)
 {
@@ -413,13 +449,55 @@ static void cfg_panel(void)
 	round_rect(AV_PANEL_BOX, AV_PANEL_COLOR, fb(AV_FRAME_X), fb(AV_PANEL_Y), fb(AV_PANEL_W), fb(AV_PANEL_H),
 	           fb(AV_PANEL_R), fb(AV_PANEL_R));
 	add_frame(AV_PANEL, AV_PANEL_BOX);
-	text_widget(AV_DESC, mh_desc(), AV_TEXT_COLOR, fb(AV_FRAME_X), fb(AV_PANEL_Y), 1.0f, 1.0f);
-	text_style(AV_DESC, 2, 0);
-	text_box(AV_DESC, fb(AV_DESC_W), fb(AV_DESC_MIN));
-	text_fit(AV_DESC, 1);
-	text_font(AV_DESC, U_FONT_MENU);
-	add_frame(AV_PANEL, AV_DESC);
+	rect(AV_PIC, AV_PIC_COLOR, fb(AV_PIC_X), fb(AV_PIC_Y), fb(AV_PIC_W), fb(AV_PIC_H), 0);
+	add_frame(AV_PANEL, AV_PIC);
 	set_layer(U_LAYER_FRAME2, AV_ROOT);
+}
+
+/*
+ * The end of AUDIO / VISUAL's init (0x2DD9B0 .. 0x2DD9F0): the rectangle tied
+ * to the source with picture 0, hidden, fading in over ten frames; the
+ * picture itself once the screen has been up as long as AUDIO / VISUAL lets
+ * the cursor rest before it shows a row's (cfg_frame).
+ */
+static void pic_tie_up(void)
+{
+	if (r8(SH(SH_PIC_ON)) == 0) return;
+	pic_tie(AV_PIC, pic_source(U_PIC_SOURCE));
+	pic_show(AV_PIC, 0);
+	set_visible(AV_PIC, 0);
+	pic_fade(AV_PIC, 1, 10);
+	w8(SH(SH_PIC_WAIT), U_PIC_WAIT);
+}
+
+/* The picture, U_PIC_WAIT frames in, as 0x2DC0B0 shows a row's (0x2DC664). */
+static void pic_frame(void)
+{
+	u32 t = r8(SH(SH_PIC_WAIT));
+
+	if (t == 0) return;
+	w8(SH(SH_PIC_WAIT), t - 1);
+	if (t != 1) return;
+	pic_show(AV_PIC, U_PICTURE);
+	set_visible(AV_PIC, 1);
+}
+
+/*
+ * As AUDIO / VISUAL's deinit (0x2DE1D8) after its layers: the source stopped
+ * (its vtable's second entry), the buffers given back, and the disc's reads
+ * waited for, so none lands in a buffer another screen has taken.
+ */
+static void pic_close(void)
+{
+	if (r8(SH(SH_PIC_ON)) == 0) return;
+	pic_source_stop(pic_source(U_PIC_SOURCE));
+	pic_buffer_drop(r32(SH(SH_PIC_BUF)));
+	pic_buffer_drop(r32(SH(SH_PIC_BUF) + 4));
+	w32(SH(SH_PIC_BUF), 0);
+	w32(SH(SH_PIC_BUF) + 4, 0);
+	w8(SH(SH_PIC_ON), 0);
+	w8(SH(SH_PIC_WAIT), 0);
+	disc_wait(1);
 }
 
 /* The list's slots on screen, top to bottom: their y. */
@@ -499,18 +577,19 @@ static void cfg_slide(u32 g)
 }
 
 /*
- * AUDIO / VISUAL's screen with the core's page (its init 0x2DD218): the frame
- * with the page's title, its banner and the title's scale fitted to it as
- * Options' screens fit theirs (0x2D4DB0), the picture panel with the
- * description, the grid built for the page's rows with eight on screen,
- * AUDIO / VISUAL's frame, cursor bar and rules, the cells, labels left and
- * values right, both in the Options screens' font, the sliders, and the cursor
- * on its row.
+ * AUDIO / VISUAL's screen with the core's page (its init 0x2DD218): the
+ * picture source, the frame with the page's title, its banner and the title's
+ * scale fitted to it as Options' screens fit theirs (0x2D4DB0), the picture
+ * panel, the grid built for the page's rows with eight on screen, AUDIO /
+ * VISUAL's frame, cursor bar and rules, the cells, labels left and values
+ * right, both in the Options screens' font, the sliders, the cursor on its
+ * row, and the picture tied to its source.
  */
 static void cfg_start(void)
 {
 	u32 n = mh_nrows(), vis = n < U_GRID_VISIBLE ? n : U_GRID_VISIBLE, g, i;
 
+	pic_open();
 	wf32(SH(SH_TITLE_SCALE), 1.0f);
 	wf32(SH(SH_TITLE_BANNER), 8.5f);
 	title_fit(mh_title(), SH(SH_TITLE_SCALE), SH(SH_TITLE_BANNER));
@@ -537,6 +616,7 @@ static void cfg_start(void)
 	grid_font(g, 1, U_FONT_MENU);
 	cfg_sliders(vis);
 	grid_set_cursor(g, (int)mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
+	pic_tie_up();
 }
 
 /*
@@ -554,6 +634,7 @@ static void cfg_frame(u32 gs)
 	g = get_grid(0);
 	grid_update(g, (int)e);
 	cfg_slide(g);
+	pic_frame();
 
 	if ((e & r32(U_CONFIRM_MASK)) != 0)  b = MH_BTN_CROSS;
 	else if ((e & PADB_LEFT) != 0)       b = MH_BTN_LEFT;
@@ -627,13 +708,6 @@ MH_API void shim_title(int p)
 	if (shown() == MBOX_PTYPE_CONFIG) set_text(U_TITLE_HANDLE, mh_title());
 }
 
-/* The description line, in the panel above a CONFIG page's list. */
-MH_API void shim_desc(int p)
-{
-	(void)p;
-	if (shown() == MBOX_PTYPE_CONFIG) set_text(AV_DESC, mh_desc());
-}
-
 MH_API u32 shim_cursor(int p)
 {
 	int c;
@@ -684,8 +758,9 @@ MH_API void mh_update(u32 gs)
 
 /*
  * It stops: the widget's own end, as AUDIO / VISUAL's deinit (0x2DE1D8: layers
- * 16, 17 and the grid's 20, which take the panel and the sliders with them)
- * and the main pause's, and the cursor back.
+ * 16, 17 and the grid's 20, which take the panel, the picture and the sliders
+ * with them, then the picture source) and the main pause's, and the cursor
+ * back.
  */
 MH_API void mh_deinit(u32 gs)
 {
@@ -696,6 +771,7 @@ MH_API void mh_deinit(u32 gs)
 		clear_layer(U_LAYER_FRAME);
 		clear_layer(U_LAYER_FRAME2);
 		grid_free(get_grid(0));
+		pic_close();
 	} else {
 		main_deinit(gs);
 	}

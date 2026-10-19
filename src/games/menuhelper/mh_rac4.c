@@ -550,12 +550,6 @@ MH_API void shim_title(int p)
 	else set_title(p, mh_title());
 }
 
-/* GAME SETTINGS has no description line. */
-MH_API void shim_desc(int p)
-{
-	(void)p;
-}
-
 MH_API u32 shim_cursor(int p)
 {
 	int c;

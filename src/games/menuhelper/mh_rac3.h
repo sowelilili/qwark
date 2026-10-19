@@ -21,11 +21,13 @@
  *           N3b, on hardware);
  *   CONFIG  the look of Options' AUDIO / VISUAL screen, the settings list of
  *           the game's Options: the submenu frame (the title fitted to its
- *           banner, "SELECT / BACK"), the picture panel above the list with
- *           the description line in it, and the grid list of raw strings in
- *           two columns with that screen's configuration and font, up to
- *           sixteen rows of which eight are on screen at once and the grid
- *           scrolls the rest, and its sliders.
+ *           banner, "SELECT / BACK"), the picture panel above the list with one
+ *           of that screen's own pictures in it (round 4, the user's choice:
+ *           EFFECTS VOLUME's), and the grid list of raw strings in two columns
+ *           with that screen's configuration and font, up to 24 rows of which
+ *           eight are on screen at once and the grid scrolls the rest (a window
+ *           of a longer page, which slides under the cursor), and its
+ *           sliders.
  *
  * The main pause's list lays its rows and frame out only as it starts, so a
  * page that is new or has another number of rows starts the menu's screen again
@@ -54,44 +56,58 @@
  * N3 and N3b hook the same words as this renderer, by design (they are its
  * prototype), so the install refuses while either is loaded.
  *
- * Data: two spans of the read-write segment's last page, which ends at
- * 0x1ADAB10 in the executable: the mailbox at 0x1ADB000, and the state, the
- * read-only data, the TOC and the descriptors between probe A's data
- * (0x1ADC000..0x1ADC89C) and N3's and N3b's (0x1ADE000..0x1ADF000). Nothing
- * the client ships or the user has names either.
+ * Data: three spans of the read-write segment's last page, which ends at
+ * 0x1ADAB10 in the executable: the grid's cells (round 4, U_CELLS below) and
+ * then the mailbox between that end and probe A's data (0x1ADC000..0x1ADC89C),
+ * and the state, the read-only data, the TOC and the descriptors between
+ * probe A's data and N3's and N3b's (0x1ADE000..0x1ADF000). Nothing the
+ * client ships or the user has names any of them. (Round 3 had the mailbox at
+ * 0x1ADB000 and the cells in the shim's state; the 24 rows of round 4 need
+ * both out of the data span, which they would overrun by 2 KB.)
  */
 #define MH_CAVE             0x00BC4000
 #define MH_CAVE_END         0x00BC8000
-#define MH_BOX              0x01ADB000
-#define MH_BOX_END          0x01ADB900
+#define MH_BOX              0x01ADB900
+#define MH_BOX_END          0x01ADC000
 #define MH_DATA             0x01ADC900
 #define MH_DATA_END         0x01ADE000
 
 /*
- * The mailbox (menubox.h): sixteen rows of 0x80 bytes, with descriptions: a
- * CONFIG page shows the cursor row's in the picture panel AUDIO / VISUAL has
- * above its list, where that screen shows a row's picture.
+ * The mailbox (menubox.h): 24 rows of 0x40 bytes (round 4: no descriptions,
+ * and 24 rows where round 3 had 16). The CONFIG look scrolls, so a page of up
+ * to 24 rows is posted whole, the twenty weapons among them, with no More
+ * row; a longer one (the 34 planets, a save category) slides 24 at a time.
  */
-#define MH_ROWS             0x00000010
-#define MH_ROW_BYTES        0x00000080
+#define MH_ROWS             0x00000018
+#define MH_ROW_BYTES        0x00000040
 #define MH_MAIN_ROWS        0x00000009   /* the main pause's nine-row tables, widgets 0xD000C..0xD0014 */
-#define MH_CFG_ROWS         0x00000010
-#define MH_MBOX_SIZE        0x00000880   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
+#define MH_CFG_ROWS         0x00000018
+#define MH_MBOX_SIZE        0x00000680   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
+
+/*
+ * The grid's cells (round 4): MH_CFG_ROWS rows of two cells of U_CELL_SIZE and
+ * a word, the buffer GridBuild takes (it builds nothing in one that is not
+ * larger than the rows' cells, and clears them itself), in a span of their
+ * own past the read-write segment's end, which the install does not write.
+ */
+#define U_CELLS             0x01ADAC00
+#define U_CELLS_END         0x01ADB900
+#define U_CELLS_SIZE        0x00000CC4   /* MH_CFG_ROWS * U_GRID_COLS * U_CELL_SIZE + 4 */
 #define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
 
 /*
  * The game's own casing: every menu of its pause is in capitals, the Options
- * screens' settings lists too ("MUSIC VOLUME:", "ON"), whose labels end with a
- * colon where a value stands beside them (MH_STYLE_COLON, as Deadlocked's
- * GAME SETTINGS). Actions with nothing to say show "..." on a CONFIG page, a
- * choice its value alone as AUDIO / VISUAL's STEREO and MONO, and the current
- * option of a list is marked with a star.
+ * screens' settings lists too ("MUSIC VOLUME:", "ON"). Round 4, the user's
+ * call: no colon after a label (round 3 had AUDIO / VISUAL's), and an action
+ * with nothing to say blank (it was "..."). A choice shows its value alone as
+ * AUDIO / VISUAL's STEREO and MONO, and the current option of a list is
+ * marked with a star.
  */
 #define MH_CASE_MAIN        0x00000001   /* MH_CASE_UPPER */
 #define MH_CASE_HEAD        0x00000001
 #define MH_CASE_LABEL       0x00000001
 #define MH_CASE_VALUE       0x00000001
-#define MH_STYLE            0x00000019   /* MH_STYLE_DOTS | MH_STYLE_STAR | MH_STYLE_COLON */
+#define MH_STYLE            0x00000008   /* MH_STYLE_STAR */
 #define MH_MAIN_SEP         ": "
 
 /* Half a second at the pause's sixty frames. */
@@ -118,7 +134,7 @@
 
 /* The core's state at the start of the data, then the shim's (SH_* below). */
 #define MH_STATE            0x01ADC900
-#define MH_SHIM             0x01ADD2D0   /* MH_STATE + MH_CORE_SIZE, which mh_rac3.c checks */
+#define MH_SHIM             0x01ADD750   /* MH_STATE + MH_CORE_SIZE, which mh_rac3.c checks */
 #define MH_MAGIC            0x514D4833   /* 'QMH3' */
 
 /* ------------------------------------------------------- the writes it makes */
@@ -223,9 +239,10 @@
  * The CONFIG page, as Options' AUDIO / VISUAL screen builds itself (getter
  * 0x2DB6B8, init 0x2DD218, the grid at 0x2DC6F0, the sliders at 0x2DBE70):
  * the submenu frame on canvas layers 16 and 17 with the page's title fitted
- * to its banner, the picture panel above the list on layer 17, and the grid
- * on layer 20 with AUDIO / VISUAL's configuration and the shim's cell buffer,
- * its frame and cursor bar, its cells in font 1, labels left and values right.
+ * to its banner, the picture panel above the list on layer 17 with one of the
+ * screen's pictures in it, and the grid on layer 20 with AUDIO / VISUAL's
+ * configuration and the shim's cell buffer, its frame and cursor bar, its
+ * cells in font 1, labels left and values right.
  * The frame's hints are Options' and Special's, "\x10 SELECT" (8169 in
  * Japanese) and "\x12 BACK", as N3b's.
  */
@@ -285,24 +302,51 @@
 #define AV_TRACK_COLOR      0x332299DE   /* created so, then SetColor ... */
 #define AV_TRACK_COLOR2     0x331465B7   /* ... this */
 #define AV_GROOVE_COLOR2    0x60000000   /* and the groove this */
-#define AV_TEXT_COLOR       0x8066CCFF   /* the grid's text (+0x8C) */
 
 /*
  * The widgets the shim adds to AUDIO / VISUAL's look, all in its handle range
  * (0x1E00xx, AUDIO / VISUAL's own and no other screen's), all under the root
  * on layer 17, which the deinit clears: the panel's container and box, the
- * description line in the panel where AUDIO / VISUAL shows a row's picture,
- * the sliders' container, and three widgets a slider slot (the groove, the
+ * picture in the panel (round 4: round 3 had a description line there), the
+ * sliders' container, and three widgets a slider slot (the groove, the
  * track, the knob) for each of the list's rows on screen.
  */
 #define AV_ROOT             0x001E0000
 #define AV_PANEL            0x001E0001
 #define AV_PANEL_BOX        0x001E0002
-#define AV_DESC             0x001E0003
+#define AV_PIC              0x001E0003
 #define AV_SLIDERS          0x001E0006
 #define AV_SLOT0            0x001E0011   /* slot s: groove +3s, track +3s+1, knob +3s+2 */
-#define AV_DESC_W           0x3F47AE14   /* 0.78    the description's box: it shrinks to fit */
-#define AV_DESC_MIN         0x3F000000   /* 0.5     but no smaller than half */
+
+/*
+ * The picture (round 4), as AUDIO / VISUAL's widget table has it (0xC4FCF0:
+ * type 2, a rectangle, under the panel's container, no texture of its own)
+ * and as the screen shows a row's: its init (0x2DD218) takes two of the pause
+ * screens' picture buffers (0x2D3A4C(0), 0x2DD320), hands them to picture
+ * source 1 with the hud.wad's word and AUDIO / VISUAL's picture set in that
+ * wad's table (0x2CCD48, 0x2DD370), and at its end ties the rectangle to the
+ * source with picture 0, hidden, fading over ten frames (0x2DD9B0 ..
+ * 0x2DD9F0); its update shows the cursor row's picture once the cursor has
+ * rested thirty frames (0x2DC0B0: 0x2AE710 then SetVisibility at 0x2DC664);
+ * its deinit stops the source (its vtable's second entry), gives the buffers
+ * back and waits for the disc (0x2DE1D8). The shim does all of it for one
+ * picture, EFFECTS VOLUME's (row 0x233's, 4), the user's choice for the
+ * header. The hud.wad's table is in memory from the game's start (the HUD and
+ * every pause screen read it, none loads it), and the picture is read from
+ * the wad into the buffers once asked for, as AUDIO / VISUAL's are.
+ */
+#define AV_PIC_COLOR        0x80808080   /*                                    0xC4FCFC */
+#define AV_PIC_X            0x3F004007   /* 0.501                              0xC4FD00 */
+#define AV_PIC_Y            0x3E893B3A   /* 0.268                              0xC4FD04 */
+#define AV_PIC_W            0x3F5075A3   /* 0.814                              0xC4FD08 */
+#define AV_PIC_H            0x3E7B18DB   /* 0.245                              0xC4FD0C */
+#define U_PIC_SOURCE        0x00000001   /* AUDIO / VISUAL's picture source (li r3,1 at 0x2DD344) */
+#define U_PIC_HUD_WAD       0x00D60F74   /* u32: the hud.wad's word the source reads from (0x2DD36C) */
+#define U_PIC_SET           0x00D63550   /* AUDIO / VISUAL's picture set in the hud.wad's table (0x2DD360) */
+#define U_PIC_ROWS          0x00C4FC00   /* AUDIO / VISUAL's rows {text id, callback, picture} */
+#define U_PIC_ROW           0x00000003   /* its fourth, EFFECTS VOLUME (0x233) */
+#define U_PICTURE           0x00000004   /* that row's picture */
+#define U_PIC_WAIT          0x0000001E   /* frames before it shows, as the cursor's rest (0x2DC0B0) */
 
 /*
  * The main pause's frame spans x 0.258 .. 0.747 (its end pieces, 0x2F4764 from
@@ -320,14 +364,14 @@
 
 /*
  * The grid's colour indexes (GridRowColor, a word after each cell's text): 0
- * draws in the palette's +0x8C, the blue of every Options list's text, 3 in
- * +0x98, white, which CHEATS gives a cheat that is on (0x2E2A7C), and 4 in
- * +0x90, the grey that 1 draws in too (0x2D6DC4), but a row of colour 4 is one
- * the grid's Up and Down skip (0x2D6A3C), as Deadlocked's validator skips a row
- * that is not ENABLED.
+ * draws in the palette's +0x8C, the blue of every Options list's text, and 4
+ * in +0x90, the grey that 1 draws in too (0x2D6DC4), but a row of colour 4 is
+ * one the grid's Up and Down skip (0x2D6A3C), as Deadlocked's validator skips
+ * a row that is not ENABLED. (Round 3 drew a row that was on in 3, white, as
+ * CHEATS draws a cheat that is on; round 4, the user's call, has every row
+ * in 0 but the grey ones, as AUDIO / VISUAL's.)
  */
 #define U_COLOR_OFF         0x00000000
-#define U_COLOR_ON          0x00000003
 #define U_COLOR_SKIP        0x00000004
 
 /* The pad bits. */
@@ -385,11 +429,18 @@
 #define OPD_ADD_FRAME       0x00BDC6E0   /* AddFrameToContainer(c, w)           0x2AFDE4 */
 #define OPD_ROUND_RECT      0x00BDC7F0   /* CreateRoundedRect(w, c, x, y, sx, sy, ra, rb) 0x2B1A88 */
 #define OPD_RECT            0x00BDC7E0   /* CreateRect(w, c, x, y, sx, sy, texture) 0x2B1908 */
-#define OPD_TEXT            0x00BDC7C8   /* CreateTextWidget(w, s, c, x, y, sx, sy) 0x2B16B8 */
 #define OPD_TEXT_BOX        0x00BDC718   /* a text's box(w, width, least scale) 0x2B0514 */
 #define OPD_TEXT_FIT        0x00BDC728   /* its fit to the box(w, on)           0x2B06C4 */
-#define OPD_TEXT_STYLE      0x00BDC710   /* its style bits(w, bits, on)         0x2B043C */
-#define OPD_TEXT_FONT       0x00BDC5D8   /* its font(w, font)                   0x2AE898 */
+/* Round 4, the picture (AV_PIC above). */
+#define OPD_PIC_BUFFER      0x00BDDB38   /* a picture buffer(0) -> it, or 0     0x2D3A4C */
+#define OPD_PIC_BUFFER_DROP 0x00BDDB40   /* (buffer): given back                0x2D3B94 */
+#define OPD_PIC_SOURCE      0x00BDD790   /* picture source(i) -> it             0x2CCA44 */
+#define OPD_PIC_SOURCE_SET  0x00BDD7E0   /* (source, buf, buf, wad, set) -> 1 when taken 0x2CCD48 */
+#define OPD_PIC_SOURCE_STOP 0x00BDD7D8   /* (source): its vtable's second entry 0x2CCD38 */
+#define OPD_PIC_TIE         0x00BDC6E8   /* (w, source): the rectangle's source 0x2AFF84 */
+#define OPD_PIC_SHOW        0x00BDC5C8   /* (w, picture): which one it shows    0x2AE710 */
+#define OPD_PIC_FADE        0x00BDC6F0   /* (w, on, frames)                     0x2B0040 */
+#define OPD_DISC_WAIT       0x00BDA6D0   /* (1): the disc's reads done          0x234CA8 */
 
 /*
  * Descriptors the shim hands the game rather than calls: the pause screens'
@@ -415,14 +466,15 @@
 #define SH_GS               0x1C   /* GuiState[2] {state, init, deinit, update, pre, post} */
 #define SH_ROWS             0x4C   /* main pause rows[MH_MAIN_ROWS], U_ROW_SIZE each */
 #define SH_GRIDCFG          0x100  /* the grid's configuration, 24 words */
-#define SH_CELLS            0x160  /* MH_CFG_ROWS x 2 cells of U_CELL_SIZE, and a word */
-#define SH_CELLS_SIZE       0x00000888
-#define SH_TITLE_SCALE      0x9E8  /* f32 the title's scale for its banner (OPD_TITLE_FIT) */
-#define SH_TITLE_BANNER     0x9EC  /* f32 the banner's size */
-#define SH_SLOTS            0x9F0  /* u8 slider slots built (0 on a page without a slider) */
-#define SH_SLOT_ROW         0x9F1  /* u8[U_GRID_VISIBLE] the row each slot's slider shows, MH_NONE */
-#define SH_SLOT_KNOB        0x9FC  /* f32[U_GRID_VISIBLE] where each knob is */
-#define SH_SIZE             0xA20
+#define SH_TITLE_SCALE      0x160  /* f32 the title's scale for its banner (OPD_TITLE_FIT) */
+#define SH_TITLE_BANNER     0x164  /* f32 the banner's size */
+#define SH_SLOTS            0x168  /* u8 slider slots built (0 on a page without a slider) */
+#define SH_SLOT_ROW         0x169  /* u8[U_GRID_VISIBLE] the row each slot's slider shows, MH_NONE */
+#define SH_PIC_WAIT         0x171  /* u8 frames until the picture shows, 0 once it has (round 4) */
+#define SH_PIC_ON           0x172  /* u8 the picture source is the shim's: stopped at the deinit */
+#define SH_SLOT_KNOB        0x174  /* f32[U_GRID_VISIBLE] where each knob is */
+#define SH_PIC_BUF          0x194  /* u32[2] the picture buffers, given back at the deinit */
+#define SH_SIZE             0x1A0
 
 #define MH_GS_SIZE          0x18
 

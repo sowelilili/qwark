@@ -2,8 +2,9 @@
  * The console menu's renderer core (src/games/menuhelper/mh_core.c), once,
  * against a fake shim: what every game's renderer shares - the mailbox's
  * seqlock, composing and casing the text, the presses into events with one in
- * flight, the waiting title, the description line, switching between the two
- * widgets and the fallback for a shim with one, the requests and the counters.
+ * flight, the waiting title, the window sliding under the cursor (round 4),
+ * switching between the two widgets and the fallback for a shim with one, the
+ * requests and the counters.
  * Each game's shim is tested against its own game's mocks (test_menu.c for
  * Deadlocked's).
  *
@@ -38,7 +39,7 @@ static u32 g_hold_main, g_hold_cfg;
 #define MH_BOX          0x01F00000u
 #define MH_STATE        0x01F01000u
 #define MH_ROWS         6
-#define MH_ROW_BYTES    0x80
+#define MH_ROW_BYTES    0x40
 #define MH_MAIN_ROWS    6
 #define MH_CFG_ROWS     g_cfg_rows
 #define MH_CAPS         0x0F
@@ -60,7 +61,7 @@ static u32 g_hold_main, g_hold_cfg;
 /* -------------------------------------------------------------- the fake shim */
 
 static struct {
-	int shows, last_how, switches, closes, last_close, titles, descs, sound, sounds;
+	int shows, last_how, switches, closes, last_close, titles, sound, sounds;
 	u32 cursor;
 	int hold;                 /* >= 0: shim_switch calls mh_core_hold(hold) */
 } F;
@@ -69,7 +70,6 @@ MH_API void shim_show(int p, u32 how)     { (void)p; F.shows++; F.last_how = (in
 MH_API void shim_switch(int p)            { (void)p; F.switches++; if (F.hold >= 0) mh_core_hold((u32)F.hold); }
 MH_API void shim_close(int p, u32 how)    { (void)p; F.closes++; F.last_close = (int)how; }
 MH_API void shim_title(int p)             { (void)p; F.titles++; }
-MH_API void shim_desc(int p)              { (void)p; F.descs++; }
 MH_API u32  shim_cursor(int p)            { (void)p; return F.cursor; }
 MH_API void shim_sound(u32 snd)           { F.sound = (int)snd; F.sounds++; }
 
@@ -107,7 +107,7 @@ static int str_is(u32 a, const char *want)
 struct prow {
 	u8 kind, flags;
 	u16 id;
-	const char *label, *value, *desc;
+	const char *label, *value, *desc;   /* desc: round 3's description, which round 4 no longer sends */
 };
 
 /* Row i's four range words, for a MROWF_RANGE row the next post_page writes (round 3). */
@@ -135,7 +135,6 @@ static void post_page(u32 key, u8 ptype, u8 pflags, u8 cursor, const char *title
 		w16(r + MROW_OFF_ID, rows[i].id);
 		put_str(r + MROW_OFF_LABEL, rows[i].label, MROW_LABEL_LEN);
 		put_str(r + MROW_OFF_VALUE, rows[i].value, MROW_VALUE_LEN);
-		put_str(r + MROW_OFF_DESC, rows[i].desc != NULL ? rows[i].desc : "", MROW_DESC_LEN);
 		if (g_range[i] != NULL) {
 			u32 k;
 			for (k = 0; k < 4; k++) w32(r + MROW_OFF_RANGE + 4 * k, g_range[i][k]);
@@ -355,6 +354,105 @@ static void test_menu_core_sets(void)
 	check(str_is(mh_title(), "Waiting For Qwark..."), "and its waiting title in its own case");
 }
 
+/*
+ * Round 4: a page longer than the window has no More or Previous row; the
+ * window slides under the cursor. The core asks qwark for the next window when
+ * the cursor comes to the window's edge the page goes on past.
+ */
+static void test_menu_core_slide(void)
+{
+	static const struct prow win[6] = {
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E00, "save a", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E01, "save b", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E02, "save c", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E03, "save d", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E04, "save e", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED | MROWF_CLOSES, 0x0E05, "save f", "", NULL }
+	};
+	static const struct prow grey_end[4] = {
+		{ MROW_TOGGLE, MROWF_ENABLED | MROWF_STEPS, 0x0205, "ghost ratchet", "Off", NULL },
+		{ MROW_ACTION, MROWF_ENABLED, 0x0215, "reset trophies", "", NULL },
+		{ MROW_INFO, 0, 0x0F15, "trophy reset", "Ready", NULL },
+		{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+	};
+
+	group("console menu: the renderer core, the window sliding under the cursor (round 4)");
+
+	fresh();
+	post_page(0x09000001, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_DOWN, 1, "saves", "", win, 6);
+	F.cursor = 1;
+	check(mh_core_start(0) == MBOX_PTYPE_CONFIG && mh_core_cursor(0) == 1, "the first window, the cursor on row 1");
+	mh_core_frame(0);
+	F.cursor = 4;
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 0, "the cursor down the window: nothing asked");
+	F.cursor = 5;
+	check(mh_core_frame(0) == 0 && r32(BOX(MBOX_OFF_EV_SEQ)) == 1 &&
+	      r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_SCROLL_DOWN && r8(BOX(MBOX_OFF_EV_ROW)) == 5 &&
+	      r16(BOX(MBOX_OFF_EV_ID)) == 0x0E05 && r32(BOX(MBOX_OFF_EV_KEY)) == 0x09000001 && F.sounds == 0,
+	      "on the window's last row of a page that goes on below: SCROLL_DOWN with the row, no sound");
+	mh_core_frame(0);
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 1 && r32(MH_STATE + ST_DROPPED) == 0, "asked once, and nothing dropped");
+	ack();
+	post_page(0x09000402, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_UP, 1, "saves", "", win, 6);
+	check(mh_core_frame(0) == 0 && F.shows == 1 && (F.last_how & MH_SHOW_NEW) != 0 && mh_core_cursor(5) == 1,
+	      "the next window comes as a new page, the cursor where qwark puts it");
+	F.cursor = 1;
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 1, "on its second row nothing is asked");
+	F.cursor = 0;
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 2 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_SCROLL_UP &&
+	      r8(BOX(MBOX_OFF_EV_ROW)) == 0, "on its first, the page going on above: SCROLL_UP");
+	ack();
+
+	/* An answer still owed: the slide waits for it rather than being dropped. */
+	post_page(0x09000103, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN, 2, "saves", "", win, 6);
+	F.cursor = 2;
+	mh_core_frame(0);
+	mh_core_press(0, MH_BTN_CROSS, 2);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 3, "the cross on a save: an event in flight");
+	F.cursor = 5;
+	mh_core_frame(0);
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 3 && r32(MH_STATE + ST_DROPPED) == 0,
+	      "the cursor at the edge meanwhile: nothing posted, nothing dropped");
+	ack();
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 4 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_SCROLL_DOWN,
+	      "and once qwark has answered, the slide");
+	ack();
+	mh_core_press(0, MH_BTN_L1, 5);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 5 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_PAGE_PREV,
+	      "L1 on a page that goes on above: PAGE_PREV");
+	ack();
+
+	/* The edge is the last row the cursor can stand on. */
+	fresh();
+	post_page(0x05000001, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_DOWN, 0, "manips", "", grey_end, 4);
+	F.cursor = 0;
+	mh_core_start(0);
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 0, "a window whose last rows are grey: nothing on its first row");
+	F.cursor = 1;
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 1 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_SCROLL_DOWN &&
+	      r8(BOX(MBOX_OFF_EV_ROW)) == 1, "the slide on the last row it may land on");
+	ack();
+
+	/* On a MAIN page too, for a game whose lists are all MAIN. */
+	fresh();
+	g_cfg_rows = 0;
+	post_page(0x04000001, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_DOWN, 0, "planets", "", win, 6);
+	F.cursor = 0;
+	check(mh_core_start(0) == MBOX_PTYPE_MAIN, "a CONFIG page drawn as MAIN");
+	F.cursor = 5;
+	mh_core_frame(0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 1 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_SCROLL_DOWN,
+	      "slides the same way");
+}
+
 void test_menu_core(void)
 {
 	static const struct prow root[4] = {
@@ -369,7 +467,7 @@ void test_menu_core(void)
 		{ MROW_ACTION, MROWF_ENABLED, 0x020B, "unlock all planets", "", "Runs it." },
 		{ MROW_CHOICE, MROWF_ENABLED | MROWF_STEPS, 0x08F0, "position slot", "3", "The slot." },
 		{ MROW_INFO, 0, 0x0207, "colour", "#\x01\xC3", NULL },
-		{ MROW_MORE, MROWF_ENABLED, 0x0401, "More", "", NULL }
+		{ MROW_LINK, MROWF_ENABLED, 0x0B02, "bot upgrades", "", NULL }
 	};
 	char buf[96];
 	u32 ev;
@@ -442,30 +540,19 @@ void test_menu_core(void)
 	check(mh_core_start(0) == MBOX_PTYPE_CONFIG && r8(MH_STATE + ST_SWITCHING) == 0 &&
 	      r32(MH_STATE + ST_STARTS) == 2, "and the start answers CONFIG");
 	check(str_is(mh_label(0), "Ghost Ratchet") && str_is(mh_value(0), "AUTO") &&
-	      str_is(mh_label(1), "Unlock All Planets") && str_is(mh_value(1), "...") &&
+	      str_is(mh_label(1), "Unlock All Planets") && str_is(mh_value(1), "") &&
 	      str_is(mh_value(2), "3") && str_is(mh_title(), "CHEATS") && str_is(mh_value(3), "#??"),
-	      "two columns: labels in title case, values in capitals, an action's \"...\", a choice its bare "
-	      "value \"3\" (round 3: no brackets, MH_STYLE_ARROWS or not), a title in capitals, a byte outside "
-	      "ASCII a question mark");
+	      "two columns: labels in title case, values in capitals, an action blank until it answers (round 4: "
+	      "no \"...\", MH_STYLE_DOTS or not), a choice its bare value \"3\" (round 3: no brackets), a title in "
+	      "capitals, a byte outside ASCII a question mark");
 	check(mh_core_cursor(9) == 0, "the cursor on the new page's row");
-
-	/* The description line follows the cursor. */
 	F.cursor = 0;
-	F.descs = 0;
-	mh_core_frame(0);
-	check(F.descs == 1 && str_is(mh_desc(), "Auto also turns it on whenever the game starts."),
-	      "the description line is the cursor's row's, read out of the mailbox as written");
-	mh_core_frame(0);
-	check(F.descs == 1, "and only read again when the cursor moves");
-	F.cursor = 2;
-	mh_core_frame(0);
-	check(F.descs == 2 && str_is(mh_desc(), "The slot."), "which it does");
 	post_page(0x07000103, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "Ghost Ratchet: done", cheats, 5);
 	mh_core_frame(0);
-	check(F.shows == 3 && (F.last_how & (MH_SHOW_NEW | MH_SHOW_ROWS)) == 0 && str_is(mh_desc(), "Ghost Ratchet: done"),
-	      "the same page refreshed: shown again, neither new nor resized, its hint on the description line");
+	check(F.shows == 3 && (F.last_how & (MH_SHOW_NEW | MH_SHOW_ROWS)) == 0 && r32(BOX(MBOX_OFF_EV_SEQ)) == 1,
+	      "the same page refreshed: shown again, neither new nor resized; a page that fits slides nothing");
 
-	/* Steps and pages. */
+	/* Steps, and L1 and R1 on a page that fits: nothing (round 4: no Previous or More rows). */
 	mh_core_press(0, MH_BTN_RIGHT, 1);
 	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 1, "Right on a row that does not step posts nothing");
 	mh_core_press(0, MH_BTN_RIGHT, 0);
@@ -473,11 +560,18 @@ void test_menu_core(void)
 	      "Right on one that does posts RIGHT, with the step sound");
 	ack();
 	mh_core_press(0, MH_BTN_L1, 0);
-	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 2, "L1 on a page with no Previous row posts nothing");
 	mh_core_press(0, MH_BTN_R1, 0);
-	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 3 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_PAGE_NEXT,
-	      "R1 with a More row posts PAGE_NEXT");
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 2, "L1 and R1 on a page that fits its window post nothing");
+	post_page(0x07000103, MBOX_PTYPE_CONFIG, MBOX_PAGE_MORE_DOWN, 0, "cheats", "", cheats, 5);
+	mh_core_frame(0);
+	mh_core_press(0, MH_BTN_L1, 0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 2, "L1 on a page that goes on below only posts nothing");
+	mh_core_press(0, MH_BTN_R1, 0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 3 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_PAGE_NEXT && F.sound == MH_SND_MOVE,
+	      "R1 there posts PAGE_NEXT, with the cursor's tick");
 	ack();
+	post_page(0x07000103, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", cheats, 5);
+	mh_core_frame(0);
 	mh_core_press(0, MH_BTN_BACK, 2);
 	check(r32(BOX(MBOX_OFF_EV_SEQ)) == 4 && r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_BACK && F.sound == MH_SND_BACK &&
 	      F.closes == 1, "back on a page that is not the root posts BACK");
@@ -552,6 +646,7 @@ void test_menu_core(void)
 	      "a CONFIG widget that only restarts for another number of rows takes a new key in place");
 
 	test_menu_core_sets();
+	test_menu_core_slide();
 
 	/* Deadlocked's GAME SETTINGS: labels in capitals, a colon after a label with a value beside it. */
 	{
@@ -568,10 +663,10 @@ void test_menu_core(void)
 		g_style = 0x0F | MH_STYLE_COLON;
 		post_page(0x07000401, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", cheats, 5);
 		check(mh_core_start(0) == MBOX_PTYPE_CONFIG && str_is(mh_label(0), "GHOST RATCHET:") &&
-		      str_is(mh_value(0), "AUTO") && str_is(mh_label(1), "UNLOCK ALL PLANETS:") && str_is(mh_value(1), "...") &&
-		      str_is(mh_label(3), "COLOUR:") && str_is(mh_label(4), "MORE"),
-		      "MH_STYLE_COLON: \"GHOST RATCHET:\", \"UNLOCK ALL PLANETS:\" beside its \"...\", a row with no value "
-		      "without");
+		      str_is(mh_value(0), "AUTO") && str_is(mh_label(1), "UNLOCK ALL PLANETS") && str_is(mh_value(1), "") &&
+		      str_is(mh_label(3), "COLOUR:") && str_is(mh_label(4), "BOT UPGRADES:") && str_is(mh_value(4), ">"),
+		      "MH_STYLE_COLON, which no game sets since round 4: \"GHOST RATCHET:\", and a row with no value, "
+		      "a blank action's included, without");
 		g_range[1] = words;
 		post_page(0x07000402, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", colon_rows, 3);
 		mh_core_frame(0);

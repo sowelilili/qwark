@@ -1,5 +1,5 @@
 /*
- * The console menu in Up Your Arsenal (revision 1.22, mailbox version 2), on
+ * The console menu in Up Your Arsenal (revision 1.22, mailbox version 3), on
  * qwark's fake console, against the real core: three layers, as test_menu.c
  * has them for Deadlocked.
  *
@@ -16,8 +16,9 @@
  *                 thread runner and SwapTo, the main pause's init, update and
  *                 deinit on a row table, the submenu frame and its title's
  *                 fit, the grid list with AUDIO / VISUAL's font and rules,
- *                 the widgets the shim makes (containers, rectangles, text,
- *                 the sliders), the Start path and the launcher. The hook stubs
+ *                 the widgets the shim makes (containers, rectangles, the
+ *                 picture and its source, the sliders), the Start path and the
+ *                 launcher. The hook stubs
  *                 are assembler and do not run here:
  *                 src/games/menuhelper/check.py steps them, and the mocks
  *                 below do in C what they do.
@@ -97,13 +98,16 @@ static struct {
 	int font[2], rules, layer17;
 	/* the widgets the shim makes or changes, by handle */
 	struct widget {
-		u32 h, parent, color, text;
-		char kind;                /* C container, R rounded box, Q rectangle, T text, ? only changed */
-		int visible, font, fit, style_off, anchor_x, anchor_y;
+		u32 h, parent, color, text, source, picture;
+		char kind;                /* C container, R rounded box, Q rectangle, ? only changed */
+		int visible, fit, anchor_x, anchor_y, fade;
 		float x, y, sx, sy, box_w, box_min;
 	} w[96];
 	int nw, widgets_bad;
 	u32 slide;                    /* the grid's +0x58 while a scroll is in flight */
+	/* the picture source and the pause screens' seven picture buffers (round 4) */
+	int pic_taken, pic_dropped, pic_busy, pic_stops, disc_waits;
+	u32 pic_src, pic_a, pic_b, pic_wad, pic_set, pic_state;
 } G;
 
 static void remember(u32 h, u32 s)
@@ -381,11 +385,6 @@ static void mock_rect(u32 h, u32 c, float x, float y, float sx, float sy, u32 te
 	(void)tex;
 	create(h, 'Q', c, x, y, sx, sy);
 }
-static void mock_text_widget(u32 h, u32 s, u32 c, float x, float y, float sx, float sy)
-{
-	create(h, 'T', c, x, y, sx, sy)->text = s;
-	remember(h, s);
-}
 static void mock_set_visible(u32 h, u32 on) { wid(h)->visible = on != 0; }
 static void mock_set_pos(u32 h, float x, float y) { wid(h)->x = x; wid(h)->y = y; }
 static void mock_set_color(u32 h, u32 c) { wid(h)->color = c; }
@@ -393,8 +392,34 @@ static void mock_set_anchor(u32 h, u32 ax, u32 ay) { wid(h)->anchor_x = (int)ax;
 static void mock_set_layer(u32 layer, u32 h) { if (layer == U_LAYER_FRAME2) G.layer17 = (int)h; }
 static void mock_text_box(u32 h, float bw, float least) { wid(h)->box_w = bw; wid(h)->box_min = least; }
 static void mock_text_fit(u32 h, u32 on) { wid(h)->fit = on != 0; }
-static void mock_text_style(u32 h, u32 bits, u32 on) { if (bits == 2 && on == 0) wid(h)->style_off = 1; }
-static void mock_text_font(u32 h, u32 font) { wid(h)->font = (int)font; }
+
+/*
+ * The picture (round 4), as AUDIO / VISUAL's init, update and deinit use it:
+ * the pause screens' seven picture buffers (0x2D3A4C, 0x2D3B94), picture
+ * source i (0x2CCA44), set up only when it is not busy (0x2CCD48) and stopped
+ * by its vtable's second entry (0x2CCD38), a rectangle tied to it and told
+ * which picture to show, and the disc's reads waited for.
+ */
+#define PIC_SOURCES    0x01358730u
+static u32 mock_pic_buffer(int kind)
+{
+	if (kind != 0 || G.pic_taken >= 7) return 0;
+	G.pic_taken++;
+	return 0x30000000u + 0x00100000u * (u32)G.pic_taken;
+}
+static int mock_pic_buffer_drop(u32 b) { if (b != 0) { G.pic_taken--; G.pic_dropped++; } return 0; }
+static u32 mock_pic_source(int i) { return PIC_SOURCES + 0x44u * (u32)i; }
+static int mock_pic_source_set(u32 src, u32 a, u32 b, u32 wad, u32 set)
+{
+	if (G.pic_busy) return 0;
+	G.pic_src = src; G.pic_a = a; G.pic_b = b; G.pic_wad = wad; G.pic_set = set; G.pic_state = 1;
+	return 1;
+}
+static int mock_pic_source_stop(u32 src) { if (src == G.pic_src) G.pic_state = 8; G.pic_stops++; return 1; }
+static void mock_pic_tie(u32 h, u32 src) { wid(h)->source = src; }
+static void mock_pic_show(u32 h, u32 n) { wid(h)->picture = n; }
+static void mock_pic_fade(u32 h, int on, int frames) { wid(h)->fade = on ? frames : 0; }
+static int mock_disc_wait(int all) { (void)all; G.disc_waits++; return 0; }
 
 /* SetScale: the title's, and any widget's. */
 static void mock_set_scale(u32 h, float sx, float sy)
@@ -603,6 +628,7 @@ static int quit(void)
 
 static u32 peek32(u32 a) { u8 b[4]; host_peek(a, b, 4); return be32_get(b); }
 static u8 peek8(u32 a) { u8 b = 0; host_peek(a, &b, 1); return b; }
+static u16 peek16(u32 a) { u8 b[2]; host_peek(a, b, 2); return be16_get(b); }
 static void poke32(u32 a, u32 v) { u8 b[4]; be32_put(b, v); host_poke(a, b, 4); }
 static void poke8(u32 a, u8 v) { host_poke(a, &v, 1); }
 
@@ -708,12 +734,11 @@ static void test_model_uya(void)
 	                                             "Unlock all titanium bolts", "Reset all titanium bolts" };
 	struct menu_view v;
 	const struct menu_row *r;
-	u8 i;
 
 	group("console menu: the model, UYA's pages");
 
 	check(boot("NPEA00387"), "UYA boots");
-	menu_model_reset(9, 16, CAPS_ALL);
+	menu_model_reset(9, 24, CAPS_ALL);
 	menu_model_view(&v);
 	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && v.rows[6].kind == MROW_INFO,
 	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey: the design's");
@@ -740,14 +765,18 @@ static void test_model_uya(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list, in the game's order, nine a window. */
+	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4), 24 a window. */
 	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_MAIN && strcmp(v.rows[0].label, "Veldin") == 0 &&
-	      strcmp(v.rows[5].label, "Obani Gemini") == 0 && v.rows[8].kind == MROW_MORE && v.nrows == 9,
-	      "Planets: Veldin, Florana, Starship Phoenix, Marcadia, Daxx, Obani Gemini ..., eight and More");
+	check(v.ptype == MBOX_PTYPE_CONFIG && strcmp(v.rows[0].label, "Veldin") == 0 &&
+	      strcmp(v.rows[5].label, "Obani Gemini") == 0 && v.nrows == 24 && strcmp(v.title, "Planets") == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
+	      "Planets: a CONFIG page, Veldin, Florana, Starship Phoenix, Marcadia, Daxx, Obani Gemini ..., the first "
+	      "24 of 34 and no More row, the page going on below");
 	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION, "each a button that closes the menu first");
-	for (i = 0; i < 6 && v.rows[v.nrows - 1].kind == MROW_MORE; i++) act(&v, MBOX_EV_ACTIVATE, "More");
-	check(view_row(&v, "Vid Comic 1 SE") != NULL && view_row(&v, "(unused)") == NULL && view_row(&v, "(none)") == NULL,
+	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 23, v.rows[23].id, v.key) == ST_OK, "the slide from the 24th");
+	menu_model_view(&v);
+	check(view_row(&v, "Vid Comic 1 SE") != NULL && view_row(&v, "(unused)") == NULL && view_row(&v, "(none)") == NULL &&
+	      v.nrows == 24 && (v.pflags & MBOX_PAGE_MORE_DOWN) == 0,
 	      "the last window ends with the vid comics; the gaps and the placeholder are left out");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
@@ -783,8 +812,9 @@ static void test_model_uya(void)
 	menu_model_view(&v);
 	check(labels_are(&v, unlocks, 4) && v.cursor == 3, "back: Unlocks, the cursor on Collectables");
 	act(&v, MBOX_EV_ACTIVATE, "Weapons");
-	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 16 && v.rows[15].kind == MROW_MORE && strcmp(v.title, "Weapons 1/2") == 0,
-	      "Weapons: twenty, fifteen and More in a page of sixteen");
+	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 20 && v.rows[19].kind == MROW_CHOICE &&
+	      strcmp(v.title, "Weapons") == 0 && (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0,
+	      "Weapons: all twenty on one page, which the grid scrolls (round 4: no More row, no \"1/2\")");
 	uya_weapon(0x4FF, 0x57, 0);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Agents of Doom"), "LOCKED") == 0, "a locked weapon: LOCKED");
@@ -803,7 +833,6 @@ static void test_model_uya(void)
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Lava Gun"), "UNLOCKED") == 0,
 	      "an owned GameCube weapon, whose version cannot be read back, shows UNLOCKED");
-	act(&v, MBOX_EV_ACTIVATE, "More");
 	uya_weapon(0x53F, 0x97, 5);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "R3YNO"), "MAX") == 0, "the R3YNO at v5, its own last: MAX");
@@ -871,11 +900,14 @@ static void test_install_uya(void)
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
-	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 16 &&
-	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x80 && peek8(mb + MBOX_OFF_MAX_ROWS) == 9 &&
-	      peek8(mb + MBOX_OFF_CFG_ROWS) == 16 && peek8(mb + MBOX_OFF_RENDERER) == 3,
-	      "the mailbox: sixteen rows of 0x80 with their descriptions, nine a MAIN page, sixteen a CONFIG page, "
+	check(mb == MH_BOX && mb == 0x01ADB900u && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 24 &&
+	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 && peek8(mb + MBOX_OFF_MAX_ROWS) == 9 &&
+	      peek8(mb + MBOX_OFF_CFG_ROWS) == 24 && peek8(mb + MBOX_OFF_RENDERER) == 3 &&
+	      peek16(mb + MBOX_OFF_VERSION) == 3,
+	      "the mailbox (round 4): at 0x1ADB900, version 3, 24 rows of 0x40, nine a MAIN page, 24 a CONFIG page, "
 	      "renderer 3");
+	check(peek32(U_CELLS) == 0 && peek32(U_CELLS + U_CELLS_SIZE - 4) == 0,
+	      "the grid's cells' span, which the install does not write");
 	check(peek32(MH_SITE_HELP8_TEXT) == 0xF000 && peek32(MH_SITE_HELP9A_TEXT) == 0xF000 &&
 	      peek32(MH_SITE_HELP9B_TEXT) == 0xF000, "each table's HELP row says TRAINER");
 
@@ -970,6 +1002,7 @@ static void test_renderer_uya(void)
 	poke32(U_CONFIRM_MASK, 0x40);
 	poke32(U_GAME_PTR, U_GAME_STATE);
 	poke32(U_PLANET, 5);
+	poke32(U_PIC_HUD_WAD, 0x00A1B2C3u);
 	put_str(MSG_AT, "TRAINER");
 	put_str(MSG_AT + 0x10, "HELP");
 	put_str(MSG_AT + 0x20, "ROW");
@@ -1044,37 +1077,48 @@ static void test_renderer_uya(void)
 	      "titled CHEATS, with SELECT and BACK");
 	check(G.banner == 7.0f && G.title_sx == 0.875f && G.title_sy == 0.875f,
 	      "the banner and the title's scale as the game fits them to the title, as Options' screens do");
-	check(strcmp(cfg_label(0, a), "FAST LOADS:") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
-	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE:") == 0 && cell_color(1) == U_COLOR_OFF,
-	      "labels in capitals with a colon, as AUDIO / VISUAL's \"SUBTITLES:\", values in capitals, an off cheat "
-	      "in the normal colour");
+	check(strcmp(cfg_label(0, a), "FAST LOADS") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
+	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE") == 0 && cell_color(1) == U_COLOR_OFF,
+	      "labels in capitals, without a colon (round 4), values in capitals, an off cheat in the normal colour");
 	check(G.font[0] == 1 && G.font[1] == 1 && G.rules == 1, "the cells in the Options screens' font, with their rules");
+	check(G.buf == U_CELLS && r32(CFG) == U_CELLS_SIZE, "the grid's cells in their own span (round 4), its size given");
 	{
-		struct widget *box = wid(AV_PANEL_BOX), *d = wid(AV_DESC);
+		struct widget *box = wid(AV_PANEL_BOX), *pic = wid(AV_PIC);
 		check(G.layer17 == AV_ROOT && made(AV_ROOT, 'C') && made(AV_PANEL, 'C') && wid(AV_PANEL)->parent == AV_ROOT &&
 		      made(AV_PANEL_BOX, 'R') && box->parent == AV_PANEL && box->color == AV_PANEL_COLOR &&
 		      box->y > 0.265f && box->y < 0.266f && box->sx > 0.827f && box->sx < 0.828f,
 		      "AUDIO / VISUAL's picture panel above the list, on layer 17");
-		check(made(AV_DESC, 'T') && d->parent == AV_PANEL && d->font == 1 && d->fit && d->style_off &&
-		      d->box_w > 0.779f && d->box_w < 0.781f && d->text == MH_STATE + ST_DESC &&
-		      strcmp(text_of(AV_DESC, a, 80), "Auto also turns it on whenever the game starts.") == 0,
-		      "and in it the description line, the cursor row's, in the cells' font, shrinking to fit the panel");
+		check(G.pic_taken == 2 && G.pic_src == PIC_SOURCES + 0x44u && G.pic_a != 0 && G.pic_b != 0 &&
+		      G.pic_a != G.pic_b && G.pic_wad == 0x00A1B2C3u && G.pic_set == U_PIC_SET && G.pic_state == 1,
+		      "round 4: two picture buffers, and AUDIO / VISUAL's picture source, 1, set up with them, the hud.wad's "
+		      "word and the screen's picture set, as its init does");
+		check(made(AV_PIC, 'Q') && pic->parent == AV_PANEL && pic->color == 0x80808080u && near(pic->y, 0.268f) &&
+		      near(pic->sx, 0.8143f) && pic->source == G.pic_src && pic->picture == 0 && !pic->visible &&
+		      pic->fade == 10,
+		      "in the panel the picture: AUDIO / VISUAL's rectangle, tied to the source, picture 0, hidden, a fade "
+		      "of ten frames");
 		check(!made(AV_SLIDERS, 'C') && !G.widgets_bad, "no slider on a page without one; no handle made twice");
 	}
+	for (i = 0; i < 28; i++) pframe(0);
+	check(!wid(AV_PIC)->visible && wid(AV_PIC)->picture == 0, "29 frames in, nothing shows yet");
+	pframe(0);
+	check(wid(AV_PIC)->visible && wid(AV_PIC)->picture == U_PICTURE && U_PICTURE == 4,
+	      "the thirtieth, as AUDIO / VISUAL's cursor rests: picture 4, EFFECTS VOLUME's, the user's header");
 	pframe(PADB_DOWN);
 	check(G.top + G.off == 1, "Down moves the grid's cursor");
 	for (i = 0; i < 3; i++) pframe(PADB_DOWN);
 	pframe(0);
-	check(strcmp(text_of(AV_DESC, a, 80), "On or off.") == 0, "the description follows the cursor: the quick-select pause's");
+	check(wid(AV_PIC)->picture == U_PICTURE, "the picture stays as the cursor moves: no description any more");
 	for (i = 0; i < 3; i++) pframe(PADB_UP);
 	pframe(PADB_RIGHT);
 	check(G.sound == SND_CHANGE && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
 	      "Right on Ghost Ratchet posts an event, with the pause's change sound");
 	tick(2);
 	pframe(0);
-	check(strcmp(cfg_value(1, a), "ON") == 0 && cell_color(1) == U_COLOR_ON && G.top + G.off == 1 &&
+	check(strcmp(cfg_value(1, a), "ON") == 0 && cell_color(1) == U_COLOR_OFF && G.top + G.off == 1 &&
 	      (features_toggle_state() & ((u64)1 << R3_GHOST)) != 0,
-	      "the same page refreshed in place: ON, CHEATS' colour of an active cheat, the cursor where it was");
+	      "the same page refreshed in place: ON, in the normal colour (round 4: no white for a row that is on), the "
+	      "cursor where it was");
 	pframe(0x40);
 	tick(2);
 	pframe(0);
@@ -1095,7 +1139,11 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(G.active == MH_SHIM + SH_GS && G.main_up && !G.frame_up && !G.built && G.count == 7 &&
 	      r32(U_CURSOR) == 1, "Triangle: the grid and frame go, the root's list is back on CHEATS");
-	check(!made(AV_ROOT, 'C') && !made(AV_DESC, 'T') && G.layer17 == 0, "and the panel with them (layer 17)");
+	check(!made(AV_ROOT, 'C') && !made(AV_PIC, 'Q') && G.layer17 == 0, "and the panel and its picture with them (layer 17)");
+	check(G.pic_state == 8 && G.pic_stops == 1 && G.pic_taken == 0 && G.pic_dropped == 2 && G.disc_waits == 1 &&
+	      r8(MH_SHIM + SH_PIC_ON) == 0,
+	      "the picture source stopped, both buffers given back and the disc's reads waited for, as AUDIO / VISUAL's "
+	      "deinit does");
 
 	/* GAME: eleven rows, eight on screen, scrolled; Challenge mode at 51 of 0..255. */
 	poke8(RAC3_CHALLENGE_MODE, 51);
@@ -1105,11 +1153,12 @@ static void test_renderer_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.built && G.rows == 11 && G.vis == 8, "GAME: a grid of eleven rows, eight on screen, as AUDIO / VISUAL's");
-	check(strcmp(cfg_label(0, a), "DIE:") == 0 && strcmp(cfg_value(0, b), "...") == 0 &&
-	      strcmp(cfg_label(6, a), "BOLTS:") == 0,
-	      "a button and a value both have a value beside the label, and so a colon (MH_STYLE_COLON)");
-	check(strcmp(cfg_label(7, a), "CHALLENGE MODE: 51") == 0 && strcmp(cfg_value(7, b), " ") == 0 &&
+	check(G.built && G.rows == 11 && G.vis == 8 && G.pic_taken == 2,
+	      "GAME: a grid of eleven rows, eight on screen, as AUDIO / VISUAL's, the picture source again");
+	check(strcmp(cfg_label(0, a), "DIE") == 0 && strcmp(cfg_value(0, b), "") == 0 &&
+	      strcmp(cfg_label(6, a), "BOLTS") == 0,
+	      "round 4: a button blank until it answers, no colons");
+	check(strcmp(cfg_label(7, a), "CHALLENGE MODE 51") == 0 && strcmp(cfg_value(7, b), " ") == 0 &&
 	      made(AV_SLIDERS, 'C') && wid(AV_SLOT0 + 21)->visible && wid(AV_SLOT0 + 23)->visible &&
 	      near(wid(AV_SLOT0 + 23)->x, 0.653f + 0.232f * 0.2f) &&
 	      !wid(AV_SLOT0 + 18)->visible,
@@ -1122,7 +1171,7 @@ static void test_renderer_uya(void)
 	pframe(PADB_RIGHT);
 	tick(2);
 	pframe(0);
-	check(strcmp(cfg_label(10, a), "FILE TIME:") == 0 && peek32(RAC3_FILE_TIME) == 1 && G.top + G.off == 10,
+	check(strcmp(cfg_label(10, a), "FILE TIME") == 0 && peek32(RAC3_FILE_TIME) == 1 && G.top + G.off == 10,
 	      "Right on File time steps it, the cursor still there");
 
 	/* Start on the CONFIG page closes the pause, as CHEATS' does. */
@@ -1130,8 +1179,9 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(G.pending == EXIT_GS && G.closing == 0, "Start: acknowledged, the pause's exit queued");
 	pframe(0);
-	check(!G.paused && !G.built && !G.frame_up && r32(MH_SHIM + SH_UP) == 0 &&
-	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "the grid freed, the frame gone, the menu down");
+	check(!G.paused && !G.built && !G.frame_up && r32(MH_SHIM + SH_UP) == 0 && G.pic_taken == 0 &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "the grid freed, the frame gone, the picture buffers back, the menu down");
 	tick(4);
 
 	/* Round 3: the combo opens on the root, not on that page; again, it closes, through the close request. */
@@ -1175,6 +1225,33 @@ static void test_renderer_uya(void)
 	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0, "and TRAINER opens the root again");
 	tick(4);
 
+	/* Round 4: PLANETS, a CONFIG page of 24 of the 34, the window sliding under the cursor at its last row. */
+	w32(U_CURSOR, 2);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.rows == 24 && strcmp(cfg_label(0, a), "VELDIN") == 0 && strcmp(cfg_value(0, b), "") == 0 &&
+	      strcmp(read_str(G.title, b, 80), "PLANETS") == 0,
+	      "PLANETS: AUDIO / VISUAL's look, the first 24 of the 34 planets, each blank, no More row, the title its own");
+	for (i = 0; i < 23; i++) pframe(PADB_DOWN);
+	check(G.top + G.off == 23 && strcmp(cfg_label(23, a), "LAUNCH SITE") == 0, "Down to the 24th, Launch Site");
+	pframe(0);
+	check(peek8(mb + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
+	      "on the window's last row, the page going on below: the core asks for the next window");
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.rows == 24 && G.top + G.off == 13 && strcmp(cfg_label(13, a), "LAUNCH SITE") == 0 &&
+	      strcmp(cfg_label(23, b), "VID COMIC 1 SE") == 0,
+	      "the screen started again on the last window, the vid comics at its end, the cursor still on Launch Site");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 2, "Triangle: the root, the cursor on PLANETS");
+	tick(4);
+
 	/* A page with no row the cursor may land on: the main pause's list must not loop. */
 	check(G.main_up && G.count == 7, "on the root");
 	{
@@ -1206,7 +1283,7 @@ static void test_renderer_uya(void)
 }
 
 /*
- * A page as qwark writes one into the mailbox, rows of 0x80: `sliders` rows
+ * A page as qwark writes one into the mailbox, rows of 0x40: `sliders` rows
  * {index, value, lowest, highest, slider} are VALUE rows with their range,
  * the rest toggles.
  */
@@ -1215,7 +1292,7 @@ struct slider_row { int row; u32 value, lo, hi; int slider; const char *label; }
 static void post_page(u32 mb, u32 key, int n, const struct slider_row *sl, int nsl)
 {
 	u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r;
-	u8 head[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY], row[MBOX_ROW_SIZE_DESC];
+	u8 head[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY], row[MBOX_ROW_SIZE];
 	char text[8];
 	int i, k;
 
@@ -1227,7 +1304,7 @@ static void post_page(u32 mb, u32 key, int n, const struct slider_row *sl, int n
 	poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 1);
 	host_poke(mb + MBOX_OFF_PAGE_KEY, head, sizeof(head));
 	for (i = 0; i < n; i++) {
-		r = mb + MBOX_OFF_ROWS + (u32)i * MBOX_ROW_SIZE_DESC;
+		r = mb + MBOX_OFF_ROWS + (u32)i * MBOX_ROW_SIZE;
 		memset(row, 0, sizeof(row));
 		row[MROW_OFF_KIND] = MROW_TOGGLE;
 		row[MROW_OFF_FLAGS] = MROWF_ENABLED | MROWF_STEPS;
@@ -1302,8 +1379,8 @@ static void test_sliders_uya(void)
 	      "Health, 5 of 0..10: its slot's slider shown, the knob half way along");
 	check(!wid(AV_SLOT0 + 3)->visible && !wid(AV_SLOT0 + 15)->visible && !wid(AV_SLOT0 + 17)->visible,
 	      "a toggle's slot and Bolts' (a range too long for a bar) show none");
-	check(strcmp(cfg_label(0, a), "HEALTH: 5") == 0 && strcmp(cfg_value(0, a), " ") == 0 &&
-	      strcmp(cfg_value(5, a), "7") == 0 && strcmp(cfg_label(5, a), "BOLTS:") == 0,
+	check(strcmp(cfg_label(0, a), "HEALTH 5") == 0 && strcmp(cfg_value(0, a), " ") == 0 &&
+	      strcmp(cfg_value(5, a), "7") == 0 && strcmp(cfg_label(5, a), "BOLTS") == 0,
 	      "a slider's value cell is blank, as AUDIO / VISUAL's MUSIC VOLUME, its number after its label; Bolts keeps its "
 	      "number in the value cell");
 

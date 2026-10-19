@@ -65,10 +65,13 @@ from Options' AUDIO / VISUAL screen is that screen's (every AV_* number where
 the screen reads it, the grid configuration it builds and the calls after it,
 the panel of its widget table, the sliders' sizes and colours, font 1, the
 text fit, the grid's fields the sliders follow, and handles no other code
-builds); the label, inject, combo and rows stubs, stepped, do what the C and
-the tests assume; and nothing overlaps the mods, the probes or qwark's own
-writes (the trophy caves and the fast-load cave at 0x9807F0..0x9808B0), but
-for probes N3 and N3b, the prototypes, whose words are the same by design.
+builds; round 4: the picture, its source, buffers and set as AUDIO / VISUAL's
+init, update and deinit use them); the grid's cells' span (round 4) is past
+the read-write segment's end and named by nothing; the label, inject, combo
+and rows stubs, stepped, do what the C and the tests assume; and nothing
+overlaps the mods, the probes or qwark's own writes (the trophy caves and the
+fast-load cave at 0x9807F0..0x9808B0), but for probes N3 and N3b, the
+prototypes, whose words are the same by design.
 
 For Going Commando's renderer, the same again, and for its six words: the
 label hook, the Start test, the pause reason and the root the pause manager
@@ -944,10 +947,10 @@ def check_rac4(ok, elf, roots, bonus=None):
     ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
        version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(box[8] == hdr["MH_ROWS"] and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE_DESC"] and
+    ok(box[8] == hdr["MH_ROWS"] and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
        box[10] == hdr["MH_MAIN_ROWS"] and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
        box[14] == hdr["MH_GAME_ID"] and box[15] == hdr["MH_CFG_ROWS"],
-       "row_cap %d, rows of 0x%02X with descriptions, %d rows a MAIN page, %d a CONFIG page, caps 0x%02X, "
+       "row_cap %d, rows of 0x%02X (round 4: no descriptions), %d rows a MAIN page, %d a CONFIG page, caps 0x%02X, "
        "closed, no request, renderer 4" % (box[8], box[9], box[10], box[15], box[11]))
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
@@ -1375,7 +1378,7 @@ def check_rac3_av(ok, elf, hdr, code, cave):
     want = [None, None, 0x14, None, None, 2, 0x3F800000, W(0x00C4FBE0), W(0x00C4FBE8), W(0x00C4FBEC),
             W(0x00C4FBF0), 0x3F800000, 0x3F800000, W(0x00C4FBF4), col1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     ok(len(tpl) == 24 and all(want[i] is None or tpl[i] == want[i] for i in range(24)) and
-       tpl[0] == hdr["SH_CELLS_SIZE"] and all(W(a) == w for a, w in sites),
+       tpl[0] == hdr["U_CELLS_SIZE"] and all(W(a) == w for a, w in sites),
        "the shim's grid configuration is AUDIO / VISUAL's (0x2DC6F0, r1+0x84) but for the buffer, its size and "
        "the rows; words 21..23, which GridBuild does not read, 0")
 
@@ -1422,13 +1425,16 @@ def check_rac3_av(ok, elf, hdr, code, cave):
     # The panel: AUDIO / VISUAL's widget table, and the colour 4 the grey a row of colour 1 is drawn in.
     ok(W(0x00C4FC60) == hdr["AV_ROOT"] and W(0x00C4FC90) == hdr["AV_PANEL"] and W(0x00C4FC94) == hdr["AV_ROOT"] and
        W(0x00C4FCC0) == hdr["AV_PANEL_BOX"] and W(0x00C4FCC4) == hdr["AV_PANEL"] and W(0x00C4FCC8) == 3 and
-       W(0x00C4FCD0) == hdr["AV_FRAME_X"] and W(0x00C4FCF0) == hdr["AV_DESC"] and W(0x00C4FCF8) == 2 and
+       W(0x00C4FCD0) == hdr["AV_FRAME_X"] and W(0x00C4FCF0) == hdr["AV_PIC"] and W(0x00C4FCF4) == hdr["AV_PANEL"] and
+       W(0x00C4FCF8) == 2 and W(0x00C4FD14) == 0 and W(0x00C4FD10) == 0 and W(0x00C4FD1C) == 0 and
        W(0x002DCFD0) == 0xC0DE0028 and W(0x002DCFD4) == 0xFCA03090 and
        branch_target(0x002DCFD8, W(0x002DCFD8)) == 0x002B1A88 and
        W(0x002DD43C) == 0x38600011 and W(0x002DD440) == 0x3C80001E and
        branch_target(0x002DD444, W(0x002DD444)) == 0x002AF6C4,
        "the panel: the root 0x1E0000 on layer 17, its container and rounded box (type 3, both corners the "
-       "table's +0x28) as AUDIO / VISUAL's table has them; 0x1E0003, its picture there, the description here")
+       "table's +0x28) as AUDIO / VISUAL's table has them; 0x1E0003, its picture, a rectangle (type 2) in the "
+       "panel's container, no texture, no anchor and no flags of its own (round 4: the shim's too)")
+    check_rac3_pic(ok, elf, hdr)
     ok(W(0x002D6EF4) == 0x80850090 and W(0x002DE1F0) == 0x38600011,
        "a row of colour 4 draws in the grey +0x90; AUDIO / VISUAL's deinit clears layer 17 (and 16, 20) as the "
        "shim's does")
@@ -1456,6 +1462,68 @@ def check_rac3_av(ok, elf, hdr, code, cave):
        "slider slots' 0x%08X..0x%08X by no code in the executable" % (hdr["AV_SLOT0"], slots_hi - 1))
     for a, v in (outside + ours)[:12]:
         print("        0x%08X: 0x%08X" % (a, v))
+
+
+def check_rac3_pic(ok, elf, hdr):
+    """
+    4b for UYA, round 4: the picture in the panel is AUDIO / VISUAL's own, set
+    up, shown and taken down the way that screen does it (its init 0x2DD218,
+    update 0x2DC0B0, deinit 0x2DE1D8): the header's source, the hud.wad word,
+    the picture set, the row whose picture it is, the wait, and the vtable
+    entry the shim calls rather than reading the vtable at run time.
+    """
+    W = elf.word
+
+    def bl(a, t):
+        return branch_target(a, W(a)) == t and (W(a) >> 26) == 18 and (W(a) & 3) == 1
+
+    def lis(w):
+        return (w & 0xFFFF) << 16
+
+    def simm(w):
+        v = w & 0xFFFF
+        return v - 0x10000 if v & 0x8000 else v
+
+    # Its init: two buffers, then source 1 with the hud.wad's word and the picture set.
+    wad = (lis(W(0x002DD350)) + simm(W(0x002DD358)) + simm(W(0x002DD36C))) & 0xFFFFFFFF
+    pset = (lis(W(0x002DD354)) + simm(W(0x002DD360))) & 0xFFFFFFFF
+    ok(W(0x002DD31C) == 0x38600000 and bl(0x002DD320, 0x002D3A4C) and W(0x002DD330) == 0x38600000 and
+       bl(0x002DD334, 0x002D3A4C) and W(0x002DD344) == 0x38600000 | hdr["U_PIC_SOURCE"] and
+       bl(0x002DD348, 0x002CCA44) and W(0x002DD350) == 0x3C8000D6 and W(0x002DD358) == 0x30C4C610 and
+       W(0x002DD36C) == 0x80C64964 and W(0x002DD354) == 0x3CE000D6 and W(0x002DD360) == 0x30E73550 and
+       bl(0x002DD370, 0x002CCD48) and wad == hdr["U_PIC_HUD_WAD"] and pset == hdr["U_PIC_SET"],
+       "AUDIO / VISUAL's init takes two picture buffers (0x2D3A4C(0)) and sets picture source %d up with them, "
+       "the hud.wad's word 0x%08X and its picture set 0x%08X (0x2CCD48), as the shim does" %
+       (hdr["U_PIC_SOURCE"], wad, pset))
+    # Its end: the rectangle tied to the source, picture 0, hidden, ten frames' fade.
+    ok(W(0x002DD998) == 0x38600000 | hdr["U_PIC_SOURCE"] and bl(0x002DD99C, 0x002CCA44) and
+       W(0x002DD9A8) == 0x3C60001E and W(0x002DD9AC) == 0x60630003 and bl(0x002DD9B0, 0x002AFF84) and
+       W(0x002DD9BC) == 0x38800000 and bl(0x002DD9C4, 0x002AE710) and W(0x002DD9D0) == 0x38800000 and
+       bl(0x002DD9D8, 0x002ADDF8) and W(0x002DD9E4) == 0x38800001 and W(0x002DD9EC) == 0x38A0000A and
+       bl(0x002DD9F0, 0x002B0040) and hdr["AV_PIC"] == 0x001E0003,
+       "then ties 0x1E0003 to the source (0x2AFF84), shows picture 0 (0x2AE710), hides it and gives it a fade "
+       "of ten frames (0x2B0040), as the shim's pic_tie_up")
+    # Its update: once the cursor has rested 30 frames, the row's picture, shown.
+    rows, row = hdr["U_PIC_ROWS"], hdr["U_PIC_ROW"]
+    ok(W(0x002DC610) == 0x38A00000 | hdr["U_PIC_WAIT"] and W(0x002DC614) == 0x90A3FE20 and
+       W(0x002DC62C) == 0x3063FFFF and lis(W(0x002DC640)) + simm(W(0x002DC648)) == rows + 8 and
+       bl(0x002DC664, 0x002AE710) and W(0x002DC670) == 0x38800001 and bl(0x002DC678, 0x002ADDF8) and
+       W(rows + 12 * row) == 0x233 and W(rows + 12 * row + 8) == hdr["U_PICTURE"],
+       "its update shows a row's picture (0x2AE710, then SetVisibility 1) %d frames after the cursor rests; "
+       "row %d of its table, EFFECTS VOLUME (0x233), has picture %d, the user's" %
+       (hdr["U_PIC_WAIT"], row, hdr["U_PICTURE"]))
+    # Its deinit: the source's vtable's second entry, the buffers back, the disc waited for.
+    vt = None
+    if W(0x002CCA58) == 0x3CA000B2 and W(0x002CCA6C) == 0x30A5C630 and W(0x002CCA78) == 0x90A40000:
+        vt = (lis(W(0x002CCA58)) + simm(W(0x002CCA6C))) & 0xFFFFFFFF
+    ok(W(0x002DE21C) == 0x38600000 | hdr["U_PIC_SOURCE"] and bl(0x002DE220, 0x002CCA44) and
+       W(0x002DE228) == 0x80830000 and W(0x002DE230) == 0x80840004 and W(0x002DE240) == 0x4E9E0421 and
+       vt == 0x00B1C630 and W(vt + 4) == hdr["OPD_PIC_SOURCE_STOP"] and
+       bl(0x002DE250, 0x002D3B94) and bl(0x002DE260, 0x002D3B94) and W(0x002DE268) == 0x38600001 and
+       bl(0x002DE26C, 0x00234CA8),
+       "its deinit calls the source's vtable's second entry (every source is made with vtable 0x%08X, whose "
+       "second entry is OPD_PIC_SOURCE_STOP), gives both buffers back (0x2D3B94) and waits for the disc's reads "
+       "(0x234CA8(1)), as the shim's pic_close" % (vt or 0))
 
 
 def check_rac3(ok, elf, roots):
@@ -1494,11 +1562,13 @@ def check_rac3(ok, elf, roots):
     ok(cave >= tv + tms and cave_end <= page_end(tv + tms),
        "code area 0x%08X..0x%08X is past the text segment's end (0x%08X), in its last page" %
        (cave, cave_end, tv + tms))
-    for lo, hi, what in ((mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+    cl, ch = hdr["U_CELLS"], hdr["U_CELLS_END"]
+    for lo, hi, what in ((mbx, mbx_end, "mailbox"), (dat, dat_end, "data"), (cl, ch, "cells")):
         ok(lo >= rv + rms and hi <= page_end(rv + rms),
            "%s area 0x%08X..0x%08X is past the read-write segment's end (0x%08X), in its last page" %
            (what, lo, hi, rv + rms))
-    for lo, hi, what in ((cave, cave_end, "code"), (mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+    for lo, hi, what in ((cave, cave_end, "code"), (mbx, mbx_end, "mailbox"), (dat, dat_end, "data"),
+                         (cl, ch, "cells")):
         br, wd, pr = refs_into(elf, lo, hi)
         ok(not wd and not pr, "no word and no lis/addi pair in the executable names the %s area%s" %
            (what, "" if not br else " (%d data words decode as branches into it)" % len(br)))
@@ -1508,10 +1578,10 @@ def check_rac3(ok, elf, roots):
     ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
        version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE_DESC"] and
+    ok(box[8] == hdr["MH_ROWS"] == 24 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
        box[10] == hdr["MH_MAIN_ROWS"] == 9 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
-       box[14] == 3 and box[15] == hdr["MH_CFG_ROWS"] == 16,
-       "row_cap 16, rows of 0x80 (descriptions, for the panel), 9 rows a MAIN page, 16 a CONFIG page, caps 0x%02X, "
+       box[14] == 3 and box[15] == hdr["MH_CFG_ROWS"] == 24,
+       "row_cap 24, rows of 0x40 (round 4: no descriptions), 9 rows a MAIN page, 24 a CONFIG page, caps 0x%02X, "
        "closed, no request, renderer 3" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
@@ -1521,11 +1591,13 @@ def check_rac3(ok, elf, roots):
        "the data image: the core's state at MH_STATE with its magic 'QMH3', the shim's at MH_SHIM "
        "(+0x%X), everything else zero" % shim_off)
     ok(shim_off + hdr["SH_SIZE"] <= len(data), "the shim's state, %d bytes, is all in the image" % hdr["SH_SIZE"])
-    cells = hdr["MH_SHIM"] + hdr["SH_CELLS"]
-    ok(hdr["MH_CFG_ROWS"] * hdr["U_GRID_COLS"] * hdr["U_CELL_SIZE"] < hdr["SH_CELLS_SIZE"] and
-       hdr["SH_CELLS"] + hdr["SH_CELLS_SIZE"] <= hdr["SH_SIZE"] and cells % 4 == 0,
-       "the grid's cells, %d bytes at 0x%08X: more than a page of 16 rows of two cells of 68 (GridBuild "
-       "builds nothing in a buffer that is not)" % (hdr["SH_CELLS_SIZE"], cells))
+    cells, cells_end = hdr["U_CELLS"], hdr["U_CELLS_END"]
+    ok(hdr["MH_CFG_ROWS"] * hdr["U_GRID_COLS"] * hdr["U_CELL_SIZE"] < hdr["U_CELLS_SIZE"] and
+       cells + hdr["U_CELLS_SIZE"] <= cells_end and cells % 4 == 0 and
+       (cells_end <= mbx or cells >= mbx_end) and (cells_end <= dat or cells >= dat_end),
+       "the grid's cells (round 4: a span of their own), %d bytes at 0x%08X: more than a page of %d rows of two "
+       "cells of 68 (GridBuild builds nothing in a buffer that is not), clear of the mailbox and the data" %
+       (hdr["U_CELLS_SIZE"], cells, hdr["MH_CFG_ROWS"]))
 
     # 1. the originals, 2. the hook words
     order = ["MH_SITE_MSG", "MH_SITE_ROWS8", "MH_SITE_ROWS9A", "MH_SITE_ROWS9B", "MH_SITE_INJECT",
@@ -1705,7 +1777,7 @@ def check_rac3(ok, elf, roots):
 
     # 9. overlaps
     ours = [(cave, cave + len(code), "renderer code"), (mbx, mbx + len(box), "renderer mailbox"),
-            (dat, dat + len(data), "renderer data")]
+            (dat, dat + len(data), "renderer data"), (hdr["U_CELLS"], hdr["U_CELLS_END"], "renderer cells")]
     ours += [(a, a + 4, "renderer word") for a, _, _, _ in hooks]
     known = mod_entries(roots, "NPEA00387")
     clashes, accepted = [], []
@@ -1723,8 +1795,9 @@ def check_rac3(ok, elf, roots):
         print("        " + c)
     named = [x for x in mod_pointers(roots, "NPEA00387", cave, cave_end) +
              mod_pointers(roots, "NPEA00387", mbx, mbx_end) +
-             mod_pointers(roots, "NPEA00387", dat, dat_end)]
-    ok(not named, "no mod's code names an address in any of the three areas")
+             mod_pointers(roots, "NPEA00387", dat, dat_end) +
+             mod_pointers(roots, "NPEA00387", hdr["U_CELLS"], hdr["U_CELLS_END"])]
+    ok(not named, "no mod's code names an address in any of the four areas")
     for x in named[:12]:
         print("        " + x)
     seen_acc = set()
@@ -1909,10 +1982,10 @@ def check_rac2(ok, elf, roots):
     ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
        version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
+    ok(box[8] == hdr["MH_ROWS"] == 32 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
        box[10] == hdr["MH_MAIN_ROWS"] == 7 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
-       box[14] == 2 and box[15] == hdr["MH_CFG_ROWS"] == 16,
-       "row_cap 16, rows of 0x40 (no description line), 7 rows a MAIN page, 16 a CONFIG page, caps 0x%02X, "
+       box[14] == 2 and box[15] == hdr["MH_CFG_ROWS"] == 32,
+       "row_cap 32 (round 4), rows of 0x40, 7 rows a MAIN page, 32 a CONFIG page, caps 0x%02X, "
        "closed, no request, renderer 2" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
@@ -2334,10 +2407,10 @@ def check_rac1(ok, elf, roots):
     ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
        version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
+    ok(box[8] == hdr["MH_ROWS"] == 24 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
        box[10] == hdr["MH_MAIN_ROWS"] == 7 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
-       box[14] == 1 and box[15] == hdr["MH_CFG_ROWS"] == 16,
-       "row_cap 16, rows of 0x40 (no description line), 7 rows a MAIN page (the main page's panes), 16 a "
+       box[14] == 1 and box[15] == hdr["MH_CFG_ROWS"] == 24,
+       "row_cap 24 (round 4), rows of 0x40, 7 rows a MAIN page (the main page's panes), 24 a "
        "CONFIG page, caps 0x%02X, closed, no request, renderer 1" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")

@@ -301,7 +301,7 @@ COMBO_OPEN_MENU = 5
 COMBO_MENU_DEFAULT = 0x060F
 
 # Revision 1.22: Deadlocked's console menu renderer (src/games/menuhelper/mh_rac4.h)
-# and its mailbox (src/core/menubox.h, version 2), read and written here as a
+# and its mailbox (src/core/menubox.h, version 3: rows of 0x40), read and written here as a
 # renderer would. The last two sites are the pause main menu's Help row, which
 # the renderer makes the menu's way in.
 MENU_BOX = 0x017DD600
@@ -319,14 +319,13 @@ MENU_BOX_SPAN = (0x017DD600, 0x017DDF00)
 DL_OPTIONS_SITE = 0x003A6F2C
 DL_OPTIONS_WORD = 0x4BFC456D
 # Revision 1.22: UYA's console menu renderer (src/games/menuhelper/mh_rac3.h),
-# whose mailbox has rows of 0x80, with descriptions (round 3: the panel above a
-# CONFIG page's list shows them). The words: the label
+# whose mailbox (round 4) is at 0x1ADB900, 24 rows of 0x40. The words: the label
 # hook, the main pause init's three row counts, the Start path's test, its
 # pause reason and the launcher's getter call, then each of the main pause's
 # three tables' HELP row, its text id and its callback.
-UYA_MENU_BOX = 0x01ADB000
-UYA_MENU_BOX_SIZE = 0x880
-UYA_MENU_ROW_SIZE = 0x80
+UYA_MENU_BOX = 0x01ADB900
+UYA_MENU_BOX_SIZE = 0x680
+UYA_MENU_ROW_SIZE = 0x40
 UYA_MENU_CODE = (0x00BC4000, 0x00BC8000)
 UYA_MENU_DATA = (0x01ADC900, 0x01ADE000)
 UYA_MENU_SITES = {0x0014BCF0: 0x3C800000, 0x002F4284: 0x38C00008, 0x002F41FC: 0x38C00009,
@@ -342,7 +341,7 @@ UYA_PENDING_MODE = 0x00C1E840
 # the main page's Help entry, its text id and kind and its page. Its code is in
 # four runs of code nothing reaches.
 RAC1_MENU_BOX = 0x0160A000
-RAC1_MENU_BOX_SIZE = 0x480
+RAC1_MENU_BOX_SIZE = 0x680
 RAC1_MENU_ROW_SIZE = 0x40
 RAC1_MENU_CODE = ((0x0057DD40, 0x0057F854), (0x004FA800, 0x004FB500), (0x005F0AA0, 0x005F1788),
                   (0x00609CF4, 0x0060A9B4))
@@ -354,7 +353,7 @@ RAC1_MENU_SITES = {0x0007B7C8: 0x3C600072, 0x000E14C8: 0x60000000,
 # pause reason and the root the pause manager opens on, then the pause root's
 # Help entry, its screen and its label.
 RAC2_MENU_BOX = 0x01FD3000
-RAC2_MENU_BOX_SIZE = 0x480
+RAC2_MENU_BOX_SIZE = 0x880
 RAC2_MENU_ROW_SIZE = 0x40
 RAC2_MENU_CODE = (0x012D9000, 0x012DD000)
 RAC2_MENU_DATA = (0x01FD5000, 0x01FD8000)
@@ -382,7 +381,7 @@ MBOX_OFF_NROWS = 0x2C
 MBOX_OFF_PTYPE = 0x2F
 MBOX_OFF_TITLE = 0x30
 MBOX_OFF_ROWS = 0x80
-MBOX_ROW_SIZE = 0x80
+MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
 MBOX_EV_ACTIVATE = 1
 MBOX_EV_BACK = 4
@@ -2347,7 +2346,7 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head
 
 # ------------------------------------------------- the console menu, 1.22
 
-def menu_page(c, box=MENU_BOX, size=0x880, row_size=MBOX_ROW_SIZE):
+def menu_page(c, box=MENU_BOX, size=0x480, row_size=MBOX_ROW_SIZE):
     """The page in a game's mailbox (Deadlocked's by default): (page_seq, key, title, [labels], raw, type)."""
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, size))
     if status != ST_OK:
@@ -2356,13 +2355,13 @@ def menu_page(c, box=MENU_BOX, size=0x880, row_size=MBOX_ROW_SIZE):
     n = body[MBOX_OFF_NROWS]
     title = body[MBOX_OFF_TITLE:MBOX_OFF_TITLE + 32].split(b"\0")[0].decode()
     labels = []
-    for i in range(min(n, 16)):
+    for i in range(min(n, (size - MBOX_OFF_ROWS) // row_size)):
         r = body[MBOX_OFF_ROWS + i * row_size:MBOX_OFF_ROWS + (i + 1) * row_size]
         labels.append(r[4:44].split(b"\0")[0].decode())
     return seq, key, title, labels, body, body[MBOX_OFF_PTYPE]
 
 
-def menu_event(c, kind, row, box=MENU_BOX, size=0x880, row_size=MBOX_ROW_SIZE):
+def menu_event(c, kind, row, box=MENU_BOX, size=0x480, row_size=MBOX_ROW_SIZE):
     """What a renderer does: the record, then ev_seq; then wait for the ack."""
     page = menu_page(c, box, size, row_size)
     body = page[4]
@@ -2454,8 +2453,9 @@ def exercise_console_menu(c, sim):
     r = MBOX_OFF_ROWS + i * MBOX_ROW_SIZE
     words = struct.unpack(">IIII", body[r + MROW_OFF_RANGE:r + MROW_OFF_RANGE + 16]) if i >= 0 else None
     check(i >= 0 and body[r + MROW_OFF_FLAGS] & (MROWF_RANGE | MROWF_SLIDER) == (MROWF_RANGE | MROWF_SLIDER) and
-          words[1:] == (0, 255, 1),
-          "Deadlocked menu: Challenge mode's row says slider, with its value, 0, 255 and step 1", words)
+          words[1:] == (0, 255, 26),
+          "Deadlocked menu: Challenge mode's row says slider, with its value, 0, 255 and (round 4) step 26, a tenth",
+          words)
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
     time.sleep(0.2)
     page = menu_page(c)
@@ -2541,8 +2541,9 @@ def exercise_console_menu_uya(c, sim):
           "UYA menu: every code word branches into the renderer, each HELP row says 0xF000 and calls into its data",
           dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
-    check(status == ST_OK and body[8] == 16 and body[9] == 0x80 and body[10] == 9 and body[14] == 3 and
-          body[15] == 16, "UYA menu: sixteen rows of 0x80, nine a MAIN page, sixteen a CONFIG page, renderer 3",
+    check(status == ST_OK and body[4:6] == b"\x00\x03" and body[8] == 24 and body[9] == 0x40 and body[10] == 9 and
+          body[14] == 3 and body[15] == 24,
+          "UYA menu: version 3, 24 rows of 0x40, nine a MAIN page, 24 a CONFIG page, renderer 3",
           body.hex() if status == ST_OK else status)
 
     page = menu_page(c, box, size, rs)
@@ -2643,8 +2644,8 @@ def exercise_console_menu_rac2(c, sim):
           "RaC2 menu: every code word branches into the renderer, Help's entry opens a screen in its data and "
           "says 0xF000", dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
-    check(status == ST_OK and body[8] == 16 and body[9] == 0x40 and body[10] == 7 and body[14] == 2 and
-          body[15] == 16, "RaC2 menu: sixteen rows of 0x40, seven a MAIN page, sixteen a CONFIG page, renderer 2",
+    check(status == ST_OK and body[8] == 32 and body[9] == 0x40 and body[10] == 7 and body[14] == 2 and
+          body[15] == 32, "RaC2 menu: 32 rows of 0x40, seven a MAIN page, 32 a CONFIG page, renderer 2",
           body.hex() if status == ST_OK else status)
     status, body = c.call(OP_MEM_READ, struct.pack(">II", h[RAC2_MENU_HELP_SCREEN] + 0xE0, 0x10))
     check(status == ST_OK and struct.unpack(">IIII", body)[0] == 0x013460E4 and
@@ -2668,8 +2669,9 @@ def exercise_console_menu_rac2(c, sim):
     check(menu_event(c, MBOX_EV_ACTIVATE, 2, box, size, rs), "RaC2 menu: Planets")
     time.sleep(0.1)
     page = menu_page(c, box, size, rs)
-    check(page is not None and page[3][:2] == ["Aranos", "Oozla"] and page[3][-1] == "More" and len(page[3]) == 7,
-          "RaC2 menu: Planets, seven rows a window, More last", page[3] if page else None)
+    check(page is not None and page[3][:2] == ["Aranos", "Oozla"] and page[3][-1] == "Jamming Array" and
+          len(page[3]) == 27 and page[5] == MBOX_PTYPE_CONFIG,
+          "RaC2 menu: Planets, a CONFIG page of all 27 (round 4: no More row)", page[3] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC2 menu: back again")
     check(combo() == 1, "RaC2 menu: the menu combo asks the renderer to open")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
@@ -2733,8 +2735,8 @@ def exercise_console_menu_rac1(c, sim):
     check(all(mem_read_u32(c, lo) != 0 for lo, _ in RAC1_MENU_CODE),
           "RaC1 menu: all four code areas are written")
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
-    check(status == ST_OK and body[8] == 16 and body[9] == 0x40 and body[10] == 7 and body[14] == 1 and
-          body[15] == 16, "RaC1 menu: sixteen rows of 0x40, seven a MAIN page, sixteen a CONFIG page, renderer 1",
+    check(status == ST_OK and body[8] == 24 and body[9] == 0x40 and body[10] == 7 and body[14] == 1 and
+          body[15] == 24, "RaC1 menu: 24 rows of 0x40, seven a MAIN page, 24 a CONFIG page, renderer 1",
           body.hex() if status == ST_OK else status)
 
     page = menu_page(c, box, size, rs)

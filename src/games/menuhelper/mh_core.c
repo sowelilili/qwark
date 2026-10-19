@@ -135,11 +135,11 @@ static void compose(u32 set, u32 i)
 		end = v + MH_VALUE_LEN;
 	}
 
+	/* Round 4: an action with nothing to say is blank (MH_STYLE_DOTS is retired). */
 	p = put_mem(v, end, src + MROW_OFF_VALUE, MROW_VALUE_LEN, main ? MH_CASE_MAIN : MH_CASE_VALUE);
 	if (!has && (MH_STYLE & MH_STYLE_LINKS) != 0 && kind == MROW_LINK) p = put_lit(p, end, ">", 0);
-	if (!has && !main && (MH_STYLE & MH_STYLE_DOTS) != 0 && kind == MROW_ACTION) p = put_lit(p, end, "...", 0);
 	w8(p, 0);
-	/* "MUSIC VOLUME:": a CONFIG label with a value beside it (Deadlocked's GAME SETTINGS). */
+	/* "MUSIC VOLUME:": a CONFIG label with a value beside it (round 3's Deadlocked and UYA, no game since). */
 	if ((MH_STYLE & MH_STYLE_COLON) != 0 && !main && p != v && lend != text)
 		w8(put_lit(lend, lim, ":", 0), 0);
 
@@ -259,7 +259,7 @@ static u32 take_page(u32 starting)
 	w32(ST(ST_SHOWN_KEY), key);
 	w8(ST(ST_CURSOR_HINT), cursor);
 	w8(ST(ST_PFLAGS), pflags);
-	w8(ST(ST_DESC_ROW), MH_NONE);
+	if (newkey) w8(ST(ST_SEEN_ROW), MH_NONE);
 	w8(ST(ST_HAVE_PAGE), 1);
 	mh_count(ST_PAGES);
 	return (there ? TAKE_OTHER : TAKE_HERE) | how;
@@ -304,33 +304,6 @@ MH_API u32 mh_core_cursor(u32 keep)
 	return pick_cursor(c);
 }
 
-/*
- * The description line: the page's hint while it has one (the last answer, as
- * a sentence), else the cursor row's description, read out of the mailbox
- * only while the page shown is still the one there. Answers 1 when it changed.
- */
-static int describe(int p)
-{
-	u32 row = shim_cursor(p), d = ST(ST_DESC), seq;
-
-	if (MH_ROW_BYTES < MBOX_ROW_SIZE_DESC || row == r8(ST(ST_DESC_ROW))) return 0;
-
-	seq = r32(ST(ST_SHOWN_SEQ));
-	if (r32(BOX(MBOX_OFF_PAGE_SEQ)) != seq) return 0;
-	mh_sync();
-	if (r8(BOX(MBOX_OFF_HINT)) != 0)
-		w8(put_mem(d, d + MH_DESC_LEN, BOX(MBOX_OFF_HINT), MBOX_HINT_LEN, 0), 0);
-	else if (row < nrows())
-		w8(put_mem(d, d + MH_DESC_LEN, MROW(row) + MROW_OFF_DESC, MROW_DESC_LEN, 0), 0);
-	else
-		w8(d, 0);
-	mh_sync();
-	/* Caught half written: the line is read again next frame, or with the next page. */
-	if (r32(BOX(MBOX_OFF_PAGE_SEQ)) != seq) return 0;
-	w8(ST(ST_DESC_ROW), row);
-	return 1;
-}
-
 /* ------------------------------------------------------------ the events */
 
 /*
@@ -360,16 +333,33 @@ static int post(u32 kind, u32 row)
 	return 1;
 }
 
-/* Whether the page has a row of `kind`. */
-static int has_kind(u32 kind)
+/*
+ * Round 4: the window slides under the cursor. A page that goes on past the
+ * window (MBOX_PAGE_MORE_*) asks qwark for the window that continues it when
+ * the cursor comes to the window's last row it can stand on with more below
+ * (its first, with more above): SCROLL_DOWN or SCROLL_UP with the cursor's
+ * row, answered with a new page, the cursor on the same row of the page. Each
+ * row is looked at once (ST_SEEN_ROW, forgotten with a new page), and only
+ * with no event in flight, so one waiting for qwark's answer is tried again
+ * the next frame rather than dropped.
+ */
+static void slide(int p)
 {
-	u32 n = nrows(), kinds = front() + SET_KIND;
-	u32 i;
+	u32 pf = r8(ST(ST_PFLAGS)), n = nrows(), flags = front() + SET_FLAGS, kinds = front() + SET_KIND;
+	u32 row, i, before = 0, after = 0;
 
+	if ((pf & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0) return;
+	row = shim_cursor(p);
+	if (row >= n || row == r8(ST(ST_SEEN_ROW))) return;
+	if (r32(BOX(MBOX_OFF_EV_SEQ)) != r32(BOX(MBOX_OFF_EV_ACK))) return;
+	w8(ST(ST_SEEN_ROW), row);
 	for (i = 0; i < n; i++) {
-		if (r8(kinds + i) == kind) return 1;
+		if ((r8(flags + i) & MROWF_ENABLED) == 0 || r8(kinds + i) == MROW_BACK) continue;
+		if (i < row) before = 1;
+		if (i > row) after = 1;
 	}
-	return 0;
+	if ((pf & MBOX_PAGE_MORE_DOWN) != 0 && !after) post(MBOX_EV_SCROLL_DOWN, row);
+	else if ((pf & MBOX_PAGE_MORE_UP) != 0 && !before) post(MBOX_EV_SCROLL_UP, row);
 }
 
 /*
@@ -406,7 +396,8 @@ MH_API void mh_core_press(int p, u32 button, u32 row)
 		return;
 	case MH_BTN_L1:
 	case MH_BTN_R1:
-		if (has_kind(button == MH_BTN_L1 ? MROW_PREV : MROW_MORE) &&
+		/* A window up or down, on a page that goes on that way (round 4: no Previous or More row). */
+		if ((r8(ST(ST_PFLAGS)) & (button == MH_BTN_L1 ? MBOX_PAGE_MORE_UP : MBOX_PAGE_MORE_DOWN)) != 0 &&
 		    post(button == MH_BTN_L1 ? MBOX_EV_PAGE_PREV : MBOX_EV_PAGE_NEXT, row))
 			shim_sound(MH_SND_MOVE);
 		return;
@@ -456,7 +447,7 @@ MH_API int mh_core_start(int p)
 		if (r8(ST(ST_HAVE_PAGE)) == 0) placeholder();
 		else retitle();
 	}
-	w8(ST(ST_DESC_ROW), MH_NONE);
+	w8(ST(ST_SEEN_ROW), MH_NONE);
 	w8(ST(ST_SHOWN), r8(front() + SET_PTYPE));
 	return (int)r8(front() + SET_PTYPE);
 }
@@ -524,7 +515,7 @@ MH_API int mh_core_frame(int p)
 		}
 	}
 
-	if (describe(p)) shim_desc(p);
+	slide(p);
 	return 0;
 }
 

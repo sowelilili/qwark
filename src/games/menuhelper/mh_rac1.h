@@ -95,26 +95,29 @@
 #define MH_DATA_END         0x0160F000
 
 /*
- * The mailbox (menubox.h): sixteen rows of 0x40 bytes. Cheats' layout has no
- * description line, so the rows carry none.
+ * The mailbox (menubox.h): 24 rows of 0x40 bytes (round 4: sixteen before, the
+ * span holding at most 30). The shim's window scrolls a page of up to 24, the
+ * nineteen planets among them, with no More row; a longer one, a save category
+ * of the console's library, slides 24 at a time.
  */
-#define MH_ROWS             0x00000010
+#define MH_ROWS             0x00000018
 #define MH_ROW_BYTES        0x00000040
 #define MH_MAIN_ROWS        0x00000007   /* the main page's seven panes */
-#define MH_CFG_ROWS         0x00000010   /* the shim's window scrolls through all sixteen */
-#define MH_MBOX_SIZE        0x00000480   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
+#define MH_CFG_ROWS         0x00000018   /* the shim's window scrolls through all 24 */
+#define MH_MBOX_SIZE        0x00000680   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
 #define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
 
 /*
  * The game's own casing: RaC1's menus are in title case ("Camera Options",
  * "Quick Select", "Quit Game"), and the user's design keeps it. An action with
- * nothing to say shows "..." on a CONFIG page; no brackets round a choice.
+ * nothing to say is blank (round 4, every game; it was "..."); no brackets
+ * round a choice.
  */
 #define MH_CASE_MAIN        0x00000002   /* MH_CASE_TITLE */
 #define MH_CASE_HEAD        0x00000002
 #define MH_CASE_LABEL       0x00000002
 #define MH_CASE_VALUE       0x00000002
-#define MH_STYLE            0x00000001   /* MH_STYLE_DOTS */
+#define MH_STYLE            0x00000000
 #define MH_MAIN_SEP         ": "
 
 /* Half a second at the pause's sixty frames. */
@@ -141,7 +144,7 @@
 
 /* The core's state at the start of the data, then the shim's (SH_* below). */
 #define MH_STATE            0x0160B000
-#define MH_SHIM             0x0160B9D0   /* MH_STATE + MH_CORE_SIZE, which mh_rac1.c checks */
+#define MH_SHIM             0x0160BE50   /* MH_STATE + MH_CORE_SIZE, which mh_rac1.c checks */
 #define MH_MAGIC            0x514D4831   /* 'QMH1' */
 
 /* ------------------------------------------------------- the writes it makes */

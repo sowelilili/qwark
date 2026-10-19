@@ -56,37 +56,41 @@
  * (0x1FD2000..0x1FD287C) and the N2 probes' (0x1FD4000..0x1FD5000), and the
  * state, the screens, the read-only data, the TOC and the descriptors after
  * the N2 probes'. Nothing the client ships or the user has names either.
+ * Round 4: the mailbox's span grows to 0x1FD3900 for its 32 rows, still well
+ * short of the N2 probes'.
  */
 #define MH_CAVE             0x012D9000
 #define MH_CAVE_END         0x012DD000
 #define MH_BOX              0x01FD3000
-#define MH_BOX_END          0x01FD3800
+#define MH_BOX_END          0x01FD3900
 #define MH_DATA             0x01FD5000
 #define MH_DATA_END         0x01FD8000
 
 /*
- * The mailbox (menubox.h): sixteen rows of 0x40 bytes. Neither look has a line
- * for a description, so the rows carry none.
+ * The mailbox (menubox.h): 32 rows of 0x40 bytes (round 4: sixteen before).
+ * The CONFIG look scrolls, so a page of up to 32 rows is posted whole, the
+ * 27 planets and the 24 weapons among them, with no More row; a longer one,
+ * a save category of the console's library, slides 32 at a time.
  */
-#define MH_ROWS             0x00000010
+#define MH_ROWS             0x00000020
 #define MH_ROW_BYTES        0x00000040
 #define MH_MAIN_ROWS        0x00000007   /* the root's bars: seven text bars, as its own Weapons .. Special */
-#define MH_CFG_ROWS         0x00000010
-#define MH_MBOX_SIZE        0x00000480   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
+#define MH_CFG_ROWS         0x00000020
+#define MH_MBOX_SIZE        0x00000880   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
 #define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
 
 /*
  * The game's own casing: its pause lists and Cheats are in title case
  * ("Weapons", "Skill Points", "Mirrored Levels", "Off"). An action with nothing
- * to say shows "..." on a CONFIG page, a choice its value alone (round 3, every
- * game), and the current option of a list ends in a star. The Help bar says
- * "Trainer", in the root's title case.
+ * to say is blank (round 4, every game; it was "..."), a choice its value
+ * alone (round 3, every game), and the current option of a list ends in a
+ * star. The Help bar says "Trainer", in the root's title case.
  */
 #define MH_CASE_MAIN        0x00000002   /* MH_CASE_TITLE */
 #define MH_CASE_HEAD        0x00000002
 #define MH_CASE_LABEL       0x00000002
 #define MH_CASE_VALUE       0x00000002
-#define MH_STYLE            0x00000009   /* MH_STYLE_DOTS | MH_STYLE_STAR */
+#define MH_STYLE            0x00000008   /* MH_STYLE_STAR */
 #define MH_MAIN_SEP         ": "
 #define MH_ENTRY_LABEL      "Trainer"
 
@@ -119,8 +123,8 @@
  * mh_rac2.c check.
  */
 #define MH_STATE            0x01FD5000
-#define MH_SHIM             0x01FD59D0   /* MH_STATE + MH_CORE_SIZE, which mh_rac2.c checks */
-#define MH_SCREENS          0x01FD5A20   /* MH_SHIM + SH_SIZE, 16-aligned */
+#define MH_SHIM             0x01FD62D0   /* MH_STATE + MH_CORE_SIZE, which mh_rac2.c checks */
+#define MH_SCREENS          0x01FD6320   /* MH_SHIM + SH_SIZE, 16-aligned */
 #define MH_MAGIC            0x514D4832   /* 'QMH2' */
 
 /* ------------------------------------------------------- the writes it makes */
@@ -230,9 +234,11 @@
  * The CONFIG page, as Cheats' draw (0xBC1A50) lays it out on the 512-wide
  * screen: the frame's sprites 139..141 of the pause's texture set at y 208,
  * the title at 65, the hints at 321 and 346, the rows from y 112, 19 apart,
- * the label at x 43 and the value centred on x 405. Cheats has room for
- * eleven rows; a longer page shows ten, with "..." over the first or under the
- * last where more are scrolled away.
+ * the label at x 43 and the value centred on x 405. Nine lines fit inside the
+ * frame, y 112 to 264 (round 4, from the user's photo: the tenth, at 283,
+ * fell off its bottom): a page of up to nine rows shows them all; a longer
+ * one shows eight and scrolls, with "..." over the first (y 93) or under the
+ * last (y 264, the ninth line) where more are scrolled away.
  */
 #define CFG_SPRITE_FRAME    0x0000008B   /* 139 */
 #define CFG_Y_FRAME         0x000000D0   /* 208 */
@@ -244,8 +250,8 @@
 #define CFG_X_LABEL         0x0000002B   /* 43 */
 #define CFG_X_VALUE         0x00000195   /* 405 */
 #define CFG_GAP             0x0000000A   /* a label ends this far before its value */
-#define CFG_VIS_MAX         0x0000000B   /* rows shown when they all fit */
-#define CFG_VIS             0x0000000A   /* rows shown when the page scrolls */
+#define CFG_VIS_MAX         0x00000009   /* rows shown when they all fit */
+#define CFG_VIS             0x00000008   /* rows shown when the page scrolls, the ninth line its "..." */
 
 /* Cheats' colours (0xAABBGGRR): a row, the cursor's, a row the cursor skips; the frame's. */
 #define CFG_COLOR_TEXT      0x80F0F0F0

@@ -35,14 +35,18 @@
 
 /* ------------------------------------------------------------- the model */
 
-/* Rows a renderer may ask for on one screen; a page longer than that is paged. */
-#define MENU_VIEW_MAX     16
+/*
+ * Rows a renderer may ask for at once (its mailbox's row_cap): RaC2's 32 are
+ * the most (round 4). A page longer than a renderer takes is posted a window
+ * at a time, and the window slides under the cursor (menu.c).
+ */
+#define MENU_VIEW_MAX     32
 
 /* How deep the pages go: the root, a section, a list under it, and room for later. */
 #define MENU_NAV_DEPTH    8
 
-/* The most rows one page lists before it is cut into windows. */
-#define MENU_ITEMS_MAX    64
+/* The most rows one page lists (round 4: 128, a save category of the console's library being any length). */
+#define MENU_ITEMS_MAX    128
 
 /*
  * Page ids: a kind in the high byte, its argument in the low byte. Round 2
@@ -84,8 +88,8 @@
 #define MENU_ROW_STATUS   0x0F      /* arg: the ACTION whose status readout it shows */
 #define MENU_ROW_ID(tag, arg) ((u16)(((u16)(tag) << 8) | (u8)(arg)))
 
-#define MENU_NAV_MORE     1
-#define MENU_NAV_PREV     2
+#define MENU_NAV_MORE     1         /* retired in round 4, with the More row */
+#define MENU_NAV_PREV     2         /* retired in round 4 */
 #define MENU_NAV_BACK     3
 
 #define MENU_MANIP_CATEGORY 0
@@ -94,8 +98,8 @@
 #define MENU_MANIP_APPLY    3
 
 /*
- * One row, as the model builds it and the mailbox carries it. The description
- * reaches only a renderer whose rows have room for it (MBOX_ROW_SIZE_DESC).
+ * One row, as the model builds it and the mailbox carries it. (Round 4: no
+ * description; no renderer showed one, and the client has its own.)
  */
 struct menu_row {
 	u16  id;
@@ -103,7 +107,6 @@ struct menu_row {
 	u8   flags;                         /* MROWF_* */
 	char label[MROW_LABEL_LEN];
 	char value[MROW_VALUE_LEN];
-	char desc[MROW_DESC_LEN];
 	/*
 	 * Round 3, a VALUE row flagged MROWF_RANGE (its label then 23 characters
 	 * at most): the value, the lowest, the highest and the step, which the
@@ -119,12 +122,19 @@ struct menu_row {
  */
 #define MENU_SLIDER_SPAN  1000
 
+/*
+ * Round 4: a slider's Left and Right move it a tenth of its range, rounded
+ * up, so ten presses go from one end to the other (Challenge mode's 0..255:
+ * 26); the cross switches to a fine step of 1 and back.
+ */
+#define MENU_SLIDER_STEPS 10
+
 /* What a renderer is shown at once: one window of one page. */
 struct menu_view {
 	u32  key;                           /* page id << 16 | window start << 8 | visit */
 	u8   nrows;
 	u8   cursor;                        /* where the cursor goes on a new key */
-	u8   pflags;                        /* MBOX_PAGE_* */
+	u8   pflags;                        /* MBOX_PAGE_*: the root, and whether the page goes on above or below */
 	u8   ptype;                         /* MBOX_PTYPE_* */
 	char title[MBOX_TITLE_LEN];
 	char hint[MBOX_HINT_LEN];           /* the last row's answer, as a sentence, for two seconds */
