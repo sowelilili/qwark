@@ -14,10 +14,13 @@
  *   the renderer  the shared core and UYA's shim (mh_rac3.c) compiled for the
  *                 PC (MH_HOST), against mocks of the game's pause: the IGE
  *                 thread runner and SwapTo, the main pause's init, update and
- *                 deinit on a row table, the submenu frame, the grid list, the
- *                 Start path and the launcher. The hook stubs are assembler
- *                 and do not run here: src/games/menuhelper/check.py steps
- *                 them, and the mocks below do in C what they do.
+ *                 deinit on a row table, the submenu frame and its title's
+ *                 fit, the grid list with AUDIO / VISUAL's font and rules,
+ *                 the widgets the shim makes (containers, rectangles, text,
+ *                 the sliders), the Start path and the launcher. The hook stubs
+ *                 are assembler and do not run here:
+ *                 src/games/menuhelper/check.py steps them, and the mocks
+ *                 below do in C what they do.
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
@@ -89,6 +92,18 @@ static struct {
 	int grid_bad;
 	int sound, sounds;
 	u32 text_h[NTEXT], text_s[NTEXT];
+	/* AUDIO / VISUAL's look: the title's fit, the cells' font, the rules, layer 17 */
+	float banner, title_sx, title_sy;
+	int font[2], rules, layer17;
+	/* the widgets the shim makes or changes, by handle */
+	struct widget {
+		u32 h, parent, color, text;
+		char kind;                /* C container, R rounded box, Q rectangle, T text, ? only changed */
+		int visible, font, fit, style_off, anchor_x, anchor_y;
+		float x, y, sx, sy, box_w, box_min;
+	} w[96];
+	int nw, widgets_bad;
+	u32 slide;                    /* the grid's +0x58 while a scroll is in flight */
 } G;
 
 static void remember(u32 h, u32 s)
@@ -215,7 +230,8 @@ static void mock_frame(u32 layer, u32 cont, u32 h0, u32 h1, u32 h2, u32 h3, u32 
                        u32 title, u32 h6, u32 hint_a, u32 h7, u32 hint_b, float f)
 {
 	(void)layer; (void)cont; (void)h0; (void)h1; (void)h2; (void)h3; (void)h4; (void)h8; (void)h6;
-	(void)h7; (void)f;
+	(void)h7;
+	G.banner = f;
 	G.frame_up = 1;
 	G.title = title;
 	G.hint_a = (int)hint_a;
@@ -223,7 +239,14 @@ static void mock_frame(u32 layer, u32 cont, u32 h0, u32 h1, u32 h2, u32 h3, u32 
 	remember(title_h, title);
 }
 
-static void mock_clear_layer(int layer) { if (layer == U_LAYER_FRAME) G.frame_up = 0; }
+static void forget_layer17(void);
+static void mock_clear_layer(int layer)
+{
+	if (layer == U_LAYER_FRAME) G.frame_up = 0;
+	if (layer == U_LAYER_FRAME2) forget_layer17();
+}
+
+static void grid_mirror(void);
 
 /* Grid 0, as 0x2D5D14 .. 0x2D76E0 have it. */
 static u32 mock_get_grid(int i) { (void)i; return GRID0; }
@@ -247,6 +270,9 @@ static void mock_grid_build(u32 g, u32 cfg)
 	G.top = G.off = 0;
 	G.built = 1;
 	G.aligned = 0;
+	G.font[0] = G.font[1] = 0;
+	G.rules = 0;
+	grid_mirror();
 }
 
 static u32 mock_grid_cell(u32 g, int col, int row) { (void)g; return cell(col, row); }
@@ -264,13 +290,130 @@ static void mock_cursor_bar(u32 g, float a, float b, float c, float d) { (void)g
 static void mock_grid_free(u32 g) { (void)g; G.built = 0; }
 static int mock_grid_cursor(u32 g) { (void)g; return G.top + G.off; }
 
+/* The grid's fields in game memory that the shim reads: the top row and the scroll in flight. */
+static void grid_mirror(void)
+{
+	w32(GRID0 + U_GRID_TOP, (u32)G.top);
+	w32(GRID0 + U_GRID_SCROLL, 0);
+	w32(GRID0 + U_GRID_SLIDE, G.slide);
+}
+
+/* GridSetCursor (0x2D6934): the row in the middle of the screen where it can be. */
 static void mock_grid_set_cursor(u32 g, int row)
 {
+	int top;
+
 	(void)g;
 	if (row >= G.rows) return;
-	G.top = row >= G.vis ? row - G.vis + 1 : 0;
+	top = row - (G.vis / 2 - 1);
+	if (top < 0) top = 0;
+	if (top > G.rows - G.vis) top = G.rows - G.vis;
+	G.top = top;
 	G.off = row - G.top;
 	G.set_cursor++;
+	grid_mirror();
+}
+
+static void mock_grid_rules(u32 g, u32 on, float y, float h, float inset)
+{
+	(void)g; (void)y; (void)h; (void)inset;
+	G.rules = (int)on;
+}
+
+static void mock_grid_font(u32 g, u32 col, u32 font) { (void)g; if (col < 2) G.font[col] = (int)font; }
+
+/* The title's fit (0x2D4DB0): a banner and a scale for it, as the game measures the title. */
+static void mock_title_fit(u32 s, u32 scale, u32 banner)
+{
+	(void)s;
+	wf32(scale, 0.875f);
+	wf32(banner, 7.0f);
+}
+
+/* The widgets: each handle's record, made on first sight. */
+static struct widget *wid(u32 h)
+{
+	int i;
+
+	for (i = 0; i < G.nw; i++) {
+		if (G.w[i].h == h) return &G.w[i];
+	}
+	if (G.nw == (int)(sizeof(G.w) / sizeof(G.w[0]))) {
+		G.widgets_bad = 1;
+		return &G.w[0];
+	}
+	memset(&G.w[G.nw], 0, sizeof(G.w[0]));
+	G.w[G.nw].h = h;
+	G.w[G.nw].kind = '?';
+	G.w[G.nw].visible = 1;
+	return &G.w[G.nw++];
+}
+
+static int made(u32 h, char kind)
+{
+	int i;
+	for (i = 0; i < G.nw; i++) {
+		if (G.w[i].h == h) return G.w[i].kind == kind;
+	}
+	return 0;
+}
+
+static struct widget *create(u32 h, char kind, u32 color, float x, float y, float sx, float sy)
+{
+	struct widget *p = wid(h);
+
+	if (p->kind != '?') G.widgets_bad = 1;          /* a handle made twice */
+	p->kind = kind;
+	p->color = color;
+	p->x = x; p->y = y; p->sx = sx; p->sy = sy;
+	return p;
+}
+
+static void mock_container(u32 h) { create(h, 'C', 0, 0, 0, 1, 1); }
+static void mock_add_frame(u32 c, u32 h) { wid(h)->parent = c; }
+static void mock_round_rect(u32 h, u32 c, float x, float y, float sx, float sy, float ra, float rb)
+{
+	(void)ra; (void)rb;
+	create(h, 'R', c, x, y, sx, sy);
+}
+static void mock_rect(u32 h, u32 c, float x, float y, float sx, float sy, u32 tex)
+{
+	(void)tex;
+	create(h, 'Q', c, x, y, sx, sy);
+}
+static void mock_text_widget(u32 h, u32 s, u32 c, float x, float y, float sx, float sy)
+{
+	create(h, 'T', c, x, y, sx, sy)->text = s;
+	remember(h, s);
+}
+static void mock_set_visible(u32 h, u32 on) { wid(h)->visible = on != 0; }
+static void mock_set_pos(u32 h, float x, float y) { wid(h)->x = x; wid(h)->y = y; }
+static void mock_set_color(u32 h, u32 c) { wid(h)->color = c; }
+static void mock_set_anchor(u32 h, u32 ax, u32 ay) { wid(h)->anchor_x = (int)ax; wid(h)->anchor_y = (int)ay; }
+static void mock_set_layer(u32 layer, u32 h) { if (layer == U_LAYER_FRAME2) G.layer17 = (int)h; }
+static void mock_text_box(u32 h, float bw, float least) { wid(h)->box_w = bw; wid(h)->box_min = least; }
+static void mock_text_fit(u32 h, u32 on) { wid(h)->fit = on != 0; }
+static void mock_text_style(u32 h, u32 bits, u32 on) { if (bits == 2 && on == 0) wid(h)->style_off = 1; }
+static void mock_text_font(u32 h, u32 font) { wid(h)->font = (int)font; }
+
+/* SetScale: the title's, and any widget's. */
+static void mock_set_scale(u32 h, float sx, float sy)
+{
+	if (h == U_TITLE_HANDLE) { G.title_sx = sx; G.title_sy = sy; }
+	wid(h)->sx = sx;
+	wid(h)->sy = sy;
+}
+
+/* ClearCanvasLayer(17) takes AUDIO / VISUAL's widgets (0x1E00xx) with it. */
+static void forget_layer17(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < G.nw; i++) {
+		if ((G.w[i].h >> 16) != 0x1E) G.w[n++] = G.w[i];
+	}
+	G.nw = n;
+	G.layer17 = 0;
 }
 
 /* Up and Down: no wrap, a row of colour 4 skipped, the rows scrolled to keep the cursor on screen. */
@@ -294,6 +437,7 @@ static void mock_grid_update(u32 g, int edges)
 		}
 		mock_play_sound(3, 0, 0);
 	}
+	grid_mirror();
 }
 
 #include "../src/games/menuhelper/mh_core.c"
@@ -722,15 +866,16 @@ static void test_install_uya(void)
 			if (a == MH_CAVE) at_code = k;
 			if (a == MH_SITE_MSG && first_hook == 999) first_hook = k;
 		}
-		check(at_code < first_hook && n <= 24 && bytes <= 18u * 1024u,
-		      "the caves before the words: twenty-two writes, under 18 KB");
+		check(at_code < first_hook && n <= 24 && bytes <= 24u * 1024u,
+		      "the caves before the words: twenty-two writes, under 24 KB");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
 	check(mb == MH_BOX && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 16 &&
-	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 && peek8(mb + MBOX_OFF_MAX_ROWS) == 9 &&
+	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x80 && peek8(mb + MBOX_OFF_MAX_ROWS) == 9 &&
 	      peek8(mb + MBOX_OFF_CFG_ROWS) == 16 && peek8(mb + MBOX_OFF_RENDERER) == 3,
-	      "the mailbox: sixteen rows of 0x40, nine a MAIN page, sixteen a CONFIG page, renderer 3");
+	      "the mailbox: sixteen rows of 0x80 with their descriptions, nine a MAIN page, sixteen a CONFIG page, "
+	      "renderer 3");
 	check(peek32(MH_SITE_HELP8_TEXT) == 0xF000 && peek32(MH_SITE_HELP9A_TEXT) == 0xF000 &&
 	      peek32(MH_SITE_HELP9B_TEXT) == 0xF000, "each table's HELP row says TRAINER");
 
@@ -805,6 +950,7 @@ static void seed_game_table(void)
 }
 
 static const char *row_text(int i, char *out) { return text_of(U_ROW_HANDLE + (u32)i, out, 80); }
+static int near(float a, float b) { return a > b - 0.0005f && a < b + 0.0005f; }
 static const char *cfg_label(int i, char *out) { return read_str(cell(0, i), out, 80); }
 static const char *cfg_value(int i, char *out) { return read_str(cell(1, i), out, 80); }
 
@@ -851,6 +997,13 @@ static void test_renderer_uya(void)
 	      "GAME .. SAVE FILES in capitals, then QWARK BUILD 54, not enabled");
 	check(G.band[0] > 0.189f && G.band[0] < 0.191f && G.band[1] > 0.819f && G.band[1] < 0.821f &&
 	      r32(U_CURSOR) == 0, "the frame's band for seven rows, 0.19 and 0.82; the cursor on GAME");
+	n = 1;
+	for (i = 0; i < 7; i++) {
+		struct widget *row = wid(U_ROW_HANDLE + (u32)i);
+		n = n && row->fit && row->box_w > 0.439f && row->box_w < 0.441f && row->box_min > 0.59f && row->box_min < 0.61f;
+	}
+	check(n && !wid(U_ROW_HANDLE + 7)->fit,
+	      "each of the menu's rows shrinks to fit the frame, 0.44 wide, no smaller than 0.6; the rows past them are left alone");
 	pframe(PADB_TRIANGLE);
 	check(G.pending == MAIN_GS && G.sound == SND_CHANGE, "Triangle at the root: back to the main pause");
 	pframe(0);
@@ -889,11 +1042,31 @@ static void test_renderer_uya(void)
 	      "the main pause's list ends, the frame and a grid of five rows begin, both columns aligned");
 	check(strcmp(read_str(G.title, a, 80), "CHEATS") == 0 && G.hint_a == 292 && G.hint_b == 3285,
 	      "titled CHEATS, with SELECT and BACK");
-	check(strcmp(cfg_label(0, a), "FAST LOADS") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
-	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE") == 0 && cell_color(1) == U_COLOR_OFF,
-	      "labels and values in capitals, an off cheat in the normal colour");
+	check(G.banner == 7.0f && G.title_sx == 0.875f && G.title_sy == 0.875f,
+	      "the banner and the title's scale as the game fits them to the title, as Options' screens do");
+	check(strcmp(cfg_label(0, a), "FAST LOADS:") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
+	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE:") == 0 && cell_color(1) == U_COLOR_OFF,
+	      "labels in capitals with a colon, as AUDIO / VISUAL's \"SUBTITLES:\", values in capitals, an off cheat "
+	      "in the normal colour");
+	check(G.font[0] == 1 && G.font[1] == 1 && G.rules == 1, "the cells in the Options screens' font, with their rules");
+	{
+		struct widget *box = wid(AV_PANEL_BOX), *d = wid(AV_DESC);
+		check(G.layer17 == AV_ROOT && made(AV_ROOT, 'C') && made(AV_PANEL, 'C') && wid(AV_PANEL)->parent == AV_ROOT &&
+		      made(AV_PANEL_BOX, 'R') && box->parent == AV_PANEL && box->color == AV_PANEL_COLOR &&
+		      box->y > 0.265f && box->y < 0.266f && box->sx > 0.827f && box->sx < 0.828f,
+		      "AUDIO / VISUAL's picture panel above the list, on layer 17");
+		check(made(AV_DESC, 'T') && d->parent == AV_PANEL && d->font == 1 && d->fit && d->style_off &&
+		      d->box_w > 0.779f && d->box_w < 0.781f && d->text == MH_STATE + ST_DESC &&
+		      strcmp(text_of(AV_DESC, a, 80), "Auto also turns it on whenever the game starts.") == 0,
+		      "and in it the description line, the cursor row's, in the cells' font, shrinking to fit the panel");
+		check(!made(AV_SLIDERS, 'C') && !G.widgets_bad, "no slider on a page without one; no handle made twice");
+	}
 	pframe(PADB_DOWN);
 	check(G.top + G.off == 1, "Down moves the grid's cursor");
+	for (i = 0; i < 3; i++) pframe(PADB_DOWN);
+	pframe(0);
+	check(strcmp(text_of(AV_DESC, a, 80), "On or off.") == 0, "the description follows the cursor: the quick-select pause's");
+	for (i = 0; i < 3; i++) pframe(PADB_UP);
 	pframe(PADB_RIGHT);
 	check(G.sound == SND_CHANGE && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
 	      "Right on Ghost Ratchet posts an event, with the pause's change sound");
@@ -922,20 +1095,34 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(G.active == MH_SHIM + SH_GS && G.main_up && !G.frame_up && !G.built && G.count == 7 &&
 	      r32(U_CURSOR) == 1, "Triangle: the grid and frame go, the root's list is back on CHEATS");
+	check(!made(AV_ROOT, 'C') && !made(AV_DESC, 'T') && G.layer17 == 0, "and the panel with them (layer 17)");
 
-	/* GAME: eleven rows, seven on screen, scrolled. */
+	/* GAME: eleven rows, eight on screen, scrolled; Challenge mode at 51 of 0..255. */
+	poke8(RAC3_CHALLENGE_MODE, 51);
+	tick(2);
 	w32(U_CURSOR, 0);
 	pframe(0x40);
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.built && G.rows == 11 && G.vis == 7, "GAME: a grid of eleven rows, seven on screen");
+	check(G.built && G.rows == 11 && G.vis == 8, "GAME: a grid of eleven rows, eight on screen, as AUDIO / VISUAL's");
+	check(strcmp(cfg_label(0, a), "DIE:") == 0 && strcmp(cfg_value(0, b), "...") == 0 &&
+	      strcmp(cfg_label(6, a), "BOLTS:") == 0,
+	      "a button and a value both have a value beside the label, and so a colon (MH_STYLE_COLON)");
+	check(strcmp(cfg_label(7, a), "CHALLENGE MODE: 51") == 0 && strcmp(cfg_value(7, b), " ") == 0 &&
+	      made(AV_SLIDERS, 'C') && wid(AV_SLOT0 + 21)->visible && wid(AV_SLOT0 + 23)->visible &&
+	      near(wid(AV_SLOT0 + 23)->x, 0.653f + 0.232f * 0.2f) &&
+	      !wid(AV_SLOT0 + 18)->visible,
+	      "Challenge mode, the one value qwark gives a short range (0..255), on AUDIO / VISUAL's slider in the "
+	      "last slot, its knob where the mode is; Bolts, beside it, a number");
 	for (i = 0; i < 10; i++) pframe(PADB_DOWN);
-	check(G.top + G.off == 10 && G.top == 4, "Down to the last row scrolls the grid");
+	check(G.top + G.off == 10 && G.top == 3, "Down to the last row scrolls the grid");
+	check(wid(AV_SLOT0 + 12)->visible && !wid(AV_SLOT0 + 21)->visible,
+	      "and the slider with it, Challenge mode now in the fifth slot");
 	pframe(PADB_RIGHT);
 	tick(2);
 	pframe(0);
-	check(strcmp(cfg_label(10, a), "FILE TIME") == 0 && peek32(RAC3_FILE_TIME) == 1 && G.top + G.off == 10,
+	check(strcmp(cfg_label(10, a), "FILE TIME:") == 0 && peek32(RAC3_FILE_TIME) == 1 && G.top + G.off == 10,
 	      "Right on File time steps it, the cursor still there");
 
 	/* Start on the CONFIG page closes the pause, as CHEATS' does. */
@@ -1018,9 +1205,150 @@ static void test_renderer_uya(void)
 	check(quit(), "quit UYA");
 }
 
+/*
+ * A page as qwark writes one into the mailbox, rows of 0x80: `sliders` rows
+ * {index, value, lowest, highest, slider} are VALUE rows with their range,
+ * the rest toggles.
+ */
+struct slider_row { int row; u32 value, lo, hi; int slider; const char *label; };
+
+static void post_page(u32 mb, u32 key, int n, const struct slider_row *sl, int nsl)
+{
+	u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r;
+	u8 head[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY], row[MBOX_ROW_SIZE_DESC];
+	char text[8];
+	int i, k;
+
+	memset(head, 0, sizeof(head));
+	be32_put(head, key);
+	head[MBOX_OFF_NROWS - MBOX_OFF_PAGE_KEY] = (u8)n;
+	head[MBOX_OFF_PTYPE - MBOX_OFF_PAGE_KEY] = MBOX_PTYPE_CONFIG;
+	memcpy(head + MBOX_OFF_TITLE - MBOX_OFF_PAGE_KEY, "Sliders", 7);
+	poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 1);
+	host_poke(mb + MBOX_OFF_PAGE_KEY, head, sizeof(head));
+	for (i = 0; i < n; i++) {
+		r = mb + MBOX_OFF_ROWS + (u32)i * MBOX_ROW_SIZE_DESC;
+		memset(row, 0, sizeof(row));
+		row[MROW_OFF_KIND] = MROW_TOGGLE;
+		row[MROW_OFF_FLAGS] = MROWF_ENABLED | MROWF_STEPS;
+		row[MROW_OFF_ID + 1] = (u8)(i + 1);
+		text[0] = 'R'; text[1] = 'o'; text[2] = 'w'; text[3] = ' '; text[4] = (char)('0' + i); text[5] = 0;
+		memcpy(row + MROW_OFF_LABEL, text, 6);
+		memcpy(row + MROW_OFF_VALUE, "Off", 3);
+		for (k = 0; k < nsl; k++) {
+			if (sl[k].row != i) continue;
+			memset(row + MROW_OFF_LABEL, 0, MROW_LABEL_LEN + MROW_VALUE_LEN);
+			memcpy(row + MROW_OFF_LABEL, sl[k].label, strlen(sl[k].label));
+			row[MROW_OFF_KIND] = MROW_VALUE;
+			row[MROW_OFF_FLAGS] = MROWF_ENABLED | MROWF_STEPS | MROWF_RANGE | (sl[k].slider ? MROWF_SLIDER : 0);
+			be32_put(row + MROW_OFF_RANGE, sl[k].value);
+			be32_put(row + MROW_OFF_RANGE + 4, sl[k].lo);
+			be32_put(row + MROW_OFF_RANGE + 8, sl[k].hi);
+			be32_put(row + MROW_OFF_RANGE + 12, 1);
+			qfmt_u32((char *)row + MROW_OFF_VALUE, MROW_VALUE_LEN, sl[k].value);
+		}
+		host_poke(r, row, sizeof(row));
+	}
+	poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 2);
+}
+
+/* The sliders: AUDIO / VISUAL's groove, track and knob for a VALUE row the core marks as one. */
+static void test_sliders_uya(void)
+{
+	static const struct slider_row page1[] = {
+		{ 0, 5, 0, 10, 1, "Health" }, { 5, 7, 0, 4000000000u, 0, "Bolts" }, { 9, 3, 1, 5, 1, "Speed" }
+	};
+	struct slider_row page2[3];
+	char a[80];
+	u32 mb, h;
+	int i, n;
+
+	group("console menu: UYA's sliders, on the fake console");
+
+	memset(&G, 0, sizeof(G));
+	check(boot("NPEA00387"), "UYA boots");
+	uya_playing();
+	seed_game_table();
+	poke32(U_PAD_PTR, U_PAD);
+	poke32(U_CONFIRM_MASK, 0x40);
+	poke32(U_GAME_PTR, U_GAME_STATE);
+	poke32(U_PLANET, 5);
+	for (i = 0; i < 1000 && menu_state() != MENU_READY; i++) tick(1);
+	tick(2);
+	mb = menu_mailbox();
+	press(COMBO_MENU_DEFAULT);
+	play_frame(0);
+	check(G.active == MH_SHIM + SH_GS && G.main_up, "the menu is up on its root");
+
+	/* A page of ten: a slider first, a value with a range too long for one, a slider last. */
+	post_page(mb, 0x7E000101u, 10, page1, 3);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.rows == 10 && G.vis == 8 && made(AV_SLIDERS, 'C') && wid(AV_SLIDERS)->parent == AV_ROOT,
+	      "the page on AUDIO / VISUAL's look, with a container of sliders under the panel's root");
+	n = 1;
+	for (i = 0; i < 8; i++) {
+		h = AV_SLOT0 + 3 * (u32)i;
+		n = n && made(h, 'Q') && made(h + 1, 'R') && made(h + 2, 'R') && wid(h)->parent == AV_SLIDERS &&
+		    wid(h)->anchor_x == 1 && wid(h)->anchor_y == 3 && wid(h)->color == AV_GROOVE_COLOR2 &&
+		    wid(h + 1)->color == AV_TRACK_COLOR2 && wid(h + 2)->color == AV_KNOB_COLOR &&
+		    near(wid(h)->y, 0.445f + 0.0532f * (float)i) && near(wid(h + 1)->x, 0.765f) &&
+		    near(wid(h + 1)->sx, 0.24f) && near(wid(h + 2)->sx, 0.01953f);
+	}
+	check(n && !made(AV_SLOT0 + 24, 'Q') && !G.widgets_bad,
+	      "a slot for each of the eight rows on screen: the groove, the track and the knob, AUDIO / VISUAL's");
+	check(wid(AV_SLOT0)->visible && wid(AV_SLOT0 + 1)->visible && wid(AV_SLOT0 + 2)->visible &&
+	      near(wid(AV_SLOT0 + 2)->x, 0.653f + 0.232f * 0.5f) && near(wid(AV_SLOT0 + 2)->y, 0.445f),
+	      "Health, 5 of 0..10: its slot's slider shown, the knob half way along");
+	check(!wid(AV_SLOT0 + 3)->visible && !wid(AV_SLOT0 + 15)->visible && !wid(AV_SLOT0 + 17)->visible,
+	      "a toggle's slot and Bolts' (a range too long for a bar) show none");
+	check(strcmp(cfg_label(0, a), "HEALTH: 5") == 0 && strcmp(cfg_value(0, a), " ") == 0 &&
+	      strcmp(cfg_value(5, a), "7") == 0 && strcmp(cfg_label(5, a), "BOLTS:") == 0,
+	      "a slider's value cell is blank, as AUDIO / VISUAL's MUSIC VOLUME, its number after its label; Bolts keeps its "
+	      "number in the value cell");
+
+	/* The same page again, its value moved: the knob follows; off the bar, it sits at the end nearer. */
+	memcpy(page2, page1, sizeof(page2));
+	page2[0].value = 10;
+	post_page(mb, 0x7E000101u, 10, page2, 3);
+	pframe(0);
+	check(near(wid(AV_SLOT0 + 2)->x, 0.885f), "10 of 0..10: the knob at the end");
+	page2[0].value = 12;
+	post_page(mb, 0x7E000101u, 10, page2, 3);
+	pframe(0);
+	check(near(wid(AV_SLOT0 + 2)->x, 0.885f), "12, past the highest: still at the end");
+	page2[0].value = 0xFFFFFFFFu;
+	post_page(mb, 0x7E000101u, 10, page2, 3);
+	pframe(0);
+	check(near(wid(AV_SLOT0 + 2)->x, 0.653f), "-1, under the lowest: at the start");
+
+	/* Down to the last row: the list scrolls, and the sliders go with their rows. */
+	for (i = 0; i < 9; i++) pframe(PADB_DOWN);
+	check(G.top == 2 && G.top + G.off == 9 && wid(AV_SLOT0 + 21)->visible && !wid(AV_SLOT0)->visible &&
+	      near(wid(AV_SLOT0 + 23)->x, 0.653f + 0.232f * 0.5f) && near(wid(AV_SLOT0 + 23)->y, 0.445f + 0.0532f * 7.0f),
+	      "Speed, the tenth row, in the last slot on screen, its knob half way; the first slot now a toggle's, empty");
+	G.slide = 0x3C000000u;
+	pframe(0);
+	check(!wid(AV_SLOT0 + 21)->visible, "while the rows slide, no slider shows");
+	G.slide = 0;
+	pframe(0);
+	check(wid(AV_SLOT0 + 21)->visible, "and it comes back where they stop");
+	G.sound = 0;
+	pframe(PADB_RIGHT);
+	check(G.sound == SND_MOVE && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
+	      "Right on a slider: an event, and the cursor's tick, as AUDIO / VISUAL's sliders tick");
+
+	G.closing = 1;
+	pframe(0);
+	pframe(0);
+	check(!G.paused && !made(AV_SLIDERS, 'C') && !made(AV_SLOT0 + 2, 'R'), "closed: the sliders go with layer 17");
+	check(quit(), "quit UYA");
+}
+
 void test_menu_uya(void)
 {
 	test_model_uya();
 	test_install_uya();
 	test_renderer_uya();
+	test_sliders_uya();
 }

@@ -3,14 +3,19 @@
  * own pause-menu widgets. mh_rac3.h says where it lives, what it hooks and what
  * it calls; mh_shim.h is the interface to the core (mh_core.c), which reads the
  * mailbox, composes the text and posts the events. This file only talks to the
- * game, the way probe N3b did on hardware:
+ * game:
  *
  *   MAIN    a page of links and buttons on the main pause's own list: its init,
  *           update and deinit run on the shim's row table, whose labels are
- *           text ids the msg_string hook answers with the core's rows;
- *   CONFIG  a page of labels and controls on CHEATS' screen: the submenu frame
- *           and the grid list of raw strings, two columns, seven rows on
- *           screen and the rest scrolled to.
+ *           text ids the msg_string hook answers with the core's rows (probe
+ *           N3b, on hardware);
+ *   CONFIG  a page of labels and controls in the look of Options' AUDIO /
+ *           VISUAL screen: the submenu frame with the title fitted to its
+ *           banner, the picture panel above the list (here the description
+ *           line), and the grid list of raw strings in two columns with that
+ *           screen's configuration and font, eight rows on screen and the rest
+ *           scrolled to, "LABEL:" left and the value right, and its sliders for
+ *           a value the core marks as one.
  *
  * The menu's screen is one of two GuiStates of the shim's own, whose init,
  * update and deinit are the three entries below whatever the page is: the init
@@ -30,10 +35,10 @@
  *   mh_row           a MAIN row's callback, which the main pause's update calls on the cross.
  *
  * Everything the game keeps a pointer to - the GuiStates, the rows, their text,
- * the title, the grid's cells - is in the renderer's state, which stays put for
- * as long as the game runs and changes only on the game's thread. Every access
- * to game memory goes through r8..w32 (mh_common.h), so the host tests run this
- * file on qwark's fake console with the real bytes.
+ * the title, the grid's cells, the description - is in the renderer's state,
+ * which stays put for as long as the game runs and changes only on the game's
+ * thread. Every access to game memory goes through r8..w32 (mh_common.h), so
+ * the host tests run this file on qwark's fake console with the real bytes.
  */
 #include "mh_common.h"
 #include "mh_shim.h"
@@ -89,6 +94,12 @@ typedef u32  (*fn_u_uii)(u32, int, int);
 typedef void (*fn_v_uf5)(u32, float, float, float, float, float);
 typedef void (*fn_v_uf4)(u32, float, float, float, float);
 typedef void (*fn_frame)(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, float);
+typedef void (*fn_v_uuu)(u32, u32, u32);
+typedef void (*fn_v_uff)(u32, float, float);
+typedef void (*fn_v_uufff)(u32, u32, float, float, float);
+typedef void (*fn_rrect)(u32, u32, float, float, float, float, float, float);
+typedef void (*fn_rect)(u32, u32, float, float, float, float, u32);
+typedef void (*fn_text)(u32, u32, u32, float, float, float, float);
 
 #define swap_to         GAME_FN(fn_v_u,    OPD_SWAP_TO,         mock_swap_to)
 #define reset_state     GAME_FN(fn_v_u,    OPD_RESET_STATE,     mock_reset_state)
@@ -114,16 +125,46 @@ typedef void (*fn_frame)(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, 
 #define grid_free       GAME_FN(fn_v_u,    OPD_GRID_FREE,       mock_grid_free)
 #define clear_layer     GAME_FN(fn_v_i,    OPD_CLEAR_LAYER,     mock_clear_layer)
 #define play_sound      GAME_FN(fn_v_iii,  OPD_PLAY_SOUND,      mock_play_sound)
+#define title_fit       GAME_FN(fn_v_uuu,  OPD_TITLE_FIT,       mock_title_fit)
+#define grid_rules      GAME_FN(fn_v_uufff, OPD_GRID_RULES,     mock_grid_rules)
+#define grid_font       GAME_FN(fn_v_uuu,  OPD_GRID_FONT,       mock_grid_font)
+#define set_scale       GAME_FN(fn_v_uff,  OPD_SET_SCALE,       mock_set_scale)
+#define set_pos         GAME_FN(fn_v_uff,  OPD_SET_POS,         mock_set_pos)
+#define set_visible     GAME_FN(fn_v_uu,   OPD_SET_VISIBLE,     mock_set_visible)
+#define set_color       GAME_FN(fn_v_uu,   OPD_SET_COLOR,       mock_set_color)
+#define set_anchor      GAME_FN(fn_v_uuu,  OPD_SET_ANCHOR,      mock_set_anchor)
+#define set_layer       GAME_FN(fn_v_uu,   OPD_SET_LAYER,       mock_set_layer)
+#define container       GAME_FN(fn_v_u,    OPD_CONTAINER,       mock_container)
+#define add_frame       GAME_FN(fn_v_uu,   OPD_ADD_FRAME,       mock_add_frame)
+#define round_rect      GAME_FN(fn_rrect,  OPD_ROUND_RECT,      mock_round_rect)
+#define rect            GAME_FN(fn_rect,   OPD_RECT,            mock_rect)
+#define text_widget     GAME_FN(fn_text,   OPD_TEXT,            mock_text_widget)
+#define text_box        GAME_FN(fn_v_uff,  OPD_TEXT_BOX,        mock_text_box)
+#define text_fit        GAME_FN(fn_v_uu,   OPD_TEXT_FIT,        mock_text_fit)
+#define text_style      GAME_FN(fn_v_uuu,  OPD_TEXT_STYLE,      mock_text_style)
+#define text_font       GAME_FN(fn_v_uu,   OPD_TEXT_FONT,       mock_text_font)
 
 /*
- * CHEATS' grid configuration (0xC506EC, with the two floats CHEATS writes on its
- * first use): the cell buffer, its size and the rows are the shim's.
+ * AUDIO / VISUAL's grid configuration, as its list builds it on the stack
+ * (0x2DC6F0): the rows at 0.445, 0.0532 apart, in two columns at 0.115 and
+ * 0.885, the labels in a box 0.53 wide and the values in one 0.24 wide, each
+ * cell's text shrinking to fit its box (no least scale). The cell buffer, its
+ * size and the rows are the shim's.
  */
 static const u32 cfg_template[24] = {
-	SH_CELLS_SIZE, 0, U_GRID_LAYER, 0, 0, U_GRID_COLS, 0x3F800000, 0x3EE66666,
-	0x3D591687, 0x3DE147AE, 0x3F63D70A, 0, 0, 0x3EB33333, 0x3EB33333, 0,
-	0, 0x3F400000, 0x3F400000, 0, 0, 0xFFFFFFFF, 0, 1
+	SH_CELLS_SIZE, 0, U_GRID_LAYER, 0, 0, U_GRID_COLS, 0x3F800000, AV_ROW_Y0,
+	AV_ROW_PITCH, AV_COL0_X, AV_COL1_X, 0x3F800000, 0x3F800000, AV_COL0_W, AV_COL1_W, 0,
+	0, 0, 0, 0, 0, 0, 0, 0
 };
+
+/* A float from its bits, which is how the header gives AUDIO / VISUAL's numbers. */
+static float fb(u32 bits)
+{
+	union { u32 u; float f; } x;
+
+	x.u = bits;
+	return x.f;
+}
 
 static u32 shown(void)
 {
@@ -218,11 +259,13 @@ static void main_rows(void)
  * The main pause's init on the shim's table: the rows stubs hand it the table,
  * the count and the band while the table word is set. Its rows sit 0.06 apart
  * about 0.5 and its end pieces 0.13 above the first and 0.14 below the last,
- * as the game's bands for eight and nine rows are (0xC529D0, 0xC529D8).
+ * as the game's bands for eight and nine rows are (0xC529D0, 0xC529D8). The
+ * game's rows are short words; one of the menu's wider than the frame shrinks
+ * to fit it, as the grid's cells do, down to 0.6 of its size.
  */
 static void main_start(u32 gs)
 {
-	u32 n = mh_nrows();
+	u32 n = mh_nrows(), i;
 
 	main_rows();
 	w32(U_CURSOR, mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
@@ -232,6 +275,10 @@ static void main_start(u32 gs)
 	w32(SH(SH_LIST_TABLE), ROWS);
 	main_init(gs);
 	w32(SH(SH_LIST_TABLE), 0);
+	for (i = 0; i < n; i++) {
+		text_box(U_ROW_HANDLE + i, fb(U_ROW_FIT_W), fb(U_ROW_FIT_MIN));
+		text_fit(U_ROW_HANDLE + i, 1);
+	}
 }
 
 /*
@@ -273,28 +320,79 @@ static void main_frame(u32 gs)
 
 /* ----------------------------------------------------- the CONFIG widget */
 
-/* A grid cell's text: char[64] at its start, which the grid hands SetText every frame. */
-static void cell_put(u32 c, u32 s)
+/*
+ * Row i's slider: 1, and where its knob goes from 0 (the bottom) to 1, when
+ * the core marks the row as one that suits a slider.
+ */
+static int slider_at(u32 i, float *at)
 {
-	u32 n = 0, ch;
+#ifdef MROWF_SLIDER
+	u32 a, off, span;
 
-	while (n < U_CELL_SIZE - 5) {
-		ch = r8(s + n);
+	if (i >= mh_nrows() || mh_row_kind(i) != MROW_VALUE ||
+	    (mh_row_flags(i) & (MROWF_RANGE | MROWF_SLIDER)) != (MROWF_RANGE | MROWF_SLIDER))
+		return 0;
+	a = mh_row_range(i);
+	off = r32(a) - r32(a + 4);
+	span = r32(a + 8) - r32(a + 4);
+	if (off <= span) *at = span == 0 ? 0.0f : (float)off / (float)span;
+	/* Off the bar: at the end it is nearer, past the highest or under the lowest. */
+	else *at = r32(a) - r32(a + 8) < r32(a + 4) - r32(a) ? 1.0f : 0.0f;
+	return 1;
+#else
+	(void)i;
+	(void)at;
+	return 0;
+#endif
+}
+
+/*
+ * A grid cell's text: char[64] at its start, which the grid hands SetText
+ * every frame. From its `n`th character: the game string at `s` (none for 0),
+ * then `tail`. Answers where the text ends.
+ */
+static u32 cell_put(u32 c, u32 n, u32 s, const char *tail)
+{
+	u32 i = 0, ch;
+
+	while (s != 0 && n < U_CELL_SIZE - 6) {
+		ch = r8(s + i);
 		if (ch == 0) break;
 		w8(c + n, ch);
 		n++;
+		i++;
+	}
+	while (*tail != 0 && n < U_CELL_SIZE - 5) {
+		w8(c + n, (u8)*tail);
+		tail++;
+		n++;
 	}
 	w8(c + n, 0);
+	return n;
 }
 
-/* The rows into the grid's cells: labels left, values right, the colours by the core's flags. */
+/*
+ * The rows into the grid's cells, as AUDIO / VISUAL fills its own (0x2DC0B0):
+ * the label left, with the colon the core gives a label that has a value
+ * beside it (MH_STYLE_COLON: "SUBTITLES:"), and the value right; a slider's
+ * value cell a blank, as that screen's, the bar there, and its number after
+ * the label ("CHALLENGE MODE: 51"), which a trainer's slider owes its user and
+ * the label's box has room for. The colours by the core's flags.
+ */
 static void cfg_fill(u32 g)
 {
-	u32 n = mh_nrows(), i, f;
+	u32 n = mh_nrows(), i, f, c;
+	float at;
 
 	for (i = 0; i < n; i++) {
-		cell_put(grid_cell(g, 0, (int)i), mh_label(i));
-		cell_put(grid_cell(g, 1, (int)i), mh_value(i));
+		c = grid_cell(g, 0, (int)i);
+		if (slider_at(i, &at)) {
+			cell_put(c, cell_put(c, 0, mh_label(i), " "), mh_value(i), "");
+			cell_put(grid_cell(g, 1, (int)i), 0, 0, " ");
+		} else {
+			cell_put(c, 0, mh_label(i), "");
+			cell_put(grid_cell(g, 1, (int)i), 0, mh_value(i), "");
+		}
 		f = mh_row_flags(i);
 		grid_color(g, (int)i, (f & MROWF_ENABLED) == 0 ? U_COLOR_SKIP :
 		                      (f & MROWF_ON) != 0 ? U_COLOR_ON : U_COLOR_OFF);
@@ -302,36 +400,150 @@ static void cfg_fill(u32 g)
 }
 
 /*
- * CHEATS' screen with the core's page (CHEATS' init 0x2E2558 and probe N3b):
- * the frame with the page's title, the grid built for the page's rows with
- * seven on screen, CHEATS' frame and cursor bar, the cells, the alignment
- * that keeps both columns inside the frame, and the cursor on its row.
+ * The picture panel above the list, as AUDIO / VISUAL's widget table builds it
+ * (0xC4FC60 through 0x2DCE60): the root on layer 17 with the panel's container
+ * and its rounded box; in it, where that screen shows a row's picture, the
+ * description line, in the cells' font, shrinking to fit the box.
+ */
+static void cfg_panel(void)
+{
+	container(AV_ROOT);
+	container(AV_PANEL);
+	add_frame(AV_ROOT, AV_PANEL);
+	round_rect(AV_PANEL_BOX, AV_PANEL_COLOR, fb(AV_FRAME_X), fb(AV_PANEL_Y), fb(AV_PANEL_W), fb(AV_PANEL_H),
+	           fb(AV_PANEL_R), fb(AV_PANEL_R));
+	add_frame(AV_PANEL, AV_PANEL_BOX);
+	text_widget(AV_DESC, mh_desc(), AV_TEXT_COLOR, fb(AV_FRAME_X), fb(AV_PANEL_Y), 1.0f, 1.0f);
+	text_style(AV_DESC, 2, 0);
+	text_box(AV_DESC, fb(AV_DESC_W), fb(AV_DESC_MIN));
+	text_fit(AV_DESC, 1);
+	text_font(AV_DESC, U_FONT_MENU);
+	add_frame(AV_PANEL, AV_DESC);
+	set_layer(U_LAYER_FRAME2, AV_ROOT);
+}
+
+/* The list's slots on screen, top to bottom: their y. */
+static float slot_y(u32 s)
+{
+	return fb(AV_ROW_Y0) + fb(AV_ROW_PITCH) * (float)s;
+}
+
+/*
+ * A page with a slider gets AUDIO / VISUAL's slider widgets (0x2DD218) for each
+ * row the list shows at once: the groove, the track and the knob, in a
+ * container under the root, hidden until a slider's row is in that slot.
+ */
+static void cfg_sliders(u32 vis)
+{
+	u32 n = mh_nrows(), i, s, h;
+	float at;
+
+	w8(SH(SH_SLOTS), 0);
+	for (i = 0; i < n && !slider_at(i, &at); i++) { }
+	if (i == n) return;
+
+	container(AV_SLIDERS);
+	for (s = 0; s < vis; s++) {
+		h = AV_SLOT0 + 3 * s;
+		rect(h, AV_TRACK_COLOR, fb(AV_GROOVE_X), slot_y(s), fb(AV_GROOVE_W), fb(AV_GROOVE_H), 0);
+		set_anchor(h, 1, 3);
+		set_color(h, AV_GROOVE_COLOR2);
+		round_rect(h + 1, AV_TRACK_COLOR, fb(AV_TRACK_X), slot_y(s), fb(AV_TRACK_W), fb(AV_TRACK_H),
+		           fb(AV_ROUND_A), fb(AV_ROUND_B));
+		set_color(h + 1, AV_TRACK_COLOR2);
+		round_rect(h + 2, AV_KNOB_COLOR, fb(AV_KNOB_LEFT), slot_y(s), fb(AV_KNOB_W), fb(AV_KNOB_H),
+		           fb(AV_ROUND_A), fb(AV_ROUND_B));
+		add_frame(AV_SLIDERS, h);
+		add_frame(AV_SLIDERS, h + 1);
+		add_frame(AV_SLIDERS, h + 2);
+		set_visible(h, 0);
+		set_visible(h + 1, 0);
+		set_visible(h + 2, 0);
+		w8(SH(SH_SLOT_ROW) + s, MH_NONE);
+	}
+	add_frame(AV_ROOT, AV_SLIDERS);
+	w8(SH(SH_SLOTS), vis);
+}
+
+/*
+ * The sliders follow the list: each slot shows the slider of the row the grid
+ * has in it, its knob where the value is, and none while the list scrolls (the
+ * rows slide then; the sliders come back where the rows stop).
+ */
+static void cfg_slide(u32 g)
+{
+	u32 slots = r8(SH(SH_SLOTS)), n = mh_nrows(), s, r, want, h;
+	int moving;
+	float at = 0.0f, x;
+
+	if (slots == 0) return;
+	moving = r32(g + U_GRID_SCROLL) != 0 || (r32(g + U_GRID_SLIDE) & 0x7FFFFFFFu) != 0;
+	for (s = 0; s < slots; s++) {
+		r = r32(g + U_GRID_TOP) + s;
+		want = !moving && r < n && slider_at(r, &at) ? r : MH_NONE;
+		h = AV_SLOT0 + 3 * s;
+		if (want != r8(SH(SH_SLOT_ROW) + s)) {
+			set_visible(h, want != MH_NONE);
+			set_visible(h + 1, want != MH_NONE);
+			set_visible(h + 2, want != MH_NONE);
+			w8(SH(SH_SLOT_ROW) + s, want);
+			wf32(SH(SH_SLOT_KNOB) + 4 * s, -1.0f);
+		}
+		if (want == MH_NONE) continue;
+		x = fb(AV_KNOB_LEFT) + fb(AV_KNOB_SPAN) * at;
+		if (x != rf32(SH(SH_SLOT_KNOB) + 4 * s)) {
+			set_pos(h + 2, x, slot_y(s));
+			wf32(SH(SH_SLOT_KNOB) + 4 * s, x);
+		}
+	}
+}
+
+/*
+ * AUDIO / VISUAL's screen with the core's page (its init 0x2DD218): the frame
+ * with the page's title, its banner and the title's scale fitted to it as
+ * Options' screens fit theirs (0x2D4DB0), the picture panel with the
+ * description, the grid built for the page's rows with eight on screen,
+ * AUDIO / VISUAL's frame, cursor bar and rules, the cells, labels left and
+ * values right, both in the Options screens' font, the sliders, and the cursor
+ * on its row.
  */
 static void cfg_start(void)
 {
-	u32 n = mh_nrows(), g, i;
+	u32 n = mh_nrows(), vis = n < U_GRID_VISIBLE ? n : U_GRID_VISIBLE, g, i;
 
-	frame(U_LAYER_FRAME, U_FRAME_CONTAINER, 0x000D0002, 0x000D0003, 0x000D0004, 0x000D0000, 0x000D0001,
+	wf32(SH(SH_TITLE_SCALE), 1.0f);
+	wf32(SH(SH_TITLE_BANNER), 8.5f);
+	title_fit(mh_title(), SH(SH_TITLE_SCALE), SH(SH_TITLE_BANNER));
+	frame(U_LAYER_FRAME, U_FRAME_CONTAINER, 0x000D0000, 0x000D0001, 0x000D0002, 0x000D0003, 0x000D0004,
 	      U_TITLE_HANDLE, 0x000D0008, mh_title(), 0x000D0006,
-	      r8(U_JAPANESE) != 0 ? U_MSG_SELECT_JP : U_MSG_SELECT, 0x000D0007, U_MSG_BACK, 8.5f);
+	      r8(U_JAPANESE) != 0 ? U_MSG_SELECT_JP : U_MSG_SELECT, 0x000D0007, U_MSG_BACK,
+	      rf32(SH(SH_TITLE_BANNER)));
+	set_scale(U_TITLE_HANDLE, rf32(SH(SH_TITLE_SCALE)), rf32(SH(SH_TITLE_SCALE)));
+	cfg_panel();
+
 	for (i = 0; i < 24; i++) w32(CFG + 4 * i, cfg_template[i]);
 	w32(CFG + 4, CELLS);
 	w32(CFG + 12, n);
-	w32(CFG + 16, n < U_GRID_VISIBLE ? n : U_GRID_VISIBLE);
+	w32(CFG + 16, vis);
 	g = get_grid(0);
 	grid_build(g, CFG);
-	frame_rect(g, 0.5f, 0.79f, 0.045f, 0.38f, 0.35f);
-	cursor_bar(g, 0.5f, 0.58f, 0.81f, 0.56f);
-	cfg_fill(g);
+	frame_rect(g, fb(AV_FRAME_X), fb(AV_FRAME_W), fb(AV_FRAME_H), fb(AV_FRAME_F4), fb(AV_FRAME_F5));
+	cursor_bar(g, fb(AV_FRAME_X), fb(AV_BAR_Y), fb(AV_FRAME_W), fb(AV_BAR_H));
+	grid_rules(g, 1, fb(AV_RULE_Y), fb(AV_RULE_H), fb(AV_RULE_INSET));
 	grid_align(g, 0, 1, 3);
 	grid_align(g, 1, 2, 3);
+	cfg_fill(g);
+	grid_font(g, 0, U_FONT_MENU);
+	grid_font(g, 1, U_FONT_MENU);
+	cfg_sliders(vis);
 	grid_set_cursor(g, (int)mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
 }
 
 /*
- * A CONFIG page's frame, as CHEATS' update (0x2E2DF8): the core's, the grid
- * (Up, Down, the scroll, their sound, the cells pushed to the widgets), one
- * press on the grid's row, then the Start close.
+ * A CONFIG page's frame, as AUDIO / VISUAL's update (0x2DDA54): the core's,
+ * the grid (Up, Down, the scroll, their sound, the cells pushed to the
+ * widgets), the sliders after it, one press on the grid's row, then the Start
+ * close.
  */
 static void cfg_frame(u32 gs)
 {
@@ -341,6 +553,7 @@ static void cfg_frame(u32 gs)
 	e = edges();
 	g = get_grid(0);
 	grid_update(g, (int)e);
+	cfg_slide(g);
 
 	if ((e & r32(U_CONFIRM_MASK)) != 0)  b = MH_BTN_CROSS;
 	else if ((e & PADB_LEFT) != 0)       b = MH_BTN_LEFT;
@@ -414,10 +627,11 @@ MH_API void shim_title(int p)
 	if (shown() == MBOX_PTYPE_CONFIG) set_text(U_TITLE_HANDLE, mh_title());
 }
 
-/* The game's pause screens have no description line. */
+/* The description line, in the panel above a CONFIG page's list. */
 MH_API void shim_desc(int p)
 {
 	(void)p;
+	if (shown() == MBOX_PTYPE_CONFIG) set_text(AV_DESC, mh_desc());
 }
 
 MH_API u32 shim_cursor(int p)
@@ -433,11 +647,15 @@ MH_API u32 shim_cursor(int p)
 /*
  * The main pause plays its change sound after a row's callback itself, so the
  * cross on a MAIN row is the game's; everything else is the pause screens'
- * change sound, and moving a window the cursor's tick.
+ * change sound, but a slider's step and a window moving, which are the
+ * cursor's tick, as AUDIO / VISUAL's sliders tick (0x2DE508).
  */
 MH_API void shim_sound(u32 snd)
 {
+	float at;
+
 	if (snd == MH_SND_FORWARD && shown() != MBOX_PTYPE_CONFIG) return;
+	if (snd == MH_SND_STEP && shown() == MBOX_PTYPE_CONFIG && slider_at(shim_cursor(0), &at)) snd = MH_SND_MOVE;
 	play_sound(snd == MH_SND_MOVE ? SND_MOVE : SND_CHANGE, 0, 0);
 }
 
@@ -464,7 +682,11 @@ MH_API void mh_update(u32 gs)
 	else main_frame(gs);
 }
 
-/* It stops: the widget's own end, as CHEATS' deinit and the main pause's, and the cursor back. */
+/*
+ * It stops: the widget's own end, as AUDIO / VISUAL's deinit (0x2DE1D8: layers
+ * 16, 17 and the grid's 20, which take the panel and the sliders with them)
+ * and the main pause's, and the cursor back.
+ */
 MH_API void mh_deinit(u32 gs)
 {
 	u32 was = shown();

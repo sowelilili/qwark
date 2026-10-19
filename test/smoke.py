@@ -319,13 +319,14 @@ MENU_BOX_SPAN = (0x017DD600, 0x017DDF00)
 DL_OPTIONS_SITE = 0x003A6F2C
 DL_OPTIONS_WORD = 0x4BFC456D
 # Revision 1.22: UYA's console menu renderer (src/games/menuhelper/mh_rac3.h),
-# whose mailbox has rows of 0x40, without descriptions. The words: the label
+# whose mailbox has rows of 0x80, with descriptions (round 3: the panel above a
+# CONFIG page's list shows them). The words: the label
 # hook, the main pause init's three row counts, the Start path's test, its
 # pause reason and the launcher's getter call, then each of the main pause's
 # three tables' HELP row, its text id and its callback.
 UYA_MENU_BOX = 0x01ADB000
-UYA_MENU_BOX_SIZE = 0x480
-UYA_MENU_ROW_SIZE = 0x40
+UYA_MENU_BOX_SIZE = 0x880
+UYA_MENU_ROW_SIZE = 0x80
 UYA_MENU_CODE = (0x00BC4000, 0x00BC8000)
 UYA_MENU_DATA = (0x01ADC900, 0x01ADE000)
 UYA_MENU_SITES = {0x0014BCF0: 0x3C800000, 0x002F4284: 0x38C00008, 0x002F41FC: 0x38C00009,
@@ -2528,8 +2529,8 @@ def exercise_console_menu_uya(c, sim):
           "UYA menu: every code word branches into the renderer, each HELP row says 0xF000 and calls into its data",
           dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
-    check(status == ST_OK and body[8] == 16 and body[9] == 0x40 and body[10] == 9 and body[14] == 3 and
-          body[15] == 16, "UYA menu: sixteen rows of 0x40, nine a MAIN page, sixteen a CONFIG page, renderer 3",
+    check(status == ST_OK and body[8] == 16 and body[9] == 0x80 and body[10] == 9 and body[14] == 3 and
+          body[15] == 16, "UYA menu: sixteen rows of 0x80, nine a MAIN page, sixteen a CONFIG page, renderer 3",
           body.hex() if status == ST_OK else status)
 
     page = menu_page(c, box, size, rs)

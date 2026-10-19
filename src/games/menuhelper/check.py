@@ -60,8 +60,12 @@ stubs their comments name, the HELP rows' words are the text id 0xF000 and a
 descriptor of the renderer's; the code around each site is what the stubs
 assume (the msg_string entry, the main pause init's three tables and bands,
 the Start test and path, the launcher); the renderer writes nothing of the
-main pause's tables but the HELP rows' two words; the grid configuration is
-CHEATS'; the label, inject, combo and rows stubs, stepped, do what the C and
+main pause's tables but the HELP rows' two words; what the CONFIG page takes
+from Options' AUDIO / VISUAL screen is that screen's (every AV_* number where
+the screen reads it, the grid configuration it builds and the calls after it,
+the panel of its widget table, the sliders' sizes and colours, font 1, the
+text fit, the grid's fields the sliders follow, and handles no other code
+builds); the label, inject, combo and rows stubs, stepped, do what the C and
 the tests assume; and nothing overlaps the mods, the probes or qwark's own
 writes (the trophy caves and the fast-load cave at 0x9807F0..0x9808B0), but
 for probes N3 and N3b, the prototypes, whose words are the same by design.
@@ -1266,6 +1270,181 @@ def check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
            "%s, the shim's init running: its table, its count, and r7 + 0x%X = its band" % (name, off))
 
 
+def f32(bits):
+    return struct.unpack(">f", struct.pack(">I", bits))[0]
+
+
+def f32_bits(x):
+    return struct.unpack(">I", struct.pack(">f", x))[0]
+
+
+def imm32(elf, ori_at):
+    """The constant a `lis rS,hi` ... `ori rA,rS,lo` pair builds, by the ori's address (the lis up to 16 words before)."""
+    w = elf.word(ori_at)
+    if w is None or (w >> 26) != 24:
+        return None
+    rs = (w >> 21) & 31
+    for k in range(1, 17):
+        p = elf.word(ori_at - 4 * k)
+        if p is not None and (p >> 26) == 15 and ((p >> 16) & 31) == 0 and ((p >> 21) & 31) == rs:
+            return ((p & 0xFFFF) << 16) | (w & 0xFFFF)
+    return None
+
+
+def check_rac3_av(ok, elf, hdr, code, cave):
+    """
+    4b for UYA: the CONFIG page is Options' AUDIO / VISUAL screen rebuilt (its
+    getter 0x2DB6B8, init 0x2DD218, grid 0x2DC6F0, sliders 0x2DBE70): each of
+    the header's AV_* numbers is the one that screen uses, read back from where
+    it uses it; the grid configuration in the shim is that screen's; the font,
+    the fit and the grid's fields the shim relies on are the game's; and the
+    handles the shim adds are nobody else's.
+    """
+    W = elf.word
+    # The numbers: a float word in the executable, or the constant a lis/ori pair builds.
+    names = sorted(k for k in hdr if k.startswith("AV_") and not k.endswith("#comment"))
+    bad = []
+    computed = {"AV_COL1_W"}
+    for name in names:
+        comment = hdr.get(name + "#comment", "")
+        m = re.search(r"(0x[0-9A-Fa-f]+)\s*$", comment)
+        if name in computed or not m:
+            continue
+        at = int(m.group(1), 16)
+        got = imm32(elf, at) if "lis/ori" in comment else W(at)
+        if got != hdr[name]:
+            bad.append("%s 0x%08X: 0x%08X at 0x%08X" % (name, hdr[name], got or 0, at))
+    ok(not bad, "AUDIO / VISUAL's numbers in the header are the screen's own: its list's floats (0xC4FBE0..), its "
+       "frame, cursor bar and rules (0x2DC6C8.., 0x2DC730..), its panel (0xC4FCC0) and its sliders (0x2DD1E0.., "
+       "0x2DBE60..)")
+    for b in bad[:12]:
+        print("        " + b)
+    col1 = f32_bits(f32(f32_bits(f32(hdr["AV_COL1_X"]) - f32(hdr["AV_COL0_X"]))) - f32(hdr["AV_COL0_W"]))
+    ok(hdr["AV_COL1_W"] == col1 and W(0x002DCA38) == 0xEC241828 and W(0x002DCA68) == 0xD02100BC,
+       "the values' box, 0.885 - 0.115 - 0.53 in single precision, as 0x2DCA38 subtracts it (0x%08X)" % col1)
+
+    # The colours, by the instructions that build them.
+    colours = [
+        ("AV_KNOB_COLOR", 0x002DD55C, "CreateRoundedRect of a knob, 0x1E0009"),
+        ("AV_TRACK_COLOR", 0x002DD5CC, "of a track, 0x1E0008"),
+        ("AV_TRACK_COLOR", 0x002DD610, "CreateRect of a groove, 0x1E0007"),
+        ("AV_TRACK_COLOR2", 0x002DD814, "then the track's SetColor"),
+    ]
+    good = all(imm32(elf, at) == hdr[n] for n, at, _ in colours) and \
+        W(0x002DD824) == (0x3C800000 | (hdr["AV_GROOVE_COLOR2"] >> 16)) and hdr["AV_GROOVE_COLOR2"] & 0xFFFF == 0 and \
+        W(0x002DD630) == 0x38800001 and W(0x002DD638) == 0x38A00003 and \
+        branch_target(0x002DD63C, W(0x002DD63C)) == 0x002ADAC8 and \
+        W(0x00C4FCCC) == hdr["AV_PANEL_COLOR"]
+    ok(good, "the sliders' colours as AUDIO / VISUAL creates and sets them (0x2DD554 .. 0x2DD82C), the groove "
+       "anchored left (SetAnchor(1, 3), 0x2DD63C), and the panel's from its widget table")
+
+    # The grid configuration, word by word, as 0x2DC6F0 builds it on the stack at r1+0x84.
+    m = re.search(r"static const u32 cfg_template\[24\] = \{(.*?)\};",
+                  open(os.path.join(HERE, "mh_rac3.c"), encoding="utf-8").read(), re.S)
+    tpl = []
+    if m:
+        for tok in m.group(1).replace("\n", " ").split(","):
+            tok = tok.strip()
+            if tok:
+                tpl.append(hdr[tok] if tok in hdr else int(tok, 0))
+    sites = [
+        (0x002DC9D0, 0x38E00014), (0x002DCA10, 0x90E1008C),            # [2] layer 20
+        (0x002DCA14, 0x38C00002), (0x002DCA2C, 0x90C10098),            # [5] two columns
+        (0x002DCA20, 0x3CA03F80), (0x002DCA34, 0x90A1009C),            # [6] scale 1.0
+        (0x002DCA00, 0xD06100A0), (0x002DCA08, 0xD0A100A4),            # [7] [8] from 0xC4FBE0, 0xC4FBE8
+        (0x002DCA30, 0xD02100A8), (0x002DCA40, 0xD04100AC),            # [9] [10] from 0xC4FBEC, 0xC4FBF0
+        (0x002DCA44, 0x90A100B0), (0x002DCA48, 0x90A100B4),            # [11] [12] 1.0
+        (0x002DCA4C, 0xD06100B8),                                      # [13] from 0xC4FBF4
+        (0x002DCA50, 0x93E100C0), (0x002DCA54, 0x93E100C4), (0x002DCA58, 0x93E100C8),
+        (0x002DCA5C, 0x93E100CC), (0x002DCA64, 0x93E100D0), (0x002DCA6C, 0x93E100D4),   # [15..20] 0
+        (0x002DCA7C, 0x3081 << 16 | 0x0084),                           # GridBuild(g, r1+0x84)
+    ]
+    want = [None, None, 0x14, None, None, 2, 0x3F800000, W(0x00C4FBE0), W(0x00C4FBE8), W(0x00C4FBEC),
+            W(0x00C4FBF0), 0x3F800000, 0x3F800000, W(0x00C4FBF4), col1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ok(len(tpl) == 24 and all(want[i] is None or tpl[i] == want[i] for i in range(24)) and
+       tpl[0] == hdr["SH_CELLS_SIZE"] and all(W(a) == w for a, w in sites),
+       "the shim's grid configuration is AUDIO / VISUAL's (0x2DC6F0, r1+0x84) but for the buffer, its size and "
+       "the rows; words 21..23, which GridBuild does not read, 0")
+
+    # The calls 0x2DC6F0 makes on the grid after GridBuild, with the shim's arguments.
+    calls = [
+        (0x002DCAC0, 0x002D5BF4, "SetFrameRect(0.5, 0.8173, 0.045, 0.0425, 0.35)"),
+        (0x002DCAE8, 0x002D5C14, "SetCursorBar(0.5, 0.6322, 0.8173, 0.4391)"),
+        (0x002DCB1C, 0x002D5BE0, "the rules(on, 0.027, 0.00666, 0.03)"),
+        (0x002DCB40, 0x002D76E0, "column 0 aligned (1, 3)"),
+        (0x002DCB64, 0x002D76E0, "column 1 aligned (2, 3)"),
+        (0x002DCDFC, 0x002D7784, "column 0's cells in font 1"),
+        (0x002DCE1C, 0x002D7784, "column 1's"),
+    ]
+    good = all(branch_target(a, W(a)) == t for a, t, _ in calls) and \
+        W(0x002DCAAC) == 0xC39E000C and W(0x002DCAB0) == 0xC3BE0010 and W(0x002DCAB4) == 0xC07E0008 and \
+        W(0x002DCAD8) == 0xC0210074 and W(0x002DCADC) == 0xC0410078 and W(0x002DCAE0) == 0xC061007C and \
+        W(0x002DCAE4) == 0xC0810080 and W(0x002DCB04) == 0xC3DE0014 and W(0x002DCB08) == 0x38800001 and \
+        W(0x002DCB0C) == 0xC3FE0018 and W(0x002DCB18) == 0xC025FBE4 and \
+        W(0x002DCB34) == 0x38800000 and W(0x002DCB38) == 0x38A00001 and W(0x002DCB3C) == 0x38C00003 and \
+        W(0x002DCB58) == 0x38800001 and W(0x002DCB5C) == 0x38A00002 and W(0x002DCB60) == 0x38C00003 and \
+        W(0x002DCDF4) == 0x38800000 and W(0x002DCDF8) == 0x38A00001 and \
+        W(0x002DCE14) == 0x38800001 and W(0x002DCE18) == 0x38A00001
+    ok(good, "and AUDIO / VISUAL's calls after GridBuild are the shim's: " + "; ".join(c for _, _, c in calls))
+
+    # The font: 0x2D7784 sets each cell's through 0x2AE898, which for a text widget
+    # is 0xA80120 (registered at 0xBDC908 in the map 0x1356C14), +0x58; the text's
+    # rectangle and draw (0x2B6128) take 1 there as font 1.
+    ok(W(0x00BDC908) == 0x00A80120 and W(0x00A80170) == 0x93FE0058 and W(0x002AE958) == 0x30656C14 and
+       W(0x002B615C) == 0x80630058 and W(0x002B6194) == 0x38600001 and
+       branch_target(0x002B6198, W(0x002B6198)) == 0x0013777C and hdr["U_FONT_MENU"] == 1,
+       "font 1: the text widget's +0x58 (0xA80120, through 0x2AE898), which 0x2B6128 hands 0x13777C as 1")
+    # The fit: 0x2B0514 sets a text's box (+0x48 width, +0x4C least scale), 0x2B06C4 its flag 1,
+    # with which 0x2B6128 scales it by 0x13AD78(least, text, width).
+    ok(W(0x002B62D0) == 0x887D0044 and W(0x002B6300) == 0xC03D0048 and W(0x002B6310) == 0xC03D004C and
+       branch_target(0x002B6324, W(0x002B6324)) == 0x0013AD78,
+       "the fit: a text with flag 1 is scaled to its box, +0x48 wide, no smaller than +0x4C (0x2B62D0 .. 0x2B6324)")
+    # The grid's fields the sliders follow.
+    ok(W(0x002D69C8) == 0x80830004 and W(0x002D74CC) == 0x80A3001C and W(0x002D7538) == 0xC0630058 and
+       W(0x002D7540) == 0xD0230058 and W(0x002D7498) == 0x90E3001C and W(0x002D74A0) == 0x90E30058 and
+       W(0x002D74AC) == 0x90830004 and hdr["U_GRID_TOP"] == 4 and hdr["U_GRID_SCROLL"] == 0x1C and
+       hdr["U_GRID_SLIDE"] == 0x58,
+       "the grid's top row at +4 (GridCursor 0x2D69C8), its scroll at +0x1C and the slide at +0x58, which "
+       "0x2D73E8 zeroes as the rows stop")
+    # The panel: AUDIO / VISUAL's widget table, and the colour 4 the grey a row of colour 1 is drawn in.
+    ok(W(0x00C4FC60) == hdr["AV_ROOT"] and W(0x00C4FC90) == hdr["AV_PANEL"] and W(0x00C4FC94) == hdr["AV_ROOT"] and
+       W(0x00C4FCC0) == hdr["AV_PANEL_BOX"] and W(0x00C4FCC4) == hdr["AV_PANEL"] and W(0x00C4FCC8) == 3 and
+       W(0x00C4FCD0) == hdr["AV_FRAME_X"] and W(0x00C4FCF0) == hdr["AV_DESC"] and W(0x00C4FCF8) == 2 and
+       W(0x002DCFD0) == 0xC0DE0028 and W(0x002DCFD4) == 0xFCA03090 and
+       branch_target(0x002DCFD8, W(0x002DCFD8)) == 0x002B1A88 and
+       W(0x002DD43C) == 0x38600011 and W(0x002DD440) == 0x3C80001E and
+       branch_target(0x002DD444, W(0x002DD444)) == 0x002AF6C4,
+       "the panel: the root 0x1E0000 on layer 17, its container and rounded box (type 3, both corners the "
+       "table's +0x28) as AUDIO / VISUAL's table has them; 0x1E0003, its picture there, the description here")
+    ok(W(0x002D6EF4) == 0x80850090 and W(0x002DE1F0) == 0x38600011,
+       "a row of colour 4 draws in the grey +0x90; AUDIO / VISUAL's deinit clears layer 17 (and 16, 20) as the "
+       "shim's does")
+    # The main pause's frame, which a MAIN row shrinks to fit.
+    ok(W(0x002F4144) == 0x3E840B78 and W(0x002F4150) == 0x3F3F3B64 and W(0x002F4138) == 0x3EDC28F6 and
+       f32(hdr["U_ROW_FIT_W"]) < f32(0x3F3F3B64) - f32(0x3E840B78),
+       "a MAIN row's box, 0.44, is inside the main pause's end pieces at 0.258 and 0.747")
+
+    # The handles: 0x1E0001 .. 0x1E000F only AUDIO / VISUAL's code builds; the shim's slots nobody.
+    lis, built = {}, []
+    tv, tfs, tms, toff, _ = elf.text
+    for a, w in elf.words(elf.text):
+        op, rd, ra = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+        if op == 15 and ra == 0:
+            lis[rd] = (w & 0xFFFF, a)
+        elif op == 24 and rd in lis and a - lis[rd][1] < 256:
+            v = (lis[rd][0] << 16) | (w & 0xFFFF)
+            if (v >> 16) == 0x1E and (v & 0xFFFF) < 0x100:
+                built.append((a, v))
+    slots_hi = hdr["AV_SLOT0"] + 3 * hdr["U_GRID_VISIBLE"]
+    outside = [(a, v) for a, v in built if 0x001E0001 <= v <= 0x001E000F and not 0x002DB6B8 <= a < 0x002DE900]
+    ours = [(a, v) for a, v in built if hdr["AV_SLOT0"] <= v < slots_hi]
+    ok(built and not outside and not ours and hdr["AV_SLOT0"] > 0x001E0010 and slots_hi <= 0x001E0100,
+       "the handles 0x1E0001..0x1E000F are built only in AUDIO / VISUAL's code (0x2DB6B8..0x2DE900), and the "
+       "slider slots' 0x%08X..0x%08X by no code in the executable" % (hdr["AV_SLOT0"], slots_hi - 1))
+    for a, v in (outside + ours)[:12]:
+        print("        0x%08X: 0x%08X" % (a, v))
+
+
 def check_rac3(ok, elf, roots):
     hdr = header_defs(os.path.join(HERE, "mh_rac3.h"))
     box_defs = header_defs(MENUBOX)
@@ -1316,10 +1495,10 @@ def check_rac3(ok, elf, roots):
     ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
        version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
-    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
+    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE_DESC"] and
        box[10] == hdr["MH_MAIN_ROWS"] == 9 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
        box[14] == 3 and box[15] == hdr["MH_CFG_ROWS"] == 16,
-       "row_cap 16, rows of 0x40 (no description line), 9 rows a MAIN page, 16 a CONFIG page, caps 0x%02X, "
+       "row_cap 16, rows of 0x80 (descriptions, for the panel), 9 rows a MAIN page, 16 a CONFIG page, caps 0x%02X, "
        "closed, no request, renderer 3" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
@@ -1453,20 +1632,8 @@ def check_rac3(ok, elf, roots):
                                                            "MH_SITE_HELP9B_CB")) and not pr,
        "nothing but the three HELP rows names HELP's callback descriptor")
 
-    # 4b. the grid configuration the shim builds on: CHEATS'
-    game_cfg = [W(0x00C506EC + 4 * i) for i in range(24)]
-    m = re.search(r"static const u32 cfg_template\[24\] = \{(.*?)\};",
-                  open(os.path.join(HERE, "mh_rac3.c"), encoding="utf-8").read(), re.S)
-    tpl = []
-    if m:
-        for tok in m.group(1).replace("\n", " ").split(","):
-            tok = tok.strip()
-            if tok:
-                tpl.append(hdr[tok] if tok in hdr else int(tok, 0))
-    ok(len(tpl) == 24 and all(tpl[i] == game_cfg[i] for i in range(24) if i not in (0, 1, 3, 4, 7, 8)) and
-       tpl[2] == 0x14 and tpl[5] == 2 and tpl[7] == 0x3EE66666 and tpl[8] == 0x3D591687,
-       "the shim's grid configuration is CHEATS' (0xC506EC) but for the buffer, its size, the rows and the "
-       "two floats CHEATS writes on first use (0x2E27E4)")
+    # 4b. what the CONFIG page takes from the game: AUDIO / VISUAL's look
+    check_rac3_av(ok, elf, hdr, code, cave)
 
     # 3. the descriptors the game calls
     if help_desc is not None:
