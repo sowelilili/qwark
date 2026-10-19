@@ -18,7 +18,9 @@
  *                 fit, the grid list with AUDIO / VISUAL's font and rules,
  *                 the widgets the shim makes (containers, rectangles, the
  *                 picture and its source, the sliders), the Start path and the
- *                 launcher. The hook stubs
+ *                 launcher, and the GALACTIC MAP the Planets row opens (its
+ *                 list build, names, update and every exit of its own). The
+ *                 hook stubs
  *                 are assembler and do not run here:
  *                 src/games/menuhelper/check.py steps them, and the mocks
  *                 below do in C what they do.
@@ -465,6 +467,159 @@ static void mock_grid_update(u32 g, int edges)
 	grid_mirror();
 }
 
+/* ---------------------------------------------- the GALACTIC MAP, as the game has it */
+
+#define U_UNLOCKED     0x00DA5A94u      /* the save's unlocked planets, u32[60] (UnlockPlanet's list) */
+#define U_KIND         0x00C4F370u      /* the pause exit's kind: 1 travels to U_DEST (0x2D22DC sets both) */
+#define U_DEST         0x00C4F374u
+#define MAP_GS         0x01379F00u      /* the game's own map's GuiState (getter 0x2CE130) */
+#define MISSIONS_GS    0x01385A00u      /* MISSIONS (0x2F5758), which Square swaps to */
+#define BATTLE_GS      0x0137C658u      /* BATTLE MISSIONS (0x2DECB4), Triangle's on planets 12 and 18 */
+
+/* What mh_map_list_stub hands the build (check.py steps the real stub on the data image's list). */
+static const u8 map_list_c[MH_MAP_LIST_LEN] = { MH_MAP_LIST };
+
+static struct {
+	int up, inits, deinits, updates, flag_in_build;
+	int pic_clash, pic_held;      /* the menu's picture source still set up, its buffers held, as the map began */
+	u32 text[30];                 /* each entry's name, as the text id the build asked for */
+	u32 exit_kind, exit_dest;     /* the pause exit's kind and planet when it ran */
+	int missions, battle;         /* Square's and Triangle's other screens started */
+} M;
+
+/* The build's filter (0x2CE838 .. 0x2CE890): planets 2 .. 29 but the mission levels and Launch Site. */
+static int game_map_filter(u32 p)
+{
+	return p >= 2 && p < 30 && p != 6 && p != 20 && p != 23 && p != 26 && p != 27 && p != 28 && p != 29;
+}
+
+/* The text the build names an entry with (0x2CEB04): the planet's for these, the location's for the rest. */
+static u32 map_text_id(u32 p)
+{
+	static const u8 by_planet[] = { 1, 2, 4, 5, 8, 9, 10, 13, 14, 18, 23, 27, 28, 29 };
+	u32 i;
+
+	for (i = 0; i < sizeof(by_planet); i++) {
+		if (by_planet[i] == p) return r32(U_MAP_TEXTS + 8 * p + 4);
+	}
+	return r32(U_MAP_TEXTS + 8 * p);
+}
+
+/*
+ * The map's init (0x2CED28), as far as the list goes: the build reads the
+ * save's sixty planets, each through its filter's first word, which is
+ * mh_map_list_stub with the hook in (here in C: SH_MAP up, the stub's list;
+ * down, the game's filter), and names each entry. The cursor on the first, and
+ * Square's MISSIONS hint shown.
+ */
+static void mock_map_init(u32 gs)
+{
+	u32 i, p, n = 0, e;
+
+	(void)gs;
+	/* The map takes picture sources 0 .. 2 and four of the pause's picture buffers (round 4: the menu's share them). */
+	M.pic_clash = G.pic_state == 1;
+	M.pic_held = G.pic_taken;
+	M.flag_in_build = r8(MH_SHIM + SH_MAP);
+	for (i = 0; i < 60; i++) {
+		p = r32(U_UNLOCKED + 4 * i);
+		if (r8(MH_SHIM + SH_MAP) != 0) {
+			p = i < MH_MAP_LIST_LEN ? map_list_c[i] : 0;
+			if (p == 0) continue;
+		} else if (!game_map_filter(p)) {
+			continue;
+		}
+		if (n == 30) break;
+		e = U_MAP_ENTRIES + n * U_MAP_ENTRY_SIZE;
+		w32(e, p);
+		w8(e + 4, 1);
+		M.text[n] = map_text_id(p);
+		n++;
+	}
+	w32(U_MAP_COUNT, n);
+	w32(U_MAP_CURSOR, 0);
+	remember(U_MAP_HINT, MSG_AT + 0x30);            /* "\x13 MISSIONS", text 0x15C6 */
+	M.up = 1;
+	M.inits++;
+}
+
+static void mock_map_deinit(u32 gs)
+{
+	(void)gs;
+	M.up = 0;
+	M.deinits++;
+}
+
+/* The travel setter 0x2D22DC: the pause exit loads that planet. */
+static void map_travel(u32 p)
+{
+	w32(U_KIND, 1);
+	w32(U_DEST, p);
+}
+
+/* Triangle's and the Start close's way out (0x2CFD54, 0x2D0534): a reload, or BATTLE MISSIONS on 12 and 18. */
+static void map_leave(u32 gs)
+{
+	u32 cur = r32(U_PLANET);
+
+	if (cur == 12 || cur == 18) {
+		mock_play_sound(5, 0, 0);
+		mock_swap_to(BATTLE_GS);
+	} else {
+		map_travel(cur);
+		mock_swap_to(mock_pause_exit());
+		mock_play_sound(0x14, 0, 0);
+	}
+	mock_reset_state(gs);
+}
+
+/*
+ * The map's update (0x2CFB60): Up and Down; the cross the pick's callback
+ * (0x2D078C: Veldin and the current planet refused, else the travel setter
+ * and out); Square MISSIONS; Triangle and the Start close map_leave.
+ */
+static void mock_map_update(u32 gs)
+{
+	u32 e = r32(U_PAD + U_PAD_EDGES), c = r32(U_MAP_CURSOR), n = r32(U_MAP_COUNT), p;
+
+	M.updates++;
+	if ((e & PADB_DOWN) != 0 && c + 1 < n) c++;
+	if ((e & PADB_UP) != 0 && c > 0) c--;
+	w32(U_MAP_CURSOR, c);
+	if ((e & r32(U_CONFIRM_MASK)) != 0) {
+		p = r32(U_MAP_ENTRIES + c * U_MAP_ENTRY_SIZE);
+		if (p > 1 && p != r32(U_PLANET)) {
+			map_travel(p);
+			mock_play_sound(0x14, 0, 0);
+			mock_swap_to(mock_pause_exit());
+			mock_reset_state(gs);
+		}
+		mock_play_sound(4, 0, 0);
+	} else if ((e & PADB_SQUARE) != 0) {
+		mock_play_sound(4, 0, 0);
+		mock_swap_to(MISSIONS_GS);
+		mock_reset_state(gs);
+	}
+	if ((e & PADB_TRIANGLE) != 0) map_leave(gs);
+	if (mock_start_close()) {
+		if (r8(U_NO_EXIT) == 0) map_leave(gs);
+		mock_start_ack();
+		mock_reset_state(gs);
+	}
+}
+
+/* The getter 0x2CE130: the game's own GuiState for the map, its five calls the game's. */
+static u32 game_map(void)
+{
+	w32(MAP_GS, 0);
+	w32(MAP_GS + 4, OPD_MAP_INIT);
+	w32(MAP_GS + 8, OPD_MAP_DEINIT);
+	w32(MAP_GS + 12, OPD_MAP_UPDATE);
+	w32(MAP_GS + 16, U_DESC_MAP_PRE);
+	w32(MAP_GS + 20, U_DESC_MAP_POST);
+	return MAP_GS;
+}
+
 #include "../src/games/menuhelper/mh_core.c"
 #include "../src/games/menuhelper/mh_rac3.c"
 
@@ -473,7 +628,7 @@ static void call_row(u32 cb)
 	const struct mh_desc *d = mh_desc_for_game(GAME_RAC3);
 
 	if (cb == MH_FN_ROW) mh_row();
-	else if (d != NULL && cb == d->hooks[8].value) mh_help();
+	else if (d != NULL && cb == d->hooks[9].value) mh_help();
 	else if (cb == MH_ORIG_HELP_CB) { G.game_help++; mock_swap_to(HELP_GS); }
 	else G.game_row_cb = cb;
 }
@@ -528,6 +683,12 @@ static void call_gs(u32 gs, int which)
 	else if (tok == OPD_MAIN_INIT) mock_main_init(gs);
 	else if (tok == OPD_MAIN_DEINIT) mock_main_deinit(gs);
 	else if (tok == OPD_MAIN_UPDATE) mock_main_update(gs);
+	else if (tok == MH_FN_MAP_INIT) mh_map_init(gs);
+	else if (tok == MH_FN_MAP_DEINIT) mh_map_deinit(gs);
+	else if (tok == MH_FN_MAP_UPDATE) mh_map_update(gs);
+	else if (tok == OPD_MAP_INIT) mock_map_init(gs);
+	else if (tok == OPD_MAP_DEINIT) mock_map_deinit(gs);
+	else if (tok == OPD_MAP_UPDATE) mock_map_update(gs);
 }
 
 /*
@@ -545,11 +706,16 @@ static void runner(void)
 		G.active = G.pending;
 		G.pending = 0;
 		if (G.active == EXIT_GS) {
+			/* The pause exit's deinit (0x2D4748): kind 1 is goto_planet, a travel; 0 a plain close. */
+			M.exit_kind = r32(U_KIND);
+			M.exit_dest = r32(U_DEST);
 			G.active = 0;
 			G.paused = 0;
 			return;
 		}
-		if (G.active == HELP_GS) return;
+		if (G.active == MISSIONS_GS) M.missions++;
+		if (G.active == BATTLE_GS) M.battle++;
+		if (G.active == HELP_GS || G.active == MISSIONS_GS || G.active == BATTLE_GS) return;
 		call_gs(G.active, 0);
 		w32(G.active, 1);
 	}
@@ -587,6 +753,7 @@ static void play_frame(int start)
 	if (r6 == 0 || G.gate_closed || G.paused) return;
 	w8(MH_SHIM + SH_FORCE, r8(MH_SHIM + SH_PRESSED));
 	G.paused = 1;
+	w32(U_KIND, 0);                     /* the launcher's init (0x2D42D0) */
 	mock_swap_to(mh_launch());
 	runner();
 }
@@ -765,7 +932,18 @@ static void test_model_uya(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4), 24 a window. */
+	/* Planets: with no picker in the renderer (CAPS_ALL), the row is a link like the others. */
+	r = view_row(&v, "Planets");
+	check(r != NULL && r->kind == MROW_LINK && (r->flags & MROWF_PICKER) == 0,
+	      "Planets, for a renderer without the game's picker: a link to qwark's own list");
+	menu_model_reset(9, 24, CAPS_ALL | MBOX_CAP_PICKER);
+	menu_model_view(&v);
+	r = view_row(&v, "Planets");
+	check(r != NULL && r->kind == MROW_LINK && (r->flags & (MROWF_PICKER | MROWF_ENABLED)) == (MROWF_PICKER | MROWF_ENABLED) &&
+	      (view_row(&v, "Cheats")->flags & MROWF_PICKER) == 0,
+	      "for one with it, the Planets row, and only it, says the cross opens the game's picker");
+
+	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4), 24 a window: the fallback. */
 	act(&v, MBOX_EV_ACTIVATE, "Planets");
 	check(v.ptype == MBOX_PTYPE_CONFIG && strcmp(v.rows[0].label, "Veldin") == 0 &&
 	      strcmp(v.rows[5].label, "Obani Gemini") == 0 && v.nrows == 24 && strcmp(v.title, "Planets") == 0 &&
@@ -861,14 +1039,19 @@ static void test_install_uya(void)
 
 	group("console menu: UYA's install and mailbox");
 
-	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 13 && d->ncaves == 4,
-	      "UYA has a renderer: the mailbox, the state, the read-only data, the code, thirteen words");
+	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 14 && d->ncaves == 4 &&
+	      d->mailbox_size == MH_MBOX_SIZE,
+	      "UYA has a renderer: the mailbox with the picker's two words, the state, the read-only data, the code, "
+	      "fourteen words");
 	if (d == NULL) return;
 	check(d->hooks[0].addr == MH_SITE_MSG && d->hooks[4].addr == MH_SITE_INJECT &&
-	      d->hooks[6].addr == MH_SITE_LAUNCH && d->hooks[7].addr == MH_SITE_HELP8_TEXT &&
-	      d->hooks[7].value == MH_MSG_HELP && d->hooks[12].addr == MH_SITE_HELP9B_CB &&
-	      d->hooks[8].value == d->hooks[10].value && d->hooks[10].value == d->hooks[12].value,
-	      "the label hook first, the HELP rows' text and callback last, one callback for all three tables");
+	      d->hooks[6].addr == MH_SITE_LAUNCH && d->hooks[7].addr == MH_SITE_MAP_LIST &&
+	      d->hooks[7].original == MH_ORIG_MAP_LIST && (d->hooks[7].value >> 26) == 18 && (d->hooks[7].value & 3) == 1 &&
+	      d->hooks[8].addr == MH_SITE_HELP8_TEXT &&
+	      d->hooks[8].value == MH_MSG_HELP && d->hooks[13].addr == MH_SITE_HELP9B_CB &&
+	      d->hooks[9].value == d->hooks[11].value && d->hooks[11].value == d->hooks[13].value,
+	      "the label hook first, the GALACTIC MAP's list word (a bl) before the HELP rows' text and callback, "
+	      "last, one callback for all three tables");
 	check(d->mode_addr == RAC3_GAME_STATE && d->mode_paused == 3 && d->pending_addr == U_PENDING_MODE &&
 	      d->screen_addr == MH_SHIM + SH_UP && d->screen_id == U_SCREEN_UP,
 	      "the menu is down when gameMode is not 3, nothing is queued and the shim's word says none of its "
@@ -886,7 +1069,7 @@ static void test_install_uya(void)
 		host_write_log_reset();
 		tick(1);
 	}
-	check(menu_state() == MENU_READY && hooks_are(d, 1), "in play again, the renderer goes in, all thirteen words");
+	check(menu_state() == MENU_READY && hooks_are(d, 1), "in play again, the renderer goes in, all fourteen words");
 	{
 		u32 k, a = 0, l = 0, n = host_write_log_count(), bytes = 0, at_code = 999, first_hook = 999;
 		for (k = 0; k < n && k < 64; k++) {
@@ -903,9 +1086,10 @@ static void test_install_uya(void)
 	check(mb == MH_BOX && mb == 0x01ADB900u && peek32(mb) == MBOX_MAGIC && peek8(mb + MBOX_OFF_ROW_CAP) == 24 &&
 	      peek8(mb + MBOX_OFF_ROW_SIZE) == 0x40 && peek8(mb + MBOX_OFF_MAX_ROWS) == 9 &&
 	      peek8(mb + MBOX_OFF_CFG_ROWS) == 24 && peek8(mb + MBOX_OFF_RENDERER) == 3 &&
-	      peek16(mb + MBOX_OFF_VERSION) == 3,
+	      peek16(mb + MBOX_OFF_VERSION) == 3 && (peek8(mb + MBOX_OFF_CAPS) & MBOX_CAP_PICKER) != 0 &&
+	      peek16(mb + MBOX_OFF_SIZE) == 0x680,
 	      "the mailbox (round 4): at 0x1ADB900, version 3, 24 rows of 0x40, nine a MAIN page, 24 a CONFIG page, "
-	      "renderer 3");
+	      "renderer 3, the planet picker (caps bit4)");
 	check(peek32(U_CELLS) == 0 && peek32(U_CELLS + U_CELLS_SIZE - 4) == 0,
 	      "the grid's cells' span, which the install does not write");
 	check(peek32(MH_SITE_HELP8_TEXT) == 0xF000 && peek32(MH_SITE_HELP9A_TEXT) == 0xF000 &&
@@ -925,6 +1109,7 @@ static void test_install_uya(void)
 	check(menu_state() == MENU_IDLE && hooks_are(d, 0) && peek32(MH_SITE_HELP8_TEXT) == 0x106 &&
 	      peek32(MH_SITE_HELP8_CB) == MH_ORIG_HELP_CB && peek32(MH_SITE_MSG) == MH_ORIG_MSG,
 	      "in play: every word the game's again, HELP its own row");
+	check(peek32(MH_SITE_MAP_LIST) == MH_ORIG_MAP_LIST, "the GALACTIC MAP's list build its own again too");
 	config_set_u32("menu.enabled", 1);
 	tick(4);
 	check(menu_state() == MENU_READY && hooks_are(d, 1), "menu.enabled = 1: back in at once");
@@ -1225,9 +1410,16 @@ static void test_renderer_uya(void)
 	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0, "and TRAINER opens the root again");
 	tick(4);
 
-	/* Round 4: PLANETS, a CONFIG page of 24 of the 34, the window sliding under the cursor at its last row. */
+	/*
+	 * Round 4: PLANETS, a CONFIG page of 24 of the 34, the window sliding under
+	 * the cursor at its last row. The row opens the GALACTIC MAP now (the
+	 * picker's own test, below); qwark's list is its fallback, here in a pause
+	 * whose Start does not leave it, where the map is refused.
+	 */
 	w32(U_CURSOR, 2);
+	poke8(U_NO_EXIT, 1);
 	pframe(0x40);
+	poke8(U_NO_EXIT, 0);
 	tick(2);
 	pframe(0);
 	pframe(0);
@@ -1422,10 +1614,378 @@ static void test_sliders_uya(void)
 	check(quit(), "quit UYA");
 }
 
+/* --------------------------------------------- the GALACTIC MAP, the Planets row's picker */
+
+/* The game's name table for planets 0 .. 29, {location, planet} (0xC409E4, as the executable has it). */
+static const u32 map_texts[30][2] = {
+	{ 0, 0 }, { 0xC9, 0xBB7 }, { 0xCA, 0xBB8 }, { 0xCB, 0xBB9 }, { 0xCC, 0xBBA }, { 0xCD, 0xE8 },
+	{ 0x135B, 0xBB9 }, { 0xCF, 0xBBB }, { 0xD0, 0xBBC }, { 0xD1, 0xBBD }, { 0xD2, 0xBBE },
+	{ 0xD3, 0xBBF }, { 0xD4, 0xBC0 }, { 0xD5, 0xBC1 }, { 0xD6, 0xBC2 }, { 0x135C, 0x1362 },
+	{ 0xD8, 0xBC3 }, { 0xD9, 0xBC4 }, { 0xDA, 0xBC5 }, { 0xDB, 0xBC6 }, { 0xD3B, 0xBC8 },
+	{ 0xDD, 0xBBF }, { 0xDE, 0xBC8 }, { 0xDF, 0xBC1 }, { 0xD3C, 0xD3F }, { 0, 0 },
+	{ 0xD3D, 0xBC3 }, { 0x135D, 0xBBC }, { 0xC8E, 0xBBC }, { 0xD3E, 0xBBD }
+};
+
+static int map_texts_are_the_games(void)
+{
+	u32 p;
+	for (p = 0; p < 30; p++) {
+		if (r32(U_MAP_TEXTS + 8 * p) != map_texts[p][0] || r32(U_MAP_TEXTS + 8 * p + 4) != map_texts[p][1]) return 0;
+	}
+	return 1;
+}
+
+/* The entry of the map's list that holds planet p, or -1. */
+static int map_index(u32 p)
+{
+	u32 i;
+	for (i = 0; i < r32(U_MAP_COUNT); i++) {
+		if (r32(U_MAP_ENTRIES + i * U_MAP_ENTRY_SIZE) == p) return (int)i;
+	}
+	return -1;
+}
+
+/* Down on the map until its cursor is on planet p (at most 40 frames, the list being 30 at most). */
+static void map_down_to(u32 p)
+{
+	int i;
+	for (i = 0; i < 40 && r32(U_MAP_ENTRIES + r32(U_MAP_CURSOR) * U_MAP_ENTRY_SIZE) != p; i++) pframe(PADB_DOWN);
+}
+
+/* The save's own list, as UnlockPlanet keeps it: these planets, then zeros. */
+static const u32 save_list[] = { 1, 2, 3, 4, 5, 11, 12, 7, 6 };
+
+static int save_list_is_intact(void)
+{
+	u32 i;
+	for (i = 0; i < 60; i++) {
+		if (r32(U_UNLOCKED + 4 * i) != (i < sizeof(save_list) / sizeof(save_list[0]) ? save_list[i] : 0)) return 0;
+	}
+	return 1;
+}
+
+/* Open the menu with the combo and press the cross on PLANETS: the map is queued. */
+static void open_picker(void)
+{
+	press(COMBO_MENU_DEFAULT);
+	play_frame(0);
+	tick(2);
+	w32(U_CURSOR, 2);
+	pframe(0x40);
+}
+
+static void test_picker_uya(void)
+{
+	const struct planet_name_check { u32 planet, text; const char *name; } names[] = {
+		{ 6, 0x15EF, "The Phoenix Attacked" }, { 23, 0xDF, "Lot 43" }, { 27, 0x135D, "Deep Sea Hideout" },
+		{ 28, 0xC8E, "Sewers" }, { 29, 0xD3E, "Island Battle" }, { 8, 0xBBC, "Aquatos" },
+		{ 13, 0xBC1, "Holostar Studios" }, { 3, 0xCB, "Starship Phoenix" }, { 1, 0xBB7, "Veldin" }
+	};
+	const struct game_api *g;
+	const u8 *order;
+	char a[80];
+	u32 mb, slot, seq, frames, i, k, n;
+	u8 count;
+	int ok;
+
+	group("console menu: UYA's Planets row, the game's own GALACTIC MAP");
+
+	memset(&G, 0, sizeof(G));
+	memset(&M, 0, sizeof(M));
+	check(boot("NPEA00387"), "UYA boots");
+	uya_playing();
+	seed_game_table();
+	poke32(U_PAD_PTR, U_PAD);
+	poke32(U_CONFIRM_MASK, 0x40);
+	poke32(U_GAME_PTR, U_GAME_STATE);
+	poke32(U_PLANET, 5);
+	put_str(MSG_AT, "TRAINER");
+	put_str(MSG_AT + 0x10, "HELP");
+	put_str(MSG_AT + 0x20, "ROW");
+	put_str(MSG_AT + 0x30, "\x13 MISSIONS");
+	for (i = 0; i < 30; i++) {
+		poke32(U_MAP_TEXTS + 8 * i, map_texts[i][0]);
+		poke32(U_MAP_TEXTS + 8 * i + 4, map_texts[i][1]);
+	}
+	for (i = 0; i < 60; i++) poke32(U_UNLOCKED + 4 * i, i < sizeof(save_list) / sizeof(save_list[0]) ? save_list[i] : 0);
+	for (i = 0; i < 1000 && menu_state() != MENU_READY; i++) tick(1);
+	tick(2);
+	mb = menu_mailbox();
+	check(menu_state() == MENU_READY && peek32(MH_SITE_MAP_LIST) != MH_ORIG_MAP_LIST,
+	      "the renderer is in, the map's list word with it");
+
+	/* The list: every planet qwark loads that the map can draw, in PLANET_LIST's menu order. */
+	g = session_game();
+	order = g != NULL ? g->planet_order : NULL;
+	g->planet_names(&count);
+	n = 0;
+	ok = order != NULL;
+	for (i = 0; ok && i < count; i++) {
+		u32 p = order[i];
+		if (p == 0 || p == 15 || p == 25 || p >= 30) continue;
+		ok = n < MH_MAP_LIST_LEN && map_list_c[n] == p;
+		n++;
+	}
+	check(ok && n == MH_MAP_LIST_LEN && n == 27,
+	      "the Trainer's list is rac3.c's menu order less the gaps and the vid comics (no picture in the map): 27");
+
+	/* CHEATS first (a CONFIG page, round 4's picture), then back to the root, so the map follows a picture. */
+	press(COMBO_MENU_DEFAULT);
+	play_frame(0);
+	tick(2);
+	w32(U_CURSOR, 1);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.pic_state == 1 && G.pic_taken == 2, "CHEATS: the picture source set up, two buffers taken");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.main_up && G.pic_state == 8 && G.pic_taken == 0, "back on the root: the picture torn down");
+
+	/* The cross on PLANETS: the map over the menu, no event. */
+	w32(U_CURSOR, 2);
+	pframe(0x40);
+	slot = MH_SHIM + SH_GS + MH_GS_SIZE * (r8(MH_SHIM + SH_CUR) ^ 1u);
+	check(G.pending == slot && r32(slot + 4) == MH_FN_MAP_INIT && r32(slot + 8) == MH_FN_MAP_DEINIT &&
+	      r32(slot + 12) == MH_FN_MAP_UPDATE && r32(slot + 16) == U_DESC_MAP_PRE && r32(slot + 20) == U_DESC_MAP_POST &&
+	      r32(MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR)) == 0 &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) == peek32(mb + MBOX_OFF_EV_ACK),
+	      "the cross on PLANETS: the map queued on the menu's other GuiState, its init, deinit and update the "
+	      "Trainer's, its renders the map's; the menu's screen reset; no event posted");
+	frames = peek32(mb + MBOX_OFF_FRAMES);
+	pframe(0);
+	check(G.active == slot && M.up && M.inits == 1 && !G.main_up && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER &&
+	      mh_picker_up() &&
+	      r32(MH_SHIM + SH_UP) == 0, "the next frame: the menu's screen ends, not closed but under the map");
+	check(M.flag_in_build == 1 && r8(MH_SHIM + SH_MAP) == 0 && r32(U_MAP_COUNT) == 27,
+	      "the build ran on the Trainer's list (SH_MAP up for the game's init only): 27 entries");
+	check(!M.pic_clash && M.pic_held == 0,
+	      "the map found picture source 1 and the pause's picture buffers free: nothing of the menu's held");
+	ok = 1;
+	for (i = 0; i < 27; i++) ok = ok && r32(U_MAP_ENTRIES + i * U_MAP_ENTRY_SIZE) == map_list_c[i];
+	check(ok && map_index(1) == 0 && map_index(6) >= 0 && map_index(29) >= 0 && map_index(20) >= 0,
+	      "in the menu's order, Veldin, Phoenix Rescue, Launch Site and the mission levels among them");
+	ok = 1;
+	for (k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
+		int at = map_index(names[k].planet);
+		ok = ok && at >= 0 && M.text[at] == names[k].text;
+		if (!ok) printf("    planet %u named 0x%X, wanted 0x%X (%s)\n", (unsigned)names[k].planet,
+		                at >= 0 ? (unsigned)M.text[at] : 0u, (unsigned)names[k].text, names[k].name);
+	}
+	for (i = 0; ok && i < 27; i++) {
+		for (k = i + 1; k < 27; k++) ok = ok && M.text[i] != M.text[k];
+	}
+	check(ok, "every entry named apart: the mission levels by their location (Lot 43, Deep Sea Hideout, Sewers, "
+	      "Island Battle), Phoenix Rescue \"The Phoenix Attacked\", the rest as the game names them");
+	check(map_texts_are_the_games() && save_list_is_intact(),
+	      "and the name table is the game's again after the init; the save's list was never written");
+	check(strcmp(text_of(U_MAP_HINT, a, 80), "\x13 ALL PLANETS") == 0,
+	      "Square's hint, MISSIONS in the game's map, says ALL PLANETS, in its own glyph");
+	tick(8);
+	check(menu_model_depth() == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER,
+	      "qwark leaves the menu where it was while the map is up");
+
+	/* The map's own update for the cursor. */
+	n = M.updates;
+	pframe(PADB_DOWN);
+	check(M.updates == n + 1 && r32(U_MAP_CURSOR) == 1, "Down: the map's own update moves the cursor");
+
+	/* Square: ALL PLANETS, back to the menu and on to qwark's own list. */
+	G.sound = 0;
+	pframe(PADB_SQUARE);
+	check(M.updates == n + 1 && M.missions == 0 && G.pending == MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR) &&
+	      G.sound == SND_CHANGE && r8(MH_SHIM + SH_MAP_LIST) == 1,
+	      "Square: no MISSIONS (whose travel would leave from play); the menu's screen queued, for the list");
+	pframe(0);
+	check(!M.up && G.main_up && r32(U_CURSOR) == 2 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN &&
+	      !mh_picker_up() && peek8(mb + MBOX_OFF_EV_KIND) == MBOX_EV_ACTIVATE &&
+	      peek8(mb + MBOX_OFF_EV_ROW) == 2 && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK) &&
+	      r8(MH_SHIM + SH_MAP_LIST) == 0 && G.pending == 0,
+	      "the root again, and the cross on PLANETS, which the picker refuses this once: the event posted, as when "
+	      "the map cannot open");
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(menu_model_depth() == 2 && G.built && G.rows == 24 && strcmp(cfg_label(0, a), "VELDIN") == 0 &&
+	      M.inits == 1, "qwark's own list of every planet, the vid comics on it, on a CONFIG page");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.main_up && r32(U_CURSOR) == 2 && menu_model_depth() == 1, "Triangle: the root, the cursor on PLANETS");
+
+	/* The map again, for Triangle. */
+	pframe(0x40);
+	pframe(0);
+	check(M.up && M.inits == 2 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER, "the map again");
+	n = M.updates;
+
+	/* Triangle: back to the menu, on PLANETS. */
+	G.sound = 0;
+	pframe(PADB_TRIANGLE);
+	check(G.pending == MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR) && G.sound == SND_CHANGE &&
+	      M.missions == 0 && M.battle == 0 && M.updates == n, "Triangle: the menu's screen queued, the change sound");
+	pframe(0);
+	check(!M.up && M.deinits == 2 && G.main_up && G.count == 7 && r32(U_CURSOR) == 2 && G.paused &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && peek32(mb + MBOX_OFF_FRAMES) >= frames &&
+	      !mh_picker_up() && r32(U_KIND) == 0,
+	      "the root again, the cursor on PLANETS, the pause still up, the menu open with its frames counting on, "
+	      "nothing set to travel");
+	tick(8);
+	check(menu_model_depth() == 1, "qwark: the same root");
+	w32(U_CURSOR, 1);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.pic_state == 1 && G.pic_taken == 2, "and CHEATS from there: its picture set up again");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.main_up && r32(U_CURSOR) == 1 && G.pic_taken == 0, "back to the root");
+
+	/* X on a planet: the pick to qwark, a plain close, qwark's load. */
+	w32(U_CURSOR, 2);
+	pframe(0x40);
+	pframe(0);
+	check(M.up && M.inits == 3, "the cross on PLANETS again: the map");
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	map_down_to(9);
+	G.sound = 0;
+	pframe(0x40);
+	check(peek32(mb + MBOX_OFF_PICK_PLANET) == 9 &&
+	      peek32(mb + MBOX_OFF_PICK_SEQ) == seq + 1 && G.sound == SND_MAP_GO && G.pending == EXIT_GS,
+	      "X on Tyhrranosis: the planet, then the seq, in the mailbox; the map's travel sound; the pause's exit queued");
+	pframe(0);
+	check(!G.paused && !M.up && M.exit_kind == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      !mh_picker_up(), "the pause closes plainly (kind 0, no travel of the game's), the menu closed");
+	for (i = 0; i < 40 && peek32(RAC3_LOAD_PLANET) != 1; i++) tick(1);
+	check(peek32(RAC3_LOAD_PLANET) == 1 && peek32(RAC3_DEST_PLANET) == 9 && menu_model_depth() == 1,
+	      "qwark takes the pick once the game plays: its planet load of Tyhrranosis; the menu back on its root");
+	poke32(RAC3_LOAD_PLANET, 0);
+	poke32(RAC3_DEST_PLANET, 0);
+	tick(8);
+
+	/* Veldin, which the game's own map refuses, and the planet you are on. */
+	open_picker();
+	pframe(0);
+	pframe(0x40);
+	pframe(0);
+	for (i = 0; i < 40 && peek32(RAC3_LOAD_PLANET) != 1; i++) tick(1);
+	check(M.exit_kind == 0 && peek32(RAC3_LOAD_PLANET) == 1 && peek32(RAC3_DEST_PLANET) == 1,
+	      "X on Veldin, the first: picked and loaded (the game's map takes no Veldin)");
+	poke32(RAC3_LOAD_PLANET, 0);
+	tick(8);
+	open_picker();
+	pframe(0);
+	map_down_to(5);
+	pframe(0x40);
+	pframe(0);
+	for (i = 0; i < 40 && peek32(RAC3_LOAD_PLANET) != 1; i++) tick(1);
+	check(M.exit_kind == 0 && peek32(RAC3_DEST_PLANET) == 5,
+	      "X on Daxx, the planet you are on: loaded again, as the Planets list would");
+	poke32(RAC3_LOAD_PLANET, 0);
+	tick(8);
+
+	/* Start: everything closes, nothing picked. */
+	open_picker();
+	pframe(0);
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	G.closing = 1;
+	pframe(0);
+	check(G.closing == 0 && G.pending == EXIT_GS && M.updates > 0, "Start: acknowledged, the pause's exit queued");
+	pframe(0);
+	tick(8);
+	check(!G.paused && M.exit_kind == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      peek32(mb + MBOX_OFF_PICK_SEQ) == seq && peek32(RAC3_LOAD_PLANET) == 0 &&
+	      menu_model_depth() == 1, "a plain close: no reload, no pick, the menu closed on its root");
+
+	/* The combo with the map up: qwark asks for a close, which the Trainer's map serves. */
+	open_picker();
+	pframe(0);
+	check(M.up && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER, "the map up");
+	tick(4);
+	press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo with the map up asks for a close");
+	pframe(0);
+	check(peek8(mb + MBOX_OFF_REQUEST) == 0 && G.pending == EXIT_GS, "the map takes it: the pause's exit queued");
+	pframe(0);
+	tick(8);
+	check(!G.paused && M.exit_kind == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      peek32(RAC3_LOAD_PLANET) == 0 && menu_model_depth() == 1, "everything closed plainly, nothing loaded");
+
+	/* Blackwater City: Triangle and Start would go to BATTLE MISSIONS in the game's map. */
+	poke32(U_PLANET, 12);
+	open_picker();
+	pframe(0);
+	pframe(PADB_TRIANGLE);
+	pframe(0);
+	check(M.battle == 0 && G.main_up && r32(U_CURSOR) == 2 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
+	      "on Blackwater City, Triangle: back to the menu, not BATTLE MISSIONS");
+	pframe(0x40);
+	pframe(0);
+	G.closing = 1;
+	pframe(0);
+	pframe(0);
+	tick(8);
+	check(M.battle == 0 && !G.paused && M.exit_kind == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "and Start: the pause closes plainly");
+	poke32(U_PLANET, 5);
+
+	/* The game's own map (the ship's): its own list, names, and travel, untouched. */
+	n = M.inits;
+	G.paused = 1;
+	w32(U_KIND, 0);
+	mock_swap_to(game_map());
+	runner();
+	check(M.up && M.inits == n + 1 && M.flag_in_build == 0 && r32(U_MAP_COUNT) == 7 && map_index(1) < 0 &&
+	      map_index(6) < 0 && map_index(2) == 0 && map_index(7) == 6,
+	      "the game's own map: the save's list through the game's filter (no Veldin, no Phoenix Rescue), seven");
+	check(M.text[map_index(3)] == 0xCB && strcmp(text_of(U_MAP_HINT, a, 80), "\x13 MISSIONS") == 0 &&
+	      map_texts_are_the_games(), "the game's names, its MISSIONS hint");
+	map_down_to(4);
+	pframe(0x40);
+	pframe(0);
+	check(!G.paused && M.exit_kind == 1 && M.exit_dest == 4 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      peek32(RAC3_LOAD_PLANET) == 0, "X on Marcadia: the game's own travel (kind 1), nothing of the Trainer's");
+	G.paused = 1;
+	w32(U_KIND, 0);
+	mock_swap_to(game_map());
+	runner();
+	pframe(PADB_TRIANGLE);
+	pframe(0);
+	check(!G.paused && M.exit_kind == 1 && M.exit_dest == 5, "Triangle there: the game's own reload of Daxx, as ever");
+	tick(8);
+
+	/* A pause whose Start does not leave it: no map, qwark's own list. */
+	poke8(U_NO_EXIT, 1);
+	open_picker();
+	check(G.pending == 0 && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK) &&
+	      !mh_picker_up(), "with U_NO_EXIT set the picker refuses, and the cross posts the event");
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(menu_model_depth() == 2 && G.built && G.rows == 24 && !G.main_up,
+	      "qwark's own Planets list, the fallback: a CONFIG page, 24 of the 34 a window");
+	poke8(U_NO_EXIT, 0);
+	G.closing = 1;
+	pframe(0);
+	pframe(0);
+	tick(8);
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "closed");
+
+	check(quit(), "quit UYA");
+}
+
 void test_menu_uya(void)
 {
 	test_model_uya();
 	test_install_uya();
 	test_renderer_uya();
 	test_sliders_uya();
+	test_picker_uya();
 }

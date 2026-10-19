@@ -54,12 +54,17 @@ For Deadlocked's renderer:
      but for probe N0, the renderer's prototype, which shares its hook sites
      by design.
 
-For Up Your Arsenal's renderer, the same, and for its thirteen words: each
+For Up Your Arsenal's renderer, the same, and for its fourteen words: each
 holds the game's word in the executable, the code words are branches to the
 stubs their comments name, the HELP rows' words are the text id 0xF000 and a
 descriptor of the renderer's; the code around each site is what the stubs
 assume (the msg_string entry, the main pause init's three tables and bands,
-the Start test and path, the launcher); the renderer writes nothing of the
+the Start test and path, the launcher, the GALACTIC MAP's list build); the
+GALACTIC MAP the Planets row opens is what the shim takes it for (its
+GuiState's five descriptors, the list, entries and cursor its update reads,
+the exits the shim takes first, the picture of every planet of the Trainer's
+list, the five name words and a name apart for each entry, the Trainer's list
+rac3.c's menu order); the renderer writes nothing of the
 main pause's tables but the HELP rows' two words; what the CONFIG page takes
 from Options' AUDIO / VISUAL screen is that screen's (every AV_* number where
 the screen reads it, the grid configuration it builds and the calls after it,
@@ -67,8 +72,9 @@ the panel of its widget table, the sliders' sizes and colours, font 1, the
 text fit, the grid's fields the sliders follow, and handles no other code
 builds; round 4: the picture, its source, buffers and set as AUDIO / VISUAL's
 init, update and deinit use them); the grid's cells' span (round 4) is past
-the read-write segment's end and named by nothing; the label, inject, combo
-and rows stubs, stepped, do what the C and the tests assume; and nothing
+the read-write segment's end and named by nothing; the label, inject, combo,
+rows and map list stubs, stepped, do what the C and the tests assume; the code
+span, grown to N3's start, is named by nothing and overlaps no mod; and nothing
 overlaps the mods, the probes or qwark's own writes (the trophy caves and the
 fast-load cave at 0x9807F0..0x9808B0), but for probes N3 and N3b, the
 prototypes, whose words are the same by design.
@@ -504,6 +510,7 @@ class Ppc:
         self.code, self.base, self.mem = code, base, mem
         self.r = [0] * 32
         self.cr0 = 0
+        self.crf = {}              # the other CR fields a compare set, by number: -1, 0 or 1
         self.written = set()
 
     def ld(self, a, n):
@@ -578,6 +585,12 @@ class Ppc:
                 self.st((base + simm) & 0xFFFFFFFF, self.r[rd], 4)
             elif op == 11 and (rd >> 2) == 0:               # cmpwi cr0
                 self.cmp(signed(self.r[ra]), simm)
+            elif op == 11 and (rd & 3) == 0:                # cmpwi crN
+                a = signed(self.r[ra])
+                self.crf[rd >> 2] = -1 if a < simm else (1 if a > simm else 0)
+                self.written.add("cr%d" % (rd >> 2))
+            elif op == 31 and ((w >> 1) & 0x3FF) == 87:     # lbzx
+                self.set(rd, self.ld(((self.r[ra] if ra else 0) + self.r[rb]) & 0xFFFFFFFF, 1))
             elif op == 10 and (rd >> 2) == 0:               # cmplwi cr0
                 self.cmp(self.r[ra], imm)
             elif op == 16 and (w & 3) == 0 and ra < 3:      # bc on cr0 (beq, bne, bgt, ble ...)
@@ -1335,6 +1348,7 @@ STUB_FIRST_RAC3 = {
     "mh_rows8_stub": (0xFFFF0000, 0x3CC00000, "lis r6,..."),
     "mh_rows9a_stub": (0xFFFF0000, 0x3CC00000, "lis r6,..."),
     "mh_rows9b_stub": (0xFFFF0000, 0x3CC00000, "lis r6,..."),
+    "mh_map_list_stub": (0xFFFF0000, 0x3D800000, "lis r12,..."),
 }
 
 # The main pause's three row tables: (address, rows, the HELP row's index).
@@ -1454,6 +1468,42 @@ def check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
         ok(how == ("blr", None) and cpu.r[3] == shim + hdr["SH_ROWS"] and cpu.r[6] == 3 and
            (cpu.r[7] + off) & 0xFFFFFFFF == band and cpu.r[4] == 0x00C50000 and cpu.written <= rows_ok,
            "%s, the shim's init running: its table, its count, and r7 + 0x%X = its band" % (name, off))
+
+    # The GALACTIC MAP's list build, its filter's first word: the save's planet, or the Trainer's.
+    flag = shim + hdr["SH_MAP"]
+    image = dict(((hdr["MH_DATA"] + i, 1), b) for i, b in enumerate(data))
+    map_ok = {"r3", "r12", "cr0", "cr1"}
+    want = map_list(hdr)
+    good = True
+    for p in (0, 1, 2, 6, 20, 29, 30, 37, 0xFFFFFFFF):
+        for i in (0, 5, 59):
+            cpu, how = run("mh_map_list_stub", {3: p, 7: i, 29: 3, 6: 0x00DA5A94 + 4 * i})
+            good = good and how == ("blr", None) and cpu.r[3] == p and cpu.r[6] == 0x00DA5A94 + 4 * i and \
+                cpu.crf.get(1) == (-1 if (p - (1 << 32) if p & 0x80000000 else p) < 30 else
+                                   (1 if (p - (1 << 32) if p & 0x80000000 else p) > 30 else 0)) and \
+                cpu.written <= map_ok
+    ok(good, "map list stub, SH_MAP down (the game's own map): the game's word, cmpwi cr1,r3,30, r3 the save's "
+       "planet, back into the filter")
+    handed, good = [], True
+    for i in range(60):
+        mem = dict(image)
+        mem[(flag, 1)] = 1
+        cpu = Ppc(code, cave, {})
+        for (a, n), v in mem.items():
+            cpu.st(a, v, n)
+        cpu.r[3], cpu.r[7], cpu.r[29], cpu.r[6] = 0x77, i, 4, 0x00DA5A94 + 4 * i
+        before = dict(cpu.mem)
+        how = cpu.run(stub_at["mh_map_list_stub"])
+        if i < len(want):
+            handed.append(cpu.r[3])
+            good = good and how == ("b", hdr["GAME_MAP_ACCEPT"]) and cpu.crf.get(1) == 1
+        else:
+            good = good and how == ("blr", None) and cpu.r[3] == 0 and cpu.crf.get(1) == -1
+        good = good and cpu.r[6] == 0x00DA5A94 + 4 * i and cpu.written <= map_ok and cpu.mem == before
+    ok(good and handed == want,
+       "map list stub, SH_MAP up: r3 the r7th of the Trainer's %d planets, past the filter to 0x%08X with cr1 as "
+       "cmpwi cr1,r29,0 leaves it; past them 0, back into the filter, which skips it; nothing written but r3, "
+       "r12, cr0 and cr1" % (len(want), hdr["GAME_MAP_ACCEPT"]))
 
 
 def f32(bits):
@@ -1696,6 +1746,120 @@ def check_rac3_pic(ok, elf, hdr):
        "(0x234CA8(1)), as the shim's pic_close" % (vt or 0))
 
 
+def map_list(hdr):
+    """MH_MAP_LIST, the Trainer's GALACTIC MAP's planets, out of the header."""
+    text = open(os.path.join(HERE, "mh_rac3.h"), encoding="utf-8").read()
+    m = re.search(r"#define\s+MH_MAP_LIST\s+([0-9, ]+)", text)
+    return [int(x) for x in m.group(1).split(",")] if m else []
+
+
+def map_name_words(hdr):
+    """MH_MAP_NAME_WORDS: {the word, its text while the Trainer's map builds, the game's}."""
+    text = open(os.path.join(HERE, "mh_rac3.h"), encoding="utf-8").read().replace("\\\n", " ")
+    m = re.search(r"#define\s+MH_MAP_NAME_WORDS\s+(.*)", text)
+    return [tuple(int(x, 0) for x in t) for t in
+            re.findall(r"\{\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+)\s*\}", m.group(1))] if m else []
+
+
+def check_rac3_map(ok, elf, hdr, code, cave, data, stub_at):
+    """
+    4c for UYA: the GALACTIC MAP the Planets row opens, and the parts of it the
+    shim relies on: its GuiState's descriptors, the list build's loop round the
+    site, the list's entries, count and cursor, the exits of its update the
+    shim takes first, a picture for every planet the Trainer lists, the name
+    words, and the Trainer's list itself.
+    """
+    W = elf.word
+    ok(W(0x00BDD938) == 0x002CED28 and W(0x00BDD940) == 0x002CFB60 and W(0x00BDD948) == 0x002D0600 and
+       W(0x00BDD950) == 0x002D0744 and W(0x00BDD958) == 0x002D0768 and
+       all(W(a + 4) == UYA_TOC for a in range(0x00BDD938, 0x00BDD960, 8)),
+       "the map's getter 0x2CE130 hands its GuiState these five: init 0x2CED28, update 0x2CFB60, deinit "
+       "0x2D0600, pre 0x2D0744, post 0x2D0768 (OPD_MAP_*, U_DESC_MAP_*)")
+    ok(W(0x002CE134) is not None and
+       [a for a, w in elf.words(elf.text) if (w >> 26) == 18 and (w & 3) == 1 and branch_target(a, w) == 0x002CE7B8] ==
+       [0x002CEE7C],
+       "the list build 0x2CE7B8 has one caller, the map's init at 0x2CEE7C: SH_MAP up is that init")
+    ctx = [
+        (0x002CE824, 0x30C65A94, "the build's loop: r6 = 0xDA5A94, the save's list ..."),
+        (0x002CE828, 0x63A70000, "... r7 = 0, the index, ..."),
+        (0x002CE834, 0x80660000, "... r3 = its r7th word, ..."),
+        (0x002CE83C, 0x2C030000, "... then cmpwi r3,0 after the site, which sets cr0 again ..."),
+        (0x002CE840, 0x4C402342, "... crorc eq,lt,4*cr1+lt, which reads the site's cr1 ..."),
+        (0x002CE844, 0x418200A0, "... beq 0x2CE8E4, the skip ..."),
+        (0x002CE848, 0x2C030000, "cmpwi r3,0; beq skip: the stub's 0 is skipped as the game's"),
+        (0x002CE84C, 0x41820098, None),
+        (0x002CE88C, 0x2C9D0000, "cmpwi cr1,r29,0, which the stub sets as this does ..."),
+        (0x002CE894, 0x40840010, "... for the bge cr1 at GAME_MAP_ACCEPT, the entry made from r3:"),
+        (0x002CE8D0, 0x7C7E412E, "stwx r3,r30,r8, the entry's planet"),
+        (0x002CE8D4, 0x93BBF0A0, "stw r29,-0xF60(r27), the count 0xC4F0A0"),
+        (0x002CE8E4, 0x30E70001, "the skip: r7 + 1 ..."),
+        (0x002CE8EC, 0x2C07003C, "... to sixty"),
+        (0x002CE7E8, 0x33DE75B8, "the entries at 0x13775B8 (lis r30,0x137 before)"),
+        (0x002CFBE8, 0x808400C4, "the map's update reads the pad's presses, +0xC4, ..."),
+        (0x002CFBEC, 0x80A5A7F0, "... the confirm mask 0xCBA7F0 ..."),
+        (0x002CFBF0, 0x9066F098, "... and keeps the grid's cursor in 0xC4F098 (U_MAP_CURSOR), which X reads"),
+        (0x002CFC94, 0x54830630, "Square: bit 0x80"),
+        (0x002CFD44, 0x54A406F6, "Triangle: bit 0x10"),
+        (0x002D07D0, 0x38600014, "the pick's travel sound 0x14 (SND_MAP_GO)"),
+    ]
+    for a, want, what in ctx:
+        ok(W(a) == want, "0x%08X holds 0x%08X: %s" % (a, want, what or "the same"))
+    exits = [(0x002CFC5C, "the cross: bctrl, the entry's callback 0x2D078C (the travel setter, then out)"),
+             (0x002CFCB4, "Square: bl MISSIONS' getter 0x2F5758"),
+             (0x002CFD80, "Triangle on planets 12 and 18: bl BATTLE MISSIONS' getter 0x2DECB4"),
+             (0x002CFDA4, "Triangle elsewhere: bl the travel setter 0x2D22DC, a reload"),
+             (0x002D0514, "the Start close: bl 0x2D21C8, the request the shim takes first")]
+    targets = {0x002CFCB4: 0x002F5758, 0x002CFD80: 0x002DECB4, 0x002CFDA4: 0x002D22DC, 0x002D0514: 0x002D21C8}
+    for a, what in exits:
+        w = W(a)
+        good = w == 0x4E9E0421 if a == 0x002CFC5C else (w >> 26) == 18 and branch_target(a, w) == targets[a]
+        ok(good, "the map's update, 0x%08X: %s" % (a, what))
+    ok(W(0x00BDD960) == 0x002D078C, "each entry's callback 0xBDD960 is the pick's, 0x2D078C")
+    # The MISSIONS hint the shim hides: 0x130028, made in the init with text 0x15C6.
+    init = [W(a) for a in range(0x002CED28, 0x002CF600, 4)]
+    ok(0x386015C6 in init and any(imm32(elf, a) == hdr["U_MAP_HINT"] for a in range(0x002CED28, 0x002CF600, 4)
+                                  if (W(a) >> 26) == 24),
+       "the init makes Square's hint, 0x%08X, with text 0x15C6 (\" MISSIONS\"), which the Trainer's map "
+       "relabels ALL PLANETS" % hdr["U_MAP_HINT"])
+
+    # The Trainer's list: rac3.c's menu order, the planets with a picture.
+    want = map_list(hdr)
+    rac3 = open(os.path.join(QWARK, "src", "games", "rac3.c"), encoding="utf-8").read()
+    m = re.search(r"rac3_planet_order\[\] = \{(.*?)\};", rac3, re.S)
+    order = [int(x) for x in re.findall(r"\b(\d+)\b", re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S))] if m else []
+    m = re.search(r"rac3_planets\[\] = \{(.*?)\};", rac3, re.S)
+    names = re.findall(r'"([^"]*)"', m.group(1)) if m else []
+    pics = dict((p, W(0x00C4EFFC + 4 * p)) for p in range(0, 40))
+    rv, rfs, rms, _, _ = elf.rw
+    with_pic = [p for p in order if 1 <= p < 30 and p < len(names) and not names[p].startswith("(") and
+                rv <= (pics[p] or 0) < rv + rms]
+    ok(want and want == with_pic and len(want) == hdr["MH_MAP_LIST_LEN"] and len(want) <= 30 and
+       15 not in want and 25 not in want,
+       "the Trainer's list, %d planets, is rac3.c's menu order less the gaps and the placeholder and those the "
+       "map has no picture for (the vid comics 30..36: 0xC4EFFC[p] past 29 is the map's own variables), at most "
+       "the map's 30" % len(want))
+    ok(all((pics[p] or 0) != 0 for p in range(1, 30)) and pics[30] == 0xFFFFFFFF,
+       "0xC4EFFC has a picture for every planet 1 .. 29; at 30 it is 0xC4F074, the map's own -1")
+    # The names: the build's rule (0x2CEB04: the planet's text for these), with the five words changed.
+    group = set(w & 0xFFFF for w in (W(a) for a in range(0x002CEB04, 0x002CEB74, 4)) if (w >> 16) == 0x2C03)
+    ok(group == {1, 2, 4, 5, 8, 9, 10, 13, 14, 18, 23, 27, 28, 29},
+       "the build names planets %s by their planet's text, the rest by their location's" % sorted(group))
+    words = map_name_words(hdr)
+    table = dict(((0x00C409E4 + 8 * p + 4 * k), W(0x00C409E4 + 8 * p + 4 * k)) for p in range(30) for k in (0, 1))
+    good = len(words) == hdr["MH_MAP_NAMES"] == 5 and all(table.get(a) == old for a, new, old in words)
+    good = good and words[0][0] == 0x00C409E4 + 8 * 6 and         all(new == table.get(a - 4) and ((a - 0x00C409E4) // 8) in group for a, new, old in words[1:])
+    ok(good, "the five name words hold the game's text ids in the executable; Phoenix Rescue's location word "
+       "first, then four mission levels' planet words, each to say its location's text")
+    after = dict(table)
+    for a, new, old in words:
+        after[a] = new
+    shown = [after[0x00C409E4 + 8 * p + (4 if p in group else 0)] for p in want]
+    before = [table[0x00C409E4 + 8 * p + (4 if p in group else 0)] for p in want]
+    ok(len(set(shown)) == len(want) and 0 not in shown,
+       "with them, every one of the %d entries has a name of its own (the game's own would repeat %d)" %
+       (len(want), len(before) - len(set(before))))
+
+
 def check_rac3(ok, elf, roots):
     hdr = header_defs(os.path.join(HERE, "mh_rac3.h"))
     box_defs = header_defs(MENUBOX)
@@ -1754,7 +1918,8 @@ def check_rac3(ok, elf, roots):
        "row_cap 24, rows of 0x40 (round 4: no descriptions), 9 rows a MAIN page, 24 a CONFIG page, caps 0x%02X, "
        "closed, no request, renderer 3" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
-       all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+       (hdr["MH_CAPS"] & box_defs["MBOX_CAP_PICKER"]) != 0 and all(b == 0 for b in box[16:]),
+       "the rows fill the image, everything after the header zero; caps has the planet picker (MBOX_CAP_PICKER)")
     shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
     ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and
        all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]),
@@ -1771,10 +1936,11 @@ def check_rac3(ok, elf, roots):
 
     # 1. the originals, 2. the hook words
     order = ["MH_SITE_MSG", "MH_SITE_ROWS8", "MH_SITE_ROWS9A", "MH_SITE_ROWS9B", "MH_SITE_INJECT",
-             "MH_SITE_COMBO", "MH_SITE_LAUNCH", "MH_SITE_HELP8_TEXT", "MH_SITE_HELP8_CB",
+             "MH_SITE_COMBO", "MH_SITE_LAUNCH", "MH_SITE_MAP_LIST", "MH_SITE_HELP8_TEXT", "MH_SITE_HELP8_CB",
              "MH_SITE_HELP9A_TEXT", "MH_SITE_HELP9A_CB", "MH_SITE_HELP9B_TEXT", "MH_SITE_HELP9B_CB"]
-    ok(len(hooks) == 13 and [h[0] for h in hooks] == [hdr[k] for k in order],
-       "thirteen words: the label hook, the three row counts, the Start path's three, then the HELP rows' six")
+    ok(len(hooks) == 14 and [h[0] for h in hooks] == [hdr[k] for k in order],
+       "fourteen words: the label hook, the three row counts, the Start path's three, the GALACTIC MAP's list "
+       "word, then the HELP rows' six")
     for a, value, orig, what in hooks:
         ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
 
@@ -1896,15 +2062,20 @@ def check_rac3(ok, elf, roots):
         ok(c != 0, "mh_help is code at 0x%08X" % c)
 
     # 4. the code, 5. the descriptors
-    allowed = (hdr["GAME_MSG_EXIT"],)
+    allowed = (hdr["GAME_MSG_EXIT"], hdr["GAME_MAP_ACCEPT"])
     bad = lint_code(code, cave, allowed=allowed)
-    ok(not bad, "the code: no branch out but the label stub's, no sc, no vector instruction, no write to r13")
+    ok(not bad, "the code: no branch out but the label stub's and the map list stub's, no sc, no vector "
+       "instruction, no write to r13")
     for b in bad[:12]:
         print("        " + b)
-    outs = [cave + i for i in range(0, len(code), 4)
+    outs = [(cave + i, branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0])) for i in range(0, len(code), 4)
             if branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0]) in allowed]
-    ok(len(outs) == 1 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 for o in outs),
-       "exactly one way out, a plain branch: the label stub on into msg_string")
+    ok(sorted(t for _, t in outs) == sorted(allowed) and
+       all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 for o, _ in outs) and
+       all(stub_at.get(n, -1) <= o < stub_at.get(n, -1) + 0x80 for (o, t), n in
+           zip(sorted(outs, key=lambda x: x[1] == hdr["GAME_MAP_ACCEPT"]), ("mh_msg_stub", "mh_map_list_stub"))),
+       "exactly two ways out, plain branches: the label stub on into msg_string, the map list stub on past the "
+       "build's filter (0x%08X)" % hdr["GAME_MAP_ACCEPT"])
     launch = stub_at.get("mh_launch_stub")
     if launch is not None:
         lw = [struct.unpack(">I", code[launch - cave + 4 * i:launch - cave + 4 * i + 4])[0] for i in range(13)]
@@ -1915,7 +2086,7 @@ def check_rac3(ok, elf, roots):
            "back and returns to the launcher")
 
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
-    handed = {hdr["U_DESC_PRE"], hdr["U_DESC_POST"]}
+    handed = {hdr["U_DESC_PRE"], hdr["U_DESC_POST"], hdr["U_DESC_MAP_PRE"], hdr["U_DESC_MAP_POST"]}
     bad, seen = calls_via_descriptors(code, cave, set(opds) | handed, elf, toc=UYA_TOC, code_hi=0xBC0000)
     ok(not bad, "every indirect call switches r2 through one of the header's descriptors and back")
     for b in bad[:12]:
@@ -1934,10 +2105,18 @@ def check_rac3(ok, elf, roots):
     named = code_pointers(code, cave, hdr["U_DESC_PRE"], hdr["U_DESC_PRE"] + 8) + \
         code_pointers(code, cave, hdr["U_DESC_POST"], hdr["U_DESC_POST"] + 8)
     ok(len(named) >= 2, "and the code hands both to its GuiStates")
+    for name, fn in (("U_DESC_MAP_PRE", 0x002D0744), ("U_DESC_MAP_POST", 0x002D0768)):
+        ok(elf.word(hdr[name]) == fn and elf.word(hdr[name] + 4) == UYA_TOC and
+           code_pointers(code, cave, hdr[name], hdr[name] + 8),
+           "%s 0x%08X = {0x%08X, TOC}, the GALACTIC MAP's own render, which the shim hands its map's GuiState" %
+           (name, hdr[name], fn))
+
+    # 4c. the GALACTIC MAP the Planets row opens
+    check_rac3_map(ok, elf, hdr, code, cave, data, stub_at)
 
     # 8. the leaf stubs, stepped
     if all(k in stub_at for k in ("mh_msg_stub", "mh_inject_stub", "mh_combo_stub", "mh_rows8_stub",
-                                  "mh_rows9a_stub", "mh_rows9b_stub")):
+                                  "mh_rows9a_stub", "mh_rows9b_stub", "mh_map_list_stub")):
         try:
             check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data)
         except ValueError as e:
@@ -1946,7 +2125,7 @@ def check_rac3(ok, elf, roots):
         ok(False, "every leaf stub found to step")
 
     # 9. overlaps
-    ours = [(cave, cave + len(code), "renderer code"), (mbx, mbx + len(box), "renderer mailbox"),
+    ours = [(cave, cave_end, "renderer code span"), (mbx, mbx + len(box), "renderer mailbox"),
             (dat, dat + len(data), "renderer data"), (hdr["U_CELLS"], hdr["U_CELLS_END"], "renderer cells")]
     ours += [(a, a + 4, "renderer word") for a, _, _, _ in hooks]
     known = mod_entries(roots, "NPEA00387")

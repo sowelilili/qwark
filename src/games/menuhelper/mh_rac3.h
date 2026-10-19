@@ -1,7 +1,7 @@
 /*
  * Up Your Arsenal's console menu renderer (NPEA00387): the game header the core
  * and the shim are both built with (mh_shim.h says what a game header
- * defines), where the renderer lives, the thirteen words it writes and the game
+ * defines), where the renderer lives, the fourteen words it writes and the game
  * it calls. mh_rac3.c is the shim; mh_core.c the core.
  *
  * UYA's single-player pause runs on the IGE widget engine, as Deadlocked's
@@ -37,6 +37,9 @@
  * and starts the menu, and qwark's combo, through the mode 0 update's Start
  * path and the pause launcher. No row is added to any of the game's lists.
  *
+ * The Planets row opens the game's own GALACTIC MAP over the menu, the
+ * Trainer's own list in it (below, "The GALACTIC MAP").
+ *
  * Plain #defines and nothing else: build.sh reads the MH_* and OPD_* lines, and
  * the assembler includes this file through the C preprocessor. Each line that
  * build.sh or check.py reads is a name and one hexadecimal literal (or a
@@ -49,12 +52,15 @@
 #define MH_TITLE            "NPEA00387"
 
 /*
- * Code: 16 KB of the text segment's last 64 KB page, which the executable
+ * Code: 32 KB of the text segment's last 64 KB page, which the executable
  * leaves empty from 0xBC1B68 to 0xBD0000. Probe A has 0xBC2000..0xBC3150 and
  * probes N3 and N3b 0xBCC000..0xBCF000 (mods the user still has); this keeps
  * clear of both, so loading one by mistake writes nothing over the renderer.
  * N3 and N3b hook the same words as this renderer, by design (they are its
- * prototype), so the install refuses while either is loaded.
+ * prototype), so the install refuses while either is loaded. (16 KB until the
+ * GALACTIC MAP's picker, which left 52 bytes of them: the end moved up to
+ * N3's start, as round 3 planned, and check.py holds the rest of the span to
+ * nothing in the executable or any mod naming it.)
  *
  * Data: three spans of the read-write segment's last page, which ends at
  * 0x1ADAB10 in the executable: the grid's cells (round 4, U_CELLS below) and
@@ -66,7 +72,7 @@
  * both out of the data span, which they would overrun by 2 KB.)
  */
 #define MH_CAVE             0x00BC4000
-#define MH_CAVE_END         0x00BC8000
+#define MH_CAVE_END         0x00BCC000
 #define MH_BOX              0x01ADB900
 #define MH_BOX_END          0x01ADC000
 #define MH_DATA             0x01ADC900
@@ -93,7 +99,7 @@
 #define U_CELLS             0x01ADAC00
 #define U_CELLS_END         0x01ADB900
 #define U_CELLS_SIZE        0x00000CC4   /* MH_CFG_ROWS * U_GRID_COLS * U_CELL_SIZE + 4 */
-#define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
+#define MH_CAPS             0x0000001F   /* steps, page keys, back button, requests, the planet picker (MBOX_CAP_PICKER) */
 
 /*
  * The game's own casing: every menu of its pause is in capitals, the Options
@@ -143,9 +149,9 @@
  * Each word with the word it replaces (check.py reads both back out of the
  * executable). qwark installs them in this order, after the caves, and takes
  * them out in the reverse order: the label hook, the three row counts, the
- * Start path's three, then the HELP rows' six, so a HELP row can only say
- * TRAINER once the label hook answers and only start a screen that is already
- * the menu's.
+ * Start path's three, the GALACTIC MAP's list word, then the HELP rows' six,
+ * so a HELP row can only say TRAINER once the label hook answers and only
+ * start a screen that is already the menu's.
  *
  * MH_SITE_MSG      msg_string's first word, `lis r4,0`: `b mh_msg_stub`, which
  *                  answers text id 0xF000 with "TRAINER" and 0xF001 + i with
@@ -185,6 +191,19 @@
 #define MH_SITE_HELP9A_CB   0x00C52900
 #define MH_SITE_HELP9B_TEXT 0x00C529AC   /* 0xC5291C row 7 */
 #define MH_SITE_HELP9B_CB   0x00C529B4
+/*
+ * MH_SITE_MAP_LIST  the GALACTIC MAP's list build (0x2CE7B8, its only caller
+ *                   the map's init at 0x2CEE7C): `cmpwi cr1,r3,30`, the first
+ *                   test of the save's planet r3 = 0xDA5A94[r7]: `bl
+ *                   mh_map_list_stub`, which for a map the Trainer opened
+ *                   (SH_MAP up, only while mh_map_init runs the game's init,
+ *                   the menu's picker up: mh_picker_up())
+ *                   hands the build its own list's r7th planet instead and
+ *                   takes it past the build's filter (Veldin and the mission
+ *                   levels with the rest); the game's word for every other map.
+ *                   Installed before the HELP rows' words.
+ */
+#define MH_SITE_MAP_LIST    0x002CE838   /* cmpwi cr1,r3,30, word 0x2C83001E */
 
 #define MH_ORIG_MSG         0x3C800000
 #define MH_ORIG_ROWS8       0x38C00008
@@ -194,6 +213,7 @@
 #define MH_ORIG_LAUNCH      0x4801F7D5
 #define MH_ORIG_HELP_TEXT   0x00000106
 #define MH_ORIG_HELP_CB     0x00BDE430   /* the HELP row's callback descriptor, code 0x2F3FEC */
+#define MH_ORIG_MAP_LIST    0x2C83001E
 
 /* The band offsets the main pause init adds to 0xC50000 after each `li r6,n`. */
 #define MH_BAND_OFF8        0x000029D0
@@ -374,10 +394,62 @@
 #define U_COLOR_OFF         0x00000000
 #define U_COLOR_SKIP        0x00000004
 
+/*
+ * The GALACTIC MAP, the game's own planet picker (getter 0x2CE130, GuiState
+ * 0x1379F00; rewrite/REPORT-planet-pickers.md section 5), which the Planets
+ * row opens over the menu (MBOX_CAP_PICKER). The shim starts it on a GuiState
+ * of its own: the map's init and deinit wrapped, its pre- and post-render the
+ * game's, and its update wrapped, which takes the cross, Triangle, Square and
+ * the Start close before the game's update would see them, so none of the
+ * map's own exits runs (every one of them would travel from play: X the pick,
+ * Triangle and Start a reload of the level, or the BATTLE MISSIONS screen on
+ * Blackwater City and Aridia). Square, MISSIONS in the game's map, is ALL
+ * PLANETS in the Trainer's: back to the menu, and the cross on Planets again,
+ * which the picker refuses this once, so the core posts it and qwark opens its
+ * own list of every planet (the vid comics among them). The game's own map
+ * keeps the game's GuiState and is never touched.
+ *
+ * The list: the map's build (0x2CE7B8) makes an entry of 176 bytes at
+ * U_MAP_ENTRIES (+0 the planet) for each of the save's 60 unlocked planets its
+ * filter lets through, at most 30, named by U_MAP_TEXTS {location, planet}
+ * (the planet's text for 1, 2, 4, 5, 8, 9, 10, 13, 14, 18, 23 and 27..29, the
+ * location's for the rest) and drawn with the picture 0xC4EFFC[planet], which
+ * exists for planets 1 to 29. The Trainer's map lists MH_MAP_LIST: every planet
+ * qwark loads that has a picture, in PLANET_LIST's menu order (rac3.c's
+ * rac3_planet_order), 27 of them; the vid comics (30..36) have none and stay
+ * on qwark's own list. Four mission levels would share their planet's name, so
+ * while the Trainer's map builds itself their planet text is their location's
+ * (23 "Lot 43", 27 "Deep Sea Hideout", 28 "Sewers", 29 "Island Battle"), and
+ * Phoenix Rescue's location, "Starship Phoenix" as the ship's, is "The Phoenix
+ * Attacked" (0x15EF, the game's shortcut to it): MH_MAP_NAME_WORDS, {the
+ * word, its text meanwhile, the game's}. The game's go back as the init
+ * returns.
+ */
+#define MH_MAP_LIST         1, 2, 3, 4, 5, 11, 12, 7, 8, 27, 28, 9, 10, 13, 23, 21, 16, 17, 18, 19, 6, 14, 22, 20, 24, 29, 26
+#define MH_MAP_LIST_LEN     0x0000001B   /* 27 */
+#define MH_MAP_NAMES        0x00000005
+#define MH_MAP_NAME_WORDS   { 0x00C40A14, 0x15EF, 0x135B }, { 0x00C40AA0, 0xDF, 0xBC1 },  \
+                            { 0x00C40AC0, 0x135D, 0xBBC }, { 0x00C40AC8, 0xC8E, 0xBBC }, \
+                            { 0x00C40AD0, 0xD3E, 0xBBD }
+#define U_MAP_TEXTS         0x00C409E4   /* {location, planet} text ids by planet, 8 bytes each */
+#define U_MAP_ENTRIES       0x013775B8   /* the map's list: +0 the planet */
+#define U_MAP_ENTRY_SIZE    0x000000B0
+#define U_MAP_COUNT         0x00C4F0A0   /* its entries */
+#define U_MAP_CURSOR        0x00C4F098   /* the entry the grid's cursor is on (the update reads it for X) */
+#define U_MAP_HINT          0x00130028   /* Square's hint, "\x13 MISSIONS" (text 0x15C6); ALL PLANETS in the Trainer's */
+#define GAME_MAP_ACCEPT     0x002CE894   /* the build past its filter: the entry is made */
+#define OPD_MAP_INIT        0x00BDD938   /* the GALACTIC MAP's init(state)     0x2CED28 */
+#define OPD_MAP_UPDATE      0x00BDD940   /* its update(state)                   0x2CFB60 */
+#define OPD_MAP_DEINIT      0x00BDD948   /* its deinit(state)                   0x2D0600 */
+#define U_DESC_MAP_PRE      0x00BDD950   /* its pre-render, handed over         0x2D0744 */
+#define U_DESC_MAP_POST     0x00BDD958   /* its post-render, handed over        0x2D0768 */
+#define SND_MAP_GO          0x00000014   /* the map's travel sound (the pick's callback, 0x2D07D0) */
+
 /* The pad bits. */
 #define PADB_L1             0x00000004
 #define PADB_R1             0x00000008
 #define PADB_TRIANGLE       0x00000010
+#define PADB_SQUARE         0x00000080
 #define PADB_START          0x00000800
 #define PADB_UP             0x00001000
 #define PADB_RIGHT          0x00002000
@@ -474,7 +546,11 @@
 #define SH_PIC_ON           0x172  /* u8 the picture source is the shim's: stopped at the deinit */
 #define SH_SLOT_KNOB        0x174  /* f32[U_GRID_VISIBLE] where each knob is */
 #define SH_PIC_BUF          0x194  /* u32[2] the picture buffers, given back at the deinit */
-#define SH_SIZE             0x1A0
+#define SH_MAP              0x19C  /* u8 the Trainer's GALACTIC MAP is building itself (mh_map_list_stub) */
+#define SH_MAP_BACK         0x19D  /* u8 it is going back to the menu, not out of the pause */
+#define SH_MAP_LIST         0x19E  /* u8 back for qwark's own list: the cross on Planets then, which the picker refuses */
+#define SH_MAP_HINT         0x1A0  /* char[16] its Square hint, "\x13 ALL PLANETS" */
+#define SH_SIZE             0x1B0
 
 #define MH_GS_SIZE          0x18
 

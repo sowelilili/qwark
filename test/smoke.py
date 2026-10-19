@@ -334,11 +334,11 @@ DL_OPTIONS_WORD = 0x4BFC456D
 UYA_MENU_BOX = 0x01ADB900
 UYA_MENU_BOX_SIZE = 0x680
 UYA_MENU_ROW_SIZE = 0x40
-UYA_MENU_CODE = (0x00BC4000, 0x00BC8000)
+UYA_MENU_CODE = (0x00BC4000, 0x00BCC000)
 UYA_MENU_DATA = (0x01ADC900, 0x01ADE000)
 UYA_MENU_SITES = {0x0014BCF0: 0x3C800000, 0x002F4284: 0x38C00008, 0x002F41FC: 0x38C00009,
                   0x002F4250: 0x38C00009, 0x00287184: 0x54C60528, 0x00287264: 0x38A00001,
-                  0x002D4444: 0x4801F7D5,
+                  0x002D4444: 0x4801F7D5, 0x002CE838: 0x2C83001E,
                   0x00C52844: 0x00000106, 0x00C5284C: 0x00BDE430,
                   0x00C528F8: 0x00000106, 0x00C52900: 0x00BDE430,
                   0x00C529AC: 0x00000106, 0x00C529B4: 0x00BDE430}
@@ -2554,8 +2554,8 @@ def exercise_console_menu(c, sim):
 
 def exercise_console_menu_uya(c, sim):
     """Revision 1.22, UYA's renderer over the wire: the install a few seconds into
-    the session in play, its thirteen words, the HELP rows, the mailbox, the
-    combo, menu.enabled."""
+    the session in play, its fourteen words, the HELP rows, the mailbox, the
+    GALACTIC MAP's pick, the combo, menu.enabled."""
     box, size, rs = UYA_MENU_BOX, UYA_MENU_BOX_SIZE, UYA_MENU_ROW_SIZE
 
     def combo():
@@ -2632,6 +2632,34 @@ def exercise_console_menu_uya(c, sim):
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Trainer", "UYA menu: closed, the root is back",
           page[2] if page else None)
+
+    # The GALACTIC MAP: the Planets row opens it, and its pick is a planet load once the game plays.
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
+    flags = page[4][MBOX_OFF_ROWS + 2 * rs + MROW_OFF_FLAGS] if page else 0
+    check(status == ST_OK and (body[11] & MBOX_CAP_PICKER) != 0 and (flags & MROWF_PICKER) != 0 and
+          (page[4][MBOX_OFF_ROWS + 1 * rs + MROW_OFF_FLAGS] & MROWF_PICKER) == 0,
+          "UYA menu: the renderer has the planet picker (caps 0x10), and the root's Planets row, alone, says so "
+          "(0x40)", (body.hex() if status == ST_OK else status, flags))
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
+    time.sleep(0.1)
+    key = menu_page(c, box, size, rs)[1]
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x02")
+    time.sleep(0.3)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[1] == key and page[2] == "Trainer",
+          "UYA menu: the map up over the menu (hstate 2): qwark keeps the page it left", page[:3] if page else None)
+    seq = mem_read_u32(c, box + MBOX_OFF_PICK_SEQ)
+    mem_write(c, box + MBOX_OFF_PICK_PLANET, struct.pack(">I", 9))
+    mem_write(c, box + MBOX_OFF_PICK_SEQ, struct.pack(">I", seq + 1))
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
+    deadline = time.time() + 3.0
+    while time.time() < deadline and mem_read_u32(c, 0x00EE9310) != 1:
+        time.sleep(0.05)
+    check(mem_read_u32(c, 0x00EE9310) == 1 and mem_read_u32(c, 0x00EE9314) == 9,
+          "UYA menu: a pick of Tyhrranosis and the close: qwark's planet load of it once the game plays",
+          (mem_read_u32(c, 0x00EE9310), mem_read_u32(c, 0x00EE9314)))
+    mem_write(c, 0x00EE9310, struct.pack(">II", 0, 0))
+
     check(combo() == 1, "UYA menu: the menu combo asks the renderer to open")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
@@ -2645,7 +2673,7 @@ def exercise_console_menu_uya(c, sim):
     while time.time() < deadline and hooks() != UYA_MENU_SITES:
         time.sleep(0.1)
     check(status == ST_OK and hooks() == UYA_MENU_SITES,
-          "UYA menu: CONFIG_RELOAD takes all thirteen words out, HELP its own row again",
+          "UYA menu: CONFIG_RELOAD takes all fourteen words out, HELP its own row again",
           dict((hex(a), hex(w)) for a, w in hooks().items()))
     check(combo() == 0, "UYA menu: the combo then asks nothing")
     check(write_console_file(c, cfg_path, cfg), "UYA menu: menu.enabled taken out again")

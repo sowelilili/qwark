@@ -32,7 +32,10 @@
  *                    the last one calling mh_launch);
  *   mh_help          the HELP row's callback, in the main pause's tables;
  *   mh_init, mh_update, mh_deinit   the menu's GuiStates, through descriptors;
- *   mh_row           a MAIN row's callback, which the main pause's update calls on the cross.
+ *   mh_row           a MAIN row's callback, which the main pause's update calls on the cross;
+ *   mh_map_list_stub, mh_map_init, mh_map_update, mh_map_deinit   the GALACTIC
+ *                    MAP the Planets row opens over the menu: its list, and its
+ *                    GuiState's calls wrapped (the end of this file).
  *
  * Everything the game keeps a pointer to - the GuiStates, the rows, their text,
  * the title, the grid's cells - is in the renderer's state or its cells' span
@@ -57,7 +60,8 @@ typedef char mh_rac3_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
                              SH_ROWS + MH_MAIN_ROWS * U_ROW_SIZE <= SH_GRIDCFG &&
                              SH_GRIDCFG + 24 * 4 <= SH_TITLE_SCALE &&
                              SH_SLOT_ROW + U_GRID_VISIBLE <= SH_PIC_WAIT &&
-                             SH_SLOT_KNOB + 4 * U_GRID_VISIBLE <= SH_PIC_BUF && SH_PIC_BUF + 8 <= SH_SIZE &&
+                             SH_SLOT_KNOB + 4 * U_GRID_VISIBLE <= SH_PIC_BUF && SH_PIC_BUF + 8 <= SH_MAP &&
+                             SH_MAP_LIST < SH_MAP_HINT && SH_MAP_HINT + 16 <= SH_SIZE &&
                              SH_GS + 2 * MH_GS_SIZE <= SH_ROWS) ? 1 : -1];
 
 /* The entries the game reaches; file-local in the host tests, which build two renderers. */
@@ -67,6 +71,9 @@ MH_API void mh_update(u32 gs);
 MH_API void mh_help(void);
 MH_API void mh_row(void);
 MH_API u32  mh_launch(void);
+MH_API void mh_map_init(u32 gs);
+MH_API void mh_map_deinit(u32 gs);
+MH_API void mh_map_update(u32 gs);
 
 /* The descriptors of the shim's own functions, as the game will hold them. */
 #ifdef MH_HOST
@@ -74,11 +81,17 @@ MH_API u32  mh_launch(void);
 #define MH_FN_DEINIT     2u
 #define MH_FN_UPDATE     3u
 #define MH_FN_ROW        4u
+#define MH_FN_MAP_INIT   5u
+#define MH_FN_MAP_DEINIT 6u
+#define MH_FN_MAP_UPDATE 7u
 #else
 #define MH_FN_INIT       ((u32)mh_init)
 #define MH_FN_DEINIT     ((u32)mh_deinit)
 #define MH_FN_UPDATE     ((u32)mh_update)
 #define MH_FN_ROW        ((u32)mh_row)
+#define MH_FN_MAP_INIT   ((u32)mh_map_init)
+#define MH_FN_MAP_DEINIT ((u32)mh_map_deinit)
+#define MH_FN_MAP_UPDATE ((u32)mh_map_update)
 #endif
 
 typedef int  (*fn_i_v)(void);
@@ -153,6 +166,9 @@ typedef int  (*fn_i_i)(int);
 #define pic_show        GAME_FN(fn_v_uu,   OPD_PIC_SHOW,        mock_pic_show)
 #define pic_fade        GAME_FN(fn_v_uii,  OPD_PIC_FADE,        mock_pic_fade)
 #define disc_wait       GAME_FN(fn_i_i,    OPD_DISC_WAIT,       mock_disc_wait)
+#define map_init        GAME_FN(fn_v_u,    OPD_MAP_INIT,        mock_map_init)
+#define map_update      GAME_FN(fn_v_u,    OPD_MAP_UPDATE,      mock_map_update)
+#define map_deinit      GAME_FN(fn_v_u,    OPD_MAP_DEINIT,      mock_map_deinit)
 
 /*
  * AUDIO / VISUAL's grid configuration, as its list builds it on the stack
@@ -194,6 +210,18 @@ static u32 edges(void)
 	return pad != 0 ? r32(pad + U_PAD_EDGES) : 0;
 }
 
+/* A GuiState {state; init, deinit, update, pre, post}, stopped, as 0x930C8 makes one. */
+static u32 gs_fill(u32 g, u32 init, u32 deinit, u32 update, u32 pre, u32 post)
+{
+	w32(g, 0);
+	w32(g + 4, init);
+	w32(g + 8, deinit);
+	w32(g + 12, update);
+	w32(g + 16, pre);
+	w32(g + 20, post);
+	return g;
+}
+
 /*
  * GuiState k made ready to start: stopped, its calls the shim's, its renders
  * the pause screens' own. The thread runner calls its init once SwapTo makes it
@@ -201,16 +229,8 @@ static u32 edges(void)
  */
 static u32 gs_ready(u32 k)
 {
-	u32 g = GSA(k);
-
-	w32(g, 0);
-	w32(g + 4, MH_FN_INIT);
-	w32(g + 8, MH_FN_DEINIT);
-	w32(g + 12, MH_FN_UPDATE);
-	w32(g + 16, U_DESC_PRE);
-	w32(g + 20, U_DESC_POST);
 	w8(SH(SH_CUR), k);
-	return g;
+	return gs_fill(GSA(k), MH_FN_INIT, MH_FN_DEINIT, MH_FN_UPDATE, U_DESC_PRE, U_DESC_POST);
 }
 
 /* The menu's screen started again, on the other GuiState, the way a pause screen starts the next. */
@@ -735,12 +755,20 @@ MH_API void shim_sound(u32 snd)
 
 /* ------------------------------------------------------------ the entries */
 
-/* The menu's GuiState starts: the page qwark posted, with the widget it asks for. */
+/*
+ * The menu's GuiState starts: the page qwark posted, with the widget it asks
+ * for. Back from the GALACTIC MAP's Square, the cross on Planets, which the
+ * picker refuses this once: qwark's own list of every planet.
+ */
 MH_API void mh_init(u32 gs)
 {
 	arrive();
 	if (mh_core_start(0) == MBOX_PTYPE_CONFIG) cfg_start();
 	else main_start(gs);
+	if (r8(SH(SH_MAP_LIST)) != 0) {
+		mh_core_press(0, MH_BTN_CROSS, shim_cursor(0));
+		w8(SH(SH_MAP_LIST), 0);
+	}
 }
 
 /* Every frame it runs. */
@@ -808,4 +836,121 @@ MH_API u32 mh_launch(void)
 	w8(SH(SH_FROM_HELP), 0);
 	mh_count(ST_OPENS);
 	return gs_ready(0);
+}
+
+/* ------------------------------------------------- the GALACTIC MAP (picker) */
+
+/* SwapTo the next GuiState and reset this one, the way every pause screen moves on. */
+static __attribute__((noinline)) void go(u32 next, u32 self)
+{
+	swap_to(next);
+	reset_state(self);
+}
+
+/*
+ * The cross on the Planets row (the core, MROWF_PICKER): the game's GALACTIC
+ * MAP over the menu, on the GuiState the menu's screen is not on, with the
+ * map's own init, deinit and update wrapped (mh_map_*) and its own renders. The
+ * menu's screen stops as the runner starts the map (its deinit first, so a
+ * CONFIG page's picture source and buffers, which the map takes too, are back
+ * before the map's init asks for them); the core counts that stop no close.
+ * Not with a Start close pending this frame, which the main pause's update
+ * takes after the row's callback, nor in a pause whose Start does not leave it
+ * (U_NO_EXIT): the core posts the cross then, and qwark shows its own list;
+ * and once after the map's Square, which asks for that list.
+ */
+MH_API u32 shim_picker(int p)
+{
+	(void)p;
+	if (r8(SH(SH_MAP_LIST)) != 0) {
+		w8(SH(SH_MAP_LIST), 0);
+		return 0;
+	}
+	if (r8(U_NO_EXIT) != 0 || start_close()) return 0;
+	w8(SH(SH_MAP_BACK), 0);
+	go(gs_fill(GSA(r8(SH(SH_CUR)) ^ 1), MH_FN_MAP_INIT, MH_FN_MAP_DEINIT, MH_FN_MAP_UPDATE,
+	           U_DESC_MAP_PRE, U_DESC_MAP_POST), current());
+	return 1;
+}
+
+/*
+ * The five name words the Trainer's map changes while it builds itself
+ * (mh_rac3.h): {the word, the text it says meanwhile, the game's own}.
+ * Phoenix Rescue's location, then each mission level's planet word, which says
+ * its location's. check.py holds each to the executable.
+ */
+static const u32 map_names[MH_MAP_NAMES][3] = { MH_MAP_NAME_WORDS };
+
+/*
+ * The map's own init (0x2CED28), with the list build handed the Trainer's
+ * planets (mh_map_list_stub, while SH_MAP is up) and the five name words
+ * changed while it runs. All of it on the game's thread, inside this one
+ * call: the game's own map, and every other screen that names a planet,
+ * never sees either. Square's hint, MISSIONS in the game's map, says what
+ * Square does in this one: ALL PLANETS, qwark's own list (the vid comics,
+ * which the map cannot show, among them), in the hint's own glyph (0x13).
+ */
+MH_API void mh_map_init(u32 gs)
+{
+	u32 i;
+
+	for (i = 0; i < MH_MAP_NAMES; i++) w32(map_names[i][0], map_names[i][1]);
+	w8(SH(SH_MAP), 1);
+	map_init(gs);
+	w8(SH(SH_MAP), 0);
+	for (i = 0; i < MH_MAP_NAMES; i++) w32(map_names[i][0], map_names[i][2]);
+	cell_put(SH(SH_MAP_HINT), 0, 0, "\x13 ALL PLANETS");
+	set_text(U_MAP_HINT, SH(SH_MAP_HINT));
+}
+
+/*
+ * Every frame of the Trainer's map. What would leave it is the Trainer's, taken
+ * before the map's own update could see it (each of its exits travels from
+ * play: X the pick, Triangle and Start a reload of the planet, or Blackwater
+ * City's and Aridia's BATTLE MISSIONS, Square MISSIONS and its travel):
+ *   the Start close, or qwark's close request (the combo): out of the pause,
+ *                     a close of the menu;
+ *   the cross         the pick to qwark and the close (mh_core_pick), the
+ *                     map's travel sound, and out of the pause plainly:
+ *                     qwark loads it once the game plays;
+ *   Triangle          back to the menu's screen, the page it left;
+ *   Square            the same, and then the cross on Planets, which the
+ *                     picker refuses this once (SH_MAP_LIST): qwark's own
+ *                     list of every planet.
+ * Anything else is the map's own update (the cursor, its views, the bolts).
+ */
+MH_API void mh_map_update(u32 gs)
+{
+	u32 e = edges(), c, snd = 0, next = 0;
+
+	if (start_close() || mh_core_close_request()) {
+		start_ack();
+	} else if ((e & r32(U_CONFIRM_MASK)) != 0) {
+		c = r32(U_MAP_CURSOR);
+		if (c >= r32(U_MAP_COUNT)) return;
+		mh_core_pick(0, (s32)r32(U_MAP_ENTRIES + c * U_MAP_ENTRY_SIZE));
+		snd = SND_MAP_GO;
+	} else if ((e & (PADB_TRIANGLE | PADB_SQUARE)) != 0) {
+		if ((e & PADB_TRIANGLE) == 0) w8(SH(SH_MAP_LIST), 1);
+		w8(SH(SH_MAP_BACK), 1);
+		snd = SND_CHANGE;
+		next = gs_ready(r8(SH(SH_CUR)));
+	} else {
+		map_update(gs);
+		return;
+	}
+	if (snd != 0) play_sound(snd, 0, 0);
+	go(next != 0 ? next : pause_exit(), gs);
+}
+
+/*
+ * The map ends (0x2D0600): back to the menu, whose screen then starts on the
+ * page it left; any other way (Start, the combo, something of the game's) the
+ * menu has closed with it, as a pick closed it already.
+ */
+MH_API void mh_map_deinit(u32 gs)
+{
+	map_deinit(gs);
+	if (r8(SH(SH_MAP_BACK)) == 0) mh_core_picker_gone(0);
+	w8(SH(SH_MAP_BACK), 0);
 }

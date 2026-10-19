@@ -1,12 +1,13 @@
 /*
- * Up Your Arsenal menu renderer: the seven hook stubs (mh_rac3.h says where
+ * Up Your Arsenal menu renderer: the eight hook stubs (mh_rac3.h says where
  * each hook goes). Preprocessed, so the offsets come from the same headers the
  * C uses, and commented C-style for the same reason. The msg, combo and rows
  * stubs are probe N3b's, which ran on hardware; the inject stub stands in for
  * N3b's L1 + R1 test with qwark's open request; the launch stub calls the C,
- * which knows the GuiStates. The GuiStates' init, update and deinit and the
- * row callbacks need no stub: the game calls them through descriptors that
- * carry this module's TOC.
+ * which knows the GuiStates; the map list stub gives the Trainer's GALACTIC
+ * MAP its planets. The GuiStates' init, update and deinit and the row
+ * callbacks need no stub: the game calls them through descriptors that carry
+ * this module's TOC.
  */
 
 #include "mh_rac3.h"
@@ -184,7 +185,55 @@ name: \
 	ROWS_STUB(mh_rows9a_stub, 9, MH_BAND_OFF9A)
 	ROWS_STUB(mh_rows9b_stub, 9, MH_BAND_OFF9B)
 
+/*
+ * MH_SITE_MAP_LIST, 0x2CE838 in the GALACTIC MAP's list build (0x2CE7B8, which
+ * only the map's init calls): `cmpwi cr1,r3,30`, the first test of the build's
+ * filter on the save's planet r3 = 0xDA5A94[r7] (r7 the loop's index, 0..59),
+ * becomes `bl mh_map_list_stub`.
+ *
+ * SH_MAP down (every map but the one mh_map_init is building, the game's own
+ * on the ship among them): the game's word, and back into the filter.
+ *
+ * SH_MAP up: r3 = the r7th planet of mh_map_list, or 0 past its end. A planet
+ * goes straight past the filter to 0x2CE894, where the build makes its entry,
+ * with cr1 as 0x2CE88C would set it (`cmpwi cr1,r29,0`, r29 the entries so
+ * far); a 0 goes back into the filter, which skips it as the game's own 0s.
+ * The save's list is read and never written: the build sees ours in its place,
+ * one planet at a time.
+ *
+ * The build saved LR on entry and calls on after its loop, so the `bl` here
+ * costs it nothing. Writes r3 (the planet, which the build reads next), r12,
+ * cr0 and cr1, which the build sets again before it reads them (r12 it never
+ * uses; cr0 at 0x2CE83C).
+ */
+#define MAP_FLAG   (MH_SHIM + SH_MAP)
+
+	.globl	mh_map_list_stub
+mh_map_list_stub:
+	lis	%r12,MAP_FLAG@ha
+	lbz	%r12,MAP_FLAG@l(%r12)
+	cmpwi	%r12,0
+	bne	1f
+	cmpwi	%cr1,%r3,30
+	blr
+1:	li	%r3,0
+	cmplwi	%r7,MH_MAP_LIST_LEN
+	bge	2f
+	lis	%r12,mh_map_list@ha
+	addi	%r12,%r12,mh_map_list@l
+	lbzx	%r3,%r12,%r7
+	cmpwi	%r3,0
+	beq	2f
+	cmpwi	%cr1,%r29,0
+	b	game_map_accept
+2:	cmpwi	%cr1,%r3,30
+	blr
+
 	.section ".rodata","a"
 	.globl	mh_help_text
 mh_help_text:
 	.asciz	MH_ENTRY_LABEL
+/* The Trainer's GALACTIC MAP's planets, in the menu's order (mh_rac3.h). */
+	.globl	mh_map_list
+mh_map_list:
+	.byte	MH_MAP_LIST

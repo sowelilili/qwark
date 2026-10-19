@@ -208,7 +208,7 @@ rac4_query() {
 rac3_entry() { echo mh_msg_stub; }
 
 rac3_ldflags() {
-	echo "--defsym game_msg_exit=$(need "$1" GAME_MSG_EXIT)"
+	echo "--defsym game_msg_exit=$(need "$1" GAME_MSG_EXIT) --defsym game_map_accept=$(need "$1" GAME_MAP_ACCEPT)"
 }
 
 rac3_hooks() {
@@ -225,7 +225,7 @@ rac3_hooks() {
 		at=$(needsym "$elf" "$stub")
 		echo "$site $(blword "$site" "$at") $(need "$hdr" "$orig") bl $stub ($at)"
 	done
-	for r in INJECT:mh_inject_stub COMBO:mh_combo_stub LAUNCH:mh_launch_stub; do
+	for r in INJECT:mh_inject_stub COMBO:mh_combo_stub LAUNCH:mh_launch_stub MAP_LIST:mh_map_list_stub; do
 		name=${r%%:*}; stub=${r#*:}
 		site=$(need "$hdr" MH_SITE_$name)
 		at=$(needsym "$elf" "$stub")
