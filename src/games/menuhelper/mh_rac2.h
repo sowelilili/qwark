@@ -77,7 +77,13 @@
 #define MH_MAIN_ROWS        0x00000007   /* the root's bars: seven text bars, as its own Weapons .. Special */
 #define MH_CFG_ROWS         0x00000020
 #define MH_MBOX_SIZE        0x00000880   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
-#define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
+/*
+ * Steps, page keys, back button, requests, and the planet picker (mailbox
+ * version 3): the ship's planet select, its list and galaxy, opened from the
+ * root's Planets row (mh_rac2.c, shim_picker), which compiles the core's
+ * picker in (MH_PICKER).
+ */
+#define MH_CAPS             0x0000001F
 
 /*
  * The game's own casing: its pause lists and Cheats are in title case
@@ -175,10 +181,16 @@
 #define MH_ORIG_HELP_SCREEN 0x01348594   /* Help's screen */
 #define MH_ORIG_HELP_LABEL  0x00002D55   /* 11605, "Help" */
 
-/* The text ids the msg hook answers: "Trainer", then the rows of a MAIN page. */
+/*
+ * The text ids the msg hook answers: "Trainer", then the rows of a MAIN page,
+ * then the picker's planet names, 0xF010 + qwark's planet id (PLANET_LIST,
+ * src/games/rac2.c, which the host test holds MS_PICK_NAMES to).
+ */
 #define MH_MSG_BASE         0x0000F000
 #define MH_MSG_HELP         0x0000F000
 #define MH_MSG_ROW0         0x0000F001
+#define MH_MSG_PLANET       0x0000F010
+#define MH_PLANETS          0x0000001B   /* 27: Aranos (0) .. the Jamming Array (26) */
 
 /* Where the msg stub goes on to: msg_string's second instruction. */
 #define GAME_MSG_EXIT       0x00B28F3C
@@ -260,6 +272,46 @@
 #define CFG_COLOR_BACK      0x60442D00
 #define CFG_COLOR_EDGE      0x55F0C070
 
+/*
+ * The ship's planet select (rewrite/REPORT-planet-pickers.md section 4). The
+ * game opens it for pause reason 4 as screen 15, 0x134DD90: item 0 the galaxy
+ * (0x134DEC0, the HD page at *0x133E8A8 + 0x4C680), item 1 the PS2 list of
+ * discovered planets (0x134E0DC: update 0xBBE528, draw 0xBCBC58, enter
+ * 0xBD2488), item 4 the picture of the planet the cursor is on (0x134DEF0,
+ * gmap_ss[p]). The cross on a planet opens screen 16, whose cross requests
+ * the game's own travel, mode 6 (0xBC983C); the menu's picker stops before it.
+ *
+ * The menu's picker is a copy of screen 15 in the renderer's data (MS_PICK),
+ * reached only from the root's Planets row: the game's galaxy and picture
+ * items as they are, and a copy of the list item (MS_PICK_ITEM) whose rows are
+ * every planet qwark loads (MS_PICK_ROWS, in qwark's id order, row i planet
+ * i), whose enter puts the cursor on the planet shown and whose update takes
+ * the cross itself: the pick goes to qwark and the pause closes. Its parent is
+ * the menu's screen it was opened from, so Triangle goes back there. Nothing
+ * of the game's own planet select changes.
+ */
+#define R2_PICK_SCREEN      0x0134DD90   /* the game's planet select, screen 15, the copy's model */
+#define R2_PICK_GALAXY      0x0134DEC0   /* its item 0, the galaxy */
+#define R2_PICK_LIST        0x0134E0DC   /* its item 1, the list the shim copies */
+#define R2_PICK_PICTURE     0x0134DEF0   /* its item 4, the planet's picture */
+#define R2_PICK_ID          0x0000000F   /* screen id 15 */
+#define R2_SCR_PARENT       0x000000E0
+#define R2_SCR_FOCUS        0x000000E8
+#define R2_SCR_ITEMS        0x000000EC
+#define R2_LIST_DRAW        0x012FD558   /* the list's draw descriptor {0xBCBC58, TOC}, which the copy keeps */
+#define R2_LIST_SIZE        0x00000050   /* the list item, to the next item at 0x134E12C */
+#define R2_LIST_FLAGS       0x00000538   /* +0x30; 0x20: a list of planets (two lines a row, the galaxy follows) */
+#define R2_LI_FLAGS         0x00000030
+#define R2_LI_ROWS          0x00000034   /* the rows: {u16 text, s16 kind, u32 target, u16 sub, s16 anim} */
+#define R2_LI_CURSOR        0x00000040
+#define R2_LI_FRESH         0x00008000   /* the flag the game's enter sets */
+#define R2_ROW_SIZE         0x0000000C
+#define R2_ROW_INERT        0x00000101   /* a kind 0xBB77EC does nothing for (it acts on 3 .. 13) */
+#define R2_PLANET_TEXT      0x01345930   /* the game's {planet name, location} text ids, planets 0 .. 26 */
+#define R2_SELECTED         0x0157D110   /* the planet the galaxy and the picture show, *(0x157CEE0) + 0x230 */
+#define R2_CURRENT_PLANET   0x01329A3C
+#define R2_LIST_BLOCKED     0x0156A00C   /* bit 0: the list takes no cross (its own test) */
+
 /* The pad bits. */
 #define PADB_L1             0x00000004
 #define PADB_R1             0x00000008
@@ -313,6 +365,9 @@
 #define OPD_LV_ORBIT        0x012E46B8   /* an orbit                            0x05BA4C */
 #define OPD_LV_OTHER        0x012E46C0   /* a level of another kind             0x05BA88 */
 #define OPD_LV_PSTATE       0x012E46D0   /* the player's state                  0x05BB00 */
+/* The planet select's: its list's update, and the call that shows a planet in the galaxy and picture. */
+#define OPD_LIST_UPDATE     0x012FD138   /* the PS2 list's update(item)         0xBBE528 */
+#define OPD_SELECT_PLANET   0x012FB0A0   /* (planet): *0x157D110 = planet        0xB4DEF8 */
 
 /* ------------------------------------------------ the shim's own state */
 
@@ -329,13 +384,17 @@
 #define SH_CTOP             0x0C   /* u8 its first row on screen */
 #define SH_PRESS_ROW        0x0D   /* u8 the row the last cross was on */
 #define SH_CUTS             0x10   /* u32 labels of the CONFIG page shown cut short to end before their values */
+#define SH_PICK_OPENS       0x14   /* u32 times the picker opened */
+#define SH_PICKS            0x18   /* u32 planets picked */
+#define SH_PICK_LAST        0x1C   /* u32 the last planet picked */
 #define SH_SIZE             0x50
 
 /*
  * The screens, at MH_SCREENS (the stubs' .rodata, in the data image): the Help
  * bar's (MAIN, the root's rects, its parent the root), the combo's (MAIN), two
  * more of each look to move between, then the item every one of them has, the
- * MAIN rows' text ids, "Trainer" and "...".
+ * MAIN rows' text ids, "Trainer" and "...", then the planet picker's screen,
+ * list item, rows and names (round 4).
  */
 #define MS_HELP             0x00000000   /* screen 0 */
 #define MS_COMBO            0x00000001   /* screen 1 */
@@ -348,6 +407,12 @@
 #define MS_IDS              0x00000750   /* u32[MH_MAIN_ROWS], 0xF001 .. */
 #define MS_TRAINER          0x00000770
 #define MS_MORE             0x00000778   /* "...", where more rows are scrolled away */
-#define MS_SIZE             0x0000077C
+/* The picker: its screen, its list item, its rows (MH_PLANETS and a zero row), its names. */
+#define MS_PICK             0x00000780
+#define MS_PICK_ITEM        0x000008B0   /* MS_PICK + R2_SCREEN_SIZE */
+#define MS_PICK_ROWS        0x00000900   /* MS_PICK_ITEM + R2_LIST_SIZE */
+#define MS_PICK_NAMES       0x00000A50   /* MS_PICK_ROWS + (MH_PLANETS + 1) * R2_ROW_SIZE: u32 the name's address, a planet */
+#define MS_PICK_STRS        0x00000ABC   /* MS_PICK_NAMES + 4 * MH_PLANETS: the names */
+#define MS_SIZE             0x00000B9D   /* MS_PICK_STRS + 225 bytes of names */
 
 #endif /* QWARK_MH_RAC2_H */

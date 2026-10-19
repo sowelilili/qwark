@@ -2720,6 +2720,34 @@ def exercise_console_menu_rac2(c, sim):
           len(page[3]) == 27 and page[5] == MBOX_PTYPE_CONFIG,
           "RaC2 menu: Planets, a CONFIG page of all 27 (round 4: no More row)", page[3] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC2 menu: back again")
+    time.sleep(0.1)
+
+    # The planet picker (mailbox version 3). The root's Planets row opens the
+    # renderer's picker (MBOX_CAP_PICKER, MROWF_PICKER); a pick is the header's
+    # pick_planet then pick_seq, and qwark loads it once the game plays.
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
+    caps = body[11] if status == ST_OK else 0
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box + 0x80 + 2 * rs + MROW_OFF_FLAGS, 1))
+    check(status == ST_OK and (caps & 0x10) != 0 and (body[0] & 0x40) != 0,
+          "RaC2 menu: the renderer has the picker, and the root's Planets row opens it", (caps, body.hex()))
+    pick = box + 0x28
+    seq = mem_read_u32(c, pick)
+    mem_write(c, RAC2_LOAD_PLANET, struct.pack(">II", 0, 0))
+    mem_write(c, pick + 4, struct.pack(">I", 14))
+    mem_write(c, pick, struct.pack(">I", seq + 1))
+    deadline = time.time() + 2.0
+    while time.time() < deadline and mem_read_u32(c, RAC2_LOAD_PLANET) != 1:
+        time.sleep(0.1)
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC2_LOAD_PLANET, 8))
+    check(status == ST_OK and body == struct.pack(">II", 1, 14),
+          "RaC2 menu: a pick of Aranos 2 in the header's pick words: qwark's planet load requests planet 14",
+          body.hex() if status == ST_OK else status)
+    mem_write(c, RAC2_LOAD_PLANET, struct.pack(">II", 0, 0))
+    mem_write(c, pick + 4, struct.pack(">I", 99))
+    mem_write(c, pick, struct.pack(">I", seq + 2))
+    time.sleep(0.5)
+    check(mem_read_u32(c, RAC2_LOAD_PLANET) == 0, "RaC2 menu: a pick of a planet qwark has not, 99: nothing loads")
+
     check(combo() == 1, "RaC2 menu: the menu combo asks the renderer to open")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 

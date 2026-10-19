@@ -17,7 +17,11 @@
  *                 draw makes, the Start path and the root it opens on. The
  *                 hook stubs are assembler and do not run here:
  *                 src/games/menuhelper/check.py steps them, and the mocks
- *                 below do in C what they do.
+ *                 below do in C what they do;
+ *   the picker    (round 4) the root's Planets row opening the renderer's
+ *                 copy of the ship's planet select, against mocks of the
+ *                 select's list update and its galaxy and picture items, the
+ *                 pick to qwark and qwark's planet load of it.
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
@@ -59,6 +63,9 @@ static u8 *mh_host_ptr(u32 addr)
 #define PM          R2_PAUSE_MGR     /* the pause manager */
 #define SCREEN(k)   (MH_SCREENS + (u32)(k) * R2_SCREEN_SIZE)
 #define LABELS      0x0135211Cu      /* the root's seven labels, Help's the fifth */
+#define PICK_SCREEN (MH_SCREENS + MS_PICK)
+#define PICK_ITEM   (MH_SCREENS + MS_PICK_ITEM)
+#define PICK_ROWS   (MH_SCREENS + MS_PICK_ROWS)
 
 /* The bars' object as the root's code has it (0xCAA71C, 0xCAA70C, 0xCA9718). */
 #define BAR_TEXT(i) (BARS + 0x1A8u + 0x50u * (u32)(i) + 0x38u)
@@ -109,10 +116,12 @@ static void put_str(u32 a, const char *s)
  */
 static u32 game_msg(u32 id)
 {
-	if ((id & ~0xFu) == MH_MSG_BASE) {
-		u32 i = id & 0xF;
+	if ((id & ~0x3Fu) == MH_MSG_BASE) {
+		u32 i = id & 0x3F;
 		if (i == 0) return MH_SCREENS + MS_TRAINER;
 		if (i <= MH_MAIN_ROWS) return mh_text(i - 1);      /* the text set on show */
+		if (i >= MH_MSG_PLANET - MH_MSG_BASE && i - (MH_MSG_PLANET - MH_MSG_BASE) < MH_PLANETS)
+			return r32(MH_SCREENS + MS_PICK_NAMES + 4 * (i - (MH_MSG_PLANET - MH_MSG_BASE)));
 	}
 	return MSG_AT + (id & 0xFFu) * 0x20u;
 }
@@ -217,6 +226,61 @@ static int mock_text_width(u32 s, int len)
 	return (int)strlen(read_str(s, t, sizeof(t))) * G.char_w;
 }
 
+/*
+ * The planet select's pieces the picker reuses. 0xB4DEF8 shows a planet in
+ * the galaxy and the picture (*0x157D110 = it, 27 at most); the PS2 list's
+ * update 0xBBE528 as it runs for the select's list (flags 0x538): only for the
+ * screen's focus; Start and Select show the current planet and close (-1);
+ * Triangle shows it and goes to the parent, or closes with none; the cross does
+ * the row's action (kind 3: the next screen); Up and Down move the cursor over
+ * rows of a kind, without wrapping, with the tick, and show the planet of the
+ * game's discovered list (0x1345AB4) at the cursor, which the test fills with
+ * planets not in the picker's order.
+ */
+static struct {
+	int selects, updates, confirms, galaxy[4], picture[4], list_draws;
+	u32 discovered[28];
+} P;
+
+static int mock_select_planet(u32 p)
+{
+	w32(R2_SELECTED, p >= 28 ? 27 : p);
+	P.selects++;
+	return 1;
+}
+
+static int mock_list_update(u32 item)
+{
+	u32 e = r32(R2_PAD_EDGES), cur = r32(R2_PAUSE_MGR + R2_MGR_CURRENT), rows = r32(item + R2_LI_ROWS);
+	u32 c = r32(item + R2_LI_CURSOR), n = 0;
+
+	P.updates++;
+	if (r32(cur + R2_SCR_FOCUS) != item) return 0;
+	while (r16(rows + n * R2_ROW_SIZE) != 0) n++;
+	if ((e & (PADB_START | PADB_SELECT)) != 0) {
+		mock_select_planet(r32(R2_CURRENT_PLANET));
+		return -1;
+	}
+	if ((e & PADB_TRIANGLE) != 0) {
+		mock_select_planet(r32(R2_CURRENT_PLANET));
+		if (r32(cur + R2_SCR_PARENT) == 0) return -1;
+		w32(R2_PAUSE_MGR + R2_MGR_NEXT, r32(cur + R2_SCR_PARENT));
+		return 0;
+	}
+	if ((e & r32(R2_CONFIRM_MASK)) != 0) {
+		P.confirms++;
+		if (r16(rows + c * R2_ROW_SIZE + 2) == 3) w32(R2_PAUSE_MGR + R2_MGR_NEXT, r32(rows + c * R2_ROW_SIZE + 4));
+		return 0;
+	}
+	if ((e & PADB_UP) != 0 && c > 0) c--;
+	else if ((e & PADB_DOWN) != 0 && c + 1 < n && r16(rows + (c + 1) * R2_ROW_SIZE + 2) != 0) c++;
+	else return 0;
+	w32(item + R2_LI_CURSOR, c);
+	mock_play_sound(SND_MOVE, 0, 0);
+	mock_select_planet(P.discovered[c]);
+	return 0;
+}
+
 static int mock_lv_race(void) { return G.q_race; }
 static int mock_lv_ship(void) { return G.q_ship; }
 static int mock_lv_ship_on(void) { return G.q_ship_on; }
@@ -249,15 +313,43 @@ static int mock_root_update(void)
 	return 0;
 }
 
+/*
+ * The picker's items, as the manager calls each item of the current screen in
+ * turn: the game's galaxy and picture (counted), and the shim's list, whose
+ * draw is the game's (counted).
+ */
+static int call_pick_item(u32 item, int which)
+{
+	if (item == R2_PICK_GALAXY || item == R2_PICK_PICTURE) {
+		(item == R2_PICK_GALAXY ? P.galaxy : P.picture)[which]++;
+		return 0;
+	}
+	if (item != PICK_ITEM) return 0;
+	switch (which) {
+	case CALL_UPDATE: return mh_pick_update(item);
+	case CALL_DRAW:   P.list_draws++; return 0;
+	case CALL_ENTER:  return mh_pick_enter(item, 0);
+	default:          return mh_pick_exit(item, 0);
+	}
+}
+
 /* An item call through the screen's first item: the root's, or the shim's (by the item's address). */
 static int call(u32 screen, int which)
 {
-	u32 item;
+	u32 item, k;
+	int rc = 0;
 
 	if (screen == R2_ROOT_SCREEN) {
 		if (which == CALL_UPDATE) return mock_root_update();
 		if (which == CALL_DRAW) G.root_draws++;
 		return 0;
+	}
+	if (screen == PICK_SCREEN) {
+		for (k = 0; k < 14; k++) {
+			item = r32(screen + R2_SCR_ITEMS + 4 * k);
+			if (item != 0 && call_pick_item(item, which) != 0) rc = 1;
+		}
+		return rc;
 	}
 	item = r32(screen + 0xEC);
 	if (item != OUR_ITEM) return 0;
@@ -333,6 +425,7 @@ static void play_frame(int start)
 	if (test == 0 || G.gate_closed || G.paused) return;
 	w8(MH_SHIM + SH_FORCE, r8(MH_SHIM + SH_PRESSED));
 	mock_bars_setup();
+	w32(R2_SELECTED, r32(R2_CURRENT_PLANET));       /* PauseInit shows the current planet (0xBB7290) */
 	if (r8(MH_SHIM + SH_FORCE) != 0) {
 		w8(MH_SHIM + SH_FORCE, 0);
 		if (r32(R2_UI_MANAGER) != 0 && r32(BARS + R2_R_POS) == R2_POS_NORMAL) {
@@ -622,8 +715,9 @@ static void test_install_rac2(void)
 			if (a == MH_CAVE) at_code = k;
 			if (a == MH_SITE_MSG && first_hook == 999) first_hook = k;
 		}
-		check(at_code < first_hook && n <= 16 && bytes <= 21u * 1024u,
-		      "the caves before the words: fifteen writes, under 21 KB (round 4: 32 rows)");
+		check(at_code < first_hook && n <= 16 && bytes <= 23u * 1024u,
+		      "the caves before the words: fifteen writes, under 23 KB (round 4: 32 rows; the picker's screen, "
+		      "rows and names)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
@@ -961,9 +1055,251 @@ static void test_renderer_rac2(void)
 	check(quit(), "quit RaC2");
 }
 
+/* ------------------------------------------------------------ the picker */
+
+extern const struct game_api rac2_game;
+
+static u16 peek16(u32 a) { u8 b[2]; host_peek(a, b, 2); return (u16)((b[0] << 8) | b[1]); }
+
+/* The picker's name of planet row i: the line under the game's location, or the row's only line. */
+static const char *pick_name(u32 i, char *out)
+{
+	u32 row = PICK_ROWS + i * R2_ROW_SIZE, text = r16(row), sub = r16(row + 8);
+	return read_str(game_msg(sub != 0 ? sub : text), out, 80);
+}
+
+/* Frames of the pause with nothing pressed. */
+static void pframes(int n)
+{
+	int i;
+	for (i = 0; i < n; i++) pframe(0);
+}
+
+/* Start, then Trainer: the menu's root from the Help bar, ten frames old. */
+static void open_from_help(void)
+{
+	play_frame(1);
+	pframe(0);
+	w32(BARS + R2_R_CURSOR, 4);
+	pframe(0x40);
+	pframes(12);
+}
+
+/* The combo: the menu's root, ten frames old. */
+static void open_from_combo(void)
+{
+	combo_press(COMBO_MENU_DEFAULT);
+	play_frame(0);
+	pframes(12);
+}
+
+/* The cross on the root's Planets bar, and the frames until the picker has entered. */
+static void open_picker(void)
+{
+	w32(BARS + R2_R_CURSOR, 2);
+	pframe(0x40);
+	pframes(2);
+}
+
+static void test_picker_rac2(void)
+{
+	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save Files",
+	                                     "Qwark Build 54" };
+	static const char * const game_bars[] = { "Weapons", "Gadgets", "Map", "Goodies", "Trainer", "Options",
+	                                          "Special" };
+	const char * const *names;
+	struct menu_view v;
+	char a[80];
+	u32 mb, seq, frames, i, good;
+	u8 count = 0;
+	int n;
+
+	group("console menu: RaC2's planet picker, the ship's planet select from the Planets row");
+
+	memset(&G, 0, sizeof(G));
+	memset(&P, 0, sizeof(P));
+	G.char_w = 8;
+	for (i = 0; i < 28; i++) P.discovered[i] = (i * 7 + 5) % 27;   /* the game's own list: another order */
+	check(boot("NPEA00386"), "RaC2 boots");
+	rac2_playing();
+	seed_game();
+	poke32(R2_CURRENT_PLANET, 3);                                     /* Endako */
+	/* Words of the game's own planet select, which nothing of the picker may change. */
+	poke32(R2_PICK_SCREEN + R2_SCR_PARENT, 0);
+	poke32(R2_PICK_LIST + R2_LI_ROWS, 0x015D167Cu);
+	poke32(R2_PICK_LIST + R2_LI_CURSOR, 5);
+	poke32(0x01345AB4u, 0x01481BD0u);
+	for (n = 0; n < 1000 && menu_state() != MENU_READY; n++) tick(1);
+	tick(2);
+	check(menu_state() == MENU_READY, "the renderer is in");
+	mb = menu_mailbox();
+
+	/* The model: the root's Planets row opens the renderer's picker. */
+	check((peek8(mb + MBOX_OFF_CAPS) & MBOX_CAP_PICKER) != 0 && peek32(mb + MBOX_OFF_PICK_SEQ) == 0 &&
+	      peek16(mb + MBOX_OFF_SIZE) == MH_MBOX_SIZE,
+	      "the mailbox says the renderer has a picker (the pick in the header, the block as before), no pick yet");
+	menu_model_view(&v);
+	check(view_row(&v, "Planets") != NULL && (view_row(&v, "Planets")->flags & MROWF_PICKER) != 0 &&
+	      (view_row(&v, "Manips")->flags & MROWF_PICKER) == 0 &&
+	      (peek8(mb + MBOX_OFF_ROWS + 2 * 0x40 + MROW_OFF_FLAGS) & MROWF_PICKER) != 0,
+	      "the root's Planets row, and only it, flagged MROWF_PICKER in the page posted");
+
+	/* The picker's data: every planet of PLANET_LIST, in its order, by its names. */
+	names = rac2_game.planet_names(&count);
+	good = count == MH_PLANETS && r16(PICK_ROWS + MH_PLANETS * R2_ROW_SIZE) == 0;
+	for (i = 0; good && i < count; i++)
+		good = strcmp(pick_name(i, a), names[i]) == 0 && r16(PICK_ROWS + i * R2_ROW_SIZE + 2) == R2_ROW_INERT &&
+		       r32(PICK_ROWS + i * R2_ROW_SIZE + 4) == 0;
+	check(good, "the picker's rows: the 27 planets of PLANET_LIST in qwark's order, by qwark's names, a kind "
+	      "the game's row actions ignore, then a zero row");
+	check(r16(PICK_ROWS + 1 * R2_ROW_SIZE) == 0xB2C && r16(PICK_ROWS + 1 * R2_ROW_SIZE + 8) == MH_MSG_PLANET + 1 &&
+	      r16(PICK_ROWS + 21 * R2_ROW_SIZE) == MH_MSG_PLANET + 21 && r16(PICK_ROWS + 21 * R2_ROW_SIZE + 8) == 0 &&
+	      r16(PICK_ROWS + 25 * R2_ROW_SIZE) == MH_MSG_PLANET + 25,
+	      "Oozla's row the game's location (Megacorp Outlet) over \"Oozla\"; the Museum and Wupash their name alone");
+	check(r32(PICK_SCREEN + R2_SCR_FOCUS) == PICK_ITEM && r32(PICK_SCREEN + R2_SCR_ITEMS) == R2_PICK_GALAXY &&
+	      r32(PICK_SCREEN + R2_SCR_ITEMS + 4) == PICK_ITEM && r32(PICK_SCREEN + R2_SCR_ITEMS + 16) == R2_PICK_PICTURE &&
+	      r32(PICK_SCREEN + 0xE4) == R2_PICK_ID && r32(PICK_ITEM + 4) == R2_LIST_DRAW &&
+	      r32(PICK_ITEM + R2_LI_FLAGS) == R2_LIST_FLAGS && r32(PICK_ITEM + R2_LI_ROWS) == PICK_ROWS,
+	      "the picker's screen: id 15, the game's galaxy and picture items, the shim's list (the game's draw, its flags)");
+
+	/* Start, Trainer: the menu's root. */
+	open_from_help();
+	check(current() == SCREEN(MS_HELP) && bars_are(root, 7), "Start, Trainer: the menu's root on the bars");
+
+	/* The cross on Planets: the picker, with the game's screen sound; no event for qwark. */
+	w32(BARS + R2_R_CURSOR, 2);
+	seq = peek32(mb + MBOX_OFF_EV_SEQ);
+	n = G.screen_sounds;
+	pframe(0x40);
+	check(G.state == 3 && r32(PM + R2_MGR_NEXT) == PICK_SCREEN && G.screen_sounds == n + 1 &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) == seq && r8(MH_STATE + ST_PICKER) == 1 && r8(MH_STATE + ST_SWITCHING) == 0 &&
+	      r32(PICK_SCREEN + R2_SCR_PARENT) == SCREEN(MS_HELP) && r32(MH_SHIM + SH_PICK_OPENS) == 1,
+	      "the cross on Planets: the picker next, its parent the menu's screen, the screen sound, no event");
+	check(r32(MH_SHIM + SH_UP) == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER &&
+	      r8(MH_STATE + ST_LAST_CURSOR) == 2,
+	      "the menu's screen stopped, but no close: hstate PICKER for qwark, the cursor kept");
+	n = G.main_draws;
+	pframes(2);
+	check(current() == PICK_SCREEN && P.galaxy[CALL_ENTER] == 1 && P.picture[CALL_ENTER] == 1 &&
+	      r32(PICK_ITEM + R2_LI_CURSOR) == 3 && (r32(PICK_ITEM + R2_LI_FLAGS) & R2_LI_FRESH) != 0 &&
+	      P.list_draws >= 1 && P.galaxy[CALL_DRAW] >= 1 && P.picture[CALL_UPDATE] >= 1 && G.main_draws == n,
+	      "the picker: the game's galaxy and picture enter, the list's cursor on Endako, the planet shown");
+	tick(4);
+	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER && menu_model_page() == MENU_PAGE_ID(MENU_PAGE_ROOT, 0),
+	      "qwark keeps the menu where it was under the picker");
+
+	/* Down: Barlow, the game's tick, and Barlow shown, not the discovered list's planet. */
+	n = P.selects;
+	pframe(PADB_DOWN);
+	check(r32(PICK_ITEM + R2_LI_CURSOR) == 4 && G.sound == SND_MOVE && r32(R2_SELECTED) == 4 && P.selects == n + 2,
+	      "Down: the cursor on Barlow with the tick; the galaxy and picture show Barlow");
+	pframe(PADB_UP);
+	check(r32(PICK_ITEM + R2_LI_CURSOR) == 3 && r32(R2_SELECTED) == 3, "Up: Endako again");
+
+	/* Triangle: the menu's root again, on Planets, the same opening. */
+	frames = peek32(mb + MBOX_OFF_FRAMES);
+	pframe(PADB_DOWN);
+	pframe(PADB_TRIANGLE);
+	check(r32(PM + R2_MGR_NEXT) == SCREEN(MS_HELP) && r32(R2_SELECTED) == 3 && P.picture[CALL_EXIT] == 1,
+	      "Triangle: back to the menu's screen, the current planet shown again, the picture's exit");
+	pframes(2);
+	check(current() == SCREEN(MS_HELP) && bars_are(root, 7) && r32(BARS + R2_R_CURSOR) == 2 &&
+	      r8(MH_STATE + ST_PICKER) == 0 && r8(MH_SHIM + SH_FROM_HELP) == 1 &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && peek32(mb + MBOX_OFF_FRAMES) > frames,
+	      "the menu's root again, the cursor on Planets, still from Help, the frames going on (no new opening)");
+	tick(4);
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_ROOT, 0) && r32(BARS + R2_R_CURSOR) == 2,
+	      "qwark's root, the cursor where it was");
+
+	/* The cross on Planets again, then on Aranos 2: the pick. */
+	open_picker();
+	check(current() == PICK_SCREEN && r32(PICK_ITEM + R2_LI_CURSOR) == 3, "the picker again, on Endako");
+	for (i = 0; i < 11; i++) pframe(PADB_DOWN);
+	n = P.confirms;
+	pframe(0x40);
+	check(G.sound == SND_CHANGE && P.confirms == n && peek32(mb + MBOX_OFF_PICK_PLANET) == 14 &&
+	      peek32(mb + MBOX_OFF_PICK_SEQ) == 1 && r32(MH_SHIM + SH_PICKS) == 1 && r32(MH_SHIM + SH_PICK_LAST) == 14,
+	      "the cross on Aranos 2: planet 14 to qwark, seq 1, the planet page's sound; the game's list never sees it");
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && r32(MH_SHIM + SH_UP) == 0 &&
+	      r8(MH_STATE + ST_PICKER) == 0 && peek32(R2_GAME_MODE) == 0,
+	      "the pause closes: the menu down, its words free to come out");
+	poke32(RAC2_LOAD_PLANET, 0);
+	poke32(RAC2_LOAD_PLANET + 4, 0);
+	tick(4);
+	check(peek32(RAC2_LOAD_PLANET) == 1 && peek32(RAC2_LOAD_PLANET + 4) == 14,
+	      "qwark loads Aranos 2 through its planet load once the game plays");
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_ROOT, 0), "and the menu's next opening is its root");
+	poke32(RAC2_LOAD_PLANET, 0);
+
+	/* From the combo: the picker, Start: everything closes, nothing picked. */
+	open_from_combo();
+	open_picker();
+	check(current() == PICK_SCREEN && r32(PICK_SCREEN + R2_SCR_PARENT) == SCREEN(MS_COMBO),
+	      "the combo's root, Planets: the picker, its parent the combo's screen");
+	pframe(PADB_START);
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && r32(MH_SHIM + SH_UP) == 0 &&
+	      peek32(mb + MBOX_OFF_PICK_SEQ) == 1 && r32(R2_SELECTED) == 3,
+	      "Start in the picker closes the pause, nothing picked");
+	tick(4);
+	check(peek32(RAC2_LOAD_PLANET) == 0, "and nothing loads");
+
+	/* The combo while the picker is up closes it, as the menu's own screens do. */
+	open_from_combo();
+	open_picker();
+	check(current() == PICK_SCREEN, "the picker again from the combo's root");
+	tick(4);
+	combo_press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo with the picker up asks for the close");
+	pframe(0);
+	check(!G.paused && peek8(mb + MBOX_OFF_REQUEST) == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      peek32(mb + MBOX_OFF_PICK_SEQ) == 1,
+	      "which the picker's next frame takes: the pause closes, nothing picked");
+	tick(4);
+
+	/* Back from a picker the combo opened, then Triangle at the root: out of the pause, as from the combo. */
+	open_from_combo();
+	open_picker();
+	pframe(PADB_TRIANGLE);
+	pframes(2);
+	check(current() == SCREEN(MS_COMBO) && r8(MH_SHIM + SH_FROM_HELP) == 0 && r32(BARS + R2_R_CURSOR) == 2,
+	      "back from the picker to the combo's root, on Planets");
+	pframe(PADB_TRIANGLE);
+	for (i = 0; i < 12 && G.paused; i++) pframe(0);
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "Triangle there leaves the pause");
+	tick(4);
+
+	/* Back from a picker the Help bar opened, then Triangle at the root: the game's root, on Trainer. */
+	open_from_help();
+	open_picker();
+	pframe(PADB_TRIANGLE);
+	pframes(2);
+	pframe(PADB_TRIANGLE);
+	pframe(0);
+	check(current() == R2_ROOT_SCREEN && bars_are(game_bars, 7) && r32(BARS + R2_R_CURSOR) == 4,
+	      "Help, Planets, Triangle, Triangle: the game's own root, on Trainer");
+	pframes(10);
+	pframe(PADB_START);
+	check(!G.paused, "closed");
+	tick(4);
+
+	/* Nothing of the game's own planet select changed. */
+	check(peek32(R2_PICK_SCREEN + R2_SCR_PARENT) == 0 && peek32(R2_PICK_LIST + R2_LI_ROWS) == 0x015D167Cu &&
+	      peek32(R2_PICK_LIST + R2_LI_CURSOR) == 5 && peek32(0x01345AB4u) == 0x01481BD0u,
+	      "the game's own select untouched: screen 15's parent, its list's rows and cursor, the discovered list's word");
+
+	/* Without the cap the Planets row is a plain link. */
+	menu_model_reset(7, 16, MBOX_CAP_STEPS | MBOX_CAP_PAGE_KEYS | MBOX_CAP_BACK | MBOX_CAP_REQUEST);
+	menu_model_view(&v);
+	check(view_row(&v, "Planets") != NULL && (view_row(&v, "Planets")->flags & MROWF_PICKER) == 0,
+	      "a renderer without MBOX_CAP_PICKER: Planets is qwark's own page, no flag");
+
+	check(quit(), "quit RaC2");
+}
+
 void test_menu_rac2(void)
 {
 	test_model_rac2();
 	test_install_rac2();
 	test_renderer_rac2();
+	test_picker_rac2();
 }

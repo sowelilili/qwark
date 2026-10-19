@@ -23,13 +23,20 @@
  * shim's screens goes into the pause manager's next screen, and the manager
  * calls this one's exit, plays its screen sound and enters that one.
  *
+ * Round 4: the root's Planets row opens the planet picker, the game's own
+ * ship planet select (its galaxy, its list, its picture) as a copy of its
+ * screen in the renderer's data, over every planet qwark loads; the cross on a
+ * planet hands it to qwark and closes the pause (shim_picker, mh_pick_*).
+ *
  * The game reaches it through
- *   mh_msg_stub      the bars' labels and the Help bar's "Trainer" (assembler);
+ *   mh_msg_stub      the bars' labels, the Help bar's "Trainer" and the
+ *                    picker's planet names (assembler);
  *   mh_inject_stub, mh_combo_stub, mh_root_stub   the combo: the Start path
  *                    opens the pause for an open request, and the manager
  *                    starts it on the menu's screen instead of the root
  *                    (assembler, the first calling mh_inject);
- *   mh_update, mh_draw, mh_enter, mh_exit   the item, through descriptors.
+ *   mh_update, mh_draw, mh_enter, mh_exit   the item, through descriptors;
+ *   mh_pick_update, mh_pick_enter, mh_pick_exit   the picker's list item.
  *
  * Everything the game keeps a pointer to - the screens, the item, the bars'
  * text ids and their text - is in the renderer's data, which stays put for as
@@ -45,16 +52,24 @@
 #define IDS      ((u32)MH_SCREENS + MS_IDS)
 #define MORE     ((u32)MH_SCREENS + MS_MORE)
 #define MGR(o)   ((u32)R2_PAUSE_MGR + (u32)(o))
+#define PICK     ((u32)MH_SCREENS + MS_PICK)
+#define PICK_IT  ((u32)MH_SCREENS + MS_PICK_ITEM)
 
 /* The shim's state starts where the core's ends, and the screens where the shim's ends. */
 typedef char mh_rac2_layout[(MH_STATE + MH_CORE_SIZE == MH_SHIM &&
                              MH_SHIM + SH_SIZE == MH_SCREENS && (MH_SCREENS & 15) == 0 &&
                              MH_SCREENS + MS_SIZE <= MH_DATA_END &&
-                             SH_CUTS + 4 <= SH_SIZE &&
+                             SH_PICK_LAST + 4 <= SH_SIZE &&
                              MS_ITEM == MS_NSCREENS * R2_SCREEN_SIZE &&
                              MS_IDS == MS_ITEM + R2_ITEM_SIZE &&
                              MS_TRAINER == MS_IDS + 4 * (MH_MAIN_ROWS + 1) &&
-                             MS_MORE == MS_TRAINER + 8 && MS_SIZE == MS_MORE + 4 &&
+                             MS_MORE == MS_TRAINER + 8 && MS_PICK == ((MS_MORE + 4 + 15) & ~15) &&
+                             MS_PICK_ITEM == MS_PICK + R2_SCREEN_SIZE &&
+                             MS_PICK_ROWS == MS_PICK_ITEM + R2_LIST_SIZE &&
+                             MS_PICK_NAMES == MS_PICK_ROWS + (MH_PLANETS + 1) * R2_ROW_SIZE &&
+                             MS_PICK_STRS == MS_PICK_NAMES + 4 * MH_PLANETS && MS_SIZE > MS_PICK_STRS &&
+                             MH_PLANETS <= 28 && MH_MSG_PLANET + MH_PLANETS <= MH_MSG_BASE + 0x40 &&
+                             (MH_CAPS & MBOX_CAP_PICKER) != 0 && MH_PICKER == 1 &&
                              MH_MAIN_ROWS <= 7 && MH_CFG_ROWS <= MH_ROWS &&
                              CFG_VIS < CFG_VIS_MAX && CFG_VIS_MAX <= MH_CFG_ROWS) ? 1 : -1];
 
@@ -64,6 +79,9 @@ MH_API int mh_draw(u32 item);
 MH_API int mh_enter(u32 item, int arg);
 MH_API int mh_exit(u32 item, int arg);
 MH_API u32 mh_inject(u32 test);
+MH_API int mh_pick_update(u32 item);
+MH_API int mh_pick_enter(u32 item, int arg);
+MH_API int mh_pick_exit(u32 item, int arg);
 
 typedef int  (*fn_i_v)(void);
 typedef int  (*fn_i_u)(u32);
@@ -102,6 +120,8 @@ typedef void (*fn_sprite)(u32, u32, u32, u32, float, float, float, float, float)
 #define lv_orbit     GAME_FN(fn_i_v,    OPD_LV_ORBIT,    mock_lv_orbit)
 #define lv_other     GAME_FN(fn_i_v,    OPD_LV_OTHER,    mock_lv_other)
 #define lv_pstate    GAME_FN(fn_i_v,    OPD_LV_PSTATE,   mock_lv_pstate)
+#define list_update  GAME_FN(fn_i_u,    OPD_LIST_UPDATE, mock_list_update)
+#define select_planet GAME_FN(fn_i_u,   OPD_SELECT_PLANET, mock_select_planet)
 
 static u32 type(void)
 {
@@ -465,16 +485,23 @@ MH_API void shim_sound(u32 snd)
  * One of the shim's screens enters, on the first frame it is the manager's:
  * the page qwark posted, with the look it asks for. A screen entered from none
  * of the shim's is the menu opening: from the Help bar's screen, or from the
- * combo's (the manager's previous screen is the root, or nothing).
+ * combo's (the manager's previous screen is the root, or nothing). One entered
+ * from the picker is the menu again as it was, Triangle having gone back to the
+ * picker's parent: the core sees the picker up and resumes the page and its
+ * cursor, no opening for qwark.
  */
 MH_API int mh_enter(u32 item, int arg)
 {
-	u32 k = screen_of(r32(MGR(R2_MGR_CURRENT))), t;
+	u32 k = screen_of(r32(MGR(R2_MGR_CURRENT))), prev = r32(MGR(R2_MGR_PREVIOUS)), t;
 
 	(void)item;
 	(void)arg;
 	if (r32(MH_STATE + ST_MAGIC) != MH_MAGIC) return 0;
-	if (screen_of(r32(MGR(R2_MGR_PREVIOUS))) == MH_NONE) w8(SH(SH_FROM_HELP), k == MS_HELP);
+	if (prev != PICK) {
+		/* A picker left up by a pause that ended some way its exit never saw: the menu was down. */
+		if (mh_picker_up()) mh_core_picker_gone(0);
+		if (screen_of(prev) == MH_NONE) w8(SH(SH_FROM_HELP), k == MS_HELP);
+	}
 	w32(SH(SH_UP), R2_SCREEN_UP);
 	w8(SH(SH_SCREEN), k);
 	w8(SH(SH_RET), 0);
@@ -515,8 +542,9 @@ MH_API int mh_draw(u32 item)
 
 /*
  * It stops being the manager's screen: on the way to the next of the shim's
- * (the core's switch), back to the root, or as the pause closes. Only the
- * first exit counts; the menu is down unless the core is switching.
+ * (the core's switch), to the planet picker, back to the root, or as the
+ * pause closes. Only the first exit counts; the menu is down unless the core
+ * is switching or the picker is up, whose code is the renderer's too.
  */
 MH_API int mh_exit(u32 item, int arg)
 {
@@ -524,8 +552,107 @@ MH_API int mh_exit(u32 item, int arg)
 	(void)arg;
 	w8(SH(SH_READY), 0);
 	if (r32(SH(SH_UP)) == 0) return 0;
-	if (r8(MH_STATE + ST_SWITCHING) == 0) w32(SH(SH_UP), 0);
+	if (r8(MH_STATE + ST_SWITCHING) == 0 && !mh_picker_up()) w32(SH(SH_UP), 0);
 	mh_core_stop(0);
+	return 0;
+}
+
+/* ------------------------------------------------------------ the picker */
+
+/*
+ * The cross on the root's Planets row (MROWF_PICKER): the picker, the copy of
+ * the ship's planet select (mh_rac2.h), in place of the bars, the game's way
+ * between pause screens: the manager plays its screen sound, calls this
+ * screen's exit, which is no close (the core has the picker up, so hstate
+ * reads PICKER and the page and cursor wait), and enters the picker. Its
+ * parent is this screen, so the picker's Triangle comes back here. Only from
+ * the bars (a MAIN page), with the UI manager up and nothing else asked of the
+ * manager; otherwise 0, and qwark's own Planets page opens instead.
+ */
+MH_API u32 shim_picker(int p)
+{
+	u32 cur = r32(MGR(R2_MGR_CURRENT));
+
+	(void)p;
+	if (type() != MBOX_PTYPE_MAIN || screen_of(cur) == MH_NONE || bars() == 0 ||
+	    r32(MGR(R2_MGR_NEXT)) != 0 || r8(SH(SH_RET)) != 0)
+		return 0;
+	w32(PICK + R2_SCR_PARENT, cur);
+	w32(SH(SH_PICK_OPENS), r32(SH(SH_PICK_OPENS)) + 1);
+	w8(SH(SH_READY), 0);
+	w32(MGR(R2_MGR_NEXT), PICK);
+	return 1;
+}
+
+/*
+ * The picker's list enters (the game's galaxy and picture items enter beside
+ * it): the cursor on the planet the galaxy shows, which is the current planet
+ * (the pause's setup selects it, and the list's Triangle selects it again), as
+ * the select's own enter (0xBD2488) puts it; the rows are the data image's.
+ */
+MH_API int mh_pick_enter(u32 item, int arg)
+{
+	u32 sel = r32(R2_SELECTED);
+
+	(void)arg;
+	if (sel >= MH_PLANETS) {
+		sel = 0;
+		select_planet(0);
+	}
+	w32(item + R2_LI_CURSOR, sel);
+	w32(item + R2_LI_FLAGS, r32(item + R2_LI_FLAGS) | R2_LI_FRESH);
+	return 0;
+}
+
+/*
+ * Every frame the picker is up. The cross on a planet, where the game's list
+ * would take it (no Start, Select or Triangle with it, the list's own block
+ * clear, the list the focus), is the pick: the sound the select's planet page
+ * plays for its own cross, the planet to qwark through the mailbox, and the
+ * pause closes (1). Everything else is the game's list's update (0xBBE528):
+ * Up and Down with its sound, Start and Select close the pause (-1), Triangle
+ * goes to the parent, the menu's screen the picker came from. The list shows
+ * the planet under the cursor in the galaxy and the picture through the
+ * game's discovered list, which is not this list, so a cursor moved has its
+ * own planet shown after it. A close request (the combo) closes the pause as
+ * the list's Start does.
+ */
+MH_API int mh_pick_update(u32 item)
+{
+	u32 e, c;
+	int rc;
+
+	if (r32(MH_STATE + ST_MAGIC) != MH_MAGIC || mh_core_close_request()) return -1;
+	e = edges();
+	c = r32(item + R2_LI_CURSOR);
+	if ((e & (PADB_START | PADB_SELECT | PADB_TRIANGLE)) == 0 && (e & r32(R2_CONFIRM_MASK)) != 0 &&
+	    (r32(R2_LIST_BLOCKED) & 1) == 0 && r32(r32(MGR(R2_MGR_CURRENT)) + R2_SCR_FOCUS) == item &&
+	    c < MH_PLANETS) {
+		play_sound(SND_CHANGE, 0, 0);
+		w32(SH(SH_PICK_LAST), c);
+		w32(SH(SH_PICKS), r32(SH(SH_PICKS)) + 1);
+		mh_core_pick(0, (s32)c);
+		return 1;
+	}
+	rc = list_update(item);
+	if (r32(item + R2_LI_CURSOR) != c && r32(item + R2_LI_CURSOR) < MH_PLANETS)
+		select_planet(r32(item + R2_LI_CURSOR));
+	return rc;
+}
+
+/*
+ * The picker's list leaves. With a next screen it is Triangle, back to the
+ * menu's screen, whose start brings the menu back. With none the pause is
+ * closing - a pick (already the menu's close), Start, Select, a close request -
+ * and the menu is down: qwark's root next time, and the words may come out.
+ */
+MH_API int mh_pick_exit(u32 item, int arg)
+{
+	(void)item;
+	(void)arg;
+	if (r32(MGR(R2_MGR_NEXT)) != 0) return 0;
+	mh_core_picker_gone(0);
+	w32(SH(SH_UP), 0);
 	return 0;
 }
 

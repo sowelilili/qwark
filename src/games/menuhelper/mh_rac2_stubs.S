@@ -24,6 +24,9 @@
 #define BARS_POS   (R2_BARS_OFF + R2_R_POS)
 #define ITEM_ADDR  (MH_SCREENS + MS_ITEM)
 #define SCR_COMBO  (MH_SCREENS + MS_COMBO * R2_SCREEN_SIZE)
+#define PICK_ITEM  (MH_SCREENS + MS_PICK_ITEM)
+#define PICK_ROWS  (MH_SCREENS + MS_PICK_ROWS)
+#define PICK_NAMES (MH_SCREENS + MS_PICK_NAMES)
 
 	.section ".text.entry","ax"
 	.align	2
@@ -35,22 +38,24 @@
  * MH_MAIN_ROWS - 1 are the core's rows of a MAIN page in the text set on show,
  * which the bars ask for as the shim lays them out (0xCAA71C, which keeps the
  * pointer), only ever after mh_core_start: a screen going keeps the pointers it
- * was given into the set it showed (round 3's pointer rule). Anything else goes
- * on into msg_string with r4 set as the replaced instruction set it. Writes r3,
- * r4, r5 and cr0, which msg_string itself writes, and returns to msg_string's
- * caller.
+ * was given into the set it showed (round 3's pointer rule). 0xF010 + p, p
+ * below MH_PLANETS, is the picker's name of qwark's planet p (MS_PICK_NAMES),
+ * which the planet list draws. Anything else goes on into msg_string with r4
+ * set as the replaced instruction set it: the game's ids end at 0xBB81, so an
+ * id of the game's costs three instructions more than msg_string's own. Writes
+ * r3, r4, r5 and cr0, which msg_string itself writes, and returns to
+ * msg_string's caller.
  */
 	.globl	mh_msg_stub
 mh_msg_stub:
-	rlwinm	%r5,%r3,0,0,27
+	rlwinm	%r5,%r3,0,0,25
 	cmplwi	%r5,MH_MSG_BASE
 	bne	2f
-	andi.	%r5,%r3,15
-	bne	1f
-	lis	%r3,(MH_SCREENS+MS_TRAINER)@ha
-	addi	%r3,%r3,(MH_SCREENS+MS_TRAINER)@l
-	blr
-1:	cmplwi	%r5,MH_MAIN_ROWS
+	andi.	%r5,%r3,0x3F
+	beq	0f
+	cmplwi	%r5,MH_MSG_PLANET-MH_MSG_BASE
+	bge	3f
+	cmplwi	%r5,MH_MAIN_ROWS
 	bgt	2f
 	mulli	%r5,%r5,MH_TEXT_LEN
 	lis	%r3,FRONT@ha
@@ -60,6 +65,17 @@ mh_msg_stub:
 	lis	%r3,TEXT_BASE@ha
 	addi	%r3,%r3,TEXT_BASE@l
 	add	%r3,%r3,%r5
+	blr
+0:	lis	%r3,(MH_SCREENS+MS_TRAINER)@ha
+	addi	%r3,%r3,(MH_SCREENS+MS_TRAINER)@l
+	blr
+3:	addi	%r5,%r5,-(MH_MSG_PLANET-MH_MSG_BASE)
+	cmplwi	%r5,MH_PLANETS
+	bge	2f
+	rlwinm	%r5,%r5,2,0,29
+	lis	%r4,PICK_NAMES@ha
+	addi	%r4,%r4,PICK_NAMES@l
+	lwzx	%r3,%r4,%r5
 	blr
 2:	lis	%r4,0x134
 	b	game_msg_exit
@@ -231,3 +247,119 @@ mh_trainer:
 	.globl	mh_more
 mh_more:
 	.asciz	"..."
+
+/*
+ * MS_PICK: the picker, a copy of the planet select's screen 15 (0x134DD90):
+ * its rects and id, its parent the menu's screen the picker was opened from
+ * (shim_picker writes it, 0 here), the list the focus, and the game's own
+ * galaxy (item 0) and picture (item 4) items where the select has them, so the
+ * manager lays the same rects into them.
+ */
+#define PICK_RECTS \
+	.long	256, 45, 470, 38, 123, 179, 184, 220, 336, 172, 307, 178; \
+	.long	94, 359, 144, 59, 352, 330, 248, 100, -92, 317, 136, 23; \
+	.long	-136, 371, 104, 17, 560, 357, 53, 34, -70, 286, 59, 62; \
+	.long	144, 462, 55, 58, -155, 283, 60, 63, -102, 203, 42, 26; \
+	.long	-72, 122, 25, 26, 0, 0, 0, 0
+
+	.align	4
+	.globl	mh_pick
+mh_pick:
+	PICK_RECTS
+	.long	0, R2_PICK_ID, PICK_ITEM
+	.long	R2_PICK_GALAXY, PICK_ITEM, 0, 0, R2_PICK_PICTURE
+	.space	9 * 4
+	.long	0, 0, 0
+
+/*
+ * MS_PICK_ITEM: the list, a copy of the select's (0x134E0DC, R2_LIST_SIZE
+ * bytes): the shim's update, enter and exit, the game's draw, its flags, the
+ * shim's rows. Everything else zero, as the game's.
+ */
+	.globl	mh_pick_item
+mh_pick_item:
+	.long	mh_pick_update, R2_LIST_DRAW, mh_pick_enter, mh_pick_exit
+	.space	0x20
+	.long	R2_LIST_FLAGS, PICK_ROWS
+	.space	R2_LIST_SIZE - 0x38
+
+/*
+ * MS_PICK_ROWS: a row a planet, in qwark's id order (row i is planet i), as
+ * {text, kind, target, sub, anim}: the game's location for the planet (the
+ * text ids at R2_PLANET_TEXT) over its name in qwark's words (0xF010 + i, the
+ * msg stub's), or the name alone where the location says the same or there is
+ * none; a kind the game's row actions ignore, since the shim takes the cross;
+ * then a zero row, which ends the list.
+ */
+#define PICK_ROW(i, loc) \
+	.short	loc, R2_ROW_INERT; .long 0; .short MH_MSG_PLANET + i, 0
+#define PICK_ROW_NAME(i) \
+	.short	MH_MSG_PLANET + i, R2_ROW_INERT; .long 0; .short 0, 0
+
+	.globl	mh_pick_rows
+mh_pick_rows:
+	PICK_ROW(0, 0xB2B)          /* Flying Lab, Aranos */
+	PICK_ROW(1, 0xB2C)          /* Megacorp Outlet, Oozla */
+	PICK_ROW(2, 0xB2D)          /* Maktar Resort */
+	PICK_ROW(3, 0xB2E)          /* Megapolis, Endako */
+	PICK_ROW(4, 0xB2F)          /* Vukovar Canyon, Barlow */
+	PICK_ROW(5, 0xB30)          /* Thug Rendezvous, Feltzin */
+	PICK_ROW(6, 0xB31)          /* Canal City, Notak */
+	PICK_ROW(7, 0xB32)          /* Frozen Base, Siberius */
+	PICK_ROW(8, 0xB33)          /* Mining Area, Tabora */
+	PICK_ROW(9, 0xB34)          /* Testing Facility, Dobbo */
+	PICK_ROW(10, 0xB35)         /* Deep Space Disposal, Hrugis */
+	PICK_ROW(11, 0xB36)         /* Megacorp Games, Joba */
+	PICK_ROW(12, 0xB37)         /* Megacorp Armory, Todano */
+	PICK_ROW(13, 0xB38)         /* Silver City, Boldan */
+	PICK_ROW(14, 0xB39)         /* Flying Lab, Aranos 2 */
+	PICK_ROW(15, 0xB3A)         /* Thugs-4-Less Fleet, Gorn */
+	PICK_ROW(16, 0xB3B)         /* Thug HQ, Snivelak */
+	PICK_ROW(17, 0xB3C)         /* Distribution Facility, Smolg */
+	PICK_ROW(18, 0xB3D)         /* Allgon City, Damosel */
+	PICK_ROW(19, 0xB3E)         /* Tundor Wastes, Grelbin */
+	PICK_ROW(20, 0xB3F)         /* Protopet Factory, Yeedil */
+	PICK_ROW_NAME(21)           /* Insomniac Museum (its location says the same) */
+	PICK_ROW(22, 0xB41)         /* Testing Facility Moon, Dobbo Orbit */
+	PICK_ROW(23, 0xB42)         /* Testing Facility Moon, Damosel Orbit */
+	PICK_ROW(24, 0xB43)         /* Slim Cognito's, Slim Cognito */
+	PICK_ROW_NAME(25)           /* Wupash (no location) */
+	PICK_ROW_NAME(26)           /* Jamming Array (its location says the same) */
+	.space	R2_ROW_SIZE
+
+/* MS_PICK_NAMES: the names' addresses, MS_PICK_STRS: the names, PLANET_LIST's (src/games/rac2.c). */
+	.globl	mh_pick_names
+mh_pick_names:
+	.long	.Lpn0, .Lpn1, .Lpn2, .Lpn3, .Lpn4, .Lpn5, .Lpn6, .Lpn7, .Lpn8
+	.long	.Lpn9, .Lpn10, .Lpn11, .Lpn12, .Lpn13, .Lpn14, .Lpn15, .Lpn16, .Lpn17
+	.long	.Lpn18, .Lpn19, .Lpn20, .Lpn21, .Lpn22, .Lpn23, .Lpn24, .Lpn25, .Lpn26
+.Lpn0:	.asciz	"Aranos"
+.Lpn1:	.asciz	"Oozla"
+.Lpn2:	.asciz	"Maktar"
+.Lpn3:	.asciz	"Endako"
+.Lpn4:	.asciz	"Barlow"
+.Lpn5:	.asciz	"Feltzin"
+.Lpn6:	.asciz	"Notak"
+.Lpn7:	.asciz	"Siberius"
+.Lpn8:	.asciz	"Tabora"
+.Lpn9:	.asciz	"Dobbo"
+.Lpn10:	.asciz	"Hrugis"
+.Lpn11:	.asciz	"Joba"
+.Lpn12:	.asciz	"Todano"
+.Lpn13:	.asciz	"Boldan"
+.Lpn14:	.asciz	"Aranos 2"
+.Lpn15:	.asciz	"Gorn"
+.Lpn16:	.asciz	"Snivelak"
+.Lpn17:	.asciz	"Smolg"
+.Lpn18:	.asciz	"Damosel"
+.Lpn19:	.asciz	"Grelbin"
+.Lpn20:	.asciz	"Yeedil"
+.Lpn21:	.asciz	"Insomniac Museum"
+.Lpn22:	.asciz	"Dobbo Orbit"
+.Lpn23:	.asciz	"Damosel Orbit"
+.Lpn24:	.asciz	"Slim Cognito"
+.Lpn25:	.asciz	"Wupash"
+.Lpn26:	.asciz	"Jamming Array"
+	.globl	mh_pick_end
+mh_pick_end:
+

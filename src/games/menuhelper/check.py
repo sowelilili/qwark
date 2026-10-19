@@ -563,6 +563,8 @@ class Ppc:
                     self.cmp(signed(self.r[ra]), 0)
             elif op == 31 and ((w >> 1) & 0x3FF) == 266:    # add
                 self.set(rd, self.r[ra] + self.r[rb])
+            elif op == 31 and ((w >> 1) & 0x3FF) == 23:     # lwzx
+                self.set(rd, self.ld((base + self.r[rb]) & 0xFFFFFFFF, 4))
             elif op == 34:                                  # lbz
                 self.set(rd, self.ld((base + simm) & 0xFFFFFFFF, 1))
             elif op == 32:                                  # lwz
@@ -2004,7 +2006,7 @@ ACCEPTED_RAC2 = {
 
 # The stubs' first words (mh_rac2_stubs.S), by the symbol in the hook's comment.
 STUB_FIRST_RAC2 = {
-    "mh_msg_stub": (0xFFFFFFFF, 0x54650036, "rlwinm r5,r3,0,0,27"),
+    "mh_msg_stub": (0xFFFFFFFF, 0x54650032, "rlwinm r5,r3,0,0,25"),
     "mh_inject_stub": (0xFFFFFFFF, 0x54840528, "rlwinm r4,r4,0,20,20, the game's own test"),
     "mh_combo_stub": (0xFFFFFFFF, 0x38A00001, "li r5,1"),
     "mh_root_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
@@ -2053,7 +2055,18 @@ def check_rac2_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
                 cpu.written <= msg_ok
         ok(good, "msg stub, 0xF001 + i for each of the %d MAIN rows: row i of text set %d, the one on show "
            "(mh_text(i))" % (hdr["MH_MAIN_ROWS"], f))
-    for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, 0xF010, 0xEFFF, 0x2D55, 0x2D4E):
+    names = rac2_planet_names()
+    good = len(names) == hdr["MH_PLANETS"]
+    table = screens + hdr["MS_PICK_NAMES"]
+    tmem = dict(((table + 4 * p, 4), struct.unpack(">I", data[table + 4 * p - hdr["MH_DATA"]:table + 4 * p + 4 - hdr["MH_DATA"]])[0])
+                for p in range(hdr["MH_PLANETS"]))
+    for p, name in enumerate(names):
+        cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_PLANET"] + p, 4: 0x1234}, tmem)
+        good = good and how == ("blr", None) and cstr(cpu.r[3]) == name and cpu.written <= msg_ok
+    ok(good, "msg stub, 0x%X + p for each of the %d planets: PLANET_LIST's name of planet p (src/games/rac2.c), "
+       "in the data image" % (hdr["MH_MSG_PLANET"], len(names)))
+    for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, hdr["MH_MSG_PLANET"] + hdr["MH_PLANETS"],
+                0xF03F, 0xF040, 0xEFFF, 0xF0F0, 0x2D55, 0x2D4E, 0xFFFFFFFF):
         cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234})
         ok(how == ("b", hdr["GAME_MSG_EXIT"]) and cpu.r[3] == idn and cpu.r[4] == 0x01340000 and
            cpu.written <= msg_ok,
@@ -2094,6 +2107,142 @@ def check_rac2_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
         ok(how == ("blr", None) and cpu.r[3] == want and cpu.ld(force, 1) == 0 and
            cpu.ld(opens, 4) == counted and cpu.r[31] == 0x015B2F50 and cpu.written <= root_ok,
            "root stub, %s (r3 = 0x%08X)" % (what, cpu.r[3]))
+
+
+def rac2_planet_names():
+    """PLANET_LIST's names for RaC2, out of src/games/rac2.c (rac2_planets)."""
+    text = open(os.path.join(QWARK, "src", "games", "rac2.c"), encoding="utf-8").read()
+    m = re.search(r"static const char \* const rac2_planets\[\] = \{(.*?)\};", text, re.S)
+    return re.findall(r'"([^"]*)"', m.group(1)) if m else []
+
+
+# The picker's rows that carry the planet's name alone: the location says the
+# same (the Museum's, the Jamming Array's) or there is none (Wupash's, -1).
+R2_PICK_NAME_ONLY = {21: 0x0B40, 25: 0xFFFFFFFF, 26: 0x271A}
+
+
+def check_rac2_picker(ok, elf, hdr, data, dat, code, cave):
+    """The planet picker (round 4): a copy of the planet select's screen 15 in
+    the data image, with the game's galaxy and picture items, the shim's copy of
+    its list over every planet qwark loads, and the game code it relies on."""
+    W = elf.word
+    scr = hdr["MH_SCREENS"]
+
+    def dw(a):
+        return struct.unpack(">I", data[a - dat:a - dat + 4])[0]
+
+    def dh(a):
+        return struct.unpack(">H", data[a - dat:a - dat + 2])[0]
+
+    def ecstr(a):
+        s = bytearray()
+        while len(s) < 96:
+            w = W((a + len(s)) & ~3)
+            c = 0 if w is None else (w >> (8 * (3 - ((a + len(s)) & 3)))) & 0xFF
+            if c == 0:
+                break
+            s.append(c)
+        return s.decode("latin1")
+
+    def desc_ok(d):
+        if not dat <= d <= dat + len(data) - 8:
+            return False
+        c, t = dw(d), dw(d + 4)
+        return cave <= c < cave + len(code) and dat + 0x8000 <= t <= dat + len(data) + 0x8000
+
+    game, gal, lst, pic = hdr["R2_PICK_SCREEN"], hdr["R2_PICK_GALAXY"], hdr["R2_PICK_LIST"], hdr["R2_PICK_PICTURE"]
+    pick, item, rows = scr + hdr["MS_PICK"], scr + hdr["MS_PICK_ITEM"], scr + hdr["MS_PICK_ROWS"]
+    items, focus, parent = hdr["R2_SCR_ITEMS"], hdr["R2_SCR_FOCUS"], hdr["R2_SCR_PARENT"]
+    n = hdr["MH_PLANETS"]
+
+    # The game's planet select, screen 15, as the copy has it.
+    gitems = [W(game + items + 4 * i) for i in range(14)]
+    ok(W(0x00BB88A8) == 0x3063DD90 and W(0x00BB889C) == 0x3C600135 and W(game + 0xE4) == hdr["R2_PICK_ID"] and
+       W(game + parent) == 0 and W(game + focus) == lst and
+       gitems == [gal, lst, 0, 0, pic] + [0] * 9,
+       "the planet select is screen 15 at 0x%08X (state 1, reason 4: 0xBB88A8), no parent, its focus the list, its "
+       "items the galaxy 0x%08X, the list 0x%08X and the picture 0x%08X" % (game, gal, lst, pic))
+    mine = [dw(pick + 4 * i) for i in range(hdr["R2_SCREEN_SIZE"] // 4)]
+    ok(mine[:56] == [W(game + 4 * i) for i in range(56)] and mine[56] == 0 and mine[57] == hdr["R2_PICK_ID"] and
+       mine[58] == item and mine[59:73] == [gal, item, 0, 0, pic] + [0] * 9 and mine[73:] == [0, 0, 0],
+       "the picker's screen at 0x%08X: screen 15's rects and id, its parent 0 until the shim opens it, its focus "
+       "and item 1 the shim's list, items 0 and 4 the game's galaxy and picture" % pick)
+    ok(W(gal) == 0x012FD488 and W(0x012FD488) == 0x00BC9620 and W(0x00BC9638) == 0x4BF8AF45 and
+       W(gal + 8) == 0x012FD498 and W(0x012FD498) == 0x00BC9690 and W(0x00BC96A0) == 0x90850234,
+       "the galaxy item: its update hands the pad to the HD page (0xB5457C), its enter only clears 0x157D114")
+    ok(W(pic) == 0x012FD620 and W(pic + 0x30) == 7 and W(0x01345870 + 4 * 7) == 0x012288F4 and
+       ecstr(0x012288F4) == "rc2/ps3data/global/hud/gmap_ss/gmap_ss",
+       "the picture item: the planet shown's gmap_ss[p] (every planet 0 .. 26 has one on the disc)")
+
+    # The list: the game's item and the shim's copy.
+    ok(W(lst) == hdr["OPD_LIST_UPDATE"] and W(hdr["OPD_LIST_UPDATE"]) == 0x00BBE528 and
+       W(lst + 4) == hdr["R2_LIST_DRAW"] and W(hdr["R2_LIST_DRAW"]) == 0x00BCBC58 and
+       W(lst + 8) == 0x012FD6A0 and W(0x012FD6A0) == 0x00BD2488 and W(lst + 0xC) == 0 and
+       W(lst + hdr["R2_LI_FLAGS"]) == hdr["R2_LIST_FLAGS"] and W(lst + hdr["R2_LI_ROWS"]) == 0x015D167C and
+       all(W(lst + o) == 0 for o in list(range(0x10, 0x30, 4)) + list(range(0x38, hdr["R2_LIST_SIZE"], 4))) and
+       W(lst + hdr["R2_LIST_SIZE"]) == 0x012FD0F0,
+       "the select's list 0x%08X: update 0xBBE528, draw 0xBCBC58, enter 0xBD2488, flags 0x538, rows 0x15D167C, "
+       "the next item 0x%X on" % (lst, hdr["R2_LIST_SIZE"]))
+    words = [dw(item + 4 * i) for i in range(hdr["R2_LIST_SIZE"] // 4)]
+    ok(desc_ok(words[0]) and words[1] == hdr["R2_LIST_DRAW"] and desc_ok(words[2]) and desc_ok(words[3]) and
+       len(set(words[:4])) == 4 and all(w == 0 for w in words[4:12]) and words[12] == hdr["R2_LIST_FLAGS"] and
+       words[13] == rows and all(w == 0 for w in words[14:]),
+       "the picker's list at 0x%08X: the shim's update, the game's draw, the shim's enter and exit, the select's "
+       "flags, the shim's rows, the rest zero as the game's" % item)
+
+    # The rows: every planet qwark loads, in its order.
+    good = True
+    for p in range(n):
+        r = rows + p * hdr["R2_ROW_SIZE"]
+        text, kind, target, sub, anim = dh(r), dh(r + 2), dw(r + 4), dh(r + 8), dh(r + 10)
+        loc = W(hdr["R2_PLANET_TEXT"] + 8 * p + 4)
+        name = hdr["MH_MSG_PLANET"] + p
+        if p in R2_PICK_NAME_ONLY:
+            good = good and loc == R2_PICK_NAME_ONLY[p] and text == name and sub == 0
+        else:
+            good = good and 0 < loc < 0x10000 and text == loc and sub == name
+        good = good and kind == hdr["R2_ROW_INERT"] and target == 0 and anim == 0
+    end = rows + n * hdr["R2_ROW_SIZE"]
+    ok(good and all(b == 0 for b in data[end - dat:end - dat + hdr["R2_ROW_SIZE"]]) and n == len(rac2_planet_names()),
+       "the picker's %d rows: planet p's location (the game's text id at 0x%08X + 8p + 4) over its name (0x%X + p), "
+       "or its name alone for the Museum, Wupash and the Jamming Array; kind 0x%X, no target; then a zero row" %
+       (n, hdr["R2_PLANET_TEXT"], hdr["MH_MSG_PLANET"], hdr["R2_ROW_INERT"]))
+
+    # The game code the picker relies on.
+    ctx = [
+        (0x00BB77FC, 0x2C830007, "the row actions: cmpwi cr1,r3,7 ..."),
+        (0x00BB7840, 0x2C03000D, "... cmpwi r3,13, the highest kind acted on ..."),
+        (0x00BB7870, 0x48000350, "... and any other kind does nothing (b 0xBB7BC0): 0x101 is inert"),
+        (0x00BBE6C8, 0x39200900, "the list's update: Start or Select ..."),
+        (0x00BBE704, 0x3860FFFF, "... close the pause (-1)"),
+        (0x00BBE70C, 0x550906F6, "Triangle ..."),
+        (0x00BBE740, 0x806300E0, "... reads the screen's parent ..."),
+        (0x00BBE74C, 0x907E0018, "... and makes it the manager's next screen"),
+        (0x00BBE770, 0x3C600142, "the cross: the confirm mask 0x141ABA8 ..."),
+        (0x00BBE774, 0x8063ABA8, ""),
+        (0x00BBE784, 0x3C600157, "... unless bit 0 of 0x156A00C ..."),
+        (0x00BBE788, 0x8063A00C, ""),
+        (0x00BBE78C, 0x546307FE, ""),
+        (0x00BBE80C, 0x4BFF8FE1, "... runs the row's action (bl 0xBB77EC)"),
+        (0x00BBE9C0, 0x80635AB4, "a cursor moved shows the planet of the game's discovered list (0x1345AB4) ..."),
+        (0x00BBE9D0, 0x4BF8F529, "... through 0xB4DEF8"),
+        (0x00B4DF08, 0x3FE00158, "0xB4DEF8 writes the planet shown, 0x157D110"),
+        (0x00B4DF10, 0x33FFCEE0, ""),
+        (0x00B4DF1C, 0x907F0230, ""),
+        (0x00BB91FC, 0x38800004, "an update's close is exit action 2 only for pause reason 4 ..."),
+        (0x00BB9228, 0x907F001C, "... (1 for the Trainer's reason 1)"),
+        (0x00BB95BC, 0x2C030002, "action 2 would pop with the planet (mode_pop(0, *0x157D110)) ..."),
+        (0x00BB9694, 0x38600000, "... and action 1 pops with none: mode_pop(0, 0)"),
+        (0x00BB9698, 0x38800000, ""),
+        (0x00BB969C, 0x4BFD2AD5, ""),
+        (0x00BC983C, 0x4BFC270D, "the planet page's cross (screen 16) requests the game's travel, mode 6: never reached"),
+        (0x00BCAA2C, 0x30A5E264, "and its update tells screen 16 by its address, so it cannot be copied"),
+    ]
+    for a, want, what in ctx:
+        ok(W(a) == want, "0x%08X holds 0x%08X%s" % (a, want, (": " + what) if what else ""))
+    ok(branch_target(0x00BBE80C, W(0x00BBE80C)) == 0x00BB77EC and branch_target(0x00BBE9D0, W(0x00BBE9D0)) == 0x00B4DEF8
+       and branch_target(0x00BB969C, W(0x00BB969C)) == 0x00B8C170 and branch_target(0x00BC983C, W(0x00BC983C)) == 0x00B8BF48,
+       "the calls: the row actions 0xBB77EC, the planet shown 0xB4DEF8, mode_pop 0xB8C170, mode_requestChange 0xB8BF48")
 
 
 def check_rac2(ok, elf, roots):
@@ -2149,11 +2298,13 @@ def check_rac2(ok, elf, roots):
        "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
     ok(box[8] == hdr["MH_ROWS"] == 32 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
        box[10] == hdr["MH_MAIN_ROWS"] == 7 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
-       box[14] == 2 and box[15] == hdr["MH_CFG_ROWS"] == 32,
-       "row_cap 32 (round 4), rows of 0x40, 7 rows a MAIN page, 32 a CONFIG page, caps 0x%02X, "
-       "closed, no request, renderer 2" % box[11])
+       box[14] == 2 and box[15] == hdr["MH_CFG_ROWS"] == 32 and (box[11] & box_defs["MBOX_CAP_PICKER"]) != 0,
+       "row_cap 32 (round 4), rows of 0x40, 7 rows a MAIN page, 32 a CONFIG page, caps 0x%02X (the planet "
+       "picker's among them), closed, no request, renderer 2" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
-       all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+       all(b == 0 for b in box[16:]),
+       "the rows fill the image, everything after the header zero (the pick words at 0x%X and 0x%X among it)" %
+       (box_defs["MBOX_OFF_PICK_SEQ"], box_defs["MBOX_OFF_PICK_PLANET"]))
     shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
     ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and
        all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]),
@@ -2205,9 +2356,11 @@ def check_rac2(ok, elf, roots):
     ids = [dw(scr + hdr["MS_IDS"] + 4 * i) for i in range(hdr["MH_MAIN_ROWS"] + 1)]
     ok(ids == [hdr["MH_MSG_ROW0"] + i for i in range(hdr["MH_MAIN_ROWS"])] + [0],
        "the MAIN rows' text ids, 0xF001 .. 0x%X" % (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"] - 1))
-    strs = data[so + hdr["MS_TRAINER"]:so + hdr["MS_SIZE"]]
+    strs = data[so + hdr["MS_TRAINER"]:so + hdr["MS_MORE"] + 4]
     ok(strs == hdr["MH_ENTRY_LABEL"].encode() + b"\0...\0",
        "\"%s\" and \"...\" after them" % hdr["MH_ENTRY_LABEL"])
+
+    check_rac2_picker(ok, elf, hdr, data, dat, code, cave)
 
     # 1. the originals, 2. the hook words
     order = ["MH_SITE_MSG", "MH_SITE_INJECT", "MH_SITE_COMBO", "MH_SITE_ROOT", "MH_SITE_HELP_SCREEN",
