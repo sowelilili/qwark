@@ -122,6 +122,7 @@
 #define MH_STYLE_ARROWS     0x02   /* retired in round 3: a choice shows its bare value in every game */
 #define MH_STYLE_LINKS      0x04   /* a link shows ">" as its value */
 #define MH_STYLE_STAR       0x08   /* the current option of a MAIN list ends in " *" */
+#define MH_STYLE_COLON      0x10   /* a CONFIG label with a value ends in ":" (Deadlocked's GAME SETTINGS) */
 
 /* --------------------------------------------------------- the core's state */
 

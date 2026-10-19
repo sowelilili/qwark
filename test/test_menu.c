@@ -61,7 +61,7 @@ static u8 *mh_host_ptr(u32 addr)
  * screens and stack, the pause, GuiSupport's list, the GuiState thread slot,
  * one CtlList and the texts and colours the widgets were given.
  */
-#define NTEXT 96
+#define NTEXT 1024
 static struct {
 	int screen, next;
 	int stack[10];
@@ -93,8 +93,13 @@ static struct {
 	int images;
 	int cursor_attached;
 	int cursor_moves;
+	int sounds[8];           /* the last sounds played, newest first */
 	u32 text_h[NTEXT], text_s[NTEXT];
 	u32 color_h[NTEXT], color_c[NTEXT];
+	u32 vis_h[NTEXT], vis_v[NTEXT];
+	u32 rect_h[NTEXT];
+	float rect_v[NTEXT][4];
+	u32 fill_h, fill_c0, fill_c1;
 } G;
 
 /* Strings the game's msg_string answers, in fake game memory. */
@@ -122,9 +127,14 @@ static void mock_set_buttons(int p, int n, u32 rows) { (void)p; G.nbuttons = n; 
 static void mock_show_menu(int p, u32 cb) { (void)p; G.shown = 1; G.close_cb = cb; }
 static void mock_select_row(void) { G.selects++; }
 static int mock_takes_input(int p, int kind) { (void)p; (void)kind; return G.input_ok; }
-static void mock_play_sound(int id) { G.sound = id; }
+static void mock_play_sound(int id)
+{
+	int i;
+	for (i = 7; i > 0; i--) G.sounds[i] = G.sounds[i - 1];
+	G.sounds[0] = id;
+	G.sound = id;
+}
 static int mock_get_command(int kind) { int c = G.cmd; (void)kind; G.cmd = 0; return c; }
-static int mock_base_frame(int p) { (void)p; return 0; }
 static void mock_reset_state(u32 gs) { w32(gs, 0); }
 static void mock_exit_state(u32 gs) { w32(gs, 0); G.thread = 3; }
 static int mock_start_thread(u32 gs)
@@ -141,7 +151,6 @@ static void mock_panel_create(u32 at, int tpl, int canvas)
 	G.handles += 0x100;
 	if (tpl == DL_TPL_SCREEN) G.screen_tpl = tpl;
 }
-static void mock_panel_frame(u32 at, float f, int canvas) { (void)at; (void)f; (void)canvas; }
 static void mock_canvas_layer(int layer, u32 h) { (void)h; G.layer = layer; }
 static void mock_clear_layer(int layer) { if (layer == G.layer) G.layer = 0; }
 static void mock_add_frame(u32 h, u32 f) { (void)h; (void)f; }
@@ -186,6 +195,25 @@ static u32 recall(const u32 *hs, const u32 *vs, u32 h)
 
 static void mock_set_text(u32 h, u32 s) { remember(G.text_h, G.text_s, h, s); }
 static void mock_set_color(u32 h, u32 c) { remember(G.color_h, G.color_c, h, c); }
+static void mock_set_visible(u32 h, int on) { remember(G.vis_h, G.vis_v, h, on ? 1u : 2u); }
+static void mock_set_rect(u32 h, float l, float t, float r, float b)
+{
+	int i;
+	for (i = 0; i < NTEXT; i++) {
+		if (G.rect_h[i] == h || G.rect_h[i] == 0) {
+			G.rect_h[i] = h;
+			G.rect_v[i][0] = l; G.rect_v[i][1] = t; G.rect_v[i][2] = r; G.rect_v[i][3] = b;
+			return;
+		}
+	}
+}
+static void mock_vertex_colors(u32 h, u32 c0, u32 c1, u32 c2, u32 c3)
+{
+	(void)c2; (void)c3;
+	G.fill_h = h; G.fill_c0 = c0; G.fill_c1 = c1;
+}
+static u32 mock_team_color(int team, int i) { return 0x80000000u | ((u32)team << 8) | (u32)i; }
+static void mock_close_menu_p(int p, int sound);
 
 /* The CtlList, as ctllist.cpp has it (REPORT-dl-ui-catalogue.md section 3). */
 static int focus(void) { return (int)r32(G.list + DL_LIST_FOCUS); }
@@ -327,7 +355,8 @@ static void mock_menu_stop(int p)
 /* GuiMenu_CloseMenu: the menu state popped, the screen stopped, the game playing. */
 static void mock_close_menu(int sound)
 {
-	if (sound >= 0) G.sound = sound;
+	w8(DL_MENU_SOUND_FLAG, 1);
+	if (sound >= 0) mock_play_sound(sound);
 	G.next = 0;
 	stop_screen();
 	G.screen = 0;
@@ -344,13 +373,15 @@ static void mock_go_back(int arg)
 		mock_close_menu(5);
 		return;
 	}
-	G.sound = SND_BACK;
+	mock_play_sound(SND_BACK);
 	if (G.depth < 1) {
 		mock_close_menu(-1);
 		return;
 	}
 	mock_go_to_screen(0, G.stack[--G.depth]);
 }
+
+static void mock_close_menu_p(int p, int sound) { (void)p; mock_close_menu(sound); }
 
 /* A frame of the canvas's threads: a new one is Init and Update at once, one leaving Deinit. */
 static void canvas_frame(void)
@@ -398,7 +429,8 @@ static void game_hud_frame(void)
 /*
  * The pause main menu, opened with Start, and its fifth row: with the menu
  * installed the row's label is the shim's and its callback, Help's own,
- * pushes screen 36 (mh_rac4.h, MH_SITE_HELP_*), keeping the main menu's cursor.
+ * pushes screen 36 (mh_rac4.h, MH_SITE_HELP_*), keeping the main menu's cursor,
+ * having cleared g_bMenuExit as each of the main menu's row callbacks does.
  */
 static void game_open_pause(void)
 {
@@ -411,6 +443,7 @@ static void game_open_pause(void)
 
 static void game_help_row(void)
 {
+	w8(DL_MENU_EXIT, 0);
 	G.stack[G.depth++] = G.screen;
 	mock_go_to_screen(0, MH_SCREEN_ID);
 	mock_play_sound(SND_FORWARD);
@@ -1198,7 +1231,7 @@ static void test_mailbox(void)
 		      hook_last == n - 1,
 		      "in the order that keeps the game off a half-written renderer: the mailbox and the data, "
 		      "the first page, the code, the hook words");
-		check(n <= 20 && bytes <= 19u * 1024u, "twenty writes at most, under 19 KB in all");
+		check(n <= 20 && bytes <= 21u * 1024u, "twenty writes at most, under 21 KB in all (round 3: GAME SETTINGS' CONFIG page)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options' call to SetMenuButtons keeps the game's word");
@@ -1537,9 +1570,14 @@ static void test_renderer(void)
 	/* The Help row: the pause main menu's fifth row opens the menu, back returns there. */
 	game_open_pause();
 	check(G.main_up && G.screen == 1, "Start: the game's own main menu");
+	poke8(DL_MENU_EXIT, 1);
+	G.sound = -1;
+	memset(G.sounds, 0xFF, sizeof(G.sounds));
 	game_help_row();
 	check(G.screen == MH_SCREEN_ID && G.shown && !G.main_up && G.depth == 1 && G.stack[0] == 1,
 	      "its Help row pushes screen 36 over the main menu");
+	check(G.sounds[0] == SND_FORWARD && G.sounds[1] == -1,
+	      "with the row's own sound and none of the list's: a list screen of the game's starts in silence");
 	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 7 &&
 	      strcmp(shown_text(0, text, sizeof(text)), "GAME") == 0 &&
 	      strcmp(shown_text(5, text, sizeof(text)), "SAVE FILES") == 0 &&
@@ -1557,25 +1595,35 @@ static void test_renderer(void)
 	G.depth = 2;
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "the combo asks the renderer to open");
+	G.sound = -1;
 	game_hud_frame();
 	check(G.screen == MH_SCREEN_ID && G.shown && G.paused && G.depth == 0 && peek8(mb + MBOX_OFF_REQUEST) == 0 &&
 	      peek32(MH_STATE + ST_OPENS) == 1, "the next GuiHud frame opens screen 36 through the Start path");
+	check(G.sound == SND_OPEN && peek8(DL_MENU_SOUND_FLAG) == 0,
+	      "with the pause's own sound, as the main menu plays it after a close, and its flag taken");
 	tick(4);
 
-	/* The frame fits the page: SetMenuTarget again when the number of rows changes. */
+	/* A new page of the same type is the game's screen change: the list stops and starts again. */
 	n = G.targets;
+	i = G.stops;
 	G.cursor = 2;
 	game_frame(PADB_CROSS);
 	check(G.sound == SND_FORWARD && !box_acked(), "the cross on PLANETS posts an event, with the forward sound");
 	tick(2);
+	G.sound = -1;
 	game_frame(0);
-	check(strcmp(read_str(G.title, title, sizeof(title)), "PLANETS") == 0 && G.targets == n + 1,
-	      "the next frame shows PLANETS, its rows laid out again and the frame fitted to them");
+	check(strcmp(read_str(G.title, title, sizeof(title)), "PLANETS") == 0 && G.targets == n + 1 && G.stops == i + 1 &&
+	      G.shown && G.screen == MH_SCREEN_ID,
+	      "the next frame stops the list (MenuMain_Stop) and starts screen 36 again on PLANETS, the frame fitted to it");
+	check(G.sound == -1, "the start again is silent, as Options' is after the main menu's 7");
 	n = G.nbuttons;
+	i = G.stops;
 	game_frame(PADB_TRIANGLE);
+	check(G.sound == SND_BACK, "triangle on PLANETS: a list's back sound");
 	tick(2);
 	game_frame(0);
-	check(G.nbuttons == 7 && G.targets > n && G.cursor == 2, "back to the root: seven rows, refitted, the cursor on PLANETS");
+	check(G.nbuttons == 7 && G.stops == i + 1 && G.cursor == 2,
+	      "back to the root through the same stop and start: seven rows, the cursor on PLANETS");
 	n = G.targets;
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
 	tick(30);
@@ -1591,6 +1639,7 @@ static void test_renderer(void)
 		game_frame(0);
 		check(!G.shown && G.stops >= 1 && G.thread == 1 && G.screen == MH_SCREEN_ID,
 		      "the cross on CHEATS: the list stops, screen 36 starts again with the shim's thread");
+		check(G.sound == SND_SCREEN, "GAME SETTINGS' start sound as the panel screen starts");
 		check(strcmp(read_str(list_title, title, sizeof(title)), "TRAINER") == 0 &&
 		      strcmp(read_str(r32(list_rows + MH_BUTTON_SIZE + 4), text, sizeof(text)), "CHEATS") == 0 &&
 		      strcmp(read_str(r32(list_rows + 6 * MH_BUTTON_SIZE + 4), text, sizeof(text)), "QWARK BUILD 54") == 0,
@@ -1606,21 +1655,25 @@ static void test_renderer(void)
 		check(i == 25, "and does on, the Cheats page's moves and all (nothing composes over it)");
 	}
 	game_frame(0);
-	check(G.thread == 2 && G.screen_tpl == DL_TPL_SCREEN && G.list_tpl == DL_TPL_ROW && G.count == 5 &&
+	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 5 &&
 	      G.layer == DL_LAYER && G.images == 3 && G.cursor_attached,
-	      "the thread's first frame builds the Cheats screen's panel and list, five rows, its plates and cursor");
+	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, five rows, its plates and cursor");
 	check(r32(MH_SHIM + SH_LIST) == DL_CTLLIST_VTABLE, "the list has CtlList's vtable at +0, as its constructor writes it");
+	for (i = DL_EL_ROWS_FIRST, n = 0; i <= DL_EL_ROWS_LAST; i++)
+		n += recall(G.vis_h, G.vis_v, r32(MH_SHIM + SH_PANEL) + (u32)i) == 2;
+	check(n == DL_EL_ROWS_LAST - DL_EL_ROWS_FIRST + 1, "GAME SETTINGS' own eight rows hidden, all 21 widgets");
 	check(strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "CHEATS") == 0 &&
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_LEGEND, text, sizeof(text)), "\x10 SELECT \x12 BACK") == 0,
-	      "titled CHEATS, with the Cheats screen's own button legend");
-	check(strcmp(cfg_label(1, text), "Ghost Ratchet") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
-	      strcmp(cfg_label(4, text), "Unlock All Planets") == 0 && strcmp(cfg_value(4, title), "...") == 0,
-	      "labels in the Cheats screen's title case, values in its capitals, a button's \"...\"");
+	      "titled CHEATS, with GAME SETTINGS' own button legend");
+	check(strcmp(cfg_label(1, text), "GHOST RATCHET:") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
+	      strcmp(cfg_label(4, text), "UNLOCK ALL PLANETS:") == 0 && strcmp(cfg_value(4, title), "...") == 0,
+	      "labels in GAME SETTINGS' capitals with its colon, values in its capitals, a button's \"...\"");
 	check(focus() == 0 && cfg_color(0) == DL_RGBA_FOCUS && cfg_color(1) == DL_RGBA_OFF,
 	      "the cursor on the first row, which is lit; the others the game's grey");
+	check(recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_A) == 2 &&
+	      recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_B) == 2,
+	      "a toggle's row keeps its swatch containers hidden: no slider");
 	game_frame(0);
-	check(strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_DESC, text, sizeof(text)), "Auto also turns it on whenever the game starts.") == 0,
-	      "the description line is the row's");
 
 	game_frame(PADB_DOWN);
 	check(focus() == 1 && G.cursor_moves > 0, "down moves the list's focus, and the cursor frame with it");
@@ -1636,7 +1689,7 @@ static void test_renderer(void)
 	check(strcmp(cfg_value(1, text), "AUTO") == 0, "the cross: AUTO");
 	game_frame(PADB_UP);
 	game_frame(0);
-	check(focus() == 0 && cfg_color(1) == DL_RGBA_ACTIVE, "off the row, an active cheat is the game's gold");
+	check(focus() == 0 && cfg_color(1) == DL_RGBA_OFF, "off the row, an active cheat is GAME SETTINGS' grey, as any row");
 	game_frame(PADB_LEFT);
 	tick(2);
 	game_frame(0);
@@ -1651,11 +1704,10 @@ static void test_renderer(void)
 	      "Left twice from AUTO: ON, then OFF");
 	for (i = 0; i < 3; i++) game_frame(PADB_DOWN);
 	game_frame(PADB_CROSS);
+	check(G.sound == SND_FORWARD, "the cross on a button: a row's forward sound, as a list's row");
 	tick(2);
 	game_frame(0);
-	check(focus() == 4 && strcmp(cfg_value(4, text), "DONE") == 0 &&
-	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_DESC, title, sizeof(title)), "Unlock all planets: done") == 0,
-	      "the button runs: DONE in its value, the sentence on the description line");
+	check(focus() == 4 && strcmp(cfg_value(4, text), "DONE") == 0, "the button runs: DONE in its value");
 
 	/* One event in flight, and the waiting title. */
 	game_frame(PADB_CROSS);
@@ -1670,16 +1722,19 @@ static void test_renderer(void)
 	      "the answer puts it back");
 
 	/* Back to the list: the thread ends and the screen starts again with GuiSupport's list. */
+	G.sound = -1;
 	game_frame(PADB_TRIANGLE);
-	check(G.sound == SND_BACK, "triangle on the page posts back");
+	check(G.sound == -1 && !box_acked(), "triangle on the page posts back, with no sound of its own, as GAME SETTINGS' back");
 	tick(2);
 	game_frame(0);
-	check(r8(MH_SHIM + SH_CFG_STATE) == 2 && strcmp(cfg_label(1, text), "Ghost Ratchet") == 0 &&
+	check(G.sound == SND_SCREEN_CLOSE, "the panel's stop sound as the screen goes");
+	check(r8(MH_SHIM + SH_CFG_STATE) == 2 && strcmp(cfg_label(1, text), "GHOST RATCHET:") == 0 &&
 	      strcmp(cfg_value(1, title), "OFF") == 0 &&
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "CHEATS") == 0,
 	      "round 3: the Cheats page ending still reads its own rows and title, not the root's");
 	game_frame(0);
 	game_frame(0);
+	check(G.sound == SND_SCREEN_CLOSE, "and the list's start says nothing more, as Options' after GAME SETTINGS");
 	check(G.thread == 0 && G.layer == 0 && G.images == 0 && !G.cursor_attached && G.shown &&
 	      G.screen == MH_SCREEN_ID && G.depth == 0,
 	      "the thread ends - the panel cleared, the plates dropped, the cursor detached - and the list is back");
@@ -1692,20 +1747,47 @@ static void test_renderer(void)
 	game_frame(0);
 	game_frame(0);
 	n = G.closes;
+	G.sound = -1;
+	poke8(DL_MENU_SOUND_FLAG, 0);
 	game_frame(PADB_START);
 	check(G.closes == n + 1 && G.screen == 0 && !G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
 	      "Start on the CONFIG page closes the menu and unpauses");
+	check(G.sounds[0] == SND_SCREEN_CLOSE && G.sounds[1] != 5 && peek8(DL_MENU_SOUND_FLAG) == 1,
+	      "with GAME SETTINGS' close: CloseMenu(p, -1), the main menu's sound flag set, the panel's stop sound alone");
 	game_frame(0);
 	game_frame(0);
 	check(G.thread == 0 && G.layer == 0, "and its thread ends behind it");
 	tick(4);
 	check(menu_model_depth() == 1, "round 3: closed, qwark's stack is back on the root");
 	press(COMBO_MENU_DEFAULT);
+	G.sound = -1;
 	game_hud_frame();
+	check(G.sound == SND_OPEN && peek8(DL_MENU_SOUND_FLAG) == 0,
+	      "the combo opens with the pause's sound, the flag the close set taken");
 	game_frame(0);
 	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == 7 &&
 	      strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0,
 	      "the combo opens the menu on the root, the cursor on its first row, not on the page it closed on");
+
+	/* A CONFIG page after a CONFIG page: the thread ends and the next starts on the other GuiState. */
+	tick(4);
+	G.cursor = 1;
+	game_frame(PADB_CROSS);
+	tick(2);
+	game_frame(0);
+	game_frame(0);
+	check(G.thread == 2 && G.count == 5, "CHEATS again");
+	{
+		u32 gs = G.gs;
+		shim_switch(0);
+		check(G.thread == 2 && r8(MH_SHIM + SH_CFG_STATE) == 2, "a new CONFIG page: the thread told to end");
+		game_frame(0);
+		game_frame(0);
+		check(G.thread == 1 && G.gs != gs && (G.gs == MH_SHIM + SH_GS || G.gs == MH_SHIM + SH_GS + DL_GS_SIZE),
+		      "its Deinit starts the next page's thread on the other GuiState");
+		game_frame(0);
+		check(G.thread == 2 && G.count == 5 && G.layer == DL_LAYER, "which builds the panel again");
+	}
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo again asks it to close");
@@ -1750,6 +1832,65 @@ static void test_renderer(void)
 	}
 	game_frame(PADB_START);
 	check(G.screen == 0, "closed");
+	tick(4);
+
+	/* GAME SETTINGS' slider on a value the core marks for one (round 3: Challenge mode, 0..255). */
+	poke8(RAC4_CHALLENGE_MODE, 51);
+	press(COMBO_MENU_DEFAULT);
+	game_hud_frame();
+	tick(4);
+	G.cursor = 0;
+	game_frame(PADB_CROSS);
+	tick(2);
+	game_frame(0);
+	game_frame(0);
+	check(G.thread == 2 && G.count == 9 && strcmp(cfg_label(8, text), "CHALLENGE MODE:") == 0,
+	      "GAME: nine rows, the last CHALLENGE MODE:");
+	{
+		u32 row = r32(item(8) + DL_ITEM_PANEL), bolts = r32(item(6) + DL_ITEM_PANEL);
+		float *fill = NULL, *track = NULL, *outline = NULL;
+
+		for (i = 0; i < NTEXT; i++) {
+			if (G.rect_h[i] == row + DL_ROW_FILL) fill = G.rect_v[i];
+			if (G.rect_h[i] == row + DL_ROW_TRACK) track = G.rect_v[i];
+			if (G.rect_h[i] == row + DL_ROW_OUTLINE) outline = G.rect_v[i];
+		}
+		check(recall(G.vis_h, G.vis_v, row + DL_ROW_BOX_A) == 1 && recall(G.vis_h, G.vis_v, row + DL_ROW_BOX_B) == 1 &&
+		      recall(G.vis_h, G.vis_v, row + DL_ROW_SPARE) == 2 && strcmp(cfg_value(8, title), "") == 0,
+		      "its row shows its outline and swatch containers, the spare outline hidden, no number");
+		check(outline != NULL && track != NULL && fill != NULL &&
+		      outline[2] - outline[0] > 0.355f && outline[2] - outline[0] < 0.356f && outline[2] > 0.900f &&
+		      outline[2] < 0.901f && track[3] - track[1] > 0.0191f && track[3] - track[1] < 0.0193f &&
+		      recall(G.color_h, G.color_c, row + DL_ROW_TRACK) == DL_RGBA_TRACK,
+		      "GAME SETTINGS' slider: an outline 0.3555 wide ending at 0.9004, a dark track 0.0192 high");
+		check(fill != NULL && track != NULL && fill[0] == track[0] && fill[1] == track[1] && fill[3] == track[3] &&
+		      fill[2] - fill[0] > DL_TRACK_W * 0.199f && fill[2] - fill[0] < DL_TRACK_W * 0.201f &&
+		      G.fill_h == row + DL_ROW_FILL && G.fill_c0 == 0x80000102u && G.fill_c1 == 0x80000100u,
+		      "the fill: the track cut at 51 of 0..255, a fifth, in GetTeamColor(1, 2) and (1, 0)");
+		check(recall(G.vis_h, G.vis_v, bolts + DL_ROW_BOX_A) == 2 && strcmp(cfg_value(6, text), "0") == 0,
+		      "BOLTS, with no bounds, keeps its number and no slider");
+		for (i = 0; i < 8; i++) game_frame(PADB_DOWN);
+		check(focus() == 8, "down to it");
+		game_frame(PADB_RIGHT);
+		check(G.sound == SND_SLIDE, "Right on it: GAME SETTINGS' slider sound");
+		tick(2);
+		game_frame(0);
+		check(peek8(RAC4_CHALLENGE_MODE) == 52 && fill[2] - fill[0] > DL_TRACK_W * 0.203f &&
+		      fill[2] - fill[0] < DL_TRACK_W * 0.205f, "52, the fill a step longer");
+		poke8(RAC4_CHALLENGE_MODE, 255);
+		tick(40);
+		game_frame(0);
+		G.sound = -1;
+		game_frame(PADB_RIGHT);
+		check(G.sound == SND_LIMIT && fill[2] - fill[0] > DL_TRACK_W * 0.999f,
+		      "at 255, full, Right sounds as a slider at its end");
+		tick(2);
+		game_frame(0);
+	}
+	game_frame(PADB_START);
+	check(G.screen == 0, "closed");
+	game_frame(0);
+	game_frame(0);
 
 	check(quit(), "quit Deadlocked");
 }

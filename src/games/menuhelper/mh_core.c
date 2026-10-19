@@ -112,7 +112,8 @@ static void compose(u32 set, u32 i)
 	u32 text = set + SET_TEXT + i * MH_TEXT_LEN;
 	u32 main = r8(set + SET_PTYPE) == MBOX_PTYPE_MAIN;
 	u32 range = kind == MROW_VALUE && (flags & MROWF_RANGE) != 0 ? (main ? MH_RANGE_MAIN : MH_RANGE_CFG) : 0;
-	u32 p, end, v, k, has = r8(src + MROW_OFF_VALUE) != 0;
+	u32 lim = text + (range != 0 ? range : MH_LABEL_LEN);
+	u32 p, end, v, k, lend = 0, has = r8(src + MROW_OFF_VALUE) != 0;
 
 	w8(set + SET_KIND + i, kind);
 	w8(set + SET_FLAGS + i, flags);
@@ -127,8 +128,9 @@ static void compose(u32 set, u32 i)
 			p = put_lit(p, end, MH_MAIN_SEP, 0);
 		v = p;
 	} else {
-		w8(put_mem(text, text + (range != 0 ? range : MH_LABEL_LEN), src + MROW_OFF_LABEL, MROW_LABEL_LEN,
-		           MH_CASE_LABEL), 0);
+		/* One byte short of the slot: room for MH_STYLE_COLON's colon. */
+		lend = put_mem(text, lim - 1, src + MROW_OFF_LABEL, MROW_LABEL_LEN, MH_CASE_LABEL);
+		w8(lend, 0);
 		v = text + MH_LABEL_LEN;
 		end = v + MH_VALUE_LEN;
 	}
@@ -137,6 +139,9 @@ static void compose(u32 set, u32 i)
 	if (!has && (MH_STYLE & MH_STYLE_LINKS) != 0 && kind == MROW_LINK) p = put_lit(p, end, ">", 0);
 	if (!has && !main && (MH_STYLE & MH_STYLE_DOTS) != 0 && kind == MROW_ACTION) p = put_lit(p, end, "...", 0);
 	w8(p, 0);
+	/* "MUSIC VOLUME:": a CONFIG label with a value beside it (Deadlocked's GAME SETTINGS). */
+	if ((MH_STYLE & MH_STYLE_COLON) != 0 && !main && p != v && lend != text)
+		w8(put_lit(lend, lim, ":", 0), 0);
 
 	if (range != 0) {
 		for (k = 0; k < 16; k += 4) w32(text + range + k, r32(src + MROW_OFF_RANGE + k));

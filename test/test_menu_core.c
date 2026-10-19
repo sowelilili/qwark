@@ -552,4 +552,39 @@ void test_menu_core(void)
 	      "a CONFIG widget that only restarts for another number of rows takes a new key in place");
 
 	test_menu_core_sets();
+
+	/* Deadlocked's GAME SETTINGS: labels in capitals, a colon after a label with a value beside it. */
+	{
+		static const struct prow colon_rows[3] = {
+			{ MROW_TOGGLE, MROWF_ENABLED | MROWF_STEPS, 0x0205, "ghost ratchet", "Auto", NULL },
+			{ MROW_VALUE, MROWF_ENABLED | MROWF_STEPS | MROWF_RANGE | MROWF_SLIDER, 0x0207,
+			  "challenge mode abcdefgh", "3", NULL },
+			{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+		};
+		static const u32 words[4] = { 3, 0, 255, 10 };
+
+		fresh();
+		g_case_label = MH_CASE_UPPER;
+		g_style = 0x0F | MH_STYLE_COLON;
+		post_page(0x07000401, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", cheats, 5);
+		check(mh_core_start(0) == MBOX_PTYPE_CONFIG && str_is(mh_label(0), "GHOST RATCHET:") &&
+		      str_is(mh_value(0), "AUTO") && str_is(mh_label(1), "UNLOCK ALL PLANETS:") && str_is(mh_value(1), "...") &&
+		      str_is(mh_label(3), "COLOUR:") && str_is(mh_label(4), "MORE"),
+		      "MH_STYLE_COLON: \"GHOST RATCHET:\", \"UNLOCK ALL PLANETS:\" beside its \"...\", a row with no value "
+		      "without");
+		g_range[1] = words;
+		post_page(0x07000402, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", colon_rows, 3);
+		mh_core_frame(0);
+		mh_core_stop(0);
+		mh_core_start(0);
+		check(str_is(mh_label(1), "CHALLENGE MODE ABCDEFGH:") && r32(mh_row_range(1)) == 3 &&
+		      r32(mh_row_range(1) + 8) == 255 && r32(mh_row_range(1) + 12) == 10 && str_is(mh_label(2), "QWARK BUILD 54"),
+		      "a slider row's longest label (23) takes its colon short of the range words, which stand");
+		g_range[1] = NULL;
+		post_page(0x00000403, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 0, "Trainer", "", root, 4);
+		mh_core_frame(0);
+		mh_core_stop(0);
+		mh_core_start(0);
+		check(str_is(mh_text(1), "DIE: DONE"), "and a MAIN row keeps its own separator");
+	}
 }

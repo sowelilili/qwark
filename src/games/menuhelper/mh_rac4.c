@@ -7,9 +7,11 @@
  *
  *   MAIN    a page of links and buttons, in GuiSupport's button list, the one
  *           Options uses: MenuButton_s rows whose text is the core's;
- *   CONFIG  a page of labels and controls, in a CtlList on the Cheats screen's
- *           templates, run by a GuiState thread of the shim's own the way the
- *           Cheats screen runs one (MenuCheats_* in the PS2 v6 symbols).
+ *   CONFIG  a page of labels and controls with the look of Options > GAME
+ *           SETTINGS: its screen panel (template 37), a CtlList of the game's
+ *           two-column rows over its row area, GAME SETTINGS' colours, sounds
+ *           and sliders, run by a GuiState thread of the shim's own the way
+ *           GAME SETTINGS runs one (MenuAudioVisual_* in the PS2 v6 symbols).
  *
  * The game reaches it through
  *   mh_inject_stub, mh_screen_stub  GuiHud's Start path (assembler), the combo:
@@ -34,7 +36,6 @@
 #define SH(o)    ((u32)MH_SHIM + (u32)(o))
 #define LIST     SH(SH_LIST)
 #define ITEMS    SH(SH_ITEMS)
-#define GS       SH(SH_GS)
 
 /* The shim's state starts where the core's ends. */
 typedef char mh_rac4_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
@@ -86,7 +87,6 @@ typedef void (*fn_v_ui)(u32, int);
 typedef void (*fn_v_iiu)(int, int, u32);
 typedef void (*fn_v_uii)(u32, int, int);
 typedef void (*fn_v_uui)(u32, u32, int);
-typedef void (*fn_v_ufi)(u32, float, int);
 typedef void (*fn_v_iiuu)(int, int, u32, u32);
 typedef void (*fn_v_iiuui)(int, int, u32, u32, int);
 typedef void (*fn_v_iiui)(int, int, u32, int);
@@ -94,6 +94,9 @@ typedef void (*fn_v_uuiuii)(u32, u32, int, u32, int, int);
 typedef void (*fn_v_iffff)(int, float, float, float, float);
 typedef void (*fn_v_iiffffi)(int, int, float, float, float, float, int);
 typedef void (*fn_v_uffff)(u32, float *, float *, float *, float *);
+typedef void (*fn_v_uFFFF)(u32, float, float, float, float);
+typedef void (*fn_v_uuuuu)(u32, u32, u32, u32, u32);
+typedef u32  (*fn_u_ii)(int, int);
 
 #define get_canvas     GAME_FN(fn_i_v,      OPD_GET_CANVAS,    mock_get_canvas)
 #define set_canvas     GAME_FN(fn_v_i,      OPD_SET_CANVAS,    mock_set_canvas)
@@ -114,12 +117,10 @@ typedef void (*fn_v_uffff)(u32, float *, float *, float *, float *);
 #define go_to_screen   GAME_FN(fn_v_ii,     OPD_GO_TO_SCREEN,  mock_go_to_screen)
 #define start_next     GAME_FN(fn_v_i,      OPD_START_NEXT,    mock_start_next)
 #define get_command    GAME_FN(fn_i_i,      OPD_GET_COMMAND,   mock_get_command)
-#define base_frame     GAME_FN(fn_i_i,      OPD_BASE_FRAME,    mock_base_frame)
 #define reset_state    GAME_FN(fn_v_u,      OPD_RESET_STATE,   mock_reset_state)
 #define exit_state     GAME_FN(fn_v_u,      OPD_EXIT_STATE,    mock_exit_state)
 #define start_thread   GAME_FN(fn_i_u,      OPD_START_THREAD,  mock_start_thread)
 #define panel_create   GAME_FN(fn_v_uii,    OPD_PANEL_CREATE,  mock_panel_create)
-#define panel_frame    GAME_FN(fn_v_ufi,    OPD_PANEL_FRAME,   mock_panel_frame)
 #define canvas_layer   GAME_FN(fn_v_iu,     OPD_CANVAS_LAYER,  mock_canvas_layer)
 #define clear_layer    GAME_FN(fn_v_i,      OPD_CLEAR_LAYER,   mock_clear_layer)
 #define add_frame      GAME_FN(fn_v_uu,     OPD_ADD_FRAME,     mock_add_frame)
@@ -147,6 +148,11 @@ typedef void (*fn_v_uffff)(u32, float *, float *, float *, float *);
 #define show_cursors   GAME_FN(fn_v_ii,     OPD_SHOW_CURSORS,  mock_show_cursors)
 #define detach_cursor  GAME_FN(fn_v_iiui,   OPD_DETACH_CURSOR, mock_detach_cursor)
 #define cursor_target  GAME_FN(fn_v_iiffffi, OPD_CURSOR_TARGET, mock_cursor_target)
+#define close_menu     GAME_FN(fn_v_ii,     OPD_CLOSE_MENU,    mock_close_menu_p)
+#define set_visible    GAME_FN(fn_v_ui,     OPD_SET_VISIBLE,   mock_set_visible)
+#define set_rect       GAME_FN(fn_v_uFFFF,  OPD_SET_RECT,      mock_set_rect)
+#define vertex_colors  GAME_FN(fn_v_uuuuu,  OPD_VERTEX_COLORS, mock_vertex_colors)
+#define team_color     GAME_FN(fn_u_ii,     OPD_TEAM_COLOR,    mock_team_color)
 
 static u32 shown(void)
 {
@@ -156,6 +162,20 @@ static u32 shown(void)
 static u32 panel(void)
 {
 	return r32(SH(SH_PANEL));
+}
+
+/*
+ * The pause opening's sound, as MenuMain_StartMain plays it (mh_rac4.h,
+ * DL_MENU_SOUND_FLAG): for a menu that starts from play, not for a new page.
+ */
+static void open_sound(void)
+{
+	if (r8(DL_MENU_SOUND_FLAG) != 0) {
+		w8(DL_MENU_SOUND_FLAG, 0);
+		play_sound(SND_OPEN);
+	} else if (r8(DL_MENU_EXIT) != 0) {
+		play_sound(SND_OPEN);
+	}
 }
 
 /* ------------------------------------------------------- the MAIN widget */
@@ -194,8 +214,13 @@ static void main_target(int p)
 	set_target(p, rf32(r), rf32(r + 4), rf32(r + 8), rf32(r + 12));
 }
 
-/* Screen 36 as MenuMain_StartOptions starts Options, with the core's page. */
-static void main_start(int p)
+/*
+ * Screen 36 as MenuMain_StartOptions starts Options, with the core's page. A
+ * list screen of the game's plays nothing as it starts: the row that opened it
+ * played 7 and the back that returned to it 8. Only the menu opening from play
+ * sounds, as the main menu does.
+ */
+static void main_start(int p, int open)
 {
 	set_cursor(p, (int)mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
 	set_title(p, mh_title());
@@ -205,10 +230,78 @@ static void main_start(int p)
 	main_buttons();
 	set_buttons(p, (int)mh_nrows(), SH(SH_BUTTONS));
 	show_menu(p, MH_FN_CLOSE);
-	play_sound(SND_SCREEN);
+	if (open) open_sound();
+	/* A list after a list: the same widget shown again already, nothing going to hold. */
+	else if (r8(SH(SH_WAS)) == MBOX_PTYPE_MAIN) mh_core_hold(0);
 }
 
 /* ----------------------------------------------------- the CONFIG widget */
+
+/*
+ * The core's slider for row i: 1, and how full it is (0..1) and whether it
+ * stands at its lowest or its highest, when the row is a value the core says
+ * suits one (MROWF_RANGE and MROWF_SLIDER, its four words at mh_row_range(i):
+ * the value, the lowest, the highest, the step). The distances are taken
+ * modulo 2^32, so a signed field reads right too, and cut down to the 24 bits a
+ * float holds before they are divided.
+ */
+static int slider(u32 i, float *fill, u32 *at_min, u32 *at_max)
+{
+	u32 r, at, span;
+
+	if (i < mh_nrows() && mh_row_kind(i) == MROW_VALUE &&
+	    (mh_row_flags(i) & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER)) {
+		r = mh_row_range(i);
+		at = r32(r) - r32(r + 4);
+		span = r32(r + 8) - r32(r + 4);
+		*at_min = at == 0;
+		*at_max = at >= span;
+		while (span > 0xFFFFFF) {
+			span >>= 1;
+			at >>= 1;
+		}
+		if (at > span) at = span;
+		*fill = span != 0 ? (float)(int)at / (float)(int)span : 1.0f;
+		return 1;
+	}
+	*fill = 0.0f;
+	*at_min = 0;
+	*at_max = 0;
+	return 0;
+}
+
+/*
+ * Row i's outline and swatch rectangles as GAME SETTINGS' slider (mh_rac4.h):
+ * the outline (its colour the row's, as GAME SETTINGS colours its slider's
+ * outline with the row), the dark track, and the fill cut at the value in the
+ * team colours; the value text empty. A row without one has both containers
+ * hidden, as the template has them.
+ */
+static void cfg_slider(u32 row, u32 i)
+{
+	float f, l, t, b;
+	u32 lo, hi;
+	int on = slider(i, &f, &lo, &hi);
+
+	set_visible(row + DL_ROW_BOX_A, on);
+	set_visible(row + DL_ROW_BOX_B, on);
+	if (!on) return;
+
+	set_visible(row + DL_ROW_SPARE, 0);
+	set_rect(row + DL_ROW_OUTLINE, DL_SLIDER_X - DL_OUTLINE_W / 2, DL_SLIDER_Y - DL_OUTLINE_H / 2,
+	         DL_SLIDER_X + DL_OUTLINE_W / 2, DL_SLIDER_Y + DL_OUTLINE_H / 2);
+	l = DL_SLIDER_X - DL_TRACK_W / 2;
+	t = DL_SLIDER_Y - DL_TRACK_H / 2;
+	b = DL_SLIDER_Y + DL_TRACK_H / 2;
+	set_rect(row + DL_ROW_TRACK, l, t, DL_SLIDER_X + DL_TRACK_W / 2, b);
+	set_color(row + DL_ROW_TRACK, DL_RGBA_TRACK);
+	if (f < 0.0f) f = 0.0f;
+	if (f > 1.0f) f = 1.0f;
+	set_rect(row + DL_ROW_FILL, l, t, l + DL_TRACK_W * f, b);
+	vertex_colors(row + DL_ROW_FILL, r32(SH(SH_TEAM)), r32(SH(SH_TEAM) + 4),
+	              r32(SH(SH_TEAM)), r32(SH(SH_TEAM) + 4));
+	set_text(row + DL_ROW_VALUE, SH(SH_EMPTY));
+}
 
 /*
  * The rows into the list: Clear, then Insert each one, as UpdateStatsList and
@@ -225,6 +318,7 @@ static void cfg_fill(u32 cursor)
 		row = r32(ITEMS + i * DL_ITEM_SIZE + DL_ITEM_PANEL);
 		set_text(row + DL_ROW_LABEL, mh_label(i));
 		set_text(row + DL_ROW_VALUE, mh_value(i));
+		cfg_slider(row, i);
 	}
 	list_focus(LIST, (int)cursor);
 	w8(SH(SH_CFG_CURSOR), 1);
@@ -240,37 +334,43 @@ static void plate(u32 n, u32 from, u32 el)
 	rect_source(panel() + el, img);
 }
 
-/* The thread, as MenuCheats_Start starts the Cheats screen's: GuiState.cpp's Init comes next frame. */
+/*
+ * The thread, as MenuAudioVisual_Start starts GAME SETTINGS': its Init comes
+ * in a frame of the canvas's threads, and the screen sounds as it starts.
+ * Two GuiStates in turn, so a page that follows a page of this type starts a
+ * thread that is not the one ending (whose Deinit is where it starts).
+ */
 static void cfg_start(int p)
 {
+	u32 gs = SH(SH_GS) + (r8(SH(SH_GS_NEXT)) & 1) * DL_GS_SIZE;
 	int c;
 
-	w32(GS, 0);
-	w32(GS + 4, MH_FN_CFG_INIT);
-	w32(GS + 8, MH_FN_CFG_DEINIT);
-	w32(GS + 12, MH_FN_CFG_UPDATE);
-	w32(GS + 16, 0);
-	w32(GS + 20, 0);
+	w8(SH(SH_GS_NEXT), (r8(SH(SH_GS_NEXT)) + 1) & 1);
+	w32(gs, 0);
+	w32(gs + 4, MH_FN_CFG_INIT);
+	w32(gs + 8, MH_FN_CFG_DEINIT);
+	w32(gs + 12, MH_FN_CFG_UPDATE);
+	w32(gs + 16, 0);
+	w32(gs + 20, 0);
 	c = get_canvas();
 	set_canvas(p);
-	reset_state(GS);
-	start_thread(GS);
+	reset_state(gs);
+	start_thread(gs);
 	set_canvas(c);
 	play_sound(SND_SCREEN);
 }
 
-/* The Cheats screen's CreateWidgets and Init, with the core's page. */
+/* GAME SETTINGS' CreateWidgets and Init, with the core's page in a CtlList. */
 void mh_cfg_init(u32 gs)
 {
 	int p = get_canvas();
-	u32 l = SH(SH_LEGEND), e = l + 40, s;
+	u32 l = SH(SH_LEGEND), e = l + 40, s, el;
 
 	(void)gs;
 	panel_create(SH(SH_PANEL), DL_TPL_SCREEN, -1);
 	canvas_layer(DL_LAYER, panel());
-	panel_frame(SH(SH_PANEL), (float)base_frame(p), -1);
 
-	/* "\x10 SELECT \x12 BACK", glyphs and all, as the Cheats screen writes it. */
+	/* "\x10 SELECT \x12 BACK", glyphs and all, as GAME SETTINGS writes it. */
 	s = msg_string(DL_MSG_SELECT);
 	while (r8(s) != 0 && l < e - 2) { w8(l, r8(s)); l++; s++; }
 	w8(l++, ' ');
@@ -280,61 +380,64 @@ void mh_cfg_init(u32 gs)
 
 	w8(SH(SH_EMPTY), 0);
 	set_text(panel() + DL_EL_LEGEND, SH(SH_LEGEND));
-	set_text(panel() + DL_EL_HEAD_L, SH(SH_EMPTY));
-	set_text(panel() + DL_EL_HEAD_R, SH(SH_EMPTY));
 	set_text(panel() + DL_EL_TITLE, mh_title());
-	w8(mh_desc(), 0);
-	set_text(panel() + DL_EL_DESC, mh_desc());
+	/* GAME SETTINGS' own eight rows give way to the list. */
+	for (el = DL_EL_ROWS_FIRST; el <= DL_EL_ROWS_LAST; el++) set_visible(panel() + el, 0);
+	w32(SH(SH_TEAM), team_color(1, 2));
+	w32(SH(SH_TEAM) + 4, team_color(1, 0));
 
 	/* CtlList::CtlList writes the vtable and nothing else (mh_rac4.h). */
 	w32(LIST, DL_CTLLIST_VTABLE);
 	list_create(LIST, ITEMS, MH_CFG_ROWS, MH_FN_CFG_ITEM, DL_TPL_ROW, 1);
 	add_frame(panel(), r32(LIST + DL_LIST_HANDLE));
+	set_rect(panel() + DL_EL_LIST, DL_LIST_L, DL_LIST_T, DL_LIST_R, DL_LIST_B);
 	box_target(LIST, panel() + DL_EL_LIST, 1);
 	box_shown(LIST, 1);
 	list_validator(LIST, MH_FN_CFG_VALID);
 	cfg_fill(mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)));
+
+	plate(0, DL_PLATE_TOP, DL_EL_PLATE_TOP);
+	plate(1, DL_PLATE_BOTTOM, DL_EL_PLATE_BOTTOM);
+	plate(2, DL_PLATE_FOOT, DL_EL_PLATE_FOOT);
 
 	frame_target(p, 0, panel() + DL_EL_CURSOR);
 	show_frames(p, 1);
 	attach_cursor(p, 0, panel(), panel() + DL_EL_CURSOR, 0);
 	show_cursors(p, 1);
 
-	plate(0, DL_PLATE_TOP, DL_EL_PLATE_TOP);
-	plate(1, DL_PLATE_BOTTOM, DL_EL_PLATE_BOTTOM);
-	plate(2, DL_PLATE_FOOT, DL_EL_PLATE_FOOT);
-
 	w8(SH(SH_CFG_STATE), 1);
 }
 
-/* The input, as MenuCheats_HandleInput reads it: one command a frame. */
+/* The input, as MenuAudioVisual_HandleInput reads it: one command a frame. */
 static void cfg_input(int p)
 {
 	int cmd = get_command(6);
 	u32 c = shim_cursor(p);
 
+	w8(SH(SH_CMD), cmd);
 	switch (cmd) {
-	case DL_CMD_CROSS:    mh_core_press(p, MH_BTN_CROSS, c); return;
-	case DL_CMD_LEFT:     mh_core_press(p, MH_BTN_LEFT, c); return;
-	case DL_CMD_RIGHT:    mh_core_press(p, MH_BTN_RIGHT, c); return;
-	case DL_CMD_L1:       mh_core_press(p, MH_BTN_L1, c); return;
-	case DL_CMD_R1:       mh_core_press(p, MH_BTN_R1, c); return;
-	case DL_CMD_TRIANGLE: mh_core_press(p, MH_BTN_BACK, c); return;
-	case DL_CMD_CLOSE:    mh_core_press(p, MH_BTN_CLOSE, c); return;
+	case DL_CMD_CROSS:    mh_core_press(p, MH_BTN_CROSS, c); break;
+	case DL_CMD_LEFT:     mh_core_press(p, MH_BTN_LEFT, c); break;
+	case DL_CMD_RIGHT:    mh_core_press(p, MH_BTN_RIGHT, c); break;
+	case DL_CMD_L1:       mh_core_press(p, MH_BTN_L1, c); break;
+	case DL_CMD_R1:       mh_core_press(p, MH_BTN_R1, c); break;
+	case DL_CMD_TRIANGLE: mh_core_press(p, MH_BTN_BACK, c); break;
+	case DL_CMD_CLOSE:    mh_core_press(p, MH_BTN_CLOSE, c); break;
 	case DL_CMD_UP:
 	case DL_CMD_DOWN:
-		if (mh_nrows() < 2) return;
+		if (mh_nrows() < 2) break;
 		if (cmd == DL_CMD_UP) list_prev(LIST);
 		else list_next(LIST);
 		play_sound(SND_MOVE);
 		w8(SH(SH_CFG_CURSOR), 1);
-		return;
+		break;
 	default:
-		return;
+		break;
 	}
+	w8(SH(SH_CMD), 0);
 }
 
-/* Every frame of the thread: the Cheats screen's Update. */
+/* Every frame of the thread: GAME SETTINGS' Update, and the list's. */
 void mh_cfg_update(u32 gs)
 {
 	int p = get_canvas();
@@ -357,7 +460,7 @@ void mh_cfg_update(u32 gs)
 	}
 }
 
-/* The thread's end: the Cheats screen's Deinit, then the next screen. */
+/* The thread's end: GAME SETTINGS' Deinit, then the next screen. */
 void mh_cfg_deinit(u32 gs)
 {
 	int p = get_canvas();
@@ -374,17 +477,20 @@ void mh_cfg_deinit(u32 gs)
 	start_next(p);
 }
 
-/* A visible row that changed: MenuCheats_UpdateCheatCB's colours, by the core's flags. */
+/*
+ * A visible row that changed: GAME SETTINGS' select and deselect colours, by
+ * the core's flags, on its label, its value and a slider's outline.
+ */
 void mh_cfg_item(u32 list, u32 item, int index)
 {
 	u32 row = r32(item + DL_ITEM_PANEL), f = mh_row_flags(index), c;
 
 	if (index == (int)r32(list + DL_LIST_FOCUS)) c = DL_RGBA_FOCUS;
 	else if ((f & MROWF_ENABLED) == 0) c = DL_RGBA_LOCKED;
-	else if ((f & MROWF_ON) != 0) c = DL_RGBA_ACTIVE;
 	else c = DL_RGBA_OFF;
 	set_color(row + DL_ROW_LABEL, c);
 	set_color(row + DL_ROW_VALUE, c);
+	set_color(row + DL_ROW_OUTLINE, c);
 }
 
 /* The rows the cursor may land on. */
@@ -403,9 +509,10 @@ MH_API void shim_show(int p, u32 how)
 		return;
 	}
 	/*
-	 * A new page while the list is up: the rows handed over again and the
-	 * highlight put back, as N0's toggle did; with another number of rows the
-	 * list is laid out again and its frame fitted round them.
+	 * The page refreshed while the list is up (a new page starts the screen
+	 * again, MH_RESTART_MAIN): the rows handed over again and the highlight
+	 * put back, as N0's toggle did; with another number of rows the list is
+	 * laid out again and its frame fitted round them.
 	 */
 	set_cursor(p, (int)mh_core_cursor((u32)get_cursor(p)));
 	set_title(p, mh_title());
@@ -416,21 +523,25 @@ MH_API void shim_show(int p, u32 how)
 }
 
 /*
- * The other widget: GoToScreen(36) again stops this one (mh_stop) and the game
- * starts the screen anew (mh_start), at once for the list and once the thread
- * has ended for the CONFIG page. GoToScreen pushes nothing, so back goes where
- * it went before.
+ * A new page, or the other widget: GoToScreen(36) again stops this one
+ * (mh_stop) and the game starts the screen anew (mh_start), at once for the
+ * list and once the thread has ended for the CONFIG page. GoToScreen pushes
+ * nothing, so back goes where it went before.
  */
 MH_API void shim_switch(int p)
 {
 	go_to_screen(p, MH_SCREEN_ID);
 }
 
-/* Back from the root, or Start: Options' own callback (mh_rac4.h, OPD_GO_BACK_CB). */
+/*
+ * Back from the root, or Start: on the list Options' own callback (mh_rac4.h,
+ * OPD_GO_BACK_CB), triangle's sound and pop or Start's sound and close; on a
+ * CONFIG page GAME SETTINGS' own close, CloseMenu with no sound of its own.
+ */
 MH_API void shim_close(int p, u32 how)
 {
-	(void)p;
-	go_back(how == MH_CLOSE_BACK ? 0 : 1);
+	if (how == MH_CLOSE_EXIT && shown() == MBOX_PTYPE_CONFIG) close_menu(p, -1);
+	else go_back(how == MH_CLOSE_BACK ? 0 : 1);
 }
 
 MH_API void shim_title(int p)
@@ -439,10 +550,10 @@ MH_API void shim_title(int p)
 	else set_title(p, mh_title());
 }
 
+/* GAME SETTINGS has no description line. */
 MH_API void shim_desc(int p)
 {
 	(void)p;
-	if (shown() == MBOX_PTYPE_CONFIG) set_text(panel() + DL_EL_DESC, mh_desc());
 }
 
 MH_API u32 shim_cursor(int p)
@@ -454,29 +565,64 @@ MH_API u32 shim_cursor(int p)
 	return c < 0 ? 0 : (u32)c;
 }
 
+/*
+ * The sounds, as the game's own screens play them (mh_rac4.h, SND_*). On a
+ * list: the cross 7, back 8, a step 0x10, a window turned the tick. On a
+ * CONFIG page, as GAME SETTINGS: a toggle or a choice changed 0x10, a value
+ * stepped 0x11 or at an end 4, the cross on a link, a button or a window row
+ * 7, and nothing for back, which the screen's stop sounds as it goes.
+ */
 MH_API void shim_sound(u32 snd)
 {
-	static const u8 sounds[] = { SND_MOVE, SND_FORWARD, SND_BACK, SND_CHANGE };
+	static const u8 main_sounds[] = { SND_MOVE, SND_FORWARD, SND_BACK, SND_CHANGE };
+	u32 row, kind, cmd, lo, hi;
+	float f;
 
-	/* On the Cheats screen's page the cross changes a row too, with the same sound. */
-	if (snd == MH_SND_FORWARD && shown() == MBOX_PTYPE_CONFIG) snd = MH_SND_STEP;
-	if (snd < sizeof(sounds)) play_sound(sounds[snd]);
+	if (shown() != MBOX_PTYPE_CONFIG) {
+		if (snd < sizeof(main_sounds)) play_sound(main_sounds[snd]);
+		return;
+	}
+	if (snd == MH_SND_BACK) return;
+	if (snd == MH_SND_MOVE) {
+		play_sound(SND_MOVE);
+		return;
+	}
+	row = shim_cursor(0);
+	kind = row < mh_nrows() ? mh_row_kind(row) : MROW_INFO;
+	cmd = r8(SH(SH_CMD));
+	if (kind == MROW_VALUE && snd == MH_SND_STEP) {
+		if (slider(row, &f, &lo, &hi) && ((cmd == DL_CMD_LEFT && lo) || (cmd == DL_CMD_RIGHT && hi)))
+			play_sound(SND_LIMIT);
+		else
+			play_sound(SND_SLIDE);
+	} else if (kind == MROW_TOGGLE || kind == MROW_CHOICE || kind == MROW_VALUE || snd == MH_SND_STEP) {
+		play_sound(SND_CHANGE);
+	} else {
+		play_sound(SND_FORWARD);
+	}
 }
 
 /* ------------------------------------------------------------ the entries */
 
-/* Screen 36's fcStart: the page qwark posted, with the widget it asks for. */
+/*
+ * Screen 36's fcStart: the page qwark posted, with the widget it asks for. A
+ * start that is not the core's own start again (shim_switch) is the menu
+ * opening, from play or from the Help row.
+ */
 void mh_start(int p)
 {
+	int open = r8(MH_STATE + ST_SWITCHING) == 0;
+
 	if (mh_core_start(p) == MBOX_PTYPE_CONFIG) cfg_start(p);
-	else main_start(p);
+	else main_start(p, open);
 }
 
-/* Screen 36's fcStop: the list's own stop, or the thread told to end, as Cheats' Stop does. */
+/* Screen 36's fcStop: the list's own stop, or the thread told to end, as GAME SETTINGS' Stop does. */
 void mh_stop(int p)
 {
 	u32 was = shown();
 
+	w8(SH(SH_WAS), was);
 	mh_core_stop(p);
 	if (was == MBOX_PTYPE_CONFIG) {
 		w8(SH(SH_CFG_STATE), 2);

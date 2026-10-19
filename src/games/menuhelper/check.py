@@ -31,8 +31,14 @@ For Deadlocked's renderer:
      Help words are the main menu's Help row's label call and its callback's
      screen, a callback nothing else names (so multiplayer, whose main menu
      has no Help, keeps every word);
-  4b. what the shim takes from the game is what the Cheats screen uses: its
-     templates, its plates, CtlList's vtable;
+  4b. what the shim takes from the game is what GAME SETTINGS uses (round 3):
+     its screen template, title, legend and frame elements, its plates, its
+     row table's widgets (the ones the shim hides) and its sounds, the open
+     sound's two bytes, the Cheats screen's row template and CtlList's
+     vtable; and, when the PS3 build's bonus.ps3 is at hand (the rpcs3
+     install, or --bonus), templates 37 and 28 themselves: every element the
+     shim names is the widget it takes it for, and the slider's geometry is
+     GAME SETTINGS';
   5. each of those descriptors is {the code the header names, TOC 0x9BCD58};
   6. the code area is in the text segment's last page past its end, the
      mailbox and data areas in the read-write segment's last page past its
@@ -632,9 +638,223 @@ def check_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
        (lab, text.decode("ascii", "replace")))
 
 
+# ------------------------------------------- Deadlocked's GAME SETTINGS (round 3)
+
+# MenuAudioVisual (screen 12, Options > GAME SETTINGS) on NPEA00423.
+DL_AV_CREATE = (0x0038F664, 0x0038FA60)    # MenuAudioVisual_CreateWidgets
+DL_AV_INIT = (0x0039063C, 0x00390A40)      # its GuiState's Init
+DL_AV_DEINIT = (0x00390A40, 0x00390AF0)    # and Deinit
+DL_AV_START, DL_AV_STOP = 0x0038F3D4, 0x0038F454
+DL_AV_TABLE = 0x009EA038                    # MenuAudioVisual_Options[8] {bEnabled, tgt, name, item, fcCMD}
+DL_PLAY_SOUND = 0x0035FAC0
+DL_SET_TEXT, DL_CLEAR_LAYER = 0x000B0CDC, 0x000B299C
+DL_BONUS = os.path.join("Documents", "rpcs3", "dev_hdd0", "game", "NPEA00423", "USRDIR", "rc4",
+                        "ps3data", "global", "boot", "bonus.ps3")
+
+
+def words_in(elf, lo, hi):
+    return [(a, elf.word(a)) for a in range(lo, hi, 4)]
+
+
+def sound_played(elf, lo, hi, snd):
+    """`li r3,snd` and, within six words that load nothing else into r3, `bl GuiMain_PlaySound`."""
+    ws = words_in(elf, lo, hi)
+    for i, (a, w) in enumerate(ws):
+        if w == 0x38600000 | snd:
+            for b, x in ws[i + 1:i + 7]:
+                if (x >> 26) == 18 and branch_target(b, x) == DL_PLAY_SOUND:
+                    return True
+                if (x >> 26) in (14, 15, 32, 34) and ((x >> 21) & 31) == 3:
+                    break
+    return False
+
+
+def dige_templates(path, which):
+    """
+    The widgets of templates `which` in Deadlocked's IGE layouts (bonus.ps3,
+    "HBN_BEG.04.05.02"): a block is {u16 type, u16 count}; type 1 a text, 2 a
+    rectangle, 4 a container (children until END_WIDGET_CONT), 5 the root, 3
+    a shape with a vertex list, 9 a widget's end. Answers {template:
+    {element: (kind, fields, parent)}}, or None when the file is not one.
+    """
+    d = open(path, "rb").read()
+    if not d.startswith(b"HBN_BEG.04.05.02"):
+        return None
+    u = lambda a: struct.unpack(">I", d[a:a + 4])[0]
+    f = lambda a: struct.unpack(">f", d[a:a + 4])[0]
+    n = u(0x14)
+    offs = [u(0x18 + 4 * i) for i in range(n)]
+    out = {}
+    for t in which:
+        p, e = offs[t], offs[t + 1] if t + 1 < n else len(d)
+        els, scope = {}, [None]
+        while p < e:
+            if d[p:p + 15] in (b"END_WIDGET_CONT", b"END_WIDGET_PCON"):
+                if d[p:p + 15] == b"END_WIDGET_CONT" and len(scope) > 1:
+                    scope.pop()
+                p += 16
+                continue
+            ty = u(p) >> 16
+            if ty == 9:
+                p += 4
+                continue
+            idx = u(p + 8)
+            if ty == 1:
+                els[idx] = ("text", {"x": f(p + 12), "y": f(p + 16), "font": u(p + 20), "size": f(p + 24),
+                                     "flags": u(p + 4), "shown": u(p + 36)}, scope[-1])
+                p += 48
+            elif ty == 2:
+                els[idx] = ("rect", {"x": f(p + 12), "y": f(p + 16), "w": f(p + 20), "h": f(p + 24),
+                                     "shown": u(p + 32), "rgba": u(p + 36)}, scope[-1])
+                p += 40
+            elif ty in (4, 5):
+                els[idx] = ("cont" if ty == 4 else "root", {"shown": u(p + 32)}, scope[-1])
+                p += 36
+                if ty == 4:
+                    scope.append(idx)
+            elif ty in (3, 10):
+                els[idx] = ("shape" if ty == 3 else "textarea", {}, scope[-1])
+                p += 12
+                while p < e and u(p) != 0x00090000:
+                    p += 4
+            else:
+                return None
+        out[t] = els
+    return out
+
+
+def check_rac4_settings(ok, elf, hdr):
+    lo, hi = DL_AV_CREATE
+    ws = [w for _, w in words_in(elf, lo, hi)]
+    ok(0x38800000 | hdr["DL_TPL_SCREEN"] in ws,
+       "MenuAudioVisual_CreateWidgets (0x%06X) makes GAME SETTINGS from template %d" % (lo, hdr["DL_TPL_SCREEN"]))
+    for el, what in ((hdr["DL_EL_LEGEND"], "legend"), (hdr["DL_EL_TITLE"], "title")):
+        at = [a for a, w in words_in(elf, lo, hi) if (w >> 26) == 12 and (w & 0xFFFF) == el]
+        good = any(any((x >> 26) == 18 and branch_target(b, x) == DL_SET_TEXT for b, x in words_in(elf, a, a + 0x28))
+                   for a in at)
+        ok(good, "and sets its %s, element 0x%X, with SetText" % (what, el))
+    ok(0x38E00000 | hdr["DL_TPL_ROW"] in [elf.word(0x00395C38 + 4 * i) for i in range(0, 0x700 // 4)],
+       "the rows are template %d, as MenuCheats_CreateWidgets (0x395C38) makes its list's" % hdr["DL_TPL_ROW"])
+    lo, hi = DL_AV_INIT
+    plates = [v for a, v in refs_into(elf, 0x00ACA360, 0x00ACA3A0)[2] if lo <= a < hi]
+    ok(set(plates) == {hdr["DL_PLATE_TOP"], hdr["DL_PLATE_BOTTOM"], hdr["DL_PLATE_FOOT"]},
+       "its thread's Init (0x%06X) loads the three plates the shim loads, and no other" % lo)
+    ok(any((w >> 26) == 12 and (w & 0xFFFF) == hdr["DL_EL_CURSOR"] for _, w in words_in(elf, lo, hi)),
+       "and puts the frame and the cursor on element 0x%X" % hdr["DL_EL_CURSOR"])
+    lo, hi = DL_AV_DEINIT
+    ok(any((w >> 26) == 18 and branch_target(a, w) == DL_CLEAR_LAYER for a, w in words_in(elf, lo, hi)) and
+       0x3860000F in [w for _, w in words_in(elf, lo, hi)] and hdr["DL_LAYER"] == 0xF,
+       "its Deinit (0x%06X) clears canvas layer 15, the shim's" % lo)
+    # The fixed rows' widgets, which the shim hides: the table's names and items, and the bars by them.
+    rows = [struct.unpack(">5I", b"".join(struct.pack(">I", elf.word(DL_AV_TABLE + 20 * i + 4 * k))
+                                          for k in range(5))) for i in range(8)]
+    items = [r[3] for r in rows]
+    names = [r[2] for r in rows]
+    tgts = [r[1] for r in rows]
+    lo_el, hi_el = hdr["DL_EL_ROWS_FIRST"], hdr["DL_EL_ROWS_LAST"]
+    bars = [x for i in (2, 3, 4) for x in (items[i] + 1, items[i] + 2)]
+    ok(tgts == list(range(0x11, 0x09, -1)) and all(lo_el <= x <= hi_el for x in items + bars) and
+       sorted(items + bars + names) == list(range(0x15, 0x29)) + [0x2A, 0x2B],
+       "GAME SETTINGS' row table (0x%08X): focus rectangles 0x11..0xA, the values, the bars and the labels "
+       "0x15..0x2B but 0x29, of which the shim hides 0x%X..0x%X (0x2A and 0x2B are in 0x29)" %
+       (DL_AV_TABLE, lo_el, hi_el))
+    # The sounds the shim plays where GAME SETTINGS, the lists and the main menu play them.
+    ok(sound_played(elf, DL_AV_START, DL_AV_START + 0x80, hdr["SND_SCREEN"]) and
+       sound_played(elf, DL_AV_STOP, DL_AV_STOP + 0x48, hdr["SND_SCREEN_CLOSE"]),
+       "GAME SETTINGS' start plays 0x%X and its stop 0x%X" % (hdr["SND_SCREEN"], hdr["SND_SCREEN_CLOSE"]))
+    ok(sound_played(elf, 0x00390404, 0x003904A8, hdr["SND_CHANGE"]) and
+       sound_played(elf, 0x0038FF28, 0x003900A8, hdr["SND_SLIDE"]) and
+       sound_played(elf, 0x0038FF28, 0x003900A8, hdr["SND_LIMIT"]),
+       "its HELP TEXT toggle plays 0x%X, its MUSIC VOLUME slider 0x%X, or 0x%X at an end" %
+       (hdr["SND_CHANGE"], hdr["SND_SLIDE"], hdr["SND_LIMIT"]))
+    ok(sound_played(elf, 0x003A6700, 0x003A6858, hdr["SND_OPEN"]) and
+       sound_played(elf, hdr["DL_HELP_CB"], hdr["DL_HELP_CB"] + 0x80, hdr["SND_FORWARD"]) and
+       sound_played(elf, 0x003A809C, 0x003A8100, hdr["SND_BACK"]),
+       "MenuMain_StartMain plays %d, the Help row's callback %d, Options' back %d" %
+       (hdr["SND_OPEN"], hdr["SND_FORWARD"], hdr["SND_BACK"]))
+    flag = hdr["DL_MENU_SOUND_FLAG"]
+    ok(elf.word(0x00361428) == 0x3C600000 | ((flag + 0x8000) >> 16) and
+       elf.word(0x0036142C) == 0x88630000 | (flag & 0xFFFF) and elf.word(0x00361430) == 0x4E800020,
+       "GuiMain's main menu sound flag (0x361428: lis, lbz, blr) is the byte at 0x%08X" % flag)
+    ex = hdr["DL_MENU_EXIT"]
+    starts = [a for a, v in refs_into(elf, ex, ex + 1)[2] if hdr["DL_START_MAIN"] <= a < 0x003A6858]
+    helps = [a for a, v in refs_into(elf, ex, ex + 1)[2] if hdr["DL_HELP_CB"] <= a < hdr["DL_HELP_CB"] + 0x80]
+    ok(starts and helps, "g_bMenuExit, 0x%08X, is the byte MenuMain_StartMain reads and the Help row's callback "
+       "clears" % ex)
+
+
+def header_float(name):
+    m = re.search(r"#define\s+%s\s+([0-9.]+)f" % name, open(os.path.join(HERE, "mh_rac4.h")).read())
+    return float(m.group(1)) if m else None
+
+
+def check_rac4_templates(ok, elf, hdr, path):
+    """Templates 37, 28 and 27 out of the PS3 build's own bonus.ps3, when it is at hand."""
+    if not path or not os.path.isfile(path):
+        print("        (no bonus.ps3: templates 37 and 28 left unread; --bonus FILE reads them)")
+        return
+    t = dige_templates(path, (hdr["DL_TPL_SCREEN"], hdr["DL_TPL_ROW"], 27))
+    if t is None:
+        ok(False, "%s is the IGE layouts, HBN_BEG.04.05.02" % path)
+        return
+    scr, row = t[hdr["DL_TPL_SCREEN"]], t[hdr["DL_TPL_ROW"]]
+    kind = lambda els, i: els.get(i, ("none", {}, None))[0]
+    ok(kind(scr, hdr["DL_EL_LIST"]) == "rect" and kind(scr, hdr["DL_EL_CURSOR"]) == "rect" and
+       kind(scr, hdr["DL_EL_TITLE"]) == "text" and kind(scr, hdr["DL_EL_LEGEND"]) == "text" and
+       all(kind(scr, hdr[k]) == "rect" for k in ("DL_EL_PLATE_TOP", "DL_EL_PLATE_BOTTOM", "DL_EL_PLATE_FOOT")),
+       "bonus.ps3, template %d: the list's target, the frame and the three plates are rectangles, the title "
+       "and the legend texts" % hdr["DL_TPL_SCREEN"])
+    box = scr.get(hdr["DL_EL_LIST"], ("", {"y": 0, "h": 0}, None))[1]
+    tops = sorted(scr[i][1]["y"] for i in range(0xA, 0x12) if kind(scr, i) == "rect")
+    ok(len(tops) == 8 and box["y"] - box["h"] / 2 <= tops[0] - 0.02 and tops[-1] + 0.02 <= box["y"] + box["h"] / 2,
+       "its element 5 (y %.4f, h %.4f) holds all eight of GAME SETTINGS' rows (%.4f..%.4f): eight rows of the "
+       "list on screen" % (box["y"], box["h"], tops[0] if tops else 0, tops[-1] if tops else 0))
+    hidden = [i for i in range(hdr["DL_EL_ROWS_FIRST"], hdr["DL_EL_ROWS_LAST"] + 1)]
+    ok(all(kind(scr, i) in ("text", "rect") for i in hidden if i != 0x29) and kind(scr, 0x29) == "cont" and
+       all(scr[i][2] == 0x29 for i in (0x2A, 0x2B)) and max(scr) == 0x2B,
+       "elements 0x%X..0x%X are the fixed rows' texts and rectangles, 0x29 the container of the last two "
+       "labels: hiding them hides every row of GAME SETTINGS" % (hdr["DL_EL_ROWS_FIRST"], hdr["DL_EL_ROWS_LAST"]))
+    lab, val = row.get(hdr["DL_ROW_LABEL"]), row.get(hdr["DL_ROW_VALUE"])
+    ok(lab and val and lab[0] == "text" and val[0] == "text" and
+       all(scr[i][0] == "text" and scr[i][1]["font"] == lab[1]["font"] and
+           abs(scr[i][1]["size"] - lab[1]["size"]) < 1e-4 for i in (0x15, 0x23)) and
+       val[1]["font"] == lab[1]["font"],
+       "template %d's label and value are texts in GAME SETTINGS' row font (%d) and size (%.4f)" %
+       (hdr["DL_TPL_ROW"], lab[1]["font"] if lab else 0, lab[1]["size"] if lab else 0))
+    ok(kind(row, hdr["DL_ROW_BOX_A"]) == "cont" and kind(row, hdr["DL_ROW_BOX_B"]) == "cont" and
+       not row[hdr["DL_ROW_BOX_A"]][1]["shown"] and not row[hdr["DL_ROW_BOX_B"]][1]["shown"] and
+       all(kind(row, hdr[k]) == "rect" for k in ("DL_ROW_OUTLINE", "DL_ROW_TRACK", "DL_ROW_SPARE", "DL_ROW_FILL")) and
+       row[hdr["DL_ROW_OUTLINE"]][2] == row[hdr["DL_ROW_TRACK"]][2] == hdr["DL_ROW_BOX_A"] and
+       row[hdr["DL_ROW_SPARE"]][2] == row[hdr["DL_ROW_FILL"]][2] == hdr["DL_ROW_BOX_B"],
+       "its two hidden containers hold the outline and the track, and the spare and the fill, as the shim "
+       "reshapes them")
+    sx = header_float("DL_SLIDER_X") or 0
+    o, tr, fl = scr[0x1E][1], scr[0x1F][1], scr[0x20][1]
+    want_right = val[1]["x"] + (o["x"] + o["w"] / 2 - scr[0x22][1]["x"])
+    ok(abs(sx + 0.3555 / 2 - want_right) < 0.001 and abs(o["w"] - 0.3555) < 1e-4 and abs(o["h"] - 0.0288) < 1e-4 and
+       abs(tr["w"] - 0.3477) < 1e-4 and abs(tr["h"] - 0.0192) < 1e-4 and o["rgba"] == 0x80D0D0D0 and
+       tr["rgba"] == hdr["DL_RGBA_TRACK"] and fl["rgba"] == 0x800606C3,
+       "GAME SETTINGS' slider is an outline 0.3555 x 0.0288, a track 0.3477 x 0.0192 (0x%08X) and a fill, "
+       "ending %.4f past its value column; the shim's ends as far past the row's (at %.4f)" %
+       (tr["rgba"], o["x"] + o["w"] / 2 - scr[0x22][1]["x"], sx + 0.3555 / 2))
+    # The list's box: the Cheats screen's width, GAME SETTINGS' rows' height, the scroll bar inside the frame.
+    ch = t[27].get(5, ("", {"x": 0, "w": 0}, None))[1]
+    l, tp, r, b = (header_float(n) for n in ("DL_LIST_L", "DL_LIST_T", "DL_LIST_R", "DL_LIST_B"))
+    fr = scr[hdr["DL_EL_CURSOR"]][1]
+    bar_lo = struct.unpack(">f", struct.pack(">I", elf.word(0x00633DF0)))[0]
+    bar_w = struct.unpack(">f", struct.pack(">I", elf.word(0x00633DF4)))[0]
+    ok(None not in (l, tp, r, b) and abs(l - (ch["x"] - ch["w"] / 2)) < 1e-4 and abs(r - (ch["x"] + ch["w"] / 2)) < 1e-4 and
+       abs(tp - (box["y"] - box["h"] / 2)) < 1e-4 and abs(b - (box["y"] + box["h"] / 2)) < 1e-4 and
+       r + bar_lo + bar_w < fr["x"] + fr["w"] / 2 < box["x"] + box["w"] / 2 + bar_lo,
+       "the list's box %.4f..%.4f wide is the Cheats screen's list (template 27, element 5) and %.4f..%.4f high "
+       "GAME SETTINGS' rows: CtlList's scroll bar (%.4f past the box, %.4f wide; 0x633DF0) ends inside the frame "
+       "(%.4f), where on element 5 as it is it would not" % (l or 0, r or 0, tp or 0, b or 0, bar_lo, bar_w,
+                                                               fr["x"] + fr["w"] / 2))
+
+
 # --------------------------------------------------------------- the checks
 
-def check_rac4(ok, elf, roots):
+def check_rac4(ok, elf, roots, bonus=None):
     hdr = header_defs(os.path.join(HERE, "mh_rac4.h"))
     box_defs = header_defs(MENUBOX)
     shim_defs = header_defs(SHIM_H)
@@ -789,18 +1009,13 @@ def check_rac4(ok, elf, roots):
     for x in named[:12]:
         print("        " + x)
 
-    # 4b. the CONFIG page's game knowledge, against the Cheats screen's own code
-    cw = [elf.word(0x00395C38 + 4 * i) for i in range(0, 0x700 // 4)]
-    ok(0x38800000 | hdr["DL_TPL_SCREEN"] in cw and 0x38E00000 | hdr["DL_TPL_ROW"] in cw,
-       "MenuCheats_CreateWidgets (0x395C38) makes its screen from template %d and its rows from %d" %
-       (hdr["DL_TPL_SCREEN"], hdr["DL_TPL_ROW"]))
-    plates = [v for a, v in refs_into(elf, 0x00ACA360, 0x00ACA3A0)[2] if 0x00396F04 <= a < 0x0039710C]
-    ok(set(plates) >= {hdr["DL_PLATE_TOP"], hdr["DL_PLATE_BOTTOM"], hdr["DL_PLATE_FOOT"]},
-       "its thread's Init (0x396F04) loads the three plates the shim loads")
+    # 4b. the CONFIG page's game knowledge, against GAME SETTINGS' own code (round 3)
+    check_rac4_settings(ok, elf, hdr)
     vt = [v for a, v in refs_into(elf, hdr["DL_CTLLIST_VTABLE"], hdr["DL_CTLLIST_VTABLE"] + 4)[2]
           if 0x00633618 <= a < 0x00633650]
     ok(vt == [hdr["DL_CTLLIST_VTABLE"]] and elf.word(0x0063363C) == 0x907F0000,
        "CtlList::CtlList (0x633618) writes the vtable 0x%08X at +0, as the shim does" % hdr["DL_CTLLIST_VTABLE"])
+    check_rac4_templates(ok, elf, hdr, bonus)
 
     stub_at = {}
     for a, value, orig, what in hooks:
@@ -1790,7 +2005,10 @@ def main():
     ap.add_argument("--eboots", default=None)
     ap.add_argument("--mods", action="append", default=None,
                     help="LABEL=DIR, a mods folder with <TITLEID>/<mod>/patch.txt")
+    ap.add_argument("--bonus", default=None,
+                    help="Deadlocked's bonus.ps3 (its IGE layouts), read for templates 37 and 28")
     args = ap.parse_args()
+    bonus = args.bonus or os.path.join(os.path.expanduser("~"), DL_BONUS)
 
     eboots = args.eboots
     if eboots is None:
@@ -1830,7 +2048,7 @@ def main():
             failures += 1
 
     print("mod libraries: " + (", ".join("%s (%s)" % (l, p) for l, p in roots) or "none"))
-    check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots)
+    check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots, bonus)
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
 
