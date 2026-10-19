@@ -281,6 +281,15 @@ void qslug(const char *src, char *dst, u32 cap)
 	dst[n] = 0;
 }
 
+void qput_fixed(u8 *dst, u32 cap, const char *src)
+{
+	u32 i = 0;
+
+	if (src != NULL)
+		while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
+	while (i < cap) dst[i++] = 0;
+}
+
 /* ---------------------------------------------------------- the scratch buffer */
 
 /*

@@ -774,14 +774,6 @@ void mods_apply_mask(u32 mask)
 
 /* --------------------------------------------------------------- MOD_LIST */
 
-static void put_fixed(u8 *dst, u32 cap, const char *src)
-{
-	u32 i = 0;
-	memset(dst, 0, cap);
-	if (src == NULL) return;
-	while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
-}
-
 /*
  * The flags a row goes out with, which are not quite the flags it is kept with.
  *
@@ -833,10 +825,10 @@ int mods_list_encode(u8 *out, u32 cap, u32 *len)
 		out[off + 2] = 0;
 		out[off + 3] = 0;
 		be32_put(out + off + 4, m->hash);
-		put_fixed(out + off + 8, 32, m->dirname);
-		put_fixed(out + off + 40, 32, m->name);
-		put_fixed(out + off + 72, 16, m->version);
-		put_fixed(out + off + 88, 32, m->author);
+		qput_fixed(out + off + 8, 32, m->dirname);
+		qput_fixed(out + off + 40, 32, m->name);
+		qput_fixed(out + off + 72, 16, m->version);
+		qput_fixed(out + off + 88, 32, m->author);
 		off += MOD_WIRE_SIZE;
 		n++;
 	}

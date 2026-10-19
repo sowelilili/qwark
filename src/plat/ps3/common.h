@@ -12,8 +12,5 @@
 
 #define ISDIGIT(a)		('0' <= (unsigned char)(a) && (unsigned char)(a) <= '9')
 
-static char _game_TitleID[16]; //#define _game_TitleID  _game_info+0x04
-static char _game_Title  [64]; //#define _game_Title    _game_info+0x14
-
 #endif /* __COMMON_H__ */
 

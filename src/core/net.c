@@ -473,14 +473,6 @@ static int mkdir_parents(const char *path)
 
 /* --------------------------------------------------- helpers for encoding */
 
-static void put_fixed(u8 *dst, u32 cap, const char *src)
-{
-	u32 i = 0;
-	memset(dst, 0, cap);
-	if (src == NULL) return;
-	while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
-}
-
 /*
  * Revision 1.21. The four manip ops answer UNSUPPORTED for a game without
  * groups and outside a game, as DESCRIBE does; MANIP_APPLY, which needs the
@@ -694,7 +686,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 
 		off = 0;
 		reply[off++] = ncat;
-		for (i = 0; i < ncat; i++) { put_fixed(reply + off, 24, cats[i]); off += 24; }
+		for (i = 0; i < ncat; i++) { qput_fixed(reply + off, 24, cats[i]); off += 24; }
 
 		/*
 		 * Protocol 1.3: four UnlockFieldDesc, always four, naming and typing
@@ -702,7 +694,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		 * per game instead of guessing from RaC1's labels.
 		 */
 		for (i = 0; i < 4; i++) {
-			put_fixed(reply + off, UNLOCK_FIELD_NAME_LEN, fields[i].name);
+			qput_fixed(reply + off, UNLOCK_FIELD_NAME_LEN, fields[i].name);
 			reply[off + UNLOCK_FIELD_NAME_LEN + 0] = fields[i].kind;
 			reply[off + UNLOCK_FIELD_NAME_LEN + 1] = fields[i].max;
 			reply[off + UNLOCK_FIELD_NAME_LEN + 2] = 0;
@@ -722,7 +714,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 			reply[off + 2] = list[i].fields;
 			reply[off + 3] = 0;
 			for (v = 0; v < 4; v++) be32_put(reply + off + 4 + v * 4, values[v]);
-			put_fixed(reply + off + 20, 24, list[i].name);
+			qput_fixed(reply + off + 20, 24, list[i].name);
 			off += UNLOCK_WIRE_SIZE;
 		}
 		cmd->replylen = off;
@@ -1090,7 +1082,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 		reply[0] = count;
 		off = 1;
-		for (i = 0; i < count; i++) { put_fixed(reply + off, 24, options[i]); off += 24; }
+		for (i = 0; i < count; i++) { qput_fixed(reply + off, 24, options[i]); off += 24; }
 		core_unlock();
 
 		*replylen = off;
@@ -1159,7 +1151,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			reply[off + 2] = rows[i].flags;
 			reply[off + 3] = 0;
 			be32_put(reply + off + 4, rows[i].param_us);
-			put_fixed(reply + off + 8, AUTOSPLIT_LABEL_LEN, rows[i].label);
+			qput_fixed(reply + off + 8, AUTOSPLIT_LABEL_LEN, rows[i].label);
 			off += AUTOSPLIT_DESC_SIZE;
 		}
 
@@ -1234,7 +1226,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			be16_put(reply + off + 4, d->count);
 			reply[off + 6] = d->kind;
 			reply[off + 7] = 0;
-			put_fixed(reply + off + 8, 32, d->name);
+			qput_fixed(reply + off + 8, 32, d->name);
 			off += 40;
 			n++;
 		}
@@ -1315,7 +1307,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 		reply[0] = count;
 		off = 1;
-		for (i = 0; i < count; i++) { put_fixed(reply + off, 24, names[i]); off += 24; }
+		for (i = 0; i < count; i++) { qput_fixed(reply + off, 24, names[i]); off += 24; }
 
 		/*
 		 * Build 53, revision 1.21: then the order a menu lists them in, one

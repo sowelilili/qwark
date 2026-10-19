@@ -70,6 +70,25 @@ void classic_health_forget(struct classic_health *h);
 int  classic_patch_toggle(const struct patch_def *def, int on);
 
 /*
+ * The unlock snapshot. A game's unlock_list reads the arrays its table covers
+ * into here, and its unlock_read serves each row from them: the core calls the
+ * two back to back on the tick thread, and the menu reuses one list for the rest
+ * of its tick. Only the running game ever fills it, so the four games share this
+ * one buffer, where each used to keep its own (SPEC-footprint.md, cut C12). It is
+ * sized by the largest, UYA's three reads, and each game checks its own fit at
+ * build time.
+ *
+ * classic_snap_game is the game_id whose bytes it holds, 0 while it holds none.
+ * It stands in for the flag each game kept beside its own buffer: a game sets it
+ * to 0 before its reads and to its own id once they have all succeeded, and
+ * serves nothing while it says another game, so no game ever reads another's.
+ */
+#define CLASSIC_SNAP_BYTES 2276u
+
+extern u8 classic_snap[CLASSIC_SNAP_BYTES];
+extern u8 classic_snap_game;
+
+/*
  * Build 50, the code switches (src/core/switches.h). A WRITES_CODE toggle is
  * one of these three rather than a bare classic_patch_toggle, each naming the
  * flag byte its switch reads (switches_bins.h) beside the patch it makes on a

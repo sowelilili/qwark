@@ -325,14 +325,6 @@ void features_apply_waiting(void)
 
 /* -------------------------------------------------------------- DESCRIBE */
 
-static void put_fixed(u8 *dst, u32 cap, const char *src)
-{
-	u32 i = 0;
-	memset(dst, 0, cap);
-	if (src == NULL) return;
-	while (i < cap && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
-}
-
 int features_describe(u8 *out, u32 cap, u32 *len)
 {
 	const struct game_describe *d;
@@ -360,13 +352,13 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 
 	out[off++] = d->ngroups;
 	for (i = 0; i < d->ngroups; i++) {
-		put_fixed(out + off, 24, d->groups[i]);
+		qput_fixed(out + off, 24, d->groups[i]);
 		off += 24;
 	}
 
 	out[off++] = d->nreadouts;
 	for (i = 0; i < d->nreadouts; i++) {
-		put_fixed(out + off, 24, d->readouts[i]);
+		qput_fixed(out + off, 24, d->readouts[i]);
 		off += 24;
 	}
 
@@ -413,7 +405,7 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		out[off + 7] = 0;
 		be32_put(out + off + 8, f->min);
 		be32_put(out + off + 12, f->max);
-		put_fixed(out + off + 16, 32, f->label);
+		qput_fixed(out + off + 16, 32, f->label);
 		off += FEATURE_WIRE_SIZE;
 	}
 

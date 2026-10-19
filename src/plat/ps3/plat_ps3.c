@@ -82,9 +82,8 @@ int plat_game_title(char out[16])
 {
 	out[0] = 0;
 
-	if (!get_game_info()) return 0;
+	if (!get_game_info(out)) return 0;
 
-	snprintf(out, 16, "%s", _game_TitleID);
 	return out[0] != 0;
 }
 
@@ -115,7 +114,7 @@ int plat_mem_write(u32 pid, u32 addr, const void *buf, u32 len)
 
 void plat_notify(const char *msg)
 {
-	vshNotify_WithIcon(ICON_GAME, msg);
+	vshNotify_Game(msg);
 }
 
 static int g_log_on = 1;
@@ -289,6 +288,10 @@ void plat_thread_exit(void)
 }
 
 /* ------------------------------------------------------- mutex, semaphore */
+
+/* plat.h sizes both to the kernel object's id on the PS3, and no larger. */
+typedef char plat_mutex_fits[sizeof(sys_mutex_t) <= sizeof(plat_mutex_t) ? 1 : -1];
+typedef char plat_sem_fits[sizeof(sys_semaphore_t) <= sizeof(plat_sem_t) ? 1 : -1];
 
 int plat_mutex_init(plat_mutex_t *m)
 {

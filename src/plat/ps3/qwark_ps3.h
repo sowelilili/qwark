@@ -79,8 +79,6 @@
 #define CELL_FS_O_RDWR          000002
 #define CELL_FS_O_WRONLY        000001
 
-static volatile u8 qwark_working __attribute__((unused)) = 1;
-
 /* The tick thread and the accept thread, created by SYS_MODULE_START. */
 extern sys_ppu_thread_t qwark_thread_tick;
 extern sys_ppu_thread_t qwark_thread_net;

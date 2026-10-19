@@ -169,20 +169,22 @@ static u32 rac1_ammo_addr(const struct rac1_item *it)
 #define SNAP_B_ADDR RAC1_GOLD_ITEMS
 #define SNAP_B_LEN  0x24u
 
-static u8 g_snap_a[SNAP_A_LEN];
-static u8 g_snap_b[SNAP_B_LEN];
-static int g_snap_valid;
+/* Both reads, end to end in the running game's snapshot (classic.h). */
+#define SNAP_A_BUF  (classic_snap)
+#define SNAP_B_BUF  (classic_snap + SNAP_A_LEN)
+#define SNAP_VALID  (classic_snap_game == GAME_RAC1)
+typedef char rac1_snap_fits[SNAP_A_LEN + SNAP_B_LEN <= CLASSIC_SNAP_BYTES ? 1 : -1];
 
 static int snap_byte(u32 addr, u8 *out)
 {
-	if (!g_snap_valid) return 0;
+	if (!SNAP_VALID) return 0;
 
 	if (addr >= SNAP_A_ADDR && addr < SNAP_A_ADDR + SNAP_A_LEN) {
-		*out = g_snap_a[addr - SNAP_A_ADDR];
+		*out = SNAP_A_BUF[addr - SNAP_A_ADDR];
 		return 1;
 	}
 	if (addr >= SNAP_B_ADDR && addr < SNAP_B_ADDR + SNAP_B_LEN) {
-		*out = g_snap_b[addr - SNAP_B_ADDR];
+		*out = SNAP_B_BUF[addr - SNAP_B_ADDR];
 		return 1;
 	}
 	return 0;
@@ -190,10 +192,10 @@ static int snap_byte(u32 addr, u8 *out)
 
 static int snap_word(u32 addr, u32 *out)
 {
-	if (!g_snap_valid) return 0;
+	if (!SNAP_VALID) return 0;
 	if (addr < SNAP_A_ADDR || addr + 4 > SNAP_A_ADDR + SNAP_A_LEN) return 0;
 
-	*out = be32_get(g_snap_a + (addr - SNAP_A_ADDR));
+	*out = be32_get(SNAP_A_BUF + (addr - SNAP_A_ADDR));
 	return 1;
 }
 
@@ -209,14 +211,14 @@ int rac1_unlock_list(const struct game_unlock **list, u8 *count,
 	*ncategories = (u8)(sizeof(rac1_categories) / sizeof(rac1_categories[0]));
 	*fields      = rac1_fields;
 
-	g_snap_valid = 0;
+	classic_snap_game = 0;
 
-	rc = mem_read(SNAP_A_ADDR, g_snap_a, SNAP_A_LEN);
+	rc = mem_read(SNAP_A_ADDR, SNAP_A_BUF, SNAP_A_LEN);
 	if (rc != ST_OK) return rc;
-	rc = mem_read(SNAP_B_ADDR, g_snap_b, SNAP_B_LEN);
+	rc = mem_read(SNAP_B_ADDR, SNAP_B_BUF, SNAP_B_LEN);
 	if (rc != ST_OK) return rc;
 
-	g_snap_valid = 1;
+	classic_snap_game = GAME_RAC1;
 	return ST_OK;
 }
 

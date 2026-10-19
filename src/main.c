@@ -44,6 +44,13 @@ static plat_thread_t g_boot = PLAT_THREAD_NONE;
 static plat_thread_t g_tick = PLAT_THREAD_NONE;
 
 /*
+ * A start failure, said at the XMB with no icon. vsh_notify.h's show_msg used
+ * to copy the text and send it to this same call, which made main.c compile the
+ * header's whole icon table beside plat_ps3.c's (SPEC-footprint.md, cut C13).
+ */
+#define show_msg(text) vshtask_notify(0, (text))
+
+/*
  * The worker. Runs off the loader thread, so it may create kernel objects,
  * sockets and touch the filesystem. It does the init, starts the tick thread,
  * then runs the accept loop itself until stop closes the sockets.
@@ -123,7 +130,6 @@ int qwark_start(size_t args, void *argp)
  */
 void qwark_stop_server(void)
 {
-	qwark_working = 0;
 	session_stop();
 }
 

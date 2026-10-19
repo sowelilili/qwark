@@ -145,11 +145,22 @@ int  plat_thread_join(plat_thread_t t);
 void plat_thread_exit(void);
 
 /*
- * Opaque, sized so a POSIX pthread_mutex_t / pthread_cond_t pair fits with room
- * to spare. Never inspect the contents outside the platform file.
+ * Opaque. Never inspect the contents outside the platform file.
+ *
+ * The host builds size them so a POSIX pthread_mutex_t / pthread_cond_t pair
+ * fits with room to spare. The PS3 keeps nothing in one but the kernel object's
+ * id, a 32-bit sys_mutex_t or sys_semaphore_t, so there they are that and no
+ * more: at the host's sizes the eight mutexes and the command ring's sixteen
+ * semaphores were 4 KB of the module's RW segment (SPEC-footprint.md, cut C10).
+ * plat_ps3.c checks at build time that the ids fit.
  */
+#ifdef QWARK_HOST
 typedef struct plat_mutex { u64 opaque[16]; } plat_mutex_t;
 typedef struct plat_sem   { u64 opaque[24]; } plat_sem_t;
+#else
+typedef struct plat_mutex { u32 opaque[1]; } plat_mutex_t;
+typedef struct plat_sem   { u32 opaque[1]; } plat_sem_t;
+#endif
 
 int  plat_mutex_init(plat_mutex_t *m);
 void plat_mutex_destroy(plat_mutex_t *m);

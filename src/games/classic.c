@@ -155,6 +155,14 @@ int classic_patch_toggle(const struct patch_def *def, int on)
 	return rc == ST_NOT_FOUND ? ST_OK : rc;
 }
 
+/*
+ * classic.h: the running game's unlock snapshot, and whose it is. Initialised
+ * so that they are this file's own .bss and not common symbols, which the
+ * footprint tool could not tell from the SDK's.
+ */
+u8 classic_snap[CLASSIC_SNAP_BYTES] = { 0 };
+u8 classic_snap_game = 0;
+
 #ifdef QWARK_EMULATOR   /* classic.h: the PS3's are the patch calls themselves */
 
 int classic_code_toggle(const struct patch_def *def, u32 flag, int on)

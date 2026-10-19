@@ -43,10 +43,11 @@
  * The bytes come out of one pool rather than sixteen fixed slots. The longest
  * single block in any game is RaC2's input block at 0x3CC, so HOT_MAX_LEN has to
  * stay at 1024, but no game asks for sixteen of those: the busiest table is
- * RaC3's at about 2.4 KB all told, then RaC2 at 1781, RaC1 at about 1.2 KB and
- * Deadlocked at under 700 bytes. A 4 KB pool holds the largest of them with room
- * for another 1.6 KB of blocks, where sixteen fixed 1 KB slots cost 16 KB to
- * hold 2.4 KB.
+ * RaC3's at 2376 bytes all told (each block rounded up to four), then RaC2 at
+ * 1792, RaC1 at 1228 and Deadlocked at 664. A 3 KB pool holds the largest of
+ * them with room for another 696 bytes of blocks, where sixteen fixed 1 KB
+ * slots cost 16 KB to hold 2.4 KB. It was 4 KB until build 54, which gave the
+ * spare kilobyte back to the RW segment (SPEC-footprint.md, cut C19).
  *
  * hot_layout hands each block its slice and says whether the table fitted;
  * session_hot_fits is the same answer for one game, which is what the unit tests
@@ -55,7 +56,7 @@
  */
 #define HOT_MAX_BLOCKS   16
 #define HOT_MAX_LEN      1024
-#define HOT_POOL_BYTES   4096
+#define HOT_POOL_BYTES   3072
 #define HOT_NO_SLOT      0xFFFFu
 
 /* ------------------------------------------------------------------- state */

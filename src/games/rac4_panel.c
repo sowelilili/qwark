@@ -218,11 +218,15 @@ static int gadget_owned(s16 level)
 /*
  * Two reads cover both categories: the live bot array, which is the one the old
  * form read back, and the whole gadget table. That is 2176 bytes, well inside
- * one PLAT_MEM_MAX read, and static rather than on the tick thread's stack.
+ * one PLAT_MEM_MAX read, and kept end to end in the running game's snapshot
+ * (classic.h) rather than on the tick thread's stack.
  */
-static u8 g_snap[RAC4_BOTS_COUNT];
-static u8 g_gadgets[RAC4_GADGET_COUNT * RAC4_GADGET_STRIDE];
-static int g_snap_valid;
+#define SNAP_BOTS_LEN    ((u32)RAC4_BOTS_COUNT)
+#define SNAP_GADGETS_LEN ((u32)RAC4_GADGET_COUNT * RAC4_GADGET_STRIDE)
+#define SNAP_BOTS        (classic_snap)
+#define SNAP_GADGETS     (classic_snap + SNAP_BOTS_LEN)
+#define SNAP_VALID       (classic_snap_game == GAME_RAC4)
+typedef char rac4_snap_fits[SNAP_BOTS_LEN + SNAP_GADGETS_LEN <= CLASSIC_SNAP_BYTES ? 1 : -1];
 
 int rac4_unlock_list(const struct game_unlock **list, u8 *count,
                      const char * const **categories, u8 *ncategories,
@@ -236,14 +240,14 @@ int rac4_unlock_list(const struct game_unlock **list, u8 *count,
 	*ncategories = (u8)(sizeof(rac4_categories) / sizeof(rac4_categories[0]));
 	*fields      = rac4_fields;
 
-	g_snap_valid = 0;
+	classic_snap_game = 0;
 
-	rc = mem_read(RAC4_BOTS_UNLOCK, g_snap, sizeof(g_snap));
+	rc = mem_read(RAC4_BOTS_UNLOCK, SNAP_BOTS, SNAP_BOTS_LEN);
 	if (rc != ST_OK) return rc;
-	rc = mem_read(RAC4_GADGETS, g_gadgets, sizeof(g_gadgets));
+	rc = mem_read(RAC4_GADGETS, SNAP_GADGETS, SNAP_GADGETS_LEN);
 	if (rc != ST_OK) return rc;
 
-	g_snap_valid = 1;
+	classic_snap_game = GAME_RAC4;
 	return ST_OK;
 }
 
@@ -256,16 +260,16 @@ int rac4_unlock_read(const struct game_unlock *entry, u32 values[4])
 	if (row < 0) return ST_BAD_ARG;
 
 	values[0] = values[1] = values[2] = values[3] = 0;
-	if (!g_snap_valid) return ST_OK;
+	if (!SNAP_VALID) return ST_OK;
 
 	gadget = rac4_gadget_for_row(row);
 	if (gadget < 0) {
-		values[0] = g_snap[rac4_unlocks[row].id];
+		values[0] = SNAP_BOTS[rac4_unlocks[row].id];
 		return ST_OK;
 	}
 
 	{
-		const u8 *e = g_gadgets + (u32)gadget * RAC4_GADGET_STRIDE;
+		const u8 *e = SNAP_GADGETS + (u32)gadget * RAC4_GADGET_STRIDE;
 		s16 level = gadget_level(e);
 		int owned = gadget_owned(level);
 

@@ -41,9 +41,6 @@ typedef struct {
 
 extern xusers_class* xusers(void)__asm__("xsetting_CC56EB2D");
 
-// Gets current game ID
-game_plugin_interface * game_interface;
-
 /*
  * This is the one place qwark calls into another VSH plugin, and it is called
  * exactly when the XMB is handing the machine over to a game, which is when
@@ -60,8 +57,13 @@ game_plugin_interface * game_interface;
  * The other half of that fix is in the session: it lets the process id hold
  * still for a while before it asks any of this, so the question is put to the
  * XMB after the handover rather than in the middle of it.
+ *
+ * The title id goes straight into the caller's buffer, which has room for 16.
+ * It used to go through two statics in common.h, the id and the game's name,
+ * and the interface was kept in a global; nothing read the name or the global
+ * (SPEC-footprint.md, phase 1).
  */
-static __attribute__((unused)) int get_game_info(void) {
+static __attribute__((unused)) int get_game_info(char *title_id) {
 	uint32_t plugin;
 	game_plugin_interface *iface;
 	char _game_info[0x120];
@@ -74,13 +76,10 @@ static __attribute__((unused)) int get_game_info(void) {
 	iface = (game_plugin_interface *)plugin_GetInterface(plugin, 1);
 	if(iface == NULL || iface->gameInfo == NULL) return 0;
 
-	game_interface = iface;
-
 	memset(_game_info, 0, sizeof(_game_info));
 	iface->gameInfo(_game_info);
 
-	snprintf(_game_TitleID, 10, "%s", _game_info+0x04);
-	snprintf(_game_Title,   63, "%s", _game_info+0x14);
+	snprintf(title_id, 10, "%s", _game_info+0x04);
 
 	return 1;
 }

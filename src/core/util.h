@@ -73,6 +73,13 @@ u32  qcrc32(const u8 *data, u32 len);
  */
 void qslug(const char *src, char *dst, u32 cap);
 
+/*
+ * A fixed-width text field on the wire: src's bytes, the rest of the cap
+ * zeroed, and no terminator when src fills it. NULL is an empty field. It was a
+ * static of its own in features.c, mods.c and net.c (SPEC-footprint.md, C17).
+ */
+void qput_fixed(u8 *dst, u32 cap, const char *src);
+
 /* ---------------------------------------------------------- the scratch buffer */
 
 /*
