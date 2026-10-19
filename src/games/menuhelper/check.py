@@ -89,8 +89,9 @@ nothing outside it branches into it, no lis/addi pair names it, and the only
 words naming it are its own functions' descriptors, which nothing names; the
 code round the sites (get_ui_string's
 not-found path, the play update's call), the main page's Help item and entry,
-Camera Options' page, title, list and hint, and the constants of its list's
-draw that the shim's copy follows; the text stub, stepped, and the play stub's
+Goodies > Cheats' page, title, list and hint, In-Level Movies' title pose and
+Cinematics' list in the same pane, the constants of Cheats' list draw and of
+Camera Options' 3D slider that the shim's draw follows; the text stub, stepped, and the play stub's
 frame; and no overlap with the mods (charge-boots among them), the probes or
 qwark's own writes (the savefile helper and the code switches), but for
 probes N1, N1b and N1c, whose words are the same by design.
@@ -2388,43 +2389,74 @@ def check_rac1(ok, elf, roots):
         (0x00729CF4, 0x007075F8, "... draw 0x7075F8, which the shim's rows name"),
         (0x00729D20, 0x00000084, "with flags 0x84, the shim's rows' (the large size)"),
         (0x00729BE8, 0x00000000, "the main page's first row has no up item: its links do not wrap"),
-        (0x0072C184, 0x4F230003, "Options' Camera row: text 0x4F23, kind 3 ..."),
-        (0x0072C188, 0x0072D1E0, "... to Camera Options, 0x72D1E0"),
-        (0x0072D1E0, 0x00000076, "Camera Options' poses 0x76 .."),
-        (0x0072D1F0, 0x0000007A, ".. 0x7A, then 5 .. 13"),
-        (0x0072D1F4, 0x00000005, "slot 5's pose, 5"),
-        (0x0072D218, 0x0072BFC4, "its parent, Options"),
-        (0x0072D21C, 0x0000001D, "screen 29"),
-        (0x0072D220, 0x0072D360, "its focus, the list item"),
-        (0x0072D224, 0x0072D268, "item 0, the title ..."),
-        (0x0072D228, 0x007298F0, "items 1 and 2, the shared empty item ..."),
-        (0x0072D22C, 0x007298F0, ""),
-        (0x0072D230, 0x0072D360, "item 3, the list ..."),
-        (0x0072D234, 0x00729998, "item 4, the hint"),
-        (0x0072D268, 0x007075A8, "the title item: the label's update, draw and enter ..."),
-        (0x0072D26C, 0x007075E8, ""),
-        (0x0072D270, 0x007075E0, ""),
-        (0x0072D298, 0x0000000F, "flags 0x0F ..."),
-        (0x0072D29C, 0x00004F42, "text 0x4F42, \"Camera Options\": the shim's copy has its own id"),
-        (0x0072D360, 0x007077D0, "the list item: update 0x14AB64 ..."),
-        (0x0072D364, 0x007077D8, "... draw 0x14AD88, which the shim's draw copies"),
+        (0x0072E1D8, 0x4FC60003, "Goodies' Cheats row: text 0x4FC6, kind 3 ..."),
+        (0x0072E1DC, hdr["R1_CHEATS_PAGE"], "... to Cheats, 0x72F5D4: the CONFIG look"),
+        (hdr["R1_CHEATS_PAGE"] + 0x00, hdr["R1_CHEATS_POSE0"], "Cheats' poses: 0x99 for its title ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x04, hdr["R1_CHEATS_POSE0"] + 1, "0x9A its list pane ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x08, hdr["R1_CHEATS_POSE0"] + 2, "0x9B its hint ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x0C, hdr["R1_CHEATS_POSE0"] + 3, "0x9C and 0x9D two panes it gives no item ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x10, hdr["R1_CHEATS_POSE0"] + 4, ""),
+        (hdr["R1_CHEATS_PAGE"] + 0x14, 0x00000005, "then 5 .. 13, the others hidden, as the shim's pages have them"),
+        (hdr["R1_CHEATS_PAGE"] + 0x34, 0x0000000D, ""),
+        (hdr["R1_CHEATS_PAGE"] + 0x38, 0x0072E0E0, "its parent, Goodies"),
+        (hdr["R1_CHEATS_PAGE"] + 0x3C, 0x00000026, "screen 38"),
+        (hdr["R1_CHEATS_PAGE"] + 0x40, hdr["R1_CHEATS_LIST"], "its focus, the list item"),
+        (hdr["R1_CHEATS_PAGE"] + 0x44, hdr["R1_CHEATS_TITLE"], "item 0, the title ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x44 + 4 * hdr["R1_CONF_LIST_PANE"], hdr["R1_CHEATS_LIST"], "item 1, the list ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x44 + 4 * hdr["R1_CONF_HINT_PANE"], hdr["R1_CHEATS_HINT"], "item 2, the hint ..."),
+        (hdr["R1_CHEATS_PAGE"] + 0x50, 0x00000000, "and none on panes 3 and 4"),
+        (hdr["R1_CHEATS_PAGE"] + 0x54, 0x00000000, ""),
+        (hdr["R1_CHEATS_TITLE"] + 0x00, hdr["OPD_LABEL_UPDATE"], "the title item: the label's update and draw ..."),
+        (hdr["R1_CHEATS_TITLE"] + 0x04, hdr["OPD_LABEL_DRAW"], ""),
+        (hdr["R1_CHEATS_TITLE"] + 0x08, 0x00000000, "no enter ..."),
+        (hdr["R1_CHEATS_TITLE"] + 0x30, 0x0000000F, "flags 0x0F ..."),
+        (hdr["R1_CHEATS_TITLE"] + 0x34, 0x00004FC6, "text 0x4FC6, \"Cheats\": the shim's copy has its own id"),
+        (hdr["R1_CHEATS_LIST"] + 0x00, 0x007077C0, "the list item: update 0x14A460 ..."),
+        (hdr["R1_CHEATS_LIST"] + 0x04, 0x007077C8, "... draw 0x14A86C, whose geometry the shim's draw follows"),
+        (0x007077C8, 0x0014A86C, ""),
+        (hdr["R1_CHEATS_HINT"] + 0x04, 0x007075F8, "the hint, a generic list's draw ..."),
+        (hdr["R1_CHEATS_HINT"] + 0x30, 0x00004002, "flags 0x4002 ..."),
+        (hdr["R1_CHEATS_HINT"] + 0x34, 0x0072F6F4, "entries 0x72F6F4 ..."),
+        (0x0072F6F4, 0x4EDF0000, "\"Toggle\" ..."),
+        (0x0072F700, 0x4EE00000, "\"Exit\" ..."),
+        (0x0072F70C, 0x00000000, "and the end"),
+        (hdr["R1_MOVIES_PAGE"] + 0x00, hdr["R1_CONF_TITLE_POSE"], "In-Level Movies: its title pose 0xA4, the shim's pages' ..."),
+        (hdr["R1_MOVIES_PAGE"] + 0x04, hdr["R1_CHEATS_POSE0"] + 1, "... and every other pose Cheats' ..."),
+        (hdr["R1_MOVIES_PAGE"] + 0x08, hdr["R1_CHEATS_POSE0"] + 2, ""),
+        (hdr["R1_MOVIES_PAGE"] + 0x0C, hdr["R1_CHEATS_POSE0"] + 3, ""),
+        (hdr["R1_MOVIES_PAGE"] + 0x10, hdr["R1_CHEATS_POSE0"] + 4, ""),
+        (hdr["R1_MOVIES_PAGE"] + 0x14, 0x00000005, ""),
+        (hdr["R1_MOVIES_PAGE"] + 0x3C, 0x00000028, "screen 40"),
+        (hdr["R1_MOVIES_PAGE"] + 0x44, 0x0072FAFC, "its title item ..."),
+        (0x0072FAFC + 0x30, 0x0000000F, "flags 0x0F, as Cheats' ..."),
+        (0x0072FAFC + 0x34, 0x00004FC8, "text 0x4FC8, \"In-Level Movies\", the longest title of the three pages"),
+        (0x0072F768, 0x000000A3, "Cinematics: its own title pose ..."),
+        (0x0072F76C, hdr["R1_CHEATS_POSE0"] + 1, "... and Cheats' list pane ..."),
+        (0x0072F7B0, 0x0072FA24, "its list on pane 1 ..."),
+        (0x0072FA28, 0x007076A8, "... a scroll list (draw 0x144638) ..."),
+        (0x0072FA54, 0x00000400, "... with flags 0x400, no 0x10 ..."),
+        (0x00144820, 0x546406F6, "which in the scroll draw means: flags & 0x10 ..."),
+        (0x00144834, 0x335A0001, "or else n + 1 ..."),
+        (0x00144838, 0x809F0024, "into the pane's height ..."),
+        (0x0014483C, 0x7F44D3D6, "divided: Cinematics' rows share the list pane"),
+        (0x0014A8A8, 0x38800005, "Cheats' list draw: the blend (1, 5, 4, ..) the shim's sets ..."),
+        (0x0014A8B8, 0x38A00004, ""),
+        (0x0014A9FC, 0x7C83DBD6, "the rows share the pane's height, divided by n + 1 ..."),
+        (0x0014AA08, 0x3384FFF8, "the first row at that - 8 ..."),
+        (0x0014AA24, 0x3C6080FF, "a row in 0x80FFA888 ..."),
+        (0x0014AA34, 0x6063A888, ""),
+        (0x0014AA40, 0x3C608020, "the cursor's in 0x8020FFFF ..."),
+        (0x0014AA44, 0x6063FFFF, ""),
+        (0x0014AA64, 0x3B00000C, "the label at x 12 ..."),
+        (0x0014AA94, 0x809F0020, "the pane's width ..."),
+        (0x0014AAA0, 0x3304FFF4, "the value right-aligned at w - 12"),
+        (hdr["R1_CAMERA_LIST"] + 0x00, 0x007077D0, "Camera Options' list: update 0x14AB64 ..."),
+        (hdr["R1_CAMERA_LIST"] + 0x04, 0x007077D8, "... draw 0x14AD88, whose 3D slider the shim's draw copies"),
         (0x007077D8, 0x0014AD88, ""),
-        (0x0072999C, 0x007075F8, "the hint, a generic list's draw ..."),
-        (0x007299C8, 0x00004002, "flags 0x4002 ..."),
-        (0x007299CC, 0x00729974, "entries 0x729974 ..."),
-        (0x00729974, 0x4EDF0000, "\"Toggle\" ..."),
-        (0x00729980, 0x4EE00000, "\"Exit\""),
-        (0x0014AD7C, 0x3F800000, "the draw's scale 1.0 ..."),
-        (0x0014AD80, 0x3F666666, "0.9 for languages 2 to 5 ..."),
-        (0x0014AD84, 0x41400000, "and the label's x, 12.0"),
-        (0x0014AE3C, 0x80639C74, "the language, 0x969C74"),
-        (0x0014AEC0, 0x807F0024, "the rows share the pane's height (+0x24) ..."),
-        (0x0014AECC, 0x7C83E3D6, "divided by n + 1 ..."),
-        (0x0014AED8, 0x33A4FFF8, "the first row at that - 8"),
-        (0x0014AF00, 0x60A5A888, "a row in 0x80FFA888 ..."),
-        (0x0014AF1C, 0x3CA08020, "the cursor's in 0x8020FFFF ..."),
+        (0x0014AF00, 0x60A5A888, "its rows in Cheats' colours, 0x80FFA888 ..."),
+        (0x0014AF1C, 0x3CA08020, "the cursor's 0x8020FFFF ..."),
         (0x0014AF20, 0x60A5FFFF, ""),
-        (0x0014B13C, 0x30A5FFF4, "the value right-aligned at w - 12"),
+        (0x0014AED8, 0x33A4FFF8, "and the first row at h / (n + 1) - 8 as well"),
         (0x0014AF68, 0x33BD0006, "the 3D slider: the rows after it 6 lower ..."),
         (0x0014AFDC, 0x307A0057, "its frame from w / 2 + 87 ..."),
         (0x0014AFD4, 0x30C4FFF6, "to w - 10 ..."),
@@ -2444,6 +2476,16 @@ def check_rac1(ok, elf, roots):
     ]
     for a, want, what in ctx:
         ok(W(a) == want, "0x%08X holds 0x%08X%s" % (a, want, (": " + what) if what else ""))
+    e = W(0x0072FA24 + 0x34)
+    rows = 0
+    while rows < 64 and (W(e + 12 * rows) >> 16) != 0:
+        rows += 1
+    ok(rows == 29, "Cinematics' list has %d rows, all sharing Cheats' list pane: the pane the shim's CONFIG "
+                   "pages draw in is a tall one" % rows)
+    ok(hdr["R1_CONF_LIST_PANE"] == 1 and hdr["R1_CONF_HINT_PANE"] == 2 and hdr["R1_CFG_ROW_H"] == 20 and
+       hdr["R1_CFG_VIS"] == 8,
+       "the shim's list on pane 1 and Cheats' hint on pane 2, rows of 20 units at least, eight before the pane "
+       "is measured")
     br, wd, pr = refs_into(elf, hdr["MH_SITE_HELP_TEXT"], hdr["MH_SITE_HELP_TEXT"] + 0x18)
     ok([a for a, _ in wd] == [0x00729D24] and not pr,
        "nothing but the main page's Help item names the Help entry: no other list changes")
@@ -2456,7 +2498,7 @@ def check_rac1(ok, elf, roots):
     for b in bad[:12]:
         print("        " + b)
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
-    handed = {hdr["OPD_LIST_DRAW"], hdr["OPD_LABEL_UPDATE"], hdr["OPD_LABEL_DRAW"], hdr["OPD_LABEL_ENTER"]}
+    handed = {hdr["OPD_LIST_DRAW"], hdr["OPD_LABEL_UPDATE"], hdr["OPD_LABEL_DRAW"]}
     seen, bad = set(), []
     for lo, _, c, _ in areas:
         b, s = calls_via_descriptors(c, lo, set(opds), elf, toc=RAC1_TOC, code_hi=0x700000)

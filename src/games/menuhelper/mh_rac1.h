@@ -19,23 +19,31 @@
  *           itself, so the shim moves the panes itself between MAIN pages: the
  *           page's panes fly out (the main page's poses forwards) and the next
  *           page's fly in (backwards), the way the pause opens.
- *   CONFIG  Options > Camera Options (screen 29, 0x72D1E0), the user's choice
- *           after N1c: its poses (Camera Options' title pane, its large list
- *           pane, its hint pane "Toggle / Exit"), its title item, and in the list
- *           pane the shim's own copy of Camera Options' list draw (0x14AD88):
- *           the label at the left and the value right-aligned, in the medium
- *           font at Camera Options' scale, the rows sharing the pane's height,
- *           the cursor row in the game's cursor colour, a row that is not
- *           ENABLED in the generic list's grey, and a slider row drawn as the
- *           game draws its 3D depth slider there (frame, track, the fill
- *           sprite). The game's own list cannot scroll; the shim's shows a
- *           window of the page's rows the pane holds and scrolls it.
+ *   CONFIG  Goodies > Cheats (screen 38, 0x72F5D4), probe N1c's CONFIG look,
+ *           which ran on hardware: Cheats' poses for its large list pane, its
+ *           hint pane ("Toggle / Exit", Cheats' own hint item) and the two
+ *           panes Cheats leaves empty, and for the title pane the pose of
+ *           Goodies > In-Level Movies (0x72FA74), the sibling page that shares
+ *           every other pose with Cheats and whose title pane is made for the
+ *           longest of their titles. In the list pane, the one Cheats,
+ *           Cinematics and In-Level Movies share (the game puts Cinematics'
+ *           29 rows in it), the shim's own list draw: the geometry of Cheats'
+ *           list draw (0x14A86C), which Camera Options' (0x14AD88) shares,
+ *           the label at the left and the value right-aligned in the medium
+ *           font, the rows sharing the pane's height, the cursor row in the
+ *           game's cursor colour, a row that is not ENABLED in the generic
+ *           list's grey, and a slider row drawn as Camera Options draws its 3D
+ *           depth slider (frame, track, the fill sprite). The game's own list
+ *           cannot scroll; the shim's shows a window of the page's rows the
+ *           pane holds and scrolls it. (Camera Options' layout, round 3's
+ *           first choice, has a list pane of three rows: its size is its
+ *           pose's, from the level data, and cannot grow for one page alone.)
  *
  * Moving between pages: MAIN to MAIN is the shim's own fly-out and fly-in; MAIN
  * to CONFIG flies the panes out, then the game's transition to the CONFIG page
- * (Camera Options' poses forwards, from Options' layout); CONFIG to MAIN the
- * game's transition back (those poses backwards) and the MAIN page's panes fly
- * in; CONFIG to CONFIG the game's transition between two CONFIG page structs.
+ * (its poses forwards, from Goodies' layout); CONFIG to MAIN the game's
+ * transition back (those poses backwards) and the MAIN page's panes fly in;
+ * CONFIG to CONFIG the game's transition between two CONFIG page structs.
  * Every new page and every change in its number of rows takes one of these
  * (MH_RESTART_*).
  *
@@ -87,7 +95,7 @@
 #define MH_DATA_END         0x0160F000
 
 /*
- * The mailbox (menubox.h): sixteen rows of 0x40 bytes. Camera Options has no
+ * The mailbox (menubox.h): sixteen rows of 0x40 bytes. Cheats' layout has no
  * description line, so the rows carry none.
  */
 #define MH_ROWS             0x00000010
@@ -193,7 +201,6 @@
 #define R1_96BD91           0x0096BD91   /* u8, non-zero refuses Start */
 #define R1_HP               0x0096BF88
 #define R1_DEBUG_CAM        0x0095C5D4
-#define R1_LANGUAGE         0x00969C74   /* 2..5 take Camera Options' smaller scale */
 #define R1_JAPANESE         0x0159C351   /* u8: the Japanese fonts */
 #define R1_MENU_PAGE        0x00A52BB4   /* the current page, 0 in a transition */
 #define R1_MENU_NEXT        0x00A52BB8   /* the page to go to */
@@ -208,11 +215,12 @@
 #define R1_SF_LOAD          0x01080001   /* qwark's savefile helper: a load asked for */
 #define R1_SF_WAIT          0x01080008   /* and waiting for the pause */
 #define R1_MAIN_PAGE        0x00729A80   /* the pause's main page, screen 2 */
-#define R1_CAMERA_PAGE      0x0072D1E0   /* Options > Camera Options, screen 29 */
-#define R1_CAMERA_TITLE     0x0072D268   /* its title item (copied) */
-#define R1_CAMERA_LIST      0x0072D360   /* its list item (the draw copied) */
-#define R1_EMPTY_ITEM       0x007298F0   /* the shared empty item */
-#define R1_TOGGLE_HINT      0x00729998   /* Camera Options' hint, "Toggle", "Exit", used as it is */
+#define R1_CHEATS_PAGE      0x0072F5D4   /* Goodies > Cheats, screen 38: the CONFIG look */
+#define R1_CHEATS_TITLE     0x0072F65C   /* its title item (copied) */
+#define R1_CHEATS_LIST      0x0072F6B4   /* its list item (the draw's geometry copied) */
+#define R1_CHEATS_HINT      0x0072F718   /* its hint, "Toggle", "Exit", used as it is */
+#define R1_MOVIES_PAGE      0x0072FA74   /* Goodies > In-Level Movies, screen 40: the title pane's pose */
+#define R1_CAMERA_LIST      0x0072D360   /* Options > Camera Options' list item (its 3D slider copied) */
 #define R1_SCREEN           0x00000032   /* 50: a screen id nothing special-cases (N1) */
 
 /* The pause's state that says the menu is down: not the pause, no reopen queued. */
@@ -228,17 +236,23 @@
 #define R1_FONT_SMALL       0x00736C50   /* list flags & 8 */
 
 /*
- * The layouts. The main page's poses (0x729A80) and Camera Options' (0x72D1E0),
- * the one-row panes' flags (0x729BB0's: the generic draw, large), and the CONFIG
- * list's geometry from Camera Options' draw (0x14AD88): the label at x 12, the
- * value right-aligned at w - 12, the first row at h / (n + 1) - 8; the slider's
- * frame from w / 2 + 87 to w - 10, its track from w / 2 + 89 to w - 12, its
- * fill the sprite 0xE99E frame 8 over 10 units of range. R1_CFG_ROW_H is the
- * least a row takes before the shim scrolls: the medium font is 12 high and the
- * game's compact lists space it 15 (0x144638).
+ * The layouts. The main page's poses (0x729A80); the CONFIG page's, Cheats'
+ * (0x72F5D4: the list pane 0x9A on pane 1, the hint 0x9B on pane 2, 0x9C and
+ * 0x9D on panes 3 and 4, which Cheats gives no item) with In-Level Movies'
+ * title pose (0x72FA74's 0xA4) on pane 0; the one-row panes' flags (0x729BB0's:
+ * the generic draw, large); and the CONFIG list's geometry from Cheats' list
+ * draw (0x14A86C), which Camera Options' (0x14AD88) shares: the label at x 12,
+ * the value right-aligned at w - 12, the first row at h / (n + 1) - 8; the
+ * slider's, Camera Options': its frame from w / 2 + 87 to w - 10, its track
+ * from w / 2 + 89 to w - 12, its fill the sprite 0xE99E frame 8 over 10 units
+ * of range. R1_CFG_ROW_H is the least a row takes before the shim scrolls: the
+ * medium font is 12 high and the game's compact lists space it 15 (0x144638).
  */
 #define R1_MAIN_POSE0       0x0000000E   /* slot k: 0x0E + k */
-#define R1_CAMERA_POSE0     0x00000076   /* slots 0..4: 0x76..0x7A */
+#define R1_CONF_TITLE_POSE  0x000000A4   /* pane 0: In-Level Movies' title */
+#define R1_CHEATS_POSE0     0x00000099   /* panes 1..4: 0x99 + k, Cheats' list, hint and two empty panes */
+#define R1_CONF_LIST_PANE   0x00000001   /* Cheats' list pane */
+#define R1_CONF_HINT_PANE   0x00000002   /* Cheats' hint pane */
 #define R1_ROW_FLAGS        0x00000084
 #define R1_ROW_SMALL        0x00000008
 #define R1_CFG_ROW_H        0x00000014   /* 20 */
@@ -283,11 +297,10 @@
 
 /*
  * Descriptors the shim hands the game rather than calls: the title item's
- * update, draw and enter (Camera Options' title, 0x72D268).
+ * update and draw (Cheats' title, 0x72F65C, which has no enter).
  */
 #define OPD_LABEL_UPDATE    0x007075A8   /* 0x13FA8C */
 #define OPD_LABEL_DRAW      0x007075E8   /* 0x1402C8 */
-#define OPD_LABEL_ENTER     0x007075E0   /* 0x140154 */
 #define R1_GAME_TOC         0x00722328
 
 /* ------------------------------------------------ the shim's own state */

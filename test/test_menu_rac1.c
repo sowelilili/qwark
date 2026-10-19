@@ -65,7 +65,7 @@ static u8 *mh_host_ptr(u32 addr)
  * The game's pause as far as the renderer can see it: the frames a transition
  * and a close have left, the sounds, the poses set, and what the draws drew.
  */
-#define NDRAW 24
+#define NDRAW 40
 static struct {
 	int trans;
 	u32 trans_to;
@@ -108,7 +108,7 @@ static u32 ui_string(u32 id)
 	if (id - R1_ID_BASE < R1_ID_COUNT && r32(MH_SHIM + SH_STRTAB + 4 * (id - R1_ID_BASE)) != 0)
 		return r32(MH_SHIM + SH_STRTAB + 4 * (id - R1_ID_BASE));
 	if (id == 0x4EE6) return MSG_AT + 0x10;          /* "Help" */
-	if (id == 0x4F42) return MSG_AT + 0x20;          /* "Camera Options" */
+	if (id == 0x4FC6) return MSG_AT + 0x20;          /* "Cheats" */
 	return MSG_AT;                                   /* "Weapons" etc.: one string will do */
 }
 
@@ -227,11 +227,10 @@ static void seed_game(void)
 	}
 	put_str(MSG_AT, "Weapons");
 	put_str(MSG_AT + 0x10, "Help");
-	put_str(MSG_AT + 0x20, "Camera Options");
+	put_str(MSG_AT + 0x20, "Cheats");
 	w32(R1_CONFIRM_MASK, 0x40);
 	w32(R1_FRAMES, 100);
 	w32(R1_HP, 8);
-	w32(R1_LANGUAGE, 0);
 }
 
 /* A page arrived on: current, its screen, each item's pane. */
@@ -278,15 +277,16 @@ static void render(u32 page)
 	for (k = 0; k < 14; k++) {
 		G.pane_text[k][0] = 0;
 		item = r32(page + 0x44 + 4 * k);
-		if (item == 0 || item == R1_EMPTY_ITEM || item == R1_TOGGLE_HINT) continue;
-		/* one-row panes 180 x 36; the CONFIG list's large pane 440 x 250 */
-		w32(item + 0x20, k == 3 && page != PAGE_LIST ? 440 : 180);
-		w32(item + 0x24, k == 3 && page != PAGE_LIST ? (u32)G.list_h : 36);
+		if (item == 0 || item == R1_CHEATS_HINT) continue;
+		/* one-row panes 180 x 36; the CONFIG list's large pane, Cheats', 440 x G.list_h */
+		w32(item + 0x20, k == R1_CONF_LIST_PANE && page != PAGE_LIST ? 440 : 180);
+		w32(item + 0x24, k == R1_CONF_LIST_PANE && page != PAGE_LIST ? (u32)G.list_h : 36);
 		tok = r32(item + 4);
 		if (tok == MH_FN_DRAW) {
 			mh_conf_draw(item);
 		} else if (tok == OPD_LIST_DRAW) {
-			read_str(ui_string(r16(r32(item + 0x34))), G.pane_text[k], 80);
+			/* an entry of text 0 is the list's end: the generic draw shows nothing */
+			if (r16(r32(item + 0x34)) != 0) read_str(ui_string(r16(r32(item + 0x34))), G.pane_text[k], 80);
 			G.pane_flags[k] = r32(item + 0x30);
 		} else if (tok == OPD_LABEL_DRAW) {
 			read_str(ui_string(r32(item + 0x34)), G.pane_text[k], 80);
@@ -757,7 +757,7 @@ static void test_renderer_rac1(void)
 	group("console menu: RaC1's renderer, core and shim, on the fake console");
 
 	memset(&G, 0, sizeof(G));
-	G.list_h = 250;
+	G.list_h = 300;
 	check(boot("NPEA00385"), "RaC1 boots");
 	rac1_playing();
 	seed_game();
@@ -766,10 +766,21 @@ static void test_renderer_rac1(void)
 	check(menu_state() == MENU_READY, "the renderer is in");
 	mb = menu_mailbox();
 	frame(0);
-	check(r32(MH_SHIM + SH_READY) == MH_MAGIC && r32(PAGE_LIST + 0x3C) == R1_SCREEN &&
-	      r32(PAGE_LIST + 0x00) == 0x0E && r32(PAGE_CONF(0) + 0x00) == 0x76 && r32(PAGE_CONF(1) + 0x4C) == R1_EMPTY_ITEM &&
-	      r32(PAGE_CONF(0) + 0x50) == LIST && r32(PAGE_CONF(0) + 0x54) == R1_TOGGLE_HINT,
-	      "the first play frame sets the pages up: the main page's poses, Camera Options' poses and panes");
+	check(r32(MH_SHIM + SH_READY) == MH_MAGIC && r32(PAGE_LIST + 0x3C) == R1_SCREEN && r32(PAGE_LIST + 0x00) == 0x0E,
+	      "the first play frame sets the pages up: the MAIN page on the main page's poses");
+	for (i = 0; i < 2; i++) {
+		u32 c = PAGE_CONF(i);
+		check(r32(c + 0x00) == 0xA4 && r32(c + 0x04) == 0x9A && r32(c + 0x08) == 0x9B && r32(c + 0x0C) == 0x9C &&
+		      r32(c + 0x10) == 0x9D && r32(c + 0x14) == 5 && r32(c + 0x34) == 13 && r32(c + 0x38) == PAGE_LIST &&
+		      r32(c + 0x3C) == R1_SCREEN && r32(c + 0x40) == LIST && r32(c + 0x44) == TITLE && r32(c + 0x48) == LIST &&
+		      r32(c + 0x4C) == R1_CHEATS_HINT && r32(c + 0x50) == 0 && r32(c + 0x54) == 0,
+		      "a CONFIG page on Cheats' poses with In-Level Movies' title pose: the title, the list and Cheats' "
+		      "hint on panes 0 to 2, nothing on the two panes Cheats leaves empty");
+	}
+	check(r32(TITLE + 0x00) == OPD_LABEL_UPDATE && r32(TITLE + 0x04) == OPD_LABEL_DRAW && r32(TITLE + 0x08) == 0 &&
+	      r32(TITLE + 0x30) == 0x0F && r32(TITLE + 0x34) == R1_ID_TITLE && r32(LIST + 0x00) == MH_FN_CONF &&
+	      r32(LIST + 0x04) == MH_FN_DRAW,
+	      "the title a copy of Cheats' (no enter, flags 0x0F) with the shim's text id; the list the shim's");
 
 	/* The Help row: Trainer in its place, opening the menu's root on the main page's panes. */
 	frame(0x800);
@@ -842,7 +853,7 @@ static void test_renderer_rac1(void)
 	frames(8);
 	tick(4);
 
-	/* CHEATS: the CONFIG page, the panes out, then Camera Options' transition. */
+	/* CHEATS: the CONFIG page, the panes out, then the game's transition to Cheats' layout. */
 	w32(PAGE_LIST + 0x40, ROW(1));
 	frame(0x40);
 	check(G.sound == SND_SELECT && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
@@ -864,8 +875,11 @@ static void test_renderer_rac1(void)
 	      "labels and values in title case");
 	printf("    (%s, %s)\n", a, b);
 	check(G.draw_x[0] == 12.0f && G.draw_x[1] == 440.0f - 12.0f && G.draw_colour[0] == R1_COLOR_CURSOR &&
-	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(250 / 6 - 8) && G.draw_y[2] == (float)(2 * (250 / 6) - 8),
-	      "Camera Options' geometry: the label at 12, the value right-aligned at w - 12, the cursor row lit");
+	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(300 / 6 - 8) && G.draw_y[2] == (float)(2 * (300 / 6) - 8),
+	      "Cheats' list geometry: the label at 12, the value right-aligned at w - 12, the rows sharing the pane, "
+	      "the cursor row lit");
+	check(r16(MH_SHIM + SH_CONF_W) == 440 && r16(MH_SHIM + SH_CONF_H) == 300 && r32(LIST + 0x14) == PANE0 + 0x100,
+	      "the list pane's size kept for the Memory panel; the list on pane 1, Cheats' list pane");
 	step(PADB_DOWN);
 	check(r8(MH_SHIM + SH_CUR) == 1 && G.sound == SND_CURSOR, "Down: Ghost Ratchet, the cursor's tick");
 	step(PADB_RIGHT);
@@ -914,7 +928,7 @@ static void test_renderer_rac1(void)
 		frame(0);
 		check(G.boxes == boxes + 2 && G.sprites == sprites + 1 && strcmp(G.drawn[6], "Challenge Mode") == 0 &&
 		      strcmp(G.drawn[7], "5") == 0 && G.draw_x[7] == 440.0f / 2 + 80 &&
-		      G.draw_y[6] == G.draw_y[4] + (float)(250 / 6) + 4.0f,
+		      G.draw_y[6] == G.draw_y[4] + (float)(300 / 6) + 4.0f,
 		      "a slider row: its label 4 lower, its value before the bar, the frame and track boxes and the fill");
 		/* qwark's own page back, as qwark posted it. */
 		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 3);
@@ -924,6 +938,51 @@ static void test_renderer_rac1(void)
 		frame(0);
 		check(strcmp(conf_row(3, a, sizeof(a)), "Freeze Health=Off") == 0 && G.boxes == boxes + 2,
 		      "and the row as it was: no bar");
+	}
+
+	/*
+	 * A grey row and a label too long for its column, refreshed in place: the
+	 * grey row in the generic list's grey and passed over by Down; the label
+	 * cut with ".." so that it ends 10 before its value (the medium font's
+	 * glyphs 10 wide here).
+	 */
+	{
+		u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r2 = mb + MBOX_OFF_ROWS + 2 * MBOX_ROW_SIZE;
+		u32 r4 = mb + MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE, c;
+		u8 keep2[MBOX_ROW_SIZE], keep4[MBOX_ROW_SIZE];
+		size_t n;
+
+		for (c = 0; c < 128; c++) w8(R1_FONT_MEDIUM + 4 * c + 3, 10);
+		host_peek(r2, keep2, sizeof(keep2));
+		host_peek(r4, keep4, sizeof(keep4));
+		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 1);
+		poke8(r2 + MROW_OFF_KIND, MROW_INFO);
+		poke8(r2 + MROW_OFF_FLAGS, 0);
+		host_poke(r4 + MROW_OFF_LABEL, (const u8 *)"abcdefghij abcdefghij abcdefghij abcdefg", MROW_LABEL_LEN);
+		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 2);
+		frame(0);
+		frame(0);
+		n = strlen(G.drawn[8]);
+		check(G.draw_colour[4] == R1_COLOR_GREY && G.draw_colour[2] == R1_COLOR_CURSOR && n >= 3 && n < 40 &&
+		      strcmp(G.drawn[8] + n - 2, "..") == 0 && strcmp(G.drawn[9], "Off") == 0 &&
+		      (int)n * 10 <= (440 - 12) - 3 * 10 - 10 - 12 && (int)(n + 1) * 10 > (440 - 12) - 3 * 10 - 10 - 12,
+		      "a grey row in the generic list's grey; a label too long cut with \"..\", ending 10 before its value");
+		printf("    (%s)\n", G.drawn[8]);
+		frame(PADB_DOWN);
+		frame(0);
+		check(r8(MH_SHIM + SH_CUR) == 3 && G.draw_colour[6] == R1_COLOR_CURSOR, "Down passes over the grey row");
+		frame(PADB_UP);
+		check(r8(MH_SHIM + SH_CUR) == 1, "and Up too");
+		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 3);
+		host_poke(r2, keep2, sizeof(keep2));
+		host_poke(r4, keep4, sizeof(keep4));
+		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 4);
+		frame(0);
+		frame(0);
+		check(strcmp(conf_row(2, a, sizeof(a)), "Infinite Ammo=Off") == 0 &&
+		      strcmp(conf_row(4, b, sizeof(b)), "Goodies Menu=Off") == 0 && G.draw_colour[4] == R1_COLOR_TEXT,
+		      "and the rows as they were");
+		for (c = 0; c < 128; c++) w8(R1_FONT_MEDIUM + 4 * c + 3, 0);
 	}
 
 	/* Back: the CONFIG page's poses backwards, the root's panes fly in, the cursor on Cheats. */
@@ -943,7 +1002,7 @@ static void test_renderer_rac1(void)
 	frames(7);
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 8 && G.ndraw == 16, "Game: eight rows, all on screen in a pane of 250");
+	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 8 && G.ndraw == 16, "Game: eight rows, all on screen in a pane of 300");
 	G.list_h = 120;
 	frame(0);
 	check(r8(MH_SHIM + SH_VIS) == 5 && G.ndraw == 10, "in a pane of 120, five on screen (rows of 20 at least)");
@@ -959,7 +1018,44 @@ static void test_renderer_rac1(void)
 	frame(0);
 	check(r8(MH_SHIM + SH_CUR) == 0 && r8(MH_SHIM + SH_TOP) == 0, "Up to the top: no wrap, the window back");
 
-	/* Start on the CONFIG page closes the pause, as Camera Options' list does. */
+	/* Back to the root, then Unlocks > Weapons: sixteen rows in Cheats' pane, fourteen on screen. */
+	G.list_h = 300;
+	step(PADB_TRIANGLE);
+	frame(0);
+	check(G.trans == 12 && G.trans_to == PAGE_LIST, "Triangle on Game: the game's transition back to the root");
+	frames(12);
+	frame(0);
+	frames(8);
+	w32(PAGE_LIST + 0x40, ROW(4));
+	step(0x40);
+	frame(0);
+	frames(7);
+	frames(7);
+	check(r1_at() == AT_LIST && r8(MH_SHIM + SH_PHASE) == PH_IDLE &&
+	      strcmp(main_texts(a, sizeof(a)), "Weapons|Gadgets|Items|Collectables") == 0,
+	      "Unlocks: the root's panes out, four in");
+	step(0x40);
+	frame(0);
+	frames(7);
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_CONF && mh_nrows() == 16 && r8(MH_SHIM + SH_VIS) == 14 && G.ndraw == 28 &&
+	      strcmp(G.pane_text[0], "Weapons") == 0,
+	      "Weapons: sixteen rows, fourteen on screen in a pane of 300 (rows of 20 at least)");
+	check(G.draw_y[0] == (float)(300 / 15 - 8) && G.draw_y[26] == (float)(14 * (300 / 15) - 8),
+	      "sharing the pane, 20 apart");
+	read_str(mh_label(15), b, sizeof(b));
+	for (i = 0; i < 15; i++) step(PADB_DOWN);
+	frame(0);
+	check(r8(MH_SHIM + SH_CUR) == 15 && r8(MH_SHIM + SH_TOP) == 2 && strcmp(G.drawn[26], b) == 0 &&
+	      G.draw_colour[26] == R1_COLOR_CURSOR,
+	      "Down to the last weapon scrolls the window by two: rows 2 to 15, the last one lit");
+	printf("    (%s)\n", b);
+	step(PADB_UP);
+	frame(0);
+	check(r8(MH_SHIM + SH_CUR) == 14 && r8(MH_SHIM + SH_TOP) == 2, "Up: the window stays");
+
+	/* Start on the CONFIG page closes the pause, as Cheats' list does. */
 	step(0x800);
 	check(G.closing != 0, "Start: the pause closes");
 	frames(12);

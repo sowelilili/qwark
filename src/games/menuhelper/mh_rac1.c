@@ -8,9 +8,8 @@
  *   MAIN    a page of links and buttons on the main pause's own panes: one
  *           row per pane, each a one-row generic list whose text is a text id
  *           the get_ui_string hook answers with the shim's copy of the row;
- *   CONFIG  a page of labels and controls in Camera Options' layout, its list
- *           pane drawn by the shim's copy of Camera Options' list draw
- *           (mh_rac1_cfg.c).
+ *   CONFIG  a page of labels and controls in Goodies > Cheats' layout, its
+ *           list pane drawn by the shim's own list draw (mh_rac1_cfg.c).
  *
  * The menu's pages are pages of the game's own framework, in the shim's state:
  * one MAIN page and two CONFIG pages, which the game reaches by pointer (the
@@ -130,19 +129,18 @@ R1_FN void r1_goodies_pane(int want)
 
 /*
  * What setup() writes besides the poses and the rows, {offset from MH_SHIM,
- * word}: the pages' screen, parent, focus and items, the title item (Camera
- * Options' 0x72D268 with the shim's text id), the list item, the text table's
- * fixed entries.
+ * word}: the pages' screen, parent, focus and items (Cheats' panes: the title,
+ * the list, Cheats' own hint, and none on the two panes it leaves empty), the
+ * title item (Cheats' 0x72F65C with the shim's text id), the list item, the
+ * text table's fixed entries.
  */
 #define CONF_WORDS(c) \
 	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_PARENT, PAGE_LIST }, \
 	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_SCREEN, R1_SCREEN }, \
 	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_FOCUS, LIST }, \
 	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 0, TITLE }, \
-	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 4, R1_EMPTY_ITEM }, \
-	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 8, R1_EMPTY_ITEM }, \
-	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 12, LIST }, \
-	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 16, R1_TOGGLE_HINT }
+	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 4 * R1_CONF_LIST_PANE, LIST }, \
+	{ SH_PAGE_CONF + (c) * R1_PAGE_SIZE + PG_ITEM + 4 * R1_CONF_HINT_PANE, R1_CHEATS_HINT }
 
 static const u32 setup_words[][2] = {
 	{ SH_PAGE_LIST + PG_SCREEN, R1_SCREEN },
@@ -151,7 +149,6 @@ static const u32 setup_words[][2] = {
 	CONF_WORDS(1),
 	{ SH_TITLE + IT_UPDATE, OPD_LABEL_UPDATE },
 	{ SH_TITLE + IT_DRAW, OPD_LABEL_DRAW },
-	{ SH_TITLE + IT_ENTER, OPD_LABEL_ENTER },
 	{ SH_TITLE + IT_FLAGS, 0x0F },
 	{ SH_TITLE + IT_DATA, R1_ID_TITLE },
 	{ SH_LIST + IT_UPDATE, MH_FN_CONF },
@@ -166,20 +163,21 @@ static const char entry_label[] = MH_ENTRY_LABEL;
 /*
  * The pages and items, as the game's own are laid out: the MAIN page on the
  * main page's poses (0x729A80), its items the seven one-row lists; the two
- * CONFIG pages on Camera Options' (0x72D1E0), their title a copy of Camera
- * Options' title item, their list the shim's, their hint Camera Options' own,
- * their parent the MAIN page. Once, from the play hook, before the menu can
- * open.
+ * CONFIG pages on Cheats' (0x72F5D4) with In-Level Movies' title pose, their
+ * title a copy of Cheats' title item, their list the shim's, their hint
+ * Cheats' own, their parent the MAIN page. Once, from the play hook, before
+ * the menu can open.
  */
 static void setup(void)
 {
-	u32 k;
+	u32 k, pose;
 
 	for (k = SH_STRTAB; k < SH_SIZE; k += 4) w32(SH(k), 0);
 	for (k = 0; k < PANES; k++) {
+		pose = k == 0 ? R1_CONF_TITLE_POSE : k < 5 ? R1_CHEATS_POSE0 + k : k;
 		w32(PAGE_LIST + PG_ANIM + 4 * k, k < MAIN_PANES ? R1_MAIN_POSE0 + k : k);
-		w32(PAGE_CONF(0) + PG_ANIM + 4 * k, k < 5 ? R1_CAMERA_POSE0 + k : k);
-		w32(PAGE_CONF(1) + PG_ANIM + 4 * k, k < 5 ? R1_CAMERA_POSE0 + k : k);
+		w32(PAGE_CONF(0) + PG_ANIM + 4 * k, pose);
+		w32(PAGE_CONF(1) + PG_ANIM + 4 * k, pose);
 	}
 	for (k = 0; k < MAIN_PANES; k++) {
 		w32(PAGE_LIST + PG_ITEM + 4 * k, ROW(k));
@@ -271,7 +269,7 @@ static void transition(u32 to)
 	w8(SH(SH_PHASE), PH_WAIT);
 }
 
-/* To a CONFIG page: the other of the two, Camera Options' poses forwards from Options' layout. */
+/* To a CONFIG page: the other of the two, Cheats' poses forwards from Goodies' layout. */
 static void go_conf(void)
 {
 	u32 c = r8(SH(SH_CONF)) ^ 1u;
@@ -520,7 +518,7 @@ MH_API void shim_title(int p)
 	if (r1_at() == AT_CONF) r1_copy_str(SH(SH_TITLE_TEXT), mh_title(), MH_TITLE_LEN);
 }
 
-/* Camera Options has no description line. */
+/* Cheats' layout has no description line. */
 MH_API void shim_desc(int p)
 {
 	(void)p;

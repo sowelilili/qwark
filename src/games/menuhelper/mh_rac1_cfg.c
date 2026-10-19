@@ -1,12 +1,13 @@
 /*
  * Ratchet & Clank's shim, the CONFIG widget: a page of labels and controls in
- * Options > Camera Options' layout (mh_rac1.h). The page is one of the shim's
- * two CONFIG pages (mh_rac1.c sets them up on Camera Options' poses, with a
- * copy of its title item and its hint); this file is the list item in its
- * large pane: its update, which reads the input as Camera Options' list
- * (0x14AB64) does and hands the core the presses, and its draw, a copy of
- * Camera Options' list draw (0x14AD88) on a window of the page's rows. The
- * text helpers both widgets use (the copy, the width, the cut) are here too.
+ * Goodies > Cheats' layout (mh_rac1.h). The page is one of the shim's two
+ * CONFIG pages (mh_rac1.c sets them up on Cheats' poses, with a copy of its
+ * title item and its hint); this file is the list item in its large pane: its
+ * update, which reads the input as Cheats' list (0x14A460) and Camera Options'
+ * (0x14AB64) do and hands the core the presses, and its draw, the geometry of
+ * Cheats' list draw (0x14A86C) with Camera Options' 3D slider (0x14AD88), on a
+ * window of the page's rows. The text helpers both widgets use (the copy, the
+ * width, the cut) are here too.
  *
  * A file of its own to keep the shim's two widgets apart; build.sh spreads
  * both files' functions over RaC1's code areas, as no one run of code nothing
@@ -85,7 +86,9 @@ R1_FN int r1_cut(u32 font, u32 s, int w, float scale)
 
 /*
  * Rows the list pane holds at R1_CFG_ROW_H or more each, as the pane is now
- * (the render writes its rect every frame), and no more than the page has.
+ * (the render writes its rect every frame), and no more than the page has:
+ * Cheats' list pane, which the game fills with Cinematics' 29 rows, should
+ * hold well over eight.
  */
 static u32 visible(void)
 {
@@ -140,7 +143,7 @@ static int slider_of(u32 i, u32 *num, u32 *den)
 	return 1;
 }
 
-/* Up or Down to the next row the cursor may land on, no wrap, as Camera Options' list moves. */
+/* Up or Down to the next row the cursor may land on, no wrap, as Cheats' list moves. */
 static int conf_move(int down)
 {
 	u32 n = mh_nrows(), i = r8(SH(SH_CUR));
@@ -157,8 +160,8 @@ static int conf_move(int down)
 
 /*
  * The CONFIG list, every frame its page is current: the core's frame, then one
- * press as Camera Options' list reads them (Up and Down with the menus'
- * auto-repeat, no wrap, a row that is not ENABLED skipped, the cursor's tick),
+ * press as Cheats' list reads them (Up and Down with the menus' auto-repeat,
+ * no wrap, a row that is not ENABLED skipped, the cursor's tick),
  * the cross, Left, Right, L1, R1 and Triangle the core's, Start, Select and R3
  * the close (none on a menu the game marks unclosable).
  */
@@ -190,25 +193,23 @@ MH_API int mh_conf_update(u32 item)
 }
 
 /*
- * The CONFIG list's draw, into its pane: Camera Options' (0x14AD88) on the
- * shim's window of rows. The blend Camera Options sets; the medium font at
- * scale 1.0, or 0.9 for languages 2 to 5; the rows sharing the pane's height,
- * the first at h / (n + 1) - 8; the label at 12, cut short so that it ends 10
- * before its value, the value right-aligned at w - 12; the cursor row in the
- * game's cursor colour, a row that is not ENABLED in the generic list's grey; a
- * slider row as the game's 3D depth slider (frame, track, fill sprite), its
- * value before the bar. Answers 2, Camera Options' answer: the pane takes the
- * drawing as it is.
+ * The CONFIG list's draw, into its pane: Cheats' (0x14A86C) on the shim's
+ * window of rows. The blend Cheats' and Camera Options' draws set; the medium
+ * font at scale 1.0, as Cheats' rows in every language; the rows sharing the
+ * pane's height, the first at h / (n + 1) - 8; the label at 12, cut short so
+ * that it ends 10 before its value, the value right-aligned at w - 12; the
+ * cursor row in the game's cursor colour, a row that is not ENABLED in the
+ * generic list's grey; a slider row as Camera Options' 3D depth slider (frame,
+ * track, fill sprite), its value before the bar. Answers 2, both draws'
+ * answer: the pane takes the drawing as it is.
  */
 MH_API int mh_conf_draw(u32 item)
 {
 	int w = (int)r32(item + IT_W), h = (int)r32(item + IT_H), H, y, x, k, slider;
 	u32 vis, top, cur, i, colour, num = 0, den = 1, cb = SH(SH_CUTBUF), v;
-	float scale = 1.0f;
+	const float scale = 1.0f;
 
 	gs_reg(22, blend(1, 5, 4, 0, 0, 0, 0, 1));
-	i = r32(R1_LANGUAGE);
-	if (i >= 2 && i <= 5) scale = 0.9f;
 	w16(SH(SH_CONF_W), (u32)w);
 	w16(SH(SH_CONF_H), (u32)h);
 	r1_keep_visible();
