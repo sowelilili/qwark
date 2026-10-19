@@ -1182,8 +1182,9 @@ static void test_mailbox(void)
 	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, nine hook words");
 	check(d != NULL && d->caves[0].zeros > 2000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
 	      d->caves[1].len < 64, "the mailbox and the state are carried as a few bytes and a count of zeros");
-	check(mh_desc_for_game(GAME_RAC1) == NULL && mh_desc_for_game(GAME_NONE) == NULL,
-	      "RaC1 has none yet, and no game none");
+	check(mh_desc_for_game(GAME_RAC1) != NULL && mh_desc_for_game(GAME_RAC2) != NULL &&
+	      mh_desc_for_game(GAME_RAC3) != NULL && mh_desc_for_game(GAME_NONE) == NULL,
+	      "every game has a renderer, and no game none");
 	if (d == NULL) return;
 	for (i = 0; i < d->nhooks; i++) {
 		if (d->hooks[i].addr >= 0x003A6858u && d->hooks[i].addr < 0x003A6F74u) break;
@@ -1533,16 +1534,6 @@ static void test_mailbox(void)
 	      "the combo says it is not available under RPCS3");
 	check(quit(), "quit");
 	host_set_can_patch_code(1);
-
-	/* A game with no renderer. */
-	check(boot("NPEA00385"), "RaC1 boots");
-	tick(20);
-	n0 = host_notify_count();
-	check(menu_state() == MENU_OFF, "RaC1 has no menu");
-	press(COMBO_MENU_DEFAULT);
-	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "not available in this game") != NULL,
-	      "the combo says so");
-	check(quit(), "quit RaC1");
 }
 
 /* ----------------------------------------------------------- the renderer */
@@ -1904,4 +1895,5 @@ void test_menu(void)
 	test_menu_core();
 	test_menu_uya();
 	test_menu_rac2();
+	test_menu_rac1();
 }

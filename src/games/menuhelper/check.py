@@ -82,6 +82,18 @@ asks the six questions the inject asks; the label, inject, combo and root stubs,
 stepped, do what the C and the tests assume; and nothing overlaps the mods, the
 probes or qwark's own writes, but for probes N2 to N2c, whose words are the
 same by design.
+For Ratchet & Clank's renderer, the same again for its four words and its
+four code areas, which are runs of code nothing reaches rather than a tail
+past the text segment: each runs from a function's start to the next's,
+nothing outside it branches into it, no lis/addi pair names it, and the only
+words naming it are its own functions' descriptors, which nothing names; the
+code round the sites (get_ui_string's
+not-found path, the play update's call), the main page's Help item and entry,
+Camera Options' page, title, list and hint, and the constants of its list's
+draw that the shim's copy follows; the text stub, stepped, and the play stub's
+frame; and no overlap with the mods (charge-boots among them), the probes or
+qwark's own writes (the savefile helper and the code switches), but for
+probes N1, N1b and N1c, whose words are the same by design.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -2148,6 +2160,362 @@ def check_rac2(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
+# ------------------------------------------------------------ Ratchet & Clank
+
+RAC1_TOC = 0x00722328
+RAC1_OPD = (0x00703548, 0x0071A328)     # the executable's .opd
+
+# qwark's own writes into RaC1, build 54: src/games/rac1*.{c,h},
+# src/games/sfhelper/sf_rac1.h, src/games/switches/sw_rac1.ld. (lo, hi, what).
+QWARK_RAC1 = [
+    (0x004F63C0, 0x004F6600, "the savefile helper's old trampoline and syscall thunk (dead code qwark keeps clear)"),
+    (0x004F6800, 0x004F6900, "the savefile helper's stub"),
+    (0x004F69B8, 0x004F7120, "code switches (RPCS3)"),
+    (0x004F8000, 0x004F8C68, "the savefile helper's cave"),
+    (0x0011E3A0, 0x0011E3A4, "the savefile helper's hook"),
+    (0x0007F558, 0x0007F560, "freeze health's site and the fingerprint"),
+    (0x000AA2DC, 0x000AA2E0, "infinite ammo"),
+    (0x00160060, 0x00160064, "fast loads"),
+    (0x001641F8, 0x001641FC, "fast loads"),
+    (0x00165490, 0x00165494, "fast loads"),
+    (0x00FC0000, 0x01070000, "savefile aside buffer"),
+    (0x01080000, 0x01080010, "savefile helper request bytes"),
+]
+
+# Overlaps that are by design: (mod folder) -> why.
+ACCEPTED_RAC1 = {
+    "probe-n1": "probe N1 hooks the same text and play words; the install refuses while it is loaded",
+    "probe-n1b": "probe N1b is the Help row's prototype and hooks the same four words; the install refuses while it is loaded",
+    "probe-n1c": "probe N1c is this renderer's prototype and hooks the same four words; the install refuses while it is loaded",
+}
+
+# The stubs' first words (mh_rac1_stubs.S), by the symbol in the hook's comment.
+STUB_FIRST_RAC1 = {
+    "mh_text_stub": (0xFFFFFFFF, 0x38A48200, "addi r5,r4,-0x7E00"),
+    "mh_play_stub": (0xFFFFFFFF, 0xF821FEA1, "stdu r1,-0x160(r1)"),
+}
+
+# The runs of code nothing reaches the renderer's four code areas are, each
+# with the descriptors that name its functions and nothing names in turn.
+RAC1_DEAD = {
+    "MH_CAVE": (0x00717290, 0x00717450),
+    "MH_CAVE2": (0x00711110, 0x00711118),
+    "MH_CAVE3": (0x00710B08, 0x00710B20),
+    "MH_CAVE4": (0x00713490, 0x007134A8),
+}
+
+
+class Ranges:
+    """A set of address ranges, for lint_code's `allowed`."""
+
+    def __init__(self, ranges):
+        self.ranges = ranges
+
+    def __contains__(self, a):
+        return any(lo <= a < hi for lo, hi in self.ranges)
+
+
+def check_rac1_stubs(ok, code, cave, hdr, stub_at, in_code):
+    strtab, hits = hdr["MH_SHIM"] + hdr["SH_STRTAB"], hdr["MH_SHIM"] + hdr["SH_HITS"]
+    text_ok = {"r3", "r5", "r6", "r7", "cr0"}
+
+    def text(idn, entry=None):
+        cpu = Ppc(code, cave, {})
+        if entry is not None:
+            cpu.st(strtab + 4 * ((idn - hdr["R1_ID_BASE"]) & 0xF), entry, 4)
+        cpu.st(hits, 7, 4)
+        cpu.r[3] = 0x333
+        cpu.r[4] = idn
+        cpu.r[8] = 0x888
+        return cpu, cpu.run(stub_at["mh_text_stub"])
+
+    good = True
+    for i in range(hdr["R1_ID_COUNT"]):
+        cpu, how = text(hdr["R1_ID_BASE"] + i, 0x0160C000 + 0x40 * i)
+        good = good and how == ("blr", None) and cpu.r[3] == 0x0160C000 + 0x40 * i and \
+            cpu.ld(hits, 4) == 8 and cpu.written <= text_ok and cpu.r[4] == hdr["R1_ID_BASE"] + i
+    ok(good, "text stub, ids 0x7E00..0x7E0F with an entry: the shim's string, a hit counted, back to "
+             "get_ui_string's caller")
+    cpu, how = text(hdr["R1_ID_TRAINER"], 0)
+    ok(how == ("blr", None) and cpu.r[3] == hdr["R1_MSG_MISSING"] and cpu.ld(hits, 4) == 7 and cpu.written <= text_ok,
+       "text stub, an id of the shim's with no entry: \"MESSAGE DOES NOT EXIST\", as the game had it")
+    for idn in (0x7DFF, hdr["R1_ID_BASE"] + hdr["R1_ID_COUNT"], 0x4EE6, 0x0, 0xFFFF):
+        cpu, how = text(idn)
+        ok(how == ("blr", None) and cpu.r[3] == hdr["R1_MSG_MISSING"] and cpu.ld(hits, 4) == 7 and
+           cpu.r[8] == 0x888 and cpu.written <= text_ok,
+           "text stub, 0x%X: \"MESSAGE DOES NOT EXIST\" (0x720B94), r8 kept" % idn)
+
+    play = stub_at["mh_play_stub"]
+    pw = [struct.unpack(">I", code[play - cave + 4 * i:play - cave + 4 * i + 4])[0] for i in range(96)]
+    calls = [i for i, w in enumerate(pw) if (w >> 26) == 18 and (w & 3) == 1]
+    ok(pw[0] == 0xF821FEA1 and pw[2] == 0x7C0802A6 and pw[3] == 0xF8010170 and pw[4] == 0xF8410078 and len(calls) == 1 and
+       branch_target(play + 4 * calls[0], pw[calls[0]]) in in_code and
+       pw[calls[0] + 1] == 0x60000000 and 0x4E800020 in pw and
+       pw[pw.index(0x4E800020) - 1] == 0x38210160,
+       "the play stub saves every volatile register, CR, XER and CTR, calls mh_play with the renderer's TOC, "
+       "puts them all back and returns to the main loop")
+
+
+def check_rac1(ok, elf, roots):
+    hdr = header_defs(os.path.join(HERE, "mh_rac1.h"))
+    box_defs = header_defs(MENUBOX)
+    shim_defs = header_defs(SHIM_H)
+    box, data, code, hooks, caves, core = parse_bins(GEN_C, "rac1")
+    print("\nNPEA00385 console menu renderer")
+    text = open(GEN_C, encoding="utf-8").read()
+
+    def array(name):
+        m = re.search(r"static const u8 %s\[\] = \{(.*?)\};" % name, text, re.S)
+        return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else None
+
+    names = ["MH_CAVE", "MH_CAVE2", "MH_CAVE3", "MH_CAVE4"]
+    codes = [code] + [array("mh_rac1_code%d" % n) for n in (2, 3, 4)]
+    if box is None or data is None or None in codes or core is None:
+        ok(False, "menuhelper_bins.c has rac1's mailbox, data, four code areas and the core's place in them")
+        return
+
+    cave, cave_end = hdr["MH_CAVE"], hdr["MH_CAVE_END"]
+    mbx, mbx_end = hdr["MH_BOX"], hdr["MH_BOX_END"]
+    dat, dat_end = hdr["MH_DATA"], hdr["MH_DATA_END"]
+    tv, tfs, tms, _, _ = elf.text
+    rv, rfs, rms, _, _ = elf.rw
+    areas = tuple((hdr[nm], hdr[nm + "_END"], c, nm) for nm, c in zip(names, codes))
+    in_code = Ranges([(lo, lo + len(c)) for lo, _, c, _ in areas])
+
+    ok(len(caves) == 7 and [c[:3] for c in caves] ==
+       [(mbx, "mh_rac1_box", 0), (dat, "mh_rac1_state", 0), (caves[2][0], "mh_rac1_data", 0)] +
+       [(lo, "mh_rac1_code" + ("%d" % (k + 1) if k else ""), 1) for k, (lo, _, _, _) in enumerate(areas)] and
+       all(c[3] == 0 for c in caves[2:]),
+       "seven caves: the mailbox at 0x%08X, the state at 0x%08X, the read-only data, then the code at "
+       "%s" % (mbx, dat, ", ".join("0x%08X" % a[0] for a in areas)))
+    rest = parse_rest(GEN_C, "rac1")
+    ok(caves[0][3] > 0 and caves[1][3] > 0 and caves[2][0] == dat + len(data) - len(rest),
+       "the mailbox and the state are a few bytes and then zeros, %d and %d of them, carried as counts; "
+       "the read-only data follows the state" % (caves[0][3], caves[1][3]))
+    ok(all(lo + len(c) <= hi for lo, hi, c, _ in areas) and mbx + len(box) <= mbx_end and dat + len(data) <= dat_end,
+       "code %s bytes (of %s), mailbox %d bytes (of %d), data %d bytes (of %d)" %
+       ("+".join(str(len(c)) for _, _, c, _ in areas), "+".join(str(hi - lo) for lo, hi, _, _ in areas),
+        len(box), mbx_end - mbx, len(data), dat_end - dat))
+
+    # 0. the core: in the first area, after the stubs
+    check_core(ok, hdr, code, cave, core)
+
+    # 6. the areas: code nothing reaches, in the text segment; the data past the read-write segment's end
+    starts = set()
+    for a, w in elf.words(elf.text):
+        if (w >> 26) == 18 and (w & 1) == 1:
+            starts.add(branch_target(a, w))
+    for a in range(RAC1_OPD[0], RAC1_OPD[1], 8):
+        if elf.word(a + 4) == RAC1_TOC:
+            starts.add(elf.word(a))
+    for lo, hi, c, name in areas:
+        dlo, dhi = RAC1_DEAD[name]
+        ok(tv <= lo and hi <= tv + tfs and lo in starts and hi in starts,
+           "%s 0x%08X..0x%08X is in the text segment, from a function's start to the next's" % (name, lo, hi))
+        br, wd, pr = refs_into(elf, lo, hi)
+        outside = [(a, t) for a, t in br if not lo <= a < hi]
+        opd_words = [(a, w) for a, w in wd if RAC1_OPD[0] <= a < RAC1_OPD[1] and elf.word(a + 4) == RAC1_TOC]
+        ok(not outside and not pr and sorted(opd_words) == sorted(wd) and
+           all(dlo <= a < dhi for a, _ in opd_words),
+           "nothing branches into it from outside, no lis/addi pair names it, and the only words that do are its "
+           "own functions' descriptors 0x%08X..0x%08X (%d)" % (dlo, dhi, len(opd_words)))
+        br, wd, pr = refs_into(elf, dlo, dhi)
+        ok(not wd and not pr, "and nothing names those descriptors: code nothing reaches")
+    for lo, hi, what in ((mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+        ok(lo >= rv + rms and hi <= page_end(rv + rms),
+           "%s area 0x%08X..0x%08X is past the read-write segment's end (0x%08X), in its last page" %
+           (what, lo, hi, rv + rms))
+        br, wd, pr = refs_into(elf, lo, hi)
+        ok(not wd and not pr, "no word and no lis/addi pair in the executable names the %s area" % what)
+
+    # 7. the mailbox and the data image
+    magic, version, size = struct.unpack(">IHH", box[0:8])
+    ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and
+       version == box_defs["MBOX_VERSION"] and size == hdr["MH_MBOX_SIZE"],
+       "the mailbox image: 'QMNU', version %d, %d bytes" % (version, size))
+    ok(box[8] == hdr["MH_ROWS"] == 16 and box[9] == hdr["MH_ROW_BYTES"] == box_defs["MBOX_ROW_SIZE"] and
+       box[10] == hdr["MH_MAIN_ROWS"] == 7 and box[11] == hdr["MH_CAPS"] and box[12] == 0 and box[13] == 0 and
+       box[14] == 1 and box[15] == hdr["MH_CFG_ROWS"] == 16,
+       "row_cap 16, rows of 0x40 (no description line), 7 rows a MAIN page (the main page's panes), 16 a "
+       "CONFIG page, caps 0x%02X, closed, no request, renderer 1" % box[11])
+    ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
+       all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+    shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
+    ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and
+       all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]) and shim_off + hdr["SH_SIZE"] <= len(data),
+       "the data image: the core's state at MH_STATE with its magic 'QMH1', the shim's (%d bytes) at MH_SHIM "
+       "(+0x%X), everything else zero: the play hook sets the pages up" % (hdr["SH_SIZE"], shim_off))
+
+    # 1. the originals, 2. the hook words
+    order = ["MH_SITE_TEXT", "MH_SITE_PLAY", "MH_SITE_HELP_TEXT", "MH_SITE_HELP_PAGE"]
+    ok(len(hooks) == 4 and [h[0] for h in hooks] == [hdr[k] for k in order],
+       "four words: the text hook, the play hook, then the Help entry's two")
+    for a, value, orig, what in hooks:
+        ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
+    stub_at = {}
+    for a, value, orig, what in hooks:
+        m = re.match(r"(b|bl) (mh_\w+_stub)", what)
+        if m:
+            link = m.group(1) == "bl"
+            t = branch_target(a, value) if (value >> 26) == 18 and (value & 3) == (1 if link else 0) else None
+            first = struct.unpack(">I", code[t - cave:t - cave + 4])[0] \
+                if t is not None and cave <= t < cave + len(code) else None
+            mask, want, name = STUB_FIRST_RAC1[m.group(2)]
+            good = first is not None and (first & mask) == want
+            ok(good, "0x%08X: %08X = %s 0x%08X, %s (%s)" % (a, value, m.group(1), t or 0, m.group(2), name))
+            if good:
+                stub_at[m.group(2)] = t
+    ok(hooks[2][1] == hdr["MH_HELP_WORD"] and (hooks[2][1] >> 16) == hdr["R1_ID_TRAINER"] and
+       (hooks[2][1] & 0xFFFF) == (hooks[2][2] & 0xFFFF) == 3,
+       "the Help entry's text id 0x4EE6 becomes 0x7E00, \"Trainer\", its kind 3 (go to a page) kept")
+    ok(hooks[3][1] == hdr["MH_SHIM"] + hdr["SH_PAGE_LIST"] and dat <= hooks[3][1] < dat + len(data),
+       "the Help entry's page, Help's 0x72AF48, becomes the shim's MAIN page in the data image (0x%08X)" % hooks[3][1])
+
+    # The sites in the game's code and data, and around them.
+    W = elf.word
+    ctx = [
+        (0x00704D90, 0x0007B740, "get_ui_string's descriptor names 0x7B740, whose not-found path the text hook takes"),
+        (0x0007B7C4, 0x4800000C, "the found path branches past the site to its blr ..."),
+        (0x0007B7CC, 0x30630B94, "... and after the site, addic r3,r3,0xB94: 0x720B94, \"MESSAGE DOES NOT EXIST\""),
+        (0x0007B7D0, 0x4E800020, "then blr: the stub returns as the function does"),
+        (0x000E14CC, 0x38600001, "the play hook's site is followed by li r3,1 and a call"),
+        (0x00729A80, 0x0000000E, "the main page's first pose, 0x0E (slot k: 0x0E + k) ..."),
+        (0x00729A98, 0x00000014, "... its seventh, 0x14, then 7 .. 13"),
+        (0x00729ABC, 0x00000002, "the main page is screen 2"),
+        (0x00729AD4, 0x00729CF0, "its fifth item is 0x729CF0 ..."),
+        (0x00729D24, 0x00729B68, "... whose entries are 0x729B68, the Help entry"),
+        (0x00729CF0, 0x007075F0, "a one-row generic list: update 0x7075F0 ..."),
+        (0x00729CF4, 0x007075F8, "... draw 0x7075F8, which the shim's rows name"),
+        (0x00729D20, 0x00000084, "with flags 0x84, the shim's rows' (the large size)"),
+        (0x00729BE8, 0x00000000, "the main page's first row has no up item: its links do not wrap"),
+        (0x0072C184, 0x4F230003, "Options' Camera row: text 0x4F23, kind 3 ..."),
+        (0x0072C188, 0x0072D1E0, "... to Camera Options, 0x72D1E0"),
+        (0x0072D1E0, 0x00000076, "Camera Options' poses 0x76 .."),
+        (0x0072D1F0, 0x0000007A, ".. 0x7A, then 5 .. 13"),
+        (0x0072D1F4, 0x00000005, "slot 5's pose, 5"),
+        (0x0072D218, 0x0072BFC4, "its parent, Options"),
+        (0x0072D21C, 0x0000001D, "screen 29"),
+        (0x0072D220, 0x0072D360, "its focus, the list item"),
+        (0x0072D224, 0x0072D268, "item 0, the title ..."),
+        (0x0072D228, 0x007298F0, "items 1 and 2, the shared empty item ..."),
+        (0x0072D22C, 0x007298F0, ""),
+        (0x0072D230, 0x0072D360, "item 3, the list ..."),
+        (0x0072D234, 0x00729998, "item 4, the hint"),
+        (0x0072D268, 0x007075A8, "the title item: the label's update, draw and enter ..."),
+        (0x0072D26C, 0x007075E8, ""),
+        (0x0072D270, 0x007075E0, ""),
+        (0x0072D298, 0x0000000F, "flags 0x0F ..."),
+        (0x0072D29C, 0x00004F42, "text 0x4F42, \"Camera Options\": the shim's copy has its own id"),
+        (0x0072D360, 0x007077D0, "the list item: update 0x14AB64 ..."),
+        (0x0072D364, 0x007077D8, "... draw 0x14AD88, which the shim's draw copies"),
+        (0x007077D8, 0x0014AD88, ""),
+        (0x0072999C, 0x007075F8, "the hint, a generic list's draw ..."),
+        (0x007299C8, 0x00004002, "flags 0x4002 ..."),
+        (0x007299CC, 0x00729974, "entries 0x729974 ..."),
+        (0x00729974, 0x4EDF0000, "\"Toggle\" ..."),
+        (0x00729980, 0x4EE00000, "\"Exit\""),
+        (0x0014AD7C, 0x3F800000, "the draw's scale 1.0 ..."),
+        (0x0014AD80, 0x3F666666, "0.9 for languages 2 to 5 ..."),
+        (0x0014AD84, 0x41400000, "and the label's x, 12.0"),
+        (0x0014AE3C, 0x80639C74, "the language, 0x969C74"),
+        (0x0014AEC0, 0x807F0024, "the rows share the pane's height (+0x24) ..."),
+        (0x0014AECC, 0x7C83E3D6, "divided by n + 1 ..."),
+        (0x0014AED8, 0x33A4FFF8, "the first row at that - 8"),
+        (0x0014AF00, 0x60A5A888, "a row in 0x80FFA888 ..."),
+        (0x0014AF1C, 0x3CA08020, "the cursor's in 0x8020FFFF ..."),
+        (0x0014AF20, 0x60A5FFFF, ""),
+        (0x0014B13C, 0x30A5FFF4, "the value right-aligned at w - 12"),
+        (0x0014AF68, 0x33BD0006, "the 3D slider: the rows after it 6 lower ..."),
+        (0x0014AFDC, 0x307A0057, "its frame from w / 2 + 87 ..."),
+        (0x0014AFD4, 0x30C4FFF6, "to w - 10 ..."),
+        (0x0014AFD8, 0x60A96969, "in 0x80696969 ..."),
+        (0x0014B008, 0x309A0059, "its track from w / 2 + 89 ..."),
+        (0x0014B01C, 0x30A3FFF4, "to w - 12 ..."),
+        (0x0014B020, 0x60C93838, "in 0x80383838 ..."),
+        (0x0014B070, 0x6083E99E, "the fill: sprite group 0xE99E ..."),
+        (0x0014B078, 0x38800008, "frame 8 ..."),
+        (0x0014B0B8, 0x39200013, "v0 19 ..."),
+        (0x0014B0BC, 0x39400035, "u1 53 ..."),
+        (0x0014B088, 0x3960002B, "v1 43 ..."),
+        (0x0014B090, 0x39800080, "alpha 128"),
+        (0x001420E0, 0x635A3030, "the generic list's grey row, 0x80303030"),
+        (0x0006FDEC, 0x3D400073, "text(): the medium font ..."),
+        (0x0006FDF0, 0x314A68B0, "0x7368B0, which the shim measures with"),
+    ]
+    for a, want, what in ctx:
+        ok(W(a) == want, "0x%08X holds 0x%08X%s" % (a, want, (": " + what) if what else ""))
+    br, wd, pr = refs_into(elf, hdr["MH_SITE_HELP_TEXT"], hdr["MH_SITE_HELP_TEXT"] + 0x18)
+    ok([a for a, _ in wd] == [0x00729D24] and not pr,
+       "nothing but the main page's Help item names the Help entry: no other list changes")
+
+    # 4. the code, 5. the descriptors
+    bad = []
+    for lo, _, c, _ in areas:
+        bad += lint_code(c, lo, allowed=in_code)
+    ok(not bad, "the code: every branch stays in the renderer's four areas, no sc, no vector instruction, no write to r13")
+    for b in bad[:12]:
+        print("        " + b)
+    opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
+    handed = {hdr["OPD_LIST_DRAW"], hdr["OPD_LABEL_UPDATE"], hdr["OPD_LABEL_DRAW"], hdr["OPD_LABEL_ENTER"]}
+    seen, bad = set(), []
+    for lo, _, c, _ in areas:
+        b, s = calls_via_descriptors(c, lo, set(opds), elf, toc=RAC1_TOC, code_hi=0x700000)
+        bad += b
+        seen |= s
+    ok(not bad, "every indirect call switches r2 through one of the header's descriptors and back")
+    for b in bad[:12]:
+        print("        " + b)
+    ok(set(opds) - handed <= seen,
+       "and every descriptor the header names for a call is one the code builds (%d of %d)" %
+       (len(seen & (set(opds) - handed)), len(set(opds) - handed)))
+    for name in sorted(opds.values()):
+        a = hdr[name]
+        m = re.search(r"(0x[0-9A-Fa-f]+)\s*$", hdr.get(name + "#comment", ""))
+        fn = int(m.group(1), 16) if m else None
+        ok(fn is not None and elf.word(a) == fn and elf.word(a + 4) == RAC1_TOC,
+           "%s 0x%08X = {0x%08X, TOC 0x%08X}" % (name, a, fn or 0, RAC1_TOC))
+
+    # 8. the leaf stubs, stepped
+    if all(k in stub_at for k in ("mh_text_stub", "mh_play_stub")):
+        try:
+            check_rac1_stubs(ok, code, cave, hdr, stub_at, in_code)
+        except ValueError as e:
+            ok(False, "the stubs step: %s" % e)
+    else:
+        ok(False, "both stubs found to step")
+
+    # 9. overlaps
+    ours = [(lo, lo + len(c), "renderer code") for lo, _, c, _ in areas]
+    ours += [(mbx, mbx + len(box), "renderer mailbox"), (dat, dat + len(data), "renderer data")]
+    ours += [(a, a + 4, "renderer word") for a, _, _, _ in hooks]
+    known = mod_entries(roots, "NPEA00385")
+    clashes, accepted = [], []
+    for lo, hi, what in ours:
+        for a, b, label, mod, kind in known:
+            if a < hi and b > lo:
+                text = "%s 0x%08X..0x%08X vs %s/%s %s 0x%08X..0x%08X" % (what, lo, hi, label, mod, kind, a, b)
+                (accepted if mod in ACCEPTED_RAC1 and what == "renderer word" else clashes).append((text, mod))
+        for a, b, w in QWARK_RAC1:
+            if a < hi and b > lo:
+                clashes.append(("%s 0x%08X..0x%08X vs qwark %s 0x%08X..0x%08X" % (what, lo, hi, w, a, b), None))
+    ok(not clashes, "no overlap with %d mod words and caves (the probes', charge-boots' among them), nor with qwark's "
+       "%d own (the savefile helper's caves and hook, the code switches)" % (len(known), len(QWARK_RAC1)))
+    for c, _ in clashes:
+        print("        " + c)
+    named = []
+    for lo, hi in [(lo, hi) for lo, hi, _, _ in areas] + [(mbx, mbx_end), (dat, dat_end)]:
+        named += mod_pointers(roots, "NPEA00385", lo, hi)
+    ok(not named, "no mod's code names an address in any of the six areas")
+    for x in named[:12]:
+        print("        " + x)
+    seen_acc = set()
+    for c, mod in accepted:
+        if mod not in seen_acc:
+            print("        known: %s/...: %s" % (mod, ACCEPTED_RAC1[mod]))
+            seen_acc.add(mod)
+    print("        (%d words shared with the prototypes by design)" % len(accepted))
+
+
 def shim_set_layout(shim_defs, rows):
     """Text set 0's first row, from the state, and a set's size, for `rows` mailbox rows (mh_shim.h)."""
     set_flags = shim_defs["SET_KIND"] + rows
@@ -2218,6 +2586,7 @@ def main():
     check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots, bonus)
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
+    check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)
 
     print("\n%s" % ("all checks passed" if failures == 0 else "%d check(s) FAILED" % failures))
     return 0 if failures == 0 else 1

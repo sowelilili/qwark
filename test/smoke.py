@@ -337,6 +337,18 @@ UYA_MENU_SITES = {0x0014BCF0: 0x3C800000, 0x002F4284: 0x38C00008, 0x002F41FC: 0x
                   0x00C529AC: 0x00000106, 0x00C529B4: 0x00BDE430}
 UYA_MENU_HELP_TEXT = (0x00C52844, 0x00C528F8, 0x00C529AC)
 UYA_PENDING_MODE = 0x00C1E840
+# Revision 1.22: RaC1's console menu renderer (src/games/menuhelper/mh_rac1.h),
+# rows of 0x40. The words: get_ui_string's not-found path, the play hook, then
+# the main page's Help entry, its text id and kind and its page. Its code is in
+# four runs of code nothing reaches.
+RAC1_MENU_BOX = 0x0160A000
+RAC1_MENU_BOX_SIZE = 0x480
+RAC1_MENU_ROW_SIZE = 0x40
+RAC1_MENU_CODE = ((0x0057DD40, 0x0057F854), (0x004FA800, 0x004FB500), (0x005F0AA0, 0x005F1788),
+                  (0x00609CF4, 0x0060A9B4))
+RAC1_MENU_DATA = (0x0160B000, 0x0160F000)
+RAC1_MENU_SITES = {0x0007B7C8: 0x3C600072, 0x000E14C8: 0x60000000,
+                   0x00729B68: 0x4EE60003, 0x00729B6C: 0x0072AF48}
 # Revision 1.22: RaC2's console menu renderer (src/games/menuhelper/mh_rac2.h),
 # rows of 0x40 as UYA's. The words: the label hook, the Start path's test, its
 # pause reason and the root the pause manager opens on, then the pause root's
@@ -2681,6 +2693,91 @@ def exercise_console_menu_rac2(c, sim):
     while time.time() < deadline and hooks() == RAC2_MENU_SITES:
         time.sleep(0.1)
     check(hooks() != RAC2_MENU_SITES, "RaC2 menu: menu.enabled = 1 puts the renderer back in play")
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+
+def exercise_console_menu_rac1(c, sim):
+    """Revision 1.22, RaC1's renderer over the wire: the install a few seconds into
+    the session in play, its four words and seven caves, the mailbox, the pages,
+    the combo, menu.enabled."""
+    box, size, rs = RAC1_MENU_BOX, RAC1_MENU_BOX_SIZE, RAC1_MENU_ROW_SIZE
+
+    def combo():
+        mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+        sim.send("pad 0x0")
+        time.sleep(0.15)
+        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
+        time.sleep(0.25)
+        sim.send("pad 0x0")
+        time.sleep(0.1)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
+        return body[0] if status == ST_OK else None
+
+    def hooks():
+        return dict((a, mem_read_u32(c, a)) for a in RAC1_MENU_SITES)
+
+    def in_code(t):
+        return any(lo <= t < hi for lo, hi in RAC1_MENU_CODE)
+
+    # In play: state 0 (a fresh fake game) and no reopen of the pause queued.
+    deadline = time.time() + 6.0
+    while time.time() < deadline and mem_read_u32(c, box) != MENU_MAGIC:
+        time.sleep(0.2)
+    check(mem_read_u32(c, box) == MENU_MAGIC,
+          "RaC1 menu: a few seconds into the session its mailbox is in the game")
+    h = hooks()
+    check((h[0x0007B7C8] >> 26) == 18 and (h[0x0007B7C8] & 3) == 0 and in_code(bl_target(0x0007B7C8, h[0x0007B7C8])) and
+          (h[0x000E14C8] >> 26) == 18 and (h[0x000E14C8] & 3) == 1 and in_code(bl_target(0x000E14C8, h[0x000E14C8])) and
+          h[0x00729B68] == 0x7E000003 and RAC1_MENU_DATA[0] <= h[0x00729B6C] < RAC1_MENU_DATA[1],
+          "RaC1 menu: the text hook and the play hook branch into the renderer, the Help entry says 0x7E00 and "
+          "goes to a page in its data", dict((hex(a), hex(w)) for a, w in h.items()))
+    check(all(mem_read_u32(c, lo) != 0 for lo, _ in RAC1_MENU_CODE),
+          "RaC1 menu: all four code areas are written")
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
+    check(status == ST_OK and body[8] == 16 and body[9] == 0x40 and body[10] == 7 and body[14] == 1 and
+          body[15] == 16, "RaC1 menu: sixteen rows of 0x40, seven a MAIN page, sixteen a CONFIG page, renderer 1",
+          body.hex() if status == ST_OK else status)
+
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[0] % 2 == 0 and
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
+          "RaC1 menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC1 menu: an event is acked")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Cheats" and page[3] == ["Fast loads", "Ghost Ratchet", "Infinite ammo",
+                                                                    "Freeze health", "Goodies menu"] and
+          page[5] == MBOX_PTYPE_CONFIG, "RaC1 menu: the Cheats page is posted, a CONFIG page",
+          page[:4] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back is acked")
+    time.sleep(0.1)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 4, box, size, rs), "RaC1 menu: Unlocks")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[3] == ["Weapons", "Gadgets", "Items", "Collectables"],
+          "RaC1 menu: Unlocks lists the categories, then Collectables", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back again")
+    check(combo() == 1, "RaC1 menu: the menu combo asks the renderer to open")
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+
+    # menu.enabled = 0: the words come out with the game in play.
+    cfg_path = "/dev_hdd0/qwark/config.txt"
+    cfg = read_console_file(c, cfg_path) or b""
+    cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
+    check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"), "RaC1 menu: config.txt says menu.enabled = 0")
+    status, _ = c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and hooks() != RAC1_MENU_SITES:
+        time.sleep(0.1)
+    check(status == ST_OK and hooks() == RAC1_MENU_SITES,
+          "RaC1 menu: CONFIG_RELOAD takes all four words out, Help its own row again",
+          dict((hex(a), hex(w)) for a, w in hooks().items()))
+    check(combo() == 0, "RaC1 menu: the combo then asks nothing")
+    check(write_console_file(c, cfg_path, cfg), "RaC1 menu: menu.enabled taken out again")
+    c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and hooks() == RAC1_MENU_SITES:
+        time.sleep(0.1)
+    check(hooks() != RAC1_MENU_SITES, "RaC1 menu: menu.enabled = 1 puts the renderer back in play")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
 def exercise_game(c, sim, spec, udp=None):
@@ -5841,6 +5938,15 @@ def main():
         ok, _ = wait_state(c, SESSION_INGAME)
         check(ok, "RaC2 comes up for its console menu")
         exercise_console_menu_rac2(c, sim)
+
+        # ----------------------- RaC1's console menu, revision 1.22
+        sim.send("quit")
+        ok, _ = wait_state(c, SESSION_XMB)
+        check(ok, "quit before RaC1's console menu")
+        sim.send("boot NPEA00385")
+        ok, _ = wait_state(c, SESSION_INGAME)
+        check(ok, "RaC1 comes up for its console menu")
+        exercise_console_menu_rac1(c, sim)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

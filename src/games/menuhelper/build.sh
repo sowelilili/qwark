@@ -5,10 +5,19 @@
 # core (mh_core.c) and a game's shim (mh_<game>.c, its stubs and its state
 # image), both compiled with the game's header (mh_<game>.h) included first,
 # like the savefile helper's one source for four games: Deadlocked's (rac4),
-# Up Your Arsenal's (rac3) and Going Commando's (rac2) so far. What differs between them - the linker's
-# entry and the game addresses it is given, the hook words and what qwark reads
-# to know the menu is down - is a few functions per game below
-# (<game>_entry, <game>_ldflags, <game>_hooks, <game>_query).
+# Up Your Arsenal's (rac3), Going Commando's (rac2) and Ratchet & Clank's
+# (rac1). What differs between them - the linker's entry and the game
+# addresses it is given, the hook words and what qwark reads to know the menu
+# is down - is a few functions per game below (<game>_entry, <game>_ldflags,
+# <game>_hooks, <game>_query, and <game>_extra for a shim of more than one C
+# file).
+#
+# A game whose free code is in several runs rather than one (RaC1: its text
+# segment's tail is a mod's) names them MH_CAVE, MH_CAVE2, MH_CAVE3 ... in its
+# header. Its renderer is compiled with -ffunction-sections and linked with a
+# map made here (pack_map): the stubs and the core together at the start of
+# MH_CAVE, then every function of the shim in the first area it fits, the
+# largest first. Each area is a code cave of its own in the generated file.
 #
 # Run it from a Cygwin login shell that has the Sony SDK on its PATH, the shell
 # `make` runs in:
@@ -45,7 +54,7 @@ OBJDUMP=ppu-lv2-objdump
 
 CFLAGS="-Os -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
 
-RENDERERS="rac4 rac3 rac2"
+RENDERERS="rac4 rac3 rac2 rac1"
 
 fail() {
 	echo "menuhelper: $*" >&2
@@ -57,6 +66,9 @@ fail() {
 sources="$DIR/build.sh $DIR/mh.ld.in $DIR/mh_common.h $DIR/mh_shim.h $DIR/mh_core.c src/core/menubox.h"
 for g in $RENDERERS; do
 	sources="$sources $DIR/mh_$g.h $DIR/mh_$g.c $DIR/mh_${g}_stubs.S $DIR/mh_${g}_state.S"
+	for f in $DIR/mh_${g}_*.c $DIR/mh_${g}_*.h; do
+		[ ! -f "$f" ] || sources="$sources $f"
+	done
 done
 
 if [ "$1" = "--if-stale" ]; then
@@ -247,6 +259,91 @@ rac2_query() {
 	echo "$(need "$1" R2_GAME_MODE) $(need "$1" R2_MODE_PAUSE) $(need "$1" R2_PENDING_MODE) $(need "$1" R2_MODE_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" R2_SCREEN_UP)"
 }
 
+# ------------------------------------------------------ per game: Ratchet & Clank
+
+rac1_entry() { echo mh_text_stub; }
+
+rac1_ldflags() { :; }
+
+# The shim's second file: the CONFIG widget.
+rac1_extra() { echo mh_rac1_cfg; }
+
+rac1_hooks() {
+	hdr=$1; elf=$2
+	text_stub=$(needsym "$elf" mh_text_stub)
+	play_stub=$(needsym "$elf" mh_play_stub)
+	site=$(need "$hdr" MH_SITE_TEXT)
+	echo "$site $(bword "$site" "$text_stub") $(need "$hdr" MH_ORIG_TEXT) b mh_text_stub ($text_stub)"
+	site=$(need "$hdr" MH_SITE_PLAY)
+	echo "$site $(blword "$site" "$play_stub") $(need "$hdr" MH_ORIG_PLAY) bl mh_play_stub ($play_stub)"
+	echo "$(need "$hdr" MH_SITE_HELP_TEXT) $(need "$hdr" MH_HELP_WORD) $(need "$hdr" MH_ORIG_HELP_TEXT) Help entry's text and kind: Trainer, go to a page"
+	echo "$(need "$hdr" MH_SITE_HELP_PAGE) $(printf '0x%08X' $(($(need "$hdr" MH_SHIM) + $(need "$hdr" SH_PAGE_LIST)))) $(need "$hdr" MH_ORIG_HELP_PAGE) Help entry's page: the menu's MAIN page"
+}
+
+rac1_query() {
+	echo "$(need "$1" R1_STATE) $(need "$1" R1_STATE_PAUSE) $(need "$1" R1_RESUME_PAGE) $(need "$1" R1_RESUME_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" R1_SCREEN_UP)"
+}
+
+# ---------------------------------------------------- several code areas
+
+# An object's code sections, one a line: object section size alignment.
+sec_list() {
+	$OBJDUMP -h "$1" | tr -d '\r' |
+		awk -v ob="$(basename "$1")" '$1 ~ /^[0-9]+$/ && $2 ~ /^\.text/ && $3 !~ /^0+$/ {
+			split($7, a, "\\*\\*"); print ob, $2, strtonum("0x" $3), 2 ^ a[2] }'
+}
+
+# pack_map OBJ_DIR AREAS...: the link map of a renderer in several code areas,
+# each AREA "org:end". The stubs and the core open the first; the shim's
+# functions go, the largest first, into the first area with room.
+pack_map() {
+	o=$1; shift
+	n=0
+	for a in "$@"; do
+		n=$((n + 1))
+		echo "$n ${a%%:*} ${a#*:}"
+	done > "$o/areas.txt"
+	{ sec_list "$o/stubs.o"; sec_list "$o/mh_core.o"; } > "$o/fixed.txt"
+	for f in shim $extra; do sec_list "$o/$f.o"; done | sort -k3,3nr -k2,2 > "$o/items.txt"
+	awk -v fail=0 '
+		function up(x, al) { return int((x + al - 1) / al) * al }
+		FILENAME ~ /areas/ { cap[$1] = strtonum($3) - strtonum($2); used[$1] = 0; na = $1; next }
+		FILENAME ~ /fixed/ { used[1] = up(used[1], $4) + $3; next }
+		{
+			for (i = 1; i <= na; i++) {
+				off = up(used[i], $4)
+				if (off + $3 <= cap[i]) { used[i] = off + $3; print i, $1, $2; next }
+			}
+			print "nowhere", $1, $2, $3; fail = 1
+		}
+		END { for (i = 1; i <= na; i++) printf "used %d %d %d\n", i, used[i], cap[i] > "/dev/stderr"; exit fail }
+	' "$o/areas.txt" "$o/fixed.txt" "$o/items.txt" > "$o/placed.txt" 2> "$o/used.txt" ||
+		fail "$g: the shim's functions do not fit its code areas: $(grep nowhere "$o/placed.txt" | tr '\n' ' ')"
+
+	echo 'OUTPUT_FORMAT("elf64-powerpc-celloslv2")'
+	echo "ENTRY($(${g}_entry))"
+	echo
+	echo 'SECTIONS'
+	echo '{'
+	while read -r i org end; do
+		sec=.text; [ "$i" = 1 ] || sec=.text$i
+		echo "	. = $org;"
+		echo "	$sec : {"
+		if [ "$i" = 1 ]; then
+			echo "		*(.text.entry)"
+			echo "		_core_start = .;"
+			echo "		*mh_core.o(.text) *mh_core.o(.text.*)"
+			echo "		_core_end = .;"
+		fi
+		awk -v i="$i" '$1 == i { printf "\t\t*%s(%s)\n", $2, $3 }' "$o/placed.txt"
+		[ "$i" != 1 ] || echo "		*(.text)"
+		echo "	}"
+		[ "$i" = 1 ] && echo "	_text_end = .;" || echo "	_text${i}_end = .;"
+		echo
+	done < "$o/areas.txt"
+	sed -n '/= @BOX_ORG@;/,$p' "$DIR/mh.ld.in" | sed -e "s/@BOX_ORG@/$mbox/" -e "s/@DATA_ORG@/$data/"
+}
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 : > "$OUT/arrays.c"
@@ -270,27 +367,47 @@ for g in $RENDERERS; do
 	state=$(need "$hdr" MH_STATE)
 	shim=$(need "$hdr" MH_SHIM)
 	mbox_size=$(need "$hdr" MH_MBOX_SIZE)
+	# The code areas past the first (MH_CAVE2 ...), and the shim's other files.
+	areas="$cave:$cave_end"
+	ncodes=1
+	while [ -n "$(getdef "$hdr" MH_CAVE$((ncodes + 1)))" ]; do
+		ncodes=$((ncodes + 1))
+		areas="$areas $(need "$hdr" MH_CAVE$ncodes):$(need "$hdr" MH_CAVE${ncodes}_END)"
+	done
+	pack=
+	[ $ncodes -eq 1 ] || pack=-ffunction-sections
+	extra=
+	! type ${g}_extra >/dev/null 2>&1 || extra=$(${g}_extra)
 
 	[ $((data)) -eq $((state)) ] || fail "$hdr: MH_STATE is not MH_DATA"
 
 	# The core and the shim, each with the game's header first.
-	$CC $CFLAGS -include "$hdr" -c -o "$obj/mh_core.o" "$DIR/mh_core.c"
-	$CC $CFLAGS -include "$hdr" -c -o "$obj/shim.o" "$DIR/mh_$g.c"
+	$CC $CFLAGS $pack -include "$hdr" -c -o "$obj/mh_core.o" "$DIR/mh_core.c"
+	$CC $CFLAGS $pack -include "$hdr" -c -o "$obj/shim.o" "$DIR/mh_$g.c"
+	extra_o=
+	for f in $extra; do
+		$CC $CFLAGS $pack -include "$hdr" -c -o "$obj/$f.o" "$DIR/$f.c"
+		extra_o="$extra_o $obj/$f.o"
+	done
 	# Through the driver, which runs the preprocessor for .S and stamps the
 	# CellOS Lv-2 ABI on the object; the linker refuses to mix objects otherwise.
 	$CC -I$DIR -c -o "$obj/stubs.o" "$DIR/mh_${g}_stubs.S"
 	$CC -I$DIR -c -o "$obj/state.o" "$DIR/mh_${g}_state.S"
 
-	sed -e "s/@TEXT_ORG@/$cave/" -e "s/@BOX_ORG@/$mbox/" -e "s/@DATA_ORG@/$data/" \
-		-e "s/@ENTRY@/$(${g}_entry)/" "$DIR/mh.ld.in" > "$obj/mh.ld"
+	if [ $ncodes -eq 1 ]; then
+		sed -e "s/@TEXT_ORG@/$cave/" -e "s/@BOX_ORG@/$mbox/" -e "s/@DATA_ORG@/$data/" \
+			-e "s/@ENTRY@/$(${g}_entry)/" "$DIR/mh.ld.in" > "$obj/mh.ld"
+	else
+		pack_map "$obj" $areas > "$obj/mh.ld" || exit 1
+	fi
 	$LD --fatal-warnings -T "$obj/mh.ld" -Map "$obj/mh.map" -o "$obj/mh.elf" \
 		$(${g}_ldflags "$hdr") \
-		"$obj/stubs.o" "$obj/mh_core.o" "$obj/shim.o" "$obj/state.o"
+		"$obj/stubs.o" "$obj/mh_core.o" "$obj/shim.o" $extra_o "$obj/state.o"
 
 	# name size vma, one line per section
 	$OBJDUMP -h "$obj/mh.elf" | tr -d '\r' |
 		awk '$1 ~ /^[0-9]+$/ { print $2, $3, $4 }' > "$obj/sections.txt"
-	bad=$(awk '$2 !~ /^0+$/ && $1 != ".text" && $1 != ".mh_box" && $1 != ".mh_box_zero" &&
+	bad=$(awk '$2 !~ /^0+$/ && $1 !~ /^\.text[2-9]?$/ && $1 != ".mh_box" && $1 != ".mh_box_zero" &&
 	           $1 != ".mh_state" && $1 != ".mh_state_zero" && $1 != ".rodata" &&
 	           $1 != ".toc" && $1 != ".opd" { print $1 }' "$obj/sections.txt")
 	[ -z "$bad" ] || fail "$g: sections that must be empty are not: $bad"
@@ -309,6 +426,20 @@ for g in $RENDERERS; do
 		fail "$g: mh_shim is at $(sym "$obj/mh.elf" mh_shim), not MH_SHIM: the core's state changed size"
 
 	$OBJCOPY -O binary -j .text "$obj/mh.elf" "$obj/code.bin"
+	n=1
+	for a in $areas; do
+		[ $n -eq 1 ] || {
+			org=${a%%:*}; org_end=${a#*:}
+			vma=0x$(awk -v s=".text$n" '$1 == s { print $3 }' "$obj/sections.txt")
+			[ $((vma)) -eq $((org)) ] || fail "$g: .text$n starts at $vma, not $org"
+			$OBJCOPY -O binary -j .text$n "$obj/mh.elf" "$obj/code$n.bin"
+			size=$(wc -c < "$obj/code$n.bin" | tr -d ' ')
+			[ $((org + size)) -eq $(($(sym "$obj/mh.elf" _text${n}_end))) ] ||
+				fail "$g: code$n.bin is $size bytes, the link ends elsewhere"
+			[ $((org + size)) -le $((org_end)) ] || fail "$g: code area $n holds $size bytes and runs past $org_end"
+		}
+		n=$((n + 1))
+	done
 	$OBJCOPY -O binary -j .mh_box "$obj/mh.elf" "$obj/box.bin"
 	$OBJCOPY -O binary -j .mh_state "$obj/mh.elf" "$obj/state.bin"
 	$OBJCOPY -O binary -j .rodata -j .toc -j .opd "$obj/mh.elf" "$obj/rest.bin"
@@ -373,11 +504,29 @@ for g in $RENDERERS; do
 		emit_bytes "$obj/code.bin"
 		echo "};"
 		echo
+		n=1
+		for a in $areas; do
+			if [ $n -gt 1 ]; then
+				echo "/* $g: the code, $(wc -c < "$obj/code$n.bin" | tr -d ' ') bytes at ${a%%:*}: more of the shim */"
+				echo "static const u8 mh_${g}_code$n[] = {"
+				emit_bytes "$obj/code$n.bin"
+				echo "};"
+				echo
+			fi
+			n=$((n + 1))
+		done
 		echo "static const struct mh_cave mh_${g}_caves[] = {"
 		echo "	{ ${mbox}u, mh_${g}_box, (u32)sizeof(mh_${g}_box), 0, ${box_zeros}u },"
 		echo "	{ ${data}u, mh_${g}_state, (u32)sizeof(mh_${g}_state), 0, ${state_zeros}u },"
 		echo "	{ ${rest_vma}u, mh_${g}_data, (u32)sizeof(mh_${g}_data), 0, 0u },"
-		echo "	{ ${cave}u, mh_${g}_code, (u32)sizeof(mh_${g}_code), 1, 0u }"
+		n=1
+		for a in $areas; do
+			sep=","
+			[ $n -lt $ncodes ] || sep=""
+			[ $n -eq 1 ] && name=mh_${g}_code || name=mh_${g}_code$n
+			echo "	{ ${a%%:*}u, $name, (u32)sizeof($name), 1, 0u }$sep"
+			n=$((n + 1))
+		done
 		echo "};"
 		echo
 		echo "/* In the order they go in; they come out in the reverse order. */"
@@ -395,13 +544,19 @@ for g in $RENDERERS; do
 	} >> "$OUT/arrays.c"
 
 	{
-		echo "	{ $((game)), mh_${g}_caves, 4, mh_${g}_hooks, $nhooks,"
+		echo "	{ $((game)), mh_${g}_caves, $((3 + ncodes)), mh_${g}_hooks, $nhooks,"
 		echo "	  ${mbox}u, ${mbox_size}u, ${state}u,"
 		echo "	  ${q_mode}u, ${q_paused}u, ${q_pending}u, ${q_none}u,"
 		echo "	  ${q_screen}u, ${q_screen_id}u },"
 	} >> "$OUT/descs.txt"
 
 	{
+		n=2
+		for a in $(echo "$areas" | cut -s -d' ' -f2-); do
+			size=$(wc -c < "$obj/code$n.bin" | tr -d ' ')
+			echo "$g: code area $n, $size bytes at ${a%%:*} ($((${a#*:} - ${a%%:*} - size)) left)"
+			n=$((n + 1))
+		done
 		echo "$g: code $code_size bytes at $cave ($((cave_end - cave - code_size)) left), mailbox $box_size bytes at $mbox, data $data_size bytes at $data ($((data_end - data - data_size)) left); the core is $((core_end - core_start)) bytes of the code"
 		while read -r h_addr h_value h_orig h_what; do
 			echo "  $h_addr -> $h_value  $h_what"

@@ -1049,23 +1049,57 @@ static const struct game_manips rac1_manips = {
 /* ----------------------------------------------------------- console menu */
 
 /*
- * Revision 1.22, round 2: what the console menu knows of RaC1 so far. It has
- * no renderer yet, and until it has, no sections either (round 1's page per
- * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED
- * and GOLD, on the gold flag, field 1.
+ * Revision 1.22: the console menu's pages for RaC1 (src/core/menu.c), after
+ * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac1",
+ * as UYA's are. Game is the quick block of the client's Game panel and its
+ * savefile tab (Force autosave beside the two set-aside buttons), then the one
+ * value, Bolts; Cheats the four cheats every game has and the Goodies menu,
+ * the one switch of the Game panel's "Options" column. The jankpot, the debug
+ * updates and the camera mode are the client's Debug page, which the menu
+ * leaves out. The gold bolt and skill point buttons are the client's
+ * Collectables tab, beside the unlock table, so the Unlocks page links them
+ * after its categories as a page of their own, Collectables, as UYA's. RaC1
+ * has no MANIP_LIST headers. The planets are the
+ * plain list in the game's order (PLANET_LIST's ids), until the native picker.
  */
-static const char * const rac1_unlock_names[] = { "LOCKED", "UNLOCKED", "GOLD" };
+static const u8 rac1_menu_game[] = {
+	F_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE,
+	F_BOLTS
+};
+
+static const u8 rac1_menu_cheats[] = {
+	F_FAST_LOADS, F_GHOST, F_INFINITE_AMMO, F_FREEZE_HEALTH,
+	F_GOODIES
+};
+
+static const struct menu_section rac1_menu_sections[] = {
+	{ "Game",   rac1_menu_game,   (u8)sizeof(rac1_menu_game) },
+	{ "Cheats", rac1_menu_cheats, (u8)sizeof(rac1_menu_cheats) }
+};
+
+static const u8 rac1_menu_unlock_actions[] = {
+	F_UNLOCK_GOLDBOLTS, F_RESET_GOLDBOLTS, F_UNLOCK_STYLE, F_RESET_STYLE
+};
+
+/*
+ * An unlock row cycles through Locked, Unlocked and Gold, on the gold flag,
+ * field 1; the five items without a gold version are Locked or Unlocked (the
+ * menu takes the casing of this set for that). In the game's title case, as
+ * the design has them for RaC1.
+ */
+static const char * const rac1_unlock_names[] = { "Locked", "Unlocked", "Gold" };
 static const u32 rac1_unlock_values[] = { 0, 0, 1 };
 
 static const struct game_menu rac1_menu = {
-	NULL, 0,
-	NULL, 0,
+	rac1_menu_sections, (u8)(sizeof(rac1_menu_sections) / sizeof(rac1_menu_sections[0])),
+	rac1_menu_unlock_actions, (u8)sizeof(rac1_menu_unlock_actions),
 	rac1_unlock_names, rac1_unlock_values,
 	(u8)(sizeof(rac1_unlock_names) / sizeof(rac1_unlock_names[0])),
 	1, NULL,
-	NULL,
+	NULL,                 /* every planet with a name: the plain list, in the game's order */
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
-	NULL                  /* no Unlocks actions yet */
+	"Collectables"        /* the gold bolt and skill point buttons, on a page of their own */
 };
 
 /* ---------------------------------------------------------------- vtable */
