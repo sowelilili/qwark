@@ -112,11 +112,12 @@ static void put_str(u32 a, const char *s)
 
 /*
  * msg_string with the label hook in: what mh_msg_stub answers (check.py steps
- * the real one), else a game text.
+ * the real one), else a game text. The pickers' round 2: our ids sign-extended
+ * as well (0xFFFFF0xx), as the planet list's draw passes a row's.
  */
 static u32 game_msg(u32 id)
 {
-	if ((id & ~0x3Fu) == MH_MSG_BASE) {
+	if ((id & ~0x3Fu) == MH_MSG_BASE || (id & ~0x3Fu) == (0xFFFF0000u | MH_MSG_BASE)) {
 		u32 i = id & 0x3F;
 		if (i == 0) return MH_SCREENS + MS_TRAINER;
 		if (i <= MH_MAIN_ROWS) return mh_text(i - 1);      /* the text set on show */
@@ -1062,10 +1063,16 @@ extern const struct game_api rac2_game;
 static u16 peek16(u32 a) { u8 b[2]; host_peek(a, b, 2); return (u16)((b[0] << 8) | b[1]); }
 
 /* The picker's name of planet row i: the line under the game's location, or the row's only line. */
+/*
+ * Row i's name line as the list's draw (0xBCBC58) asks msg_string for it: the
+ * halfword sign-extended (lhzx and extsh), so our 0xF010 + p comes as
+ * 0xFFFFF010 + p, which the label hook takes since the pickers' round 2
+ * (round 1 sent it on into msg_string, whose answer was "(unavailable)").
+ */
 static const char *pick_name(u32 i, char *out)
 {
 	u32 row = PICK_ROWS + i * R2_ROW_SIZE, text = r16(row), sub = r16(row + 8);
-	return read_str(game_msg(sub != 0 ? sub : text), out, 80);
+	return read_str(game_msg((u32)(s32)(s16)(u16)(sub != 0 ? sub : text)), out, 80);
 }
 
 /* Frames of the pause with nothing pressed. */
@@ -1150,8 +1157,16 @@ static void test_picker_rac2(void)
 	for (i = 0; good && i < count; i++)
 		good = strcmp(pick_name(i, a), names[i]) == 0 && r16(PICK_ROWS + i * R2_ROW_SIZE + 2) == R2_ROW_INERT &&
 		       r32(PICK_ROWS + i * R2_ROW_SIZE + 4) == 0;
-	check(good, "the picker's rows: the 27 planets of PLANET_LIST in qwark's order, by qwark's names, a kind "
-	      "the game's row actions ignore, then a zero row");
+	check(good, "the picker's rows: the 27 planets of PLANET_LIST in qwark's order, by qwark's names (asked for "
+	      "sign-extended, as the list's draw asks), a kind the game's row actions ignore, then a zero row");
+	good = 1;
+	for (i = 0; i < count; i++) {
+		u32 row = PICK_ROWS + i * R2_ROW_SIZE, id = r16(row + 8) != 0 ? r16(row + 8) : r16(row);
+		good = good && id >= 0x8000 && game_msg(id) == game_msg(0xFFFF0000u | id) &&
+		       strcmp(read_str(game_msg(0xFFFF0000u | id), a, 80), names[i]) == 0;
+	}
+	check(good, "every row's name id is a halfword past 0x7FFF, which the draw makes negative: the hook answers "
+	      "both forms alike, so no row says \"(unavailable)\" (the user's photo, round 1)");
 	check(r16(PICK_ROWS + 1 * R2_ROW_SIZE) == 0xB2C && r16(PICK_ROWS + 1 * R2_ROW_SIZE + 8) == MH_MSG_PLANET + 1 &&
 	      r16(PICK_ROWS + 21 * R2_ROW_SIZE) == MH_MSG_PLANET + 21 && r16(PICK_ROWS + 21 * R2_ROW_SIZE + 8) == 0 &&
 	      r16(PICK_ROWS + 25 * R2_ROW_SIZE) == MH_MSG_PLANET + 25,

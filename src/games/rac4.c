@@ -1091,7 +1091,8 @@ static const struct game_menu rac4_menu = {
 	1, "V",
 	NULL,                 /* every planet, the placeholders apart (menu.c leaves out "(...)") */
 	NULL, NULL,           /* every weapon goes to V99; no action with a status */
-	NULL                  /* the two weapon buttons stay on the Unlocks page, which they fit */
+	NULL,                 /* the two weapon buttons stay on the Unlocks page, which they fit */
+	NULL                  /* Worlds shows every planet (the pickers' round 2) */
 };
 
 /* ---------------------------------------------------------------- vtable */

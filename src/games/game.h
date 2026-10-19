@@ -298,6 +298,17 @@ struct game_menu {
 	 * point and titanium bolt ones). RaC1 and RaC2 do the same with theirs.
 	 */
 	const char *unlock_actions_title;
+
+	/*
+	 * The planet pickers' round 2: the planets the game's own planet picker
+	 * cannot show, which the player asks it for (mailbox event
+	 * MBOX_EV_PICKER_OTHERS: UYA's GALACTIC MAP has no vid comics, and its
+	 * Square asks for them): a CONFIG page of that title with these planets
+	 * (PLANET_LIST ids, as `items`), in order, each a button that loads it as
+	 * the Planets page's do. NULL where the picker shows every planet, or a
+	 * game has none; the event then opens the whole Planets page.
+	 */
+	const struct menu_section *picker_others;
 };
 
 /* Build 53: what struct game_api's savefile_ready is asked about. */

@@ -1215,7 +1215,8 @@ static const struct game_menu rac2_menu = {
 	1, "V",
 	NULL,                 /* every planet with a name: the plain list, in the ids' order, the game's */
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
-	"Collectables"        /* the eight buttons on a page of their own (round 3, as UYA's) */
+	"Collectables",       /* the eight buttons on a page of their own (round 3, as UYA's) */
+	NULL                  /* the planet select shows every planet (the pickers' round 2) */
 };
 
 /* ---------------------------------------------------------------- vtable */

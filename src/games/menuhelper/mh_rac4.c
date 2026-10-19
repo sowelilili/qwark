@@ -23,7 +23,8 @@
  *   mh_start, mh_stop  screen 36's fcStart and fcStop, through descriptors;
  *   mh_row, mh_close  the callbacks a MAIN page's rows and list carry;
  *   mh_cfg_*         the CONFIG page's thread, its row callback and validator;
- *   mh_select_stub, mh_gate_*  Worlds' X and its list and trap gates
+ *   mh_select_stub, mh_gate_*  Worlds' X, its list and trap gates, and (the
+ *                    pickers' round 2) its locks and Circle's Skills
  *                    (assembler), and mh_worlds_stop, Worlds' fcStop: the
  *                    planet picker (mailbox version 3), the game's own Worlds
  *                    screen opened from PLANETS, each acting only while the
@@ -779,8 +780,10 @@ int mh_worlds_select(void)
  * Worlds' fcStop (MH_WORLDS_STOP), for every Worlds, the game's own too.
  * GuiMenu sets the next screen before it calls a stop, and CloseMenu sets it
  * to 0: back to screen 36 is the picker coming back to the menu, which
- * mh_start takes up; anything else ends it (Start, and Circle's Skills, after
- * which Worlds is the game's own). Then the game's own stop.
+ * mh_start takes up; anything else ends it (Start, or a screen of the game's
+ * that Worlds leaves for; since the pickers' round 2 Circle's Skills is not
+ * one, mh_gate_skills ignoring Circle in the menu's Worlds). Then the game's
+ * own stop.
  */
 void mh_worlds_stop(int p)
 {

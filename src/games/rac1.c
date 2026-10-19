@@ -1099,7 +1099,8 @@ static const struct game_menu rac1_menu = {
 	1, NULL,
 	NULL,                 /* every planet with a name: the plain list, in the game's order */
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
-	"Collectables"        /* the gold bolt and skill point buttons, on a page of their own */
+	"Collectables",       /* the gold bolt and skill point buttons, on a page of their own */
+	NULL                  /* the Galactic Map shows every planet (the pickers' round 2) */
 };
 
 /* ---------------------------------------------------------------- vtable */

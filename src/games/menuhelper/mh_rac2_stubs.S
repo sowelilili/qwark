@@ -40,18 +40,31 @@
  * pointer), only ever after mh_core_start: a screen going keeps the pointers it
  * was given into the set it showed (round 3's pointer rule). 0xF010 + p, p
  * below MH_PLANETS, is the picker's name of qwark's planet p (MS_PICK_NAMES),
- * which the planet list draws. Anything else goes on into msg_string with r4
- * set as the replaced instruction set it: the game's ids end at 0xBB81, so an
- * id of the game's costs three instructions more than msg_string's own. Writes
- * r3, r4, r5 and cr0, which msg_string itself writes, and returns to
- * msg_string's caller.
+ * which the planet list draws.
+ *
+ * The pickers' round 2: the planet list's draw (0xBCBC58) reads a row's text
+ * ids as halfwords and sign-extends them (lhzx then extsh at 0xBCC124, lhz then
+ * extsh at 0xBCC384) before it calls msg_string, so our ids reach it as
+ * 0xFFFFF0xx: the stub takes that form of them too (the low word xored with
+ * 0xFFFF0000 is 0xF0xx again), where it used to send them on into msg_string,
+ * whose answer for an id it does not know is "(unavailable)". The game's own
+ * rows, the ship's select's among them, carry the game's ids, below 0x8000,
+ * which neither form matches, so they say what they always said.
+ *
+ * Anything else goes on into msg_string with r4 set as the replaced
+ * instruction set it: the game's ids end at 0xBB81, so an id of the game's
+ * costs six instructions more than msg_string's own. Writes r3, r4, r5 and
+ * cr0, which msg_string itself writes, and returns to msg_string's caller.
  */
 	.globl	mh_msg_stub
 mh_msg_stub:
 	rlwinm	%r5,%r3,0,0,25
 	cmplwi	%r5,MH_MSG_BASE
+	beq	1f
+	xoris	%r5,%r5,0xFFFF
+	cmplwi	%r5,MH_MSG_BASE
 	bne	2f
-	andi.	%r5,%r3,0x3F
+1:	andi.	%r5,%r3,0x3F
 	beq	0f
 	cmplwi	%r5,MH_MSG_PLANET-MH_MSG_BASE
 	bge	3f

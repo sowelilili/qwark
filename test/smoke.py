@@ -304,14 +304,16 @@ COMBO_MENU_DEFAULT = 0x060F
 # and its mailbox (src/core/menubox.h, version 3: rows of 0x40), read and written here as a
 # renderer would. The last two sites are the pause main menu's Help row, which
 # the renderer makes the menu's way in. Mailbox version 3: the planet picker's
-# six, Worlds' X, its four gates and its fcStop (a data word: a descriptor).
+# eight, Worlds' X, its six gates (the lock's and Circle's since the pickers'
+# round 2) and its fcStop (a data word: a descriptor).
 MENU_BOX = 0x017DD600
 MENU_MAGIC = 0x514D4E55
 MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
               0x0035DFBC: 0x60000000, 0x003A649C: 0x4BDF25C1,
               0x003A8584: 0x3880001E,
               0x003B2844: 0x4BFFF955, 0x003B177C: 0x41820024, 0x003B1424: 0x3860000F,
-              0x003B27C0: 0x41820114, 0x003B2898: 0x4182003C, 0x009E8954: 0x00994400}
+              0x003B27C0: 0x41820114, 0x003B2898: 0x4182003C, 0x003B1590: 0x7CA7C1AE,
+              0x003B2794: 0x418200B8, 0x009E8954: 0x00994400}
 MENU_HELP_SCREEN = (0x003A8584, 0x38800024)
 MENU_WORLDS_STOP = 0x009E8954
 # Deadlocked's MF_LevelSave array (src/games/rac4.h): a planet's status byte at
@@ -397,6 +399,7 @@ MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
 MBOX_EV_ACTIVATE = 1
 MBOX_EV_BACK = 4
+MBOX_EV_PICKER_OTHERS = 9
 
 PLANET_FLAG_RESET_LEVELFLAGS = 0x01
 PLANET_FLAG_RESET_BOLTS = 0x02
@@ -2657,6 +2660,28 @@ def exercise_console_menu_uya(c, sim):
         time.sleep(0.05)
     check(mem_read_u32(c, 0x00EE9310) == 1 and mem_read_u32(c, 0x00EE9314) == 9,
           "UYA menu: a pick of Tyhrranosis and the close: qwark's planet load of it once the game plays",
+          (mem_read_u32(c, 0x00EE9310), mem_read_u32(c, 0x00EE9314)))
+    mem_write(c, 0x00EE9310, struct.pack(">II", 0, 0))
+
+    # The pickers' round 2: the map's Square, VID-COMICS, posts MBOX_EV_PICKER_OTHERS on the Planets row, and qwark
+    # opens its page of the vid comics the map cannot show; X there loads one as the Planets page's rows do.
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
+    time.sleep(0.2)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Trainer" and menu_event(c, MBOX_EV_PICKER_OTHERS, 2, box, size, rs),
+          "UYA menu: the picker's event on the Planets row is acked", page[:3] if page else None)
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Vid-Comics" and page[5] == MBOX_PTYPE_CONFIG and
+          page[3] == ["Vid Comic 1", "Vid Comic 2", "Vid Comic 3", "Vid Comic 4", "Vid Comic 5"],
+          "UYA menu: qwark's Vid-Comics page, a CONFIG page of the base vid comics 1 to 5", page[2:4] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: the cross on Vid Comic 4")
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
+    deadline = time.time() + 3.0
+    while time.time() < deadline and mem_read_u32(c, 0x00EE9310) != 1:
+        time.sleep(0.05)
+    check(mem_read_u32(c, 0x00EE9310) == 1 and mem_read_u32(c, 0x00EE9314) == 32,
+          "UYA menu: and the menu closed: qwark's planet load of Vid Comic 4 (planet 32)",
           (mem_read_u32(c, 0x00EE9310), mem_read_u32(c, 0x00EE9314)))
     mem_write(c, 0x00EE9310, struct.pack(">II", 0, 0))
 

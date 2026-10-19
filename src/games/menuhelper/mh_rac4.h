@@ -199,7 +199,8 @@
  * screen 3 (MenuPlanet), pushed over screen 36 from the root's PLANETS row as
  * the main menu's WORLDS row pushes it (MenuMain_MainCMDWorldsCB, 0x3A8368:
  * GuiMenu_PushScreen(p, 3)). REPORT-planet-pickers.md section 2 and probe
- * PL4, which ran it on hardware. Six more words, each acting only while the
+ * PL4, which ran it on hardware. Six more words (eight since the pickers'
+ * round 2), each acting only while the
  * core's ST_PICKER says the menu opened Worlds, so the game's own Worlds (from
  * the main menu's WORLDS row) runs every word as the game has it:
  *
@@ -220,6 +221,19 @@
  *                  planet's last mission): mh_gate_back, passed while the
  *                  picker is up, so Back always returns to the menu.
  * MH_SITE_CLOSE    the same test for Start and Select: mh_gate_close.
+ * MH_SITE_LOCKED   (the pickers' round 2) UpdatePlanets' `stbx r5,r7,r24`,
+ *                  a planet entry's bLocked (status bit 1 clear): a branch to
+ *                  mh_gate_locked, which stores 0 while the picker is up, so
+ *                  the menu's Worlds draws no lock beside a planet, every one
+ *                  of which it can load, and shows the planet's own panel
+ *                  rather than its requirements; the game's value otherwise.
+ *                  A tournament's lock (0x3B16C4) is not gated: a locked one
+ *                  is refused, as before.
+ * MH_SITE_SKILLS   (the pickers' round 2) HandleInput's `beq` to the Skills
+ *                  screen on Circle (command 4): a branch to mh_gate_skills,
+ *                  which ignores the press while the picker is up (the user's
+ *                  call: back from Skills was the game's own Worlds), and goes
+ *                  to Skills otherwise.
  * MH_WORLDS_STOP   GuiMenu_Screens[3].fcStop, a data word: the descriptor of
  *                  mh_worlds_stop, which ends the picker when Worlds goes
  *                  anywhere but back to screen 36 and calls the game's stop.
@@ -233,6 +247,8 @@
 #define MH_SITE_COUNT       0x003B1424   /* li r3,15, word 0x3860000F */
 #define MH_SITE_BACK        0x003B27C0   /* beq 0x3B28D4, word 0x41820114 */
 #define MH_SITE_CLOSE       0x003B2898   /* beq 0x3B28D4, word 0x4182003C */
+#define MH_SITE_LOCKED      0x003B1590   /* stbx r5,r7,r24, word 0x7CA7C1AE */
+#define MH_SITE_SKILLS      0x003B2794   /* beq 0x3B284C, word 0x418200B8 */
 #define MH_WORLDS_STOP      0x009E8954   /* GuiMenu_Screens[3].fcStop, 0x994400 */
 
 #define MH_ORIG_SELECT      0x4BFFF955
@@ -240,6 +256,8 @@
 #define MH_ORIG_COUNT       0x3860000F
 #define MH_ORIG_BACK        0x41820114
 #define MH_ORIG_CLOSE       0x4182003C
+#define MH_ORIG_LOCKED      0x7CA7C1AE
+#define MH_ORIG_SKILLS      0x418200B8
 #define MH_ORIG_WORLDS_STOP 0x00994400   /* MenuPlanet_Stop's descriptor */
 
 /* Where the picker's stubs go on to (build.sh hands each to the linker as dl_<name>). */
@@ -250,6 +268,9 @@
 #define DL_BACK_TAKEN       0x003B27C4   /* Triangle goes on: g_fromOther = 0, PopScreen */
 #define DL_CLOSE_TAKEN      0x003B289C   /* Start goes on: the sound flag, the bytes, CloseMenu */
 #define DL_INPUT_DONE       0x003B28D4   /* HandleInput's epilogue: the press ignored */
+#define DL_LOCKED_DONE      0x003B1594   /* after the bLocked store: bNew and complete next */
+#define DL_SKILLS_TAKEN     0x003B284C   /* the beq's target: the Skills screen pushed (21) */
+#define DL_SKILLS_NEXT      0x003B2798   /* after the beq: the next command's test */
 
 /* Where the one stub that is not a call goes on to. */
 #define GAME_HANDLE_MENU_INPUT 0x00368304   /* GuiSupport_HandleMenuInput */

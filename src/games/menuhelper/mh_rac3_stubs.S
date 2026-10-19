@@ -33,7 +33,10 @@
  * MH_SITE_MSG, 0x14BCF0: msg_string(id), a leaf, begins with `lis r4,0`, which
  * becomes `b mh_msg_stub`. In: r3 = the id. 0xF000 is MH_ENTRY_LABEL, "TRAINER", the HELP row's
  * label; 0xF001 .. 0xF001 + MH_MAIN_ROWS - 1 are the core's rows of a MAIN
- * page, which the main pause's init asks for as it lays the menu's rows out.
+ * page, which the main pause's init asks for as it lays the menu's rows out;
+ * MH_MSG_PLANET + p, p below MH_MAP_PLANETS (the pickers' round 2), is
+ * PLANET_LIST's name of planet p (mh_map_names), which the Trainer's GALACTIC
+ * MAP asks for while it builds itself (mh_map_init).
  * Anything else goes on into msg_string with r4 set as the replaced
  * instruction set it. Writes r3, r4, r5 and cr0, which msg_string itself
  * writes, and returns to msg_string's caller.
@@ -42,8 +45,19 @@
 mh_msg_stub:
 	rlwinm	%r5,%r3,0,0,27
 	cmplwi	%r5,MH_MSG_BASE
+	beq	3f
+	rlwinm	%r5,%r3,0,0,25
+	cmplwi	%r5,MH_MSG_PLANET
 	bne	2f
-	andi.	%r5,%r3,15
+	andi.	%r5,%r3,0x3F
+	cmplwi	%r5,MH_MAP_PLANETS
+	bge	2f
+	rlwinm	%r5,%r5,2,0,29
+	lis	%r4,mh_map_names@ha
+	addi	%r4,%r4,mh_map_names@l
+	lwzx	%r3,%r4,%r5
+	blr
+3:	andi.	%r5,%r3,15
 	bne	1f
 	lis	%r3,mh_help_text@ha
 	addi	%r3,%r3,mh_help_text@l
@@ -229,11 +243,55 @@ mh_map_list_stub:
 2:	cmpwi	%cr1,%r3,30
 	blr
 
+/*
+ * The read-only data, the first of it at MH_MAP_NAMES (the stubs' .rodata,
+ * which the link puts first, right after the shim's state; build.sh checks
+ * both addresses): the Trainer's GALACTIC MAP's names, a pointer a planet,
+ * 0 .. 29, PLANET_LIST's (src/games/rac3.c rac3_planets, which check.py and the
+ * host test hold them to); then its planets, in the menu's order (MH_MAP_LIST),
+ * which mh_map_init reads at MH_MAP_NAMES + 4 * MH_MAP_PLANETS; then the
+ * names; then the HELP row's label.
+ */
 	.section ".rodata","a"
-	.globl	mh_help_text
-mh_help_text:
-	.asciz	MH_ENTRY_LABEL
-/* The Trainer's GALACTIC MAP's planets, in the menu's order (mh_rac3.h). */
+	.align	4
+	.globl	mh_map_names
+mh_map_names:
+	.long	.Lmn0, .Lmn1, .Lmn2, .Lmn3, .Lmn4, .Lmn5, .Lmn6, .Lmn7, .Lmn8, .Lmn9
+	.long	.Lmn10, .Lmn11, .Lmn12, .Lmn13, .Lmn14, .Lmn15, .Lmn16, .Lmn17, .Lmn18, .Lmn19
+	.long	.Lmn20, .Lmn21, .Lmn22, .Lmn23, .Lmn24, .Lmn25, .Lmn26, .Lmn27, .Lmn28, .Lmn29
 	.globl	mh_map_list
 mh_map_list:
 	.byte	MH_MAP_LIST
+.Lmn0:	.asciz	"(none)"
+.Lmn1:	.asciz	"Veldin"
+.Lmn2:	.asciz	"Florana"
+.Lmn3:	.asciz	"Starship Phoenix"
+.Lmn4:	.asciz	"Marcadia"
+.Lmn5:	.asciz	"Daxx"
+.Lmn6:	.asciz	"Phoenix Rescue"
+.Lmn7:	.asciz	"Annihilation Nation"
+.Lmn8:	.asciz	"Aquatos"
+.Lmn9:	.asciz	"Tyhrranosis"
+.Lmn10:	.asciz	"Zeldrin Starport"
+.Lmn11:	.asciz	"Obani Gemini"
+.Lmn12:	.asciz	"Blackwater City"
+.Lmn13:	.asciz	"Holostar"
+.Lmn14:	.asciz	"Koros"
+.Lmn15:	.asciz	"(unused)"
+.Lmn16:	.asciz	"Metropolis"
+.Lmn17:	.asciz	"Crash Site"
+.Lmn18:	.asciz	"Aridia"
+.Lmn19:	.asciz	"Qwark's Hideout"
+.Lmn20:	.asciz	"Launch Site"
+.Lmn21:	.asciz	"Obani Draco"
+.Lmn22:	.asciz	"Command Center"
+.Lmn23:	.asciz	"Holostar Clank"
+.Lmn24:	.asciz	"Insomniac Museum"
+.Lmn25:	.asciz	"(unused)"
+.Lmn26:	.asciz	"Metropolis Rangers"
+.Lmn27:	.asciz	"Aquatos Clank"
+.Lmn28:	.asciz	"Aquatos Sewers"
+.Lmn29:	.asciz	"Tyhrranosis Rangers"
+	.globl	mh_help_text
+mh_help_text:
+	.asciz	MH_ENTRY_LABEL

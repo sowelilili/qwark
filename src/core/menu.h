@@ -66,6 +66,8 @@
 #define MENU_PAGE_SAVE_CAT   0x09   /* MAIN, arg: the category's place in the library */
 #define MENU_PAGE_UNLOCK_ACTIONS 0x0A /* CONFIG: the Unlocks page's buttons, where the game names them a page (round 3) */
 #define MENU_PAGE_ID(kind, arg) ((u16)(((u16)(kind) << 8) | (u8)(arg)))
+/* MENU_PAGE_PLANETS' arg (the pickers' round 2): the planets the game's picker cannot show, struct game_menu's picker_others. */
+#define MENU_PLANETS_OTHERS  0x01
 
 /*
  * Row ids, which a renderer echoes and never reads: a tag in the high byte, an

@@ -152,7 +152,8 @@ rac4_entry() { echo mh_frame_stub; }
 rac4_ldflags() {
 	echo "--defsym game_handle_menu_input=$(need "$1" GAME_HANDLE_MENU_INPUT)"
 	# The planet picker's stubs (mailbox version 3) go on to these.
-	for x in HANDLE_SELECTION GHOST_LISTED GHOST_TESTED COUNT_DONE BACK_TAKEN CLOSE_TAKEN INPUT_DONE; do
+	for x in HANDLE_SELECTION GHOST_LISTED GHOST_TESTED COUNT_DONE BACK_TAKEN CLOSE_TAKEN INPUT_DONE \
+	         LOCKED_DONE SKILLS_TAKEN SKILLS_NEXT; do
 		echo "--defsym dl_$(echo $x | tr 'A-Z' 'a-z')=$(need "$1" DL_$x)"
 	done
 }
@@ -182,11 +183,12 @@ rac4_hooks() {
 	echo "$site $(blword "$site" "$screen_stub") $(need "$hdr" MH_ORIG_SCREEN) bl mh_screen_stub ($screen_stub)"
 	site=$(need "$hdr" MH_SITE_INJECT)
 	echo "$site $(blword "$site" "$inject_stub") $(need "$hdr" MH_ORIG_INJECT) bl mh_inject_stub ($inject_stub)"
-	# The planet picker (mailbox version 3): Worlds' X, its four gates, its stop.
+	# The planet picker (mailbox version 3): Worlds' X, its six gates (the lock and
+	# Skills since the pickers' round 2), its stop.
 	stub=$(needsym "$elf" mh_select_stub)
 	site=$(need "$hdr" MH_SITE_SELECT)
 	echo "$site $(blword "$site" "$stub") $(need "$hdr" MH_ORIG_SELECT) bl mh_select_stub ($stub)"
-	for gate in GHOST COUNT BACK CLOSE; do
+	for gate in GHOST COUNT BACK CLOSE LOCKED SKILLS; do
 		lower=$(echo $gate | tr 'A-Z' 'a-z')
 		stub=$(needsym "$elf" mh_gate_$lower)
 		site=$(need "$hdr" MH_SITE_$gate)
@@ -217,6 +219,12 @@ rac3_hooks() {
 	help_desc=$(needsym "$elf" mh_help)
 	[ $((help_desc)) -ge $((data)) ] && [ $((help_desc)) -lt $((data + data_size)) ] ||
 		fail "rac3: mh_help's descriptor $help_desc is not in data.bin"
+	# The pickers' round 2: the map's names and list where the C reads them (MH_MAP_NAMES).
+	names=$(needsym "$elf" mh_map_names)
+	[ "$names" = "$(printf '0x%08X' $(($(need "$hdr" MH_MAP_NAMES))))" ] ||
+		fail "rac3: mh_map_names is at $names, not MH_MAP_NAMES: the stubs' read-only data is not the first"
+	[ "$(needsym "$elf" mh_map_list)" = "$(printf '0x%08X' $((names + 4 * $(need "$hdr" MH_MAP_PLANETS))))" ] ||
+		fail "rac3: mh_map_list does not follow the names' pointers"
 	site=$(need "$hdr" MH_SITE_MSG)
 	echo "$site $(bword "$site" "$msg_stub") $(need "$hdr" MH_ORIG_MSG) b mh_msg_stub ($msg_stub)"
 	for r in 8:ROWS8:mh_rows8_stub:MH_ORIG_ROWS8 9a:ROWS9A:mh_rows9a_stub:MH_ORIG_ROWS9 9b:ROWS9B:mh_rows9b_stub:MH_ORIG_ROWS9; do

@@ -24,7 +24,9 @@
  * on it, reads hstate MBOX_HSTATE_PICKER while the picker is up, and posts
  * what the player picked in pick_planet and pick_seq, the two words that sit
  * at the end of the header qwark polls. The page moved 8 bytes for them and
- * the hint is 8 bytes shorter.
+ * the hint is 8 bytes shorter. The pickers' round 2 adds an event: a picker
+ * that cannot show every planet asks qwark for its page of the others
+ * (MBOX_EV_PICKER_OTHERS).
  *
  * qwark owns the menu (src/core/menu.c): the pages, the navigation, what a row
  * does. A renderer is a small piece of code qwark writes into the game, one per
@@ -192,6 +194,14 @@
 #define MBOX_EV_PAGE_NEXT   6      /* R1: a window down, on a page that goes on below */
 #define MBOX_EV_SCROLL_UP   7      /* round 4: the cursor came to the window's first row, the page going on above */
 #define MBOX_EV_SCROLL_DOWN 8      /* round 4: to its last row, the page going on below */
+/*
+ * The planet pickers' round 2 (version 3): the game's own planet picker,
+ * opened from the root's Planets row (ev_row, ev_id: that row), cannot show
+ * every planet, and the player asked it for the others (UYA's GALACTIC MAP
+ * has no vid comics): qwark opens its page of them, struct game_menu's
+ * picker_others, or its whole Planets page where the game names none.
+ */
+#define MBOX_EV_PICKER_OTHERS 9
 
 /* pflags. */
 #define MBOX_PAGE_ROOT      0x01   /* back here leaves the menu, which the renderer does itself */

@@ -237,6 +237,50 @@ mh_gate_close:
 	b	dl_input_done
 9:	b	dl_close_taken
 
+/*
+ * The pickers' round 2: two more gates of the same kind.
+ *
+ * MH_SITE_LOCKED, 0x3B1590 in MenuPlanet_UpdatePlanets, for a planet's entry
+ * (type 0): `stbx r5,r7,r24` stores the entry's bLocked, r5 = 1 where the
+ * level's status byte has no 0x02 (unlocked), into the list at r7 (entry r24).
+ * It becomes `b mh_gate_locked`, a leaf: the game's r5, or 0 while the picker
+ * is up, so the menu's Worlds draws a planet as an unlocked one (no lock; the
+ * game's NEW mark where the save has not visited it) and its panel the planet's
+ * own text (MenuPlanet_UpdateForPlanet reads bLocked), every planet being one
+ * the pick can load. Then on to 0x3B1594. r5 is set again at 0x3B15A0 before
+ * it is read; r12 the function never uses; cr0 is set again (0x3B1610,
+ * 0x3B1760) before it is read on every path from here.
+ */
+	.globl	mh_gate_locked
+mh_gate_locked:
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	beq	9f
+	li	%r5,0
+9:	stbx	%r5,%r7,%r24
+	b	dl_locked_done
+
+/*
+ * MH_SITE_SKILLS, 0x3B2794 in MenuPlanet_HandleInput: `beq 0x3B284C` on cr0
+ * from `cmpwi r3,4` (command 4, Circle: the Skills screen) becomes
+ * `b mh_gate_skills`, a leaf. Another command goes on to the next test
+ * (0x3B2798, `cmpwi r3,2`, r3 untouched); command 4 goes to Skills (0x3B284C),
+ * unless the picker is up, when it is ignored (0x3B28D4, the epilogue). r12
+ * and cr0 are dead at the last two: Skills calls GetCurrentCanvas first, and
+ * the epilogue reads neither.
+ */
+	.globl	mh_gate_skills
+mh_gate_skills:
+	bne	8f
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	9f
+	b	dl_skills_taken
+8:	b	dl_skills_next
+9:	b	dl_input_done
+
 	.section ".rodata","a"
 	.globl	mh_help_text
 mh_help_text:

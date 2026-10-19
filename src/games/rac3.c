@@ -1412,6 +1412,21 @@ static void rac3_menu_status(u8 id, u32 word, char *out, u32 cap)
 	}
 }
 
+/*
+ * The planet pickers' round 2 (struct game_menu's picker_others): the GALACTIC
+ * MAP, which the Planets row opens, has no picture for a vid comic, so its
+ * Square ("VID-COMICS" in the Trainer's map) opens this page instead, the base
+ * vid comics 1 to 5 in their own order, as rac3_planet_order lists them (the
+ * game's own name table names planet 31 "Pirate Booty!", 33 "Arriba Amoeba!",
+ * 34 "Shadow of the Robot", 32 "Deja Q All Over Again" and 35 "The Shaming of
+ * the Q": issues 1 to 5). Vid Comic 6 and 1 SE stay on the Planets page.
+ */
+static const u8 rac3_menu_comics[] = { 31, 33, 34, 32, 35 };
+
+static const struct menu_section rac3_menu_picker_others = {
+	"Vid-Comics", rac3_menu_comics, (u8)sizeof(rac3_menu_comics)
+};
+
 static const struct game_menu rac3_menu = {
 	rac3_menu_sections, (u8)(sizeof(rac3_menu_sections) / sizeof(rac3_menu_sections[0])),
 	rac3_menu_unlock_actions, (u8)sizeof(rac3_menu_unlock_actions),
@@ -1421,7 +1436,8 @@ static const struct game_menu rac3_menu = {
 	NULL,                 /* every planet with a name: the plain list, in rac3_planet_order */
 	rac3_unlock_levels,
 	rac3_menu_status,
-	"Collectables"        /* the six buttons on a page of their own (round 3) */
+	"Collectables",       /* the six buttons on a page of their own (round 3) */
+	&rac3_menu_picker_others   /* the vid comics, which the GALACTIC MAP cannot show */
 };
 
 /* ---------------------------------------------------------------- vtable */

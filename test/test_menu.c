@@ -588,7 +588,8 @@ static void worlds_focus(int count, int focus)
  * A press on Worlds, MenuPlanet_HandleInput with the renderer's words in: X is
  * mh_select_stub (mh_worlds_select, else the game's HandleSelection), Triangle
  * and Start pass their gates (mh_gate_back, mh_gate_close: a mission active,
- * or the picker up; check.py steps the real ones), Circle pushes Skills.
+ * or the picker up; check.py steps the real ones), Circle pushes Skills but
+ * in the menu's Worlds (mh_gate_skills, the pickers' round 2).
  */
 static void worlds_press(int cmd)
 {
@@ -613,11 +614,21 @@ static void worlds_press(int cmd)
 		}
 		break;
 	case 4:
-		mock_push_screen(0, 21);
+		if (!mh_picker_up()) mock_push_screen(0, 21);
 		break;
 	default:
 		break;
 	}
+}
+
+/*
+ * UpdatePlanets' bLocked for entry i, a planet whose level the save has
+ * `unlocked` or not, with the renderer's word at its store (mh_gate_locked,
+ * the pickers' round 2; check.py steps the real one): 0 in the menu's Worlds.
+ */
+static void worlds_lock(int i, int unlocked)
+{
+	w8(WORLDS_ENTRIES + 12u * (u32)i, (!unlocked && !mh_picker_up()) ? 1u : 0u);
 }
 
 /* Row i of the list as the game shows it. */
@@ -1119,6 +1130,13 @@ static void test_model_dl(void)
 	      peek32(RAC4_TARGET_PLANET) != 2, "the cross on Catacrom: the row waits, nothing loads yet");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
+	/* The pickers' round 2: Deadlocked names no planets its picker cannot show, so the event opens the whole page. */
+	r = view_row(&v, "Planets");
+	check(r != NULL && menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_OK &&
+	      menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0),
+	      "the picker's MBOX_EV_PICKER_OTHERS, in a game with no picker_others: the whole Planets page");
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
 
 	/* Mailbox version 3: with a renderer that opens the game's own picker, the root's Planets row says so. */
 	check((view_row(&v, "Planets")->flags & MROWF_PICKER) == 0, "a renderer without the picker: Planets a plain link");
@@ -1351,9 +1369,9 @@ static void test_mailbox(void)
 
 	group("console menu: the install and the mailbox");
 
-	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 15 && d->ncaves == 4,
-	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, fifteen hook words "
-	      "(nine, and the planet picker's six)");
+	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 17 && d->ncaves == 4,
+	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, seventeen hook words "
+	      "(nine, and the planet picker's eight)");
 	check(d != NULL && d->caves[0].zeros > 1000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
 	      d->caves[1].len < 64, "the mailbox and the state are carried as a few bytes and a count of zeros");
 	check(mh_desc_for_game(GAME_RAC1) != NULL && mh_desc_for_game(GAME_RAC2) != NULL &&
@@ -1364,13 +1382,19 @@ static void test_mailbox(void)
 		if (d->hooks[i].addr >= 0x003A6858u && d->hooks[i].addr < 0x003A6F74u) break;
 	}
 	check(i == d->nhooks, "none of them in MenuMain_StartOptions: Options is the game's own list");
-	check(d->hooks[13].addr == MH_SITE_HELP_LABEL && d->hooks[14].addr == MH_SITE_HELP_SCREEN &&
-	      d->hooks[14].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
+	check(d->hooks[15].addr == MH_SITE_HELP_LABEL && d->hooks[16].addr == MH_SITE_HELP_SCREEN &&
+	      d->hooks[16].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
 	check(d->hooks[7].addr == MH_SITE_SELECT && d->hooks[8].addr == MH_SITE_GHOST && d->hooks[9].addr == MH_SITE_COUNT &&
 	      d->hooks[10].addr == MH_SITE_BACK && d->hooks[11].addr == MH_SITE_CLOSE &&
-	      d->hooks[12].addr == MH_WORLDS_STOP && d->hooks[12].original == MH_ORIG_WORLDS_STOP &&
+	      d->hooks[14].addr == MH_WORLDS_STOP && d->hooks[14].original == MH_ORIG_WORLDS_STOP &&
 	      d->hooks[7].original == MH_ORIG_SELECT && d->hooks[9].original == MH_ORIG_COUNT,
-	      "before them the planet picker's: Worlds' X, its four gates and its stop, with the game's words");
+	      "before them the planet picker's: Worlds' X, its gates and its stop, with the game's words");
+	check(d->hooks[12].addr == MH_SITE_LOCKED && d->hooks[12].original == MH_ORIG_LOCKED &&
+	      (d->hooks[12].value >> 26) == 18 && (d->hooks[12].value & 3) == 0 &&
+	      d->hooks[13].addr == MH_SITE_SKILLS && d->hooks[13].original == MH_ORIG_SKILLS &&
+	      (d->hooks[13].value >> 26) == 18 && (d->hooks[13].value & 3) == 0,
+	      "the pickers' round 2: the lock's gate and Circle's, each a plain branch to a stub, after the four, "
+	      "before the stop");
 
 	/* The install, a few seconds into the session and only in play. */
 	check(menu_install_delay_us() == 3000000ull, "the install is due three seconds into a session");
@@ -2352,33 +2376,44 @@ static void test_picker(void)
 	tick(8);
 	check(peek32(RAC4_TARGET_PLANET) == 0 && menu_model_depth() == 1, "nothing loads");
 
-	/* Circle's Skills ends it too: back from Skills, Worlds is the game's own. */
+	/*
+	 * The pickers' round 2, the user's calls: Circle (Skills) does nothing in
+	 * the menu's Worlds (mh_gate_skills; round 1 pushed Skills, after which
+	 * Worlds was the game's own), and no planet there has a lock beside it,
+	 * every one being one a pick loads (mh_gate_locked).
+	 */
 	dl_menu_open();
 	G.cursor = planets_row;
 	game_frame(PADB_CROSS);
+	n = W.game_stops;
+	G.sound = -1;
 	worlds_press(4);
-	check(G.screen == 21 && !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
-	      "Circle on Worlds pushes Skills: the picker over, the menu closed");
-	mock_pop_screen();
-	check(G.screen == DL_SCREEN_WORLDS && W.up, "back from Skills to Worlds");
-	n = W.selections;
-	worlds_press(DL_CMD_CROSS);
-	check(W.selections == n + 1 && peek32(RAC4_TARGET_PLANET) == 0, "now the game's own: X is HandleSelection's");
+	check(G.screen == DL_SCREEN_WORLDS && W.up && mh_picker_up() && W.game_stops == n && G.sound == -1 &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER,
+	      "Circle on the menu's Worlds: nothing, no Skills screen, no sound; Worlds and the picker stay up");
+	worlds_entry(6, 0, 6, DL_TYPE_PLANET);
+	worlds_lock(2, 0);                             /* Sarathos, which the save has not unlocked */
+	worlds_lock(6, 1);                             /* Shaar, which it has */
+	check(r8(WORLDS_ENTRIES + 24) == 0 && r8(WORLDS_ENTRIES + 72) == 0 && r8(WORLDS_ENTRIES + 36) == 1,
+	      "and its planets are drawn unlocked, Sarathos too (no lock beside it); a locked tournament keeps its lock");
 	worlds_press(DL_CMD_TRIANGLE);
-	check(G.screen == DL_SCREEN_WORLDS, "and the trap holds Triangle, as the game has it");
-	W.mission = 3;
-	worlds_press(DL_CMD_TRIANGLE);
-	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
-	      "a mission active: back to screen 36, which opens again");
+	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up(),
+	      "Triangle: back to the root as ever");
 	game_frame(PADB_START);
 	check(G.screen == 0, "Start closes it");
-	W.mission = -1;
+	worlds_entry(2, 1, 4, DL_TYPE_PLANET);
 	tick(4);
 
 	/* The game's own Worlds, from the main menu's WORLDS row: nothing of the menu's. */
 	game_open_pause();
 	mock_push_screen(0, DL_SCREEN_WORLDS);
 	check(G.screen == DL_SCREEN_WORLDS && !mh_picker_up(), "the main menu's WORLDS row: the game's own Worlds");
+	worlds_lock(2, 0);
+	check(r8(WORLDS_ENTRIES + 24) == 1, "Sarathos with its lock there, as the game draws it");
+	worlds_press(4);
+	check(G.screen == 21 && W.game_stops > 0, "Circle: the game's own Skills screen, as ever");
+	mock_pop_screen();
+	check(G.screen == DL_SCREEN_WORLDS && W.up && !mh_picker_up(), "and back from it to the game's Worlds");
 	worlds_focus(6, 2);
 	n = W.selections;
 	seq = peek32(mb + MBOX_OFF_PICK_SEQ);

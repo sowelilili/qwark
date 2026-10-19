@@ -527,10 +527,12 @@ static u8 page_items(u16 page, u16 *ids)
 
 	case MENU_PAGE_PLANETS: {
 		const char * const *names;
+		/* The pickers' round 2: the planets the game's picker cannot show, where it names them. */
+		const struct menu_section *o = arg == MENU_PLANETS_OTHERS && gm != NULL ? gm->picker_others : NULL;
 		if (g_game == NULL || g_game->planet_names == NULL) return 0;
 		names = g_game->planet_names(&count);
-		for (i = 0; i < count; i++) {
-			u8 p = g_game->planet_order != NULL ? g_game->planet_order[i] : i;
+		for (i = 0; i < (o != NULL ? o->nitems : count); i++) {
+			u8 p = o != NULL ? o->items[i] : g_game->planet_order != NULL ? g_game->planet_order[i] : i;
 			if (p >= count || names[p] == NULL || names[p][0] == '(' || names[p][0] == 0) continue;
 			if (gm != NULL && gm->planet_ok != NULL && !gm->planet_ok(p)) continue;
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PLANET, p));
@@ -635,6 +637,12 @@ static void page_title(u16 page, char *out, u32 cap)
 	case MENU_PAGE_SAVE_CAT:
 		if (save_category(arg, cat)) qstrcpy(out, cap, cat);
 		return;
+	case MENU_PAGE_PLANETS:
+		if (arg == MENU_PLANETS_OTHERS && gm != NULL && gm->picker_others != NULL) {
+			qstrcpy(out, cap, gm->picker_others->title);
+			return;
+		}
+		/* fall through */
 	default:
 		qstrcpy(out, cap, page_name(page_kind(page)));
 		return;
@@ -1379,6 +1387,16 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 	case MBOX_EV_ACTIVATE: return act(row, id, 0);
 	case MBOX_EV_LEFT:     return act(row, id, -1);
 	case MBOX_EV_RIGHT:    return act(row, id, 1);
+	case MBOX_EV_PICKER_OTHERS:
+		/*
+		 * The pickers' round 2: on the Planets row, the game's picker asked for
+		 * the planets it cannot show (UYA's map, the vid comics): the game's
+		 * page of them, or the whole Planets page where it names none.
+		 */
+		if (id != MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS)) return ST_BAD_ARG;
+		return nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS,
+		                             gmenu() != NULL && gmenu()->picker_others != NULL ? MENU_PLANETS_OTHERS : 0),
+		                row, 0, 0);
 	default:               return ST_BAD_ARG;
 	}
 }

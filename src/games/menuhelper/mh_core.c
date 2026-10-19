@@ -394,8 +394,24 @@ static void closed(void)
  * Version 3: the cross on the Planets row of a renderer with the game's own
  * picker. The picker is up before the shim opens it, since the menu's screen
  * stops on the way (mh_core_stop) and must know it is no close. Answers 1 when
- * the shim opened it.
+ * the shim opened it. With MH_PICKER_OTHERS (the pickers' round 2) it answers
+ * what the shim answered, MH_PICK_OTHERS among them; without, it is the same
+ * code as before, so the games that do not use it build byte for byte as they
+ * did.
  */
+#if MH_PICKER_OTHERS
+static u32 picker(int p)
+{
+	u32 k;
+
+	if (r8(ST(ST_HAVE_PAGE)) == 0) return MH_PICK_REFUSED;
+	w8(ST(ST_PICKER), 1);
+	k = shim_picker(p);
+	if (k == MH_PICK_OPENED) return k;
+	w8(ST(ST_PICKER), 0);
+	return k;
+}
+#else
 static int picker(int p)
 {
 	if (r8(ST(ST_HAVE_PAGE)) == 0) return 0;
@@ -404,6 +420,7 @@ static int picker(int p)
 	w8(ST(ST_PICKER), 0);
 	return 0;
 }
+#endif
 
 MH_API void mh_core_picker_gone(int p)
 {
@@ -427,6 +444,9 @@ MH_API void mh_core_pick(int p, s32 planet)
 MH_API void mh_core_press(int p, u32 button, u32 row)
 {
 	u32 flags = row < nrows() ? r8(front() + SET_FLAGS + row) : 0;
+#if MH_PICKER && MH_PICKER_OTHERS
+	u32 k;
+#endif
 
 	/* A screen on its way out acts on nothing but a close. */
 	if (r8(ST(ST_SWITCHING)) != 0 && button != MH_BTN_CLOSE) return;
@@ -438,6 +458,16 @@ MH_API void mh_core_press(int p, u32 button, u32 row)
 	switch (button) {
 	case MH_BTN_CROSS:
 		if ((flags & MROWF_ENABLED) == 0) return;
+#if MH_PICKER && MH_PICKER_OTHERS
+		/* The pickers' round 2: a picker may send the player to qwark's page of the planets it cannot show. */
+		k = (flags & MROWF_PICKER) != 0 ? picker(p) : MH_PICK_REFUSED;
+		if (k == MH_PICK_OPENED) {
+			shim_sound(MH_SND_FORWARD);
+			return;
+		}
+		if (post(k == MH_PICK_OTHERS ? MBOX_EV_PICKER_OTHERS : MBOX_EV_ACTIVATE, row)) shim_sound(MH_SND_FORWARD);
+		return;
+#else
 #if MH_PICKER
 		if ((flags & MROWF_PICKER) != 0 && picker(p)) {
 			shim_sound(MH_SND_FORWARD);
@@ -446,6 +476,7 @@ MH_API void mh_core_press(int p, u32 button, u32 row)
 #endif
 		if (post(MBOX_EV_ACTIVATE, row)) shim_sound(MH_SND_FORWARD);
 		return;
+#endif
 	case MH_BTN_LEFT:
 	case MH_BTN_RIGHT:
 		if ((flags & MROWF_STEPS) != 0 &&

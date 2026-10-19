@@ -162,6 +162,8 @@ STUB_FIRST = {
     "mh_gate_count": (0xFFFFFFFF, 0x3860000F, "li r3,15, the game's own count first"),
     "mh_gate_back": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
     "mh_gate_close": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
+    "mh_gate_locked": (0xFFFF0000, 0x3D800000, "lis r12,..., the picker's byte"),
+    "mh_gate_skills": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
     "mh_frame_stub": (0xFFFFFFFF, 0xF821FF81, "stdu r1,-0x80(r1)"),
     "mh_inject_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
     "mh_screen_stub": (0xFFFFFFFF, 0x38800001, "li r4,1"),
@@ -424,6 +426,22 @@ def written_regs(w):
     return ()
 
 
+def uses_reg(w, reg):
+    """Whether an instruction names general register `reg` in a register field (branches, CR ops and a
+    compare's CR field apart): what a gate that writes `reg` must not find in the function round it."""
+    op = w >> 26
+    rd, ra, rb = (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31
+    if op in (16, 17, 18, 19):
+        return False
+    if op in (10, 11):
+        return ra == reg
+    if op == 31:
+        return reg in (rd, ra, rb)
+    if op in (21, 23):
+        return reg in (rd, ra) or (op == 23 and rb == reg)
+    return reg in (rd, ra)
+
+
 def lint_code(code, base, allowed=()):
     bad = []
     for i in range(len(code) // 4):
@@ -557,6 +575,8 @@ class Ppc:
                 self.set(rd, signed(self.r[ra]) * simm)
             elif op == 24:                                  # ori (rS, rA swapped)
                 self.set(ra, self.r[rd] | imm)
+            elif op == 27:                                  # xoris (rS, rA swapped)
+                self.set(ra, self.r[rd] ^ (imm << 16))
             elif op == 28:                                  # andi. (rS, rA swapped)
                 self.set(ra, self.r[rd] & imm)
                 self.cmp(signed(self.r[ra]), 0)
@@ -589,6 +609,8 @@ class Ppc:
                 a = signed(self.r[ra])
                 self.crf[rd >> 2] = -1 if a < simm else (1 if a > simm else 0)
                 self.written.add("cr%d" % (rd >> 2))
+            elif op == 31 and ((w >> 1) & 0x3FF) == 215:    # stbx
+                self.st(((self.r[ra] if ra else 0) + self.r[rb]) & 0xFFFFFFFF, self.r[rd], 1)
             elif op == 31 and ((w >> 1) & 0x3FF) == 87:     # lbzx
                 self.set(rd, self.ld(((self.r[ra] if ra else 0) + self.r[rb]) & 0xFFFFFFFF, 1))
             elif op == 10 and (rd >> 2) == 0:               # cmplwi cr0
@@ -1019,6 +1041,78 @@ def check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at):
                "written")
         except ValueError as e:
             ok(False, "mh_gate_count steps: %s" % e)
+    # The pickers' round 2: a planet's lock in UpdatePlanets, and Circle's Skills in HandleInput.
+    lk = hdr["MH_SITE_LOCKED"]
+    ok(w(0x003B14DC) == 0x80740008 and w(0x003B14E4) == 0x2C030000 and
+       branch_target(0x003B14F0, w(0x003B14F0)) == 0x003B1650 and
+       w(0x003B1548) == 0x88840300 and w(0x003B154C) == 0x548907BC and
+       w(lk) == hdr["MH_ORIG_LOCKED"] == 0x7CA7C1AE and lk + 4 == hdr["DL_LOCKED_DONE"] and
+       w(0x003B1504) == 0x63670000 and w(0x003B14CC) == 0x3F60011A and w(0x003B14D0) == 0x337B1374,
+       "the lock's site (0x%08X) is on UpdatePlanets' path for a planet (an entry's type 0, 0x3B14E4), after "
+       "the level's status byte (+0x300, 0x3B1548) and its bit 0x02 (0x3B154C): stbx r5,r7,r24, bLocked into the "
+       "list at 0x11A1374 (r7 = r27)" % lk)
+    ok(w(lk + 4) == 0x39000000 and w(lk + 8) == 0x39200001 and w(lk + 12) == 0x7884D146 and
+       w(lk + 16) == 0x38A00001 and
+       w(0x003B15CC) == 0x41860008 and w(0x003B15D0) == 0x409A0190 and
+       not any((w(a) >> 26) == 16 and ((w(a) >> 18) & 7) == 0 for a in range(lk + 4, 0x003B15D4, 4)) and
+       w(0x003B1610) == 0x2C050000 and w(0x003B1760) == 0x2C1E000E and
+       not [a for a in range(0x003B1440, 0x003B1BB0, 4) if uses_reg(w(a), 12)],
+       "after it r5 is set again (li r5,1, 0x%08X) before it is read, no branch reads cr0 before 0x3B1610 or "
+       "0x3B1760 sets it again, and the function never writes r12: the gate's r5, r12 and cr0 are free" % (lk + 16))
+    ok(w(0x003B16C4) == 0x7C9BC1AE and w(0x003B1828) == 0x3B607548 and w(0x003B1804) == 0x88740000,
+       "a tournament's lock is the other store (0x3B16C4), which stays the game's; the list's icon is the lock "
+       "(0x7548, 0x3B1828) on bLocked (0x3B1804)")
+    sk = hdr["MH_SITE_SKILLS"]
+    ok(w(sk - 4) == 0x2C030004 and branch_target(sk, hdr["MH_ORIG_SKILLS"]) == hdr["DL_SKILLS_TAKEN"] and
+       sk + 4 == hdr["DL_SKILLS_NEXT"] and w(hdr["DL_SKILLS_NEXT"]) == 0x2C030002 and
+       branch_target(hdr["DL_SKILLS_TAKEN"], w(hdr["DL_SKILLS_TAKEN"])) == 0x000B2244 and
+       w(hdr["DL_SKILLS_TAKEN"] + 0x20) == 0x38800015 and
+       branch_target(hdr["DL_SKILLS_TAKEN"] + 0x34, w(hdr["DL_SKILLS_TAKEN"] + 0x34)) == 0x00362308 and
+       branch_target(hdr["DL_SKILLS_TAKEN"] + 0x3C, w(hdr["DL_SKILLS_TAKEN"] + 0x3C)) == hdr["DL_INPUT_DONE"] and
+       w(0x003B2768) == 0x38600006 and branch_target(0x003B2770, w(0x003B2770)) == 0x00360958,
+       "Circle's gate (0x%08X): GuiMain_GetMenuCommand(6)'s command 4 goes to 0x%08X, GetCurrentCanvas then "
+       "GuiMenu_PushScreen(p, 21), the Skills screen; any other command to the next test (0x%08X)" %
+       (sk, hdr["DL_SKILLS_TAKEN"], hdr["DL_SKILLS_NEXT"]))
+    if "mh_gate_locked" in stub_at:
+        try:
+            good = True
+            for up in (0, 1):
+                for r5 in (0, 1):
+                    cpu = Ppc(code, cave, {})
+                    cpu.st(picker, up, 1)
+                    cpu.r = [0x1000 + i for i in range(32)]
+                    cpu.r[5], cpu.r[7], cpu.r[24] = r5, 0x011A1374, 0x18
+                    cpu.st(0x011A1374 + 0x18, 0x77, 1)
+                    keep = list(cpu.r)
+                    how = cpu.run(stub_at["mh_gate_locked"])
+                    good = good and how == ("b", hdr["DL_LOCKED_DONE"]) and \
+                        cpu.ld(0x011A1374 + 0x18, 1) == (0 if up else r5) and \
+                        all(cpu.r[i] == keep[i] for i in range(32) if i not in (5, 12)) and \
+                        cpu.r[5] == (0 if up else r5) and cpu.written <= {"r5", "r12", "cr0"}
+            ok(good, "mh_gate_locked stepped: the entry's bLocked the game's (locked or not) with the picker down, "
+               "0 with it up, on to 0x%08X; only r5, r12 and cr0 written" % hdr["DL_LOCKED_DONE"])
+        except ValueError as e:
+            ok(False, "mh_gate_locked steps: %s" % e)
+    if "mh_gate_skills" in stub_at:
+        try:
+            outs = []
+            for eq in (1, 0):
+                for up in (0, 1):
+                    cpu = Ppc(code, cave, {})
+                    cpu.st(picker, up, 1)
+                    cpu.cr0 = 0 if eq else 1
+                    cpu.r = [0x1000 + i for i in range(32)]
+                    keep = list(cpu.r)
+                    how = cpu.run(stub_at["mh_gate_skills"])
+                    outs.append((how, all(cpu.r[i] == keep[i] for i in range(32) if i != 12)))
+            ok([o[0] for o in outs] == [("b", hdr["DL_SKILLS_TAKEN"]), ("b", hdr["DL_INPUT_DONE"]),
+                                         ("b", hdr["DL_SKILLS_NEXT"]), ("b", hdr["DL_SKILLS_NEXT"])] and
+               all(o[1] for o in outs),
+               "mh_gate_skills stepped: Circle goes to Skills (0x%08X) with the picker down and is ignored "
+               "(0x%08X) with it up; another command on to its test (0x%08X) either way; only r12 and cr0 "
+               "written, r3 kept" % (hdr["DL_SKILLS_TAKEN"], hdr["DL_INPUT_DONE"], hdr["DL_SKILLS_NEXT"]))
+        except ValueError as e:
+            ok(False, "mh_gate_skills steps: %s" % e)
     # The select stub: the frame stub's shape, mh_worlds_select with the module's TOC, else HandleSelection.
     at = stub_at.get("mh_select_stub")
     if at is not None:
@@ -1127,17 +1221,18 @@ def check_rac4(ok, elf, roots, bonus=None):
     }
     slot = hdr["MH_SCREEN_SLOT"]
     sites[hdr["MH_SITE_HELP_LABEL"]] = ("mh_help_label", hdr["MH_ORIG_HELP_LABEL"])
-    # Mailbox version 3, the planet picker: Worlds' X (a bl) and its four gates (each a b).
+    # Mailbox version 3, the planet picker: Worlds' X (a bl) and its six gates (each a b; the lock and Skills
+    # since the pickers' round 2).
     sites[hdr["MH_SITE_SELECT"]] = ("mh_select_stub", hdr["MH_ORIG_SELECT"])
-    for g in ("GHOST", "COUNT", "BACK", "CLOSE"):
+    for g in ("GHOST", "COUNT", "BACK", "CLOSE", "LOCKED", "SKILLS"):
         sites[hdr["MH_SITE_" + g]] = ("mh_gate_" + g.lower(), hdr["MH_ORIG_" + g])
-    ok(len(hooks) == 15 and [h[0] for h in hooks] ==
+    ok(len(hooks) == 17 and [h[0] for h in hooks] ==
        [slot, slot + 4, slot + 8, slot + 12, hdr["MH_SITE_FRAME"], hdr["MH_SITE_SCREEN"],
         hdr["MH_SITE_INJECT"], hdr["MH_SITE_SELECT"], hdr["MH_SITE_GHOST"], hdr["MH_SITE_COUNT"],
-        hdr["MH_SITE_BACK"], hdr["MH_SITE_CLOSE"], hdr["MH_WORLDS_STOP"],
-        hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]],
-       "fifteen words: screen 36's slot, then the frame, screen and inject hooks, then the planet picker's six "
-       "(Worlds' X, its four gates, its stop), then the Help row's two")
+        hdr["MH_SITE_BACK"], hdr["MH_SITE_CLOSE"], hdr["MH_SITE_LOCKED"], hdr["MH_SITE_SKILLS"],
+        hdr["MH_WORLDS_STOP"], hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]],
+       "seventeen words: screen 36's slot, then the frame, screen and inject hooks, then the planet picker's eight "
+       "(Worlds' X, its six gates, its stop), then the Help row's two")
     for a, value, orig, what in hooks:
         ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
 
@@ -1176,7 +1271,7 @@ def check_rac4(ok, elf, roots, bonus=None):
        "and keeps every word")
     ok(not [a for a, _ in refs_into(elf, hdr["DL_HELP_CB"], hdr["DL_HELP_CB"] + 4)[0]],
        "and no code branches into the callback")
-    ok(hooks[14][1] == hdr["MH_HELP_SCREEN_WORD"] == 0x38800000 | hdr["MH_SCREEN_ID"],
+    ok(hooks[16][1] == hdr["MH_HELP_SCREEN_WORD"] == 0x38800000 | hdr["MH_SCREEN_ID"],
        "the callback's word becomes li r4,%d" % hdr["MH_SCREEN_ID"])
 
     # 4a. the game's own menus
@@ -1240,7 +1335,8 @@ def check_rac4(ok, elf, roots, bonus=None):
 
     # 4. the code, 5. the descriptors
     picker_outs = dict((hdr[k], k) for k in ("DL_HANDLE_SELECTION", "DL_GHOST_LISTED", "DL_GHOST_TESTED",
-                                              "DL_COUNT_DONE", "DL_BACK_TAKEN", "DL_CLOSE_TAKEN", "DL_INPUT_DONE"))
+                                              "DL_COUNT_DONE", "DL_BACK_TAKEN", "DL_CLOSE_TAKEN", "DL_INPUT_DONE",
+                                              "DL_LOCKED_DONE", "DL_SKILLS_TAKEN", "DL_SKILLS_NEXT"))
     allowed = (hdr["GAME_HANDLE_MENU_INPUT"],) + tuple(picker_outs)
     bad = lint_code(code, cave, allowed=allowed)
     ok(not bad, "the code: no branch out but the stubs' tail branches, no sc, no vector instruction, "
@@ -1249,10 +1345,11 @@ def check_rac4(ok, elf, roots, bonus=None):
         print("        " + b)
     outs = [cave + i for i in range(0, len(code), 4)
             if branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0]) in allowed]
-    ok(len(outs) == 9 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 and o < core[0]
-                              for o in outs),
-       "nine ways out, every one a plain branch (no link) from a stub, before the core: the frame stub's tail call "
-       "to HandleMenuInput, the select stub's to HandleSelection, and the gates' seven back into Worlds' code")
+    ok(len(outs) == 13 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 and o < core[0]
+                               for o in outs),
+       "thirteen ways out, every one a plain branch (no link) from a stub, before the core: the frame stub's tail "
+       "call to HandleMenuInput, the select stub's to HandleSelection, and the gates' eleven back into Worlds' "
+       "code (the lock's one and Skills' three since the pickers' round 2)")
 
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
     bad, seen = calls_via_descriptors(code, cave, set(opds), elf)
@@ -1408,8 +1505,21 @@ def check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
             good = good and how == ("blr", None) and cpu.r[3] == text0 + f * set_size + i * text_len and                 cpu.written <= msg_ok
         ok(good, "msg stub, 0xF001 + i for each of the %d MAIN rows: row i of text set %d, the one on show "
            "(mh_text(i))" % (hdr["MH_MAIN_ROWS"], f))
-    for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, 0xF010, 0xEFFF, 0x106, 0x522):
-        cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234})
+    # The pickers' round 2: the Trainer's map's names, PLANET_LIST's, from the table at MH_MAP_NAMES.
+    names = rac3_planet_names()
+    image = dict(((hdr["MH_DATA"] + i, 1), b) for i, b in enumerate(data))
+    good = len(names) >= hdr["MH_MAP_PLANETS"] == 30
+    for p in range(hdr["MH_MAP_PLANETS"]):
+        cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_PLANET"] + p, 4: 0x1234}, image)
+        good = good and how == ("blr", None) and p < len(names) and cstr(cpu.r[3]) == names[p] and \
+            cpu.written <= msg_ok
+    ok(good, "msg stub, 0x%X + p for each of the map's %d planets: PLANET_LIST's name of planet p "
+       "(src/games/rac3.c), from the table at 0x%08X in the data image" %
+       (hdr["MH_MSG_PLANET"], hdr["MH_MAP_PLANETS"], hdr["MH_MAP_NAMES"]))
+    for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, 0xF010, 0xEFFF, 0x106, 0x522,
+                hdr["MH_MSG_PLANET"] - 1, hdr["MH_MSG_PLANET"] + hdr["MH_MAP_PLANETS"],
+                hdr["MH_MSG_PLANET"] + 0x3F, hdr["MH_MSG_PLANET"] + 0x40, 0xFFFFF040, 0x1F040):
+        cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234}, image)
         ok(how == ("b", hdr["GAME_MSG_EXIT"]) and cpu.r[3] == idn and cpu.r[4] == 0 and cpu.written <= msg_ok,
            "msg stub, 0x%X: on into msg_string with r4 = 0 (its first instruction), r3 kept" % idn)
 
@@ -1753,12 +1863,11 @@ def map_list(hdr):
     return [int(x) for x in m.group(1).split(",")] if m else []
 
 
-def map_name_words(hdr):
-    """MH_MAP_NAME_WORDS: {the word, its text while the Trainer's map builds, the game's}."""
-    text = open(os.path.join(HERE, "mh_rac3.h"), encoding="utf-8").read().replace("\\\n", " ")
-    m = re.search(r"#define\s+MH_MAP_NAME_WORDS\s+(.*)", text)
-    return [tuple(int(x, 0) for x in t) for t in
-            re.findall(r"\{\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+)\s*\}", m.group(1))] if m else []
+def rac3_planet_names():
+    """PLANET_LIST's names for UYA, out of src/games/rac3.c (rac3_planets)."""
+    text = open(os.path.join(QWARK, "src", "games", "rac3.c"), encoding="utf-8").read()
+    m = re.search(r"static const char \* const rac3_planets\[\] = \{(.*?)\};", text, re.S)
+    return re.findall(r'"([^"]*)"', m.group(1)) if m else []
 
 
 def check_rac3_map(ok, elf, hdr, code, cave, data, stub_at):
@@ -1820,7 +1929,7 @@ def check_rac3_map(ok, elf, hdr, code, cave, data, stub_at):
     ok(0x386015C6 in init and any(imm32(elf, a) == hdr["U_MAP_HINT"] for a in range(0x002CED28, 0x002CF600, 4)
                                   if (W(a) >> 26) == 24),
        "the init makes Square's hint, 0x%08X, with text 0x15C6 (\" MISSIONS\"), which the Trainer's map "
-       "relabels ALL PLANETS" % hdr["U_MAP_HINT"])
+       "relabels VID-COMICS" % hdr["U_MAP_HINT"])
 
     # The Trainer's list: rac3.c's menu order, the planets with a picture.
     want = map_list(hdr)
@@ -1840,24 +1949,27 @@ def check_rac3_map(ok, elf, hdr, code, cave, data, stub_at):
        "the map's 30" % len(want))
     ok(all((pics[p] or 0) != 0 for p in range(1, 30)) and pics[30] == 0xFFFFFFFF,
        "0xC4EFFC has a picture for every planet 1 .. 29; at 30 it is 0xC4F074, the map's own -1")
-    # The names: the build's rule (0x2CEB04: the planet's text for these), with the five words changed.
+    # The names (the pickers' round 2): the build's rule (0x2CEB04: the planet's text for these, the location's
+    # for the rest) and the init's (the same), both of which mh_map_init answers by swapping both words of each
+    # listed planet for MH_MSG_PLANET + p, which the msg stub answers with PLANET_LIST's name.
     group = set(w & 0xFFFF for w in (W(a) for a in range(0x002CEB04, 0x002CEB74, 4)) if (w >> 16) == 0x2C03)
     ok(group == {1, 2, 4, 5, 8, 9, 10, 13, 14, 18, 23, 27, 28, 29},
        "the build names planets %s by their planet's text, the rest by their location's" % sorted(group))
-    words = map_name_words(hdr)
+    ok(W(0x002CEA84) == 0x33390000 | 0x09E4 and W(0x002CEA78) == 0x3F2000C4 and W(0x002CEBB4) == 0x80830004 and
+       W(0x002CEBFC) == 0x7CB9182E and branch_target(0x002CEC08, W(0x002CEC08)) == 0x0014BCF0,
+       "the build reads a planet's text id out of the name table 0xC409E4 (r25) and hands it to msg_string "
+       "(0x14BCF0), whose first word is the msg stub's")
     table = dict(((0x00C409E4 + 8 * p + 4 * k), W(0x00C409E4 + 8 * p + 4 * k)) for p in range(30) for k in (0, 1))
-    good = len(words) == hdr["MH_MAP_NAMES"] == 5 and all(table.get(a) == old for a, new, old in words)
-    good = good and words[0][0] == 0x00C409E4 + 8 * 6 and         all(new == table.get(a - 4) and ((a - 0x00C409E4) // 8) in group for a, new, old in words[1:])
-    ok(good, "the five name words hold the game's text ids in the executable; Phoenix Rescue's location word "
-       "first, then four mission levels' planet words, each to say its location's text")
-    after = dict(table)
-    for a, new, old in words:
-        after[a] = new
-    shown = [after[0x00C409E4 + 8 * p + (4 if p in group else 0)] for p in want]
+    shown = [names[p] if p < len(names) else None for p in want]
     before = [table[0x00C409E4 + 8 * p + (4 if p in group else 0)] for p in want]
-    ok(len(set(shown)) == len(want) and 0 not in shown,
-       "with them, every one of the %d entries has a name of its own (the game's own would repeat %d)" %
-       (len(want), len(before) - len(set(before))))
+    ok(all(p < hdr["MH_MAP_PLANETS"] for p in want) and None not in shown and
+       not [n for n in shown if n.startswith("(")] and len(set(shown)) == len(want) and
+       all(table[0x00C409E4 + 8 * p] != 0 or table[0x00C409E4 + 8 * p + 4] != 0 for p in want),
+       "with them every one of the %d entries reads as the client's planet picker names it, PLANET_LIST's name, "
+       "each its own (the game's own texts would repeat %d), every one of their name words a text of the game's "
+       "to go back" % (len(want), len(before) - len(set(before))))
+    ok(b"\x13 VID-COMICS\x00" in data,
+       "Square's hint in the Trainer's map, \"\x13 VID-COMICS\", is in the data image")
 
 
 def check_rac3(ok, elf, roots):
@@ -2247,8 +2359,22 @@ def check_rac2_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
         good = good and how == ("blr", None) and cstr(cpu.r[3]) == name and cpu.written <= msg_ok
     ok(good, "msg stub, 0x%X + p for each of the %d planets: PLANET_LIST's name of planet p (src/games/rac2.c), "
        "in the data image" % (hdr["MH_MSG_PLANET"], len(names)))
+    # The pickers' round 2: the planet list's draw sign-extends a row's ids, so ours come as 0xFFFFF0xx too.
+    good = True
+    for p, name in enumerate(names):
+        cpu, how = run("mh_msg_stub", {3: 0xFFFF0000 | (hdr["MH_MSG_PLANET"] + p), 4: 0x1234}, tmem)
+        good = good and how == ("blr", None) and cstr(cpu.r[3]) == name and cpu.written <= msg_ok
+    cpu, how = run("mh_msg_stub", {3: 0xFFFF0000 | hdr["MH_MSG_HELP"], 4: 0x1234})
+    good = good and how == ("blr", None) and cstr(cpu.r[3]) == hdr["MH_ENTRY_LABEL"]
+    for i in range(hdr["MH_MAIN_ROWS"]):
+        cpu, how = run("mh_msg_stub", {3: 0xFFFF0000 | (hdr["MH_MSG_ROW0"] + i)}, {(front, 1): 1})
+        good = good and how == ("blr", None) and cpu.r[3] == text0 + set_size + i * text_len
+    ok(good, "msg stub, the same ids sign-extended (0xFFFFF0xx, as the planet list's draw passes them): the same "
+       "answers, every planet's name among them, where round 1 went on into msg_string and its \"(unavailable)\"")
     for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, hdr["MH_MSG_PLANET"] + hdr["MH_PLANETS"],
-                0xF03F, 0xF040, 0xEFFF, 0xF0F0, 0x2D55, 0x2D4E, 0xFFFFFFFF):
+                0xF03F, 0xF040, 0xEFFF, 0xF0F0, 0x2D55, 0x2D4E, 0xFFFFFFFF,
+                0xFFFF0000 | (hdr["MH_MSG_PLANET"] + hdr["MH_PLANETS"]), 0xFFFFF040, 0xFFFFEFFF, 0xFFFFF0F0,
+                0xFFFF0000 | 0x2D55, 0x0001F010, 0x7FFFF010):
         cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234})
         ok(how == ("b", hdr["GAME_MSG_EXIT"]) and cpu.r[3] == idn and cpu.r[4] == 0x01340000 and
            cpu.written <= msg_ok,
@@ -2371,6 +2497,18 @@ def check_rac2_picker(ok, elf, hdr, data, dat, code, cave):
        words[13] == rows and all(w == 0 for w in words[14:]),
        "the picker's list at 0x%08X: the shim's update, the game's draw, the shim's enter and exit, the select's "
        "flags, the shim's rows, the rest zero as the game's" % item)
+    # The pickers' round 2: why the msg stub takes our ids sign-extended. The draw reads a row's text (+0) and its
+    # second line (+8) as halfwords and sign-extends both before msg_string, whose answer for an id it does not
+    # know is "(unavailable)" (0x133EE68): our 0xF0xx came to it as 0xFFFFF0xx and was not ours.
+    ok(W(0x00BCC124) == 0x7C63FA2E and W(0x00BCC128) == 0x7C630734 and
+       branch_target(0x00BCC12C, W(0x00BCC12C)) == 0x00B28F38 and
+       W(0x00BCC384) == 0xA3BD0008 and W(0x00BCC390) == 0x7FA30734 and
+       branch_target(0x00BCC398, W(0x00BCC398)) == 0x00B28F38 and
+       W(0x00B28FD0) == 0x3C600134 and W(0x00B28FD4) == 0x3063EE68 and
+       ecstr(0x0133EE68) == "(unavailable)",
+       "the list's draw (0xBCBC58) sign-extends a row's two text ids (lhzx/extsh at 0xBCC124, lhz/extsh at "
+       "0xBCC384) before msg_string, which answers an id it does not know with \"(unavailable)\": the msg stub "
+       "takes 0xFFFFF0xx as 0xF0xx")
 
     # The rows: every planet qwark loads, in its order.
     good = True

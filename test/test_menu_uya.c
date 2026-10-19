@@ -164,6 +164,8 @@ static u32 game_msg(u32 id)
 		if (i == 0) return MSG_AT;                     /* "TRAINER" */
 		if (i <= MH_MAIN_ROWS) return mh_text(i - 1);  /* the set on show (round 3) */
 	}
+	/* The pickers' round 2: the Trainer's map's names, from the data image's table. */
+	if ((id & ~0x3Fu) == MH_MSG_PLANET && (id & 0x3F) < MH_MAP_PLANETS) return r32(MH_MAP_NAMES + 4 * (id & 0x3F));
 	return id == 0x106 ? MSG_AT + 0x10 : MSG_AT + 0x20; /* "HELP", "ROW" */
 }
 
@@ -959,6 +961,33 @@ static void test_model_uya(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
+	/*
+	 * The pickers' round 2: the GALACTIC MAP asks for the planets it cannot
+	 * show (MBOX_EV_PICKER_OTHERS on the Planets row): rac3.c's picker_others,
+	 * the base vid comics, on a CONFIG page of their own; back to the root.
+	 */
+	r = view_row(&v, "Planets");
+	check(r != NULL && menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_OK,
+	      "the picker's event on the Planets row is taken");
+	menu_model_view(&v);
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && v.ptype == MBOX_PTYPE_CONFIG &&
+	      strcmp(v.title, "Vid-Comics") == 0 && v.nrows == 5 && strcmp(v.rows[0].label, "Vid Comic 1") == 0 &&
+	      strcmp(v.rows[1].label, "Vid Comic 2") == 0 && strcmp(v.rows[3].label, "Vid Comic 4") == 0 &&
+	      strcmp(v.rows[4].label, "Vid Comic 5") == 0 && v.rows[0].id == MENU_ROW_ID(MENU_ROW_PLANET, 31) &&
+	      v.rows[3].id == MENU_ROW_ID(MENU_ROW_PLANET, 32) && v.rows[4].id == MENU_ROW_ID(MENU_ROW_PLANET, 35) &&
+	      (v.rows[2].flags & MROWF_CLOSES) != 0 && v.rows[2].kind == MROW_ACTION &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0 && view_row(&v, "Vid Comic 6") == NULL,
+	      "Vid-Comics: Vid Comic 1 to 5 (planets 31, 33, 34, 32, 35), each a button that closes the menu first; no 6, "
+	      "no 1 SE");
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+	check(menu_model_depth() == 1 && v.cursor == (u8)(view_row(&v, "Planets") - v.rows),
+	      "back: the root, the cursor on Planets");
+	r = view_row(&v, "Cheats");
+	check(menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_BAD_ARG &&
+	      menu_model_depth() == 1, "the same event on another row: refused, nothing opens");
+	menu_model_view(&v);
+
 	/* Manips, with the Trophies header and the reset's status under its button. */
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
 	check(labels_are(&v, manips, 7) && v.ptype == MBOX_PTYPE_CONFIG,
@@ -1676,14 +1705,10 @@ static void open_picker(void)
 
 static void test_picker_uya(void)
 {
-	const struct planet_name_check { u32 planet, text; const char *name; } names[] = {
-		{ 6, 0x15EF, "The Phoenix Attacked" }, { 23, 0xDF, "Lot 43" }, { 27, 0x135D, "Deep Sea Hideout" },
-		{ 28, 0xC8E, "Sewers" }, { 29, 0xD3E, "Island Battle" }, { 8, 0xBBC, "Aquatos" },
-		{ 13, 0xBC1, "Holostar Studios" }, { 3, 0xCB, "Starship Phoenix" }, { 1, 0xBB7, "Veldin" }
-	};
 	const struct game_api *g;
+	const char * const *pl;
 	const u8 *order;
-	char a[80];
+	char a[80], b[80];
 	u32 mb, slot, seq, frames, i, k, n;
 	u8 count;
 	int ok;
@@ -1717,7 +1742,7 @@ static void test_picker_uya(void)
 	/* The list: every planet qwark loads that the map can draw, in PLANET_LIST's menu order. */
 	g = session_game();
 	order = g != NULL ? g->planet_order : NULL;
-	g->planet_names(&count);
+	pl = g->planet_names(&count);
 	n = 0;
 	ok = order != NULL;
 	for (i = 0; ok && i < count; i++) {
@@ -1768,22 +1793,36 @@ static void test_picker_uya(void)
 	for (i = 0; i < 27; i++) ok = ok && r32(U_MAP_ENTRIES + i * U_MAP_ENTRY_SIZE) == map_list_c[i];
 	check(ok && map_index(1) == 0 && map_index(6) >= 0 && map_index(29) >= 0 && map_index(20) >= 0,
 	      "in the menu's order, Veldin, Phoenix Rescue, Launch Site and the mission levels among them");
+	/*
+	 * The pickers' round 2, the user's call: every entry reads as the client's
+	 * planet picker names it, PLANET_LIST's name, through the msg hook's
+	 * 0xF040 + p (the build asked for that id, which game_msg answers as the
+	 * stub does, out of the data image's table).
+	 */
 	ok = 1;
-	for (k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
-		int at = map_index(names[k].planet);
-		ok = ok && at >= 0 && M.text[at] == names[k].text;
-		if (!ok) printf("    planet %u named 0x%X, wanted 0x%X (%s)\n", (unsigned)names[k].planet,
-		                at >= 0 ? (unsigned)M.text[at] : 0u, (unsigned)names[k].text, names[k].name);
+	for (i = 0; i < 27; i++) {
+		u32 p = r32(U_MAP_ENTRIES + i * U_MAP_ENTRY_SIZE);
+		ok = ok && M.text[i] == MH_MSG_PLANET + p && p < count &&
+		     strcmp(read_str(game_msg(M.text[i]), a, 80), pl[p]) == 0;
+		if (!ok) {
+			printf("    entry %u, planet %u: text 0x%X, \"%s\"\n", (unsigned)i, (unsigned)p, (unsigned)M.text[i], a);
+			break;
+		}
 	}
 	for (i = 0; ok && i < 27; i++) {
 		for (k = i + 1; k < 27; k++) ok = ok && M.text[i] != M.text[k];
 	}
-	check(ok, "every entry named apart: the mission levels by their location (Lot 43, Deep Sea Hideout, Sewers, "
-	      "Island Battle), Phoenix Rescue \"The Phoenix Attacked\", the rest as the game names them");
+	check(ok, "every entry named as the client's planet picker names it, PLANET_LIST's name (Phoenix Rescue, "
+	      "Holostar Clank, Aquatos Clank, Aquatos Sewers, Tyhrranosis Rangers ...), each its own");
+	read_str(game_msg(M.text[map_index(6)]), a, 80);
+	check(strcmp(a, "Phoenix Rescue") == 0 && strcmp(read_str(game_msg(M.text[map_index(23)]), a, 80), "Holostar Clank") == 0 &&
+	      strcmp(read_str(game_msg(M.text[map_index(13)]), a, 80), "Holostar") == 0,
+	      "Phoenix Rescue (round 1: \"The Phoenix Attacked\"), Holostar Clank (\"Lot 43\"), Holostar (the game's "
+	      "\"Holostar Studios\")");
 	check(map_texts_are_the_games() && save_list_is_intact(),
 	      "and the name table is the game's again after the init; the save's list was never written");
-	check(strcmp(text_of(U_MAP_HINT, a, 80), "\x13 ALL PLANETS") == 0,
-	      "Square's hint, MISSIONS in the game's map, says ALL PLANETS, in its own glyph");
+	check(strcmp(text_of(U_MAP_HINT, a, 80), "\x13 VID-COMICS") == 0,
+	      "Square's hint, MISSIONS in the game's map, says VID-COMICS, in its own glyph and capitals");
 	tick(8);
 	check(menu_model_depth() == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER,
 	      "qwark leaves the menu where it was while the map is up");
@@ -1793,35 +1832,72 @@ static void test_picker_uya(void)
 	pframe(PADB_DOWN);
 	check(M.updates == n + 1 && r32(U_MAP_CURSOR) == 1, "Down: the map's own update moves the cursor");
 
-	/* Square: ALL PLANETS, back to the menu and on to qwark's own list. */
+	/* Square: VID-COMICS (the pickers' round 2), back to the menu and on to qwark's page of the vid comics. */
 	G.sound = 0;
 	pframe(PADB_SQUARE);
 	check(M.updates == n + 1 && M.missions == 0 && G.pending == MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR) &&
 	      G.sound == SND_CHANGE && r8(MH_SHIM + SH_MAP_LIST) == 1,
-	      "Square: no MISSIONS (whose travel would leave from play); the menu's screen queued, for the list");
+	      "Square: no MISSIONS (whose travel would leave from play); the menu's screen queued, for the vid comics");
 	pframe(0);
 	check(!M.up && G.main_up && r32(U_CURSOR) == 2 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN &&
-	      !mh_picker_up() && peek8(mb + MBOX_OFF_EV_KIND) == MBOX_EV_ACTIVATE &&
-	      peek8(mb + MBOX_OFF_EV_ROW) == 2 && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK) &&
+	      !mh_picker_up() && peek8(mb + MBOX_OFF_EV_KIND) == MBOX_EV_PICKER_OTHERS &&
+	      peek8(mb + MBOX_OFF_EV_ROW) == 2 && peek16(mb + MBOX_OFF_EV_ID) == MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS) &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK) &&
 	      r8(MH_SHIM + SH_MAP_LIST) == 0 && G.pending == 0,
-	      "the root again, and the cross on PLANETS, which the picker refuses this once: the event posted, as when "
-	      "the map cannot open");
+	      "the root again, and the cross on PLANETS, which the picker answers this once with MH_PICK_OTHERS: "
+	      "MBOX_EV_PICKER_OTHERS on the Planets row, not ACTIVATE");
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(menu_model_depth() == 2 && G.built && G.rows == 24 && strcmp(cfg_label(0, a), "VELDIN") == 0 &&
-	      M.inits == 1, "qwark's own list of every planet, the vid comics on it, on a CONFIG page");
+	check(menu_model_depth() == 2 && menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) &&
+	      G.built && G.rows == 5 && M.inits == 1 && strcmp(read_str(G.title, b, 80), "VID-COMICS") == 0,
+	      "qwark's page of the vid comics, a CONFIG page titled VID-COMICS, five rows");
+	ok = 1;
+	for (i = 0; i < 5; i++) {
+		static const char *const comics[5] = { "VID COMIC 1", "VID COMIC 2", "VID COMIC 3", "VID COMIC 4", "VID COMIC 5" };
+		ok = ok && strcmp(cfg_label((int)i, a), comics[i]) == 0;
+	}
+	check(ok, "the base vid comics 1 to 5, in their order, PLANET_LIST's names in UYA's capitals (no 6, no 1 SE)");
 	pframe(PADB_TRIANGLE);
 	tick(2);
 	pframe(0);
 	pframe(0);
 	check(G.main_up && r32(U_CURSOR) == 2 && menu_model_depth() == 1, "Triangle: the root, the cursor on PLANETS");
 
-	/* The map again, for Triangle. */
+	/* The map again, Square, and a vid comic loaded from qwark's page. */
 	pframe(0x40);
 	pframe(0);
-	check(M.up && M.inits == 2 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER, "the map again");
+	check(M.up && M.inits == 2, "the map again");
+	pframe(PADB_SQUARE);
+	pframe(0);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && G.rows == 5,
+	      "Square: the vid comics' page again");
+	pframe(PADB_DOWN);
+	pframe(PADB_DOWN);
+	pframe(PADB_DOWN);
+	check(strcmp(cfg_label((int)shim_cursor(0), a), "VID COMIC 4") == 0, "Down three times: VID COMIC 4");
+	pframe(0x40);
+	for (i = 0; i < 80 && peek32(RAC3_LOAD_PLANET) != 1; i++) {
+		tick(1);
+		if (G.paused) pframe(0);
+	}
+	check(peek32(RAC3_LOAD_PLANET) == 1 && peek32(RAC3_DEST_PLANET) == 32 && !G.paused &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "the cross on it: the menu closes, and qwark's planet load of Vid Comic 4 (planet 32) once the game plays, "
+	      "as the Planets page's rows load");
+	poke32(RAC3_LOAD_PLANET, 0);
+	poke32(RAC3_DEST_PLANET, 0);
+	tick(8);
+
+	/* The map again, for Triangle. */
+	open_picker();
+	pframe(0);
+	check(M.up && M.inits == 3 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER, "the map again");
 	n = M.updates;
+	frames = peek32(mb + MBOX_OFF_FRAMES);
 
 	/* Triangle: back to the menu, on PLANETS. */
 	G.sound = 0;
@@ -1829,7 +1905,7 @@ static void test_picker_uya(void)
 	check(G.pending == MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR) && G.sound == SND_CHANGE &&
 	      M.missions == 0 && M.battle == 0 && M.updates == n, "Triangle: the menu's screen queued, the change sound");
 	pframe(0);
-	check(!M.up && M.deinits == 2 && G.main_up && G.count == 7 && r32(U_CURSOR) == 2 && G.paused &&
+	check(!M.up && M.deinits == 3 && G.main_up && G.count == 7 && r32(U_CURSOR) == 2 && G.paused &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && peek32(mb + MBOX_OFF_FRAMES) >= frames &&
 	      !mh_picker_up() && r32(U_KIND) == 0,
 	      "the root again, the cursor on PLANETS, the pause still up, the menu open with its frames counting on, "
@@ -1852,7 +1928,7 @@ static void test_picker_uya(void)
 	w32(U_CURSOR, 2);
 	pframe(0x40);
 	pframe(0);
-	check(M.up && M.inits == 3, "the cross on PLANETS again: the map");
+	check(M.up && M.inits == 4, "the cross on PLANETS again: the map");
 	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
 	map_down_to(9);
 	G.sound = 0;

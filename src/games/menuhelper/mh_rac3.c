@@ -62,7 +62,14 @@ typedef char mh_rac3_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
                              SH_SLOT_ROW + U_GRID_VISIBLE <= SH_PIC_WAIT &&
                              SH_SLOT_KNOB + 4 * U_GRID_VISIBLE <= SH_PIC_BUF && SH_PIC_BUF + 8 <= SH_MAP &&
                              SH_MAP_LIST < SH_MAP_HINT && SH_MAP_HINT + 16 <= SH_SIZE &&
-                             SH_GS + 2 * MH_GS_SIZE <= SH_ROWS) ? 1 : -1];
+                             SH_GS + 2 * MH_GS_SIZE <= SH_ROWS &&
+                             MH_MAP_NAMES == MH_SHIM + SH_SIZE && (MH_MAP_NAMES & 15) == 0 &&
+                             MH_MAP_LIST_LEN <= MH_MAP_PLANETS && MH_MAP_PLANETS <= 0x40 &&
+                             (MH_MSG_PLANET & 0x3F) == 0 && MH_MSG_PLANET > MH_MSG_ROW0 + MH_MAIN_ROWS &&
+                             MH_PICKER == 1 && MH_PICKER_OTHERS == 1) ? 1 : -1];
+
+/* The Trainer's map's planets, in the stubs' read-only data after the names' pointers (mh_rac3_stubs.S). */
+#define MAP_LIST ((u32)MH_MAP_NAMES + 4u * MH_MAP_PLANETS)
 
 /* The entries the game reaches; file-local in the host tests, which build two renderers. */
 MH_API void mh_init(u32 gs);
@@ -758,7 +765,8 @@ MH_API void shim_sound(u32 snd)
 /*
  * The menu's GuiState starts: the page qwark posted, with the widget it asks
  * for. Back from the GALACTIC MAP's Square, the cross on Planets, which the
- * picker refuses this once: qwark's own list of every planet.
+ * picker answers this once with MH_PICK_OTHERS: qwark's page of the vid
+ * comics (the pickers' round 2).
  */
 MH_API void mh_init(u32 gs)
 {
@@ -857,49 +865,61 @@ static __attribute__((noinline)) void go(u32 next, u32 self)
  * Not with a Start close pending this frame, which the main pause's update
  * takes after the row's callback, nor in a pause whose Start does not leave it
  * (U_NO_EXIT): the core posts the cross then, and qwark shows its own list;
- * and once after the map's Square, which asks for that list.
+ * and once after the map's Square, which asks for qwark's page of the vid
+ * comics instead (MH_PICK_OTHERS: the core posts MBOX_EV_PICKER_OTHERS).
  */
 MH_API u32 shim_picker(int p)
 {
 	(void)p;
 	if (r8(SH(SH_MAP_LIST)) != 0) {
 		w8(SH(SH_MAP_LIST), 0);
-		return 0;
+		return MH_PICK_OTHERS;
 	}
-	if (r8(U_NO_EXIT) != 0 || start_close()) return 0;
+	if (r8(U_NO_EXIT) != 0 || start_close()) return MH_PICK_REFUSED;
 	w8(SH(SH_MAP_BACK), 0);
 	go(gs_fill(GSA(r8(SH(SH_CUR)) ^ 1), MH_FN_MAP_INIT, MH_FN_MAP_DEINIT, MH_FN_MAP_UPDATE,
 	           U_DESC_MAP_PRE, U_DESC_MAP_POST), current());
-	return 1;
+	return MH_PICK_OPENED;
 }
 
 /*
- * The five name words the Trainer's map changes while it builds itself
- * (mh_rac3.h): {the word, the text it says meanwhile, the game's own}.
- * Phoenix Rescue's location, then each mission level's planet word, which says
- * its location's. check.py holds each to the executable.
- */
-static const u32 map_names[MH_MAP_NAMES][3] = { MH_MAP_NAME_WORDS };
-
-/*
  * The map's own init (0x2CED28), with the list build handed the Trainer's
- * planets (mh_map_list_stub, while SH_MAP is up) and the five name words
- * changed while it runs. All of it on the game's thread, inside this one
- * call: the game's own map, and every other screen that names a planet,
- * never sees either. Square's hint, MISSIONS in the game's map, says what
- * Square does in this one: ALL PLANETS, qwark's own list (the vid comics,
- * which the map cannot show, among them), in the hint's own glyph (0x13).
+ * planets (mh_map_list_stub, while SH_MAP is up) and every one of them named
+ * as the client's planet picker names it (the pickers' round 2, the user's
+ * call): while the init runs, both name words of each listed planet (its
+ * location's and its planet's, whichever the build and the init read) say
+ * MH_MSG_PLANET + p, which the msg hook answers with PLANET_LIST's name, and
+ * the game's words go back as it returns. All of it on the game's thread,
+ * inside this one call: the game's own map, and every other screen that names
+ * a planet, never sees either. Square's hint, MISSIONS in the game's map,
+ * says what Square does in this one: VID-COMICS, qwark's page of the vid
+ * comics, which the map cannot show, in the hint's own glyph (0x13) and the
+ * capitals of the map's other hints ("\x10 SELECT", "\x12 EXIT").
  */
 MH_API void mh_map_init(u32 gs)
 {
-	u32 i;
+	u32 save[2 * MH_MAP_LIST_LEN], i, p, a;
 
-	for (i = 0; i < MH_MAP_NAMES; i++) w32(map_names[i][0], map_names[i][1]);
+	for (i = 0; i < MH_MAP_LIST_LEN; i++) {
+		p = r8(MAP_LIST + i);
+		if (p >= MH_MAP_PLANETS) continue;
+		a = U_MAP_TEXTS + 8 * p;
+		save[2 * i] = r32(a);
+		save[2 * i + 1] = r32(a + 4);
+		w32(a, MH_MSG_PLANET + p);
+		w32(a + 4, MH_MSG_PLANET + p);
+	}
 	w8(SH(SH_MAP), 1);
 	map_init(gs);
 	w8(SH(SH_MAP), 0);
-	for (i = 0; i < MH_MAP_NAMES; i++) w32(map_names[i][0], map_names[i][2]);
-	cell_put(SH(SH_MAP_HINT), 0, 0, "\x13 ALL PLANETS");
+	for (i = MH_MAP_LIST_LEN; i-- > 0;) {
+		p = r8(MAP_LIST + i);
+		if (p >= MH_MAP_PLANETS) continue;
+		a = U_MAP_TEXTS + 8 * p;
+		w32(a, save[2 * i]);
+		w32(a + 4, save[2 * i + 1]);
+	}
+	cell_put(SH(SH_MAP_HINT), 0, 0, "\x13 VID-COMICS");
 	set_text(U_MAP_HINT, SH(SH_MAP_HINT));
 }
 
@@ -915,8 +935,8 @@ MH_API void mh_map_init(u32 gs)
  *                     qwark loads it once the game plays;
  *   Triangle          back to the menu's screen, the page it left;
  *   Square            the same, and then the cross on Planets, which the
- *                     picker refuses this once (SH_MAP_LIST): qwark's own
- *                     list of every planet.
+ *                     picker answers this once (SH_MAP_LIST) with
+ *                     MH_PICK_OTHERS: qwark's page of the vid comics.
  * Anything else is the map's own update (the cursor, its views, the bolts).
  */
 MH_API void mh_map_update(u32 gs)

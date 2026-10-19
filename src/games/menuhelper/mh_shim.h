@@ -172,6 +172,13 @@
  *   - Everything the shim changes in the game for the picker (a list that
  *     shows more, a gate passed, the pick hook) acts only while mh_picker_up()
  *     says the menu opened it; the game's own picker stays as it is.
+ *   - (The pickers' round 2.) A picker that cannot show every planet (UYA's
+ *     GALACTIC MAP has no vid comics) can hand the player qwark's page of the
+ *     others: its game header sets MH_PICKER_OTHERS, and shim_picker answers
+ *     MH_PICK_OTHERS instead of opening, after which the core posts
+ *     MBOX_EV_PICKER_OTHERS on the row rather than ACTIVATE, and qwark opens
+ *     that page (struct game_menu's picker_others). A game without it builds
+ *     the core as before.
  */
 
 #define MH_CASE_AS_IS       0
@@ -279,6 +286,16 @@
 #define MH_PICKER           1
 #else
 #define MH_PICKER           0
+#endif
+
+/* shim_picker's answers (version 3; MH_PICK_OTHERS since the pickers' round 2). */
+#define MH_PICK_REFUSED     0      /* qwark's Planets page instead: the core posts ACTIVATE */
+#define MH_PICK_OPENED      1      /* the game's picker is opening over the menu */
+#define MH_PICK_OTHERS      2      /* not opened: qwark's page of the planets the picker cannot show */
+
+/* The pickers' round 2: 1 in a game header whose shim answers MH_PICK_OTHERS (UYA). */
+#ifndef MH_PICKER_OTHERS
+#define MH_PICKER_OTHERS    0
 #endif
 
 /* shim_close's `how`. */
@@ -439,8 +456,10 @@ MH_API void shim_sound(u32 snd);
 #if MH_PICKER
 /*
  * Version 3: open the game's own planet picker over the menu's screen, from
- * the cross on the Planets row (above). 1 when it did; 0 to fall back to
- * qwark's Planets page.
+ * the cross on the Planets row (above). MH_PICK_OPENED (1) when it did;
+ * MH_PICK_REFUSED (0) to fall back to qwark's Planets page; MH_PICK_OTHERS
+ * (2, only with MH_PICKER_OTHERS) for qwark's page of the planets the picker
+ * cannot show.
  */
 MH_API u32  shim_picker(int p);
 #endif
