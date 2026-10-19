@@ -17,6 +17,18 @@
 
 #define RAC4_BOLTS             0x009C32E8u
 #define RAC4_DREAD_POINTS      0x009C32F4u
+/*
+ * Round 5, the console menu's Max bolts and Max Dread points. The bolts are
+ * the game's own cap: its update 0x2B1F30 (called from the frame's 0x1CE638,
+ * 0x1CEED0, 0x1CF3A8 and 0x1CFE30) puts min(bolts, 99,999,999) back at
+ * 0x2B2400. Nothing caps the Dread points; the game adds rewards to them and
+ * tests them signed (cmpw) against its unlocks, the highest 250,000 (Ghost
+ * Station), so the bolts' cap is theirs too: as many digits as the game keeps
+ * of its other currency, far from where a reward added on top would wrap
+ * negative and lock everything again.
+ */
+#define RAC4_MAX_BOLTS         99999999u
+#define RAC4_MAX_DREAD         99999999u
 #define RAC4_SKIN              0x009C32FBu  /* one byte, 22 skins */
 #define RAC4_BADGES            0x009C3308u  /* six bytes */
 #define RAC4_CHALLENGE_MODE    0x009C330Eu  /* one byte */

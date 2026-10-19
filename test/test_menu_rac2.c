@@ -566,12 +566,12 @@ static void test_model_rac2(void)
 {
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
-	static const char * const game[] = { "Die", "Position slot", "Save position", "Load position",
-	                                     "Set aside file", "Load set-aside file", "Bolts", "Raritanium",
-	                                     "Challenge mode", "Health XP" };
+	/* Round 5: no Die, Health XP, Set respawn point or Store Swingshot; a spacer (""); the values on Cheats. */
+	static const char * const game[] = { "Position slot", "Save position", "Load position", "",
+	                                     "Set aside file", "Load set-aside file" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
-	                                       "Set respawn point", "Store Swingshot", "Reset bosses on death",
-	                                       "Reset platinum bolts on death" };
+	                                       "Reset bosses on death", "Reset platinum bolts on death",
+	                                       "Challenge mode", "Max bolts", "Max raritanium" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Max all weapon levels", "Max all weapon ammo",
 	                                             "Unlock all platinum bolts", "Reset platinum bolts",
@@ -591,22 +591,31 @@ static void test_model_rac2(void)
 	      "seven rows, the root's own seven bars");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 10) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Game: a CONFIG page, the quick block and the client's Values (no QE offset, no cosmetics)");
-	r = view_row(&v, "Raritanium");
-	check(r != NULL && r->kind == MROW_VALUE, "Raritanium is a stepper");
-	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC2_BOLTS) == 1, "and Right on Bolts adds one");
+	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
+	      v.rows[3].flags == 0,
+	      "round 5, Game: the slot and the positions, a blank grey row, the save-file buttons");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
 	act(&v, MBOX_EV_ACTIVATE, "Cheats");
-	check(labels_are(&v, cheats, 8) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Cheats: the four cheats every game has, then the Game panel's Player section");
+	check(labels_are(&v, cheats, 9) && v.ptype == MBOX_PTYPE_CONFIG,
+	      "Cheats: the four cheats, the two resets on death, then (round 5) Challenge mode, Max bolts and Max "
+	      "raritanium; no Set respawn point or Store Swingshot");
 	check(act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet") == ST_OK && strcmp(value_of(&v, "Ghost Ratchet"), "On") == 0,
 	      "Ghost Ratchet: the cross turns it On");
-	r = view_row(&v, "Store Swingshot");
-	check(r != NULL && r->kind == MROW_ACTION && (r->flags & MROWF_STEPS) == 0,
-	      "Store Swingshot is a button: Left and Right do nothing on it");
+	poke8(RAC2_CHALLENGE_MODE, 0);
+	tick(2);
+	menu_model_view(&v);
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->kind == MROW_TOGGLE && strcmp(r->value, "Off") == 0 &&
+	      act(&v, MBOX_EV_ACTIVATE, "Challenge mode") == ST_OK && peek8(RAC2_CHALLENGE_MODE) == 1 &&
+	      strcmp(value_of(&v, "Challenge mode"), "On") == 0, "Challenge mode: a switch, Off at 0, the cross On at 1");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	check(peek8(RAC2_CHALLENGE_MODE) == 0, "and Off again at 0");
+	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC2_BOLTS) == 9999999u &&
+	      act(&v, MBOX_EV_ACTIVATE, "Max raritanium") == ST_OK && peek32(RAC2_RARITANIUM) == 9999999u &&
+	      value_of(&v, "Max raritanium")[0] == 0,
+	      "Max bolts and Max raritanium: 9,999,999 each, the HUD's seven digits, the rows blank");
 	r = view_row(&v, "Reset bosses on death");
 	check(r != NULL && r->kind == MROW_TOGGLE, "the resets on death are checkboxes");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
@@ -627,8 +636,10 @@ static void test_model_rac2(void)
 
 	/* Manips: no header in RaC2, so the category and its options. */
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
-	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 4 && strcmp(v.rows[0].label, "Category") == 0 &&
-	      strcmp(value_of(&v, "Category"), "None") == 0, "Manips: Category (None), Auto-reset, Remember, Apply now");
+	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 3 && strcmp(v.rows[0].label, "Category") == 0 &&
+	      strcmp(value_of(&v, "Category"), "None") == 0 && strcmp(v.rows[1].label, "Auto-reset") == 0 &&
+	      strcmp(v.rows[2].label, "Apply now") == 0,
+	      "Manips: Category (None), Auto-reset, Apply now (round 5: no Remember row, and no spacer with nothing after)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -649,16 +660,27 @@ static void test_model_rac2(void)
 	poke8(RAC2_ITEM_ARRAY + R2_LANCER_ITEM, R2_LANCER_ITEM);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Lancer"), "Locked") == 0, "a locked weapon: Locked, in the game's title case");
-	check(act(&v, MBOX_EV_RIGHT, "Lancer") == ST_OK && strcmp(value_of(&v, "Lancer"), "Unlocked") == 0 &&
-	      peek8(RAC2_OWNED_ARRAY + R2_LANCER_ITEM) == 1, "Right: Unlocked, owned at v1");
-	check(act(&v, MBOX_EV_RIGHT, "Lancer") == ST_OK && strcmp(value_of(&v, "Lancer"), "Max") == 0 &&
-	      peek8(RAC2_ITEM_ARRAY + R2_LANCER_ITEM) == 80, "Right: Max, v4 (its version item 80)");
+	check(act(&v, MBOX_EV_RIGHT, "Lancer") == ST_OK && strcmp(value_of(&v, "Lancer"), "V1") == 0 &&
+	      peek8(RAC2_OWNED_ARRAY + R2_LANCER_ITEM) == 1, "Right: V1, owned at v1 (round 5: it said Unlocked)");
+	check(act(&v, MBOX_EV_RIGHT, "Lancer") == ST_OK && strcmp(value_of(&v, "Lancer"), "V4") == 0 &&
+	      peek8(RAC2_ITEM_ARRAY + R2_LANCER_ITEM) == 80, "Right: V4, its last (its version item 80; it said Max)");
 	check(act(&v, MBOX_EV_RIGHT, "Lancer") == ST_OK && strcmp(value_of(&v, "Lancer"), "Locked") == 0,
 	      "Right wraps to Locked");
 	poke8(RAC2_OWNED_ARRAY + R2_LANCER_ITEM, 1);
 	poke8(RAC2_ITEM_ARRAY + R2_LANCER_ITEM, 60);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Lancer"), "V2") == 0, "a version between shows as itself, V2");
+	/* Round 5: the Tesla Claw, item 18, stops at v2 (item 114): its own last (rac2_unlock_levels). */
+	poke8(RAC2_OWNED_ARRAY + 18, 1);
+	poke8(RAC2_ITEM_ARRAY + 18, 114);
+	menu_model_view(&v);
+	check(strcmp(value_of(&v, "Tesla Claw"), "V2") == 0, "the Tesla Claw at v2, its own last: V2");
+	check(act(&v, MBOX_EV_RIGHT, "Tesla Claw") == ST_OK && strcmp(value_of(&v, "Tesla Claw"), "Locked") == 0 &&
+	      peek8(RAC2_OWNED_ARRAY + 18) == 0,
+	      "Right from its last wraps to Locked (round 4 asked for v4, held to v2, and never left it)");
+	act(&v, MBOX_EV_LEFT, "Tesla Claw");
+	check(strcmp(value_of(&v, "Tesla Claw"), "V2") == 0 && peek8(RAC2_ITEM_ARRAY + 18) == 114,
+	      "Left from Locked: V2, its last");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Gadgets");
@@ -919,10 +941,13 @@ static void test_renderer_rac2(void)
 	check(G.begins == n + 1 && G.ends == n + 1 && G.sprites == 3 && strcmp(G.title, "Cheats") == 0 &&
 	      strcmp(G.hint1, "\x10 Toggle") == 0 && strcmp(G.hint2, "\x12 Exit") == 0,
 	      "Cheats' look: the frame's three sprites, the title Cheats, the Toggle and Exit hints");
-	check(G.rows_drawn == 8 && G.first_y == CFG_Y_ROW0 && strcmp(G.lab[0], "Fast Loads") == 0 &&
-	      strcmp(G.val[0], "Off") == 0 && strcmp(G.lab[7], "Reset Platinum Bolts On Death") == 0 &&
+	check(G.rows_drawn == 9 && G.first_y == CFG_Y_ROW0 && strcmp(G.lab[0], "Fast Loads") == 0 &&
+	      strcmp(G.val[0], "Off") == 0 && strcmp(G.lab[5], "Reset Platinum Bolts On Death") == 0 &&
+	      strcmp(G.lab[6], "Challenge Mode") == 0 && strcmp(G.lab[7], "Max Bolts") == 0 &&
+	      strcmp(G.lab[8], "Max Raritanium") == 0 && strcmp(G.val[8], "") == 0 &&
 	      G.colour[0] == CFG_COLOR_CURSOR && G.colour[1] == CFG_COLOR_TEXT && !G.more_top && !G.more_bottom,
-	      "eight rows from y 112, labels and values in title case, the cursor's row in Cheats' highlight");
+	      "nine rows from y 112, all in the frame, labels and values in title case, the cursor's row in Cheats' "
+	      "highlight; round 5: Challenge Mode, Max Bolts and Max Raritanium last");
 	pframe(PADB_DOWN);
 	check(r8(MH_SHIM + SH_CCUR) == 1 && G.sound == SND_MOVE && G.colour[1] == CFG_COLOR_CURSOR,
 	      "Down: the cursor on Ghost Ratchet, the tick");
@@ -935,22 +960,33 @@ static void test_renderer_rac2(void)
 	check(strcmp(G.val[1], "On") == 0 && G.screen_sounds == n && current() == SCREEN(MS_CFG_A) &&
 	      r8(MH_SHIM + SH_CCUR) == 1 && (features_toggle_state() & ((u64)1 << R2_GHOST)) != 0,
 	      "the same page refreshed in place: On, the cursor where it was, no screen change");
-	for (i = 0; i < 3; i++) pframe(PADB_DOWN);
+	for (i = 0; i < 6; i++) pframe(PADB_DOWN);
 	seq = peek32(mb + MBOX_OFF_EV_SEQ);
 	pframe(PADB_LEFT);
-	check(r8(MH_SHIM + SH_CCUR) == 4 && strcmp(G.lab[4], "Set Respawn Point") == 0 && G.sound == SND_NO &&
-	      peek32(mb + MBOX_OFF_EV_SEQ) == seq, "Left on Set Respawn Point, a button: Cheats' refusal, no event");
+	check(r8(MH_SHIM + SH_CCUR) == 7 && strcmp(G.lab[7], "Max Bolts") == 0 && G.sound == SND_NO &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) == seq, "Left on Max Bolts, a button: Cheats' refusal, no event");
+
+	/* Round 5: the cross on Max Bolts writes the bolts, and the row says nothing. */
+	poke32(RAC2_BOLTS, 3);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	check(peek32(RAC2_BOLTS) == 9999999u && strcmp(G.val[7], "") == 0, "the cross on Max Bolts: 9,999,999, no DONE");
 
 	/* A label too long for its column is cut short before its value: the page refreshed after a cross. */
 	G.char_w = 12;
+	poke8(RAC2_CHALLENGE_MODE, 0);
+	pframe(PADB_UP);
 	pframe(0x40);
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(r32(MH_SHIM + SH_CUTS) >= 1 && strlen(G.lab[7]) < strlen("Reset Platinum Bolts On Death") &&
-	      strcmp(G.lab[7] + strlen(G.lab[7]) - 2, "..") == 0 &&
-	      (int)strlen(G.lab[7]) * 12 <= CFG_X_VALUE - 3 * 12 / 2 - CFG_GAP - CFG_X_LABEL,
-	      "wider glyphs: Reset Platinum Bolts On Death cut short with \"..\", ending before its value");
+	check(r32(MH_SHIM + SH_CUTS) >= 1 && strlen(G.lab[5]) < strlen("Reset Platinum Bolts On Death") &&
+	      strcmp(G.lab[5] + strlen(G.lab[5]) - 2, "..") == 0 &&
+	      (int)strlen(G.lab[5]) * 12 <= CFG_X_VALUE - 3 * 12 / 2 - CFG_GAP - CFG_X_LABEL &&
+	      peek8(RAC2_CHALLENGE_MODE) == 1 && strcmp(G.val[6], "On") == 0,
+	      "wider glyphs: Reset Platinum Bolts On Death cut short with \"..\", ending before its value (the page "
+	      "refreshed by Challenge Mode On)");
 	G.char_w = 8;
 
 	/* Back: the root on the bars again, on the next MAIN screen, the cursor on Cheats. */
@@ -962,16 +998,25 @@ static void test_renderer_rac2(void)
 	check(current() == SCREEN(MS_MAIN_A) && bars_are(root, 7) && r32(BARS + R2_R_CURSOR) == 1,
 	      "Triangle: MAIN A, the root's bars, the cursor on Cheats");
 
-	/* Game: ten rows; round 4, nine lines in the frame: eight on screen and "..." on the ninth. */
+	/*
+	 * Game (round 5): six rows, all on screen; the spacer a blank line in the
+	 * grey of a row the cursor skips, which Up and Down pass over (cfg_step).
+	 */
 	w32(BARS + R2_R_CURSOR, 0);
 	pframe(0x40);
 	settle();
-	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 8 && strcmp(G.lab[7], "Raritanium") == 0 &&
-	      !G.more_top && G.more_bottom == CFG_Y_ROW0 + 8 * CFG_DY && CFG_Y_ROW0 + 8 * CFG_DY == 264,
-	      "Game: ten rows, eight on screen and \"...\" at y 264, the frame's ninth and last line (round 4)");
-	for (i = 0; i < 9; i++) pframe(PADB_DOWN);
-	check(r8(MH_SHIM + SH_CCUR) == 9 && r8(MH_SHIM + SH_CTOP) == 2 && G.more_top && !G.more_bottom &&
-	      strcmp(G.lab[7], "Health XP") == 0, "Down to Health XP: the last eight, \"...\" over them");
+	check(current() == SCREEN(MS_CFG_A) && G.rows_drawn == 6 && strcmp(G.lab[2], "Load Position") == 0 &&
+	      strcmp(G.lab[3], "") == 0 && strcmp(G.val[3], "") == 0 && G.colour[3] == CFG_COLOR_GREY &&
+	      strcmp(G.lab[4], "Set Aside File") == 0 && !G.more_top && !G.more_bottom,
+	      "Game: six rows, the fourth blank and grey, nothing scrolled");
+	pframe(PADB_DOWN);
+	pframe(PADB_DOWN);
+	check(r8(MH_SHIM + SH_CCUR) == 2, "Down twice: Load Position");
+	pframe(PADB_DOWN);
+	check(r8(MH_SHIM + SH_CCUR) == 4 && G.sound == SND_MOVE && G.colour[4] == CFG_COLOR_CURSOR,
+	      "Down: past the spacer to Set Aside File, the tick");
+	pframe(PADB_UP);
+	check(r8(MH_SHIM + SH_CCUR) == 2, "Up: past it back to Load Position");
 	pframe(PADB_TRIANGLE);
 	settle();
 

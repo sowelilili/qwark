@@ -27,6 +27,15 @@
 #define RAC2_BOLTS             0x1329A90u
 #define RAC2_RARITANIUM        0x1329A94u
 /*
+ * Round 5, the console menu's Max bolts and Max raritanium. The game caps
+ * neither (a pickup adds, 0xC13A48; a purchase takes, 0xBFD780), and the
+ * HUD's counter prints its number with "%d" into a layout of one to seven
+ * characters, its length less one held to 0..6 (0xCC2678): seven digits, the
+ * largest it lays out. Raritanium is given the same.
+ */
+#define RAC2_MAX_BOLTS         9999999u
+#define RAC2_MAX_RARITANIUM    9999999u
+/*
  * Build 53, Freeze health (classic.h): the game's maximum, a word, from the
  * NPEA00386 executable. Every frame the game works it out again - 4, one more
  * for each experience level the health XP has reached and one more for each
@@ -486,6 +495,7 @@ int rac2_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int rac2_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac2_unlock_set(u8 id, u8 field, u32 value);
+u32 rac2_unlock_levels(u8 id);
 
 /* ---------------------------------------------------------- rac2.c exports */
 

@@ -1164,10 +1164,14 @@ static const struct game_manips rac2_manips = {
 /*
  * Revision 1.22: the console menu's pages for RaC2 (src/core/menu.c), after
  * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac2",
- * as Deadlocked's and UYA's are. Game is the quick block and the client's
- * Values; Cheats the four cheats every game has, then the rest of the Game
- * panel, its Player section: Set respawn point, Store Swingshot and the two
- * resets on death. Debug mode and the QE offset are the client's Debug page and
+ * as Deadlocked's and UYA's are. Game is the quick block; Cheats the four
+ * cheats every game has, then the rest of the Game panel's Player section,
+ * the two resets on death. Round 5 (the user's hardware notes): Die is left
+ * to the combos; Set respawn point and Store Swingshot, which other ways have
+ * mostly replaced, and Health XP are left out; a spacer parts Game's position
+ * rows from its save-file rows; and the values go to the end of Cheats, the
+ * toggles first, then Challenge mode as a switch, then Max bolts and Max
+ * raritanium. Debug mode and the QE offset are the client's Debug page and
  * the chargeboot colours its Cosmetics, which the menu leaves out. The weapon
  * buttons are the client's Unlocks panel buttons and the platinum bolt,
  * nanotech and skill point ones its Collectables tab, beside the unlock table:
@@ -1176,14 +1180,26 @@ static const struct game_manips rac2_manips = {
  * so Manips is the category and its options.
  */
 static const u8 rac2_menu_game[] = {
-	R2_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	R2_SET_ASIDE, R2_LOAD_ASIDE,
-	R2_BOLTS, R2_RARITANIUM, R2_CHALLENGE, R2_HEALTH_XP
+	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	MENU_ITEM_SPACER,
+	R2_SET_ASIDE, R2_LOAD_ASIDE
 };
 
 static const u8 rac2_menu_cheats[] = {
 	R2_FAST_LOADS, R2_GHOST, R2_INFINITE_AMMO, R2_FREEZE_HEALTH,
-	R2_SET_RESPAWN, R2_STORE_SWINGSHOT, R2_DEATH_BOSSES, R2_DEATH_PBOLTS
+	R2_DEATH_BOSSES, R2_DEATH_PBOLTS,
+	MENU_ITEM_VALUE(0), MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
+};
+
+/*
+ * Round 5: Challenge mode On while the counter is above 0, On from 0 making it
+ * 1, the first run's (the game's own challenge-mode start adds one, 0xBBB798);
+ * the bolts and raritanium to the HUD's seven digits (rac2.h).
+ */
+static const struct menu_value rac2_menu_values[] = {
+	{ R2_CHALLENGE,  MENU_VALUE_SWITCH, 1,                   NULL },
+	{ R2_BOLTS,      MENU_VALUE_SET,    RAC2_MAX_BOLTS,      "Max bolts" },
+	{ R2_RARITANIUM, MENU_VALUE_SET,    RAC2_MAX_RARITANIUM, "Max raritanium" }
 };
 
 static const struct menu_section rac2_menu_sections[] = {
@@ -1198,8 +1214,10 @@ static const u8 rac2_menu_unlock_actions[] = {
 };
 
 /*
- * An unlock row cycles through Locked, Unlocked and Max, on the level, field
- * 1, which UNLOCK_SET holds to the weapon's own last version; a gadget or an
+ * An unlock row cycles through Locked, v1 and the weapon's own last version
+ * (rac2_unlock_levels: v4, or v2 for the Clank Zapper and the five RaC1
+ * carry-overs), on the level, field 1; round 5 shows them as the game numbers
+ * them, "V1", "V4" (menu.c), where they read Unlocked and Max. A gadget or an
  * item, which have no level, is Locked or Unlocked, the first two names. The
  * game's menus are in title case, and so is the renderer, which keeps capitals
  * as they are, so the names are written so.
@@ -1214,9 +1232,11 @@ static const struct game_menu rac2_menu = {
 	(u8)(sizeof(rac2_unlock_names) / sizeof(rac2_unlock_names[0])),
 	1, "V",
 	NULL,                 /* every planet with a name: the plain list, in the ids' order, the game's */
-	NULL, NULL,           /* every item goes as far as the set; no action with a status */
+	rac2_unlock_levels,   /* round 5: each weapon's own last version, v4 or v2 */
+	NULL,                 /* no action with a status */
 	"Collectables",       /* the eight buttons on a page of their own (round 3, as UYA's) */
-	NULL                  /* the planet select shows every planet (the pickers' round 2) */
+	NULL,                 /* the planet select shows every planet (the pickers' round 2) */
+	rac2_menu_values, (u8)(sizeof(rac2_menu_values) / sizeof(rac2_menu_values[0]))
 };
 
 /* ---------------------------------------------------------------- vtable */

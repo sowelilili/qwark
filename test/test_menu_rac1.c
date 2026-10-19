@@ -522,11 +522,12 @@ static void test_model_rac1(void)
 {
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
-	static const char * const game[] = { "Die", "Position slot", "Save position", "Load position",
-	                                     "Set aside file", "Load set-aside file", "Force autosave", "Bolts" };
+	/* Round 5: no Die, a spacer (""), Bolts a button on Cheats; Auto-reset alone, no Remember. */
+	static const char * const game[] = { "Position slot", "Save position", "Load position", "",
+	                                     "Set aside file", "Load set-aside file", "Force autosave" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
-	                                       "Goodies menu" };
-	static const char * const manips[] = { "Category", "Auto-reset", "Remember", "Apply now" };
+	                                       "Goodies menu", "Max bolts" };
+	static const char * const manips[] = { "Category", "Auto-reset", "Apply now" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Unlock all gold bolts", "Reset all gold bolts",
 	                                             "Unlock all skill points", "Reset skill points" };
@@ -545,19 +546,22 @@ static void test_model_rac1(void)
 	      "window of seven");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 8) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Game: a CONFIG page, the quick block, Force autosave and Bolts (the jankpot and debug rows left out)");
-	r = view_row(&v, "Bolts");
-	check(r != NULL && r->kind == MROW_VALUE, "Bolts is a stepper");
-	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC1_BOLTS) == 1, "and Right adds one");
+	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
+	      v.rows[3].flags == 0,
+	      "round 5, Game: the slot and the positions, a blank grey row, the save-file buttons and Force autosave "
+	      "(the jankpot and debug rows left out)");
 	r = view_row(&v, "Load set-aside file");
 	check(r != NULL && (r->flags & MROWF_CLOSES) != 0, "Load set-aside file closes the menu first");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
 	act(&v, MBOX_EV_ACTIVATE, "Cheats");
-	check(labels_are(&v, cheats, 5) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Cheats: the four cheats every game has, then the Goodies menu");
+	check(labels_are(&v, cheats, 6) && v.ptype == MBOX_PTYPE_CONFIG,
+	      "Cheats: the four cheats every game has, the Goodies menu, then (round 5) Max bolts");
+	r = view_row(&v, "Max bolts");
+	check(r != NULL && r->kind == MROW_ACTION && act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK &&
+	      peek32(RAC1_BOLTS) == 9999999u && value_of(&v, "Max bolts")[0] == 0,
+	      "Max bolts: 9,999,999, the HUD counter's limit, the row blank");
 	check(act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet") == ST_OK && strcmp(value_of(&v, "Ghost Ratchet"), "On") == 0,
 	      "Ghost Ratchet: the cross turns it On");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
@@ -583,8 +587,8 @@ static void test_model_rac1(void)
 	menu_model_view(&v);
 
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
-	check(labels_are(&v, manips, 4) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Manips: the category, Auto-reset, Remember, Apply now (RaC1 has no headers)");
+	check(labels_are(&v, manips, 3) && v.ptype == MBOX_PTYPE_CONFIG,
+	      "Manips: the category, Auto-reset, Apply now (RaC1 has no headers, so no spacer either)");
 	check(strcmp(value_of(&v, "Category"), "None") == 0 && act(&v, MBOX_EV_RIGHT, "Category") == ST_OK &&
 	      strcmp(value_of(&v, "Category"), "NG+ (poki skip)") == 0, "Category: Right goes from None to NG+ (poki skip)");
 	act(&v, MBOX_EV_LEFT, "Category");
@@ -913,14 +917,15 @@ static void test_renderer_rac1(void)
 	      "then the game's transition to a CONFIG page");
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && strcmp(G.pane_text[0], "Cheats") == 0 && G.ndraw == 10 && G.blends >= 1,
-	      "titled Cheats in the title pane, five rows in the list pane");
+	check(r1_at() == AT_CONF && strcmp(G.pane_text[0], "Cheats") == 0 && G.ndraw == 12 && G.blends >= 1,
+	      "titled Cheats in the title pane, six rows in the list pane");
 	check(strcmp(conf_row(0, a, sizeof(a)), "Fast Loads=Off") == 0 &&
-	      strcmp(conf_row(4, b, sizeof(b)), "Goodies Menu=Off") == 0,
-	      "labels and values in title case");
+	      strcmp(conf_row(4, b, sizeof(b)), "Goodies Menu=Off") == 0 &&
+	      strcmp(conf_row(5, b + 80, 80), "Max Bolts=") == 0,
+	      "labels and values in title case; round 5: Max Bolts, a blank button, last");
 	printf("    (%s, %s)\n", a, b);
 	check(G.draw_x[0] == 12.0f && G.draw_x[1] == 440.0f - 12.0f && G.draw_colour[0] == R1_COLOR_CURSOR &&
-	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(300 / 6 - 8) && G.draw_y[2] == (float)(2 * (300 / 6) - 8),
+	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(300 / 7 - 8) && G.draw_y[2] == (float)(2 * (300 / 7) - 8),
 	      "Cheats' list geometry: the label at 12, the value right-aligned at w - 12, the rows sharing the pane, "
 	      "the cursor row lit");
 	check(r16(MH_SHIM + SH_CONF_W) == 440 && r16(MH_SHIM + SH_CONF_H) == 300 && r32(LIST + 0x14) == PANE0 + 0x100,
@@ -973,7 +978,7 @@ static void test_renderer_rac1(void)
 		frame(0);
 		check(G.boxes == boxes + 2 && G.sprites == sprites + 1 && strcmp(G.drawn[6], "Challenge Mode") == 0 &&
 		      strcmp(G.drawn[7], "5") == 0 && G.draw_x[7] == 440.0f / 2 + 80 &&
-		      G.draw_y[6] == G.draw_y[4] + (float)(300 / 6) + 4.0f,
+		      G.draw_y[6] == G.draw_y[4] + (float)(300 / 7) + 4.0f,
 		      "a slider row: its label 4 lower, its value before the bar, the frame and track boxes and the fill");
 		/* qwark's own page back, as qwark posted it. */
 		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 3);
@@ -1040,25 +1045,33 @@ static void test_renderer_rac1(void)
 	check(r32(R1_MENU_PAGE) == PAGE_LIST && r32(PAGE_LIST + 0x40) == ROW(1) && r8(MH_SHIM + SH_NROWS) == 7,
 	      "the root again, the focus on Cheats");
 
-	/* GAME: eight rows; a long page scrolls in the list pane. */
+	/* GAME (round 5): seven rows, a spacer among them; a long page scrolls in the list pane. */
 	w32(PAGE_LIST + 0x40, ROW(0));
 	step(0x40);
 	frame(0);
 	frames(7);
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 8 && G.ndraw == 16, "Game: eight rows, all on screen in a pane of 300");
+	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 7 && G.ndraw == 14, "Game: seven rows, all on screen in a pane of 300");
+	check(strcmp(G.drawn[6], "") == 0 && strcmp(G.drawn[7], "") == 0 && G.draw_colour[6] == R1_COLOR_GREY &&
+	      strcmp(conf_row(2, a, sizeof(a)), "Load Position=") == 0 &&
+	      strcmp(conf_row(4, b, sizeof(b)), "Set Aside File=") == 0,
+	      "the fourth row blank, in the generic list's grey, between Load Position and Set Aside File");
+	step(PADB_DOWN);
+	step(PADB_DOWN);
+	check(r8(MH_SHIM + SH_CUR) == 2, "Down twice: Load Position");
+	step(PADB_DOWN);
+	frame(0);
+	check(r8(MH_SHIM + SH_CUR) == 4 && G.draw_colour[8] == R1_COLOR_CURSOR, "Down passes over the spacer");
+	step(PADB_UP);
+	check(r8(MH_SHIM + SH_CUR) == 2, "and Up too");
 	G.list_h = 120;
 	frame(0);
 	check(r8(MH_SHIM + SH_VIS) == 5 && G.ndraw == 10, "in a pane of 120, five on screen (rows of 20 at least)");
-	for (i = 0; i < 7; i++) step(PADB_DOWN);
+	for (i = 0; i < 4; i++) step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 7 && r8(MH_SHIM + SH_TOP) == 3 && strncmp(G.drawn[8], "Bolts", 5) == 0,
-	      "Down to Bolts scrolls the window: rows 3 to 7");
-	step(PADB_RIGHT);
-	tick(2);
-	frame(0);
-	check(peek32(RAC1_BOLTS) == 1 && strcmp(G.drawn[9], "1") == 0, "Right on Bolts steps it");
+	check(r8(MH_SHIM + SH_CUR) == 6 && r8(MH_SHIM + SH_TOP) == 2 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
+	      "Down to Force Autosave, the last, scrolls the window: rows 2 to 6");
 	for (i = 0; i < 10; i++) step(PADB_UP);
 	frame(0);
 	check(r8(MH_SHIM + SH_CUR) == 0 && r8(MH_SHIM + SH_TOP) == 0, "Up to the top: no wrap, the window back");

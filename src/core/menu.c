@@ -58,11 +58,12 @@ static u32 g_vc_value;
 static u32 g_vc_until;
 
 /*
- * A row's answer, shown in place of its value for two seconds: "done" for an
- * action, the reason for a refusal.
+ * A row's answer, shown in place of its value for two seconds: the reason for
+ * a refusal. Round 5 (the user's call): nothing for an answer that went
+ * through, the game's own sound being the cue; round 4 showed "done", and
+ * "after closing" for a load.
  */
 #define NOTE_TICKS 240
-#define NOTE_DEFERRED 0xFF
 static u16 g_note_page;
 static u16 g_note_id = 0;
 static u8  g_note_rc;
@@ -107,8 +108,21 @@ static u32 now_tick(void)
 	return session_tick_count();
 }
 
+#ifdef QWARK_TEST
+/*
+ * The tests' own menu table in place of the game's, NULL for the game's again:
+ * since round 5 no game lists a VALUE as a stepper, and the steppers and
+ * sliders are still a page's controls (round 1's DESCRIBE groups).
+ */
+static const struct game_menu *g_test_menu;
+void menu_test_menu(const struct game_menu *gm) { g_test_menu = gm; }
+#endif
+
 static const struct game_menu *gmenu(void)
 {
+#ifdef QWARK_TEST
+	if (g_test_menu != NULL) return g_test_menu;
+#endif
 	return g_game != NULL ? g_game->menu : NULL;
 }
 
@@ -139,7 +153,6 @@ static void set_text(char *dst, u32 cap, const char *src)
 static const char *status_text(u8 rc)
 {
 	switch (rc) {
-	case ST_OK:          return "done";
 	case ST_NOT_INGAME:  return "not in game";
 	case ST_UNSUPPORTED: return "not available";
 	case ST_BAD_ARG:     return "refused";
@@ -147,7 +160,6 @@ static const char *status_text(u8 rc)
 	case ST_FULL:        return "full";
 	case ST_NOT_FOUND:   return "not found";
 	case ST_BUSY:        return "busy";
-	case NOTE_DEFERRED:  return "after closing";
 	default:             return "error";
 	}
 }
@@ -182,17 +194,13 @@ static const char *note_for(u16 page, u16 id)
 	return status_text(g_note_rc);
 }
 
-/* Notes a failure, and answers what it was given. */
+/*
+ * Notes a failure, and answers what it was given. Round 5: an action's success
+ * too is no note (round 4's done() noted "done").
+ */
 static int answer(u16 id, int rc, const char *label)
 {
 	if (rc != ST_OK) note(id, (u8)rc, label);
-	return rc;
-}
-
-/* An action's answer, "done" included, and answers what it was given. */
-static int done(u16 id, int rc, const char *label)
-{
-	note(id, (u8)rc, label);
 	return rc;
 }
 
@@ -465,6 +473,25 @@ static u8 push_id(u16 *ids, u8 n, u16 id)
 	return n;
 }
 
+#define SPACER_ID MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_SPACER)
+
+/*
+ * Round 5: a blank row between a page's parts, never opening the page or
+ * following another (Game without its position rows, where the game has no
+ * positions, starts with its save-file part).
+ */
+static u8 push_spacer(u16 *ids, u8 n)
+{
+	if (n == 0 || ids[n - 1] == SPACER_ID) return n;
+	return push_id(ids, n, SPACER_ID);
+}
+
+/* Nor ending it. */
+static u8 drop_spacer(const u16 *ids, u8 n)
+{
+	return n != 0 && ids[n - 1] == SPACER_ID ? (u8)(n - 1) : n;
+}
+
 /* Every row of a page, as row ids, in order; how many. */
 static u8 page_items(u16 page, u16 *ids)
 {
@@ -497,7 +524,10 @@ static u8 page_items(u16 page, u16 *ids)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_UNLOCKS));
 		if (savefile_library_gate() != ST_UNSUPPORTED)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_SAVES));
-		return push_id(ids, n, MENU_ROW_ID(MENU_ROW_TEXT, 0));
+#if MENU_BUILD_ROW
+		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_BUILD));
+#endif
+		return n;
 
 	case MENU_PAGE_GROUP:
 		if (d == NULL) return 0;
@@ -511,13 +541,20 @@ static u8 page_items(u16 page, u16 *ids)
 		if (gm == NULL || arg >= gm->nsections) return 0;
 		for (i = 0; i < gm->sections[arg].nitems; i++) {
 			u8 it = gm->sections[arg].items[i];
-			if (it >= MENU_ITEM_SLOT) {
+			if (it == MENU_ITEM_SPACER) {
+				n = push_spacer(ids, n);
+			} else if (it >= MENU_ITEM_SLOT) {
 				if (g_game->save_blob != NULL) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_POS, it));
+			} else if (it >= MENU_ITEM_VALUE(0)) {
+				/* Round 5: a VALUE as a button or a switch (struct menu_value). */
+				j = (u8)(it - MENU_ITEM_VALUE(0));
+				if (j < gm->nvalues && feature(gm->values[j].id) != NULL)
+					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_VALUE, j));
 			} else if (feature(it) != NULL) {
 				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, it));
 			}
 		}
-		return n;
+		return drop_spacer(ids, n);
 
 	case MENU_PAGE_CHOICE:
 		f = feature(arg);
@@ -542,19 +579,24 @@ static u8 page_items(u16 page, u16 *ids)
 
 	case MENU_PAGE_MANIPS:
 		if (g_game == NULL || g_game->manips == NULL) return 0;
-		for (i = MENU_MANIP_CATEGORY; i <= MENU_MANIP_APPLY; i++)
-			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, i));
+		/* Round 5: one Auto-reset row, Off, On or On boot, where Remember had its own. */
+		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, MENU_MANIP_CATEGORY));
+		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, MENU_MANIP_AUTO));
+		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, MENU_MANIP_APPLY));
+		count = n;
 		/*
 		 * MANIP_LIST's headers' features, those DESCRIBE has (UYA's trophy
 		 * rows are not where the reset cannot work), each ACTION that names a
 		 * status readout followed by a row of that status (UYA's Reset
-		 * trophies, PROTOCOL.md 5.14).
+		 * trophies, PROTOCOL.md 5.14). Round 5: a spacer between the category's
+		 * part and theirs (Deadlocked's Fixes, UYA's Trophies).
 		 */
 		for (i = 0; i < g_game->manips->nheaders; i++) {
 			for (j = 0; j < g_game->manips->headers[i].nfeatures; j++) {
 				u8 id = g_game->manips->headers[i].features[j];
 				f = feature(id);
 				if (f == NULL) continue;
+				if (n == count) n = push_spacer(ids, n);
 				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, id));
 				if (f->kind == FEATURE_ACTION && f->readout < QWARK_MAX_READOUTS &&
 				    gm != NULL && gm->action_status != NULL)
@@ -665,6 +707,28 @@ static u8 steps(void)
 }
 
 static const char *const g_toggle_text[3] = { "Off", "On", "Auto" };
+
+/*
+ * Round 5: the Manips page's Auto-reset, MANIP_OPTIONS' two flags as one row
+ * (manips_options_now: bit0 auto-reset, bit1 remember). Off is no auto-reset
+ * and no remembering, On is auto-reset alone, On boot both: the category
+ * comes back at the next boot and is put in on every file load. Remember
+ * without auto-reset, which only the client can set, reads Off, since nothing
+ * is put in on a file load then; a step from it writes one of the three.
+ */
+static const char *const g_reset_text[3] = { "Off", "On", "On boot" };
+
+static u8 manip_reset(u8 opts)
+{
+	if ((opts & 1u) == 0) return 0;
+	return (opts & 2u) != 0 ? 2 : 1;
+}
+
+/* Round 5: a VALUE as a switch (struct menu_value) is on while the field reads above 0. */
+static u8 value_on(const struct feature_desc *f)
+{
+	return value_number(f, feature_value(f)) > 0;
+}
 
 /*
  * Round 3, what a native slider needs: a VALUE whose range is narrower than
@@ -796,12 +860,18 @@ static u8 unlock_now(const struct game_unlock *u, char *out, u32 cap)
 	}
 	for (i = 1; i < gm->nunlock; i++) {
 		if (v[gm->unlock_field] == unlock_value(gm, u, i)) {
-			qstrcpy(out, cap, gm->unlock_names[i]);
-			return i;
+			below = i;
+			break;
 		}
 		if (v[gm->unlock_field] > unlock_value(gm, u, i)) below = i;
 	}
-	/* Off the list: the number, or the name of the value under it. */
+	/*
+	 * Round 5 (the user's call): where the game has a prefix, the version as
+	 * the game numbers it, on the list or off it: V1, a weapon's own last
+	 * version ("V4", "V8", the R3YNO's "V5") and any between ("V3"), where
+	 * RaC2 and UYA said Unlocked and Max. Without one, the name of the value,
+	 * or of the value under it off the list.
+	 */
 	if (gm->unlock_prefix != NULL) {
 		qstrcpy(out, cap, gm->unlock_prefix);
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), v[gm->unlock_field]);
@@ -854,9 +924,25 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		row(r, MROW_LINK, MROWF_ENABLED, text, "");
 		break;
 	case MENU_ROW_TEXT:
-		row(r, MROW_INFO, 0, arg == 0 ? "qwark build " : "Nothing here", "");
-		if (arg == 0) qfmt_u32(r->label + qstrlen(r->label), 8, QWARK_BUILD);
+		/* Grey: no row of text is ENABLED, so every renderer's cursor passes over it. */
+		row(r, MROW_INFO, 0, arg == MENU_TEXT_BUILD ? "qwark build " : arg == MENU_TEXT_EMPTY ? "Nothing here" : "", "");
+		if (arg == MENU_TEXT_BUILD) qfmt_u32(r->label + qstrlen(r->label), 8, QWARK_BUILD);
 		break;
+
+	case MENU_ROW_VALUE: {
+		/* Round 5: a VALUE as a button ("Max bolts") or a switch (Challenge mode). */
+		const struct menu_value *mv = gm != NULL && arg < gm->nvalues ? &gm->values[arg] : NULL;
+		f = mv != NULL ? feature(mv->id) : NULL;
+		if (f == NULL) break;
+		n = mv->label != NULL ? mv->label : f->label;
+		if (mv->kind == MENU_VALUE_SWITCH) {
+			count = value_on(f);
+			row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (count ? MROWF_ON : 0), n, g_toggle_text[count]);
+		} else {
+			row(r, MROW_ACTION, MROWF_ENABLED, n, "");
+		}
+		break;
+	}
 
 	case MENU_ROW_FEATURE:
 		f = feature(arg);
@@ -897,10 +983,8 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 			}
 			break;
 		case MENU_MANIP_AUTO:
-		case MENU_MANIP_REMEMBER:
-			on = (opts_now >> (arg - MENU_MANIP_AUTO)) & 1u;
-			row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (on ? MROWF_ON : 0),
-			    arg == MENU_MANIP_AUTO ? "Auto-reset" : "Remember", g_toggle_text[on]);
+			on = manip_reset(opts_now);
+			row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (on ? MROWF_ON : 0), "Auto-reset", g_reset_text[on]);
 			break;
 		default:
 			row(r, MROW_ACTION, MROWF_ENABLED, "Apply now", "");
@@ -1142,7 +1226,7 @@ void menu_model_view(struct menu_view *v)
 
 	/* A page with nothing on it still has a row, which says so. */
 	if (v->nrows == 0) {
-		build_row(cur->page, MENU_ROW_ID(MENU_ROW_TEXT, 1), &r);
+		build_row(cur->page, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_EMPTY), &r);
 		push_row(v, &r);
 	}
 
@@ -1209,13 +1293,13 @@ static void cycle_step(const struct feature_desc *f)
 	g_step[f->id] = next;
 }
 
-static int defer(u16 id, u8 kind, u8 arg, const char *label)
+/* A CLOSES action, set up for the driver (round 5: its row says nothing meanwhile). */
+static int defer(u8 kind, u8 arg, const char *label)
 {
 	g_defer.kind = kind;
 	g_defer.arg = arg;
 	g_defer.waiting = 0;
 	set_text(g_defer.label, sizeof(g_defer.label), label);
-	note(id, NOTE_DEFERRED, label);
 	return ST_OK;
 }
 
@@ -1232,8 +1316,8 @@ static int act_feature(u8 row, u16 id, const struct feature_desc *f, int dir)
 	switch (f->kind) {
 	case FEATURE_ACTION:
 		if (dir != 0) return ST_OK;
-		if ((f->flags & FEATURE_FLAG_LOAD_ASIDE) != 0) return defer(id, DEFER_FEATURE, f->id, f->label);
-		return done(id, features_trigger(f->id), f->label);
+		if ((f->flags & FEATURE_FLAG_LOAD_ASIDE) != 0) return defer(DEFER_FEATURE, f->id, f->label);
+		return answer(id, features_trigger(f->id), f->label);
 	case FEATURE_VALUE:
 		if (dir != 0) return answer(id, step_feature(f, dir), f->label);
 		if ((g_caps & MBOX_CAP_STEPS) != 0) cycle_step(f);
@@ -1269,13 +1353,38 @@ static int act_manip(u16 id, u8 arg, int dir)
 		cur = cycle(cur, (u8)(m->ngroups + 1), dir);
 		return answer(id, manips_select(cur == 0 ? 0 : m->groups[cur - 1].id), "Category");
 	case MENU_MANIP_AUTO:
-	case MENU_MANIP_REMEMBER:
-		opts ^= (u8)(1u << (arg - MENU_MANIP_AUTO));
-		return answer(id, manips_options(opts & 1u, (opts >> 1) & 1u), NULL);
-	default:
+		/* Round 5: Off, On, On boot (manip_reset), the cross and Right forward, wrapping. */
+		cur = cycle(manip_reset(opts), 3, dir);
+		return answer(id, manips_options(cur != 0, cur == 2), "Auto-reset");
+	case MENU_MANIP_APPLY:
 		if (dir != 0) return ST_OK;
-		return done(id, manips_apply(), "Apply now");
+		return answer(id, manips_apply(), "Apply now");
+	default:
+		return ST_OK;
 	}
+}
+
+/*
+ * Round 5: a VALUE as a button, which writes the game's value (Max bolts), or
+ * as a switch (Challenge mode): Off writes 0, On the menu value's (1), since
+ * a switch that reads Off reads 0. The row then shows what was written until
+ * the readout agrees, as a stepped value did.
+ */
+static int act_value(u16 id, u8 arg, int dir)
+{
+	const struct game_menu *gm = gmenu();
+	const struct menu_value *mv = gm != NULL && arg < gm->nvalues ? &gm->values[arg] : NULL;
+	const struct feature_desc *f = mv != NULL ? feature(mv->id) : NULL;
+	u32 raw;
+	int rc;
+
+	if (f == NULL) return ST_NOT_FOUND;
+	if (mv->kind == MENU_VALUE_SWITCH) raw = value_on(f) ? 0 : mv->value;
+	else if (dir != 0) return ST_OK;
+	else raw = mv->value;
+	rc = features_set(f->id, raw);
+	if (rc == ST_OK) remember_value(f->id, raw);
+	return answer(id, rc, mv->label != NULL ? mv->label : f->label);
 }
 
 static int act_unlock(u16 id, u8 arg, int dir)
@@ -1331,13 +1440,16 @@ static int act(u8 row, u16 id, int dir)
 			return ST_OK;
 		}
 		if (dir != 0) return ST_OK;
-		if (arg == MENU_ITEM_POS_SAVE) return done(id, session_position_save(0xFF), "Save position");
-		return done(id, session_position_load(0xFF), "Load position");
+		if (arg == MENU_ITEM_POS_SAVE) return answer(id, session_position_save(0xFF), "Save position");
+		return answer(id, session_position_load(0xFF), "Load position");
 
 	case MENU_ROW_PLANET:
 		if (dir != 0) return ST_OK;
 		names = g_game->planet_names(&count);
-		return defer(id, DEFER_PLANET, arg, arg < count ? names[arg] : NULL);
+		return defer(DEFER_PLANET, arg, arg < count ? names[arg] : NULL);
+
+	case MENU_ROW_VALUE:
+		return act_value(id, arg, dir);
 
 	case MENU_ROW_MANIP:
 		return act_manip(id, arg, dir);
@@ -1350,7 +1462,7 @@ static int act(u8 row, u16 id, int dir)
 		if (!save_category(page_arg(cur->page), g_defer.cat) ||
 		    arg >= savefile_menu_entry(g_defer.cat, arg, g_defer.name, sizeof(g_defer.name)))
 			return answer(id, ST_NOT_FOUND, NULL);
-		return defer(id, DEFER_RESTORE, arg, g_defer.name);
+		return defer(DEFER_RESTORE, arg, g_defer.name);
 
 	case MENU_ROW_NAV:
 		if (dir != 0) return ST_OK;

@@ -1052,9 +1052,11 @@ static const struct game_manips rac1_manips = {
  * Revision 1.22: the console menu's pages for RaC1 (src/core/menu.c), after
  * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac1",
  * as UYA's are. Game is the quick block of the client's Game panel and its
- * savefile tab (Force autosave beside the two set-aside buttons), then the one
- * value, Bolts; Cheats the four cheats every game has and the Goodies menu,
- * the one switch of the Game panel's "Options" column. The jankpot, the debug
+ * savefile tab (Force autosave beside the two set-aside buttons); Cheats the
+ * four cheats every game has and the Goodies menu, the one switch of the Game
+ * panel's "Options" column. Round 5 (the user's hardware notes): Die is left
+ * to the combos, a spacer parts Game's position rows from its save-file rows,
+ * and Bolts is a button at the end of Cheats, Max bolts. The jankpot, the debug
  * updates and the camera mode are the client's Debug page, which the menu
  * leaves out. The gold bolt and skill point buttons are the client's
  * Collectables tab, beside the unlock table, so the Unlocks page links them
@@ -1063,14 +1065,20 @@ static const struct game_manips rac1_manips = {
  * plain list in the game's order (PLANET_LIST's ids), until the native picker.
  */
 static const u8 rac1_menu_game[] = {
-	F_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE,
-	F_BOLTS
+	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	MENU_ITEM_SPACER,
+	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE
 };
 
 static const u8 rac1_menu_cheats[] = {
 	F_FAST_LOADS, F_GHOST, F_INFINITE_AMMO, F_FREEZE_HEALTH,
-	F_GOODIES
+	F_GOODIES,
+	MENU_ITEM_VALUE(0)
+};
+
+/* Round 5: the HUD's seven digits (rac1.h, RAC1_MAX_BOLTS). */
+static const struct menu_value rac1_menu_values[] = {
+	{ F_BOLTS, MENU_VALUE_SET, RAC1_MAX_BOLTS, "Max bolts" }
 };
 
 static const struct menu_section rac1_menu_sections[] = {
@@ -1100,7 +1108,8 @@ static const struct game_menu rac1_menu = {
 	NULL,                 /* every planet with a name: the plain list, in the game's order */
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
 	"Collectables",       /* the gold bolt and skill point buttons, on a page of their own */
-	NULL                  /* the Galactic Map shows every planet (the pickers' round 2) */
+	NULL,                 /* the Galactic Map shows every planet (the pickers' round 2) */
+	rac1_menu_values, (u8)(sizeof(rac1_menu_values) / sizeof(rac1_menu_values[0]))
 };
 
 /* ---------------------------------------------------------------- vtable */

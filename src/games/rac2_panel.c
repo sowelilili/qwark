@@ -392,6 +392,21 @@ int rac2_unlock_read(const struct game_unlock *entry, u32 values[4])
 	return ST_OK;
 }
 
+/*
+ * Round 5, the console menu's last step for an unlock row (struct game_menu,
+ * unlock_top): the weapon's own last version where it stops short of the
+ * field's game-wide v4 (the Clank Zapper and the RaC1 carry-overs, v2), else
+ * 0, the set's own. Without it the menu stepped such a weapon from v2 to the
+ * set's v4, which UNLOCK_SET holds to v2, and Right never left it.
+ */
+u32 rac2_unlock_levels(u8 id)
+{
+	int row = rac2_row_for_id(id);
+
+	if (row < 0 || rac2_items[row].levels >= RAC2_MAX_LEVELS) return 0;
+	return rac2_items[row].levels;
+}
+
 int rac2_unlock_set(u8 id, u8 field, u32 value)
 {
 	const struct rac2_item *it;

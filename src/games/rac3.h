@@ -25,6 +25,12 @@
 #define RAC3_ITEM_ARRAY        0x00C1E43Cu  /* one byte per item id: its version */
 #define RAC3_BOLTS             0x00C1E4DCu
 /*
+ * Round 5, the console menu's Max bolts: the game's own cap, which its update
+ * (0x286D08) puts on the bolts every frame, min(bolts, 99,999,999), at
+ * 0x287C04.
+ */
+#define RAC3_MAX_BOLTS         99999999u
+/*
  * Build 53, Freeze health (classic.h): the game's maximum, a word, from the
  * NPEA00387 executable. The game works it out from the health XP and the ten
  * bytes at +0x50 beside it, writes it at 0x14EF68 when it changes, with a

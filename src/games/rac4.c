@@ -1049,20 +1049,36 @@ static const struct game_manips rac4_manips = {
 /*
  * Revision 1.22, round 2: the console menu's pages for Deadlocked
  * (src/core/menu.c), after rewrite/console-ui-framework.md. Game is the quick
- * block and the values of the client's Game panel; Cheats the four cheats
- * every game has and the Game panel's other actions. Skin is a cosmetic, which
+ * block of the client's Game panel; Cheats the four cheats every game has and
+ * the Game panel's other actions. Round 5 (the user's hardware notes): Die is
+ * left to the combos, a spacer parts Game's position rows from its save-file
+ * rows, and the values go to Cheats, after its toggles: Challenge mode as a
+ * switch, then the buttons, Max bolts, Max Dread points and Unlock all
+ * planets. Skin is a cosmetic, which
  * the menu leaves out, and the crash patches and the softlock fix are the
  * "Fixes" header the Manips page lists, as the client's Manips panel does.
  */
 static const u8 rac4_menu_game[] = {
-	R4_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	R4_SET_ASIDE, R4_LOAD_ASIDE,
-	R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE
+	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	MENU_ITEM_SPACER,
+	R4_SET_ASIDE, R4_LOAD_ASIDE
 };
 
 static const u8 rac4_menu_cheats[] = {
 	R4_FAST_LOADS, R4_GHOST, R4_REFILL_AMMO, R4_FREEZE_HEALTH,
+	MENU_ITEM_VALUE(0), MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2),
 	R4_UNLOCK_PLANETS
+};
+
+/*
+ * Round 5: Challenge mode On while the counter is above 0, On from 0 making it
+ * 1, the first run's; the bolts to the game's own cap, and the Dread points to
+ * the same (rac4.h).
+ */
+static const struct menu_value rac4_menu_values[] = {
+	{ R4_CHALLENGE,    MENU_VALUE_SWITCH, 1,              NULL },
+	{ R4_BOLTS,        MENU_VALUE_SET,    RAC4_MAX_BOLTS, "Max bolts" },
+	{ R4_DREAD_POINTS, MENU_VALUE_SET,    RAC4_MAX_DREAD, "Max Dread points" }
 };
 
 static const struct menu_section rac4_menu_sections[] = {
@@ -1092,7 +1108,8 @@ static const struct game_menu rac4_menu = {
 	NULL,                 /* every planet, the placeholders apart (menu.c leaves out "(...)") */
 	NULL, NULL,           /* every weapon goes to V99; no action with a status */
 	NULL,                 /* the two weapon buttons stay on the Unlocks page, which they fit */
-	NULL                  /* Worlds shows every planet (the pickers' round 2) */
+	NULL,                 /* Worlds shows every planet (the pickers' round 2) */
+	rac4_menu_values, (u8)(sizeof(rac4_menu_values) / sizeof(rac4_menu_values[0]))
 };
 
 /* ---------------------------------------------------------------- vtable */

@@ -571,6 +571,50 @@ static void test_menu_core_picker(void)
 	F.picker_ok = 0;
 }
 
+/*
+ * Round 5: title case starts a word after the punctuation that opens it, so a
+ * save category of the console's library, "(premade savefiles)", reads
+ * "(Premade Savefiles)" in RaC1 and RaC2 (round 4: "(premade Savefiles)").
+ * A letter or a digit ends the start; capitals and the game's own casing
+ * have no words to find.
+ */
+static void test_menu_core_case(void)
+{
+	static const struct prow rows[4] = {
+		{ MROW_LINK, MROWF_ENABLED, 0x0D00, "(premade savefiles)", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED, 0x0201, "load set-aside file", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED, 0x0E01, "\"quoted\" 'single' -dash [x] 2nd run", "", NULL },
+		{ MROW_ACTION, MROWF_ENABLED, 0x0E02, "  (( two", "", NULL }
+	};
+
+	group("console menu: the renderer core's casing (round 5: a word after leading punctuation)");
+
+	fresh();
+	g_case_main = MH_CASE_TITLE;
+	g_style = 0;
+	post_page(0x09000101, MBOX_PTYPE_MAIN, 0, 0, "(premade savefiles)", "", rows, 4);
+	mh_core_start(0);
+	check(str_is(mh_text(0), "(Premade Savefiles)") && str_is(mh_title(), "(Premade Savefiles)"),
+	      "title case: \"(premade savefiles)\" reads \"(Premade Savefiles)\", the row and the title");
+	check(str_is(mh_text(1), "Load Set-aside File"), "a hyphen inside a word starts none: \"Load Set-aside File\"");
+	check(str_is(mh_text(2), "\"Quoted\" 'Single' -Dash [x] 2nd Run"),
+	      "after a quote, an apostrophe or a dash opening a word, its first letter; a digit ends the start; "
+	      "\"[\" is not below '0' and starts none");
+	check(str_is(mh_text(3), "  (( Two"), "spaces and brackets in a row, then the word");
+	g_case_main = MH_CASE_UPPER;
+	post_page(0x09000102, MBOX_PTYPE_MAIN, 0, 0, "(premade savefiles)", "", rows, 4);
+	mh_core_frame(0);
+	check(str_is(mh_text(0), "(PREMADE SAVEFILES)") && str_is(mh_text(1), "LOAD SET-ASIDE FILE"),
+	      "capitals: every letter, as before");
+	g_case_main = MH_CASE_AS_IS;
+	post_page(0x09000103, MBOX_PTYPE_MAIN, 0, 0, "(premade savefiles)", "", rows, 4);
+	mh_core_frame(0);
+	check(str_is(mh_text(0), "(premade savefiles)") && str_is(mh_text(2), "\"quoted\" 'single' -dash [x] 2nd run"),
+	      "the game's own casing: as qwark wrote it");
+	g_case_main = MH_CASE_UPPER;
+	g_style = 0x0F;
+}
+
 void test_menu_core(void)
 {
 	static const struct prow root[4] = {
@@ -766,6 +810,7 @@ void test_menu_core(void)
 	test_menu_core_sets();
 	test_menu_core_slide();
 	test_menu_core_picker();
+	test_menu_core_case();
 
 	/* Deadlocked's GAME SETTINGS: labels in capitals, a colon after a label with a value beside it. */
 	{

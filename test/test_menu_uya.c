@@ -884,18 +884,37 @@ static void uya_weapon(u32 unlock_off, u32 item_id, int version)
 
 #define CAPS_ALL (MBOX_CAP_STEPS | MBOX_CAP_PAGE_KEYS | MBOX_CAP_BACK | MBOX_CAP_REQUEST)
 
+/*
+ * Round 4's Game page, which round 5 took the values off (rac3.c): the tests'
+ * own table keeps it for the grid's sliders and scrolling.
+ */
+static const u8 uya_tv_items[] = {
+	R3_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD, R3_SET_ASIDE, R3_LOAD_ASIDE,
+	R3_BOLTS, R3_CHALLENGE, R3_HEALTH_XP, R3_HEALTH, R3_FILE_TIME
+};
+static const struct menu_section uya_tv_sections[] = { { "Game", uya_tv_items, (u8)sizeof(uya_tv_items) } };
+static struct game_menu uya_tv_menu;
+
+static void uya_tv_on(void)
+{
+	memset(&uya_tv_menu, 0, sizeof(uya_tv_menu));
+	uya_tv_menu.sections = uya_tv_sections;
+	uya_tv_menu.nsections = 1;
+	menu_test_menu(&uya_tv_menu);
+}
+
 /* ------------------------------------------------------------- the model */
 
 static void test_model_uya(void)
 {
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
-	static const char * const game[] = { "Die", "Position slot", "Save position", "Load position",
-	                                     "Set aside file", "Load set-aside file", "Bolts", "Challenge mode",
-	                                     "Health XP", "Health", "File time" };
+	/* Round 5: no Die, Health XP, Health or File time; a spacer (""); the values on Cheats. */
+	static const char * const game[] = { "Position slot", "Save position", "Load position", "",
+	                                     "Set aside file", "Load set-aside file" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
-	                                       "Quick-select pause" };
-	static const char * const manips[] = { "Category", "Auto-reset", "Remember", "Apply now", "Reset trophies",
+	                                       "Quick-select pause", "Challenge mode", "Max bolts" };
+	static const char * const manips[] = { "Category", "Auto-reset", "Apply now", "", "Reset trophies",
 	                                       "Trophy reset", "Reset trophies on Veldin load" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets and items", "Vid comics", "Collectables" };
 	static const char * const collectables[] = { "Max all weapon levels", "Reset all weapon levels",
@@ -913,17 +932,32 @@ static void test_model_uya(void)
 	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey: the design's");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 11) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Game: a CONFIG page, the quick block and the client's Values (no QE offset, no cosmetics)");
-	r = view_row(&v, "Bolts");
-	check(r != NULL && r->kind == MROW_VALUE, "Bolts is a stepper");
-	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC3_BOLTS) == 1, "and Right adds one");
+	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
+	      v.rows[3].flags == 0,
+	      "round 5, Game: the slot and the positions, a blank grey row, the save-file buttons; no Die, no values");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
 	act(&v, MBOX_EV_ACTIVATE, "Cheats");
-	check(labels_are(&v, cheats, 5) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Cheats: the four cheats every game has, then the quick-select pause");
+	check(labels_are(&v, cheats, 7) && v.ptype == MBOX_PTYPE_CONFIG,
+	      "Cheats: the four cheats every game has, the quick-select pause, then (round 5) Challenge mode and Max bolts");
+	poke8(RAC3_CHALLENGE_MODE, 0);
+	tick(2);
+	menu_model_view(&v);
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->kind == MROW_TOGGLE && strcmp(r->value, "Off") == 0, "Challenge mode: a switch, Off at 0");
+	check(act(&v, MBOX_EV_RIGHT, "Challenge mode") == ST_OK && peek8(RAC3_CHALLENGE_MODE) == 1 &&
+	      strcmp(value_of(&v, "Challenge mode"), "On") == 0, "Right: On, the counter 1");
+	poke8(RAC3_CHALLENGE_MODE, 4);
+	tick(2);
+	menu_model_view(&v);
+	check(strcmp(value_of(&v, "Challenge mode"), "On") == 0 && act(&v, MBOX_EV_ACTIVATE, "Challenge mode") == ST_OK &&
+	      peek8(RAC3_CHALLENGE_MODE) == 0 && strcmp(value_of(&v, "Challenge mode"), "Off") == 0,
+	      "on its fourth run On, and the cross Off, 0");
+	poke32(RAC3_BOLTS, 5);
+	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC3_BOLTS) == 99999999u &&
+	      value_of(&v, "Max bolts")[0] == 0 && view_row(&v, "Max bolts")->kind == MROW_ACTION,
+	      "Max bolts: 99,999,999, the game's own cap, and the row blank");
 	check(act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet") == ST_OK && strcmp(value_of(&v, "Ghost Ratchet"), "On") == 0,
 	      "Ghost Ratchet: the cross turns it On");
 	r = view_row(&v, "Quick-select pause");
@@ -979,6 +1013,8 @@ static void test_model_uya(void)
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0 && view_row(&v, "Vid Comic 6") == NULL,
 	      "Vid-Comics: Vid Comic 1 to 5 (planets 31, 33, 34, 32, 35), each a button that closes the menu first; no 6, "
 	      "no 1 SE");
+	check(act(&v, MBOX_EV_ACTIVATE, "Vid Comic 2") == ST_OK && value_of(&v, "Vid Comic 2")[0] == 0,
+	      "round 5: the cross on one waits for the close, its row blank (no \"after closing\")");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	check(menu_model_depth() == 1 && v.cursor == (u8)(view_row(&v, "Planets") - v.rows),
@@ -990,8 +1026,10 @@ static void test_model_uya(void)
 
 	/* Manips, with the Trophies header and the reset's status under its button. */
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
-	check(labels_are(&v, manips, 7) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Manips: the category, Auto-reset, Remember, Apply now, then Reset trophies, its status and the toggle");
+	check(labels_are(&v, manips, 7) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
+	      v.rows[3].flags == 0 && strcmp(value_of(&v, "Auto-reset"), "On") == 0,
+	      "Manips: the category, Auto-reset (On), Apply now, a spacer (round 5), then Reset trophies, its status and "
+	      "the toggle");
 	r = view_row(&v, "Trophy reset");
 	check(r != NULL && r->kind == MROW_INFO && (r->flags & MROWF_ENABLED) == 0 && strcmp(r->value, "Not this boot") == 0,
 	      "the status, grey: no reset this boot");
@@ -1014,7 +1052,7 @@ static void test_model_uya(void)
 	      v.rows[0].kind == MROW_ACTION && v.rows[5].kind == MROW_ACTION,
 	      "Collectables: a CONFIG page of the six buttons, their long labels in its label column");
 	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all skill points") == ST_OK &&
-	      strcmp(value_of(&v, "Unlock all skill points"), "done") == 0, "each runs, and says done");
+	      value_of(&v, "Unlock all skill points")[0] == 0, "each runs, and says nothing (round 5)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	check(labels_are(&v, unlocks, 4) && v.cursor == 3, "back: Unlocks, the cursor on Collectables");
@@ -1025,29 +1063,33 @@ static void test_model_uya(void)
 	uya_weapon(0x4FF, 0x57, 0);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Agents of Doom"), "LOCKED") == 0, "a locked weapon: LOCKED");
-	check(act(&v, MBOX_EV_RIGHT, "Agents of Doom") == ST_OK && strcmp(value_of(&v, "Agents of Doom"), "UNLOCKED") == 0 &&
-	      peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57, "Right: UNLOCKED, owned at v1");
-	check(act(&v, MBOX_EV_RIGHT, "Agents of Doom") == ST_OK && strcmp(value_of(&v, "Agents of Doom"), "MAX") == 0 &&
-	      peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57 + 7, "Right: MAX, v8");
+	check(act(&v, MBOX_EV_RIGHT, "Agents of Doom") == ST_OK && strcmp(value_of(&v, "Agents of Doom"), "V1") == 0 &&
+	      peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57, "Right: V1, owned at v1 (round 5: it said UNLOCKED)");
+	check(act(&v, MBOX_EV_RIGHT, "Agents of Doom") == ST_OK && strcmp(value_of(&v, "Agents of Doom"), "V8") == 0 &&
+	      peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57 + 7, "Right: V8, its last (it said MAX)");
 	check(act(&v, MBOX_EV_RIGHT, "Agents of Doom") == ST_OK && strcmp(value_of(&v, "Agents of Doom"), "LOCKED") == 0,
 	      "Right wraps to LOCKED");
 	uya_weapon(0x4FF, 0x57, 3);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Agents of Doom"), "V3") == 0, "a version between shows as itself, V3");
 	act(&v, MBOX_EV_RIGHT, "Agents of Doom");
-	check(peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57 + 7, "and Right steps on to MAX");
+	check(peek8(RAC3_ITEM_ARRAY + 0x57) == 0x57 + 7 && strcmp(value_of(&v, "Agents of Doom"), "V8") == 0,
+	      "and Right steps on to the last, V8");
 	uya_weapon(0x4B9, 0x11, 1);
 	menu_model_view(&v);
 	check(strcmp(value_of(&v, "Lava Gun"), "UNLOCKED") == 0,
 	      "an owned GameCube weapon, whose version cannot be read back, shows UNLOCKED");
 	uya_weapon(0x53F, 0x97, 5);
 	menu_model_view(&v);
-	check(strcmp(value_of(&v, "R3YNO"), "MAX") == 0, "the R3YNO at v5, its own last: MAX");
+	check(strcmp(value_of(&v, "R3YNO"), "V5") == 0, "the R3YNO at v5, its own last: V5");
+	act(&v, MBOX_EV_RIGHT, "R3YNO");
+	check(strcmp(value_of(&v, "R3YNO"), "LOCKED") == 0, "and Right from its last wraps to LOCKED");
 	uya_weapon(0x53F, 0x97, 1);
 	menu_model_view(&v);
+	check(strcmp(value_of(&v, "R3YNO"), "V1") == 0, "at v1: V1");
 	act(&v, MBOX_EV_RIGHT, "R3YNO");
-	check(peek8(RAC3_ITEM_ARRAY + 0x97) == 0x97 + 4 && strcmp(value_of(&v, "R3YNO"), "MAX") == 0,
-	      "and MAX writes its v5");
+	check(peek8(RAC3_ITEM_ARRAY + 0x97) == 0x97 + 4 && strcmp(value_of(&v, "R3YNO"), "V5") == 0,
+	      "and Right writes its v5, V5");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Gadgets and items");
@@ -1284,9 +1326,9 @@ static void test_renderer_uya(void)
 	      strcmp(row_text(6, a), "QWARK BUILD 54") == 0,
 	      "round 3: the frame it draws before the runner swaps still reads the root's rows, not the Cheats page");
 	pframe(0);
-	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 5 && G.vis == 5 &&
+	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 7 && G.vis == 7 &&
 	      G.cols == 2 && G.aligned == 2 && G.set_cursor >= 1,
-	      "the main pause's list ends, the frame and a grid of five rows begin, both columns aligned");
+	      "the main pause's list ends, the frame and a grid of seven rows begin, both columns aligned");
 	check(strcmp(read_str(G.title, a, 80), "CHEATS") == 0 && G.hint_a == 292 && G.hint_b == 3285,
 	      "titled CHEATS, with SELECT and BACK");
 	check(G.banner == 7.0f && G.title_sx == 0.875f && G.title_sy == 0.875f,
@@ -1294,6 +1336,9 @@ static void test_renderer_uya(void)
 	check(strcmp(cfg_label(0, a), "FAST LOADS") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
 	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE") == 0 && cell_color(1) == U_COLOR_OFF,
 	      "labels in capitals, without a colon (round 4), values in capitals, an off cheat in the normal colour");
+	check(strcmp(cfg_label(5, a), "CHALLENGE MODE") == 0 && strcmp(cfg_label(6, b), "MAX BOLTS") == 0 &&
+	      strcmp(cfg_value(6, a), "") == 0,
+	      "round 5: CHALLENGE MODE, a switch, and MAX BOLTS, a blank button, end it");
 	check(G.font[0] == 1 && G.font[1] == 1 && G.rules == 1, "the cells in the Options screens' font, with their rules");
 	check(G.buf == U_CELLS && r32(CFG) == U_CELLS_SIZE, "the grid's cells in their own span (round 4), its size given");
 	{
@@ -1359,7 +1404,12 @@ static void test_renderer_uya(void)
 	      "the picture source stopped, both buffers given back and the disc's reads waited for, as AUDIO / VISUAL's "
 	      "deinit does");
 
-	/* GAME: eleven rows, eight on screen, scrolled; Challenge mode at 51 of 0..255. */
+	/*
+	 * Round 4's GAME, eleven rows, eight on screen, scrolled; Challenge mode at
+	 * 51 of 0..255. Round 5 moved the values off it, so the page is the tests'
+	 * own, the same rows (uya_tv_menu).
+	 */
+	uya_tv_on();
 	poke8(RAC3_CHALLENGE_MODE, 51);
 	tick(2);
 	w32(U_CURSOR, 0);
@@ -1387,6 +1437,7 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(strcmp(cfg_label(10, a), "FILE TIME") == 0 && peek32(RAC3_FILE_TIME) == 1 && G.top + G.off == 10,
 	      "Right on File time steps it, the cursor still there");
+	menu_test_menu(NULL);
 
 	/* Start on the CONFIG page closes the pause, as CHEATS' does. */
 	G.closing = 1;
@@ -1410,6 +1461,32 @@ static void test_renderer_uya(void)
 	pframe(0);
 	pframe(0);
 	check(!G.paused && peek8(mb + MBOX_OFF_REQUEST) == 0 && !G.built, "which its next frame does");
+	tick(4);
+
+	/* Round 5: GAME's spacer, a blank cell pair in the grey the grid's Up and Down pass over. */
+	press(COMBO_MENU_DEFAULT);
+	play_frame(0);
+	tick(4);
+	w32(U_CURSOR, 0);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.rows == 6 && strcmp(cfg_label(2, a), "LOAD POSITION") == 0 &&
+	      strcmp(cfg_label(3, b), "") == 0 && strcmp(cfg_value(3, a), "") == 0 && cell_color(3) == U_COLOR_SKIP &&
+	      strcmp(cfg_label(4, b), "SET ASIDE FILE") == 0 && cell_color(4) == U_COLOR_OFF,
+	      "GAME: six rows, the fourth blank, in the colour the grid skips");
+	pframe(PADB_DOWN);
+	pframe(PADB_DOWN);
+	check(G.top + G.off == 2, "Down twice: LOAD POSITION");
+	pframe(PADB_DOWN);
+	check(G.top + G.off == 4, "Down: past the spacer to SET ASIDE FILE");
+	pframe(PADB_UP);
+	check(G.top + G.off == 2, "Up: past it back to LOAD POSITION");
+	press(COMBO_MENU_DEFAULT);
+	pframe(0);
+	pframe(0);
+	check(!G.paused && !G.built, "the combo closes it");
 	tick(4);
 
 	/* The HELP row after a close deep in the menu: the root too, the cursor on its first row. */

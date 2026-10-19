@@ -17,6 +17,13 @@
 #define RAC1_ANALOGS          0x964A40u   /* f32 rx, ry, lx, ly */
 #define RAC1_CURRENT_PLANET   0x969C70u
 #define RAC1_BOLTS            0x969CA0u
+/*
+ * Round 5, the console menu's Max bolts: the game keeps no cap, but every
+ * place that shows the HUD's bolt counter (slot 2 of the HUD's counters,
+ * 0xC8444, from the game's update 0x1675C8, the vendor 0x16AB38 and seven
+ * more) registers it with 9,999,999 as its limit: seven digits.
+ */
+#define RAC1_MAX_BOLTS        9999999u
 #define RAC1_GOLD_ITEMS       0x969CA8u   /* one byte per unlock index */
 /*
  * These two are the same value at two widths: rac1.cs calls 0x969CD0 read as a

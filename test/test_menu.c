@@ -972,6 +972,93 @@ static void save_drop(const char *cat, const char *name)
 
 /* ------------------------------------------------------------- the model */
 
+/*
+ * Round 5: no game lists a VALUE as a stepper any more, so the steppers and
+ * sliders, still the controls of round 1's pages of DESCRIBE groups, are
+ * tried on a menu table of the test's own: Deadlocked's three values.
+ */
+static const u8 tv_items[] = { R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE };
+/* Round 5: spacers that would open the page, follow another or end it are left out. */
+static const u8 tv_spaced[] = {
+	MENU_ITEM_SPACER, R4_BOLTS, MENU_ITEM_SPACER, MENU_ITEM_SPACER, R4_SKIN, MENU_ITEM_SPACER,
+	MENU_ITEM_VALUE(7), MENU_ITEM_SPACER
+};
+static const struct menu_section tv_sections[] = {
+	{ "Values", tv_items, (u8)sizeof(tv_items) },
+	{ "Spacers", tv_spaced, (u8)sizeof(tv_spaced) }
+};
+static struct game_menu tv_menu;
+
+static void tv_menu_on(void)
+{
+	memset(&tv_menu, 0, sizeof(tv_menu));
+	tv_menu.sections = tv_sections;
+	tv_menu.nsections = 2;
+	menu_test_menu(&tv_menu);
+}
+
+static void test_model_dl_values(void)
+{
+	struct menu_view v;
+	const struct menu_row *r;
+	u8 i;
+
+	tv_menu_on();
+	poke32(RAC4_BOLTS, 0);
+	poke8(RAC4_CHALLENGE_MODE, 0);
+	tick(10);
+	menu_model_reset(8, 16, CAPS_ALL);
+	menu_model_view(&v);
+	check(act(&v, MBOX_EV_ACTIVATE, "Values") == ST_OK && v.nrows == 3, "a page of the three values as steppers");
+	r = view_row(&v, "Bolts");
+	check(r != NULL && r->kind == MROW_VALUE && strcmp(r->value, "0") == 0, "Bolts is a stepper reading 0");
+	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC4_BOLTS) == 1, "Right adds one");
+	act(&v, MBOX_EV_ACTIVATE, "Bolts");
+	check(strcmp(value_of(&v, "Bolts"), "1 [10]") == 0, "the cross makes the step 10");
+	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC4_BOLTS) == 11, "and Right adds ten");
+	for (i = 0; i < 10 && strcmp(value_of(&v, "Bolts"), "11") != 0; i++) act(&v, MBOX_EV_ACTIVATE, "Bolts");
+	check(strcmp(value_of(&v, "Bolts"), "11") == 0, "the cross on round the steps back to 1");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
+	      r->range[0] == 0 && r->range[1] == 0 && r->range[2] == 255 && r->range[3] == 26 &&
+	      strcmp(r->value, "0") == 0,
+	      "Challenge mode carries its slider's numbers, 0 in 0..255, and (round 4) a step of a tenth, 26");
+	for (i = 0; i < 9; i++) act(&v, MBOX_EV_RIGHT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "234") == 0 && peek8(RAC4_CHALLENGE_MODE) == 234,
+	      "nine presses of Right: 234");
+	act(&v, MBOX_EV_RIGHT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "255") == 0 && peek8(RAC4_CHALLENGE_MODE) == 255,
+	      "the tenth: the top, 255, ten presses from end to end");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->range[3] == 1 && strcmp(r->value, "255 [1]") == 0,
+	      "the cross: the fine step, 1, which the value shows");
+	act(&v, MBOX_EV_LEFT, "Challenge mode");
+	check(peek8(RAC4_CHALLENGE_MODE) == 254, "Left by one");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->range[3] == 26 && strcmp(r->value, "254") == 0, "the cross again: back to the tenth");
+	for (i = 0; i < 12; i++) act(&v, MBOX_EV_LEFT, "Challenge mode");
+	check(strcmp(value_of(&v, "Challenge mode"), "0") == 0, "and Left to the bottom, where it stops");
+	r = view_row(&v, "Bolts");
+	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == 0,
+	      "Bolts, a whole 32-bit counter, has no bounds to carry and no slider");
+	menu_model_reset(8, 0, 0);
+	menu_model_view(&v);
+	act(&v, MBOX_EV_ACTIVATE, "Values");
+	r = view_row(&v, "Bolts");
+	check(r != NULL && r->kind == MROW_INFO && r->flags == 0, "with no Left and Right a value is shown and nothing more");
+
+	menu_model_reset(8, 16, CAPS_ALL);
+	menu_model_view(&v);
+	act(&v, MBOX_EV_ACTIVATE, "Spacers");
+	check(v.nrows == 3 && strcmp(v.rows[0].label, "Bolts") == 0 && v.rows[1].kind == MROW_INFO &&
+	      v.rows[1].flags == 0 && v.rows[1].label[0] == 0 && strcmp(v.rows[2].label, "Skin") == 0,
+	      "round 5: a spacer opening the page, one after another and one ending it are left out, as is a "
+	      "MENU_ITEM_VALUE the table does not have: Bolts, a spacer, Skin");
+	menu_test_menu(NULL);
+}
+
 static void test_model_dl(void)
 {
 	struct menu_view v;
@@ -1004,13 +1091,17 @@ static void test_model_dl(void)
 	rc = menu_model_event(MBOX_EV_BACK, 0, v.rows[0].id, v.key);
 	check(rc == ST_BAD_ARG && menu_model_depth() == 1, "back at the root has nowhere to go");
 
-	/* Cheats: four checkboxes of three ways, and a button. */
+	/*
+	 * Cheats: four checkboxes of three ways; round 5, Challenge mode as a
+	 * switch, then the buttons: Max bolts, Max Dread points, Unlock all planets.
+	 */
 	check(act(&v, MBOX_EV_ACTIVATE, "Cheats") == ST_OK && strcmp(v.title, "Cheats") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 5, "Cheats is a CONFIG page of five rows");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 8, "Cheats is a CONFIG page of eight rows");
 	check(strcmp(v.rows[0].label, "Fast loads") == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0 &&
 	      strcmp(v.rows[2].label, "Refill ammo") == 0 && strcmp(v.rows[3].label, "Freeze health") == 0 &&
-	      strcmp(v.rows[4].label, "Unlock all planets") == 0,
-	      "the four cheats in their order, then Unlock all planets");
+	      strcmp(v.rows[4].label, "Challenge mode") == 0 && strcmp(v.rows[5].label, "Max bolts") == 0 &&
+	      strcmp(v.rows[6].label, "Max Dread points") == 0 && strcmp(v.rows[7].label, "Unlock all planets") == 0,
+	      "round 5: the four cheats, Challenge mode, then Max bolts, Max Dread points and Unlock all planets");
 	r = view_row(&v, "Ghost Ratchet");
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == (MROWF_ENABLED | MROWF_STEPS) &&
 	      strcmp(r->value, "Off") == 0, "Ghost Ratchet: Off, a three-way checkbox");
@@ -1033,28 +1124,57 @@ static void test_model_dl(void)
 
 	r = view_row(&v, "Unlock all planets");
 	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
-	      "Unlock all planets is a button with nothing to say yet");
+	      "Unlock all planets is a button with nothing to say");
 	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all planets") == ST_OK &&
-	      strcmp(value_of(&v, "Unlock all planets"), "done") == 0 && strcmp(v.hint, "Unlock all planets: done") == 0,
-	      "the cross runs it: the row says done, the hint says it as a sentence");
-	tick(250);
+	      value_of(&v, "Unlock all planets")[0] == 0 && v.hint[0] == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
+	      "round 5: the cross runs it, and the row stays blank (no DONE: the game's sound says it)");
+
+	/* Round 5: the values as a switch and buttons. */
+	poke8(RAC4_CHALLENGE_MODE, 0);
+	tick(10);
 	menu_model_view(&v);
-	check(value_of(&v, "Unlock all planets")[0] == 0, "for two seconds");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == (MROWF_ENABLED | MROWF_STEPS) &&
+	      strcmp(r->value, "Off") == 0, "Challenge mode is a switch, Off on a file not in challenge mode");
+	check(act(&v, MBOX_EV_ACTIVATE, "Challenge mode") == ST_OK && peek8(RAC4_CHALLENGE_MODE) == 1 &&
+	      strcmp(value_of(&v, "Challenge mode"), "On") == 0 && (view_row(&v, "Challenge mode")->flags & MROWF_ON) != 0,
+	      "the cross: On, the counter 1, the first run's");
+	check(act(&v, MBOX_EV_RIGHT, "Challenge mode") == ST_OK && peek8(RAC4_CHALLENGE_MODE) == 0 &&
+	      strcmp(value_of(&v, "Challenge mode"), "Off") == 0, "Right: Off, the counter 0");
+	poke8(RAC4_CHALLENGE_MODE, 7);
+	tick(10);
+	menu_model_view(&v);
+	check(strcmp(value_of(&v, "Challenge mode"), "On") == 0, "a file on its seventh run reads On");
+	check(act(&v, MBOX_EV_LEFT, "Challenge mode") == ST_OK && peek8(RAC4_CHALLENGE_MODE) == 0 &&
+	      strcmp(value_of(&v, "Challenge mode"), "Off") == 0, "and Left turns it Off, 0");
+	act(&v, MBOX_EV_LEFT, "Challenge mode");
+	check(peek8(RAC4_CHALLENGE_MODE) == 1, "Left again: On, 1");
+	r = view_row(&v, "Max bolts");
+	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
+	      "Max bolts is a button");
+	poke32(RAC4_BOLTS, 1234);
+	check(act(&v, MBOX_EV_RIGHT, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 1234, "Right does nothing on it");
+	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 99999999u &&
+	      value_of(&v, "Max bolts")[0] == 0, "the cross: 99,999,999, the game's own cap, the row blank");
+	check(act(&v, MBOX_EV_ACTIVATE, "Max Dread points") == ST_OK && peek32(RAC4_DREAD_POINTS) == 99999999u,
+	      "Max Dread points: the same");
+	check(view_row(&v, "Bolts") == NULL && view_row(&v, "Dread points") == NULL, "no stepper for either");
 	rc = menu_model_event(MBOX_EV_PAGE_NEXT, 0, v.rows[0].id, v.key);
 	check(rc == ST_BAD_ARG, "R1 on a page of one window does nothing");
 	menu_model_event(MBOX_EV_BACK, 1, v.rows[1].id, v.key);
 	menu_model_view(&v);
 	check(strcmp(v.title, "Trainer") == 0 && v.cursor == 1, "back: the root, the cursor on Cheats");
 
-	/* Game: the quick block's buttons, the slot, and the values. */
+	/* Game: the slot and the position buttons, a spacer, the save-file buttons (round 5). */
 	check(act(&v, MBOX_EV_ACTIVATE, "Game") == ST_OK && strcmp(v.title, "Game") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 9, "Game is a CONFIG page of nine rows");
-	check(strcmp(v.rows[0].label, "Die") == 0 && strcmp(v.rows[1].label, "Position slot") == 0 &&
-	      strcmp(v.rows[2].label, "Save position") == 0 && strcmp(v.rows[3].label, "Load position") == 0 &&
-	      strcmp(v.rows[4].label, "Set aside file") == 0 && strcmp(v.rows[5].label, "Load set-aside file") == 0 &&
-	      strcmp(v.rows[6].label, "Bolts") == 0 && strcmp(v.rows[7].label, "Dread points") == 0 &&
-	      strcmp(v.rows[8].label, "Challenge mode") == 0,
-	      "Die, the slot, Save and Load position, the two savefile buttons, Bolts, Dread points, Challenge mode");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 6, "Game is a CONFIG page of six rows");
+	check(strcmp(v.rows[0].label, "Position slot") == 0 &&
+	      strcmp(v.rows[1].label, "Save position") == 0 && strcmp(v.rows[2].label, "Load position") == 0 &&
+	      v.rows[3].kind == MROW_INFO && v.rows[3].flags == 0 && v.rows[3].label[0] == 0 && v.rows[3].value[0] == 0 &&
+	      strcmp(v.rows[4].label, "Set aside file") == 0 && strcmp(v.rows[5].label, "Load set-aside file") == 0,
+	      "round 5: the slot, Save and Load position, a blank grey row, the two savefile buttons");
+	check(view_row(&v, "Die") == NULL && view_row(&v, "Bolts") == NULL && view_row(&v, "Challenge mode") == NULL,
+	      "no Die (the combos have it) and no values (Cheats has them)");
 	check(view_row(&v, "Skin") == NULL, "and no Skin: cosmetics are left out");
 	config_set_selected_slot(0);
 	menu_model_view(&v);
@@ -1068,46 +1188,21 @@ static void test_model_dl(void)
 	act(&v, MBOX_EV_ACTIVATE, "Position slot");
 	check(config_selected_slot() == 0, "the cross moves it on as well");
 	poke32(RAC4_COORDS, 0x41200000u);
-	check(act(&v, MBOX_EV_ACTIVATE, "Save position") == ST_OK && strcmp(value_of(&v, "Save position"), "done") == 0,
-	      "Save position keeps where the player stands");
+	check(act(&v, MBOX_EV_ACTIVATE, "Save position") == ST_OK && value_of(&v, "Save position")[0] == 0,
+	      "Save position keeps where the player stands, and says nothing (round 5)");
 	poke32(RAC4_COORDS, 0);
 	check(act(&v, MBOX_EV_ACTIVATE, "Load position") == ST_OK && peek32(RAC4_COORDS) == 0x41200000u,
 	      "Load position puts the player back");
 	r = view_row(&v, "Load set-aside file");
 	check(r != NULL && (r->flags & MROWF_CLOSES) != 0, "Load set-aside file closes the menu before it runs");
-	r = view_row(&v, "Bolts");
-	check(r != NULL && r->kind == MROW_VALUE && strcmp(r->value, "0") == 0, "Bolts is a stepper reading 0");
-	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC4_BOLTS) == 1, "Right adds one");
-	act(&v, MBOX_EV_ACTIVATE, "Bolts");
-	check(strcmp(value_of(&v, "Bolts"), "1 [10]") == 0, "the cross makes the step 10");
-	check(act(&v, MBOX_EV_RIGHT, "Bolts") == ST_OK && peek32(RAC4_BOLTS) == 11, "and Right adds ten");
-	while (strcmp(value_of(&v, "Bolts"), "11") != 0) act(&v, MBOX_EV_ACTIVATE, "Bolts");
-	r = view_row(&v, "Challenge mode");
-	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
-	      r->range[0] == 0 && r->range[1] == 0 && r->range[2] == 255 && r->range[3] == 26 &&
-	      strcmp(r->value, "0") == 0,
-	      "Challenge mode carries its slider's numbers, 0 in 0..255, and (round 4) a step of a tenth, 26");
-	for (i = 0; i < 9; i++) act(&v, MBOX_EV_RIGHT, "Challenge mode");
-	check(strcmp(value_of(&v, "Challenge mode"), "234") == 0 && peek8(RAC4_CHALLENGE_MODE) == 234,
-	      "nine presses of Right: 234");
-	act(&v, MBOX_EV_RIGHT, "Challenge mode");
-	check(strcmp(value_of(&v, "Challenge mode"), "255") == 0 && peek8(RAC4_CHALLENGE_MODE) == 255,
-	      "the tenth: the top, 255, ten presses from end to end");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
-	r = view_row(&v, "Challenge mode");
-	check(r != NULL && r->range[3] == 1 && strcmp(r->value, "255 [1]") == 0,
-	      "the cross: the fine step, 1, which the value shows");
-	act(&v, MBOX_EV_LEFT, "Challenge mode");
-	check(peek8(RAC4_CHALLENGE_MODE) == 254, "Left by one");
-	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
-	r = view_row(&v, "Challenge mode");
-	check(r != NULL && r->range[3] == 26 && strcmp(r->value, "254") == 0, "the cross again: back to the tenth");
-	for (i = 0; i < 12; i++) act(&v, MBOX_EV_LEFT, "Challenge mode");
-	check(strcmp(value_of(&v, "Challenge mode"), "0") == 0, "and Left to the bottom, where it stops");
-	r = view_row(&v, "Bolts");
-	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == 0,
-	      "Bolts, a whole 32-bit counter, has no bounds to carry and no slider");
+	check(act(&v, MBOX_EV_ACTIVATE, "") == ST_OK && menu_model_depth() == 2 && strcmp(v.title, "Game") == 0,
+	      "the spacer does nothing (and no renderer posts for it: it is not ENABLED)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+
+	/* The steppers and sliders themselves, on a page of round 1's DESCRIBE groups (Deadlocked's Player). */
+	test_model_dl_values();
+	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 
 	/*
@@ -1126,8 +1221,8 @@ static void test_model_dl(void)
 	      strcmp(v.rows[11].label, "Interior") == 0,
 	      "DreadZone, Catacrom, Sarathos .. Valix .. Interior in the game's order, the placeholders left out");
 	check(v.rows[1].kind == MROW_ACTION && (v.rows[1].flags & MROWF_CLOSES) != 0, "each closes the menu first");
-	check(act(&v, MBOX_EV_ACTIVATE, "Catacrom") == ST_OK && strcmp(value_of(&v, "Catacrom"), "after closing") == 0 &&
-	      peek32(RAC4_TARGET_PLANET) != 2, "the cross on Catacrom: the row waits, nothing loads yet");
+	check(act(&v, MBOX_EV_ACTIVATE, "Catacrom") == ST_OK && value_of(&v, "Catacrom")[0] == 0 &&
+	      peek32(RAC4_TARGET_PLANET) != 2, "the cross on Catacrom: nothing loads yet, the row blank (round 5)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	/* The pickers' round 2: Deadlocked names no planets its picker cannot show, so the event opens the whole page. */
@@ -1148,24 +1243,36 @@ static void test_model_dl(void)
 	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 
-	/* Manips: the category, two checkboxes, Apply now, then the Fixes. */
+	/* Manips: the category, Auto-reset, Apply now, a spacer, then the Fixes (round 5). */
 	check(act(&v, MBOX_EV_ACTIVATE, "Manips") == ST_OK && v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 6,
 	      "Manips is a CONFIG page of six rows");
 	check(strcmp(v.rows[0].label, "Category") == 0 && strcmp(v.rows[0].value, "None") == 0 &&
 	      strcmp(v.rows[1].label, "Auto-reset") == 0 && strcmp(v.rows[1].value, "On") == 0 &&
-	      strcmp(v.rows[2].label, "Remember") == 0 && strcmp(v.rows[2].value, "Off") == 0 &&
-	      strcmp(v.rows[3].label, "Apply now") == 0 && strcmp(v.rows[4].label, "Crash patches") == 0 &&
-	      strcmp(v.rows[5].label, "Fix reset softlocks") == 0,
-	      "Category None, Auto-reset On, Remember Off, Apply now, Crash patches, Fix reset softlocks");
+	      strcmp(v.rows[2].label, "Apply now") == 0 &&
+	      v.rows[3].kind == MROW_INFO && v.rows[3].flags == 0 && v.rows[3].label[0] == 0 &&
+	      strcmp(v.rows[4].label, "Crash patches") == 0 && strcmp(v.rows[5].label, "Fix reset softlocks") == 0,
+	      "Category None, Auto-reset On, Apply now, a blank grey row, Crash patches, Fix reset softlocks");
+	check(view_row(&v, "Remember") == NULL, "no Remember row: Auto-reset says it (round 5)");
 	check(act(&v, MBOX_EV_RIGHT, "Category") == ST_OK && manips_selected() == 1 &&
 	      strcmp(value_of(&v, "Category"), "NG+") == 0, "Right: NG+, selected as MANIP_SELECT selects it");
 	check(act(&v, MBOX_EV_ACTIVATE, "Category") == ST_OK && manips_selected() == 0, "the cross: back to None");
-	check(act(&v, MBOX_EV_ACTIVATE, "Auto-reset") == ST_OK && (manips_options_now() & 1) == 0 &&
-	      strcmp(value_of(&v, "Auto-reset"), "Off") == 0, "the cross on Auto-reset turns it off");
+	check(manips_options_now() == 1, "MANIP_OPTIONS: auto-reset 1, remember 0, the defaults");
+	check(act(&v, MBOX_EV_ACTIVATE, "Auto-reset") == ST_OK && manips_options_now() == 3 &&
+	      strcmp(value_of(&v, "Auto-reset"), "On boot") == 0 && (view_row(&v, "Auto-reset")->flags & MROWF_ON) != 0,
+	      "the cross on Auto-reset: On boot, auto-reset 1 and remember 1");
+	check(act(&v, MBOX_EV_RIGHT, "Auto-reset") == ST_OK && manips_options_now() == 0 &&
+	      strcmp(value_of(&v, "Auto-reset"), "Off") == 0 && (view_row(&v, "Auto-reset")->flags & MROWF_ON) == 0,
+	      "Right wraps to Off: auto-reset 0, remember 0");
+	check(act(&v, MBOX_EV_RIGHT, "Auto-reset") == ST_OK && manips_options_now() == 1 &&
+	      strcmp(value_of(&v, "Auto-reset"), "On") == 0, "Right: On, auto-reset 1, remember 0");
+	check(act(&v, MBOX_EV_LEFT, "Auto-reset") == ST_OK && manips_options_now() == 0, "Left: Off again");
 	act(&v, MBOX_EV_LEFT, "Auto-reset");
-	check((manips_options_now() & 1) == 1, "and Left back on");
-	check(act(&v, MBOX_EV_ACTIVATE, "Apply now") == ST_OK && strcmp(value_of(&v, "Apply now"), "done") == 0,
-	      "Apply now with None applies nothing, and says done");
+	check(manips_options_now() == 3, "Left from Off wraps to On boot");
+	check(manips_options(0, 1) == ST_OK && (menu_model_view(&v), strcmp(value_of(&v, "Auto-reset"), "Off") == 0),
+	      "remember without auto-reset, which only the client sets, reads Off");
+	check(act(&v, MBOX_EV_RIGHT, "Auto-reset") == ST_OK && manips_options_now() == 1, "and Right from it is On");
+	check(act(&v, MBOX_EV_ACTIVATE, "Apply now") == ST_OK && value_of(&v, "Apply now")[0] == 0,
+	      "Apply now with None applies nothing, and says nothing (round 5)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -1237,8 +1344,8 @@ static void test_model_dl(void)
 	r = view_row(&v, "first");
 	check(r != NULL && r->kind == MROW_ACTION && (r->flags & MROWF_CLOSES) != 0 && r->value[0] == 0,
 	      "each a button, blank, that loads once the menu is closed");
-	check(act(&v, MBOX_EV_ACTIVATE, "first") == ST_OK && strcmp(value_of(&v, "first"), "after closing") == 0,
-	      "the cross on one: it waits");
+	check(act(&v, MBOX_EV_ACTIVATE, "first") == ST_OK && value_of(&v, "first")[0] == 0,
+	      "the cross on one: it waits for the close, the row blank (round 5)");
 	save_drop("menu-test", "first.sav");
 	save_drop("menu-test", "second.sav");
 	save_drop("menu-test", NULL);
@@ -1249,19 +1356,21 @@ static void test_model_dl(void)
 	/* A renderer without Left and Right, nor a back control, nor a CONFIG page. */
 	menu_model_reset(8, 0, 0);
 	menu_model_view(&v);
-	act(&v, MBOX_EV_ACTIVATE, "Game");
+	act(&v, MBOX_EV_ACTIVATE, "Cheats");
 	check(v.ptype == MBOX_PTYPE_MAIN, "with no CONFIG page every page is MAIN");
-	check(v.nrows == 8 && strcmp(v.rows[6].label, "Bolts") == 0 && v.rows[7].kind == MROW_BACK &&
+	check(v.nrows == 8 && strcmp(v.rows[6].label, "Max Dread points") == 0 && v.rows[7].kind == MROW_BACK &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
-	      "nine rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
-	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 5, v.rows[5].id, v.key) == ST_OK,
-	      "the slide from the sixth, Load set-aside file, the last the cursor may stand on (Bolts is text here)");
+	      "eight rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == MROWF_ENABLED,
+	      "with no Left and Right the switch takes the cross alone");
+	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 6, v.rows[6].id, v.key) == ST_OK,
+	      "the slide from the seventh, Max Dread points");
 	menu_model_view(&v);
-	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Load set-aside file") == 0 && v.rows[7].kind == MROW_BACK &&
+	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Max Dread points") == 0 && v.rows[7].kind == MROW_BACK &&
+	      strcmp(v.rows[6].label, "Unlock all planets") == 0 &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP,
-	      "the last window, the cursor still on Load set-aside file, the Back row last again");
-	r = view_row(&v, "Bolts");
-	check(r != NULL && r->kind == MROW_INFO && r->flags == 0, "and with no Left and Right a value is shown and nothing more");
+	      "the last window, the cursor still on Max Dread points, Unlock all planets, the Back row last again");
 	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
 
 	check(quit(), "quit Deadlocked");
@@ -1460,7 +1569,7 @@ static void test_mailbox(void)
 	check(!box_acked(), "an event posted is not acked yet");
 	tick(4);
 	read_box(&p);
-	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 5 && p.ptype == MBOX_PTYPE_CONFIG,
+	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 8 && p.ptype == MBOX_PTYPE_CONFIG,
 	      "within a poll it is acked, and the Cheats page is posted as a CONFIG page");
 	check(strcmp(p.rows[1].label, "Ghost Ratchet") == 0 && peek8(mb + MBOX_OFF_ROWS + 0x40 + MROW_OFF_LABEL) == 'G',
 	      "each row 0x40 bytes, the next row's label where round 3's description was");
@@ -1572,10 +1681,11 @@ static void test_mailbox(void)
 	config_set_combo(COMBO_OPEN_MENU, COMBO_MENU_DEFAULT);
 	tick(2);
 
-	/* CLOSES actions of each kind: asked to close first, run once the game plays. */
+	/* A slider's numbers, on the tests' own table of values (round 5: no game's page has a slider now). */
+	tv_menu_on();
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
 	tick(4);
-	box_activate("Game");
+	box_activate("Values");
 	read_box(&p);
 	i = box_index(&p, "Challenge mode");
 	{
@@ -1587,11 +1697,26 @@ static void test_mailbox(void)
 		      be32_get(raw + MROW_OFF_RANGE) == peek8(RAC4_CHALLENGE_MODE),
 		      "Challenge mode's row carries value, 0, 255 and (round 4) step 26 at +0x1C, past its label's NUL");
 	}
+	box_event(MBOX_EV_BACK, 0);
+	tick(2);
+	menu_test_menu(NULL);
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
+	tick(4);
+
+	/* CLOSES actions of each kind: asked to close first, run once the game plays. */
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+	tick(4);
+	box_activate("Game");
+	read_box(&p);
+	i = box_index(&p, "");
+	check(i == 3 && p.rows[i].kind == MROW_INFO && p.rows[i].flags == 0 && p.rows[i].value[0] == 0 &&
+	      strcmp(p.rows[2].label, "Load position") == 0 && strcmp(p.rows[4].label, "Set aside file") == 0,
+	      "round 5: Game's spacer in the mailbox, a blank row not ENABLED, between the two parts");
 	box_activate("Load set-aside file");
 	read_box(&p);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE &&
-	      strcmp(p.rows[box_index(&p, "Load set-aside file")].value, "after closing") == 0,
-	      "loading the set-aside file asks the menu to close first");
+	      p.rows[box_index(&p, "Load set-aside file")].value[0] == 0,
+	      "loading the set-aside file asks the menu to close first, its row blank (round 5)");
 	check(peek8(0x015CD71Eu) == 0, "and asks the game for nothing yet");
 	poke8(mb + MBOX_OFF_REQUEST, 0);
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
@@ -1902,9 +2027,9 @@ static void test_renderer(void)
 		check(i == 25, "and does on, the Cheats page's moves and all (nothing composes over it)");
 	}
 	game_frame(0);
-	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 5 &&
+	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 8 &&
 	      G.layer == DL_LAYER && G.images == 3 && G.cursor_attached,
-	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, five rows, its plates and cursor");
+	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, eight rows, its plates and cursor");
 	check(r32(MH_SHIM + SH_LIST) == DL_CTLLIST_VTABLE, "the list has CtlList's vtable at +0, as its constructor writes it");
 	for (i = DL_EL_ROWS_FIRST, n = 0; i <= DL_EL_ROWS_LAST; i++)
 		n += recall(G.vis_h, G.vis_v, r32(MH_SHIM + SH_PANEL) + (u32)i) == 2;
@@ -1913,8 +2038,11 @@ static void test_renderer(void)
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_LEGEND, text, sizeof(text)), "\x10 SELECT \x12 BACK") == 0,
 	      "titled CHEATS, with GAME SETTINGS' own button legend");
 	check(strcmp(cfg_label(1, text), "GHOST RATCHET") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
-	      strcmp(cfg_label(4, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(4, title), "") == 0,
-	      "labels in GAME SETTINGS' capitals without its colon, values in its capitals, a button blank (round 4)");
+	      strcmp(cfg_label(7, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(7, title), "") == 0 &&
+	      strcmp(cfg_label(4, text), "CHALLENGE MODE") == 0 && strcmp(cfg_label(5, title), "MAX BOLTS") == 0 &&
+	      strcmp(cfg_label(6, text), "MAX DREAD POINTS") == 0 && strcmp(cfg_value(6, title), "") == 0,
+	      "labels in GAME SETTINGS' capitals without its colon, values in its capitals, a button blank (round 4); "
+	      "round 5: CHALLENGE MODE, MAX BOLTS, MAX DREAD POINTS, then UNLOCK ALL PLANETS");
 	check(focus() == 0 && cfg_color(0) == DL_RGBA_FOCUS && cfg_color(1) == DL_RGBA_OFF,
 	      "the cursor on the first row, which is lit; the others the game's grey");
 	check(recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_A) == 2 &&
@@ -1949,12 +2077,14 @@ static void test_renderer(void)
 	game_frame(0);
 	check(strcmp(cfg_value(1, text), "OFF") == 0 && (features_toggle_state() & ((u64)1 << R4_GHOST)) == 0,
 	      "Left twice from AUTO: ON, then OFF");
-	for (i = 0; i < 3; i++) game_frame(PADB_DOWN);
+	for (i = 0; i < 6; i++) game_frame(PADB_DOWN);
+	poke32(RAC4_DREAD_POINTS, 0);
 	game_frame(PADB_CROSS);
 	check(G.sound == SND_FORWARD, "the cross on a button: a row's forward sound, as a list's row");
 	tick(2);
 	game_frame(0);
-	check(focus() == 4 && strcmp(cfg_value(4, text), "DONE") == 0, "the button runs: DONE in its value");
+	check(focus() == 7 && strcmp(cfg_value(7, text), "") == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
+	      "the button runs, and its value stays blank (round 5: no DONE)");
 
 	/* One event in flight, and the waiting title. */
 	game_frame(PADB_CROSS);
@@ -2023,7 +2153,7 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	game_frame(0);
-	check(G.thread == 2 && G.count == 5, "CHEATS again");
+	check(G.thread == 2 && G.count == 8, "CHEATS again");
 	{
 		u32 gs = G.gs;
 		shim_switch(0);
@@ -2033,7 +2163,7 @@ static void test_renderer(void)
 		check(G.thread == 1 && G.gs != gs && (G.gs == MH_SHIM + SH_GS || G.gs == MH_SHIM + SH_GS + DL_GS_SIZE),
 		      "its Deinit starts the next page's thread on the other GuiState");
 		game_frame(0);
-		check(G.thread == 2 && G.count == 5 && G.layer == DL_LAYER, "which builds the panel again");
+		check(G.thread == 2 && G.count == 8 && G.layer == DL_LAYER, "which builds the panel again");
 	}
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
@@ -2061,7 +2191,8 @@ static void test_renderer(void)
 	game_frame(PADB_CROSS);
 	tick(2);
 	game_frame(0);
-	check(shown_row("MAX ALL WEAPON AMMO: DONE") == 4, "a MAIN button says DONE beside its label");
+	check(shown_row("MAX ALL WEAPON AMMO") == 4 && box_acked(),
+	      "a MAIN button runs and says nothing beside its label (round 5: no DONE)");
 	game_frame(PADB_SELECT);
 	check(G.screen == 0 && !G.paused, "Select closes the menu");
 	tick(4);
@@ -2081,8 +2212,14 @@ static void test_renderer(void)
 	check(G.screen == 0, "closed");
 	tick(4);
 
-	/* GAME SETTINGS' slider on a value the core marks for one (round 3: Challenge mode, 0..255). */
+	/*
+	 * GAME SETTINGS' slider on a value the core marks for one (round 3:
+	 * Challenge mode, 0..255), on the tests' own page of values (round 5).
+	 */
 	poke8(RAC4_CHALLENGE_MODE, 51);
+	poke32(RAC4_BOLTS, 0);
+	tick(10);
+	tv_menu_on();
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
 	tick(4);
@@ -2091,10 +2228,10 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	game_frame(0);
-	check(G.thread == 2 && G.count == 9 && strcmp(cfg_label(8, text), "CHALLENGE MODE") == 0,
-	      "GAME: nine rows, the last CHALLENGE MODE");
+	check(G.thread == 2 && G.count == 3 && strcmp(cfg_label(2, text), "CHALLENGE MODE") == 0,
+	      "VALUES: three rows, the last CHALLENGE MODE");
 	{
-		u32 row = r32(item(8) + DL_ITEM_PANEL), bolts = r32(item(6) + DL_ITEM_PANEL);
+		u32 row = r32(item(2) + DL_ITEM_PANEL), bolts = r32(item(0) + DL_ITEM_PANEL);
 		float *fill = NULL, *track = NULL, *outline = NULL;
 
 		for (i = 0; i < NTEXT; i++) {
@@ -2103,7 +2240,7 @@ static void test_renderer(void)
 			if (G.rect_h[i] == row + DL_ROW_OUTLINE) outline = G.rect_v[i];
 		}
 		check(recall(G.vis_h, G.vis_v, row + DL_ROW_BOX_A) == 1 && recall(G.vis_h, G.vis_v, row + DL_ROW_BOX_B) == 1 &&
-		      recall(G.vis_h, G.vis_v, row + DL_ROW_SPARE) == 2 && strcmp(cfg_value(8, title), "") == 0,
+		      recall(G.vis_h, G.vis_v, row + DL_ROW_SPARE) == 2 && strcmp(cfg_value(2, title), "") == 0,
 		      "its row shows its outline and swatch containers, the spare outline hidden, no number");
 		check(outline != NULL && track != NULL && fill != NULL &&
 		      outline[2] - outline[0] > 0.355f && outline[2] - outline[0] < 0.356f && outline[2] > 0.900f &&
@@ -2114,10 +2251,10 @@ static void test_renderer(void)
 		      fill[2] - fill[0] > DL_TRACK_W * 0.199f && fill[2] - fill[0] < DL_TRACK_W * 0.201f &&
 		      G.fill_h == row + DL_ROW_FILL && G.fill_c0 == 0x80000102u && G.fill_c1 == 0x80000100u,
 		      "the fill: the track cut at 51 of 0..255, a fifth, in GetTeamColor(1, 2) and (1, 0)");
-		check(recall(G.vis_h, G.vis_v, bolts + DL_ROW_BOX_A) == 2 && strcmp(cfg_value(6, text), "0") == 0,
+		check(recall(G.vis_h, G.vis_v, bolts + DL_ROW_BOX_A) == 2 && strcmp(cfg_value(0, text), "0") == 0,
 		      "BOLTS, with no bounds, keeps its number and no slider");
-		for (i = 0; i < 8; i++) game_frame(PADB_DOWN);
-		check(focus() == 8, "down to it");
+		for (i = 0; i < 2; i++) game_frame(PADB_DOWN);
+		check(focus() == 2, "down to it");
 		game_frame(PADB_RIGHT);
 		check(G.sound == SND_SLIDE, "Right on it: GAME SETTINGS' slider sound");
 		tick(2);
@@ -2134,6 +2271,39 @@ static void test_renderer(void)
 		tick(2);
 		game_frame(0);
 	}
+	game_frame(PADB_START);
+	check(G.screen == 0, "closed");
+	game_frame(0);
+	game_frame(0);
+	menu_test_menu(NULL);
+	tick(4);
+
+	/*
+	 * Round 5: GAME's spacer, a blank row in GAME SETTINGS' grey for a row
+	 * the cursor may not land on, which Up and Down pass over (CtlList's
+	 * FocusNext and FocusPrev ask the validator, 0x35F4F8).
+	 */
+	press(COMBO_MENU_DEFAULT);
+	game_hud_frame();
+	tick(4);
+	G.cursor = 0;
+	game_frame(PADB_CROSS);
+	tick(2);
+	game_frame(0);
+	game_frame(0);
+	check(G.thread == 2 && G.count == 6 && strcmp(cfg_label(2, text), "LOAD POSITION") == 0 &&
+	      strcmp(cfg_label(3, title), "") == 0 && strcmp(cfg_value(3, title), "") == 0 &&
+	      strcmp(cfg_label(4, text), "SET ASIDE FILE") == 0 && !mh_cfg_valid(3) && mh_cfg_valid(4),
+	      "GAME: six rows, the fourth blank and not one the cursor may land on");
+	game_frame(PADB_DOWN);
+	game_frame(PADB_DOWN);
+	check(focus() == 2, "down to LOAD POSITION");
+	game_frame(0);
+	check(cfg_color(3) == DL_RGBA_LOCKED, "the spacer in the grey of a row the cursor skips");
+	game_frame(PADB_DOWN);
+	check(focus() == 4, "down again: past the spacer to SET ASIDE FILE");
+	game_frame(PADB_UP);
+	check(focus() == 2, "and up: past it back to LOAD POSITION");
 	game_frame(PADB_START);
 	check(G.screen == 0, "closed");
 	game_frame(0);

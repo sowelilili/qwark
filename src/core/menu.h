@@ -88,15 +88,35 @@
 #define MENU_ROW_SCAT     0x0D      /* arg: the save category a LINK opens */
 #define MENU_ROW_SAVE     0x0E      /* arg: the save's place in its category */
 #define MENU_ROW_STATUS   0x0F      /* arg: the ACTION whose status readout it shows */
+#define MENU_ROW_VALUE    0x10      /* round 5, arg: the game's menu value (struct menu_value) */
 #define MENU_ROW_ID(tag, arg) ((u16)(((u16)(tag) << 8) | (u8)(arg)))
+
+/* MENU_ROW_TEXT's lines. */
+#define MENU_TEXT_BUILD   0         /* "qwark build 54", grey, the root's last row */
+#define MENU_TEXT_EMPTY   1         /* "Nothing here", a page with no rows */
+#define MENU_TEXT_SPACER  2         /* round 5: blank, between a page's parts; the cursor passes over it */
+
+/*
+ * Round 5: the root's grey "qwark build 54" row, which the user's testing
+ * reads; the release builds it out (0), as rewrite/SPEC-console-ui.md section
+ * 10 lists.
+ */
+#ifndef MENU_BUILD_ROW
+#define MENU_BUILD_ROW    1
+#endif
 
 #define MENU_NAV_MORE     1         /* retired in round 4, with the More row */
 #define MENU_NAV_PREV     2         /* retired in round 4 */
 #define MENU_NAV_BACK     3
 
+/*
+ * The Manips page's own rows. Round 5: Auto-reset is Off, On or On boot, which
+ * is MANIP_OPTIONS' auto-reset and remember together (menu.c, manip_reset),
+ * and Remember (2) has no row of its own any more.
+ */
 #define MENU_MANIP_CATEGORY 0
 #define MENU_MANIP_AUTO     1
-#define MENU_MANIP_REMEMBER 2
+#define MENU_MANIP_REMEMBER 2       /* retired in round 5 */
 #define MENU_MANIP_APPLY    3
 
 /*
@@ -175,6 +195,11 @@ u8   menu_model_depth(void);
  * for the close stay.
  */
 void menu_model_home(void);
+
+#ifdef QWARK_TEST
+/* The tests' own menu table in place of the running game's; NULL for the game's. */
+void menu_test_menu(const struct game_menu *gm);
+#endif
 
 /* -------------------------------------------------------------- the driver */
 

@@ -53,7 +53,7 @@ static u32 nrows(void)
 
 /* ------------------------------------------------------------- the text */
 
-/* `c` cased `how` (MH_CASE_*), the first letter of a word being one after a space or the start. */
+/* `c` cased `how` (MH_CASE_*), `word` when it is the first letter of a word (put_mem says when). */
 static u32 cased(u32 c, u32 how, u32 word)
 {
 	if (c >= 'a' && c <= 'z' && (how == MH_CASE_UPPER || (how == MH_CASE_TITLE && word))) c -= 0x20;
@@ -65,6 +65,15 @@ static u32 cased(u32 c, u32 how, u32 word)
  * `end - 1`, cased `how` (MH_CASE_*). Plain ASCII only: the games' fonts read
  * low bytes as button glyphs and high ones as the first of a double-byte
  * glyph, so anything outside 0x20..0x7E shows as a question mark instead.
+ *
+ * A word starts after a space, and (round 5) goes on starting after the
+ * punctuation that opens one, below '0' in ASCII ("(", the quotes, "-" and the
+ * rest), so that "(premade savefiles)" reads "(Premade Savefiles)" in title
+ * case, where round 4 made it "(premade Savefiles)". A letter or a digit ends
+ * the start, and punctuation inside a word starts none: "set-aside" stays
+ * "Set-aside". With every byte 0x20 .. 0x7E here, that is `c < '!'` (a space)
+ * outside a word's start and `c < '0'` inside one. Only MH_CASE_TITLE reads
+ * it: MH_CASE_UPPER cases every letter and MH_CASE_AS_IS none.
  */
 static u32 put_mem(u32 dst, u32 end, u32 src, u32 len, u32 how)
 {
@@ -75,14 +84,14 @@ static u32 put_mem(u32 dst, u32 end, u32 src, u32 len, u32 how)
 		if (c == 0) break;
 		if (c < 0x20 || c > 0x7E) c = '?';
 		c = cased(c, how, word);
-		word = c == ' ';
+		word = c < '!' + 15u * word;
 		w8(dst, c);
 		dst++;
 	}
 	return dst;
 }
 
-/* The same from one of the core's own strings. */
+/* The same from one of the core's own strings, none of which opens a word with punctuation. */
 static u32 put_lit(u32 dst, u32 end, const char *s, u32 how)
 {
 	u32 word = 1;

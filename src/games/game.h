@@ -235,6 +235,34 @@ struct game_manips {
 #define MENU_ITEM_SLOT      0xF0   /* the position slot Save and Load use */
 #define MENU_ITEM_POS_SAVE  0xF1
 #define MENU_ITEM_POS_LOAD  0xF2
+/*
+ * Round 5: a blank row the cursor passes over, between a page's parts (Game's
+ * position rows and its save-file rows). One that would open or end the page,
+ * or follow another, is left out.
+ */
+#define MENU_ITEM_SPACER    0xF3
+/* Round 5: row i of the game's `values` (struct menu_value, below), 0 .. 15. */
+#define MENU_ITEM_VALUE(i)  (0xE0 + (i))
+#define MENU_ITEM_VALUES    16
+
+/*
+ * Round 5: a VALUE feature as the menu shows it instead of a stepper, which a
+ * section lists by MENU_ITEM_VALUE. A button (MENU_VALUE_SET) writes `value`
+ * ("Max bolts": the game's own largest). A switch (MENU_VALUE_SWITCH) reads
+ * On while the field is above 0: Off writes 0, and On writes `value` when the
+ * field read 0 (Challenge mode: on a file in challenge mode it stays as it is,
+ * on one that is not it becomes the first run's, 1). `label` is the row's
+ * label, NULL for the feature's own.
+ */
+#define MENU_VALUE_SET      0
+#define MENU_VALUE_SWITCH   1
+
+struct menu_value {
+	u8 id;
+	u8 kind;
+	u32 value;
+	const char *label;
+};
 
 struct menu_section {
 	const char *title;
@@ -254,9 +282,14 @@ struct game_menu {
 	/*
 	 * The values an unlock row cycles through, for the rows that declare
 	 * `unlock_field`: names[0] is the locked one, and names[i] owns the item
-	 * with `unlock_field` set to values[i]. A field value that is not on the
-	 * list shows as `unlock_prefix` and the number, or as the name below it
-	 * when there is no prefix. Rows without the field are LOCKED or UNLOCKED.
+	 * with `unlock_field` set to values[i]. Where the game has an
+	 * `unlock_prefix`, an owned item's field shows as the prefix and the
+	 * number, on the list or off it (round 5, the user's call: RaC2's and
+	 * UYA's weapons read V1 and their own last version, "V4" or "V8",
+	 * where they read Unlocked and Max; Deadlocked's names were V1, V10 and
+	 * V99 already). Without one it shows as names[i], or the name below it off
+	 * the list. Rows without the field are LOCKED or UNLOCKED, the owned one
+	 * names[1] unless that starts with the prefix.
 	 */
 	const char * const *unlock_names;
 	const u32 *unlock_values;
@@ -274,9 +307,10 @@ struct game_menu {
 	/*
 	 * UYA (the renderer's round): the item's own last value of `unlock_field`,
 	 * where it stops short of the set's last (the R3YNO stops at V5 where the
-	 * other weapons go to V8), or 0 for the set's own. The set's last name
-	 * then stands for that value, so MAX is each item's maximum. NULL where
-	 * every item goes as far as the set.
+	 * other weapons go to V8), or 0 for the set's own. The set's last entry
+	 * then stands for that value, so the last step is each item's own
+	 * maximum (round 5: RaC2's too, whose Clank Zapper and RaC1 carry-overs
+	 * stop at V2). NULL where every item goes as far as the set.
 	 */
 	u32 (*unlock_top)(u8 id);
 
@@ -309,6 +343,10 @@ struct game_menu {
 	 * game has none; the event then opens the whole Planets page.
 	 */
 	const struct menu_section *picker_others;
+
+	/* Round 5: the rows MENU_ITEM_VALUE(i) names, NULL and 0 for none. */
+	const struct menu_value *values;
+	u8 nvalues;
 };
 
 /* Build 53: what struct game_api's savefile_ready is asked about. */
