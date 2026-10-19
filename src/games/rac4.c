@@ -1103,7 +1103,8 @@ static const struct game_menu rac4_menu = {
 	rac4_unlock_names, rac4_unlock_values,
 	(u8)(sizeof(rac4_unlock_names) / sizeof(rac4_unlock_names[0])),
 	1, "V",
-	rac4_planet_ok
+	rac4_planet_ok,
+	NULL, NULL            /* every weapon goes to V99; no action with a status */
 };
 
 /* ---------------------------------------------------------------- vtable */

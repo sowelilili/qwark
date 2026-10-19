@@ -83,6 +83,14 @@
  */
 #define MH_WAIT_FRAMES      0x0000001E
 
+/*
+ * Both widgets take every page in place: the list is handed its new rows and,
+ * with another number of them, SetMenuTarget refits its frame; the CtlList is
+ * cleared and filled again. So the screen starts again only for the other type.
+ */
+#define MH_RESTART_MAIN     0x00000000
+#define MH_RESTART_CFG      0x00000000
+
 /* The core's state at the start of the data, then the shim's (SH_* below). */
 #define MH_STATE            0x017DF0C0
 #define MH_SHIM             0x017DFA78   /* MH_STATE + MH_CORE_SIZE, which mh_rac4.c checks */

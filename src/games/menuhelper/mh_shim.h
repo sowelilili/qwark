@@ -53,6 +53,13 @@
  *   MH_MAIN_SEP      the string between a MAIN row's label and value, ": "
  *   MH_WAIT_FRAMES   frames an event may go unanswered before the title says so
  *   MH_MAGIC         the state's first word, which names the renderer
+ *   MH_RESTART_MAIN  MH_SHOW_* bits a MAIN widget cannot take in place: a page
+ *                    shown with any of them makes the core start the menu's
+ *                    screen again (shim_switch) instead of calling shim_show.
+ *                    0 for a widget that takes every page in place (Deadlocked's
+ *                    list refits itself); UYA's main pause list lays its rows
+ *                    and frame out only as it starts, so MH_SHOW_NEW | ROWS.
+ *   MH_RESTART_CFG   the same for the CONFIG widget
  */
 
 #define MH_CASE_AS_IS       0
@@ -125,6 +132,14 @@
 /* shim_show's `how`. */
 #define MH_SHOW_NEW         0x01   /* a page not shown before: the cursor to mh_core_cursor */
 #define MH_SHOW_ROWS        0x02   /* it has a different number of rows */
+
+/* A game header that predates MH_RESTART_*: every page is taken in place. */
+#ifndef MH_RESTART_MAIN
+#define MH_RESTART_MAIN     0
+#endif
+#ifndef MH_RESTART_CFG
+#define MH_RESTART_CFG      0
+#endif
 
 /* shim_close's `how`. */
 #define MH_CLOSE_BACK       1      /* back from the root: the game's own back */
@@ -201,7 +216,11 @@ MH_API u32  mh_core_open_request(void);
  */
 MH_API void shim_show(int p, u32 how);
 
-/* The next page is drawn with the other widget: start the screen again with it. */
+/*
+ * Start the menu's screen again, so that mh_core_start runs: the next page is
+ * drawn with the other widget, or it is one the widget cannot take in place
+ * (MH_RESTART_MAIN, MH_RESTART_CFG). The stop on the way is not a close.
+ */
 MH_API void shim_switch(int p);
 
 /* Close the menu, or go back from its root (MH_CLOSE_*), the game's way. */

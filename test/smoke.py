@@ -318,6 +318,24 @@ MENU_BOX_SPAN = (0x017DD600, 0x017DDF00)
 # game's own list.
 DL_OPTIONS_SITE = 0x003A6F2C
 DL_OPTIONS_WORD = 0x4BFC456D
+# Revision 1.22: UYA's console menu renderer (src/games/menuhelper/mh_rac3.h),
+# whose mailbox has rows of 0x40, without descriptions. The words: the label
+# hook, the main pause init's three row counts, the Start path's test, its
+# pause reason and the launcher's getter call, then each of the main pause's
+# three tables' HELP row, its text id and its callback.
+UYA_MENU_BOX = 0x01ADB000
+UYA_MENU_BOX_SIZE = 0x480
+UYA_MENU_ROW_SIZE = 0x40
+UYA_MENU_CODE = (0x00BC4000, 0x00BC8000)
+UYA_MENU_DATA = (0x01ADC900, 0x01ADE000)
+UYA_MENU_SITES = {0x0014BCF0: 0x3C800000, 0x002F4284: 0x38C00008, 0x002F41FC: 0x38C00009,
+                  0x002F4250: 0x38C00009, 0x00287184: 0x54C60528, 0x00287264: 0x38A00001,
+                  0x002D4444: 0x4801F7D5,
+                  0x00C52844: 0x00000106, 0x00C5284C: 0x00BDE430,
+                  0x00C528F8: 0x00000106, 0x00C52900: 0x00BDE430,
+                  0x00C529AC: 0x00000106, 0x00C529B4: 0x00BDE430}
+UYA_MENU_HELP_TEXT = (0x00C52844, 0x00C528F8, 0x00C529AC)
+UYA_PENDING_MODE = 0x00C1E840
 # Deadlocked's pad mask (src/games/rac4.h RAC4_INPUTS), for a combo under RPCS3.
 RAC4_PAD_MASK = 0x00B11F30
 MBOX_OFF_HSTATE = 0x0C
@@ -2296,9 +2314,9 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head
 
 # ------------------------------------------------- the console menu, 1.22
 
-def menu_page(c):
-    """The page in Deadlocked's mailbox: (page_seq, key, title, [labels], raw, type)."""
-    status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX, 0x880))
+def menu_page(c, box=MENU_BOX, size=0x880, row_size=MBOX_ROW_SIZE):
+    """The page in a game's mailbox (Deadlocked's by default): (page_seq, key, title, [labels], raw, type)."""
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, size))
     if status != ST_OK:
         return None
     seq, key = struct.unpack(">II", body[MBOX_OFF_PAGE_SEQ:MBOX_OFF_PAGE_SEQ + 8])
@@ -2306,21 +2324,21 @@ def menu_page(c):
     title = body[MBOX_OFF_TITLE:MBOX_OFF_TITLE + 32].split(b"\0")[0].decode()
     labels = []
     for i in range(min(n, 16)):
-        r = body[MBOX_OFF_ROWS + i * MBOX_ROW_SIZE:MBOX_OFF_ROWS + (i + 1) * MBOX_ROW_SIZE]
+        r = body[MBOX_OFF_ROWS + i * row_size:MBOX_OFF_ROWS + (i + 1) * row_size]
         labels.append(r[4:44].split(b"\0")[0].decode())
     return seq, key, title, labels, body, body[MBOX_OFF_PTYPE]
 
 
-def menu_event(c, kind, row):
+def menu_event(c, kind, row, box=MENU_BOX, size=0x880, row_size=MBOX_ROW_SIZE):
     """What a renderer does: the record, then ev_seq; then wait for the ack."""
-    page = menu_page(c)
+    page = menu_page(c, box, size, row_size)
     body = page[4]
-    at = MBOX_OFF_ROWS + row * MBOX_ROW_SIZE
+    at = MBOX_OFF_ROWS + row * row_size
     seq = struct.unpack(">I", body[MBOX_OFF_EV_SEQ:MBOX_OFF_EV_SEQ + 4])[0]
-    mem_write(c, MENU_BOX + MBOX_OFF_EV_KIND,
+    mem_write(c, box + MBOX_OFF_EV_KIND,
               bytes([kind, row]) + body[at + 2:at + 4] + struct.pack(">I", page[1]))
-    mem_write(c, MENU_BOX + MBOX_OFF_EV_SEQ, struct.pack(">I", seq + 1))
-    return read_u32_until(c, MENU_BOX + MBOX_OFF_EV_ACK, seq + 1, timeout=2.0) == seq + 1
+    mem_write(c, box + MBOX_OFF_EV_SEQ, struct.pack(">I", seq + 1))
+    return read_u32_until(c, box + MBOX_OFF_EV_ACK, seq + 1, timeout=2.0) == seq + 1
 
 
 def menu_hooks(c):
@@ -2432,6 +2450,90 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: Options' word through all of it is the game's")
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
 
+
+
+def exercise_console_menu_uya(c, sim):
+    """Revision 1.22, UYA's renderer over the wire: the install a few seconds into
+    the session in play, its thirteen words, the HELP rows, the mailbox, the
+    combo, menu.enabled."""
+    box, size, rs = UYA_MENU_BOX, UYA_MENU_BOX_SIZE, UYA_MENU_ROW_SIZE
+
+    def combo():
+        mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+        sim.send("pad 0x0")
+        time.sleep(0.15)
+        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
+        time.sleep(0.25)
+        sim.send("pad 0x0")
+        time.sleep(0.1)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
+        return body[0] if status == ST_OK else None
+
+    def hooks():
+        return dict((a, mem_read_u32(c, a)) for a in UYA_MENU_SITES)
+
+    # In play: gameMode 0 (a fresh fake game) and no mode change queued.
+    mem_write(c, UYA_PENDING_MODE, struct.pack(">I", 0xFFFFFFFE))
+    deadline = time.time() + 6.0
+    while time.time() < deadline and mem_read_u32(c, box) != MENU_MAGIC:
+        time.sleep(0.2)
+    check(mem_read_u32(c, box) == MENU_MAGIC,
+          "UYA menu: a few seconds into the session its mailbox is in the game")
+    h = hooks()
+    code_ok = all((w >> 26) == 18 and UYA_MENU_CODE[0] <= bl_target(a, w) < UYA_MENU_CODE[1]
+                  for a, w in h.items() if a < 0x00C00000)
+    text_ok = all(h[a] == 0xF000 for a in UYA_MENU_HELP_TEXT)
+    cb_ok = all(UYA_MENU_DATA[0] <= h[a + 8] < UYA_MENU_DATA[1] for a in UYA_MENU_HELP_TEXT)
+    check(code_ok and text_ok and cb_ok,
+          "UYA menu: every code word branches into the renderer, each HELP row says 0xF000 and calls into its data",
+          dict((hex(a), hex(w)) for a, w in h.items()))
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
+    check(status == ST_OK and body[8] == 16 and body[9] == 0x40 and body[10] == 9 and body[14] == 3 and
+          body[15] == 16, "UYA menu: sixteen rows of 0x40, nine a MAIN page, sixteen a CONFIG page, renderer 3",
+          body.hex() if status == ST_OK else status)
+
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
+          "UYA menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "UYA menu: an event is acked")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Cheats" and page[3][:4] == ["Fast loads", "Ghost Ratchet",
+                                                                       "Infinite ammo", "Freeze health"] and
+          page[5] == MBOX_PTYPE_CONFIG, "UYA menu: the Cheats page is posted, a CONFIG page",
+          page[:4] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "UYA menu: back is acked")
+    time.sleep(0.1)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: Manips")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and "Reset trophies" in page[3] and "Trophy reset" in page[3],
+          "UYA menu: Manips lists the trophy reset with its status", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "UYA menu: back again")
+    check(combo() == 1, "UYA menu: the menu combo asks the renderer to open")
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+
+    # menu.enabled = 0: the words come out with the game in play.
+    cfg_path = "/dev_hdd0/qwark/config.txt"
+    cfg = read_console_file(c, cfg_path) or b""
+    cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
+    check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"), "UYA menu: config.txt says menu.enabled = 0")
+    status, _ = c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and hooks() != UYA_MENU_SITES:
+        time.sleep(0.1)
+    check(status == ST_OK and hooks() == UYA_MENU_SITES,
+          "UYA menu: CONFIG_RELOAD takes all thirteen words out, HELP its own row again",
+          dict((hex(a), hex(w)) for a, w in hooks().items()))
+    check(combo() == 0, "UYA menu: the combo then asks nothing")
+    check(write_console_file(c, cfg_path, cfg), "UYA menu: menu.enabled taken out again")
+    c.call(OP_CONFIG_RELOAD)
+    deadline = time.time() + 3.0
+    while time.time() < deadline and hooks() == UYA_MENU_SITES:
+        time.sleep(0.1)
+    check(hooks() != UYA_MENU_SITES, "UYA menu: menu.enabled = 1 puts the renderer back in play")
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
 def exercise_game(c, sim, spec, udp=None):
     name = spec["name"]
@@ -5573,6 +5675,15 @@ def main():
                   "Deadlocked: and the byte is cleared for the next quit")
 
         exercise_console_menu(c, sim)
+
+        # ----------------------- UYA's console menu, revision 1.22
+        sim.send("quit")
+        ok, _ = wait_state(c, SESSION_XMB)
+        check(ok, "quit before UYA's console menu")
+        sim.send("boot NPEA00387")
+        ok, _ = wait_state(c, SESSION_INGAME)
+        check(ok, "UYA comes up for its console menu")
+        exercise_console_menu_uya(c, sim)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

@@ -14,6 +14,7 @@
 #include "../core/autosplit.h"
 #include "../core/savefile.h"
 #include "../core/manips.h"
+#include "../core/util.h"
 
 #include <string.h>
 
@@ -1330,22 +1331,95 @@ static const struct game_manips rac3_manips = {
 /* ----------------------------------------------------------- console menu */
 
 /*
- * Revision 1.22, round 2: what the console menu knows of UYA so far. It has no
- * renderer yet, and until it has, no sections either (round 1's page per
- * DESCRIBE group stands in). An unlock row cycles through LOCKED, UNLOCKED and
- * MAX, on the level, field 1, which UNLOCK_SET holds to the weapon's own last
- * version.
+ * Revision 1.22: the console menu's pages for UYA (src/core/menu.c), after
+ * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac3",
+ * as Deadlocked's are. Game is the quick block and the values of the client's
+ * Game panel; Cheats the four cheats every game has and the quick-select
+ * pause, the one switch of the Game panel's "Options" column. Armour and the
+ * ship colour are the client's Cosmetics, and the QE offset and vendor QE its
+ * Debug page, which the menu leaves out. The weapon level buttons are the
+ * client's Unlocks panel buttons and the skill point and titanium bolt ones its
+ * Collectables tab, beside the unlock table, so the Unlocks page lists them
+ * under its categories. The trophy reset is MANIP_LIST's "Trophies" header,
+ * which the Manips page lists with its status (rac3_menu_status).
+ */
+static const u8 rac3_menu_game[] = {
+	R3_DIE, MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	R3_SET_ASIDE, R3_LOAD_ASIDE,
+	R3_BOLTS, R3_CHALLENGE, R3_HEALTH_XP, R3_HEALTH, R3_FILE_TIME
+};
+
+static const u8 rac3_menu_cheats[] = {
+	R3_FAST_LOADS, R3_GHOST, R3_FREEZE_AMMO, R3_FREEZE_HEALTH,
+	R3_QS_PAUSE
+};
+
+static const struct menu_section rac3_menu_sections[] = {
+	{ "Game",   rac3_menu_game,   (u8)sizeof(rac3_menu_game) },
+	{ "Cheats", rac3_menu_cheats, (u8)sizeof(rac3_menu_cheats) }
+};
+
+static const u8 rac3_menu_unlock_actions[] = {
+	R3_UPGRADE_ALL, R3_DOWNGRADE_ALL,
+	R3_UNLOCK_SKILL, R3_RESET_SKILL, R3_UNLOCK_TITANIUM, R3_RESET_TITANIUM
+};
+
+/*
+ * An unlock row cycles through LOCKED, UNLOCKED and MAX, on the version, field
+ * 1: UNLOCKED owns the weapon at v1, MAX at its own last version, v8, or the
+ * R3YNO's v5 (rac3_unlock_levels). A version between shows as "V3" and steps
+ * on to MAX. The GameCube weapons' versions cannot be read back (rac3_panel.c),
+ * so an owned one shows UNLOCKED whatever its version.
  */
 static const char * const rac3_unlock_names[] = { "LOCKED", "UNLOCKED", "MAX" };
 static const u32 rac3_unlock_values[] = { 0, 1, RAC3_MAX_LEVELS };
 
+/*
+ * The trophy reset's status readout (RAC3_RO_TROPHIES, PROTOCOL.md 5.14) as the
+ * Manips page shows it under Reset trophies, in a value of nineteen
+ * characters: what a running reset is doing, how long the last one took, or
+ * why it failed.
+ */
+static void rac3_menu_status(u8 id, u32 word, char *out, u32 cap)
+{
+	static const char * const why[] = {
+		"Failed", "Files not deleted", "Not registered", "No answer", "Load ended first",
+		"Game refused", "Not taken", "Refused", "Game changed"
+	};
+	u32 detail = (word >> 24) & 15u, secs = (word >> 8) & 0xFFFu;
+
+	if (id != R3_RESET_TROPHIES) {
+		out[0] = 0;
+		return;
+	}
+	switch (word >> 28) {
+	case RAC3_TS_RUNNING:
+		qstrcpy(out, cap, detail == RAC3_TS_DELETING ? "Deleting" :
+		                  detail == RAC3_TS_REGISTERING ? "Registering" : "Starting");
+		return;
+	case RAC3_TS_READY:
+		qstrcpy(out, cap, "Ready, ");
+		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), secs);
+		qstrcat(out, cap, " s");
+		return;
+	case RAC3_TS_FAILED:
+		qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
+		return;
+	default:
+		qstrcpy(out, cap, "Not this boot");
+		return;
+	}
+}
+
 static const struct game_menu rac3_menu = {
-	NULL, 0,
-	NULL, 0,
+	rac3_menu_sections, (u8)(sizeof(rac3_menu_sections) / sizeof(rac3_menu_sections[0])),
+	rac3_menu_unlock_actions, (u8)sizeof(rac3_menu_unlock_actions),
 	rac3_unlock_names, rac3_unlock_values,
 	(u8)(sizeof(rac3_unlock_names) / sizeof(rac3_unlock_names[0])),
 	1, "V",
-	NULL
+	NULL,                 /* every planet with a name: the plain list, in rac3_planet_order */
+	rac3_unlock_levels,
+	rac3_menu_status
 };
 
 /* ---------------------------------------------------------------- vtable */

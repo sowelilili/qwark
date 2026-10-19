@@ -1,8 +1,8 @@
 /*
  * A menu renderer's link map. build.sh puts the code cave's address in for
  * @TEXT_ORG@, the mailbox's for @BOX_ORG@ and the data area's for @DATA_ORG@,
- * and hands the result to ppu-lv2-ld. The layout is the probes' and N0's,
- * which ran on hardware:
+ * and the game's first stub for @ENTRY@, and hands the result to ppu-lv2-ld.
+ * The layout is the probes' and N0's, which ran on hardware:
  *
  *   code     at the code cave: the hook stubs, then the core (mh_core.o, between
  *            _core_start and _core_end, which check.py holds to naming no game
@@ -14,14 +14,15 @@
  *            (the stubs load _toc_base, the start of .toc plus 0x8000, which
  *            ppu-lv2-ld resolves TOC16 relocations against when there is no
  *            .got) and the descriptors of its functions, which the game calls
- *            (screen 36's start and stop, the callbacks, the thread).
+ *            (Deadlocked's screen 36 start and stop, UYA's GuiStates, the
+ *            callbacks, the thread).
  *
  * .data and .bss are placed only so build.sh can see them and refuse the build:
  * the renderer keeps no variables of its own. Its state is at absolute
  * addresses, the start of the data area.
  */
 OUTPUT_FORMAT("elf64-powerpc-celloslv2")
-ENTRY(mh_frame_stub)
+ENTRY(@ENTRY@)
 
 SECTIONS
 {

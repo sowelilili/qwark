@@ -80,6 +80,7 @@
 #define MENU_ROW_UNLOCK   0x0C      /* arg: the unlock's id */
 #define MENU_ROW_SCAT     0x0D      /* arg: the save category a LINK opens */
 #define MENU_ROW_SAVE     0x0E      /* arg: the save's place in its category */
+#define MENU_ROW_STATUS   0x0F      /* arg: the ACTION whose status readout it shows */
 #define MENU_ROW_ID(tag, arg) ((u16)(((u16)(tag) << 8) | (u8)(arg)))
 
 #define MENU_NAV_MORE     1

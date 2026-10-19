@@ -31,6 +31,7 @@ static u8 *mh_host_ptr(u32 addr)
 static u32 g_cfg_rows = 6;
 static u32 g_case_main = 1, g_case_head = 1, g_case_label = 2, g_case_value = 1;
 static u32 g_style = 0x0F;
+static u32 g_restart_main, g_restart_cfg;
 
 #define MH_GAME_ID      0x7F
 #define MH_BOX          0x01F00000u
@@ -48,6 +49,8 @@ static u32 g_style = 0x0F;
 #define MH_MAIN_SEP     ": "
 #define MH_WAIT_FRAMES  30
 #define MH_MAGIC        0x514D4846u
+#define MH_RESTART_MAIN g_restart_main
+#define MH_RESTART_CFG  g_restart_cfg
 
 #include "../src/games/menuhelper/mh_core.c"
 
@@ -144,6 +147,8 @@ static void fresh(void)
 	g_cfg_rows = 6;
 	g_case_main = 1; g_case_head = 1; g_case_label = 2; g_case_value = 1;
 	g_style = 0x0F;
+	g_restart_main = 0;
+	g_restart_cfg = 0;
 }
 
 void test_menu_core(void)
@@ -307,4 +312,35 @@ void test_menu_core(void)
 	check(mh_core_frame(0) == 0 && F.switches == 0, "and never asked to switch");
 	get_str(mh_title(), buf, sizeof(buf));
 	check(strcmp(buf, "CHEATS") == 0 && r32(MH_STATE + ST_PAGES) == 2, "the pages counted");
+
+	/*
+	 * A widget that takes no new page in place (UYA's: MH_RESTART_* say which
+	 * of shim_show's reasons it cannot take): the core starts the screen again.
+	 */
+	fresh();
+	g_restart_main = MH_SHOW_NEW | MH_SHOW_ROWS;
+	post_page(0x00000301, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 0, "RaCMAN", "", root, 4);
+	check(mh_core_start(0) == MBOX_PTYPE_MAIN && mh_nrows() == 4, "a restarting shim starts on a MAIN page");
+	F.cursor = 2;
+	check(mh_core_cursor(0) == 0 && mh_core_frame(0) == 0 && F.shows == 0, "and has nothing to show again");
+	post_page(0x00000301, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 0, "RaCMAN", "", root, 4);
+	check(mh_core_frame(0) == 0 && F.shows == 1 && F.last_how == 0 && F.switches == 0,
+	      "the same page refreshed is shown in place");
+	post_page(0x00000302, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 1, "RaCMAN", "", root, 3);
+	check(mh_core_frame(0) == MH_GONE && F.switches == 1 && F.shows == 1 && r8(MH_STATE + ST_SWITCHING) == 1,
+	      "a new page: the shim is asked to start its screen again, not to show it");
+	mh_core_stop(0);
+	check(r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_OPEN && mh_core_start(0) == MBOX_PTYPE_MAIN &&
+	      mh_nrows() == 3 && mh_core_cursor(0) == 1,
+	      "the stop on the way keeps the menu open, and the start takes the page with its own cursor");
+	post_page(0x00000302, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 1, "RaCMAN", "", root, 4);
+	check(mh_core_frame(0) == MH_GONE && F.switches == 2, "another number of rows on the same page: again");
+	g_restart_cfg = MH_SHOW_ROWS;
+	post_page(0x07000303, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", cheats, 5);
+	check(mh_core_frame(0) == MH_GONE && F.switches == 3, "a page of the other type, as always");
+	mh_core_stop(0);
+	mh_core_start(0);
+	post_page(0x07000304, MBOX_PTYPE_CONFIG, 0, 0, "cheats", "", cheats, 5);
+	check(mh_core_frame(0) == 0 && F.switches == 3 && (F.last_how & MH_SHOW_NEW) != 0,
+	      "a CONFIG widget that only restarts for another number of rows takes a new key in place");
 }

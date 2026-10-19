@@ -1177,7 +1177,8 @@ static const struct game_menu rac2_menu = {
 	rac2_unlock_names, rac2_unlock_values,
 	(u8)(sizeof(rac2_unlock_names) / sizeof(rac2_unlock_names[0])),
 	1, "V",
-	NULL
+	NULL,
+	NULL, NULL            /* every item goes as far as the set; no action with a status */
 };
 
 /* ---------------------------------------------------------------- vtable */

@@ -270,6 +270,24 @@ struct game_menu {
 	 * Tick thread: it may read the game.
 	 */
 	int (*planet_ok)(u8 planet);
+
+	/*
+	 * UYA (the renderer's round): the item's own last value of `unlock_field`,
+	 * where it stops short of the set's last (the R3YNO stops at V5 where the
+	 * other weapons go to V8), or 0 for the set's own. The set's last name
+	 * then stands for that value, so MAX is each item's maximum. NULL where
+	 * every item goes as far as the set.
+	 */
+	u32 (*unlock_top)(u8 id);
+
+	/*
+	 * UYA: an ACTION's status readout (PROTOCOL.md 5.3) as a short text for the
+	 * menu, whose layout only the game knows (UYA's Reset trophies, section
+	 * 5.14). The Manips page puts a row of it under each header ACTION that
+	 * names one, labelled with the readout's name; "" says nothing. NULL where
+	 * the game has no such action.
+	 */
+	void (*action_status)(u8 id, u32 word, char *out, u32 cap);
 };
 
 /* Build 53: what struct game_api's savefile_ready is asked about. */

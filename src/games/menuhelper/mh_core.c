@@ -356,7 +356,7 @@ MH_API void mh_core_stop(int p)
 
 MH_API int mh_core_frame(int p)
 {
-	u32 req, old_n, frames, ev, ack;
+	u32 req, old_n, frames, ev, ack, how, type;
 
 	frames = r32(BOX(MBOX_OFF_FRAMES)) + 1;
 	w32(BOX(MBOX_OFF_FRAMES), frames);
@@ -375,13 +375,19 @@ MH_API int mh_core_frame(int p)
 	if (take_page()) {
 		w8(ST(ST_WAITING), 0);
 		title();
-		if (r8(ST(ST_PTYPE)) != r8(ST(ST_SHOWN))) {
-			/* The other widget: the shim starts its screen again, through mh_core_start. */
+		how = (r8(ST(ST_NEW_KEY)) != 0 ? MH_SHOW_NEW : 0) | (nrows() != old_n ? MH_SHOW_ROWS : 0);
+		type = r8(ST(ST_PTYPE));
+		if (type != r8(ST(ST_SHOWN)) ||
+		    (how & (type == MBOX_PTYPE_MAIN ? MH_RESTART_MAIN : MH_RESTART_CFG)) != 0) {
+			/*
+			 * The other widget, or a page this one cannot take in place: the
+			 * shim starts its screen again, through mh_core_start.
+			 */
 			w8(ST(ST_SWITCHING), 1);
 			shim_switch(p);
 			return MH_GONE;
 		}
-		shim_show(p, (r8(ST(ST_NEW_KEY)) != 0 ? MH_SHOW_NEW : 0) | (nrows() != old_n ? MH_SHOW_ROWS : 0));
+		shim_show(p, how);
 	} else {
 		ev = r32(BOX(MBOX_OFF_EV_SEQ));
 		ack = r32(BOX(MBOX_OFF_EV_ACK));

@@ -619,6 +619,8 @@ int rac3_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int rac3_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac3_unlock_set(u8 id, u8 field, u32 value);
+/* The console menu's MAX for a weapon that stops short of RAC3_MAX_LEVELS, else 0. */
+u32 rac3_unlock_levels(u8 id);
 
 /* ---------------------------------------------------------- rac3.c exports */
 

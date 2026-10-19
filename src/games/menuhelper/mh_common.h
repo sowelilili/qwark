@@ -43,6 +43,12 @@ static __attribute__((unused)) float rf32(u32 a)
 	x.u = r32(a);
 	return x.f;
 }
+static __attribute__((unused)) void wf32(u32 a, float v)
+{
+	union { u32 u; float f; } x;
+	x.f = v;
+	w32(a, x.u);
+}
 
 #define mh_sync() __sync_synchronize()
 #define GAME_FN(type, opd, mock) (mock)
@@ -53,6 +59,7 @@ static __attribute__((unused)) float rf32(u32 a)
 #define r16(a)    ((u32)*(volatile u16 *)(u32)(a))
 #define r32(a)    (*(volatile u32 *)(u32)(a))
 #define rf32(a)   (*(volatile float *)(u32)(a))
+#define wf32(a, v) (*(volatile float *)(u32)(a) = (float)(v))
 #define w8(a, v)  (*(volatile u8 *)(u32)(a) = (u8)(v))
 #define w16(a, v) (*(volatile u16 *)(u32)(a) = (u16)(v))
 #define w32(a, v) (*(volatile u32 *)(u32)(a) = (u32)(v))

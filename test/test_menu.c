@@ -1069,7 +1069,11 @@ static void test_model_dl(void)
 	check(quit(), "quit Deadlocked");
 }
 
-/* Every group of every window of UYA's longest page, and nothing twice. */
+/*
+ * Every group of every window of RaC2's longest page, and nothing twice: round
+ * 1's pages, which a game with no menu table still gets (UYA has had one since
+ * its renderer).
+ */
 static void test_model_paging(void)
 {
 	struct menu_view v;
@@ -1078,16 +1082,16 @@ static void test_model_paging(void)
 	u16 ids[64];
 	int guard;
 
-	group("console menu: the model, paging UYA's groups (round 1's pages, no menu table yet)");
+	group("console menu: the model, paging RaC2's groups (round 1's pages, no menu table yet)");
 
-	check(boot("NPEA00387"), "UYA boots");
+	check(boot("NPEA00386"), "RaC2 boots");
 	d = session_game()->describe();
 	for (g = 0; g < d->ngroups; g++) {
 		u8 n = 0, i;
 		for (i = 0; i < d->nfeatures; i++) if (d->features[i].group == g) n++;
 		if (n > bestn) { bestn = n; best = g; }
 	}
-	check(bestn > 8, "UYA has a group longer than a screen");
+	check(bestn > 8, "RaC2 has a group longer than a screen");
 
 	menu_model_reset(8, 0, MBOX_CAP_STEPS | MBOX_CAP_BACK);
 	menu_model_view(&v);
@@ -1125,7 +1129,7 @@ static void test_model_paging(void)
 	check(v.rows[0].kind != MROW_PREV && v.rows[v.nrows - 1].kind == MROW_MORE,
 	      "and Previous walks back to the first");
 
-	check(quit(), "quit UYA");
+	check(quit(), "quit RaC2");
 }
 
 /* ------------------------------------------------------------ the mailbox */
@@ -1696,4 +1700,5 @@ void test_menu(void)
 	test_mailbox();
 	test_renderer();
 	test_menu_core();
+	test_menu_uya();
 }

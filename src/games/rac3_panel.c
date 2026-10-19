@@ -366,6 +366,19 @@ int rac3_unlock_read(const struct game_unlock *entry, u32 values[4])
 	return ST_OK;
 }
 
+/*
+ * The console menu's MAX for an unlock row (struct game_menu, unlock_top): the
+ * weapon's own last version, where it stops short of the field's game-wide 8
+ * (the R3YNO's v5), else 0, the set's own.
+ */
+u32 rac3_unlock_levels(u8 id)
+{
+	int row = rac3_row_for_id(id);
+
+	if (row < 0 || rac3_items[row].levels >= RAC3_MAX_LEVELS) return 0;
+	return rac3_items[row].levels;
+}
+
 int rac3_unlock_set(u8 id, u8 field, u32 value)
 {
 	const struct rac3_item *it;

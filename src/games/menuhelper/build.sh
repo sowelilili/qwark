@@ -4,8 +4,11 @@
 # carries them in, src/games/menuhelper_bins.c and .h. A renderer is the shared
 # core (mh_core.c) and a game's shim (mh_<game>.c, its stubs and its state
 # image), both compiled with the game's header (mh_<game>.h) included first,
-# like the savefile helper's one source for four games. Deadlocked's is the
-# only one so far.
+# like the savefile helper's one source for four games: Deadlocked's (rac4)
+# and Up Your Arsenal's (rac3) so far. What differs between them - the linker's
+# entry and the game addresses it is given, the hook words and what qwark reads
+# to know the menu is down - is a few functions per game below
+# (<game>_entry, <game>_ldflags, <game>_hooks, <game>_query).
 #
 # Run it from a Cygwin login shell that has the Sony SDK on its PATH, the shell
 # `make` runs in:
@@ -42,7 +45,7 @@ OBJDUMP=ppu-lv2-objdump
 
 CFLAGS="-Os -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
 
-RENDERERS="rac4"
+RENDERERS="rac4 rac3"
 
 fail() {
 	echo "menuhelper: $*" >&2
@@ -115,6 +118,101 @@ emit_bytes() {
 		END { if (n % 12 != 0) printf "\n" }'
 }
 
+# `b target` at `site`, no link: a signed 26-bit displacement.
+bword() {
+	delta=$(($2 - $1))
+	[ $delta -lt $((0x02000000)) ] && [ $delta -ge -$((0x02000000)) ] ||
+		fail "$(printf '0x%08X' $1) cannot reach $(printf '0x%08X' $2) with a b"
+	printf '0x%08X' $((0x48000000 | (delta & 0x03FFFFFC)))
+}
+
+# A symbol that must be there.
+needsym() {
+	v=$(sym "$1" "$2")
+	[ -n "$v" ] || fail "$1 has no symbol $2"
+	echo "$v"
+}
+
+# ------------------------------------------------------- per game: Deadlocked
+
+rac4_entry() { echo mh_frame_stub; }
+
+rac4_ldflags() {
+	echo "--defsym game_handle_menu_input=$(need "$1" GAME_HANDLE_MENU_INPUT)"
+}
+
+# The hook words, one a line: address, value, the game's word, what it is.
+rac4_hooks() {
+	hdr=$1; elf=$2
+	slot=$(need "$hdr" MH_SCREEN_SLOT)
+	screen_id=$(need "$hdr" MH_SCREEN_ID)
+	start_desc=$(needsym "$elf" mh_start)
+	stop_desc=$(needsym "$elf" mh_stop)
+	frame_stub=$(needsym "$elf" mh_frame_stub)
+	screen_stub=$(needsym "$elf" mh_screen_stub)
+	inject_stub=$(needsym "$elf" mh_inject_stub)
+	help_stub=$(needsym "$elf" mh_help_label)
+	for d in $start_desc $stop_desc; do
+		[ $((d)) -ge $((data)) ] && [ $((d)) -lt $((data + data_size)) ] || fail "rac4: descriptor $d is not in data.bin"
+	done
+	printf '0x%08X 0x00000000 0x00000000 screen %d fcInit\n' $((slot)) $((screen_id))
+	printf '0x%08X 0x00000000 0x00000000 fcReset\n' $((slot + 4))
+	printf '0x%08X %s %s fcStart: mh_start\n' $((slot + 8)) "$start_desc" "$(need "$hdr" MH_ORIG_SLOT_START)"
+	printf '0x%08X %s 0x00000000 fcStop: mh_stop\n' $((slot + 12)) "$stop_desc"
+	site=$(need "$hdr" MH_SITE_FRAME)
+	echo "$site $(blword "$site" "$frame_stub") $(need "$hdr" MH_ORIG_FRAME) bl mh_frame_stub ($frame_stub)"
+	site=$(need "$hdr" MH_SITE_SCREEN)
+	echo "$site $(blword "$site" "$screen_stub") $(need "$hdr" MH_ORIG_SCREEN) bl mh_screen_stub ($screen_stub)"
+	site=$(need "$hdr" MH_SITE_INJECT)
+	echo "$site $(blword "$site" "$inject_stub") $(need "$hdr" MH_ORIG_INJECT) bl mh_inject_stub ($inject_stub)"
+	site=$(need "$hdr" MH_SITE_HELP_LABEL)
+	echo "$site $(blword "$site" "$help_stub") $(need "$hdr" MH_ORIG_HELP_LABEL) bl mh_help_label ($help_stub)"
+	echo "$(need "$hdr" MH_SITE_HELP_SCREEN) $(need "$hdr" MH_HELP_SCREEN_WORD) $(need "$hdr" MH_ORIG_HELP_SCREEN) li r4,36: the Help row opens screen 36"
+}
+
+# What says the menu is down: mode word, its paused value, pending word, none, screen word, the menu's screen.
+rac4_query() {
+	echo "$(need "$1" DL_GAME_MODE) $(need "$1" DL_MODE_PAUSE) $(need "$1" DL_PENDING_MODE) $(need "$1" DL_MODE_NONE) $(need "$1" DL_MENU_SCREEN) $(need "$1" MH_SCREEN_ID)"
+}
+
+# --------------------------------------------------------- per game: UYA
+
+rac3_entry() { echo mh_msg_stub; }
+
+rac3_ldflags() {
+	echo "--defsym game_msg_exit=$(need "$1" GAME_MSG_EXIT)"
+}
+
+rac3_hooks() {
+	hdr=$1; elf=$2
+	msg_stub=$(needsym "$elf" mh_msg_stub)
+	help_desc=$(needsym "$elf" mh_help)
+	[ $((help_desc)) -ge $((data)) ] && [ $((help_desc)) -lt $((data + data_size)) ] ||
+		fail "rac3: mh_help's descriptor $help_desc is not in data.bin"
+	site=$(need "$hdr" MH_SITE_MSG)
+	echo "$site $(bword "$site" "$msg_stub") $(need "$hdr" MH_ORIG_MSG) b mh_msg_stub ($msg_stub)"
+	for r in 8:ROWS8:mh_rows8_stub:MH_ORIG_ROWS8 9a:ROWS9A:mh_rows9a_stub:MH_ORIG_ROWS9 9b:ROWS9B:mh_rows9b_stub:MH_ORIG_ROWS9; do
+		name=$(echo "$r" | cut -d: -f2); stub=$(echo "$r" | cut -d: -f3); orig=$(echo "$r" | cut -d: -f4)
+		site=$(need "$hdr" MH_SITE_$name)
+		at=$(needsym "$elf" "$stub")
+		echo "$site $(blword "$site" "$at") $(need "$hdr" "$orig") bl $stub ($at)"
+	done
+	for r in INJECT:mh_inject_stub COMBO:mh_combo_stub LAUNCH:mh_launch_stub; do
+		name=${r%%:*}; stub=${r#*:}
+		site=$(need "$hdr" MH_SITE_$name)
+		at=$(needsym "$elf" "$stub")
+		echo "$site $(blword "$site" "$at") $(need "$hdr" MH_ORIG_$name) bl $stub ($at)"
+	done
+	for t in 8 9A 9B; do
+		echo "$(need "$hdr" MH_SITE_HELP${t}_TEXT) $(printf '0x%08X' $(($(need "$hdr" MH_MSG_HELP)))) $(need "$hdr" MH_ORIG_HELP_TEXT) HELP row's text: RACMAN (table $t)"
+		echo "$(need "$hdr" MH_SITE_HELP${t}_CB) $help_desc $(need "$hdr" MH_ORIG_HELP_CB) HELP row's callback: mh_help (table $t)"
+	done
+}
+
+rac3_query() {
+	echo "$(need "$1" U_GAME_MODE) $(need "$1" U_MODE_PAUSE) $(need "$1" U_PENDING_MODE) $(need "$1" U_MODE_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" U_SCREEN_UP)"
+}
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 : > "$OUT/arrays.c"
@@ -138,26 +236,6 @@ for g in $RENDERERS; do
 	state=$(need "$hdr" MH_STATE)
 	shim=$(need "$hdr" MH_SHIM)
 	mbox_size=$(need "$hdr" MH_MBOX_SIZE)
-	slot=$(need "$hdr" MH_SCREEN_SLOT)
-	screen_id=$(need "$hdr" MH_SCREEN_ID)
-	site_frame=$(need "$hdr" MH_SITE_FRAME)
-	site_screen=$(need "$hdr" MH_SITE_SCREEN)
-	site_inject=$(need "$hdr" MH_SITE_INJECT)
-	orig_frame=$(need "$hdr" MH_ORIG_FRAME)
-	orig_screen=$(need "$hdr" MH_ORIG_SCREEN)
-	orig_inject=$(need "$hdr" MH_ORIG_INJECT)
-	orig_start=$(need "$hdr" MH_ORIG_SLOT_START)
-	site_help_label=$(need "$hdr" MH_SITE_HELP_LABEL)
-	site_help_screen=$(need "$hdr" MH_SITE_HELP_SCREEN)
-	orig_help_label=$(need "$hdr" MH_ORIG_HELP_LABEL)
-	orig_help_screen=$(need "$hdr" MH_ORIG_HELP_SCREEN)
-	w_help_screen=$(need "$hdr" MH_HELP_SCREEN_WORD)
-	handle_input=$(need "$hdr" GAME_HANDLE_MENU_INPUT)
-	mode_addr=$(need "$hdr" DL_GAME_MODE)
-	mode_paused=$(need "$hdr" DL_MODE_PAUSE)
-	pending_addr=$(need "$hdr" DL_PENDING_MODE)
-	pending_none=$(need "$hdr" DL_MODE_NONE)
-	screen_addr=$(need "$hdr" DL_MENU_SCREEN)
 
 	[ $((data)) -eq $((state)) ] || fail "$hdr: MH_STATE is not MH_DATA"
 
@@ -170,9 +248,9 @@ for g in $RENDERERS; do
 	$CC -I$DIR -c -o "$obj/state.o" "$DIR/mh_${g}_state.S"
 
 	sed -e "s/@TEXT_ORG@/$cave/" -e "s/@BOX_ORG@/$mbox/" -e "s/@DATA_ORG@/$data/" \
-		"$DIR/mh.ld.in" > "$obj/mh.ld"
+		-e "s/@ENTRY@/$(${g}_entry)/" "$DIR/mh.ld.in" > "$obj/mh.ld"
 	$LD --fatal-warnings -T "$obj/mh.ld" -Map "$obj/mh.map" -o "$obj/mh.elf" \
-		--defsym game_handle_menu_input=$handle_input \
+		$(${g}_ldflags "$hdr") \
 		"$obj/stubs.o" "$obj/mh_core.o" "$obj/shim.o" "$obj/state.o"
 
 	# name size vma, one line per section
@@ -218,6 +296,7 @@ for g in $RENDERERS; do
 		fail "$g: the data image is not the state, its zeros and the read-only data"
 	core_start=$(sym "$obj/mh.elf" _core_start)
 	core_end=$(sym "$obj/mh.elf" _core_end)
+	[ -n "$core_start" ] && [ -n "$core_end" ] || fail "$g: the core's bounds are missing"
 	[ $((box_size)) -eq $((mbox_size)) ] && [ $((mbox + box_size)) -eq $(($(sym "$obj/mh.elf" _box_end))) ] ||
 		fail "$g: box.bin is $box_size bytes, not the mailbox's $mbox_size"
 	[ $((mbox + box_size)) -le $((mbox_end)) ] || fail "$g: the mailbox runs past $mbox_end"
@@ -230,25 +309,14 @@ for g in $RENDERERS; do
 
 	$OBJDUMP -d "$obj/mh.elf" > "$obj/mh.dis"
 
-	# The hook words, from the linked addresses.
-	start_desc=$(sym "$obj/mh.elf" mh_start)
-	stop_desc=$(sym "$obj/mh.elf" mh_stop)
-	frame_stub=$(sym "$obj/mh.elf" mh_frame_stub)
-	screen_stub=$(sym "$obj/mh.elf" mh_screen_stub)
-	inject_stub=$(sym "$obj/mh.elf" mh_inject_stub)
-	help_stub=$(sym "$obj/mh.elf" mh_help_label)
-	[ -n "$start_desc" ] && [ -n "$stop_desc" ] && [ -n "$frame_stub" ] && [ -n "$screen_stub" ] &&
-		[ -n "$inject_stub" ] && [ -n "$help_stub" ] && [ -n "$core_start" ] && [ -n "$core_end" ] ||
-		fail "$g: a symbol is missing"
-	# The descriptors must be data.bin's, the stubs code.bin's.
-	for d in $start_desc $stop_desc; do
-		[ $((d)) -ge $((data)) ] && [ $((d)) -lt $((data + data_size)) ] || fail "$g: descriptor $d is not in data.bin"
-	done
-
-	w_frame=$(blword "$site_frame" "$frame_stub")
-	w_screen=$(blword "$site_screen" "$screen_stub")
-	w_inject=$(blword "$site_inject" "$inject_stub")
-	w_help_label=$(blword "$site_help_label" "$help_stub")
+	# The hook words, from the linked addresses: address, value, the game's word, what.
+	${g}_hooks "$hdr" "$obj/mh.elf" > "$obj/hooks.txt" || fail "$g: the hook words"
+	nhooks=$(wc -l < "$obj/hooks.txt" | tr -d ' ')
+	[ "$nhooks" -gt 0 ] || fail "$g: no hook words"
+	query=$(${g}_query "$hdr")
+	set -- $query
+	[ $# -eq 6 ] || fail "$g: what says the menu is down is not six words"
+	q_mode=$1; q_paused=$2; q_pending=$3; q_none=$4; q_screen=$5; q_screen_id=$6
 
 	{
 		echo "/* $g: the mailbox, $box_size bytes at $mbox as the install leaves it: the header, then $box_zeros zeros */"
@@ -280,34 +348,30 @@ for g in $RENDERERS; do
 		echo
 		echo "/* In the order they go in; they come out in the reverse order. */"
 		echo "static const struct mh_word mh_${g}_hooks[] = {"
-		printf '\t{ 0x%08Xu, 0x00000000u, 0x00000000u },   /* screen %d fcInit */\n' $((slot)) $((screen_id))
-		printf '\t{ 0x%08Xu, 0x00000000u, 0x00000000u },   /* fcReset */\n' $((slot + 4))
-		printf '\t{ 0x%08Xu, %su, %su },   /* fcStart: mh_start */\n' $((slot + 8)) "$start_desc" "$orig_start"
-		printf '\t{ 0x%08Xu, %su, 0x00000000u },   /* fcStop: mh_stop */\n' $((slot + 12)) "$stop_desc"
-		printf '\t{ %su, %su, %su },   /* bl mh_frame_stub (%s) */\n' "$site_frame" "$w_frame" "$orig_frame" "$frame_stub"
-		printf '\t{ %su, %su, %su },   /* bl mh_screen_stub (%s) */\n' "$site_screen" "$w_screen" "$orig_screen" "$screen_stub"
-		printf '\t{ %su, %su, %su },   /* bl mh_inject_stub (%s) */\n' "$site_inject" "$w_inject" "$orig_inject" "$inject_stub"
-		printf '\t{ %su, %su, %su },   /* bl mh_help_label (%s) */\n' "$site_help_label" "$w_help_label" "$orig_help_label" "$help_stub"
-		printf '\t{ %su, %su, %su }    /* li r4,36: the Help row opens screen 36 */\n' "$site_help_screen" "$w_help_screen" "$orig_help_screen"
+		k=0
+		while read -r h_addr h_value h_orig h_what; do
+			k=$((k + 1))
+			sep=","
+			[ $k -lt $nhooks ] || sep=" "
+			printf '\t{ 0x%08Xu, 0x%08Xu, 0x%08Xu }%s   /* %s */\n' \
+				$((h_addr)) $((h_value)) $((h_orig)) "$sep" "$h_what"
+		done < "$obj/hooks.txt"
 		echo "};"
 		echo
 	} >> "$OUT/arrays.c"
 
 	{
-		echo "	{ $((game)), mh_${g}_caves, 4, mh_${g}_hooks, 9,"
+		echo "	{ $((game)), mh_${g}_caves, 4, mh_${g}_hooks, $nhooks,"
 		echo "	  ${mbox}u, ${mbox_size}u, ${state}u,"
-		echo "	  ${mode_addr}u, ${mode_paused}u, ${pending_addr}u, ${pending_none}u,"
-		echo "	  ${screen_addr}u, ${screen_id}u },"
+		echo "	  ${q_mode}u, ${q_paused}u, ${q_pending}u, ${q_none}u,"
+		echo "	  ${q_screen}u, ${q_screen_id}u },"
 	} >> "$OUT/descs.txt"
 
 	{
 		echo "$g: code $code_size bytes at $cave ($((cave_end - cave - code_size)) left), mailbox $box_size bytes at $mbox, data $data_size bytes at $data ($((data_end - data - data_size)) left); the core is $((core_end - core_start)) bytes of the code"
-		echo "  $(printf '0x%08X' $((slot)))..+16 -> {0, 0, $start_desc, $stop_desc}"
-		echo "  $site_frame -> $w_frame  bl mh_frame_stub ($frame_stub)"
-		echo "  $site_screen -> $w_screen  bl mh_screen_stub ($screen_stub)"
-		echo "  $site_inject -> $w_inject  bl mh_inject_stub ($inject_stub)"
-		echo "  $site_help_label -> $w_help_label  bl mh_help_label ($help_stub)"
-		echo "  $site_help_screen -> $w_help_screen  li r4,36"
+		while read -r h_addr h_value h_orig h_what; do
+			echo "  $h_addr -> $h_value  $h_what"
+		done < "$obj/hooks.txt"
 	} >> "$OUT/report.txt"
 done
 

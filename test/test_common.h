@@ -20,4 +20,7 @@ void test_menu(void);
 /* test_menu_core.c: the renderers' shared core, against a fake shim. */
 void test_menu_core(void);
 
+/* test_menu_uya.c: UYA's pages, install and renderer. */
+void test_menu_uya(void);
+
 #endif /* QWARK_TEST_COMMON_H */

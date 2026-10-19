@@ -483,9 +483,22 @@ static u8 page_items(u16 page, u16 *ids)
 		if (g_game == NULL || g_game->manips == NULL) return 0;
 		for (i = MENU_MANIP_CATEGORY; i <= MENU_MANIP_APPLY; i++)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, i));
+		/*
+		 * MANIP_LIST's headers' features, those DESCRIBE has (UYA's trophy
+		 * rows are not where the reset cannot work), each ACTION that names a
+		 * status readout followed by a row of that status (UYA's Reset
+		 * trophies, PROTOCOL.md 5.14).
+		 */
 		for (i = 0; i < g_game->manips->nheaders; i++) {
-			for (j = 0; j < g_game->manips->headers[i].nfeatures; j++)
-				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, g_game->manips->headers[i].features[j]));
+			for (j = 0; j < g_game->manips->headers[i].nfeatures; j++) {
+				u8 id = g_game->manips->headers[i].features[j];
+				f = feature(id);
+				if (f == NULL) continue;
+				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, id));
+				if (f->kind == FEATURE_ACTION && f->readout < QWARK_MAX_READOUTS &&
+				    gm != NULL && gm->action_status != NULL)
+					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_STATUS, id));
+			}
 		}
 		return n;
 
@@ -635,6 +648,22 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 	}
 }
 
+/*
+ * The value of the set's i-th name for this item: the set's own, but for the
+ * last, which is the item's own last value where the game says it stops short
+ * (struct game_menu, unlock_top), so MAX is each weapon's maximum.
+ */
+static u32 unlock_value(const struct game_menu *gm, const struct game_unlock *u, u8 i)
+{
+	u32 top;
+
+	if (i + 1 == gm->nunlock && gm->unlock_top != NULL) {
+		top = gm->unlock_top(u->id);
+		if (top != 0) return top;
+	}
+	return gm->unlock_values[i];
+}
+
 /* An unlock row's value: its place in the game's value set, and that value's name. */
 static u8 unlock_now(const struct game_unlock *u, char *out, u32 cap)
 {
@@ -651,12 +680,21 @@ static u8 unlock_now(const struct game_unlock *u, char *out, u32 cap)
 		qstrcpy(out, cap, "UNLOCKED");
 		return 1;
 	}
+	/*
+	 * Owned, and the field reads 0: a value the game cannot report (UYA's
+	 * GameCube weapons keep theirs where it cannot be read back), shown as the
+	 * set's first owned name rather than as a number.
+	 */
+	if (v[gm->unlock_field] == 0) {
+		qstrcpy(out, cap, gm->unlock_names[1]);
+		return 1;
+	}
 	for (i = 1; i < gm->nunlock; i++) {
-		if (v[gm->unlock_field] == gm->unlock_values[i]) {
+		if (v[gm->unlock_field] == unlock_value(gm, u, i)) {
 			qstrcpy(out, cap, gm->unlock_names[i]);
 			return i;
 		}
-		if (v[gm->unlock_field] > gm->unlock_values[i]) below = i;
+		if (v[gm->unlock_field] > unlock_value(gm, u, i)) below = i;
 	}
 	/* Off the list: the number, or the name of the value under it. */
 	if (gm->unlock_prefix != NULL) {
@@ -769,6 +807,15 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		}
 		break;
 	}
+
+	case MENU_ROW_STATUS:
+		/* An ACTION's status readout, as the game words it (UYA's trophy reset). */
+		f = feature(arg);
+		if (f == NULL || gm == NULL || gm->action_status == NULL || f->readout >= QWARK_MAX_READOUTS) break;
+		row(r, MROW_INFO, 0, f->readout < d->nreadouts ? d->readouts[f->readout] : f->label, "", NULL);
+		gm->action_status(arg, session_readout(f->readout), r->value, sizeof(r->value));
+		r->value[sizeof(r->value) - 1] = 0;
+		break;
 
 	case MENU_ROW_UNLOCK:
 		u = unlock_row(arg);
@@ -1186,7 +1233,7 @@ static int act_unlock(u16 id, u8 arg, int dir)
 	g_ul.ok = 0;
 	rc = g_game->unlock_set(u->id, 0, next != 0);
 	if (rc == ST_OK && next != 0 && unlock_count(u) > 2)
-		rc = g_game->unlock_set(u->id, gm->unlock_field, gm->unlock_values[next]);
+		rc = g_game->unlock_set(u->id, gm->unlock_field, unlock_value(gm, u, next));
 	return answer(id, rc, u->name);
 }
 
