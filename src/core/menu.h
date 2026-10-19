@@ -60,6 +60,7 @@
 #define MENU_PAGE_UNLOCK_CAT 0x07   /* CONFIG, arg: the unlock category */
 #define MENU_PAGE_SAVES      0x08   /* MAIN */
 #define MENU_PAGE_SAVE_CAT   0x09   /* MAIN, arg: the category's place in the library */
+#define MENU_PAGE_UNLOCK_ACTIONS 0x0A /* CONFIG: the Unlocks page's buttons, where the game names them a page (round 3) */
 #define MENU_PAGE_ID(kind, arg) ((u16)(((u16)(kind) << 8) | (u8)(arg)))
 
 /*
@@ -103,7 +104,20 @@ struct menu_row {
 	char label[MROW_LABEL_LEN];
 	char value[MROW_VALUE_LEN];
 	char desc[MROW_DESC_LEN];
+	/*
+	 * Round 3, a VALUE row flagged MROWF_RANGE (its label then 23 characters
+	 * at most): the value, the lowest, the highest and the step, which the
+	 * mailbox carries in the label's last 16 bytes (menubox.h).
+	 */
+	u32  range[4];
 };
+
+/*
+ * A VALUE row whose range spans this many steps of 1 or fewer is flagged
+ * MROWF_SLIDER as well: few enough for a bar to mean something (Challenge
+ * mode's 0..255, not Bolts').
+ */
+#define MENU_SLIDER_SPAN  1000
 
 /* What a renderer is shown at once: one window of one page. */
 struct menu_view {
@@ -141,6 +155,14 @@ int  menu_model_event(u8 kind, u8 row, u16 id, u32 key);
 /* The current page id and the stack's depth, for the tests. */
 u16  menu_model_page(void);
 u8   menu_model_depth(void);
+
+/*
+ * Round 3: back to the root, the cursor on its first row, as the menu closes
+ * (the driver calls it when the renderer says so), so the next open, from the
+ * game's row or the combo, starts there. The values' steps and a load waiting
+ * for the close stay.
+ */
+void menu_model_home(void);
 
 /* -------------------------------------------------------------- the driver */
 

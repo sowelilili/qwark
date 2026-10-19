@@ -341,8 +341,6 @@ int manips_list(u8 *out, u32 cap, u32 *len)
 
 int manips_select(u8 id)
 {
-	const struct manip_group *g;
-
 	if (g_m == NULL) return ST_UNSUPPORTED;
 	if (id != 0 && find_group(id) == NULL) return ST_BAD_ARG;
 
@@ -357,11 +355,14 @@ int manips_select(u8 id)
 	g_setup_done = 0;
 	config_set_manip(g_m->key, "category", id);
 
-	/* A setup goes in straight away when a file it can go into is in play. */
-	g = find_group(id);
-	if (g != NULL && lists_have_writes(g->setup) && in_file())
-		attempt(g, DO_SETUP);
-
+	/*
+	 * Build 54, round 3: nothing is written now, whatever is in play. The
+	 * group's setup is due at the next start of a run that passes its check,
+	 * with its per-run writes, or at Apply now. Build 53 put the setup in at
+	 * once when a file was in play, so stepping through the categories on the
+	 * console menu applied (or refused) each group on the way, and the user's
+	 * call is the old checkboxes': manips go in at the start of a run.
+	 */
 	return ST_OK;
 }
 

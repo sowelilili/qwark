@@ -832,8 +832,8 @@ static void test_model_dl(void)
 	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 
-	check(strcmp(v.title, "RaCMAN") == 0 && (v.pflags & MBOX_PAGE_ROOT) != 0 && v.ptype == MBOX_PTYPE_MAIN,
-	      "the root is a MAIN page titled RaCMAN that says it is the root");
+	check(strcmp(v.title, "Trainer") == 0 && (v.pflags & MBOX_PAGE_ROOT) != 0 && v.ptype == MBOX_PTYPE_MAIN,
+	      "the root is a MAIN page titled Trainer (round 3) that says it is the root");
 	check(v.nrows == 7 && strcmp(v.rows[0].label, "Game") == 0 && strcmp(v.rows[1].label, "Cheats") == 0 &&
 	      strcmp(v.rows[2].label, "Planets") == 0 && strcmp(v.rows[3].label, "Manips") == 0 &&
 	      strcmp(v.rows[4].label, "Unlocks") == 0 && strcmp(v.rows[5].label, "Save files") == 0,
@@ -892,7 +892,7 @@ static void test_model_dl(void)
 	check(rc == ST_BAD_ARG, "R1 on a page of one window does nothing");
 	menu_model_event(MBOX_EV_BACK, 1, v.rows[1].id, v.key);
 	menu_model_view(&v);
-	check(strcmp(v.title, "RaCMAN") == 0 && v.cursor == 1, "back: the root, the cursor on Cheats");
+	check(strcmp(v.title, "Trainer") == 0 && v.cursor == 1, "back: the root, the cursor on Cheats");
 
 	/* Game: the quick block's buttons, the slot, and the values. */
 	check(act(&v, MBOX_EV_ACTIVATE, "Game") == ST_OK && strcmp(v.title, "Game") == 0 &&
@@ -934,6 +934,20 @@ static void test_model_dl(void)
 	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
 	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
 	check(strcmp(value_of(&v, "Challenge mode"), "0") == 0, "Challenge mode's step stops at 100, its range 0..255");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
+	      r->range[0] == 0 && r->range[1] == 0 && r->range[2] == 255 && r->range[3] == 1,
+	      "round 3: Challenge mode carries its slider's numbers, 0 in 0..255 by 1, and suits a slider");
+	act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	act(&v, MBOX_EV_RIGHT, "Challenge mode");
+	r = view_row(&v, "Challenge mode");
+	check(r != NULL && r->range[0] == 10 && r->range[3] == 10 && strcmp(r->value, "10 [10]") == 0,
+	      "the cross and Right: 10, the step 10, in the numbers as in the text");
+	act(&v, MBOX_EV_LEFT, "Challenge mode");
+	while (strcmp(value_of(&v, "Challenge mode"), "0") != 0) act(&v, MBOX_EV_ACTIVATE, "Challenge mode");
+	r = view_row(&v, "Bolts");
+	check(r != NULL && (r->flags & (MROWF_RANGE | MROWF_SLIDER)) == 0,
+	      "Bolts, a whole 32-bit counter, has no bounds to carry and no slider");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -1197,7 +1211,7 @@ static void test_mailbox(void)
 		      hook_last == n - 1,
 		      "in the order that keeps the game off a half-written renderer: the mailbox and the data, "
 		      "the first page, the code, the hook words");
-		check(n <= 20 && bytes <= 18u * 1024u, "twenty writes at most, under 18 KB in all");
+		check(n <= 20 && bytes <= 19u * 1024u, "twenty writes at most, under 19 KB in all");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options' call to SetMenuButtons keeps the game's word");
@@ -1211,7 +1225,7 @@ static void test_mailbox(void)
 	check(peek32(MH_STATE) == MH_MAGIC, "the renderer's state, its magic in place");
 
 	read_box(&p);
-	check(p.seq != 0 && (p.seq & 1) == 0 && p.ptype == MBOX_PTYPE_MAIN && strcmp(p.title, "RaCMAN") == 0 &&
+	check(p.seq != 0 && (p.seq & 1) == 0 && p.ptype == MBOX_PTYPE_MAIN && strcmp(p.title, "Trainer") == 0 &&
 	      p.n == 7 && (p.pflags & MBOX_PAGE_ROOT) != 0 && strcmp(p.rows[0].label, "Game") == 0,
 	      "the root page is in, page_seq even, a MAIN page");
 
@@ -1270,6 +1284,34 @@ static void test_mailbox(void)
 		}
 		check(found, "a page goes out as page_seq, the page, page_seq: three writes");
 	}
+
+	/* Round 3: whenever the menu closes, the next open starts at the root, the cursor on its first row. */
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+	tick(4);
+	read_box(&p);
+	check(strcmp(p.title, "Cheats") == 0 && menu_model_depth() == 2, "on Cheats, the menu up");
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
+	tick(4);
+	read_box(&p);
+	check(strcmp(p.title, "Trainer") == 0 && p.cursor == 0 && (p.pflags & MBOX_PAGE_ROOT) != 0 &&
+	      menu_model_depth() == 1, "the renderer says closed: the root is posted at once, the cursor on its first row");
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+	poke32(mb + MBOX_OFF_FRAMES, 0);
+	tick(4);
+	box_activate("Cheats");
+	poke32(mb + MBOX_OFF_FRAMES, 400);
+	tick(2);
+	read_box(&p);
+	check(strcmp(p.title, "Cheats") == 0, "open again, on Cheats, four hundred frames up");
+	poke32(mb + MBOX_OFF_FRAMES, 2);
+	tick(2);
+	read_box(&p);
+	check(strcmp(p.title, "Trainer") == 0 && p.cursor == 0 && menu_model_depth() == 1,
+	      "its frame count back at 2, the menu never seen closed: an opening, so the root again");
+	poke32(mb + MBOX_OFF_FRAMES, 3);
+	tick(2);
+	check(menu_model_depth() == 1, "and the count going on from there is no new opening");
+	box_activate("Cheats");
 	box_event(MBOX_EV_BACK, 0);
 	tick(2);
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
@@ -1308,6 +1350,17 @@ static void test_mailbox(void)
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
 	tick(4);
 	box_activate("Game");
+	read_box(&p);
+	i = box_index(&p, "Challenge mode");
+	{
+		u8 raw[MH_ROW_BYTES];
+		host_peek(mb + MBOX_OFF_ROWS + (u32)i * MH_ROW_BYTES, raw, sizeof(raw));
+		check(i >= 0 && (p.rows[i].flags & (MROWF_RANGE | MROWF_SLIDER)) == (MROWF_RANGE | MROWF_SLIDER) &&
+		      raw[MROW_OFF_LABEL + 23] == 0 && be32_get(raw + MROW_OFF_RANGE + 8) == 255 &&
+		      be32_get(raw + MROW_OFF_RANGE + 4) == 0 && be32_get(raw + MROW_OFF_RANGE + 12) == 1 &&
+		      be32_get(raw + MROW_OFF_RANGE) == peek8(RAC4_CHALLENGE_MODE),
+		      "round 3: Challenge mode's row carries value, 0, 255 and step 1 at +0x1C, past its label's NUL");
+	}
 	box_activate("Load set-aside file");
 	read_box(&p);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE &&
@@ -1500,11 +1553,11 @@ static void test_renderer(void)
 	game_help_row();
 	check(G.screen == MH_SCREEN_ID && G.shown && !G.main_up && G.depth == 1 && G.stack[0] == 1,
 	      "its Help row pushes screen 36 over the main menu");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "RACMAN") == 0 && G.nbuttons == 7 &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 7 &&
 	      strcmp(shown_text(0, text, sizeof(text)), "GAME") == 0 &&
 	      strcmp(shown_text(5, text, sizeof(text)), "SAVE FILES") == 0 &&
 	      strcmp(shown_text(6, text, sizeof(text)), "QWARK BUILD 54") == 0,
-	      "the root in the main menu's capitals: GAME .. SAVE FILES, then QWARK BUILD 54, under RACMAN");
+	      "the root in the main menu's capitals: GAME .. SAVE FILES, then QWARK BUILD 54, under TRAINER");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && G.close_cb == MH_FN_CLOSE,
 	      "the mailbox says open, the list's close is the shim's");
 	game_frame(PADB_TRIANGLE);
@@ -1546,9 +1599,25 @@ static void test_renderer(void)
 	G.cursor = 1;
 	game_frame(PADB_CROSS);
 	tick(2);
-	game_frame(0);
-	check(!G.shown && G.stops >= 1 && G.thread == 1 && G.screen == MH_SCREEN_ID,
-	      "the cross on CHEATS: the list stops, screen 36 starts again with the shim's thread");
+	{
+		u32 list_title = G.title, list_rows = G.buttons;
+		game_frame(0);
+		check(!G.shown && G.stops >= 1 && G.thread == 1 && G.screen == MH_SCREEN_ID,
+		      "the cross on CHEATS: the list stops, screen 36 starts again with the shim's thread");
+		check(strcmp(read_str(list_title, title, sizeof(title)), "TRAINER") == 0 &&
+		      strcmp(read_str(r32(list_rows + MH_BUTTON_SIZE + 4), text, sizeof(text)), "CHEATS") == 0 &&
+		      strcmp(read_str(r32(list_rows + 6 * MH_BUTTON_SIZE + 4), text, sizeof(text)), "QWARK BUILD 54") == 0,
+		      "round 3: the list fading out still reads TRAINER, CHEATS .. QWARK BUILD 54, not the Cheats page");
+		for (i = 0; i < 25; i++) {
+			if (i == 1) {
+				game_frame(PADB_DOWN);
+				game_frame(PADB_UP);
+			}
+			game_frame(0);
+			if (strcmp(read_str(r32(list_rows + MH_BUTTON_SIZE + 4), text, sizeof(text)), "CHEATS") != 0) break;
+		}
+		check(i == 25, "and does on, the Cheats page's moves and all (nothing composes over it)");
+	}
 	game_frame(0);
 	check(G.thread == 2 && G.screen_tpl == DL_TPL_SCREEN && G.list_tpl == DL_TPL_ROW && G.count == 5 &&
 	      G.layer == DL_LAYER && G.images == 3 && G.cursor_attached,
@@ -1618,12 +1687,16 @@ static void test_renderer(void)
 	check(G.sound == SND_BACK, "triangle on the page posts back");
 	tick(2);
 	game_frame(0);
+	check(r8(MH_SHIM + SH_CFG_STATE) == 2 && strcmp(cfg_label(1, text), "Ghost Ratchet") == 0 &&
+	      strcmp(cfg_value(1, title), "OFF") == 0 &&
+	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "CHEATS") == 0,
+	      "round 3: the Cheats page ending still reads its own rows and title, not the root's");
 	game_frame(0);
 	game_frame(0);
 	check(G.thread == 0 && G.layer == 0 && G.images == 0 && !G.cursor_attached && G.shown &&
 	      G.screen == MH_SCREEN_ID && G.depth == 0,
 	      "the thread ends - the panel cleared, the plates dropped, the cursor detached - and the list is back");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "RACMAN") == 0 && G.cursor == 1,
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.cursor == 1,
 	      "on the root, the cursor on CHEATS");
 
 	/* Closes: Start from the CONFIG page, and a close request. */
@@ -1639,10 +1712,13 @@ static void test_renderer(void)
 	game_frame(0);
 	check(G.thread == 0 && G.layer == 0, "and its thread ends behind it");
 	tick(4);
+	check(menu_model_depth() == 1, "round 3: closed, qwark's stack is back on the root");
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
 	game_frame(0);
-	check(G.thread == 2 && G.count == 5, "the combo opens the menu again on the page it was closed on");
+	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == 7 &&
+	      strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0,
+	      "the combo opens the menu on the root, the cursor on its first row, not on the page it closed on");
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo again asks it to close");
@@ -1656,8 +1732,6 @@ static void test_renderer(void)
 	/* A MAIN page with a choice list, through the Unlocks page's buttons and Select. */
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
-	game_frame(0);
-	game_frame(PADB_TRIANGLE);
 	tick(4);
 	for (i = 0; i < 4; i++) game_frame(0);
 	row = shown_row("UNLOCKS");

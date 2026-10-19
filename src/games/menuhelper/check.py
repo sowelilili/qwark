@@ -328,7 +328,8 @@ def code_pointers(code, base, lo, hi):
         op = w >> 26
         if op == 15:
             lis[(w >> 21) & 31] = w & 0xFFFF
-        elif op in (14, 24, 32, 34, 36, 38, 40, 44, 48, 52, 58, 62):
+            continue
+        if op in (14, 24, 32, 34, 36, 38, 40, 44, 48, 52, 58, 62):
             ra = (w >> 21) & 31 if op == 24 else (w >> 16) & 31
             if ra in lis:
                 imm = w & 0xFFFF
@@ -336,7 +337,34 @@ def code_pointers(code, base, lo, hi):
                     (lis[ra] << 16) + (imm - 0x10000 if imm & 0x8000 else imm)
                 if lo <= (v & 0xFFFFFFFF) < hi:
                     found.append("0x%08X: 0x%08X" % (base + i, v & 0xFFFFFFFF))
+        # A register written by anything but an addis holds no high half any
+        # more (round 3: a set's address made as `addis rD,rIndex,hi` and then
+        # used for a sum read as a pair with an addi much further on).
+        for d in written_regs(w):
+            lis.pop(d, None)
     return found
+
+
+def written_regs(w):
+    """The general registers an instruction writes, as far as the pairs above care."""
+    op = w >> 26
+    rd, ra = (w >> 21) & 31, (w >> 16) & 31
+    if op in (7, 8, 12, 13, 14, 32, 33, 34, 35, 40, 41, 42, 43, 58):
+        return (rd,)
+    if op in (20, 21, 23, 24, 25, 26, 27, 28, 29, 30):
+        return (ra,)
+    if op == 31:
+        xo = (w >> 1) & 0x3FF
+        if xo in (28, 60, 124, 284, 316, 412, 444, 476, 24, 27, 536, 539, 792, 794, 824, 826, 827,
+                  954, 922, 986, 26, 58):
+            return (ra,)
+        if xo & 0x1FF in (266, 10, 138, 234, 202, 40, 8, 136, 232, 200, 104, 235, 233, 75, 11, 73, 9,
+                          491, 459, 489, 457) or xo in (23, 55, 87, 119, 279, 311, 343, 375, 21, 53,
+                                                        339, 371, 19, 83):
+            return (rd,)
+        if xo == 467 or xo == 144:
+            return ()
+    return ()
 
 
 def lint_code(code, base, allowed=()):
@@ -584,7 +612,7 @@ def check_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
     text = b""
     if hdr["MH_DATA"] <= lab < hdr["MH_DATA"] + len(data):
         text = data[lab - hdr["MH_DATA"]:].split(b"\0")[0]
-    ok(text == b"RACMAN" and all(cpu.r[i] == keep[i] for i in range(32) if i != 3),
+    ok(text == hdr["MH_ENTRY_LABEL"].encode() and all(cpu.r[i] == keep[i] for i in range(32) if i != 3),
        "help label stub: r3 = 0x%08X, \"%s\" in the data image, every other register kept" %
        (lab, text.decode("ascii", "replace")))
 
@@ -915,7 +943,9 @@ def check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
     pressed, force = shim + hdr["SH_PRESSED"], shim + hdr["SH_FORCE"]
     request = box + box_defs["MBOX_OFF_REQUEST"]
     opens = state + shim_defs["ST_OPEN_REQS"]
-    text0 = state + shim_defs["ST_TEXT"]
+    front = state + shim_defs["ST_FRONT"]
+    text0, set_size = shim_set_layout(shim_defs, hdr["MH_ROWS"])
+    text0 += state
     text_len = shim_defs["MH_TEXT_LEN"]
     game, planet = 0x01400000, hdr["U_PLANET"]
 
@@ -932,16 +962,18 @@ def check_rac3_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data):
             return None
         return data[a - hdr["MH_DATA"]:].split(b"\0")[0].decode("latin1")
 
-    # The label hook: RACMAN, the rows, and everything else on into msg_string.
+    # The label hook: TRAINER, the rows, and everything else on into msg_string.
     msg_ok = {"r3", "r4", "r5", "cr0"}
     cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_HELP"], 4: 0x1234})
-    ok(how == ("blr", None) and cstr(cpu.r[3]) == "RACMAN" and cpu.written <= msg_ok,
-       "msg stub, 0xF000: \"RACMAN\", in the data image, back to msg_string's caller")
-    good = True
-    for i in range(hdr["MH_MAIN_ROWS"]):
-        cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_ROW0"] + i})
-        good = good and how == ("blr", None) and cpu.r[3] == text0 + i * text_len and cpu.written <= msg_ok
-    ok(good, "msg stub, 0xF001 + i for each of the %d MAIN rows: the core's row i (mh_text(i))" % hdr["MH_MAIN_ROWS"])
+    ok(how == ("blr", None) and cstr(cpu.r[3]) == hdr["MH_ENTRY_LABEL"] and cpu.written <= msg_ok,
+       "msg stub, 0xF000: \"%s\", in the data image, back to msg_string's caller" % hdr["MH_ENTRY_LABEL"])
+    for f in (0, 1):
+        good = True
+        for i in range(hdr["MH_MAIN_ROWS"]):
+            cpu, how = run("mh_msg_stub", {3: hdr["MH_MSG_ROW0"] + i}, {(front, 1): f})
+            good = good and how == ("blr", None) and cpu.r[3] == text0 + f * set_size + i * text_len and                 cpu.written <= msg_ok
+        ok(good, "msg stub, 0xF001 + i for each of the %d MAIN rows: row i of text set %d, the one on show "
+           "(mh_text(i))" % (hdr["MH_MAIN_ROWS"], f))
     for idn in (hdr["MH_MSG_ROW0"] + hdr["MH_MAIN_ROWS"], 0xF00F, 0xF010, 0xEFFF, 0x106, 0x522):
         cpu, how = run("mh_msg_stub", {3: idn, 4: 0x1234})
         ok(how == ("b", hdr["GAME_MSG_EXIT"]) and cpu.r[3] == idn and cpu.r[4] == 0 and cpu.written <= msg_ok,
@@ -1008,7 +1040,6 @@ def check_rac3(ok, elf, roots):
     hdr = header_defs(os.path.join(HERE, "mh_rac3.h"))
     box_defs = header_defs(MENUBOX)
     shim_defs = header_defs(SHIM_H)
-    shim_defs["ST_TEXT"] = shim_text_offset(hdr["MH_ROWS"])
     box, data, code, hooks, caves, core = parse_bins(GEN_C, "rac3")
     print("\nNPEA00387 console menu renderer")
     if box is None or data is None or code is None or core is None:
@@ -1294,13 +1325,13 @@ def check_rac3(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
-def shim_text_offset(rows):
-    """ST_TEXT for a renderer of `rows` mailbox rows (mh_shim.h)."""
-    st_kind = 0x38
-    st_flags = st_kind + rows
-    st_id = (st_flags + rows + 1) & ~1
-    st_title = (st_id + 2 * rows + 3) & ~3
-    return st_title + 0x24 + 0x44
+def shim_set_layout(shim_defs, rows):
+    """Text set 0's first row, from the state, and a set's size, for `rows` mailbox rows (mh_shim.h)."""
+    set_flags = shim_defs["SET_KIND"] + rows
+    set_id = (set_flags + rows + 1) & ~1
+    set_title = (set_id + 2 * rows + 3) & ~3
+    set_text = set_title + shim_defs["MH_TITLE_LEN"]
+    return shim_defs["ST_SET0"] + set_text, set_text + rows * shim_defs["MH_TEXT_LEN"]
 
 
 def find_up(rel):

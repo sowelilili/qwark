@@ -18,7 +18,7 @@
  * Moving between the two is the game's own way between screens: GoToScreen
  * to slot 36 again, whose stop ends the one widget and whose start begins the
  * other. There are two ways in: the pause main menu's Help row, which becomes
- * RACMAN and opens screen 36 instead of Help, and qwark's menu combo, through
+ * TRAINER and opens screen 36 instead of Help, and qwark's menu combo, through
  * GuiHud's own Start path. No row is added to any of the game's lists.
  *
  * Plain #defines and nothing else: build.sh reads the MH_* and OPD_* lines, and
@@ -91,9 +91,23 @@
 #define MH_RESTART_MAIN     0x00000000
 #define MH_RESTART_CFG      0x00000000
 
+/*
+ * Round 3: how long a screen going still draws once the next has started. The
+ * list's MenuMain_Stop is GuiSupport_CloseMenu, which clears bShown; the next
+ * GuiSupport_UpdateMenuWidgets (0x367DE0, the frame after) sets the list's
+ * container's visibility from bShown, so the old buttons draw at most a frame
+ * more (2 to be sure). The CONFIG page's thread clears its canvas layer in its
+ * deinit, before GuiMenu_StartNextScreen starts the next.
+ */
+#define MH_HOLD_MAIN        0x00000002
+#define MH_HOLD_CFG         0x00000000
+
+/* The Help row's label, in the capitals of the pause main menu (round 3: TRAINER for RACMAN). */
+#define MH_ENTRY_LABEL      "TRAINER"
+
 /* The core's state at the start of the data, then the shim's (SH_* below). */
 #define MH_STATE            0x017DF0C0
-#define MH_SHIM             0x017DFA78   /* MH_STATE + MH_CORE_SIZE, which mh_rac4.c checks */
+#define MH_SHIM             0x017DFA90   /* MH_STATE + MH_CORE_SIZE, which mh_rac4.c checks */
 #define MH_MAGIC            0x514D4834   /* 'QMH4' */
 
 /* ------------------------------------------------------- the writes it makes */

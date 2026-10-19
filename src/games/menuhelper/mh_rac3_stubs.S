@@ -18,15 +18,19 @@
 #define LIST_TABLE (MH_SHIM + SH_LIST_TABLE)
 #define LIST_COUNT (MH_SHIM + SH_LIST_COUNT)
 #define BAND       (MH_SHIM + SH_BAND)
-/* The core's row texts, less one: text id MH_MSG_ROW0 + i is row i. */
-#define TEXT_BASE  (MH_STATE + ST_TEXT - MH_TEXT_LEN)
+/*
+ * The core's row texts in text set 0, less one: text id MH_MSG_ROW0 + i is row
+ * i of the set on show, ST_FRONT's (round 3), MH_SET_SIZE further on for set 1.
+ */
+#define TEXT_BASE  (MH_STATE + ST_SET0 + SET_TEXT - MH_TEXT_LEN)
+#define FRONT      (MH_STATE + ST_FRONT)
 
 	.section ".text.entry","ax"
 	.align	2
 
 /*
  * MH_SITE_MSG, 0x14BCF0: msg_string(id), a leaf, begins with `lis r4,0`, which
- * becomes `b mh_msg_stub`. In: r3 = the id. 0xF000 is "RACMAN", the HELP row's
+ * becomes `b mh_msg_stub`. In: r3 = the id. 0xF000 is MH_ENTRY_LABEL, "TRAINER", the HELP row's
  * label; 0xF001 .. 0xF001 + MH_MAIN_ROWS - 1 are the core's rows of a MAIN
  * page, which the main pause's init asks for as it lays the menu's rows out.
  * Anything else goes on into msg_string with r4 set as the replaced
@@ -46,6 +50,10 @@ mh_msg_stub:
 1:	cmplwi	%r5,MH_MAIN_ROWS
 	bgt	2f
 	mulli	%r5,%r5,MH_TEXT_LEN
+	lis	%r3,FRONT@ha
+	lbz	%r4,FRONT@l(%r3)
+	mulli	%r4,%r4,MH_SET_SIZE
+	add	%r5,%r5,%r4
 	lis	%r3,TEXT_BASE@ha
 	addi	%r3,%r3,TEXT_BASE@l
 	add	%r3,%r3,%r5
@@ -179,4 +187,4 @@ name: \
 	.section ".rodata","a"
 	.globl	mh_help_text
 mh_help_text:
-	.asciz	"RACMAN"
+	.asciz	MH_ENTRY_LABEL

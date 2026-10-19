@@ -204,7 +204,7 @@ rac3_hooks() {
 		echo "$site $(blword "$site" "$at") $(need "$hdr" MH_ORIG_$name) bl $stub ($at)"
 	done
 	for t in 8 9A 9B; do
-		echo "$(need "$hdr" MH_SITE_HELP${t}_TEXT) $(printf '0x%08X' $(($(need "$hdr" MH_MSG_HELP)))) $(need "$hdr" MH_ORIG_HELP_TEXT) HELP row's text: RACMAN (table $t)"
+		echo "$(need "$hdr" MH_SITE_HELP${t}_TEXT) $(printf '0x%08X' $(($(need "$hdr" MH_MSG_HELP)))) $(need "$hdr" MH_ORIG_HELP_TEXT) HELP row's text: TRAINER (table $t)"
 		echo "$(need "$hdr" MH_SITE_HELP${t}_CB) $help_desc $(need "$hdr" MH_ORIG_HELP_CB) HELP row's callback: mh_help (table $t)"
 	done
 }

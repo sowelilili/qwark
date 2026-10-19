@@ -367,7 +367,7 @@ static u8 page_type(u16 page)
 
 	if (g_cfg_rows == 0) return MBOX_PTYPE_MAIN;
 	return (k == MENU_PAGE_GROUP || k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS ||
-	        k == MENU_PAGE_UNLOCK_CAT) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
+	        k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_UNLOCK_ACTIONS) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
 }
 
 /*
@@ -383,6 +383,11 @@ static int page_live(u16 page)
 	       k == MENU_PAGE_MANIPS || k == MENU_PAGE_UNLOCK_CAT;
 }
 
+/*
+ * Round 3: the root is the trainer, "Trainer" as qwark writes it, which each
+ * renderer cases as its game's lists ("TRAINER" in Deadlocked and UYA), the
+ * name of the pause-menu row that opens it.
+ */
 static const char *page_name(u8 kind)
 {
 	switch (kind) {
@@ -390,8 +395,23 @@ static const char *page_name(u8 kind)
 	case MENU_PAGE_MANIPS:  return "Manips";
 	case MENU_PAGE_UNLOCKS: return "Unlocks";
 	case MENU_PAGE_SAVES:   return "Save files";
-	default:                return "RaCMAN";
+	case MENU_PAGE_UNLOCK_ACTIONS:
+		return gmenu() != NULL && gmenu()->unlock_actions_title != NULL ? gmenu()->unlock_actions_title : "Unlocks";
+	default:                return "Trainer";
 	}
+}
+
+/* Whether the game puts the Unlocks page's actions on a page of their own (struct game_menu). */
+static int unlock_actions_page(void)
+{
+	const struct game_menu *gm = gmenu();
+	u8 i;
+
+	if (gm == NULL || gm->unlock_actions_title == NULL) return 0;
+	for (i = 0; i < gm->nunlock_actions; i++) {
+		if (feature(gm->unlock_actions[i]) != NULL) return 1;
+	}
+	return 0;
 }
 
 /* The save library's category with this place, into `out`; 0 when there is none. */
@@ -511,6 +531,12 @@ static u8 page_items(u16 page, u16 *ids)
 				if (j < g_ul.n) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_UCAT, i));
 			}
 		}
+		/* Round 3: the actions on a page of their own where the game names one, one row for it here. */
+		if (unlock_actions_page())
+			return push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_UNLOCK_ACTIONS));
+		/* fall through */
+	case MENU_PAGE_UNLOCK_ACTIONS:
+		if (page_kind(page) == MENU_PAGE_UNLOCK_ACTIONS && !unlock_actions_page()) return n;
 		if (gm != NULL) {
 			for (i = 0; i < gm->nunlock_actions; i++) {
 				if (feature(gm->unlock_actions[i]) != NULL)
@@ -595,6 +621,28 @@ static u8 steps(void)
 
 static const char *const g_toggle_text[3] = { "Off", "On", "Auto" };
 
+/*
+ * Round 3, what a native slider needs: a VALUE whose range is narrower than
+ * its 32-bit field (explicit bounds, or an 8- or 16-bit field) is flagged
+ * MROWF_RANGE and carries its value, its bounds and its step as numbers, its
+ * label held to the 23 characters such a row leaves room for; one whose range
+ * spans MENU_SLIDER_SPAN or fewer is MROWF_SLIDER as well.
+ */
+static void value_range_row(const struct feature_desc *f, struct menu_row *r)
+{
+	s64 lo, hi;
+
+	value_range(f, &lo, &hi);
+	if (hi - lo >= (s64)0xFFFFFFFFll) return;
+	r->flags |= MROWF_RANGE;
+	if (hi - lo <= MENU_SLIDER_SPAN) r->flags |= MROWF_SLIDER;
+	r->range[0] = (u32)value_number(f, feature_value(f));
+	r->range[1] = (u32)lo;
+	r->range[2] = (u32)hi;
+	r->range[3] = g_pow10[f->id < QWARK_MAX_FEATURES ? g_step[f->id] : 0];
+	memset(r->label + MROW_RANGE_LABEL - 1, 0, sizeof(r->label) - (MROW_RANGE_LABEL - 1));
+}
+
 static void feature_row(const struct feature_desc *f, struct menu_row *r)
 {
 	const char * const *opts;
@@ -631,6 +679,7 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 		else
 			row(r, MROW_INFO, 0, f->label, NULL, NULL);
 		value_text(f, r->value, sizeof(r->value));
+		if (r->kind == MROW_VALUE) value_range_row(f, r);
 		break;
 	case FEATURE_ENUM:
 		count = enum_options(f, &opts);
@@ -1013,6 +1062,11 @@ void menu_model_reset(u8 max_rows, u8 cfg_rows, u8 caps)
 	g_ul.ok = 0;
 }
 
+void menu_model_home(void)
+{
+	nav_reset();
+}
+
 u16 menu_model_page(void)
 {
 	return g_nav[g_depth - 1].page;
@@ -1366,6 +1420,8 @@ static u32  g_posted_crc;
 static int  g_posted;
 static u32  g_last_ack;
 static u8   g_hstate;
+/* The renderer's frame count when last read: it starts again from 0 at each opening. */
+static u32  g_frames;
 static u32  g_last_poll;
 static u32  g_last_build;
 static u8   g_req;
@@ -1471,6 +1527,10 @@ static void post(int force)
 		r[MROW_OFF_FLAGS] = v->rows[i].flags;
 		be16_put(r + MROW_OFF_ID, v->rows[i].id);
 		memcpy(r + MROW_OFF_LABEL, v->rows[i].label, MROW_LABEL_LEN);
+		if ((v->rows[i].flags & MROWF_RANGE) != 0) {
+			u8 k;
+			for (k = 0; k < 4; k++) be32_put(r + MROW_OFF_RANGE + 4u * k, v->rows[i].range[k]);
+		}
 		memcpy(r + MROW_OFF_VALUE, v->rows[i].value, MROW_VALUE_LEN);
 		if (g_row_size >= MBOX_ROW_SIZE_DESC)
 			memcpy(r + MROW_OFF_DESC, v->rows[i].desc, MROW_DESC_LEN);
@@ -1613,6 +1673,7 @@ static int install(void)
 	    mem_write_u32(box(MBOX_OFF_EV_ACK), g_last_ack) != ST_OK)
 		return ST_IO_ERROR;
 	g_hstate = head[MBOX_OFF_HSTATE];
+	g_frames = be32_get(head + MBOX_OFF_FRAMES);
 
 	{
 		u8 rows = head[MBOX_OFF_MAX_ROWS], cfg = head[MBOX_OFF_CFG_ROWS];
@@ -1740,7 +1801,7 @@ static void defer_notify(const char *what, const char *why)
 {
 	char msg[96];
 
-	qstrcpy(msg, sizeof(msg), "RaCMAN: ");
+	qstrcpy(msg, sizeof(msg), "Trainer: ");
 	qstrcat(msg, sizeof(msg), g_defer.label);
 	qstrcat(msg, sizeof(msg), what);
 	qstrcat(msg, sizeof(msg), why);
@@ -1788,7 +1849,7 @@ static void serve(void)
 {
 	u8 head[MBOX_READ_HEAD];
 	u32 tick = now_tick();
-	u32 ev;
+	u32 ev, frames;
 	int dirty = 0;
 	u8 hstate;
 
@@ -1808,11 +1869,25 @@ static void serve(void)
 		return;
 	}
 
+	/*
+	 * Round 3: whenever the menu closes, the next open starts at the root, the
+	 * cursor on its first row, from the game's row and the combo alike: the
+	 * stack goes back to the root as qwark sees it close, and the root is in
+	 * the mailbox before it can open again. An opening qwark did not see the
+	 * close before (the renderer's frame count back near 0 with the menu up
+	 * all along) goes back to the root too, a moment late.
+	 */
 	hstate = head[MBOX_OFF_HSTATE];
+	frames = be32_get(head + MBOX_OFF_FRAMES);
 	if (hstate != g_hstate) {
 		g_hstate = hstate;
-		if (hstate == MBOX_HSTATE_OPEN) dirty = 1;
+		if (hstate == MBOX_HSTATE_CLOSED) menu_model_home();
+		dirty = 1;
+	} else if (hstate == MBOX_HSTATE_OPEN && frames < g_frames) {
+		menu_model_home();
+		dirty = 1;
 	}
+	g_frames = frames;
 
 	if (g_req != 0) {
 		if (head[MBOX_OFF_REQUEST] == MBOX_REQ_NONE) {
@@ -1892,12 +1967,12 @@ void menu_combo(void)
 {
 	if (g_state == MENU_OFF || g_mh == NULL) {
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
-		            ? "RaCMAN menu: not available in this game yet"
-		            : "RaCMAN menu: not available under RPCS3");
+		            ? "Trainer menu: not available in this game yet"
+		            : "Trainer menu: not available under RPCS3");
 		return;
 	}
 	if (!enabled()) {
-		unavailable(WHY_OFF, "RaCMAN menu: switched off (menu.enabled = 0 in config.txt)");
+		unavailable(WHY_OFF, "Trainer menu: switched off (menu.enabled = 0 in config.txt)");
 		return;
 	}
 	if (g_state == MENU_REMOVING) g_state = MENU_READY;
@@ -1910,7 +1985,7 @@ void menu_combo(void)
 	 */
 	if (g_state != MENU_READY && !try_install()) {
 		if (g_state == MENU_REFUSED)
-			unavailable(WHY_REFUSED, "RaCMAN menu: another mod holds the menu's hooks");
+			unavailable(WHY_REFUSED, "Trainer menu: another mod holds the menu's hooks");
 		return;
 	}
 

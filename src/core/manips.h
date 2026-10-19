@@ -9,8 +9,10 @@
  * file applies them:
  *
  *   setup    once per game boot: at the first compatible file load after the
- *            boot or after the selection, or straight away when the group is
- *            selected while a compatible file is in play.
+ *            boot or after the selection, and by Apply now. (Build 53 also
+ *            put it in straight away when the group was selected with a
+ *            compatible file in play; build 54 does not: a selection writes
+ *            nothing until the next run starts.)
  *   per-run  on every file load (a save loaded, a new game started) while
  *            auto-reset is on, and by Apply now.
  *

@@ -4908,17 +4908,21 @@ static void test_manip_semantics(void)
 	check(mt_log_matches(any, 0, any->n), "a fresh file load runs the any% reset");
 	check(r2_word(R2M_PAD) == 0x41500000u, "which puts the jump pad back to 13.0");
 
+	seq = manips_event_seq();
 	check(manips_select(2) == ST_OK, "NG+ selected again, on a fresh file");
 	check(r2_word(R2M_PAD) == 0x41500000u, "nothing is written onto a fresh file");
-	check(manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE && manips_event_group() == 2,
-	      "the selection's setup is refused: not a challenge mode file");
+	check(manips_event_seq() == seq,
+	      "nor checked, nor refused: build 54 writes nothing at a selection (the user's call, round 3)");
 	mt_put_counter(g, 3);
 	host_write_log_reset();
 	check(manips_select(2) == ST_OK, "selecting the same group again");
 	check_eq_u64(host_write_log_count(), 0, "does nothing at all");
 	check(manips_select(0) == ST_OK && manips_select(2) == ST_OK,
 	      "None and back to NG+ while a challenge-mode file is in play");
-	check(r2_word(R2M_PAD) == 0x41C80000u, "puts the setup in straight away");
+	check(r2_word(R2M_PAD) == 0x41500000u && host_write_log_count() == 0 && manips_event_seq() == seq &&
+	      !manips_setup_done(), "writes nothing either: the setup is due at the start of the next run");
+	manips_file_loaded();
+	check(r2_word(R2M_PAD) == 0x41C80000u, "which puts it in");
 	check(manips_event_kind() == MANIP_EVENT_APPLIED,
 	      "already announced this boot, so it is recorded as applied");
 	host_write_log_reset();
@@ -5001,12 +5005,14 @@ static void test_manip_semantics(void)
 	mt_put_counter(g, 0);
 	host_write_log_reset();
 	check(manips_select(6) == ST_OK, "NG+ No Specials selected on a fresh file");
-	check(mt_log_matches(&mt_rac2[5], 0, mt_rac2[5].nsetup),
-	      "No Specials skips the check: its setup goes in on a counter of 0");
+	check_eq_u64(host_write_log_count(), 0, "writes nothing at the selection");
+	manips_file_loaded();
+	check(mt_log_matches(&mt_rac2[5], 0, mt_rac2[5].n),
+	      "No Specials skips the check: the file load puts its setup in on a counter of 0, and M");
 	host_write_log_reset();
 	manips_file_loaded();
 	check(mt_log_matches(&mt_rac2[5], mt_rac2[5].nsetup, mt_rac2[5].n),
-	      "and a file load writes M without the shortcut cursor");
+	      "and the next file load writes M without the shortcut cursor");
 	mt_put_counter(g, 255);
 	host_write_log_reset();
 	manips_file_loaded();
@@ -5316,11 +5322,10 @@ static void test_manip_trigger_rac4(void)
 	group("manip trigger: Deadlocked, a refusal on a fresh file");
 
 	mt_put_counter(&mt_games[3], 0);
+	seq = manips_event_seq();
 	check(manips_select(0) == ST_OK && manips_select(1) == ST_OK,
 	      "NG+ selected again, on a fresh file");
-	check(manips_event_kind() == MANIP_EVENT_NOT_CHALLENGE,
-	      "its setup is refused there straight away");
-	seq = manips_event_seq();
+	check(manips_event_seq() == seq, "nothing checked at the selection (build 54)");
 	r4t_tutorial(0x00);                       /* a new game's reset */
 	pump(3);
 	check(manips_event_seq() == (u16)(seq + 1) &&

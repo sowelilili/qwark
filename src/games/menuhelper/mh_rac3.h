@@ -27,7 +27,7 @@
  * page that is new or has another number of rows starts the menu's screen again
  * on the other GuiState (MH_RESTART_*), as the game's own screens are started.
  *
- * Two ways in, as in Deadlocked: the main pause's HELP row, which says RACMAN
+ * Two ways in, as in Deadlocked: the main pause's HELP row, which says TRAINER
  * and starts the menu, and qwark's combo, through the mode 0 update's Start
  * path and the pause launcher. No row is added to any of the game's lists.
  *
@@ -77,14 +77,14 @@
 /*
  * The game's own casing: every menu of its pause is in capitals (the user's
  * call, from probe N3b: "all caps throughout"). Actions with nothing to say
- * show "..." on a CONFIG page, a choice "< VALUE >", as N3b's did, and the
+ * show "..." on a CONFIG page, as N3b's did, a choice its bare value (round 3), and the
  * current option of a list is marked with a star.
  */
 #define MH_CASE_MAIN        0x00000001   /* MH_CASE_UPPER */
 #define MH_CASE_HEAD        0x00000001
 #define MH_CASE_LABEL       0x00000001
 #define MH_CASE_VALUE       0x00000001
-#define MH_STYLE            0x0000000B   /* MH_STYLE_DOTS | MH_STYLE_ARROWS | MH_STYLE_STAR */
+#define MH_STYLE            0x00000009   /* MH_STYLE_DOTS | MH_STYLE_STAR */
 #define MH_MAIN_SEP         ": "
 
 /* Half a second at the pause's sixty frames. */
@@ -99,9 +99,19 @@
 #define MH_RESTART_MAIN     0x00000003   /* MH_SHOW_NEW | MH_SHOW_ROWS */
 #define MH_RESTART_CFG      0x00000003
 
+/*
+ * Round 3: nothing of a screen going draws once the next has started: the
+ * thread runner ends the one (its deinit) before it starts the other.
+ */
+#define MH_HOLD_MAIN        0x00000000
+#define MH_HOLD_CFG         0x00000000
+
+/* The HELP row's label, in the main pause's capitals (round 3: TRAINER for RACMAN). */
+#define MH_ENTRY_LABEL      "TRAINER"
+
 /* The core's state at the start of the data, then the shim's (SH_* below). */
 #define MH_STATE            0x01ADC900
-#define MH_SHIM             0x01ADD2B8   /* MH_STATE + MH_CORE_SIZE, which mh_rac3.c checks */
+#define MH_SHIM             0x01ADD2D0   /* MH_STATE + MH_CORE_SIZE, which mh_rac3.c checks */
 #define MH_MAGIC            0x514D4833   /* 'QMH3' */
 
 /* ------------------------------------------------------- the writes it makes */
@@ -111,11 +121,11 @@
  * executable). qwark installs them in this order, after the caves, and takes
  * them out in the reverse order: the label hook, the three row counts, the
  * Start path's three, then the HELP rows' six, so a HELP row can only say
- * RACMAN once the label hook answers and only start a screen that is already
+ * TRAINER once the label hook answers and only start a screen that is already
  * the menu's.
  *
  * MH_SITE_MSG      msg_string's first word, `lis r4,0`: `b mh_msg_stub`, which
- *                  answers text id 0xF000 with "RACMAN" and 0xF001 + i with
+ *                  answers text id 0xF000 with "TRAINER" and 0xF001 + i with
  *                  the core's row i, and sends every other id on into
  *                  msg_string (probes N3 and N3b).
  * MH_SITE_ROWS8 .. the main pause init's three `li r6,n`, the row count after
@@ -136,7 +146,7 @@
  *                  reason 1: `bl mh_launch_stub`, the menu's GuiState in place
  *                  of the main pause when the flag is up (N3).
  * MH_SITE_HELP*    in each of the main pause's three tables, the HELP row's
- *                  text id and its callback: 0xF000 ("RACMAN") and the shim's
+ *                  text id and its callback: 0xF000 ("TRAINER") and the shim's
  *                  mh_help, which starts the menu over the main pause.
  */
 #define MH_SITE_MSG         0x0014BCF0   /* lis r4,0, word 0x3C800000 */
@@ -167,7 +177,7 @@
 #define MH_BAND_OFF9A       0x000029D8
 #define MH_BAND_OFF9B       0x000029E0
 
-/* The text ids the msg hook answers: RACMAN, then the rows of a MAIN page. */
+/* The text ids the msg hook answers: TRAINER, then the rows of a MAIN page. */
 #define MH_MSG_BASE         0x0000F000
 #define MH_MSG_HELP         0x0000F000
 #define MH_MSG_ROW0         0x0000F001

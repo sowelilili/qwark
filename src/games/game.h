@@ -288,6 +288,16 @@ struct game_menu {
 	 * the game has no such action.
 	 */
 	void (*action_status)(u8 id, u32 word, char *out, u32 cap);
+
+	/*
+	 * Round 3: where the Unlocks page's actions go. NULL lists them on the
+	 * Unlocks page under its categories, as buttons (Deadlocked's two weapon
+	 * buttons); a name moves them all onto a CONFIG page of that name, reached
+	 * from one row after the categories, so their long labels sit in its label
+	 * column (UYA's six, "Collectables", the client's Unlocks tab for the skill
+	 * point and titanium bolt ones). RaC1 and RaC2 do the same with theirs.
+	 */
+	const char *unlock_actions_title;
 };
 
 /* Build 53: what struct game_api's savefile_ready is asked about. */

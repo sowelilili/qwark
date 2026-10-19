@@ -60,7 +60,7 @@
 #define MBOX_OFF_REQUEST    0x0D   /* u8 MBOX_REQ_*            qwark sets, renderer clears */
 #define MBOX_OFF_RENDERER   0x0E   /* u8 the renderer's game id (4 Deadlocked) install */
 #define MBOX_OFF_CFG_ROWS   0x0F   /* u8 the same on a CONFIG page, 0 for none  renderer */
-#define MBOX_OFF_FRAMES     0x10   /* u32 frames the menu has been up         renderer */
+#define MBOX_OFF_FRAMES     0x10   /* u32 frames the menu has been up since it opened  renderer */
 #define MBOX_OFF_EV_SEQ     0x14   /* u32 bumped after the record below       renderer */
 #define MBOX_OFF_EV_KIND    0x18   /* u8 MBOX_EV_*                            renderer */
 #define MBOX_OFF_EV_ROW     0x19   /* u8 the row's index in the page          renderer */
@@ -103,6 +103,17 @@
 #define MROW_VALUE_LEN      20
 #define MROW_DESC_LEN       64
 
+/*
+ * Round 3: a VALUE row flagged MROWF_RANGE has a label of 23 characters at
+ * most, terminated inside its first 24 bytes, and the label's last 16 bytes
+ * hold four big-endian words for a native slider: the value, the lowest, the
+ * highest and the step Left and Right move it by. (value - lowest) and
+ * (highest - lowest), modulo 2^32, are the distances along the bar whatever
+ * the field's sign.
+ */
+#define MROW_OFF_RANGE      0x1C   /* u32[4], MROWF_RANGE rows only */
+#define MROW_RANGE_LABEL    24     /* such a row's label, with its NUL */
+
 /* Row kinds: what the row is, for a renderer that draws them differently. */
 #define MROW_INFO           0      /* read-only text */
 #define MROW_LINK           1      /* opens another page */
@@ -120,6 +131,8 @@
 #define MROWF_ON            0x02   /* active: a toggle that is on, the current option */
 #define MROWF_STEPS         0x04   /* Left and Right do something on this row */
 #define MROWF_CLOSES        0x08   /* activating it closes the menu before it acts */
+#define MROWF_RANGE         0x10   /* a VALUE with bounds: its four words at MROW_OFF_RANGE */
+#define MROWF_SLIDER        0x20   /* and few enough steps from end to end for a bar (with RANGE) */
 
 /* -------------------------------------------------------- the other fields */
 

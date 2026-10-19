@@ -339,6 +339,12 @@ UYA_PENDING_MODE = 0x00C1E840
 # Deadlocked's pad mask (src/games/rac4.h RAC4_INPUTS), for a combo under RPCS3.
 RAC4_PAD_MASK = 0x00B11F30
 MBOX_OFF_HSTATE = 0x0C
+MBOX_OFF_FRAMES = 0x10
+MBOX_OFF_CURSOR = 0x2D
+MROW_OFF_FLAGS = 0x01
+MROW_OFF_RANGE = 0x1C
+MROWF_RANGE = 0x10
+MROWF_SLIDER = 0x20
 MBOX_OFF_REQUEST = 0x0D
 MBOX_OFF_EV_SEQ = 0x14
 MBOX_OFF_EV_KIND = 0x18
@@ -2393,9 +2399,9 @@ def exercise_console_menu(c, sim):
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
 
     page = menu_page(c)
-    check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
+    check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
           page[3][:3] == ["Game", "Cheats", "Planets"],
-          "Deadlocked menu: the root page is posted", page[:4] if page else None)
+          "Deadlocked menu: the root page is posted, titled Trainer", page[:4] if page else None)
 
     check(menu_event(c, MBOX_EV_ACTIVATE, 1),
           "Deadlocked menu: an event written into the mailbox is acked")
@@ -2407,7 +2413,27 @@ def exercise_console_menu(c, sim):
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back is acked")
     time.sleep(0.1)
     page = menu_page(c)
-    check(page is not None and page[2] == "RaCMAN", "Deadlocked menu: and the root is back",
+    check(page is not None and page[2] == "Trainer", "Deadlocked menu: and the root is back",
+          page[2] if page else None)
+
+    # Round 3: Game's Challenge mode carries a slider's numbers; closing the menu puts the root back.
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")
+    time.sleep(0.1)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 0), "Deadlocked menu: Game")
+    time.sleep(0.1)
+    page = menu_page(c)
+    body = page[4] if page else b""
+    i = page[3].index("Challenge mode") if page and "Challenge mode" in page[3] else -1
+    r = MBOX_OFF_ROWS + i * MBOX_ROW_SIZE
+    words = struct.unpack(">IIII", body[r + MROW_OFF_RANGE:r + MROW_OFF_RANGE + 16]) if i >= 0 else None
+    check(i >= 0 and body[r + MROW_OFF_FLAGS] & (MROWF_RANGE | MROWF_SLIDER) == (MROWF_RANGE | MROWF_SLIDER) and
+          words[1:] == (0, 255, 1),
+          "Deadlocked menu: Challenge mode's row says slider, with its value, 0, 255 and step 1", words)
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
+    time.sleep(0.2)
+    page = menu_page(c)
+    check(page is not None and page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == 0,
+          "Deadlocked menu: the renderer saying closed puts the root back, the cursor on its first row",
           page[2] if page else None)
 
     # The combo asks the renderer to open, also with every combo switched off.
@@ -2493,7 +2519,7 @@ def exercise_console_menu_uya(c, sim):
           body.hex() if status == ST_OK else status)
 
     page = menu_page(c, box, size, rs)
-    check(page is not None and page[0] % 2 == 0 and page[2] == "RaCMAN" and
+    check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
           page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
           "UYA menu: the root page is posted, the design's six and the build", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "UYA menu: an event is acked")
@@ -2511,6 +2537,26 @@ def exercise_console_menu_uya(c, sim):
     check(page is not None and "Reset trophies" in page[3] and "Trophy reset" in page[3],
           "UYA menu: Manips lists the trophy reset with its status", page[3] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "UYA menu: back again")
+    time.sleep(0.1)
+    # Round 3: Unlocks' six buttons on a page of their own, Collectables.
+    check(menu_event(c, MBOX_EV_ACTIVATE, 4, box, size, rs), "UYA menu: Unlocks")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[3] == ["Weapons", "Gadgets and items", "Vid comics", "Collectables"],
+          "UYA menu: Unlocks is the three categories and Collectables", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: Collectables")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Collectables" and page[5] == MBOX_PTYPE_CONFIG and len(page[3]) == 6 and
+          page[3][0] == "Max all weapon levels" and page[3][5] == "Reset all titanium bolts",
+          "UYA menu: a CONFIG page of the six buttons", page[2:4] if page else None)
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
+    time.sleep(0.1)
+    mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
+    time.sleep(0.2)
+    page = menu_page(c, box, size, rs)
+    check(page is not None and page[2] == "Trainer", "UYA menu: closed, the root is back",
+          page[2] if page else None)
     check(combo() == 1, "UYA menu: the menu combo asks the renderer to open")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 

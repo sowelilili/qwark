@@ -122,7 +122,7 @@ mh_screen_stub:
  * MH_SITE_HELP_LABEL, 0x3A649C in MenuMain_StartMain: the pause main menu's
  * Help row takes its label from `bl msg_string` with the row's text id; the
  * call becomes a call to mh_help_label, a leaf that answers the menu's label
- * instead, "RACMAN" in the capitals of that list. msg_string is a pure lookup
+ * instead, MH_ENTRY_LABEL, "TRAINER" in the capitals of that list. msg_string is a pure lookup
  * and the code after it reloads every register but r3 (the label), so nothing
  * else is missed. The row's callback is the game's Help callback, whose
  * `li r4,30` (MH_SITE_HELP_SCREEN) the install makes 36: it saves the main
@@ -137,4 +137,4 @@ mh_help_label:
 	.section ".rodata","a"
 	.globl	mh_help_text
 mh_help_text:
-	.asciz	"RACMAN"
+	.asciz	MH_ENTRY_LABEL

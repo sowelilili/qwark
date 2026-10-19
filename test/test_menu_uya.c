@@ -140,8 +140,8 @@ static u32 game_msg(u32 id)
 {
 	if ((id & ~0xFu) == MH_MSG_BASE) {
 		u32 i = id & 0xF;
-		if (i == 0) return MSG_AT;                     /* "RACMAN" */
-		if (i <= MH_MAIN_ROWS) return MH_STATE + ST_TEXT + (i - 1) * MH_TEXT_LEN;
+		if (i == 0) return MSG_AT;                     /* "TRAINER" */
+		if (i <= MH_MAIN_ROWS) return mh_text(i - 1);  /* the set on show (round 3) */
 	}
 	return id == 0x106 ? MSG_AT + 0x10 : MSG_AT + 0x20; /* "HELP", "ROW" */
 }
@@ -558,10 +558,10 @@ static void test_model_uya(void)
 	                                       "Quick-select pause" };
 	static const char * const manips[] = { "Category", "Auto-reset", "Remember", "Apply now", "Reset trophies",
 	                                       "Trophy reset", "Reset trophies on Veldin load" };
-	static const char * const unlocks[] = { "Weapons", "Gadgets and items", "Vid comics", "Max all weapon levels",
-	                                        "Reset all weapon levels", "Unlock all skill points",
-	                                        "Reset all skill points", "Unlock all titanium bolts",
-	                                        "Reset all titanium bolts" };
+	static const char * const unlocks[] = { "Weapons", "Gadgets and items", "Vid comics", "Collectables" };
+	static const char * const collectables[] = { "Max all weapon levels", "Reset all weapon levels",
+	                                             "Unlock all skill points", "Reset all skill points",
+	                                             "Unlock all titanium bolts", "Reset all titanium bolts" };
 	struct menu_view v;
 	const struct menu_row *r;
 	u8 i;
@@ -625,11 +625,19 @@ static void test_model_uya(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Unlocks: the categories and the six buttons; the values LOCKED, UNLOCKED, MAX. */
+	/* Unlocks: the categories and a page of the six buttons; the values LOCKED, UNLOCKED, MAX. */
 	act(&v, MBOX_EV_ACTIVATE, "Unlocks");
-	check(labels_are(&v, unlocks, 9) && v.ptype == MBOX_PTYPE_MAIN,
-	      "Unlocks: Weapons, Gadgets and items, Vid comics, the weapon level buttons and the Collectables ones, "
-	      "nine rows, one window");
+	check(labels_are(&v, unlocks, 4) && v.ptype == MBOX_PTYPE_MAIN && v.rows[3].kind == MROW_LINK,
+	      "round 3: Unlocks is Weapons, Gadgets and items, Vid comics and a link, Collectables");
+	act(&v, MBOX_EV_ACTIVATE, "Collectables");
+	check(labels_are(&v, collectables, 6) && v.ptype == MBOX_PTYPE_CONFIG && strcmp(v.title, "Collectables") == 0 &&
+	      v.rows[0].kind == MROW_ACTION && v.rows[5].kind == MROW_ACTION,
+	      "Collectables: a CONFIG page of the six buttons, their long labels in its label column");
+	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all skill points") == ST_OK &&
+	      strcmp(value_of(&v, "Unlock all skill points"), "done") == 0, "each runs, and says done");
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+	check(labels_are(&v, unlocks, 4) && v.cursor == 3, "back: Unlocks, the cursor on Collectables");
 	act(&v, MBOX_EV_ACTIVATE, "Weapons");
 	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 16 && v.rows[15].kind == MROW_MORE && strcmp(v.title, "Weapons 1/2") == 0,
 	      "Weapons: twenty, fifteen and More in a page of sixteen");
@@ -714,8 +722,8 @@ static void test_install_uya(void)
 			if (a == MH_CAVE) at_code = k;
 			if (a == MH_SITE_MSG && first_hook == 999) first_hook = k;
 		}
-		check(at_code < first_hook && n <= 24 && bytes <= 16u * 1024u,
-		      "the caves before the words: twenty-two writes, under 16 KB");
+		check(at_code < first_hook && n <= 24 && bytes <= 18u * 1024u,
+		      "the caves before the words: twenty-two writes, under 18 KB");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
@@ -724,7 +732,7 @@ static void test_install_uya(void)
 	      peek8(mb + MBOX_OFF_CFG_ROWS) == 16 && peek8(mb + MBOX_OFF_RENDERER) == 3,
 	      "the mailbox: sixteen rows of 0x40, nine a MAIN page, sixteen a CONFIG page, renderer 3");
 	check(peek32(MH_SITE_HELP8_TEXT) == 0xF000 && peek32(MH_SITE_HELP9A_TEXT) == 0xF000 &&
-	      peek32(MH_SITE_HELP9B_TEXT) == 0xF000, "each table's HELP row says RACMAN");
+	      peek32(MH_SITE_HELP9B_TEXT) == 0xF000, "each table's HELP row says TRAINER");
 
 	/* menu.enabled = 0: every word back once the menu is down and the pause closed. */
 	config_set_u32("menu.enabled", 0);
@@ -816,7 +824,7 @@ static void test_renderer_uya(void)
 	poke32(U_CONFIRM_MASK, 0x40);
 	poke32(U_GAME_PTR, U_GAME_STATE);
 	poke32(U_PLANET, 5);
-	put_str(MSG_AT, "RACMAN");
+	put_str(MSG_AT, "TRAINER");
 	put_str(MSG_AT + 0x10, "HELP");
 	put_str(MSG_AT + 0x20, "ROW");
 	for (i = 0; i < 1000 && menu_state() != MENU_READY; i++) tick(1);
@@ -824,15 +832,15 @@ static void test_renderer_uya(void)
 	check(menu_state() == MENU_READY, "the renderer is in");
 	mb = menu_mailbox();
 
-	/* The HELP row: RACMAN in its place, opening the menu over the main pause. */
+	/* The HELP row: TRAINER in its place, opening the menu over the main pause. */
 	play_frame(1);
 	check(G.paused && G.active == MAIN_GS && G.main_up && G.table == GAME_TABLE8 && G.count == 8 &&
-	      strcmp(row_text(6, a), "RACMAN") == 0 && strcmp(row_text(5, b), "ROW") == 0,
-	      "Start: the game's main pause, eight rows, the seventh RACMAN where HELP was");
+	      strcmp(row_text(6, a), "TRAINER") == 0 && strcmp(row_text(5, b), "ROW") == 0,
+	      "Start: the game's main pause, eight rows, the seventh TRAINER where HELP was");
 	w32(U_CURSOR, 6);
 	pframe(0x40);
 	check(G.pending == MH_SHIM + SH_GS && r32(MAIN_GS) == 0 && r8(MH_SHIM + SH_FROM_HELP) == 1,
-	      "the cross on RACMAN: the menu's GuiState queued, the main pause reset as after HELP");
+	      "the cross on TRAINER: the menu's GuiState queued, the main pause reset as after HELP");
 	pframe(0);
 	check(G.active == MH_SHIM + SH_GS && G.main_up && G.table == MH_SHIM + SH_ROWS && G.count == 7 &&
 	      r32(MH_SHIM + SH_UP) == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
@@ -848,7 +856,7 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(G.active == MAIN_GS && G.table == GAME_TABLE8 && r32(U_CURSOR) == 6 && r32(MH_SHIM + SH_UP) == 0 &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
-	      "the main pause again, its cursor back on RACMAN, the menu down");
+	      "the main pause again, its cursor back on TRAINER, the menu down");
 	G.closing = 1;
 	pframe(0);
 	pframe(0);
@@ -872,6 +880,9 @@ static void test_renderer_uya(void)
 	tick(2);
 	pframe(0);
 	check(G.pending == MH_SHIM + SH_GS + MH_GS_SIZE, "the CONFIG page: the other GuiState queued");
+	check(strcmp(row_text(0, a), "GAME") == 0 && strcmp(row_text(1, b), "CHEATS") == 0 &&
+	      strcmp(row_text(6, a), "QWARK BUILD 54") == 0,
+	      "round 3: the frame it draws before the runner swaps still reads the root's rows, not the Cheats page");
 	pframe(0);
 	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 5 && G.vis == 5 &&
 	      G.cols == 2 && G.aligned == 2 && G.set_cursor >= 1,
@@ -936,10 +947,12 @@ static void test_renderer_uya(void)
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "the grid freed, the frame gone, the menu down");
 	tick(4);
 
-	/* The combo again opens on that page; again closes it, through the close request. */
+	/* Round 3: the combo opens on the root, not on that page; again, it closes, through the close request. */
+	check(menu_model_depth() == 1, "closed, qwark's stack is back on the root");
 	press(COMBO_MENU_DEFAULT);
 	play_frame(0);
-	check(G.active == MH_SHIM + SH_GS && G.built && G.rows == 11, "the combo opens the menu on GAME again");
+	check(G.main_up && !G.built && G.count == 7 && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
+	      "the combo opens the menu on the root, the cursor on its first row, not on GAME");
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo with it up asks it to close");
@@ -948,15 +961,35 @@ static void test_renderer_uya(void)
 	check(!G.paused && peek8(mb + MBOX_OFF_REQUEST) == 0 && !G.built, "which its next frame does");
 	tick(4);
 
-	/* A page with no row the cursor may land on: the main pause's list must not loop. */
-	press(COMBO_MENU_DEFAULT);
-	play_frame(0);
+	/* The HELP row after a close deep in the menu: the root too, the cursor on its first row. */
+	play_frame(1);
+	w32(U_CURSOR, 6);
+	pframe(0x40);
+	pframe(0);
+	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
+	      "TRAINER from the pause opens the root, the cursor on GAME");
 	tick(4);
-	pframe(PADB_TRIANGLE);
+	w32(U_CURSOR, 4);
+	pframe(0x40);
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.main_up && G.count == 7, "back on the root");
+	check(G.main_up && strcmp(row_text(0, a), "WEAPONS") == 0 && strcmp(row_text(3, b), "COLLECTABLES") == 0 &&
+	      G.count == 4, "UNLOCKS: WEAPONS .. COLLECTABLES, four rows that fit the list");
+	G.closing = 1;
+	pframe(0);
+	pframe(0);
+	check(!G.paused, "Start closes the pause from it");
+	tick(4);
+	play_frame(1);
+	w32(U_CURSOR, 6);
+	pframe(0x40);
+	pframe(0);
+	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0, "and TRAINER opens the root again");
+	tick(4);
+
+	/* A page with no row the cursor may land on: the main pause's list must not loop. */
+	check(G.main_up && G.count == 7, "on the root");
 	{
 		u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r = mb + MBOX_OFF_ROWS;
 		u8 page[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY + MBOX_ROW_SIZE];

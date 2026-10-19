@@ -1339,8 +1339,9 @@ static const struct game_manips rac3_manips = {
  * ship colour are the client's Cosmetics, and the QE offset and vendor QE its
  * Debug page, which the menu leaves out. The weapon level buttons are the
  * client's Unlocks panel buttons and the skill point and titanium bolt ones its
- * Collectables tab, beside the unlock table, so the Unlocks page lists them
- * under its categories. The trophy reset is MANIP_LIST's "Trophies" header,
+ * Collectables tab, beside the unlock table. Round 3 moves all six off the
+ * Unlocks page, whose main pause list they ran past, onto a CONFIG page of
+ * buttons, COLLECTABLES, after the client's tab and the user's word for them. The trophy reset is MANIP_LIST's "Trophies" header,
  * which the Manips page lists with its status (rac3_menu_status).
  */
 static const u8 rac3_menu_game[] = {
@@ -1419,7 +1420,8 @@ static const struct game_menu rac3_menu = {
 	1, "V",
 	NULL,                 /* every planet with a name: the plain list, in rac3_planet_order */
 	rac3_unlock_levels,
-	rac3_menu_status
+	rac3_menu_status,
+	"Collectables"        /* the six buttons on a page of their own (round 3) */
 };
 
 /* ---------------------------------------------------------------- vtable */
