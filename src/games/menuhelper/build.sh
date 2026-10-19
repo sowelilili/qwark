@@ -281,8 +281,8 @@ rac1_entry() { echo mh_text_stub; }
 
 rac1_ldflags() { :; }
 
-# The shim's second file: the CONFIG widget.
-rac1_extra() { echo mh_rac1_cfg; }
+# The shim's other files: the CONFIG widget and the planet picker.
+rac1_extra() { echo mh_rac1_cfg mh_rac1_pick; }
 
 rac1_hooks() {
 	hdr=$1; elf=$2

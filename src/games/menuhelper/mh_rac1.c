@@ -12,13 +12,15 @@
  *           list pane drawn by the shim's own list draw (mh_rac1_cfg.c).
  *
  * The menu's pages are pages of the game's own framework, in the shim's state:
- * one MAIN page and two CONFIG pages, which the game reaches by pointer (the
- * Help row's page word, the reopen fields, the shim's writes of the next
- * page). The game calls the shim's items every frame their page is current:
+ * one MAIN page, two CONFIG pages and the planet picker's (mh_rac1_pick.c),
+ * which the game reaches by pointer (the Help row's page word, the reopen
+ * fields, the shim's writes of the next page). The game calls the shim's
+ * items every frame their page is current:
  *   mh_row_update    the seven one-row panes of the MAIN page; the first runs
  *                    the core's frame and the pane moves;
  *   mh_conf_update   the CONFIG list: the core's frame and the input;
  *   mh_conf_draw     the CONFIG list's draw, into its pane;
+ *   mh_pick_update   the planet picker's list, on the Galactic Map's look;
  * and from its main loop:
  *   mh_text_stub     the text ids, on get_ui_string's not-found path (asm);
  *   mh_play_stub     after every play update, which calls mh_play: the pages
@@ -48,7 +50,13 @@ typedef char mh_rac1_layout[(MH_STATE + MH_CORE_SIZE <= MH_SHIM &&
                              SH_CUTBUF + R1_CUTBUF_LEN <= SH_ENTRY_TEXT &&
                              SH_ENTRY_TEXT + 8 <= SH_TITLE_TEXT &&
                              SH_TITLE_TEXT + MH_TITLE_LEN <= SH_TEXT &&
-                             SH_TEXT + MAIN_PANES * MH_TEXT_LEN <= SH_SIZE) ? 1 : -1];
+                             SH_TEXT + MAIN_PANES * MH_TEXT_LEN <= SH_PICK &&
+                             SH_PICK_LAST + 4 <= SH_PAGE_MAP &&
+                             SH_PAGE_MAP + R1_PAGE_SIZE <= SH_MAP_LIST &&
+                             SH_MAP_LIST + R1_LIST_SIZE <= SH_MAP_GALAXY &&
+                             SH_MAP_GALAXY + 0x30 <= SH_MAP_ENTRIES &&
+                             SH_MAP_ENTRIES + (R1_PLANETS + 1) * R1_GENTRY_SIZE <= SH_VELDIN2 &&
+                             SH_VELDIN2 + 8 <= SH_SIZE) ? 1 : -1];
 
 typedef int  (*fn_i_u)(u32);
 typedef void (*fn_v_iiu)(int, int, u32);
@@ -57,10 +65,6 @@ typedef void (*fn_v_uii)(u32, int, int);
 #define list_update   GAME_FN(fn_i_u,   OPD_LIST_UPDATE, mock_list_update)
 #define play_sound    GAME_FN(fn_v_iiu, OPD_PLAY_SOUND,  mock_play_sound)
 #define anim_set      GAME_FN(fn_v_uii, OPD_ANIM_SET,    mock_anim_set)
-
-/* What follows a fly-out: the menu's screen again (another page), or the game's main page. */
-enum { T_NONE, T_RESTART, T_GAME };
-enum { MOVE_OUT, MOVE_IN, MOVE_HIDE };
 
 /* ------------------------------------------------------------- helpers */
 
@@ -75,7 +79,7 @@ R1_FN u32 r1_at(void)
 	u32 p = r32(SH(SH_AT_PAGE));
 
 	if (p == 0 || p != r32(R1_MENU_PAGE)) return AT_NONE;
-	return p == PAGE_LIST ? AT_LIST : AT_CONF;
+	return p == PAGE_LIST ? AT_LIST : p == PAGE_MAP ? AT_MAP : AT_CONF;
 }
 
 R1_FN u32 r1_phase(void)
@@ -189,6 +193,7 @@ static void setup(void)
 	for (k = 0; k < sizeof(setup_words) / sizeof(setup_words[0]); k++)
 		w32(SH(setup_words[k][0]), setup_words[k][1]);
 	for (k = 0; k < sizeof(entry_label) && k < 8; k++) w8(SH(SH_ENTRY_TEXT) + k, (u8)entry_label[k]);
+	r1_pick_setup();
 	w32(SH(SH_READY), MH_MAGIC);
 }
 
@@ -223,20 +228,21 @@ static u32 frames_of(u32 moby, u32 pose)
 }
 
 /*
- * Panes lo..hi-1 on the main page's own pose for each: OUT plays it forwards
- * (the main layout to hidden), IN backwards (hidden to the main layout), HIDE
- * puts it at its last frame, hidden, at once. The phase runs for the slowest,
- * at least a frame.
+ * Panes lo..hi-1 on their pose pose0 + k of a root page's (the main page's,
+ * or the Galactic Map's for the planet picker): OUT plays it forwards (the
+ * page's layout to hidden), IN backwards (hidden to the layout), HIDE puts it
+ * at its last frame, hidden, at once. The phase runs for the slowest, at
+ * least a frame.
  */
-static void panes(u32 ph, u32 lo, u32 hi, int how)
+R1_FN void r1_panes(u32 ph, u32 lo, u32 hi, int how, u32 pose0)
 {
 	u32 k, f, moby, most = 1;
 
 	for (k = lo; k < hi; k++) {
 		moby = r32(R1_PANES + 4 * k);
 		if (moby == 0) continue;
-		f = frames_of(moby, R1_MAIN_POSE0 + k);
-		anim_set(moby, (int)(R1_MAIN_POSE0 + k), how == MOVE_OUT ? 0 : (int)f - 1);
+		f = frames_of(moby, pose0 + k);
+		anim_set(moby, (int)(pose0 + k), how == MOVE_OUT ? 0 : (int)f - 1);
 		w32(moby + R1_MOBY_SPEED, how == MOVE_IN ? 0xBF800000 : 0x3F800000);   /* -1.0f, 1.0f */
 		if (how != MOVE_HIDE && f > most) most = f;
 	}
@@ -244,6 +250,8 @@ static void panes(u32 ph, u32 lo, u32 hi, int how)
 	w8(SH(SH_PHASE), ph);
 	w8(SH(SH_TIMER), most);
 }
+
+#define panes(ph, lo, hi, how) r1_panes(ph, lo, hi, how, R1_MAIN_POSE0)
 
 /* The MAIN page's panes fly in; the ones it does not use go at once. */
 static void show(void)
@@ -255,11 +263,13 @@ static void show(void)
 }
 
 /* Its panes fly out; `then` follows. */
-static void leave(u32 then)
+R1_FN void r1_leave(u32 then)
 {
 	w8(SH(SH_THEN), then);
 	panes(PH_OUT, 0, r8(SH(SH_NROWS)), MOVE_OUT);
 }
+
+#define leave r1_leave
 
 /* The game's own transition to page `to` (the next page), and nothing until it arrives. */
 static void transition(u32 to)
@@ -320,11 +330,13 @@ static void main_rows(void)
 }
 
 /* The row the MAIN page's focus is on. */
-static u32 main_cursor(void)
+R1_FN u32 r1_main_cursor(void)
 {
 	u32 k = (r32(PAGE_LIST + PG_FOCUS) - ROW(0)) / R1_LIST_SIZE;
 	return k < MAIN_PANES ? k : 0;
 }
+
+#define main_cursor r1_main_cursor
 
 /* The MAIN page the core just started: its rows, links and focus. */
 static void main_start(void)
@@ -405,7 +417,9 @@ R1_FN u32 r1_arrive(void)
 		go_conf();
 	} else {
 		main_start();
-		if (r8(SH(SH_OPENING)) != 0) {
+		if (r1_pick_returned(r8(SH(SH_NROWS)))) {
+			/* Back from the planet picker: its transition flew the panes in. */
+		} else if (r8(SH(SH_OPENING)) != 0) {
 			/* The open brought all seven panes in: the ones this page does not use go. */
 			w8(SH(SH_OPENING), 0);
 			mh_count(ST_OPENS);
@@ -453,6 +467,9 @@ static void moves(void)
 		w32(PAGE_LIST + PG_PARENT, R1_MAIN_PAGE);
 		w8(SH(SH_GONE), 1);
 		transition(R1_MAIN_PAGE);
+	} else if (t == T_PICK) {
+		/* The planet picker: the game's transition to the Galactic Map's page, its panes flying in. */
+		r1_pick_open();
 	}
 }
 
@@ -615,6 +632,7 @@ MH_API void mh_play(void)
 		w8(SH(SH_PENDING), pend);
 	}
 	if (st == 0 && pend == 0) {
+		r1_pick_reset();
 		if (r8(SH(SH_STARTED)) != 0) {
 			/* The pause closed with the menu up: its screen stops, the menu is down. */
 			w8(MH_STATE + ST_SWITCHING, 0);

@@ -52,6 +52,12 @@
  * fields, which the play hook writes once Start's own gates would let the pause
  * open. No row is added to any of the game's lists.
  *
+ * The planet picker (mh_rac1_pick.c): the root's Planets row opens the game's
+ * own Galactic Map look in the same pause, a copy of the map's page in the
+ * shim's state under the shim's screen 50, every planet of qwark's list; the
+ * cross hands the planet to qwark through the mailbox and closes the pause
+ * plainly, Triangle goes back to the root. No word is added for it.
+ *
  * Plain #defines and nothing else: build.sh reads the MH_* and OPD_* lines, and
  * the assembler includes this file through the C preprocessor. Each line that
  * build.sh or check.py reads is a name and one hexadecimal literal (or a
@@ -105,7 +111,7 @@
 #define MH_MAIN_ROWS        0x00000007   /* the main page's seven panes */
 #define MH_CFG_ROWS         0x00000018   /* the shim's window scrolls through all 24 */
 #define MH_MBOX_SIZE        0x00000680   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
-#define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
+#define MH_CAPS             0x0000001F   /* steps, page keys, back button, requests, the planet picker */
 
 /*
  * The game's own casing: RaC1's menus are in title case ("Camera Options",
@@ -186,6 +192,7 @@
 #define R1_ID_TRAINER       0x00007E00   /* the Help row */
 #define R1_ID_ROW0          0x00007E01   /* MAIN rows 0..6 */
 #define R1_ID_TITLE         0x00007E08   /* a CONFIG page's title */
+#define R1_ID_VELDIN2       0x00007E09   /* the planet picker's name for planet 18, "Veldin2" */
 #define MH_HELP_WORD        0x7E000003   /* MH_SITE_HELP_TEXT's new word: id 0x7E00, kind 3 */
 #define R1_MSG_MISSING      0x00720B94   /* "MESSAGE DOES NOT EXIST" */
 
@@ -267,6 +274,38 @@
 #define R1_COLOR_TRACK      0x80383838
 #define R1_SLIDER_SPRITE    0x0000E99E
 
+/*
+ * The planet picker (mh_rac1_pick.c): the Galactic Map's page, as the ship
+ * opens it (0x72D87C, screen 15), copied into the shim's state and shown in
+ * the pause the Trainer menu is in. Its poses, its title, galaxy, hint and
+ * planet picture are the game's; its list is the map list's (the scroll
+ * list's draw, its flags) with the shim's update and every planet of qwark's
+ * PLANET_LIST, the cursor setting the planet the galaxy labels and the
+ * picture shows (0xA206E4), as the map list's own cursor does. The map's
+ * planet page (0x72DC78, screen 16) and its loader of planet maps (0x72DBC8)
+ * are left out: they read and write the pause's map-only memory, which only
+ * an opening of the pause on the map sets up. The page's screen is the
+ * shim's 50, so a close is the plain one, never the map's travel.
+ */
+#define R1_MAP_PAGE         0x0072D87C   /* the Galactic Map, screen 15: its poses and items */
+#define R1_MAP_TITLE        0x0072D9B4   /* its title, "Galactic Map" (pane 0), used as it is */
+#define R1_MAP_LIST         0x0072DAF0   /* its planet list (pane 1): the draw and flags copied */
+#define R1_MAP_GALAXY       0x0072DB98   /* its galaxy (pane 2): the draw copied, not the update */
+#define R1_MAP_HINT         0x0072B200   /* its hint, "Select", "Exit" (pane 3), used as it is */
+#define R1_MAP_SHOT         0x0072D904   /* its planet picture, gmap_ss (pane 4), used as it is */
+#define R1_MAP_LOADER       0x0072DBC8   /* its loader of planet maps (pane 5): left out */
+#define R1_MAP_INFO         0x0072DC78   /* the planet's page, screen 16: left out */
+#define R1_MAP_POSE0        0x00000063   /* panes 0..4: 0x63 + k, the others 5 .. 13 */
+#define R1_MAP_PANES        0x00000005
+#define R1_MAP_LIST_FLAGS   0x00000138   /* small size, rows 13 apart, L1 and R1 as Up and Down */
+#define R1_LIST_FIRST       0x00008000   /* the scroll draw's first frame: the cursor in view at once */
+#define R1_PLANET_TABLE     0x007352B0   /* {name id, subtitle id, value} a planet, 0 .. 18 */
+#define R1_PLANETS          0x00000013   /* 19, qwark's PLANET_LIST: Veldin 0 .. Veldin2 18 */
+#define R1_VELDIN2          0x00000012   /* planet 18, whose name the picker gives its own text */
+#define R1_CURRENT_PLANET   0x00969C70
+#define R1_SELECTED         0x00A206E4   /* the map's selected planet */
+#define R1_GENTRY_SIZE      0x0000000C   /* a generic entry {text, kind, arg, sub text, highlight} */
+
 /* The pad bits, qwark's layout. */
 #define PADB_L1             0x00000004
 #define PADB_R1             0x00000008
@@ -304,6 +343,8 @@
  */
 #define OPD_LABEL_UPDATE    0x007075A8   /* 0x13FA8C */
 #define OPD_LABEL_DRAW      0x007075E8   /* 0x1402C8 */
+#define OPD_SCROLL_DRAW     0x007076A8   /* the scroll list's draw, the map list's   0x144638 */
+#define OPD_GALAXY_DRAW     0x00707808   /* "Galactic Map Draw", the galaxy's        0x14B5F4 */
 #define R1_GAME_TOC         0x00722328
 
 /* ------------------------------------------------ the shim's own state */
@@ -351,7 +392,19 @@
 #define SH_ENTRY_TEXT       0x5A8  /* "Trainer", 8 */
 #define SH_TITLE_TEXT       0x5B0  /* the CONFIG title as shown, MH_TITLE_LEN */
 #define SH_TEXT             0x5D4  /* the MAIN rows as shown, 7 x MH_TEXT_LEN */
-#define SH_SIZE             0x7B0
+#define SH_PICK             0x7B0  /* u8 PK_*: the planet picker opening, up, or going back */
+#define SH_PICK_ROW         0x7B1  /* u8 the MAIN page's row it was opened from */
+#define SH_PICK_SEL         0x7B4  /* u32 the map's selected planet before the picker */
+#define SH_PICK_PARENT      0x7B8  /* u32 the MAIN page's parent before the picker */
+#define SH_PICK_OPENS       0x7BC  /* u32 times the picker opened */
+#define SH_PICK_POSTS       0x7C0  /* u32 picks posted */
+#define SH_PICK_LAST        0x7C4  /* u32 the planet last picked */
+#define SH_PAGE_MAP         0x7C8  /* the picker's page, 0x88 */
+#define SH_MAP_LIST         0x850  /* its list, a generic list item, 0x50 */
+#define SH_MAP_GALAXY       0x8A0  /* its galaxy, 0x30 */
+#define SH_MAP_ENTRIES      0x8D0  /* the nineteen planets and the end, 12 each */
+#define SH_VELDIN2          0x9C0  /* "Veldin2", 8 */
+#define SH_SIZE             0x9C8
 
 #define R1_PAGE_SIZE        0x88
 #define R1_LIST_SIZE        0x50

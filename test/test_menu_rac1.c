@@ -17,9 +17,11 @@
  *                 and the next page, a transition of twelve frames, the close
  *                 of ten, the panes and their poses, the generic list's update,
  *                 the title and list draws, the main page with its Help entry,
- *                 the opener and its reopen fields. The hook stubs are
- *                 assembler and do not run here: src/games/menuhelper/check.py
- *                 steps them, and the model does in C what they do.
+ *                 the opener and its reopen fields; the planet picker on the
+ *                 Galactic Map's page (mh_rac1_pick.c) and the transitions'
+ *                 direction and poses. The hook stubs are assembler and do
+ *                 not run here: src/games/menuhelper/check.py steps them, and
+ *                 the model does in C what they do.
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
@@ -81,6 +83,14 @@ static struct {
 	float draw_x[NDRAW], draw_y[NDRAW];
 	u32 draw_colour[NDRAW];
 	int boxes, sprites, blends;
+	/* the transitions: back to the current page's parent, and the pose pane 0 then plays */
+	int trans_back;
+	u32 trans_pose0;
+	/* the planet picker's page, as the last frame drew it */
+	int map_draws, galaxy_draws;
+	u32 map_cursor, galaxy_sel, map_flags;
+	char map_rows[20][40];
+	int map_nrows;
 	int list_h;                 /* the CONFIG list pane's height */
 } G;
 
@@ -109,6 +119,8 @@ static u32 ui_string(u32 id)
 		return r32(MH_SHIM + SH_STRTAB + 4 * (id - R1_ID_BASE));
 	if (id == 0x4EE6) return MSG_AT + 0x10;          /* "Help" */
 	if (id == 0x4FC6) return MSG_AT + 0x20;          /* "Cheats" */
+	if (id == 0x4EF0) return MSG_AT + 0x30;          /* "Galactic Map" */
+	if (id >= 0x4EB9 && id <= 0x4ECB) return MSG_AT + 0x40 + 0x10 * (id - 0x4EB9);   /* "Planet 0" .. */
 	return MSG_AT;                                   /* "Weapons" etc.: one string will do */
 }
 
@@ -191,6 +203,7 @@ static int mock_list_update(u32 item)
 #include "../src/games/menuhelper/mh_core.c"
 #include "../src/games/menuhelper/mh_rac1.c"
 #include "../src/games/menuhelper/mh_rac1_cfg.c"
+#include "../src/games/menuhelper/mh_rac1_pick.c"
 
 /* ----------------------------------------------------- the game's pause */
 
@@ -228,6 +241,19 @@ static void seed_game(void)
 	put_str(MSG_AT, "Weapons");
 	put_str(MSG_AT + 0x10, "Help");
 	put_str(MSG_AT + 0x20, "Cheats");
+	put_str(MSG_AT + 0x30, "Galactic Map");
+	w32(R1_MAP_TITLE + 0x00, OPD_LABEL_UPDATE);   /* the map's title item, as the executable has it */
+	w32(R1_MAP_TITLE + 0x04, OPD_LABEL_DRAW);
+	w32(R1_MAP_TITLE + 0x30, 0x0F);
+	w32(R1_MAP_TITLE + 0x34, 0x4EF0);
+	/* The planet table (0x7352B0): the names 0x4EB9 + p, the subtitles 0x4ECD + p, Veldin's 0x4EDE. */
+	for (k = 0; k < 19; k++) {
+		char name[16];
+		snprintf(name, sizeof(name), "Planet %u", (unsigned)k);
+		put_str(MSG_AT + 0x40 + 0x10 * k, name);
+		w32(R1_PLANET_TABLE + 12 * k, 0x4EB9 + k);
+		w32(R1_PLANET_TABLE + 12 * k + 4, k == 0 ? 0x4EDE : 0x4ECD + k - 1);
+	}
 	w32(R1_CONFIRM_MASK, 0x40);
 	w32(R1_FRAMES, 100);
 	w32(R1_HP, 8);
@@ -264,6 +290,7 @@ static int call_update(u32 tok, u32 item)
 {
 	if (tok == MH_FN_ROW) return mh_row_update(item);
 	if (tok == MH_FN_CONF) return mh_conf_update(item);
+	if (tok == MH_FN_PICK) return mh_pick_update(item);
 	if (tok == OPD_LIST_UPDATE) return mock_list_update(item);
 	return 0;
 }
@@ -288,6 +315,21 @@ static void render(u32 page)
 			/* an entry of text 0 is the list's end: the generic draw shows nothing */
 			if (r16(r32(item + 0x34)) != 0) read_str(ui_string(r16(r32(item + 0x34))), G.pane_text[k], 80);
 			G.pane_flags[k] = r32(item + 0x30);
+		} else if (tok == OPD_SCROLL_DRAW) {
+			/* the map list: the scroll list's draw of its entries, the cursor's row lit */
+			u32 ent = r32(item + 0x34), n = 0;
+			while (n < 20 && r16(ent + 12 * n) != 0) {
+				read_str(ui_string(r16(ent + 12 * n)), G.map_rows[n], 40);
+				n++;
+			}
+			G.map_nrows = (int)n;
+			G.map_cursor = r32(item + 0x40);
+			G.map_flags = r32(item + 0x30);
+			w32(item + 0x30, r32(item + 0x30) & ~0x8000u);
+			G.map_draws++;
+		} else if (tok == OPD_GALAXY_DRAW) {
+			G.galaxy_sel = r32(R1_SELECTED);
+			G.galaxy_draws++;
 		} else if (tok == OPD_LABEL_DRAW) {
 			read_str(ui_string(r32(item + 0x34)), G.pane_text[k], 80);
 		}
@@ -331,6 +373,8 @@ static void pause_frame(void)
 		return;
 	}
 	if (r32(R1_MENU_NEXT) != 0) {
+		G.trans_back = r32(R1_MENU_NEXT) == r32(page + 0x38);
+		G.trans_pose0 = G.trans_back ? r32(page + 0x00) : r32(r32(R1_MENU_NEXT) + 0x00);
 		G.trans = 12;
 		G.trans_to = r32(R1_MENU_NEXT);
 		w32(R1_MENU_PAGE, 0);
@@ -644,8 +688,8 @@ static void test_install_rac1(void)
 			if ((a == MH_CAVE || a == MH_CAVE2 || a == MH_CAVE3 || a == MH_CAVE4) && first_code == 999) first_code = k;
 			if (a == MH_SITE_TEXT && first_hook == 999) first_hook = k;
 		}
-		check(first_code < first_hook && n <= 20 && bytes <= 23u * 1024u,
-		      "the caves before the words: under twenty writes, under 23 KB (round 4: 24 rows)");
+		check(first_code < first_hook && n <= 20 && bytes <= 27u * 1024u,
+		      "the caves before the words: under twenty writes, under 27 KB (round 4's 24 rows, the planet picker)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();
@@ -746,6 +790,8 @@ static void step(u32 edges)
 	frame(edges);
 	tick(2);
 }
+
+static void test_picker_rac1(u32 mb);
 
 static void test_renderer_rac1(void)
 {
@@ -1094,6 +1140,8 @@ static void test_renderer_rac1(void)
 	w32(R1_STATE, 0);
 	frame(0);
 
+	test_picker_rac1(mb);
+
 	check(quit(), "quit RaC1");
 }
 
@@ -1102,4 +1150,221 @@ void test_menu_rac1(void)
 	test_model_rac1();
 	test_install_rac1();
 	test_renderer_rac1();
+}
+
+/*
+ * The planet picker, on the root the combo opened: the Galactic Map's page in
+ * the same pause, every planet in qwark's order, the cursor moving the map's
+ * selected planet, Triangle back to the root on the Planets row, the cross a
+ * pick through the mailbox's pick fields and a plain close, Start and the
+ * combo a close; the core's screen never stopped while it is up.
+ */
+static void test_picker_rac1(u32 mb)
+{
+	char a[160];
+	u32 starts, seq, k, key, fr;
+	int i, good;
+
+	group("console menu: RaC1's planet picker, the Galactic Map's page");
+
+	w32(R1_SELECTED, 0x77);
+	poke32(RAC1_CURRENT_PLANET, 3);
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	tick(4);
+	check(r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == 7 && r8(MH_SHIM + SH_PHASE) == PH_IDLE,
+	      "the root, from the combo");
+	check(r32(PAGE_MAP + 0x00) == 0x63 && r32(PAGE_MAP + 0x10) == 0x67 && r32(PAGE_MAP + 0x14) == 5 &&
+	      r32(PAGE_MAP + 0x3C) == R1_SCREEN && r32(PAGE_MAP + 0x40) == MAP_LIST &&
+	      r32(PAGE_MAP + 0x44) == R1_MAP_TITLE && r32(PAGE_MAP + 0x48) == MAP_LIST &&
+	      r32(PAGE_MAP + 0x4C) == MAP_GALAXY && r32(PAGE_MAP + 0x50) == R1_MAP_HINT &&
+	      r32(PAGE_MAP + 0x54) == R1_MAP_SHOT && r32(PAGE_MAP + 0x58) == 0,
+	      "the picker's page: the map's poses 0x63 .. 0x67, screen 50, the map's title, the shim's list and "
+	      "galaxy, the map's hint and picture, no loader of planet maps");
+	check(r32(MAP_LIST + 0x00) == MH_FN_PICK && r32(MAP_LIST + 0x04) == OPD_SCROLL_DRAW &&
+	      r32(MAP_LIST + 0x30) == R1_MAP_LIST_FLAGS && r32(MAP_GALAXY + 0x00) == 0 &&
+	      r32(MAP_GALAXY + 0x04) == OPD_GALAXY_DRAW,
+	      "the list the map list's look with the shim's update, the galaxy the map's draw and no update");
+	good = 1;
+	for (k = 0; k < 19; k++) {
+		u32 e = MAP_ENTRY(k);
+		good = good && r16(e) == (k == 18 ? R1_ID_VELDIN2 : 0x4EB9 + k) && r16(e + 2) == 1 &&
+		       r16(e + 8) == (k == 0 ? 0x4EDE : 0x4ECD + k - 1);
+	}
+	check(good && r16(MAP_ENTRY(19)) == 0, "nineteen entries, Veldin to Veldin2, each its name and subtitle, then the end");
+
+	/* Open: the root's panes out, then the game's transition back to "the parent", on the map's poses. */
+	starts = r32(MH_STATE + ST_STARTS);
+	check(peek8(mb + MBOX_OFF_CAPS) == (CAPS_ALL | MBOX_CAP_PICKER) && (r8(mh_set() + SET_FLAGS + 2) & MROWF_PICKER) != 0,
+	      "the renderer has the picker's cap, and qwark flags the root's Planets row");
+	w32(PAGE_LIST + 0x40, ROW(2));
+	seq = peek32(mb + MBOX_OFF_EV_SEQ);
+	key = peek32(mb + MBOX_OFF_PAGE_KEY);
+	fr = peek32(mb + MBOX_OFF_FRAMES);
+	frame(0x40);
+	check(mh_picker_up() && r8(MH_SHIM + SH_PICK) == PK_OPENING && r8(MH_SHIM + SH_PHASE) == PH_OUT &&
+	      r8(MH_SHIM + SH_THEN) == T_PICK && r32(MH_SHIM + SH_PICK_OPENS) == 1 && G.sound == SND_SELECT &&
+	      peek32(mb + MBOX_OFF_EV_SEQ) == seq,
+	      "the cross on Planets: the core marks the picker up and asks the shim, the forward sound, no event; "
+	      "the root's panes fly out");
+	check(shim_picker(0) == 0, "and a second call while they move is refused");
+	frames(6);
+	check(G.trans == 12 && G.trans_to == PAGE_MAP && G.trans_back && G.trans_pose0 == 0x63 &&
+	      r32(PAGE_LIST + 0x38) == PAGE_MAP && r8(R1_GOODIES_PANE) == 0,
+	      "then the game's transition to the map page as the MAIN page's parent: the map's poses backwards, "
+	      "its panes flying in");
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_MAP && r8(MH_SHIM + SH_PICK) == PK_UP && r32(PAGE_LIST + 0x00) == 0x0E &&
+	      r32(PAGE_LIST + 0x18) == 0x14 && r32(PAGE_LIST + 0x38) == 0,
+	      "arrived: the MAIN page's own poses and parent back");
+	check(G.map_draws == 1 && G.map_nrows == 19 && G.map_cursor == 3 && (G.map_flags & 0x8000) != 0 &&
+	      r32(R1_SELECTED) == 3 && G.galaxy_draws == 1 && G.galaxy_sel == 3 &&
+	      strcmp(G.pane_text[0], "Galactic Map") == 0,
+	      "the list of nineteen on the planet the player is on, the galaxy on it too, the map's title");
+	check(strcmp(G.map_rows[0], "Planet 0") == 0 && strcmp(G.map_rows[17], "Planet 17") == 0 &&
+	      strcmp(G.map_rows[18], "Veldin2") == 0, "the game's names, and Veldin2 for planet 18");
+	check(r8(MH_SHIM + SH_STARTED) == 1 && r32(MH_STATE + ST_STARTS) == starts && mh_picker_up() &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && r32(MH_SHIM + SH_UP) == 1,
+	      "the core's screen never stopped: the push is no close, hstate open, the picker up");
+
+	/* The cursor: Up and Down, L1 and R1, no wrap, the tick, the selected planet following. */
+	G.sounds = 0;
+	frame(PADB_DOWN);
+	frame(0);
+	check(G.map_cursor == 4 && r32(R1_SELECTED) == 4 && G.galaxy_sel == 4 && G.sound == SND_CURSOR && G.sounds == 1,
+	      "Down: Eudora, the galaxy and the picture follow, the cursor's tick");
+	for (i = 0; i < 6; i++) frame(PADB_UP);
+	frame(0);
+	check(G.map_cursor == 0 && r32(R1_SELECTED) == 0 && G.sounds == 5, "Up to Veldin, and no further (no wrap)");
+	frame(PADB_R1);
+	frame(PADB_R1);
+	frame(PADB_L1);
+	frame(0);
+	check(G.map_cursor == 1 && r32(R1_SELECTED) == 1, "R1 and L1 move it too");
+	for (i = 0; i < 20; i++) frame(PADB_DOWN);
+	frame(0);
+	check(G.map_cursor == 18 && r32(R1_SELECTED) == 18, "Down to Veldin2, and no further");
+
+	/* Triangle: the map's panes fly out, then the game's transition back to the MAIN page as the map's parent. */
+	frame(PADB_TRIANGLE);
+	check(r8(MH_SHIM + SH_PICK) == PK_RETURN && r8(MH_SHIM + SH_PHASE) == PH_OUT && G.sound == SND_PAGE,
+	      "Triangle: the map's panes fly out");
+	frames(6);
+	check(G.trans == 12 && G.trans_to == PAGE_LIST && G.trans_back && G.trans_pose0 == 0x0E &&
+	      r32(R1_SELECTED) == 0x77 && r8(R1_GOODIES_PANE) == 1,
+	      "then the transition back on the main page's poses: the root's seven panes fly in; the map's "
+	      "selected planet as the game had it");
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_LIST && r32(PAGE_LIST + 0x40) == ROW(2) && r8(MH_SHIM + SH_PICK) == PK_NONE &&
+	      !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN &&
+	      r32(PAGE_MAP + 0x00) == 0x63 && r32(PAGE_MAP + 0x38) == 0 && r32(MH_STATE + ST_STARTS) == starts &&
+	      strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54") == 0,
+	      "the root again, as it was, the focus on Planets, the picker down (mh_core_picker_back); the map "
+	      "page's poses back");
+	tick(8);
+	frame(0);
+	check(peek32(mb + MBOX_OFF_PAGE_KEY) == key && peek32(mb + MBOX_OFF_FRAMES) > fr && r32(PAGE_LIST + 0x40) == ROW(2) &&
+	      r32(MH_STATE + ST_STARTS) == starts,
+	      "and qwark resets nothing: the same root page, the frames counting on from before, still on Planets");
+	frames(8);
+	frame(PADB_DOWN);
+	check(r32(PAGE_LIST + 0x40) == ROW(3), "and the root answers the pad again");
+	frame(PADB_UP);
+
+	/* The cross: the pick to qwark (mh_core_pick), then the plain close; qwark loads it in play. */
+	frame(0x40);
+	frames(6);
+	frames(12);
+	frame(0);
+	frame(PADB_DOWN);
+	seq = r32(mb + MBOX_OFF_PICK_SEQ);
+	frame(0x40);
+	check(G.closing != 0 && r32(mb + MBOX_OFF_PICK_PLANET) == 4 && r32(mb + MBOX_OFF_PICK_SEQ) == seq + 1 &&
+	      r32(MH_SHIM + SH_PICK_LAST) == 4 && r32(MH_SHIM + SH_PICK_POSTS) == 1 && G.sound == SND_SELECT &&
+	      r32(0x00A52BB0) == R1_SCREEN && !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "the cross on Eudora: mh_core_pick posts it, the planet first, then its number, and the menu counts "
+	      "as closed; the pause closes on screen 50, a plain close");
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r32(MH_SHIM + SH_UP) == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      r8(MH_SHIM + SH_PICK) == PK_NONE && r32(R1_SELECTED) == 0x77 && r32(PAGE_LIST + 0x00) == 0x0E &&
+	      r32(PAGE_MAP + 0x00) == 0x63,
+	      "in play: the menu down; the pages and the selected planet as before");
+	tick(8);
+	check(peek32(RAC1_LOAD_PLANET) != 0 && peek8(RAC1_DEST_PLANET + 3) == 4,
+	      "and qwark loads Eudora, the game back in play");
+	poke32(RAC1_LOAD_PLANET, 0);
+	tick(4);
+
+	/* Start from the picker closes, and so does the combo. */
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	tick(4);
+	check(r1_at() == AT_LIST && r32(PAGE_LIST + 0x40) == ROW(0), "the combo again: the root, on Game");
+	w32(PAGE_LIST + 0x40, ROW(2));
+	frame(0x40);
+	check(mh_picker_up() && r8(MH_SHIM + SH_PICK) == PK_OPENING, "the picker again");
+	frames(6);
+	frames(12);
+	frame(0);
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	frame(0x800);
+	check(G.closing != 0 && r32(MH_SHIM + SH_PICK_POSTS) == 1 && !mh_picker_up() &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && peek32(mb + MBOX_OFF_PICK_SEQ) == seq,
+	      "Start: mh_core_picker_gone, a close with no pick; the pause closes");
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r8(MH_SHIM + SH_PICK) == PK_NONE && r32(R1_SELECTED) == 0x77, "closed");
+	tick(4);
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	tick(4);
+	w32(PAGE_LIST + 0x40, ROW(2));
+	frame(0x40);
+	frames(6);
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_MAP && mh_picker_up(), "the picker once more");
+	press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo while it is up asks to close");
+	frame(0);
+	check(G.closing != 0 && peek8(mb + MBOX_OFF_REQUEST) == 0 && !mh_picker_up() &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "which the picker takes (mh_core_close_request), a close with no pick");
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r8(MH_SHIM + SH_PICK) == PK_NONE, "closed");
+	tick(4);
+
+	/* Nowhere but on a still MAIN page: on a CONFIG page the core shows its list. */
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	tick(4);
+	w32(PAGE_LIST + 0x40, ROW(1));
+	step(0x40);
+	frame(0);
+	frames(6);
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_CONF && shim_picker(0) == 0, "on a CONFIG page the picker is refused");
+	step(0x800);
+	frames(12);
+	frame(0);
+	tick(4);
+	check(r32(0x00729970) == 0 && r32(R1_MAP_PAGE + 0x00) == 0 && r32(R1_MAP_LIST + 0x00) == 0,
+	      "the game's own map, its page, its list and the map list's pointer, never written");
 }

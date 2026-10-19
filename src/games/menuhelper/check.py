@@ -94,7 +94,10 @@ code round the sites (get_ui_string's
 not-found path, the play update's call), the main page's Help item and entry,
 Goodies > Cheats' page, title, list and hint, In-Level Movies' title pose and
 Cinematics' list in the same pane, the constants of Cheats' list draw and of
-Camera Options' 3D slider that the shim's draw follows; the text stub, stepped, and the play stub's
+Camera Options' 3D slider that the shim's draw follows; the planet picker's
+Galactic Map: its page, title, list, galaxy, hint and picture, the planet table,
+the transition's rule the picker's moves use and the close action screen 50
+keeps plain; the text stub, stepped, and the play stub's
 frame; and no overlap with the mods (charge-boots among them), the probes or
 qwark's own writes (the savefile helper and the code switches), but for
 probes N1, N1b and N1c, whose words are the same by design.
@@ -2607,6 +2610,12 @@ class Ranges:
         return any(lo <= a < hi for lo, hi in self.ranges)
 
 
+def R1_ID_OK(hdr):
+    return hdr["R1_ID_BASE"] < hdr["R1_ID_VELDIN2"] < hdr["R1_ID_BASE"] + hdr["R1_ID_COUNT"] and \
+        hdr["R1_ID_VELDIN2"] not in (hdr["R1_ID_TRAINER"], hdr["R1_ID_TITLE"]) and \
+        not hdr["R1_ID_ROW0"] <= hdr["R1_ID_VELDIN2"] < hdr["R1_ID_ROW0"] + hdr["MH_MAIN_ROWS"]
+
+
 def check_rac1_stubs(ok, code, cave, hdr, stub_at, in_code):
     strtab, hits = hdr["MH_SHIM"] + hdr["SH_STRTAB"], hdr["MH_SHIM"] + hdr["SH_HITS"]
     text_ok = {"r3", "r5", "r6", "r7", "cr0"}
@@ -2732,6 +2741,8 @@ def check_rac1(ok, elf, roots):
        "CONFIG page, caps 0x%02X, closed, no request, renderer 1" % box[11])
     ok(box_defs["MBOX_OFF_ROWS"] + hdr["MH_ROWS"] * hdr["MH_ROW_BYTES"] == hdr["MH_MBOX_SIZE"] and
        all(b == 0 for b in box[16:]), "the rows fill the image, everything after the header zero")
+    ok((hdr["MH_CAPS"] & box_defs["MBOX_CAP_PICKER"]) != 0,
+       "caps has MBOX_CAP_PICKER: the root's Planets row opens the Galactic Map's look (mh_rac1_pick.c)")
     shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
     ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and
        all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]) and shim_off + hdr["SH_SIZE"] <= len(data),
@@ -2848,6 +2859,84 @@ def check_rac1(ok, elf, roots):
         (0x0014AF1C, 0x3CA08020, "the cursor's 0x8020FFFF ..."),
         (0x0014AF20, 0x60A5FFFF, ""),
         (0x0014AED8, 0x33A4FFF8, "and the first row at h / (n + 1) - 8 as well"),
+        # The planet picker (mh_rac1_pick.c): the Galactic Map's page and what the shim's copy keeps of it.
+        (hdr["R1_MAP_PAGE"] + 0x00, hdr["R1_MAP_POSE0"], "the Galactic Map's poses: 0x63 for its title ..."),
+        (hdr["R1_MAP_PAGE"] + 0x04, hdr["R1_MAP_POSE0"] + 1, "0x64 its list ..."),
+        (hdr["R1_MAP_PAGE"] + 0x08, hdr["R1_MAP_POSE0"] + 2, "0x65 its galaxy ..."),
+        (hdr["R1_MAP_PAGE"] + 0x0C, hdr["R1_MAP_POSE0"] + 3, "0x66 its hint ..."),
+        (hdr["R1_MAP_PAGE"] + 0x10, hdr["R1_MAP_POSE0"] + 4, "0x67 its planet picture ..."),
+        (hdr["R1_MAP_PAGE"] + 0x14, 0x00000005, "then 5 .. 13, the loader's pane among them, hidden"),
+        (hdr["R1_MAP_PAGE"] + 0x34, 0x0000000D, ""),
+        (hdr["R1_MAP_PAGE"] + 0x38, 0x00000000, "no parent: a root page, opened only by the opener ..."),
+        (hdr["R1_MAP_PAGE"] + 0x3C, 0x0000000F, "screen 15, which makes every close travel (below)"),
+        (hdr["R1_MAP_PAGE"] + 0x40, hdr["R1_MAP_LIST"], "its focus, the list"),
+        (hdr["R1_MAP_PAGE"] + 0x44, hdr["R1_MAP_TITLE"], "items: the title ..."),
+        (hdr["R1_MAP_PAGE"] + 0x48, hdr["R1_MAP_LIST"], "the list ..."),
+        (hdr["R1_MAP_PAGE"] + 0x4C, hdr["R1_MAP_GALAXY"], "the galaxy ..."),
+        (hdr["R1_MAP_PAGE"] + 0x50, hdr["R1_MAP_HINT"], "the hint ..."),
+        (hdr["R1_MAP_PAGE"] + 0x54, hdr["R1_MAP_SHOT"], "the planet picture ..."),
+        (hdr["R1_MAP_PAGE"] + 0x58, hdr["R1_MAP_LOADER"], "and the loader of planet maps, which the shim leaves out"),
+        (hdr["R1_MAP_TITLE"] + 0x00, hdr["OPD_LABEL_UPDATE"], "the title, a label item ..."),
+        (hdr["R1_MAP_TITLE"] + 0x04, hdr["OPD_LABEL_DRAW"], ""),
+        (hdr["R1_MAP_TITLE"] + 0x08, 0x007077F0, "its enter 0x14B478, li r3,0: nothing ..."),
+        (hdr["R1_MAP_TITLE"] + 0x34, 0x00004EF0, "text 0x4EF0, \"Galactic Map\""),
+        (hdr["R1_MAP_LIST"] + 0x00, hdr["OPD_LIST_UPDATE"], "the map list: the generic update, which the shim's replaces ..."),
+        (hdr["R1_MAP_LIST"] + 0x04, hdr["OPD_SCROLL_DRAW"], "... the scroll list's draw, which the shim's list keeps ..."),
+        (hdr["R1_MAP_LIST"] + 0x08, 0x007077F8, "... its enter 0x14B480, which builds the discovered planets ..."),
+        (hdr["R1_MAP_LIST"] + 0x30, hdr["R1_MAP_LIST_FLAGS"], "... flags 0x138, the shim's list's"),
+        (0x007077F8, 0x0014B480, ""),
+        (0x0014B4C4, 0x310852B0, "the enter's entries come from the planet table 0x7352B0 ..."),
+        (0x0014B4E4, 0x314A3290, "into the buffer 0xA53290 ..."),
+        (0x0014B53C, 0x61288000, "and it sets the list's flag 0x8000, the draw's first frame, as the shim's arrival does"),
+        (hdr["R1_MAP_GALAXY"] + 0x00, 0x00707800, "the galaxy item's update 0x14B5B8 ..."),
+        (0x00707800, 0x0014B5B8, ""),
+        (0x0014B5E4, 0x3063DC78, "... which on the cross goes to the planet page 0x72DC78: the shim's copy has no update"),
+        (hdr["R1_MAP_GALAXY"] + 0x04, hdr["OPD_GALAXY_DRAW"], "its draw, \"Galactic Map Draw\", the shim's copy's ..."),
+        (hdr["OPD_GALAXY_DRAW"], 0x0014B5F4, ""),
+        (0x004D29E4, 0x32105394, "which draws the planets from the table 0x735394 ..."),
+        (0x004D2B20, 0x806E0224, "and labels the selected one, 0xA206E4"),
+        (hdr["OPD_SCROLL_DRAW"], 0x00144638, "the scroll list's draw"),
+        (hdr["R1_MAP_HINT"] + 0x04, hdr["OPD_LIST_DRAW"], "the hint, a generic list's draw ..."),
+        (hdr["R1_MAP_HINT"] + 0x30, 0x00004002, "flags 0x4002 ..."),
+        (hdr["R1_MAP_HINT"] + 0x34, 0x0072B1DC, "entries 0x72B1DC ..."),
+        (0x0072B1DC, 0x4F050000, "\"Select\" ..."),
+        (0x0072B1E8, 0x4EE00000, "\"Exit\" ..."),
+        (0x0072B1F4, 0x00000000, "and the end"),
+        (hdr["R1_MAP_SHOT"] + 0x00, 0x00707770, "the planet picture: update 0x1480F4 ..."),
+        (hdr["R1_MAP_SHOT"] + 0x04, 0x00707778, "draw 0x1484A4 ..."),
+        (hdr["R1_MAP_SHOT"] + 0x08, 0x00707780, "enter 0x148688 ..."),
+        (hdr["R1_MAP_SHOT"] + 0x0C, 0x00707788, "exit 0x14876C ..."),
+        (0x00707770, 0x001480F4, ""),
+        (0x00707780, 0x00148688, ""),
+        (0x00707788, 0x0014876C, ""),
+        (hdr["R1_MAP_SHOT"] + 0x30, 0x00000007, "set 7, gmap_ss ..."),
+        (hdr["R1_MAP_SHOT"] + 0x34, 0x00000022, "flag 2: the picture of the selected planet ..."),
+        (0x00148160, 0x83C30224, "read from 0xA206E4"),
+        (0x0072C0AC, 0x00707780, "the Options page's picture uses the same enter and exit, in an ordinary pause"),
+        (0x0072C0B0, 0x00707788, ""),
+        (hdr["R1_MAP_LOADER"] + 0x00, 0x00707620, "the loader of planet maps: update 0x142E38 ..."),
+        (0x00707620, 0x00142E38, ""),
+        (0x001430EC, 0x809D0040, "which loads a planet's map into the pause's base buffer (0xA10918) ..."),
+        (0x001430F0, 0x483C0D11, "... with LoadAssetFromFile: only a pause opened on the map lays it out for that, so it is left out"),
+        (0x0013B274, 0x2C87000F, "the opener's map-only memory: for screen 15 ..."),
+        (0x0013B27C, 0x2C07000B, "... or 11 only"),
+        (hdr["R1_MAP_INFO"] + 0x38, hdr["R1_MAP_PAGE"], "the planet page's parent is the map ..."),
+        (hdr["R1_MAP_INFO"] + 0x3C, 0x00000010, "... screen 16, which travels too: left out"),
+        (0x0013C03C, 0x80A30038, "the transition: the current page's parent ..."),
+        (0x0013C040, 0x7C852010, "... against the next page ..."),
+        (0x0013C044, 0x7C9F0034, "... equal: back to the parent"),
+        (0x0013C10C, 0x80790004, "back: the current page's ..."),
+        (0x0013C114, 0x7C83E82E, "... pose for each pane ..."),
+        (0x0013C13C, 0x30A5FFFF, "... at its last frame ..."),
+        (0x0013C14C, 0x3C60BF80, "... played at -1.0 (the picker's open and its way back) ..."),
+        (0x0013C150, 0x90640058, ""),
+        (0x0013C164, 0x7C83E82E, "forwards: the next page's pose ..."),
+        (0x0013C15C, 0x63850000, "... from frame 0 ..."),
+        (0x0013C17C, 0x3C803F80, "... at 1.0"),
+        (0x0013C20C, 0x38800001, "a close is action 1 ..."),
+        (0x0013C210, 0x2C03000F, "... but on screen 15 ..."),
+        (0x0013C218, 0x2C030010, "... or 16 ..."),
+        (0x0013C220, 0x38800002, "... action 2, travel: the picker's page is screen 50"),
         (0x0014AF68, 0x33BD0006, "the 3D slider: the rows after it 6 lower ..."),
         (0x0014AFDC, 0x307A0057, "its frame from w / 2 + 87 ..."),
         (0x0014AFD4, 0x30C4FFF6, "to w - 10 ..."),
@@ -2877,6 +2966,13 @@ def check_rac1(ok, elf, roots):
        hdr["R1_CFG_VIS"] == 8,
        "the shim's list on pane 1 and Cheats' hint on pane 2, rows of 20 units at least, eight before the pane "
        "is measured")
+    names = [W(hdr["R1_PLANET_TABLE"] + 12 * k) for k in range(20)]
+    subs = [W(hdr["R1_PLANET_TABLE"] + 12 * k + 4) for k in range(20)]
+    ok(names[:19] == [0x4EB9 + k for k in range(19)] and names[19] == 0 and all(0x4ECD <= x <= 0x4EDE for x in subs[:19])
+       and hdr["R1_PLANETS"] == 19 and hdr["R1_VELDIN2"] == 18,
+       "the planet table: nineteen planets, names 0x4EB9 .. 0x4ECB and their subtitles, then none: qwark's "
+       "PLANET_LIST, Veldin 0 .. Veldin2 18, which the picker lists in that order")
+    ok(R1_ID_OK(hdr), "the picker's own text id, Veldin2's, is in the text stub's range")
     br, wd, pr = refs_into(elf, hdr["MH_SITE_HELP_TEXT"], hdr["MH_SITE_HELP_TEXT"] + 0x18)
     ok([a for a, _ in wd] == [0x00729D24] and not pr,
        "nothing but the main page's Help item names the Help entry: no other list changes")
@@ -2889,7 +2985,8 @@ def check_rac1(ok, elf, roots):
     for b in bad[:12]:
         print("        " + b)
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
-    handed = {hdr["OPD_LIST_DRAW"], hdr["OPD_LABEL_UPDATE"], hdr["OPD_LABEL_DRAW"]}
+    handed = {hdr["OPD_LIST_DRAW"], hdr["OPD_LABEL_UPDATE"], hdr["OPD_LABEL_DRAW"], hdr["OPD_SCROLL_DRAW"],
+              hdr["OPD_GALAXY_DRAW"]}
     seen, bad = set(), []
     for lo, _, c, _ in areas:
         b, s = calls_via_descriptors(c, lo, set(opds), elf, toc=RAC1_TOC, code_hi=0x700000)
