@@ -151,6 +151,10 @@ rac4_entry() { echo mh_frame_stub; }
 
 rac4_ldflags() {
 	echo "--defsym game_handle_menu_input=$(need "$1" GAME_HANDLE_MENU_INPUT)"
+	# The planet picker's stubs (mailbox version 3) go on to these.
+	for x in HANDLE_SELECTION GHOST_LISTED GHOST_TESTED COUNT_DONE BACK_TAKEN CLOSE_TAKEN INPUT_DONE; do
+		echo "--defsym dl_$(echo $x | tr 'A-Z' 'a-z')=$(need "$1" DL_$x)"
+	done
 }
 
 # The hook words, one a line: address, value, the game's word, what it is.
@@ -164,7 +168,8 @@ rac4_hooks() {
 	screen_stub=$(needsym "$elf" mh_screen_stub)
 	inject_stub=$(needsym "$elf" mh_inject_stub)
 	help_stub=$(needsym "$elf" mh_help_label)
-	for d in $start_desc $stop_desc; do
+	worlds_desc=$(needsym "$elf" mh_worlds_stop)
+	for d in $start_desc $stop_desc $worlds_desc; do
 		[ $((d)) -ge $((data)) ] && [ $((d)) -lt $((data + data_size)) ] || fail "rac4: descriptor $d is not in data.bin"
 	done
 	printf '0x%08X 0x00000000 0x00000000 screen %d fcInit\n' $((slot)) $((screen_id))
@@ -177,6 +182,17 @@ rac4_hooks() {
 	echo "$site $(blword "$site" "$screen_stub") $(need "$hdr" MH_ORIG_SCREEN) bl mh_screen_stub ($screen_stub)"
 	site=$(need "$hdr" MH_SITE_INJECT)
 	echo "$site $(blword "$site" "$inject_stub") $(need "$hdr" MH_ORIG_INJECT) bl mh_inject_stub ($inject_stub)"
+	# The planet picker (mailbox version 3): Worlds' X, its four gates, its stop.
+	stub=$(needsym "$elf" mh_select_stub)
+	site=$(need "$hdr" MH_SITE_SELECT)
+	echo "$site $(blword "$site" "$stub") $(need "$hdr" MH_ORIG_SELECT) bl mh_select_stub ($stub)"
+	for gate in GHOST COUNT BACK CLOSE; do
+		lower=$(echo $gate | tr 'A-Z' 'a-z')
+		stub=$(needsym "$elf" mh_gate_$lower)
+		site=$(need "$hdr" MH_SITE_$gate)
+		echo "$site $(bword "$site" "$stub") $(need "$hdr" MH_ORIG_$gate) b mh_gate_$lower ($stub)"
+	done
+	echo "$(need "$hdr" MH_WORLDS_STOP) $worlds_desc $(need "$hdr" MH_ORIG_WORLDS_STOP) Worlds' fcStop: mh_worlds_stop"
 	site=$(need "$hdr" MH_SITE_HELP_LABEL)
 	echo "$site $(blword "$site" "$help_stub") $(need "$hdr" MH_ORIG_HELP_LABEL) bl mh_help_label ($help_stub)"
 	echo "$(need "$hdr" MH_SITE_HELP_SCREEN) $(need "$hdr" MH_HELP_SCREEN_WORD) $(need "$hdr" MH_ORIG_HELP_SCREEN) li r4,36: the Help row opens screen 36"

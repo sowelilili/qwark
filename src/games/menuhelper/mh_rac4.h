@@ -77,7 +77,7 @@
 #define MH_MAIN_ROWS        0x00000008   /* GuiSupport's list has eight */
 #define MH_CFG_ROWS         0x00000010
 #define MH_MBOX_SIZE        0x00000480   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
-#define MH_CAPS             0x0000000F   /* steps, page keys, back button, requests */
+#define MH_CAPS             0x0000001F   /* steps, page keys, back button, requests, the planet picker */
 
 /*
  * The game's own casing (read from the PS3 build's english.ps3): its lists of
@@ -193,6 +193,63 @@
 #define DL_HELP_CB          0x003A8540   /* MenuMain_MainCMDHelpCB */
 #define DL_HELP_CB_OPD      0x00993FD0
 #define DL_START_MAIN       0x003A5AE4   /* MenuMain_StartMain */
+
+/*
+ * The planet picker (mailbox version 3): the pause menu's own Worlds screen,
+ * screen 3 (MenuPlanet), pushed over screen 36 from the root's PLANETS row as
+ * the main menu's WORLDS row pushes it (MenuMain_MainCMDWorldsCB, 0x3A8368:
+ * GuiMenu_PushScreen(p, 3)). REPORT-planet-pickers.md section 2 and probe
+ * PL4, which ran it on hardware. Six more words, each acting only while the
+ * core's ST_PICKER says the menu opened Worlds, so the game's own Worlds (from
+ * the main menu's WORLDS row) runs every word as the game has it:
+ *
+ * MH_SITE_SELECT   MenuPlanet_HandleInput's X, `bl HandleSelection`: a call to
+ *                  mh_select_stub. While the picker is up the shim takes the
+ *                  focused entry, hands its planet to qwark (mh_core_pick) and
+ *                  closes the menu the way Start closes Worlds; otherwise
+ *                  HandleSelection, as before.
+ * MH_SITE_GHOST    UpdatePlanets' `beq` that leaves Ghost Station (14) out of
+ *                  the list unless a byte says otherwise: a branch to
+ *                  mh_gate_ghost, which passes it while the picker is up.
+ * MH_SITE_COUNT    SetupPlanetTourneyList's `li r3,15`: a branch to
+ *                  mh_gate_count, 16 while the picker is up, so the sixteenth
+ *                  entry it writes, Interior (15), is listed (the CtlList holds
+ *                  19).
+ * MH_SITE_BACK     HandleInput's `beq` that ignores Triangle while no mission
+ *                  is active (mf_activeMissionIndex -1, the trap after a
+ *                  planet's last mission): mh_gate_back, passed while the
+ *                  picker is up, so Back always returns to the menu.
+ * MH_SITE_CLOSE    the same test for Start and Select: mh_gate_close.
+ * MH_WORLDS_STOP   GuiMenu_Screens[3].fcStop, a data word: the descriptor of
+ *                  mh_worlds_stop, which ends the picker when Worlds goes
+ *                  anywhere but back to screen 36 and calls the game's stop.
+ *
+ * They go in after the Start path's words and before the Help row's, and none
+ * of them can act before the PLANETS row of a menu that is already the
+ * renderer's has set ST_PICKER.
+ */
+#define MH_SITE_SELECT      0x003B2844   /* bl 0x3B2198 (MenuPlanet_HandleSelection), word 0x4BFFF955 */
+#define MH_SITE_GHOST       0x003B177C   /* beq 0x3B17A0, word 0x41820024 */
+#define MH_SITE_COUNT       0x003B1424   /* li r3,15, word 0x3860000F */
+#define MH_SITE_BACK        0x003B27C0   /* beq 0x3B28D4, word 0x41820114 */
+#define MH_SITE_CLOSE       0x003B2898   /* beq 0x3B28D4, word 0x4182003C */
+#define MH_WORLDS_STOP      0x009E8954   /* GuiMenu_Screens[3].fcStop, 0x994400 */
+
+#define MH_ORIG_SELECT      0x4BFFF955
+#define MH_ORIG_GHOST       0x41820024
+#define MH_ORIG_COUNT       0x3860000F
+#define MH_ORIG_BACK        0x41820114
+#define MH_ORIG_CLOSE       0x4182003C
+#define MH_ORIG_WORLDS_STOP 0x00994400   /* MenuPlanet_Stop's descriptor */
+
+/* Where the picker's stubs go on to (build.sh hands each to the linker as dl_<name>). */
+#define DL_HANDLE_SELECTION 0x003B2198   /* MenuPlanet_HandleSelection */
+#define DL_GHOST_LISTED     0x003B1780   /* after the beq: Ghost Station goes in */
+#define DL_GHOST_TESTED     0x003B17A0   /* the beq's target: one more test, which may leave it out */
+#define DL_COUNT_DONE       0x003B1428   /* SetupPlanetTourneyList's epilogue, r3 the count */
+#define DL_BACK_TAKEN       0x003B27C4   /* Triangle goes on: g_fromOther = 0, PopScreen */
+#define DL_CLOSE_TAKEN      0x003B289C   /* Start goes on: the sound flag, the bytes, CloseMenu */
+#define DL_INPUT_DONE       0x003B28D4   /* HandleInput's epilogue: the press ignored */
 
 /* Where the one stub that is not a call goes on to. */
 #define GAME_HANDLE_MENU_INPUT 0x00368304   /* GuiSupport_HandleMenuInput */
@@ -386,6 +443,36 @@
 #define DL_MENU_EXIT        0x009EAE34   /* u8 g_bMenuExit */
 
 /*
+ * Worlds (the picker), as MenuPlanet's code reads it (REPORT-planet-pickers.md
+ * 2.1; PL4 on hardware):
+ *   MenuPlanet_PlayerData, 600 bytes a player: its CtlList's items (0x18
+ *   each, +8 the entry), their count and the focus;
+ *   an entry {u8 bLocked, u8 complete, u8 bNew, pad, s32 iLink, s32 type}:
+ *   type 0 a planet, iLink its level (+20 in co-op), type 1 a tournament,
+ *   which DreadZone (level 1) holds;
+ *   g_fromPlanet, g_fromOther, g_fromMissionScreen, the three bytes Start
+ *   clears as it closes Worlds (MenuPlanet_SystemCancel).
+ * The main menu's WORLDS row is greyed (MenuMain_StartMain, 0x3A619C..0x3A63B0)
+ * in Interior (level 15, co-op 35), and in DreadZone (1, 21) until its mission
+ * 37 has a completion (the byte at DL_DZ_GATE): the picker refuses there too,
+ * and the PLANETS row opens qwark's own list.
+ */
+#define DL_SCREEN_WORLDS    0x00000003
+#define DL_PLANET_PD        0x011A1458   /* MenuPlanet_PlayerData */
+#define DL_PLANET_PD_SIZE   0x00000258
+#define DL_PLANET_ITEMS     0x00000220
+#define DL_PLANET_COUNT     0x0000023C
+#define DL_PLANET_FOCUS     0x00000240
+#define DL_PLANET_FROM      0x011A1370   /* g_fromPlanet, g_fromOther, g_fromMissionScreen: bytes */
+#define DL_LEVEL            0x009C3240   /* Level: 1..20 single player, 21..40 co-op */
+#define DL_LEVEL_INTERIOR   0x0000000F
+#define DL_DZ_GATE          0x00B281B5   /* DreadZone's MF_LevelSave mission[0x25].completes */
+#define DL_TYPE_PLANET      0x00000000
+#define DL_TYPE_TOURNAMENT  0x00000001
+#define DL_LEVEL_DREADZONE  0x00000001
+#define SND_REFUSED         0x00000004   /* what HandleSelection plays for a locked entry */
+
+/*
  * The game's function descriptors {code, TOC 0x9BCD58}, each read back out of
  * the executable by check.py.
  */
@@ -444,6 +531,10 @@
 #define OPD_SET_RECT        0x009861A0   /* SetRectLTRB(h, l, t, r, b)          0x0AF4D8 */
 #define OPD_VERTEX_COLORS   0x009862D0   /* SetVertexColors(h, c0, c1, c2, c3)  0x0B1600 */
 #define OPD_TEAM_COLOR      0x00991EE0   /* GuiMain_GetTeamColor(team, i)       0x360EB0 */
+#define OPD_PUSH_SCREEN     0x00992018   /* GuiMenu_PushScreen(p, screen)       0x362308 */
+#define OPD_NEXT_SCREEN     0x00992010   /* GuiMenu_GetNextScreen(p)            0x3622E4 */
+#define OPD_SOUND_FLAG      0x00991F28   /* GuiMain_SetMainMenuSoundFlag()      0x361408 */
+#define OPD_WORLDS_STOP     0x00994400   /* MenuPlanet_Stop(p)                  0x3B316C */
 
 /*
  * OPD_GO_BACK_CB is Options' back callback, and the menu has no Options under
@@ -474,6 +565,7 @@
 #define SH_CMD              0x14   /* u8 the CONFIG page's command in hand, for its sound */
 #define SH_GS_NEXT          0x15   /* u8 which of the two GuiStates the next CONFIG start runs */
 #define SH_WAS              0x16   /* u8 the type of the screen that stopped last (MBOX_PTYPE_*, MH_NONE) */
+#define SH_WORLDS_OPENS     0x17   /* u8 the times PLANETS opened Worlds (wraps at 256); the mailbox's pick_seq counts the picks */
 #define SH_TEAM             0x18   /* u32[2] the slider fill's team colours (GetTeamColor(1, 2), (1, 0)) */
 #define SH_GS               0x20   /* GuiState[2] {state, init, deinit, update, pre, post} */
 #define SH_LIST             0x50   /* CtlList, DL_LIST_SIZE */

@@ -1078,32 +1078,18 @@ static const char * const rac4_unlock_names[] = { "LOCKED", "V1", "V10", "V99" }
 static const u32 rac4_unlock_values[] = { 0, 1, 10, RAC4_MAX_LEVEL };
 
 /*
- * Deadlocked crashes loading a planet the save has not unlocked, so the menu
- * lists only the unlocked ones. The test is the Worlds screen's own
- * (MenuPlanet_UpdatePlanets, PS2 v6 0x4BF1D8): bit 1 of the status byte at the
- * end of the planet's MF_LevelSave, entry `planet - 1` of RAC4_LEVEL_SAVES.
+ * Build 54: the menu's own Planets page (the fallback where Worlds cannot
+ * open) lists every planet, as PLANET_LIST does. Round 2 listed only those the
+ * save had unlocked, since loading another crashed the game; a planet load now
+ * unlocks it first (rac4_planet_unlock), so none is left out.
  */
-#define RAC4_LEVEL_STATUS   0x300u
-#define RAC4_LEVEL_UNLOCKED 0x02u
-
-static int rac4_planet_ok(u8 planet)
-{
-	u8 status = 0;
-
-	if (planet == 0 || planet > RAC4_PLANET_SAVES || rac4_planets[planet][0] == '(') return 0;
-	if (mem_read_u8(RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE + RAC4_LEVEL_STATUS,
-	                &status) != ST_OK)
-		return 0;
-	return (status & RAC4_LEVEL_UNLOCKED) != 0;
-}
-
 static const struct game_menu rac4_menu = {
 	rac4_menu_sections, (u8)(sizeof(rac4_menu_sections) / sizeof(rac4_menu_sections[0])),
 	rac4_menu_unlock_actions, (u8)sizeof(rac4_menu_unlock_actions),
 	rac4_unlock_names, rac4_unlock_values,
 	(u8)(sizeof(rac4_unlock_names) / sizeof(rac4_unlock_names[0])),
 	1, "V",
-	rac4_planet_ok,
+	NULL,                 /* every planet, the placeholders apart (menu.c leaves out "(...)") */
 	NULL, NULL,           /* every weapon goes to V99; no action with a status */
 	NULL                  /* the two weapon buttons stay on the Unlocks page, which they fit */
 };

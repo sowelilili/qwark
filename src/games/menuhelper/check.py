@@ -138,12 +138,21 @@ QWARK_RAC4 = [
 
 # Overlaps that are by design: (mod folder) -> why.
 ACCEPTED = {
+    "probe-pl4": "probe PL4 is the planet picker's prototype and hooks Worlds' X and its stop the same way; "
+                 "the install refuses while it is loaded",
+    "probe-pl4-list": "probe PL4's list mod writes the four words the picker gates, as plain words; the install "
+                      "refuses while it is loaded",
     "probe-n0": "probe N0 is this renderer's prototype and hooks the same sites; "
                 "the install refuses while it is loaded, and N0 never needs loading again",
 }
 
 # The stubs' first words (mh_rac4_stubs.S).
 STUB_FIRST = {
+    "mh_select_stub": (0xFFFFFFFF, 0xF821FF81, "stdu r1,-0x80(r1)"),
+    "mh_gate_ghost": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
+    "mh_gate_count": (0xFFFFFFFF, 0x3860000F, "li r3,15, the game's own count first"),
+    "mh_gate_back": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
+    "mh_gate_close": (0xFFFF0003, 0x40820000, "bne, the game's own test first"),
     "mh_frame_stub": (0xFFFFFFFF, 0xF821FF81, "stdu r1,-0x80(r1)"),
     "mh_inject_stub": (0xFFFF0000, 0x3D600000, "lis r11,..."),
     "mh_screen_stub": (0xFFFFFFFF, 0x38800001, "li r4,1"),
@@ -872,6 +881,138 @@ def check_rac4_templates(ok, elf, hdr, path):
                                                                fr["x"] + fr["w"] / 2))
 
 
+# ------------------------------------- Deadlocked's planet picker (mailbox version 3)
+
+def check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at):
+    """
+    Worlds (screen 3, MenuPlanet) as the picker's six words and the shim assume
+    it: the code round each site, the numbers the shim reads, the main menu's
+    WORLDS row's own rule, and the leaf gates stepped with the picker up and
+    down on either outcome of the game's own test.
+    """
+    w = elf.word
+    # X: HandleInput's command 1 reaches `bl HandleSelection`, then its epilogue.
+    sel = hdr["MH_SITE_SELECT"]
+    ok(branch_target(sel, hdr["MH_ORIG_SELECT"]) == hdr["DL_HANDLE_SELECTION"] and
+       branch_target(sel + 4, w(sel + 4)) == hdr["DL_INPUT_DONE"] and
+       w(0x003B27A0) == 0x2C030001 and branch_target(0x003B27A4, w(0x003B27A4)) == sel,
+       "Worlds' X: command 1 (0x3B27A0) goes to 0x%08X, `bl HandleSelection` (0x%08X), then the epilogue" %
+       (sel, hdr["DL_HANDLE_SELECTION"]))
+    # Triangle (Cancel) and Start (SystemCancel): the active mission's test, then the press or the epilogue.
+    back, close = hdr["MH_SITE_BACK"], hdr["MH_SITE_CLOSE"]
+    ok(w(back - 12) == 0x3C80009D and w(back - 8) == 0x8084195C and w(back - 4) == 0x2C04FFFF and
+       branch_target(back, hdr["MH_ORIG_BACK"]) == hdr["DL_INPUT_DONE"] and back + 4 == hdr["DL_BACK_TAKEN"] and
+       w(hdr["DL_BACK_TAKEN"]) == 0x3C80011A and
+       branch_target(hdr["DL_BACK_TAKEN"] + 12, w(hdr["DL_BACK_TAKEN"] + 12)) == 0x00362584,
+       "Triangle's gate (0x%08X): mf_activeMissionIndex (0x9D195C) against -1, the press dropped (0x%08X) or on to "
+       "PopScreen (0x362584)" % (back, hdr["DL_INPUT_DONE"]))
+    ok(w(close - 12) == 0x3C60009D and w(close - 8) == 0x8063195C and w(close - 4) == 0x2C03FFFF and
+       branch_target(close, hdr["MH_ORIG_CLOSE"]) == hdr["DL_INPUT_DONE"] and close + 4 == hdr["DL_CLOSE_TAKEN"] and
+       branch_target(hdr["DL_CLOSE_TAKEN"], w(hdr["DL_CLOSE_TAKEN"])) == 0x00361408 and
+       w(close + 0x30) == 0x3880FFFF and branch_target(close + 0x34, w(close + 0x34)) == 0x0036249C,
+       "Start's gate (0x%08X): the same test, then the sound flag (0x361408), the three bytes, CloseMenu(p, -1): "
+       "the close the shim's pick copies" % close)
+    frm = hdr["DL_PLANET_FROM"]
+    ok([w(close + 0x1C), w(close + 0x20), w(close + 0x24)] ==
+       [0x98830000 | ((frm + 2) & 0xFFFF), 0x98850000 | ((frm + 1) & 0xFFFF), 0x98860000 | (frm & 0xFFFF)] and
+       (frm + 0x8000) >> 16 == 0x11A,
+       "the three bytes it clears are g_fromMissionScreen, g_fromOther, g_fromPlanet at 0x%08X" % frm)
+    # The list: Ghost Station's test, and the count.
+    gh, cnt = hdr["MH_SITE_GHOST"], hdr["MH_SITE_COUNT"]
+    ok(w(gh - 0x1C) == 0x2C1E000E and branch_target(gh - 0x18, w(gh - 0x18)) == hdr["DL_GHOST_LISTED"] and
+       w(gh - 4) == 0x2C030000 and branch_target(gh, hdr["MH_ORIG_GHOST"]) == hdr["DL_GHOST_TESTED"] and
+       gh + 4 == hdr["DL_GHOST_LISTED"] and w(hdr["DL_GHOST_LISTED"]) == 0x2C1E0022 and
+       (w(hdr["DL_GHOST_TESTED"]) >> 26) == 18 and (w(hdr["DL_GHOST_TESTED"]) & 1) == 1,
+       "Ghost Station's gate (0x%08X): only entry 14 reaches it (0x%08X), a byte's bit deciding between "
+       "listing it (0x%08X) and one more test (0x%08X)" % (gh, gh - 0x1C, hdr["DL_GHOST_LISTED"],
+                                                             hdr["DL_GHOST_TESTED"]))
+    ok(w(cnt) == hdr["MH_ORIG_COUNT"] and cnt + 4 == hdr["DL_COUNT_DONE"] and w(cnt + 4) == 0xEBC10030 and
+       w(cnt + 16) == 0x4E800020 and w(0x003B1390) == 0x3880000F and w(0x003B13CC) == 0x908300B8 and
+       branch_target(0x003B14B0, w(0x003B14B0)) == 0x003B1300 and
+       not [a for a, _ in refs_into(elf, 0x003B1300, 0x003B1304)[0] if a != 0x003B14B0],
+       "SetupPlanetTourneyList (0x3B1300, called from UpdatePlanets alone) answers 15 at 0x%08X, a leaf's "
+       "epilogue after, having written a sixteenth entry, Interior (15, at +0xB8)" % cnt)
+    ok(any(w(0x003B3200 + 4 * i) == 0x38A00013 for i in range(0x10)) and
+       branch_target(0x003B323C, w(0x003B323C)) == 0x00633690,
+       "and Worlds' CtlList holds 19 (CtlList::Create at 0x3B323C), room for the sixteenth")
+    # The entry the shim reads: PlayerData's items, count and focus.
+    pd, sz = hdr["DL_PLANET_PD"], hdr["DL_PLANET_PD_SIZE"]
+    ok(w(0x003B27E8) == 0x1C630000 | sz and w(0x003B27EC) == 0x3C800000 | ((pd + 0x8000) >> 16) and
+       w(0x003B27F4) == 0x30840000 | (pd & 0xFFFF) and w(0x003B281C) == 0x807F0000 | hdr["DL_PLANET_COUNT"] and
+       w(0x003B2878) == 0x80A50000 | hdr["DL_PLANET_FOCUS"] and w(0x003B17F8) == 0x809F0000 | hdr["DL_PLANET_ITEMS"],
+       "MenuPlanet_PlayerData at 0x%08X, 0x%X a player: its items +0x%X, count +0x%X, focus +0x%X" %
+       (pd, sz, hdr["DL_PLANET_ITEMS"], hdr["DL_PLANET_COUNT"], hdr["DL_PLANET_FOCUS"]))
+    # Worlds' table entry, and the WORLDS row's rule, which the shim's refusals copy.
+    ok(hdr["MH_WORLDS_STOP"] == 0x009E8918 + 0x10 * hdr["DL_SCREEN_WORLDS"] + 0xC and
+       w(hdr["MH_WORLDS_STOP"]) == hdr["MH_ORIG_WORLDS_STOP"] == hdr["OPD_WORLDS_STOP"],
+       "0x%08X is GuiMenu_Screens[3].fcStop, MenuPlanet_Stop's descriptor" % hdr["MH_WORLDS_STOP"])
+    lev, gate = hdr["DL_LEVEL"], hdr["DL_DZ_GATE"]
+    ok(w(0x003A619C) == 0x3FC00000 | ((lev + 0x8000) >> 16) and w(0x003A61A0) == 0x83DE0000 | (lev & 0xFFFF) and
+       w(0x003A61A4) == 0x2C1E0000 | hdr["DL_LEVEL_DREADZONE"] and w(0x003A61A8) == 0x2C9E0015 and
+       w(0x003A61AC) == 0x2F1E0000 | hdr["DL_LEVEL_INTERIOR"] and w(0x003A61B0) == 0x2F9E0023 and
+       w(0x003A61DC) == 0x3CA00000 | ((gate + 0x8000) >> 16) and w(0x003A61E8) == 0x30A50000 | (gate & 0xFFFF) and
+       w(0x003A6394) == 0x30643FB0 and w(0x003A63B0) == 0x38800001,
+       "the main menu greys WORLDS (descriptor 0x993FB0) in Interior (15, 35), and in DreadZone (1, 21) until "
+       "the byte at 0x%08X (its mission 37's completions) is set: Level at 0x%08X, as the shim refuses" % (gate, lev))
+    ok(w(0x00993FB0) == 0x003A8368 and w(0x00993FB4) == DL_TOC and
+       any(w(0x003A8368 + 4 * i) == 0x38800000 | hdr["DL_SCREEN_WORLDS"] and
+           any(branch_target(0x003A8368 + 4 * k, w(0x003A8368 + 4 * k)) == 0x00362308 for k in range(i + 1, i + 6))
+           for i in range(0x18)),
+       "and its callback (0x3A8368) is GuiMenu_PushScreen(p, 3), what the shim's PLANETS does")
+    # The leaf gates, stepped.
+    picker = hdr["MH_STATE"] + shim_defs["ST_PICKER"]
+    gates = (("mh_gate_ghost", "DL_GHOST_TESTED", "DL_GHOST_LISTED", "Ghost Station listed"),
+             ("mh_gate_back", "DL_INPUT_DONE", "DL_BACK_TAKEN", "Triangle pops"),
+             ("mh_gate_close", "DL_INPUT_DONE", "DL_CLOSE_TAKEN", "Start closes"))
+    for stub, taken, passed, what in gates:
+        if stub not in stub_at:
+            continue
+        try:
+            outs = []
+            for eq in (1, 0):
+                for up in (0, 1):
+                    cpu = Ppc(code, cave, {})
+                    cpu.st(picker, up, 1)
+                    cpu.cr0 = 0 if eq else 1
+                    cpu.r = [0x1000 + i for i in range(32)]
+                    keep = list(cpu.r)
+                    how = cpu.run(stub_at[stub])
+                    clean = all(cpu.r[i] == keep[i] for i in range(32) if i != 12)
+                    outs.append((how, clean))
+            want = [("b", hdr[taken]), ("b", hdr[passed]), ("b", hdr[passed]), ("b", hdr[passed])]
+            ok([o[0] for o in outs] == want and all(o[1] for o in outs),
+               "%s stepped: the game's test true goes where the game goes with the picker down (0x%08X) and on "
+               "with it up (0x%08X, %s); false, on as the game goes; only r12 and cr0 written" %
+               (stub, hdr[taken], hdr[passed], what))
+        except ValueError as e:
+            ok(False, "%s steps: %s" % (stub, e))
+    if "mh_gate_count" in stub_at:
+        try:
+            got = []
+            for up in (0, 1):
+                cpu = Ppc(code, cave, {})
+                cpu.st(picker, up, 1)
+                cpu.r = [0x1000 + i for i in range(32)]
+                keep = list(cpu.r)
+                how = cpu.run(stub_at["mh_gate_count"])
+                got.append((how, cpu.r[3], all(cpu.r[i] == keep[i] for i in range(32) if i not in (3, 12))))
+            ok(got == [(("b", hdr["DL_COUNT_DONE"]), 15, True), (("b", hdr["DL_COUNT_DONE"]), 16, True)],
+               "mh_gate_count stepped: 15, or 16 with the picker up, on to the epilogue; only r3, r12 and cr0 "
+               "written")
+        except ValueError as e:
+            ok(False, "mh_gate_count steps: %s" % e)
+    # The select stub: the frame stub's shape, mh_worlds_select with the module's TOC, else HandleSelection.
+    at = stub_at.get("mh_select_stub")
+    if at is not None:
+        ws = [struct.unpack(">I", code[at - cave + 4 * i:at - cave + 4 * i + 4])[0] for i in range(15)]
+        ok(ws[0:4] == [0xF821FF81, 0x7C0802A6, 0xF8010090, 0xF8410070] and (ws[4] >> 16) == 0x3C40 and
+           (ws[5] >> 16) == 0x3842 and (ws[6] >> 26) == 18 and (ws[6] & 3) == 1 and ws[7] == 0x60000000 and
+           ws[8:14] == [0x2C030000, 0xE8410070, 0xE8010090, 0x7C0803A6, 0x38210080, 0x4C820020] and
+           branch_target(at + 56, ws[14]) == hdr["DL_HANDLE_SELECTION"] and (ws[14] & 3) == 0,
+           "mh_select_stub: a frame, r2 the module's TOC, bl mh_worlds_select, the game's r2 and LR back, bnelr, "
+           "else b HandleSelection (0x%08X)" % hdr["DL_HANDLE_SELECTION"])
+
+
 # --------------------------------------------------------------- the checks
 
 def check_rac4(ok, elf, roots, bonus=None):
@@ -968,10 +1109,17 @@ def check_rac4(ok, elf, roots, bonus=None):
     }
     slot = hdr["MH_SCREEN_SLOT"]
     sites[hdr["MH_SITE_HELP_LABEL"]] = ("mh_help_label", hdr["MH_ORIG_HELP_LABEL"])
-    ok(len(hooks) == 9 and [h[0] for h in hooks] ==
+    # Mailbox version 3, the planet picker: Worlds' X (a bl) and its four gates (each a b).
+    sites[hdr["MH_SITE_SELECT"]] = ("mh_select_stub", hdr["MH_ORIG_SELECT"])
+    for g in ("GHOST", "COUNT", "BACK", "CLOSE"):
+        sites[hdr["MH_SITE_" + g]] = ("mh_gate_" + g.lower(), hdr["MH_ORIG_" + g])
+    ok(len(hooks) == 15 and [h[0] for h in hooks] ==
        [slot, slot + 4, slot + 8, slot + 12, hdr["MH_SITE_FRAME"], hdr["MH_SITE_SCREEN"],
-        hdr["MH_SITE_INJECT"], hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]],
-       "nine words: screen 36's slot, then the frame, screen and inject hooks, then the Help row's two")
+        hdr["MH_SITE_INJECT"], hdr["MH_SITE_SELECT"], hdr["MH_SITE_GHOST"], hdr["MH_SITE_COUNT"],
+        hdr["MH_SITE_BACK"], hdr["MH_SITE_CLOSE"], hdr["MH_WORLDS_STOP"],
+        hdr["MH_SITE_HELP_LABEL"], hdr["MH_SITE_HELP_SCREEN"]],
+       "fifteen words: screen 36's slot, then the frame, screen and inject hooks, then the planet picker's six "
+       "(Worlds' X, its four gates, its stop), then the Help row's two")
     for a, value, orig, what in hooks:
         ok(elf.word(a) == orig, "0x%08X holds 0x%08X in the executable (%s)" % (a, orig, what))
 
@@ -1010,7 +1158,7 @@ def check_rac4(ok, elf, roots, bonus=None):
        "and keeps every word")
     ok(not [a for a, _ in refs_into(elf, hdr["DL_HELP_CB"], hdr["DL_HELP_CB"] + 4)[0]],
        "and no code branches into the callback")
-    ok(hooks[8][1] == hdr["MH_HELP_SCREEN_WORD"] == 0x38800000 | hdr["MH_SCREEN_ID"],
+    ok(hooks[14][1] == hdr["MH_HELP_SCREEN_WORD"] == 0x38800000 | hdr["MH_SCREEN_ID"],
        "the callback's word becomes li r4,%d" % hdr["MH_SCREEN_ID"])
 
     # 4a. the game's own menus
@@ -1042,11 +1190,12 @@ def check_rac4(ok, elf, roots, bonus=None):
         if a not in sites:
             continue
         stub, _ = sites[a]
-        t = branch_target(a, value) if (value >> 26) == 18 and (value & 3) == 1 else None
+        link = not stub.startswith("mh_gate_")
+        t = branch_target(a, value) if (value >> 26) == 18 and (value & 3) == (1 if link else 0) else None
         first = struct.unpack(">I", code[t - cave:t - cave + 4])[0] if t is not None and cave <= t < cave + len(code) else None
         mask, want, name = STUB_FIRST[stub]
         good = t is not None and first is not None and (first & mask) == want and stub in what
-        ok(good, "0x%08X: %08X = bl 0x%08X, %s (%s)" % (a, value, t or 0, stub, name))
+        ok(good, "0x%08X: %08X = %s 0x%08X, %s (%s)" % (a, value, "bl" if link else "b", t or 0, stub, name))
         if good:
             stub_at[stub] = t
 
@@ -1062,17 +1211,30 @@ def check_rac4(ok, elf, roots, bonus=None):
         else:
             ok(False, "its %s 0x%08X is in the data image" % (what, desc))
 
+    # Worlds' stop: a descriptor of the renderer's in place of MenuPlanet_Stop's (mailbox version 3).
+    desc = words[hdr["MH_WORLDS_STOP"]]
+    if dat <= desc <= dat + len(data) - 8:
+        c, t = struct.unpack(">II", data[desc - dat:desc - dat + 8])
+        ok(cave <= c < cave + len(code) and dat + 0x8000 <= t <= dat + len(data) + 0x8000,
+           "Worlds' fcStop 0x%08X becomes a descriptor {0x%08X in the code, TOC 0x%08X}" % (desc, c, t))
+    else:
+        ok(False, "Worlds' fcStop 0x%08X is in the data image" % desc)
+
     # 4. the code, 5. the descriptors
-    allowed = (hdr["GAME_HANDLE_MENU_INPUT"],)
+    picker_outs = dict((hdr[k], k) for k in ("DL_HANDLE_SELECTION", "DL_GHOST_LISTED", "DL_GHOST_TESTED",
+                                              "DL_COUNT_DONE", "DL_BACK_TAKEN", "DL_CLOSE_TAKEN", "DL_INPUT_DONE"))
+    allowed = (hdr["GAME_HANDLE_MENU_INPUT"],) + tuple(picker_outs)
     bad = lint_code(code, cave, allowed=allowed)
-    ok(not bad, "the code: no branch out but the frame stub's tail branch, no sc, no vector instruction, "
+    ok(not bad, "the code: no branch out but the stubs' tail branches, no sc, no vector instruction, "
        "no write to r13")
     for b in bad[:12]:
         print("        " + b)
     outs = [cave + i for i in range(0, len(code), 4)
             if branch_target(cave + i, struct.unpack(">I", code[i:i + 4])[0]) in allowed]
-    ok(len(outs) == 1 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 1) == 0 for o in outs),
-       "exactly one way out, a plain branch (no link): the frame stub's tail call to HandleMenuInput")
+    ok(len(outs) == 9 and all((struct.unpack(">I", code[o - cave:o - cave + 4])[0] & 3) == 0 and o < core[0]
+                              for o in outs),
+       "nine ways out, every one a plain branch (no link) from a stub, before the core: the frame stub's tail call "
+       "to HandleMenuInput, the select stub's to HandleSelection, and the gates' seven back into Worlds' code")
 
     opds = dict((v, k) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
     bad, seen = calls_via_descriptors(code, cave, set(opds), elf)
@@ -1094,6 +1256,9 @@ def check_rac4(ok, elf, roots, bonus=None):
             check_stubs(ok, code, cave, hdr, box_defs, shim_defs, stub_at, data)
         except ValueError as e:
             ok(False, "the leaf stubs step: %s" % e)
+
+    # 4c, 8. the planet picker: Worlds' code round each word, the game's facts the shim reads, the stubs stepped
+    check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at)
 
     # 9. overlaps
     ours = [(cave, cave + len(code), "renderer code"), (mbx, mbx + len(box), "renderer mailbox"),

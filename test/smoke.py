@@ -303,13 +303,21 @@ COMBO_MENU_DEFAULT = 0x060F
 # Revision 1.22: Deadlocked's console menu renderer (src/games/menuhelper/mh_rac4.h)
 # and its mailbox (src/core/menubox.h, version 3: rows of 0x40), read and written here as a
 # renderer would. The last two sites are the pause main menu's Help row, which
-# the renderer makes the menu's way in.
+# the renderer makes the menu's way in. Mailbox version 3: the planet picker's
+# six, Worlds' X, its four gates and its fcStop (a data word: a descriptor).
 MENU_BOX = 0x017DD600
 MENU_MAGIC = 0x514D4E55
 MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
               0x0035DFBC: 0x60000000, 0x003A649C: 0x4BDF25C1,
-              0x003A8584: 0x3880001E}
+              0x003A8584: 0x3880001E,
+              0x003B2844: 0x4BFFF955, 0x003B177C: 0x41820024, 0x003B1424: 0x3860000F,
+              0x003B27C0: 0x41820114, 0x003B2898: 0x4182003C, 0x009E8954: 0x00994400}
 MENU_HELP_SCREEN = (0x003A8584, 0x38800024)
+MENU_WORLDS_STOP = 0x009E8954
+# Deadlocked's MF_LevelSave array (src/games/rac4.h): a planet's status byte at
+# +0x300 of its 0x304, its first mission's at +8; 0x03 is visible and unlocked.
+RAC4_LEVEL_SAVES = 0x00B27FF0
+RAC4_LEVEL_SIZE = 0x304
 MENU_CODE = (0x0097B000, 0x0097F000)
 MENU_DATA = (0x017DF0C0, 0x017DFFC0)
 MENU_BOX_SPAN = (0x017DD600, 0x017DDF00)
@@ -366,7 +374,7 @@ RAC2_PENDING_MODE = 0x01329F90
 RAC4_PAD_MASK = 0x00B11F30
 MBOX_OFF_HSTATE = 0x0C
 MBOX_OFF_FRAMES = 0x10
-MBOX_OFF_CURSOR = 0x2D
+MBOX_OFF_CURSOR = 0x35
 MROW_OFF_FLAGS = 0x01
 MROW_OFF_RANGE = 0x1C
 MROWF_RANGE = 0x10
@@ -376,10 +384,14 @@ MBOX_OFF_EV_SEQ = 0x14
 MBOX_OFF_EV_KIND = 0x18
 MBOX_OFF_EV_ACK = 0x20
 MBOX_OFF_PAGE_SEQ = 0x24
-MBOX_OFF_PAGE_KEY = 0x28
-MBOX_OFF_NROWS = 0x2C
-MBOX_OFF_PTYPE = 0x2F
-MBOX_OFF_TITLE = 0x30
+MBOX_OFF_PICK_SEQ = 0x28
+MBOX_OFF_PICK_PLANET = 0x2C
+MBOX_OFF_PAGE_KEY = 0x30
+MBOX_OFF_NROWS = 0x34
+MBOX_OFF_PTYPE = 0x37
+MBOX_OFF_TITLE = 0x38
+MBOX_CAP_PICKER = 0x10
+MROWF_PICKER = 0x40
 MBOX_OFF_ROWS = 0x80
 MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
@@ -2351,7 +2363,8 @@ def menu_page(c, box=MENU_BOX, size=0x480, row_size=MBOX_ROW_SIZE):
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, size))
     if status != ST_OK:
         return None
-    seq, key = struct.unpack(">II", body[MBOX_OFF_PAGE_SEQ:MBOX_OFF_PAGE_SEQ + 8])
+    seq = struct.unpack(">I", body[MBOX_OFF_PAGE_SEQ:MBOX_OFF_PAGE_SEQ + 4])[0]
+    key = struct.unpack(">I", body[MBOX_OFF_PAGE_KEY:MBOX_OFF_PAGE_KEY + 4])[0]
     n = body[MBOX_OFF_NROWS]
     title = body[MBOX_OFF_TITLE:MBOX_OFF_TITLE + 32].split(b"\0")[0].decode()
     labels = []
@@ -2413,9 +2426,11 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: a few seconds into the session its mailbox is in the game")
     hooks = menu_hooks(c)
     check(all((w >> 26) == 18 and MENU_CODE[0] <= bl_target(a, w) < MENU_CODE[1]
-              for a, w in hooks.items() if a != MENU_HELP_SCREEN[0]) and
-          hooks[MENU_HELP_SCREEN[0]] == MENU_HELP_SCREEN[1],
-          "Deadlocked menu: every hook site branches into the renderer's code, and Help's callback opens screen 36",
+              for a, w in hooks.items() if a not in (MENU_HELP_SCREEN[0], MENU_WORLDS_STOP)) and
+          hooks[MENU_HELP_SCREEN[0]] == MENU_HELP_SCREEN[1] and
+          MENU_DATA[0] <= hooks[MENU_WORLDS_STOP] < MENU_DATA[1],
+          "Deadlocked menu: every hook site branches into the renderer's code, Help's callback opens screen 36, "
+          "and Worlds' stop is a descriptor of the renderer's",
           dict((hex(a), hex(w)) for a, w in hooks.items()))
     check(combo(clear=False) == 1,
           "Deadlocked menu: the menu combo asks the renderer to open")
@@ -2441,6 +2456,38 @@ def exercise_console_menu(c, sim):
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer", "Deadlocked menu: and the root is back",
           page[2] if page else None)
+
+    # Mailbox version 3: the picker. The renderer says it opens the game's own;
+    # qwark flags the root's Planets row; a pick (the planet, then the seq)
+    # loads that planet once the menu is closed and the game plays, a locked
+    # one unlocked first.
+    page = menu_page(c)
+    body = page[4] if page else b""
+    i = page[3].index("Planets") if page and "Planets" in page[3] else -1
+    check(page is not None and struct.unpack(">H", body[4:6])[0] == 3 and body[0x0B] & MBOX_CAP_PICKER and i >= 0 and
+          body[MBOX_OFF_ROWS + i * MBOX_ROW_SIZE + MROW_OFF_FLAGS] & MROWF_PICKER,
+          "Deadlocked menu: mailbox version 3, the picker cap, and the root's Planets row flagged for it")
+    shaar = RAC4_LEVEL_SAVES + 5 * RAC4_LEVEL_SIZE
+    mem_write(c, shaar + 0x300, b"\x00")
+    mem_write(c, shaar + 8, b"\x00")
+    mem_write(c, 0xB36DD0, struct.pack(">I", 0))
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
+    seq = mem_read_u32(c, MENU_BOX + MBOX_OFF_PICK_SEQ)
+    mem_write(c, MENU_BOX + MBOX_OFF_PICK_PLANET, struct.pack(">I", 6))
+    mem_write(c, MENU_BOX + MBOX_OFF_PICK_SEQ, struct.pack(">I", seq + 1))
+    deadline = time.time() + 3.0
+    while time.time() < deadline and mem_read_u32(c, 0xB36DD0) != 6:
+        time.sleep(0.1)
+    check(mem_read_u32(c, 0xB36DD0) == 6 and mem_read_u32(c, 0xB36DCC) == 1 and
+          mem_read_u8(c, shaar + 0x300) == 3 and mem_read_u8(c, shaar + 8) == 3,
+          "Deadlocked menu: a pick of Shaar, locked, unlocks it (the level and its first mission 0x03) and loads it",
+          (mem_read_u32(c, 0xB36DD0), mem_read_u8(c, shaar + 0x300), mem_read_u8(c, shaar + 8)))
+    mem_write(c, 0xB36DCC, struct.pack(">I", 0))
+    # Leave the load as finished, so the fast loads it forced go back.
+    mem_write(c, 0xB3C5A0, struct.pack(">I", 6))
+    time.sleep(0.2)
+    mem_write(c, 0xB3C5A0, struct.pack(">I", 0))
+    time.sleep(0.2)
 
     # Round 3: Game's Challenge mode carries a slider's numbers; closing the menu puts the root back.
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")

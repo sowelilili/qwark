@@ -476,6 +476,43 @@ static int rac4_all_max_ammo(void)
  * as the other three games' loads do: one an earlier load still has
  * outstanding stays.
  */
+/* Whether an id is DreadZone or a planet: one with a LevelDef and a level save. */
+static int rac4_planet_real(u8 planet)
+{
+	return planet >= 1 && planet <= RAC4_PLANET_SAVES && ((RAC4_PLANETS_REAL >> planet) & 1u) != 0;
+}
+
+/*
+ * Build 54: a planet the save has not unlocked becomes one that has just
+ * unlocked, by the game's own rules (rac4.h, RAC4_PLANET_UNLOCK): its first
+ * mission and then the level visible and unlocked. Nothing else - no badges,
+ * points, armour, completions, no next-mission word - so the save is what the
+ * game would hold had the player unlocked it the long way, minus the reason.
+ * The mission goes first, so the level never reads unlocked without it.
+ */
+int rac4_planet_unlock(u8 planet)
+{
+	u32 base;
+	u8 status = 0, first = 0;
+	int rc;
+
+	if (!rac4_planet_real(planet)) return ST_BAD_ARG;
+	if (planet == RAC4_PLANET_DREADZONE) return ST_OK;
+
+	base = RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE;
+	rc = mem_read_u8(base + RAC4_LEVEL_STATUS, &status);
+	if (rc != ST_OK) return rc;
+	if ((status & RAC4_LEVEL_UNLOCKED) != 0) return ST_OK;
+	rc = mem_read_u8(base + RAC4_MISSION_STATUS, &first);
+	if (rc != ST_OK) return rc;
+
+	rc = mem_write_u8(base + RAC4_MISSION_STATUS, (u8)(first | RAC4_PLANET_UNLOCK));
+	if (rc == ST_OK) rc = mem_write_u8(base + RAC4_LEVEL_STATUS, (u8)(status | RAC4_PLANET_UNLOCK));
+	if (rc == ST_OK) plat_log("rac4: planet %d unlocked (status 0x%02X, its first mission 0x%02X)",
+	                          (int)planet, (int)(status | RAC4_PLANET_UNLOCK), (int)(first | RAC4_PLANET_UNLOCK));
+	return rc;
+}
+
 int rac4_planet_load(u8 planet, u8 flags)
 {
 	int was, rc;
@@ -483,6 +520,16 @@ int rac4_planet_load(u8 planet, u8 flags)
 	(void)flags;   /* Deadlocked has no level flag region and no special bolts. */
 
 	if (planet == 0 || planet >= rac4_planet_count()) return ST_BAD_ARG;
+
+	/*
+	 * Build 54: a planet the save has not unlocked crashed the game on
+	 * arrival (an empty Missions screen); it is unlocked first, as the game
+	 * would have it had it unlocked. The placeholders have no level save.
+	 */
+	if (rac4_planet_real(planet)) {
+		rc = rac4_planet_unlock(planet);
+		if (rc != ST_OK) return rc;
+	}
 
 	was = rac4_fastload_forced();
 	rc = rac4_fastload_force();
@@ -606,6 +653,13 @@ int rac4_get_options(u8 id, const char * const **options, u8 *count)
  * The old handler wrote the status byte of each mission one call at a time, 288
  * writes in all. One read-modify-write of each planet's mission array does the
  * same in thirty, which matters when every one of them is a syscall.
+ *
+ * Build 54: then every planet the save has not unlocked is unlocked the way a
+ * PLANET_LOAD unlocks one (rac4_planet_unlock): DreadZone's load used to unlock
+ * those whose requirements the badges, rank and points now meet, but not
+ * Interior, and each only as that load ran, so a trip there before it arrived
+ * empty. And the load request goes out last, once everything it is to see is
+ * written, rather than first.
  */
 static int rac4_unlock_all_planets(void)
 {
@@ -619,8 +673,6 @@ static int rac4_unlock_all_planets(void)
 
 	mem_write_u8(RAC4_RANGE, 0x04);            /* Liberator */
 	mem_write_u32(RAC4_DREAD_POINTS, 1000000);
-	mem_write_u32(RAC4_TARGET_PLANET, 1);
-	mem_write_u32(RAC4_LOAD_PLANET2, 1);
 
 	for (planet = 0; planet < RAC4_PLANET_SAVES; planet++) {
 		u32 base = RAC4_LEVEL_SAVES + (u32)planet * RAC4_LEVEL_SIZE;
@@ -640,6 +692,12 @@ static int rac4_unlock_all_planets(void)
 		mem_write(base, missions, span);
 	}
 
+	for (planet = 2; planet <= RAC4_PLANET_SAVES; planet++) {
+		if (rac4_planet_real((u8)planet)) rac4_planet_unlock((u8)planet);
+	}
+
+	mem_write_u32(RAC4_TARGET_PLANET, 1);
+	mem_write_u32(RAC4_LOAD_PLANET2, 1);
 	return ST_OK;
 }
 

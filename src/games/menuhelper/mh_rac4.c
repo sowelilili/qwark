@@ -22,7 +22,12 @@
  *   mh_frame_stub    UpdateMenus' input call, which calls mh_frame;
  *   mh_start, mh_stop  screen 36's fcStart and fcStop, through descriptors;
  *   mh_row, mh_close  the callbacks a MAIN page's rows and list carry;
- *   mh_cfg_*         the CONFIG page's thread, its row callback and validator.
+ *   mh_cfg_*         the CONFIG page's thread, its row callback and validator;
+ *   mh_select_stub, mh_gate_*  Worlds' X and its list and trap gates
+ *                    (assembler), and mh_worlds_stop, Worlds' fcStop: the
+ *                    planet picker (mailbox version 3), the game's own Worlds
+ *                    screen opened from PLANETS, each acting only while the
+ *                    core says the menu opened it.
  *
  * Everything the game keeps a pointer to - the rows, their text, the title, the
  * thread, the list - is in the renderer's state, which stays put for as long
@@ -51,6 +56,8 @@ void mh_cfg_deinit(u32 gs);
 void mh_cfg_update(u32 gs);
 void mh_cfg_item(u32 list, u32 item, int index);
 int  mh_cfg_valid(int index);
+int  mh_worlds_select(void);
+void mh_worlds_stop(int p);
 
 /* The descriptors of the shim's own callbacks, as the game will hold them. */
 #ifdef MH_HOST
@@ -153,6 +160,10 @@ typedef u32  (*fn_u_ii)(int, int);
 #define set_rect       GAME_FN(fn_v_uFFFF,  OPD_SET_RECT,      mock_set_rect)
 #define vertex_colors  GAME_FN(fn_v_uuuuu,  OPD_VERTEX_COLORS, mock_vertex_colors)
 #define team_color     GAME_FN(fn_u_ii,     OPD_TEAM_COLOR,    mock_team_color)
+#define push_screen    GAME_FN(fn_v_ii,     OPD_PUSH_SCREEN,   mock_push_screen)
+#define next_screen    GAME_FN(fn_i_i,      OPD_NEXT_SCREEN,   mock_next_screen)
+#define sound_flag     GAME_FN(fn_v_v,      OPD_SOUND_FLAG,    mock_sound_flag)
+#define worlds_stop    GAME_FN(fn_v_i,      OPD_WORLDS_STOP,   mock_worlds_stop)
 
 static u32 shown(void)
 {
@@ -605,7 +616,8 @@ MH_API void shim_sound(u32 snd)
  */
 void mh_start(int p)
 {
-	int open = r8(MH_STATE + ST_SWITCHING) == 0;
+	/* Neither a new page nor back from Worlds: the menu opening, from play or from the Help row. */
+	int open = r8(MH_STATE + ST_SWITCHING) == 0 && !mh_picker_up();
 
 	if (mh_core_start(p) == MBOX_PTYPE_CONFIG) cfg_start(p);
 	else main_start(p, open);
@@ -690,4 +702,88 @@ int mh_frame(int p)
 	if (r32(MH_STATE + ST_MAGIC) != MH_MAGIC || shown() != MBOX_PTYPE_MAIN) return 0;
 	if (mh_core_frame(p) == MH_GONE) return 1;
 	return steps(p);
+}
+
+/* -------------------------------------------- the planet picker (version 3) */
+
+/*
+ * The cross on PLANETS (MROWF_PICKER): the pause menu's own Worlds screen over
+ * the root, GuiMenu_PushScreen(p, 3) as the main menu's WORLDS row pushes it
+ * (0x3A8368), whose push stops screen 36 first (mh_stop, which the core takes
+ * as no close). Worlds then starts with its own sound, and back pops to screen
+ * 36 again (mh_start). Only from a MAIN page, and only where the main menu
+ * would light its WORLDS row (mh_rac4.h, DL_LEVEL): never in Interior, and in
+ * DreadZone only once its mission 37 has been completed. Elsewhere the core
+ * falls back to qwark's own Planets page.
+ */
+MH_API u32 shim_picker(int p)
+{
+	s32 k = (s32)r32(DL_LEVEL) % 20;
+
+	if (shown() != MBOX_PTYPE_MAIN) return 0;
+	if (k == DL_LEVEL_INTERIOR) return 0;
+	if (k == DL_LEVEL_DREADZONE && r8(DL_DZ_GATE) == 0) return 0;
+	w8(SH(SH_WORLDS_OPENS), r8(SH(SH_WORLDS_OPENS)) + 1);
+	push_screen(p, DL_SCREEN_WORLDS);
+	return 1;
+}
+
+/*
+ * X on a Worlds entry, from mh_select_stub in place of HandleSelection. 0 lets
+ * HandleSelection have the press: the game's own Worlds. While the menu opened
+ * Worlds the press is the menu's. The focused entry, as HandleSelection reads
+ * it: a planet hands its level to qwark, locked or not (qwark's planet load
+ * unlocks a locked one first), a tournament DreadZone's, unless it is locked,
+ * which gets the game's own refusal; then the menu closes the way Start closes
+ * Worlds (MenuPlanet_SystemCancel: the sound flag, the three bytes, CloseMenu
+ * with no sound of its own; Worlds' stop sounds as it goes), and qwark loads
+ * the planet once the game plays again, as PL4's mode 1 did on hardware.
+ */
+int mh_worlds_select(void)
+{
+	int p;
+	u32 pd, li;
+	s32 n, f, level;
+
+	if (!mh_picker_up()) return 0;
+	p = get_canvas();
+	pd = DL_PLANET_PD + (u32)p * DL_PLANET_PD_SIZE;
+	n = (s32)r32(pd + DL_PLANET_COUNT);
+	f = (s32)r32(pd + DL_PLANET_FOCUS);
+	if (n < 1 || f < 0 || f >= n) return 1;
+	li = r32(r32(pd + DL_PLANET_ITEMS) + (u32)f * DL_ITEM_SIZE + 8);
+	if (li == 0) return 1;
+	level = (s32)r32(li + 4);
+	if (r32(li + 8) == DL_TYPE_TOURNAMENT) {
+		if (r8(li) != 0) {
+			play_sound(SND_REFUSED);
+			return 1;
+		}
+		level = DL_LEVEL_DREADZONE;
+	} else if (r32(li + 8) != DL_TYPE_PLANET || level < 1) {
+		return 1;
+	} else {
+		/* Co-op's planets are 21..35; qwark's ids are the single-player ones. */
+		level = (level - 1) % 20 + 1;
+	}
+	mh_core_pick(p, level);
+	sound_flag();
+	w8(DL_PLANET_FROM, 0);
+	w8(DL_PLANET_FROM + 1, 0);
+	w8(DL_PLANET_FROM + 2, 0);
+	close_menu(p, -1);
+	return 1;
+}
+
+/*
+ * Worlds' fcStop (MH_WORLDS_STOP), for every Worlds, the game's own too.
+ * GuiMenu sets the next screen before it calls a stop, and CloseMenu sets it
+ * to 0: back to screen 36 is the picker coming back to the menu, which
+ * mh_start takes up; anything else ends it (Start, and Circle's Skills, after
+ * which Worlds is the game's own). Then the game's own stop.
+ */
+void mh_worlds_stop(int p)
+{
+	if (mh_picker_up() && next_screen(p) != MH_SCREEN_ID) mh_core_picker_gone(p);
+	worlds_stop(p);
 }

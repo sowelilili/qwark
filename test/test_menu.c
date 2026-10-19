@@ -1,5 +1,5 @@
 /*
- * The console menu (revision 1.22, mailbox version 2), on qwark's fake console.
+ * The console menu (revision 1.22, mailbox version 3), on qwark's fake console.
  *
  * Three layers, each against the real core:
  *
@@ -215,6 +215,23 @@ static void mock_vertex_colors(u32 h, u32 c0, u32 c1, u32 c2, u32 c3)
 static u32 mock_team_color(int team, int i) { return 0x80000000u | ((u32)team << 8) | (u32)i; }
 static void mock_close_menu_p(int p, int sound);
 
+/*
+ * Worlds, screen 3, the planet picker (mailbox version 3), as far as the
+ * renderer sees it: its start and stop (MenuPlanet_Start plays 5, its stop 6),
+ * the active mission its Triangle and Start test, and the game's own X
+ * (HandleSelection), counted. Its entries are in game memory, as
+ * SetupPlanetTourneyList writes them (worlds_entry below).
+ */
+static struct {
+	int up, starts, game_stops, selections;
+	int mission;             /* mf_activeMissionIndex: -1, the trap */
+} W;
+
+static void mock_push_screen(int p, int s);
+static int mock_next_screen(int p) { (void)p; return G.next; }
+static void mock_sound_flag(void) { w8(DL_MENU_SOUND_FLAG, 1); }
+static void mock_worlds_stop(int p) { (void)p; W.up = 0; W.game_stops++; mock_play_sound(6); }
+
 /* The CtlList, as ctllist.cpp has it (REPORT-dl-ui-catalogue.md section 3). */
 static int focus(void) { return (int)r32(G.list + DL_LIST_FOCUS); }
 static u32 item(int i) { return G.items + (u32)i * DL_ITEM_SIZE; }
@@ -326,14 +343,43 @@ static void start_screen(int s)
 	G.screen = s;
 	if (s == MH_SCREEN_ID) mh_start(0);
 	else if (s == 1) { G.main_up = 1; G.shown = 1; G.close_cb = 0; G.nbuttons = 8; }
+	else if (s == DL_SCREEN_WORLDS) { W.up = 1; W.starts++; mock_play_sound(5); }
 }
 
 static void mock_start_next(int p) { (void)p; start_screen(G.next); }
 
+/* Worlds' fcStop is the renderer's (MH_WORLDS_STOP) while it is installed, as here. */
 static void stop_screen(void)
 {
 	if (G.screen == MH_SCREEN_ID) mh_stop(0);
 	else if (G.screen == 1) { G.main_up = 0; G.shown = 0; mock_start_next(0); }
+	else if (G.screen == DL_SCREEN_WORLDS) mh_worlds_stop(0);
+}
+
+/* GuiMenu_PushScreen: the screen it leaves onto the stack, its stop, the next one current. */
+static void mock_push_screen(int p, int s)
+{
+	(void)p;
+	G.stack[G.depth++] = G.screen;
+	G.next = s;
+	stop_screen();
+	if (G.screen != s) {
+		G.screen = s;
+		if (s == DL_SCREEN_WORLDS) start_screen(s);
+	}
+}
+
+/* GuiMenu_PopScreen: the next screen the one under, the stop, then its start; none under closes. */
+static void mock_close_menu(int sound);
+static void mock_pop_screen(void)
+{
+	if (G.depth < 1) {
+		mock_close_menu(-1);
+		return;
+	}
+	G.next = G.stack[--G.depth];
+	stop_screen();
+	start_screen(G.next);
 }
 
 static void mock_go_to_screen(int p, int s)
@@ -506,6 +552,71 @@ static void game_frame(u32 bits)
 		G.cursor = c;
 	} else if (bits & (PADB_START | PADB_SELECT)) {
 		call_token(G.close_cb, 1);
+	}
+}
+
+/*
+ * Worlds' list as SetupPlanetTourneyList and UpdatePlanets leave it: entry i
+ * {u8 bLocked, u8 complete, u8 bNew, pad, s32 iLink, s32 type} at the game's
+ * table, item i of player 0's CtlList naming it, `count` items, the focus on
+ * `focus`.
+ */
+#define WORLDS_ITEMS   0x011A2000u
+#define WORLDS_ENTRIES 0x011A1374u
+
+static void worlds_entry(int i, int locked, int link, int type)
+{
+	u32 e = WORLDS_ENTRIES + 12u * (u32)i;
+
+	w8(e, (u32)locked);
+	w8(e + 1, 0);
+	w8(e + 2, 0);
+	w8(e + 3, 0);
+	w32(e + 4, (u32)link);
+	w32(e + 8, (u32)type);
+	w32(WORLDS_ITEMS + DL_ITEM_SIZE * (u32)i + 8, e);
+}
+
+static void worlds_focus(int count, int focus)
+{
+	w32(DL_PLANET_PD + DL_PLANET_ITEMS, WORLDS_ITEMS);
+	w32(DL_PLANET_PD + DL_PLANET_COUNT, (u32)count);
+	w32(DL_PLANET_PD + DL_PLANET_FOCUS, (u32)focus);
+}
+
+/*
+ * A press on Worlds, MenuPlanet_HandleInput with the renderer's words in: X is
+ * mh_select_stub (mh_worlds_select, else the game's HandleSelection), Triangle
+ * and Start pass their gates (mh_gate_back, mh_gate_close: a mission active,
+ * or the picker up; check.py steps the real ones), Circle pushes Skills.
+ */
+static void worlds_press(int cmd)
+{
+	if (G.screen != DL_SCREEN_WORLDS) return;
+	switch (cmd) {
+	case DL_CMD_CROSS:
+		if (!mh_worlds_select()) W.selections++;
+		break;
+	case DL_CMD_TRIANGLE:
+		if (W.mission != -1 || mh_picker_up()) {
+			w8(DL_PLANET_FROM + 1, 0);
+			mock_pop_screen();
+		}
+		break;
+	case DL_CMD_CLOSE:
+		if (W.mission != -1 || mh_picker_up()) {
+			mock_sound_flag();
+			w8(DL_PLANET_FROM, 0);
+			w8(DL_PLANET_FROM + 1, 0);
+			w8(DL_PLANET_FROM + 2, 0);
+			mock_close_menu_p(0, -1);
+		}
+		break;
+	case 4:
+		mock_push_screen(0, 21);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -988,25 +1099,35 @@ static void test_model_dl(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: only those the save has unlocked, each a button that loads it once the menu is closed. */
+	/*
+	 * Planets: every planet, locked or not, each a button that loads it once
+	 * the menu is closed (build 54: a load unlocks a locked planet first, so
+	 * round 2's filter is gone).
+	 */
 	for (i = 1; i <= 15; i++) dl_planet(i, 0);
 	dl_planet(1, 1);
-	dl_planet(2, 1);
-	dl_planet(5, 1);
 	dl_planet(3, 1);
 	check(act(&v, MBOX_EV_ACTIVATE, "Planets") == ST_OK && strcmp(v.title, "Planets") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 3,
-	      "Planets is a CONFIG page (round 4: no MAIN look scrolls) of the three the save has unlocked");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 12,
+	      "Planets is a CONFIG page (round 4) of every planet, twelve, the save's locks or not");
 	check(strcmp(v.rows[0].label, "DreadZone") == 0 && strcmp(v.rows[1].label, "Catacrom") == 0 &&
-	      strcmp(v.rows[2].label, "Kronos") == 0,
-	      "DreadZone, Catacrom, Kronos, in the game's order, the unlocked placeholder left out");
+	      strcmp(v.rows[2].label, "Sarathos") == 0 && strcmp(v.rows[6].label, "Valix") == 0 &&
+	      strcmp(v.rows[11].label, "Interior") == 0,
+	      "DreadZone, Catacrom, Sarathos .. Valix .. Interior in the game's order, the placeholders left out");
 	check(v.rows[1].kind == MROW_ACTION && (v.rows[1].flags & MROWF_CLOSES) != 0, "each closes the menu first");
 	check(act(&v, MBOX_EV_ACTIVATE, "Catacrom") == ST_OK && strcmp(value_of(&v, "Catacrom"), "after closing") == 0 &&
 	      peek32(RAC4_TARGET_PLANET) != 2, "the cross on Catacrom: the row waits, nothing loads yet");
-	dl_planet(4, 1);
-	menu_model_view(&v);
-	check(v.nrows == 4 && strcmp(v.rows[2].label, "Sarathos") == 0, "a planet unlocked since shows when the page is built");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+
+	/* Mailbox version 3: with a renderer that opens the game's own picker, the root's Planets row says so. */
+	check((view_row(&v, "Planets")->flags & MROWF_PICKER) == 0, "a renderer without the picker: Planets a plain link");
+	menu_model_reset(8, 16, CAPS_ALL | MBOX_CAP_PICKER);
+	menu_model_view(&v);
+	check(view_row(&v, "Planets")->flags == (MROWF_ENABLED | MROWF_PICKER) &&
+	      (view_row(&v, "Unlocks")->flags & MROWF_PICKER) == 0,
+	      "one with it: the Planets row flagged PICKER, and no other");
+	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 
 	/* Manips: the category, two checkboxes, Apply now, then the Fixes. */
@@ -1230,8 +1351,9 @@ static void test_mailbox(void)
 
 	group("console menu: the install and the mailbox");
 
-	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 9 && d->ncaves == 4,
-	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, nine hook words");
+	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 15 && d->ncaves == 4,
+	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, fifteen hook words "
+	      "(nine, and the planet picker's six)");
 	check(d != NULL && d->caves[0].zeros > 1000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
 	      d->caves[1].len < 64, "the mailbox and the state are carried as a few bytes and a count of zeros");
 	check(mh_desc_for_game(GAME_RAC1) != NULL && mh_desc_for_game(GAME_RAC2) != NULL &&
@@ -1242,8 +1364,13 @@ static void test_mailbox(void)
 		if (d->hooks[i].addr >= 0x003A6858u && d->hooks[i].addr < 0x003A6F74u) break;
 	}
 	check(i == d->nhooks, "none of them in MenuMain_StartOptions: Options is the game's own list");
-	check(d->hooks[7].addr == MH_SITE_HELP_LABEL && d->hooks[8].addr == MH_SITE_HELP_SCREEN &&
-	      d->hooks[8].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
+	check(d->hooks[13].addr == MH_SITE_HELP_LABEL && d->hooks[14].addr == MH_SITE_HELP_SCREEN &&
+	      d->hooks[14].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
+	check(d->hooks[7].addr == MH_SITE_SELECT && d->hooks[8].addr == MH_SITE_GHOST && d->hooks[9].addr == MH_SITE_COUNT &&
+	      d->hooks[10].addr == MH_SITE_BACK && d->hooks[11].addr == MH_SITE_CLOSE &&
+	      d->hooks[12].addr == MH_WORLDS_STOP && d->hooks[12].original == MH_ORIG_WORLDS_STOP &&
+	      d->hooks[7].original == MH_ORIG_SELECT && d->hooks[9].original == MH_ORIG_COUNT,
+	      "before them the planet picker's: Worlds' X, its four gates and its stop, with the game's words");
 
 	/* The install, a few seconds into the session and only in play. */
 	check(menu_install_delay_us() == 3000000ull, "the install is due three seconds into a session");
@@ -1284,7 +1411,8 @@ static void test_mailbox(void)
 		      hook_last == n - 1,
 		      "in the order that keeps the game off a half-written renderer: the mailbox and the data, "
 		      "the first page, the code, the hook words");
-		check(n <= 20 && bytes <= 21u * 1024u, "twenty writes at most, under 21 KB in all (round 3: GAME SETTINGS' CONFIG page)");
+		check(n <= 26 && bytes <= 22u * 1024u,
+		      "twenty-six writes at most, under 22 KB in all (the planet picker's six words included)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options' call to SetMenuButtons keeps the game's word");
@@ -1990,12 +2118,330 @@ static void test_renderer(void)
 	check(quit(), "quit Deadlocked");
 }
 
+/* -------------------------------------------------------- the planet picker */
+
+/* A planet's level status byte, and its first mission's. */
+static u8 dl_status(u8 planet)
+{
+	return peek8(RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE + RAC4_LEVEL_STATUS);
+}
+
+static u8 dl_first_mission(u8 planet)
+{
+	return peek8(RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE + RAC4_MISSION_STATUS);
+}
+
+/* The combo, then the menu's first frames: the root up, the cursor where the shim put it. */
+static void dl_menu_open(void)
+{
+	press(COMBO_MENU_DEFAULT);
+	game_hud_frame();
+	tick(4);
+	game_frame(0);
+}
+
+/*
+ * Mailbox version 3, the planet picker: the driver against a renderer
+ * simulated at the byte level, then Deadlocked's renderer against Worlds'
+ * mocks. PLANETS opens the game's own Worlds over the root; Back returns to
+ * the root on PLANETS; X hands the planet to qwark, which unlocks a locked one
+ * and loads it once the game plays; Start, and Circle's Skills, end it; the
+ * game's own Worlds is left alone; where the main menu greys WORLDS the row
+ * opens qwark's own Planets page, every planet on it.
+ */
+static void test_picker(void)
+{
+	struct box_page p;
+	char title[40];
+	u32 mb, seq, frames;
+	int planets_row, i, n;
+
+	group("console menu: the planet picker, qwark's side (mailbox version 3)");
+
+	memset(&G, 0, sizeof(G));
+	memset(&W, 0, sizeof(W));
+	G.input_ok = 1;
+	G.handles = 0xF0000000u;
+	W.mission = -1;
+	poke32(MH_BOX + MBOX_OFF_PICK_SEQ, 0);
+	check(dl_boot() && dl_installed(), "Deadlocked up and the renderer in");
+	poke32(DL_PAD0_PTR, PAD0);
+	mb = menu_mailbox();
+	for (i = 1; i <= 15; i++) {
+		dl_planet((u8)i, i == 1 || i == 2 || i == 5);
+		poke8(RAC4_LEVEL_SAVES + (u32)(i - 1) * RAC4_LEVEL_SIZE + RAC4_MISSION_STATUS, 0);
+	}
+
+	read_box(&p);
+	planets_row = box_index(&p, "Planets");
+	check(peek16(mb + MBOX_OFF_VERSION) == 3 && (peek8(mb + MBOX_OFF_CAPS) & MBOX_CAP_PICKER) != 0 &&
+	      planets_row == 2 && (p.rows[planets_row].flags & MROWF_PICKER) != 0,
+	      "mailbox version 3: the renderer says it opens the game's planet picker, and qwark flags the root's "
+	      "Planets row for it");
+	for (i = 0, n = 0; i < p.n; i++) n += (p.rows[i].flags & MROWF_PICKER) != 0;
+	check(n == 1, "and no other row");
+
+	/* While the picker is up the menu is neither open nor closed. */
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+	tick(4);
+	box_activate("Unlocks");
+	read_box(&p);
+	seq = p.seq;
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_PICKER);
+	tick(8);
+	read_box(&p);
+	check(p.seq == seq && strcmp(p.title, "Unlocks") == 0 && menu_model_depth() == 2,
+	      "hstate PICKER: no close, qwark's stack and page stay as they are");
+	press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "the combo then asks for a close, as with the menu up");
+	tick(62);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE, "which nobody takes under Worlds, so it is withdrawn");
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
+	tick(4);
+	check(menu_model_depth() == 1, "closed: back to the root");
+
+	/* A pick, as a renderer posts it: the planet, then the seq. */
+	poke32(RAC4_TARGET_PLANET, 0);
+	poke32(RAC4_LOAD_PLANET2, 0);
+	poke32(mb + MBOX_OFF_PICK_PLANET, 99);
+	poke32(mb + MBOX_OFF_PICK_SEQ, peek32(mb + MBOX_OFF_PICK_SEQ) + 1);
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 0 && peek32(RAC4_LOAD_PLANET2) == 0, "a pick of no planet the game has: nothing");
+	poke32(DL_GAME_MODE, 3);
+	poke32(mb + MBOX_OFF_PICK_PLANET, 7);
+	poke32(mb + MBOX_OFF_PICK_SEQ, peek32(mb + MBOX_OFF_PICK_SEQ) + 1);
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 0 && dl_status(7) == 0, "Valix, picked with the game still paused: nothing yet");
+	poke32(DL_GAME_MODE, 0);
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 7 && peek32(RAC4_LOAD_PLANET2) == 1,
+	      "back in play: Valix loads, as PLANET_LOAD loads it");
+	check(dl_status(7) == RAC4_PLANET_UNLOCK && dl_first_mission(7) == RAC4_PLANET_UNLOCK,
+	      "locked, so unlocked first: the level and its first mission visible and unlocked");
+	poke32(RAC4_LOAD_PLANET2, 0);
+	tick(8);
+	check(peek32(RAC4_LOAD_PLANET2) == 0, "taken once");
+
+	/* A pick left from before an install is not one. */
+	poke32(mb + MBOX_OFF_PICK_PLANET, 8);
+	poke32(mb + MBOX_OFF_PICK_SEQ, peek32(mb + MBOX_OFF_PICK_SEQ) + 1);
+	menu_enter(session_game());
+	check(dl_installed(), "a module loaded again takes the renderer over");
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 7 && dl_status(8) == 0, "and the pick it finds in the mailbox is not loaded");
+
+	group("console menu: Deadlocked's planet picker, Worlds from PLANETS");
+
+	poke32(DL_LEVEL, 5);
+	worlds_entry(0, 0, 0, DL_TYPE_TOURNAMENT);     /* tournament 0 */
+	worlds_entry(1, 0, 2, DL_TYPE_PLANET);         /* Catacrom */
+	worlds_entry(2, 1, 4, DL_TYPE_PLANET);         /* Sarathos, locked */
+	worlds_entry(3, 1, 1, DL_TYPE_TOURNAMENT);     /* tournament 1, locked */
+	worlds_entry(4, 1, 25, DL_TYPE_PLANET);        /* Kronos in co-op, as SetupPlanetTourneyList adds 20 */
+	worlds_entry(5, 1, 15, DL_TYPE_PLANET);        /* Interior, listed for the menu only */
+	worlds_focus(6, 1);
+
+	/* PLANETS opens Worlds over the root. */
+	dl_menu_open();
+	check(G.screen == MH_SCREEN_ID && G.shown && G.nbuttons == 7, "the combo: the root");
+	G.cursor = planets_row;
+	memset(G.sounds, 0xFF, sizeof(G.sounds));
+	game_frame(0);
+	frames = peek32(mb + MBOX_OFF_FRAMES);
+	seq = peek32(mb + MBOX_OFF_PAGE_SEQ);
+	game_frame(PADB_CROSS);
+	check(G.screen == DL_SCREEN_WORLDS && W.up && W.starts == 1 && G.depth == 1 && G.stack[0] == MH_SCREEN_ID &&
+	      !G.shown, "the cross on PLANETS pushes Worlds (screen 3) over screen 36, as the main menu's WORLDS row does");
+	check(G.sounds[0] == SND_FORWARD && G.sounds[1] == 5 && G.sounds[2] == -1,
+	      "Worlds' own opening sound and a row's forward sound, nothing else");
+	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER && mh_picker_up() && box_acked() &&
+	      r8(MH_SHIM + SH_WORLDS_OPENS) == 1,
+	      "the menu's screen stopped under it with no close: hstate PICKER, the picker up, no event posted");
+	tick(8);
+	check(peek32(mb + MBOX_OFF_PAGE_SEQ) == seq && menu_model_depth() == 1, "qwark posts nothing and leaves its stack");
+
+	/* Back, with no mission active (Worlds' trap): the root again, on PLANETS. */
+	G.sound = -1;
+	worlds_press(DL_CMD_TRIANGLE);
+	check(G.screen == MH_SCREEN_ID && G.shown && !W.up && G.depth == 0 && W.game_stops == 1,
+	      "Triangle pops back to screen 36 though no mission is active: the gate passed for the menu's Worlds");
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 7 &&
+	      G.cursor == planets_row, "the root, the cursor on PLANETS");
+	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up() &&
+	      peek32(mb + MBOX_OFF_FRAMES) >= frames && G.sound == 6,
+	      "no opening: hstate open again, the frames counting on, Worlds' closing sound and no other");
+	tick(4);
+	game_frame(0);
+	check(G.cursor == planets_row && menu_model_depth() == 1, "and qwark's root as it was");
+
+	/* X on a locked planet: picked, unlocked, loaded once the game plays. */
+	game_frame(PADB_CROSS);
+	worlds_focus(6, 2);
+	poke32(RAC4_TARGET_PLANET, 0);
+	poke32(RAC4_LOAD_PLANET2, 0);
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	n = G.closes;
+	poke8(DL_MENU_SOUND_FLAG, 0);
+	worlds_press(DL_CMD_CROSS);
+	check(peek32(mb + MBOX_OFF_PICK_SEQ) == seq + 1 && peek32(mb + MBOX_OFF_PICK_PLANET) == 4 &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && !mh_picker_up(),
+	      "X on Sarathos, locked: pick_planet 4 and pick_seq posted, and the menu counts as closed");
+	check(G.closes == n + 1 && G.screen == 0 && !G.paused && peek8(DL_MENU_SOUND_FLAG) == 1 &&
+	      W.selections == 0 && W.game_stops == 2 && G.sound == 6,
+	      "Worlds closes as Start closes it (the sound flag, CloseMenu(-1), its own stop and sound); "
+	      "HandleSelection never runs");
+	check(peek32(RAC4_TARGET_PLANET) == 0, "nothing loads before qwark's tick");
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 4 && peek32(RAC4_LOAD_PLANET2) == 1 &&
+	      dl_status(4) == RAC4_PLANET_UNLOCK && dl_first_mission(4) == RAC4_PLANET_UNLOCK,
+	      "the game playing: qwark unlocks Sarathos and loads it");
+	check(menu_model_depth() == 1, "qwark's stack on the root");
+
+	/* A locked tournament gets the game's refusal; an unlocked one is DreadZone. */
+	poke32(RAC4_LOAD_PLANET2, 0);
+	dl_menu_open();
+	check(G.cursor == 0, "the combo opens the root on its first row after the pick's close");
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	worlds_focus(6, 3);
+	G.sound = -1;
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	worlds_press(DL_CMD_CROSS);
+	check(G.sound == SND_REFUSED && G.screen == DL_SCREEN_WORLDS && peek32(mb + MBOX_OFF_PICK_SEQ) == seq,
+	      "a locked tournament: the game's own refusal sound, nothing picked, Worlds still up");
+	worlds_focus(6, 0);
+	worlds_press(DL_CMD_CROSS);
+	tick(8);
+	check(peek32(mb + MBOX_OFF_PICK_PLANET) == 1 && peek32(RAC4_TARGET_PLANET) == 1 && peek32(RAC4_LOAD_PLANET2) == 1,
+	      "an unlocked tournament: DreadZone, which holds them");
+
+	/* Co-op's links are 21..35; qwark's ids the single-player ones. */
+	poke32(RAC4_LOAD_PLANET2, 0);
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	worlds_focus(6, 4);
+	worlds_press(DL_CMD_CROSS);
+	tick(8);
+	check(peek32(mb + MBOX_OFF_PICK_PLANET) == 5 && peek32(RAC4_TARGET_PLANET) == 5 && dl_status(5) == 0x02,
+	      "Kronos at link 25: planet 5, already unlocked, so its status untouched");
+
+	/* Interior, which only the menu's Worlds lists. */
+	poke32(RAC4_LOAD_PLANET2, 0);
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	worlds_focus(6, 5);
+	worlds_press(DL_CMD_CROSS);
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 15 && dl_status(15) == RAC4_PLANET_UNLOCK,
+	      "Interior: unlocked and loaded");
+
+	/* Start ends the picker with no pick. */
+	poke32(RAC4_LOAD_PLANET2, 0);
+	poke32(RAC4_TARGET_PLANET, 0);
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	n = W.game_stops;
+	worlds_press(DL_CMD_CLOSE);
+	check(G.screen == 0 && !G.paused && W.game_stops == n + 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      !mh_picker_up() && peek32(mb + MBOX_OFF_PICK_SEQ) == seq,
+	      "Start on the menu's Worlds, no mission active: the gate passed, everything closes, no pick, the menu closed");
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 0 && menu_model_depth() == 1, "nothing loads");
+
+	/* Circle's Skills ends it too: back from Skills, Worlds is the game's own. */
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	worlds_press(4);
+	check(G.screen == 21 && !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "Circle on Worlds pushes Skills: the picker over, the menu closed");
+	mock_pop_screen();
+	check(G.screen == DL_SCREEN_WORLDS && W.up, "back from Skills to Worlds");
+	n = W.selections;
+	worlds_press(DL_CMD_CROSS);
+	check(W.selections == n + 1 && peek32(RAC4_TARGET_PLANET) == 0, "now the game's own: X is HandleSelection's");
+	worlds_press(DL_CMD_TRIANGLE);
+	check(G.screen == DL_SCREEN_WORLDS, "and the trap holds Triangle, as the game has it");
+	W.mission = 3;
+	worlds_press(DL_CMD_TRIANGLE);
+	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
+	      "a mission active: back to screen 36, which opens again");
+	game_frame(PADB_START);
+	check(G.screen == 0, "Start closes it");
+	W.mission = -1;
+	tick(4);
+
+	/* The game's own Worlds, from the main menu's WORLDS row: nothing of the menu's. */
+	game_open_pause();
+	mock_push_screen(0, DL_SCREEN_WORLDS);
+	check(G.screen == DL_SCREEN_WORLDS && !mh_picker_up(), "the main menu's WORLDS row: the game's own Worlds");
+	worlds_focus(6, 2);
+	n = W.selections;
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	worlds_press(DL_CMD_CROSS);
+	worlds_press(DL_CMD_TRIANGLE);
+	worlds_press(DL_CMD_CLOSE);
+	check(W.selections == n + 1 && G.screen == DL_SCREEN_WORLDS && peek32(mb + MBOX_OFF_PICK_SEQ) == seq &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
+	      "X is HandleSelection's, the trap holds Triangle and Start, nothing is picked");
+	W.mission = 2;
+	worlds_press(DL_CMD_TRIANGLE);
+	check(G.screen == 1 && G.main_up && W.game_stops > 0, "with a mission, back to the main menu, as the game goes");
+	mock_close_menu(5);
+	W.mission = -1;
+	tick(4);
+
+	/* Where the main menu greys WORLDS, PLANETS opens qwark's own page: every planet. */
+	poke32(DL_LEVEL, 15);
+	dl_menu_open();
+	G.cursor = planets_row;
+	n = W.starts;
+	game_frame(PADB_CROSS);
+	check(G.screen == MH_SCREEN_ID && W.starts == n && !mh_picker_up() && !box_acked(),
+	      "in Interior (as the main menu greys WORLDS there): no Worlds, an event posted instead");
+	tick(2);
+	game_frame(0);
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), "and qwark opens its own Planets page");
+	{
+		struct menu_view v;
+		menu_model_view(&v);
+		check(view_index(&v, "Sarathos") >= 0 || view_index(&v, "DreadZone") >= 0,
+		      "which lists the planets, unlocked or not (round 2 left the locked ones out)");
+	}
+	game_frame(PADB_START);
+	tick(4);
+	poke32(DL_LEVEL, 21);
+	poke8(DL_DZ_GATE, 0);
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	check(G.screen == MH_SCREEN_ID && !mh_picker_up(), "in DreadZone (co-op's too) before its mission 37: the same");
+	tick(2);
+	game_frame(0);
+	game_frame(PADB_START);
+	tick(4);
+	poke8(DL_DZ_GATE, 1);
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	check(G.screen == DL_SCREEN_WORLDS && mh_picker_up(), "and once it has a completion, Worlds");
+	worlds_press(DL_CMD_CLOSE);
+	tick(4);
+
+	check(quit(), "quit Deadlocked");
+}
+
 void test_menu(void)
 {
 	test_model_dl();
 	test_model_paging();
 	test_mailbox();
 	test_renderer();
+	test_picker();
 	test_menu_core();
 	test_menu_uya();
 	test_menu_rac2();

@@ -13,6 +13,7 @@
 #define REQUEST   (MH_BOX + MBOX_OFF_REQUEST)
 #define OPEN_REQS (MH_STATE + ST_OPEN_REQS)
 #define OPENS     (MH_STATE + ST_OPENS)
+#define PICKER    (MH_STATE + ST_PICKER)
 
 	.section ".text.entry","ax"
 	.align	2
@@ -133,6 +134,108 @@ mh_help_label:
 	lis	%r3,mh_help_text@ha
 	addi	%r3,%r3,mh_help_text@l
 	blr
+
+/*
+ * The planet picker (mailbox version 3, mh_rac4.h): Worlds' X and four gates,
+ * each the game's own way unless the core's ST_PICKER byte says the menu
+ * opened this Worlds.
+ *
+ * MH_SITE_SELECT, 0x3B2844 in MenuPlanet_HandleInput: X's `bl HandleSelection`
+ * becomes `bl mh_select_stub`. HandleSelection takes nothing (it asks
+ * GetCurrentCanvas) and HandleInput goes to its epilogue right after it.
+ * mh_worlds_select answers 1 when it dealt with the press; on 0 the stub
+ * branches on to HandleSelection with the game's r2 and LR = 0x3B2848, as the
+ * call would have. Probe PL4's select stub, which ran on hardware, and the
+ * frame stub's frame: 0x00..0x6F the ABI header and the callee's parameter
+ * save area, 0x70 the game's r2; LR into the caller's slot, 0x90.
+ */
+	.globl	mh_select_stub
+mh_select_stub:
+	stdu	%r1,-0x80(%r1)
+	mflr	%r0
+	std	%r0,0x90(%r1)
+	std	%r2,0x70(%r1)
+	lis	%r2,_toc_base@ha
+	addi	%r2,%r2,_toc_base@l
+	bl	.mh_worlds_select
+	nop
+	cmpwi	%r3,0
+	ld	%r2,0x70(%r1)
+	ld	%r0,0x90(%r1)
+	mtlr	%r0
+	addi	%r1,%r1,0x80
+	bnelr
+	b	dl_handle_selection
+
+/*
+ * MH_SITE_GHOST, 0x3B177C in MenuPlanet_UpdatePlanets, reached only for Ghost
+ * Station's entry: `beq 0x3B17A0` on cr0 from `cmpwi r3,0` (a bit of the byte
+ * at 0xB2AA24) becomes `b mh_gate_ghost`, a leaf. With the bit set the game
+ * goes on to list Ghost Station (0x3B1780); clear, it asks once more
+ * (0x3B17A0), which may leave it out. While the picker is up it is listed
+ * either way. r12 and cr0 are dead at both: the code there sets cr0 and reads
+ * no volatile register before setting it.
+ */
+	.globl	mh_gate_ghost
+mh_gate_ghost:
+	bne	9f
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	9f
+	b	dl_ghost_tested
+9:	b	dl_ghost_listed
+
+/*
+ * MH_SITE_COUNT, 0x3B1424 in MenuPlanet_SetupPlanetTourneyList, a leaf that
+ * has written sixteen entries, the sixteenth Interior's: its `li r3,15`, the
+ * count it answers (and every branch to it), becomes `b mh_gate_count`, a
+ * leaf. 15, or 16 while the picker is up so Interior is listed too, then on
+ * to its epilogue (0x3B1428) and the caller's LR. r12 and cr0 are dead there:
+ * the epilogue reloads two saved registers and returns, and UpdatePlanets
+ * compares the count before it reads cr0.
+ */
+	.globl	mh_gate_count
+mh_gate_count:
+	li	%r3,15
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	beq	9f
+	li	%r3,16
+9:	b	dl_count_done
+
+/*
+ * MH_SITE_BACK, 0x3B27C0 in MenuPlanet_HandleInput's Triangle (Cancel): `beq
+ * 0x3B28D4` on cr0 from `cmpwi r4,-1` (mf_activeMissionIndex) becomes
+ * `b mh_gate_back`, a leaf. A mission active: on to PopScreen (0x3B27C4); none
+ * (the trap): the press is ignored (0x3B28D4), unless the picker is up, when
+ * it pops all the same, back to the menu. r12 and cr0 are dead at both.
+ */
+	.globl	mh_gate_back
+mh_gate_back:
+	bne	9f
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	9f
+	b	dl_input_done
+9:	b	dl_back_taken
+
+/*
+ * MH_SITE_CLOSE, 0x3B2898, the same for Start and Select (SystemCancel):
+ * `beq 0x3B28D4` on cr0 from `cmpwi r3,-1` becomes `b mh_gate_close`, a leaf;
+ * on to the close (0x3B289C), or the press ignored, which the picker passes.
+ */
+	.globl	mh_gate_close
+mh_gate_close:
+	bne	9f
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	9f
+	b	dl_input_done
+9:	b	dl_close_taken
 
 	.section ".rodata","a"
 	.globl	mh_help_text

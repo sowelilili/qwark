@@ -835,6 +835,8 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		break;
 	case MENU_ROW_PAGE:
 		row(r, MROW_LINK, MROWF_ENABLED, page_name(arg), "");
+		/* Mailbox version 3: a renderer that opens the game's own planet picker opens it here. */
+		if (arg == MENU_PAGE_PLANETS && (g_caps & MBOX_CAP_PICKER) != 0) r->flags |= MROWF_PICKER;
 		break;
 	case MENU_ROW_UCAT:
 		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "");
@@ -1415,6 +1417,8 @@ static u32  g_page_seq;
 static u32  g_posted_crc;
 static int  g_posted;
 static u32  g_last_ack;
+/* Mailbox version 3: the renderer's pick_seq when last read; a new one is a pick to load. */
+static u32  g_pick_seq;
 static u8   g_hstate;
 /* The renderer's frame count when last read: it starts again from 0 at each opening. */
 static u32  g_frames;
@@ -1664,9 +1668,10 @@ static int install(void)
 		return INSTALL_REFUSED;
 	}
 
-	/* Take the mailbox as it is: an event left from before is answered unread. */
+	/* Take the mailbox as it is: an event left from before is answered unread, a pick dropped. */
 	g_page_seq = (be32_get(head + MBOX_OFF_PAGE_SEQ) + 1u) & ~1u;
 	g_last_ack = be32_get(head + MBOX_OFF_EV_SEQ);
+	g_pick_seq = be32_get(head + MBOX_OFF_PICK_SEQ);
 	if (be32_get(head + MBOX_OFF_EV_ACK) != g_last_ack &&
 	    mem_write_u32(box(MBOX_OFF_EV_ACK), g_last_ack) != ST_OK)
 		return ST_IO_ERROR;
@@ -1842,12 +1847,38 @@ static void deferred_tick(void)
 	}
 }
 
-/* The mailbox: requests, events, live values. Every POLL_* ticks. */
+/*
+ * Mailbox version 3: what the player picked in the game's own planet picker,
+ * which the menu's Planets row opened. The renderer has closed the game's menu
+ * on the pick; the planet loads once the game plays again, as a planet row of
+ * the menu's own Planets page loads it (session_planet_load, the selected
+ * flags), whatever the request cap.
+ */
+static void take_pick(s32 planet)
+{
+	const struct game_api *game = session_game();
+	const char * const *names;
+	u8 count = 0;
+
+	if (game == NULL || game->planet_names == NULL || game->planet_load == NULL) return;
+	names = game->planet_names(&count);
+	if (planet < 0 || planet >= (s32)count) {
+		plat_log("menu: a pick of planet %d, which the game has not; nothing loads", (int)planet);
+		return;
+	}
+	g_defer.kind = DEFER_PLANET;
+	g_defer.arg = (u8)planet;
+	g_defer.waiting = 1;
+	g_defer.until = plat_time_us() + DEFER_US;
+	set_text(g_defer.label, sizeof(g_defer.label), names[planet]);
+}
+
+/* The mailbox: requests, events, picks, live values. Every POLL_* ticks. */
 static void serve(void)
 {
 	u8 head[MBOX_READ_HEAD];
 	u32 tick = now_tick();
-	u32 ev, frames;
+	u32 ev, frames, pick;
 	int dirty = 0;
 	u8 hstate;
 
@@ -1909,6 +1940,12 @@ static void serve(void)
 	if (dirty || (menu_model_live() &&
 	              tick - g_last_build >= (g_hstate == MBOX_HSTATE_OPEN ? BUILD_OPEN : BUILD_CLOSED)))
 		post(0);
+
+	pick = be32_get(head + MBOX_OFF_PICK_SEQ);
+	if (pick != g_pick_seq) {
+		g_pick_seq = pick;
+		take_pick((s32)be32_get(head + MBOX_OFF_PICK_PLANET));
+	}
 
 	deferred_tick();
 }
@@ -1988,7 +2025,8 @@ void menu_combo(void)
 	}
 
 	if ((g_caps & MBOX_CAP_REQUEST) == 0) return;
-	if (g_hstate == MBOX_HSTATE_OPEN) {
+	/* Up, or under the game's planet picker it opened (which takes no request, so nothing happens). */
+	if (g_hstate != MBOX_HSTATE_CLOSED) {
 		request(MBOX_REQ_CLOSE);
 	} else {
 		/* The page it opens on is the current one, values and all. */

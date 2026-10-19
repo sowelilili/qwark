@@ -42,7 +42,7 @@ static u32 g_hold_main, g_hold_cfg;
 #define MH_ROW_BYTES    0x40
 #define MH_MAIN_ROWS    6
 #define MH_CFG_ROWS     g_cfg_rows
-#define MH_CAPS         0x0F
+#define MH_CAPS         0x1F   /* every cap, the planet picker's (mailbox version 3) too */
 #define MH_CASE_MAIN    g_case_main
 #define MH_CASE_HEAD    g_case_head
 #define MH_CASE_LABEL   g_case_label
@@ -64,6 +64,9 @@ static struct {
 	int shows, last_how, switches, closes, last_close, titles, sound, sounds;
 	u32 cursor;
 	int hold;                 /* >= 0: shim_switch calls mh_core_hold(hold) */
+	int pickers;              /* shim_picker calls */
+	int picker_ok;            /* 0: shim_picker answers 0; 1: it stops the menu's screen, as a push does; 2: it does not */
+	int picker_up_seen;       /* mh_picker_up() as shim_picker found it */
 } F;
 
 MH_API void shim_show(int p, u32 how)     { (void)p; F.shows++; F.last_how = (int)how; }
@@ -72,6 +75,13 @@ MH_API void shim_close(int p, u32 how)    { (void)p; F.closes++; F.last_close = 
 MH_API void shim_title(int p)             { (void)p; F.titles++; }
 MH_API u32  shim_cursor(int p)            { (void)p; return F.cursor; }
 MH_API void shim_sound(u32 snd)           { F.sound = (int)snd; F.sounds++; }
+MH_API u32  shim_picker(int p)
+{
+	F.pickers++;
+	F.picker_up_seen = mh_picker_up();
+	if (F.picker_ok == 1) mh_core_stop(p);
+	return (u32)(F.picker_ok != 0);
+}
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -453,6 +463,114 @@ static void test_menu_core_slide(void)
 	      "slides the same way");
 }
 
+/*
+ * Mailbox version 3: the game's planet picker (mh_shim.h). The cross on a
+ * MROWF_PICKER row asks the shim; the screen stopping under the picker is no
+ * close; back is no opening; a pick posts the planet and closes; the picker
+ * going any other way closes.
+ */
+static void test_menu_core_picker(void)
+{
+	static const struct prow root[3] = {
+		{ MROW_LINK, MROWF_ENABLED, 0x0700, "game", "", NULL },
+		{ MROW_LINK, MROWF_ENABLED | MROWF_PICKER, 0x0604, "planets", "", NULL },
+		{ MROW_LINK, MROWF_ENABLED, 0x0606, "unlocks", "", NULL }
+	};
+	u32 frames, ev;
+
+	group("console menu: the renderer core and the game's planet picker (mailbox version 3)");
+
+	fresh();
+	mh_core_start(0);
+	post_page(0x00000101, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 0, "Trainer", "", root, 3);
+	mh_core_frame(0);
+	mh_core_cursor(0);        /* as a shim's shim_show takes the new page's cursor */
+	F.cursor = 1;
+	mh_core_frame(0);
+	mh_core_frame(0);
+	frames = r32(BOX(MBOX_OFF_FRAMES));
+
+	/* The shim cannot open it: the row is a link like any other. */
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	check(F.pickers == 1 && F.picker_up_seen && !mh_picker_up() && r32(BOX(MBOX_OFF_EV_SEQ)) == 1 &&
+	      r8(BOX(MBOX_OFF_EV_KIND)) == MBOX_EV_ACTIVATE && r16(BOX(MBOX_OFF_EV_ID)) == 0x0604 &&
+	      F.sound == MH_SND_FORWARD,
+	      "the cross on a PICKER row asks the shim, the picker up while it does; answered 0, ACTIVATE goes to qwark");
+	ack();
+	F.sounds = 0;
+	mh_core_press(0, MH_BTN_CROSS, 2);
+	check(F.pickers == 1 && r32(BOX(MBOX_OFF_EV_SEQ)) == 2, "a row without the flag never asks");
+	ack();
+
+	/* The shim opens it: the screen stops under it, no close. */
+	F.picker_ok = 1;
+	F.sounds = 0;
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	check(F.pickers == 2 && mh_picker_up() && r32(BOX(MBOX_OFF_EV_SEQ)) == 2 && F.sounds == 1 &&
+	      F.sound == MH_SND_FORWARD,
+	      "answered 1: no event, the forward sound, the picker up");
+	check(r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_PICKER && r8(MH_STATE + ST_LAST_CURSOR) == 1 &&
+	      r8(MH_STATE + ST_SHOWN) == MH_NONE,
+	      "the screen's stop on the way is no close: hstate PICKER, the cursor kept on the row");
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	check(F.pickers == 2, "nothing a shim might still hand the core then opens it twice");
+
+	/* Back from it: no opening, the page and the cursor as they were. */
+	check(mh_core_start(0) == MBOX_PTYPE_MAIN && !mh_picker_up() && r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_OPEN &&
+	      r32(BOX(MBOX_OFF_FRAMES)) == frames && mh_core_cursor(r8(MH_STATE + ST_LAST_CURSOR)) == 1 &&
+	      mh_nrows() == 3 && str_is(mh_text(1), "PLANETS: >"),
+	      "back: the picker down, hstate open, the frames going on (no opening), the root on PLANETS");
+
+	/* A pick: the planet, then the seq; a close. */
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	check(mh_picker_up(), "the picker again");
+	mh_core_pick(0, 13);
+	check(r32(BOX(MBOX_OFF_PICK_PLANET)) == 13 && r32(BOX(MBOX_OFF_PICK_SEQ)) == 1 && !mh_picker_up() &&
+	      r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_CLOSED && r8(MH_STATE + ST_LAST_CURSOR) == 0,
+	      "a pick: pick_planet 13, pick_seq 1, the menu closed, the next opening on the first row");
+	mh_core_pick(0, 14);
+	check(r32(BOX(MBOX_OFF_PICK_SEQ)) == 1 && r32(BOX(MBOX_OFF_PICK_PLANET)) == 13,
+	      "a pick with no picker of the menu's up is none");
+	w32(BOX(MBOX_OFF_FRAMES), 500);
+	mh_core_start(0);
+	check(r32(BOX(MBOX_OFF_FRAMES)) == 0 && r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_OPEN,
+	      "the next start is an opening: the frames from 0");
+
+	/* The picker gone some other way: a close, no pick. */
+	mh_core_frame(0);
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	mh_core_picker_gone(0);
+	check(!mh_picker_up() && r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_CLOSED && r32(BOX(MBOX_OFF_PICK_SEQ)) == 1,
+	      "the picker gone: the menu closed, nothing picked");
+	mh_core_picker_gone(0);
+	check(r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_CLOSED, "and gone again is nothing");
+
+	/* A picker inside the menu's own screen, which never stops it: back is mh_core_picker_back. */
+	mh_core_start(0);
+	mh_core_frame(0);
+	F.picker_ok = 2;
+	ack();
+	mh_core_press(0, MH_BTN_CROSS, 1);
+	check(mh_picker_up() && r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_OPEN,
+	      "a picker that keeps the menu's screen started: the picker up, hstate open, which is no close either");
+	ev = r32(BOX(MBOX_OFF_EV_SEQ));
+	mh_core_press(0, MH_BTN_CROSS, 0);
+	mh_core_press(0, MH_BTN_CLOSE, 0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == ev && F.closes == 0, "while it is up the core takes no press, not even a close");
+	check(mh_core_close_request() == 0, "no close asked");
+	w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_CLOSE);
+	check(mh_core_close_request() == 1 && r8(BOX(MBOX_OFF_REQUEST)) == MBOX_REQ_NONE && mh_core_close_request() == 0,
+	      "the combo's close with the picker up: the picker takes it once (mh_core_close_request)");
+	w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_OPEN);
+	check(mh_core_close_request() == 0 && r8(BOX(MBOX_OFF_REQUEST)) == MBOX_REQ_OPEN, "and leaves an open request alone");
+	w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+	mh_core_picker_back(0);
+	check(!mh_picker_up() && r8(BOX(MBOX_OFF_HSTATE)) == MBOX_HSTATE_OPEN, "back: the picker down, the menu open");
+	mh_core_press(0, MH_BTN_CROSS, 0);
+	check(r32(BOX(MBOX_OFF_EV_SEQ)) == ev + 1, "and the presses are its again");
+	F.picker_ok = 0;
+}
+
 void test_menu_core(void)
 {
 	static const struct prow root[4] = {
@@ -647,6 +765,7 @@ void test_menu_core(void)
 
 	test_menu_core_sets();
 	test_menu_core_slide();
+	test_menu_core_picker();
 
 	/* Deadlocked's GAME SETTINGS: labels in capitals, a colon after a label with a value beside it. */
 	{

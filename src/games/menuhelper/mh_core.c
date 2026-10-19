@@ -377,16 +377,74 @@ static void close_all(int p)
 	shim_close(p, MH_CLOSE_EXIT);
 }
 
+/*
+ * The menu closing: the next open starts over, on the root qwark puts back
+ * when it sees hstate closed, at its first row.
+ */
+static void closed(void)
+{
+	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_CLOSED);
+	w8(ST(ST_WAITING), 0);
+	w8(ST(ST_LAST_CURSOR), 0);
+	w8(ST(ST_HOLD), 0);
+}
+
+#if MH_PICKER
+/*
+ * Version 3: the cross on the Planets row of a renderer with the game's own
+ * picker. The picker is up before the shim opens it, since the menu's screen
+ * stops on the way (mh_core_stop) and must know it is no close. Answers 1 when
+ * the shim opened it.
+ */
+static int picker(int p)
+{
+	if (r8(ST(ST_HAVE_PAGE)) == 0) return 0;
+	w8(ST(ST_PICKER), 1);
+	if (shim_picker(p)) return 1;
+	w8(ST(ST_PICKER), 0);
+	return 0;
+}
+
+MH_API void mh_core_picker_gone(int p)
+{
+	(void)p;
+	if (r8(ST(ST_PICKER)) == 0) return;
+	w8(ST(ST_PICKER), 0);
+	closed();
+}
+
+MH_API void mh_core_pick(int p, s32 planet)
+{
+	if (r8(ST(ST_PICKER)) == 0) return;
+	w32(BOX(MBOX_OFF_PICK_PLANET), (u32)planet);
+	mh_sync();
+	w32(BOX(MBOX_OFF_PICK_SEQ), r32(BOX(MBOX_OFF_PICK_SEQ)) + 1);
+	mh_sync();
+	mh_core_picker_gone(p);
+}
+#endif
+
 MH_API void mh_core_press(int p, u32 button, u32 row)
 {
 	u32 flags = row < nrows() ? r8(front() + SET_FLAGS + row) : 0;
 
 	/* A screen on its way out acts on nothing but a close. */
 	if (r8(ST(ST_SWITCHING)) != 0 && button != MH_BTN_CLOSE) return;
+#if MH_PICKER
+	/* Under the game's planet picker the menu's screen is not up, and takes nothing. */
+	if (r8(ST(ST_PICKER)) != 0) return;
+#endif
 
 	switch (button) {
 	case MH_BTN_CROSS:
-		if ((flags & MROWF_ENABLED) != 0 && post(MBOX_EV_ACTIVATE, row)) shim_sound(MH_SND_FORWARD);
+		if ((flags & MROWF_ENABLED) == 0) return;
+#if MH_PICKER
+		if ((flags & MROWF_PICKER) != 0 && picker(p)) {
+			shim_sound(MH_SND_FORWARD);
+			return;
+		}
+#endif
+		if (post(MBOX_EV_ACTIVATE, row)) shim_sound(MH_SND_FORWARD);
 		return;
 	case MH_BTN_LEFT:
 	case MH_BTN_RIGHT:
@@ -429,6 +487,11 @@ MH_API int mh_core_start(int p)
 		/* The page the switch was for takes over: its set is the one on show now. */
 		w8(ST(ST_FRONT), r8(ST(ST_FRONT)) ^ 1);
 		w8(ST(ST_SWITCHING), 0);
+#if MH_PICKER
+	} else if (r8(ST(ST_PICKER)) != 0) {
+		/* Back from the game's planet picker: the menu never closed, so no opening. */
+		w8(ST(ST_PICKER), 0);
+#endif
 	} else {
 		/*
 		 * A fresh open: the frames count from it, which tells qwark the menu
@@ -457,11 +520,14 @@ MH_API void mh_core_stop(int p)
 	w8(ST(ST_LAST_CURSOR), shim_cursor(p));
 	w8(ST(ST_SHOWN), MH_NONE);
 	if (r8(ST(ST_SWITCHING)) != 0) return;
-	/* A close: the next open starts over, on the root qwark puts back, at its first row. */
-	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_CLOSED);
-	w8(ST(ST_WAITING), 0);
-	w8(ST(ST_LAST_CURSOR), 0);
-	w8(ST(ST_HOLD), 0);
+#if MH_PICKER
+	if (r8(ST(ST_PICKER)) != 0) {
+		/* Under the game's planet picker the menu opened: no close, the page and the cursor kept. */
+		w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_PICKER);
+		return;
+	}
+#endif
+	closed();
 }
 
 MH_API int mh_core_frame(int p)

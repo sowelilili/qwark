@@ -346,6 +346,40 @@
 #define RAC4_MISSIONS_OTHER    16
 
 /*
+ * Build 54 (revision 1.22): a planet's unlock, by the game's own progress code
+ * (PS2 v6 symbols, missionfunc.cpp and LevelBox.cpp; the PS3 code at 0x1D62E0
+ * is the same). MF_LevelSave is {MF_MissionSave mission[64]; u8 status; u8
+ * jackpot}, a mission {s32 xp, s32 bolts, u8 status, u8 completes, u8
+ * difficulty}. A level's status byte:
+ *   0x01 visible   (CheckVisibleLevel: its badge and armour requirement met)
+ *   0x02 unlocked  (CheckUnlockLevel: its LevelDef's requirement met; what
+ *                   Worlds shows as not locked)
+ *   0x04 visited   (Worlds' "new" is the bit clear)
+ *   0x08 its main missions complete, 0x10 its side missions too
+ * and a mission's: 0x01 visible, 0x02 unlocked. MF_UpdateProgress, which runs
+ * at every level load before the level picks its mission, sets 0x01 and 0x02
+ * by those rules and never clears them, and only for a level whose 0x02 is set
+ * does it go on to its missions (MF_UpdateMissionProgress), each visible
+ * unless its MissionDef hides it and unlocked by its own UnlockData
+ * (CheckUnlockMission). The level then starts MF_GetNextMissionIndex, the
+ * first main mission that is unlocked and not complete.
+ *
+ * A planet the save has not reached arrives with neither bit, so with no
+ * mission visible, and the game drops the player on an empty Missions screen,
+ * which crashes (the user's hardware run of probe PL4). RAC4_PLANET_UNLOCK is
+ * what the game's own rules leave in a planet that has just unlocked: the
+ * level visible and unlocked, and its first mission (every planet's is main,
+ * visible and asks nothing: the PS3 MissionDefs at 0x9E06A4, first_mission in
+ * the LevelDefs at 0x9E03CC) visible and unlocked. The rest, its other
+ * missions' visibility, "visited", is the arrival's own MF_UpdateProgress.
+ */
+#define RAC4_LEVEL_STATUS      0x300u  /* the level's status byte in its MF_LevelSave */
+/* The ids with a LevelDef: DreadZone and the planets, not the unused slot and the three placeholders. */
+#define RAC4_PLANETS_REAL      0xEDF6u /* 1, 2, 4..8, 10, 11, 13..15 */
+#define RAC4_LEVEL_UNLOCKED    0x02u
+#define RAC4_PLANET_UNLOCK     0x03u   /* visible and unlocked, in the level's byte and its first mission's */
+
+/*
  * The game's two mode words, which are what says whether a save may be taken or
  * put back. `gameMode` is RAC4_GAME_STATE above, the word the fast-load watcher
  * already reads; `pendingGameMode` is the mode the game has been asked to change
@@ -559,6 +593,13 @@ u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 
 int rac4_planet_load(u8 planet, u8 flags);
+/*
+ * Build 54: unlocks a planet the save has not unlocked, as the game leaves one
+ * that has just unlocked (RAC4_PLANET_UNLOCK). ST_OK with nothing written for
+ * one already unlocked and for DreadZone, which asks nothing; BAD_ARG for an
+ * id with no planet behind it. Save data: the next save keeps it.
+ */
+int rac4_planet_unlock(u8 planet);
 
 int rac4_unlock_list(const struct game_unlock **list, u8 *count,
                      const char * const **categories, u8 *ncategories,

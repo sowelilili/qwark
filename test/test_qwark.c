@@ -8154,6 +8154,9 @@ static void test_rac3(void)
 #define F4_RESET_LEVELS  16   /* retired in build 32, never reused */
 #define F4_MAX_AMMO      17
 
+/* src/games/rac4.h, build 54: a planet's unlock, which a PLANET_LOAD of a locked planet runs first. */
+int rac4_planet_unlock(u8 planet);
+
 /*
  * The fast-load words in the order the patch lists them: where, and the game's
  * own word or the patch's. The thirteen from R4_FL_MOVIE are the routine that
@@ -8354,6 +8357,95 @@ static void test_rac4(void)
 	pump(6);
 	check(r4_fl_is(0), "and go back to the toggle setting when it ends: the game's own words");
 	check(r4_fl_order(0), "taken out in the reverse order");
+
+	group("build 54: a Deadlocked PLANET_LOAD unlocks a locked planet first");
+
+	{
+		/* MF_LevelSave[planet - 1]: its status byte at +0x300, its first mission's at +8. */
+		const u32 saves = 0x00B27FF0u, size = 0x304u;
+		u8 st = 0, m0 = 0, m1 = 0;
+		int i, order_ok;
+
+#define R4_STATUS(p)  (saves + ((u32)(p) - 1u) * size + 0x300u)
+#define R4_MISSION(p, i) (saves + ((u32)(p) - 1u) * size + (u32)(i) * 12u + 8u)
+		for (i = 1; i <= 15; i++) {
+			host_poke(R4_STATUS(i), (const u8 *)"\x00", 1);
+			host_poke(R4_MISSION(i, 0), (const u8 *)"\x00", 1);
+			host_poke(R4_MISSION(i, 1), (const u8 *)"\x00", 1);
+		}
+		host_poke(R4_STATUS(1), (const u8 *)"\x03", 1);
+		host_poke(R4_STATUS(2), (const u8 *)"\x07", 1);
+		host_poke(R4_MISSION(6, 0), (const u8 *)"\x04", 1);
+		host_poke(R4_STATUS(6), (const u8 *)"\x10", 1);
+
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_OK, "PLANET_LOAD to Shaar, which the save has not unlocked");
+		host_peek(R4_STATUS(6), &st, 1);
+		host_peek(R4_MISSION(6, 0), &m0, 1);
+		host_peek(R4_MISSION(6, 1), &m1, 1);
+		check(st == 0x13 && m0 == 0x07 && m1 == 0,
+		      "the level visible and unlocked (0x03 or'd in), its first mission too, the second untouched");
+		order_ok = write_covering(R4_MISSION(6, 0)) >= 0 &&
+		           write_covering(R4_MISSION(6, 0)) < write_covering(R4_STATUS(6)) &&
+		           write_covering(R4_STATUS(6)) < write_covering(R4_TARGET) &&
+		           write_covering(R4_TARGET) < write_covering(R4_LOADP2);
+		check(order_ok, "the mission, then the level, then the planet and the load request");
+		mem_read_u32(R4_TARGET, &v);
+		check_eq_u64(v, 6, "and Shaar loads");
+
+		host_write_log_reset();
+		check(session_planet_load(2, 0) == ST_OK, "PLANET_LOAD to Catacrom, unlocked already");
+		host_peek(R4_STATUS(2), &st, 1);
+		check(st == 0x07 && write_covering(R4_STATUS(2)) < 0 && write_covering(R4_MISSION(2, 0)) < 0,
+		      "nothing of its save is written");
+		host_write_log_reset();
+		check(session_planet_load(1, 0) == ST_OK && write_covering(R4_STATUS(1)) < 0 &&
+		      write_covering(R4_MISSION(1, 0)) < 0, "nor of DreadZone's, which asks nothing to unlock");
+		host_write_log_reset();
+		check(session_planet_load(3, 0) == ST_OK && write_covering(R4_STATUS(3)) < 0,
+		      "nor of a placeholder's, which has no level of its own");
+		check(rac4_planet_unlock(3) == ST_BAD_ARG && rac4_planet_unlock(0) == ST_BAD_ARG &&
+		      rac4_planet_unlock(16) == ST_BAD_ARG, "the unlock refuses an id that is no planet");
+		host_write_log_reset();
+		host_fail_writes(R4_STATUS(8), 1);
+		check(session_planet_load(8, 0) != ST_OK && write_covering(R4_TARGET) < 0,
+		      "an unlock that cannot be written: no load either");
+		host_fail_writes(0, 0);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		pump(4);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		pump(4);
+
+		group("build 54: Deadlocked's Unlock all planets unlocks each, then loads DreadZone");
+
+		for (i = 1; i <= 15; i++) {
+			host_poke(R4_STATUS(i), (const u8 *)"\x00", 1);
+			host_poke(R4_MISSION(i, 0), (const u8 *)"\x00", 1);
+		}
+		host_poke(R4_STATUS(1), (const u8 *)"\x03", 1);
+		host_poke(R4_STATUS(4), (const u8 *)"\x0F", 1);
+		host_write_log_reset();
+		check(features_trigger(11) == ST_OK, "Unlock all planets runs");
+		for (i = 2, order_ok = 1; i <= 15; i++) {
+			int real = i != 3 && i != 9 && i != 12;
+			host_peek(R4_STATUS(i), &st, 1);
+			host_peek(R4_MISSION(i, 0), &m0, 1);
+			if (i == 4) order_ok &= st == 0x0F && m0 == 0x02;
+			else if (real) order_ok &= st == 0x03 && m0 == 0x03;
+			else order_ok &= st == 0x00;
+		}
+		check(order_ok, "every planet it had locked is unlocked, its first mission visible and unlocked; Sarathos, "
+		      "unlocked already, keeps its status (its missions unlocked, 2, as ever); the placeholders untouched");
+		host_peek(R4_STATUS(15), &st, 1);
+		check(st == 0x03, "Interior included, which DreadZone's load never unlocked");
+		check(write_covering(R4_LOADP2) > write_covering(R4_STATUS(15)) &&
+		      write_covering(R4_TARGET) > write_covering(R4_STATUS(15)),
+		      "and the load of DreadZone goes out last, once all of it is written");
+		mem_read_u32(R4_TARGET, &v);
+		check_eq_u64(v, 1, "DreadZone");
+#undef R4_STATUS
+#undef R4_MISSION
+	}
 
 	group("build 53: Deadlocked's Fast loads checkbox and a forced load");
 

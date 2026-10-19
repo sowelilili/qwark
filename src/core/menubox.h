@@ -18,6 +18,14 @@
  * the window that continues it when the cursor comes to its edge
  * (MBOX_EV_SCROLL_*), so the window slides under the cursor.
  *
+ * Also in version 3 (the planet pickers, same revision): the game's own
+ * planet picker: a renderer that can open it says so (MBOX_CAP_PICKER), qwark
+ * flags the root's Planets row (MROWF_PICKER), the renderer opens the picker
+ * on it, reads hstate MBOX_HSTATE_PICKER while the picker is up, and posts
+ * what the player picked in pick_planet and pick_seq, the two words that sit
+ * at the end of the header qwark polls. The page moved 8 bytes for them and
+ * the hint is 8 bytes shorter.
+ *
  * qwark owns the menu (src/core/menu.c): the pages, the navigation, what a row
  * does. A renderer is a small piece of code qwark writes into the game, one per
  * game, that draws the page it finds here with the game's own menu widgets and
@@ -74,21 +82,28 @@
 #define MBOX_OFF_EV_KEY     0x1C   /* u32 the page key the event was made on  renderer */
 #define MBOX_OFF_EV_ACK     0x20   /* u32 the last ev_seq qwark has dealt with  qwark */
 #define MBOX_OFF_PAGE_SEQ   0x24   /* u32 seqlock: odd while qwark writes       qwark */
+/*
+ * Version 3: the pick, the planet first and then the seq, a barrier between.
+ * qwark takes each new pick_seq once (the seq it finds at the install is not
+ * one) and loads pick_planet, its own planet id, once the game plays again.
+ */
+#define MBOX_OFF_PICK_SEQ   0x28   /* u32 bumped after pick_planet              renderer */
+#define MBOX_OFF_PICK_PLANET 0x2C  /* s32 the planet picked, qwark's id         renderer */
 
 /* The page: everything from here on is written between the two page_seq writes. */
-#define MBOX_OFF_PAGE_KEY   0x28   /* u32 which page this is (below)            qwark */
-#define MBOX_OFF_NROWS      0x2C   /* u8 rows in use, 1..row_cap                qwark */
-#define MBOX_OFF_CURSOR     0x2D   /* u8 the row the cursor goes to on a new key qwark */
-#define MBOX_OFF_PFLAGS     0x2E   /* u8 MBOX_PAGE_*                            qwark */
-#define MBOX_OFF_PTYPE      0x2F   /* u8 MBOX_PTYPE_*                           qwark */
-#define MBOX_OFF_TITLE      0x30   /* char[32], NUL-padded                      qwark */
-#define MBOX_OFF_HINT       0x50   /* char[48], a line about the page: the last result qwark */
+#define MBOX_OFF_PAGE_KEY   0x30   /* u32 which page this is (below)            qwark */
+#define MBOX_OFF_NROWS      0x34   /* u8 rows in use, 1..row_cap                qwark */
+#define MBOX_OFF_CURSOR     0x35   /* u8 the row the cursor goes to on a new key qwark */
+#define MBOX_OFF_PFLAGS     0x36   /* u8 MBOX_PAGE_*                            qwark */
+#define MBOX_OFF_PTYPE      0x37   /* u8 MBOX_PTYPE_*                           qwark */
+#define MBOX_OFF_TITLE      0x38   /* char[32], NUL-padded                      qwark */
+#define MBOX_OFF_HINT       0x58   /* char[40], a line about the page: the last result qwark */
 #define MBOX_OFF_ROWS       0x80   /* rows[row_cap], row_size each              qwark */
 
 #define MBOX_TITLE_LEN      32
-#define MBOX_HINT_LEN       48
+#define MBOX_HINT_LEN       40
 #define MBOX_HEAD_SIZE      MBOX_OFF_ROWS
-#define MBOX_READ_HEAD      0x28   /* what qwark polls: magic .. page_seq */
+#define MBOX_READ_HEAD      0x30   /* what qwark polls: magic .. pick_planet */
 
 /* --------------------------------------------------------------------- a row */
 
@@ -136,6 +151,13 @@
 #define MROWF_CLOSES        0x08   /* activating it closes the menu before it acts */
 #define MROWF_RANGE         0x10   /* a VALUE with bounds: its four words at MROW_OFF_RANGE */
 #define MROWF_SLIDER        0x20   /* and few enough steps from end to end for a bar (with RANGE) */
+/*
+ * Version 3: the root's Planets row, for a renderer with MBOX_CAP_PICKER. The
+ * cross opens the game's own planet picker instead of posting ACTIVATE; a
+ * renderer that cannot open it there and then posts ACTIVATE as for any link,
+ * and qwark opens its own Planets page.
+ */
+#define MROWF_PICKER        0x40
 
 /* -------------------------------------------------------- the other fields */
 
@@ -144,10 +166,17 @@
 #define MBOX_CAP_PAGE_KEYS  0x02   /* it posts PAGE_PREV and PAGE_NEXT */
 #define MBOX_CAP_BACK       0x04   /* it has a back control of its own, so no BACK rows */
 #define MBOX_CAP_REQUEST    0x08   /* it opens and closes the menu when asked */
+#define MBOX_CAP_PICKER     0x10   /* version 3: it opens the game's own planet picker (MROWF_PICKER) */
 
-/* hstate. */
+/*
+ * hstate. PICKER (version 3): the menu's screen has stopped under the game's
+ * planet picker, which it opened. Not a close: the page and the cursor stay,
+ * and back from the picker shows them again. A pick, or the picker closing
+ * some other way, ends it as a close (CLOSED).
+ */
 #define MBOX_HSTATE_CLOSED  0
 #define MBOX_HSTATE_OPEN    1
+#define MBOX_HSTATE_PICKER  2
 
 /* request. */
 #define MBOX_REQ_NONE       0
