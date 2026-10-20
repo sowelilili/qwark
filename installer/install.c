@@ -495,7 +495,8 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 		append(out, cap, line);
 	}
 	if (r->usb_list) {
-		append(out, cap, "\n\nThe console reads boot_plugins.txt on the USB drive first, so qwark will not load. "
+		append(out, cap, "\n\nYour console has a USB drive attached. The console reads a "
+		                 "boot_plugins.txt on the USB drive first, so qwark will not load. "
 		                 "Remove that file.");
 	}
 	if (hen) append(out, cap, "\n\nAfter the restart, enable HEN. qwark loads with it.");
