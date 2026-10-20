@@ -2575,13 +2575,88 @@ static void dl_menu_open(void)
 }
 
 /*
+ * Where the pause's own main menu greys WORLDS (Interior, 15 and co-op's 35;
+ * DreadZone, 1 and 21, until its mission 37 has a completion) the menu's
+ * Worlds opens all the same: the greying is the pause's rule, and nothing in
+ * Worlds depends on it (mh_rac4.c, shim_picker; check.py reads the game's
+ * side). One state, at the level and DL_DZ_GATE byte given and with the
+ * mission active (-1 is the trap): PLANETS pushes Worlds over the root, Back
+ * returns to the root on PLANETS, Start closes with no pick, and X on
+ * Catacrom hands qwark the pick without HandleSelection, whose own test
+ * (missions 8 and 37) would only close the menu in the tutorial, and qwark
+ * loads the planet once the game plays. Co-op's levels carry co-op's links.
+ */
+static void worlds_where(const char *where, u32 level, int gate, int mission, int planets_row)
+{
+	u32 mb = menu_mailbox(), seq, link = level > 20 ? 22 : 2, want = link;
+	int n, sel;
+	char msg[200];
+
+	poke32(DL_LEVEL, level);
+	poke8(DL_DZ_GATE, (u32)gate);
+	poke32(RAC4_GAME_RULES, level > 20 ? RAC4_GAME_RULES_COOP : 0);
+	W.mission = mission;
+	poke32(RAC4_TARGET_PLANET, 0);
+	poke32(RAC4_LOAD_PLANET2, 0);
+	worlds_entry(0, 0, 0, DL_TYPE_TOURNAMENT);
+	worlds_entry(1, 0, (int)link, DL_TYPE_PLANET);
+	worlds_entry(5, 0, level > 20 ? 35 : 15, DL_TYPE_PLANET);
+	worlds_focus(6, 1);
+
+	dl_menu_open();
+	G.cursor = planets_row;
+	n = W.starts;
+	game_frame(PADB_CROSS);
+	snprintf(msg, sizeof(msg), "%s: PLANETS pushes Worlds over the root, as anywhere (the picker up, hstate PICKER, "
+	         "no event)", where);
+	check(G.screen == DL_SCREEN_WORLDS && W.up && W.starts == n + 1 && mh_picker_up() && box_acked() &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER && G.depth == 1 && G.stack[0] == MH_SCREEN_ID, msg);
+
+	worlds_press(DL_CMD_TRIANGLE);
+	snprintf(msg, sizeof(msg), "%s: Triangle goes back to the root, the cursor on PLANETS (the gate passes with %s)",
+	         where, mission == -1 ? "no mission active" : "a mission active");
+	check(G.screen == MH_SCREEN_ID && G.shown && !W.up && !mh_picker_up() && G.cursor == planets_row &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN, msg);
+	tick(4);
+	game_frame(0);
+
+	game_frame(PADB_CROSS);
+	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
+	worlds_press(DL_CMD_CLOSE);
+	snprintf(msg, sizeof(msg), "%s: Start closes everything, nothing picked", where);
+	check(G.screen == 0 && !G.paused && !mh_picker_up() && peek32(mb + MBOX_OFF_PICK_SEQ) == seq &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, msg);
+	tick(8);
+
+	dl_menu_open();
+	G.cursor = planets_row;
+	game_frame(PADB_CROSS);
+	sel = W.selections;
+	worlds_press(DL_CMD_CROSS);
+	snprintf(msg, sizeof(msg), "%s: X on Catacrom picks planet 2 (pick_seq + 1) without HandleSelection, and the menu "
+	         "closes", where);
+	check(peek32(mb + MBOX_OFF_PICK_SEQ) == seq + 1 && peek32(mb + MBOX_OFF_PICK_PLANET) == 2 &&
+	      W.selections == sel && G.screen == 0 && !G.paused &&
+	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && !mh_picker_up(), msg);
+	tick(8);
+	snprintf(msg, sizeof(msg), "%s: the game playing, qwark loads Catacrom (target %u)", where, (unsigned)want);
+	check(peek32(RAC4_TARGET_PLANET) == want && peek32(RAC4_LOAD_PLANET2) == 1, msg);
+
+	poke32(RAC4_LOAD_PLANET2, 0);
+	poke32(RAC4_TARGET_PLANET, 0);
+	dl_in_file();
+	tick(4);
+}
+
+/*
  * Mailbox version 3, the planet picker: the driver against a renderer
  * simulated at the byte level, then Deadlocked's renderer against Worlds'
  * mocks. PLANETS opens the game's own Worlds over the root; Back returns to
  * the root on PLANETS; X hands the planet to qwark, which unlocks a locked one
  * and loads it once the game plays; Start, and Circle's Skills, end it; the
- * game's own Worlds is left alone; where the main menu greys WORLDS the row
- * opens qwark's own Planets page, every planet on it.
+ * game's own Worlds is left alone; and wherever the pause's own WORLDS row is
+ * greyed (Interior, DreadZone before its mission 37) PLANETS opens Worlds
+ * regardless.
  */
 static void test_picker(void)
 {
@@ -2872,41 +2947,36 @@ static void test_picker(void)
 	W.mission = -1;
 	tick(4);
 
-	/* Where the main menu greys WORLDS, PLANETS opens qwark's own page: every planet. */
-	poke32(DL_LEVEL, 15);
+	/*
+	 * Where the pause's main menu greys WORLDS, PLANETS opens the menu's Worlds
+	 * all the same (build 55; build 54 refused there and opened qwark's own
+	 * Planets page): Interior, DreadZone before its mission 37 - the tutorial,
+	 * with and without a mission active - and co-op's of each.
+	 */
+	worlds_where("Interior", 15, 1, -1, planets_row);
+	worlds_where("Interior with a mission active", 15, 1, 5, planets_row);
+	worlds_where("co-op's Interior", 35, 1, -1, planets_row);
+	worlds_where("DreadZone before mission 37, no mission active", 1, 0, -1, planets_row);
+	worlds_where("DreadZone before mission 37, a mission active", 1, 0, 8, planets_row);
+	worlds_where("co-op's DreadZone before mission 37", 21, 0, -1, planets_row);
+	worlds_where("DreadZone after mission 37", 1, 1, -1, planets_row);
+
+	/*
+	 * The one refusal left: a page that is not MAIN. Only the root's Planets
+	 * row carries the PICKER flag and the root is a MAIN page, so nothing reaches
+	 * it, but the push is written for the list screen: the shim answers 0 (the
+	 * core would fall back to qwark's own Planets page) and pushes nothing.
+	 */
+	poke32(DL_LEVEL, 5);
+	W.mission = -1;
 	dl_menu_open();
-	G.cursor = planets_row;
 	n = W.starts;
-	game_frame(PADB_CROSS);
-	check(G.screen == MH_SCREEN_ID && W.starts == n && !mh_picker_up() && !box_acked(),
-	      "in Interior (as the main menu greys WORLDS there): no Worlds, an event posted instead");
-	tick(2);
-	game_frame(0);
-	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), "and qwark opens its own Planets page");
-	{
-		struct menu_view v;
-		menu_model_view(&v);
-		check(view_index(&v, "Sarathos") >= 0 || view_index(&v, "DreadZone") >= 0,
-		      "which lists the planets, unlocked or not (round 2 left the locked ones out)");
-	}
+	seq = r8(MH_SHIM + SH_WORLDS_OPENS);
+	w8(MH_STATE + ST_SHOWN, MBOX_PTYPE_CONFIG);
+	check(shim_picker(0) == 0 && W.starts == n && r8(MH_SHIM + SH_WORLDS_OPENS) == seq &&
+	      G.screen == MH_SCREEN_ID && !W.up, "on a CONFIG page the shim refuses, and pushes nothing");
+	w8(MH_STATE + ST_SHOWN, MBOX_PTYPE_MAIN);
 	game_frame(PADB_START);
-	tick(4);
-	poke32(DL_LEVEL, 21);
-	poke8(DL_DZ_GATE, 0);
-	dl_menu_open();
-	G.cursor = planets_row;
-	game_frame(PADB_CROSS);
-	check(G.screen == MH_SCREEN_ID && !mh_picker_up(), "in DreadZone (co-op's too) before its mission 37: the same");
-	tick(2);
-	game_frame(0);
-	game_frame(PADB_START);
-	tick(4);
-	poke8(DL_DZ_GATE, 1);
-	dl_menu_open();
-	G.cursor = planets_row;
-	game_frame(PADB_CROSS);
-	check(G.screen == DL_SCREEN_WORLDS && mh_picker_up(), "and once it has a completion, Worlds");
-	worlds_press(DL_CMD_CLOSE);
 	tick(4);
 
 	check(quit(), "quit Deadlocked");

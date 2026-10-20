@@ -500,10 +500,13 @@
  *   which DreadZone (level 1) holds;
  *   g_fromPlanet, g_fromOther, g_fromMissionScreen, the three bytes Start
  *   clears as it closes Worlds (MenuPlanet_SystemCancel).
- * The main menu's WORLDS row is greyed (MenuMain_StartMain, 0x3A619C..0x3A63B0)
+ * The pause's own WORLDS row is greyed (MenuMain_StartMain, 0x3A619C..0x3A63B0)
  * in Interior (level 15, co-op 35), and in DreadZone (1, 21) until its mission
- * 37 has a completion (the byte at DL_DZ_GATE): the picker refuses there too,
- * and the PLANETS row opens qwark's own list.
+ * 37 has a completion (the byte at DL_DZ_GATE). That is the pause's rule, not a
+ * limit of Worlds: the picker opens Worlds there too (shim_picker), and check.py
+ * reads both facts, the greying and what Worlds does in those states. DL_LEVEL,
+ * DL_LEVEL_INTERIOR and DL_DZ_GATE are the tests' and check.py's, no code of
+ * the renderer's reads them.
  */
 #define DL_SCREEN_WORLDS    0x00000003
 #define DL_PLANET_PD        0x011A1458   /* MenuPlanet_PlayerData */

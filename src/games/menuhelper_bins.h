@@ -26,7 +26,7 @@
  * packs this table. A module takes only the pak that carries it (and names its
  * build), so the menu that goes into a game is always the module's own.
  */
-#define MH_PAK_ID 0xE975AC2Fu
+#define MH_PAK_ID 0x5F5C8D3Du
 
 /*
  * One run of bytes at one address - the mailbox, the state, the read-only

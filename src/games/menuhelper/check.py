@@ -958,8 +958,10 @@ def check_rac4_templates(ok, elf, hdr, path):
 def check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at):
     """
     Worlds (screen 3, MenuPlanet) as the picker's six words and the shim assume
-    it: the code round each site, the numbers the shim reads, the main menu's
-    WORLDS row's own rule, and the leaf gates stepped with the picker up and
+    it: the code round each site, the numbers the shim reads, the pause's own
+    WORLDS row rule (which the picker does not copy: build 55 opens Worlds in
+    Interior and early DreadZone too), what Worlds does with the level and
+    with the tutorial's test, and the leaf gates stepped with the picker up and
     down on either outcome of the game's own test.
     """
     w = elf.word
@@ -1014,7 +1016,7 @@ def check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at):
        w(0x003B2878) == 0x80A50000 | hdr["DL_PLANET_FOCUS"] and w(0x003B17F8) == 0x809F0000 | hdr["DL_PLANET_ITEMS"],
        "MenuPlanet_PlayerData at 0x%08X, 0x%X a player: its items +0x%X, count +0x%X, focus +0x%X" %
        (pd, sz, hdr["DL_PLANET_ITEMS"], hdr["DL_PLANET_COUNT"], hdr["DL_PLANET_FOCUS"]))
-    # Worlds' table entry, and the WORLDS row's rule, which the shim's refusals copy.
+    # Worlds' table entry, and the pause's WORLDS row rule, which the picker no longer copies (build 55).
     ok(hdr["MH_WORLDS_STOP"] == 0x009E8918 + 0x10 * hdr["DL_SCREEN_WORLDS"] + 0xC and
        w(hdr["MH_WORLDS_STOP"]) == hdr["MH_ORIG_WORLDS_STOP"] == hdr["OPD_WORLDS_STOP"],
        "0x%08X is GuiMenu_Screens[3].fcStop, MenuPlanet_Stop's descriptor" % hdr["MH_WORLDS_STOP"])
@@ -1024,13 +1026,45 @@ def check_rac4_picker(ok, elf, hdr, shim_defs, code, cave, stub_at):
        w(0x003A61AC) == 0x2F1E0000 | hdr["DL_LEVEL_INTERIOR"] and w(0x003A61B0) == 0x2F9E0023 and
        w(0x003A61DC) == 0x3CA00000 | ((gate + 0x8000) >> 16) and w(0x003A61E8) == 0x30A50000 | (gate & 0xFFFF) and
        w(0x003A6394) == 0x30643FB0 and w(0x003A63B0) == 0x38800001,
-       "the main menu greys WORLDS (descriptor 0x993FB0) in Interior (15, 35), and in DreadZone (1, 21) until "
-       "the byte at 0x%08X (its mission 37's completions) is set: Level at 0x%08X, as the shim refuses" % (gate, lev))
+       "the game's own pause greys WORLDS (descriptor 0x993FB0) in Interior (15, 35), and in DreadZone (1, 21) "
+       "until the byte at 0x%08X (its mission 37's completions) is set: Level at 0x%08X. That is the pause's rule "
+       "alone, which the picker does not copy (build 55): the checks below are why Worlds may open there" %
+       (gate, lev))
     ok(w(0x00993FB0) == 0x003A8368 and w(0x00993FB4) == DL_TOC and
        any(w(0x003A8368 + 4 * i) == 0x38800000 | hdr["DL_SCREEN_WORLDS"] and
            any(branch_target(0x003A8368 + 4 * k, w(0x003A8368 + 4 * k)) == 0x00362308 for k in range(i + 1, i + 6))
            for i in range(0x18)),
-       "and its callback (0x3A8368) is GuiMenu_PushScreen(p, 3), what the shim's PLANETS does")
+       "and its callback (0x3A8368) is GuiMenu_PushScreen(p, 3), what the shim's PLANETS does, with no test of the "
+       "level of its own")
+    # Build 55, why the picker may open Worlds where the pause greys it. The tutorial: HandleSelection's own test
+    # (missions 8 and 37 of DreadZone completed, else the plain close, which X never reaches).
+    base, hs = gate - 0x1C5, hdr["DL_HANDLE_SELECTION"]
+    ok(w(0x003B2240) == 0x3C600000 | ((base + 0x8000) >> 16) and w(0x003B2244) == 0x30630000 | (base & 0xFFFF) and
+       w(0x003B2248) == 0x88830000 | (8 * 12 + 9) and w(0x003B224C) == 0x2C040000 and
+       branch_target(0x003B2250, w(0x003B2250)) == 0x003B2260 and
+       w(0x003B2254) == 0x88630000 | (0x25 * 12 + 9) and w(0x003B2258) == 0x2C030000 and
+       branch_target(0x003B225C, w(0x003B225C)) == 0x003B2294 and
+       branch_target(0x003B2260, w(0x003B2260)) == 0x00361408 and w(0x003B2278) == 0x3880FFFF and
+       branch_target(0x003B2288, w(0x003B2288)) == 0x0036249C,
+       "HandleSelection (0x%08X), once the entry is not locked, reads mission 8's and mission 37's completions of "
+       "DreadZone (0x%08X and the gate's 0x%08X): either clear, it is the plain close - the sound flag, the three "
+       "bytes, CloseMenu(p, -1) - and no travel, no Missions screen; the renderer's X (above) never reaches it" %
+       (hs, base + 8 * 12 + 9, gate))
+    brs, wds, prs = refs_into(elf, hs, hs + 4)
+    dbr, dwd, dpr = refs_into(elf, 0x009943B0, 0x009943B4)
+    ok([a for a, _ in brs] == [hdr["MH_SITE_SELECT"]] and [a for a, _ in wds] == [0x009943B0] and not prs and
+       w(0x009943B0) == hs and not dbr and not dwd and not dpr,
+       "and HandleSelection is called from the hooked X alone: its one branch is 0x%08X, its descriptor "
+       "(0x009943B0) is named by no word, no lis/addi pair and no branch" % hdr["MH_SITE_SELECT"])
+    # Where Worlds reads the level (GetMenuPlanetState 0x3AE2D0 to the GuiState's update, ending 0x3B36FB) and
+    # nothing else: the focus searches, one help line, and the two functions the renderer's X replaces.
+    reads = sorted(a for a, _ in refs_into(elf, lev, lev + 4)[2] if 0x003AE2D0 <= a < 0x003B3700)
+    ok(reads == [0x003B08B0, 0x003B0938, 0x003B0ABC, 0x003B0CF8, 0x003B0EE8, 0x003B1C64, 0x003B22A8, 0x003B2998],
+       "Worlds reads Level (0x%08X) at eight places only: the first-focus searches (the incomplete-missions "
+       "search 0x3B0834 three times, TestForCurrentLevelFocus 0x3B0CD0, TestForTournamentFocus 0x3B0E98), "
+       "HandleVO's one help line (0x3B1C64, which skips the Interior hint in Interior), HandleSelection "
+       "(0x3B22A8) and ChangePlanet (0x3B2998), both of which the renderer's X replaces; nothing in its list "
+       "build, input, panels or exits depends on the level" % lev)
     # The leaf gates, stepped.
     picker = hdr["MH_STATE"] + shim_defs["ST_PICKER"]
     gates = (("mh_gate_ghost", "DL_GHOST_TESTED", "DL_GHOST_LISTED", "Ghost Station listed"),

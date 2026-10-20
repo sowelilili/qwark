@@ -713,18 +713,26 @@ int mh_frame(int p)
  * the root, GuiMenu_PushScreen(p, 3) as the main menu's WORLDS row pushes it
  * (0x3A8368), whose push stops screen 36 first (mh_stop, which the core takes
  * as no close). Worlds then starts with its own sound, and back pops to screen
- * 36 again (mh_start). Only from a MAIN page, and only where the main menu
- * would light its WORLDS row (mh_rac4.h, DL_LEVEL): never in Interior, and in
- * DreadZone only once its mission 37 has been completed. Elsewhere the core
- * falls back to qwark's own Planets page.
+ * 36 again (mh_start).
+ *
+ * Wherever the player is. The pause's own main menu greys its WORLDS row in
+ * Interior and in DreadZone until its mission 37 is done (MenuMain_StartMain,
+ * mh_rac4.h), but that is the pause's rule and nothing in Worlds depends on
+ * it: in DreadZone before the tutorial's end the game's X would only close
+ * the menu (HandleSelection's mission 8 and 37 test), which the renderer's X
+ * never reaches, and in Interior no word of Worlds' list, focus, input or
+ * panels reads the level but the first focus (which finds the Interior entry
+ * the renderer lists) and one help line. The trap (no mission active) and the
+ * tutorial's early states pass through the same gates as anywhere.
+ *
+ * The one refusal left is a page that is not MAIN: the push is written for
+ * the list screen (mh_stop's MAIN branch), and the core would fall back to
+ * qwark's own Planets page. Nothing reaches it today, since only the root's
+ * Planets row carries the PICKER flag and the root is a MAIN page.
  */
 MH_API u32 shim_picker(int p)
 {
-	s32 k = (s32)r32(DL_LEVEL) % 20;
-
 	if (shown() != MBOX_PTYPE_MAIN) return 0;
-	if (k == DL_LEVEL_INTERIOR) return 0;
-	if (k == DL_LEVEL_DREADZONE && r8(DL_DZ_GATE) == 0) return 0;
 	w8(SH(SH_WORLDS_OPENS), r8(SH(SH_WORLDS_OPENS)) + 1);
 	push_screen(p, DL_SCREEN_WORLDS);
 	return 1;
