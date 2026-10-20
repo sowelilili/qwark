@@ -7457,7 +7457,10 @@ static void r3_fl_check_words(void)
 #define AOD_AMMO   (R3_AMMO_ARRAY + (0x39Fu - 0x243u))
 #define AOD_ITEM   (R3_ITEM_ARRAY + 0x57u)
 
-/* Bouncer, one of the five GC weapons whose versions live in a table of their own. */
+/* Bouncer, one of the five GC weapons whose versions live in a table of their own.
+ * UYA's, not the RaC2 tests' of the same name further up. */
+#undef BOUNCER_ID
+#undef BOUNCER_ITEM
 #define BOUNCER_ID   23
 #define BOUNCER_ITEM (R3_ITEM_ARRAY + 0x13u)
 

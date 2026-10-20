@@ -377,6 +377,17 @@ void test_pine(void)
 	check(1, "the fake PINE server starts");
 
 	pine_set_port(g_port);
+	/* Up to the stalled-RPCS3 section nothing here is about time, so a caller
+	 * waits a second for its answer rather than 100 ms: this fake answers
+	 * from a thread that polls every 20 ms, and on a machine busy with other
+	 * builds an answer could miss the 100 ms and every check after it failed.
+	 * The link and retry clocks are the defaults (5 s, and a refused connect
+	 * retried once a second). */
+	pine_set_timeouts(1000, 5000, 5000);
+	/* A connect is capped at PINE_CONNECT_MS (40 ms) and a failed one waits out
+	 * the one-second retry clock. A busy machine can take longer than 40 ms to
+	 * finish a loopback connect, so the first connect is given a few rounds. */
+	for (i = 0; i < 5 && pine_ensure() != 1; i++) plat_sleep_us(1100000);
 	check(pine_ensure() == 1, "the backend connects to it");
 	check(pine_connected() == 1, "and reports the connection");
 
@@ -532,24 +543,31 @@ void test_pine(void)
 	/* ------------------------------------------------- a stalled RPCS3 */
 
 	/* The test's clocks: callers wait 50 ms, the link is dead after 400 ms of
-	 * silence, a silent server is left alone for 600 ms. */
-	pine_set_timeouts(50, 400, 600);
+	 * silence, a silent server is left alone for 600 ms - each times
+	 * PINE_STALL_SCALE, with every sleep and bound below. What is checked is
+	 * how the three stand to each other, and the gaps between them are the
+	 * time a thread may wait for the CPU: at 70 ms, a machine busy with other
+	 * builds outlasted them now and then. */
+#define PINE_STALL_SCALE 3
+#define STALL_MS(ms)     ((ms) * PINE_STALL_SCALE)
+#define STALL_US(ms)     ((u32)STALL_MS(ms) * 1000u)
+	pine_set_timeouts(STALL_MS(50), STALL_MS(400), STALL_MS(600));
 
 	pine_forget_cache();
 	check(pine_game_running() == 1, "with a prompt server the game is up");
 
-	g_srv_delay_ms = 150;                  /* every reply now takes 150 ms */
-	plat_sleep_us(60000);                  /* past the 50 ms poll window */
+	g_srv_delay_ms = STALL_MS(150);        /* every reply now takes 150 ms */
+	plat_sleep_us(STALL_US(60));           /* past the 50 ms poll window */
 	t0 = plat_time_us();
 	check(pine_read(FAKE_BASE + 0x200, out, 8) < 0,
 	      "a read the server sits on is reported failed");
-	check(plat_time_us() - t0 < 120000u,
+	check(plat_time_us() - t0 < STALL_US(120),
 	      "after the caller's wait, not after the server's delay");
 	check(pine_connected() == 1, "and the link is kept while the worker waits on");
 	check(pine_game_running() == 1,
 	      "a stall keeps the last answer: the game is still up");
 
-	plat_sleep_us(250000);                 /* the late reply has come and gone */
+	plat_sleep_us(STALL_US(250));          /* the late reply has come and gone */
 	g_srv_delay_ms = 0;
 	memset(out, 0, sizeof(out));
 	check(pine_read(FAKE_BASE + 0x100, out, 4) == 0 && memcmp(out, WORD_BE, 4) == 0,
@@ -558,34 +576,36 @@ void test_pine(void)
 	/* ------------------------------------------- one client at a time */
 
 	pine_close();
-	pine_set_timeouts(50, 400, 600);
+	pine_set_timeouts(STALL_MS(50), STALL_MS(400), STALL_MS(600));
 
 	holder = holder_connect();
 	check(holder >= 0, "another client takes the server's one seat");
-	plat_sleep_us(50000);                  /* it is being served, and says nothing */
+	plat_sleep_us(STALL_US(50));           /* it is being served, and says nothing */
 
 	before = g_conns;
+	/* The connect's 40 ms cap again, as at the top. */
+	for (i = 0; i < 5 && pine_ensure() != 1; i++) plat_sleep_us(1100000);
 	check(pine_ensure() == 1, "behind it the backend's connect still completes");
 	t0 = plat_time_us();
 	check(pine_read(FAKE_BASE + 0x100, out, 4) < 0, "but a read is never answered");
-	check(plat_time_us() - t0 < 200000u, "and fails within the caller's wait");
+	check(plat_time_us() - t0 < STALL_US(200), "and fails within the caller's wait");
 	t0 = plat_time_us();
 	for (i = 0; i < 20; i++) (void)pine_read(FAKE_BASE + 0x100, out, 4);
-	check(plat_time_us() - t0 < 100000u,
+	check(plat_time_us() - t0 < STALL_US(100),
 	      "twenty more calls return at once: nothing waits twice");
 	check(pine_connected() == 1,
 	      "the link is held open while the worker waits for the answer");
 	check(pine_game_running() == 0, "and no game is reported");
 	check(g_conns - before == 0, "the server has not even accepted it");
 
-	plat_sleep_us(500000);                 /* past the 400 ms link timeout */
+	plat_sleep_us(STALL_US(500));          /* past the 400 ms link timeout */
 	check(pine_connected() == 0,
 	      "when the link timeout passes the connection is given up");
 	check(pine_ensure() == 0,
 	      "and not queued up behind the other client again at once");
 
 	plat_socket_close(holder);             /* the other client leaves */
-	plat_sleep_us(700000);                 /* past the 600 ms silent retry */
+	plat_sleep_us(STALL_US(700));          /* past the 600 ms silent retry */
 	check(pine_ensure() == 1, "once it has gone, the backend reconnects");
 	memset(out, 0, sizeof(out));
 	check(pine_read(FAKE_BASE + 0x100, out, 4) == 0 && memcmp(out, WORD_BE, 4) == 0,

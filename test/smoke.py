@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import zlib
+import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -555,6 +556,33 @@ class Sim:
             self.proc.kill()
 
 
+def start_sim(exe, args):
+    """Starts `exe` with `args` on a port of its own: (sim, port).
+
+    free_port() finds a port that is free while it looks, and the program binds
+    it a moment later. With other runs about - another worktree's suite, the
+    client's tests - something else can take the port in between, and then the
+    suite talked to that instead: a reset connection at best. The program says
+    which happened, "listening on N" or "cannot listen on N" (and a retry for
+    ever), so in the second case it is stopped and started on another port.
+    """
+    for _ in range(8):
+        port = free_port()
+        sim = Sim(exe, list(args) + ["--port", str(port)])
+        listening = re.compile(r"listening on %d\b" % port)
+        refused = "cannot listen on %d" % port
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and sim.proc.poll() is None:
+            lines = list(sim.lines)
+            if any(listening.search(line) for line in lines):
+                return sim, port
+            if any(refused in line for line in lines):
+                break
+            time.sleep(0.01)
+        sim.stop()
+    raise RuntimeError("the program under test found no port it could listen on")
+
+
 def sim_line(sim, needle, timeout=3.0):
     """The first line the program printed that contains `needle`, or None.
 
@@ -733,7 +761,12 @@ def test_boot_buffers(sim, c, udp_port, udp):
     stalled = connect()
     try:
         stalled.sendall(struct.pack(">IHH", 32, 1, 0x61))
-        time.sleep(.1)
+        # Until the network thread has read the header, rather than a tenth of a
+        # second: a loaded machine can take longer than that to get round to it,
+        # and the request timeout it starts is two seconds away.
+        deadline = time.monotonic() + 1.5
+        while sim_arena(sim) == 0 and time.monotonic() < deadline:
+            time.sleep(.01)
         check(sim_arena(sim) == 1, "timeout probe starts holding the arena")
         check(sim_arena_idle(sim, 3.0) == 0, "payload timeout releases the arena without a boot")
         check(c.call(OP_HEARTBEAT)[0] == ST_OK, "other connections survive a stalled request")
@@ -1019,12 +1052,16 @@ def test_vsh_memory(sim, c):
 
 def smoke_vshmem_start(exe):
     """Build 54: the simulator with a VSH figure from the start, as a console is."""
-    port = free_port()
-    sim = Sim(exe, ["--port", str(port), "--vshmem", "20480,40960"])
+    sim, port = start_sim(exe, ["--vshmem", "20480,40960"])
     sock = None
     try:
         sock = connect(port=port)
         c = Client(sock)
+        # HELLO answers from the snapshot the tick thread publishes every fourth
+        # tick. A client that connects in the module's first few milliseconds,
+        # as this one can when the machine is slow to start the tick thread,
+        # is answered from the empty one before it: so one publish first.
+        wait_ticks(c, TELEMETRY_EVERY)
         status, body = c.call(OP_HELLO, bytes([1]))
         info = parse_session_info(body) if status == ST_OK else None
         check(info and (info["flags"] & SESSION_FLAG_VSH_MEMORY) != 0,
@@ -1186,21 +1223,145 @@ def parse_autosplit_describe(b):
 
 # --------------------------------------------------------------- helpers
 
-def fresh_state(client, settle=0.2):
-    """Telemetry is published at 30 Hz, so let a frame go by before reading."""
-    time.sleep(settle)
+# The tick thread's rate (TICK_PERIOD_US in src/core/session.c), and how often
+# it publishes the snapshot GET_STATE answers with (TELEMETRY_EVERY): every
+# fourth tick, stamped with the tick it was taken on (SessionInfo.tick).
+#
+# Every wait in this file for something the tick thread does is counted in
+# those ticks rather than in seconds. On a loaded machine the tick thread falls
+# behind the wall clock, so a sleep meant to let a few frames go by could let
+# none go by at all, and a deadline of a few seconds could run out with the
+# module half way through: that is how a run beside other builds failed steps
+# that pass on a quiet one. A wait of `seconds` is that many seconds of the
+# module's own time, the same on an idle machine. WALL_GUARD only stops a run
+# whose module has stopped ticking altogether.
+TICK_HZ = 120
+TELEMETRY_EVERY = 4
+WALL_GUARD = 120.0
+
+
+def ticks(seconds):
+    """`seconds` of the module's time, in ticks."""
+    return int(round(seconds * TICK_HZ))
+
+
+def snapshot_tick(client):
+    """The tick the snapshot GET_STATE answers with was taken on, or None."""
     status, body = client.call(OP_GET_STATE)
     if status != ST_OK:
         return None
-    info, _watches, _n = parse_telemetry(body)
-    return info
+    return parse_telemetry(body)[0]["tick"]
+
+
+def ticks_since(client, start):
+    """How many ticks the module has run since the snapshot stamped `start`."""
+    now = snapshot_tick(client)
+    return None if now is None else (now - start) & 0xFFFFFFFF
+
+
+def state_after_ticks(client, n):
+    """The first snapshot taken at least `n` ticks after this call, or None."""
+    wall = time.monotonic() + WALL_GUARD
+    # GET_STATE is refused until the tick thread has published once.
+    start = snapshot_tick(client)
+    while start is None and time.monotonic() < wall:
+        time.sleep(0.005)
+        start = snapshot_tick(client)
+    if start is None:
+        return None
+    # The snapshot in hand was taken up to TELEMETRY_EVERY - 1 ticks ago.
+    want = n + TELEMETRY_EVERY
+    while True:
+        status, body = client.call(OP_GET_STATE)
+        if status != ST_OK:
+            return None
+        info = parse_telemetry(body)[0]
+        if ((info["tick"] - start) & 0xFFFFFFFF) >= want:
+            return info
+        if time.monotonic() >= wall:
+            return None
+        time.sleep(0.005)
+
+
+def wait_ticks(client, n):
+    """Lets the tick thread run `n` ticks; False if it never did."""
+    return state_after_ticks(client, n) is not None
+
+
+def module_sleep(client, seconds):
+    """A sleep of `seconds` of the module's time: what the tick thread has to be
+    given to take in a write, a pad state or an event before it is looked at."""
+    wait_ticks(client, ticks(seconds))
+
+
+def wait_while(client, busy, seconds, poll=0.02):
+    """Polls `busy()` until it is false or the module has run `seconds` worth of
+    ticks since the call. Returns True when it came false."""
+    start = snapshot_tick(client)
+    budget = ticks(seconds) + TELEMETRY_EVERY
+    wall = time.monotonic() + (WALL_GUARD if start is not None else seconds)
+    while busy():
+        ran = ticks_since(client, start) if start is not None else None
+        if (ran is not None and ran >= budget) or time.monotonic() >= wall:
+            return not busy()
+        time.sleep(poll)
+    return True
+
+
+def press(sim, client, mask, seconds):
+    """Puts `mask` on the fake pad and holds it for `seconds` of the module's
+    time. The simulator's stdin is read on a thread of its own, so its "ok pad"
+    is waited for before the ticks are counted."""
+    mark = len(sim.lines)
+    sim.send("pad %s" % mask)
+    wall = time.monotonic() + WALL_GUARD
+    while (not any(line.startswith("ok pad") for line in sim.lines[mark:])
+           and time.monotonic() < wall):
+        time.sleep(0.005)
+    if seconds > 0:
+        module_sleep(client, seconds)
+
+
+def combo_request(sim, client, addr):
+    """The menu combo, as a player presses it, and what it left in the mailbox's
+    request byte at `addr`: 0 when it asked nothing.
+
+    qwark withdraws a request nobody took after half a second of wall time
+    (REQUEST_US in src/core/menu.c), so the byte is read while the combo is
+    still held, as soon as it shows, rather than after a hold of fixed length:
+    on a loaded machine the hold and the release could outlast the half second
+    and the request was gone by the time it was looked at. A combo that asks
+    nothing is held for the whole quarter second of the module's time it always
+    was."""
+    press(sim, client, "0x0", 0.15)
+    press(sim, client, "0x%x" % COMBO_MENU_DEFAULT, 0)
+    seen = [0]
+
+    def nothing_yet():
+        status, body = client.call(OP_MEM_READ, struct.pack(">II", addr, 1))
+        seen[0] = body[0] if status == ST_OK else None
+        return seen[0] == 0
+
+    wait_while(client, nothing_yet, 0.25, 0.005)
+    press(sim, client, "0x0", 0.1)
+    return seen[0]
+
+
+def fresh_state(client, settle=0.2):
+    """The snapshot once the tick thread has had `settle` seconds' worth of
+    ticks since the call: telemetry is published at 30 Hz, so at least a frame
+    goes by before reading, however slowly the machine is running the module."""
+    return state_after_ticks(client, ticks(settle))
 
 
 def wait_state(client, want, timeout=6.0, forbid=None):
-    """Polls GET_STATE until the session reaches `want`. Returns (ok, info)."""
-    deadline = time.time() + timeout
+    """Polls GET_STATE until the session reaches `want`, for `timeout` seconds
+    of the module's time. Returns (ok, info)."""
+    budget = ticks(timeout) + TELEMETRY_EVERY
+    wall = time.monotonic() + WALL_GUARD
+    start = None
     info = None
-    while time.time() < deadline:
+    while True:
         status, body = client.call(OP_GET_STATE)
         if status == ST_OK:
             info, _watches, _n = parse_telemetry(body)
@@ -1208,11 +1369,18 @@ def wait_state(client, want, timeout=6.0, forbid=None):
                 return False, info
             if info["state"] == want:
                 return True, info
+            if start is None:
+                start = info["tick"]
+            elif ((info["tick"] - start) & 0xFFFFFFFF) >= budget:
+                return False, info
+        if time.monotonic() >= wall:
+            return False, info
         time.sleep(0.05)
-    return False, info
 
 
-def connect(timeout=10.0, port=PORT):
+def connect(timeout=10.0, port=None):
+    if port is None:
+        port = PORT
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -1246,13 +1414,10 @@ def mem_read_u8(c, addr):
 
 
 def read_u32_until(c, addr, want, timeout=1.0):
-    """Reads the word until it is `want` or the time runs out; returns the last read."""
-    deadline = time.time() + timeout
-    got = mem_read_u32(c, addr)
-    while got != want and time.time() < deadline:
-        time.sleep(0.02)
-        got = mem_read_u32(c, addr)
-    return got
+    """Reads the word until it is `want` or `timeout` seconds of the module's
+    time have gone; returns the last read."""
+    wait_while(c, lambda: mem_read_u32(c, addr) != want, timeout)
+    return mem_read_u32(c, addr)
 
 
 # Build 53: Freeze health in every game holds the hit points at the game's own
@@ -1301,7 +1466,7 @@ def exercise_freeze_health(c, name, fh):
     status, _ = c.call(OP_FEATURE_SET, off)
     check(status == ST_OK, "%s: Freeze health turns off" % name, status)
     mem_write(c, health, struct.pack(">I", fh["hurt"]))
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     got = mem_read_u32(c, health)
     check(got == fh["hurt"], "%s: and lets go of the hit points" % name, got)
 
@@ -1368,20 +1533,22 @@ def wait_qe(udp, seq, timeout=2.0):
 
 
 def as_wait(c, mark, kind, code, timeout=3.0):
-    """The first event past `mark` with this kind and code, or None."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    """The first event past `mark` with this kind and code, or None, within
+    `timeout` seconds of the module's time."""
+    found = []
+
+    def missing():
         _latest, events, _n = autosplit_events(c, mark)
-        for e in events:
-            if e["kind"] == kind and e["code"] == code:
-                return e
-        time.sleep(0.05)
-    return None
+        found[:] = [e for e in events if e["kind"] == kind and e["code"] == code]
+        return not found
+
+    wait_while(c, missing, timeout, 0.05)
+    return found[0] if found else None
 
 
 def as_absent(c, mark, kind, code, settle=0.5):
     """True when nothing of this kind and code shows up past `mark`."""
-    time.sleep(settle)
+    module_sleep(c, settle)
     _latest, events, _n = autosplit_events(c, mark)
     return not any(e["kind"] == kind and e["code"] == code for e in events)
 
@@ -1399,7 +1566,7 @@ def exercise_autosplit_steps(c, name, steps):
 
         # Let the tick thread take the setup in before anything is measured.
         if step.get("poke"):
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
 
         mark, _events, _n = autosplit_events(c, 0)
 
@@ -1465,7 +1632,7 @@ def exercise_autosplit(c, udp, name, spec):
     # Put the watcher's world where the split condition can be reached from.
     for addr, value in spec["setup"]:
         mem_write(c, addr, value)
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
 
     drain_udp(udp)
     mark, _events, _n = autosplit_events(c, 0)
@@ -1478,8 +1645,12 @@ def exercise_autosplit(c, udp, name, spec):
 
     got = None
     check_parse = -1
-    deadline = time.time() + 3.0
-    while time.time() < deadline and got is None:
+    wall = time.monotonic() + WALL_GUARD
+    start = snapshot_tick(c)
+    while got is None:
+        if ((ticks_since(c, start) or 0) >= ticks(3.0) + TELEMETRY_EVERY
+                or time.monotonic() >= wall):
+            break
         _latest, events, consumed = autosplit_events(c, mark)
         check_parse = consumed
         for e in events:
@@ -2036,7 +2207,9 @@ def exercise_savefile(c, name, save_aside_id, setaside_addr=None, idle=None, sav
           "%s: a request byte that has just read zero is still outstanding" % name,
           body[3] if body else None)
 
-    time.sleep(0.5)
+    # Thirty ticks (SAVEFILE_SETTLE_TICKS), and twice that to be sure; counted
+    # in ticks, since half a second of a loaded machine can be fewer than thirty.
+    wait_ticks(c, 60)
     status, body = c.call(OP_SAVEFILE_INFO)
     check(status == ST_OK and body[3] == 0,
           "%s: and a whole settle window of zeroes is what clears it" % name,
@@ -2107,7 +2280,7 @@ def exercise_savefile_not_idle(c, name, setaside_addr, load_addr,
 
     # And the other half: the helper found the game busy on its own frame.
     mem_write(c, setaside_addr, bytes([SAVEFILE_HELPER_REFUSED]))
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     check(mem_read_u8(c, setaside_addr) == 0,
           "%s: qwark clears the helper's refusal code out of the byte" % name)
     info = savefile_info(c)
@@ -2199,15 +2372,16 @@ def fixed32(text):
 
 
 def wait_transfer(c, timeout=10.0):
-    """Polls INFO until the transfer bit clears, as a client's save loop does."""
-    deadline = time.time() + timeout
-    info = savefile_info(c)
-    while info is not None and (info["pending"] & SAVEFILE_PENDING_TRANSFER):
-        if time.time() > deadline:
-            return info
-        time.sleep(0.02)
-        info = savefile_info(c)
-    return info
+    """Polls INFO until the transfer bit clears, as a client's save loop does,
+    for `timeout` seconds of the module's time."""
+    last = [savefile_info(c)]
+
+    def busy():
+        last[0] = savefile_info(c)
+        return last[0] is not None and (last[0]["pending"] & SAVEFILE_PENDING_TRANSFER)
+
+    wait_while(c, busy, timeout)
+    return last[0]
 
 
 def read_console_file(c, path):
@@ -2438,13 +2612,14 @@ def exercise_savefile_library(c, name, setaside_addr, load_addr, save=None, head
     check(status == ST_OK, "%s: SAVEFILE_RESTORE is accepted" % name, status)
 
     # It copies the file in and only then raises the load at the game.
-    deadline = time.time() + 10.0
-    raised = b"\x00"
-    while time.time() < deadline:
-        status, raised = c.call(OP_MEM_READ, struct.pack(">II", load_addr, 1))
-        if status == ST_OK and raised == b"\x01":
-            break
-        time.sleep(0.02)
+    raised = [b"\x00"]
+
+    def unraised():
+        status, raised[0] = c.call(OP_MEM_READ, struct.pack(">II", load_addr, 1))
+        return not (status == ST_OK and raised[0] == b"\x01")
+
+    wait_while(c, unraised, 10.0)
+    raised = raised[0]
     check(raised == b"\x01",
           "%s: the load request goes out once the file is in the buffer" % name, raised)
 
@@ -2572,22 +2747,13 @@ def exercise_console_menu(c, sim):
     def combo(clear=True):
         if clear:
             mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
-        sim.send("pad 0x0")
-        time.sleep(0.15)
-        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
-        time.sleep(0.25)
-        sim.send("pad 0x0")
-        time.sleep(0.1)
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", MENU_BOX + MBOX_OFF_REQUEST, 1))
-        return body[0] if status == ST_OK else None
+        return combo_request(sim, c, MENU_BOX + MBOX_OFF_REQUEST)
 
     # The renderer goes in a few seconds into the session, once the game is in
     # ordinary play (gameMode 0, no mode change queued), for the Help row.
     mem_write(c, DL_OPTIONS_SITE, struct.pack(">I", DL_OPTIONS_WORD))
     mem_write(c, 0x009C37F4, struct.pack(">I", 0xFFFFFFFE))
-    deadline = time.time() + 6.0
-    while time.time() < deadline and mem_read_u32(c, MENU_BOX) != MENU_MAGIC:
-        time.sleep(0.2)
+    wait_while(c, lambda: mem_read_u32(c, MENU_BOX) != MENU_MAGIC, 6.0, 0.2)
     check(mem_read_u32(c, MENU_BOX) == MENU_MAGIC,
           "Deadlocked menu: a few seconds into the session its mailbox is in the game")
     hooks = menu_hooks(c)
@@ -2613,13 +2779,13 @@ def exercise_console_menu(c, sim):
 
     check(menu_event(c, MBOX_EV_ACTIVATE, 1),
           "Deadlocked menu: an event written into the mailbox is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     check(page is not None and page[2] == "Cheats" and "Ghost Ratchet" in page[3] and
           page[5] == MBOX_PTYPE_CONFIG,
           "Deadlocked menu: and the Cheats page is posted for it, a CONFIG page", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer", "Deadlocked menu: and the root is back",
           page[2] if page else None)
@@ -2645,9 +2811,7 @@ def exercise_console_menu(c, sim):
     seq = mem_read_u32(c, MENU_BOX + MBOX_OFF_PICK_SEQ)
     mem_write(c, MENU_BOX + MBOX_OFF_PICK_PLANET, struct.pack(">I", 6))
     mem_write(c, MENU_BOX + MBOX_OFF_PICK_SEQ, struct.pack(">I", seq + 1))
-    deadline = time.time() + 3.0
-    while time.time() < deadline and mem_read_u32(c, 0xB36DD0) != 6:
-        time.sleep(0.1)
+    wait_while(c, lambda: mem_read_u32(c, 0xB36DD0) != 6, 3.0, 0.1)
     check(mem_read_u32(c, 0xB36DD0) == 6 and mem_read_u32(c, 0xB36DCC) == 1 and
           mem_read_u8(c, shaar + 0x300) == 3 and mem_read_u8(c, shaar + 8) == 3,
           "Deadlocked menu: a pick of Shaar, locked, unlocks it (the level and its first mission 0x03) and loads it",
@@ -2655,19 +2819,19 @@ def exercise_console_menu(c, sim):
     mem_write(c, 0xB36DCC, struct.pack(">I", 0))
     # Leave the load as finished, so the fast loads it forced go back.
     mem_write(c, 0xB3C5A0, struct.pack(">I", 6))
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     mem_write(c, 0xB3C5A0, struct.pack(">I", 0))
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
 
     # Round 6: Game with Challenge mode, a switch, between its two parts, where
     # round 5 had a spacer; Cheats the toggles, then the values' Max buttons,
     # each answered with nothing in its row; Unlocks' two weapon buttons on a
     # page of their own, Collectables. Closing the menu puts the root back.
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     mem_write(c, 0x009C330E, b"\x00")
     check(menu_event(c, MBOX_EV_ACTIVATE, 0), "Deadlocked menu: Game")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     page = menu_page(c)
     body = page[4] if page else b""
     r = MBOX_OFF_ROWS + 3 * MBOX_ROW_SIZE
@@ -2678,7 +2842,7 @@ def exercise_console_menu(c, sim):
           "the save files", page[3] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 3) and mem_read_u8(c, 0x009C330E) == 1,
           "Deadlocked menu: Challenge mode from Off: On, the counter 1", mem_read_u8(c, 0x009C330E))
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     body = page[4] if page else b""
     at = MBOX_OFF_ROWS + 3 * MBOX_ROW_SIZE + MROW_OFF_VALUE
@@ -2687,9 +2851,9 @@ def exercise_console_menu(c, sim):
     check(menu_event(c, MBOX_EV_ACTIVATE, 3) and mem_read_u8(c, 0x009C330E) == 0,
           "Deadlocked menu: again: Off, 0", mem_read_u8(c, 0x009C330E))
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back from Game")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1), "Deadlocked menu: Cheats")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     body = page[4] if page else b""
     want = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health", "Max bolts", "Max Dread points",
@@ -2698,29 +2862,29 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: round 6's Cheats, the toggles, then Max bolts, Max Dread points and Unlock all planets "
           "(buttons)", page[3] if page else None)
     mem_write(c, 0x009C32E8, struct.pack(">I", 12))
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     check(menu_event(c, MBOX_EV_ACTIVATE, 4) and mem_read_u32(c, 0x009C32E8) == 99999999,
           "Deadlocked menu: Max bolts writes 99,999,999, the game's own cap", mem_read_u32(c, 0x009C32E8))
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     body = page[4] if page else b""
     check(page is not None and body[MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE + MROW_OFF_VALUE] == 0,
           "Deadlocked menu: and its row says nothing (no DONE)")
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back from Cheats")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 4), "Deadlocked menu: Unlocks")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     check(page is not None and page[3] == ["Weapons", "Gadgets", "Bot upgrades", "Collectables"],
           "Deadlocked menu: round 6's Unlocks, the tabs and Collectables", page[3] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 3), "Deadlocked menu: Collectables")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c)
     check(page is not None and page[2] == "Collectables" and page[5] == MBOX_PTYPE_CONFIG and
           page[3] == ["Max all weapon levels", "Max all weapon ammo"],
           "Deadlocked menu: Collectables, a CONFIG page of the two weapon buttons", page[:4] if page else None)
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == 0,
           "Deadlocked menu: the renderer saying closed puts the root back, the cursor on its first row",
@@ -2745,9 +2909,7 @@ def exercise_console_menu(c, sim):
     check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"),
           "Deadlocked menu: config.txt says menu.enabled = 0")
     status, _ = c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and menu_hooks(c) != MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: menu_hooks(c) != MENU_SITES, 3.0, 0.1)
     check(status == ST_OK and menu_hooks(c) == MENU_SITES,
           "Deadlocked menu: CONFIG_RELOAD takes every hook out",
           dict((hex(a), hex(w)) for a, w in menu_hooks(c).items()))
@@ -2755,10 +2917,8 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: the combo asks nothing and installs nothing")
     check(write_console_file(c, cfg_path, cfg), "Deadlocked menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
-    time.sleep(0.5)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and menu_hooks(c) == MENU_SITES:
-        time.sleep(0.1)
+    module_sleep(c, 0.5)
+    wait_while(c, lambda: menu_hooks(c) == MENU_SITES, 3.0, 0.1)
     check(menu_hooks(c) != MENU_SITES,
           "Deadlocked menu: menu.enabled = 1 puts the renderer back, the game being in play")
     check(combo() == 1, "Deadlocked menu: and the combo asks it to open")
@@ -2775,9 +2935,7 @@ def exercise_console_menu(c, sim):
         return [mem_read_u32(c, a) for a in help_sites]
 
     def wait_words(want, timeout=2.0):
-        deadline = time.time() + timeout
-        while time.time() < deadline and help_words() != want:
-            time.sleep(0.05)
+        wait_while(c, lambda: help_words() != want, timeout, 0.05)
         return help_words()
 
     game_help = [MENU_SITES[a] for a in help_sites]
@@ -2800,7 +2958,7 @@ def exercise_console_menu(c, sim):
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
     mem_write(c, 0xB3C5A0, struct.pack(">I", 3))
     status, _ = c.call(OP_MENU_HELP, bytes([1]))
-    time.sleep(0.5)
+    module_sleep(c, 0.5)
     check(status == ST_OK and help_words() == game_help,
           "Deadlocked menu: MENU_HELP 1 with the game paused: the Help row waits",
           [hex(w) for w in help_words()])
@@ -2821,23 +2979,14 @@ def exercise_console_menu_uya(c, sim):
 
     def combo():
         mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
-        sim.send("pad 0x0")
-        time.sleep(0.15)
-        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
-        time.sleep(0.25)
-        sim.send("pad 0x0")
-        time.sleep(0.1)
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
-        return body[0] if status == ST_OK else None
+        return combo_request(sim, c, box + MBOX_OFF_REQUEST)
 
     def hooks():
         return dict((a, mem_read_u32(c, a)) for a in UYA_MENU_SITES)
 
     # In play: gameMode 0 (a fresh fake game) and no mode change queued.
     mem_write(c, UYA_PENDING_MODE, struct.pack(">I", 0xFFFFFFFE))
-    deadline = time.time() + 6.0
-    while time.time() < deadline and mem_read_u32(c, box) != MENU_MAGIC:
-        time.sleep(0.2)
+    wait_while(c, lambda: mem_read_u32(c, box) != MENU_MAGIC, 6.0, 0.2)
     check(mem_read_u32(c, box) == MENU_MAGIC,
           "UYA menu: a few seconds into the session its mailbox is in the game")
     h = hooks()
@@ -2859,37 +3008,37 @@ def exercise_console_menu_uya(c, sim):
           page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
           "UYA menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "UYA menu: an event is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Cheats" and page[3][:4] == ["Fast loads", "Ghost Ratchet",
                                                                        "Infinite ammo", "Freeze health"] and
           page[5] == MBOX_PTYPE_CONFIG, "UYA menu: the Cheats page is posted, a CONFIG page",
           page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "UYA menu: back is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: Manips")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and "Reset trophies" in page[3] and "Trophy reset" in page[3],
           "UYA menu: Manips lists the trophy reset with its status", page[3] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "UYA menu: back again")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     # Round 3: Unlocks' six buttons on a page of their own, Collectables.
     check(menu_event(c, MBOX_EV_ACTIVATE, 4, box, size, rs), "UYA menu: Unlocks")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[3] == ["Weapons", "Gadgets and items", "Vid comics", "Collectables"],
           "UYA menu: Unlocks is the three categories and Collectables", page[3] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: Collectables")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Collectables" and page[5] == MBOX_PTYPE_CONFIG and len(page[3]) == 6 and
           page[3][0] == "Max all weapon levels" and page[3][5] == "Reset all titanium bolts",
           "UYA menu: a CONFIG page of the six buttons", page[2:4] if page else None)
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Trainer", "UYA menu: closed, the root is back",
           page[2] if page else None)
@@ -2902,10 +3051,10 @@ def exercise_console_menu_uya(c, sim):
           "UYA menu: the renderer has the planet picker (caps 0x10), and the root's Planets row, alone, says so "
           "(0x40)", (body.hex() if status == ST_OK else status, flags))
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     key = menu_page(c, box, size, rs)[1]
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x02")
-    time.sleep(0.3)
+    module_sleep(c, 0.3)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[1] == key and page[2] == "Trainer",
           "UYA menu: the map up over the menu (hstate 2): qwark keeps the page it left", page[:3] if page else None)
@@ -2913,9 +3062,7 @@ def exercise_console_menu_uya(c, sim):
     mem_write(c, box + MBOX_OFF_PICK_PLANET, struct.pack(">I", 9))
     mem_write(c, box + MBOX_OFF_PICK_SEQ, struct.pack(">I", seq + 1))
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
-    deadline = time.time() + 3.0
-    while time.time() < deadline and mem_read_u32(c, 0x00EE9310) != 1:
-        time.sleep(0.05)
+    wait_while(c, lambda: mem_read_u32(c, 0x00EE9310) != 1, 3.0, 0.05)
     check(mem_read_u32(c, 0x00EE9310) == 1 and mem_read_u32(c, 0x00EE9314) == 9,
           "UYA menu: a pick of Tyhrranosis and the close: qwark's planet load of it once the game plays",
           (mem_read_u32(c, 0x00EE9310), mem_read_u32(c, 0x00EE9314)))
@@ -2924,20 +3071,18 @@ def exercise_console_menu_uya(c, sim):
     # The pickers' round 2: the map's Square, VID-COMICS, posts MBOX_EV_PICKER_OTHERS on the Planets row, and qwark
     # opens its page of the vid comics the map cannot show; X there loads one as the Planets page's rows do.
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Trainer" and menu_event(c, MBOX_EV_PICKER_OTHERS, 2, box, size, rs),
           "UYA menu: the picker's event on the Planets row is acked", page[:3] if page else None)
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Vid-Comics" and page[5] == MBOX_PTYPE_CONFIG and
           page[3] == ["Vid Comic 1", "Vid Comic 2", "Vid Comic 3", "Vid Comic 4", "Vid Comic 5"],
           "UYA menu: qwark's Vid-Comics page, a CONFIG page of the base vid comics 1 to 5", page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs), "UYA menu: the cross on Vid Comic 4")
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
-    deadline = time.time() + 3.0
-    while time.time() < deadline and mem_read_u32(c, 0x00EE9310) != 1:
-        time.sleep(0.05)
+    wait_while(c, lambda: mem_read_u32(c, 0x00EE9310) != 1, 3.0, 0.05)
     check(mem_read_u32(c, 0x00EE9310) == 1 and mem_read_u32(c, 0x00EE9314) == 32,
           "UYA menu: and the menu closed: qwark's planet load of Vid Comic 4 (planet 32)",
           (mem_read_u32(c, 0x00EE9310), mem_read_u32(c, 0x00EE9314)))
@@ -2952,18 +3097,14 @@ def exercise_console_menu_uya(c, sim):
     cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
     check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"), "UYA menu: config.txt says menu.enabled = 0")
     status, _ = c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() != UYA_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() != UYA_MENU_SITES, 3.0, 0.1)
     check(status == ST_OK and hooks() == UYA_MENU_SITES,
           "UYA menu: CONFIG_RELOAD takes all fourteen words out, HELP its own row again",
           dict((hex(a), hex(w)) for a, w in hooks().items()))
     check(combo() == 0, "UYA menu: the combo then asks nothing")
     check(write_console_file(c, cfg_path, cfg), "UYA menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() == UYA_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() == UYA_MENU_SITES, 3.0, 0.1)
     check(hooks() != UYA_MENU_SITES, "UYA menu: menu.enabled = 1 puts the renderer back in play")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
@@ -2975,23 +3116,14 @@ def exercise_console_menu_rac2(c, sim):
 
     def combo():
         mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
-        sim.send("pad 0x0")
-        time.sleep(0.15)
-        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
-        time.sleep(0.25)
-        sim.send("pad 0x0")
-        time.sleep(0.1)
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
-        return body[0] if status == ST_OK else None
+        return combo_request(sim, c, box + MBOX_OFF_REQUEST)
 
     def hooks():
         return dict((a, mem_read_u32(c, a)) for a in RAC2_MENU_SITES)
 
     # In play: gameMode 0 (a fresh fake game) and no mode change queued.
     mem_write(c, RAC2_PENDING_MODE, struct.pack(">I", 0xFFFFFFFE))
-    deadline = time.time() + 6.0
-    while time.time() < deadline and mem_read_u32(c, box) != MENU_MAGIC:
-        time.sleep(0.2)
+    wait_while(c, lambda: mem_read_u32(c, box) != MENU_MAGIC, 6.0, 0.2)
     check(mem_read_u32(c, box) == MENU_MAGIC,
           "RaC2 menu: a few seconds into the session its mailbox is in the game")
     h = hooks()
@@ -3016,7 +3148,7 @@ def exercise_console_menu_rac2(c, sim):
           page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
           "RaC2 menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC2 menu: an event is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Cheats" and page[3][:4] == ["Fast loads", "Ghost Ratchet",
                                                                        "Infinite ammo", "Freeze health"] and
@@ -3026,15 +3158,15 @@ def exercise_console_menu_rac2(c, sim):
           "raritanium after the cheats; round 6: Challenge mode on Game)",
           page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC2 menu: back is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 2, box, size, rs), "RaC2 menu: Planets")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[3][:2] == ["Aranos", "Oozla"] and page[3][-1] == "Jamming Array" and
           len(page[3]) == 27 and page[5] == MBOX_PTYPE_CONFIG,
           "RaC2 menu: Planets, a CONFIG page of all 27 (round 4: no More row)", page[3] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC2 menu: back again")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
 
     # The planet picker (mailbox version 3). The root's Planets row opens the
     # renderer's picker (MBOX_CAP_PICKER, MROWF_PICKER); a pick is the header's
@@ -3049,9 +3181,7 @@ def exercise_console_menu_rac2(c, sim):
     mem_write(c, RAC2_LOAD_PLANET, struct.pack(">II", 0, 0))
     mem_write(c, pick + 4, struct.pack(">I", 14))
     mem_write(c, pick, struct.pack(">I", seq + 1))
-    deadline = time.time() + 2.0
-    while time.time() < deadline and mem_read_u32(c, RAC2_LOAD_PLANET) != 1:
-        time.sleep(0.1)
+    wait_while(c, lambda: mem_read_u32(c, RAC2_LOAD_PLANET) != 1, 2.0, 0.1)
     status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC2_LOAD_PLANET, 8))
     check(status == ST_OK and body == struct.pack(">II", 1, 14),
           "RaC2 menu: a pick of Aranos 2 in the header's pick words: qwark's planet load requests planet 14",
@@ -3059,7 +3189,7 @@ def exercise_console_menu_rac2(c, sim):
     mem_write(c, RAC2_LOAD_PLANET, struct.pack(">II", 0, 0))
     mem_write(c, pick + 4, struct.pack(">I", 99))
     mem_write(c, pick, struct.pack(">I", seq + 2))
-    time.sleep(0.5)
+    module_sleep(c, 0.5)
     check(mem_read_u32(c, RAC2_LOAD_PLANET) == 0, "RaC2 menu: a pick of a planet qwark has not, 99: nothing loads")
 
     check(combo() == 1, "RaC2 menu: the menu combo asks the renderer to open")
@@ -3071,18 +3201,14 @@ def exercise_console_menu_rac2(c, sim):
     cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
     check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"), "RaC2 menu: config.txt says menu.enabled = 0")
     status, _ = c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() != RAC2_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() != RAC2_MENU_SITES, 3.0, 0.1)
     check(status == ST_OK and hooks() == RAC2_MENU_SITES,
           "RaC2 menu: CONFIG_RELOAD takes all six words out, Help its own entry again",
           dict((hex(a), hex(w)) for a, w in hooks().items()))
     check(combo() == 0, "RaC2 menu: the combo then asks nothing")
     check(write_console_file(c, cfg_path, cfg), "RaC2 menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() == RAC2_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() == RAC2_MENU_SITES, 3.0, 0.1)
     check(hooks() != RAC2_MENU_SITES, "RaC2 menu: menu.enabled = 1 puts the renderer back in play")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
@@ -3094,14 +3220,7 @@ def exercise_console_menu_rac1(c, sim):
 
     def combo():
         mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
-        sim.send("pad 0x0")
-        time.sleep(0.15)
-        sim.send("pad 0x%x" % COMBO_MENU_DEFAULT)
-        time.sleep(0.25)
-        sim.send("pad 0x0")
-        time.sleep(0.1)
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
-        return body[0] if status == ST_OK else None
+        return combo_request(sim, c, box + MBOX_OFF_REQUEST)
 
     def hooks():
         return dict((a, mem_read_u32(c, a)) for a in RAC1_MENU_SITES)
@@ -3110,9 +3229,7 @@ def exercise_console_menu_rac1(c, sim):
         return any(lo <= t < hi for lo, hi in RAC1_MENU_CODE)
 
     # In play: state 0 (a fresh fake game) and no reopen of the pause queued.
-    deadline = time.time() + 6.0
-    while time.time() < deadline and mem_read_u32(c, box) != MENU_MAGIC:
-        time.sleep(0.2)
+    wait_while(c, lambda: mem_read_u32(c, box) != MENU_MAGIC, 6.0, 0.2)
     check(mem_read_u32(c, box) == MENU_MAGIC,
           "RaC1 menu: a few seconds into the session its mailbox is in the game")
     h = hooks()
@@ -3135,7 +3252,7 @@ def exercise_console_menu_rac1(c, sim):
     # Round 6: the Goodies menu, RaC1's equivalent of the other games' Challenge mode, is the
     # fourth row of Game, a switch; Cheats is the four toggles, then Max bolts.
     check(menu_event(c, MBOX_EV_ACTIVATE, 0, box, size, rs), "RaC1 menu: Game")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     body = page[4] if page else b""
     check(page is not None and page[2] == "Game" and
@@ -3146,7 +3263,7 @@ def exercise_console_menu_rac1(c, sim):
     mem_write(c, RAC1_GOODIES_MENU, b"\x00")
     check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs) and mem_read_u8(c, RAC1_GOODIES_MENU) == 1,
           "RaC1 menu: the Goodies menu from Off: On, the byte 1", mem_read_u8(c, RAC1_GOODIES_MENU))
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     body = page[4] if page else b""
     at = MBOX_OFF_ROWS + 3 * rs + MROW_OFF_VALUE
@@ -3155,18 +3272,18 @@ def exercise_console_menu_rac1(c, sim):
     check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs) and mem_read_u8(c, RAC1_GOODIES_MENU) == 0,
           "RaC1 menu: again: Off, the byte 0", mem_read_u8(c, RAC1_GOODIES_MENU))
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back from Game")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC1 menu: an event is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Cheats" and page[3] == ["Fast loads", "Ghost Ratchet", "Infinite ammo",
                                                                     "Freeze health", "Max bolts"] and
           page[5] == MBOX_PTYPE_CONFIG, "RaC1 menu: the Cheats page is posted, a CONFIG page (no Goodies menu, "
           "Max bolts last)", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back is acked")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 4, box, size, rs), "RaC1 menu: Unlocks")
-    time.sleep(0.1)
+    module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[3] == ["Weapons", "Gadgets", "Items", "Collectables"],
           "RaC1 menu: Unlocks lists the categories, then Collectables", page[3] if page else None)
@@ -3180,18 +3297,14 @@ def exercise_console_menu_rac1(c, sim):
     cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.enabled"))
     check(write_console_file(c, cfg_path, cfg + b"menu.enabled = 0\n"), "RaC1 menu: config.txt says menu.enabled = 0")
     status, _ = c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() != RAC1_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() != RAC1_MENU_SITES, 3.0, 0.1)
     check(status == ST_OK and hooks() == RAC1_MENU_SITES,
           "RaC1 menu: CONFIG_RELOAD takes all four words out, Help its own row again",
           dict((hex(a), hex(w)) for a, w in hooks().items()))
     check(combo() == 0, "RaC1 menu: the combo then asks nothing")
     check(write_console_file(c, cfg_path, cfg), "RaC1 menu: menu.enabled taken out again")
     c.call(OP_CONFIG_RELOAD)
-    deadline = time.time() + 3.0
-    while time.time() < deadline and hooks() == RAC1_MENU_SITES:
-        time.sleep(0.1)
+    wait_while(c, lambda: hooks() == RAC1_MENU_SITES, 3.0, 0.1)
     check(hooks() != RAC1_MENU_SITES, "RaC1 menu: menu.enabled = 1 puts the renderer back in play")
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
@@ -3691,9 +3804,9 @@ def exercise_game(c, sim, spec, udp=None):
         mode_was = mem_read_u32(c, cf["mode"])
 
         mem_write(c, cf["mode"], struct.pack(">I", 6))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         mem_write(c, cf["mode"], struct.pack(">I", 0))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         for addr, word in cf["game"]:
             mem_write(c, addr, struct.pack(">I", word))
 
@@ -3713,18 +3826,18 @@ def exercise_game(c, sim, spec, udp=None):
             check(fl_words() == fast, "%s: forces the same words on" % name,
                   [hex(w) for w in fl_words()])
             mem_write(c, cf["mode"], struct.pack(">I", 6))
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             check(fl_words() == fast,
                   "%s: they stay through the space transition" % name,
                   [hex(w) for w in fl_words()])
             mem_write(c, cf["mode"], struct.pack(">I", 0))
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             check(fl_words() == game,
                   "%s: and go when the game leaves it" % name,
                   [hex(w) for w in fl_words()])
 
         mem_write(c, cf["mode"], struct.pack(">I", mode_was))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
 
     # --------------------------------------------------- fast loads (1.9, build 11)
     #
@@ -3740,13 +3853,13 @@ def exercise_game(c, sim, spec, udp=None):
         draw = struct.pack(">I", fl["draw_word"])
 
         mem_write(c, fl["mode"], struct.pack(">I", 6))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         check(mem_read_u32(c, fl["site"]) == fl["branch"],
               "%s: the load above runs, in mode 6, with its forced fast loads in" % name,
               hex(mem_read_u32(c, fl["site"])))
         mem_write(c, fl["request"], struct.pack(">I", 0))
         mem_write(c, fl["mode"], struct.pack(">I", 0))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         check(mem_read_u32(c, fl["site"]) == 0 and mem_read_u32(c, fl["draw"]) == 0,
               "%s: and its end took them out of both sites" % name,
               (hex(mem_read_u32(c, fl["site"])), hex(mem_read_u32(c, fl["draw"]))))
@@ -3767,18 +3880,18 @@ def exercise_game(c, sim, spec, udp=None):
             check(info is not None and not info["toggle_state"] & (1 << fl["toggle"]),
                   "%s: while the checkbox stays off" % name,
                   info["toggle_state"] if info else None)
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             mem_write(c, fl["request"], struct.pack(">I", 0))
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             check(mem_read_u32(c, fl["site"]) == fl["branch"],
                   "%s: the request word down before the mode was 6 is not the end" % name,
                   hex(mem_read_u32(c, fl["site"])))
             mem_write(c, fl["request"], struct.pack(">I", 1))
             mem_write(c, fl["mode"], struct.pack(">I", 6))
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             mem_write(c, fl["request"], struct.pack(">I", 0))
             mem_write(c, fl["mode"], struct.pack(">I", 0))
-            time.sleep(0.15)
+            module_sleep(c, 0.15)
             check(mem_read_u32(c, fl["site"]) == fl["site_word"] and
                   mem_read_u32(c, fl["draw"]) == fl["draw_word"],
                   "%s: the load's end after mode 6 puts the game's words back" % name,
@@ -3791,9 +3904,9 @@ def exercise_game(c, sim, spec, udp=None):
 
         # A load the game starts on its own leaves the checkbox's patch in.
         mem_write(c, fl["request"], struct.pack(">II", 1, fl["planet"]))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         mem_write(c, fl["request"], struct.pack(">I", 0))
-        time.sleep(0.15)
+        module_sleep(c, 0.15)
         check(mem_read_u32(c, fl["site"]) == fl["branch"],
               "%s: a load the game started ends with it still on" % name,
               hex(mem_read_u32(c, fl["site"])))
@@ -3825,10 +3938,18 @@ RPCS3_PORT = free_port()
 
 
 def wait_savefile_pending_clear(c, timeout=3.0):
-    """Polls INFO until no request is outstanding, as a client's save loop does."""
-    deadline = time.time() + timeout
+    """Polls INFO until no request is outstanding, as a client's save loop does,
+    for `timeout` seconds' worth of the module's ticks (see state_after_ticks):
+    the settle window is counted in ticks, and a loaded machine runs fewer of
+    them a second."""
+    start = snapshot_tick(c)
+    budget = int(round(timeout * TICK_HZ)) + TELEMETRY_EVERY
+    deadline = time.monotonic() + 30.0
     info = savefile_info(c)
-    while info is not None and info["pending"] != 0 and time.time() < deadline:
+    while info is not None and info["pending"] != 0 and start is not None:
+        ran = ticks_since(c, start)
+        if ran is None or ran >= budget or time.monotonic() >= deadline:
+            break
         time.sleep(0.02)
         info = savefile_info(c)
     return info
@@ -3881,7 +4002,7 @@ def smoke_rpcs3_savefile_patch(c, pine, features):
     check(info is not None and
           info["pending"] == SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
           "rpcs3: and INFO reports a set-aside and a load outstanding from boot", info)
-    time.sleep(0.5)
+    module_sleep(c, 0.5)
     info = savefile_info(c)
     check(info is not None and
           info["pending"] == SAVEFILE_PENDING_SET_ASIDE | SAVEFILE_PENDING_LOAD,
@@ -3979,16 +4100,16 @@ RAC1_SW_AMMO_FLAG = 0x009058B1
 
 
 def wait_info_flag(c, flag, want, timeout=3.0):
-    """Polls HELLO until SessionInfo flags has `flag` set (want) or clear."""
-    deadline = time.time() + timeout
-    info = None
-    while time.time() < deadline:
+    """Polls HELLO until SessionInfo flags has `flag` set (want) or clear, for
+    `timeout` seconds of the module's time."""
+    last = [None]
+
+    def other():
         status, body = c.call(OP_HELLO, bytes([1]))
-        info = parse_session_info(body) if status == ST_OK else None
-        if info is not None and bool(info["flags"] & flag) == want:
-            return True, info
-        time.sleep(0.05)
-    return False, info
+        last[0] = parse_session_info(body) if status == ST_OK else None
+        return last[0] is None or bool(last[0]["flags"] & flag) != want
+
+    return wait_while(c, other, timeout, 0.05), last[0]
 
 
 def smoke_rpcs3_switches(c, pine):
@@ -4055,7 +4176,7 @@ def smoke_rpcs3_switches(c, pine):
 
     # The byte is the truth: written behind qwark's back, the checkbox follows.
     pine.poke(RAC1_SW_AMMO_FLAG, b"\x01")
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     info = fresh_state(c)
     check(info is not None and info["toggle_state"] & (1 << RAC1_SW_AMMO_ID),
           "rpcs3 switches: the checkbox reads the flag byte back", info["toggle_state"] if info else None)
@@ -4093,15 +4214,20 @@ def rpcs3_mod_text():
 
 
 def wait_mod_looked(c, dirname, timeout=10.0):
-    """Polls MOD_LIST until the mod is not CHECKING. (row, seen_checking)."""
-    deadline = time.time() + timeout
-    seen = False
-    row = mod_row(c, dirname)
-    while row is not None and row["flags"] & MOD_FLAG_CHECKING and time.time() < deadline:
-        seen = True
-        time.sleep(0.02)
-        row = mod_row(c, dirname)
-    return row, seen
+    """Polls MOD_LIST until the mod is not CHECKING, for `timeout` seconds of the
+    module's time. (row, seen_checking)."""
+    last = [None]
+    seen = [False]
+
+    def checking():
+        last[0] = mod_row(c, dirname)
+        if last[0] is not None and last[0]["flags"] & MOD_FLAG_CHECKING:
+            seen[0] = True
+            return True
+        return False
+
+    wait_while(c, checking, timeout)
+    return last[0], seen[0]
 
 
 def smoke_rpcs3_mods(c, pine):
@@ -4157,7 +4283,7 @@ def smoke_rpcs3_mods(c, pine):
         pine.poke(addr, value)
     for addr, value in single:
         pine.poke(addr, bytes([value]))
-    time.sleep(0.3)
+    module_sleep(c, 0.3)
     row = mod_row(c, RPCS3_MOD_DIR)
     check(row is not None and row["flags"] & MOD_FLAG_LOADED == 0,
           "rpcs3 mods: words that arrive mid-session do not count until a restart", row)
@@ -4347,10 +4473,10 @@ def smoke_rpcs3(exe):
 
     # --bind spelled out here, so the flag itself is exercised; 127.0.0.1 is
     # also what it defaults to, and the only address anything here ever binds.
-    sim = Sim(exe, ["--pine-port", str(pine.port),
-                    "--port", str(RPCS3_PORT),
-                    "--bind", HOST,
-                    "--root", root])
+    global RPCS3_PORT
+    sim, RPCS3_PORT = start_sim(exe, ["--pine-port", str(pine.port),
+                                      "--bind", HOST,
+                                      "--root", root])
     sock = None
 
     try:
@@ -4642,14 +4768,14 @@ def smoke_rpcs3_planet_loads(c, pine, sim=None):
     # seconds into a session on a console; here nothing of it is written, the
     # combo pressed or not.
     pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     logged = len(pine.write_log)
     pine.poke(RAC4_PAD_MASK, struct.pack(">I", COMBO_MENU_DEFAULT))
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     status, body = c.call(OP_GET_STATE)
     held = parse_telemetry(body)[0]["pad_mask"] if status == ST_OK else None
     pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     check(held == COMBO_MENU_DEFAULT, "rpcs3: qwark sees the menu combo held",
           hex(held) if held is not None else None)
     menu_writes = [(hex(a), n) for a, n in pine.write_log[logged:]
@@ -4672,9 +4798,9 @@ def smoke_rpcs3_planet_loads(c, pine, sim=None):
     logged = len(pine.write_log)
     mark = len(sim.lines) if sim is not None else 0
     pine.poke(RAC4_PAD_MASK, struct.pack(">I", FAST_LOADS_MASK))
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
-    time.sleep(0.2)
+    module_sleep(c, 0.2)
     status, body = c.call(OP_GET_STATE)
     st = parse_telemetry(body)[0] if status == ST_OK else None
     fl_writes = [(hex(a), n) for a, n in pine.write_log[logged:]
@@ -4944,7 +5070,7 @@ def smoke_rpcs3_rac3_switches(c, pine):
     check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x01",
           "rpcs3 rac3 switches: forcing fast loads on through their flag byte",
           pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     info = fresh_state(c)
     check(info is not None and not info["toggle_state"] & (1 << RAC3_SW_FAST_ID),
           "rpcs3 rac3 switches: while the checkbox reads back off",
@@ -4953,10 +5079,10 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: the flag stays up while the request word is",
           pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
     pine.poke(RAC3_MODE, struct.pack(">I", 6))
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     pine.poke(RAC3_LOAD_PLANET, b"\0\0\0\0")
     pine.poke(RAC3_MODE, struct.pack(">I", 0))
-    time.sleep(0.4)
+    module_sleep(c, 0.4)
     check(pine.peek(RAC3_SW_FAST_FLAG, 1) == b"\x00",
           "rpcs3 rac3 switches: and the load's end, after mode 6, puts it back",
           pine.peek(RAC3_SW_FAST_FLAG, 1).hex())
@@ -5001,10 +5127,10 @@ def smoke_rpcs3_held(exe):
 
     # The test's clocks: callers wait 50 ms, a silent link dies after 500 ms,
     # a silent RPCS3 is left alone for 600 ms.
-    sim = Sim(exe, ["--pine-port", str(pine.port),
-                    "--port", str(RPCS3_PORT),
-                    "--root", root,
-                    "--pine-timeouts", "50,500,600"])
+    global RPCS3_PORT
+    sim, RPCS3_PORT = start_sim(exe, ["--pine-port", str(pine.port),
+                                      "--root", root,
+                                      "--pine-timeouts", "50,500,600"])
     sock = None
 
     try:
@@ -5030,11 +5156,12 @@ def smoke_rpcs3_held(exe):
         check(took < 1.0, "rpcs3 held: twenty requests in under a second",
               round(took, 3))
 
-        time.sleep(1.0)              # past the 500 ms link timeout
-        said = [l for l in sim.lines if "has not answered" in l]
-        check(len(said) > 0,
+        # Once the 500 ms link timeout has passed: the line is waited for, since
+        # a loaded machine can take longer than a second to get the worker to it.
+        said = sim_line(sim, "has not answered", timeout=15.0)
+        check(said is not None,
               "rpcs3 held: the helper says another program holds the IPC server",
-              sim.lines[-3:])
+              [l for l in sim.lines if "pine" in l][-4:])
         check(not any("pine: connected" in l for l in sim.lines),
               "rpcs3 held: and never claimed to be connected on the strength of a handshake")
 
@@ -5342,10 +5469,8 @@ def exercise_manips(c, sim, spec):
         for step in trig["steps"]:
             for a, v in step:
                 mem_write(c, a, v)
-            time.sleep(0.15)
-        deadline = time.time() + 2.0
-        while time.time() < deadline and mem_read_u8(c, addr) != want:
-            time.sleep(0.05)
+            module_sleep(c, 0.15)
+        wait_while(c, lambda: mem_read_u8(c, addr) != want, 2.0, 0.05)
         check(mem_read_u8(c, addr) == want,
               "%s manips: the file-load trigger applies the group" % name,
               mem_read_u8(c, addr))
@@ -5355,13 +5480,8 @@ def exercise_manips(c, sim, spec):
               "%s manips: and records one event, the group activated" % name,
               l and (l["seq"], l["kind"]))
         if trig.get("toast"):
-            deadline = time.time() + 2.0
-            said = []
-            while time.time() < deadline:
-                said = [s for s in sim.lines[mark:] if "notify: " in s]
-                if said:
-                    break
-                time.sleep(0.05)
+            wait_while(c, lambda: not any("notify: " in s for s in sim.lines[mark:]), 2.0, 0.05)
+            said = [s for s in sim.lines[mark:] if "notify: " in s]
             check(len(said) == 1 and said[0].endswith("notify: " + trig["toast"]),
                   "%s manips: and the console says \"%s\", once" % (name, trig["toast"]),
                   said)
@@ -5383,9 +5503,7 @@ def exercise_manips(c, sim, spec):
                     f.write(b"x")
 
         def wait_byte(want):
-            deadline = time.time() + 2.0
-            while time.time() < deadline and mem_read_u8(c, t["byte"]) != want:
-                time.sleep(0.05)
+            wait_while(c, lambda: mem_read_u8(c, t["byte"]) != want, 2.0, 0.05)
             return mem_read_u8(c, t["byte"]) == want
 
         for a, v in t["rest"] + t["game"]:
@@ -5414,7 +5532,7 @@ def exercise_manips(c, sim, spec):
         c.call(OP_FEATURE_SET, struct.pack(">BI", t["toggle"], 0))
 
         make_set()
-        time.sleep(0.1)
+        module_sleep(c, 0.1)
         mark = len(sim.lines)
         status, _ = c.call(OP_FEATURE_TRIGGER, bytes([t["button"]]))
         check(status == ST_OK, "%s trophies: the Reset trophies button is accepted" % name, status)
@@ -5431,7 +5549,7 @@ def exercise_manips(c, sim, spec):
               "%s trophies: which goes once the game's context is down" % name,
               mem_read_u8(c, t["byte"]))
         mem_write(c, t["byte"], b"\x00")
-        time.sleep(0.1)
+        module_sleep(c, 0.1)
 
         # Revision 1.21: the readout says the trophies are ready, and the
         # console's screen says nothing, where build 53 said "Trophies reset".
@@ -5485,7 +5603,8 @@ def main():
             shutil.copytree(os.path.join(fixtures, name), os.path.join(mods_dst, name))
 
     # No --bind: the simulator's own default is loopback, which is the point.
-    sim = Sim(exe, ["--port", str(PORT)])
+    global PORT
+    sim, PORT = start_sim(exe, [])
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind((HOST, 0))
     udp_port = udp.getsockname()[1]
@@ -5801,17 +5920,15 @@ def main():
         # The game's end of the load: the request word back at 0, then the
         # level's state 6 left. Only then do the game's words come back.
         mem_write(c, RAC1_GAME_STATE, struct.pack(">I", 6))
-        time.sleep(0.1)
+        module_sleep(c, 0.1)
         mem_write(c, RAC1_LOAD_PLANET, struct.pack(">II", 0, 0))
-        time.sleep(0.1)
+        module_sleep(c, 0.1)
         check(mem_read_u32(c, RAC1_FASTLOAD_SITES[1][0]) == RAC1_FASTLOAD_SITES[1][2],
               "still forced while the level's state 6 runs",
               hex(mem_read_u32(c, RAC1_FASTLOAD_SITES[1][0])))
         mem_write(c, RAC1_GAME_STATE, struct.pack(">I", 0))
-        deadline = time.time() + 2.0
-        while time.time() < deadline and \
-                mem_read_u32(c, RAC1_FASTLOAD_SITES[0][0]) != RAC1_FASTLOAD_SITES[0][1]:
-            time.sleep(0.02)
+        wait_while(c, lambda: mem_read_u32(c, RAC1_FASTLOAD_SITES[0][0]) != RAC1_FASTLOAD_SITES[0][1],
+                   2.0)
         check([mem_read_u32(c, a) for a, _w, _p in RAC1_FASTLOAD_SITES]
               == [w for _a, w, _p in RAC1_FASTLOAD_SITES],
               "and the end of the load put the game's words back",
@@ -5872,7 +5989,7 @@ def main():
         check(status == ST_OK and body and body[0] == watch_id,
               "adding the same watch again returns the same id", body)
 
-        time.sleep(0.2)
+        module_sleep(c, 0.2)
         status, body = c.call(OP_GET_STATE)
         _tinfo, watches, _n = parse_telemetry(body)
         found = [w for w in watches if w["id"] == watch_id]
@@ -5885,7 +6002,7 @@ def main():
         freeze_id = body[0] if status == ST_OK and body else None
         check(freeze_id is not None, "FREEZE_ADD returns an id", (status, body))
 
-        time.sleep(0.3)
+        module_sleep(c, 0.3)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", RAC1_BOLTS, 4))
         check(body == struct.pack(">I", 777), "the freeze holds the value", body)
 
@@ -6028,12 +6145,9 @@ def main():
         # 0) as the checkbox does, and the console says which way.
         def fast_loads_press():
             mark = len(sim.lines)
-            sim.send("pad 0x0")
-            time.sleep(0.15)
-            sim.send("pad 0x%x" % FAST_LOADS_MASK)
-            time.sleep(0.3)
-            sim.send("pad 0x0")
-            time.sleep(0.15)
+            press(sim, c, "0x0", 0.15)
+            press(sim, c, "0x%x" % FAST_LOADS_MASK, 0.3)
+            press(sim, c, "0x0", 0.15)
             st = fresh_state(c)
             said = [s for s in sim.lines[mark:] if "notify: " in s]
             return (st["toggle_state"] & 1) if st else None, said
@@ -6052,12 +6166,9 @@ def main():
         coords2 = struct.pack(">fff", 9.0, 8.0, 7.0) + b"\x00" * 18
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords2)
 
-        sim.send("pad 0x0")
-        time.sleep(0.2)
-        sim.send("pad 0x1005")
-        time.sleep(0.4)
-        sim.send("pad 0x0")
-        time.sleep(0.2)
+        press(sim, c, "0x0", 0.2)
+        press(sim, c, "0x1005", 0.4)
+        press(sim, c, "0x0", 0.2)
 
         status, body = c.call(OP_POS_LIST)
         fired = False
@@ -6091,10 +6202,8 @@ def main():
         coords3 = struct.pack(">fff", 1.0, 2.0, 3.0) + b"\x00" * 18
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords3)
 
-        sim.send("pad 0x1005")
-        time.sleep(0.4)
-        sim.send("pad 0x0")
-        time.sleep(0.2)
+        press(sim, c, "0x1005", 0.4)
+        press(sim, c, "0x0", 0.2)
 
         held = saved_position()
         check(held is not None and abs(held[0] - 9.0) < 0.001,
@@ -6103,10 +6212,8 @@ def main():
         status, _ = c.call(OP_COMBO_SUSPEND, bytes([0]))
         check(status == ST_OK, "COMBO_SUSPEND 0 hands them back", status)
 
-        sim.send("pad 0x1005")
-        time.sleep(0.4)
-        sim.send("pad 0x0")
-        time.sleep(0.2)
+        press(sim, c, "0x1005", 0.4)
+        press(sim, c, "0x0", 0.2)
 
         resumed = saved_position()
         check(resumed is not None and abs(resumed[0] - 1.0) < 0.001,
@@ -6154,10 +6261,8 @@ def main():
         coords4 = struct.pack(">fff", 4.0, 5.0, 6.0) + b"\x00" * 18
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords4)
 
-        sim.send("pad 0x1005")
-        time.sleep(0.4)
-        sim.send("pad 0x0")
-        time.sleep(0.2)
+        press(sim, c, "0x1005", 0.4)
+        press(sim, c, "0x0", 0.2)
 
         switched_off = saved_position()
         check(switched_off is not None and abs(switched_off[0] - 1.0) < 0.001,
@@ -6171,10 +6276,8 @@ def main():
               "and flags bit3 clears with it",
               state["flags"] if state else None)
 
-        sim.send("pad 0x1005")
-        time.sleep(0.4)
-        sim.send("pad 0x0")
-        time.sleep(0.2)
+        press(sim, c, "0x1005", 0.4)
+        press(sim, c, "0x0", 0.2)
 
         switched_on = saved_position()
         check(switched_on is not None and abs(switched_on[0] - 4.0) < 0.001,
@@ -6655,7 +6758,11 @@ def main():
         sock.close()
 
     except Exception as exc:  # noqa: BLE001
-        check(False, "the smoke run completed without an exception", repr(exc))
+        # Where it went, and what the simulator said last: an exception ends the
+        # whole run, and its message alone does not say which step it was.
+        import traceback
+        check(False, "the smoke run completed without an exception",
+              (repr(exc), traceback.format_exc().splitlines()[-6:], sim.lines[-5:]))
     finally:
         udp.close()
         sim.stop()
