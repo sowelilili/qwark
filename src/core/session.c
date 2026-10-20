@@ -1086,6 +1086,34 @@ int session_load_setaside(void)
 
 /* ----------------------------------------------------------------- combos */
 
+/*
+ * Revision 1.23, build 55: COMBO_TOGGLE_FAST_LOADS. The running game's Fast
+ * loads toggle flipped through FEATURE_SET's own code, which is what a client's
+ * checkbox sends, so its refusals are the checkbox's: UNSUPPORTED under RPCS3
+ * until the code switches are in. A combo has no reply, so the console says
+ * which way it went, or why it did not, at every press.
+ */
+static void toggle_fast_loads(void)
+{
+	u8 id;
+	int on, rc;
+
+	if (g_game == NULL || g_game->fast_loads == 0) {
+		plat_notify("Fast loads: not in this game");
+		return;
+	}
+	id = (u8)(g_game->fast_loads - 1);
+	on = (features_toggle_state() & ((u64)1 << id)) == 0;
+	rc = features_set(id, (u32)on);
+	if (rc == ST_OK) {
+		plat_notify(on ? "Fast loads on" : "Fast loads off");
+		return;
+	}
+	plat_log("qwark: the fast-loads combo was refused (%d)", rc);
+	plat_notify(rc == ST_UNSUPPORTED && !plat_can_patch_code()
+	            ? "Fast loads: needs qwark's RPCS3 patches" : "Fast loads: refused");
+}
+
 static void run_combo(u8 action)
 {
 	switch (action) {
@@ -1095,6 +1123,7 @@ static void run_combo(u8 action)
 	case COMBO_LOAD_PLANET:   session_planet_load(0xFF, 0xFF); break;
 	case COMBO_LOAD_SETASIDE: session_load_setaside(); break;
 	case COMBO_OPEN_MENU:     menu_combo(); break;
+	case COMBO_TOGGLE_FAST_LOADS: toggle_fast_loads(); break;
 	default: break;
 	}
 }
@@ -1242,6 +1271,8 @@ static u32 encode_info(u8 *out, u32 cap)
 	if (switches_present())      flags |= SESSION_FLAG_CODE_SWITCHES;
 	/* Build 54. VSH_MEMORY has a reading to give. */
 	if (g_vm.known)              flags |= SESSION_FLAG_VSH_MEMORY;
+	/* Revision 1.23. MENU_HELP's setting, out of config like COMBOS_OFF. */
+	if (!config_menu_help())     flags |= SESSION_FLAG_MENU_HELP_OFF;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;

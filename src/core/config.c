@@ -50,7 +50,8 @@ static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.die",
 	"combo.planet",
 	"combo.setaside",
-	"combo.menu"        /* revision 1.22, COMBO_OPEN_MENU */
+	"combo.menu",       /* revision 1.22, COMBO_OPEN_MENU */
+	"combo.fastloads"   /* revision 1.23, COMBO_TOGGLE_FAST_LOADS */
 };
 
 /* Revision 1.12. The switch under those five, and in the same scope as them. */
@@ -266,6 +267,22 @@ int config_set_combo_enabled(u8 on)
 int config_menu_enabled(void)
 {
 	return config_get_u32("menu.enabled", 1) != 0;
+}
+
+/*
+ * Revision 1.23. `menu.help`: 1 for a file that has never mentioned it, as the
+ * menu took the Help row before the key existed. MENU_HELP writes it, a plain
+ * 0 or 1 like `combo.enabled`, so it reads the same by hand.
+ */
+int config_menu_help(void)
+{
+	return config_get_u32("menu.help", 1) != 0;
+}
+
+int config_set_menu_help(u8 on)
+{
+	if (on > 1) return ST_BAD_ARG;
+	return config_set_u32("menu.help", on);
 }
 
 /* -------------------------------------------------------------- selection */

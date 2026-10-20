@@ -66,6 +66,11 @@
  * for information only.
  * Revision 1.22, build 54: VSH_MEMORY at 0x0007 and SessionInfo flags bit5,
  * the VSH's free memory as the module reads it (PROTOCOL.md 5.1.1).
+ * Revision 1.23, build 55: MENU_HELP at 0x0092 and SessionInfo flags bit6
+ * MENU_HELP_OFF, config key menu.help: whether the console menu takes over the
+ * game's Help row, swapped in a running game at its next safe moment
+ * (PROTOCOL.md 5.10 and 9.2). Combo action 6 TOGGLE_FAST_LOADS, config key
+ * combo.fastloads with no mask out of the box, so COMBO_LIST has seven entries.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -81,7 +86,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             54
+#define QWARK_BUILD             55
 
 #define QWARK_PORT              9673
 /*
@@ -251,6 +256,15 @@
 
 #define OP_CONFIG_RELOAD     0x0090
 #define OP_CONFIG_SAVE       0x0091
+/*
+ * Revision 1.23, build 55. `menu.help`, a config write like COMBO_ENABLE's:
+ * u8 on, 1 the console menu's Trainer row takes the place of the game's Help
+ * row in its pause menu (the default), 0 the Help row is the game's own while
+ * the rest of the menu stays in, so its combo still opens it. Anything but 0
+ * or 1 is BAD_ARG; UNSUPPORTED where code cannot be patched, which has no menu.
+ * Reply none. SessionInfo flags bit6 reports it. PROTOCOL.md 5.10 and 9.2.
+ */
+#define OP_MENU_HELP         0x0092
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -504,6 +518,13 @@
  * older module (UNKNOWN_OP) and RPCS3 (UNSUPPORTED) from ever being asked.
  */
 #define SESSION_FLAG_VSH_MEMORY       0x20
+/*
+ * Revision 1.23, build 55. bit6 is set while config.txt's `menu.help` is 0, so
+ * the console menu leaves the game's Help row alone (MENU_HELP). Clear in every
+ * earlier build, whose menu always took the row: the bit reads right against
+ * those too.
+ */
+#define SESSION_FLAG_MENU_HELP_OFF    0x40
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0
@@ -626,7 +647,15 @@
  * still holds it, so a client can capture it.
  */
 #define COMBO_OPEN_MENU     5
-#define COMBO_COUNT         6
+/*
+ * Revision 1.23, build 55. Flips the running game's Fast loads toggle, exactly
+ * as FEATURE_SET from a client's checkbox does, and says on the console which
+ * way it went, or why not (under RPCS3 without the code switches, the same
+ * UNSUPPORTED the checkbox gets). No mask out of the box; COMBO_ENABLE holds it
+ * off like the first five.
+ */
+#define COMBO_TOGGLE_FAST_LOADS 6
+#define COMBO_COUNT         7
 #define COMBO_MENU_DEFAULT  0x060Fu
 
 /* Planet flags, PLANET_SELECT / PLANET_LOAD */

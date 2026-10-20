@@ -48,6 +48,8 @@
  * selected planet and its flags per game, two keys per game played and eight
  * at most, and a file from before then keeps the console's old pair beside
  * them: the four games' manips and selections together are twenty of the 64.
+ * Revision 1.23 adds two console-wide keys, the seventh combo mask and
+ * `menu.help`, each written only once a client sets it.
  */
 #define CONFIG_MAX_ENTRIES 64
 
@@ -75,7 +77,7 @@ u32  config_get_u32(const char *key, u32 fallback);
 u32  config_version(void);
 int  config_set_u32(const char *key, u32 value);
 
-/* Combos, indexed by COMBO_* action. Mask 0 disables. */
+/* Combos, indexed by COMBO_* action. Mask 0 disables. Revision 1.23: seven of them. */
 u32  config_combo(u8 action);
 int  config_set_combo(u8 action, u32 mask);
 
@@ -93,6 +95,15 @@ int  config_set_combo_enabled(u8 on);
  * never mentioned it, 0 turns the whole menu off (src/core/menu.h).
  */
 int  config_menu_enabled(void);
+
+/*
+ * Revision 1.23, MENU_HELP: `menu.help`, 1 when the file has never mentioned
+ * it. 1 the menu's Trainer row takes the game's Help row, 0 the Help row is
+ * the game's own and the rest of the menu stays in. Anything but 0 or 1 is
+ * ST_BAD_ARG.
+ */
+int  config_menu_help(void);
+int  config_set_menu_help(u8 on);
 
 u8   config_selected_slot(void);
 void config_set_selected_slot(u8 slot);

@@ -1175,5 +1175,6 @@ const struct game_api rac4_game = {
 
 	&rac4_manips,         /* revision 1.21 */
 	rac4_planet_order,    /* build 53 */
-	&rac4_menu            /* revision 1.22, round 2 */
+	&rac4_menu,           /* revision 1.22, round 2 */
+	GAME_FEATURE(R4_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
 };

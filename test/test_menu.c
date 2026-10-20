@@ -2923,4 +2923,5 @@ void test_menu(void)
 	test_menu_uya();
 	test_menu_rac2();
 	test_menu_rac1();
+	test_menu_help();
 }

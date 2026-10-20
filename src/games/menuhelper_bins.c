@@ -5735,19 +5735,19 @@ static const struct mh_word mh_rac1_hooks[] = {
 };
 
 static const struct mh_desc mh_descs[] = {
-	{ 4, mh_rac4_caves, 4, mh_rac4_hooks, 19,
+	{ 4, mh_rac4_caves, 4, mh_rac4_hooks, 19, 2,
 	  0x017DD600u, 0x00000480u, 0x017DF0C0u,
 	  0x00B3C5A0u, 0x00000003u, 0x009C37F4u, 0xFFFFFFFEu,
 	  0x0110D784u, 0x00000024u },
-	{ 3, mh_rac3_caves, 4, mh_rac3_hooks, 14,
+	{ 3, mh_rac3_caves, 4, mh_rac3_hooks, 14, 6,
 	  0x01ADB900u, 0x00000680u, 0x01ADC900u,
 	  0x00EE9334u, 0x00000003u, 0x00C1E840u, 0xFFFFFFFEu,
 	  0x01ADD754u, 0x00000001u },
-	{ 2, mh_rac2_caves, 4, mh_rac2_hooks, 6,
+	{ 2, mh_rac2_caves, 4, mh_rac2_hooks, 6, 2,
 	  0x01FD3000u, 0x00000880u, 0x01FD5000u,
 	  0x0156B064u, 0x00000003u, 0x01329F90u, 0xFFFFFFFEu,
 	  0x01FD62D4u, 0x00000001u },
-	{ 1, mh_rac1_caves, 7, mh_rac1_hooks, 4,
+	{ 1, mh_rac1_caves, 7, mh_rac1_hooks, 4, 2,
 	  0x0160A000u, 0x00000680u, 0x0160B000u,
 	  0x00A10708u, 0x00000003u, 0x00A52C9Cu, 0x00000000u,
 	  0x0160BE54u, 0x00000001u }

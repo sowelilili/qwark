@@ -49,6 +49,12 @@ struct mh_desc {
 	/* In the order they go in; they come out in the reverse order. */
 	const struct mh_word *hooks;
 	u8 nhooks;
+	/*
+	 * Revision 1.23: the last `nhelp` of them are the Help row's words, which
+	 * menu.c puts in and takes out on their own as config.txt's menu.help
+	 * says, the rest of the renderer staying in.
+	 */
+	u8 nhelp;
 
 	/* The mailbox (src/core/menubox.h): where, and how big. */
 	u32 mailbox;

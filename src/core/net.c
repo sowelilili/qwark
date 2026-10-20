@@ -1690,6 +1690,17 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return rc;
 	}
 
+	/*
+	 * Revision 1.23. `menu.help`, a config write and nothing else, exactly like
+	 * COMBO_ENABLE: it answers whatever the session state is, and the tick
+	 * thread puts the Help row's words in or back at the next moment it is safe
+	 * to (menu.c). Where code cannot be patched there is no menu to set.
+	 */
+	case OP_MENU_HELP:
+		if (reqlen < 1 || req[0] > 1) return ST_BAD_ARG;
+		if (!plat_can_patch_code()) return ST_UNSUPPORTED;
+		return (u16)config_set_menu_help(req[0]);
+
 #ifndef QWARK_EMULATOR
 	/*
 	 * Revision 1.18. The three RPCS3 patch ops exist only in the emulator

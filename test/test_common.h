@@ -33,4 +33,10 @@ void test_menu_rac1(void);
 /* test_vshmem.c: the VSH's free memory, build 54. */
 void test_vshmem(void);
 
+/* test_menu_help.c: menu.help, the console menu's Help row as a switch, build 55. */
+void test_menu_help(void);
+
+/* test_combo_fastloads.c: combo action 6, TOGGLE_FAST_LOADS, build 55. */
+void test_combo_fastloads(void);
+
 #endif /* QWARK_TEST_COMMON_H */

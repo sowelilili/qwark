@@ -211,6 +211,15 @@ u32  menu_test_builds(void);
 #define MENU_REFUSED     3     /* a hook site held a word not the game's or ours; tried again later */
 #define MENU_REMOVING    4     /* menu.enabled went to 0: the hooks come out once it is safe */
 
+/*
+ * Revision 1.23, build 55: while READY, the Help row's words (struct mh_desc's
+ * last `nhelp` hooks) follow config.txt's `menu.help`, which MENU_HELP writes:
+ * at 1 the menu's Trainer row in the game's Help row, at 0 the game's own Help
+ * with the rest of the renderer in, so the combo still opens the menu. A change
+ * swaps those words alone, in the running game, at the first tick nothing can
+ * be reading the pause menu's rows (menu.c, help_safe), and waits until then.
+ */
+
 /* The session reached INGAME with `game` (NULL for a title qwark does not know). */
 void menu_enter(const struct game_api *game);
 

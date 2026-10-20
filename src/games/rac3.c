@@ -1517,5 +1517,6 @@ const struct game_api rac3_game = {
 
 	&rac3_manips,         /* revision 1.21 */
 	rac3_planet_order,    /* build 53 */
-	&rac3_menu            /* revision 1.22, round 2 */
+	&rac3_menu,           /* revision 1.22, round 2 */
+	GAME_FEATURE(R3_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
 };

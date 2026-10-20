@@ -1648,6 +1648,19 @@ static u8   g_why;
 static int  g_enabled = 1;
 static u32  g_enabled_version = 0xFFFFFFFFu;
 
+/*
+ * Revision 1.23, build 55: config.txt's `menu.help`, read beside menu.enabled,
+ * and what the Help row's words in the game are: -1 not known (nothing of the
+ * menu in, or an install since they were last put right), 0 the game's, 1 the
+ * menu's. While the two differ a swap waits for a safe tick (help_sync).
+ */
+static struct {
+	int want;          /* menu.help */
+	int in;            /* the words in the game: -1, 0 or 1 */
+	u64 retry;         /* another mod's word stopped them: not before then */
+	int logged;        /* and the log has said so, once a session */
+} g_help = { 1, -1, 0, 0 };
+
 int menu_state(void) { return g_state; }
 u64 menu_install_delay_us(void) { return g_install_delay; }
 void menu_set_install_delay_us(u64 us) { g_install_delay = us; }
@@ -1658,16 +1671,28 @@ u32 menu_mailbox(void)
 	return g_mh->mailbox;
 }
 
-/* config.txt `menu.enabled`, 1 unless it says 0 (PROTOCOL.md 5.10). */
-static int enabled(void)
+/* config.txt `menu.enabled` and (revision 1.23) `menu.help`, each 1 unless it says 0 (PROTOCOL.md 5.10). */
+static void read_switches(void)
 {
 	u32 v = config_version();
 
 	if (v != g_enabled_version) {
 		g_enabled_version = v;
 		g_enabled = config_menu_enabled();
+		g_help.want = config_menu_help();
 	}
+}
+
+static int enabled(void)
+{
+	read_switches();
 	return g_enabled;
+}
+
+static int help_wanted(void)
+{
+	read_switches();
+	return g_help.want;
 }
 
 static u32 box(u32 off)
@@ -1682,6 +1707,8 @@ void menu_forget(void)
 	g_posted = 0;
 	g_hstate = MBOX_HSTATE_CLOSED;
 	g_req = 0;
+	g_help.in = -1;
+	g_help.retry = 0;
 	memset(&g_defer, 0, sizeof(g_defer));
 }
 
@@ -1690,6 +1717,7 @@ void menu_enter(const struct game_api *game)
 	menu_forget();
 	g_why = 0;
 	g_logged_refusal = 0;
+	g_help.logged = 0;
 	menu_model_reset(8, 0, 0);
 
 	/*
@@ -1824,11 +1852,21 @@ static int write_zeros(u32 addr, u32 len)
  * mailbox and the state written out of the tick's scratch). Nothing can branch
  * into a cave before its hook word, every hook word goes in after the caves,
  * and a combo's request byte goes in last of all.
+ *
+ * Revision 1.23: the Help row's words, the last `nhelp` of the table, are not
+ * written here. help_sync puts them in, or leaves them out for menu.help = 0,
+ * straight after a good install, in the same tick when it is safe to (the
+ * session's install always is: it runs in ordinary play), so they still go in
+ * last. Each must hold the game's word or the menu's as the others must, both
+ * being fine either way; with menu.help = 0 a third mod's word there is that
+ * mod's business, and refuses nothing.
  */
 static int install(void)
 {
 	const struct mh_desc *d = g_mh;
 	u8 head[MBOX_READ_HEAD];
+	u8 first_help = (u8)(d->nhooks - d->nhelp);
+	int help = help_wanted();
 	u32 w;
 	int ours = 0;
 	u8 i;
@@ -1838,6 +1876,7 @@ static int install(void)
 		if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return ST_IO_ERROR;
 		if (w == d->hooks[i].original) continue;
 		if (w == d->hooks[i].value) { ours++; continue; }
+		if (i >= first_help && !help) continue;
 		if (!g_logged_refusal) {
 			plat_log("menu: 0x%08X holds 0x%08X, neither the game's word nor the menu's; "
 			         "another mod has it, so no menu", (int)d->hooks[i].addr, (int)w);
@@ -1924,7 +1963,7 @@ static int install(void)
 		}
 	}
 
-	for (i = 0; i < d->nhooks; i++) {
+	for (i = 0; i < first_help; i++) {
 		if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return ST_IO_ERROR;
 		if (w == d->hooks[i].value) continue;
 		rc = mem_write_u32(d->hooks[i].addr, d->hooks[i].value);
@@ -1954,11 +1993,14 @@ static int uninstall(void)
 	return ST_OK;
 }
 
+static void help_sync(void);
+
 /*
  * install(), and the state it leaves: READY, REFUSED for another mod's word or
  * another build's renderer, IDLE for a write that failed. Either is tried
  * again ten seconds on (menu_tick), or sooner by a press of the combo.
- * Answers 1 when the menu serves.
+ * Answers 1 when the menu serves. Revision 1.23: READY puts the Help row's
+ * words right at once if it is safe, and at the first safe tick otherwise.
  */
 static int try_install(void)
 {
@@ -1966,6 +2008,8 @@ static int try_install(void)
 
 	if (rc == ST_OK) {
 		g_state = MENU_READY;
+		g_help.in = -1;
+		help_sync();
 		return 1;
 	}
 	if (rc == INSTALL_REFUSED) {
@@ -2004,6 +2048,80 @@ static int game_playing(void)
 	if (mem_read_u32(d->mode_addr, &mode) != ST_OK) return 0;
 	if (mem_read_u32(d->pending_addr, &pending) != ST_OK) return 0;
 	return mode == 0 && pending == d->pending_none;
+}
+
+/*
+ * Revision 1.23: whether the Help row's words may change now, which is
+ * whenever nothing can be reading the rows they sit in. The menu down; the
+ * game in ordinary play, its mode 0 with no mode change queued (RaC1: its
+ * state 0 and no reopen of the pause queued), so no pause menu is up or being
+ * built and no move between its screens is under way; and none of the
+ * renderer's screens up. The install's moment, with uninstall()'s screen test.
+ */
+static int help_safe(void)
+{
+	const struct mh_desc *d = g_mh;
+	u32 screen = 0;
+
+	if (g_hstate != MBOX_HSTATE_CLOSED || !game_playing()) return 0;
+	if (mem_read_u32(d->screen_addr, &screen) != ST_OK) return 0;
+	return screen != d->screen_id;
+}
+
+/*
+ * Revision 1.23, build 55: the Help row's words (the table's last `nhelp`)
+ * made what `menu.help` asks for while the rest of the renderer stays in: 1,
+ * the menu's Trainer row where the game's Help was; 0, the game's own Help.
+ * Only while help_safe() says so; otherwise the swap waits for a later tick,
+ * so a pause menu on screen when the setting changes keeps its rows until it
+ * has closed. In they go in the table's order and out they come in the
+ * reverse, as install() and uninstall() put them. A word another mod holds
+ * stops them going in, as it stops an install, and the swap is tried again ten
+ * seconds on; going out, such a word is that mod's and is left alone.
+ */
+static void help_sync(void)
+{
+	const struct mh_desc *d = g_mh;
+	int want = help_wanted();
+	int first = (int)d->nhooks - (int)d->nhelp;
+	int wrote = 0;
+	u32 w;
+	int i;
+
+	if (g_help.in == want) return;
+	if (plat_time_us() < g_help.retry || !help_safe()) return;
+
+	for (i = first; want && i < (int)d->nhooks; i++) {
+		if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return;
+		if (w == d->hooks[i].original || w == d->hooks[i].value) continue;
+		if (!g_help.logged) {
+			plat_log("menu: 0x%08X holds 0x%08X, another mod's; the Help row stays the game's",
+			         (int)d->hooks[i].addr, (int)w);
+			g_help.logged = 1;
+		}
+		g_help.retry = plat_time_us() + RETRY_US;
+		return;
+	}
+
+	if (want) {
+		for (i = first; i < (int)d->nhooks; i++) {
+			if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return;
+			if (w != d->hooks[i].original) continue;
+			if (mem_write_u32(d->hooks[i].addr, d->hooks[i].value) != ST_OK) return;
+			wrote = 1;
+		}
+	} else {
+		for (i = (int)d->nhooks - 1; i >= first; i--) {
+			if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return;
+			if (w != d->hooks[i].value) continue;
+			if (mem_write_u32(d->hooks[i].addr, d->hooks[i].original) != ST_OK) return;
+			wrote = 1;
+		}
+	}
+	/* An install says so itself; a swap in a running game is worth its own line. */
+	if (wrote && g_help.in >= 0)
+		plat_log("menu: the Help row is %s", want ? "the menu's again" : "the game's own");
+	g_help.in = want;
 }
 
 static void request(u8 what)
@@ -2172,6 +2290,9 @@ static void serve(void)
 	}
 
 	deferred_tick();
+
+	/* Revision 1.23: a menu.help change, or a swap still waiting, once it is safe. */
+	if (g_state == MENU_READY) help_sync();
 }
 
 void menu_tick(void)
@@ -2190,6 +2311,7 @@ void menu_tick(void)
 		if (g_state == MENU_REMOVING && safe_to_remove() && uninstall() == ST_OK) {
 			g_state = MENU_IDLE;
 			g_defer.kind = DEFER_NONE;
+			g_help.in = -1;
 		}
 		return;
 

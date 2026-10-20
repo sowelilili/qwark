@@ -1184,5 +1184,6 @@ const struct game_api rac1_game = {
 
 	&rac1_manips,         /* revision 1.21 */
 	NULL,                 /* planet_order: the ids run in the game's order */
-	&rac1_menu            /* revision 1.22, round 2 */
+	&rac1_menu,           /* revision 1.22, round 2 */
+	GAME_FEATURE(F_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
 };

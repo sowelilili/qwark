@@ -533,7 +533,17 @@ struct game_api {
 
 	/* Revision 1.22, round 2: the console menu's table, NULL for round 1's menu. */
 	const struct game_menu *menu;
+
+	/*
+	 * Revision 1.23, build 55: the TOGGLE the COMBO_TOGGLE_FAST_LOADS combo
+	 * flips, the game's Fast loads, as GAME_FEATURE(id). 0, what a game that
+	 * leaves it out gets, is none, and the combo then says so.
+	 */
+	u8 fast_loads;
 };
+
+/* A feature id in a game_api field where 0 means none: the id plus one. */
+#define GAME_FEATURE(id) ((u8)((id) + 1))
 
 /*
  * fp_switch and fp_switch_old, as a game names them. The branch a code switch

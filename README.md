@@ -52,7 +52,7 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 ## Console menu
 
-On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
+On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
 
 ## What it does without a PC
 
@@ -64,7 +64,7 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 
 | Path | Contents |
 |---|---|
-| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot, per-game selected planet and its reset flags (`selected.<game>.*`), `log = 1`, `savefile_helper`, `menu.enabled` |
+| `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot, per-game selected planet and its reset flags (`selected.<game>.*`), `log = 1`, `savefile_helper`, `menu.enabled`, `menu.help` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |

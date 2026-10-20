@@ -66,7 +66,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 54
+QWARK_BUILD = 55
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -138,6 +138,8 @@ OP_COMBO_LIST = 0x0081
 OP_COMBO_SUSPEND = 0x0082
 OP_COMBO_ENABLE = 0x0083
 OP_CONFIG_RELOAD = 0x0090
+# Revision 1.23: menu.help, the console menu's Help row as a switch.
+OP_MENU_HELP = 0x0092
 OP_AUTOSPLIT_EVENTS = 0x00A0
 OP_AUTOSPLIT_DESCRIBE = 0x00A1
 OP_SAVEFILE_INFO = 0x00B0
@@ -260,6 +262,8 @@ SESSION_FLAG_COMBOS_OFF = 0x08
 SESSION_FLAG_CODE_SWITCHES = 0x10
 # Build 54: the module has read the VSH's free memory, so VSH_MEMORY answers.
 SESSION_FLAG_VSH_MEMORY = 0x20
+# Revision 1.23: MENU_HELP's setting, set while menu.help is 0.
+SESSION_FLAG_MENU_HELP_OFF = 0x40
 
 # VSH_MEMORY's reply, and what its lowest_at says the lowest was taken at.
 VSH_MEMORY_SIZE = 28
@@ -307,6 +311,12 @@ COMBO_SAVE_POSITION = 0
 # Revision 1.22: the console menu's combo, the one with a mask out of the box.
 COMBO_OPEN_MENU = 5
 COMBO_MENU_DEFAULT = 0x060F
+# Revision 1.23: the fast-loads combo, with no mask out of the box. Select +
+# Triangle + Left here, which no other combo of the run uses.
+COMBO_TOGGLE_FAST_LOADS = 6
+FAST_LOADS_MASK = 0x8110
+# Deadlocked's Fast loads, feature 2 (src/games/rac4.h R4_FAST_LOADS).
+RAC4_FAST_LOADS_ID = 2
 
 # Revision 1.22: Deadlocked's console menu renderer (src/games/menuhelper/mh_rac4.h)
 # and its mailbox (src/core/menubox.h, version 3: rows of 0x40), read and written here as a
@@ -2756,6 +2766,51 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: Options' word through all of it is the game's")
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
 
+    # Revision 1.23: MENU_HELP. At 0 the Help row's two words go back to the
+    # game's in the running game and every other word stays in, the setting in
+    # flags bit6; at 1 they go in again, but not while the game is paused.
+    help_sites = (0x003A649C, 0x003A8584)
+
+    def help_words():
+        return [mem_read_u32(c, a) for a in help_sites]
+
+    def wait_words(want, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline and help_words() != want:
+            time.sleep(0.05)
+        return help_words()
+
+    game_help = [MENU_SITES[a] for a in help_sites]
+    ours_help = help_words()
+    check(ours_help[1] == MENU_HELP_SCREEN[1] and ours_help != game_help,
+          "Deadlocked menu: menu.help never set, the Help row is the menu's", [hex(w) for w in ours_help])
+    status, _ = c.call(OP_MENU_HELP, bytes([2]))
+    check(status == ST_BAD_ARG, "Deadlocked menu: MENU_HELP of 2 is BAD_ARG", status)
+    status, _ = c.call(OP_MENU_HELP, bytes([0]))
+    words = wait_words(game_help)
+    others = dict((a, w) for a, w in menu_hooks(c).items() if a not in help_sites)
+    check(status == ST_OK and words == game_help and
+          all(w != MENU_SITES[a] for a, w in others.items() if a != MENU_WORLDS_STOP),
+          "Deadlocked menu: MENU_HELP 0 puts the game's Help row back at once in play, the rest of the "
+          "renderer in", (status, [hex(w) for w in words]))
+    info = fresh_state(c)
+    check(info is not None and info["flags"] & SESSION_FLAG_MENU_HELP_OFF,
+          "Deadlocked menu: and flags bit6 says so", hex(info["flags"]) if info else None)
+    check(combo() == 1, "Deadlocked menu: the combo still asks the renderer to open")
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    mem_write(c, 0xB3C5A0, struct.pack(">I", 3))
+    status, _ = c.call(OP_MENU_HELP, bytes([1]))
+    time.sleep(0.5)
+    check(status == ST_OK and help_words() == game_help,
+          "Deadlocked menu: MENU_HELP 1 with the game paused: the Help row waits",
+          [hex(w) for w in help_words()])
+    mem_write(c, 0xB3C5A0, struct.pack(">I", 0))
+    words = wait_words(ours_help)
+    info = fresh_state(c)
+    check(words == ours_help and info is not None and not info["flags"] & SESSION_FLAG_MENU_HELP_OFF,
+          "Deadlocked menu: back in play it is the menu's again, flags bit6 clear",
+          [hex(w) for w in words])
+
 
 
 def exercise_console_menu_uya(c, sim):
@@ -4491,7 +4546,7 @@ def smoke_rpcs3(exe):
               info)
 
         # ---------------------------------------------------- planet loads
-        smoke_rpcs3_planet_loads(c, pine)
+        smoke_rpcs3_planet_loads(c, pine, sim)
 
         # ------------------- RaC2 with an earlier build's code switches
         smoke_rpcs3_rac2_old_switches(c, pine)
@@ -4530,7 +4585,7 @@ RAC4_LOAD_PLANET2 = 0x00B36DCC
 RAC4_TARGET_PLANET = 0x00B36DD0
 
 
-def smoke_rpcs3_planet_loads(c, pine):
+def smoke_rpcs3_planet_loads(c, pine, sim=None):
     """RaC2 and Deadlocked force fast loads, an instruction patch, before a
     planet load. RPCS3 refuses the patch, so the load goes out without it:
     the request and the level-flag reset reach the emulator and the patch
@@ -4605,6 +4660,31 @@ def smoke_rpcs3_planet_loads(c, pine):
           all(pine.peek(a, 4) in (b"\0\0\0\0", struct.pack(">I", w)) for a, w in MENU_SITES.items()),
           "rpcs3: the menu combo writes no console menu renderer into the game",
           menu_writes)
+
+    # Revision 1.23: no menu, so no MENU_HELP; and the fast-loads combo is
+    # refused as the Fast loads checkbox is, without the code switches.
+    status, _ = c.call(OP_MENU_HELP, bytes([0]))
+    check(status == ST_UNSUPPORTED, "rpcs3: MENU_HELP is UNSUPPORTED", status)
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, FAST_LOADS_MASK))
+    check(status == ST_OK, "rpcs3: COMBO_SET stores a fast-loads combo", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC4_FAST_LOADS_ID, 1))
+    check(status == ST_UNSUPPORTED, "rpcs3: Deadlocked's Fast loads checkbox is UNSUPPORTED", status)
+    logged = len(pine.write_log)
+    mark = len(sim.lines) if sim is not None else 0
+    pine.poke(RAC4_PAD_MASK, struct.pack(">I", FAST_LOADS_MASK))
+    time.sleep(0.4)
+    pine.poke(RAC4_PAD_MASK, b"\0\0\0\0")
+    time.sleep(0.2)
+    status, body = c.call(OP_GET_STATE)
+    st = parse_telemetry(body)[0] if status == ST_OK else None
+    fl_writes = [(hex(a), n) for a, n in pine.write_log[logged:]
+                 if any(a <= fa < a + n for fa, _w in RAC4_FASTLOAD_ORIG)]
+    said = [s for s in sim.lines[mark:] if "notify: " in s] if sim is not None else ["notify: (no sim) RPCS3"]
+    check(st is not None and not (st["toggle_state"] >> RAC4_FAST_LOADS_ID) & 1 and not fl_writes and
+          said and "Fast loads: " in said[-1] and "RPCS3" in said[-1],
+          "rpcs3: the fast-loads combo is refused the same way, writes nothing and says it needs the patches",
+          (st["toggle_state"] if st else None, fl_writes, said))
+    c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, 0))
 
     pine.shutdown_game()
     ok, info = wait_state(c, SESSION_XMB)
@@ -5931,15 +6011,42 @@ def main():
                 combos[body[off]] = struct.unpack(">I", body[off + 4:off + 8])[0]
         check(combos.get(COMBO_SAVE_POSITION) == 0x1005,
               "COMBO_LIST reports it back", combos)
-        # Revision 1.22: six actions, the sixth the console menu's, which has a
-        # mask before anybody sets one.
-        check(status == ST_OK and body[0] == 6 and sorted(combos) == [0, 1, 2, 3, 4, 5],
-              "COMBO_LIST reports six actions", combos)
+        # Revision 1.22: the sixth action the console menu's, which has a mask
+        # before anybody sets one. Revision 1.23: seven, the fast-loads combo
+        # the seventh, with none.
+        check(status == ST_OK and body[0] == 7 and sorted(combos) == [0, 1, 2, 3, 4, 5, 6],
+              "COMBO_LIST reports seven actions", combos)
         check(combos.get(COMBO_OPEN_MENU) == COMBO_MENU_DEFAULT,
               "the open-menu combo is L1 + R1 + L2 + R2 + L3 + R3 out of the box",
               hex(combos.get(COMBO_OPEN_MENU, 0)))
-        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 6, 0x1))
-        check(status == ST_BAD_ARG, "COMBO_SET of a seventh action is BAD_ARG", status)
+        check(combos.get(COMBO_TOGGLE_FAST_LOADS) == 0, "the fast-loads combo has no mask out of the box",
+              hex(combos.get(COMBO_TOGGLE_FAST_LOADS, 0)))
+        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 7, 0x1))
+        check(status == ST_BAD_ARG, "COMBO_SET of an eighth action is BAD_ARG", status)
+
+        # Revision 1.23: the fast-loads combo flips RaC1's Fast loads (feature
+        # 0) as the checkbox does, and the console says which way.
+        def fast_loads_press():
+            mark = len(sim.lines)
+            sim.send("pad 0x0")
+            time.sleep(0.15)
+            sim.send("pad 0x%x" % FAST_LOADS_MASK)
+            time.sleep(0.3)
+            sim.send("pad 0x0")
+            time.sleep(0.15)
+            st = fresh_state(c)
+            said = [s for s in sim.lines[mark:] if "notify: " in s]
+            return (st["toggle_state"] & 1) if st else None, said
+
+        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, FAST_LOADS_MASK))
+        check(status == ST_OK, "COMBO_SET stores a fast-loads combo", status)
+        on, said = fast_loads_press()
+        check(on == 1 and said and said[-1].endswith("notify: Fast loads on"),
+              "the fast-loads combo turns RaC1's fast loads on and says \"Fast loads on\"", (on, said))
+        on, said = fast_loads_press()
+        check(on == 0 and said and said[-1].endswith("notify: Fast loads off"),
+              "pressed again, off, and \"Fast loads off\"", (on, said))
+        c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, 0))
 
         # Move somewhere recognisable, then press the combo.
         coords2 = struct.pack(">fff", 9.0, 8.0, 7.0) + b"\x00" * 18

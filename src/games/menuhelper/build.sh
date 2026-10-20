@@ -504,6 +504,27 @@ for g in $RENDERERS; do
 	${g}_hooks "$hdr" "$obj/mh.elf" > "$obj/hooks.txt" || fail "$g: the hook words"
 	nhooks=$(wc -l < "$obj/hooks.txt" | tr -d ' ')
 	[ "$nhooks" -gt 0 ] || fail "$g: no hook words"
+	# Revision 1.23: the Help row's words, the hooks at the header's MH_SITE_HELP*
+	# sites, which menu.c swaps on their own for menu.help: the table's last, all of them.
+	help_sites=$(tr -d '\r' < "$hdr" | sed -n 's/^#define[ \t][ \t]*MH_SITE_HELP[A-Z0-9_]*[ \t][ \t]*\(0x[0-9A-Fa-f][0-9A-Fa-f]*\).*/\1/p')
+	set -- $help_sites
+	nsites=$#
+	nhelp=0
+	k=0
+	while read -r h_addr h_rest; do
+		k=$((k + 1))
+		is_help=0
+		for s in $help_sites; do
+			[ $((s)) -ne $((h_addr)) ] || is_help=1
+		done
+		if [ $is_help -eq 1 ]; then
+			nhelp=$((nhelp + 1))
+		elif [ $nhelp -gt 0 ]; then
+			fail "$g: hook word $k follows a Help row word; the Help row's must be the last"
+		fi
+	done < "$obj/hooks.txt"
+	[ $nhelp -gt 0 ] && [ $nhelp -eq $nsites ] ||
+		fail "$g: $nhelp Help row words in the table, the header names $nsites sites"
 	query=$(${g}_query "$hdr")
 	set -- $query
 	[ $# -eq 6 ] || fail "$g: what says the menu is down is not six words"
@@ -570,7 +591,7 @@ for g in $RENDERERS; do
 	} >> "$OUT/arrays.c"
 
 	{
-		echo "	{ $((game)), mh_${g}_caves, $((3 + ncodes)), mh_${g}_hooks, $nhooks,"
+		echo "	{ $((game)), mh_${g}_caves, $((3 + ncodes)), mh_${g}_hooks, $nhooks, $nhelp,"
 		echo "	  ${mbox}u, ${mbox_size}u, ${state}u,"
 		echo "	  ${q_mode}u, ${q_paused}u, ${q_pending}u, ${q_none}u,"
 		echo "	  ${q_screen}u, ${q_screen_id}u },"
@@ -646,6 +667,12 @@ struct mh_desc {
 	/* In the order they go in; they come out in the reverse order. */
 	const struct mh_word *hooks;
 	u8 nhooks;
+	/*
+	 * Revision 1.23: the last `nhelp` of them are the Help row's words, which
+	 * menu.c puts in and takes out on their own as config.txt's menu.help
+	 * says, the rest of the renderer staying in.
+	 */
+	u8 nhelp;
 
 	/* The mailbox (src/core/menubox.h): where, and how big. */
 	u32 mailbox;

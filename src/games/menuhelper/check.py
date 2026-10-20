@@ -107,6 +107,15 @@ keeps plain; the text stub, stepped, and the play stub's
 frame; and no overlap with the mods (charge-boots among them), the probes or
 qwark's own writes (the savefile helper and the code switches), but for
 probes N1, N1b and N1c, whose words are the same by design.
+
+For every renderer (revision 1.23, build 55, menu.help): the Help row's words
+are the hooks at the header's MH_SITE_HELP* sites, every one of them, and they
+are the table's last, as many as the generated table's `nhelp` says, so menu.c
+can put them in and take them out alone and in order; and no code of the
+renderer names a Help site and no word of its data image holds one, so it never
+reads them and draws, opens and closes the same whether they are in or out.
+Each Help word's game word is what the install restores at menu.help = 0, and
+check 1 above holds the executables to it.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -3517,6 +3526,52 @@ def check_rac1(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
+def parse_descs(path):
+    """Each renderer's (nhooks, nhelp) from menuhelper_bins.c's mh_descs, by game ("rac4" ..)."""
+    text = open(path, encoding="utf-8").read()
+    out = {}
+    for d in re.finditer(r"\{ \d+, mh_(\w+)_caves, \d+, mh_\w+_hooks, (\d+), (\d+),", text):
+        out[d.group(1)] = (int(d.group(2)), int(d.group(3)))
+    return out
+
+
+def check_help_rows(ok):
+    """Revision 1.23: each renderer's Help row words, which menu.help swaps on their own."""
+    text = open(GEN_C, encoding="utf-8").read()
+    descs = parse_descs(GEN_C)
+    for g, name in (("rac4", "Deadlocked"), ("rac3", "UYA"), ("rac2", "RaC2"), ("rac1", "RaC1")):
+        hdr = header_defs(os.path.join(HERE, "mh_%s.h" % g))
+        sites = sorted(v for k, v in hdr.items() if k.startswith("MH_SITE_HELP") and not k.endswith("#comment"))
+        _, data, _, hooks, caves, _ = parse_bins(GEN_C, g)
+        if g not in descs or not hooks or not sites:
+            ok(False, "%s: the desc, the hook words and the Help sites are there to read" % name)
+            continue
+        nhooks, nhelp = descs[g]
+        last = [h[0] for h in hooks[len(hooks) - nhelp:]] if nhelp else []
+        ok(nhooks == len(hooks) and nhelp == len(sites) and sorted(last) == sites and
+           not [h for h in hooks[:len(hooks) - nhelp] if h[0] in sites],
+           "%s: the Help row is the table's last %d words (%s), every MH_SITE_HELP site and no other word" %
+           (name, nhelp, ", ".join("0x%08X" % a for a in last)))
+        named = []
+        for addr, cname, code, _ in caves:
+            if not code:
+                continue
+            m = re.search(r"static const u8 %s\[\] = \{(.*?)\};" % cname, text, re.S)
+            body = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+            for a in sites:
+                named += code_pointers(body, addr, a, a + 4)
+        held = []
+        if data is not None:
+            for i in range(0, len(data) - 3, 4):
+                if struct.unpack(">I", data[i:i + 4])[0] in sites:
+                    held.append(i)
+        ok(not named and not held,
+           "%s: no code of the renderer names a Help site and no word of its data holds one, so it never reads "
+           "them and works the same with the Help row in or out" % name)
+        for x in named[:8]:
+            print("        " + x)
+
+
 def shim_set_layout(shim_defs, rows):
     """Text set 0's first row, from the state, and a set's size, for `rows` mailbox rows (mh_shim.h)."""
     set_flags = shim_defs["SET_KIND"] + rows
@@ -3588,6 +3643,7 @@ def main():
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
     check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)
+    check_help_rows(ok)
 
     print("\n%s" % ("all checks passed" if failures == 0 else "%d check(s) FAILED" % failures))
     return 0 if failures == 0 else 1
