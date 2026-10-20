@@ -312,8 +312,9 @@ COMBO_MENU_DEFAULT = 0x060F
 # and its mailbox (src/core/menubox.h, version 3: rows of 0x40), read and written here as a
 # renderer would. The last two sites are the pause main menu's Help row, which
 # the renderer makes the menu's way in. Mailbox version 3: the planet picker's
-# eight, Worlds' X, its six gates (the lock's and Circle's since the pickers'
-# round 2) and its fcStop (a data word: a descriptor).
+# ten, Worlds' X, its eight gates (the lock's and Circle's since the pickers'
+# round 2, the tournaments' and the legend's since round 6) and its fcStop (a
+# data word: a descriptor).
 MENU_BOX = 0x017DD600
 MENU_MAGIC = 0x514D4E55
 MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
@@ -321,7 +322,8 @@ MENU_SITES = {0x00368620: 0x4BFFFCE5, 0x0035E074: 0x38800001,
               0x003A8584: 0x3880001E,
               0x003B2844: 0x4BFFF955, 0x003B177C: 0x41820024, 0x003B1424: 0x3860000F,
               0x003B27C0: 0x41820114, 0x003B2898: 0x4182003C, 0x003B1590: 0x7CA7C1AE,
-              0x003B2794: 0x418200B8, 0x009E8954: 0x00994400}
+              0x003B2794: 0x418200B8, 0x003B14F0: 0x40820160, 0x003AE500: 0x40820054,
+              0x009E8954: 0x00994400}
 MENU_HELP_SCREEN = (0x003A8584, 0x38800024)
 MENU_WORLDS_STOP = 0x009E8954
 # Deadlocked's MF_LevelSave array (src/games/rac4.h): a planet's status byte at
@@ -2635,53 +2637,66 @@ def exercise_console_menu(c, sim):
     mem_write(c, 0xB3C5A0, struct.pack(">I", 0))
     time.sleep(0.2)
 
-    # Round 5: Game with no Die and no values, and a spacer between its two
-    # parts; on Cheats, Challenge mode a switch and the values' Max buttons,
-    # each answered with nothing in its row. Closing the menu puts the root back.
+    # Round 6: Game with Challenge mode, a switch, between its two parts, where
+    # round 5 had a spacer; Cheats the toggles, then the values' Max buttons,
+    # each answered with nothing in its row; Unlocks' two weapon buttons on a
+    # page of their own, Collectables. Closing the menu puts the root back.
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")
     time.sleep(0.1)
+    mem_write(c, 0x009C330E, b"\x00")
     check(menu_event(c, MBOX_EV_ACTIVATE, 0), "Deadlocked menu: Game")
-    time.sleep(0.1)
+    time.sleep(0.2)
     page = menu_page(c)
     body = page[4] if page else b""
     r = MBOX_OFF_ROWS + 3 * MBOX_ROW_SIZE
-    check(page is not None and page[3] == ["Position slot", "Save position", "Load position", "", "Set aside file",
-                                           "Load set-aside file"] and
-          body[r + MROW_OFF_KIND] == MROW_INFO and body[r + MROW_OFF_FLAGS] == 0,
-          "Deadlocked menu: round 5's Game, the positions, a blank row the cursor may not land on, the save files",
-          page[3] if page else None)
+    check(page is not None and page[3] == ["Position slot", "Save position", "Load position", "Challenge mode",
+                                           "Set aside file", "Load set-aside file"] and
+          body[r + MROW_OFF_KIND] == MROW_TOGGLE,
+          "Deadlocked menu: round 6's Game, the positions, Challenge mode (a switch, where round 5's blank row was), "
+          "the save files", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3) and mem_read_u8(c, 0x009C330E) == 1,
+          "Deadlocked menu: Challenge mode from Off: On, the counter 1", mem_read_u8(c, 0x009C330E))
+    time.sleep(0.1)
+    page = menu_page(c)
+    body = page[4] if page else b""
+    at = MBOX_OFF_ROWS + 3 * MBOX_ROW_SIZE + MROW_OFF_VALUE
+    v = body[at:at + 20]
+    check(page is not None and v.split(b"\0")[0] == b"On", "Deadlocked menu: and the row reads On", v)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3) and mem_read_u8(c, 0x009C330E) == 0,
+          "Deadlocked menu: again: Off, 0", mem_read_u8(c, 0x009C330E))
     check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back from Game")
     time.sleep(0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1), "Deadlocked menu: Cheats")
     time.sleep(0.1)
     page = menu_page(c)
     body = page[4] if page else b""
-    want = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health", "Challenge mode", "Max bolts",
-            "Max Dread points", "Unlock all planets"]
-    check(page is not None and page[3] == want and body[MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE] == MROW_TOGGLE and
-          body[MBOX_OFF_ROWS + 5 * MBOX_ROW_SIZE] == MROW_ACTION,
-          "Deadlocked menu: round 5's Cheats, the toggles, Challenge mode (a switch), Max bolts, Max Dread points "
-          "and Unlock all planets (buttons)", page[3] if page else None)
+    want = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health", "Max bolts", "Max Dread points",
+            "Unlock all planets"]
+    check(page is not None and page[3] == want and body[MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE] == MROW_ACTION,
+          "Deadlocked menu: round 6's Cheats, the toggles, then Max bolts, Max Dread points and Unlock all planets "
+          "(buttons)", page[3] if page else None)
     mem_write(c, 0x009C32E8, struct.pack(">I", 12))
-    mem_write(c, 0x009C330E, b"\x00")
     time.sleep(0.2)
-    check(menu_event(c, MBOX_EV_ACTIVATE, 5) and mem_read_u32(c, 0x009C32E8) == 99999999,
+    check(menu_event(c, MBOX_EV_ACTIVATE, 4) and mem_read_u32(c, 0x009C32E8) == 99999999,
           "Deadlocked menu: Max bolts writes 99,999,999, the game's own cap", mem_read_u32(c, 0x009C32E8))
     time.sleep(0.1)
     page = menu_page(c)
     body = page[4] if page else b""
-    check(page is not None and body[MBOX_OFF_ROWS + 5 * MBOX_ROW_SIZE + MROW_OFF_VALUE] == 0,
+    check(page is not None and body[MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE + MROW_OFF_VALUE] == 0,
           "Deadlocked menu: and its row says nothing (no DONE)")
-    check(menu_event(c, MBOX_EV_ACTIVATE, 4) and mem_read_u8(c, 0x009C330E) == 1,
-          "Deadlocked menu: Challenge mode from Off: On, the counter 1", mem_read_u8(c, 0x009C330E))
+    check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back from Cheats")
+    time.sleep(0.1)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 4), "Deadlocked menu: Unlocks")
     time.sleep(0.1)
     page = menu_page(c)
-    body = page[4] if page else b""
-    at = MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE + MROW_OFF_VALUE
-    v = body[at:at + 20]
-    check(page is not None and v.split(b"\0")[0] == b"On", "Deadlocked menu: and the row reads On", v)
-    check(menu_event(c, MBOX_EV_ACTIVATE, 4) and mem_read_u8(c, 0x009C330E) == 0,
-          "Deadlocked menu: again: Off, 0", mem_read_u8(c, 0x009C330E))
+    check(page is not None and page[3] == ["Weapons", "Gadgets", "Bot upgrades", "Collectables"],
+          "Deadlocked menu: round 6's Unlocks, the tabs and Collectables", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3), "Deadlocked menu: Collectables")
+    time.sleep(0.1)
+    page = menu_page(c)
+    check(page is not None and page[2] == "Collectables" and page[5] == MBOX_PTYPE_CONFIG and
+          page[3] == ["Max all weapon levels", "Max all weapon ammo"],
+          "Deadlocked menu: Collectables, a CONFIG page of the two weapon buttons", page[:4] if page else None)
     mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
     time.sleep(0.2)
     page = menu_page(c)
@@ -2939,9 +2954,9 @@ def exercise_console_menu_rac2(c, sim):
     check(page is not None and page[2] == "Cheats" and page[3][:4] == ["Fast loads", "Ghost Ratchet",
                                                                        "Infinite ammo", "Freeze health"] and
           page[5] == MBOX_PTYPE_CONFIG and page[3][4:] == ["Reset bosses on death", "Reset platinum bolts on death",
-                                                          "Challenge mode", "Max bolts", "Max raritanium"],
-          "RaC2 menu: the Cheats page is posted, a CONFIG page (round 5: the resets on death, Challenge mode, "
-          "Max bolts and Max raritanium after the cheats)",
+                                                          "Max bolts", "Max raritanium"],
+          "RaC2 menu: the Cheats page is posted, a CONFIG page (round 5: the resets on death, Max bolts and Max "
+          "raritanium after the cheats; round 6: Challenge mode on Game)",
           page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC2 menu: back is acked")
     time.sleep(0.1)

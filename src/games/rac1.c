@@ -1055,8 +1055,9 @@ static const struct game_manips rac1_manips = {
  * savefile tab (Force autosave beside the two set-aside buttons); Cheats the
  * four cheats every game has and the Goodies menu, the one switch of the Game
  * panel's "Options" column. Round 5 (the user's hardware notes): Die is left
- * to the combos, a spacer parts Game's position rows from its save-file rows,
- * and Bolts is a button at the end of Cheats, Max bolts. The jankpot, the debug
+ * to the combos, and Bolts is a button at the end of Cheats, Max bolts. Round
+ * 6: Game has no spacer (the other games put Challenge mode in its place, which
+ * RaC1's menu never had). The jankpot, the debug
  * updates and the camera mode are the client's Debug page, which the menu
  * leaves out. The gold bolt and skill point buttons are the client's
  * Collectables tab, beside the unlock table, so the Unlocks page links them
@@ -1066,7 +1067,6 @@ static const struct game_manips rac1_manips = {
  */
 static const u8 rac1_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	MENU_ITEM_SPACER,
 	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE
 };
 

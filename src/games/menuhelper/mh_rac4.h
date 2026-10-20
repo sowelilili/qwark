@@ -200,7 +200,7 @@
  * the main menu's WORLDS row pushes it (MenuMain_MainCMDWorldsCB, 0x3A8368:
  * GuiMenu_PushScreen(p, 3)). REPORT-planet-pickers.md section 2 and probe
  * PL4, which ran it on hardware. Six more words (eight since the pickers'
- * round 2), each acting only while the
+ * round 2, ten since round 6), each acting only while the
  * core's ST_PICKER says the menu opened Worlds, so the game's own Worlds (from
  * the main menu's WORLDS row) runs every word as the game has it:
  *
@@ -234,6 +234,21 @@
  *                  which ignores the press while the picker is up (the user's
  *                  call: back from Skills was the game's own Worlds), and goes
  *                  to Skills otherwise.
+ * MH_SITE_TOURNEY  (round 6) UpdatePlanets' `bne` to a tournament's path (an
+ *                  entry's type 1): a branch to mh_gate_tourney, which leaves
+ *                  tournaments 1 to 4 out of the list while the picker is up
+ *                  (on to the next entry, 0x3B1960, with nothing inserted; the
+ *                  user's call: every one goes to DreadZone Station, which has
+ *                  its own row); tournament 0, that row (the game's
+ *                  MenuPlanet_GetTournamentName names it after level 1), and
+ *                  every planet as the game has them.
+ * MH_SITE_LEGEND   (round 6) MenuPlanet_CreateWidgets' `bne` between its two
+ *                  legends (no mission active: "\x11 SKILLS \x10 SELECT"; one
+ *                  active: and "\x12 BACK"): a branch to mh_gate_legend, which
+ *                  while the picker is up writes "\x10 SELECT \x12 BACK" into
+ *                  the legend's buffer instead (msg_string's own texts, the
+ *                  game's "%s %s"): no Circle there, and Triangle always goes
+ *                  back in the menu's Worlds (mh_gate_back).
  * MH_WORLDS_STOP   GuiMenu_Screens[3].fcStop, a data word: the descriptor of
  *                  mh_worlds_stop, which ends the picker when Worlds goes
  *                  anywhere but back to screen 36 and calls the game's stop.
@@ -249,6 +264,8 @@
 #define MH_SITE_CLOSE       0x003B2898   /* beq 0x3B28D4, word 0x4182003C */
 #define MH_SITE_LOCKED      0x003B1590   /* stbx r5,r7,r24, word 0x7CA7C1AE */
 #define MH_SITE_SKILLS      0x003B2794   /* beq 0x3B284C, word 0x418200B8 */
+#define MH_SITE_TOURNEY     0x003B14F0   /* bne 0x3B1650, word 0x40820160 */
+#define MH_SITE_LEGEND      0x003AE500   /* bne 0x3AE554, word 0x40820054 */
 #define MH_WORLDS_STOP      0x009E8954   /* GuiMenu_Screens[3].fcStop, 0x994400 */
 
 #define MH_ORIG_SELECT      0x4BFFF955
@@ -258,6 +275,8 @@
 #define MH_ORIG_CLOSE       0x4182003C
 #define MH_ORIG_LOCKED      0x7CA7C1AE
 #define MH_ORIG_SKILLS      0x418200B8
+#define MH_ORIG_TOURNEY     0x40820160
+#define MH_ORIG_LEGEND      0x40820054
 #define MH_ORIG_WORLDS_STOP 0x00994400   /* MenuPlanet_Stop's descriptor */
 
 /* Where the picker's stubs go on to (build.sh hands each to the linker as dl_<name>). */
@@ -271,6 +290,14 @@
 #define DL_LOCKED_DONE      0x003B1594   /* after the bLocked store: bNew and complete next */
 #define DL_SKILLS_TAKEN     0x003B284C   /* the beq's target: the Skills screen pushed (21) */
 #define DL_SKILLS_NEXT      0x003B2798   /* after the beq: the next command's test */
+#define DL_TOURNEY_PLANET   0x003B14F4   /* after the bne: a planet's path */
+#define DL_TOURNEY_TAKEN    0x003B1650   /* the bne's target: a tournament's path */
+#define DL_ENTRY_NEXT       0x003B1960   /* UpdatePlanets' loop: the next entry, this one not inserted */
+#define DL_LEGEND_TWO       0x003AE504   /* after the bne: no mission active, SKILLS and SELECT */
+#define DL_LEGEND_THREE     0x003AE554   /* the bne's target: SKILLS, SELECT and BACK */
+#define DL_LEGEND_PRINT     0x003AE538   /* sprintf(legend, r29, r28, r3), then on (0x3AE5BC) */
+#define DL_MSG_STRING_FN    0x00198A5C   /* msg_string(id), which the legend stub calls with the game's r2 */
+#define DL_LEGEND_FMT       0x008918E0   /* "%s %s", the game's own two-text legend format */
 
 /* Where the one stub that is not a call goes on to. */
 #define GAME_HANDLE_MENU_INPUT 0x00368304   /* GuiSupport_HandleMenuInput */

@@ -281,6 +281,68 @@ mh_gate_skills:
 8:	b	dl_skills_next
 9:	b	dl_input_done
 
+/*
+ * Round 6: two more gates of the same kind.
+ *
+ * MH_SITE_TOURNEY, 0x3B14F0 in MenuPlanet_UpdatePlanets' loop over the
+ * entries SetupPlanetTourneyList wrote: `bne 0x3B1650` on cr0 from
+ * `cmpwi r3,0` (the entry's type, 0x3B14E4) becomes `b mh_gate_tourney`, a
+ * leaf. A planet (type 0) goes on to its path (0x3B14F4) before anything is
+ * touched, so cr0, cr1 and cr6 reach it as the game set them. A tournament
+ * goes to its path (0x3B1650), unless the picker is up and it is one of the
+ * four tournaments (r30, its iLink, 1 to 4), which then is not inserted:
+ * on to the loop's next entry (0x3B1960). Tournament 0 is DreadZone Station's
+ * own row (MenuPlanet_GetTournamentName names it after level 1) and stays.
+ * r12 the function never uses; cr0 is not read at 0x3B1650 before the call
+ * there, nor at 0x3B1960 before the loop's compare.
+ */
+	.globl	mh_gate_tourney
+mh_gate_tourney:
+	beq	8f
+	cmpwi	%r30,0
+	beq	7f
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	9f
+7:	b	dl_tourney_taken
+8:	b	dl_tourney_planet
+9:	b	dl_entry_next
+
+/*
+ * MH_SITE_LEGEND, 0x3AE500 in MenuPlanet_CreateWidgets, which Worlds' init
+ * alone calls: `bne 0x3AE554` on cr0 from `cmpwi r3,-1` (mf_activeMissionIndex,
+ * still in r3) becomes `b mh_gate_legend`. With the picker down the game's own
+ * test, made again, picks the game's legend: "\x11 SKILLS \x10 SELECT"
+ * (0x3AE504), or with a mission active "\x11 SKILLS \x10 SELECT \x12 BACK"
+ * (0x3AE554). With it up the stub fetches "\x10 SELECT" and "\x12 BACK"
+ * through msg_string itself (a direct call: this is the game's function, with
+ * the game's r2, its LR saved in its frame) into r28 and r3, the game's
+ * "%s %s" into r29, and goes on to the two-text path's sprintf into the legend
+ * the panel shows (0x3AE538): no Circle, and BACK, which the menu's Worlds
+ * always takes (mh_gate_back). r28 and r29 are the function's own saved
+ * registers, set here for that sprintf and again before they are read after
+ * it; r3 and r12 are free.
+ */
+	.globl	mh_gate_legend
+mh_gate_legend:
+	lis	%r12,PICKER@ha
+	lbz	%r12,PICKER@l(%r12)
+	cmpwi	%r12,0
+	bne	1f
+	cmpwi	%r3,-1
+	bne	8f
+	b	dl_legend_two
+8:	b	dl_legend_three
+1:	li	%r3,DL_MSG_SELECT
+	bl	dl_msg_string_fn
+	ori	%r28,%r3,0
+	li	%r3,DL_MSG_BACK
+	bl	dl_msg_string_fn
+	lis	%r29,DL_LEGEND_FMT@ha
+	addi	%r29,%r29,DL_LEGEND_FMT@l
+	b	dl_legend_print
+
 	.section ".rodata","a"
 	.globl	mh_help_text
 mh_help_text:

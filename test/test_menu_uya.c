@@ -909,11 +909,14 @@ static void test_model_uya(void)
 {
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
-	/* Round 5: no Die, Health XP, Health or File time; a spacer (""); the values on Cheats. */
-	static const char * const game[] = { "Position slot", "Save position", "Load position", "",
+	/*
+	 * Round 5: no Die, Health XP, Health or File time; Max bolts on Cheats.
+	 * Round 6: Challenge mode on Game, where round 5 had a spacer.
+	 */
+	static const char * const game[] = { "Position slot", "Save position", "Load position", "Challenge mode",
 	                                     "Set aside file", "Load set-aside file" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
-	                                       "Quick-select pause", "Challenge mode", "Max bolts" };
+	                                       "Quick-select pause", "Max bolts" };
 	static const char * const manips[] = { "Category", "Auto-reset", "Apply now", "", "Reset trophies",
 	                                       "Trophy reset", "Reset trophies on Veldin load" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets and items", "Vid comics", "Collectables" };
@@ -932,15 +935,9 @@ static void test_model_uya(void)
 	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey: the design's");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
-	      v.rows[3].flags == 0,
-	      "round 5, Game: the slot and the positions, a blank grey row, the save-file buttons; no Die, no values");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
-	menu_model_view(&v);
-
-	act(&v, MBOX_EV_ACTIVATE, "Cheats");
-	check(labels_are(&v, cheats, 7) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Cheats: the four cheats every game has, the quick-select pause, then (round 5) Challenge mode and Max bolts");
+	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_TOGGLE,
+	      "round 6, Game: the slot and the positions, Challenge mode (round 5's spacer gone), the save-file "
+	      "buttons; no Die");
 	poke8(RAC3_CHALLENGE_MODE, 0);
 	tick(2);
 	menu_model_view(&v);
@@ -954,6 +951,13 @@ static void test_model_uya(void)
 	check(strcmp(value_of(&v, "Challenge mode"), "On") == 0 && act(&v, MBOX_EV_ACTIVATE, "Challenge mode") == ST_OK &&
 	      peek8(RAC3_CHALLENGE_MODE) == 0 && strcmp(value_of(&v, "Challenge mode"), "Off") == 0,
 	      "on its fourth run On, and the cross Off, 0");
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+
+	act(&v, MBOX_EV_ACTIVATE, "Cheats");
+	check(labels_are(&v, cheats, 6) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "Challenge mode") == NULL,
+	      "Cheats: the four cheats every game has, the quick-select pause, then (round 5) Max bolts; round 6, no "
+	      "Challenge mode");
 	poke32(RAC3_BOLTS, 5);
 	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC3_BOLTS) == 99999999u &&
 	      value_of(&v, "Max bolts")[0] == 0 && view_row(&v, "Max bolts")->kind == MROW_ACTION,
@@ -1326,9 +1330,9 @@ static void test_renderer_uya(void)
 	      strcmp(row_text(6, a), "QWARK BUILD 54") == 0,
 	      "round 3: the frame it draws before the runner swaps still reads the root's rows, not the Cheats page");
 	pframe(0);
-	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 7 && G.vis == 7 &&
+	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 6 && G.vis == 6 &&
 	      G.cols == 2 && G.aligned == 2 && G.set_cursor >= 1,
-	      "the main pause's list ends, the frame and a grid of seven rows begin, both columns aligned");
+	      "the main pause's list ends, the frame and a grid of six rows begin, both columns aligned");
 	check(strcmp(read_str(G.title, a, 80), "CHEATS") == 0 && G.hint_a == 292 && G.hint_b == 3285,
 	      "titled CHEATS, with SELECT and BACK");
 	check(G.banner == 7.0f && G.title_sx == 0.875f && G.title_sy == 0.875f,
@@ -1336,9 +1340,8 @@ static void test_renderer_uya(void)
 	check(strcmp(cfg_label(0, a), "FAST LOADS") == 0 && strcmp(cfg_value(0, b), "OFF") == 0 &&
 	      strcmp(cfg_label(4, a), "QUICK-SELECT PAUSE") == 0 && cell_color(1) == U_COLOR_OFF,
 	      "labels in capitals, without a colon (round 4), values in capitals, an off cheat in the normal colour");
-	check(strcmp(cfg_label(5, a), "CHALLENGE MODE") == 0 && strcmp(cfg_label(6, b), "MAX BOLTS") == 0 &&
-	      strcmp(cfg_value(6, a), "") == 0,
-	      "round 5: CHALLENGE MODE, a switch, and MAX BOLTS, a blank button, end it");
+	check(strcmp(cfg_label(5, b), "MAX BOLTS") == 0 && strcmp(cfg_value(5, a), "") == 0,
+	      "round 5: MAX BOLTS, a blank button, ends it (round 6: CHALLENGE MODE is on GAME)");
 	check(G.font[0] == 1 && G.font[1] == 1 && G.rules == 1, "the cells in the Options screens' font, with their rules");
 	check(G.buf == U_CELLS && r32(CFG) == U_CELLS_SIZE, "the grid's cells in their own span (round 4), its size given");
 	{
@@ -1463,7 +1466,8 @@ static void test_renderer_uya(void)
 	check(!G.paused && peek8(mb + MBOX_OFF_REQUEST) == 0 && !G.built, "which its next frame does");
 	tick(4);
 
-	/* Round 5: GAME's spacer, a blank cell pair in the grey the grid's Up and Down pass over. */
+	/* Round 6: GAME's CHALLENGE MODE, where round 5 had a blank cell pair the grid passed over. */
+	poke8(RAC3_CHALLENGE_MODE, 0);
 	press(COMBO_MENU_DEFAULT);
 	play_frame(0);
 	tick(4);
@@ -1473,16 +1477,23 @@ static void test_renderer_uya(void)
 	pframe(0);
 	pframe(0);
 	check(G.built && G.rows == 6 && strcmp(cfg_label(2, a), "LOAD POSITION") == 0 &&
-	      strcmp(cfg_label(3, b), "") == 0 && strcmp(cfg_value(3, a), "") == 0 && cell_color(3) == U_COLOR_SKIP &&
-	      strcmp(cfg_label(4, b), "SET ASIDE FILE") == 0 && cell_color(4) == U_COLOR_OFF,
-	      "GAME: six rows, the fourth blank, in the colour the grid skips");
+	      strcmp(cfg_label(3, b), "CHALLENGE MODE") == 0 && strcmp(cfg_value(3, a), "OFF") == 0 &&
+	      cell_color(3) == U_COLOR_OFF && strcmp(cfg_label(4, b), "SET ASIDE FILE") == 0 && cell_color(4) == U_COLOR_OFF,
+	      "GAME: six rows, the fourth CHALLENGE MODE, OFF, in the normal colour");
 	pframe(PADB_DOWN);
 	pframe(PADB_DOWN);
 	check(G.top + G.off == 2, "Down twice: LOAD POSITION");
 	pframe(PADB_DOWN);
-	check(G.top + G.off == 4, "Down: past the spacer to SET ASIDE FILE");
+	check(G.top + G.off == 3, "Down: CHALLENGE MODE, a row the cursor lands on");
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	check(strcmp(cfg_value(3, a), "ON") == 0 && peek8(RAC3_CHALLENGE_MODE) == 1, "the cross: ON, the counter 1");
+	pframe(PADB_DOWN);
+	check(G.top + G.off == 4, "Down: SET ASIDE FILE");
 	pframe(PADB_UP);
-	check(G.top + G.off == 2, "Up: past it back to LOAD POSITION");
+	check(G.top + G.off == 3, "Up: CHALLENGE MODE again");
+	poke8(RAC3_CHALLENGE_MODE, 0);
 	press(COMBO_MENU_DEFAULT);
 	pframe(0);
 	pframe(0);

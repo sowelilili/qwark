@@ -522,8 +522,12 @@ static void test_model_rac1(void)
 {
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
-	/* Round 5: no Die, a spacer (""), Bolts a button on Cheats; Auto-reset alone, no Remember. */
-	static const char * const game[] = { "Position slot", "Save position", "Load position", "",
+	/*
+	 * Round 5: no Die, Bolts a button on Cheats; Auto-reset alone, no
+	 * Remember. Round 6: no spacer on Game (the other games put Challenge
+	 * mode there, which RaC1's menu has never had).
+	 */
+	static const char * const game[] = { "Position slot", "Save position", "Load position",
 	                                     "Set aside file", "Load set-aside file", "Force autosave" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
 	                                       "Goodies menu", "Max bolts" };
@@ -546,9 +550,9 @@ static void test_model_rac1(void)
 	      "window of seven");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_INFO &&
-	      v.rows[3].flags == 0,
-	      "round 5, Game: the slot and the positions, a blank grey row, the save-file buttons and Force autosave "
+	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
+	      view_row(&v, "Challenge mode") == NULL,
+	      "round 6, Game: the slot and the positions, the save-file buttons and Force autosave, no blank row "
 	      "(the jankpot and debug rows left out)");
 	r = view_row(&v, "Load set-aside file");
 	check(r != NULL && (r->flags & MROWF_CLOSES) != 0, "Load set-aside file closes the menu first");
@@ -1045,33 +1049,32 @@ static void test_renderer_rac1(void)
 	check(r32(R1_MENU_PAGE) == PAGE_LIST && r32(PAGE_LIST + 0x40) == ROW(1) && r8(MH_SHIM + SH_NROWS) == 7,
 	      "the root again, the focus on Cheats");
 
-	/* GAME (round 5): seven rows, a spacer among them; a long page scrolls in the list pane. */
+	/* GAME (round 6): six rows, no spacer among them; a long page scrolls in the list pane. */
 	w32(PAGE_LIST + 0x40, ROW(0));
 	step(0x40);
 	frame(0);
 	frames(7);
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 7 && G.ndraw == 14, "Game: seven rows, all on screen in a pane of 300");
-	check(strcmp(G.drawn[6], "") == 0 && strcmp(G.drawn[7], "") == 0 && G.draw_colour[6] == R1_COLOR_GREY &&
-	      strcmp(conf_row(2, a, sizeof(a)), "Load Position=") == 0 &&
-	      strcmp(conf_row(4, b, sizeof(b)), "Set Aside File=") == 0,
-	      "the fourth row blank, in the generic list's grey, between Load Position and Set Aside File");
+	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 6 && G.ndraw == 12, "Game: six rows, all on screen in a pane of 300");
+	check(strcmp(conf_row(2, a, sizeof(a)), "Load Position=") == 0 &&
+	      strcmp(conf_row(3, b, sizeof(b)), "Set Aside File=") == 0,
+	      "round 6: Set Aside File straight after Load Position, no blank row between");
 	step(PADB_DOWN);
 	step(PADB_DOWN);
 	check(r8(MH_SHIM + SH_CUR) == 2, "Down twice: Load Position");
 	step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 4 && G.draw_colour[8] == R1_COLOR_CURSOR, "Down passes over the spacer");
+	check(r8(MH_SHIM + SH_CUR) == 3 && G.draw_colour[6] == R1_COLOR_CURSOR, "Down: Set Aside File");
 	step(PADB_UP);
-	check(r8(MH_SHIM + SH_CUR) == 2, "and Up too");
+	check(r8(MH_SHIM + SH_CUR) == 2, "and Up: Load Position");
 	G.list_h = 120;
 	frame(0);
 	check(r8(MH_SHIM + SH_VIS) == 5 && G.ndraw == 10, "in a pane of 120, five on screen (rows of 20 at least)");
 	for (i = 0; i < 4; i++) step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 6 && r8(MH_SHIM + SH_TOP) == 2 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
-	      "Down to Force Autosave, the last, scrolls the window: rows 2 to 6");
+	check(r8(MH_SHIM + SH_CUR) == 5 && r8(MH_SHIM + SH_TOP) == 1 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
+	      "Down to Force Autosave, the last, scrolls the window: rows 1 to 5");
 	for (i = 0; i < 10; i++) step(PADB_UP);
 	frame(0);
 	check(r8(MH_SHIM + SH_CUR) == 0 && r8(MH_SHIM + SH_TOP) == 0, "Up to the top: no wrap, the window back");

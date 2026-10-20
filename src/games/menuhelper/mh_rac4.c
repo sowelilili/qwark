@@ -23,9 +23,10 @@
  *   mh_start, mh_stop  screen 36's fcStart and fcStop, through descriptors;
  *   mh_row, mh_close  the callbacks a MAIN page's rows and list carry;
  *   mh_cfg_*         the CONFIG page's thread, its row callback and validator;
- *   mh_select_stub, mh_gate_*  Worlds' X, its list and trap gates, and (the
- *                    pickers' round 2) its locks and Circle's Skills
- *                    (assembler), and mh_worlds_stop, Worlds' fcStop: the
+ *   mh_select_stub, mh_gate_*  Worlds' X, its list and trap gates, (the
+ *                    pickers' round 2) its locks and Circle's Skills, and
+ *                    (round 6) its tournaments and its legend (assembler),
+ *                    and mh_worlds_stop, Worlds' fcStop: the
  *                    planet picker (mailbox version 3), the game's own Worlds
  *                    screen opened from PLANETS, each acting only while the
  *                    core says the menu opened it.

@@ -1051,22 +1051,23 @@ static const struct game_manips rac4_manips = {
  * (src/core/menu.c), after rewrite/console-ui-framework.md. Game is the quick
  * block of the client's Game panel; Cheats the four cheats every game has and
  * the Game panel's other actions. Round 5 (the user's hardware notes): Die is
- * left to the combos, a spacer parts Game's position rows from its save-file
- * rows, and the values go to Cheats, after its toggles: Challenge mode as a
- * switch, then the buttons, Max bolts, Max Dread points and Unlock all
- * planets. Skin is a cosmetic, which
+ * left to the combos, and the values go to Cheats, after its toggles: the
+ * buttons, Max bolts, Max Dread points and Unlock all planets. Round 6 (the
+ * user's call: "not really a cheat"): Challenge mode, a switch, is on Game
+ * between its position rows and its save-file rows, where round 5 had a
+ * spacer. Skin is a cosmetic, which
  * the menu leaves out, and the crash patches and the softlock fix are the
  * "Fixes" header the Manips page lists, as the client's Manips panel does.
  */
 static const u8 rac4_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	MENU_ITEM_SPACER,
+	MENU_ITEM_VALUE(0),
 	R4_SET_ASIDE, R4_LOAD_ASIDE
 };
 
 static const u8 rac4_menu_cheats[] = {
 	R4_FAST_LOADS, R4_GHOST, R4_REFILL_AMMO, R4_FREEZE_HEALTH,
-	MENU_ITEM_VALUE(0), MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2),
+	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2),
 	R4_UNLOCK_PLANETS
 };
 
@@ -1086,7 +1087,11 @@ static const struct menu_section rac4_menu_sections[] = {
 	{ "Cheats", rac4_menu_cheats, (u8)sizeof(rac4_menu_cheats) }
 };
 
-/* The client's Unlocks panel draws these two above its table. */
+/*
+ * The client's Unlocks panel draws these two above its table. Round 6 (the
+ * user's call): on a page of their own, Collectables, as the other games have
+ * theirs, one row after the Unlocks page's categories.
+ */
 static const u8 rac4_menu_unlock_actions[] = { R4_MAX_LEVELS, R4_MAX_AMMO };
 
 /* A weapon is locked, or owned at the game's V1, V10 or V99 (unlock field 1). */
@@ -1107,7 +1112,7 @@ static const struct game_menu rac4_menu = {
 	1, "V",
 	NULL,                 /* every planet, the placeholders apart (menu.c leaves out "(...)") */
 	NULL, NULL,           /* every weapon goes to V99; no action with a status */
-	NULL,                 /* the two weapon buttons stay on the Unlocks page, which they fit */
+	"Collectables",       /* round 6: the two weapon buttons on a page of their own, as the other games' */
 	NULL,                 /* Worlds shows every planet (the pickers' round 2) */
 	rac4_menu_values, (u8)(sizeof(rac4_menu_values) / sizeof(rac4_menu_values[0]))
 };

@@ -237,8 +237,9 @@ struct game_manips {
 #define MENU_ITEM_POS_LOAD  0xF2
 /*
  * Round 5: a blank row the cursor passes over, between a page's parts (Game's
- * position rows and its save-file rows). One that would open or end the page,
- * or follow another, is left out.
+ * position rows and its save-file rows until round 6, which put Challenge mode
+ * there; no game's section lists one now, and Manips makes its own). One that
+ * would open or end the page, or follow another, is left out.
  */
 #define MENU_ITEM_SPACER    0xF3
 /* Round 5: row i of the game's `values` (struct menu_value, below), 0 .. 15. */
@@ -326,10 +327,11 @@ struct game_menu {
 	/*
 	 * Round 3: where the Unlocks page's actions go. NULL lists them on the
 	 * Unlocks page under its categories, as buttons (Deadlocked's two weapon
-	 * buttons); a name moves them all onto a CONFIG page of that name, reached
-	 * from one row after the categories, so their long labels sit in its label
-	 * column (UYA's six, "Collectables", the client's Unlocks tab for the skill
-	 * point and titanium bolt ones). RaC1 and RaC2 do the same with theirs.
+	 * buttons until round 6); a name moves them all onto a CONFIG page of that
+	 * name, reached from one row after the categories, so their long labels
+	 * sit in its label column (UYA's six, "Collectables", the client's Unlocks
+	 * tab for the skill point and titanium bolt ones). RaC1 and RaC2 do the
+	 * same with theirs, and since round 6 Deadlocked with its two.
 	 */
 	const char *unlock_actions_title;
 

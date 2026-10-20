@@ -153,7 +153,8 @@ rac4_ldflags() {
 	echo "--defsym game_handle_menu_input=$(need "$1" GAME_HANDLE_MENU_INPUT)"
 	# The planet picker's stubs (mailbox version 3) go on to these.
 	for x in HANDLE_SELECTION GHOST_LISTED GHOST_TESTED COUNT_DONE BACK_TAKEN CLOSE_TAKEN INPUT_DONE \
-	         LOCKED_DONE SKILLS_TAKEN SKILLS_NEXT; do
+	         LOCKED_DONE SKILLS_TAKEN SKILLS_NEXT TOURNEY_PLANET TOURNEY_TAKEN ENTRY_NEXT \
+	         LEGEND_TWO LEGEND_THREE LEGEND_PRINT MSG_STRING_FN; do
 		echo "--defsym dl_$(echo $x | tr 'A-Z' 'a-z')=$(need "$1" DL_$x)"
 	done
 }
@@ -183,12 +184,13 @@ rac4_hooks() {
 	echo "$site $(blword "$site" "$screen_stub") $(need "$hdr" MH_ORIG_SCREEN) bl mh_screen_stub ($screen_stub)"
 	site=$(need "$hdr" MH_SITE_INJECT)
 	echo "$site $(blword "$site" "$inject_stub") $(need "$hdr" MH_ORIG_INJECT) bl mh_inject_stub ($inject_stub)"
-	# The planet picker (mailbox version 3): Worlds' X, its six gates (the lock and
-	# Skills since the pickers' round 2), its stop.
+	# The planet picker (mailbox version 3): Worlds' X, its eight gates (the lock and
+	# Skills since the pickers' round 2, the tournaments and the legend since round 6),
+	# its stop.
 	stub=$(needsym "$elf" mh_select_stub)
 	site=$(need "$hdr" MH_SITE_SELECT)
 	echo "$site $(blword "$site" "$stub") $(need "$hdr" MH_ORIG_SELECT) bl mh_select_stub ($stub)"
-	for gate in GHOST COUNT BACK CLOSE LOCKED SKILLS; do
+	for gate in GHOST COUNT BACK CLOSE LOCKED SKILLS TOURNEY LEGEND; do
 		lower=$(echo $gate | tr 'A-Z' 'a-z')
 		stub=$(needsym "$elf" mh_gate_$lower)
 		site=$(need "$hdr" MH_SITE_$gate)

@@ -1168,10 +1168,11 @@ static const struct game_manips rac2_manips = {
  * cheats every game has, then the rest of the Game panel's Player section,
  * the two resets on death. Round 5 (the user's hardware notes): Die is left
  * to the combos; Set respawn point and Store Swingshot, which other ways have
- * mostly replaced, and Health XP are left out; a spacer parts Game's position
- * rows from its save-file rows; and the values go to the end of Cheats, the
- * toggles first, then Challenge mode as a switch, then Max bolts and Max
- * raritanium. Debug mode and the QE offset are the client's Debug page and
+ * mostly replaced, and Health XP are left out; and the values go to the end of
+ * Cheats, the toggles first, then Max bolts and Max raritanium. Round 6 (the
+ * user's call: "not really a cheat"): Challenge mode, a switch, is on Game
+ * between its position rows and its save-file rows, where round 5 had a
+ * spacer. Debug mode and the QE offset are the client's Debug page and
  * the chargeboot colours its Cosmetics, which the menu leaves out. The weapon
  * buttons are the client's Unlocks panel buttons and the platinum bolt,
  * nanotech and skill point ones its Collectables tab, beside the unlock table:
@@ -1181,14 +1182,14 @@ static const struct game_manips rac2_manips = {
  */
 static const u8 rac2_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	MENU_ITEM_SPACER,
+	MENU_ITEM_VALUE(0),
 	R2_SET_ASIDE, R2_LOAD_ASIDE
 };
 
 static const u8 rac2_menu_cheats[] = {
 	R2_FAST_LOADS, R2_GHOST, R2_INFINITE_AMMO, R2_FREEZE_HEALTH,
 	R2_DEATH_BOSSES, R2_DEATH_PBOLTS,
-	MENU_ITEM_VALUE(0), MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
+	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
 };
 
 /*

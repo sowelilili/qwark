@@ -1337,9 +1337,10 @@ static const struct game_manips rac3_manips = {
  * Cheats the four cheats every game has and the quick-select pause, the one
  * switch of the Game panel's "Options" column. Round 5 (the user's hardware
  * notes): Die is left to the combos; Health XP, Health and File time, which no
- * row of the menu can edit well, are left out; a spacer parts Game's position
- * rows from its save-file rows; and Challenge mode, as a switch, and Max bolts
- * close Cheats, after its toggles. Armour and the
+ * row of the menu can edit well, are left out; and Max bolts closes Cheats,
+ * after its toggles. Round 6 (the user's call: "not really a cheat"): Challenge
+ * mode, a switch, is on Game between its position rows and its save-file rows,
+ * where round 5 had a spacer. Armour and the
  * ship colour are the client's Cosmetics, and the QE offset and vendor QE its
  * Debug page, which the menu leaves out. The weapon level buttons are the
  * client's Unlocks panel buttons and the skill point and titanium bolt ones its
@@ -1350,14 +1351,14 @@ static const struct game_manips rac3_manips = {
  */
 static const u8 rac3_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	MENU_ITEM_SPACER,
+	MENU_ITEM_VALUE(0),
 	R3_SET_ASIDE, R3_LOAD_ASIDE
 };
 
 static const u8 rac3_menu_cheats[] = {
 	R3_FAST_LOADS, R3_GHOST, R3_FREEZE_AMMO, R3_FREEZE_HEALTH,
 	R3_QS_PAUSE,
-	MENU_ITEM_VALUE(0), MENU_ITEM_VALUE(1)
+	MENU_ITEM_VALUE(1)
 };
 
 /*

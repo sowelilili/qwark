@@ -631,6 +631,28 @@ static void worlds_lock(int i, int unlocked)
 	w8(WORLDS_ENTRIES + 12u * (u32)i, (!unlocked && !mh_picker_up()) ? 1u : 0u);
 }
 
+/*
+ * Round 6: whether UpdatePlanets lists an entry of SetupPlanetTourneyList's,
+ * with the renderer's word at its type test (mh_gate_tourney; check.py steps
+ * the real one): every planet, and tournament 0, DreadZone Station's own row;
+ * tournaments 1 to 4 only in the game's own Worlds.
+ */
+static int worlds_listed(int link, int type)
+{
+	return type == DL_TYPE_PLANET || link == 0 || !mh_picker_up();
+}
+
+/*
+ * Round 6: the legend MenuPlanet_CreateWidgets writes as Worlds starts, with
+ * the renderer's word at its mission test (mh_gate_legend; check.py steps the
+ * real one): SELECT and BACK in the menu's Worlds, the game's otherwise.
+ */
+static const char *worlds_legend(void)
+{
+	if (mh_picker_up()) return "\x10 SELECT \x12 BACK";
+	return W.mission == -1 ? "\x11 SKILLS \x10 SELECT" : "\x11 SKILLS \x10 SELECT \x12 BACK";
+}
+
 /* Row i of the list as the game shows it. */
 static const char *shown_text(int i, char *out, u32 cap)
 {
@@ -1092,16 +1114,16 @@ static void test_model_dl(void)
 	check(rc == ST_BAD_ARG && menu_model_depth() == 1, "back at the root has nowhere to go");
 
 	/*
-	 * Cheats: four checkboxes of three ways; round 5, Challenge mode as a
-	 * switch, then the buttons: Max bolts, Max Dread points, Unlock all planets.
+	 * Cheats: four checkboxes of three ways, then the buttons: Max bolts, Max
+	 * Dread points, Unlock all planets (round 6: Challenge mode is on Game).
 	 */
 	check(act(&v, MBOX_EV_ACTIVATE, "Cheats") == ST_OK && strcmp(v.title, "Cheats") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 8, "Cheats is a CONFIG page of eight rows");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 7, "Cheats is a CONFIG page of seven rows");
 	check(strcmp(v.rows[0].label, "Fast loads") == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0 &&
 	      strcmp(v.rows[2].label, "Refill ammo") == 0 && strcmp(v.rows[3].label, "Freeze health") == 0 &&
-	      strcmp(v.rows[4].label, "Challenge mode") == 0 && strcmp(v.rows[5].label, "Max bolts") == 0 &&
-	      strcmp(v.rows[6].label, "Max Dread points") == 0 && strcmp(v.rows[7].label, "Unlock all planets") == 0,
-	      "round 5: the four cheats, Challenge mode, then Max bolts, Max Dread points and Unlock all planets");
+	      strcmp(v.rows[4].label, "Max bolts") == 0 && strcmp(v.rows[5].label, "Max Dread points") == 0 &&
+	      strcmp(v.rows[6].label, "Unlock all planets") == 0 && view_row(&v, "Challenge mode") == NULL,
+	      "round 6: the four cheats, then Max bolts, Max Dread points and Unlock all planets; no Challenge mode");
 	r = view_row(&v, "Ghost Ratchet");
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == (MROWF_ENABLED | MROWF_STEPS) &&
 	      strcmp(r->value, "Off") == 0, "Ghost Ratchet: Off, a three-way checkbox");
@@ -1129,7 +1151,42 @@ static void test_model_dl(void)
 	      value_of(&v, "Unlock all planets")[0] == 0 && v.hint[0] == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
 	      "round 5: the cross runs it, and the row stays blank (no DONE: the game's sound says it)");
 
-	/* Round 5: the values as a switch and buttons. */
+	/* Round 5: the values as buttons. */
+	r = view_row(&v, "Max bolts");
+	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
+	      "Max bolts is a button");
+	poke32(RAC4_BOLTS, 1234);
+	check(act(&v, MBOX_EV_RIGHT, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 1234, "Right does nothing on it");
+	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 99999999u &&
+	      value_of(&v, "Max bolts")[0] == 0, "the cross: 99,999,999, the game's own cap, the row blank");
+	check(act(&v, MBOX_EV_ACTIVATE, "Max Dread points") == ST_OK && peek32(RAC4_DREAD_POINTS) == 99999999u,
+	      "Max Dread points: the same");
+	check(view_row(&v, "Bolts") == NULL && view_row(&v, "Dread points") == NULL, "no stepper for either");
+	rc = menu_model_event(MBOX_EV_PAGE_NEXT, 0, v.rows[0].id, v.key);
+	check(rc == ST_BAD_ARG, "R1 on a page of one window does nothing");
+	menu_model_event(MBOX_EV_BACK, 1, v.rows[1].id, v.key);
+	menu_model_view(&v);
+	check(strcmp(v.title, "Trainer") == 0 && v.cursor == 1, "back: the root, the cursor on Cheats");
+
+	/*
+	 * Game: the slot and the position buttons, Challenge mode (round 6, the
+	 * user's call: "not really a cheat"; round 5 had a spacer there), the
+	 * save-file buttons.
+	 */
+	check(act(&v, MBOX_EV_ACTIVATE, "Game") == ST_OK && strcmp(v.title, "Game") == 0 &&
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 6, "Game is a CONFIG page of six rows");
+	check(strcmp(v.rows[0].label, "Position slot") == 0 &&
+	      strcmp(v.rows[1].label, "Save position") == 0 && strcmp(v.rows[2].label, "Load position") == 0 &&
+	      strcmp(v.rows[3].label, "Challenge mode") == 0 && v.rows[3].kind == MROW_TOGGLE &&
+	      strcmp(v.rows[4].label, "Set aside file") == 0 && strcmp(v.rows[5].label, "Load set-aside file") == 0,
+	      "round 6: the slot, Save and Load position, Challenge mode, the two savefile buttons");
+	for (i = 0; i < v.nrows && (v.rows[i].kind != MROW_INFO || v.rows[i].label[0] != 0); i++)
+		;
+	check(i == v.nrows, "no blank row: Challenge mode is where round 5's spacer was");
+	check(view_row(&v, "Die") == NULL && view_row(&v, "Bolts") == NULL && view_row(&v, "Max bolts") == NULL,
+	      "no Die (the combos have it) and no other value (Cheats has the buttons)");
+	check(view_row(&v, "Skin") == NULL, "and no Skin: cosmetics are left out");
+	/* Round 5's switch, on Game since round 6. */
 	poke8(RAC4_CHALLENGE_MODE, 0);
 	tick(10);
 	menu_model_view(&v);
@@ -1149,33 +1206,7 @@ static void test_model_dl(void)
 	      strcmp(value_of(&v, "Challenge mode"), "Off") == 0, "and Left turns it Off, 0");
 	act(&v, MBOX_EV_LEFT, "Challenge mode");
 	check(peek8(RAC4_CHALLENGE_MODE) == 1, "Left again: On, 1");
-	r = view_row(&v, "Max bolts");
-	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
-	      "Max bolts is a button");
-	poke32(RAC4_BOLTS, 1234);
-	check(act(&v, MBOX_EV_RIGHT, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 1234, "Right does nothing on it");
-	check(act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK && peek32(RAC4_BOLTS) == 99999999u &&
-	      value_of(&v, "Max bolts")[0] == 0, "the cross: 99,999,999, the game's own cap, the row blank");
-	check(act(&v, MBOX_EV_ACTIVATE, "Max Dread points") == ST_OK && peek32(RAC4_DREAD_POINTS) == 99999999u,
-	      "Max Dread points: the same");
-	check(view_row(&v, "Bolts") == NULL && view_row(&v, "Dread points") == NULL, "no stepper for either");
-	rc = menu_model_event(MBOX_EV_PAGE_NEXT, 0, v.rows[0].id, v.key);
-	check(rc == ST_BAD_ARG, "R1 on a page of one window does nothing");
-	menu_model_event(MBOX_EV_BACK, 1, v.rows[1].id, v.key);
-	menu_model_view(&v);
-	check(strcmp(v.title, "Trainer") == 0 && v.cursor == 1, "back: the root, the cursor on Cheats");
 
-	/* Game: the slot and the position buttons, a spacer, the save-file buttons (round 5). */
-	check(act(&v, MBOX_EV_ACTIVATE, "Game") == ST_OK && strcmp(v.title, "Game") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 6, "Game is a CONFIG page of six rows");
-	check(strcmp(v.rows[0].label, "Position slot") == 0 &&
-	      strcmp(v.rows[1].label, "Save position") == 0 && strcmp(v.rows[2].label, "Load position") == 0 &&
-	      v.rows[3].kind == MROW_INFO && v.rows[3].flags == 0 && v.rows[3].label[0] == 0 && v.rows[3].value[0] == 0 &&
-	      strcmp(v.rows[4].label, "Set aside file") == 0 && strcmp(v.rows[5].label, "Load set-aside file") == 0,
-	      "round 5: the slot, Save and Load position, a blank grey row, the two savefile buttons");
-	check(view_row(&v, "Die") == NULL && view_row(&v, "Bolts") == NULL && view_row(&v, "Challenge mode") == NULL,
-	      "no Die (the combos have it) and no values (Cheats has them)");
-	check(view_row(&v, "Skin") == NULL, "and no Skin: cosmetics are left out");
 	config_set_selected_slot(0);
 	menu_model_view(&v);
 	r = view_row(&v, "Position slot");
@@ -1195,8 +1226,6 @@ static void test_model_dl(void)
 	      "Load position puts the player back");
 	r = view_row(&v, "Load set-aside file");
 	check(r != NULL && (r->flags & MROWF_CLOSES) != 0, "Load set-aside file closes the menu before it runs");
-	check(act(&v, MBOX_EV_ACTIVATE, "") == ST_OK && menu_model_depth() == 2 && strcmp(v.title, "Game") == 0,
-	      "the spacer does nothing (and no renderer posts for it: it is not ENABLED)");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -1276,12 +1305,28 @@ static void test_model_dl(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Unlocks: the tabs, then each a CONFIG page of selectors. */
-	check(act(&v, MBOX_EV_ACTIVATE, "Unlocks") == ST_OK && v.ptype == MBOX_PTYPE_MAIN && v.nrows == 5 &&
+	/*
+	 * Unlocks: the tabs, then each a CONFIG page of selectors; round 6, the
+	 * two buttons the client has above its table on a page of their own,
+	 * Collectables, as the other games have theirs.
+	 */
+	check(act(&v, MBOX_EV_ACTIVATE, "Unlocks") == ST_OK && v.ptype == MBOX_PTYPE_MAIN && v.nrows == 4 &&
 	      strcmp(v.rows[0].label, "Weapons") == 0 && strcmp(v.rows[1].label, "Gadgets") == 0 &&
-	      strcmp(v.rows[2].label, "Bot upgrades") == 0 && strcmp(v.rows[3].label, "Max all weapon levels") == 0 &&
-	      strcmp(v.rows[4].label, "Max all weapon ammo") == 0,
-	      "Unlocks lists Weapons, Gadgets, Bot upgrades, and the two buttons the client has above its table");
+	      strcmp(v.rows[2].label, "Bot upgrades") == 0 && strcmp(v.rows[3].label, "Collectables") == 0 &&
+	      v.rows[3].kind == MROW_LINK && view_row(&v, "Max all weapon levels") == NULL,
+	      "Unlocks lists Weapons, Gadgets, Bot upgrades, then Collectables, a link (round 6)");
+	check(act(&v, MBOX_EV_ACTIVATE, "Collectables") == ST_OK && strcmp(v.title, "Collectables") == 0 &&
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 2 &&
+	      strcmp(v.rows[0].label, "Max all weapon levels") == 0 && strcmp(v.rows[1].label, "Max all weapon ammo") == 0 &&
+	      v.rows[0].kind == MROW_ACTION && v.rows[1].kind == MROW_ACTION,
+	      "Collectables: a CONFIG page of Max all weapon levels and Max all weapon ammo, buttons");
+	dl_weapon(2, 1);
+	check(act(&v, MBOX_EV_ACTIVATE, "Max all weapon levels") == ST_OK && dl_weapon_now(2) == 99 &&
+	      value_of(&v, "Max all weapon levels")[0] == 0, "the cross on Max all weapon levels: an owned weapon at V99");
+	dl_weapon(2, 0);
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	menu_model_view(&v);
+	check(strcmp(v.title, "Unlocks") == 0 && v.cursor == 3, "back: Unlocks, the cursor on Collectables");
 	check(act(&v, MBOX_EV_ACTIVATE, "Weapons") == ST_OK && strcmp(v.title, "Weapons") == 0 &&
 	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 10, "Weapons: a CONFIG page of the ten weapons");
 	dl_weapon(2, 0);
@@ -1356,21 +1401,25 @@ static void test_model_dl(void)
 	/* A renderer without Left and Right, nor a back control, nor a CONFIG page. */
 	menu_model_reset(8, 0, 0);
 	menu_model_view(&v);
-	act(&v, MBOX_EV_ACTIVATE, "Cheats");
+	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(v.ptype == MBOX_PTYPE_MAIN, "with no CONFIG page every page is MAIN");
-	check(v.nrows == 8 && strcmp(v.rows[6].label, "Max Dread points") == 0 && v.rows[7].kind == MROW_BACK &&
-	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
-	      "eight rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
+	check(v.nrows == 7 && v.rows[6].kind == MROW_BACK && (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0,
+	      "Game: its six rows and a Back row, one window");
 	r = view_row(&v, "Challenge mode");
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == MROWF_ENABLED,
 	      "with no Left and Right the switch takes the cross alone");
+	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
+	act(&v, MBOX_EV_ACTIVATE, "Planets");
+	check(v.nrows == 8 && strcmp(v.rows[6].label, "Valix") == 0 && v.rows[7].kind == MROW_BACK &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
+	      "eight rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
 	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 6, v.rows[6].id, v.key) == ST_OK,
-	      "the slide from the seventh, Max Dread points");
+	      "the slide from the seventh, Valix");
 	menu_model_view(&v);
-	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Max Dread points") == 0 && v.rows[7].kind == MROW_BACK &&
-	      strcmp(v.rows[6].label, "Unlock all planets") == 0 &&
+	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Valix") == 0 && v.rows[7].kind == MROW_BACK &&
+	      strcmp(v.rows[6].label, "Interior") == 0 &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP,
-	      "the last window, the cursor still on Max Dread points, Unlock all planets, the Back row last again");
+	      "the last window, the cursor still on Valix, Interior, the Back row last again");
 	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
 
 	check(quit(), "quit Deadlocked");
@@ -1478,9 +1527,9 @@ static void test_mailbox(void)
 
 	group("console menu: the install and the mailbox");
 
-	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 17 && d->ncaves == 4,
-	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, seventeen hook words "
-	      "(nine, and the planet picker's eight)");
+	check(d != NULL && d->mailbox == MH_BOX && d->state == MH_STATE && d->nhooks == 19 && d->ncaves == 4,
+	      "Deadlocked has a renderer: the mailbox, the state, the read-only data, the code, nineteen hook words "
+	      "(nine, and the planet picker's ten)");
 	check(d != NULL && d->caves[0].zeros > 1000 && d->caves[1].zeros > 3000 && d->caves[0].len < 64 &&
 	      d->caves[1].len < 64, "the mailbox and the state are carried as a few bytes and a count of zeros");
 	check(mh_desc_for_game(GAME_RAC1) != NULL && mh_desc_for_game(GAME_RAC2) != NULL &&
@@ -1491,11 +1540,11 @@ static void test_mailbox(void)
 		if (d->hooks[i].addr >= 0x003A6858u && d->hooks[i].addr < 0x003A6F74u) break;
 	}
 	check(i == d->nhooks, "none of them in MenuMain_StartOptions: Options is the game's own list");
-	check(d->hooks[15].addr == MH_SITE_HELP_LABEL && d->hooks[16].addr == MH_SITE_HELP_SCREEN &&
-	      d->hooks[16].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
+	check(d->hooks[17].addr == MH_SITE_HELP_LABEL && d->hooks[18].addr == MH_SITE_HELP_SCREEN &&
+	      d->hooks[18].value == 0x38800024u, "the last two are the Help row's label call and its li r4,36");
 	check(d->hooks[7].addr == MH_SITE_SELECT && d->hooks[8].addr == MH_SITE_GHOST && d->hooks[9].addr == MH_SITE_COUNT &&
 	      d->hooks[10].addr == MH_SITE_BACK && d->hooks[11].addr == MH_SITE_CLOSE &&
-	      d->hooks[14].addr == MH_WORLDS_STOP && d->hooks[14].original == MH_ORIG_WORLDS_STOP &&
+	      d->hooks[16].addr == MH_WORLDS_STOP && d->hooks[16].original == MH_ORIG_WORLDS_STOP &&
 	      d->hooks[7].original == MH_ORIG_SELECT && d->hooks[9].original == MH_ORIG_COUNT,
 	      "before them the planet picker's: Worlds' X, its gates and its stop, with the game's words");
 	check(d->hooks[12].addr == MH_SITE_LOCKED && d->hooks[12].original == MH_ORIG_LOCKED &&
@@ -1504,6 +1553,11 @@ static void test_mailbox(void)
 	      (d->hooks[13].value >> 26) == 18 && (d->hooks[13].value & 3) == 0,
 	      "the pickers' round 2: the lock's gate and Circle's, each a plain branch to a stub, after the four, "
 	      "before the stop");
+	check(d->hooks[14].addr == MH_SITE_TOURNEY && d->hooks[14].original == MH_ORIG_TOURNEY &&
+	      (d->hooks[14].value >> 26) == 18 && (d->hooks[14].value & 3) == 0 &&
+	      d->hooks[15].addr == MH_SITE_LEGEND && d->hooks[15].original == MH_ORIG_LEGEND &&
+	      (d->hooks[15].value >> 26) == 18 && (d->hooks[15].value & 3) == 0,
+	      "round 6: the tournaments' gate and the legend's, plain branches to stubs, after those, before the stop");
 
 	/* The install, a few seconds into the session and only in play. */
 	check(menu_install_delay_us() == 3000000ull, "the install is due three seconds into a session");
@@ -1569,7 +1623,7 @@ static void test_mailbox(void)
 	check(!box_acked(), "an event posted is not acked yet");
 	tick(4);
 	read_box(&p);
-	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 8 && p.ptype == MBOX_PTYPE_CONFIG,
+	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 7 && p.ptype == MBOX_PTYPE_CONFIG,
 	      "within a poll it is acked, and the Cheats page is posted as a CONFIG page");
 	check(strcmp(p.rows[1].label, "Ghost Ratchet") == 0 && peek8(mb + MBOX_OFF_ROWS + 0x40 + MROW_OFF_LABEL) == 'G',
 	      "each row 0x40 bytes, the next row's label where round 3's description was");
@@ -1708,10 +1762,11 @@ static void test_mailbox(void)
 	tick(4);
 	box_activate("Game");
 	read_box(&p);
-	i = box_index(&p, "");
-	check(i == 3 && p.rows[i].kind == MROW_INFO && p.rows[i].flags == 0 && p.rows[i].value[0] == 0 &&
-	      strcmp(p.rows[2].label, "Load position") == 0 && strcmp(p.rows[4].label, "Set aside file") == 0,
-	      "round 5: Game's spacer in the mailbox, a blank row not ENABLED, between the two parts");
+	i = box_index(&p, "Challenge mode");
+	check(i == 3 && p.rows[i].kind == MROW_TOGGLE && (p.rows[i].flags & MROWF_ENABLED) != 0 &&
+	      strcmp(p.rows[2].label, "Load position") == 0 && strcmp(p.rows[4].label, "Set aside file") == 0 &&
+	      box_index(&p, "") < 0,
+	      "round 6: Game's Challenge mode in the mailbox, a switch between the two parts, where round 5's spacer was");
 	box_activate("Load set-aside file");
 	read_box(&p);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE &&
@@ -2027,9 +2082,9 @@ static void test_renderer(void)
 		check(i == 25, "and does on, the Cheats page's moves and all (nothing composes over it)");
 	}
 	game_frame(0);
-	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 8 &&
+	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 7 &&
 	      G.layer == DL_LAYER && G.images == 3 && G.cursor_attached,
-	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, eight rows, its plates and cursor");
+	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, seven rows, its plates and cursor");
 	check(r32(MH_SHIM + SH_LIST) == DL_CTLLIST_VTABLE, "the list has CtlList's vtable at +0, as its constructor writes it");
 	for (i = DL_EL_ROWS_FIRST, n = 0; i <= DL_EL_ROWS_LAST; i++)
 		n += recall(G.vis_h, G.vis_v, r32(MH_SHIM + SH_PANEL) + (u32)i) == 2;
@@ -2038,11 +2093,11 @@ static void test_renderer(void)
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_LEGEND, text, sizeof(text)), "\x10 SELECT \x12 BACK") == 0,
 	      "titled CHEATS, with GAME SETTINGS' own button legend");
 	check(strcmp(cfg_label(1, text), "GHOST RATCHET") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
-	      strcmp(cfg_label(7, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(7, title), "") == 0 &&
-	      strcmp(cfg_label(4, text), "CHALLENGE MODE") == 0 && strcmp(cfg_label(5, title), "MAX BOLTS") == 0 &&
-	      strcmp(cfg_label(6, text), "MAX DREAD POINTS") == 0 && strcmp(cfg_value(6, title), "") == 0,
+	      strcmp(cfg_label(6, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(6, title), "") == 0 &&
+	      strcmp(cfg_label(4, text), "MAX BOLTS") == 0 && strcmp(cfg_label(5, title), "MAX DREAD POINTS") == 0 &&
+	      strcmp(cfg_value(5, title), "") == 0,
 	      "labels in GAME SETTINGS' capitals without its colon, values in its capitals, a button blank (round 4); "
-	      "round 5: CHALLENGE MODE, MAX BOLTS, MAX DREAD POINTS, then UNLOCK ALL PLANETS");
+	      "round 6: MAX BOLTS, MAX DREAD POINTS, then UNLOCK ALL PLANETS, no CHALLENGE MODE");
 	check(focus() == 0 && cfg_color(0) == DL_RGBA_FOCUS && cfg_color(1) == DL_RGBA_OFF,
 	      "the cursor on the first row, which is lit; the others the game's grey");
 	check(recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_A) == 2 &&
@@ -2077,13 +2132,13 @@ static void test_renderer(void)
 	game_frame(0);
 	check(strcmp(cfg_value(1, text), "OFF") == 0 && (features_toggle_state() & ((u64)1 << R4_GHOST)) == 0,
 	      "Left twice from AUTO: ON, then OFF");
-	for (i = 0; i < 6; i++) game_frame(PADB_DOWN);
+	for (i = 0; i < 5; i++) game_frame(PADB_DOWN);
 	poke32(RAC4_DREAD_POINTS, 0);
 	game_frame(PADB_CROSS);
 	check(G.sound == SND_FORWARD, "the cross on a button: a row's forward sound, as a list's row");
 	tick(2);
 	game_frame(0);
-	check(focus() == 7 && strcmp(cfg_value(7, text), "") == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
+	check(focus() == 6 && strcmp(cfg_value(6, text), "") == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
 	      "the button runs, and its value stays blank (round 5: no DONE)");
 
 	/* One event in flight, and the waiting title. */
@@ -2153,7 +2208,7 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	game_frame(0);
-	check(G.thread == 2 && G.count == 8, "CHEATS again");
+	check(G.thread == 2 && G.count == 7, "CHEATS again");
 	{
 		u32 gs = G.gs;
 		shim_switch(0);
@@ -2163,7 +2218,7 @@ static void test_renderer(void)
 		check(G.thread == 1 && G.gs != gs && (G.gs == MH_SHIM + SH_GS || G.gs == MH_SHIM + SH_GS + DL_GS_SIZE),
 		      "its Deinit starts the next page's thread on the other GuiState");
 		game_frame(0);
-		check(G.thread == 2 && G.count == 8 && G.layer == DL_LAYER, "which builds the panel again");
+		check(G.thread == 2 && G.count == 7 && G.layer == DL_LAYER, "which builds the panel again");
 	}
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
@@ -2175,7 +2230,10 @@ static void test_renderer(void)
 	check(G.thread == 0 && G.layer == 0, "the thread ends in the frames after, as the game plays on");
 	tick(4);
 
-	/* A MAIN page with a choice list, through the Unlocks page's buttons and Select. */
+	/*
+	 * Round 6: UNLOCKS, a MAIN page of the tabs and COLLECTABLES, whose CONFIG
+	 * page has the two weapon buttons, as the other games' COLLECTABLES pages.
+	 */
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
 	tick(4);
@@ -2185,16 +2243,28 @@ static void test_renderer(void)
 	game_frame(PADB_CROSS);
 	tick(2);
 	game_frame(0);
-	check(strcmp(read_str(G.title, title, sizeof(title)), "UNLOCKS") == 0 && shown_row("MAX ALL WEAPON AMMO") == 4,
-	      "UNLOCKS lists the tabs and the two buttons");
-	G.cursor = 4;
+	check(strcmp(read_str(G.title, title, sizeof(title)), "UNLOCKS") == 0 && G.nbuttons == 4 &&
+	      shown_row("COLLECTABLES") == 3 && shown_row("MAX ALL WEAPON AMMO") < 0,
+	      "UNLOCKS lists the tabs and COLLECTABLES (round 6), no button");
+	G.cursor = 3;
 	game_frame(PADB_CROSS);
 	tick(2);
 	game_frame(0);
-	check(shown_row("MAX ALL WEAPON AMMO") == 4 && box_acked(),
-	      "a MAIN button runs and says nothing beside its label (round 5: no DONE)");
+	game_frame(0);
+	check(G.thread == 2 && G.count == 2 &&
+	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_TITLE, title, sizeof(title)), "COLLECTABLES") == 0 &&
+	      strcmp(cfg_label(0, text), "MAX ALL WEAPON LEVELS") == 0 && strcmp(cfg_label(1, title), "MAX ALL WEAPON AMMO") == 0,
+	      "COLLECTABLES: GAME SETTINGS' look with MAX ALL WEAPON LEVELS and MAX ALL WEAPON AMMO");
+	game_frame(PADB_DOWN);
+	game_frame(PADB_CROSS);
+	tick(2);
+	game_frame(0);
+	check(focus() == 1 && strcmp(cfg_value(1, text), "") == 0 && box_acked(),
+	      "a button runs and says nothing beside its label (round 5: no DONE)");
 	game_frame(PADB_SELECT);
 	check(G.screen == 0 && !G.paused, "Select closes the menu");
+	game_frame(0);
+	game_frame(0);
 	tick(4);
 
 	/* A page qwark is still writing is left for the next frame. */
@@ -2279,10 +2349,10 @@ static void test_renderer(void)
 	tick(4);
 
 	/*
-	 * Round 5: GAME's spacer, a blank row in GAME SETTINGS' grey for a row
-	 * the cursor may not land on, which Up and Down pass over (CtlList's
-	 * FocusNext and FocusPrev ask the validator, 0x35F4F8).
+	 * Round 6: GAME's CHALLENGE MODE, where round 5 had a blank row the
+	 * cursor passed over: a checkbox between LOAD POSITION and SET ASIDE FILE.
 	 */
+	poke8(RAC4_CHALLENGE_MODE, 0);
 	press(COMBO_MENU_DEFAULT);
 	game_hud_frame();
 	tick(4);
@@ -2292,18 +2362,23 @@ static void test_renderer(void)
 	game_frame(0);
 	game_frame(0);
 	check(G.thread == 2 && G.count == 6 && strcmp(cfg_label(2, text), "LOAD POSITION") == 0 &&
-	      strcmp(cfg_label(3, title), "") == 0 && strcmp(cfg_value(3, title), "") == 0 &&
-	      strcmp(cfg_label(4, text), "SET ASIDE FILE") == 0 && !mh_cfg_valid(3) && mh_cfg_valid(4),
-	      "GAME: six rows, the fourth blank and not one the cursor may land on");
+	      strcmp(cfg_label(3, title), "CHALLENGE MODE") == 0 && strcmp(cfg_value(3, title), "OFF") == 0 &&
+	      strcmp(cfg_label(4, text), "SET ASIDE FILE") == 0 && mh_cfg_valid(3) && mh_cfg_valid(4),
+	      "GAME: six rows, the fourth CHALLENGE MODE, OFF, a row the cursor lands on");
 	game_frame(PADB_DOWN);
 	game_frame(PADB_DOWN);
-	check(focus() == 2, "down to LOAD POSITION");
+	game_frame(PADB_DOWN);
+	check(focus() == 3, "down from LOAD POSITION to CHALLENGE MODE");
+	game_frame(PADB_CROSS);
+	tick(2);
 	game_frame(0);
-	check(cfg_color(3) == DL_RGBA_LOCKED, "the spacer in the grey of a row the cursor skips");
+	check(strcmp(cfg_value(3, text), "ON") == 0 && peek8(RAC4_CHALLENGE_MODE) == 1 && cfg_color(3) == DL_RGBA_FOCUS,
+	      "the cross: ON, the counter 1, the row lit");
 	game_frame(PADB_DOWN);
-	check(focus() == 4, "down again: past the spacer to SET ASIDE FILE");
+	check(focus() == 4, "down again: SET ASIDE FILE");
 	game_frame(PADB_UP);
-	check(focus() == 2, "and up: past it back to LOAD POSITION");
+	check(focus() == 3, "and up: CHALLENGE MODE");
+	poke8(RAC4_CHALLENGE_MODE, 0);
 	game_frame(PADB_START);
 	check(G.screen == 0, "closed");
 	game_frame(0);
@@ -2427,10 +2502,10 @@ static void test_picker(void)
 	group("console menu: Deadlocked's planet picker, Worlds from PLANETS");
 
 	poke32(DL_LEVEL, 5);
-	worlds_entry(0, 0, 0, DL_TYPE_TOURNAMENT);     /* tournament 0 */
+	worlds_entry(0, 0, 0, DL_TYPE_TOURNAMENT);     /* tournament 0, DreadZone Station's own row */
 	worlds_entry(1, 0, 2, DL_TYPE_PLANET);         /* Catacrom */
 	worlds_entry(2, 1, 4, DL_TYPE_PLANET);         /* Sarathos, locked */
-	worlds_entry(3, 1, 1, DL_TYPE_TOURNAMENT);     /* tournament 1, locked */
+	worlds_entry(3, 1, 0, DL_TYPE_TOURNAMENT);     /* the same row, locked (its hub mission not yet open) */
 	worlds_entry(4, 1, 25, DL_TYPE_PLANET);        /* Kronos in co-op, as SetupPlanetTourneyList adds 20 */
 	worlds_entry(5, 1, 15, DL_TYPE_PLANET);        /* Interior, listed for the menu only */
 	worlds_focus(6, 1);
@@ -2491,7 +2566,11 @@ static void test_picker(void)
 	      "the game playing: qwark unlocks Sarathos and loads it");
 	check(menu_model_depth() == 1, "qwark's stack on the root");
 
-	/* A locked tournament gets the game's refusal; an unlocked one is DreadZone. */
+	/*
+	 * A locked tournament gets the game's refusal; an unlocked one is DreadZone.
+	 * Round 6: DreadZone Station's own row is the only one the menu's Worlds
+	 * lists (tournaments 1 to 4 left out, below).
+	 */
 	poke32(RAC4_LOAD_PLANET2, 0);
 	dl_menu_open();
 	check(G.cursor == 0, "the combo opens the root on its first row after the pick's close");
@@ -2502,12 +2581,12 @@ static void test_picker(void)
 	seq = peek32(mb + MBOX_OFF_PICK_SEQ);
 	worlds_press(DL_CMD_CROSS);
 	check(G.sound == SND_REFUSED && G.screen == DL_SCREEN_WORLDS && peek32(mb + MBOX_OFF_PICK_SEQ) == seq,
-	      "a locked tournament: the game's own refusal sound, nothing picked, Worlds still up");
+	      "DreadZone Station's row locked: the game's own refusal sound, nothing picked, Worlds still up");
 	worlds_focus(6, 0);
 	worlds_press(DL_CMD_CROSS);
 	tick(8);
 	check(peek32(mb + MBOX_OFF_PICK_PLANET) == 1 && peek32(RAC4_TARGET_PLANET) == 1 && peek32(RAC4_LOAD_PLANET2) == 1,
-	      "an unlocked tournament: DreadZone, which holds them");
+	      "DreadZone Station's row unlocked: DreadZone");
 
 	/* Co-op's links are 21..35; qwark's ids the single-player ones. */
 	poke32(RAC4_LOAD_PLANET2, 0);
@@ -2566,6 +2645,13 @@ static void test_picker(void)
 	worlds_lock(6, 1);                             /* Shaar, which it has */
 	check(r8(WORLDS_ENTRIES + 24) == 0 && r8(WORLDS_ENTRIES + 72) == 0 && r8(WORLDS_ENTRIES + 36) == 1,
 	      "and its planets are drawn unlocked, Sarathos too (no lock beside it); a locked tournament keeps its lock");
+	/* Round 6, the user's calls: no tournament but DreadZone Station's row, and no SKILLS in the legend. */
+	check(worlds_listed(0, DL_TYPE_TOURNAMENT) && worlds_listed(14, DL_TYPE_PLANET) &&
+	      worlds_listed(15, DL_TYPE_PLANET) && !worlds_listed(1, DL_TYPE_TOURNAMENT) &&
+	      !worlds_listed(4, DL_TYPE_TOURNAMENT),
+	      "round 6: the menu's Worlds lists DreadZone Station's own row and every planet, no tournament 1 to 4");
+	check(strcmp(worlds_legend(), "\x10 SELECT \x12 BACK") == 0,
+	      "and its legend is SELECT and BACK (Triangle always goes back there), no SKILLS");
 	worlds_press(DL_CMD_TRIANGLE);
 	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up(),
 	      "Triangle: back to the root as ever");
@@ -2580,6 +2666,9 @@ static void test_picker(void)
 	check(G.screen == DL_SCREEN_WORLDS && !mh_picker_up(), "the main menu's WORLDS row: the game's own Worlds");
 	worlds_lock(2, 0);
 	check(r8(WORLDS_ENTRIES + 24) == 1, "Sarathos with its lock there, as the game draws it");
+	check(worlds_listed(1, DL_TYPE_TOURNAMENT) && worlds_listed(4, DL_TYPE_TOURNAMENT) &&
+	      strcmp(worlds_legend(), "\x11 SKILLS \x10 SELECT") == 0,
+	      "round 6: its tournaments listed and its legend the game's, SKILLS first");
 	worlds_press(4);
 	check(G.screen == 21 && W.game_stops > 0, "Circle: the game's own Skills screen, as ever");
 	mock_pop_screen();
