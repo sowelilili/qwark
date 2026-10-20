@@ -10,6 +10,7 @@
 #include "switches.h"
 #include "manips.h"
 #include "menu.h"
+#include "uipak.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -1273,6 +1274,8 @@ static u32 encode_info(u8 *out, u32 cap)
 	if (g_vm.known)              flags |= SESSION_FLAG_VSH_MEMORY;
 	/* Revision 1.23. MENU_HELP's setting, out of config like COMBOS_OFF. */
 	if (!config_menu_help())     flags |= SESSION_FLAG_MENU_HELP_OFF;
+	/* Build 55. No ui.pak the console menu can be read from. */
+	if (uipak_bad())             flags |= SESSION_FLAG_UI_PAK_BAD;
 
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
@@ -1509,6 +1512,13 @@ static void session_step(void)
 
 	/* Build 54. The menu's install and the ten-second reading of the VSH's memory. */
 	vm_tick();
+
+	/*
+	 * Build 55. ui.pak, looked at on the module's first tick and again after
+	 * a client's file op on it (uipak_touch), at the XMB or in a game, never
+	 * through a launch. A look is one file read through the scratch.
+	 */
+	if (g_state == SESSION_XMB || g_state == SESSION_INGAME) uipak_tick();
 
 	/*
 	 * Protocol 1.4. Autosplit datagrams go out every tick, not every fourth:

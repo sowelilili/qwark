@@ -39,4 +39,7 @@ void test_menu_help(void);
 /* test_combo_fastloads.c: combo action 6, TOGGLE_FAST_LOADS, build 55. */
 void test_combo_fastloads(void);
 
+/* test_uipak.c: ui.pak, the console menu's renderers on the HDD, build 55. */
+void test_uipak(void);
+
 #endif /* QWARK_TEST_COMMON_H */

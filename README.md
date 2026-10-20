@@ -15,7 +15,7 @@ Anything else the console runs still gets the memory tools: a game qwark has no 
 
 ## Installing
 
-1. Copy `qwark.sprx` to the console, for example to `/dev_hdd0/tmp/qwark.sprx` over FTP. RaCMAN Reloaded's Connection panel does this for you and loads the plugin through webMAN.
+1. Copy `qwark.sprx` to the console, for example to `/dev_hdd0/tmp/qwark.sprx` over FTP, and `ui.pak`, which carries the console menu, to `/dev_hdd0/qwark/ui.pak`. RaCMAN Reloaded's Connection panel does both for you and loads the plugin through webMAN.
 2. To load it by hand: open `http://<ps3-ip>/vshplugin.ps3mapi?prx=%2Fdev_hdd0%2Ftmp%2Fqwark.sprx&load_slot=5` in a browser. An XMB notification confirms the load.
 3. Only once it has proven stable on your console: add the path to `/dev_hdd0/boot_plugins.txt` so it loads at boot. A VSH plugin that crashes at boot is only recoverable by disabling plugins, so do not do this first.
 
@@ -52,7 +52,7 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 ## Console menu
 
-On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
+On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. The menu is read from `/dev_hdd0/qwark/ui.pak`, which must come from the same build as `qwark.sprx`; without it everything else works, the console says once that the file is missing, and the client offers to send it. PROTOCOL.md section 9 has the details.
 
 ## What it does without a PC
 
@@ -115,7 +115,7 @@ Everything that is a plain data write or a freeze works exactly as it does on a 
 
 ## Building
 
-PS3 module: the PS3 toolchain with `CELL_SDK` set and Cygwin, as for Ratchetron. Run `_Make.bat`, or `make` from a Cygwin login shell in this directory. The output is `qwark.sprx`.
+PS3 module: the PS3 toolchain with `CELL_SDK` set and Cygwin, as for Ratchetron. Run `_Make.bat`, or `make` from a Cygwin login shell in this directory. The output is `qwark.sprx` and, beside it, `ui.pak`, the console menu's renderers, which `src/games/menuhelper/pak.py` packs with Python; the two go together.
 
 Host builds, which need no console: `build-host.sh` builds both `qwark-host.exe` and `qwark-rpcs3.exe` with the clang listed in `CLAUDE.md` (`build-host.sh host` or `build-host.sh rpcs3` for one of them). `test/run.sh` runs the unit tests; `python test/smoke.py` drives both executables through the full wire protocol, the second against the fake PINE server in `test/fake_pine.py`.
 
@@ -123,7 +123,7 @@ Both PC executables bind their listener to `127.0.0.1` by default, so no build a
 
 The savefile helper is built separately, because it is PowerPC code that runs inside the *game* rather than inside qwark: `make sfhelper` compiles `src/games/sfhelper/sfhelper.c` once per game at that game's cave address and regenerates `src/games/sfhelper_bins.c`, which is committed. A plain `make` never needs to do that, but it does rebuild it when one of the helper's sources is newer, so an edit cannot be left out of a module by accident. The host builds and the tests compile the committed file and need no SDK.
 
-`make dist` copies the built `qwark.sprx` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes both from there rather than from a working tree that may or may not have been built.
+`make dist` copies the built `qwark.sprx`, `ui.pak` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes them from there rather than from a working tree that may or may not have been built.
 
 `qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `vshmem <free KB> <total KB>` (a figure for the VSH's memory, which it otherwise cannot read), `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 

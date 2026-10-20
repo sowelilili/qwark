@@ -11,13 +11,22 @@
  * code the Sony cross compiler produces, and the host builds and the tests are
  * clang on a PC with no SDK near them.
  *
- * Embedded in the module for now; the spec's ui.pak on the HDD would hand
- * menu.c the same struct mh_desc out of a file.
+ * Since build 55 the module carries none of it. `make` packs it into ui.pak
+ * (src/games/menuhelper/pak.py), the file on the console's HDD the module
+ * reads the running game's renderer from (src/core/uipak.c), and the host
+ * tests link this table to hold the pak to it.
  */
 #ifndef QWARK_MENUHELPER_BINS_H
 #define QWARK_MENUHELPER_BINS_H
 
 #include "../core/proto.h"
+
+/*
+ * The renderers' identity: the CRC-32 of ui.pak after its header, as pak.py
+ * packs this table. A module takes only the pak that carries it (and names its
+ * build), so the menu that goes into a game is always the module's own.
+ */
+#define MH_PAK_ID 0xE975AC2Fu
 
 /*
  * One run of bytes at one address - the mailbox, the state, the read-only
@@ -75,7 +84,10 @@ struct mh_desc {
 	u32 screen_id;
 };
 
-/* NULL for a game with no renderer, and for GAME_NONE. */
+/*
+ * The table, by game: NULL for a game with no renderer, and for GAME_NONE.
+ * Only the host builds link it; the module reads ui.pak (mh_pak_desc).
+ */
 const struct mh_desc *mh_desc_for_game(u8 game_id);
 
 #endif /* QWARK_MENUHELPER_BINS_H */

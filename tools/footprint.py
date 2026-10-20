@@ -22,6 +22,9 @@ an old one.
 What it prints:
   - the loaded image by segment, from the module's program headers: RX (code,
     then read-only data), RW (data, then bss, which takes no file bytes);
+  - each segment in the 64 KB pages the console allocates it in, and what is
+    left before a page more (build 55: the page model, measured on the console
+    on 2026-10-20, SPEC-footprint.md 2.9), and the resident total in pages;
   - the image by area (per-game code, the menu, the renderers, ...), each split
     into code, read-only data, data, TOC and descriptors, and bss;
   - every static buffer or table of 512 bytes or more;
@@ -54,6 +57,7 @@ AREAS = [
     ('per-game: Deadlocked',      r'^games/rac4(_panel)?$'),
     ('per-game: shared',          r'^games/(classic|games)$'),
     ('menu model and driver',     r'^core/menu$'),
+    ('ui.pak reader (uipak.c)',   r'^core/uipak$'),
     ('renderers',                 r'^games/menuhelper_bins$'),
     ('savefile helpers',          r'^games/sfhelper_bins$'),
     ('code switches',             r'^(games/switches_bins|core/switches)$'),
@@ -146,6 +150,14 @@ def segments(path):
         elif typ == 0x700000a4:
             seg['rela'] += filesz
     return seg
+
+
+PAGE = 65536
+
+
+def pages(n):
+    """The 64 KB pages a segment of n bytes takes (SPEC-footprint.md 2.9, confirmed on the console)."""
+    return (n + PAGE - 1) // PAGE
 
 
 def stacks(srcdir):
@@ -270,6 +282,14 @@ def print_report(cur, old, top, show_files, srcdir):
         for name, n, o in rows:
             print('%-44s %9d %8s %9s' % (name, n, kb(n), delta(n, o) if oseg else ''))
         print()
+        # Measured on the console on 2026-10-20 (SPEC-footprint.md 2.9): each segment is
+        # allocated out of the VSH in 64 KB pages, so only a page crossed frees memory.
+        for name, n, o in (('RX', seg['rx'], oseg and oseg['rx']), ('RW', seg['rw_mem'], oseg and oseg['rw_mem'])):
+            p = pages(n)
+            print('%s in 64 KB pages: %d (%d bytes of %d, %d to spare before a page more)%s' %
+                  (name, p, n, p * PAGE, p * PAGE - n,
+                   '' if not oseg else ' (was %d)' % pages(o)))
+        print()
 
     areas, sub = area_table(cur)
     oareas, osub = area_table(old) if old else ({}, {})
@@ -353,6 +373,9 @@ def print_report(cur, old, top, show_files, srcdir):
         if seg:
             img = seg['rx'] + seg['rw_mem']
             print('  resident with one client: image %d + stacks %d = %d (%s KB)' % (img, fixed + per, img + fixed + per, kb(img + fixed + per)))
+            paged = (pages(seg['rx']) + pages(seg['rw_mem'])) * PAGE
+            print('  resident with one client, as the console allocates it: %d + %d pages + stacks %d = %d KB' %
+                  (pages(seg['rx']), pages(seg['rw_mem']), fixed + per, (paged + fixed + per) // 1024))
             print('  each further client: %d' % per)
         print('  (the stop thread\'s stack exists only while the module unloads)')
         print()

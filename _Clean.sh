@@ -1,6 +1,6 @@
 #!/bin/sh
 cd "$(dirname "$0")" || exit 1
-rm -f ./*.sprx ./*.elf ./*.prx ./*.sym
+rm -f ./*.sprx ./*.elf ./*.prx ./*.sym ./ui.pak
 rm -rf objs
 
 make clean

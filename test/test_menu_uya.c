@@ -1152,8 +1152,9 @@ static void test_install_uya(void)
 			if (a == MH_CAVE) at_code = k;
 			if (a == MH_SITE_MSG && first_hook == 999) first_hook = k;
 		}
-		check(at_code < first_hook && n <= 24 && bytes <= 24u * 1024u,
-		      "the caves before the words: twenty-two writes, under 24 KB");
+		check(at_code < first_hook && n <= 25 && bytes <= 24u * 1024u,
+		      "the caves before the words: twenty-five writes (build 55: the code out of ui.pak in three "
+		      "pieces), under 24 KB");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	mb = menu_mailbox();

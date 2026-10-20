@@ -15,7 +15,7 @@
  *                 (features_set, features_trigger), so config, auto flags and
  *                 the previous-session record behave exactly as when a client
  *                 does it;
- *   the driver    the game's renderer: installing it (src/games/menuhelper_bins.c)
+ *   the driver    the game's renderer: installing it (build 55: out of ui.pak, src/core/uipak.h)
  *                 a few seconds into a session, which puts the menu behind the
  *                 game's own Help row and the OPEN_MENU combo, polling the
  *                 mailbox it shares with qwark
@@ -210,6 +210,12 @@ u32  menu_test_builds(void);
 #define MENU_READY       2     /* installed, and serving the mailbox */
 #define MENU_REFUSED     3     /* a hook site held a word not the game's or ours; tried again later */
 #define MENU_REMOVING    4     /* menu.enabled went to 0: the hooks come out once it is safe */
+/*
+ * Build 55: ui.pak, which carries the renderers (src/core/uipak.h), is missing,
+ * damaged or another build's. Nothing goes in; it is tried again once the pak
+ * has been looked at again (a client wrote it) or at a press of the combo.
+ */
+#define MENU_NOPAK       5
 
 /*
  * Revision 1.23, build 55: while READY, the Help row's words (struct mh_desc's

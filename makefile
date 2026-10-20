@@ -32,7 +32,13 @@ PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
 PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
 PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/menu.c
-PPU_SRCS += src/games/sfhelper_bins.c src/games/menuhelper_bins.c
+#
+# Build 55: not src/games/menuhelper_bins.c. The console menu's renderers go
+# into ui.pak beside the module (below), and qwark reads the running game's out
+# of /dev_hdd0/qwark/ui.pak (src/core/uipak.c); the module carries none of them.
+#
+PPU_SRCS += src/core/uipak.c
+PPU_SRCS += src/games/sfhelper_bins.c
 PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
 PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
 PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c
@@ -67,7 +73,17 @@ all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
 	$(MAKE) $(PPU_OBJS_DEPENDS)
 	$(PPU_PRX_STRIP) --strip-debug --strip-section-header $(PPU_PRX_TARGET)
 	./scetool -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000 -c SPRX --self-ctrl-flags 4000000000000000000000000000000000000000000000000000000000000002 -e $(PPU_PRX_TARGET) $(PPU_SPRX_TARGET)
+	$(MAKE) ui.pak
 	@rm -rf objs qwark.prx qwark.sym
+
+#
+# Build 55: ui.pak, the console menu's renderers, packed out of the committed
+# src/games/menuhelper_bins.c by pak.py and stamped with this build. It goes
+# to /dev_hdd0/qwark/ui.pak beside the module's data, and a module takes only
+# the pak built with it (src/core/uipak.h). Python, as for check.py.
+#
+ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
+	python -I src/games/menuhelper/pak.py --out ui.pak
 
 #
 # The savefile helper is PowerPC code that runs inside the game rather than
@@ -110,12 +126,14 @@ switches-if-stale:
 
 #
 # dist/ is what the PC client's release workflow takes the console side from:
-# the signed module and the RPCS3 helper, both committed so a release can be cut
-# without an SDK or a cross build. Run it after `make` and `./build-host.sh`.
+# the signed module, its ui.pak (build 55) and the RPCS3 helper, all committed
+# so a release can be cut without an SDK or a cross build. Run it after `make`
+# and `./build-host.sh`. The module and the pak only ever go out together.
 #
-dist:
+dist: ui.pak
 	@mkdir -p dist
 	@cp qwark.sprx dist/qwark.sprx
+	@cp ui.pak dist/ui.pak
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
 	@ls -l dist
 

@@ -392,6 +392,20 @@ int plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread)
 	return 0;
 }
 
+int plat_file_read_at(plat_file_t f, u32 off, void *buf, u32 len, u32 *nread)
+{
+	uint64_t got = 0;
+
+	if (nread) *nread = 0;
+	if (f == PLAT_FILE_INVALID) return -1;
+	if (len == 0) return 0;
+
+	if (cellFsReadWithOffset(f, (uint64_t)off, buf, (uint64_t)len, &got) != CELL_OK) return -1;
+
+	if (nread) *nread = (u32)got;
+	return 0;
+}
+
 int plat_file_write(plat_file_t f, const void *buf, u32 len)
 {
 	uint64_t written = 0;

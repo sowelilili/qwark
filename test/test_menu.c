@@ -1619,8 +1619,9 @@ static void test_mailbox(void)
 		      hook_last == n - 1,
 		      "in the order that keeps the game off a half-written renderer: the mailbox and the data, "
 		      "the first page, the code, the hook words");
-		check(n <= 26 && bytes <= 22u * 1024u,
-		      "twenty-six writes at most, under 22 KB in all (the planet picker's six words included)");
+		check(n <= 27 && bytes <= 22u * 1024u,
+		      "twenty-seven writes at most, under 22 KB in all (the planet picker's six words included; "
+		      "build 55: the code out of ui.pak in two pieces)");
 		printf("    (the install wrote %u times, %u bytes)\n", (unsigned)n, (unsigned)bytes);
 	}
 	check(peek32(DL_OPTIONS_SITE) == DL_OPTIONS_WORD, "Options' call to SetMenuButtons keeps the game's word");

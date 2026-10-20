@@ -182,6 +182,12 @@ typedef int plat_file_t;
 
 int  plat_file_open(const char *path, int mode, plat_file_t *out);
 int  plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread);
+/*
+ * Build 55. Reads at an offset from the file's start, wherever the file's own
+ * position is: cellFsReadWithOffset on the console. ui.pak's reader takes one
+ * game's renderer out of the middle of the file with it (src/core/uipak.c).
+ */
+int  plat_file_read_at(plat_file_t f, u32 off, void *buf, u32 len, u32 *nread);
 int  plat_file_write(plat_file_t f, const void *buf, u32 len);
 int  plat_file_close(plat_file_t f);
 int  plat_file_unlink(const char *path);

@@ -7,6 +7,8 @@
  *     sh src/games/menuhelper/build.sh
  *
  * from the SDK's Cygwin shell, then python -I src/games/menuhelper/check.py.
+ * Only the host builds link it: the module reads the running game's renderer
+ * out of ui.pak, which pak.py packs from this file (src/core/uipak.h).
  *
  * Per renderer: the data image (the mailbox, the renderer state, its read-only
  * data, its TOC and its descriptors), the code, and the hook words with the

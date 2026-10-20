@@ -477,6 +477,20 @@ int plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread)
 	return 0;
 }
 
+int plat_file_read_at(plat_file_t f, u32 off, void *buf, u32 len, u32 *nread)
+{
+	size_t got;
+
+	if (nread) *nread = 0;
+	if (f < 0 || f >= HOST_FILE_SLOTS || g_open_files[f] == NULL) return -1;
+	if (len == 0) return 0;
+	if (fseek(g_open_files[f], (long)off, SEEK_SET) != 0) return -1;
+
+	got = fread(buf, 1, len, g_open_files[f]);
+	if (nread) *nread = (u32)got;
+	return 0;
+}
+
 int plat_file_write(plat_file_t f, const void *buf, u32 len)
 {
 	if (f < 0 || f >= HOST_FILE_SLOTS || g_open_files[f] == NULL) return -1;

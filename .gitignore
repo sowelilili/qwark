@@ -296,6 +296,9 @@ objs/
 qwark.prx
 qwark.sym
 qwark.map
+# Build 55: the console menu's renderers `make` packs beside the module. Only
+# dist/ui.pak, which `make dist` copies, is committed.
+/ui.pak
 qwark-host.exe
 qwark-host-root/
 qwark-rpcs3.exe
@@ -327,6 +330,7 @@ src/games/menuhelper/out/
 # workflow, so the blanket ignores above do not apply to those two files.
 !dist/qwark.sprx
 !dist/qwark-rpcs3.exe
+!dist/ui.pak
 
 # Python cache from the smoke test
 __pycache__/

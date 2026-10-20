@@ -525,6 +525,15 @@
  * those too.
  */
 #define SESSION_FLAG_MENU_HELP_OFF    0x40
+/*
+ * Build 55, revision 1.23. bit7 is set while the console's ui.pak, the file
+ * the console menu's renderers are read from (src/core/uipak.h), is missing,
+ * damaged or not the one built with this module, so no menu goes into a game.
+ * A client offers to write the one it shipped. Set only on a console, from
+ * the module's first tick on; never by qwark-rpcs3, which has no menu, and
+ * never by an earlier build, whose renderers were in the module.
+ */
+#define SESSION_FLAG_UI_PAK_BAD       0x80
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

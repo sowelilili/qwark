@@ -6,7 +6,7 @@
 #include "util.h"
 #include "manips.h"
 #include "savefile.h"
-#include "../games/menuhelper_bins.h"
+#include "uipak.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -1619,9 +1619,21 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 #define WHY_NO_RENDERER  0x01
 #define WHY_REFUSED      0x02
 #define WHY_OFF          0x04
+#define WHY_NO_PAK       0x08
+
+#define NO_PAK_TEXT      "Trainer menu: ui.pak missing or from another build"
 
 static int  g_state = MENU_OFF;
+/*
+ * Build 55: the session's renderer, read out of ui.pak the first time it is
+ * wanted (load), and the game it is for. NULL until then.
+ */
 static const struct mh_desc *g_mh;
+static u8   g_game_id;
+/* The pak's looks (uipak_looks) when MENU_NOPAK began; a new one is a try again. */
+static u32  g_pak_looks;
+/* Said once on the console in the module's life, not every session; a good pak resets it. */
+static int  g_pak_told;
 /* The block as the renderer laid it out: row slots and the size of one. */
 static u8   g_row_cap;
 static u8   g_row_size;
@@ -1704,6 +1716,7 @@ void menu_forget(void)
 {
 	g_state = MENU_OFF;
 	g_mh = NULL;
+	mh_pak_close();
 	g_posted = 0;
 	g_hstate = MBOX_HSTATE_CLOSED;
 	g_req = 0;
@@ -1723,12 +1736,13 @@ void menu_enter(const struct game_api *game)
 	/*
 	 * A renderer is code, so where code cannot be patched (RPCS3) there is no
 	 * menu at all: nothing is installed and the combo says so.
+	 *
+	 * Build 55: the renderer is read out of ui.pak when it is first wanted
+	 * (load), not here, so a session's entry reads no file for it; a game
+	 * the pak has no renderer for is MENU_OFF from then on.
 	 */
-	g_mh = game != NULL ? mh_desc_for_game(game->game_id) : NULL;
-	if (g_mh == NULL || !plat_can_patch_code()) {
-		g_mh = NULL;
-		return;
-	}
+	if (game == NULL || !plat_can_patch_code()) return;
+	g_game_id = game->game_id;
 
 	/*
 	 * Round 2: the renderer goes in a few seconds into the session, once the
@@ -1800,23 +1814,29 @@ static void post(int force)
 typedef char menu_scratch_fits[(sizeof(struct menu_view) <= 4096 &&
                                 4096 + MBOX_OFF_ROWS + MENU_VIEW_MAX * MBOX_ROW_SIZE <= LIB_AT) ? 1 : -1];
 
-/* Whether the code cave holds this build's renderer, byte for byte. */
+/*
+ * Whether the code cave holds this build's renderer, byte for byte: the game's
+ * memory in the scratch's first half, ui.pak's bytes (build 55) in its second.
+ */
 static int code_matches(const struct mh_cave *c)
 {
-	u8 *buf = qscratch();
+	u8 *game = qscratch();
+	u8 *ours = qscratch() + QSCRATCH_BYTES / 2;
 	u32 off = 0;
 
 	while (off < c->len) {
 		u32 n = c->len - off;
-		if (n > QSCRATCH_BYTES) n = QSCRATCH_BYTES;
-		if (mem_read(c->addr + off, buf, n) != ST_OK) return 0;
-		if (memcmp(buf, c->bytes + off, n) != 0) return 0;
+		if (n > QSCRATCH_BYTES / 2) n = QSCRATCH_BYTES / 2;
+		if (mem_read(c->addr + off, game, n) != ST_OK) return 0;
+		if (mh_pak_read(c, off, ours, n) != ST_OK) return 0;
+		if (memcmp(game, ours, n) != 0) return 0;
 		off += n;
 	}
 	return 1;
 }
 
 #define INSTALL_REFUSED 100
+#define INSTALL_NO_PAK  101
 
 /* A cave's zeros, out of the tick's scratch: one write per 8 KB rather than per 256 bytes. */
 static int write_zeros(u32 addr, u32 len)
@@ -1837,6 +1857,28 @@ static int write_zeros(u32 addr, u32 len)
 }
 
 /*
+ * Build 55: a cave out of ui.pak into the game, a scratch at a time, then its
+ * zeros. Nothing branches into a cave until its hook words are in, and they go
+ * in last, so a cave may arrive in pieces, as a mod's caves do.
+ */
+static int write_cave(const struct mh_cave *c)
+{
+	u8 *buf = qscratch();
+	u32 off = 0, n;
+	int rc;
+
+	while (off < c->len) {
+		n = c->len - off;
+		if (n > QSCRATCH_BYTES) n = QSCRATCH_BYTES;
+		rc = mh_pak_read(c, off, buf, n);
+		if (rc == ST_OK) rc = mem_write(c->addr + off, buf, n);
+		if (rc != ST_OK) return rc;
+		off += n;
+	}
+	return c->zeros != 0 ? write_zeros(c->addr + c->len, c->zeros) : ST_OK;
+}
+
+/*
  * Puts the renderer into the game: every hook site must hold the game's own
  * word or the renderer's. All the game's: the data images (the mailbox, the
  * state, the read-only data), the first page, the code, then the hook words in
@@ -1852,6 +1894,11 @@ static int write_zeros(u32 addr, u32 len)
  * mailbox and the state written out of the tick's scratch). Nothing can branch
  * into a cave before its hook word, every hook word goes in after the caves,
  * and a combo's request byte goes in last of all.
+ *
+ * Build 55: the caves' bytes come out of ui.pak, a scratch at a time, once
+ * the hook words have been read and the pak checked (mh_pak_open): one file
+ * open and the game's part read twice, about 16 to 18 KB, the first time to
+ * check its CRC. A pak that cannot serve writes nothing (INSTALL_NO_PAK).
  *
  * Revision 1.23: the Help row's words, the last `nhelp` of the table, are not
  * written here. help_sync puts them in, or leaves them out for menu.help = 0,
@@ -1885,6 +1932,13 @@ static int install(void)
 		return INSTALL_REFUSED;
 	}
 
+	/*
+	 * Build 55: the renderer's bytes are in ui.pak. It must still be this
+	 * build's and the game's part of it whole before a byte of it is compared
+	 * or written; mh_pak_close (try_install) closes it again.
+	 */
+	if (mh_pak_open() != UIPAK_OK) return INSTALL_NO_PAK;
+
 	if (ours != 0) {
 		for (i = 0; i < d->ncaves; i++) {
 			if (d->caves[i].code && !code_matches(&d->caves[i])) {
@@ -1904,9 +1958,7 @@ static int install(void)
 		/* The data image: a mailbox with no event and no page yet. */
 		for (i = 0; i < d->ncaves; i++) {
 			if (d->caves[i].code) continue;
-			rc = mem_write(d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
-			if (rc == ST_OK && d->caves[i].zeros != 0)
-				rc = write_zeros(d->caves[i].addr + d->caves[i].len, d->caves[i].zeros);
+			rc = write_cave(&d->caves[i]);
 			if (rc != ST_OK) return rc;
 		}
 		if (mem_read(d->mailbox, head, sizeof(head)) != ST_OK) return ST_IO_ERROR;
@@ -1958,7 +2010,7 @@ static int install(void)
 	if (ours == 0) {
 		for (i = 0; i < d->ncaves; i++) {
 			if (!d->caves[i].code) continue;
-			rc = mem_write(d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
+			rc = write_cave(&d->caves[i]);
 			if (rc != ST_OK) return rc;
 		}
 	}
@@ -1995,6 +2047,49 @@ static int uninstall(void)
 
 static void help_sync(void);
 
+static void unavailable(u8 why, const char *msg)
+{
+	if ((g_why & why) != 0) return;
+	g_why |= why;
+	plat_notify(msg);
+}
+
+/*
+ * Build 55: ui.pak is missing, damaged or another build's (uipak.c has logged
+ * which). Nothing of the menu goes in, and the rest of qwark carries on. The
+ * console says so once in the module's life, at the first session it stops,
+ * not in every session; a press of the combo says it again, once a session.
+ * MENU_NOPAK is left once the pak has been looked at again, which a client's
+ * write of it does (uipak_touch), and at a press of the combo.
+ */
+static void no_pak(void)
+{
+	g_state = MENU_NOPAK;
+	g_pak_looks = uipak_looks();
+	if (!g_pak_told) {
+		g_pak_told = 1;
+		unavailable(WHY_NO_PAK, NO_PAK_TEXT);
+	}
+}
+
+/*
+ * Build 55: the session's renderer out of ui.pak, when it is first wanted.
+ * 1 with g_mh set. A game the pak has no renderer for has no menu (MENU_OFF),
+ * as a game had with no renderer in the module; a pak that cannot serve leaves
+ * the session at MENU_NOPAK.
+ */
+static int load(void)
+{
+	int st;
+
+	if (g_mh != NULL) return 1;
+	g_mh = mh_pak_desc(g_game_id, &st);
+	if (g_mh != NULL) return 1;
+	if (st == UIPAK_OK) g_state = MENU_OFF;
+	else no_pak();
+	return 0;
+}
+
 /*
  * install(), and the state it leaves: READY, REFUSED for another mod's word or
  * another build's renderer, IDLE for a write that failed. Either is tried
@@ -2006,8 +2101,15 @@ static int try_install(void)
 {
 	int rc = install();
 
+	/* Build 55: ui.pak is open only inside the install. */
+	mh_pak_close();
+	if (rc == INSTALL_NO_PAK) {
+		no_pak();
+		return 0;
+	}
 	if (rc == ST_OK) {
 		g_state = MENU_READY;
+		g_pak_told = 0;
 		g_help.in = -1;
 		help_sync();
 		return 1;
@@ -2297,8 +2399,6 @@ static void serve(void)
 
 void menu_tick(void)
 {
-	if (g_mh == NULL) return;
-
 	switch (g_state) {
 	case MENU_READY:
 		if (enabled()) { serve(); return; }
@@ -2315,15 +2415,26 @@ void menu_tick(void)
 		}
 		return;
 
+	case MENU_NOPAK:
+		/*
+		 * Build 55: no usable ui.pak. Looked at again only once the pak has
+		 * been (a client wrote it, uipak_touch), not every ten seconds.
+		 */
+		if (uipak_looks() == g_pak_looks) return;
+		g_state = MENU_IDLE;
+		return;
+
 	case MENU_IDLE:
 	case MENU_REFUSED:
 		/*
 		 * Nothing of the menu is in the game yet. It goes in once it is due
 		 * and the game is in ordinary play, so nothing is written while a
 		 * menu of the game's is up; a refusal waits ten seconds for the other
-		 * mod to go, and says so once in the log.
+		 * mod to go, and says so once in the log. Build 55: the renderer is
+		 * read out of ui.pak first, the first time it is due.
 		 */
 		if (!enabled() || plat_time_us() < g_install_at) return;
+		if (!load()) return;
 		if (!game_playing()) {
 			/* Looked at four times a second, not every tick, until the game plays. */
 			g_install_at = plat_time_us() + 250000ull;
@@ -2337,16 +2448,9 @@ void menu_tick(void)
 	}
 }
 
-static void unavailable(u8 why, const char *msg)
-{
-	if ((g_why & why) != 0) return;
-	g_why |= why;
-	plat_notify(msg);
-}
-
 void menu_combo(void)
 {
-	if (g_state == MENU_OFF || g_mh == NULL) {
+	if (g_state == MENU_OFF) {
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
 		            ? "Trainer menu: not available in this game yet"
 		            : "Trainer menu: not available under RPCS3");
@@ -2362,11 +2466,15 @@ void menu_combo(void)
 	 * A press before the session's install, after a refusal, or after
 	 * menu.enabled went to 0 and back puts the renderer in now, here in the
 	 * tick that saw it, and asks it to open straight after (install() has the
-	 * cost).
+	 * cost). Build 55: and after ui.pak was found wanting, it is read again.
 	 */
-	if (g_state != MENU_READY && !try_install()) {
+	if (g_state != MENU_READY && !(load() && try_install())) {
 		if (g_state == MENU_REFUSED)
 			unavailable(WHY_REFUSED, "Trainer menu: another mod holds the menu's hooks");
+		else if (g_state == MENU_NOPAK)
+			unavailable(WHY_NO_PAK, NO_PAK_TEXT);
+		else if (g_state == MENU_OFF)
+			unavailable(WHY_NO_RENDERER, "Trainer menu: not available in this game yet");
 		return;
 	}
 

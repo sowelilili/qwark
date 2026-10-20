@@ -265,6 +265,11 @@ SESSION_FLAG_CODE_SWITCHES = 0x10
 SESSION_FLAG_VSH_MEMORY = 0x20
 # Revision 1.23: MENU_HELP's setting, set while menu.help is 0.
 SESSION_FLAG_MENU_HELP_OFF = 0x40
+# Build 55: the console's ui.pak, the console menu's renderers, is missing,
+# damaged or not this module's. Never set by qwark-rpcs3.
+SESSION_FLAG_UI_PAK_BAD = 0x80
+UI_PAK = "/dev_hdd0/qwark/ui.pak"
+PAK_PY = os.path.join(ROOT, "src", "games", "menuhelper", "pak.py")
 
 # VSH_MEMORY's reply, and what its lowest_at says the lowest was taken at.
 VSH_MEMORY_SIZE = 28
@@ -826,6 +831,33 @@ def test_mem_read_cap(c, addr):
     check(c.call(OP_HEARTBEAT)[0] == ST_OK, "and the connection carries on")
 
 
+def test_one_arena(c, addr):
+    """Build 55 (SPEC-footprint.md, cut C4): one shared 16 KB frame, not two.
+
+    A request of up to 937 bytes is read into the connection's own buffer and
+    the shared frame takes the reply; a larger one is read into the shared frame
+    and answered from the connection's buffer, which caps its reply at 937.
+    """
+    pattern = bytes((i * 7 + 3) & 0xFF for i in range(16000))
+    status, _ = c.call(OP_MEM_WRITE, struct.pack(">I", addr) + pattern)
+    check(status == ST_OK, "one arena: a 16 KB MEM_WRITE goes in through the shared frame", status)
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, len(pattern)))
+    check(status == ST_OK and body == pattern,
+          "one arena: and a 16 KB MEM_READ comes back out of it, every byte", (status, len(body)))
+
+    padded = struct.pack(">II", addr, 937) + bytes(992)
+    status, body = c.call(OP_MEM_READ, padded)
+    check(status == ST_OK and body == pattern[:937],
+          "one arena: a 1000-byte request is answered from the connection's buffer, 937 bytes of it",
+          (status, len(body)))
+    padded = struct.pack(">II", addr, 938) + bytes(992)
+    status, body = c.call(OP_MEM_READ, padded)
+    check(status == ST_BAD_ARG and body == b"",
+          "one arena: and a reply past those 937 bytes is refused as past the cap, never written past it",
+          status)
+    check(c.call(OP_HEARTBEAT)[0] == ST_OK, "one arena: the connection carries on")
+
+
 def test_client_limit(c):
     """QWARK_MAX_CLIENTS is 4 since revision 1.11, where it was 8.
 
@@ -1048,6 +1080,65 @@ def test_vsh_memory(sim, c):
           (takes, sim_arena_takes(sim)))
     sim.send("vshmem off")
     sim_line(sim, "ok vshmem off")
+
+
+def pack_pak(path, build=None):
+    """ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with another build."""
+    args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else [])
+    return subprocess.run(args, capture_output=True, text=True).returncode == 0
+
+
+def send_pak(c, data):
+    """What a client does to put ui.pak right: ui.pak.new, read back, the old one
+    deleted, the new one renamed into its place. Answers the rename's status."""
+    if not write_console_file(c, UI_PAK + ".new", data):
+        return None
+    if read_console_file(c, UI_PAK + ".new") != data:
+        return None
+    c.call(OP_FILE_DELETE, UI_PAK.encode())
+    frm = (UI_PAK + ".new").encode()
+    status, _ = c.call(OP_FILE_RENAME, struct.pack(">H", len(frm)) + frm + UI_PAK.encode())
+    return status
+
+
+def test_ui_pak(sim, c):
+    """Build 55: ui.pak and SessionInfo flags bit7 over the wire, at the XMB,
+    through the file ops a client writes the pak with."""
+    good_path = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "ui.pak")
+    with open(good_path, "rb") as f:
+        good = f.read()
+
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
+    check(ok, "ui.pak: the simulator's fake HDD has this build's: flags bit7 clear",
+          hex(info["flags"]) if info else None)
+
+    status, _ = c.call(OP_FILE_DELETE, UI_PAK.encode())
+    check(status == ST_OK, "ui.pak: FILE_DELETE takes it away", status)
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, True)
+    check(ok, "ui.pak: and the next look sets flags bit7", hex(info["flags"]) if info else None)
+    check(sim_line(sim, "ui.pak: none at") is not None, "ui.pak: the log says there is none")
+
+    status = send_pak(c, good)
+    check(status == ST_OK, "ui.pak: a client's send: ui.pak.new written and read back, renamed into place", status)
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
+    check(ok, "ui.pak: the rename's look clears flags bit7", hex(info["flags"]) if info else None)
+
+    other = os.path.join(ROOT, "qwark-host-root", "ui-other.pak")
+    stale = None
+    if pack_pak(other, QWARK_BUILD - 1):
+        with open(other, "rb") as f:
+            stale = f.read()
+        os.remove(other)
+    check(stale is not None and write_console_file(c, UI_PAK, stale),
+          "ui.pak: build %d's written over it in place" % (QWARK_BUILD - 1))
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, True)
+    check(ok, "ui.pak: the look at its FILE_CLOSE sets flags bit7: another build's",
+          hex(info["flags"]) if info else None)
+    check(sim_line(sim, "not this module's") is not None, "ui.pak: and the log says whose it is")
+
+    status = send_pak(c, good)
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
+    check(status == ST_OK and ok, "ui.pak: the right one sent again: flags bit7 clear", status)
 
 
 def smoke_vshmem_start(exe):
@@ -4531,6 +4622,9 @@ def smoke_rpcs3(exe):
         check(info and (info["flags"] & SESSION_FLAG_NO_CODE_PATCHES) != 0,
               "rpcs3: flags bit2 NO_CODE_PATCHES is set",
               hex(info["flags"]) if info else None)
+        check(info and (info["flags"] & SESSION_FLAG_UI_PAK_BAD) == 0,
+              "rpcs3: and bit7 UI_PAK_BAD is clear with no ui.pak anywhere: RPCS3 has no menu to need one",
+              hex(info["flags"]) if info else None)
         check(info and info["state"] == SESSION_XMB,
               "rpcs3: with no game up the session is in XMB",
               info["state"] if info else None)
@@ -5601,6 +5695,10 @@ def main():
     if os.path.isdir(fixtures):
         for name in os.listdir(fixtures):
             shutil.copytree(os.path.join(fixtures, name), os.path.join(mods_dst, name))
+    # Build 55: and the console menu's renderers, as `make` packs them.
+    if not pack_pak(os.path.join(host_root, "dev_hdd0", "qwark", "ui.pak")):
+        print("FAIL  pak.py could not pack ui.pak into the fake HDD")
+        return 2
 
     # No --bind: the simulator's own default is loopback, which is the point.
     global PORT
@@ -5678,6 +5776,9 @@ def main():
 
         # ------------------------------------------------------ VSH memory
         test_vsh_memory(sim, c)
+
+        # ------------------------------------------------------------ ui.pak
+        test_ui_pak(sim, c)
 
         # ------------------------------------------------------------ boot
         test_boot_buffers(sim, c, udp_port, udp)
@@ -5977,6 +6078,7 @@ def main():
         # ------------------------------------------- the frame cap, revision 1.11
         test_frame_cap(c)
         test_mem_read_cap(c, 0x00700000)
+        test_one_arena(c, 0x00700000)
         test_client_limit(c)
         test_arena_sharing(sim, c, 0x00720000)
 

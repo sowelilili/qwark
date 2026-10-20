@@ -17242,6 +17242,7 @@ int main(void)
 	test_submit_after_stop();
 	test_net_stop_with_client();
 	test_menu();
+	test_uipak();
 	test_pine();
 	test_vshmem();
 

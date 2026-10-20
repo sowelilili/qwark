@@ -12,7 +12,7 @@ ROOT="test/qwark-host-root"
 
 SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/core/mods.c src/core/session.c src/core/net.c src/core/autosplit.c src/core/manips.c \
-     src/core/savefile.c src/core/switches.c src/core/menu.c \
+     src/core/savefile.c src/core/switches.c src/core/menu.c src/core/uipak.c \
      src/games/sfhelper_bins.c src/games/switches_bins.c src/games/menuhelper_bins.c \
      src/games/classic.c src/games/rac1.c src/games/rac1_panel.c \
      src/games/rac2.c src/games/rac2_panel.c \
@@ -21,7 +21,7 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/games/games.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
-     test/test_game.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c \
+     test/test_game.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c \
      test/test_combo_fastloads.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
@@ -42,6 +42,21 @@ echo "compiling $OUT"
 rm -rf "$ROOT"
 mkdir -p "$ROOT/dev_hdd0/qwark/mods"
 cp -r test/fixtures/mods/. "$ROOT/dev_hdd0/qwark/mods/"
+
+# Build 55: the console menu's renderers as a console reads them, ui.pak in the
+# fake HDD, packed by the same pak.py `make` runs. test_uipak.c makes its own
+# bad copies of it (another build, cut short, damaged) and puts this one back.
+PAK=""
+for PY in python python3 py; do
+	if "$PY" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" >/dev/null 2>&1; then
+		PAK="$ROOT/dev_hdd0/qwark/ui.pak"
+		break
+	fi
+done
+if [ -z "$PAK" ]; then
+	echo "test/run.sh: no python to pack ui.pak with (src/games/menuhelper/pak.py)" >&2
+	exit 2
+fi
 
 # A free port for this run. The suite used to listen on 9673, which is the port
 # a qwark-rpcs3.exe serving the user's own client already holds; the bind

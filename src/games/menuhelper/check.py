@@ -116,6 +116,16 @@ renderer names a Help site and no word of its data image holds one, so it never
 reads them and draws, opens and closes the same whether they are in or out.
 Each Help word's game word is what the install restores at menu.help = 0, and
 check 1 above holds the executables to it.
+
+For ui.pak (build 55), which carries the renderers to the console instead of
+the module: the pak pak.py packs from menuhelper_bins.c holds exactly what this
+script checked above, read back with a parser of its own here: every renderer,
+its descriptor's numbers, every cave's address, bytes, zeros and kind, every
+hook word and the Help row's count, in the table's order, within what the
+module's reader takes (8 renderers, 8 caves, 32 hook words); its CRC after the
+header is MH_PAK_ID in menuhelper_bins.h, the identity the module is built to
+accept; and a ui.pak beside the module (the one `make` writes, or --pak FILE)
+names this build and is byte for byte that pak.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -3572,6 +3582,96 @@ def check_help_rows(ok):
             print("        " + x)
 
 
+def load_pak_py():
+    """pak.py beside this file, the one writer of ui.pak (python -I leaves this folder off the path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("qwark_pak", os.path.join(HERE, "pak.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def read_pak(b):
+    """ui.pak's renderers, by a reader of this script's own (PROTOCOL.md 9.10): (build, crc, [renderer])."""
+    magic, fmt, hsize, build, crc, blen, n = struct.unpack(">4sHHIIIB", b[:21])
+    if magic != b"QPAK" or fmt != 1 or hsize != 32 or len(b) != 32 + blen:
+        raise ValueError("not a whole format 1 pak")
+    out = []
+    for i in range(n):
+        game, kind, title, at, length, ecrc = struct.unpack(">BB2x12sIII4x", b[32 + 32 * i:64 + 32 * i])
+        e = b[at:at + length]
+        if kind != 1 or len(e) != length or zlib_crc(e) != ecrc:
+            raise ValueError("entry %d is not a whole renderer" % i)
+        words = list(struct.unpack(">9I", e[:36]))
+        ncaves, nhooks, nhelp = e[36], e[37], e[38]
+        caves, hooks = [], []
+        for k in range(ncaves):
+            addr, off, ln, zeros, code = struct.unpack(">IIIIB", e[40 + 20 * k:57 + 20 * k])
+            caves.append((addr, e[off:off + ln], code, zeros))
+        p = 40 + 20 * ncaves
+        for k in range(nhooks):
+            hooks.append(struct.unpack(">III", e[p + 12 * k:p + 12 * k + 12]))
+        out.append({"game": game, "title": title.rstrip(b"\0").decode("ascii"), "words": words,
+                    "caves": caves, "hooks": hooks, "nhelp": nhelp})
+    return build, crc, out
+
+
+def zlib_crc(b):
+    import zlib
+    return zlib.crc32(b) & 0xFFFFFFFF
+
+
+def table_desc_words(text, g):
+    """The nine numbers of a renderer's mh_descs entry after its counts, as this script reads them."""
+    m = re.search(r"\{ \d+, mh_%s_caves, \d+, mh_%s_hooks, \d+, \d+,(.*?)\}" % (g, g), text, re.S)
+    return [int(x, 16) for x in re.findall(r"(0x[0-9A-Fa-f]+)u", m.group(1))] if m else []
+
+
+def check_pak(ok, pak_path=None):
+    """Build 55: ui.pak against the table every check above read (menuhelper_bins.c)."""
+    try:
+        pak = load_pak_py()
+        table = pak.parse_table(GEN_C)
+        build = pak.qwark_build()
+        data = pak.pak_bytes(table, build)
+        got_build, got_crc, rs = read_pak(data)
+    except (SystemExit, ValueError, OSError) as e:
+        ok(False, "ui.pak: pak.py packs the table into a pak this script can read back (%s)" % e)
+        return
+    text = open(GEN_C, encoding="utf-8").read()
+    descs = parse_descs(GEN_C)
+    games = (("rac4", 4, "Deadlocked"), ("rac3", 3, "UYA"), ("rac2", 2, "RaC2"), ("rac1", 1, "RaC1"))
+    ok(got_build == build and [r["game"] for r in rs] == [g[1] for g in games] and len(rs) <= 8,
+       "ui.pak: build %d, the four renderers in the table's order" % build)
+    for (g, game, name), r in zip(games, rs):
+        _, _, _, hooks, caves, _ = parse_bins(GEN_C, g)
+        want_caves = []
+        for addr, cname, code, zeros in caves:
+            m = re.search(r"static const u8 %s\[\] = \{(.*?)\};" % cname, text, re.S)
+            body = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+            want_caves.append((addr, body, code, zeros))
+        hdr = header_defs(os.path.join(HERE, "mh_%s.h" % g))
+        ok(r["caves"] == want_caves and [tuple(h) for h in r["hooks"]] == [h[:3] for h in hooks] and
+           r["nhelp"] == descs.get(g, (0, -1))[1] and r["words"] == table_desc_words(text, g) and
+           r["title"] == hdr.get("MH_TITLE") and len(r["caves"]) <= 8 and len(r["hooks"]) <= 32,
+           "ui.pak: %s's renderer is the table's: the descriptor, %d caves byte for byte with their zeros, "
+           "%d hook words, %d of them the Help row's" % (name, len(r["caves"]), len(r["hooks"]), r["nhelp"]))
+    m = re.search(r"^#define\s+MH_PAK_ID\s+(0x[0-9A-Fa-f]{8})u",
+                  open(os.path.join(QWARK, "src", "games", "menuhelper_bins.h"), encoding="utf-8").read(), re.M)
+    pak_id = int(m.group(1), 16) if m else None
+    ok(pak_id == got_crc == zlib_crc(data[32:]),
+       "ui.pak: its CRC after the header, 0x%08X, is MH_PAK_ID in menuhelper_bins.h, the renderers the module "
+       "accepts" % got_crc)
+    path = pak_path or os.path.join(QWARK, "ui.pak")
+    if os.path.exists(path):
+        file_data = open(path, "rb").read()
+        ok(file_data == data, "ui.pak: %s is this build's pak, byte for byte (%d bytes)" % (path, len(data)))
+    elif pak_path:
+        ok(False, "ui.pak: %s exists" % pak_path)
+    else:
+        print("        (no ui.pak beside the module to compare; `make` writes one)")
+
+
 def shim_set_layout(shim_defs, rows):
     """Text set 0's first row, from the state, and a set's size, for `rows` mailbox rows (mh_shim.h)."""
     set_flags = shim_defs["SET_KIND"] + rows
@@ -3598,6 +3698,8 @@ def main():
                     help="LABEL=DIR, a mods folder with <TITLEID>/<mod>/patch.txt")
     ap.add_argument("--bonus", default=None,
                     help="Deadlocked's bonus.ps3 (its IGE layouts), read for templates 37 and 28")
+    ap.add_argument("--pak", default=None,
+                    help="a ui.pak to hold to this table (by default the one `make` left beside qwark.sprx)")
     args = ap.parse_args()
     bonus = args.bonus or os.path.join(os.path.expanduser("~"), DL_BONUS)
 
@@ -3644,6 +3746,7 @@ def main():
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
     check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)
     check_help_rows(ok)
+    check_pak(ok, args.pak)
 
     print("\n%s" % ("all checks passed" if failures == 0 else "%d check(s) FAILED" % failures))
     return 0 if failures == 0 else 1

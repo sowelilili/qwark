@@ -8,6 +8,7 @@
 #include "autosplit.h"
 #include "savefile.h"
 #include "switches.h"
+#include "uipak.h"
 #include "manips.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
@@ -35,8 +36,20 @@
  * since build 54, VSH_MEMORY) keep their own small per-connection buffers and never come near this, so they are
  * answered while another client holds the arena, exactly as they are answered
  * during a boot.
+ *
+ * Build 55 (SPEC-footprint.md, cut C4): the arena is one frame, not two. No op
+ * takes a large request and gives a large reply: the bulk writes (MEM_WRITE,
+ * FILE_WRITE, SAVEFILE_WRITE, PATCH_APPLY, LEVELFLAGS_SET, POS_STORE,
+ * FILE_RENAME's two paths) answer in a few bytes, and every large reply comes
+ * from a small request. So a request that fits the connection's own control
+ * reply buffer (CONN_SMALL, 937 bytes) is read into that and the arena takes
+ * the reply, a whole frame of it; a larger request is read into the arena and
+ * its reply goes into the connection's buffer, FULL past 937 bytes, which every
+ * handler checks as it has always checked its cap. Who holds the arena, and
+ * for how long, is as it was: one request of one connection at a time.
  */
 #define CONN_REPLY_CAP  QWARK_MAX_PAYLOAD
+#define CONN_SMALL      TELEMETRY_MAX
 #define REQUEST_TIMEOUT_US 2000000u
 
 /* How long a connection waiting for the arena sleeps between tries. */
@@ -114,6 +127,8 @@ struct filehandle {
 	plat_file_t f;
 	int  conn_slot;
 	u8   used;
+	/* Build 55: opened for writing on ui.pak, which is looked at again once it closes. */
+	u8   pak;
 };
 
 static struct conn g_conns[QWARK_MAX_CLIENTS];
@@ -121,13 +136,13 @@ static struct sub  g_subs[QWARK_MAX_SUBS];
 static struct filehandle g_files[MAX_FILES];
 
 /*
- * The arena itself. Two buffers, one frame each, and a flag that says whether a
- * connection has them. The flag is taken and given back under g_arena_mutex; a
- * connection that cannot have it sleeps and tries again rather than blocking on
- * the mutex, so it stays cancellable and holds no other lock while it waits.
+ * The arena itself. One frame (two until build 55), and a flag that says
+ * whether a connection has it. The flag is taken and given back under
+ * g_arena_mutex; a connection that cannot have it sleeps and tries again rather
+ * than blocking on the mutex, so it stays cancellable and holds no other lock
+ * while it waits.
  */
-static u8 g_arena_req[QWARK_MAX_PAYLOAD];
-static u8 g_arena_reply[CONN_REPLY_CAP];
+static u8 g_arena[QWARK_MAX_PAYLOAD];
 static plat_mutex_t g_arena_mutex;
 static int g_arena_held;
 static u32 g_arena_takes;
@@ -364,7 +379,7 @@ static int payload_path(const u8 *req, u32 reqlen, u32 offset, char *out, u32 ca
 	return path_ok(out);
 }
 
-static int file_alloc(int conn_slot, plat_file_t f, u32 *handle)
+static int file_alloc(int conn_slot, plat_file_t f, u32 *handle, u8 pak)
 {
 	int i;
 
@@ -374,6 +389,7 @@ static int file_alloc(int conn_slot, plat_file_t f, u32 *handle)
 		g_files[i].used = 1;
 		g_files[i].f = f;
 		g_files[i].conn_slot = conn_slot;
+		g_files[i].pak = pak;
 		*handle = (u32)(i + 1);
 		plat_mutex_unlock(&g_file_mutex);
 		return 1;
@@ -404,6 +420,7 @@ static void file_release(int conn_slot, u32 handle)
 	plat_mutex_lock(&g_file_mutex);
 	if (g_files[handle - 1].used && g_files[handle - 1].conn_slot == conn_slot) {
 		plat_file_close(g_files[handle - 1].f);
+		if (g_files[handle - 1].pak) uipak_touch(UIPAK_PATH);
 		memset(&g_files[handle - 1], 0, sizeof(g_files[0]));
 	}
 	plat_mutex_unlock(&g_file_mutex);
@@ -417,6 +434,7 @@ static void file_release_conn(int conn_slot)
 	for (i = 0; i < MAX_FILES; i++) {
 		if (!g_files[i].used || g_files[i].conn_slot != conn_slot) continue;
 		plat_file_close(g_files[i].f);
+		if (g_files[i].pak) uipak_touch(UIPAK_PATH);
 		memset(&g_files[i], 0, sizeof(g_files[0]));
 	}
 	plat_mutex_unlock(&g_file_mutex);
@@ -1435,7 +1453,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (plat_file_open(path, req[0] == 0 ? PLAT_OPEN_READ : PLAT_OPEN_WRITE, &f) != 0)
 			return ST_IO_ERROR;
 
-		if (!file_alloc(slot, f, &handle)) {
+		if (!file_alloc(slot, f, &handle, (u8)(req[0] == 1 && uipak_names(path)))) {
 			plat_file_close(f);
 			return ST_FULL;
 		}
@@ -1484,8 +1502,13 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 	case OP_FILE_DELETE: {
 		char path[PATH_MAX_LEN];
+		int rc;
+
 		if (!payload_path(req, reqlen, 0, path, sizeof(path))) return ST_BAD_ARG;
-		return plat_file_unlink(path) == 0 ? ST_OK : ST_NOT_FOUND;
+		rc = plat_file_unlink(path) == 0 ? ST_OK : ST_NOT_FOUND;
+		/* Build 55: after the op, so the look the tick takes sees what it left. */
+		uipak_touch(path);
+		return rc;
 	}
 
 	case OP_DIR_LIST: {
@@ -1525,8 +1548,12 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 	case OP_DIR_DELETE: {
 		char path[PATH_MAX_LEN];
+		u16 rc;
+
 		if (!payload_path(req, reqlen, 0, path, sizeof(path))) return ST_BAD_ARG;
-		return (u16)rmdir_recursive(path, 0);
+		rc = (u16)rmdir_recursive(path, 0);
+		uipak_touch(path);
+		return rc;
 	}
 
 	case OP_USER_ID:
@@ -1567,7 +1594,14 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (!plat_path_exists(from, NULL, NULL)) return ST_NOT_FOUND;
 		if (plat_path_exists(to, NULL, NULL)) return ST_BAD_ARG;
 
-		return plat_file_rename(from, to) == 0 ? ST_OK : ST_IO_ERROR;
+		{
+			u16 rc = plat_file_rename(from, to) == 0 ? ST_OK : ST_IO_ERROR;
+
+			/* Build 55: a client putting ui.pak in place, or taking it away. */
+			uipak_touch(from);
+			uipak_touch(to);
+			return rc;
+		}
 	}
 
 	/*
@@ -1745,8 +1779,8 @@ static int take_arena(struct conn *c)
 		g_arena_held = 1;
 		g_arena_takes++;
 		c->has_arena = 1;
-		c->req = g_arena_req;
-		c->reply = g_arena_reply;
+		c->req = g_arena;
+		c->reply = g_arena;
 		got = 1;
 	}
 	plat_mutex_unlock(&g_arena_mutex);
@@ -1863,8 +1897,21 @@ static void conn_thread(void *arg)
 				if (send_all(c, header, QWARK_FRAME_HEADER) != 0) break;
 				continue;
 			}
-			/* take_arena pointed req and reply at the two shared buffers. */
-			replycap = CONN_REPLY_CAP;
+			/*
+			 * Build 55: one arena. A request that fits the connection's own
+			 * buffer is read into it and the arena takes the reply; a larger
+			 * one is read into the arena and answered from the connection's
+			 * buffer. The two never overlap, whatever a handler does.
+			 */
+			if (length <= CONN_SMALL) {
+				c->req = c->control_reply;
+				c->reply = g_arena;
+				replycap = CONN_REPLY_CAP;
+			} else {
+				c->req = g_arena;
+				c->reply = c->control_reply;
+				replycap = CONN_SMALL;
+			}
 		}
 
 		if (length > 0 && recv_all(c, c->req, length) != 0) {

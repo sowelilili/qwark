@@ -37,6 +37,14 @@
 # the state where the C looks for it, every branch within reach. Then python -I
 # src/games/menuhelper/check.py checks it against the game's executable and
 # every mod known (it reads the generated file, so it runs without the SDK).
+#
+# Build 55: the module no longer links the generated file. `make` packs it
+# into ui.pak with pak.py beside this file, and qwark reads the running game's
+# renderer out of that file on the console's HDD (src/core/uipak.c). The last
+# step here asks pak.py for the renderers' identity, the CRC-32 the pak will
+# carry, and writes it into the header as MH_PAK_ID, so a module takes only the
+# pak packed from the renderers it was built with. Python is needed for that,
+# as for check.py.
 set -e
 
 cd "$(dirname "$0")/../../.."
@@ -63,7 +71,7 @@ fail() {
 
 # ---------------------------------------------------------------- staleness
 
-sources="$DIR/build.sh $DIR/mh.ld.in $DIR/mh_common.h $DIR/mh_shim.h $DIR/mh_core.c src/core/menubox.h"
+sources="$DIR/build.sh $DIR/pak.py $DIR/mh.ld.in $DIR/mh_common.h $DIR/mh_shim.h $DIR/mh_core.c src/core/menubox.h"
 for g in $RENDERERS; do
 	sources="$sources $DIR/mh_$g.h $DIR/mh_$g.c $DIR/mh_${g}_stubs.S $DIR/mh_${g}_state.S"
 	for f in $DIR/mh_${g}_*.c $DIR/mh_${g}_*.h; do
@@ -615,7 +623,7 @@ sed '$ s/},$/}/' "$OUT/descs.txt" > "$OUT/descs-final.txt"
 
 # --------------------------------------------------------------- emit the source
 
-cat > "$GEN_H" <<'EOF'
+cat > "$OUT/bins.h.in" <<'EOF'
 /*
  * The console menu's renderers, as bytes: what qwark writes into a game so that
  * the game draws qwark's menu with its own widgets (src/core/menu.c).
@@ -629,13 +637,22 @@ cat > "$GEN_H" <<'EOF'
  * code the Sony cross compiler produces, and the host builds and the tests are
  * clang on a PC with no SDK near them.
  *
- * Embedded in the module for now; the spec's ui.pak on the HDD would hand
- * menu.c the same struct mh_desc out of a file.
+ * Since build 55 the module carries none of it. `make` packs it into ui.pak
+ * (src/games/menuhelper/pak.py), the file on the console's HDD the module
+ * reads the running game's renderer from (src/core/uipak.c), and the host
+ * tests link this table to hold the pak to it.
  */
 #ifndef QWARK_MENUHELPER_BINS_H
 #define QWARK_MENUHELPER_BINS_H
 
 #include "../core/proto.h"
+
+/*
+ * The renderers' identity: the CRC-32 of ui.pak after its header, as pak.py
+ * packs this table. A module takes only the pak that carries it (and names its
+ * build), so the menu that goes into a game is always the module's own.
+ */
+#define MH_PAK_ID @MH_PAK_ID@u
 
 /*
  * One run of bytes at one address - the mailbox, the state, the read-only
@@ -693,7 +710,10 @@ struct mh_desc {
 	u32 screen_id;
 };
 
-/* NULL for a game with no renderer, and for GAME_NONE. */
+/*
+ * The table, by game: NULL for a game with no renderer, and for GAME_NONE.
+ * Only the host builds link it; the module reads ui.pak (mh_pak_desc).
+ */
 const struct mh_desc *mh_desc_for_game(u8 game_id);
 
 #endif /* QWARK_MENUHELPER_BINS_H */
@@ -710,6 +730,8 @@ EOF
  *     sh src/games/menuhelper/build.sh
  *
  * from the SDK's Cygwin shell, then python -I src/games/menuhelper/check.py.
+ * Only the host builds link it: the module reads the running game's renderer
+ * out of ui.pak, which pak.py packs from this file (src/core/uipak.h).
  *
  * Per renderer: the data image (the mailbox, the renderer state, its read-only
  * data, its TOC and its descriptors), the code, and the hook words with the
@@ -736,5 +758,13 @@ const struct mh_desc *mh_desc_for_game(u8 game_id)
 EOF
 } > "$GEN_C"
 
-echo "menuhelper: regenerated $GEN_C and $GEN_H"
+# Build 55: the identity of what was just written, as ui.pak will carry it.
+pak_id=$(python -I "$DIR/pak.py" --id --table "$GEN_C" | tr -d '\r')
+case "$pak_id" in
+	0x????????) ;;
+	*) fail "pak.py --id answered '$pak_id'" ;;
+esac
+sed "s/@MH_PAK_ID@/$pak_id/" "$OUT/bins.h.in" > "$GEN_H"
+
+echo "menuhelper: regenerated $GEN_C and $GEN_H (renderers $pak_id)"
 cat "$OUT/report.txt"

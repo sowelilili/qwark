@@ -52,6 +52,8 @@ Revision 1.23 (2026-10-20, module build 55): two settings of the console's own. 
 
 Revision 1.23, the fixes (client 1.4.1): Deadlocked's PLANET_LOAD unlocks a locked planet only in a save file's game held still, and is `BUSY` for one anywhere else (the front end, multiplayer, a load), with nothing written; Unlock all planets (feature 11) is `BUSY` there too. In co-op it loads co-op's level, the planet's id plus 20, as the game's own travel does, where it loaded the single-player level with co-op's rules on (section 5.5). The console menu, which is not on the wire: a row's refusal goes when its two seconds are up or its page goes, a save library page reads each folder once per build, and a save row's press is refused as stale if the category's listing has changed since the page was built (section 9). No opcode, structure or status changed.
 
+Revision 1.23, ui.pak (client 1.4.1, same build 55): the console menu's four renderers leave the module for a file on the console's HDD, `/dev_hdd0/qwark/ui.pak`, which `make` writes beside `qwark.sprx` and a release ships with it; the module reads the running game's renderer from it as the menu goes into the game, and takes only the pak built with it (section 9.10). SessionInfo `flags` bit7 UI_PAK_BAD is set while that file is missing, damaged or another build's, so a client can write the right one: FILE_OPEN, FILE_WRITE and FILE_CLOSE to `ui.pak.new`, FILE_DELETE of `ui.pak`, FILE_RENAME into its place, and the module looks at it again within a tick of a file op on its path (section 5.8). A pak left as `ui.pak.new` by an update is taken at the next module start. Separately, the console keeps one 16384-byte frame for every connection's bulk requests where it kept two, a request and a reply; nothing changed for a client that sends what this document describes, but a request longer than 937 bytes is answered from the connection's own buffer, so its reply is `FULL` (or `BAD_ARG`, where an op checks its length against the room) past 937 bytes, and no op takes a request that long and answers more (section 1.1). No opcode or structure changed. Without its pak a module still works in full but for the console menu; RPCS3 never needs one.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -77,7 +79,7 @@ The moment the console reports a game process, qwark leaves it alone for one sec
 
 For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE and, since build 54, VSH_MEMORY, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
 
-Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. A second client's bulk request therefore waits for the first to finish rather than being refused, and the six control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
+Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. Since build 55 (revision 1.23) the pair is one 16384-byte frame and the connection's own 937-byte buffer: a request of up to 937 bytes is read into the connection's buffer and the reply goes into the frame; a longer request goes into the frame and its reply into the connection's buffer, at most 937 bytes. No op takes more than 937 bytes and answers more than that (the bulk writes, MEM_WRITE, FILE_WRITE, SAVEFILE_WRITE, PATCH_APPLY, LEVELFLAGS_SET, POS_STORE and FILE_RENAME's two paths, answer in a few bytes, and every large reply comes from a small request), so a client that sends what this document describes sees no difference; a request padded past 937 bytes gets `FULL`, or the op's own `BAD_ARG` for a length past its room, for a reply that would not fit. A second client's bulk request therefore waits for the first to finish rather than being refused, and the six control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
 
 Connected sockets are non-blocking. A payload receive and a reply send each have a two-second deadline, not counting time paused for a launch, and a connection that misses one is closed and the buffers released. Waiting for the next request header has no deadline and holds no buffers.
 
@@ -123,6 +125,11 @@ u8   flags              bit0 PREVIOUS_PENDING: a previous-session record is wait
                         bit6 MENU_HELP_OFF (revision 1.23): config.txt's `menu.help` is 0, so the
                              console menu leaves the game's Help row alone (MENU_HELP, sections
                              5.10 and 9.2)
+                        bit7 UI_PAK_BAD (revision 1.23, build 55): the console's
+                             /dev_hdd0/qwark/ui.pak is missing, damaged or not the one built with
+                             this module, so the console menu cannot go into a game (section 9.10).
+                             Set only on a console, from the module's first tick; never by
+                             qwark-rpcs3, and never by a module before build 55
 u8   selected_slot      0..7, used by the save/load combos
 u8   selected_planet    used by the load-planet combo. Since build 53 the running game's, and
                         outside a game the last game's (section 5.5)
@@ -180,6 +187,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | FEATURE_TRIGGER of UYA's Reset trophies (21), and FEATURE_SET of its toggle (39) to on | `UNSUPPORTED` always, patch or not (revision 1.21, section 5.14). The reset deletes the game's trophy data on the console first, and RPCS3 keeps its own where qwark cannot reach it; the game's half alone would change nothing a run can see |
 | The OPEN_MENU combo (revision 1.22) | nothing but a notification: the console menu's renderer is code, so `qwark-rpcs3` installs none and there is no menu (section 9) |
 | MENU_HELP (revision 1.23) | `UNSUPPORTED`: there is no menu, and so no Help row of its |
+| ui.pak (revision 1.23, build 55) | never looked at, and `flags` bit7 UI_PAK_BAD never set: there is no menu to read |
 | The TOGGLE_FAST_LOADS combo (revision 1.23) | refused as FEATURE_SET of the game's Fast loads is, unless bit4 CODE_SWITCHES is set, with a notification that says the patches are needed |
 
 SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on this platform (section 5.12.1).
@@ -621,6 +629,8 @@ These are the transport of both libraries: the client uploads a mod's files with
 **FILE_RENAME** (revision 1.10) moves a file within `/dev_hdd0`. Both paths obey the rule above; the old path must exist (`NOT_FOUND` otherwise) and the new one must **not** (`BAD_ARG` if it does), because cellFs and Windows refuse to replace an existing destination while POSIX replaces it silently, and a rename that means one thing on a console and another in the simulator is worse than one that never overwrites anywhere. A client that means to replace a file deletes it first.
 
 It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gone: 0x0075 has been DIR_LIST since revision 1, and an opcode is never renumbered.
+
+**ui.pak** (revision 1.23, build 55). The console menu's file, `/dev_hdd0/qwark/ui.pak` (section 9.10), is written with these ops like any other file. The module looks at it again at its next tick after one of them changes it: FILE_CLOSE of a handle FILE_OPEN opened for writing on that path, FILE_DELETE of it, FILE_RENAME to or from it, and DIR_DELETE of a folder above it, each once the op is done. SessionInfo `flags` bit7 then says what it found, in the next block a client reads (telemetry and GET_STATE carry the block the tick publishes four times in its 120 a second). The way to put it right without a moment of a half-written pak is the module update's: write `ui.pak.new`, read it back, FILE_DELETE `ui.pak` (`NOT_FOUND` when there was none), FILE_RENAME `ui.pak.new` to `ui.pak`.
 
 ### 5.9 Combos (0x008x)
 
@@ -1333,7 +1343,7 @@ On a console qwark writes a game's renderer in a few seconds into each session (
 
 A renderer's caves are never taken out, and its hook words only for `menu.enabled = 0`, as above, and the Help row's alone for `menu.help = 0` (revision 1.23, section 9.2). A process that ends takes them with it, and the next session installs afresh.
 
-qwark carries the renderers inside the module in build 54 (`src/games/menuhelper_bins.c`, built from `src/games/menuhelper/`), the zeros of the mailbox and the state as counts rather than bytes; a later build may load them from a file on the HDD instead.
+qwark carried the renderers inside the module in build 54 (`src/games/menuhelper_bins.c`, built from `src/games/menuhelper/`), the zeros of the mailbox and the state as counts rather than bytes. Since build 55 (revision 1.23) they are in `/dev_hdd0/qwark/ui.pak`, and the install reads the running game's out of it as it writes it (section 9.10): before anything is compared or written the pak must still name this build and carry this module's renderers, and the game's part of it must be whole, or nothing is written, as for a refusal. Its code goes in a scratch buffer at a time, in pieces of 8 KB, still before every hook word, so an install makes a write or two more than build 54 did (Deadlocked twenty-seven, UYA twenty-five, in the host tests).
 
 ### 9.4 The mailbox
 
@@ -1600,3 +1610,50 @@ The code is in four runs of code nothing reaches, the text segment's tail being 
 The renderer's state begins with the core's counters, at 0x160B000, as section 9.5 lists them: +0x04 the times its screen started, +0x08 open requests the play stub took, +0x0C the times the pause opened on the menu for one, +0x10 events, +0x14 pages, +0x18 pages caught half written, +0x1C presses dropped. Its own words at 0x160BE50 (round 4; 0x160B9D0 before): +0x1C the text stub's answers, +0x20 opens written and taken back unused, +0x24 rows shrunk or cut short to fit, +0x28 the first one-row pane's width and height, +0x2C the CONFIG list pane's (two halves each, in the game's draw units).
 
 From the NPEA00385 executable and probes N1, N1b and N1c on hardware. The renderer's first version, with Camera Options' layout on its CONFIG pages, ran on the user's console (2026-10-19), and Cheats' layout, the planet picker and rounds 5 and 6 since (2026-10-19 and 2026-10-20). The disc trilogy's RaC1 (BCES01503) shares RaC1's addresses, and gets the renderer only if every one of the four words holds the game's own.
+
+### 9.10 ui.pak, the renderers on the HDD (revision 1.23, build 55)
+
+Until build 54 the module carried all four renderers, 66 KB of them, for its whole life in the VSH's memory, when only the running game's is ever wanted and only for the moment it goes in. Since build 55 they are a file beside qwark's other files, **`/dev_hdd0/qwark/ui.pak`**, wherever `boot_plugins.txt` loads the module from. `make` writes it beside `qwark.sprx` (`src/games/menuhelper/pak.py`, out of the committed `src/games/menuhelper_bins.c`), `make dist` copies it into `dist/`, and a client release ships the two together. Nothing of it crosses the network but the file itself, which a client writes with the file ops (section 5.8); this section is for anyone who builds, checks or copies one.
+
+**The file**, every integer big-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | magic `QPAK` |
+| 4 | u16 format, 1 |
+| 6 | u16 header size, 32 |
+| 8 | u32 the module build it was made with (QWARK_BUILD) |
+| 12 | u32 CRC-32 of everything after the header: the **renderers' identity** |
+| 16 | u32 the length of everything after the header |
+| 20 | u8 entries, then 3 bytes of 0, then 8 bytes of 0 |
+| 32 | the table of contents, 32 bytes an entry: u8 game id (1 RaC1 .. 4 Deadlocked, as in SessionInfo), u8 kind (1 a renderer), u16 0, char title[12] (NUL-padded, "NPEA00423"), u32 the entry's offset from the start of the file, u32 its length, u32 its CRC-32, u32 0 |
+
+An **entry**, at its offset:
+
+| Offset | Field |
+|---|---|
+| 0 | the descriptor: u32 mailbox address, u32 mailbox size, u32 the renderer's state, u32 the game's mode word, u32 its paused value, u32 the pending-mode word, u32 its none value, u32 the screen word, u32 the menu's screen value; u8 caves, u8 hook words, u8 of those the Help row's (the last ones, section 9.2), u8 0 |
+| 40 | the caves, 20 bytes each, in the order they go in (the mailbox, the state, the read-only data, then the code): u32 address in the game, u32 offset of its bytes from the start of the entry, u32 their length, u32 the zeros that follow them in the game, u8 1 for code, 3 bytes of 0 |
+| after the caves | the hook words, 12 bytes each, in the order they go in: u32 address, u32 the renderer's word, u32 the game's own |
+| after the hook words | each cave's bytes, in the caves' order |
+
+The CRCs are the ordinary reflected CRC-32 of zlib and of every other sum in this document. The reader takes at most 8 entries, 8 caves and 32 hook words. Build 55's pak is 67,784 bytes: Deadlocked 15,480 bytes of caves and 19 words, UYA 17,932 and 14, RaC2 15,564 and 6, RaC1 17,592 in seven caves and 4.
+
+**Which pak a module takes.** Exactly the one built with it. The header must name the module's build, and its CRC must be the identity the module was compiled with (`MH_PAK_ID`, which the renderers' build writes into `src/games/menuhelper_bins.h`), so a pak of another build, or of other renderers under the same build number, a test build's, is refused like a missing one. The CRC must hold over the rest of the file, its length must be the header's, and the game's own part must be whole by its own CRC before a byte of it goes into the game.
+
+**When it is read.** The module looks at the whole file once its tick thread is up, at the XMB or in a game, never in the second a launch is left alone (section 1.1): one open and some 68 KB read through its 8 KB scratch buffer. It looks again within a tick of a client's file op on the path (section 5.8). Neither look holds the file open. At a session's menu install (section 9.3), a few seconds in, it reads the header, the table of contents and the game's descriptor and records, checks the game's part whole, and then writes the caves straight out of the file into the game a scratch buffer at a time; the file is open for that one tick. A session that has no menu for another reason (`menu.enabled = 0`, RPCS3, a title with no game table) never opens it.
+
+**An update's pak.** As it starts, before it looks, the module takes `/dev_hdd0/qwark/ui.pak.new` in place of `ui.pak` (a delete and a rename) when that file is a good pak for its own build, and leaves it where it is otherwise. A client's standalone module update writes the new build's pak there, beside the module that is still running, which keeps reading its own `ui.pak` until the console restarts; the new module then puts the staged one in place. A `ui.pak.new` written while a module runs is never read by that module.
+
+**Without a usable pak**, missing, damaged or another build's:
+
+- nothing of the menu goes into the game: no cave, no hook word, the game's Help row its own;
+- qwark.log says which (`ui.pak: none at ...`, `ui.pak: build 54, renderers 0x..., not this module's (build 55, 0x...)`, `ui.pak: damaged or cut short`);
+- the console shows "Trainer menu: ui.pak missing or from another build" once in the module's life, at the first session the menu cannot go in, and a press of the menu combo says it again, once a session;
+- SessionInfo `flags` bit7 UI_PAK_BAD is set, at the XMB as well, so a client says so and offers to send the one it shipped (section 5.8 has the sequence);
+- the session tries again as soon as the module has looked at the pak again, which a client's write of it makes happen, so the menu goes into a running game without a restart; a press of the combo tries at once;
+- everything else qwark does is unchanged.
+
+A pak whose own part for one game is damaged serves the other games and fails that one; bit7 stays set for the file as a whole. A pak deleted while a game runs leaves the renderer already in that game alone; the next session has none.
+
+**RPCS3** has no console menu, so `qwark-rpcs3` never opens a pak, never looks for one and never sets bit7. The simulator, `qwark-host.exe`, reads one from its fake HDD (`qwark-host-root/dev_hdd0/qwark/ui.pak`) as a console does; the smoke run packs it there.
