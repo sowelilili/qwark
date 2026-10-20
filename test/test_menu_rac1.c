@@ -524,13 +524,14 @@ static void test_model_rac1(void)
 	                                     "qwark build 54" };
 	/*
 	 * Round 5: no Die, Bolts a button on Cheats; Auto-reset alone, no
-	 * Remember. Round 6: no spacer on Game (the other games put Challenge
-	 * mode there, which RaC1's menu has never had).
+	 * Remember. Round 6: no spacer on Game, and the Goodies menu in the place
+	 * the other games give Challenge mode (RaC1 has none; the user: the
+	 * goodies menu is its equivalent), off Cheats.
 	 */
-	static const char * const game[] = { "Position slot", "Save position", "Load position",
+	static const char * const game[] = { "Position slot", "Save position", "Load position", "Goodies menu",
 	                                     "Set aside file", "Load set-aside file", "Force autosave" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
-	                                       "Goodies menu", "Max bolts" };
+	                                       "Max bolts" };
 	static const char * const manips[] = { "Category", "Auto-reset", "Apply now" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Unlock all gold bolts", "Reset all gold bolts",
@@ -550,18 +551,27 @@ static void test_model_rac1(void)
 	      "window of seven");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
+	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
 	      view_row(&v, "Challenge mode") == NULL,
-	      "round 6, Game: the slot and the positions, the save-file buttons and Force autosave, no blank row "
-	      "(the jankpot and debug rows left out)");
+	      "round 6, Game: the slot and the positions, the Goodies menu (in Challenge mode's place), the "
+	      "save-file buttons and Force autosave, no blank row (the jankpot and debug rows left out)");
+	r = view_row(&v, "Goodies menu");
+	check(r != NULL && r->kind == MROW_TOGGLE && strcmp(r->value, "Off") == 0,
+	      "the Goodies menu, a LIVE toggle, is Off or On");
+	check(act(&v, MBOX_EV_ACTIVATE, "Goodies menu") == ST_OK && peek8(RAC1_GOODIES_MENU) == 1 &&
+	      strcmp(value_of(&v, "Goodies menu"), "On") == 0,
+	      "and the cross writes the game's byte");
+	check(act(&v, MBOX_EV_ACTIVATE, "Goodies menu") == ST_OK && peek8(RAC1_GOODIES_MENU) == 0 &&
+	      strcmp(value_of(&v, "Goodies menu"), "Off") == 0,
+	      "and again takes it back (a LIVE toggle has no Auto)");
 	r = view_row(&v, "Load set-aside file");
 	check(r != NULL && (r->flags & MROWF_CLOSES) != 0, "Load set-aside file closes the menu first");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
 	act(&v, MBOX_EV_ACTIVATE, "Cheats");
-	check(labels_are(&v, cheats, 6) && v.ptype == MBOX_PTYPE_CONFIG,
-	      "Cheats: the four cheats every game has, the Goodies menu, then (round 5) Max bolts");
+	check(labels_are(&v, cheats, 5) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "Goodies menu") == NULL,
+	      "Cheats: the four cheats every game has, then (round 5) Max bolts; the Goodies menu is on Game");
 	r = view_row(&v, "Max bolts");
 	check(r != NULL && r->kind == MROW_ACTION && act(&v, MBOX_EV_ACTIVATE, "Max bolts") == ST_OK &&
 	      peek32(RAC1_BOLTS) == 9999999u && value_of(&v, "Max bolts")[0] == 0,
@@ -570,12 +580,6 @@ static void test_model_rac1(void)
 	      "Ghost Ratchet: the cross turns it On");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
-	r = view_row(&v, "Goodies menu");
-	check(r != NULL && r->kind == MROW_TOGGLE && strcmp(r->value, "Off") == 0,
-	      "the Goodies menu, a LIVE toggle, is Off or On");
-	check(act(&v, MBOX_EV_ACTIVATE, "Goodies menu") == ST_OK && peek8(RAC1_GOODIES_MENU) == 1,
-	      "and the cross writes the game's byte");
-	act(&v, MBOX_EV_ACTIVATE, "Goodies menu");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
@@ -921,15 +925,15 @@ static void test_renderer_rac1(void)
 	      "then the game's transition to a CONFIG page");
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && strcmp(G.pane_text[0], "Cheats") == 0 && G.ndraw == 12 && G.blends >= 1,
-	      "titled Cheats in the title pane, six rows in the list pane");
+	check(r1_at() == AT_CONF && strcmp(G.pane_text[0], "Cheats") == 0 && G.ndraw == 10 && G.blends >= 1,
+	      "titled Cheats in the title pane, five rows in the list pane");
 	check(strcmp(conf_row(0, a, sizeof(a)), "Fast Loads=Off") == 0 &&
-	      strcmp(conf_row(4, b, sizeof(b)), "Goodies Menu=Off") == 0 &&
-	      strcmp(conf_row(5, b + 80, 80), "Max Bolts=") == 0,
-	      "labels and values in title case; round 5: Max Bolts, a blank button, last");
+	      strcmp(conf_row(3, b, sizeof(b)), "Freeze Health=Off") == 0 &&
+	      strcmp(conf_row(4, b + 80, 80), "Max Bolts=") == 0,
+	      "labels and values in title case; round 5: Max Bolts, a blank button, last; round 6: no Goodies Menu");
 	printf("    (%s, %s)\n", a, b);
 	check(G.draw_x[0] == 12.0f && G.draw_x[1] == 440.0f - 12.0f && G.draw_colour[0] == R1_COLOR_CURSOR &&
-	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(300 / 7 - 8) && G.draw_y[2] == (float)(2 * (300 / 7) - 8),
+	      G.draw_colour[2] == R1_COLOR_TEXT && G.draw_y[0] == (float)(300 / 6 - 8) && G.draw_y[2] == (float)(2 * (300 / 6) - 8),
 	      "Cheats' list geometry: the label at 12, the value right-aligned at w - 12, the rows sharing the pane, "
 	      "the cursor row lit");
 	check(r16(MH_SHIM + SH_CONF_W) == 440 && r16(MH_SHIM + SH_CONF_H) == 300 && r32(LIST + 0x14) == PANE0 + 0x100,
@@ -982,7 +986,7 @@ static void test_renderer_rac1(void)
 		frame(0);
 		check(G.boxes == boxes + 2 && G.sprites == sprites + 1 && strcmp(G.drawn[6], "Challenge Mode") == 0 &&
 		      strcmp(G.drawn[7], "5") == 0 && G.draw_x[7] == 440.0f / 2 + 80 &&
-		      G.draw_y[6] == G.draw_y[4] + (float)(300 / 7) + 4.0f,
+		      G.draw_y[6] == G.draw_y[4] + (float)(300 / 6) + 4.0f,
 		      "a slider row: its label 4 lower, its value before the bar, the frame and track boxes and the fill");
 		/* qwark's own page back, as qwark posted it. */
 		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 3);
@@ -1002,7 +1006,7 @@ static void test_renderer_rac1(void)
 	 */
 	{
 		u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r2 = mb + MBOX_OFF_ROWS + 2 * MBOX_ROW_SIZE;
-		u32 r4 = mb + MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE, c;
+		u32 r4 = mb + MBOX_OFF_ROWS + 3 * MBOX_ROW_SIZE, c;
 		u8 keep2[MBOX_ROW_SIZE], keep4[MBOX_ROW_SIZE];
 		size_t n;
 
@@ -1016,12 +1020,12 @@ static void test_renderer_rac1(void)
 		poke32(mb + MBOX_OFF_PAGE_SEQ, seq + 2);
 		frame(0);
 		frame(0);
-		n = strlen(G.drawn[8]);
+		n = strlen(G.drawn[6]);
 		check(G.draw_colour[4] == R1_COLOR_GREY && G.draw_colour[2] == R1_COLOR_CURSOR && n >= 3 && n < 40 &&
-		      strcmp(G.drawn[8] + n - 2, "..") == 0 && strcmp(G.drawn[9], "Off") == 0 &&
+		      strcmp(G.drawn[6] + n - 2, "..") == 0 && strcmp(G.drawn[7], "Off") == 0 &&
 		      (int)n * 10 <= (440 - 12) - 3 * 10 - 10 - 12 && (int)(n + 1) * 10 > (440 - 12) - 3 * 10 - 10 - 12,
 		      "a grey row in the generic list's grey; a label too long cut with \"..\", ending 10 before its value");
-		printf("    (%s)\n", G.drawn[8]);
+		printf("    (%s)\n", G.drawn[6]);
 		frame(PADB_DOWN);
 		frame(0);
 		check(r8(MH_SHIM + SH_CUR) == 3 && G.draw_colour[6] == R1_COLOR_CURSOR, "Down passes over the grey row");
@@ -1034,7 +1038,7 @@ static void test_renderer_rac1(void)
 		frame(0);
 		frame(0);
 		check(strcmp(conf_row(2, a, sizeof(a)), "Infinite Ammo=Off") == 0 &&
-		      strcmp(conf_row(4, b, sizeof(b)), "Goodies Menu=Off") == 0 && G.draw_colour[4] == R1_COLOR_TEXT,
+		      strcmp(conf_row(3, b, sizeof(b)), "Freeze Health=Off") == 0 && G.draw_colour[4] == R1_COLOR_TEXT,
 		      "and the rows as they were");
 		for (c = 0; c < 128; c++) w8(R1_FONT_MEDIUM + 4 * c + 3, 0);
 	}
@@ -1049,32 +1053,51 @@ static void test_renderer_rac1(void)
 	check(r32(R1_MENU_PAGE) == PAGE_LIST && r32(PAGE_LIST + 0x40) == ROW(1) && r8(MH_SHIM + SH_NROWS) == 7,
 	      "the root again, the focus on Cheats");
 
-	/* GAME (round 6): six rows, no spacer among them; a long page scrolls in the list pane. */
+	/*
+	 * GAME (round 6): seven rows, no spacer among them, the Goodies menu in
+	 * Challenge mode's place; a long page scrolls in the list pane.
+	 */
 	w32(PAGE_LIST + 0x40, ROW(0));
 	step(0x40);
 	frame(0);
 	frames(7);
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 6 && G.ndraw == 12, "Game: six rows, all on screen in a pane of 300");
+	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 7 && G.ndraw == 14, "Game: seven rows, all on screen in a pane of 300");
 	check(strcmp(conf_row(2, a, sizeof(a)), "Load Position=") == 0 &&
-	      strcmp(conf_row(3, b, sizeof(b)), "Set Aside File=") == 0,
-	      "round 6: Set Aside File straight after Load Position, no blank row between");
+	      strcmp(conf_row(3, b, sizeof(b)), "Goodies Menu=Off") == 0 &&
+	      strcmp(conf_row(4, b + 80, 80), "Set Aside File=") == 0,
+	      "round 6: Goodies Menu straight after Load Position, Set Aside File after it, no blank row");
 	step(PADB_DOWN);
 	step(PADB_DOWN);
 	check(r8(MH_SHIM + SH_CUR) == 2, "Down twice: Load Position");
 	step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 3 && G.draw_colour[6] == R1_COLOR_CURSOR, "Down: Set Aside File");
+	check(r8(MH_SHIM + SH_CUR) == 3 && G.draw_colour[6] == R1_COLOR_CURSOR, "Down: Goodies Menu");
+	step(0x40);
+	tick(2);
+	frame(0);
+	check(strcmp(conf_row(3, a, sizeof(a)), "Goodies Menu=On") == 0 && peek8(RAC1_GOODIES_MENU) == 1 &&
+	      r8(MH_SHIM + SH_CUR) == 3,
+	      "the cross: On, the game's byte written, refreshed in place");
+	step(0x40);
+	tick(2);
+	frame(0);
+	check(strcmp(conf_row(3, a, sizeof(a)), "Goodies Menu=Off") == 0 && peek8(RAC1_GOODIES_MENU) == 0,
+	      "and again: Off");
+	step(PADB_DOWN);
+	frame(0);
+	check(r8(MH_SHIM + SH_CUR) == 4 && G.draw_colour[8] == R1_COLOR_CURSOR, "Down: Set Aside File");
 	step(PADB_UP);
-	check(r8(MH_SHIM + SH_CUR) == 2, "and Up: Load Position");
+	step(PADB_UP);
+	check(r8(MH_SHIM + SH_CUR) == 2, "and Up twice: Load Position");
 	G.list_h = 120;
 	frame(0);
 	check(r8(MH_SHIM + SH_VIS) == 5 && G.ndraw == 10, "in a pane of 120, five on screen (rows of 20 at least)");
 	for (i = 0; i < 4; i++) step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 5 && r8(MH_SHIM + SH_TOP) == 1 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
-	      "Down to Force Autosave, the last, scrolls the window: rows 1 to 5");
+	check(r8(MH_SHIM + SH_CUR) == 6 && r8(MH_SHIM + SH_TOP) == 2 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
+	      "Down to Force Autosave, the last, scrolls the window: rows 2 to 6");
 	for (i = 0; i < 10; i++) step(PADB_UP);
 	frame(0);
 	check(r8(MH_SHIM + SH_CUR) == 0 && r8(MH_SHIM + SH_TOP) == 0, "Up to the top: no wrap, the window back");

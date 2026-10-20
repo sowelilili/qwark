@@ -3065,13 +3065,37 @@ def exercise_console_menu_rac1(c, sim):
     check(page is not None and page[0] % 2 == 0 and
           page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
           "RaC1 menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+    # Round 6: the Goodies menu, RaC1's equivalent of the other games' Challenge mode, is the
+    # fourth row of Game, a switch; Cheats is the four toggles, then Max bolts.
+    check(menu_event(c, MBOX_EV_ACTIVATE, 0, box, size, rs), "RaC1 menu: Game")
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    body = page[4] if page else b""
+    check(page is not None and page[2] == "Game" and
+          page[3] == ["Position slot", "Save position", "Load position", "Goodies menu", "Set aside file",
+                      "Load set-aside file", "Force autosave"] and page[5] == MBOX_PTYPE_CONFIG and
+          body[MBOX_OFF_ROWS + 3 * rs + MROW_OFF_KIND] == MROW_TOGGLE,
+          "RaC1 menu: round 6's Game, the Goodies menu (a switch) fourth, no blank row", page[3] if page else None)
+    mem_write(c, RAC1_GOODIES_MENU, b"\x00")
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs) and mem_read_u8(c, RAC1_GOODIES_MENU) == 1,
+          "RaC1 menu: the Goodies menu from Off: On, the byte 1", mem_read_u8(c, RAC1_GOODIES_MENU))
+    time.sleep(0.1)
+    page = menu_page(c, box, size, rs)
+    body = page[4] if page else b""
+    at = MBOX_OFF_ROWS + 3 * rs + MROW_OFF_VALUE
+    check(page is not None and body[at:at + 8].split(b"\0")[0] == b"On",
+          "RaC1 menu: and the row reads On", body[at:at + 8])
+    check(menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs) and mem_read_u8(c, RAC1_GOODIES_MENU) == 0,
+          "RaC1 menu: again: Off, the byte 0", mem_read_u8(c, RAC1_GOODIES_MENU))
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back from Game")
+    time.sleep(0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC1 menu: an event is acked")
     time.sleep(0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Cheats" and page[3] == ["Fast loads", "Ghost Ratchet", "Infinite ammo",
-                                                                    "Freeze health", "Goodies menu", "Max bolts"] and
-          page[5] == MBOX_PTYPE_CONFIG, "RaC1 menu: the Cheats page is posted, a CONFIG page (round 5: Max bolts last)",
-          page[:4] if page else None)
+                                                                    "Freeze health", "Max bolts"] and
+          page[5] == MBOX_PTYPE_CONFIG, "RaC1 menu: the Cheats page is posted, a CONFIG page (no Goodies menu, "
+          "Max bolts last)", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size, rs), "RaC1 menu: back is acked")
     time.sleep(0.1)
     check(menu_event(c, MBOX_EV_ACTIVATE, 4, box, size, rs), "RaC1 menu: Unlocks")

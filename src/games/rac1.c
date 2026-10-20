@@ -1053,11 +1053,14 @@ static const struct game_manips rac1_manips = {
  * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac1",
  * as UYA's are. Game is the quick block of the client's Game panel and its
  * savefile tab (Force autosave beside the two set-aside buttons); Cheats the
- * four cheats every game has and the Goodies menu, the one switch of the Game
- * panel's "Options" column. Round 5 (the user's hardware notes): Die is left
+ * four cheats every game has. Round 5 (the user's hardware notes): Die is left
  * to the combos, and Bolts is a button at the end of Cheats, Max bolts. Round
- * 6: Game has no spacer (the other games put Challenge mode in its place, which
- * RaC1's menu never had). The jankpot, the debug
+ * 6: Game has no spacer; the other games put Challenge mode in its place, and
+ * RaC1, which has none, the Goodies menu (the user: the game's challenge-mode
+ * equivalent), off Cheats, where it had been the fifth toggle. The feature is
+ * as it was (a LIVE toggle in G_CHEATS, so DESCRIBE and the client's panels are
+ * the same); only this table moved it. NG+ goodies is a different thing, a
+ * readout, in no menu table. The jankpot, the debug
  * updates and the camera mode are the client's Debug page, which the menu
  * leaves out. The gold bolt and skill point buttons are the client's
  * Collectables tab, beside the unlock table, so the Unlocks page links them
@@ -1067,12 +1070,12 @@ static const struct game_manips rac1_manips = {
  */
 static const u8 rac1_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	F_GOODIES,
 	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE
 };
 
 static const u8 rac1_menu_cheats[] = {
 	F_FAST_LOADS, F_GHOST, F_INFINITE_AMMO, F_FREEZE_HEALTH,
-	F_GOODIES,
 	MENU_ITEM_VALUE(0)
 };
 
