@@ -84,3 +84,7 @@ else
 	echo "running $OUT (no python to pick a port, falling back to 9673)"
 fi
 "./$OUT"
+
+# The installer package's EBOOT (installer/): its boot_plugins.txt edit and its
+# install over a fake HDD, a program of its own.
+sh installer/test/run.sh

@@ -19,6 +19,8 @@ Anything else the console runs still gets the memory tools: a game qwark has no 
 2. To load it by hand: open `http://<ps3-ip>/vshplugin.ps3mapi?prx=%2Fdev_hdd0%2Ftmp%2Fqwark.sprx&load_slot=5` in a browser. An XMB notification confirms the load.
 3. Only once it has proven stable on your console: add the path to `/dev_hdd0/boot_plugins.txt` so it loads at boot. A VSH plugin that crashes at boot is only recoverable by disabling plugins, so do not do this first.
 
+Without a PC: install `qwark-installer.pkg` with Package Manager, run **qwark installer** once, and let it restart the console. It puts `qwark.sprx` and `ui.pak` where the client does and qwark first in `/dev_hdd0/boot_plugins.txt`. See [docs/installer.md](docs/installer.md).
+
 qwark listens on TCP port 9673 and streams telemetry over UDP to connected clients. It can coexist with Ratchetron (9671) and the old autosplitter modules (9672).
 
 ## When a game launches
@@ -123,7 +125,7 @@ Both PC executables bind their listener to `127.0.0.1` by default, so no build a
 
 The savefile helper is built separately, because it is PowerPC code that runs inside the *game* rather than inside qwark: `make sfhelper` compiles `src/games/sfhelper/sfhelper.c` once per game at that game's cave address and regenerates `src/games/sfhelper_bins.c`, which is committed. A plain `make` never needs to do that, but it does rebuild it when one of the helper's sources is newer, so an edit cannot be left out of a module by accident. The host builds and the tests compile the committed file and need no SDK.
 
-`make dist` copies the built `qwark.sprx`, `ui.pak` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes them from there rather than from a working tree that may or may not have been built.
+`make pkg` packs the built `qwark.sprx` and `ui.pak` into `qwark-installer.pkg`, the installer for a console with no PC ([docs/installer.md](docs/installer.md)); `installer/test/run.sh`, which `test/run.sh` runs, tests what its app does. `make dist` makes the package and copies it, the built `qwark.sprx`, `ui.pak` and `qwark-rpcs3.exe` into `dist/`, which is committed: the PC client's release packaging takes them from there rather than from a working tree that may or may not have been built.
 
 `qwark-host.exe` is the simulator: it takes `boot <TITLEID>`, `quit`, `pad <hex>`, `poke`, `peek`, `vshmem <free KB> <total KB>` (a figure for the VSH's memory, which it otherwise cannot read), `status` and `exit` on standard input and serves the same protocol as the real module, so the PC client can be developed against it with neither a console nor an emulator. The two executables share everything but one file: `src/plat/host/plat_host.c` is the common half, `backend_fake.c` is the fake console and `backend_pine.c` is RPCS3.
 

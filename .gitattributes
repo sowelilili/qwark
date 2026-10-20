@@ -6,3 +6,6 @@
 # git's guess: one converted byte in either of them is a file that will not load.
 *.sprx binary
 *.exe binary
+
+# The console installer package, which dist/ carries too.
+*.pkg binary
