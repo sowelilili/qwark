@@ -6,6 +6,16 @@
 #define QWARK_TEST_COMMON_H
 
 #include "../src/plat/plat.h"
+#include "../src/core/menu.h"
+
+/*
+ * The console menu's root in a game that has every part of it (Game, Cheats,
+ * Planets, Manips, Unlocks, Save files): six rows, and the grey build row after
+ * them when src/core/menu.h builds it in (MENU_BUILD_ROW 1; the release does
+ * not). A test that counts the root's rows, or looks at its last, goes by this
+ * and by MENU_BUILD_ROW, so the suite passes under -DMENU_BUILD_ROW=1 as well.
+ */
+#define ROOT_ROWS (6 + MENU_BUILD_ROW)
 
 void group(const char *name);
 void check(int ok, const char *what);

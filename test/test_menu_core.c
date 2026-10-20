@@ -185,7 +185,7 @@ static void test_menu_core_sets(void)
 	static const struct prow main_a[3] = {
 		{ MROW_LINK, MROWF_ENABLED, 0x0700, "game", "", NULL },
 		{ MROW_LINK, MROWF_ENABLED, 0x0701, "cheats", "", NULL },
-		{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+		{ MROW_INFO, 0, 0x0500, "grey note", "", NULL }
 	};
 	static const struct prow main_b[2] = {
 		{ MROW_ACTION, MROWF_ENABLED, 0x0901, "veldin", "", NULL },
@@ -383,7 +383,7 @@ static void test_menu_core_slide(void)
 		{ MROW_TOGGLE, MROWF_ENABLED | MROWF_STEPS, 0x0205, "ghost ratchet", "Off", NULL },
 		{ MROW_ACTION, MROWF_ENABLED, 0x0215, "reset trophies", "", NULL },
 		{ MROW_INFO, 0, 0x0F15, "trophy reset", "Ready", NULL },
-		{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+		{ MROW_INFO, 0, 0x0500, "grey note", "", NULL }
 	};
 
 	group("console menu: the renderer core, the window sliding under the cursor (round 4)");
@@ -621,7 +621,7 @@ void test_menu_core(void)
 		{ MROW_LINK, MROWF_ENABLED, 0x0700, "game", "", NULL },
 		{ MROW_ACTION, MROWF_ENABLED, 0x0201, "die", "done", NULL },
 		{ MROW_OPTION, MROWF_ENABLED | MROWF_ON, 0x0302, "Marauder", "", NULL },
-		{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+		{ MROW_INFO, 0, 0x0500, "grey note", "", NULL }
 	};
 	static const struct prow cheats[5] = {
 		{ MROW_TOGGLE, MROWF_ENABLED | MROWF_STEPS | MROWF_ON, 0x0205, "ghost ratchet", "Auto",
@@ -654,8 +654,8 @@ void test_menu_core(void)
 	      (F.last_how & MH_SHOW_ROWS) != 0 && mh_nrows() == 4,
 	      "the next frame takes the page and shows it: new, with another number of rows");
 	check(str_is(mh_text(0), "GAME: >") && str_is(mh_text(1), "DIE: DONE") &&
-	      str_is(mh_text(2), "MARAUDER *") && str_is(mh_text(3), "QWARK BUILD 54"),
-	      "rows read \"GAME: >\", \"DIE: DONE\", \"MARAUDER *\", \"QWARK BUILD 54\"");
+	      str_is(mh_text(2), "MARAUDER *") && str_is(mh_text(3), "GREY NOTE"),
+	      "rows read \"GAME: >\", \"DIE: DONE\", \"MARAUDER *\", \"GREY NOTE\"");
 	check(str_is(mh_title(), "TRAINER") && mh_core_cursor(0) == 1, "the title in capitals, the cursor on the page's row");
 	check(mh_core_cursor(3) == 0, "a cursor kept on a grey row moves to the first it may land on");
 	check(mh_core_frame(0) == 0 && F.shows == 1, "the same page is not shown again");
@@ -818,7 +818,7 @@ void test_menu_core(void)
 			{ MROW_TOGGLE, MROWF_ENABLED | MROWF_STEPS, 0x0205, "ghost ratchet", "Auto", NULL },
 			{ MROW_VALUE, MROWF_ENABLED | MROWF_STEPS | MROWF_RANGE | MROWF_SLIDER, 0x0207,
 			  "challenge mode abcdefgh", "3", NULL },
-			{ MROW_INFO, 0, 0x0500, "qwark build 54", "", NULL }
+			{ MROW_INFO, 0, 0x0500, "grey note", "", NULL }
 		};
 		static const u32 words[4] = { 3, 0, 255, 10 };
 
@@ -837,7 +837,7 @@ void test_menu_core(void)
 		mh_core_stop(0);
 		mh_core_start(0);
 		check(str_is(mh_label(1), "CHALLENGE MODE ABCDEFGH:") && r32(mh_row_range(1)) == 3 &&
-		      r32(mh_row_range(1) + 8) == 255 && r32(mh_row_range(1) + 12) == 10 && str_is(mh_label(2), "QWARK BUILD 54"),
+		      r32(mh_row_range(1) + 8) == 255 && r32(mh_row_range(1) + 12) == 10 && str_is(mh_label(2), "GREY NOTE"),
 		      "a slider row's longest label (23) takes its colon short of the range words, which stand");
 		g_range[1] = NULL;
 		post_page(0x00000403, MBOX_PTYPE_MAIN, MBOX_PAGE_ROOT, 0, "Trainer", "", root, 4);

@@ -1096,7 +1096,7 @@ static void test_model_dl(void)
 
 	check(strcmp(v.title, "Trainer") == 0 && (v.pflags & MBOX_PAGE_ROOT) != 0 && v.ptype == MBOX_PTYPE_MAIN,
 	      "the root is a MAIN page titled Trainer (round 3) that says it is the root");
-	check(v.nrows == 7 && strcmp(v.rows[0].label, "Game") == 0 && strcmp(v.rows[1].label, "Cheats") == 0 &&
+	check(v.nrows == ROOT_ROWS && strcmp(v.rows[0].label, "Game") == 0 && strcmp(v.rows[1].label, "Cheats") == 0 &&
 	      strcmp(v.rows[2].label, "Planets") == 0 && strcmp(v.rows[3].label, "Manips") == 0 &&
 	      strcmp(v.rows[4].label, "Unlocks") == 0 && strcmp(v.rows[5].label, "Save files") == 0,
 	      "Game, Cheats, Planets, Manips, Unlocks, Save files, as the design has them");
@@ -1104,7 +1104,11 @@ static void test_model_dl(void)
 		if (v.rows[i].kind != MROW_LINK || v.rows[i].flags != MROWF_ENABLED) break;
 	}
 	check(i == 6, "each a link");
+#if MENU_BUILD_ROW
 	check(v.rows[6].kind == MROW_INFO && strcmp(v.rows[6].label, "qwark build 54") == 0, "then the build, grey");
+#else
+	check(v.nrows == 6, "the release's root ends at Save files: the build row is built out (MENU_BUILD_ROW 0)");
+#endif
 
 	rc = menu_model_event(MBOX_EV_ACTIVATE, 0, v.rows[0].id, v.key + 1);
 	check(rc == ST_BAD_ARG && menu_model_depth() == 1, "an event on another page's key is refused");
@@ -1615,7 +1619,7 @@ static void test_mailbox(void)
 
 	read_box(&p);
 	check(p.seq != 0 && (p.seq & 1) == 0 && p.ptype == MBOX_PTYPE_MAIN && strcmp(p.title, "Trainer") == 0 &&
-	      p.n == 7 && (p.pflags & MBOX_PAGE_ROOT) != 0 && strcmp(p.rows[0].label, "Game") == 0,
+	      p.n == ROOT_ROWS && (p.pflags & MBOX_PAGE_ROOT) != 0 && strcmp(p.rows[0].label, "Game") == 0,
 	      "the root page is in, page_seq even, a MAIN page");
 
 	/* Events and the page type. */
@@ -2002,11 +2006,12 @@ static void test_renderer(void)
 	      "its Help row pushes screen 36 over the main menu");
 	check(G.sounds[0] == SND_FORWARD && G.sounds[1] == -1,
 	      "with the row's own sound and none of the list's: a list screen of the game's starts in silence");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 7 &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == ROOT_ROWS &&
 	      strcmp(shown_text(0, text, sizeof(text)), "GAME") == 0 &&
 	      strcmp(shown_text(5, text, sizeof(text)), "SAVE FILES") == 0 &&
-	      strcmp(shown_text(6, text, sizeof(text)), "QWARK BUILD 54") == 0,
-	      "the root in the main menu's capitals: GAME .. SAVE FILES, then QWARK BUILD 54, under TRAINER");
+	      (!MENU_BUILD_ROW || strcmp(shown_text(6, text, sizeof(text)), "QWARK BUILD 54") == 0),
+	      "the root in the main menu's capitals under TRAINER: GAME .. SAVE FILES, six rows (the release has no "
+	      "QWARK BUILD 54 after them)");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && G.close_cb == MH_FN_CLOSE,
 	      "the mailbox says open, the list's close is the shim's");
 	game_frame(PADB_TRIANGLE);
@@ -2049,8 +2054,8 @@ static void test_renderer(void)
 	check(G.sound == SND_BACK, "triangle on UNLOCKS: a list's back sound");
 	tick(2);
 	game_frame(0);
-	check(G.nbuttons == 7 && G.stops == i + 1 && G.cursor == 4,
-	      "back to the root through the same stop and start: seven rows, the cursor on UNLOCKS");
+	check(G.nbuttons == ROOT_ROWS && G.stops == i + 1 && G.cursor == 4,
+	      "back to the root through the same stop and start: six rows, the cursor on UNLOCKS");
 	n = G.targets;
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
 	tick(30);
@@ -2069,8 +2074,9 @@ static void test_renderer(void)
 		check(G.sound == SND_SCREEN, "GAME SETTINGS' start sound as the panel screen starts");
 		check(strcmp(read_str(list_title, title, sizeof(title)), "TRAINER") == 0 &&
 		      strcmp(read_str(r32(list_rows + MH_BUTTON_SIZE + 4), text, sizeof(text)), "CHEATS") == 0 &&
-		      strcmp(read_str(r32(list_rows + 6 * MH_BUTTON_SIZE + 4), text, sizeof(text)), "QWARK BUILD 54") == 0,
-		      "round 3: the list fading out still reads TRAINER, CHEATS .. QWARK BUILD 54, not the Cheats page");
+		      strcmp(read_str(r32(list_rows + (ROOT_ROWS - 1) * MH_BUTTON_SIZE + 4), text, sizeof(text)),
+		             MENU_BUILD_ROW ? "QWARK BUILD 54" : "SAVE FILES") == 0,
+		      "round 3: the list fading out still reads TRAINER, CHEATS .. SAVE FILES, not the Cheats page");
 		for (i = 0; i < 25; i++) {
 			if (i == 1) {
 				game_frame(PADB_DOWN);
@@ -2197,7 +2203,7 @@ static void test_renderer(void)
 	check(G.sound == SND_OPEN && peek8(DL_MENU_SOUND_FLAG) == 0,
 	      "the combo opens with the pause's sound, the flag the close set taken");
 	game_frame(0);
-	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == 7 &&
+	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == ROOT_ROWS &&
 	      strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0,
 	      "the combo opens the menu on the root, the cursor on its first row, not on the page it closed on");
 
@@ -2512,7 +2518,7 @@ static void test_picker(void)
 
 	/* PLANETS opens Worlds over the root. */
 	dl_menu_open();
-	check(G.screen == MH_SCREEN_ID && G.shown && G.nbuttons == 7, "the combo: the root");
+	check(G.screen == MH_SCREEN_ID && G.shown && G.nbuttons == ROOT_ROWS, "the combo: the root");
 	G.cursor = planets_row;
 	memset(G.sounds, 0xFF, sizeof(G.sounds));
 	game_frame(0);
@@ -2534,7 +2540,7 @@ static void test_picker(void)
 	worlds_press(DL_CMD_TRIANGLE);
 	check(G.screen == MH_SCREEN_ID && G.shown && !W.up && G.depth == 0 && W.game_stops == 1,
 	      "Triangle pops back to screen 36 though no mission is active: the gate passed for the menu's Worlds");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 7 &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == ROOT_ROWS &&
 	      G.cursor == planets_row, "the root, the cursor on PLANETS");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up() &&
 	      peek32(mb + MBOX_OFF_FRAMES) >= frames && G.sound == 6,

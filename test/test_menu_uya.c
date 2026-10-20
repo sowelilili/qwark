@@ -907,6 +907,7 @@ static void uya_tv_on(void)
 
 static void test_model_uya(void)
 {
+	/* The build row is the last, and there only while MENU_BUILD_ROW is 1 (ROOT_ROWS). */
 	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files",
 	                                     "qwark build 54" };
 	/*
@@ -931,8 +932,9 @@ static void test_model_uya(void)
 	check(boot("NPEA00387"), "UYA boots");
 	menu_model_reset(9, 24, CAPS_ALL);
 	menu_model_view(&v);
-	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && v.rows[6].kind == MROW_INFO,
-	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey: the design's");
+	check(labels_are(&v, root, ROOT_ROWS) && v.ptype == MBOX_PTYPE_MAIN && (!MENU_BUILD_ROW || v.rows[6].kind == MROW_INFO),
+	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files: the design's six (the build row, grey, "
+	      "only when it is built in)");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_TOGGLE,
@@ -1281,21 +1283,27 @@ static void test_renderer_uya(void)
 	check(G.pending == MH_SHIM + SH_GS && r32(MAIN_GS) == 0 && r8(MH_SHIM + SH_FROM_HELP) == 1,
 	      "the cross on TRAINER: the menu's GuiState queued, the main pause reset as after HELP");
 	pframe(0);
-	check(G.active == MH_SHIM + SH_GS && G.main_up && G.table == MH_SHIM + SH_ROWS && G.count == 7 &&
+	check(G.active == MH_SHIM + SH_GS && G.main_up && G.table == MH_SHIM + SH_ROWS && G.count == ROOT_ROWS &&
 	      r32(MH_SHIM + SH_UP) == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
-	      "the next frame: the main pause's init on the menu's table, seven rows, the mailbox open");
+	      "the next frame: the main pause's init on the menu's table, six rows, the mailbox open");
 	check(strcmp(row_text(0, a), "GAME") == 0 && strcmp(row_text(5, b), "SAVE FILES") == 0 &&
-	      strcmp(text_of(U_ROW_HANDLE + 6, a, 80), "QWARK BUILD 54") == 0 &&
-	      r8(MH_SHIM + SH_ROWS + 6 * 20 + 8) == 0 && r8(MH_SHIM + SH_ROWS + 8) == 1,
-	      "GAME .. SAVE FILES in capitals, then QWARK BUILD 54, not enabled");
-	check(G.band[0] > 0.189f && G.band[0] < 0.191f && G.band[1] > 0.819f && G.band[1] < 0.821f &&
-	      r32(U_CURSOR) == 0, "the frame's band for seven rows, 0.19 and 0.82; the cursor on GAME");
+	      r8(MH_SHIM + SH_ROWS + 5 * 20 + 8) == 1 && r8(MH_SHIM + SH_ROWS + 8) == 1,
+	      "GAME .. SAVE FILES in capitals, all enabled");
+	check(!MENU_BUILD_ROW || (strcmp(text_of(U_ROW_HANDLE + 6, a, 80), "QWARK BUILD 54") == 0 &&
+	                         r8(MH_SHIM + SH_ROWS + 6 * 20 + 8) == 0),
+	      "with the build row built in (MENU_BUILD_ROW 1): QWARK BUILD 54 after SAVE FILES, not enabled");
+	{
+		/* The band is 0.40 - 0.03 * rows to 0.61 + 0.03 * rows: 0.22 and 0.79 for six, 0.19 and 0.82 for seven. */
+		float lo = 0.40f - 0.03f * (float)ROOT_ROWS, hi = 0.61f + 0.03f * (float)ROOT_ROWS;
+		check(G.band[0] > lo - 0.001f && G.band[0] < lo + 0.001f && G.band[1] > hi - 0.001f && G.band[1] < hi + 0.001f &&
+		      r32(U_CURSOR) == 0, "the frame's band for the root's six rows, 0.22 and 0.79; the cursor on GAME");
+	}
 	n = 1;
-	for (i = 0; i < 7; i++) {
+	for (i = 0; i < ROOT_ROWS; i++) {
 		struct widget *row = wid(U_ROW_HANDLE + (u32)i);
 		n = n && row->fit && row->box_w > 0.439f && row->box_w < 0.441f && row->box_min > 0.59f && row->box_min < 0.61f;
 	}
-	check(n && !wid(U_ROW_HANDLE + 7)->fit,
+	check(n && !wid(U_ROW_HANDLE + ROOT_ROWS)->fit,
 	      "each of the menu's rows shrinks to fit the frame, 0.44 wide, no smaller than 0.6; the rows past them are left alone");
 	pframe(PADB_TRIANGLE);
 	check(G.pending == MAIN_GS && G.sound == SND_CHANGE, "Triangle at the root: back to the main pause");
@@ -1313,7 +1321,7 @@ static void test_renderer_uya(void)
 	press(COMBO_MENU_DEFAULT);
 	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "the combo asks the renderer to open");
 	play_frame(0);
-	check(G.paused && G.active == MH_SHIM + SH_GS && G.count == 7 && peek8(mb + MBOX_OFF_REQUEST) == 0 &&
+	check(G.paused && G.active == MH_SHIM + SH_GS && G.count == ROOT_ROWS && peek8(mb + MBOX_OFF_REQUEST) == 0 &&
 	      r32(MH_STATE + ST_OPENS) == 1 && r8(MH_SHIM + SH_FROM_HELP) == 0 && r8(MH_SHIM + SH_FORCE) == 0,
 	      "the next frame of play opens the pause on the menu's root, counted, not from HELP");
 	tick(4);
@@ -1327,7 +1335,7 @@ static void test_renderer_uya(void)
 	pframe(0);
 	check(G.pending == MH_SHIM + SH_GS + MH_GS_SIZE, "the CONFIG page: the other GuiState queued");
 	check(strcmp(row_text(0, a), "GAME") == 0 && strcmp(row_text(1, b), "CHEATS") == 0 &&
-	      strcmp(row_text(6, a), "QWARK BUILD 54") == 0,
+	      strcmp(row_text(ROOT_ROWS - 1, a), MENU_BUILD_ROW ? "QWARK BUILD 54" : "SAVE FILES") == 0,
 	      "round 3: the frame it draws before the runner swaps still reads the root's rows, not the Cheats page");
 	pframe(0);
 	check(!G.main_up && G.main_deinits >= 2 && G.frame_up && G.built && G.rows == 6 && G.vis == 6 &&
@@ -1399,7 +1407,7 @@ static void test_renderer_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.active == MH_SHIM + SH_GS && G.main_up && !G.frame_up && !G.built && G.count == 7 &&
+	check(G.active == MH_SHIM + SH_GS && G.main_up && !G.frame_up && !G.built && G.count == ROOT_ROWS &&
 	      r32(U_CURSOR) == 1, "Triangle: the grid and frame go, the root's list is back on CHEATS");
 	check(!made(AV_ROOT, 'C') && !made(AV_PIC, 'Q') && G.layer17 == 0, "and the panel and its picture with them (layer 17)");
 	check(G.pic_state == 8 && G.pic_stops == 1 && G.pic_taken == 0 && G.pic_dropped == 2 && G.disc_waits == 1 &&
@@ -1456,7 +1464,7 @@ static void test_renderer_uya(void)
 	check(menu_model_depth() == 1, "closed, qwark's stack is back on the root");
 	press(COMBO_MENU_DEFAULT);
 	play_frame(0);
-	check(G.main_up && !G.built && G.count == 7 && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
+	check(G.main_up && !G.built && G.count == ROOT_ROWS && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
 	      "the combo opens the menu on the root, the cursor on its first row, not on GAME");
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
@@ -1505,7 +1513,7 @@ static void test_renderer_uya(void)
 	w32(U_CURSOR, 6);
 	pframe(0x40);
 	pframe(0);
-	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
+	check(G.main_up && G.count == ROOT_ROWS && r32(U_CURSOR) == 0 && strcmp(row_text(0, a), "GAME") == 0,
 	      "TRAINER from the pause opens the root, the cursor on GAME");
 	tick(4);
 	w32(U_CURSOR, 4);
@@ -1524,7 +1532,7 @@ static void test_renderer_uya(void)
 	w32(U_CURSOR, 6);
 	pframe(0x40);
 	pframe(0);
-	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 0, "and TRAINER opens the root again");
+	check(G.main_up && G.count == ROOT_ROWS && r32(U_CURSOR) == 0, "and TRAINER opens the root again");
 	tick(4);
 
 	/*
@@ -1558,11 +1566,11 @@ static void test_renderer_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 2, "Triangle: the root, the cursor on PLANETS");
+	check(G.main_up && G.count == ROOT_ROWS && r32(U_CURSOR) == 2, "Triangle: the root, the cursor on PLANETS");
 	tick(4);
 
 	/* A page with no row the cursor may land on: the main pause's list must not loop. */
-	check(G.main_up && G.count == 7, "on the root");
+	check(G.main_up && G.count == ROOT_ROWS, "on the root");
 	{
 		u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r = mb + MBOX_OFF_ROWS;
 		u8 page[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY + MBOX_ROW_SIZE];
@@ -1993,7 +2001,7 @@ static void test_picker_uya(void)
 	check(G.pending == MH_SHIM + SH_GS + MH_GS_SIZE * r8(MH_SHIM + SH_CUR) && G.sound == SND_CHANGE &&
 	      M.missions == 0 && M.battle == 0 && M.updates == n, "Triangle: the menu's screen queued, the change sound");
 	pframe(0);
-	check(!M.up && M.deinits == 3 && G.main_up && G.count == 7 && r32(U_CURSOR) == 2 && G.paused &&
+	check(!M.up && M.deinits == 3 && G.main_up && G.count == ROOT_ROWS && r32(U_CURSOR) == 2 && G.paused &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && peek32(mb + MBOX_OFF_FRAMES) >= frames &&
 	      !mh_picker_up() && r32(U_KIND) == 0,
 	      "the root again, the cursor on PLANETS, the pause still up, the menu open with its frames counting on, "

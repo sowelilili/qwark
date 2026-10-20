@@ -545,10 +545,10 @@ static void test_model_rac1(void)
 	check(boot("NPEA00385"), "RaC1 boots");
 	menu_model_reset(7, 24, CAPS_ALL);
 	menu_model_view(&v);
-	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && v.rows[6].kind == MROW_INFO &&
-	      (v.rows[6].flags & MROWF_ENABLED) == 0 && strcmp(v.title, "Trainer") == 0,
-	      "the root, Trainer: Game, Cheats, Planets, Manips, Unlocks, Save files, and the build, grey, in one "
-	      "window of seven");
+	check(labels_are(&v, root, ROOT_ROWS) && v.ptype == MBOX_PTYPE_MAIN && strcmp(v.title, "Trainer") == 0 &&
+	      (!MENU_BUILD_ROW || (v.rows[6].kind == MROW_INFO && (v.rows[6].flags & MROWF_ENABLED) == 0)),
+	      "the root, Trainer: Game, Cheats, Planets, Manips, Unlocks, Save files, six of the main page's seven "
+	      "panes (the build row, grey, the seventh only when it is built in)");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
@@ -772,6 +772,13 @@ static void test_install_rac1(void)
 
 /* ----------------------------------------------------------- the renderer */
 
+/* The root's rows as the panes draw them: the build row last only while it is built in (MENU_BUILD_ROW). */
+#if MENU_BUILD_ROW
+#define ROOT_TEXTS "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54"
+#else
+#define ROOT_TEXTS "Game|Cheats|Planets|Manips|Unlocks|Save Files"
+#endif
+
 /* The MAIN page's rows as the panes drew them, "|"-joined, and the CONFIG rows as label=value pairs. */
 static const char *main_texts(char *out, u32 cap)
 {
@@ -809,7 +816,7 @@ static void test_renderer_rac1(void)
 {
 	char a[160], b[160];
 	u32 mb;
-	int i;
+	int i, anims;
 
 	group("console menu: RaC1's renderer, core and shim, on the fake console");
 
@@ -853,15 +860,18 @@ static void test_renderer_rac1(void)
 	check(r32(R1_MENU_PAGE) == PAGE_LIST, "arrived");
 	frame(0);
 	check(r32(MH_SHIM + SH_UP) == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN &&
-	      r8(MH_SHIM + SH_NROWS) == 7 && r8(MH_SHIM + SH_PHASE) == PH_IN && r8(R1_GOODIES_PANE) == 1,
-	      "the root's seven rows fly in on the main page's panes, pane 6 drawn for the seventh");
+	      r8(MH_SHIM + SH_NROWS) == ROOT_ROWS && r8(MH_SHIM + SH_PHASE) == PH_IN &&
+	      r8(R1_GOODIES_PANE) == (MENU_BUILD_ROW ? 1 : 0) && r8(MH_SHIM + SH_GOODIES) == (MENU_BUILD_ROW ? 1 : 0),
+	      "the root's six rows fly in on the main page's panes, the seventh gone at once and the game's Goodies "
+	      "byte not touched (the shim sets it only for a page of seven)");
 	frames(7);
 	check(r8(MH_SHIM + SH_PHASE) == PH_IDLE, "and settle");
-	check(strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54") == 0,
-	      "Game .. Save Files, then the build, in title case");
+	check(strcmp(main_texts(a, sizeof(a)), ROOT_TEXTS) == 0,
+	      "Game .. Save Files in title case, the build after them only when it is built in");
 	printf("    (%s)\n", a);
 	check(r16(ENTRY(6) + 2) == 0 && r16(ENTRY(0) + 2) == 1 && r32(ROW(5) + 0x3C) == 0 && r32(ROW(0) + 0x38) == 0,
-	      "the build row grey (kind 0), left out of the links; no wrap at the ends");
+	      "the seventh pane's entry inert (kind 0: the build row, grey, where it is built in; unused otherwise), "
+	      "left out of the links; Save Files has no row below it and Game none above: no wrap at the ends");
 	check(r32(PAGE_LIST + 0x40) == ROW(0), "the focus on Game");
 	frame(PADB_DOWN);
 	check(r32(PAGE_LIST + 0x40) == ROW(1) && G.sound == 1, "Down: Cheats, with the cursor's tick (the game's list)");
@@ -872,7 +882,8 @@ static void test_renderer_rac1(void)
 	check(r8(MH_SHIM + SH_PHASE) == PH_OUT && G.sound == SND_PAGE, "Triangle at the root: the panes fly out");
 	frames(6);
 	check(G.trans == 12 && G.trans_to == R1_MAIN_PAGE && r32(PAGE_LIST + 0x38) == R1_MAIN_PAGE &&
-	      r32(MH_SHIM + SH_UP) == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && r8(R1_GOODIES_PANE) == 0,
+	      r32(MH_SHIM + SH_UP) == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && r8(R1_GOODIES_PANE) == 0 &&
+	      r8(MH_SHIM + SH_GOODIES) == 0,
 	      "then the game's transition back to the main page (the MAIN page's poses backwards), the menu down");
 	frames(12);
 	check(r32(R1_MENU_PAGE) == R1_MAIN_PAGE && r32(R1_MAIN_PAGE + 0x40) == HELP_ITEM,
@@ -902,12 +913,21 @@ static void test_renderer_rac1(void)
 	check(r32(R1_RESUME_PAGE) == PAGE_LIST && r32(R1_RESUME_SCREEN) == R1_SCREEN &&
 	      peek8(mb + MBOX_OFF_REQUEST) == 0 && r8(MH_SHIM + SH_COMBO) == 1,
 	      "then the play hook takes it and writes the reopen fields");
+	anims = G.anims;
 	frame(0);
 	frame(0);
+	/*
+	 * The game's open brings all seven panes in; a root of six sends the
+	 * seventh away (one pane's pose set, the phase running while it goes),
+	 * where a root of seven has no spare pane.
+	 */
 	check(r32(R1_STATE) == 3 && r32(R1_MENU_PAGE) == PAGE_LIST && r32(MH_STATE + ST_OPENS) == 1 &&
-	      r8(MH_SHIM + SH_PHASE) == PH_IDLE && r8(MH_SHIM + SH_NROWS) == 7,
-	      "the next play frame opens the pause on the root, counted (seven rows: no spare pane to send away)");
+	      r8(MH_SHIM + SH_PHASE) == (ROOT_ROWS < 7 ? PH_IN : PH_IDLE) && r8(MH_SHIM + SH_NROWS) == ROOT_ROWS &&
+	      G.anims == anims + (7 - ROOT_ROWS) && r8(MH_SHIM + SH_GOODIES) == (ROOT_ROWS == 7 ? 1 : 0),
+	      "the next play frame opens the pause on the root, counted (six rows: the spare seventh pane is sent "
+	      "away, and the Goodies byte left to the game)");
 	frames(8);
+	check(r8(MH_SHIM + SH_PHASE) == PH_IDLE, "and the spare pane's move ends");
 	tick(4);
 
 	/* CHEATS: the CONFIG page, the panes out, then the game's transition to Cheats' layout. */
@@ -918,7 +938,7 @@ static void test_renderer_rac1(void)
 	tick(2);
 	frame(0);
 	check(r8(MH_SHIM + SH_PHASE) == PH_OUT, "the CONFIG page: the root's panes fly out");
-	check(strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54") == 0,
+	check(strcmp(main_texts(a, sizeof(a)), ROOT_TEXTS) == 0,
 	      "showing the root's rows as they go");
 	frames(6);
 	check(G.trans == 12 && (G.trans_to == PAGE_CONF(0) || G.trans_to == PAGE_CONF(1)),
@@ -1050,7 +1070,7 @@ static void test_renderer_rac1(void)
 	frames(12);
 	frame(0);
 	frames(8);
-	check(r32(R1_MENU_PAGE) == PAGE_LIST && r32(PAGE_LIST + 0x40) == ROW(1) && r8(MH_SHIM + SH_NROWS) == 7,
+	check(r32(R1_MENU_PAGE) == PAGE_LIST && r32(PAGE_LIST + 0x40) == ROW(1) && r8(MH_SHIM + SH_NROWS) == ROOT_ROWS,
 	      "the root again, the focus on Cheats");
 
 	/*
@@ -1154,7 +1174,7 @@ static void test_renderer_rac1(void)
 	frame(0);
 	frame(0);
 	check(r32(R1_STATE) == 3 && r1_at() == AT_LIST && r32(MH_SHIM + SH_UP) == 1 && r32(PAGE_LIST + 0x40) == ROW(0) &&
-	      strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54") == 0,
+	      strcmp(main_texts(a, sizeof(a)), ROOT_TEXTS) == 0,
 	      "the combo opens the menu again, on the root, the cursor on Game");
 	frames(8);
 	tick(4);
@@ -1178,6 +1198,34 @@ static void test_renderer_rac1(void)
 	      "the state leaves play before the pause opened: the fields are taken back");
 	w32(R1_STATE, 0);
 	frame(0);
+
+	/*
+	 * Goodies unlocked, the game draws the seventh pane: a root of six leaves
+	 * the game's byte alone (the shim swaps it only for a page of seven) and
+	 * sends that pane away; closed, the byte is the player's.
+	 */
+	w8(R1_GOODIES_PANE, 1);
+	anims = G.anims;
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	check(r32(R1_STATE) == 3 && r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == ROOT_ROWS &&
+	      r8(MH_SHIM + SH_PHASE) == PH_IDLE && G.anims == anims + (7 - ROOT_ROWS) && r8(R1_GOODIES_PANE) == 1 &&
+	      r8(MH_SHIM + SH_GOODIES) == (ROOT_ROWS == 7 ? 1 : 0),
+	      "Goodies unlocked: the root opens, the game's byte still on, and with six rows the seventh pane sent "
+	      "away without the shim's swap");
+	tick(4);
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r8(R1_GOODIES_PANE) == 1 && r8(MH_SHIM + SH_GOODIES) == 0,
+	      "and closed, the game's byte is as the player had it");
+	w8(R1_GOODIES_PANE, 0);
+	tick(4);
 
 	test_picker_rac1(mb);
 
@@ -1214,7 +1262,7 @@ static void test_picker_rac1(u32 mb)
 	frame(0);
 	frames(8);
 	tick(4);
-	check(r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == 7 && r8(MH_SHIM + SH_PHASE) == PH_IDLE,
+	check(r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == ROOT_ROWS && r8(MH_SHIM + SH_PHASE) == PH_IDLE,
 	      "the root, from the combo");
 	check(r32(PAGE_MAP + 0x00) == 0x63 && r32(PAGE_MAP + 0x10) == 0x67 && r32(PAGE_MAP + 0x14) == 5 &&
 	      r32(PAGE_MAP + 0x3C) == R1_SCREEN && r32(PAGE_MAP + 0x40) == MAP_LIST &&
@@ -1294,15 +1342,15 @@ static void test_picker_rac1(u32 mb)
 	      "Triangle: the map's panes fly out");
 	frames(6);
 	check(G.trans == 12 && G.trans_to == PAGE_LIST && G.trans_back && G.trans_pose0 == 0x0E &&
-	      r32(R1_SELECTED) == 0x77 && r8(R1_GOODIES_PANE) == 1,
-	      "then the transition back on the main page's poses: the root's seven panes fly in; the map's "
-	      "selected planet as the game had it");
+	      r32(R1_SELECTED) == 0x77 && r8(R1_GOODIES_PANE) == (ROOT_ROWS == 7 ? 1 : 0),
+	      "then the transition back on the main page's poses: all seven panes fly in, the seventh drawn only "
+	      "for a root of seven; the map's selected planet as the game had it");
 	frames(12);
 	frame(0);
 	check(r1_at() == AT_LIST && r32(PAGE_LIST + 0x40) == ROW(2) && r8(MH_SHIM + SH_PICK) == PK_NONE &&
 	      !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN &&
 	      r32(PAGE_MAP + 0x00) == 0x63 && r32(PAGE_MAP + 0x38) == 0 && r32(MH_STATE + ST_STARTS) == starts &&
-	      strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Save Files|Qwark Build 54") == 0,
+	      strcmp(main_texts(a, sizeof(a)), ROOT_TEXTS) == 0,
 	      "the root again, as it was, the focus on Planets, the picker down (mh_core_picker_back); the map "
 	      "page's poses back");
 	tick(8);

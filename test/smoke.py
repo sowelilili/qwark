@@ -2589,8 +2589,9 @@ def exercise_console_menu(c, sim):
 
     page = menu_page(c)
     check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
-          page[3][:3] == ["Game", "Cheats", "Planets"],
-          "Deadlocked menu: the root page is posted, titled Trainer", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
+          "Deadlocked menu: the root page is posted, titled Trainer, the design's six, no build row",
+          page[:4] if page else None)
 
     check(menu_event(c, MBOX_EV_ACTIVATE, 1),
           "Deadlocked menu: an event written into the mailbox is acked")
@@ -2789,8 +2790,8 @@ def exercise_console_menu_uya(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
-          "UYA menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
+          "UYA menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "UYA menu: an event is acked")
     time.sleep(0.1)
     page = menu_page(c, box, size, rs)
@@ -2946,8 +2947,8 @@ def exercise_console_menu_rac2(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
-          "RaC2 menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
+          "RaC2 menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC2 menu: an event is acked")
     time.sleep(0.1)
     page = menu_page(c, box, size, rs)
@@ -3063,8 +3064,8 @@ def exercise_console_menu_rac1(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files", "qwark build 54"],
-          "RaC1 menu: the root page is posted, the design's six and the build", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
+          "RaC1 menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
     # Round 6: the Goodies menu, RaC1's equivalent of the other games' Challenge mode, is the
     # fourth row of Game, a switch; Cheats is the four toggles, then Max bolts.
     check(menu_event(c, MBOX_EV_ACTIVATE, 0, box, size, rs), "RaC1 menu: Game")
