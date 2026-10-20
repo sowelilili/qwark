@@ -466,6 +466,19 @@
 #define RAC4_STATS_AMMO_MP     0x44u        /* u16 base ammo, multiplayer */
 #define RAC4_AMMO_PER_MOD      0x009DD434u  /* u32 per gadget, added per ammo mod */
 
+/*
+ * 1.4.1: g_gameRules, beside g_gameType. With g_gameType 0, a save file's
+ * game, rules 1 is co-op (MenuLoad_IsCoop in the PS2 prototype reads the pair
+ * so), whose levels are single player's plus 20, 21..40: the game's own
+ * travel, SwitchToLevel (0x18DA24), adds 20 to a level under 20 in co-op and
+ * takes 20 off one of 20 or more in single player (0x18DA68..0x18DABC), so a
+ * planet load does the same. Both share each planet's level save,
+ * MF_LevelSave[(level - 1) % 20] (UpdatePlanets, 0x3B1440).
+ */
+#define RAC4_GAME_RULES        0x00B36DF8u  /* u32 g_gameRules */
+#define RAC4_GAME_RULES_COOP   1u
+#define RAC4_COOP_LEVELS       20u
+
 /* The mod slots inside a GadgetEntry: ten of them, one word each, type 2 is ammo. */
 #define RAC4_MOD_SLOT0         0x14u
 #define RAC4_MOD_SLOT_SIZE     4u
@@ -622,6 +635,12 @@ int rac4_unlock_set(u8 id, u8 field, u32 value);
 /* ---------------------------------------------------------- rac4.c exports */
 
 u8  rac4_planet_count(void);
+
+/*
+ * Whether a save file is in play: out of the front end, in a single-player or
+ * co-op level. 1 or 0, or -1 when the game cannot be read. Tick thread.
+ */
+int rac4_in_file(void);
 
 /*
  * The fast-load patch, forced on for a planet load and restored when it ends.

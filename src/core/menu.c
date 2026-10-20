@@ -61,7 +61,9 @@ static u32 g_vc_until;
  * A row's answer, shown in place of its value for two seconds: the reason for
  * a refusal. Round 5 (the user's call): nothing for an answer that went
  * through, the game's own sound being the cue; round 4 showed "done", and
- * "after closing" for a load.
+ * "after closing" for a load. 1.4.1: it goes when its two seconds are up,
+ * whatever is built, and with its page (note_up, nav_*); it used to wait for
+ * its own row to be built again, and kept every page live meanwhile.
  */
 #define NOTE_TICKS 240
 static u16 g_note_page;
@@ -102,6 +104,25 @@ static struct {
 	u8  ok;
 	u32 tick;
 } g_ul;
+
+/*
+ * 1.4.1 (finding 8): the save library as one page build reads it. Save files
+ * walks the library's folder once a build, and a category's page walks it
+ * once for the category's name and the category's folder once for its saves,
+ * where every row used to walk both again. The names of the rows the window
+ * shows go in the tick's scratch, past what post() puts there (LIB_AT, the
+ * category's name first); they are good for that build only, so an event
+ * reads the folders afresh. `sig` is the listing the last build showed
+ * (savefile_menu_list), which a save row's press checks (finding 10).
+ */
+#define LIB_NAME (SAVEFILE_NAME_LEN + 1)
+#define LIB_AT   (QSCRATCH_BYTES - (MENU_VIEW_MAX + 1) * LIB_NAME)
+static struct {
+	u8  on;                 /* a build is reading from it */
+	u8  n;                  /* the page's rows */
+	u8  first;              /* the row the first name kept is */
+	u32 sig;
+} g_lib;
 
 static u32 now_tick(void)
 {
@@ -173,11 +194,18 @@ static void note(u16 id, u8 rc, const char *label)
 	set_text(g_note_label, sizeof(g_note_label), label);
 }
 
-/* The page's hint: the last answer as "<row>: <answer>", while it lasts. */
+/* Whether an answer is showing; one whose two seconds are up is forgotten here. */
+static int note_up(void)
+{
+	if (g_note_id != 0 && (s32)(now_tick() - g_note_until) >= 0) g_note_id = 0;
+	return g_note_id != 0;
+}
+
+/* The page's hint: the last answer as "<row>: <answer>", while it lasts. Every build asks. */
 static void note_hint(char *out, u32 cap)
 {
 	memset(out, 0, cap);
-	if (g_note_id == 0 || (s32)(now_tick() - g_note_until) >= 0) return;
+	if (!note_up()) return;
 	qstrcpy(out, cap, g_note_label);
 	qstrcat(out, cap, ": ");
 	qstrcat(out, cap, status_text(g_note_rc));
@@ -186,21 +214,19 @@ static void note_hint(char *out, u32 cap)
 /* The row's note, if it has one now. */
 static const char *note_for(u16 page, u16 id)
 {
-	if (g_note_id == 0 || id != g_note_id || page != g_note_page) return NULL;
-	if ((s32)(now_tick() - g_note_until) >= 0) {
-		g_note_id = 0;
-		return NULL;
-	}
+	if (!note_up() || id != g_note_id || page != g_note_page) return NULL;
 	return status_text(g_note_rc);
 }
 
 /*
  * Notes a failure, and answers what it was given. Round 5: an action's success
- * too is no note (round 4's done() noted "done").
+ * too is no note (round 4's done() noted "done"); 1.4.1: and it takes the
+ * row's own refusal off, which went on showing for its two seconds.
  */
 static int answer(u16 id, int rc, const char *label)
 {
 	if (rc != ST_OK) note(id, (u8)rc, label);
+	else if (id == g_note_id) g_note_id = 0;
 	return rc;
 }
 
@@ -461,10 +487,42 @@ static int unlock_actions_page(void)
 	return 0;
 }
 
-/* The save library's category with this place, into `out`; 0 when there is none. */
+/* The save library's category with this place, into `out` (LIB_NAME bytes); 0 when there is none. */
 static int save_category(u8 index, char *out)
 {
-	return index < savefile_menu_entry(NULL, index, out, SAVEFILE_NAME_LEN + 1) && out[0] != 0;
+	out[0] = 0;
+	return index < savefile_menu_list(NULL, index, 1, out, NULL) && out[0] != 0;
+}
+
+static char *lib_slot(u8 k)
+{
+	return (char *)qscratch() + LIB_AT + (u32)k * LIB_NAME;
+}
+
+/* The library for a build of `page`, its window from row `first`, `m` rows: one walk of each folder. */
+static void lib_read(u16 page, u8 first, u8 m)
+{
+	u8 k = page_kind(page);
+
+	g_lib.on = 0;
+	g_lib.n = 0;
+	g_lib.sig = 0;
+	if (k != MENU_PAGE_SAVES && k != MENU_PAGE_SAVE_CAT) return;
+	if (m > MENU_VIEW_MAX) m = MENU_VIEW_MAX;
+	memset(lib_slot(0), 0, (MENU_VIEW_MAX + 1) * LIB_NAME);
+	g_lib.on = 1;
+	g_lib.first = first;
+	if (k == MENU_PAGE_SAVES)
+		g_lib.n = savefile_menu_list(NULL, first, m, lib_slot(1), NULL);
+	else if (save_category(page_arg(page), lib_slot(0)))
+		g_lib.n = savefile_menu_list(lib_slot(0), first, m, lib_slot(1), &g_lib.sig);
+}
+
+/* The name of the page's row `i` as the build read it, "" outside its window. */
+static const char *lib_name(u8 i)
+{
+	if (!g_lib.on || i < g_lib.first || i - g_lib.first >= MENU_VIEW_MAX) return "";
+	return lib_slot((u8)(1 + i - g_lib.first));
 }
 
 static u8 push_id(u16 *ids, u8 n, u16 id)
@@ -524,9 +582,6 @@ static u8 page_items(u16 page, u16 *ids)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_UNLOCKS));
 		if (savefile_library_gate() != ST_UNSUPPORTED)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_SAVES));
-#if MENU_BUILD_ROW
-		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_BUILD));
-#endif
 		return n;
 
 	case MENU_PAGE_GROUP:
@@ -635,18 +690,17 @@ static u8 page_items(u16 page, u16 *ids)
 		}
 		return n;
 
+	/* Within a build, the count lib_read found; outside one (a slide), a walk of its own. */
 	case MENU_PAGE_SAVES:
-		count = savefile_menu_entry(NULL, 0, cat, sizeof(cat));
+		count = g_lib.on ? g_lib.n : savefile_menu_list(NULL, 0, 0, NULL, NULL);
 		for (i = 0; i < count; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_SCAT, i));
 		return n;
 
-	case MENU_PAGE_SAVE_CAT: {
-		char name[SAVEFILE_NAME_LEN + 1];
-		if (!save_category(arg, cat)) return 0;
-		count = savefile_menu_entry(cat, 0, name, sizeof(name));
+	case MENU_PAGE_SAVE_CAT:
+		if (g_lib.on) count = g_lib.n;
+		else count = save_category(arg, cat) ? savefile_menu_list(cat, 0, 0, NULL, NULL) : 0;
 		for (i = 0; i < count; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_SAVE, i));
 		return n;
-	}
 
 	default:
 		return 0;
@@ -658,7 +712,6 @@ static void page_title(u16 page, char *out, u32 cap)
 	const struct game_describe *d = desc();
 	const struct game_menu *gm = gmenu();
 	const struct feature_desc *f;
-	char cat[SAVEFILE_NAME_LEN + 1];
 	u8 arg = page_arg(page);
 
 	memset(out, 0, cap);
@@ -677,7 +730,8 @@ static void page_title(u16 page, char *out, u32 cap)
 		if (unlocks() && arg < g_ul.ncats) qstrcpy(out, cap, g_ul.cats[arg]);
 		return;
 	case MENU_PAGE_SAVE_CAT:
-		if (save_category(arg, cat)) qstrcpy(out, cap, cat);
+		/* The category's name as the build read it (page_title runs only in one). */
+		if (g_lib.on) qstrcpy(out, cap, lib_slot(0));
 		return;
 	case MENU_PAGE_PLANETS:
 		if (arg == MENU_PLANETS_OTHERS && gm != NULL && gm->picker_others != NULL) {
@@ -897,7 +951,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 	const struct feature_desc *f;
 	const struct game_unlock *u;
 	const char * const *opts;
-	char text[SAVEFILE_NAME_LEN + 1], cat[SAVEFILE_NAME_LEN + 1];
+	char text[LIB_NAME];
 	u8 arg = (u8)id, count;
 	const char *n;
 
@@ -920,13 +974,11 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "");
 		break;
 	case MENU_ROW_SCAT:
-		save_category(arg, text);
-		row(r, MROW_LINK, MROWF_ENABLED, text, "");
+		row(r, MROW_LINK, MROWF_ENABLED, lib_name(arg), "");
 		break;
 	case MENU_ROW_TEXT:
 		/* Grey: no row of text is ENABLED, so every renderer's cursor passes over it. */
-		row(r, MROW_INFO, 0, arg == MENU_TEXT_BUILD ? "qwark build " : arg == MENU_TEXT_EMPTY ? "Nothing here" : "", "");
-		if (arg == MENU_TEXT_BUILD) qfmt_u32(r->label + qstrlen(r->label), 8, QWARK_BUILD);
+		row(r, MROW_INFO, 0, arg == MENU_TEXT_EMPTY ? "Nothing here" : "", "");
 		break;
 
 	case MENU_ROW_VALUE: {
@@ -1010,8 +1062,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		break;
 
 	case MENU_ROW_SAVE:
-		text[0] = 0;
-		if (save_category(page_arg(page), cat)) savefile_menu_entry(cat, arg, text, sizeof(text));
+		qstrcpy(text, sizeof(text), lib_name(arg));
 		/* The name without its ".sav". */
 		count = (u8)qstrlen(text);
 		if (count > 4) text[count - 4] = 0;
@@ -1072,12 +1123,14 @@ static u8 window_at(u8 n, u8 m, u8 a, int down)
 
 /* ------------------------------------------------------------ navigation */
 
+/* 1.4.1: a row's answer goes with its page, so each move to another page drops it. */
 static void nav_reset(void)
 {
 	memset(g_nav, 0, sizeof(g_nav));
 	g_nav[0].page = MENU_PAGE_ID(MENU_PAGE_ROOT, 0);
 	g_depth = 1;
 	g_visit++;
+	g_note_id = 0;
 }
 
 /* Opens `page` from row `from` of the current view, with the cursor on its row `cursor`. */
@@ -1090,6 +1143,7 @@ static int nav_push(u16 page, u8 from, u8 start, u8 cursor)
 	g_nav[g_depth].cursor = cursor;
 	g_depth++;
 	g_visit++;
+	g_note_id = 0;
 	return ST_OK;
 }
 
@@ -1099,6 +1153,7 @@ static int nav_pop(void)
 	if (g_depth <= 1) return ST_BAD_ARG;
 	g_depth--;
 	g_visit++;
+	g_note_id = 0;
 	return ST_OK;
 }
 
@@ -1170,11 +1225,20 @@ u8 menu_model_depth(void)
 	return g_depth;
 }
 
-/* Whether the current page wants building again ten times a second (driver). */
+/*
+ * Whether the current page wants building again ten times a second (driver):
+ * a live page, or any page while a row's answer is on it, until the build
+ * after its two seconds, which takes it off (note_hint).
+ */
 static int menu_model_live(void)
 {
 	return page_live(g_nav[g_depth - 1].page) || g_note_id != 0;
 }
+
+#ifdef QWARK_TEST
+static u32 g_test_builds;
+u32 menu_test_builds(void) { return g_test_builds; }
+#endif
 
 static void push_row(struct menu_view *v, const struct menu_row *r)
 {
@@ -1204,11 +1268,18 @@ void menu_model_view(struct menu_view *v)
 	g_game = session_game();
 	g_ul.ok = 0;
 	cur = &g_nav[g_depth - 1];
+#ifdef QWARK_TEST
+	g_test_builds++;
+#endif
 
-	n = page_items(cur->page, ids);
 	m = screen_rows(cur->page, g_depth);
-	/* A start past the last window (the page got shorter) comes back to it. */
-	if (cur->start > last_start(n, m)) cur->start = last_start(n, m);
+	lib_read(cur->page, cur->start, m);
+	n = page_items(cur->page, ids);
+	/* A start past the last window (the page got shorter) comes back to it, its names read again. */
+	if (cur->start > last_start(n, m)) {
+		cur->start = last_start(n, m);
+		if (g_lib.on) lib_read(cur->page, cur->start, m);
+	}
 	content = n - cur->start < m ? (u8)(n - cur->start) : m;
 
 	v->key = ((u32)cur->page << 16) | ((u32)cur->start << 8) | g_visit;
@@ -1232,6 +1303,8 @@ void menu_model_view(struct menu_view *v)
 
 	v->cursor = cur->cursor < v->nrows ? cur->cursor : (u8)(v->nrows - 1);
 
+	/* The names in the scratch are this build's; `sig` stays, for a press on this view. */
+	g_lib.on = 0;
 	g_view_key = v->key;
 	g_view_n = v->nrows;
 	for (i = 0; i < v->nrows; i++) g_view_id[i] = v->rows[i].id;
@@ -1457,12 +1530,26 @@ static int act(u8 row, u16 id, int dir)
 	case MENU_ROW_UNLOCK:
 		return act_unlock(id, arg, dir);
 
-	case MENU_ROW_SAVE:
+	case MENU_ROW_SAVE: {
+		char cat[LIB_NAME], name[LIB_NAME];
+		u32 sig = 0;
+
 		if (dir != 0) return ST_OK;
-		if (!save_category(page_arg(cur->page), g_defer.cat) ||
-		    arg >= savefile_menu_entry(g_defer.cat, arg, g_defer.name, sizeof(g_defer.name)))
-			return answer(id, ST_NOT_FOUND, NULL);
-		return defer(DEFER_RESTORE, arg, g_defer.name);
+		/*
+		 * 1.4.1 (finding 10): the row is the save in its place as the page
+		 * was built. An upload, a rename or a delete from a PC since then can
+		 * put another save there, so the press stands only while the category
+		 * lists what it listed then; otherwise it is stale, refused as an
+		 * event on an old page is, and the page built again shows the change.
+		 */
+		name[0] = 0;
+		if (save_category(page_arg(cur->page), cat)) savefile_menu_list(cat, arg, 1, name, &sig);
+		if (sig != g_lib.sig) return ST_BAD_ARG;
+		if (name[0] == 0) return answer(id, ST_NOT_FOUND, NULL);
+		qstrcpy(g_defer.cat, sizeof(g_defer.cat), cat);
+		qstrcpy(g_defer.name, sizeof(g_defer.name), name);
+		return defer(DEFER_RESTORE, arg, name);
+	}
 
 	case MENU_ROW_NAV:
 		if (dir != 0) return ST_OK;
@@ -1632,7 +1719,10 @@ void menu_enter(const struct game_api *game)
  */
 static void post(int force)
 {
-	/* The view and the page it becomes, in the tick's scratch: 2.7 KB and 2.1 KB at most (32 rows). */
+	/*
+	 * The view and the page it becomes, in the tick's scratch: 2.7 KB and
+	 * 2.1 KB at most (32 rows), and the build's save names past them (LIB_AT).
+	 */
 	struct menu_view *v = (struct menu_view *)qscratch();
 	u8 *img = qscratch() + 4096;
 	u8 cap = g_row_cap;
@@ -1675,9 +1765,12 @@ static void post(int force)
 	g_posted = 1;
 }
 
-/* The view and the page image fit the tick's scratch, as post() lays them out. */
+/*
+ * The view and the page image fit the tick's scratch, as post() lays them out,
+ * clear of the save library's names that the build keeps at its end (LIB_AT).
+ */
 typedef char menu_scratch_fits[(sizeof(struct menu_view) <= 4096 &&
-                                MBOX_OFF_ROWS + MENU_VIEW_MAX * MBOX_ROW_SIZE <= QSCRATCH_BYTES - 4096) ? 1 : -1];
+                                4096 + MBOX_OFF_ROWS + MENU_VIEW_MAX * MBOX_ROW_SIZE <= LIB_AT) ? 1 : -1];
 
 /* Whether the code cave holds this build's renderer, byte for byte. */
 static int code_matches(const struct mh_cave *c)
@@ -1727,10 +1820,10 @@ static int write_zeros(u32 addr, u32 len)
  *
  * It runs a few seconds into the session with the game in ordinary play, or in
  * the tick that saw an earlier press of the menu combo: some twenty reads and
- * sixteen writes, 17 KB in all for Deadlocked (the zeros of the mailbox and the
- * state written out of the tick's scratch). Nothing can branch into a cave
- * before its hook word, every hook word goes in after the caves, and a combo's
- * request byte goes in last of all.
+ * twenty-six writes, about 20 KB in all for Deadlocked (the zeros of the
+ * mailbox and the state written out of the tick's scratch). Nothing can branch
+ * into a cave before its hook word, every hook word goes in after the caves,
+ * and a combo's request byte goes in last of all.
  */
 static int install(void)
 {
@@ -1863,8 +1956,9 @@ static int uninstall(void)
 
 /*
  * install(), and the state it leaves: READY, REFUSED for another mod's word or
- * another build's renderer, IDLE for a write that failed. Nothing retries on
- * its own; the next combo press tries again. Answers 1 when the menu serves.
+ * another build's renderer, IDLE for a write that failed. Either is tried
+ * again ten seconds on (menu_tick), or sooner by a press of the combo.
+ * Answers 1 when the menu serves.
  */
 static int try_install(void)
 {

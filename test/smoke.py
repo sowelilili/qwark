@@ -1826,7 +1826,15 @@ OTHER_GAMES = [
         "action_id": 11,
         "action_addr": 0x9C331F,
         "action_expect": 4,
+        # 1.4.1: and only into a save file's game held still: out of the front
+        # end, in a single-player level, in the pause (not play, which would
+        # let the console menu go in here), no mode change queued.
+        "action_state": [(0xB3C7D4, b"\x00"), (0x9C3240, struct.pack(">I", 2)),
+                         (R4_GAME_MODE, struct.pack(">I", 3)),
+                         (R4_PENDING_GAME_MODE, struct.pack(">i", -2))],
         "planet": 4,
+        # 1.4.1: a locked planet is unlocked only there too, so the save has this one.
+        "planet_unlocked": [RAC4_LEVEL_SAVES + 3 * RAC4_LEVEL_SIZE + 0x300],
         # Deadlocked writes the planet then a 1 into a second word.
         "load_addr": 0xB36DD0,
         "load_expect": [(0xB36DD0, 4), (0xB36DCC, 1)],
@@ -2617,6 +2625,9 @@ def exercise_console_menu(c, sim):
           body[MBOX_OFF_ROWS + i * MBOX_ROW_SIZE + MROW_OFF_FLAGS] & MROWF_PICKER,
           "Deadlocked menu: mailbox version 3, the picker cap, and the root's Planets row flagged for it")
     shaar = RAC4_LEVEL_SAVES + 5 * RAC4_LEVEL_SIZE
+    # 1.4.1: the unlock goes only into a save file's game: out of the front end, in a level.
+    mem_write(c, 0xB3C7D4, b"\x00")
+    mem_write(c, 0x9C3240, struct.pack(">I", 2))
     mem_write(c, shaar + 0x300, b"\x00")
     mem_write(c, shaar + 8, b"\x00")
     mem_write(c, 0xB36DD0, struct.pack(">I", 0))
@@ -3487,7 +3498,14 @@ def exercise_game(c, sim, spec, udp=None):
 
     # ---------------------------------------------------- FEATURE_TRIGGER
     mem_write(c, spec["action_addr"], b"\xAA")
+    was = []
+    for addr, data in spec.get("action_state", []):
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, len(data)))
+        was.append((addr, body))
+        mem_write(c, addr, data)
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([spec["action_id"]]))
+    for addr, data in reversed(was):
+        mem_write(c, addr, data)
     if check(status == ST_OK, "%s: FEATURE_TRIGGER runs" % name, status):
         status, body = c.call(OP_MEM_READ, struct.pack(">II", spec["action_addr"], 1))
         check(status == ST_OK and body[0] == spec["action_expect"],
@@ -3577,6 +3595,8 @@ def exercise_game(c, sim, spec, udp=None):
     # -------------------------------------------------------- planet load
     for addr, _want in spec["load_expect"]:
         mem_write(c, addr, struct.pack(">I", 0))
+    for addr in spec.get("planet_unlocked", []):
+        mem_write(c, addr, b"\x02")
     status, _ = c.call(OP_PLANET_LOAD, bytes([spec["planet"], 0]))
     if check(status == ST_OK, "%s: PLANET_LOAD accepted" % name, status):
         for addr, want in spec["load_expect"]:
@@ -4547,6 +4567,8 @@ def smoke_rpcs3_planet_loads(c, pine):
     ok, info = wait_state(c, SESSION_INGAME)
     check(ok and info["game"] == 4, "rpcs3: Deadlocked reaches INGAME", info)
 
+    # 1.4.1: a planet the save has unlocked, which loads wherever the game is.
+    pine.poke(RAC4_LEVEL_SAVES + 3 * RAC4_LEVEL_SIZE + 0x300, b"\x02")
     status, _ = c.call(OP_PLANET_LOAD, bytes([4, 0]))
     check(status == ST_OK,
           "rpcs3: Deadlocked's PLANET_LOAD goes ahead without fast loads", status)

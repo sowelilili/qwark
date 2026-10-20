@@ -21,8 +21,8 @@
  *   CONFIG  Special > Cheats as its draw (0xBC1A50) draws it, drawn by the
  *           shim every frame: the frame's three sprites, the title, the
  *           "Toggle" and "Exit" hints, and the rows in two columns, label left
- *           and value centred, up to eleven on screen, sixteen in a page with
- *           the rest scrolled to.
+ *           and value centred, up to nine on screen (eight and a "..." when
+ *           the page scrolls), thirty-two in a page with the rest scrolled to.
  *
  * A new page, or another number of rows, opens the next of the shim's screens
  * (MH_RESTART_*), the game's own way between its pause screens, which plays

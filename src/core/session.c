@@ -33,7 +33,7 @@
 #define BOOT_QUIET_US  1000000ull
 
 /*
- * Sixteen blocks, which is more than any game needs: RaC3 uses fourteen, ten of
+ * Sixteen blocks, which is more than any game needs: RaC3 uses thirteen, nine of
  * them per-tick reads once its autosplit watcher and the manips' file-load
  * trigger (revision 1.21) are counted, and four slow ones for ship colour, file
  * time, the savefile helper and the chargeboot colours. The slow blocks carry a
@@ -687,7 +687,8 @@ static void enter_ingame(void)
 
 	/*
 	 * Revision 1.22. The console menu starts over: the root page, and on a
-	 * console a renderer that goes in on the session's first menu combo.
+	 * console a renderer that goes in a few seconds into the session once the
+	 * game plays, or at a menu combo before then.
 	 */
 	menu_enter(g_game);
 
@@ -1465,9 +1466,9 @@ static void session_step(void)
 		 */
 		if (switches_tick()) features_apply_waiting();
 		/*
-		 * Revision 1.22. The console menu: once the combo has put its
-		 * renderer in, its mailbox, read every fourth tick while the menu is
-		 * down and every tick while it is up.
+		 * Revision 1.22. The console menu: its renderer's install when due,
+		 * then its mailbox, read every fourth tick while the menu is down
+		 * and every tick while it is up.
 		 */
 		menu_tick();
 	} else {

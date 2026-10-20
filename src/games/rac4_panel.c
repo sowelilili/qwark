@@ -217,7 +217,7 @@ static int gadget_owned(s16 level)
 
 /*
  * Two reads cover both categories: the live bot array, which is the one the old
- * form read back, and the whole gadget table. That is 2176 bytes, well inside
+ * form read back, and the whole gadget table. That is 2192 bytes, well inside
  * one PLAT_MEM_MAX read, and kept end to end in the running game's snapshot
  * (classic.h) rather than on the tick thread's stack.
  */
@@ -517,8 +517,40 @@ int rac4_planet_unlock(u8 planet)
 	return rc;
 }
 
+/*
+ * 1.4.1: whether the save in memory is a save file's game, held still, where
+ * a planet's unlock may go into it: out of the front end in a single-player
+ * or co-op level (rac4_in_file), not multiplayer (g_gameType 0, the only type
+ * whose travel the game saves), and in ordinary play or the pause with no mode
+ * change queued (rac4_savefile_ready), so not in a load.
+ */
+static int rac4_campaign_steady(void)
+{
+	u32 type = RAC4_GAME_TYPE_MP;
+
+	if (rac4_in_file() != 1) return 0;
+	if (mem_read_u32(RAC4_GAME_TYPE, &type) != ST_OK || type != 0) return 0;
+	return rac4_savefile_ready(0) == SAVEFILE_ERR_NONE;
+}
+
+/*
+ * 1.4.1: the level a planet is in the game being played, as the game's own
+ * travel maps it (rac4.h, RAC4_GAME_RULES): co-op's are 21..35. A load wrote
+ * the single-player id there, which brought the single-player level up with
+ * co-op's rules on.
+ */
+static u32 rac4_level_for(u8 planet)
+{
+	u32 type = 1, rules = 0;
+
+	if (mem_read_u32(RAC4_GAME_TYPE, &type) != ST_OK || type != 0) return planet;
+	if (mem_read_u32(RAC4_GAME_RULES, &rules) != ST_OK || rules != RAC4_GAME_RULES_COOP) return planet;
+	return planet < RAC4_COOP_LEVELS ? planet + RAC4_COOP_LEVELS : planet;
+}
+
 int rac4_planet_load(u8 planet, u8 flags)
 {
+	u8 status = RAC4_LEVEL_UNLOCKED;
 	int was, rc;
 
 	(void)flags;   /* Deadlocked has no level flag region and no special bolts. */
@@ -528,11 +560,16 @@ int rac4_planet_load(u8 planet, u8 flags)
 	/*
 	 * Build 54: a planet the save has not unlocked crashed the game on
 	 * arrival (an empty Missions screen); it is unlocked first, as the game
-	 * would have it had it unlocked. The placeholders have no level save.
+	 * would have it had it unlocked. The placeholders have no level save, and
+	 * DreadZone asks nothing. 1.4.1: only into a save file's game held still;
+	 * anywhere else (the front end, multiplayer, a load under way) such a
+	 * load is refused, BUSY, with nothing written. A planet the save has
+	 * unlocked loads as before, wherever the game is.
 	 */
-	if (rac4_planet_real(planet)) {
-		rc = rac4_planet_unlock(planet);
+	if (rac4_planet_real(planet) && planet != RAC4_PLANET_DREADZONE) {
+		rc = mem_read_u8(RAC4_LEVEL_SAVES + (u32)(planet - 1) * RAC4_LEVEL_SIZE + RAC4_LEVEL_STATUS, &status);
 		if (rc != ST_OK) return rc;
+		if ((status & RAC4_LEVEL_UNLOCKED) == 0 && !rac4_campaign_steady()) return ST_BUSY;
 	}
 
 	was = rac4_fastload_forced();
@@ -540,7 +577,18 @@ int rac4_planet_load(u8 planet, u8 flags)
 	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
 	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
 
-	rc = mem_write_u32(RAC4_TARGET_PLANET, planet);
+	/*
+	 * The unlock after the force, so a force that fails leaves the save as it
+	 * was, and before the request, which goes last: the level, in co-op the
+	 * planet's plus 20 (its save is the same planet's, rac4.h), then the word
+	 * that starts the load. After the unlock only a write of the game's memory
+	 * can fail, which on a console means the game has gone, its memory and
+	 * the unlock with it; under RPCS3 a dropped connection could leave the
+	 * planet unlocked and not loaded, the save as the game itself leaves one
+	 * that has just unlocked.
+	 */
+	rc = (status & RAC4_LEVEL_UNLOCKED) == 0 ? rac4_planet_unlock(planet) : ST_OK;
+	if (rc == ST_OK) rc = mem_write_u32(RAC4_TARGET_PLANET, rac4_level_for(planet));
 	if (rc == ST_OK) rc = mem_write_u32(RAC4_LOAD_PLANET2, 1);
 	if (rc != ST_OK && !was) rac4_fastload_restore();
 	return rc;
@@ -664,6 +712,10 @@ int rac4_get_options(u8 id, const char * const **options, u8 *count)
  * Interior, and each only as that load ran, so a trip there before it arrived
  * empty. And the load request goes out last, once everything it is to see is
  * written, rather than first.
+ *
+ * 1.4.1: all of it is save data, so it is written only into a save file's
+ * game held still, as a planet's unlock is, and refused BUSY elsewhere with
+ * nothing written; and DreadZone's load is co-op's DreadZone in co-op.
  */
 static int rac4_unlock_all_planets(void)
 {
@@ -672,6 +724,7 @@ static int rac4_unlock_all_planets(void)
 	int planet;
 	int rc;
 
+	if (!rac4_campaign_steady()) return ST_BUSY;
 	rc = mem_write(RAC4_BADGES, badges, sizeof(badges));
 	if (rc != ST_OK) return rc;
 
@@ -700,7 +753,7 @@ static int rac4_unlock_all_planets(void)
 		if (rac4_planet_real((u8)planet)) rac4_planet_unlock((u8)planet);
 	}
 
-	mem_write_u32(RAC4_TARGET_PLANET, 1);
+	mem_write_u32(RAC4_TARGET_PLANET, rac4_level_for(RAC4_PLANET_DREADZONE));
 	mem_write_u32(RAC4_LOAD_PLANET2, 1);
 	return ST_OK;
 }

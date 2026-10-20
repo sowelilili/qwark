@@ -79,6 +79,8 @@ u32  host_presence_calls(void);
 #ifdef QWARK_TEST
 void host_advance_time(u64 us);
 void host_freeze_time(int on);
+/* 1.4.1: how many folders have been opened for a walk since the program started (plat_dir_open). */
+u32  host_dir_opens(void);
 #endif
 
 void host_fail_writes(u32 addr, u32 count);

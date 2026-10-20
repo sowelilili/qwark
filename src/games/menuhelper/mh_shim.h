@@ -22,7 +22,7 @@
  * calls the core through the mh_core_* functions and reads what the core
  * composed through the mh_* macros. Both are compiled with the game's header
  * (mh_<game>.h) included first, which defines the numbers in the first table.
- * PROTOCOL.md section 9.5 and rewrite/SPEC-console-ui.md describe the same for
+ * PROTOCOL.md section 9.6 and rewrite/SPEC-console-ui.md describe the same for
  * someone writing a shim.
  *
  * Plain #defines and declarations; the assembler includes this file too, so
@@ -58,9 +58,11 @@
  *   MH_RESTART_MAIN  MH_SHOW_* bits a MAIN widget cannot take in place: a page
  *                    shown with any of them makes the core start the menu's
  *                    screen again (shim_switch) instead of calling shim_show.
- *                    0 for a widget that takes every page in place (Deadlocked's
- *                    list refits itself); UYA's main pause list lays its rows
- *                    and frame out only as it starts, so MH_SHOW_NEW | ROWS.
+ *                    0 for a widget that takes every page in place; Deadlocked's
+ *                    list refits itself to more or fewer rows but starts again
+ *                    for a new page (round 3), so MH_SHOW_NEW; UYA's main
+ *                    pause list lays its rows and frame out only as it
+ *                    starts, so MH_SHOW_NEW | ROWS.
  *   MH_RESTART_CFG   the same for the CONFIG widget
  *   MH_HOLD_MAIN     (round 3) frames a MAIN screen that is going still draws
  *                    after the next screen has started (mh_core_start): the

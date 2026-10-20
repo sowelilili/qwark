@@ -31,10 +31,9 @@
  * qwark owns the menu (src/core/menu.c): the pages, the navigation, what a row
  * does. A renderer is a small piece of code qwark writes into the game, one per
  * game, that draws the page it finds here with the game's own menu widgets and
- * posts back what the player pressed. Nothing in this file knows a game: every
- * renderer, Deadlocked's today and RaC1's, RaC2's and UYA's later, speaks the
- * same block, and only its address, its row capacity and its capabilities
- * differ.
+ * posts back what the player pressed. Nothing in this file knows a game: the
+ * four games' renderers all speak the same block, and only its address, its
+ * row capacity and its capabilities differ.
  *
  * Plain #defines and nothing else, so the renderer's C and assembler
  * (src/games/menuhelper/) include it exactly as qwark does.

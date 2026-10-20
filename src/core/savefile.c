@@ -1476,14 +1476,17 @@ int savefile_list(const char *category, u8 *out, u32 cap, u32 *len)
 	return ST_OK;
 }
 
-u8 savefile_menu_entry(const char *category, u8 index, char *out, u32 cap)
+u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig)
 {
 	char path[SAVEFILE_PATH_MAX];
 	plat_dir_t dir;
 	struct plat_dirent ent;
+	u32 crc = qcrc32_start();
 	u8 n = 0;
 
-	out[0] = 0;
+	/* The category's name is part of what its listing is. */
+	if (category != NULL) crc = qcrc32_update(crc, (const u8 *)category, qstrlen(category) + 1);
+	if (sig != NULL) *sig = qcrc32_finish(crc);
 	if (category != NULL && !savefile_name_ok(category)) return 0;
 	save_path(path, sizeof(path), category, NULL);
 	if (plat_dir_open(path, &dir) != 0) return 0;
@@ -1491,11 +1494,15 @@ u8 savefile_menu_entry(const char *category, u8 index, char *out, u32 cap)
 	while (n < 0xFF && plat_dir_next(&dir, &ent) == 1) {
 		if (!savefile_name_ok(ent.name)) continue;
 		if (category == NULL ? !ent.is_dir : (ent.is_dir || !has_sav_ext(ent.name))) continue;
-		if (n == index) qstrcpy(out, cap, ent.name);
+		crc = qcrc32_update(crc, (const u8 *)ent.name, qstrlen(ent.name) + 1);
+		/* savefile_name_ok held the name to SAVEFILE_NAME_LEN. */
+		if (n >= first && (u32)(n - first) < max)
+			qstrcpy(names + (u32)(n - first) * (SAVEFILE_NAME_LEN + 1), SAVEFILE_NAME_LEN + 1, ent.name);
 		n++;
 	}
 
 	plat_dir_close(&dir);
+	if (sig != NULL) *sig = qcrc32_finish(crc);
 	return n;
 }
 

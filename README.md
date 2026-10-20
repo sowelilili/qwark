@@ -52,11 +52,11 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 ## Console menu
 
-On a console, all four games have a Trainer menu on the TV, with the game's cheats, values, planets, manips, unlocks and save files. Open it from Help in the pause menu, which it replaces, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
+On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo. `menu.enabled = 0` in `config.txt` turns the menu off. PROTOCOL.md section 9 has the details.
 
 ## What it does without a PC
 
-Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots, and the manips of the selected category, which qwark applies on its own whenever a save is loaded or a new game starts. The console is the single source of truth; the client only displays and requests.
+Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots, and the manips of the selected category, which qwark applies on its own at the start of a run. The console is the single source of truth; the client only displays and requests.
 
 ## Files on the console
 

@@ -910,11 +910,24 @@ static void dl_playing(void)
 	poke32(DL_PENDING_MODE, DL_MODE_NONE);
 }
 
-/* Deadlocked up, in play, and nothing of the menu in it yet (the install is due later). */
+/*
+ * 1.4.1: and in a save file's game, single player: out of the front end, in
+ * Catacrom's level, where a planet's unlock may be written (rac4_panel.c).
+ */
+static void dl_in_file(void)
+{
+	poke8(RAC4_IN_FRONTEND, 0);
+	poke32(RAC4_LEVEL, 2);
+	poke32(RAC4_GAME_TYPE, 0);
+	poke32(RAC4_GAME_RULES, 0);
+}
+
+/* Deadlocked up, in play in a save file, and nothing of the menu in it yet (the install is due later). */
 static int dl_boot(void)
 {
 	if (!boot("NPEA00423")) return 0;
 	dl_playing();
+	dl_in_file();
 	poke32(DL_OPTIONS_SITE, DL_OPTIONS_WORD);
 	return menu_state() == MENU_IDLE;
 }
@@ -1096,7 +1109,7 @@ static void test_model_dl(void)
 
 	check(strcmp(v.title, "Trainer") == 0 && (v.pflags & MBOX_PAGE_ROOT) != 0 && v.ptype == MBOX_PTYPE_MAIN,
 	      "the root is a MAIN page titled Trainer (round 3) that says it is the root");
-	check(v.nrows == ROOT_ROWS && strcmp(v.rows[0].label, "Game") == 0 && strcmp(v.rows[1].label, "Cheats") == 0 &&
+	check(v.nrows == 6 && strcmp(v.rows[0].label, "Game") == 0 && strcmp(v.rows[1].label, "Cheats") == 0 &&
 	      strcmp(v.rows[2].label, "Planets") == 0 && strcmp(v.rows[3].label, "Manips") == 0 &&
 	      strcmp(v.rows[4].label, "Unlocks") == 0 && strcmp(v.rows[5].label, "Save files") == 0,
 	      "Game, Cheats, Planets, Manips, Unlocks, Save files, as the design has them");
@@ -1104,11 +1117,6 @@ static void test_model_dl(void)
 		if (v.rows[i].kind != MROW_LINK || v.rows[i].flags != MROWF_ENABLED) break;
 	}
 	check(i == 6, "each a link");
-#if MENU_BUILD_ROW
-	check(v.rows[6].kind == MROW_INFO && strcmp(v.rows[6].label, "qwark build 54") == 0, "then the build, grey");
-#else
-	check(v.nrows == 6, "the release's root ends at Save files: the build row is built out (MENU_BUILD_ROW 0)");
-#endif
 
 	rc = menu_model_event(MBOX_EV_ACTIVATE, 0, v.rows[0].id, v.key + 1);
 	check(rc == ST_BAD_ARG && menu_model_depth() == 1, "an event on another page's key is refused");
@@ -1151,9 +1159,18 @@ static void test_model_dl(void)
 	r = view_row(&v, "Unlock all planets");
 	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
 	      "Unlock all planets is a button with nothing to say");
+	poke32(RAC4_DREAD_POINTS, 0);
+	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all planets") == ST_BUSY &&
+	      strcmp(value_of(&v, "Unlock all planets"), "busy") == 0 &&
+	      strcmp(v.hint, "Unlock all planets: busy") == 0 && peek32(RAC4_DREAD_POINTS) == 0,
+	      "1.4.1: with no save file's game held still (no level, a change queued) it is refused, nothing "
+	      "written, and the row and the hint say busy");
+	poke32(DL_PENDING_MODE, DL_MODE_NONE);
+	dl_in_file();
 	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all planets") == ST_OK &&
 	      value_of(&v, "Unlock all planets")[0] == 0 && v.hint[0] == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
-	      "round 5: the cross runs it, and the row stays blank (no DONE: the game's sound says it)");
+	      "round 5: in a level the cross runs it, and the row stays blank (no DONE: the game's sound says it); "
+	      "1.4.1: the refusal's note goes as the row answers again");
 
 	/* Round 5: the values as buttons. */
 	r = view_row(&v, "Max bolts");
@@ -1619,7 +1636,7 @@ static void test_mailbox(void)
 
 	read_box(&p);
 	check(p.seq != 0 && (p.seq & 1) == 0 && p.ptype == MBOX_PTYPE_MAIN && strcmp(p.title, "Trainer") == 0 &&
-	      p.n == ROOT_ROWS && (p.pflags & MBOX_PAGE_ROOT) != 0 && strcmp(p.rows[0].label, "Game") == 0,
+	      p.n == 6 && (p.pflags & MBOX_PAGE_ROOT) != 0 && strcmp(p.rows[0].label, "Game") == 0,
 	      "the root page is in, page_seq even, a MAIN page");
 
 	/* Events and the page type. */
@@ -1973,6 +1990,150 @@ static void test_mailbox(void)
 	host_set_can_patch_code(1);
 }
 
+/* -------------------------------------------- 1.4.1: notes and save pages */
+
+static const char *box_hint(char *out)
+{
+	host_peek(menu_mailbox() + MBOX_OFF_HINT, (u8 *)out, MBOX_HINT_LEN);
+	out[MBOX_HINT_LEN] = 0;
+	return out;
+}
+
+static void walk_name(char *out, u32 cap, int k, int ext)
+{
+	out[0] = 's';
+	out[1] = (char)('0' + k / 10);
+	out[2] = (char)('0' + k % 10);
+	out[3] = 0;
+	if (ext) qstrcat(out, cap, ".sav");
+}
+
+/*
+ * 1.4.1, from the review since 1.3.0. Finding 5: a refusal's note goes with
+ * its page, and when its two seconds are up, and leaves no page live behind
+ * it. Finding 8: a build of a save library page walks each folder once, the
+ * rows and their ids as they were. Finding 10: a save row loads the save it
+ * showed, or nothing.
+ */
+static void test_menu_141(void)
+{
+	struct menu_view v;
+	struct box_page p;
+	char name[16], hint[MBOX_HINT_LEN + 1];
+	u32 mb, b0, d0, n0, walks;
+	u64 t0, us;
+	int i, k, ok;
+
+	group("console menu (1.4.1): a refusal's note, and the save library's pages");
+
+	check(dl_boot() && dl_installed(), "Deadlocked up and the renderer in");
+	mb = menu_mailbox();
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
+	tick(4);
+
+	config_set_selected_slot(7);
+	box_activate("Game");
+	box_activate("Load position");
+	read_box(&p);
+	i = box_index(&p, "Load position");
+	check(i >= 0 && strcmp(p.rows[i].value, "not found") == 0 &&
+	      strcmp(box_hint(hint), "Load position: not found") == 0,
+	      "Load position on an empty slot: the row and the hint say not found");
+	tick(250);
+	read_box(&p);
+	check(p.rows[i].value[0] == 0 && box_hint(hint)[0] == 0, "and two seconds on neither does");
+
+	box_activate("Load position");
+	read_box(&p);
+	check(strcmp(p.rows[i].value, "not found") == 0, "refused again");
+	box_event(MBOX_EV_BACK, 0);
+	tick(2);
+	check(box_hint(hint)[0] == 0, "Back within the two seconds: the note goes with its page, the root's hint blank");
+	box_activate("Save files");
+	b0 = menu_test_builds();
+	d0 = host_dir_opens();
+	tick(120);
+	check(menu_test_builds() == b0 && host_dir_opens() == d0,
+	      "finding 5: Save files, which nothing on it moves, is not built again in the second after (the note "
+	      "kept every page live, ten builds a second, until its row was built on its own page again)");
+	box_event(MBOX_EV_BACK, 0);
+	tick(2);
+	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
+	tick(4);
+	config_set_selected_slot(0);
+
+	/* Finding 8: twenty saves, the window sixteen. */
+	for (k = 0; k < 20; k++) {
+		walk_name(name, sizeof(name), k, 1);
+		save_put("menu-walks", name, 16);
+	}
+	menu_model_reset(8, 16, CAPS_ALL);
+	menu_model_view(&v);
+	act(&v, MBOX_EV_ACTIVATE, "Save files");
+	d0 = host_dir_opens();
+	menu_model_view(&v);
+	check(host_dir_opens() - d0 == 1 && view_row(&v, "menu-walks") != NULL &&
+	      view_row(&v, "menu-walks")->id == MENU_ROW_ID(MENU_ROW_SCAT, view_index(&v, "menu-walks")),
+	      "finding 8: a build of Save files walks the library once, each category a link by its place");
+	act(&v, MBOX_EV_ACTIVATE, "menu-walks");
+	d0 = host_dir_opens();
+	t0 = plat_time_us();
+	for (k = 0; k < 10; k++) menu_model_view(&v);
+	us = (plat_time_us() - t0) / 10;
+	walks = (host_dir_opens() - d0) / 10;
+	ok = v.nrows == 16 && strcmp(v.title, "menu-walks") == 0;
+	for (k = 0; k < 16; k++) {
+		walk_name(name, sizeof(name), k, 0);
+		ok = ok && v.rows[k].id == MENU_ROW_ID(MENU_ROW_SAVE, k) && strcmp(v.rows[k].label, name) == 0;
+	}
+	check(walks == 2 && ok,
+	      "a category of twenty: two walks a build, the library's for its name and its own, where every row "
+	      "walked both (3 + 2 x 16 = 35); s00 .. s15 in order, by their places, as before");
+	printf("    (a build of the twenty-save category: %u walks, about %u us on the host)\n",
+	       (unsigned)walks, (unsigned)us);
+	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 15, v.rows[15].id, v.key) == ST_OK, "the slide from s15");
+	d0 = host_dir_opens();
+	menu_model_view(&v);
+	ok = v.nrows == 16 && host_dir_opens() - d0 == 2;
+	for (k = 0; k < 16; k++) {
+		walk_name(name, sizeof(name), k + 4, 0);
+		ok = ok && v.rows[k].id == MENU_ROW_ID(MENU_ROW_SAVE, k + 4) && strcmp(v.rows[k].label, name) == 0;
+	}
+	check(ok, "the last window, s04 .. s19, read the same way: its names, not the first window's");
+	check(menu_model_event(MBOX_EV_SCROLL_UP, 0, v.rows[0].id, v.key) == ST_OK, "and up again");
+	menu_model_view(&v);
+
+	/* Finding 10: the PC deletes s01 under the page. */
+	i = view_index(&v, "s03");
+	save_drop("menu-walks", "s01.sav");
+	check(i == 3 && menu_model_event(MBOX_EV_ACTIVATE, (u8)i, v.rows[i].id, v.key) == ST_BAD_ARG,
+	      "finding 10: s01 deleted under the page, the cross on s03, whose place is s04's now, is stale: refused, "
+	      "nothing to load");
+	menu_model_view(&v);
+	check(view_row(&v, "s01") == NULL && view_index(&v, "s03") == 2 && v.rows[2].value[0] == 0,
+	      "the page built again lists s00, s02, s03 .., with no note on the row");
+	save_drop("menu-walks", "s05.sav");
+	save_put("menu-walks", "s05b.sav", 16);
+	i = view_index(&v, "s06");
+	check(menu_model_event(MBOX_EV_ACTIVATE, (u8)i, v.rows[i].id, v.key) == ST_BAD_ARG,
+	      "s05 renamed: stale too, though s06 keeps its place");
+	menu_model_view(&v);
+	n0 = host_notify_count();
+	check(act(&v, MBOX_EV_ACTIVATE, "s03") == ST_OK, "on the page built since, the cross on s03 takes it");
+	tick(8);
+	check(host_notify_count() == n0 + 1 && strstr(host_notify_last(), "s03.sav") != NULL,
+	      "and s03.sav is what the load goes to (a 16-byte file, so the game refuses it, by name)");
+	printf("    (%s)\n", host_notify_last());
+
+	for (k = 0; k < 20; k++) {
+		walk_name(name, sizeof(name), k, 1);
+		save_drop("menu-walks", name);
+	}
+	save_drop("menu-walks", "s05b.sav");
+	save_drop("menu-walks", NULL);
+	check(quit(), "quit Deadlocked");
+}
+
 /* ----------------------------------------------------------- the renderer */
 
 static void test_renderer(void)
@@ -2006,12 +2167,10 @@ static void test_renderer(void)
 	      "its Help row pushes screen 36 over the main menu");
 	check(G.sounds[0] == SND_FORWARD && G.sounds[1] == -1,
 	      "with the row's own sound and none of the list's: a list screen of the game's starts in silence");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == ROOT_ROWS &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 6 &&
 	      strcmp(shown_text(0, text, sizeof(text)), "GAME") == 0 &&
-	      strcmp(shown_text(5, text, sizeof(text)), "SAVE FILES") == 0 &&
-	      (!MENU_BUILD_ROW || strcmp(shown_text(6, text, sizeof(text)), "QWARK BUILD 54") == 0),
-	      "the root in the main menu's capitals under TRAINER: GAME .. SAVE FILES, six rows (the release has no "
-	      "QWARK BUILD 54 after them)");
+	      strcmp(shown_text(5, text, sizeof(text)), "SAVE FILES") == 0,
+	      "the root in the main menu's capitals under TRAINER: GAME .. SAVE FILES, six rows");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && G.close_cb == MH_FN_CLOSE,
 	      "the mailbox says open, the list's close is the shim's");
 	game_frame(PADB_TRIANGLE);
@@ -2054,7 +2213,7 @@ static void test_renderer(void)
 	check(G.sound == SND_BACK, "triangle on UNLOCKS: a list's back sound");
 	tick(2);
 	game_frame(0);
-	check(G.nbuttons == ROOT_ROWS && G.stops == i + 1 && G.cursor == 4,
+	check(G.nbuttons == 6 && G.stops == i + 1 && G.cursor == 4,
 	      "back to the root through the same stop and start: six rows, the cursor on UNLOCKS");
 	n = G.targets;
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_OPEN);
@@ -2074,8 +2233,7 @@ static void test_renderer(void)
 		check(G.sound == SND_SCREEN, "GAME SETTINGS' start sound as the panel screen starts");
 		check(strcmp(read_str(list_title, title, sizeof(title)), "TRAINER") == 0 &&
 		      strcmp(read_str(r32(list_rows + MH_BUTTON_SIZE + 4), text, sizeof(text)), "CHEATS") == 0 &&
-		      strcmp(read_str(r32(list_rows + (ROOT_ROWS - 1) * MH_BUTTON_SIZE + 4), text, sizeof(text)),
-		             MENU_BUILD_ROW ? "QWARK BUILD 54" : "SAVE FILES") == 0,
+		      strcmp(read_str(r32(list_rows + 5 * MH_BUTTON_SIZE + 4), text, sizeof(text)), "SAVE FILES") == 0,
 		      "round 3: the list fading out still reads TRAINER, CHEATS .. SAVE FILES, not the Cheats page");
 		for (i = 0; i < 25; i++) {
 			if (i == 1) {
@@ -2203,7 +2361,7 @@ static void test_renderer(void)
 	check(G.sound == SND_OPEN && peek8(DL_MENU_SOUND_FLAG) == 0,
 	      "the combo opens with the pause's sound, the flag the close set taken");
 	game_frame(0);
-	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == ROOT_ROWS &&
+	check(G.thread == 0 && G.shown && G.cursor == 0 && G.nbuttons == 6 &&
 	      strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0,
 	      "the combo opens the menu on the root, the cursor on its first row, not on the page it closed on");
 
@@ -2497,6 +2655,24 @@ static void test_picker(void)
 	tick(8);
 	check(peek32(RAC4_LOAD_PLANET2) == 0, "taken once");
 
+	/*
+	 * 1.4.1: in co-op Worlds' links are 21..35, which the renderer hands over
+	 * as qwark's ids, 1..15; the load is co-op's level again, as the game's
+	 * own travel maps it, and the unlock the planet's own level save.
+	 */
+	poke32(RAC4_GAME_RULES, 1);
+	poke32(RAC4_LEVEL, 22);
+	poke32(mb + MBOX_OFF_PICK_PLANET, 6);
+	poke32(mb + MBOX_OFF_PICK_SEQ, peek32(mb + MBOX_OFF_PICK_SEQ) + 1);
+	tick(8);
+	check(peek32(RAC4_TARGET_PLANET) == 26 && peek32(RAC4_LOAD_PLANET2) == 1 &&
+	      dl_status(6) == RAC4_PLANET_UNLOCK && dl_first_mission(6) == RAC4_PLANET_UNLOCK,
+	      "1.4.1, a pick of Shaar in co-op: level 26, co-op's Shaar, Shaar's own level save unlocked");
+	poke32(RAC4_LOAD_PLANET2, 0);
+	poke32(RAC4_TARGET_PLANET, 7);
+	dl_in_file();
+	tick(8);
+
 	/* A pick left from before an install is not one. */
 	poke32(mb + MBOX_OFF_PICK_PLANET, 8);
 	poke32(mb + MBOX_OFF_PICK_SEQ, peek32(mb + MBOX_OFF_PICK_SEQ) + 1);
@@ -2518,7 +2694,7 @@ static void test_picker(void)
 
 	/* PLANETS opens Worlds over the root. */
 	dl_menu_open();
-	check(G.screen == MH_SCREEN_ID && G.shown && G.nbuttons == ROOT_ROWS, "the combo: the root");
+	check(G.screen == MH_SCREEN_ID && G.shown && G.nbuttons == 6, "the combo: the root");
 	G.cursor = planets_row;
 	memset(G.sounds, 0xFF, sizeof(G.sounds));
 	game_frame(0);
@@ -2540,7 +2716,7 @@ static void test_picker(void)
 	worlds_press(DL_CMD_TRIANGLE);
 	check(G.screen == MH_SCREEN_ID && G.shown && !W.up && G.depth == 0 && W.game_stops == 1,
 	      "Triangle pops back to screen 36 though no mission is active: the gate passed for the menu's Worlds");
-	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == ROOT_ROWS &&
+	check(strcmp(read_str(G.title, title, sizeof(title)), "TRAINER") == 0 && G.nbuttons == 6 &&
 	      G.cursor == planets_row, "the root, the cursor on PLANETS");
 	check(peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up() &&
 	      peek32(mb + MBOX_OFF_FRAMES) >= frames && G.sound == 6,
@@ -2740,6 +2916,7 @@ void test_menu(void)
 	test_model_dl();
 	test_model_paging();
 	test_mailbox();
+	test_menu_141();
 	test_renderer();
 	test_picker();
 	test_menu_core();

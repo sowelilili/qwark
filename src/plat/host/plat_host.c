@@ -556,11 +556,19 @@ struct host_dir {
 #endif
 };
 
+#ifdef QWARK_TEST
+static u32 g_dir_opens;
+u32 host_dir_opens(void) { return g_dir_opens; }
+#endif
+
 int plat_dir_open(const char *path, plat_dir_t *d)
 {
 	char real[1024];
 	struct host_dir *hd;
 
+#ifdef QWARK_TEST
+	g_dir_opens++;
+#endif
 	memset(d, 0, sizeof(*d));
 	d->handle = -1;
 	snprintf(d->path, sizeof(d->path), "%s", path);

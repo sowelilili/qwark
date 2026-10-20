@@ -91,20 +91,13 @@
 #define MENU_ROW_VALUE    0x10      /* round 5, arg: the game's menu value (struct menu_value) */
 #define MENU_ROW_ID(tag, arg) ((u16)(((u16)(tag) << 8) | (u8)(arg)))
 
-/* MENU_ROW_TEXT's lines. */
-#define MENU_TEXT_BUILD   0         /* "qwark build 54", grey, the root's last row; only when MENU_BUILD_ROW */
+/*
+ * MENU_ROW_TEXT's lines. 0 was round 5's grey "qwark build 54", the root's
+ * last row for the user's testing, built out for client 1.4.0 and gone in
+ * 1.4.1: the root ends at Save files, six rows where the game has all of them.
+ */
 #define MENU_TEXT_EMPTY   1         /* "Nothing here", a page with no rows */
 #define MENU_TEXT_SPACER  2         /* round 5: blank, between a page's parts; the cursor passes over it */
-
-/*
- * Round 5: the root's grey "qwark build 54" row, which the user's testing
- * read. The release builds it out (0): the root ends at Save files, six rows
- * where the game has all of them. QWARK_TEST_CFLAGS=-DMENU_BUILD_ROW=1 sh
- * test/run.sh runs the host tests with it put back.
- */
-#ifndef MENU_BUILD_ROW
-#define MENU_BUILD_ROW    0
-#endif
 
 #define MENU_NAV_MORE     1         /* retired in round 4, with the More row */
 #define MENU_NAV_PREV     2         /* retired in round 4 */
@@ -200,6 +193,8 @@ void menu_model_home(void);
 #ifdef QWARK_TEST
 /* The tests' own menu table in place of the running game's; NULL for the game's. */
 void menu_test_menu(const struct game_menu *gm);
+/* 1.4.1: how many views have been built since the program started. */
+u32  menu_test_builds(void);
 #endif
 
 /* -------------------------------------------------------------- the driver */

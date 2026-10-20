@@ -8204,6 +8204,56 @@ static void r4_fl_seed(void)
 	}
 }
 
+/*
+ * 1.4.1: a save that has unlocked every planet, so a planet load has nothing
+ * to unlock and goes ahead wherever the game is, as the tests of a load's
+ * other parts want; a locked planet is unlocked only in a save file's game
+ * held still (r4_campaign).
+ */
+static void r4_planets_unlocked(void)
+{
+	u32 p;
+
+	for (p = 1; p <= 15; p++) host_poke(0x00B27FF0u + (p - 1u) * 0x304u + 0x300u, (const u8 *)"\x02", 1);
+}
+
+#define R4_FRONTEND     0x00B3C7D4u
+#define R4_LEVEL        0x009C3240u
+#define R4_PENDING      0x009C37F4u
+#define R4_GAME_RULES   0x00B36DF8u
+
+static void r4_poke32(u32 addr, u32 v)
+{
+	u8 w[4];
+
+	be32_put(w, v);
+	host_poke(addr, w, 4);
+}
+
+static u32 r4_peek32(u32 addr)
+{
+	u8 w[4] = { 0, 0, 0, 0 };
+
+	host_peek(addr, w, 4);
+	return be32_get(w);
+}
+
+/*
+ * 1.4.1: Deadlocked in a save file's game held still (`on`): out of the front
+ * end, in a single-player level, single player, no mode change queued; or the
+ * words as the fake console leaves them (0: nothing queued reads as a change).
+ * The tests call qwark straight after, with no tick between, so the menu's
+ * renderer, which goes in once the game plays, never does here.
+ */
+static void r4_campaign(int on)
+{
+	host_poke(R4_FRONTEND, (const u8 *)"\x00", 1);
+	r4_poke32(R4_LEVEL, on ? 2u : 0u);
+	r4_poke32(R4_PENDING, on ? 0xFFFFFFFEu : 0u);
+	r4_poke32(R4_GAME_TYPE, 0);
+	r4_poke32(R4_GAME_RULES, 0);
+}
+
 /* 1 when every word reads as the patch's (fast) or as the game's own. */
 static int r4_fl_is(int fast)
 {
@@ -8327,6 +8377,7 @@ static void test_rac4(void)
 	group("Deadlocked: planet load and the fast-load restore");
 
 	r4_fl_seed();
+	r4_planets_unlocked();
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
@@ -8378,6 +8429,45 @@ static void test_rac4(void)
 		host_poke(R4_MISSION(6, 0), (const u8 *)"\x04", 1);
 		host_poke(R4_STATUS(6), (const u8 *)"\x10", 1);
 
+		/*
+		 * 1.4.1: only into a save file's game held still. At the front end,
+		 * in multiplayer and in a load a locked planet is refused, nothing
+		 * written; one the save has unlocked loads anywhere, as before.
+		 */
+		r4_campaign(1);
+		host_poke(R4_FRONTEND, (const u8 *)"\x01", 1);
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_BUSY && host_write_log_count() == 0,
+		      "1.4.1: at the front end a load of Shaar, locked, is BUSY, and nothing is written");
+		check(session_planet_load(2, 0) == ST_OK && host_write_log_count() != 0,
+		      "while one of Catacrom, unlocked, goes as before");
+		host_poke(R4_FRONTEND, (const u8 *)"\x00", 1);
+		r4_poke32(R4_GAME_TYPE, 1);
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_BUSY && host_write_log_count() == 0, "BUSY in multiplayer");
+		r4_poke32(R4_GAME_TYPE, 0);
+		r4_poke32(R4_LEVEL, 45);
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_BUSY && host_write_log_count() == 0,
+		      "and in a multiplayer level whatever the game type says");
+		r4_poke32(R4_LEVEL, 2);
+		r4_poke32(R4_PENDING, 6);
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_BUSY && host_write_log_count() == 0,
+		      "and with a mode change queued, a load under way");
+		r4_poke32(R4_PENDING, 0xFFFFFFFEu);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+		host_write_log_reset();
+		check(session_planet_load(6, 0) == ST_BUSY && host_write_log_count() == 0,
+		      "and in the space transition");
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x03", 1);
+		host_write_log_reset();
+		check(session_planet_load(7, 0) == ST_OK && write_covering(R4_STATUS(7)) >= 0,
+		      "in the pause it unlocks and loads");
+		host_poke(R4_STATUS(7), (const u8 *)"\x00", 1);
+		host_poke(R4_MISSION(7, 0), (const u8 *)"\x00", 1);
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+
 		host_write_log_reset();
 		check(session_planet_load(6, 0) == ST_OK, "PLANET_LOAD to Shaar, which the save has not unlocked");
 		host_peek(R4_STATUS(6), &st, 1);
@@ -8411,10 +8501,45 @@ static void test_rac4(void)
 		check(session_planet_load(8, 0) != ST_OK && write_covering(R4_TARGET) < 0,
 		      "an unlock that cannot be written: no load either");
 		host_fail_writes(0, 0);
+
+		/*
+		 * 1.4.1, co-op (g_gameRules 1 with g_gameType 0): the level is the
+		 * planet's plus 20, as the game's own travel maps it, and the unlock
+		 * goes into the same planet's level save.
+		 */
+		r4_poke32(R4_GAME_RULES, 1);
+		host_poke(R4_STATUS(10), (const u8 *)"\x00", 1);
+		host_poke(R4_MISSION(10, 0), (const u8 *)"\x00", 1);
+		check(session_planet_load(10, 0) == ST_OK, "in co-op, PLANET_LOAD to Torval, locked");
+		mem_read_u32(R4_TARGET, &v);
+		host_peek(R4_STATUS(10), &st, 1);
+		host_peek(R4_MISSION(10, 0), &m0, 1);
+		check(v == 30 && st == 0x03 && m0 == 0x03,
+		      "loads level 30, co-op's Torval, with Torval's own level save unlocked");
+		check(session_planet_load(1, 0) == ST_OK && r4_peek32(R4_TARGET) == 21, "and DreadZone is level 21");
+		r4_poke32(R4_GAME_TYPE, 1);
+		check(session_planet_load(2, 0) == ST_OK && r4_peek32(R4_TARGET) == 2,
+		      "rules 1 in multiplayer is no co-op: the id as given");
+		r4_poke32(R4_GAME_TYPE, 0);
+		r4_poke32(R4_GAME_RULES, 0);
+		check(session_planet_load(2, 0) == ST_OK && r4_peek32(R4_TARGET) == 2, "and single player's");
+		/* Nothing ticks with the game in play here, so the console menu's renderer stays out. */
+		r4_poke32(R4_PENDING, 0);
 		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
 		pump(4);
 		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 		pump(4);
+		r4_poke32(R4_PENDING, 0xFFFFFFFEu);
+		check(r4_fl_is(0), "the loads over, fast loads are the game's own again");
+		host_poke(R4_STATUS(8), (const u8 *)"\x00", 1);
+		host_poke(R4_MISSION(8, 0), (const u8 *)"\x00", 1);
+		host_write_log_reset();
+		host_fail_writes(R4_FASTLOAD_1, 1);
+		check(session_planet_load(8, 0) != ST_OK && write_covering(R4_STATUS(8)) < 0 &&
+		      write_covering(R4_MISSION(8, 0)) < 0 && write_covering(R4_TARGET) < 0,
+		      "1.4.1: a force of fast loads that fails fails the load before the unlock: the save as it was");
+		host_fail_writes(0, 0);
+		check(r4_fl_is(0), "and leaves fast loads as they were");
 
 		group("build 54: Deadlocked's Unlock all planets unlocks each, then loads DreadZone");
 
@@ -8424,6 +8549,11 @@ static void test_rac4(void)
 		}
 		host_poke(R4_STATUS(1), (const u8 *)"\x03", 1);
 		host_poke(R4_STATUS(4), (const u8 *)"\x0F", 1);
+		host_poke(R4_FRONTEND, (const u8 *)"\x01", 1);
+		host_write_log_reset();
+		check(features_trigger(11) == ST_BUSY && host_write_log_count() == 0,
+		      "1.4.1: at the front end Unlock all planets is BUSY, nothing written: it is all save data");
+		host_poke(R4_FRONTEND, (const u8 *)"\x00", 1);
 		host_write_log_reset();
 		check(features_trigger(11) == ST_OK, "Unlock all planets runs");
 		for (i = 2, order_ok = 1; i <= 15; i++) {
@@ -8443,6 +8573,11 @@ static void test_rac4(void)
 		      "and the load of DreadZone goes out last, once all of it is written");
 		mem_read_u32(R4_TARGET, &v);
 		check_eq_u64(v, 1, "DreadZone");
+		r4_poke32(R4_GAME_RULES, 1);
+		check(features_trigger(11) == ST_OK && r4_peek32(R4_TARGET) == 21,
+		      "1.4.1: in co-op, co-op's DreadZone, level 21");
+		r4_campaign(0);
+		r4_planets_unlocked();
 #undef R4_STATUS
 #undef R4_MISSION
 	}
@@ -10642,6 +10777,7 @@ static void test_no_code_patches_planet_load(void)
 	check(boot_and_wait("NPEA00423"), "Deadlocked boots with the gate closed");
 
 	r4_fl_seed();
+	r4_planets_unlocked();
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
 	pump(4);
 
@@ -13346,6 +13482,7 @@ static void test_switches_fastloads(void)
 	check(quit_and_wait(), "quit");
 	check(swt_boot_patched("NPEA00423", g_sw_patch, len, SF_NO_FLIP), "Deadlocked with them in");
 	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	r4_planets_unlocked();
 	pump(4);
 	host_write_log_reset();
 
@@ -14312,6 +14449,7 @@ static void test_switches_rac4_fastloads(void)
 		check(features_set(SWT_R4_FAST, 1) == ST_UNSUPPORTED, "Fast loads is refused meanwhile");
 
 		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		r4_planets_unlocked();
 		pump(4);
 		check(session_planet_load(4, 0) == ST_OK, "and a planet load goes out without them");
 		check_eq_u64(swt_peek8(SW_RAC4_FLAG_FAST_LOADS), 0,
@@ -16696,6 +16834,7 @@ static void test_fu_failed_requests(void)
 	check(quit_and_wait(), "quit");
 	host_boot("NPEA00423");
 	r4_fl_seed();
+	r4_planets_unlocked();
 	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots");
 	pump(4);
 	check(r4_fl_is(0), "fast loads are the game's own");
@@ -16734,7 +16873,10 @@ static void fu_flag_left_up(const char *title, u32 flag, u8 id, int game)
 	check(swt_boot_patched(title, g_sw_patch, len, SF_NO_FLIP), "the game with them in, under RPCS3");
 	if (game == GAME_RAC1) r1t_world(0, 3, 0, 0);
 	if (game == GAME_RAC2) host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
-	if (game == GAME_RAC4) host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	if (game == GAME_RAC4) {
+		host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+		r4_planets_unlocked();
+	}
 	pump(6);
 	check_eq_u64(switches_state(), 1, "the switches are found");
 

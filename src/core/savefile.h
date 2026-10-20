@@ -346,9 +346,14 @@ int savefile_name_ok(const char *name);
  * Revision 1.22, round 2: the console menu's view of the library, tick thread.
  * With `category` NULL the categories, otherwise the saves in that category,
  * in the order the directory lists them, neither summed nor sized: how many
- * there are, and the `index`-th name in `out` (empty past the end). A save's
- * name keeps its ".sav", as SAVEFILE_RESTORE wants it.
+ * there are (at most 255). 1.4.1: in one walk of the folder, which also puts
+ * the names of up to `max` of them, from the `first` on, into `names`,
+ * SAVEFILE_NAME_LEN + 1 bytes apart (a slot past the end is left as it was),
+ * and, where `sig` is not NULL, a CRC of the category's name and every name
+ * listed, in order, so a listing that has changed in any way since an earlier
+ * one reads differently. A save's name keeps its ".sav", as SAVEFILE_RESTORE
+ * wants it.
  */
-u8 savefile_menu_entry(const char *category, u8 index, char *out, u32 cap);
+u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig);
 
 #endif /* QWARK_SAVEFILE_H */

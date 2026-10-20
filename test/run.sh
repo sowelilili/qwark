@@ -28,10 +28,6 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
 # QWARK_EMULATOR, as in build-host.sh: the tests cover the RPCS3 paths too.
 CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
         -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_PINE_NO_PLAT"
-# QWARK_TEST_CFLAGS adds to them: QWARK_TEST_CFLAGS=-DMENU_BUILD_ROW=1 runs the
-# suite with the console menu's grey build row built in, as it was until the
-# release (src/core/menu.h); the tests that count the root's rows go by it.
-CFLAGS="$CFLAGS ${QWARK_TEST_CFLAGS:-}"
 # -static folds winpthreads into the executable. Without it both programs import
 # libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
 # on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at

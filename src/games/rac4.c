@@ -669,9 +669,9 @@ static void rac4_file_load_watch(void)
  * Whether a save file is in play, for the manips: out of the main menu and in
  * a single-player or co-op level. Apply now refuses outside one (event 5), and
  * a selection puts its setup in at once only inside one; the trigger does not
- * use it. Tick thread.
+ * use it. 1.4.1: a planet's unlock asks it too (rac4_panel.c). Tick thread.
  */
-static int rac4_in_file(void)
+int rac4_in_file(void)
 {
 	u8 frontend = 1;
 	u32 level = 0;
