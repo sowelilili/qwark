@@ -1742,12 +1742,17 @@ static void test_mailbox(void)
 	poke8(mb + MBOX_OFF_REQUEST, 0);
 	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
 	tick(4);
+	/* Build 55, revision 1.23: the switch over every combo holds this one off too (build 54 spared it). */
 	config_set_combo_enabled(0);
 	tick(2);
 	press(COMBO_MENU_DEFAULT);
-	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "with every combo switched off it still opens the menu");
-	poke8(mb + MBOX_OFF_REQUEST, 0);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && menu_state() == MENU_READY,
+	      "with every combo switched off the menu combo asks for nothing, and the menu stays in for the Help row");
 	config_set_combo_enabled(1);
+	tick(2);
+	press(COMBO_MENU_DEFAULT);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "with the combos switched back on it opens the menu again");
+	poke8(mb + MBOX_OFF_REQUEST, 0);
 	tick(2);
 	config_set_combo(COMBO_OPEN_MENU, 0);
 	tick(2);

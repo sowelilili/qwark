@@ -2981,12 +2981,14 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: the renderer saying closed puts the root back, the cursor on its first row",
           page[2] if page else None)
 
-    # The combo asks the renderer to open, also with every combo switched off.
+    # The combo asks the renderer to open, unless every combo is switched off
+    # (revision 1.23: the switch holds it like any other, which 1.22 spared).
     check(combo() == 1, "Deadlocked menu: the menu combo asks the renderer to open again")
     status, _ = c.call(OP_COMBO_ENABLE, bytes([0]))
-    check(status == ST_OK and combo() == 1,
-          "Deadlocked menu: and still does with every combo switched off")
+    check(status == ST_OK and combo() == 0,
+          "Deadlocked menu: and asks for nothing with every combo switched off")
     c.call(OP_COMBO_ENABLE, bytes([1]))
+    check(combo() == 1, "Deadlocked menu: and again once the combos are switched back on")
     status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_OPEN_MENU, 0))
     check(status == ST_OK and combo() == 0, "Deadlocked menu: combo.menu 0 turns it off")
     c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_OPEN_MENU, COMBO_MENU_DEFAULT))

@@ -71,6 +71,9 @@
  * game's Help row, swapped in a running game at its next safe moment
  * (PROTOCOL.md 5.10 and 9.2). Combo action 6 TOGGLE_FAST_LOADS, config key
  * combo.fastloads with no mask out of the box, so COMBO_LIST has seven entries.
+ * Also build 55: the COMBO_ENABLE switch holds the OPEN_MENU combo off like the
+ * rest, which it spared in revision 1.22; the pause menu's Trainer row is the
+ * way in then, unless MENU_HELP has given that row back to the game's Help.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -651,9 +654,9 @@
 /*
  * Revision 1.22. Opens the console menu, or closes it when it is up. The one
  * combo with a mask of its own out of the box (COMBO_MENU_DEFAULT, L1 + R1 +
- * L2 + R2 + L3 + R3), and the one the COMBO_ENABLE switch does not hold off: it
- * is the menu's only way in, which a console without a PC may need. COMBO_SUSPEND
- * still holds it, so a client can capture it.
+ * L2 + R2 + L3 + R3). Revision 1.22 had it the one combo the COMBO_ENABLE switch
+ * does not hold off; since revision 1.23 the switch and COMBO_SUSPEND hold it
+ * as they hold every combo, and a client can capture it.
  */
 #define COMBO_OPEN_MENU     5
 /*

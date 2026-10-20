@@ -54,7 +54,7 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 ## Console menu
 
-On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. The menu is read from `/dev_hdd0/qwark/ui.pak`, which must come from the same build as `qwark.sprx`; without it everything else works, the console says once that the file is missing, and the client offers to send it. PROTOCOL.md section 9 has the details.
+On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and the combos switch turns it off with the rest; its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. The menu is read from `/dev_hdd0/qwark/ui.pak`, which must come from the same build as `qwark.sprx`; without it everything else works, the console says once that the file is missing, and the client offers to send it. PROTOCOL.md section 9 has the details.
 
 ## What it does without a PC
 

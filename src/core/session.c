@@ -1133,13 +1133,6 @@ static void run_combo(u8 action)
 static u32 g_combo_mask[COMBO_COUNT];
 static int g_combos_enabled = 1;
 static u32 g_combo_cfg_version = 0xFFFFFFFFu;
-/*
- * Revision 1.22. The switch as the last tick with buttons down saw it: the
- * switch coming on under a held pad disarms, so a combo still held then waits
- * for the pad to empty, as it always has. It used to be the disarming every
- * tick the switch was off that did it, which would also hold the menu combo off.
- */
-static int g_combos_enabled_seen = 1;
 
 static void refresh_combos(void)
 {
@@ -1184,15 +1177,10 @@ static void step_combos(void)
 
 	refresh_combos();
 
-	if (g_state != SESSION_INGAME) {
-		g_combo_armed = 1;
-		g_combos_enabled_seen = g_combos_enabled;
-		return;
-	}
+	if (g_state != SESSION_INGAME) { g_combo_armed = 1; return; }
 
 	if (g_hot.pad_mask == 0) {
 		g_combo_armed = 1;
-		g_combos_enabled_seen = g_combos_enabled;
 		return;
 	}
 
@@ -1202,36 +1190,26 @@ static void step_combos(void)
 	 * COMBO_SUSPEND that set it and is dropped when the session leaves the game,
 	 * and the user's COMBO_ENABLE switch (revision 1.12), which never expires
 	 * and never changes on its own. Either one is enough; combos fire only when
-	 * neither applies. Since revision 1.22 the switch spares the menu combo,
-	 * and the hold does not.
+	 * neither applies. Every combo is held by both, the menu combo too: it
+	 * spared the switch in build 54 (revision 1.22) as the quick way in, and
+	 * since revision 1.23 the pause menu's Trainer row is the menu's own, so it
+	 * needs no sparing.
 	 *
 	 * The arming rule above is untouched, so a pad still full when a hold ends
 	 * or the switch comes back on stays disarmed: the buttons the user was
 	 * pressing do not fire a combo the instant the combos return, they wait for
 	 * the pad to go empty like any other press.
 	 */
-	if (combos_suspended()) {
+	if (!g_combos_enabled || combos_suspended()) {
 		g_combo_armed = 0;
-		g_combos_enabled_seen = g_combos_enabled;
 		return;
 	}
-
-	/*
-	 * Revision 1.22. With the switch off only the menu combo fires: it is the
-	 * menu's only way in, and a console with no PC may have no other way to
-	 * switch the combos back on, so the switch that stops a run's combos does
-	 * not stop it. The switch coming back on under a held
-	 * pad disarms, exactly as before.
-	 */
-	if (g_combos_enabled && !g_combos_enabled_seen) g_combo_armed = 0;
-	g_combos_enabled_seen = g_combos_enabled;
 
 	if (!g_combo_armed) return;
 
 	for (a = 0; a < COMBO_COUNT; a++) {
 		u32 mask = g_combo_mask[a];
 		if (mask == 0) continue;
-		if (!g_combos_enabled && a != COMBO_OPEN_MENU) continue;
 		if (g_hot.pad_mask != mask) continue;
 
 		run_combo(a);

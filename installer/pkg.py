@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 pkg.py: qwark-installer.pkg, around the compiled EBOOT.BIN: its PARAM.SFO and
-ICON0.PNG, the package itself, and the check of the finished package. `make
-pkg` runs it. It needs the Python standard library, and for the check the SDK's
-own make_package_npdrm and make_fself_npdrm and qwark's scetool.
+ICON0.PNG (installer/icon0.png, RaCMAN Reloaded's icon), the package itself, and
+the check of the finished package. `make pkg` runs it. It needs the Python
+standard library, and for the check the SDK's own make_package_npdrm and
+make_fself_npdrm and qwark's scetool.
 
 From the qwark checkout:
 
@@ -26,9 +27,6 @@ From the qwark checkout:
         again here and holds the two packages to each other, byte for byte.
         It never asks the SDK to unpack it: make_package_npdrm --extract never
         finishes an EBOOT.BIN that scetool signed, and writes for ever
-
-    python -I installer/pkg.py icon OUT.png
-        ICON0.PNG on its own, to look at
 
 Why a packager of our own: the SDK's make_package_npdrm packs a game for
 Sony's own signing, so it takes only an EBOOT.BIN that make_fself_npdrm made,
@@ -202,77 +200,46 @@ def read_sfo(blob):
 
 # ---------------------------------------------------------------- ICON0.PNG
 
-# Drawn here, from these few letters, so the package carries no art of anyone's.
-WORD = {  # 5 wide, 9 tall: two rows of ascender, five of x-height, two of descender
-    "q": [".....", ".....", ".####", "#...#", "#...#", ".####", "....#", "....#", "....#"],
-    "w": [".....", ".....", "#...#", "#...#", "#.#.#", "#.#.#", ".#.#.", ".....", "....."],
-    "a": [".....", ".....", ".###.", "....#", ".####", "#...#", ".####", ".....", "....."],
-    "r": [".....", ".....", "#.##.", "##..#", "#....", "#....", "#....", ".....", "....."],
-    "k": ["#....", "#....", "#..#.", "#.#..", "##...", "#.#..", "#..#.", ".....", "....."],
-}
-CAPS = {  # 5 wide, 7 tall
-    "I": ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"],
-    "N": ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
-    "S": [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
-    "T": ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
-    "A": [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
-    "L": ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
-    "E": ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
-    "R": ["####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"],
-}
-
+# The icon on the XMB is RaCMAN Reloaded's own: installer/icon0.png, 320 x 176, 8-bit
+# RGBA, which is the size the XMB shows an ICON0.PNG at. It was made once, from the
+# client's icon (racman-reloaded/packaging/racman-reloaded.png, 256 x 256 RGBA), because
+# the build has no image library and this script reads the finished file. The icon was
+# fitted inside the 320 x 176 and centred without distortion, so it is 176 x 176 at
+# x = 72, on a transparent background, scaled by .NET's System.Drawing (PowerShell:
+# Graphics.DrawImage with HighQualityBicubic, PixelOffsetMode HighQuality and
+# WrapMode TileFlipXY onto a transparent Format32bppArgb 320 x 176 Bitmap, saved as
+# PNG). System.Drawing's PNG carries gAMA, sRGB and pHYs chunks, which were taken out
+# (IHDR, IDAT recompressed at level 9, IEND are all that is left), so the console's
+# decoder has only pixels to read. To change the icon, redo that and replace the file.
+ICON_PNG = os.path.join(HERE, "icon0.png")
 ICON_W, ICON_H = 320, 176
-TOP, BOTTOM = (0x24, 0x33, 0x58), (0x10, 0x17, 0x2A)
-WORD_COLOUR = (0xFF, 0xC4, 0x3A)
-CAPS_COLOUR = (0xC8, 0xD2, 0xE8)
 
 
-def draw_text(px, text, font, scale, gap, x0, y0, colour):
-    for n, ch in enumerate(text):
-        for gy, row in enumerate(font[ch]):
-            for gx, bit in enumerate(row):
-                if bit != "#":
-                    continue
-                for dy in range(scale):
-                    for dx in range(scale):
-                        x = x0 + n * (5 * scale + gap) + gx * scale + dx
-                        y = y0 + gy * scale + dy
-                        if 0 <= x < ICON_W and 0 <= y < ICON_H:
-                            px[y][x] = colour
-
-
-def text_width(text, scale, gap):
-    return len(text) * 5 * scale + (len(text) - 1) * gap
-
-
-def make_icon():
-    """320 x 176, 8-bit RGB: a dark blue fade, "qwark" in yellow, a rule, INSTALLER under it."""
-    px = []
-    for y in range(ICON_H):
-        t = y / (ICON_H - 1)
-        c = tuple(int(round(a + (b - a) * t)) for a, b in zip(TOP, BOTTOM))
-        px.append([c] * ICON_W)
-
-    # The word with its descender, a rule under it, the caps under that: 104 rows, centred.
-    scale, gap = 7, 7
-    caps_scale, caps_gap = 3, 3
-    top = (ICON_H - (9 * scale + 6 + 2 + 12 + 7 * caps_scale)) // 2
-    draw_text(px, "qwark", WORD, scale, gap, (ICON_W - text_width("qwark", scale, gap)) // 2, top, WORD_COLOUR)
-    rule_y = top + 9 * scale + 6
-    for x in range(56, ICON_W - 56):
-        px[rule_y][x] = px[rule_y + 1][x] = WORD_COLOUR
-    draw_text(px, "INSTALLER", CAPS, caps_scale, caps_gap,
-              (ICON_W - text_width("INSTALLER", caps_scale, caps_gap)) // 2, rule_y + 2 + 12, CAPS_COLOUR)
-
-    raw = b"".join(b"\0" + bytes(v for p in row for v in p) for row in px)
-
-    def chunk(kind, body):
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", ICON_W, ICON_H, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 9))
-            + chunk(b"IEND", b""))
+def read_icon():
+    """The bytes of installer/icon0.png, once they are known to be an ICON0.PNG: a PNG
+    of 320 x 176, 8-bit RGBA, not interlaced, whose chunk checksums hold and whose
+    pixel data is as long as that size says."""
+    data = open(ICON_PNG, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        die("%s is not a PNG" % ICON_PNG)
+    pos, chunks, idat = 8, [], b""
+    while pos + 12 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        crc = struct.unpack(">I", data[pos + 8 + length:pos + 12 + length])[0]
+        if len(body) != length or crc != zlib.crc32(kind + body) & 0xFFFFFFFF:
+            die("%s: the %s chunk is damaged" % (ICON_PNG, kind.decode("ascii", "replace")))
+        chunks.append(kind)
+        if kind == b"IDAT":
+            idat += body
+        elif kind == b"IHDR" and struct.unpack(">IIBBBBB", body) != (ICON_W, ICON_H, 8, 6, 0, 0, 0):
+            die("%s is not %d x %d, 8-bit RGBA, not interlaced" % (ICON_PNG, ICON_W, ICON_H))
+        pos += 12 + length
+    if chunks[:1] != [b"IHDR"] or chunks[-1:] != [b"IEND"] or pos != len(data):
+        die("%s is not a whole PNG" % ICON_PNG)
+    if len(zlib.decompress(idat)) != ICON_H * (1 + ICON_W * 4):
+        die("%s: the pixel data is not %d x %d RGBA" % (ICON_PNG, ICON_W, ICON_H))
+    return data
 
 
 # ---------------------------------------------------------------- the package format
@@ -468,7 +435,7 @@ def cmd_stage(args):
     with open(os.path.join(root, "PARAM.SFO"), "wb") as f:
         f.write(make_sfo(build))
     with open(os.path.join(root, "ICON0.PNG"), "wb") as f:
-        f.write(make_icon())
+        f.write(read_icon())
     shutil.copyfile(args.sprx, os.path.join(root, "USRDIR", "qwark.sprx"))
     shutil.copyfile(args.pak, os.path.join(root, "USRDIR", "ui.pak"))
     print("pkg.py: staged %s for build %d (%s)" % (root, build, app_ver(build)))
@@ -570,8 +537,8 @@ def check_contents(problems, files, args, build):
     if files["USRDIR/ui.pak"] != open(args.pak, "rb").read():
         problems.append("USRDIR/ui.pak is not %s" % args.pak)
     check_pak(files["USRDIR/ui.pak"], build, "USRDIR/ui.pak")
-    if files["ICON0.PNG"] != make_icon():
-        problems.append("ICON0.PNG is not the one pkg.py draws")
+    if files["ICON0.PNG"] != read_icon():
+        problems.append("ICON0.PNG is not installer/icon0.png")
     if files["PARAM.SFO"] != make_sfo(build):
         problems.append("PARAM.SFO is not the one pkg.py writes for build %d" % build)
     sfo = read_sfo(files["PARAM.SFO"])
@@ -729,8 +696,6 @@ def main():
     ck.add_argument("--pak", required=True)
     ck.add_argument("--elf", required=True)
     ck.add_argument("--sdk-bin")
-    ic = sub.add_parser("icon")
-    ic.add_argument("out")
     args = ap.parse_args()
 
     if args.cmd == "content-id":
@@ -741,9 +706,6 @@ def main():
         cmd_build(args)
     elif args.cmd == "check":
         cmd_check(args)
-    elif args.cmd == "icon":
-        with open(args.out, "wb") as f:
-            f.write(make_icon())
 
 
 if __name__ == "__main__":

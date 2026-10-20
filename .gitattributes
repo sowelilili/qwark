@@ -9,3 +9,6 @@
 
 # The console installer package, which dist/ carries too.
 *.pkg binary
+
+# The installer's XMB icon: pixels, whatever git guesses.
+installer/icon0.png binary
