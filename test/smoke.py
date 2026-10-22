@@ -67,7 +67,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 55
+QWARK_BUILD = 56
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -141,6 +141,14 @@ OP_COMBO_ENABLE = 0x0083
 OP_CONFIG_RELOAD = 0x0090
 # Revision 1.23: menu.help, the console menu's Help row as a switch.
 OP_MENU_HELP = 0x0092
+# Revision 1.24: settings profiles, one per console user.
+OP_PROFILE_INFO = 0x0093
+OP_PROFILE_ENABLE = 0x0094
+OP_COMBO_OVERRIDE = 0x0095
+PROFILE_SUPPORTED = 0x02
+PROFILE_ON = 0x04
+PROFILE_ACTIVE = 0x08
+PROFILE_HAS_PROFILE = 0x20
 OP_AUTOSPLIT_EVENTS = 0x00A0
 OP_AUTOSPLIT_DESCRIBE = 0x00A1
 OP_SAVEFILE_INFO = 0x00B0
@@ -974,6 +982,8 @@ def parse_session_info(b):
     info["planet_sel"] = b[26]
     info["planet_flags"] = b[27]
     info["planet"] = b[28]
+    info["profile_flags"] = b[29]
+    info["profile_seq"] = b[30]
     info["pos"] = struct.unpack(">3f", b[32:44])
     info["pad_mask"] = struct.unpack(">I", b[44:48])[0]
     info["analog"] = struct.unpack(">4f", b[48:64])
@@ -1139,6 +1149,130 @@ def test_ui_pak(sim, c):
     status = send_pak(c, good)
     ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
     check(status == ST_OK and ok, "ui.pak: the right one sent again: flags bit7 clear", status)
+
+
+def profile_info(c):
+    status, body = c.call(OP_PROFILE_INFO)
+    if status != ST_OK or len(body) != 64:
+        return status, None
+    p = {"flags": body[0], "kind": body[1], "seq": body[2],
+         "user": struct.unpack(">I", body[4:8])[0],
+         "folder": body[8:32].split(b"\0")[0].decode("ascii", "replace"),
+         "name": body[32:64].split(b"\0")[0].decode("utf-8", "replace")}
+    return status, p
+
+
+def combo_rows(c):
+    status, body = c.call(OP_COMBO_LIST)
+    if status != ST_OK or not body:
+        return None
+    n = body[0]
+    return [struct.unpack(">BB2xI", body[1 + 8 * i:9 + 8 * i]) for i in range(n)]
+
+
+def wait_profile(c, pred, timeout=4.0):
+    """Polls HELLO until pred(SessionInfo) holds, for `timeout` seconds of the module's time."""
+    last = [None]
+
+    def other():
+        status, body = c.call(OP_HELLO, bytes([1]))
+        last[0] = parse_session_info(body) if status == ST_OK else None
+        return last[0] is None or not pred(last[0])
+
+    return wait_while(c, other, timeout, 0.05), last[0]
+
+
+def test_profiles(sim, c):
+    """Revision 1.24: settings profiles over the wire, at the XMB: the switch, the
+    copy, a second user, a combo override, and the refusals."""
+    home = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "profiles")
+
+    status, p = profile_info(c)
+    check(status == ST_OK and p is not None, "profiles: PROFILE_INFO answers 64 bytes", status)
+    check(p and p["flags"] == PROFILE_SUPPORTED and p["kind"] == 0 and p["user"] == 1 and
+          p["folder"] == "user-00000001" and p["name"] == "",
+          "profiles: off; user 1 signed in, no profile, and no name (named profiles are later)", p)
+    ok, info = wait_profile(c, lambda i: i["profile_flags"] == PROFILE_SUPPORTED)
+    check(ok, "profiles: SessionInfo byte 29 is bit0 alone", info and info["profile_flags"])
+
+    for payload, what in ((bytes([2, 0]), "on 2"), (bytes([1, 3]), "setup 3"), (bytes([1]), "a short request")):
+        status, _ = c.call(OP_PROFILE_ENABLE, payload)
+        check(status == ST_BAD_ARG, "profiles: PROFILE_ENABLE with %s is BAD_ARG" % what, status)
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 0, 1, 0x0101))
+    check(status == ST_NOT_FOUND, "profiles: COMBO_OVERRIDE with no profile active is NOT_FOUND", status)
+
+    status, _ = c.call(OP_MENU_HELP, bytes([0]))
+    status2, _ = c.call(OP_POS_SELECT, bytes([4]))
+    check(status == ST_OK and status2 == ST_OK, "profiles: the console's In-game menus off and slot 4",
+          (status, status2))
+
+    status, _ = c.call(OP_PROFILE_ENABLE, bytes([1, 1]))
+    check(status == ST_OK, "profiles: PROFILE_ENABLE on, with a copy", status)
+    status, p = profile_info(c)
+    check(p and p["flags"] == PROFILE_SUPPORTED | PROFILE_ON | PROFILE_ACTIVE | PROFILE_HAS_PROFILE and
+          p["kind"] == 1 and p["user"] == 1,
+          "profiles: user 1's profile is active and made", p)
+    check(os.path.isfile(os.path.join(home, "user-00000001", "config.txt")),
+          "profiles: profiles/user-00000001/config.txt is on the fake HDD")
+    ok, info = wait_profile(c, lambda i: i["profile_flags"] == PROFILE_SUPPORTED | PROFILE_ON | PROFILE_ACTIVE)
+    check(ok and info["slot"] == 4 and info["flags"] & SESSION_FLAG_MENU_HELP_OFF,
+          "profiles: the copy carries the slot and In-game menus", info and (info["slot"], hex(info["flags"])))
+    seq1 = info["profile_seq"] if info else None
+
+    rows = combo_rows(c)
+    check(rows and len(rows) == 7 and all(r[1] == 0 for r in rows),
+          "profiles: COMBO_LIST has seven rows and no override", rows)
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 0, 1, 0x0109))
+    check(status == ST_OK, "profiles: COMBO_OVERRIDE of the save combo", status)
+    rows = combo_rows(c)
+    check(rows and rows[0][1] == 1 and rows[0][2] == 0x0109 and rows[1][1] == 0,
+          "profiles: its row is flagged and carries the override, the next is not", rows and rows[:2])
+    for payload, what in ((struct.pack(">BB2xI", 7, 1, 1), "action 7"),
+                          (struct.pack(">BB2xI", 0, 2, 1), "set 2"),
+                          (bytes([0, 1]), "a short request")):
+        status, _ = c.call(OP_COMBO_OVERRIDE, payload)
+        check(status == ST_BAD_ARG, "profiles: COMBO_OVERRIDE with %s is BAD_ARG" % what, status)
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 0, 0x0105))
+    rows = combo_rows(c)
+    check(status == ST_OK and rows and rows[0][2] == 0x0109,
+          "profiles: COMBO_SET writes the console's mask, which the override hides", rows and rows[0])
+
+    sim.send("user 2")
+    ok, info = wait_profile(c, lambda i: i["profile_seq"] != seq1)
+    check(ok, "profiles: user 2 signing in at the XMB moves the sequence within a second",
+          info and info["profile_seq"])
+    status, p = profile_info(c)
+    check(p and p["user"] == 2 and p["folder"] == "user-00000002" and not p["flags"] & PROFILE_HAS_PROFILE and
+          p["flags"] & PROFILE_ACTIVE,
+          "profiles: user 2's profile is active and has not been made", p)
+    check(not os.path.exists(os.path.join(home, "user-00000002")), "profiles: nothing was made for user 2")
+    check(info and info["slot"] == 0 and not info["flags"] & SESSION_FLAG_MENU_HELP_OFF,
+          "profiles: user 2 reads the defaults, not the console's or user 1's",
+          info and (info["slot"], hex(info["flags"])))
+    rows = combo_rows(c)
+    check(rows and rows[0][1] == 0 and rows[0][2] == 0x0105, "profiles: and the console's save combo",
+          rows and rows[0])
+
+    sim.send("user 1")
+    ok, info = wait_profile(c, lambda i: i["slot"] == 4)
+    check(ok, "profiles: user 1 again: their slot", info and info["slot"])
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 0, 0, 0))
+    rows = combo_rows(c)
+    check(status == ST_OK and rows and rows[0][1] == 0 and rows[0][2] == 0x0105,
+          "profiles: COMBO_OVERRIDE set 0 gives the row back to the console's mask", rows and rows[0])
+
+    status, _ = c.call(OP_PROFILE_ENABLE, bytes([0, 0]))
+    ok, info = wait_profile(c, lambda i: i["profile_flags"] == PROFILE_SUPPORTED)
+    check(status == ST_OK and ok and info["slot"] == 4,
+          "profiles: off again: no profile, the console's settings", info and info["profile_flags"])
+    status, p = profile_info(c)
+    check(p and p["flags"] == PROFILE_SUPPORTED | PROFILE_HAS_PROFILE and p["kind"] == 0,
+          "profiles: PROFILE_INFO still says user 1 has a profile", p)
+    status, _ = c.call(OP_MENU_HELP, bytes([1]))
+    status2, _ = c.call(OP_POS_SELECT, bytes([0]))
+    status3, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 0, 0))
+    check(status == ST_OK and status2 == ST_OK and status3 == ST_OK,
+          "profiles: the console's settings as they were", (status, status2, status3))
 
 
 def smoke_vshmem_start(exe):
@@ -4887,6 +5021,14 @@ def smoke_rpcs3_planet_loads(c, pine, sim=None):
     # refused as the Fast loads checkbox is, without the code switches.
     status, _ = c.call(OP_MENU_HELP, bytes([0]))
     check(status == ST_UNSUPPORTED, "rpcs3: MENU_HELP is UNSUPPORTED", status)
+    # Revision 1.24: one user, so no profiles.
+    status, p = profile_info(c)
+    check(status == ST_OK and p and p["flags"] == 0 and p["user"] == 0,
+          "rpcs3: PROFILE_INFO says there are no profiles", p)
+    status, _ = c.call(OP_PROFILE_ENABLE, bytes([1, 1]))
+    check(status == ST_UNSUPPORTED, "rpcs3: PROFILE_ENABLE is UNSUPPORTED", status)
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 0, 1, 1))
+    check(status == ST_UNSUPPORTED, "rpcs3: COMBO_OVERRIDE is UNSUPPORTED", status)
     status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, FAST_LOADS_MASK))
     check(status == ST_OK, "rpcs3: COMBO_SET stores a fast-loads combo", status)
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC4_FAST_LOADS_ID, 1))
@@ -5781,6 +5923,9 @@ def main():
 
         # ------------------------------------------------------------ ui.pak
         test_ui_pak(sim, c)
+
+        # -------------------------------------------------------- profiles
+        test_profiles(sim, c)
 
         # ------------------------------------------------------------ boot
         test_boot_buffers(sim, c, udp_port, udp)

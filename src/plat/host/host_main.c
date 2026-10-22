@@ -13,6 +13,9 @@
  *   peek <addr> <len>     print bytes from the fake process memory
  *   vshmem <free> <total> the fake VSH's memory, in KB, and a reading of it
  *                         now; `vshmem off` makes it unreadable again
+ *   user <n>              the fake XMB's signed-in user number (1 at start, 0
+ *                         nobody); the session sees it at the XMB within a
+ *                         second, never in a game (revision 1.24)
  *   status                one line of session state
  *   exit                  shut down
  *
@@ -195,6 +198,19 @@ static void handle_line(char *line, int *keep_running)
 		session_vsh_memory_read(VSHMEM_AT_PERIODIC);
 		session_activity_unlock();
 		printf("ok vshmem %u %u\n", (unsigned)free_kb, (unsigned)total_kb);
+
+	} else if (qstreq(cmd, "user")) {
+		char *n_s = next_token(&cursor);
+		int ok = 0;
+		u32 n = (n_s != NULL) ? qparse_u32(n_s, &ok) : 0;
+
+		if (!ok) {
+			printf("usage: user <n>\n");
+			fflush(stdout);
+			return;
+		}
+		host_set_user(n);
+		printf("ok user %u\n", (unsigned)n);
 
 	} else if (qstreq(cmd, "status")) {
 		print_status();

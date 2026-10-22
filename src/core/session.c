@@ -25,6 +25,12 @@
  * does not need to be any quicker than the eye.
  */
 #define LIVE_POLL_EVERY  12        /* 10 Hz */
+/*
+ * Revision 1.24. How often the XMB's signed-in user is asked for: once a
+ * second, at the XMB only. A user can change only there, and it is one VSH
+ * call.
+ */
+#define PROFILE_POLL_EVERY 120u
 
 /*
  * A full second after IS_INGAME, before even the first PID query. Use elapsed
@@ -1218,6 +1224,39 @@ static void step_combos(void)
 	}
 }
 
+/* ------------------------------------------------------------- profiles */
+
+void session_profile_changed(void)
+{
+	features_refresh_auto();
+	mods_refresh_auto();
+}
+
+/*
+ * The VSH is asked only while the switch is on: off, the console's settings are
+ * everyone's and there is nobody to look for. While nobody is signed in (the
+ * user-select screen after a sign-out, or the module's start before the first
+ * sign-in) whatever is active stays: no game can start there, and the next user
+ * is looked for a second later.
+ */
+void session_profile_poll(void)
+{
+	u32 user = 0;
+
+	if (!plat_has_users()) return;
+	if (config_profiles_enabled()) {
+		user = plat_user_id();
+		if (user == 0 || user > 99999999u) return;
+		if (config_profile_active() && user == config_profile_user()) return;
+	} else if (!config_profile_active()) {
+		return;
+	}
+
+	core_lock();
+	if (config_profile_resolve(user, PROFILE_SETUP_NONE)) session_profile_changed();
+	core_unlock();
+}
+
 /* -------------------------------------------------------------- telemetry */
 
 static u32 encode_info(u8 *out, u32 cap)
@@ -1278,7 +1317,12 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[26] = config_selected_planet(select_key());
 	out[27] = config_selected_planet_flags(select_key());
 	out[28] = g_hot.current_planet;
-	/* out[29..31] pad */
+	/*
+	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
+	 * (bit0 is the USB mods'), and the profile's sequence. out[31] pad.
+	 */
+	out[29] = config_profile_flags();
+	out[30] = config_profile_seq();
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	be32_put(out + 44, g_hot.pad_mask);
@@ -1490,6 +1534,9 @@ static void session_step(void)
 
 	/* Build 54. The menu's install and the ten-second reading of the VSH's memory. */
 	vm_tick();
+
+	/* Revision 1.24. A new user at the XMB, and with them their settings profile. */
+	if (g_state == SESSION_XMB && (g_tick % PROFILE_POLL_EVERY) == 0) session_profile_poll();
 
 	/*
 	 * Build 55. ui.pak, looked at on the module's first tick and again after

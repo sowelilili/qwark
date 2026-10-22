@@ -684,10 +684,10 @@ void plat_dir_close(plat_dir_t *d)
 
 /* ------------------------------------------------------------------- misc */
 
-u32 plat_user_id(void)
-{
-	return 1;
-}
+/*
+ * plat_user_id and plat_has_users are the backend's (revision 1.24): the
+ * simulator has users to switch between, RPCS3 has one.
+ */
 
 /* ---------------------------------------------------------------- sockets */
 

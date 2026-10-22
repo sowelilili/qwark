@@ -153,6 +153,21 @@ void session_previous_dismiss(void);
 void core_lock(void);
 void core_unlock(void);
 
+/*
+ * Revision 1.24. The active settings profile changed under the running tables
+ * (config_profile_resolve, or a CONFIG_RELOAD with a profile active): the
+ * toggles' and the mods' auto flags are read again out of the new one. Caller
+ * holds the core lock.
+ */
+void session_profile_changed(void);
+
+/*
+ * Revision 1.24. The look for the signed-in user, which the tick runs once a
+ * second at the XMB and never anywhere else, so a profile never changes under
+ * a game. Exposed for the host tests; takes the core lock itself.
+ */
+void session_profile_poll(void);
+
 /* Position and planet helpers the combo actions and the net handlers share. */
 int  session_position_save(u8 slot);
 int  session_position_load(u8 slot);

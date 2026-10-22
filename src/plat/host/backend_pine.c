@@ -1034,6 +1034,10 @@ int plat_game_title(char out[16]) { return pine_game_title(out); }
 int plat_can_patch_code(void) { return 0; }
 int plat_is_emulator(void)    { return 1; }
 
+/* Revision 1.24. RPCS3 has one user, so there are no per-user settings here. */
+u32 plat_user_id(void)        { return 1; }
+int plat_has_users(void)      { return 0; }
+
 /* Build 54. The PC's memory is not the VSH's, and PINE has nothing to say about RPCS3's. */
 int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
 {

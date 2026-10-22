@@ -233,7 +233,26 @@ void plat_dir_close(plat_dir_t *d);
 
 /* --------------------------------------------------------------------- misc */
 
+/*
+ * The XMB's signed-in user number, the eight digits of /dev_hdd0/home/<user>:
+ * 1 for 00000001. 0, or anything past 99999999, is nobody signed in yet (the
+ * VSH answers a negative number at its user-select screen). The PS3 asks the
+ * VSH each call (xsetting's GetCurrentUserNumber), so the session asks once a
+ * second at the XMB and never in a game.
+ */
 u32  plat_user_id(void);
+
+/*
+ * Revision 1.24, build 56. Whether the console has users to keep settings
+ * profiles for (src/core/config.h, the profiles). 1 on the PS3 and in the
+ * simulator; 0 under RPCS3, which has one user, so per-user settings are not
+ * offered there at all.
+ */
+#ifdef QWARK_EMULATOR
+int  plat_has_users(void);
+#else
+static __inline int plat_has_users(void) { return 1; }
+#endif
 
 /*
  * Build 54. The VSH's own memory, in bytes: what is free of its user memory,

@@ -19,6 +19,8 @@ void features_forget_state(void);
 
 u64  features_toggle_state(void);
 u64  features_toggle_auto(void);
+/* Revision 1.24. Reads the auto flags again out of config: a settings profile changed. */
+void features_refresh_auto(void);
 
 int  features_set(u8 id, u32 value);
 int  features_trigger(u8 id);

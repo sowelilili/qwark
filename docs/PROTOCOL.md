@@ -54,6 +54,8 @@ Revision 1.23, the fixes (client 1.4.1): Deadlocked's PLANET_LOAD unlocks a lock
 
 Revision 1.23, ui.pak (client 1.4.1, same build 55): the console menu's four renderers leave the module for a file on the console's HDD, `/dev_hdd0/qwark/ui.pak`, which `make` writes beside `qwark.sprx` and a release ships with it; the module reads the running game's renderer from it as the menu goes into the game, and takes only the pak built with it (section 9.10). SessionInfo `flags` bit7 UI_PAK_BAD is set while that file is missing, damaged or another build's, so a client can write the right one: FILE_OPEN, FILE_WRITE and FILE_CLOSE to `ui.pak.new`, FILE_DELETE of `ui.pak`, FILE_RENAME into its place, and the module looks at it again within a tick of a file op on its path (section 5.8). A pak left as `ui.pak.new` by an update is taken at the next module start. Separately, the console keeps one 16384-byte frame for every connection's bulk requests where it kept two, a request and a reply; nothing changed for a client that sends what this document describes, but a request longer than 937 bytes is answered from the connection's own buffer, so its reply is `FULL` (or `BAD_ARG`, where an op checks its length against the room) past 937 bytes, and no op takes a request that long and answers more (section 1.1). No opcode or structure changed. Without its pak a module still works in full but for the console menu; RPCS3 never needs one.
 
+Revision 1.24, settings profiles (2026-10-22, module build 56): a set of settings per console user, behind a console-wide switch that is off out of the box (section 5.10.1). Three ops: **PROFILE_INFO** at 0x0093 (the active profile and the signed-in user, 64 bytes), **PROFILE_ENABLE** at 0x0094 (`u8 on, u8 setup`: the switch, and the signed-in user's profile made as it goes on, a copy of the console's per-user settings or empty) and **COMBO_OVERRIDE** at 0x0095 (`u8 action, u8 set, u8 pad[2], u32 mask`: one combo's own mask in the active profile, or none). SessionInfo byte 29, a pad byte until now, is `flags2`, whose bit0 is the USB mods' and whose bits 1 to 3 are the profile's: bit1 PROFILES, the capability bit (the module has profiles and the console has users; never set by qwark-rpcs3), bit2 PROFILES_ON, bit3 PROFILE_ACTIVE; byte 30 is `profile_seq`, which moves whenever the profile behind the settings changes. The byte after each COMBO_LIST action, a pad byte until now, is that row's flags, bit0 OVERRIDDEN. With a profile active the per-user keys of config.txt, the position slots, which mods and toggles apply themselves and the overridden combos are the user's; the rest is the console's (section 5.10.1 lists every key). The module looks for a new user once a second at the XMB and never in a game. Since build 56 config.txt and the position files are written as `<file>.new` and then renamed into place.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -137,7 +139,18 @@ u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used b
                         Which bits a game's load acts on is in section 5.5. The same game's as
                         selected_planet
 u8   current_planet     game planet index, 0 when unknown
-u8   pad[3]
+u8   flags2             revision 1.24, a pad byte before it. bit0 USB_MODS (the USB mods' paragraph).
+                        Settings profiles (section 5.10.1):
+                        bit1 PROFILES: the module has settings profiles and the console has users
+                             to keep them for. The client's capability bit. Set by the PS3 module
+                             from build 56 and by the simulator; never by qwark-rpcs3, which has one
+                             user, and never by an earlier build
+                        bit2 PROFILES_ON: config.txt's `profiles.enabled` is 1
+                        bit3 PROFILE_ACTIVE: a console user's profile is the active one, so the
+                             per-user settings are that user's
+u8   profile_seq        revision 1.24, a pad byte before it: goes up by one, wrapping, whenever the
+                        active profile changes or is read again (section 5.10.1)
+u8   pad
 f32  pos[3]             player x, y, z
 u32  pad_mask           controller buttons, OG layout (section 10)
 f32  analog[4]          rx, ry, lx, ly, each -1..1
@@ -188,6 +201,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | The OPEN_MENU combo (revision 1.22) | nothing but a notification: the console menu's renderer is code, so `qwark-rpcs3` installs none and there is no menu (section 9) |
 | MENU_HELP (revision 1.23) | `UNSUPPORTED`: there is no menu, and so no Help row of its |
 | ui.pak (revision 1.23, build 55) | never looked at, and `flags` bit7 UI_PAK_BAD never set: there is no menu to read |
+| PROFILE_ENABLE and COMBO_OVERRIDE (revision 1.24) | `UNSUPPORTED`: RPCS3 has one user, so there are no settings profiles. PROFILE_INFO answers with every byte 0, and SessionInfo `flags2` bit1 is never set |
 | The TOGGLE_FAST_LOADS combo (revision 1.23) | refused as FEATURE_SET of the game's Fast loads is, unless bit4 CODE_SWITCHES is set, with a notification that says the patches are needed |
 
 SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on this platform (section 5.12.1).
@@ -634,7 +648,7 @@ It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gon
 
 ### 5.9 Combos (0x008x)
 
-A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title.
+A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title; since revision 1.24 a settings profile may override one combo at a time for its user (COMBO_OVERRIDE, section 5.10.1).
 
 Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE, 5 OPEN_MENU (revision 1.22), 6 TOGGLE_FAST_LOADS (revision 1.23). LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper, or where code cannot be patched and no RPCS3 patch put the helper in (section 5.12.1). OPEN_MENU opens the console menu, or closes it when it is up (section 9).
 
@@ -652,7 +666,7 @@ COMBO_LIST therefore has **six** entries since revision 1.22, where it had five,
 | Op | Name | Request | Reply |
 |---|---|---|---|
 | 0x0080 | COMBO_SET | `u8 action, u8 pad[3], u32 mask` | none |
-| 0x0081 | COMBO_LIST | none | `u8 n, { u8 action, u8 pad[3], u32 mask }[n]` |
+| 0x0081 | COMBO_LIST | none | `u8 n, { u8 action, u8 flags, u8 pad[2], u32 mask }[n]`; `flags` (revision 1.24, a pad byte before it) bit0 OVERRIDDEN, section 5.10.1 |
 | 0x0082 | COMBO_SUSPEND | `u8 suspend` (1 hold every combo off, 0 resume) | none |
 | 0x0083 | COMBO_ENABLE | `u8 on` (1 combos fire, 0 every combo is held off) | none |
 
@@ -673,12 +687,64 @@ The switch and the hold are independent, and either one on its own holds every c
 | 0x0090 | CONFIG_RELOAD | none | none. Re-reads `/dev_hdd0/qwark/config.txt` after a user edited it |
 | 0x0091 | CONFIG_SAVE | none | none. Config is also written on every change |
 | 0x0092 | MENU_HELP | `u8 on` (1 the console menu's Trainer row takes the game's Help row, 0 the Help row is the game's own) | none (revision 1.23) |
+| 0x0093 | PROFILE_INFO | none | 64 bytes, section 5.10.1 (revision 1.24) |
+| 0x0094 | PROFILE_ENABLE | `u8 on, u8 setup` | none (revision 1.24) |
+| 0x0095 | COMBO_OVERRIDE | `u8 action, u8 set, u8 pad[2], u32 mask` | none (revision 1.24) |
 
 Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment, the game's Help row its own again (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up.
 
 **MENU_HELP** (revision 1.23, build 55) writes `menu.help`, the console menu's Help row: 1 when the file does not mention it, the Trainer row in the game's pause menu where Help was, as build 54 always had it; 0, the game's own Help row in every game, with the rest of the renderer in and the menu combo opening the menu as before, while the combos are on. It is a config write like COMBO_ENABLE, answered in any session state; any value other than 0 or 1 is `BAD_ARG`, and a platform that cannot patch code, which has no menu, answers `UNSUPPORTED` and writes nothing. In a game whose renderer is in, the tick thread puts the Help row's words in or takes them out at the first moment it is safe, and only then (section 9.2), so the change shows the next time the player opens the pause menu, or the next time after this one if it is open. SessionInfo `flags` bit6 MENU_HELP_OFF is set while the key is 0; there is no op to read it back. A hand edit picked up by CONFIG_RELOAD counts as a change like any other. `menu.enabled = 0` takes every word out whatever `menu.help` says.
 
-Keys a client's own ops write. Console-wide rather than per title: the seven combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, since revision 1.22 `combo.menu` (0x060F when the file does not name it) and since revision 1.23 `combo.fastloads` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it), `menu.help` (MENU_HELP, revision 1.23, 1 when the file does not mention it) and `selected.slot` (POS_SELECT). Per game since build 53: `selected.<game>.planet` and `selected.<game>.planet_flags` (PLANET_SELECT), `<game>` being `rac1`, `rac2`, `rac3` or `rac4` as in the manips' keys (section 5.14), so the disc trilogy keeps three. Until build 53 the planet selection was one pair for the console, `selected.planet` and `selected.planet_flags`; qwark never writes those two again, and a game whose own key the file does not hold yet reads the old one in its place, so the first PLANET_SELECT in each game is where its own pair begins (section 5.5). Each key is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart.
+Keys a client's own ops write. Console-wide rather than per title: the seven combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, since revision 1.22 `combo.menu` (0x060F when the file does not name it) and since revision 1.23 `combo.fastloads` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it), `menu.help` (MENU_HELP, revision 1.23, 1 when the file does not mention it) and `selected.slot` (POS_SELECT). Per game since build 53: `selected.<game>.planet` and `selected.<game>.planet_flags` (PLANET_SELECT), `<game>` being `rac1`, `rac2`, `rac3` or `rac4` as in the manips' keys (section 5.14), so the disc trilogy keeps three. Until build 53 the planet selection was one pair for the console, `selected.planet` and `selected.planet_flags`; qwark never writes those two again, and a game whose own key the file does not hold yet reads the old one in its place, so the first PLANET_SELECT in each game is where its own pair begins (section 5.5). Each key is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart. With settings profiles on (revision 1.24, section 5.10.1) the per-user ones among them, the selections, the manip options, `menu.help` and the auto flags, are the active profile's and live in its own config.txt; the combo masks and `combo.enabled` stay the console's.
+
+### 5.10.1 Settings profiles (revision 1.24, build 56)
+
+A console can have several users, and each can keep settings of their own: a **profile**. Today a profile is a console user's; a later revision adds named profiles, picked from a client, beside them, which is why the layout and the ops talk about profiles rather than users.
+
+**Off out of the box.** config.txt's `profiles.enabled`, console-wide, is the switch: 0 when the file has never named it, and then nothing is read from a profile and everything below is as before revision 1.24. PROFILE_ENABLE writes it; a hand edit picked up by CONFIG_RELOAD takes effect at the next second the console spends at the XMB.
+
+**The layout.** `/dev_hdd0/qwark/profiles/<folder>/config.txt`, the same `key = value` text as the console's, and `/dev_hdd0/qwark/profiles/<folder>/positions/<game>.txt`, laid out like `/dev_hdd0/qwark/positions/`. A console user's folder is `user-` and the XMB's eight-digit user number, `user-00000001` for the first user, as `/dev_hdd0/home/00000001` is theirs. Named profiles will be `name-<slug>`. A profile's file holds only per-user keys and combo overrides.
+
+**Which side every key is on.** With a profile active:
+
+| Side | Keys and files |
+|---|---|
+| Per user: read from and written to the active profile only | `selected.slot`, `selected.<game>.planet`, `selected.<game>.planet_flags`, the old `selected.planet` and `selected.planet_flags`, `manip.<game>.auto_reset`, `manip.<game>.remember`, `manip.<game>.category`, `menu.help` (In-game menus), `<TITLEID>.auto.<slug>` (a toggle's auto-apply), `<TITLEID>.mod.<dirname>.auto` (which mods load by themselves), `profile.*` (the profile's own), and the position slots |
+| Combos, one at a time | the seven masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, `combo.menu`, `combo.fastloads` are the console's, in config.txt, for everyone. The active profile may hold a key of the same name, that combo's **override**, which wins for that combo alone |
+| The console's, always config.txt | `profiles.enabled`, `combo.enabled` (the combo switch), `menu.enabled`, `log`, `savefile_helper`, and any key not named above |
+| The console's files, shared by everyone | the mod library (`mods/`), the savefile library (`savefiles/`), `ui.pak` and `qwark.log` |
+
+A per-user key the active profile does not hold is unset, so it reads its default: it does not fall back to the console's value. While no profile is active (the switch off, or nobody signed in yet), the console's config.txt holds and answers every key, the per-user ones included, as before.
+
+**Which profile is active.** The module asks the XMB for the signed-in user once a second while it is at the XMB, and only while the switch is on; never in BOOTING, INGAME or QUITTING, so a profile never changes under a game. When the user differs from the active profile's, the slots go back to the file they came from, the new profile's config.txt and slots are read, the toggles' and mods' auto flags are read again, and `profile_seq` moves. While nobody is signed in (the user-select screen), whatever is active stays. PROFILE_ENABLE acts at once, in a game too, since it is the user's own request.
+
+**A profile that has never been made** has no folder. It reads every per-user key as its default, and nothing is made for it until something is written into it: its first per-user write, slot store or combo override makes the folder and an empty config.txt, and then the write. Nothing is ever copied into a profile but by PROFILE_ENABLE's setup, so a user who signs in later with no profile starts from the defaults. A folder that cannot be made answers that write `IO_ERROR` and leaves the profile unmade.
+
+**PROFILE_INFO** (0x0093), no request, 64 bytes, answered in XMB and INGAME:
+
+```
+u8   flags      bits 1-3 as SessionInfo flags2 (bit1 PROFILES, bit2 PROFILES_ON, bit3 PROFILE_ACTIVE),
+                plus bit5 HAS_PROFILE: the signed-in user's profile has been made, whether or
+                not the switch is on. Bits 0, 4, 6 and 7 are 0
+u8   kind       0 the console's settings are in use, 1 a console user's profile, 2 reserved for
+                named profiles
+u8   seq        profile_seq
+u8   pad
+u32  user_id    the signed-in XMB user number, 1 for 00000001; 0 when nobody is signed in
+char folder[24] the signed-in user's profile folder, "user-00000001", whether or not it is in use;
+                "" when nobody is signed in. NUL-padded
+char name[32]   reserved for named profiles: all 0 for a console user's
+```
+
+On a platform without users (qwark-rpcs3) every byte is 0.
+
+**PROFILE_ENABLE** (0x0094), `u8 on, u8 setup`, no reply. `on` writes `profiles.enabled`. `setup`, which acts only with `on` 1, and only on a profile that has not been made (HAS_PROFILE clear): 0 nothing; 1 **COPY**, make the signed-in user's profile with every per-user key of the console's config.txt and the four position files (`rac1` .. `rac4`); 2 **FRESH**, make it empty. A profile that exists is never overwritten: the setup is ignored. `on` > 1 or `setup` > 2 is `BAD_ARG`, and `UNSUPPORTED` where flags2 bit1 is clear. Turning the switch off leaves every profile folder where it is, so turning it on again finds them. A client asks the question once, as the user turns the switch on: PROFILE_INFO first, and when HAS_PROFILE is clear, "copy the current settings, or start from the defaults?", then PROFILE_ENABLE(1, 1 or 2); otherwise PROFILE_ENABLE(1, 0).
+
+**COMBO_OVERRIDE** (0x0095), `u8 action, u8 set, u8 pad[2], u32 mask`, no reply. `set` 1 stores `mask` as the active profile's override of that combo (0 too: the combo is off for this user); `set` 0 removes it, so the console's mask is in force again, and removing one that is not there is `OK`. An action past the last combo, or `set` > 1, is `BAD_ARG`; `UNSUPPORTED` where flags2 bit1 is clear; `NOT_FOUND` when no profile is active. **COMBO_SET** writes the console's mask whatever is active, so under an override its change shows to this user once the override goes. **COMBO_LIST** answers the mask in force, the override where there is one, and sets that row's `flags` bit0 OVERRIDDEN. Overrides stay in the profile's file while the switch is off and are back when it goes on. COMBO_ENABLE's switch is the console's.
+
+**profile_seq** (SessionInfo byte 30, and PROFILE_INFO's `seq`) moves by one whenever the active profile changes (a new user at the XMB, PROFILE_ENABLE turning the switch on or off, a setup) and at a CONFIG_RELOAD while a profile is active. A client that sees it move reads PROFILE_INFO, COMBO_LIST, MOD_LIST, POS_LIST and MANIP_LIST again. A single key write does not move it: the client that made it knows.
+
+**Files.** Since build 56 config.txt, a profile's config.txt and every position file are written to `<file>.new` and then put in the old file's place (cellFs will not rename onto a file, so the old one is deleted first). A read that finds no file but a `.new`, which is what a write cut off between the two leaves, reads the `.new`, and the next write puts a whole file back.
 
 ### 5.11 Autosplitting (0x00Ax)
 

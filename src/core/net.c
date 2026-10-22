@@ -1263,7 +1263,10 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	case OP_POS_SELECT:
 		if (reqlen < 1) return ST_BAD_ARG;
 		if (req[0] >= QWARK_POS_SLOTS) return ST_BAD_ARG;
+		/* Revision 1.24: under the core lock, as a profile switch swaps the store under it. */
+		core_lock();
 		config_set_selected_slot(req[0]);
+		core_unlock();
 		return ST_OK;
 
 	case OP_POS_LIST: {
@@ -1672,28 +1675,115 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	}
 #endif
 
-	case OP_COMBO_SET:
+	/*
+	 * The console's mask, always: revision 1.24 keeps a profile's own in an
+	 * override (COMBO_OVERRIDE, below), so a profile's override hides this
+	 * write from its user until the override goes. Every config op from here
+	 * to MENU_HELP takes the core lock, which a profile switch holds while it
+	 * swaps the profile's keys.
+	 */
+	case OP_COMBO_SET: {
+		u16 rc;
 		if (reqlen < 8) return ST_BAD_ARG;
 		if (req[0] >= COMBO_COUNT) return ST_BAD_ARG;
-		return (u16)config_set_combo(req[0], be32_get(req + 4));
+		core_lock();
+		rc = (u16)config_set_combo(req[0], be32_get(req + 4));
+		core_unlock();
+		return rc;
+	}
 
+	/*
+	 * The mask in force, the active profile's override where it has one.
+	 * Revision 1.24: the byte after the action, a pad until then, is the row's
+	 * flags, bit0 OVERRIDDEN.
+	 */
 	case OP_COMBO_LIST: {
 		u8 a;
 		u32 off = 1;
 
 		if (1u + COMBO_COUNT * 8u > replycap) return ST_FULL;
 
+		core_lock();
 		reply[0] = COMBO_COUNT;
 		for (a = 0; a < COMBO_COUNT; a++) {
 			reply[off] = a;
-			reply[off + 1] = 0;
+			reply[off + 1] = config_combo_overridden(a) ? COMBO_LIST_OVERRIDDEN : 0;
 			reply[off + 2] = 0;
 			reply[off + 3] = 0;
 			be32_put(reply + off + 4, config_combo(a));
 			off += 8;
 		}
+		core_unlock();
 		*replylen = off;
 		return ST_OK;
+	}
+
+	/*
+	 * Revision 1.24. One combo's override in the active profile: u8 action,
+	 * u8 set, u8 pad[2], u32 mask. A config write like COMBO_SET, answered in
+	 * any session state; the tick thread's cached masks follow the config
+	 * version.
+	 */
+	case OP_COMBO_OVERRIDE: {
+		u16 rc;
+		if (reqlen < 8 || req[0] >= COMBO_COUNT || req[1] > 1) return ST_BAD_ARG;
+		if (!plat_has_users()) return ST_UNSUPPORTED;
+		core_lock();
+		rc = (u16)config_set_combo_override(req[0], req[1], be32_get(req + 4));
+		core_unlock();
+		return rc;
+	}
+
+	/*
+	 * Revision 1.24. The active profile and the signed-in user, 64 bytes
+	 * (PROTOCOL.md 5.10.1). The user is asked for here, on demand: one VSH
+	 * call. The name field stays empty until named profiles come.
+	 */
+	case OP_PROFILE_INFO: {
+		u32 user;
+		u8 flags;
+
+		if (replycap < PROFILE_INFO_SIZE) return ST_FULL;
+		memset(reply, 0, PROFILE_INFO_SIZE);
+		*replylen = PROFILE_INFO_SIZE;
+		if (!plat_has_users()) return ST_OK;
+
+		user = plat_user_id();
+		if (user > 99999999u) user = 0;
+
+		core_lock();
+		flags = config_profile_flags();
+		if (user != 0 && config_profile_exists(user)) flags |= PROFILE_INFO_HAS_PROFILE;
+		reply[0] = flags;
+		reply[1] = config_profile_active() ? 1 : 0;
+		reply[2] = config_profile_seq();
+		core_unlock();
+
+		be32_put(reply + 4, user);
+		{
+			char folder[PROFILE_FOLDER_MAX];
+			config_profile_folder_for(user, folder, sizeof(folder));
+			memcpy(reply + 8, folder, qstrlen(folder));
+		}
+		return ST_OK;
+	}
+
+	/*
+	 * Revision 1.24. The console's switch, and the signed-in user's profile
+	 * made as it goes on: a copy of the console's per-user settings, or empty.
+	 * It acts at once, in a game too: it is the user's own request. Only the
+	 * session's look for a new user at the XMB waits for the XMB (session.c).
+	 */
+	case OP_PROFILE_ENABLE: {
+		u16 rc;
+		if (reqlen < 2 || req[0] > 1 || req[1] > PROFILE_SETUP_FRESH) return ST_BAD_ARG;
+		if (!plat_has_users()) return ST_UNSUPPORTED;
+		core_lock();
+		rc = (u16)config_set_profiles_enabled(req[0]);
+		if (rc == ST_OK && config_profile_resolve(plat_user_id(), req[0] ? req[1] : 0))
+			session_profile_changed();
+		core_unlock();
+		return rc;
 	}
 
 	/*
@@ -1706,12 +1796,20 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	case OP_COMBO_ENABLE:
 		if (reqlen < 1) return ST_BAD_ARG;
 		if (req[0] > 1) return ST_BAD_ARG;
-		return (u16)config_set_combo_enabled(req[0]);
+		{
+			u16 rc;
+			core_lock();
+			rc = (u16)config_set_combo_enabled(req[0]);
+			core_unlock();
+			return rc;
+		}
 
 	case OP_CONFIG_RELOAD: {
 		u16 rc;
 		core_lock();
 		rc = (u16)config_load();
+		/* Revision 1.24: the profile was read again with it; its auto flags follow. */
+		if (config_profile_active()) session_profile_changed();
 		core_unlock();
 		return rc == ST_NOT_FOUND ? ST_OK : rc;
 	}
@@ -1733,7 +1831,13 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	case OP_MENU_HELP:
 		if (reqlen < 1 || req[0] > 1) return ST_BAD_ARG;
 		if (!plat_can_patch_code()) return ST_UNSUPPORTED;
-		return (u16)config_set_menu_help(req[0]);
+		{
+			u16 rc;
+			core_lock();
+			rc = (u16)config_set_menu_help(req[0]);
+			core_unlock();
+			return rc;
+		}
 
 #ifndef QWARK_EMULATOR
 	/*

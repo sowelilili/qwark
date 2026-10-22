@@ -121,4 +121,12 @@ void host_set_emulator(int on);
  */
 void host_set_vsh_memory(u32 free_bytes, u32 total_bytes);
 
+/*
+ * Revision 1.24. The fake XMB's signed-in user (plat_user_id; 0 nobody), and
+ * whether the console has users at all (plat_has_users; 0 is RPCS3's answer).
+ * backend_fake.c only.
+ */
+void host_set_user(u32 user);
+void host_set_has_users(int on);
+
 #endif /* QWARK_PLAT_HOST_H */

@@ -124,6 +124,21 @@ u32 mods_loaded_mask(void)
 	return mask;
 }
 
+/*
+ * Revision 1.24. Every row's AUTO bit read again out of config, which a change
+ * of settings profile has just swapped: which mods load by themselves is the
+ * user's, the library itself is the console's.
+ */
+void mods_refresh_auto(void)
+{
+	u32 i;
+	for (i = 0; i < g_nmods; i++) {
+		if (!g_mods[i].used) continue;
+		if (config_mod_auto(g_title, g_mods[i].dirname)) g_mods[i].flags |= MOD_FLAG_AUTO;
+		else g_mods[i].flags &= (u8)~MOD_FLAG_AUTO;
+	}
+}
+
 u32 mods_auto_mask(void)
 {
 	u32 mask = 0;

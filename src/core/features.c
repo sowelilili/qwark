@@ -178,6 +178,12 @@ void features_forget_state(void)
 u64 features_toggle_state(void) { return g_toggle_state; }
 u64 features_toggle_auto(void)  { return g_toggle_auto; }
 
+/* Revision 1.24: the auto flags of another settings profile. */
+void features_refresh_auto(void)
+{
+	g_toggle_auto = features_auto_mask();
+}
+
 int features_set(u8 id, u32 value)
 {
 	const struct feature_desc *f = find_desc(id);

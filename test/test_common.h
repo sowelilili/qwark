@@ -42,4 +42,7 @@ void test_combo_fastloads(void);
 /* test_uipak.c: ui.pak, the console menu's renderers on the HDD, build 55. */
 void test_uipak(void);
 
+/* test_profiles.c: settings profiles, one per console user, build 56. */
+void test_profiles(void);
+
 #endif /* QWARK_TEST_COMMON_H */

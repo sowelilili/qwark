@@ -317,6 +317,19 @@ int plat_is_emulator(void)
 }
 
 /*
+ * Revision 1.24. The fake XMB's signed-in user, 1 from the start, which the
+ * `user` command and the tests change; 0 is nobody signed in. The session
+ * reads it once a second at the XMB, as it does the VSH's on a console.
+ */
+static volatile u32 g_user_id = 1;
+static volatile int g_has_users = 1;
+
+void host_set_user(u32 user) { g_user_id = user; }
+void host_set_has_users(int on) { g_has_users = on ? 1 : 0; }
+u32 plat_user_id(void) { return g_user_id; }
+int plat_has_users(void) { return g_has_users; }
+
+/*
  * Every read the core makes of the "process", for the test that a boot leaves it
  * alone for its first second. host_peek does not go through here, so a test can look at the
  * fake console's memory without disturbing the count.

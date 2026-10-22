@@ -70,9 +70,14 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
 | `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
+| `profiles/user-<8 digits>/` | per-user settings (build 56): a `config.txt` of that user's own keys and their `positions/`, used while `profiles.enabled = 1` |
 | `qwark.log` | state transitions and the VSH's free memory (`vsh mem:` lines, PROTOCOL.md 5.1.1), when `log = 1` |
 
 The log is there for working out why a console is crashing. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
+
+## Per-user settings
+
+With `profiles.enabled = 1` (the client's Settings panel turns it on, off out of the box) each console user keeps their own position slots, planet selection, manip options, In-game menus switch, and which toggles and mods apply themselves, in `profiles/user-<8 digits>/`. The mod and savefile libraries, `ui.pak`, the log and the combos stay the console's, though a user can override one combo at a time. qwark picks up a new user at the XMB, never in a game. Turning the switch on can copy the console's settings into the user signed in then; any other user starts from the defaults. RPCS3 has one user, so it has no profiles. PROTOCOL.md 5.10.1 has every key.
 
 ## RPCS3
 

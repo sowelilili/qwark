@@ -74,6 +74,12 @@
  * Also build 55: the COMBO_ENABLE switch holds the OPEN_MENU combo off like the
  * rest, which it spared in revision 1.22; the pause menu's Trainer row is the
  * way in then, unless MENU_HELP has given that row back to the game's Help.
+ * Revision 1.24, build 56: settings profiles, one per console user, behind the
+ * console's switch `profiles.enabled` (src/core/config.h). PROFILE_INFO,
+ * PROFILE_ENABLE and COMBO_OVERRIDE at 0x0093..0x0095; SessionInfo byte 29,
+ * a pad byte until now, is `flags2`, whose bits 1 to 3 are the profile's,
+ * and byte 30 `profile_seq`; the byte after each COMBO_LIST action, a pad
+ * byte until now, is its flags, bit0 OVERRIDDEN. PROTOCOL.md 5.10.1.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -89,7 +95,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             55
+#define QWARK_BUILD             56
 
 #define QWARK_PORT              9673
 /*
@@ -268,6 +274,20 @@
  * Reply none. SessionInfo flags bit6 reports it. PROTOCOL.md 5.10 and 9.2.
  */
 #define OP_MENU_HELP         0x0092
+/*
+ * Revision 1.24, build 56. Settings profiles (PROTOCOL.md 5.10.1).
+ *   PROFILE_INFO    none -> PROFILE_INFO_SIZE bytes: the active profile and
+ *                   the signed-in user
+ *   PROFILE_ENABLE  u8 on, u8 setup (PROFILE_SETUP_*): the console's switch,
+ *                   and the copy, or the empty start, of the signed-in user's
+ *                   profile as it goes on
+ *   COMBO_OVERRIDE  u8 action, u8 set, u8 pad[2], u32 mask: the active
+ *                   profile's own mask for one combo, or (set 0) none
+ * A client sends them only while SessionInfo flags2 (byte 29) bit1 is set.
+ */
+#define OP_PROFILE_INFO      0x0093
+#define OP_PROFILE_ENABLE    0x0094
+#define OP_COMBO_OVERRIDE    0x0095
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -537,6 +557,24 @@
  * never by an earlier build, whose renderers were in the module.
  */
 #define SESSION_FLAG_UI_PAK_BAD       0x80
+
+/*
+ * Revision 1.24, build 56. SessionInfo byte 29, a pad byte until then, is
+ * `flags2`: bit0 is the USB mods' (their paragraph), bits 1 to 3 the settings
+ * profiles'. Byte 30 is `profile_seq` (config_profile_seq). bit1 is the
+ * client's capability bit: the module has settings profiles and the console has
+ * users to keep them for. Set by the PS3 module from build 56 and the
+ * simulator; never by qwark-rpcs3, as RPCS3 has one user, and never by an
+ * earlier build, which sent a pad byte.
+ */
+#define SESSION_PROFILE_SUPPORTED     0x02
+#define SESSION_PROFILE_ON            0x04   /* `profiles.enabled` is 1 */
+#define SESSION_PROFILE_ACTIVE        0x08   /* a user's profile is in use now */
+/* PROFILE_INFO's flags: the three above, in the same bits, and this one. */
+#define PROFILE_INFO_HAS_PROFILE      0x20   /* the signed-in user's profile has been made */
+#define PROFILE_INFO_SIZE             64
+/* COMBO_LIST's byte after each action. */
+#define COMBO_LIST_OVERRIDDEN         0x01
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

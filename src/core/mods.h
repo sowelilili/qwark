@@ -124,6 +124,8 @@ int  mods_info(const char *dirname, char *out, u32 cap, u32 *len);
 
 u32  mods_loaded_mask(void);
 u32  mods_auto_mask(void);
+/* Revision 1.24. Every row's AUTO bit again out of config: a settings profile changed. */
+void mods_refresh_auto(void);
 
 /* Drops the loaded flags without writing anything (a game reboot did it for us). */
 void mods_forget_loaded(void);
