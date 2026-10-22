@@ -125,6 +125,13 @@ OP_MOD_RESCAN = 0x0064
 OP_MOD_INFO = 0x0065
 # Revision 1.16: one mod as the words and bytes an RPCS3 patch writes.
 OP_MOD_PATCH = 0x0066
+# Revision 1.24, build 56: the mods on the console's USB drives (PROTOCOL.md 5.7.2).
+OP_MOD_USB_LIST = 0x0067
+MODUSB_WIRE_SIZE = 120
+MODUSB_AVAILABLE, MODUSB_SAME, MODUSB_NEWER, MODUSB_OLDER, MODUSB_CONFLICT, MODUSB_BROKEN = range(6)
+# SessionInfo byte 29, flags2 (revision 1.24): bit0 USB_MODS.
+SESSION_FLAG2_USB_MODS = 0x01
+OP_DIR_DELETE = 0x0077
 # Revision 1.17: the running game's code switches, in SAVEFILE_PATCH's layout.
 OP_SWITCH_PATCH = 0x0025
 
@@ -982,7 +989,9 @@ def parse_session_info(b):
     info["planet_sel"] = b[26]
     info["planet_flags"] = b[27]
     info["planet"] = b[28]
-    info["profile_flags"] = b[29]
+    # Byte 29, flags2: bits 1 to 3 the profiles', bit0 the USB mods' (revision 1.24).
+    info["flags2"] = b[29]
+    info["profile_flags"] = b[29] & 0x0E
     info["profile_seq"] = b[30]
     info["pos"] = struct.unpack(">3f", b[32:44])
     info["pad_mask"] = struct.unpack(">I", b[44:48])[0]
@@ -2652,6 +2661,117 @@ def mod_row(c, dirname):
     """One mod's MOD_LIST row, or None."""
     _, mods = mod_list(c)
     return next((m for m in mods if m["dirname"] == dirname), None)
+
+
+def mod_usb_list(c):
+    """MOD_USB_LIST (revision 1.24), as the rows a client reads out of it."""
+    status, body = c.call(OP_MOD_USB_LIST)
+    rows = []
+    if status == ST_OK and body:
+        for i in range(body[0]):
+            off = 1 + i * MODUSB_WIRE_SIZE
+            rows.append({
+                "port": body[off],
+                "state": body[off + 1],
+                "flags": body[off + 2],
+                "problem": body[off + 3],
+                "hash": struct.unpack(">I", body[off + 4:off + 8])[0],
+                "dirname": body[off + 8:off + 40].split(b"\0")[0].decode(),
+                "name": body[off + 40:off + 72].split(b"\0")[0].decode(),
+                "version": body[off + 72:off + 88].split(b"\0")[0].decode(),
+                "author": body[off + 88:off + 120].split(b"\0")[0].decode(),
+            })
+    return status, rows
+
+
+def write_host_mod(folder, text, bins=None):
+    """A mod folder straight on the host's disk, as a fake USB drive holds one; its hash, the client's rule."""
+    os.makedirs(folder, exist_ok=True)
+    data = text.encode()
+    with open(os.path.join(folder, "patch.txt"), "wb") as f:
+        f.write(data)
+    crc = zlib.crc32(data)
+    for name, body in (bins or []):
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(body)
+        crc = zlib.crc32(body, crc)
+    return crc & 0xFFFFFFFF
+
+
+def smoke_usb_mods(c, host_root):
+    """
+    Revision 1.24, build 56: mods on a USB drive, over the wire, against fake
+    drives in the simulator's root. A USB-only mod is listed by MOD_USB_LIST and
+    not by MOD_LIST, and MOD_LOAD copies it in; an older copy of it on another
+    drive's /dev_usb00N/mods is left aside; a newer USB copy of an installed mod
+    is NEWER and the next MOD_LOAD takes it.
+    """
+    status, body = c.call(OP_HELLO, bytes([1]))
+    check(status == ST_OK and (body[29] & SESSION_FLAG2_USB_MODS) != 0,
+          "usb mods: SessionInfo flags2 bit0 says this module reads USB drives",
+          body[29] if status == ST_OK else status)
+
+    title = "NPEA00385"
+    usb0 = os.path.join(host_root, "dev_usb000", "qwark", "mods", title)
+    usb1 = os.path.join(host_root, "dev_usb001", "mods", title)
+    want = write_host_mod(os.path.join(usb0, "usb-smoke"),
+                          "#- name: USB smoke\n#- version: 1.0\n#- author: smoke\n"
+                          "0x00A20000: 0x60000000\n0x00A20100: cave.bin\n",
+                          [("cave.bin", bytes([1, 2, 3, 4, 5, 6]))])
+    write_host_mod(os.path.join(usb1, "usb-smoke"),
+                   "#- name: USB smoke\n#- version: 0.5\n0x00A20000: 0x38600000\n")
+
+    # An installed mod, uploaded the client's way, and a newer copy on USB.
+    hdd = "/dev_hdd0/qwark/mods/%s/usb-upd" % title
+    text = b"#- name: USB upd\n#- version: 1.0\n0x00A20200: 0x10000000\n"
+    c.call(OP_DIR_CREATE, hdd.encode())
+    write_console_file(c, hdd + "/patch.txt", text)
+    write_console_file(c, hdd + "/qwark.sum", b"%08x" % (zlib.crc32(text) & 0xFFFFFFFF))
+    newer = write_host_mod(os.path.join(usb0, "usb-upd"),
+                           "#- name: USB upd\n#- version: 1.1\n0x00A20200: 0x11000000\n")
+
+    status, _ = c.call(OP_MOD_RESCAN)
+    check(status == ST_OK, "usb mods: MOD_RESCAN reads the drives too", status)
+    status, rows = mod_usb_list(c)
+    check(status == ST_OK, "usb mods: MOD_USB_LIST answers OK", status)
+    smoke = next((r for r in rows if r["dirname"] == "usb-smoke"), None)
+    check(smoke is not None and smoke["state"] == MODUSB_AVAILABLE and smoke["port"] == 0 and
+          smoke["flags"] == 0 and smoke["version"] == "1.0" and smoke["hash"] == want,
+          "usb mods: the USB-only mod is AVAILABLE, the newer of two copies, from /dev_usb000/qwark/mods", smoke)
+    upd = next((r for r in rows if r["dirname"] == "usb-upd"), None)
+    check(upd is not None and upd["state"] == MODUSB_NEWER and upd["version"] == "1.1",
+          "usb mods: a newer USB copy of an installed mod is NEWER", upd)
+    check(mod_row(c, "usb-smoke") is None, "usb mods: MOD_LIST does not have the USB-only mod")
+
+    status, _ = c.call(OP_MOD_LOAD, fixed32("usb-smoke"))
+    check(status == ST_OK, "usb mods: MOD_LOAD of the USB-only mod answers OK", status)
+    row = mod_row(c, "usb-smoke")
+    check(row is not None and (row["flags"] & MOD_FLAG_LOADED) != 0 and row["hash"] == want,
+          "usb mods: it is installed and loaded, with the client's hash", row)
+    check(mem_read_u32(c, 0x00A20000) == 0x60000000, "usb mods: its word is in the game")
+    check(os.path.exists(os.path.join(host_root, "dev_hdd0", "qwark", "mods", title, "usb-smoke", "cave.bin")),
+          "usb mods: its .bin is in the console's library")
+
+    status, _ = c.call(OP_MOD_LOAD, fixed32("usb-upd"))
+    row = mod_row(c, "usb-upd")
+    check(status == ST_OK and row is not None and row["version"] == "1.1" and row["hash"] == newer,
+          "usb mods: MOD_LOAD of the installed mod took the newer USB copy", (status, row))
+    check(mem_read_u32(c, 0x00A20200) == 0x11000000, "usb mods: 1.1's word is in the game")
+
+    status, rows = mod_usb_list(c)
+    states = dict((r["dirname"], r["state"]) for r in rows)
+    check(states.get("usb-smoke") == MODUSB_SAME and states.get("usb-upd") == MODUSB_SAME,
+          "usb mods: both USB copies are SAME now", states)
+
+    c.call(OP_MOD_UNLOAD, fixed32("usb-smoke"))
+    c.call(OP_MOD_UNLOAD, fixed32("usb-upd"))
+    shutil.rmtree(os.path.join(host_root, "dev_usb000"), ignore_errors=True)
+    shutil.rmtree(os.path.join(host_root, "dev_usb001"), ignore_errors=True)
+    c.call(OP_DIR_DELETE, ("/dev_hdd0/qwark/mods/%s/usb-smoke" % title).encode())
+    c.call(OP_DIR_DELETE, hdd.encode())
+    c.call(OP_MOD_RESCAN)
+    status, rows = mod_usb_list(c)
+    check(status == ST_OK and not rows, "usb mods: with the drives gone the list is empty", rows)
 
 
 def mod_patch_page(c, index, page, request=None):
@@ -4718,6 +4838,11 @@ def smoke_rpcs3(exe):
         check(info and info["build"] == QWARK_BUILD,
               "rpcs3: it reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
+        # Revision 1.24: no USB mods under RPCS3, where a mod is an RPCS3 patch.
+        check(status == ST_OK and (body[29] & SESSION_FLAG2_USB_MODS) == 0,
+              "rpcs3: flags2 bit0 is clear: no USB mods here", body[29] if status == ST_OK else None)
+        status, _ = c.call(OP_MOD_USB_LIST)
+        check(status == ST_UNSUPPORTED, "rpcs3: MOD_USB_LIST is UNSUPPORTED", status)
 
         # The banner says where it bound, and we are talking to it there.
         want = "client on %s:%d" % (HOST, RPCS3_PORT)
@@ -6617,6 +6742,9 @@ def main():
 
         status, _ = c.call(OP_MOD_UNLOAD, fixed32("hardcore"))
         check(status == ST_OK, "MOD_UNLOAD hands the game back its own words", status)
+
+        # ------------------------------------------- mods on a USB drive, 1.24
+        smoke_usb_mods(c, host_root)
 
         # ----------------------------------------------- same-title reboot
         sim.send("quit")

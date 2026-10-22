@@ -56,6 +56,14 @@ qwark finds the folder from the game and the signed-in user rather than guessing
 
 On a console, all four games have a Trainer menu on the TV, with the game's cheats, planets, manips, unlocks and save files. Open it from **Trainer** in the pause menu, where Help was, or with L1 + R1 + L2 + R2 + L3 + R3 in play. The Combos panel can change the combo, and the combos switch turns it off with the rest; its In-game menus box (`menu.help`) keeps the game's own Help in the pause menu, the combo still opening the Trainer menu. `menu.enabled = 0` in `config.txt` turns the menu off. The menu is read from `/dev_hdd0/qwark/ui.pak`, which must come from the same build as `qwark.sprx`; without it everything else works, the console says once that the file is missing, and the client offers to send it. PROTOCOL.md section 9 has the details.
 
+## Mods on a USB drive
+
+A console can also take mods from a USB drive, in the same layout as its own library, in either of two places on the drive: `qwark/mods/<TITLEID>/<mod>/` or `mods/<TITLEID>/<mod>/` (for example `/dev_usb000/mods/NPEA00423/il-ghost/`). qwark reads every USB port the console has (`/dev_usb000` to `003`, `006` and `007`) when a game boots, when a client rescans and when a client asks for the list; it never reads them in the background. A mod on USB is available, not installed: the client lists it as on the console's USB drive, and qwark copies it into `/dev_hdd0/qwark/mods/` only when it is loaded or its auto-load is turned on. From then on it is an ordinary installed mod.
+
+A mod both places have is compared by the `#- version` in each `patch.txt`, read as dotted numbers (`1.10` is newer than `1.9`; a leading `v` is fine). A newer USB copy is an update: the next time the mod loads, by hand, by its auto-load at boot or by a reapply, qwark takes it first. While the mod is loaded in the running game its files are never touched; the update waits for the next load, and the client says so. An older USB copy, or one with the same version, is left alone, and the console's copy loads. When the versions are equal but the contents differ, or either copy has no version qwark can compare, the console's copy stays too, the log says so and the client shows it. When one mod is on several drives or in both places, the newest is used and the others are ignored; copies with the same version count as the same mod. A mod deleted from the console that is still on the drive shows as available again and is never loaded until somebody loads it.
+
+The copy goes into `/dev_hdd0/qwark/usbtmp/`, is read back and checked, and only then swapped in with two renames, so a drive pulled mid-copy leaves the console's library as it was. qwark copies `patch.txt` and the `.bin` files it names (at most 32, 256 KB each and 1 MB in all, no `..` in a name) and writes `qwark.sum` as the client does. Under RPCS3 none of this happens: mods there are RPCS3 patches the client writes, and qwark-rpcs3 never looks at RPCS3's USB folders. PROTOCOL.md section 5.7.2 has the details.
+
 ## What it does without a PC
 
 Everything that was configured last time keeps working with no client attached: combos, auto-applied mods and toggles, position slots, and the manips of the selected category, which qwark applies on its own at the start of a run. The console is the single source of truth; the client only displays and requests.
@@ -68,7 +76,8 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 |---|---|
 | `config.txt` | `key = value` lines: combos, per-game auto flags for toggles and mods, per-game manip options (`manip.<game>.*`), selected slot, per-game selected planet and its reset flags (`selected.<game>.*`), `log = 1`, `savefile_helper`, `menu.enabled`, `menu.help` |
 | `positions/<game>.txt` | one line per position slot, `<planet>.<slot> = <hex bytes>`; keyed on the game (`rac1` to `rac4`) so the disc collection and the PSN release share slots |
-| `mods/<TITLEID>/<mod>/` | mods uploaded by the client, same format as RaCMAN's `patch.txt` folders |
+| `mods/<TITLEID>/<mod>/` | mods uploaded by the client or taken from a USB drive, same format as RaCMAN's `patch.txt` folders |
+| `usbtmp/` | a mod on its way in from a USB drive; empty between copies |
 | `savefiles/<TITLEID>/<category>/` | the savefile library: `<name>.sav` and its `<name>.sav.sum`, eight hex digits of CRC32 |
 | `profiles/user-<8 digits>/` | per-user settings (build 56): a `config.txt` of that user's own keys and their `positions/`, used while `profiles.enabled = 1` |
 | `qwark.log` | state transitions and the VSH's free memory (`vsh mem:` lines, PROTOCOL.md 5.1.1), when `log = 1` |

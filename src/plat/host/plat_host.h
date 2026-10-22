@@ -81,6 +81,15 @@ void host_advance_time(u64 us);
 void host_freeze_time(int on);
 /* 1.4.1: how many folders have been opened for a walk since the program started (plat_dir_open). */
 u32  host_dir_opens(void);
+
+/*
+ * Build 56: a USB drive pulled out mid-copy. Every path under `prefix` (say
+ * "/dev_usb000") goes on working for `after_reads` more file reads from files
+ * opened under it, and then that read and every later one fails, and every
+ * open, folder open and stat under it fails as if nothing were there. 0 pulls
+ * it at once; NULL puts it back.
+ */
+void host_pull_drive(const char *prefix, u32 after_reads);
 #endif
 
 void host_fail_writes(u32 addr, u32 count);

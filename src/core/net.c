@@ -3,6 +3,7 @@
 #include "mem.h"
 #include "features.h"
 #include "mods.h"
+#include "modusb.h"
 #include "config.h"
 #include "util.h"
 #include "autosplit.h"
@@ -667,6 +668,8 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 
 		if (cmd->op == OP_MOD_RESCAN) {
 			cmd->status = (u16)mods_rescan();
+			/* Build 56: and the USB drives, whatever the last look found. */
+			modusb_scan(1);
 			break;
 		}
 
@@ -1385,6 +1388,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		u16 rc;
 		core_lock();
 		rc = (u16)mods_list_encode(reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+
+	/*
+	 * Revision 1.24. The mods on the USB drives, read again when the last look
+	 * is over a second old: file reads on this thread, under the core lock, as
+	 * MOD_INFO's are, and only when a client asks.
+	 */
+	case OP_MOD_USB_LIST: {
+		u16 rc;
+
+		if (!modusb_enabled()) return ST_UNSUPPORTED;
+		core_lock();
+		rc = (u16)modusb_list_encode(reply, replycap, replylen);
 		core_unlock();
 		return rc;
 	}

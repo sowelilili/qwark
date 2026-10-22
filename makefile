@@ -30,7 +30,7 @@ CRT_TAIL += $(shell ppu-lv2-gcc -print-file-name'='crtend.o)
 PPU_SRCS  = src/plat/ps3/libc.c src/plat/ps3/printf.c src/plat/ps3/plat_ps3.c
 PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
-PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
+PPU_SRCS += src/core/features.c src/core/mods.c src/core/modusb.c src/core/session.c src/core/net.c
 PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/menu.c
 #
 # Build 55: not src/games/menuhelper_bins.c. The console menu's renderers go

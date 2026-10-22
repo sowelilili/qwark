@@ -56,6 +56,8 @@ Revision 1.23, ui.pak (client 1.4.1, same build 55): the console menu's four ren
 
 Revision 1.24, settings profiles (2026-10-22, module build 56): a set of settings per console user, behind a console-wide switch that is off out of the box (section 5.10.1). Three ops: **PROFILE_INFO** at 0x0093 (the active profile and the signed-in user, 64 bytes), **PROFILE_ENABLE** at 0x0094 (`u8 on, u8 setup`: the switch, and the signed-in user's profile made as it goes on, a copy of the console's per-user settings or empty) and **COMBO_OVERRIDE** at 0x0095 (`u8 action, u8 set, u8 pad[2], u32 mask`: one combo's own mask in the active profile, or none). SessionInfo byte 29, a pad byte until now, is `flags2`, whose bit0 is the USB mods' and whose bits 1 to 3 are the profile's: bit1 PROFILES, the capability bit (the module has profiles and the console has users; never set by qwark-rpcs3), bit2 PROFILES_ON, bit3 PROFILE_ACTIVE; byte 30 is `profile_seq`, which moves whenever the profile behind the settings changes. The byte after each COMBO_LIST action, a pad byte until now, is that row's flags, bit0 OVERRIDDEN. With a profile active the per-user keys of config.txt, the position slots, which mods and toggles apply themselves and the overridden combos are the user's; the rest is the console's (section 5.10.1 lists every key). The module looks for a new user once a second at the XMB and never in a game. Since build 56 config.txt and the position files are written as `<file>.new` and then renamed into place.
 
+Revision 1.24, mods on a USB drive (module build 56): the console reads mods off its USB drives, at `/dev_usb00N/qwark/mods/<TITLEID>/<dir>/` and `/dev_usb00N/mods/<TITLEID>/<dir>/` for N in 0, 1, 2, 3, 6 and 7, and lists them as available rather than installed. **MOD_USB_LIST** at 0x0067, no request, answers `u8 n, UsbMod[n]`, 120 bytes a row: the drive, how the USB copy stands against the console's own (AVAILABLE, SAME, NEWER, OLDER, CONFLICT or BROKEN), whether a NEWER copy waits because the mod is loaded, which of the two places it is in, and the hash, folder name, name, version and author. SessionInfo `flags2` (byte 29, beside the profiles' bits) bit0 USB_MODS says the module reads USB drives and answers the op; it is never set by qwark-rpcs3, which answers MOD_USB_LIST `UNSUPPORTED` and never reads a USB folder. **MOD_LOAD** of a folder only a USB drive has copies it into the console's library and loads it, and MOD_LOAD of an installed mod first takes a newer USB copy of it, and of anything it depends on that is not loaded, as do the auto-load at boot and PREVIOUS_REAPPLY; a mod that is loaded is never replaced, and its update waits for its next load. **MOD_SET_AUTO** on of a USB-only folder copies it in and sets the flag. **MOD_RESCAN** reads the drives again too. A newer copy is one whose `#- version` is greater as dotted numbers; with no version to compare, or an equal one and other contents, the console's copy stays. A copy is built in `/dev_hdd0/qwark/usbtmp/`, read back, and swapped in by rename, so a drive pulled mid-copy leaves the library as it was. Separately, MOD_RESCAN keeps every mod that is still there at the index it had, where it used to number the mods afresh in folder order, so a mod's bit in `mod_loaded`, `mod_auto` and `mod_previous` and its MOD_PATCH index name the same mod across a rescan. No other opcode or structure changed. See sections 3, 3.2 and 5.7.2.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -139,7 +141,10 @@ u8   planet_flags       bit0 reset level flags, bit1 reset special bolts, used b
                         Which bits a game's load acts on is in section 5.5. The same game's as
                         selected_planet
 u8   current_planet     game planet index, 0 when unknown
-u8   flags2             revision 1.24, a pad byte before it. bit0 USB_MODS (the USB mods' paragraph).
+u8   flags2             revision 1.24, a pad byte before it.
+                        bit0 USB_MODS: the module reads mods off the console's USB drives and
+                             answers MOD_USB_LIST (section 5.7.2). Set on a console and in the
+                             simulator; never by qwark-rpcs3
                         Settings profiles (section 5.10.1):
                         bit1 PROFILES: the module has settings profiles and the console has users
                              to keep them for. The client's capability bit. Set by the PS3 module
@@ -202,6 +207,7 @@ qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC
 | MENU_HELP (revision 1.23) | `UNSUPPORTED`: there is no menu, and so no Help row of its |
 | ui.pak (revision 1.23, build 55) | never looked at, and `flags` bit7 UI_PAK_BAD never set: there is no menu to read |
 | PROFILE_ENABLE and COMBO_OVERRIDE (revision 1.24) | `UNSUPPORTED`: RPCS3 has one user, so there are no settings profiles. PROFILE_INFO answers with every byte 0, and SessionInfo `flags2` bit1 is never set |
+| MOD_USB_LIST (revision 1.24) | `UNSUPPORTED`, and `flags2` bit0 never set: a mod is an RPCS3 patch here, and qwark never reads RPCS3's USB folders, so a mod there is neither listed nor copied (section 5.7.2) |
 | The TOGGLE_FAST_LOADS combo (revision 1.23) | refused as FEATURE_SET of the game's Fast loads is, unless bit4 CODE_SWITCHES is set, with a notification that says the patches are needed |
 
 SAVEFILE_INFO was in this table until revision 1.15. It answers on this platform now, and its `installed` byte says whether the helper is in the game, which is how a client knows whether to offer to write the patch; SAVEFILE_PATCH answers on this platform (section 5.12.1).
@@ -544,6 +550,7 @@ Mods live under `/dev_hdd0/qwark/mods/<TITLEID>/<dirname>/` on the console. The 
 | 0x0064 | MOD_RESCAN | none | none |
 | 0x0065 | MOD_INFO | `char[32] dirname` | description text, at most 1024 bytes |
 | 0x0066 | MOD_PATCH | `u8 index, u8 pad, u16 page` (the Mod row's `index`; a request before revision 1.19 is `u8 index, u8 pad[3]`, page 0) | One page: `u16 n, u16 pages, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the mod as the words and bytes an RPCS3 patch writes (revision 1.16), a page at a time (revision 1.19), section 5.7.1. `UNSUPPORTED` from the PS3 module (revision 1.18) |
+| 0x0067 | MOD_USB_LIST | none | `u8 n, UsbMod[n]`: the mods on the console's USB drives (revision 1.24, section 5.7.2). `UNSUPPORTED` where code cannot be patched |
 
 ```
 Mod (120 bytes):
@@ -558,7 +565,7 @@ char version[16]
 char author[32]
 ```
 
-**MOD_RESCAN** reads every mod folder of the current title again, and that is what makes the upload above land: the `qwark.sum` just written becomes the `hash` MOD_LIST reports, the `#-` lines become the name, version and author in the row, and the patch words become what the next MOD_LOAD writes into the game. It answers OK whatever it finds, including for a title with no mod folder at all.
+**MOD_RESCAN** reads every mod folder of the current title again, and that is what makes the upload above land: the `qwark.sum` just written becomes the `hash` MOD_LIST reports, the `#-` lines become the name, version and author in the row, and the patch words become what the next MOD_LOAD writes into the game. It answers OK whatever it finds, including for a title with no mod folder at all. Since revision 1.24 it also reads the console's USB drives again (section 5.7.2), and a mod that is still there keeps its `index`: a rescan used to number every mod that was not loaded afresh, in the order the folder listing gave them, so a folder added or removed could move another mod's bit in SessionInfo's `mod_loaded`, `mod_auto` and `mod_previous`. A new folder takes the lowest index free, and the index of a folder that has gone is free again.
 
 A mod that is loaded at that moment is the one exception, and it is left exactly as it was parsed: its patch words are in the running game next to the originals its unload will put back, so re-reading its folder would leave the console unable to give the game its own instructions again. Its row therefore keeps the hash it was parsed with, and a client that uploads over a mod the console has loaded goes on seeing the old hash until it unloads the mod and rescans. Every other mod is re-read whatever is loaded, so a client that uploads a mod in order to load it — which is the only time the mods panel uploads one — always sees what it just wrote. A rescan used to skip *every* folder it already knew as soon as any one mod was loaded, so an uploaded mod kept the hash and the words of the copy it replaced for the rest of the session; that is fixed, and no client has to do anything differently for it.
 
@@ -618,6 +625,74 @@ A mod that is never looked for never shows CHECKING: one that failed to parse, o
 The answer holds for the session, because a patch goes in at load or not at all. It is looked for again when a game comes back, the same title included, since a patch written meanwhile counts from the next restart and not before, and after every MOD_RESCAN, since the files it was compared against may have changed: a client that uploads a new copy of a mod sees it CHECKING and then not LOADED until it rewrites the patch and the game is restarted. A read that fails, because the emulator is not answering, leaves the mod CHECKING rather than calling it absent. Outside INGAME no mod is CHECKING or LOADED on this platform. qwark writes nothing into the game for any of this, and SessionInfo's `mod_loaded` stays qwark's own loads, so it never carries a patched-in mod.
 
 **What the client does with the reply.** It uploads the mod exactly as for a console - the files, `qwark.sum`, MOD_RESCAN - asks for it with MOD_PATCH, every page of it (revision 1.19), writes it into RPCS3's per-title patch file `patches/<TITLE_ID>_patch.yml` as its own entry, `be32` rows and `byte` entries, enables that entry in `patch_config.yml`, and has the user restart the game. Taking a mod out is disabling the entry and restarting. That half is the client's; nothing in qwark touches RPCS3's files.
+
+### 5.7.2 Mods on a USB drive (revision 1.24)
+
+A console with a USB drive in it may carry mods there, available to load but not installed. qwark lists them and copies one into the console's library, `/dev_hdd0/qwark/mods/<TITLEID>/<dir>/`, only when it is loaded or its auto-load is turned on; from then on it is an installed mod like any other, in MOD_LIST, auto-loading, reapplied and unloaded as before. Module build 56; SessionInfo `flags2` bit0 USB_MODS says the module has this. qwark never writes to a USB drive.
+
+**Where.** For each USB mount point the console gives storage, `/dev_usb000`, `001`, `002`, `003`, `006` and `007`, two places, in this order:
+
+```
+/dev_usb00N/qwark/mods/<TITLEID>/<dir>/      the console library's own layout
+/dev_usb00N/mods/<TITLEID>/<dir>/            the same without the qwark folder, for a drive laid out by hand
+```
+
+`<TITLEID>` is the running title's, as for the library. A folder is a mod when it holds a `patch.txt`; a folder name longer than 31 bytes is skipped, as MOD_LIST and MOD_LOAD cannot carry it.
+
+**One mod, several copies.** A mod is its folder name. When more than one drive, or both places on one drive, hold the same `<TITLEID>/<dir>`, one copy is listed and the rest are left aside: a copy that can be taken before one that cannot (BROKEN, below), then the newer version by the rule below. Copies of equal version are the same mod, and so are two with no version to compare: the first found is kept, which is the lower port, and on one drive `qwark/mods` before `mods`. Copies on USB are never a CONFLICT with each other; only the one kept is compared with the console's.
+
+**When the drives are read.** At each game boot, just before the auto-load; at MOD_RESCAN; at MOD_USB_LIST and before a MOD_LOAD or MOD_SET_AUTO, when the last read of this title is more than a second old. Never on a tick, and never in the background: qwark does not watch for a drive going in, and a list asked for after one did is what sees it. The reads run under the core lock, on the tick thread or the asking connection's, and read every listed mod's `patch.txt` and `.bin` files to hash them, so a slow drive (a hard disk spinning up) holds the tick that long.
+
+**MOD_USB_LIST** (0x0067), no request, any session state. `UNSUPPORTED` where code cannot be patched (section 3.2). The reply is `u8 n, UsbMod[n]`, at most 32 rows:
+
+```
+UsbMod (120 bytes, laid out as Mod):
+u8   port        N of /dev_usb00N
+u8   state       0 AVAILABLE   only the USB drive has the mod
+                 1 SAME        the console has this very copy
+                 2 NEWER       an update: the next load of the mod takes it
+                 3 OLDER       the console's copy is newer, and stays
+                 4 CONFLICT    the same version, or no version to compare, and other contents:
+                               the console's copy stays
+                 5 BROKEN      this copy cannot be taken; `problem` says why
+u8   flags       bit0 WAITING: NEWER while the console's copy is loaded in the game, so the
+                      update waits for the mod's next load
+                 bit1 ROOT_MODS: the copy is under /dev_usb00N/mods, not /dev_usb00N/qwark/mods
+u8   problem     for BROKEN: 1 patch.txt unreadable or over 16 KB, 2 a .bin it names is missing,
+                 3 a .bin name qwark will not copy (absolute, "..", '\' or ':', over 63 bytes),
+                 4 a .bin over 256 KB or the mod over 1 MB, 5 more than 32 .bin files,
+                 6 a read failed. 0 otherwise
+u32  hash        the USB copy's content, by qwark.sum's rule (section 5.7)
+char dirname[32]
+char name[32]    #- name, or the folder name without one
+char version[16] #- version
+char author[32]  #- author
+```
+
+`state` is worked out against the console's library as the reply is built, so it follows an upload or an unload at once. The content compared for SAME and CONFLICT is the console copy's `qwark.sum`, or, for a copy with none (put there by hand), its files hashed by the same rule.
+
+**The version rule.** A version is up to four numbers separated by dots, with an optional leading `v` and spaces around it, nothing else: `1.10` is newer than `1.9`, `1.0` and `1.00` and `1.0.0` are equal. Anything else - an empty version, `1.0-beta`, `final` - is no version to compare. A USB copy is NEWER only when both sides have a version and the USB one is greater, and OLDER only when both have one and it is smaller. Otherwise the contents decide between SAME and CONFLICT, and in both the console's copy stays: qwark never replaces a copy on the strength of a version it cannot read, and a missing version on either side is never an update. A client that wants a CONFLICT's USB copy deletes the console's copy (DIR_DELETE); the mod is then AVAILABLE, and a load takes it.
+
+**MOD_LOAD** (as before, `char[32] dirname`) first does what the drives call for, then loads as it always has:
+
+- a folder the console does not have and a USB drive does is copied in, and loaded. BROKEN answers `IO_ERROR`, as a parse error does, and a copy that fails answers its status (below) with nothing changed. An auto-load key config.txt still has for the folder name, from a copy deleted earlier, is cleared, so the mod does not come back auto-loading;
+- for a mod the console has, and everything it depends on (`#- depends`, by `#- name`), a NEWER copy of each one that is not loaded is taken first. A copy that fails is logged and the console's copy loads; the load's status is the load's own;
+- a dependency the console does not have, and a USB drive has under that `#- name`, is copied in and loaded first, its stale auto key cleared as above;
+- **a mod that is loaded is never replaced.** Its patch words and the originals its unload puts back are in the running game, so its files stay as they are and a MOD_LOAD of it re-applies it as before. Its NEWER row says WAITING, the log says the update waits, and the next load after an unload, a reboot's auto-load or a PREVIOUS_REAPPLY takes it.
+
+Outside a game nothing is copied: the load is refused `NOT_INGAME` as before. The auto-load at boot and PREVIOUS_REAPPLY load through the same path, so an auto-loaded mod picks up a NEWER copy at the next boot, before anything of it is in the game. A mod only on USB is never in the auto-load: auto-load acts on installed mods, so a mod deleted from the console and still on a drive is AVAILABLE again and loads only when somebody loads it.
+
+**MOD_SET_AUTO** of 1 for a folder only a USB drive has copies it into the library first, without loading it, and sets the flag; a copy that fails answers its status, BROKEN `IO_ERROR`, and a folder neither place has `NOT_FOUND`. For an installed mod it is unchanged and takes nothing: a NEWER copy of an auto-load mod is taken by its next load.
+
+**The copy**, all or nothing:
+
+1. `patch.txt` and every `.bin` it names, once each, the names checked as above, are copied from the drive into `/dev_hdd0/qwark/usbtmp/new/`, keeping any subfolder a `.bin` name has; each file is read back and compared, length and CRC, and the content hash of what was read from the drive must still be the one the list showed. A failed open or read - a drive pulled out, which is how one shows - a file grown past the bounds, or a hash that moved stops the copy, removes the temporary folder and leaves the library as it was; the next list or load reads the drives again. A cave's `.bin` the copy needs is never left out, so a mod with one missing is BROKEN rather than copied half.
+2. `qwark.sum` is written beside them with that hash, eight lowercase hex digits, exactly what a client's upload writes, so MOD_LIST's `hash` for a copy taken from USB is the hash a client computes over the same folder, and a client holding the same files sees nothing to upload.
+3. The console's copy, if there is one, is renamed to `/dev_hdd0/qwark/usbtmp/old`, the new folder renamed into its place (the old one renamed back if that fails), and the old one deleted. A power cut between the two renames leaves the mod out of the library and its copy in `usbtmp`; the drive still has it, and it lists as AVAILABLE.
+
+Only `patch.txt` and the `.bin` files are copied, as only they are uploaded by a client; other files in the folder stay on the drive. The library is rescanned after a copy, which keeps every mod at its index (section 5.7). Each copy, each update that waits, and each load that keeps the console's copy over an OLDER or CONFLICT one is a line in `qwark.log`.
+
+**What a client does with it.** It reads MOD_USB_LIST beside MOD_LIST and DIR_LIST when `flags2` bit0 is set, shows an AVAILABLE mod as on the console's USB drive, and loads it with MOD_LOAD by its folder name, uploading nothing. A NEWER row is an update to show; WAITING, one that comes with the next load. A client whose own library holds the mod as well should not upload its copy over a newer one, or the console takes the USB copy back at the next load, or keeps a newer console copy it was about to overwrite: the client the user ships uploads its own copy only when its version is not older than the USB copy's and the console's, by this rule.
 
 ### 5.8 Files (0x007x)
 

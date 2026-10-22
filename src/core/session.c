@@ -2,6 +2,7 @@
 #include "mem.h"
 #include "features.h"
 #include "mods.h"
+#include "modusb.h"
 #include "config.h"
 #include "net.h"
 #include "util.h"
@@ -699,6 +700,14 @@ static void enter_ingame(void)
 	 */
 	menu_enter(g_game);
 
+	/*
+	 * Build 56. The USB drives are read once a boot, before the auto-load, so an
+	 * auto-loaded mod takes a newer copy from one and an update shows in the
+	 * client's list from the start. Nothing on a platform that refuses code
+	 * patches.
+	 */
+	modusb_scan(1);
+
 	/* Auto-flagged toggles and mods come back silently. */
 	features_apply_mask(features_auto_mask());
 	mods_apply_mask(mods_auto_mask());
@@ -1321,7 +1330,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
 	 * (bit0 is the USB mods'), and the profile's sequence. out[31] pad.
 	 */
-	out[29] = config_profile_flags();
+	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0));
 	out[30] = config_profile_seq();
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);

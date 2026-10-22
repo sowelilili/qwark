@@ -201,7 +201,7 @@ static void test_flow(void)
 	check(!config_profile_active(), "a second at the XMB makes nothing active");
 	check(!exists(QWARK_PROFILEDIR "/user-00000001"), "and makes no folder");
 	session_info_copy(info, sizeof(info));
-	check_eq_u64(info[29], SESSION_PROFILE_SUPPORTED, "SessionInfo byte 29, flags2, says the same");
+	check_eq_u64(info[29] & (u8)~SESSION_FLAG2_USB_MODS, SESSION_PROFILE_SUPPORTED, "SessionInfo byte 29, flags2, says the same");
 	check_eq_u64(info[31], 0, "byte 31 is still pad");
 
 	config_profile_folder_for(1, folder, sizeof(folder));
@@ -261,7 +261,7 @@ static void test_flow(void)
 	config_set_combo_enabled(1);
 	tick(4);   /* the block a client reads is the one the tick publishes */
 	session_info_copy(info, sizeof(info));
-	check_eq_u64(info[29], SESSION_PROFILE_SUPPORTED | SESSION_PROFILE_ON | SESSION_PROFILE_ACTIVE,
+	check_eq_u64(info[29] & (u8)~SESSION_FLAG2_USB_MODS, SESSION_PROFILE_SUPPORTED | SESSION_PROFILE_ON | SESSION_PROFILE_ACTIVE,
 	             "SessionInfo byte 29 has the profile on and active");
 	check_eq_u64(info[30], config_profile_seq(), "and byte 30 its sequence");
 	check_eq_u64(info[25], 6, "the selected slot SessionInfo carries is the profile's");

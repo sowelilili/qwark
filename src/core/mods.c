@@ -1,4 +1,5 @@
 #include "mods.h"
+#include "modusb.h"
 #include "config.h"
 #include "session.h"
 #include "util.h"
@@ -90,6 +91,8 @@ static void mod_dir_path(char *out, u32 cap, const char *dirname, const char *le
 
 u32 mods_count(void) { return g_nmods; }
 
+const char *mods_title(void) { return g_title; }
+
 const struct mod_entry *mods_at(u32 index)
 {
 	if (index >= g_nmods || !g_mods[index].used) return NULL;
@@ -105,7 +108,7 @@ int mods_find(const char *dirname)
 	return -1;
 }
 
-static int mods_find_by_name(const char *name)
+int mods_find_by_name(const char *name)
 {
 	u32 i;
 	for (i = 0; i < g_nmods; i++) {
@@ -373,9 +376,30 @@ static u32 mods_free_slot(void)
 {
 	u32 i;
 	for (i = 0; i < QWARK_MAX_MODS; i++) {
-		if (!g_mods[i].used) return i;
+		if (!g_mods[i].used) return i;   /* a reserved slot is not free */
 	}
 	return QWARK_MAX_MODS;
+}
+
+/*
+ * Build 56. A slot a rescan is holding for a mod it has not reached yet: the
+ * mod's folder name and nothing else, so the folder goes back into the slot it
+ * had (mods_rescan, below). Only ever seen inside a rescan.
+ */
+#define MOD_SLOT_USED      1
+#define MOD_SLOT_RESERVED  2
+
+/* The slot holding `dirname` as the table keeps it (cut to 31 bytes), used or reserved. */
+static int mods_slot_of(const char *dirname)
+{
+	char cut[32];
+	u32 i;
+
+	qstrcpy(cut, sizeof(cut), dirname);
+	for (i = 0; i < g_nmods; i++) {
+		if (g_mods[i].used && qstreq(g_mods[i].dirname, cut)) return (int)i;
+	}
+	return -1;
 }
 
 int mods_rescan(void)
@@ -407,48 +431,66 @@ int mods_rescan(void)
 	 * entry, its slot and its slice and stays exactly as it was parsed, and a
 	 * client that wants it re-read unloads it first - which is what the mods
 	 * panel does, since it only ever uploads a mod it is about to load.
+	 *
+	 * Build 56: every other mod keeps its slot too. Its entry is emptied down to
+	 * its folder name and reserved, and the walk below puts the folder back into
+	 * that slot, so a mod's index - its bit in SessionInfo's masks and in the
+	 * previous-session record, and the index a load is walking - names the same
+	 * mod after a rescan as before it. A new folder takes the lowest free slot;
+	 * a slot whose folder has gone is freed at the end. A USB take (modusb.c)
+	 * rescans in the middle of a load and relies on this.
 	 */
 	for (i = 0; i < g_nmods; i++) {
-		if (g_mods[i].used && (g_mods[i].flags & MOD_FLAG_LOADED)) continue;
+		char keep[32];
+
+		if (!g_mods[i].used || (g_mods[i].flags & MOD_FLAG_LOADED)) continue;
+		memcpy(keep, g_mods[i].dirname, sizeof(keep));
 		memset(&g_mods[i], 0, sizeof(g_mods[i]));
+		memcpy(g_mods[i].dirname, keep, sizeof(keep));
+		g_mods[i].used = MOD_SLOT_RESERVED;
 	}
 	mods_pack_pools();
-	while (g_nmods > 0 && !g_mods[g_nmods - 1].used) g_nmods--;
 
 	path[0] = 0;
 	qstrcat(path, sizeof(path), QWARK_MODSDIR);
 	qstrcat(path, sizeof(path), "/");
 	qstrcat(path, sizeof(path), g_title);
 
-	if (plat_dir_open(path, &dir) != 0) {   /* no mods installed yet */
-		look_arm_all();
-		return ST_OK;
+	if (plat_dir_open(path, &dir) == 0) {
+		while (plat_dir_next(&dir, &ent) == 1) {
+			struct mod_entry tmp;
+			int at;
+			u32 slot;
+
+			if (!ent.is_dir) continue;
+			if (qstreq(ent.name, ".") || qstreq(ent.name, "..")) continue;
+
+			at = mods_slot_of(ent.name);
+			if (at >= 0 && g_mods[at].used == MOD_SLOT_USED) continue;   /* a loaded mod, left alone */
+
+			slot = at >= 0 ? (u32)at : mods_free_slot();
+			if (slot >= QWARK_MAX_MODS) continue;
+
+			parse_mod(&tmp, ent.name);
+			tmp.index = (u8)slot;
+			g_mods[slot] = tmp;
+			/*
+			 * parse_mod pointed def.name at the temporary's own name buffer, which
+			 * dies with this loop iteration; the copy in the table has to point at
+			 * its own. Without this PATCH_LIST read a dead stack frame for the name.
+			 */
+			g_mods[slot].def.name = g_mods[slot].name;
+			if (slot + 1 > g_nmods) g_nmods = slot + 1;
+		}
+
+		plat_dir_close(&dir);
 	}
 
-	while (plat_dir_next(&dir, &ent) == 1) {
-		struct mod_entry tmp;
-		u32 slot;
-
-		if (!ent.is_dir) continue;
-		if (qstreq(ent.name, ".") || qstreq(ent.name, "..")) continue;
-		if (mods_find(ent.name) >= 0) continue;   /* a loaded mod, left alone */
-
-		slot = mods_free_slot();
-		if (slot >= QWARK_MAX_MODS) break;
-
-		parse_mod(&tmp, ent.name);
-		tmp.index = (u8)slot;
-		g_mods[slot] = tmp;
-		/*
-		 * parse_mod pointed def.name at the temporary's own name buffer, which
-		 * dies with this loop iteration; the copy in the table has to point at
-		 * its own. Without this PATCH_LIST read a dead stack frame for the name.
-		 */
-		g_mods[slot].def.name = g_mods[slot].name;
-		if (slot + 1 > g_nmods) g_nmods = slot + 1;
+	/* A slot still reserved is a folder that has gone. */
+	for (i = 0; i < g_nmods; i++) {
+		if (g_mods[i].used == MOD_SLOT_RESERVED) memset(&g_mods[i], 0, sizeof(g_mods[i]));
 	}
-
-	plat_dir_close(&dir);
+	while (g_nmods > 0 && !g_mods[g_nmods - 1].used) g_nmods--;
 
 	/*
 	 * Build 49. Whatever the last look found was found against the files this
@@ -520,7 +562,7 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
  * name is trimmed, exactly as the old strtok-and-qtrim walk did. Returns 1 with
  * a name in `out`, 0 at the end of the list.
  */
-static int depends_next(const char *list, u16 *pos, char *out, u32 cap)
+int mods_depends_next(const char *list, u16 *pos, char *out, u32 cap)
 {
 	u32 i = *pos;
 	u32 start, end, n;
@@ -662,7 +704,7 @@ static int mods_load_index(int index, int depth)
 
 		m = &g_mods[fr->index];
 
-		if (depends_next(m->depends, &fr->pos, name, sizeof(name))) {
+		if (mods_depends_next(m->depends, &fr->pos, name, sizeof(name))) {
 			int dep = mods_find_by_name(name);
 
 			if (dep < 0) { rc = ST_NOT_FOUND; break; }
@@ -689,8 +731,18 @@ static int mods_load_index(int index, int depth)
 	return rc;
 }
 
+/*
+ * Build 56. A load first takes what the console's USB drives have for it
+ * (modusb.c): the mod itself when only a USB drive has it, a newer copy of it or
+ * of anything it depends on that is not loaded, and a dependency the console
+ * lacks. That may rescan the table, which keeps every mod in its slot, so the
+ * name is looked up afresh after it. On a platform that refuses code patches it
+ * does nothing.
+ */
 int mods_load(const char *dirname)
 {
+	int rc = modusb_prepare(dirname);
+	if (rc != ST_OK) return rc;
 	return mods_load_index(mods_find(dirname), 0);
 }
 
@@ -721,6 +773,16 @@ int mods_set_auto(const char *dirname, int on)
 {
 	int index = mods_find(dirname);
 
+	/*
+	 * Build 56. Turning auto-load on for a mod only a USB drive has copies it
+	 * into the console's library first (modusb.c), and it is an installed mod
+	 * from then on. Turning it off for one is NOT_FOUND, as it always was.
+	 */
+	if (index < 0 && on) {
+		int rc = modusb_install(dirname);
+		if (rc != ST_OK) return rc;
+		index = mods_find(dirname);
+	}
 	if (index < 0) return ST_NOT_FOUND;
 
 	config_set_mod_auto(g_title, dirname, on);
@@ -778,12 +840,21 @@ int mods_info(const char *dirname, char *out, u32 cap, u32 *len)
 	return ST_OK;
 }
 
+/*
+ * Build 56: each mod by name, through mods_load, so an auto-load or a
+ * previous-session reapply takes a newer USB copy as a client's load does. A
+ * rescan in the middle keeps every mod in its slot, so the walk over the mask
+ * still names the mods it named when it started.
+ */
 void mods_apply_mask(u32 mask)
 {
 	u32 i;
 	for (i = 0; i < g_nmods && i < 32; i++) {
-		if ((mask & (1u << i)) == 0) continue;
-		mods_load_index((int)i, 0);
+		char dirname[32];
+
+		if ((mask & (1u << i)) == 0 || !g_mods[i].used) continue;
+		qstrcpy(dirname, sizeof(dirname), g_mods[i].dirname);
+		mods_load(dirname);
 	}
 }
 

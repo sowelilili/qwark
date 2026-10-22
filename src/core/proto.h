@@ -234,6 +234,13 @@
  * and the reply's pad after n is u16 pages (MOD_PATCH_PAGE_ROWS, below).
  */
 #define OP_MOD_PATCH         0x0066
+/*
+ * Revision 1.24, build 56. The mods on the console's USB drives for the title,
+ * as available rather than installed: no request, reply u8 n, UsbMod[n] (120
+ * bytes a row, MODUSB_WIRE_SIZE in modusb.h). UNSUPPORTED where code cannot be
+ * patched. See PROTOCOL.md 5.7.2.
+ */
+#define OP_MOD_USB_LIST      0x0067
 
 #define OP_FILE_OPEN         0x0070
 #define OP_FILE_WRITE        0x0071
@@ -575,6 +582,14 @@
 #define PROFILE_INFO_SIZE             64
 /* COMBO_LIST's byte after each action. */
 #define COMBO_LIST_OVERRIDDEN         0x01
+
+/*
+ * Revision 1.24, build 56: flags2 bit0 USB_MODS, this module reads mods off
+ * the console's USB drives and answers MOD_USB_LIST (PROTOCOL.md 5.7.2). Set
+ * on a console and in the simulator; never by qwark-rpcs3, where a mod is an
+ * RPCS3 patch.
+ */
+#define SESSION_FLAG2_USB_MODS        0x01
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

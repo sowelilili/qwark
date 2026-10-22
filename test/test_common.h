@@ -44,5 +44,7 @@ void test_uipak(void);
 
 /* test_profiles.c: settings profiles, one per console user, build 56. */
 void test_profiles(void);
+/* test_usbmods.c: mods on a USB drive, build 56. */
+void test_usbmods(void);
 
 #endif /* QWARK_TEST_COMMON_H */

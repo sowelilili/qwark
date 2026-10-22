@@ -109,6 +109,10 @@ struct mod_entry {
 };
 
 /* Points the scanner at a title and rescans. NULL or "" clears the table. */
+/*
+ * Build 56: a rescan keeps every mod that is still there in the slot it had, so
+ * an index names the same mod before and after one (mods.c).
+ */
 void mods_set_title(const char *title);
 
 int  mods_rescan(void);
@@ -116,6 +120,17 @@ int  mods_rescan(void);
 u32  mods_count(void);
 const struct mod_entry *mods_at(u32 index);
 int  mods_find(const char *dirname);
+/*
+ * The next name out of a "#- depends" list from byte `*pos` on, trimmed, without
+ * writing into the list: 1 with a name, 0 at the end.
+ */
+int  mods_depends_next(const char *list, u16 *pos, char *out, u32 cap);
+
+/* By "#- name", the way "#- depends" names a mod. */
+int  mods_find_by_name(const char *name);
+
+/* The title the table is for: the running game's, or at the XMB the last one's. */
+const char *mods_title(void);
 
 int  mods_load(const char *dirname);
 int  mods_unload(const char *dirname);

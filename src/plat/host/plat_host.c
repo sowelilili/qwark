@@ -433,6 +433,33 @@ void plat_sem_wait(plat_sem_t *s)
 
 static FILE *g_open_files[HOST_FILE_SLOTS];
 
+#ifdef QWARK_TEST
+/* host_pull_drive: the drive, the reads it has left, and the open files on it. */
+static char g_pull_prefix[64];
+static u32  g_pull_left;
+static int  g_pulled;
+static u8   g_on_pulled[HOST_FILE_SLOTS];
+
+void host_pull_drive(const char *prefix, u32 after_reads)
+{
+	g_pull_prefix[0] = 0;
+	g_pulled = 0;
+	if (prefix == NULL) return;
+	snprintf(g_pull_prefix, sizeof(g_pull_prefix), "%s", prefix);
+	g_pull_left = after_reads;
+	g_pulled = after_reads == 0;
+}
+
+static int host_under_pull(const char *path)
+{
+	return g_pull_prefix[0] != 0 && strncmp(path, g_pull_prefix, strlen(g_pull_prefix)) == 0;
+}
+
+#define HOST_PULLED(path) (host_under_pull(path) && g_pulled)
+#else
+#define HOST_PULLED(path) 0
+#endif
+
 int plat_file_open(const char *path, int mode, plat_file_t *out)
 {
 	char real[1024];
@@ -441,6 +468,7 @@ int plat_file_open(const char *path, int mode, plat_file_t *out)
 
 	*out = PLAT_FILE_INVALID;
 
+	if (HOST_PULLED(path)) return -1;
 	host_path(path, real, sizeof(real));
 
 	if (mode == PLAT_OPEN_WRITE) {
@@ -456,6 +484,9 @@ int plat_file_open(const char *path, int mode, plat_file_t *out)
 		if (g_open_files[i] == NULL) {
 			g_open_files[i] = f;
 			*out = i;
+#ifdef QWARK_TEST
+			g_on_pulled[i] = (u8)host_under_pull(path);
+#endif
 			return 0;
 		}
 	}
@@ -471,6 +502,15 @@ int plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread)
 	if (nread) *nread = 0;
 	if (f < 0 || f >= HOST_FILE_SLOTS || g_open_files[f] == NULL) return -1;
 	if (len == 0) return 0;
+#ifdef QWARK_TEST
+	if (g_on_pulled[f] && g_pull_prefix[0] != 0) {
+		if (g_pulled) return -1;
+		if (g_pull_left > 0 && --g_pull_left == 0) {
+			g_pulled = 1;
+			return -1;
+		}
+	}
+#endif
 
 	got = fread(buf, 1, len, g_open_files[f]);
 	if (nread) *nread = (u32)got;
@@ -548,6 +588,7 @@ int plat_path_exists(const char *path, int *is_dir, u64 *size)
 	char real[1024];
 	struct stat sb;
 
+	if (HOST_PULLED(path)) return 0;
 	host_path(path, real, sizeof(real));
 	if (stat(real, &sb) != 0) return 0;
 

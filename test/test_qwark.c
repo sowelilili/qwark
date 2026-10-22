@@ -17232,6 +17232,7 @@ int main(void)
 	test_mod_patch_pages();
 	test_mod_presence();
 	test_mod_previous();
+	test_usbmods();
 	test_switches();
 	test_reply_sizes();
 	test_planet_order();
