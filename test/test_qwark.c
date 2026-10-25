@@ -5119,8 +5119,8 @@ static void test_manip_retired(void)
 		const u8 *row = desc_feature(out, len, 0);
 		const u8 *row1 = desc_feature(out, len, 1);
 		u8 ngroups = out[1];
-		check(ngroups == 5 && memcmp(out + 2 + 4 * 24, "Fixes", 5) == 0,
-		      "DESCRIBE has a fifth group, Fixes");
+		check(ngroups == 6 && memcmp(out + 2 + 4 * 24, "Fixes", 5) == 0,
+		      "DESCRIBE has a fifth group, Fixes (and since build 56 a sixth, Cosmetics)");
 		check(row != NULL && row1 != NULL && row[2] == 4 && row1[2] == 4,
 		      "Crash patches and Fix reset softlocks are described under it");
 		check(row != NULL && (row[4] & FEATURE_FLAG_AUTO) != 0 &&
@@ -8156,6 +8156,7 @@ static void test_rac3(void)
 #define F4_MAX_LEVELS    15
 #define F4_RESET_LEVELS  16   /* retired in build 32, never reused */
 #define F4_MAX_AMMO      17
+#define F4_HUD_COLOUR    18
 
 /* src/games/rac4.h, build 54: a planet's unlock, which a PLANET_LOAD of a locked planet runs first. */
 int rac4_planet_unlock(u8 planet);
@@ -8331,8 +8332,8 @@ static void test_rac4(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 16, "Deadlocked declares sixteen features (build 53 retired act tuning)");
-		check_eq_u64(d->nreadouts, 8, "and eight readouts");
+		check_eq_u64(d->nfeatures, 17, "Deadlocked declares seventeen features (build 56 added the HUD colour)");
+		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->auto_default,
 		             ((u64)1 << F4_CRASH_PATCHES) | ((u64)1 << F4_SOFTLOCK_FIX),
 		             "two toggles ship auto-flagged");
@@ -9087,6 +9088,66 @@ static void test_rac4(void)
 	mem_read_u32(0x0110D975u, &v);
 	check_eq_u64(v, 1, "and the apply word behind it");
 	check(features_set(F4_SKIN, 22) == ST_BAD_ARG, "a skin past the end is BAD_ARG");
+
+	/*
+	 * Build 56: the HUD colour. GuiMain_TeamColors at 0x9E87CC, four words a
+	 * team, each { 0x80, B, G, R }: the colour, then 1.5 times it capped at
+	 * 255, half of it and halfway to 255. The HUD draws in team 1 with the HUD
+	 * colour cheat (0xB1F47A) at Default and in its byte less one otherwise.
+	 */
+	{
+		static const u8 want1[16] = {
+			0x80, 0x73, 0x4C, 0xFF,  0x80, 0xAC, 0x72, 0xFF,
+			0x80, 0x39, 0x26, 0x7F,  0x80, 0xB9, 0xA5, 0xFF
+		};
+		static const u8 want11[16] = {
+			0x80, 0x00, 0xFF, 0x01,  0x80, 0x00, 0xFF, 0x01,
+			0x80, 0x00, 0x7F, 0x00,  0x80, 0x7F, 0xFF, 0x80
+		};
+		u8 got[16], guard[16];
+		u8 info[SESSION_INFO_SIZE];
+		const struct game_describe *d = g->describe();
+		u32 i;
+		int found = 0;
+
+		for (i = 0; i < d->nfeatures; i++) {
+			const struct feature_desc *f = &d->features[i];
+			if (f->id == F4_HUD_COLOUR)
+				found = f->kind == FEATURE_COLOR && f->readout == 8 &&
+				        strcmp(f->label, "HUD colour") == 0 &&
+				        strcmp(d->groups[f->group], "Cosmetics") == 0;
+		}
+		check(found, "the HUD colour is a COLOR in Cosmetics, mirrored by readout 8");
+
+		memset(guard, 0x5A, sizeof(guard));
+		host_poke(0x009E87CCu, guard, 16);
+		host_poke(0x009E87CCu + 32, guard, 16);
+		host_poke(0x00B1F47Au, (const u8 *)" ", 1);
+		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "the HUD colour writes");
+		host_peek(0x009E87CCu + 16, got, 16);
+		check(memcmp(got, want1, 16) == 0, "team 1's four words, the colour and its three variants");
+		host_peek(0x009E87CCu, got, 16);
+		check(memcmp(got, guard, 16) == 0, "team 0 untouched");
+		host_peek(0x009E87CCu + 32, got, 16);
+		check(memcmp(got, guard, 16) == 0, "and team 2");
+		pump(40);
+		session_info_copy(info, sizeof(info));
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C73u, "readout 8 is the colour back");
+
+		host_poke(0x00B1F47Au, (const u8 *)"", 1);
+		check(features_set(F4_HUD_COLOUR, 0x0001FF00u) == ST_OK, "with the cheat on the last team");
+		host_peek(0x009E87CCu + 10 * 16, got, 16);
+		check(memcmp(got, want11, 16) == 0, "team 10's words, the vivid green capped at 0xFF");
+		pump(40);
+		session_info_copy(info, sizeof(info));
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x0001FF00u, "and the readout follows the cheat");
+
+		host_poke(0x00B1F47Au, (const u8 *)"", 1);
+		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "a cheat byte past the options");
+		host_peek(0x009E87CCu + 16, got, 16);
+		check(memcmp(got, want1, 16) == 0, "goes to the hero's team, never past the table");
+		host_poke(0x00B1F47Au, (const u8 *)" ", 1);
+	}
 
 	check(session_die() == ST_OK, "DIE runs");
 	mem_read_u32(R4_COORDS + 8, &v);

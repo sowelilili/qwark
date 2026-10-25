@@ -2186,7 +2186,7 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 16,
+        "features": 17,
         "cheats": FOUR_CHEATS_DL,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
@@ -2203,7 +2203,10 @@ OTHER_GAMES = [
         "freeze_health": {"id": 4, "health": 0x010D7250, "max": 0x010D7354,
                           "full": 0x41700000, "more": 0x43480000,
                           "hurt": 0x40A00000},
-        "readouts": 8,
+        "readouts": 9,
+        # Build 56: the HUD colour, a COLOR (src/games/rac4.h R4_HUD_COLOUR): the
+        # id, GuiMain_TeamColors, the HUD colour cheat's byte and the readout.
+        "hud_colour": (18, 0x009E87CC, 0x00B1F47A, 8),
         "planets": 16,
         "planet0": "(unused)",
         # Build 53: RAC4Form's combo box had Orxon (8) before Valix (7).
@@ -4010,6 +4013,28 @@ def exercise_game(c, sim, spec, udp=None):
             status, body = c.call(OP_MEM_READ, struct.pack(">II", qe_addr, 2))
             check(status == ST_OK and body == b"\x80\x00",
                   "%s: which lands as 0x8000" % name, body)
+
+    # ------------------------------------------- FEATURE_SET on a COLOR
+    if spec.get("hud_colour"):
+        hud_id, table, cheat, hud_ro = spec["hud_colour"]
+
+        # The cheat at Default draws in the hero's team, 1; on, in its byte less one.
+        # The four words: the colour, then 1.5 times it capped, half, and halfway to white.
+        for byte, team, rgb, words in (
+                (0, 1, 0x00FF4C73, (0x80734CFF, 0x80AC72FF, 0x8039267F, 0x80B9A5FF)),
+                (5, 4, 0x00102030, (0x80302010, 0x80483018, 0x80181008, 0x80978F87))):
+            mem_write(c, cheat, bytes([byte]))
+            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, rgb))
+            if check(status == ST_OK, "%s: FEATURE_SET on the HUD colour, cheat byte %d" % (name, byte), status):
+                status, body = c.call(OP_MEM_READ, struct.pack(">II", table + team * 16, 16))
+                check(status == ST_OK and struct.unpack(">4I", body) == words,
+                      "%s: and team %d's four words are the colour and its variants" % (name, team),
+                      body.hex() if body else None)
+                info = fresh_state(c, 0.4)
+                check(info and info["readout"][hud_ro] == rgb,
+                      "%s: the readout follows the team the HUD draws in" % name,
+                      hex(info["readout"][hud_ro]) if info else None)
+        mem_write(c, cheat, bytes([0]))
 
     # ---------------------------------------------------- FEATURE_TRIGGER
     mem_write(c, spec["action_addr"], b"\xAA")

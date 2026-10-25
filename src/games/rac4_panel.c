@@ -772,6 +772,47 @@ static int rac4_set_skin(u32 skin)
 	return mem_write_u32(RAC4_SKIN_APPLY, 1);
 }
 
+/* The team the HUD draws in, from the HUD colour cheat's byte (rac4.h). */
+u8 rac4_hud_team(u8 cheat)
+{
+	return (cheat != 0 && cheat <= RAC4_TEAM_COUNT) ? (u8)(cheat - 1) : RAC4_HUD_TEAM_DEFAULT;
+}
+
+/*
+ * Build 56: the HUD's colour. All four words of the team the HUD is drawing in
+ * go in at once, the variants worked out as GuiMain_InitTeamColors works them
+ * out (rac4.h; the same truncations, checked against every team's words), so
+ * the HUD reads one colour whatever it asks the table for. Data only, so it
+ * works under RPCS3 as on the console. The health bar takes it on its next
+ * frame (checked under RPCS3); the rest of the HUD sets its colours when it
+ * is built (HudInfo_PlayerInit, 0x381068, and the prototype's
+ * HealthHud_CreateWidgets from its HUD state's Init), so at the next load, and
+ * by the prototype's code whenever the HUD state starts again.
+ */
+static int rac4_set_hud_colour(u32 rgb)
+{
+	u8 words[16];
+	u8 cheat = 0;
+	int i;
+
+	if (mem_read_u8(RAC4_HUD_CHEAT, &cheat) != ST_OK) cheat = 0;
+
+	/* Channel i is R, G, B; a word is { alpha, B, G, R }, so R is its last byte. */
+	for (i = 0; i < 3; i++) {
+		u32 c = (rgb >> (16 - 8 * i)) & 0xFFu;
+		u32 vivid = c + (c >> 1);
+		u8 *p = words + 3 - i;
+
+		p[0]  = (u8)c;
+		p[4]  = (u8)(vivid > 0xFFu ? 0xFFu : vivid);
+		p[8]  = (u8)(c >> 1);
+		p[12] = (u8)((c + 0xFFu) >> 1);
+	}
+	words[0] = words[4] = words[8] = words[12] = 0x80;
+
+	return mem_write(RAC4_TEAM_COLORS + (u32)rac4_hud_team(cheat) * 16u, words, 16);
+}
+
 /* ------------------------------------------------------------ the handlers */
 
 int rac4_set_value(u8 id, u32 value)
@@ -781,6 +822,7 @@ int rac4_set_value(u8 id, u32 value)
 	case R4_DREAD_POINTS: return mem_write_u32(RAC4_DREAD_POINTS, value);
 	case R4_CHALLENGE:    return mem_write_u8(RAC4_CHALLENGE_MODE, (u8)value);
 	case R4_SKIN:         return rac4_set_skin(value);
+	case R4_HUD_COLOUR:   return rac4_set_hud_colour(value);
 	default:              return ST_NOT_FOUND;
 	}
 }

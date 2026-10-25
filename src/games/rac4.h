@@ -431,6 +431,33 @@
 #define RAC4_SKIN_COUNT        22
 
 /*
+ * The HUD's colours (build 56, from the NPEA00423 executable and the PS2
+ * prototype's symbols). The HUD draws in a team's colours, out of
+ * GuiMain_TeamColors, eleven teams of four words: the team's colour, then the
+ * vivid, dark and light variants GuiMain_InitTeamColors (0x35E9D8) works out
+ * from it, each channel times 1.5 capped at 255, halved, and halfway to 255.
+ * A word is the bytes { alpha, B, G, R } with 0x80 for opaque, as the
+ * chargeboot words of RaC2 and RaC3 are. GuiMain_Startup (0x35EAD8) runs the
+ * same sums at every level load, but only into a variant that reads 0, which
+ * a word with its alpha set never does, so what qwark writes stays until the
+ * game restarts.
+ *
+ * Which team the HUD draws in is GuiMain_GetPlayerHudTeam (0x360EEC): the HUD
+ * colour cheat's byte for player 1 (CheatsActivated[2]; [3] is player 2's) less
+ * one when the cheat is on, 0 being its Default, and the hero's own team
+ * otherwise, which is 1 in the single-player game (checked under RPCS3 with the
+ * cheat at Default: the health bar drew in team 1's vivid red). The cheat
+ * offers the eleven teams and Default, twelve options, so its byte is 0..11.
+ * The same table colours other things: team 0 the weapons' level tint and the
+ * Omega mods, team 4 a vehicle's health and the gadgets, team 5 a V99 weapon.
+ */
+#define RAC4_TEAM_COLORS       0x009E87CCu  /* GuiMain_TeamColors, u32[11][4] */
+#define RAC4_TEAM_COUNT        11
+#define RAC4_TEAM_COLORS_LEN   (RAC4_TEAM_COUNT * 16)
+#define RAC4_HUD_CHEAT         0x00B1F47Au  /* CheatsActivated[2], the HUD colour cheat */
+#define RAC4_HUD_TEAM_DEFAULT  1            /* the hero's team when the cheat is at Default */
+
+/*
  * The gadget table's shape, and the level a weapon can reach: V10 in a first
  * playthrough, V99 in challenge mode, which is the number the field descriptor
  * advertises.
@@ -571,6 +598,7 @@ extern const u8 rac4_fp_switch[4];
 #define RAC4_RO_CUR_CHAL   5
 #define RAC4_RO_SKIN       6
 #define RAC4_RO_IN_GAME    7
+#define RAC4_RO_HUD_COLOUR 8
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -608,6 +636,9 @@ extern const u8 rac4_fp_switch[4];
 #define R4_RESET_LEVELS    16
 #define R4_MAX_AMMO        17
 
+/* Build 56: the HUD's colour, a COLOR (RAC4_TEAM_COLORS above). */
+#define R4_HUD_COLOUR      18
+
 /* ------------------------------------------------------ rac4_panel.c exports */
 
 int rac4_trigger(u8 id);
@@ -616,6 +647,7 @@ int rac4_get_options(u8 id, const char * const **options, u8 *count);
 int rac4_load_setaside(void);
 u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
+u8  rac4_hud_team(u8 cheat);
 
 int rac4_planet_load(u8 planet, u8 flags);
 /*

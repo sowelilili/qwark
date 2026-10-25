@@ -42,12 +42,15 @@ const u8 rac4_fp_switch[4]  = {
  *   8  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
  *   9  challenge  the challenge currently being run                  every 8th
  *  10  savefile   helper byte and its two request bytes              every 8th
+ *  11  teamcols   GuiMain_TeamColors, the HUD's colours              every 16th
+ *  12  hudcheat   the HUD colour cheat's byte                        every 16th
  *
  * Blocks 4 to 6 are the autosplit watcher's, and the flags block moved from
  * every eighth tick to every tick because the watcher, the softlock fix and
  * the manips' file-load trigger (revision 1.21) all read it. Block 7 takes the
  * even ticks and blocks 8 to 10 the odd ones, so a tick costs exactly eight
- * reads and never pays for two slow blocks at once.
+ * reads and never pays for two slow blocks at once. Blocks 11 and 12 (build 56)
+ * take phase 7 of 8 between them, on alternate rounds.
  */
 static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_HOT_INPUTS_ADDR, RAC4_HOT_INPUTS_LEN, 1, 0 },
@@ -60,7 +63,9 @@ static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_FRAME_COUNTER,   8,                   2, 0 },
 	{ RAC4_BOLTS,           RAC4_HOT_STATS_LEN,  8, 1 },
 	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 3 },
-	{ RAC4_SF_HELPER,       4,                   8, 5 }
+	{ RAC4_SF_HELPER,       4,                   8, 5 },
+	{ RAC4_TEAM_COLORS,     RAC4_TEAM_COLORS_LEN, 16, 7 },
+	{ RAC4_HUD_CHEAT,       1,                   16, 15 }
 };
 
 #define HOT_INPUTS    0
@@ -74,6 +79,8 @@ static const struct game_hot_block rac4_hot[] = {
 #define HOT_STATS     8
 #define HOT_CHALLENGE 9
 #define HOT_SAVEFILE  10
+#define HOT_TEAMCOLS  11
+#define HOT_HUDCHEAT  12
 
 #define OFF_ANALOGS   (RAC4_ANALOGS         - RAC4_INPUTS)        /* 0x1DC */
 #define OFF_GAMESTATE (RAC4_GAME_STATE      - RAC4_FRAME_COUNTER) /* 0x04 */
@@ -157,6 +164,11 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	/* 1 once the helper has run a frame; SAVEFILE_INFO reports the same byte. */
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC4_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
+
+	/* The colour of the team the HUD draws in, as the wire's 0x00RRGGBB. */
+	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL)
+		out->readout[RAC4_RO_HUD_COLOUR] = classic_cb_to_rgb(be32_get(
+			blocks[HOT_TEAMCOLS] + rac4_hud_team(blocks[HOT_HUDCHEAT][0]) * 16));
 
 	/* --------------------------------------------- the autosplit watcher's view */
 
@@ -733,7 +745,8 @@ static const char * const rac4_groups[] = {
 	"Player",
 	"Progress",
 	"Savefile",
-	"Fixes"
+	"Fixes",
+	"Cosmetics"     /* build 56, the HUD's colour */
 };
 
 #define G_CHEATS   0
@@ -741,6 +754,7 @@ static const char * const rac4_groups[] = {
 #define G_PROGRESS 2
 #define G_SAVEFILE 3
 #define G_FIXES    4
+#define G_COSMETICS 5
 
 /* Indexed by RAC4_RO_*; the order is part of the wire contract for this game. */
 static const char * const rac4_readouts[] = {
@@ -751,7 +765,8 @@ static const char * const rac4_readouts[] = {
 	"Frame counter",
 	"Current challenge",
 	"Skin",
-	"In game"
+	"In game",
+	"HUD colour"
 };
 
 #define NR (u8)(sizeof(rac4_readouts) / sizeof(rac4_readouts[0]))
@@ -797,7 +812,10 @@ static const struct feature_desc rac4_features[] = {
 
 	/* Protocol 1.2: Deadlocked's helper has exactly the one pair. */
 	{ R4_SET_ASIDE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
-	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" }
+	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
+
+	/* Build 56: what the game's HUD colour cheat picks from, any colour (rac4.h). */
+	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, 0, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" }
 };
 
 #undef NO
