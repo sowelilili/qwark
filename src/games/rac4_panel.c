@@ -779,38 +779,65 @@ u8 rac4_hud_team(u8 cheat)
 }
 
 /*
- * Build 56: the HUD's colour. All four words of the team the HUD is drawing in
- * go in at once, the variants worked out as GuiMain_InitTeamColors works them
- * out (rac4.h; the same truncations, checked against every team's words), so
- * the HUD reads one colour whatever it asks the table for. Data only, so it
- * works under RPCS3 as on the console. The health bar takes it on its next
- * frame (checked under RPCS3); the rest of the HUD sets its colours when it
- * is built (HudInfo_PlayerInit, 0x381068, and the prototype's
- * HealthHud_CreateWidgets from its HUD state's Init), so at the next load, and
- * by the prototype's code whenever the HUD state starts again.
+ * Build 56: the HUD's colour, and since revision 1.24 its three shades. Shade
+ * v (1 vivid, 2 dark, 3 light) of a team's four words, for its readout:
+ * 0x00RRGGBB, with FEATURE_COLOR_AUTO while it is automatic, that is while its
+ * word is 0 or what GuiMain_InitTeamColors works out from the colour (rac4.h;
+ * the same truncations, checked against every team's words). Each channel on
+ * its own, so the sums do not care about the byte order.
  */
-static int rac4_set_hud_colour(u32 rgb)
+u32 rac4_hud_shade(const u8 *team, u8 v)
 {
-	u8 words[16];
+	/* Vivid (3c) / 2 capped, dark c / 2, light (c + 255) / 2. */
+	u32 base = be32_get(team), w = be32_get(team + 4 * v), out = FEATURE_COLOR_AUTO;
+	u32 m = v == 1 ? 3 : 1, a = v == 3 ? 0xFFu : 0;
+	int s;
+
+	for (s = 0; s < 24; s += 8) {
+		u32 x = (((base >> s) & 0xFFu) * m + a) >> 1;
+		out |= (x > 0xFFu ? 0xFFu : x) << s;
+	}
+	if (w != 0 && ((w ^ out) & 0x00FFFFFFu) != 0) out = w;
+	return classic_cb_to_rgb(out) | (out & FEATURE_COLOR_AUTO);
+}
+
+/*
+ * Word v of the team the HUD is drawing in: the colour (0), which takes every
+ * automatic shade with it and leaves an overridden one alone, or a shade, set
+ * to `value` or, with FEATURE_COLOR_AUTO, worked out from the colour again. A
+ * shade to work out is zeroed first and filled from the colour last, as the
+ * game fills a zero word. Data only, so it works under RPCS3 as on the
+ * console. The health bar takes it on its next frame (checked under RPCS3);
+ * the rest of the HUD sets its colours when it is built (HudInfo_PlayerInit,
+ * 0x381068, and the prototype's HealthHud_CreateWidgets from its HUD state's
+ * Init), so at the next load, and by the prototype's code whenever the HUD
+ * state starts again.
+ */
+static int rac4_set_hud(u8 v, u32 value)
+{
+	u8 team[16];
 	u8 cheat = 0;
-	int i;
+	u32 at, w = 0x80000000u | classic_cb_to_rgb(value);
+	u8 i;
+	int rc;
 
 	if (mem_read_u8(RAC4_HUD_CHEAT, &cheat) != ST_OK) cheat = 0;
+	at = RAC4_TEAM_COLORS + (u32)rac4_hud_team(cheat) * 16u;
+	rc = mem_read(at, team, 16);
+	if (rc != ST_OK) return rc;
 
-	/* Channel i is R, G, B; a word is { alpha, B, G, R }, so R is its last byte. */
-	for (i = 0; i < 3; i++) {
-		u32 c = (rgb >> (16 - 8 * i)) & 0xFFu;
-		u32 vivid = c + (c >> 1);
-		u8 *p = words + 3 - i;
-
-		p[0]  = (u8)c;
-		p[4]  = (u8)(vivid > 0xFFu ? 0xFFu : vivid);
-		p[8]  = (u8)(c >> 1);
-		p[12] = (u8)((c + 0xFFu) >> 1);
+	if (v == 0) {
+		for (i = 1; i < 4; i++)
+			if ((rac4_hud_shade(team, i) & FEATURE_COLOR_AUTO) != 0) be32_put(team + 4 * i, 0);
+	} else if ((value & FEATURE_COLOR_AUTO) != 0) {
+		w = 0;
 	}
-	words[0] = words[4] = words[8] = words[12] = 0x80;
+	be32_put(team + 4 * v, w);
 
-	return mem_write(RAC4_TEAM_COLORS + (u32)rac4_hud_team(cheat) * 16u, words, 16);
+	for (i = 1; i < 4; i++)
+		if (be32_get(team + 4 * i) == 0)
+			be32_put(team + 4 * i, 0x80000000u | classic_cb_to_rgb(rac4_hud_shade(team, i)));
+	return mem_write(at, team, 16);
 }
 
 /* ------------------------------------------------------------ the handlers */
@@ -822,7 +849,10 @@ int rac4_set_value(u8 id, u32 value)
 	case R4_DREAD_POINTS: return mem_write_u32(RAC4_DREAD_POINTS, value);
 	case R4_CHALLENGE:    return mem_write_u8(RAC4_CHALLENGE_MODE, (u8)value);
 	case R4_SKIN:         return rac4_set_skin(value);
-	case R4_HUD_COLOUR:   return rac4_set_hud_colour(value);
+	case R4_HUD_COLOUR:
+	case R4_HUD_VIVID:
+	case R4_HUD_DARK:
+	case R4_HUD_LIGHT:    return rac4_set_hud((u8)(id - R4_HUD_COLOUR), value);
 	default:              return ST_NOT_FOUND;
 	}
 }

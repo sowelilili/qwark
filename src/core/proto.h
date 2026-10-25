@@ -631,6 +631,14 @@
  * and max at 0, because the width already says what the range is.
  */
 #define FEATURE_FLAG_SIGNED      0x20
+/*
+ * Revision 1.24. A COLOR the console works out from another COLOR, whose id is
+ * this row's `aux`, until the user overrides it (PROTOCOL.md 5.3.3). Its
+ * readout carries FEATURE_COLOR_AUTO while it is worked out; a FEATURE_SET
+ * with that bit puts it back to automatic, and one without it overrides it.
+ */
+#define FEATURE_FLAG_SHADE       0x40
+#define FEATURE_COLOR_AUTO       0x01000000u
 
 /*
  * Feature, 48 bytes: id, kind, group, aux, flags, readout, bits, pad, u32 min,

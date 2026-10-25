@@ -165,10 +165,18 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC4_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
-	/* The colour of the team the HUD draws in, as the wire's 0x00RRGGBB. */
-	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL)
-		out->readout[RAC4_RO_HUD_COLOUR] = classic_cb_to_rgb(be32_get(
-			blocks[HOT_TEAMCOLS] + rac4_hud_team(blocks[HOT_HUDCHEAT][0]) * 16));
+	/*
+	 * The colour of the team the HUD draws in, as the wire's 0x00RRGGBB, and
+	 * (revision 1.24) its three shades, each flagged AUTO while automatic.
+	 */
+	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL) {
+		const u8 *team = blocks[HOT_TEAMCOLS] + rac4_hud_team(blocks[HOT_HUDCHEAT][0]) * 16;
+		u8 v;
+
+		out->readout[RAC4_RO_HUD_COLOUR] = classic_cb_to_rgb(be32_get(team));
+		for (v = 1; v < 4; v++)
+			out->readout[RAC4_RO_HUD_COLOUR + v] = rac4_hud_shade(team, v);
+	}
 
 	/* --------------------------------------------- the autosplit watcher's view */
 
@@ -766,7 +774,10 @@ static const char * const rac4_readouts[] = {
 	"Current challenge",
 	"Skin",
 	"In game",
-	"HUD colour"
+	"HUD colour",
+	"HUD vivid shade",      /* revision 1.24, the HUD colour's shades */
+	"HUD dark shade",
+	"HUD light shade"
 };
 
 #define NR (u8)(sizeof(rac4_readouts) / sizeof(rac4_readouts[0]))
@@ -774,6 +785,7 @@ static const char * const rac4_readouts[] = {
 #define WC FEATURE_FLAG_WRITES_CODE
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
+#define SH FEATURE_FLAG_SHADE
 
 static const struct feature_desc rac4_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -815,13 +827,23 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
 	/* Build 56: what the game's HUD colour cheat picks from, any colour (rac4.h). */
-	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, 0, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" }
+	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, 0, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" },
+
+	/*
+	 * Revision 1.24: its shades, worked out from it until overridden (rac4.h),
+	 * `aux` naming the colour they follow. Unbounded, so FEATURE_COLOR_AUTO
+	 * gets through.
+	 */
+	{ R4_HUD_VIVID, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_VIVID, 0, 0, "HUD vivid shade" },
+	{ R4_HUD_DARK,  FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_DARK,  0, 0, "HUD dark shade" },
+	{ R4_HUD_LIGHT, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_LIGHT, 0, 0, "HUD light shade" }
 };
 
 #undef NO
 #undef WC
 #undef SA
 #undef LA
+#undef SH
 
 static const struct game_describe rac4_describe_table = {
 	rac4_groups,   (u8)(sizeof(rac4_groups) / sizeof(rac4_groups[0])),

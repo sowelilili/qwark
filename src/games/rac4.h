@@ -450,6 +450,24 @@
  * offers the eleven teams and Default, twelve options, so its byte is 0..11.
  * The same table colours other things: team 0 the weapons' level tint and the
  * Omega mods, team 4 a vehicle's health and the gadgets, team 5 a V99 weapon.
+ *
+ * All four words are read. The HUD team's, through GuiMain_GetPlayerColor
+ * (0x360F78): the colour, vivid and dark by the health bar and the ammo, and
+ * the light one too: it is the top-left corner of the prompt and pickup boxes'
+ * gradients (HudInfo_PlayerInit, 0x381068: light, colour, dark), what the
+ * radar's cursor pulses to from vivid (HudRadar_UpdateCursor, 0x3876D0, by
+ * GuiMain_UpdatePulse, 0x360E40) and part of the bot HUD's flash
+ * (BotHud_UpdateFlash, 0x376EB0). The cheat menu's swatch is the colour, vivid
+ * and dark of the team the cheat picks (MenuCheats_CMDCheatCHEAT_HUD_COLORS,
+ * 0x39685C). Straight out of the table, team 4's light word is a gadget's
+ * colour and teams 0 and 4's are Omega mods' (GuiMain_GetGadgetColor,
+ * GuiMain_GetOmegaColor). The prototype's symbols say the same of each.
+ *
+ * Build 56, revision 1.24: the three variants are shades the client may
+ * override (FEATURE_FLAG_SHADE). A shade is automatic while its word is 0 or
+ * what the sums give from the team's colour, so the table itself is the
+ * override state: nothing in qwark to lose, nothing to reset at a game change,
+ * and a team the cheat switches to reads as it is.
  */
 #define RAC4_TEAM_COLORS       0x009E87CCu  /* GuiMain_TeamColors, u32[11][4] */
 #define RAC4_TEAM_COUNT        11
@@ -599,6 +617,10 @@ extern const u8 rac4_fp_switch[4];
 #define RAC4_RO_SKIN       6
 #define RAC4_RO_IN_GAME    7
 #define RAC4_RO_HUD_COLOUR 8
+/* Build 56: the three shades, RAC4_RO_HUD_COLOUR + 1 + the variant less one. */
+#define RAC4_RO_HUD_VIVID  9
+#define RAC4_RO_HUD_DARK   10
+#define RAC4_RO_HUD_LIGHT  11
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -638,6 +660,10 @@ extern const u8 rac4_fp_switch[4];
 
 /* Build 56: the HUD's colour, a COLOR (RAC4_TEAM_COLORS above). */
 #define R4_HUD_COLOUR      18
+/* Revision 1.24: its shades, COLORs flagged SHADE, in variant order. */
+#define R4_HUD_VIVID       19
+#define R4_HUD_DARK        20
+#define R4_HUD_LIGHT       21
 
 /* ------------------------------------------------------ rac4_panel.c exports */
 
@@ -648,6 +674,7 @@ int rac4_load_setaside(void);
 u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 u8  rac4_hud_team(u8 cheat);
+u32 rac4_hud_shade(const u8 *team, u8 v);
 
 int rac4_planet_load(u8 planet, u8 flags);
 /*

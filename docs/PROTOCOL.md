@@ -60,6 +60,8 @@ Revision 1.24, mods on a USB drive (module build 56): the console reads mods off
 
 Revision 1.24, Deadlocked's HUD colour (same build 56): no opcode or structure changes, only Deadlocked's DESCRIBE. It gains a sixth group, "Cosmetics" (index 5, after Fixes, so the other groups keep their indices), a ninth readout, "HUD colour" (index 8), and feature 18, "HUD colour", a COLOR in Cosmetics mirrored by readout 8. FEATURE_SET writes `0x00RRGGBB` into the game's team colour table (GuiMain_TeamColors, 0x9E87CC, eleven teams of four words `{ 0x80, B, G, R }`): all four words of the team the HUD draws in, the colour and the three variants the game works out from it (each channel times 1.5 capped at 255, halved, and halfway to 255). That team is the one the game's own HUD colour cheat picks (its byte at 0xB1F47A, less one) or, with the cheat at Default, team 1, the hero's; the readout is the colour of the same team, so it follows the cheat. The words are data, so the feature works under RPCS3 as on the console, and the game rewrites them only at boot, so a colour stays until the game restarts. The health bar takes it on its next frame and the rest of the HUD when it is next built (a load). A client that does not know the feature draws it as any COLOR, as RaC2's and UYA's chargeboot colours are.
 
+Revision 1.24, the HUD colour's shades (same build 56): feature flags bit6 **SHADE**, a COLOR the console works out from another COLOR, named by the row's `aux`, until the user overrides it (section 5.3.3). Its readout carries bit 24, **AUTO** (`0x01000000`), while it is worked out; FEATURE_SET with bit 24 set puts it back to automatic, and any value without it overrides it. Deadlocked's DESCRIBE gains three readouts, "HUD vivid shade", "HUD dark shade" and "HUD light shade" (9, 10 and 11), and three features, 19 "HUD vivid shade", 20 "HUD dark shade" and 21 "HUD light shade", COLORs in Cosmetics flagged SHADE with `aux` 18, mirrored by readouts 9 to 11: the three variant words of the team the HUD draws in. All three are read by the game; light, the fourth word, is the top corner of the HUD's prompt and pickup boxes, what the radar's cursor pulses to and part of the bot HUD's flash. Feature 18 now changes only the shades that are automatic and leaves an overridden one as it is. qwark keeps no override state of its own: a shade is automatic while its word is 0 or exactly what the game's sums give from the colour, so the state survives a reconnect and a restart of qwark, follows the team when the game's cheat changes it, and goes with the colours when the game restarts. Nothing is re-applied at boot, as nothing is for any COLOR. A client that does not know the flag draws three more COLORs, each of which overrides its shade, and ignores bit 24 of their readouts, as it ignores everything above `0x00FFFFFF`.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -356,8 +358,8 @@ Feature (48 bytes):
 u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
-u8   aux            ENUM: option count. 0 for every other kind
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2)
+u8   aux            ENUM: option count. SHADE COLOR (revision 1.24): the id of the COLOR it is worked out from. 0 for every other row
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2), bit6 SHADE (COLOR only, section 5.3.3, revision 1.24)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. ACTION: 0xFF, or (revision 1.21) the index of its status readout, below. TOGGLE: 0xFF
 u8   bits           VALUE: the width in bits of the field behind it, 8, 16 or 32. 0 means 32, so a row that names no width reads as it always did. 0 for every other kind (revision 1.7)
 u8   pad
@@ -415,6 +417,24 @@ The signed VALUEs today:
 | RaC2 | 23 | QE save write-offset | signed 16-bit halfword |
 | RaC3 | 9 | Health XP | signed 32-bit |
 | RaC3 | 14 | QE offset | signed 16-bit halfword |
+
+#### 5.3.3 Shades (revision 1.24)
+
+Some colours come in a set the game works out from one of them: Deadlocked's HUD draws in a team's colour and three variants of it. A COLOR row flagged **SHADE** (bit6) is one of the variants, and its `aux` names the COLOR it follows, which is listed before it.
+
+- While a shade is **automatic**, the console works it out from the colour it follows, at every change of that colour. Its readout is the shade it worked out, with **bit 24 AUTO** (`0x01000000`) set.
+- **FEATURE_SET with a value below `0x01000000`** overrides it: the shade is that colour, and a change of the colour it follows leaves it alone. Its readout carries no AUTO.
+- **FEATURE_SET with bit 24 set** (`0x01000000`; the colour bits are ignored) makes it automatic again, worked out from the colour as it is now.
+
+A client draws a shade as a COLOR that is not required: greyed out while it is automatic, so the user can see it is taken care of, and pickable all the same, a pick being an override, with a way back to automatic once it is overridden. A colour preset that leaves a shade out means the shade is automatic. Where the console keeps that state is the game's business: Deadlocked's shade is automatic while its word is 0 or exactly what the game's sums give, so an override that picks exactly the worked-out colour reads as automatic again, which it is in every way but name.
+
+The shades today:
+
+| Game | Feature id | Label | Follows | What it is |
+|---|---|---|---|---|
+| Deadlocked | 19 | HUD vivid shade | 18, HUD colour | each channel times 1.5, capped at 255: the health bar, the ammo, the radar's cursor |
+| Deadlocked | 20 | HUD dark shade | 18 | each channel halved: the bottom corner of the HUD's gradients |
+| Deadlocked | 21 | HUD light shade | 18 | each channel halfway to 255: the top corner of the prompt and pickup boxes, the radar cursor's pulse, the bot HUD's flash |
 
 ### 5.4 Memory (0x003x)
 

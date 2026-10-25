@@ -404,7 +404,8 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		out[off + 0] = f->id;
 		out[off + 1] = f->kind;
 		out[off + 2] = f->group;
-		out[off + 3] = (f->kind == FEATURE_ENUM) ? f->aux : 0;
+		/* Revision 1.24: a SHADE's `aux` is the id of the COLOR it follows. */
+		out[off + 3] = (f->kind == FEATURE_ENUM || (flags & FEATURE_FLAG_SHADE) != 0) ? f->aux : 0;
 		out[off + 4] = flags;
 		out[off + 5] = readout;
 		out[off + 6] = bits;

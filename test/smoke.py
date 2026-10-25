@@ -2186,7 +2186,7 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 17,
+        "features": 20,
         "cheats": FOUR_CHEATS_DL,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
@@ -2203,7 +2203,7 @@ OTHER_GAMES = [
         "freeze_health": {"id": 4, "health": 0x010D7250, "max": 0x010D7354,
                           "full": 0x41700000, "more": 0x43480000,
                           "hurt": 0x40A00000},
-        "readouts": 9,
+        "readouts": 12,
         # Build 56: the HUD colour, a COLOR (src/games/rac4.h R4_HUD_COLOUR): the
         # id, GuiMain_TeamColors, the HUD colour cheat's byte and the readout.
         "hud_colour": (18, 0x009E87CC, 0x00B1F47A, 8),
@@ -4034,6 +4034,38 @@ def exercise_game(c, sim, spec, udp=None):
                 check(info and info["readout"][hud_ro] == rgb,
                       "%s: the readout follows the team the HUD draws in" % name,
                       hex(info["readout"][hud_ro]) if info else None)
+
+        # Revision 1.24: the shades, SHADE COLORs following the colour, ids and
+        # readouts one on from it. With the cheat on team 4: a vivid override
+        # survives a new colour, and AUTO (bit 24) puts it back.
+        status, body = c.call(OP_DESCRIBE)
+        rows = {f["id"]: f for f in parse_describe(body)[3]} if status == ST_OK else {}
+        shades = [rows.get(hud_id + v) for v in (1, 2, 3)]
+        check(all(f and f["kind"] == FEATURE_COLOR and f["flags"] == 0x40 and f["aux"] == hud_id
+                  and f["readout"] == hud_ro + v for v, f in zip((1, 2, 3), shades)),
+              "%s: the vivid, dark and light shades follow the HUD colour on the wire" % name,
+              [(f["id"], f["flags"], f["aux"], f["readout"]) for f in shades if f])
+        at = table + 4 * 16
+        info = fresh_state(c, 0.4)
+        check(info and [info["readout"][hud_ro + v] for v in (1, 2, 3)]
+              == [0x01183048, 0x01081018, 0x01878F97],
+              "%s: each shade's readout is worked out, flagged AUTO" % name,
+              [hex(info["readout"][hud_ro + v]) for v in (1, 2, 3)] if info else None)
+        c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 1, 0x00123456))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x00FF4C73))
+        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at, 16))
+        check(status == ST_OK and status2 == ST_OK and struct.unpack(">4I", body)
+              == (0x80734CFF, 0x80563412, 0x8039267F, 0x80B9A5FF),
+              "%s: a new colour keeps the vivid override and works out the rest" % name,
+              body.hex() if body else None)
+        info = fresh_state(c, 0.4)
+        check(info and info["readout"][hud_ro + 1] == 0x00123456,
+              "%s: the override's readout carries no AUTO" % name,
+              hex(info["readout"][hud_ro + 1]) if info else None)
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 1, 0x01000000))
+        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at + 4, 4))
+        check(status == ST_OK and status2 == ST_OK and body == bytes.fromhex("80AC72FF"),
+              "%s: AUTO works the vivid shade out again" % name, body.hex() if body else None)
         mem_write(c, cheat, bytes([0]))
 
     # ---------------------------------------------------- FEATURE_TRIGGER
