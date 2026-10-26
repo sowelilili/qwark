@@ -564,7 +564,7 @@ static void rac2_playing(void)
 
 static void test_model_rac2(void)
 {
-	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files" };
+	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files" };
 	/*
 	 * Round 5: no Die, Health XP, Set respawn point or Store Swingshot; the
 	 * Max buttons on Cheats. Round 6: Challenge mode on Game, where round 5
@@ -588,9 +588,9 @@ static void test_model_rac2(void)
 	check(boot("NPEA00386"), "RaC2 boots");
 	menu_model_reset(7, 32, CAPS_ALL);
 	menu_model_view(&v);
-	check(labels_are(&v, root, 6) && v.ptype == MBOX_PTYPE_MAIN,
-	      "the root: Game, Cheats, Planets, Manips, Unlocks, Save files: the design's six, on six of the root's "
-	      "own seven bars");
+	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN,
+	      "the root: Game, Cheats, Planets, Manips, Unlocks, Mods (build 56, a preview feature), Save files: the "
+	      "design's seven, on the root's own seven bars");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[3].kind == MROW_TOGGLE,
@@ -853,7 +853,7 @@ static void settle(void)
 
 static void test_renderer_rac2(void)
 {
-	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save Files" };
+	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save Files" };
 	static const char * const game_bars[] = { "Weapons", "Gadgets", "Map", "Goodies", "Trainer", "Options",
 	                                          "Special" };
 	char a[80];
@@ -888,13 +888,13 @@ static void test_renderer_rac2(void)
 	check(current() == SCREEN(MS_HELP) && G.main_draws == n && r8(MH_SHIM + SH_READY) == 0,
 	      "the frame it becomes the current screen, before its enter: nothing of the menu drawn");
 	pframe(0);
-	check(G.main_draws == n + 1 && bars_are(root, 6) &&
-	      r8(BAR_ON(5)) == 1 && r8(BAR_ON(0)) == 1 &&
+	check(G.main_draws == n + 1 && bars_are(root, 7) &&
+	      r8(BAR_ON(6)) == 1 && r8(BAR_ON(0)) == 1 &&
 	      r8(BAR_EIGHTH) == 0 && r32(BARS + R2_R_CURSOR) == 0 && r8(MH_SHIM + SH_FROM_HELP) == 1 &&
 	      r32(MH_SHIM + SH_UP) == 1 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN,
-	      "its enter: Game .. Save Files on the bars, six of them, in title case, the cursor on Game");
+	      "its enter: Game .. Mods, Save Files on the bars, seven of them, in title case, the cursor on Game");
 	pframe(PADB_UP);
-	check(r32(BARS + R2_R_CURSOR) == 5 && G.sound == SND_MOVE,
+	check(r32(BARS + R2_R_CURSOR) == 6 && G.sound == SND_MOVE,
 	      "Up from Game wraps to Save Files, the last bar");
 	pframe(PADB_DOWN);
 
@@ -921,7 +921,7 @@ static void test_renderer_rac2(void)
 	      "the next frame of play opens the pause on the combo's screen, counted");
 	pframe(0);
 	pframe(0);
-	check(current() == SCREEN(MS_COMBO) && bars_are(root, 6) && r8(MH_SHIM + SH_FROM_HELP) == 0,
+	check(current() == SCREEN(MS_COMBO) && bars_are(root, 7) && r8(MH_SHIM + SH_FROM_HELP) == 0,
 	      "its enter: the menu's root, not from Help");
 	tick(4);
 
@@ -1000,7 +1000,7 @@ static void test_renderer_rac2(void)
 	pframe(0);
 	pframe(0);
 	pframe(0);
-	check(current() == SCREEN(MS_MAIN_A) && bars_are(root, 6) && r32(BARS + R2_R_CURSOR) == 1,
+	check(current() == SCREEN(MS_MAIN_A) && bars_are(root, 7) && r32(BARS + R2_R_CURSOR) == 1,
 	      "Triangle: MAIN A, the root's bars, the cursor on Cheats");
 
 	/*
@@ -1067,7 +1067,7 @@ static void test_renderer_rac2(void)
 	play_frame(0);
 	pframe(0);
 	pframe(0);
-	check(current() == SCREEN(MS_COMBO) && r8(MH_SHIM + SH_TYPE) == MBOX_PTYPE_MAIN && bars_are(root, 6) &&
+	check(current() == SCREEN(MS_COMBO) && r8(MH_SHIM + SH_TYPE) == MBOX_PTYPE_MAIN && bars_are(root, 7) &&
 	      r32(BARS + R2_R_CURSOR) == 0, "the combo opens the menu on its root, the cursor on Game");
 	tick(4);
 	for (i = 0; i < 10; i++) pframe(0);
@@ -1168,7 +1168,7 @@ static void open_picker(void)
 
 static void test_picker_rac2(void)
 {
-	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save Files" };
+	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save Files" };
 	static const char * const game_bars[] = { "Weapons", "Gadgets", "Map", "Goodies", "Trainer", "Options",
 	                                          "Special" };
 	const char * const *names;
@@ -1236,7 +1236,7 @@ static void test_picker_rac2(void)
 
 	/* Start, Trainer: the menu's root. */
 	open_from_help();
-	check(current() == SCREEN(MS_HELP) && bars_are(root, 6), "Start, Trainer: the menu's root on the bars");
+	check(current() == SCREEN(MS_HELP) && bars_are(root, 7), "Start, Trainer: the menu's root on the bars");
 
 	/* The cross on Planets: the picker, with the game's screen sound; no event for qwark. */
 	w32(BARS + R2_R_CURSOR, 2);
@@ -1275,7 +1275,7 @@ static void test_picker_rac2(void)
 	check(r32(PM + R2_MGR_NEXT) == SCREEN(MS_HELP) && r32(R2_SELECTED) == 3 && P.picture[CALL_EXIT] == 1,
 	      "Triangle: back to the menu's screen, the current planet shown again, the picture's exit");
 	pframes(2);
-	check(current() == SCREEN(MS_HELP) && bars_are(root, 6) && r32(BARS + R2_R_CURSOR) == 2 &&
+	check(current() == SCREEN(MS_HELP) && bars_are(root, 7) && r32(BARS + R2_R_CURSOR) == 2 &&
 	      r8(MH_STATE + ST_PICKER) == 0 && r8(MH_SHIM + SH_FROM_HELP) == 1 &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && peek32(mb + MBOX_OFF_FRAMES) > frames,
 	      "the menu's root again, the cursor on Planets, still from Help, the frames going on (no new opening)");

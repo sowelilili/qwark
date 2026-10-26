@@ -520,7 +520,7 @@ static int labels_are(const struct menu_view *v, const char * const *want, u8 n)
 
 static void test_model_rac1(void)
 {
-	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files" };
+	static const char * const root[] = { "Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files" };
 	/*
 	 * Round 5: no Die, Bolts a button on Cheats; Auto-reset alone, no
 	 * Remember. Round 6: no spacer on Game, and the Goodies menu in the place
@@ -543,9 +543,9 @@ static void test_model_rac1(void)
 	check(boot("NPEA00385"), "RaC1 boots");
 	menu_model_reset(7, 24, CAPS_ALL);
 	menu_model_view(&v);
-	check(labels_are(&v, root, 6) && v.ptype == MBOX_PTYPE_MAIN && strcmp(v.title, "Trainer") == 0,
-	      "the root, Trainer: Game, Cheats, Planets, Manips, Unlocks, Save files, six of the main page's seven "
-	      "panes");
+	check(labels_are(&v, root, 7) && v.ptype == MBOX_PTYPE_MAIN && strcmp(v.title, "Trainer") == 0,
+	      "the root, Trainer: Game, Cheats, Planets, Manips, Unlocks, Mods (build 56, a preview feature), Save "
+	      "files, the main page's seven panes");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
 	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
@@ -835,6 +835,12 @@ static void test_renderer_rac1(void)
 
 	group("console menu: RaC1's renderer, core and shim, on the fake console");
 
+	/*
+	 * Build 56: the root of six a release module shows, without the Mods row
+	 * of the preview features, for the seventh pane's two ways; the root of
+	 * seven the test build shows comes after the tests' own.
+	 */
+	menu_test_mods_row(0);
 	memset(&G, 0, sizeof(G));
 	G.list_h = 300;
 	check(boot("NPEA00385"), "RaC1 boots");
@@ -1271,7 +1277,30 @@ static void test_renderer_rac1(void)
 	menu_test_menu(NULL);
 	tick(4);
 
+	/* Build 56: the test build's own root of seven, with Mods (a preview feature) sixth. */
+	menu_test_mods_row(1);
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	check(r32(R1_STATE) == 3 && r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == 7 &&
+	      r8(MH_SHIM + SH_PHASE) == PH_IDLE && r8(R1_GOODIES_PANE) == 1 && r8(MH_SHIM + SH_GOODIES) == 1 &&
+	      strcmp(main_texts(a, sizeof(a)), "Game|Cheats|Planets|Manips|Unlocks|Mods|Save Files") == 0,
+	      "build 56: the root with Mods, seven rows, every pane drawn, the seventh by the shim's Goodies byte");
+	tick(4);
+	press(COMBO_MENU_DEFAULT);
+	frame(0);
+	frame(0);
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r8(R1_GOODIES_PANE) == 0 && r8(MH_SHIM + SH_GOODIES) == 0,
+	      "and closed, the game's byte off again");
+	menu_test_mods_row(0);
+	tick(4);
+
 	test_picker_rac1(mb);
+	menu_test_mods_row(1);
 
 	check(quit(), "quit RaC1");
 }

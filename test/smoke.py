@@ -450,6 +450,8 @@ MBOX_OFF_ROWS = 0x80
 MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
 MBOX_EV_ACTIVATE = 1
+MBOX_EV_LEFT = 2
+MBOX_EV_RIGHT = 3
 MBOX_EV_BACK = 4
 MBOX_EV_PICKER_OTHERS = 9
 
@@ -3127,8 +3129,9 @@ def exercise_console_menu(c, sim):
 
     page = menu_page(c)
     check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
-          "Deadlocked menu: the root page is posted, titled Trainer, the design's six, no build row",
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files"],
+          "Deadlocked menu: the root page is posted, titled Trainer, the design's seven (build 56: Mods, a "
+          "preview feature), no build row",
           page[:4] if page else None)
 
     check(menu_event(c, MBOX_EV_ACTIVATE, 1),
@@ -3143,6 +3146,56 @@ def exercise_console_menu(c, sim):
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer", "Deadlocked menu: and the root is back",
           page[2] if page else None)
+
+    # Build 56, a preview feature: the Mods page. A mod switched on from the TV
+    # is what a client sees over the wire: MOD_LIST's LOADED and AUTO and
+    # SessionInfo's mod_loaded and mod_auto, its dependency with it.
+    check(menu_event(c, MBOX_EV_ACTIVATE, page[3].index("Mods")), "Deadlocked menu: Mods")
+    module_sleep(c, 0.2)
+    page = menu_page(c)
+    check(page is not None and page[2] == "Mods" and page[5] == MBOX_PTYPE_CONFIG and
+          "IL Ghost" in page[3] and "IL Decimal Timer" in page[3],
+          "Deadlocked menu: the Mods page, a CONFIG page of the console's mods by name", page[2:4] if page else None)
+    status, mods = mod_list(c)
+    idx = {m["dirname"]: m["index"] for m in mods}
+    check(menu_event(c, MBOX_EV_LEFT, page[3].index("IL Ghost")) if page else False,
+          "Deadlocked menu: Left on IL Ghost, from Off to On boot")
+    module_sleep(c, 0.2)
+    page = menu_page(c)
+    status, mods = mod_list(c)
+    rows = {m["dirname"]: m for m in mods}
+    ok = ("il-ghost" in rows and "dl-cs" in rows and rows["il-ghost"]["flags"] & 0x03 == 0x03 and
+          rows["dl-cs"]["flags"] & 0x03 == MOD_FLAG_LOADED)
+    check(ok, "Deadlocked menu: MOD_LIST: IL Ghost LOADED and AUTO, IL Decimal Timer, its dependency, LOADED",
+          {k: v["flags"] for k, v in rows.items()})
+    status, body = c.call(OP_GET_STATE)
+    info = parse_session_info(body[4:]) if status == ST_OK else None
+    check(info is not None and "il-ghost" in idx and info["mod_loaded"] & (1 << idx["il-ghost"]) and
+          info["mod_auto"] & (1 << idx["il-ghost"]) and info["mod_loaded"] & (1 << idx["dl-cs"]),
+          "Deadlocked menu: and telemetry's mod_loaded and mod_auto carry them",
+          (info["mod_loaded"], info["mod_auto"]) if info else status)
+    vals = [page[4][MBOX_OFF_ROWS + i * MBOX_ROW_SIZE + 0x2C:MBOX_OFF_ROWS + i * MBOX_ROW_SIZE + 0x40].split(b"\0")[0]
+            .decode() for i in range(len(page[3]))] if page else []
+    check(page is not None and vals[page[3].index("IL Ghost")] == "On boot" and
+          vals[page[3].index("IL Decimal Timer")] == "On",
+          "Deadlocked menu: the page reads On boot and On", vals)
+    check(menu_event(c, MBOX_EV_RIGHT, page[3].index("IL Ghost")) if page else False,
+          "Deadlocked menu: Right on IL Ghost: Off")
+    module_sleep(c, 0.2)
+    status, mods = mod_list(c)
+    rows = {m["dirname"]: m for m in mods}
+    check("il-ghost" in rows and rows["il-ghost"]["flags"] & 0x03 == 0,
+          "Deadlocked menu: MOD_LIST: IL Ghost neither LOADED nor AUTO",
+          rows["il-ghost"]["flags"] if "il-ghost" in rows else None)
+    page = menu_page(c)
+    menu_event(c, MBOX_EV_RIGHT, page[3].index("IL Decimal Timer"))
+    menu_event(c, MBOX_EV_RIGHT, page[3].index("IL Decimal Timer"))
+    module_sleep(c, 0.1)
+    status, mods = mod_list(c)
+    check(all(m["flags"] & 0x03 == 0 for m in mods), "Deadlocked menu: and IL Decimal Timer off again",
+          [m["flags"] for m in mods])
+    check(menu_event(c, MBOX_EV_BACK, 0), "Deadlocked menu: back from Mods")
+    module_sleep(c, 0.1)
 
     # Mailbox version 3: the picker. The renderer says it opens the game's own;
     # qwark flags the root's Planets row; a pick (the planet, then the seq)
@@ -3361,8 +3414,8 @@ def exercise_console_menu_uya(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
-          "UYA menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files"],
+          "UYA menu: the root page is posted, the design's seven, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "UYA menu: an event is acked")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
@@ -3501,8 +3554,8 @@ def exercise_console_menu_rac2(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
-          "RaC2 menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files"],
+          "RaC2 menu: the root page is posted, the design's seven, no build row", page[:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size, rs), "RaC2 menu: an event is acked")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
@@ -3603,8 +3656,8 @@ def exercise_console_menu_rac1(c, sim):
 
     page = menu_page(c, box, size, rs)
     check(page is not None and page[0] % 2 == 0 and
-          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Save files"],
-          "RaC1 menu: the root page is posted, the design's six, no build row", page[:4] if page else None)
+          page[3] == ["Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files"],
+          "RaC1 menu: the root page is posted, the design's seven, no build row", page[:4] if page else None)
     # Round 6: the Goodies menu, RaC1's equivalent of the other games' Challenge mode, is the
     # fourth row of Game, a switch; Cheats is the four toggles, then Max bolts.
     check(menu_event(c, MBOX_EV_ACTIVATE, 0, box, size, rs), "RaC1 menu: Game")

@@ -101,6 +101,25 @@ void patch_forget_all(void);        /* drops the table without writing anything 
 
 u32 patch_count(void);
 const struct patch_def *patch_at(u32 index);
+#if QWARK_PREVIEW
+/*
+ * Build 56, a preview feature, for the console menu's Mods page (menu.c), whose
+ * load puts no part of a mod over anything of qwark's own (mods.c,
+ * mods_load_guarded). What qwark writes into a game other than as a patch
+ * says so here: the menu's renderer, the savefile helper, and every loaded
+ * mod's caves (its words are a patch). (Deadlocked's HUD colours and RaC2's
+ * crash guards, two more pieces of qwark's own code, are not here yet.) mem_own: [addr, addr + len) is `who`'s; mem_own_drop: nothing is
+ * `who`'s any more (the pointer, not the text, names it); patch_forget_all,
+ * with the process, forgets them all. mem_owner: who has a byte in
+ * [a, a + l), an applied patch (its name) or one of these, or NULL.
+ */
+void mem_own(u32 addr, u32 len, const char *who);
+void mem_own_drop(const char *who);
+const char *mem_owner(u32 a, u32 l);
+#else
+static __inline void mem_own(u32 addr, u32 len, const char *who) { (void)addr; (void)len; (void)who; }
+static __inline void mem_own_drop(const char *who) { (void)who; }
+#endif
 
 /*
  * The largest def patch_apply will take, and with it the width of the write

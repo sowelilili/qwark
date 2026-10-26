@@ -8,6 +8,10 @@
 #include "savefile.h"
 #include "uipak.h"
 #include "../plat/plat.h"
+#if QWARK_PREVIEW
+#include "mods.h"
+#include "modusb.h"
+#endif
 
 #include <string.h>
 
@@ -138,9 +142,13 @@ static u32 now_tick(void)
  */
 static const struct game_menu *g_test_menu;
 void menu_test_menu(const struct game_menu *gm) { g_test_menu = gm; }
+#if QWARK_PREVIEW
+static int g_test_no_mods;
+void menu_test_mods_row(int on) { g_test_no_mods = !on; }
+#endif
 #endif
 
-static const struct game_menu *gmenu(void)
+static __attribute__((noinline)) const struct game_menu *gmenu(void)
 {
 #ifdef QWARK_TEST
 	if (g_test_menu != NULL) return g_test_menu;
@@ -172,7 +180,11 @@ static void set_text(char *dst, u32 cap, const char *src)
 	if (src != NULL) qstrcpy(dst, cap, src);
 }
 
-static const char *status_text(u8 rc)
+/*
+ * Out of line (build 56): -Os put a copy of the switch's table in each of its
+ * four callers.
+ */
+static __attribute__((noinline)) const char *status_text(u8 rc)
 {
 	switch (rc) {
 	case ST_NOT_INGAME:  return "not in game";
@@ -184,6 +196,22 @@ static const char *status_text(u8 rc)
 	case ST_BUSY:        return "busy";
 	default:             return "error";
 	}
+}
+
+/*
+ * A console notification, "Trainer: " and three pieces: a load the menu ran
+ * once it closed that failed or was dropped, and (build 56) a refusal of the
+ * Mods page's.
+ */
+static void tell(const char *a, const char *b, const char *c)
+{
+	char msg[128];
+
+	qstrcpy(msg, sizeof(msg), "Trainer: ");
+	qstrcat(msg, sizeof(msg), a);
+	qstrcat(msg, sizeof(msg), b);
+	qstrcat(msg, sizeof(msg), c);
+	plat_notify(msg);
 }
 
 static void note(u16 id, u8 rc, const char *label)
@@ -436,7 +464,7 @@ static u8 page_type(u16 page)
 	if (g_cfg_rows == 0) return MBOX_PTYPE_MAIN;
 	return (k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS ||
 	        k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_UNLOCK_ACTIONS || k == MENU_PAGE_PLANETS ||
-	        k == MENU_PAGE_SAVES || k == MENU_PAGE_SAVE_CAT) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
+	        k == MENU_PAGE_SAVES || k == MENU_PAGE_SAVE_CAT || k == MENU_PAGE_MODS) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
 }
 
 /*
@@ -448,7 +476,7 @@ static u8 page_type(u16 page)
 static int page_live(u16 page)
 {
 	u8 k = page_kind(page);
-	return k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS || k == MENU_PAGE_UNLOCK_CAT;
+	return k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS || k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_MODS;
 }
 
 /*
@@ -463,6 +491,7 @@ static const char *page_name(u8 kind)
 	case MENU_PAGE_MANIPS:  return "Manips";
 	case MENU_PAGE_UNLOCKS: return "Unlocks";
 	case MENU_PAGE_SAVES:   return "Save files";
+	case MENU_PAGE_MODS:    return "Mods";
 	case MENU_PAGE_UNLOCK_ACTIONS:
 		return gmenu() != NULL && gmenu()->unlock_actions_title != NULL ? gmenu()->unlock_actions_title : "Unlocks";
 	default:                return "Trainer";
@@ -538,6 +567,54 @@ static u8 push_spacer(u16 *ids, u8 n)
 	return push_id(ids, n, SPACER_ID);
 }
 
+#if QWARK_PREVIEW
+/*
+ * Build 56, a preview feature: the Mods page (PROTOCOL.md 9.1). One row a mod
+ * of the running game, as MOD_LIST and MOD_USB_LIST have them: the installed
+ * ones (row argument the mod's index, which a rescan keeps) and those only a
+ * USB drive has (MENU_MOD_USB + their place in the USB list), in the order
+ * MOD_LIST and MOD_USB_LIST give them. Each is Off, On or On boot, the Manips page's Auto-reset words:
+ * not loaded, loaded, loaded and auto-loaded at every boot (MOD_SET_AUTO's
+ * flag, which config.txt keeps as the client's does). A press is checked
+ * against the row id the last build put there, as on every page, so a USB
+ * list read again in between, which may order it otherwise, changes nothing.
+ */
+struct menu_mod {
+	const char *dir;
+	u8 flags;              /* MOD_FLAG_*: 0 for one only USB has */
+	u8 usb;                /* 1 for one only USB has */
+};
+
+/* Row argument `arg`'s mod: its name, NULL for none. */
+static const char *mod_of(u8 arg, struct menu_mod *o)
+{
+	const struct modusb_entry *u;
+	const struct mod_entry *m;
+
+	o->usb = arg >> 7;
+	o->flags = 0;
+	if (o->usb) {
+		u = modusb_at(arg & (MENU_MOD_USB - 1));
+		if (u == NULL) return NULL;
+		o->dir = u->dirname;
+		return u->name;
+	}
+	m = mods_at(arg);
+	if (m == NULL) return NULL;
+	o->dir = m->dirname;
+	o->flags = m->flags;
+	return m->name;
+}
+
+/* 0 Off, 1 On, 2 On boot. A mod that is not loaded reads Off, its auto flag or not, as a toggle does. */
+static u8 mod_now(u8 flags)
+{
+	if ((flags & MOD_FLAG_LOADED) == 0) return 0;
+	return (flags & MOD_FLAG_AUTO) != 0 ? 2 : 1;
+}
+
+#endif
+
 /* Every row of a page, as row ids, in order; how many. */
 static u8 page_items(u16 page, u16 *ids)
 {
@@ -562,6 +639,14 @@ static u8 page_items(u16 page, u16 *ids)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MANIPS));
 		if (g_game != NULL && g_game->unlock_list != NULL && g_game->unlock_set != NULL)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_UNLOCKS));
+#if QWARK_PREVIEW
+		/* Build 56, a preview feature: the Mods page, where a mod can go into the game. */
+		if (plat_can_patch_code()
+#ifdef QWARK_TEST
+		    && !g_test_no_mods
+#endif
+		   ) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS));
+#endif
 		if (savefile_library_gate() != ST_UNSUPPORTED)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_SAVES));
 		return n;
@@ -666,6 +751,18 @@ static u8 page_items(u16 page, u16 *ids)
 		for (i = 0; i < count; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_SCAT, i));
 		return n;
 
+#if QWARK_PREVIEW
+	case MENU_PAGE_MODS: {
+		/* The installed ones by index, then each the USB list has that the console does not. */
+		struct menu_mod o;
+		for (j = 0; j < 2 * QWARK_MAX_MODS; j++) {
+			arg = j < QWARK_MAX_MODS ? j : (u8)(MENU_MOD_USB | (j - QWARK_MAX_MODS));
+			if (mod_of(arg, &o) != NULL && (!o.usb || mods_find(o.dir) < 0)) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MOD, arg));
+		}
+		return n;
+	}
+#endif
+
 	case MENU_PAGE_SAVE_CAT:
 		if (g_lib.on) count = g_lib.n;
 		else count = save_category(arg, cat) ? savefile_menu_list(cat, 0, 0, NULL, NULL) : 0;
@@ -716,7 +813,7 @@ static void row(struct menu_row *r, u8 kind, u8 flags, const char *label, const 
 	if (value != NULL) set_text(r->value, sizeof(r->value), value);
 }
 
-static u8 steps(void)
+static __attribute__((noinline)) u8 steps(void)
 {
 	return (g_caps & MBOX_CAP_STEPS) != 0 ? MROWF_STEPS : 0;
 }
@@ -1007,6 +1104,17 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		row(r, MROW_CHOICE, MROWF_ENABLED | steps(), u->name, "");
 		if (unlock_now(u, r->value, sizeof(r->value)) != 0) r->flags |= MROWF_ON;
 		break;
+
+#if QWARK_PREVIEW
+	case MENU_ROW_MOD: {
+		struct menu_mod o;
+		n = mod_of(arg, &o);
+		if (n == NULL) break;
+		count = mod_now(o.flags);
+		row(r, MROW_TOGGLE, MROWF_ENABLED | steps() | (count ? MROWF_ON : 0), n, g_reset_text[count]);
+		break;
+	}
+#endif
 
 	case MENU_ROW_SAVE:
 		qstrcpy(text, sizeof(text), lib_name(arg));
@@ -1398,6 +1506,49 @@ static int act_unlock(u16 id, u8 arg, int dir)
 	return answer(id, rc, u->name);
 }
 
+#if QWARK_PREVIEW
+/*
+ * The Mods page's rules (build 56, a preview feature). MOD_LOAD's own do most
+ * of it: a mod whose patch.txt qwark could not parse does not load
+ * (IO_ERROR), nor one that needs (`#- depends`, by `#- name`) a mod the
+ * console does not have (NOT_FOUND), and a mod only a USB drive has is copied
+ * in first, a copy that cannot be taken leaving everything as it was
+ * (modusb.c). The page loads through mods_load_guarded, which adds two: no
+ * part of a mod goes into the game over a loaded mod or over qwark's own code
+ * there (mem_owner, mem.h), the rule the client kept under RPCS3 alone; and a
+ * load that fails half way takes back every mod it put in.
+ * Unloading is MOD_UNLOAD's, as the client's is. A refusal shows in the row
+ * for two seconds, as any row's does, and as a console notification that
+ * names the mod and the reason.
+ */
+static const char g_menu_who[] = "the trainer menu";
+
+/* A mod's row: the cross and Right forward through Off, On, On boot, Left back, wrapping. */
+static int act_mod(u16 id, u8 arg, int dir)
+{
+	struct menu_mod o;
+	char d[32], name[32];
+	const char *n = mod_of(arg, &o), *who = NULL;
+	u8 now, want;
+	int rc = ST_OK;
+
+	if (n == NULL) return ST_NOT_FOUND;
+	qstrcpy(d, sizeof(d), o.dir);
+	qstrcpy(name, sizeof(name), n);
+	now = mod_now(o.flags);
+	want = cycle(now, 3, dir);
+	if (want == 0) rc = mods_unload(d);
+	else if (now == 0) rc = mods_load_guarded(d, &who);
+	/* A mod only USB had is installed now, with no auto flag (modusb.c clears a stale one). */
+	if (rc == ST_OK && ((o.flags & MOD_FLAG_AUTO) != 0) != (want == 2)) rc = mods_set_auto(d, want == 2);
+	if (rc != ST_OK)
+		tell(name, who != NULL ? " would write over " : ": ",
+		     who != NULL ? who : o.usb ? "its USB copy can't be used" :
+		     rc == ST_NOT_FOUND ? "a mod it needs is missing" : status_text((u8)rc));
+	return answer(id, who != NULL ? ST_BAD_ARG : rc, name);
+}
+#endif
+
 static int act(u8 row, u16 id, int dir)
 {
 	struct menu_nav *cur = &g_nav[g_depth - 1];
@@ -1407,7 +1558,20 @@ static int act(u8 row, u16 id, int dir)
 
 	switch ((u8)(id >> 8)) {
 	case MENU_ROW_SECTION: return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SECTION, arg), row, 0, 0);
-	case MENU_ROW_PAGE:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(arg, 0), row, 0, 0);
+	case MENU_ROW_PAGE:
+		if (dir != 0) return ST_OK;
+#if QWARK_PREVIEW
+		/*
+		 * The Mods page reads the console's library and its USB drives again
+		 * as it opens, as MOD_RESCAN does, so a mod copied in by FTP or a
+		 * drive put in since shows.
+		 */
+		if (arg == MENU_PAGE_MODS) {
+			mods_rescan();
+			modusb_scan(0);
+		}
+#endif
+		return nav_push(MENU_PAGE_ID(arg, 0), row, 0, 0);
 	case MENU_ROW_UCAT:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_UNLOCK_CAT, arg), row, 0, 0);
 	case MENU_ROW_SCAT:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SAVE_CAT, arg), row, 0, 0);
 
@@ -1438,6 +1602,11 @@ static int act(u8 row, u16 id, int dir)
 
 	case MENU_ROW_UNLOCK:
 		return act_unlock(id, arg, dir);
+
+#if QWARK_PREVIEW
+	case MENU_ROW_MOD:
+		return act_mod(id, arg, dir);
+#endif
 
 	case MENU_ROW_SAVE: {
 		char cat[LIB_NAME], name[LIB_NAME];
@@ -1934,6 +2103,12 @@ static int install(void)
 		if (rc != ST_OK) return rc;
 	}
 
+#if QWARK_PREVIEW
+	/* Build 56: the renderer is qwark's own, for the Mods page's guarded load (mem.h), once however often it goes in. */
+	mem_own_drop(g_menu_who);
+	for (i = 0; i < d->ncaves; i++) mem_own(d->caves[i].addr, d->caves[i].len + d->caves[i].zeros, g_menu_who);
+	for (i = 0; i < d->nhooks; i++) mem_own(d->hooks[i].addr, 4, g_menu_who);
+#endif
 	g_last_poll = now_tick();
 	plat_log("menu: %s for game %d, mailbox 0x%08X",
 	         ours != 0 ? "renderer found and taken over" : "renderer installed",
@@ -2156,17 +2331,6 @@ static int run_deferred(void)
 	}
 }
 
-static void defer_notify(const char *what, const char *why)
-{
-	char msg[96];
-
-	qstrcpy(msg, sizeof(msg), "Trainer: ");
-	qstrcat(msg, sizeof(msg), g_defer.label);
-	qstrcat(msg, sizeof(msg), what);
-	qstrcat(msg, sizeof(msg), why);
-	plat_notify(msg);
-}
-
 /*
  * A CLOSES action (a load: the set-aside file, a planet, a save of the
  * library): asked for, the menu asked to close; run once it has and the game
@@ -2192,13 +2356,13 @@ static void deferred_tick(void)
 
 	if (g_hstate == MBOX_HSTATE_CLOSED && game_playing()) {
 		rc = run_deferred();
-		if (rc != ST_OK) defer_notify(": ", status_text((u8)rc));
+		if (rc != ST_OK) tell(g_defer.label, ": ", status_text((u8)rc));
 		g_defer.kind = DEFER_NONE;
 		return;
 	}
 
 	if (plat_time_us() >= g_defer.until) {
-		defer_notify(" was dropped, the game did not go back to play", "");
+		tell(g_defer.label, " was dropped, the game did not go back to play", "");
 		g_defer.kind = DEFER_NONE;
 	}
 }

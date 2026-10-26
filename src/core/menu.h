@@ -66,6 +66,12 @@
 #define MENU_PAGE_SAVES      0x08   /* MAIN */
 #define MENU_PAGE_SAVE_CAT   0x09   /* MAIN, arg: the category's place in the library */
 #define MENU_PAGE_UNLOCK_ACTIONS 0x0A /* CONFIG: the Unlocks page's buttons, where the game names them a page (round 3) */
+/*
+ * Build 56, a preview feature (QWARK_PREVIEW, proto.h; a release module has no
+ * such page): CONFIG, the running game's mods, installed and USB-only, each an
+ * Off / On / On boot row (menu.c, the Mods page).
+ */
+#define MENU_PAGE_MODS       0x0B
 #define MENU_PAGE_ID(kind, arg) ((u16)(((u16)(kind) << 8) | (u8)(arg)))
 /* MENU_PAGE_PLANETS' arg (the pickers' round 2): the planets the game's picker cannot show, struct game_menu's picker_others. */
 #define MENU_PLANETS_OTHERS  0x01
@@ -90,6 +96,8 @@
 #define MENU_ROW_SAVE     0x0E      /* arg: the save's place in its category */
 #define MENU_ROW_STATUS   0x0F      /* arg: the ACTION whose status readout it shows */
 #define MENU_ROW_VALUE    0x10      /* round 5, arg: the game's menu value (struct menu_value) */
+#define MENU_ROW_MOD      0x11      /* build 56, preview: arg a mod's index, or MENU_MOD_USB + its place in the USB list */
+#define MENU_MOD_USB      0x80
 #define MENU_ROW_ID(tag, arg) ((u16)(((u16)(tag) << 8) | (u8)(arg)))
 
 /*
@@ -200,6 +208,14 @@ void menu_model_home(void);
  * game's. Build 56: only such a table can list a VALUE as a stepper.
  */
 void menu_test_menu(const struct game_menu *gm);
+#if QWARK_PREVIEW
+/*
+ * Build 56: the root's Mods row (a preview feature) on, as built, or off, so
+ * a renderer's test of a root of six (what a release module shows) still
+ * runs in the test build.
+ */
+void menu_test_mods_row(int on);
+#endif
 /* 1.4.1: how many views have been built since the program started. */
 u32  menu_test_builds(void);
 #endif

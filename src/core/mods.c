@@ -516,6 +516,30 @@ void mods_set_title(const char *title)
 
 /* ------------------------------------------------------------ load/unload */
 
+#if QWARK_PREVIEW
+/*
+ * The console menu's guarded load (mods_load_guarded, build 56, a preview
+ * feature). While it runs, nothing of a mod goes into the game over anything
+ * of qwark's own there or of another loaded mod (mem_owner: an applied patch,
+ * which a loaded mod's words are, or what mem_own was told, which its caves
+ * are). Every word of a mod is looked at before anything of it is written,
+ * and each piece of a cave as it is read, before it is written, so no file is
+ * read twice; a cave stopped half way has written only where nothing was.
+ * `g_guard_who` names what was in the way.
+ */
+static u8 g_guard;
+static const char *g_guard_who;
+
+static int guarded(u32 a, u32 l)
+{
+	if (!g_guard) return 0;
+	g_guard_who = mem_owner(a, l);
+	return g_guard_who != NULL;
+}
+#else
+#define guarded(a, l) 0
+#endif
+
 static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 {
 	char path[MOD_PATH_MAX];
@@ -541,7 +565,7 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 		}
 		if (got == 0) break;
 
-		rc = mem_write(cave->addr + offset, chunk, got);
+		rc = guarded(cave->addr + offset, got) ? ST_BUSY : mem_write(cave->addr + offset, chunk, got);
 		if (rc != ST_OK) {
 			plat_file_close(f);
 			return rc;
@@ -550,6 +574,8 @@ static int write_cave(const struct mod_entry *m, const struct mod_cave *cave)
 	}
 
 	plat_file_close(f);
+	/* Build 56: the cave is the mod's now, as far as the console menu's guarded load is concerned. */
+	mem_own(cave->addr, offset, m->name);
 	return offset != 0 ? ST_OK : ST_IO_ERROR;
 }
 
@@ -608,10 +634,16 @@ struct load_frame {
 static struct load_frame g_load_stack[QWARK_MAX_MODS + 2];
 
 /* The mod itself, once every dependency of it is in. */
-static int mod_write(struct mod_entry *m)
+static int mod_write_parts(struct mod_entry *m)
 {
 	u16 c;
 	int rc;
+
+#if QWARK_PREVIEW
+	for (c = 0; c < m->def.count; c++) {
+		if (guarded(m->def.words[c].addr, 4)) return ST_BUSY;
+	}
+#endif
 
 	/*
 	 * Caves first, then the words: the words are usually branches into the cave,
@@ -645,6 +677,14 @@ static int mod_write(struct mod_entry *m)
 	/* PREVIOUS is not stored, so there is nothing to clear: see mods_list_encode. */
 	m->flags |= MOD_FLAG_LOADED;
 	return ST_OK;
+}
+
+/* Build 56: and a mod that did not go in owns none of the caves it wrote (mem.h). */
+static int mod_write(struct mod_entry *m)
+{
+	int rc = mod_write_parts(m);
+	if (rc != ST_OK && (m->flags & MOD_FLAG_LOADED) == 0) mem_own_drop(m->name);
+	return rc;
 }
 
 /*
@@ -746,6 +786,27 @@ int mods_load(const char *dirname)
 	return mods_load_index(mods_find(dirname), 0);
 }
 
+#if QWARK_PREVIEW
+int mods_load_guarded(const char *dirname, const char **who)
+{
+	u32 before = mods_loaded_mask(), now, k;
+	int rc;
+
+	g_guard = 1;
+	g_guard_who = NULL;
+	rc = mods_load(dirname);
+	g_guard = 0;
+	*who = g_guard_who;
+	if (rc != ST_OK) {
+		now = mods_loaded_mask() & ~before;
+		for (k = 0; k < 32; k++) {
+			if (now & (1u << k)) mods_unload(g_mods[k].dirname);
+		}
+	}
+	return rc;
+}
+#endif
+
 int mods_unload(const char *dirname)
 {
 	int index = mods_find(dirname);
@@ -766,12 +827,15 @@ int mods_unload(const char *dirname)
 	}
 
 	m->flags &= (u8)~MOD_FLAG_LOADED;
+	/* Build 56: its caves stay in the game, nothing branching to them, and are nobody's (mem.h). */
+	mem_own_drop(m->name);
 	return ST_OK;
 }
 
 int mods_set_auto(const char *dirname, int on)
 {
 	int index = mods_find(dirname);
+	int rc;
 
 	/*
 	 * Build 56. Turning auto-load on for a mod only a USB drive has copies it
@@ -779,13 +843,18 @@ int mods_set_auto(const char *dirname, int on)
 	 * from then on. Turning it off for one is NOT_FOUND, as it always was.
 	 */
 	if (index < 0 && on) {
-		int rc = modusb_install(dirname);
+		rc = modusb_install(dirname);
 		if (rc != ST_OK) return rc;
 		index = mods_find(dirname);
 	}
 	if (index < 0) return ST_NOT_FOUND;
 
-	config_set_mod_auto(g_title, dirname, on);
+	/*
+	 * The flag is what config.txt says, so a write that did not land (FULL:
+	 * no room, nothing changed) leaves the row as it was and is the answer.
+	 */
+	rc = config_set_mod_auto(g_title, dirname, on);
+	if (rc != ST_OK) return rc;
 
 	if (on) g_mods[index].flags |= MOD_FLAG_AUTO;
 	else    g_mods[index].flags &= (u8)~MOD_FLAG_AUTO;

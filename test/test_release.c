@@ -22,6 +22,7 @@
 #include "../src/core/session.h"
 #include "../src/core/config.h"
 #include "../src/core/mods.h"
+#include "../src/core/menu.h"
 #include "../src/core/net.h"
 #include "../src/core/util.h"
 #include "../src/plat/plat.h"
@@ -295,6 +296,27 @@ static void test_release(void)
 	check(st == ST_OK && mod_listed(reply, len, "both"), "MOD_LIST lists the installed mod");
 	check(st == ST_OK && !mod_listed(reply, len, "usbonly") && !mod_listed(reply, len, "usbonly2"),
 	      "and neither mod only a drive has");
+
+	/* Build 56: the console menu's Mods page is a preview feature too. */
+	{
+		struct menu_view v;
+		u8 i, mods = 0;
+
+		core_lock();
+		menu_model_reset(7, 24, MBOX_CAP_STEPS | MBOX_CAP_PAGE_KEYS | MBOX_CAP_BACK | MBOX_CAP_REQUEST);
+		menu_model_view(&v);
+		for (i = 0; i < v.nrows; i++) {
+			if (strcmp(v.rows[i].label, "Mods") == 0 || v.rows[i].id == MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS))
+				mods = 1;
+		}
+		check(!mods && v.nrows == 6 && strcmp(v.rows[4].label, "Unlocks") == 0 &&
+		      strcmp(v.rows[5].label, "Save files") == 0,
+		      "the console menu's root has no Mods row: Game .. Unlocks, Save files, six rows, as in 1.4.1");
+		check_eq(menu_model_event(MBOX_EV_ACTIVATE, 5, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS), v.key), ST_BAD_ARG,
+		         "an event for a Mods row is refused: no row of the root's is one");
+		check_eq(menu_model_depth(), 1, "and the menu stays on its root");
+		core_unlock();
+	}
 
 	host_quit();
 	check(tick_until(SESSION_XMB, 2000), "back at the XMB");

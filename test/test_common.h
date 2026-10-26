@@ -47,4 +47,7 @@ void test_profiles(void);
 /* test_usbmods.c: mods on a USB drive, build 56. */
 void test_usbmods(void);
 
+/* test_menu_mods.c: the console menu's Mods page, build 56, a preview feature. */
+void test_menu_mods(void);
+
 #endif /* QWARK_TEST_COMMON_H */

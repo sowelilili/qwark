@@ -7,6 +7,9 @@
 #include "../plat/plat.h"
 
 #include <string.h>
+#if QWARK_PREVIEW
+static const char g_sf_who[] = "the savefile helper";
+#endif
 
 /*
  * Whether this process has the helper in it. It is a plain flag rather than a
@@ -447,6 +450,11 @@ int savefile_install(void)
 	 * and three comparisons a frame.
 	 */
 	g_installed = 1;
+#if QWARK_PREVIEW
+	/* Build 56: qwark's own, for the console menu's guarded mod load (mem.h). */
+	for (i = 0; i < d->ncaves; i++) mem_own(d->caves[i].addr, d->caves[i].len, g_sf_who);
+	for (i = 0; i < d->nhooks; i++) mem_own(d->hooks[i].addr, 4, g_sf_who);
+#endif
 	plat_log("savefile: helper installed for game %d", (int)d->game_id);
 	return ST_OK;
 }

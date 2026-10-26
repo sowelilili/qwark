@@ -148,6 +148,21 @@ void mods_forget_loaded(void);
 /* Loads every mod whose index bit is set, dependencies first. */
 void mods_apply_mask(u32 mask);
 
+#if QWARK_PREVIEW
+/*
+ * Build 56, a preview feature: the console menu's load (menu.c, the Mods
+ * page). mods_load, with two rules more. No part of a mod of the walk goes
+ * into the game over anything of qwark's own or of another loaded mod
+ * (mem_owner, mem.h: an applied patch, a loaded mod's cave, qwark's helpers):
+ * every word is looked at before anything of the mod is written, each piece
+ * of a cave before it is. Such a part stops the load with ST_BUSY, and *who
+ * names what was in the way (NULL when the load stopped for another reason).
+ * And a load that fails, for that or for any other reason, unloads every mod
+ * it loaded on the way (its dependencies), so the game is left as it was.
+ */
+int  mods_load_guarded(const char *dirname, const char **who);
+#endif
+
 /* Encodes the MOD_LIST reply. */
 int  mods_list_encode(u8 *out, u32 cap, u32 *len);
 

@@ -521,8 +521,57 @@ int patch_revert(const struct patch_def *def)
 	return ST_OK;
 }
 
+#if QWARK_PREVIEW
+/*
+ * Build 56, a preview feature: what of qwark's own is in the game besides its
+ * patches (mem.h, mem_own), for the console menu's guarded mod load (mods.c).
+ */
+#define OWN_MAX 96
+static struct { u32 addr, len; const char *who; } g_own[OWN_MAX];
+static u32 g_nown;
+
+void mem_own(u32 addr, u32 len, const char *who)
+{
+	if (g_nown >= OWN_MAX) return;
+	g_own[g_nown].addr = addr;
+	g_own[g_nown].len = len;
+	g_own[g_nown].who = who;
+	g_nown++;
+}
+
+void mem_own_drop(const char *who)
+{
+	u32 i = 0;
+
+	while (i < g_nown) {
+		if (g_own[i].who == who) g_own[i] = g_own[--g_nown];
+		else i++;
+	}
+}
+
+const char *mem_owner(u32 a, u32 l)
+{
+	const struct patch_def *p;
+	u32 i, k;
+
+	for (i = 0; i < QWARK_MAX_PATCHES; i++) {
+		p = g_patches[i];
+		for (k = 0; p != NULL && k < p->count; k++) {
+			if (a - p->words[k].addr < 4 || p->words[k].addr - a < l) return p->name;
+		}
+	}
+	for (i = 0; i < g_nown; i++) {
+		if (a - g_own[i].addr < g_own[i].len || g_own[i].addr - a < l) return g_own[i].who;
+	}
+	return NULL;
+}
+#endif
+
 void patch_forget_all(void)
 {
+#if QWARK_PREVIEW
+	g_nown = 0;
+#endif
 	memset(g_patches, 0, sizeof(g_patches));
 	memset(g_patch_runs, 0, sizeof(g_patch_runs));
 	memset(g_patch_complete, 0, sizeof(g_patch_complete));
