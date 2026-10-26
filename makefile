@@ -127,11 +127,13 @@ all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
 #
 # A release: the module with no DEV bit, and dist/ made from it. Commit dist/
 # afterwards, as after any `make dist`. Objects a failed build left behind
-# were compiled with the other DEV bit, so they go first.
+# were compiled with the other DEV bit, so they go first. The preview
+# features are pinned off here, so a QWARK_PREVIEW=1 on the command line
+# cannot ship them in a release.
 #
 release:
 	@rm -rf objs
-	$(MAKE) all QWARK_DEV=0
+	$(MAKE) all QWARK_DEV=0 QWARK_PREVIEW=0
 	$(MAKE) dist
 
 #
