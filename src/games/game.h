@@ -224,22 +224,25 @@ struct game_manips {
 
 /*
  * Revision 1.22, round 2: what the console menu (src/core/menu.c) needs to
- * know about a game beyond its DESCRIBE table. A game without one gets round
- * 1's menu, a page per DESCRIBE group. How the menu is cased is the game's
- * renderer's business (src/games/menuhelper/), not this table's.
+ * know about a game beyond its DESCRIBE table. Build 56: a game without one
+ * has only the root's own pages (round 1's page per DESCRIBE group went: all
+ * four games have one). How the menu is cased is the game's renderer's
+ * business (src/games/menuhelper/), not this table's.
  *
- * A section is a page of rows the game lists in order: its own features by
- * id, and the position rows, which are not features, by the MENU_ITEM_*
- * numbers below (no feature id reaches them).
+ * A section is a page of rows the game lists in order: its own TOGGLE and
+ * ACTION features by id, its values (below), and the position rows, which are
+ * not features, by the MENU_ITEM_* numbers below (no feature id reaches them).
+ * The module serves no other kind of feature as a row (build 56); test_menu.c
+ * holds every game's table to it.
  */
 #define MENU_ITEM_SLOT      0xF0   /* the position slot Save and Load use */
 #define MENU_ITEM_POS_SAVE  0xF1
 #define MENU_ITEM_POS_LOAD  0xF2
 /*
- * Round 5: a blank row the cursor passes over, between a page's parts (Game's
+ * Retired in build 56: round 5's blank row between a section's parts (Game's
  * position rows and its save-file rows until round 6, which put Challenge mode
- * there; no game's section lists one now, and Manips makes its own). One that
- * would open or end the page, or follow another, is left out.
+ * there). No section has listed one since, and the menu lists none; the
+ * Manips page makes its own.
  */
 #define MENU_ITEM_SPACER    0xF3
 /* Round 5: row i of the game's `values` (struct menu_value, below), 0 .. 15. */
@@ -531,7 +534,7 @@ struct game_api {
 	 */
 	const u8 *planet_order;
 
-	/* Revision 1.22, round 2: the console menu's table, NULL for round 1's menu. */
+	/* Revision 1.22, round 2: the console menu's table (build 56: NULL for the root's own pages alone). */
 	const struct game_menu *menu;
 
 	/*

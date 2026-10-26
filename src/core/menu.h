@@ -51,12 +51,13 @@
 /*
  * Page ids: a kind in the high byte, its argument in the low byte. Round 2
  * (rewrite/console-ui-framework.md): the root, the game's sections, planets,
- * manips, unlocks and save files. A game with no menu table (game.h, struct
- * game_menu) gets round 1's page per DESCRIBE group instead of sections.
+ * manips, unlocks and save files. Build 56: every game has a menu table
+ * (game.h, struct game_menu), so round 1's page per DESCRIBE group went, and
+ * no table lists an ENUM, so its page of options went too.
  */
 #define MENU_PAGE_ROOT       0x00   /* MAIN */
-#define MENU_PAGE_GROUP      0x01   /* CONFIG, arg: the DESCRIBE group */
-#define MENU_PAGE_CHOICE     0x02   /* MAIN, arg: the ENUM feature */
+#define MENU_PAGE_GROUP      0x01   /* retired in build 56: round 1's DESCRIBE group */
+#define MENU_PAGE_CHOICE     0x02   /* retired in build 56: an ENUM's options */
 #define MENU_PAGE_SECTION    0x03   /* CONFIG, arg: the game's section */
 #define MENU_PAGE_PLANETS    0x04   /* MAIN */
 #define MENU_PAGE_MANIPS     0x05   /* CONFIG */
@@ -73,9 +74,9 @@
  * Row ids, which a renderer echoes and never reads: a tag in the high byte, an
  * argument in the low byte. The tag is what menu_event dispatches on.
  */
-#define MENU_ROW_GROUP    0x01      /* arg: the group a LINK opens */
+#define MENU_ROW_GROUP    0x01      /* retired in build 56, with round 1's groups */
 #define MENU_ROW_FEATURE  0x02      /* arg: the feature id */
-#define MENU_ROW_OPTION   0x03      /* arg: the option's index in its ENUM */
+#define MENU_ROW_OPTION   0x03      /* retired in build 56, with the ENUM's page */
 #define MENU_ROW_NAV      0x04      /* arg: MENU_NAV_* */
 #define MENU_ROW_TEXT     0x05      /* arg: which line of text */
 #define MENU_ROW_PAGE     0x06      /* arg: the page kind a LINK opens (argument 0) */
@@ -123,18 +124,21 @@ struct menu_row {
 	u8   flags;                         /* MROWF_* */
 	char label[MROW_LABEL_LEN];
 	char value[MROW_VALUE_LEN];
+#ifdef QWARK_TEST
 	/*
 	 * Round 3, a VALUE row flagged MROWF_RANGE (its label then 23 characters
 	 * at most): the value, the lowest, the highest and the step, which the
-	 * mailbox carries in the label's last 16 bytes (menubox.h).
+	 * mailbox carries in the label's last 16 bytes (menubox.h). Build 56: the
+	 * tests' steppers alone (menu.c); no row the module builds has them.
 	 */
 	u32  range[4];
+#endif
 };
 
 /*
- * A VALUE row whose range spans this many steps of 1 or fewer is flagged
- * MROWF_SLIDER as well: few enough for a bar to mean something (Challenge
- * mode's 0..255, not Bolts').
+ * The tests' steppers (menu.c): a VALUE row whose range spans this many steps
+ * of 1 or fewer is flagged MROWF_SLIDER as well: few enough for a bar to mean
+ * something (Challenge mode's 0..255, not Bolts').
  */
 #define MENU_SLIDER_SPAN  1000
 
@@ -191,7 +195,10 @@ u8   menu_model_depth(void);
 void menu_model_home(void);
 
 #ifdef QWARK_TEST
-/* The tests' own menu table in place of the running game's; NULL for the game's. */
+/*
+ * The tests' own menu table in place of the running game's; NULL for the
+ * game's. Build 56: only such a table can list a VALUE as a stepper.
+ */
 void menu_test_menu(const struct game_menu *gm);
 /* 1.4.1: how many views have been built since the program started. */
 u32  menu_test_builds(void);

@@ -38,8 +38,10 @@ static u8 g_depth;
  */
 static u8 g_visit;
 
-/* The step a VALUE row moves by, as a power of ten, per feature id. */
+#ifdef QWARK_TEST
+/* The step a VALUE row moves by, as a power of ten, per feature id (the steppers, below). */
 static u8 g_step[QWARK_MAX_FEATURES];
+#endif
 
 /* The last view built: what an event has to be about. */
 static u32 g_view_key;
@@ -47,10 +49,10 @@ static u8  g_view_n;
 static u16 g_view_id[MENU_VIEW_MAX];
 
 /*
- * A VALUE or ENUM just written from the menu. Its readout lags the write by up
- * to a slow block's period (session.c), so the row shows, and the next step
- * starts from, what was written until the readout agrees or a quarter second
- * has gone by.
+ * A VALUE just written from the menu (round 5: a menu value's button or
+ * switch). Its readout lags the write by up to a slow block's period
+ * (session.c), so the row shows what was written until the readout agrees or
+ * a quarter second has gone by.
  */
 #define VCACHE_TICKS 30
 static u8  g_vc_id = 0xFF;
@@ -131,9 +133,8 @@ static u32 now_tick(void)
 
 #ifdef QWARK_TEST
 /*
- * The tests' own menu table in place of the game's, NULL for the game's again:
- * since round 5 no game lists a VALUE as a stepper, and the steppers and
- * sliders are still a page's controls (round 1's DESCRIBE groups).
+ * The tests' own menu table in place of the game's, NULL for the game's again
+ * (a root of seven rows, and the steppers below).
  */
 static const struct game_menu *g_test_menu;
 void menu_test_menu(const struct game_menu *gm) { g_test_menu = gm; }
@@ -266,7 +267,7 @@ static u32 value_mask(const struct feature_desc *f)
 	return bits == 32 ? 0xFFFFFFFFu : (((u32)1 << bits) - 1u);
 }
 
-/* The current value of a VALUE, ENUM or COLOR row: the readout, or what was just written. */
+/* The current value of a VALUE: the readout, or what was just written. */
 static u32 feature_value(const struct feature_desc *f)
 {
 	u32 live = 0;
@@ -298,6 +299,17 @@ static s64 value_number(const struct feature_desc *f, u32 raw)
 	return (s64)raw;
 }
 
+#ifdef QWARK_TEST
+/*
+ * The steppers: a VALUE listed in a section as itself, whose Left and Right
+ * step the number and whose cross changes the step (round 1), or which a
+ * renderer draws as a native slider (round 3: MROWF_RANGE, its four words at
+ * MROW_OFF_RANGE; round 4, a step of a tenth). Since round 5 no game's table
+ * lists a VALUE so (its values are buttons and switches, MENU_ITEM_VALUE), so
+ * the module carries none of it: it is the tests' own, on a table of theirs
+ * (menu_test_menu), for the renderers' sliders, which ui.pak still carries.
+ * test_menu.c holds every game's table to the rows the module serves.
+ */
 static void value_range(const struct feature_desc *f, s64 *lo, s64 *hi)
 {
 	u8 bits = value_bits(f);
@@ -366,23 +378,7 @@ static void value_text(const struct feature_desc *f, char *out, u32 cap)
 		qstrcat(out, cap, step);
 	}
 }
-
-/* The ENUM's options, or none. */
-static u8 enum_options(const struct feature_desc *f, const char * const **opts)
-{
-	u8 count = 0;
-
-	*opts = NULL;
-	if (features_options(f->id, opts, &count) != ST_OK || *opts == NULL) return 0;
-	return count;
-}
-
-/* The option an ENUM is on, 0 for a value off the list. */
-static u8 enum_index(const struct feature_desc *f, u8 count)
-{
-	u32 v = feature_value(f) - f->min;
-	return v < count ? (u8)v : 0;
-}
+#endif /* QWARK_TEST: the steppers */
 
 /*
  * A toggle with an auto flag is a three-way choice: Off, On, and Auto, which
@@ -438,7 +434,7 @@ static u8 page_type(u16 page)
 	u8 k = page_kind(page);
 
 	if (g_cfg_rows == 0) return MBOX_PTYPE_MAIN;
-	return (k == MENU_PAGE_GROUP || k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS ||
+	return (k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS ||
 	        k == MENU_PAGE_UNLOCK_CAT || k == MENU_PAGE_UNLOCK_ACTIONS || k == MENU_PAGE_PLANETS ||
 	        k == MENU_PAGE_SAVES || k == MENU_PAGE_SAVE_CAT) ? MBOX_PTYPE_CONFIG : MBOX_PTYPE_MAIN;
 }
@@ -452,8 +448,7 @@ static u8 page_type(u16 page)
 static int page_live(u16 page)
 {
 	u8 k = page_kind(page);
-	return k == MENU_PAGE_GROUP || k == MENU_PAGE_SECTION || k == MENU_PAGE_CHOICE ||
-	       k == MENU_PAGE_MANIPS || k == MENU_PAGE_UNLOCK_CAT;
+	return k == MENU_PAGE_SECTION || k == MENU_PAGE_MANIPS || k == MENU_PAGE_UNLOCK_CAT;
 }
 
 /*
@@ -534,9 +529,8 @@ static u8 push_id(u16 *ids, u8 n, u16 id)
 #define SPACER_ID MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_SPACER)
 
 /*
- * Round 5: a blank row between a page's parts, never opening the page or
- * following another (Game without its position rows, where the game has no
- * positions, starts with its save-file part).
+ * Round 5: a blank row between a page's parts (the Manips page's category and
+ * its headers' features), never opening the page or following another.
  */
 static u8 push_spacer(u16 *ids, u8 n)
 {
@@ -544,35 +538,23 @@ static u8 push_spacer(u16 *ids, u8 n)
 	return push_id(ids, n, SPACER_ID);
 }
 
-/* Nor ending it. */
-static u8 drop_spacer(const u16 *ids, u8 n)
-{
-	return n != 0 && ids[n - 1] == SPACER_ID ? (u8)(n - 1) : n;
-}
-
 /* Every row of a page, as row ids, in order; how many. */
 static u8 page_items(u16 page, u16 *ids)
 {
-	const struct game_describe *d = desc();
 	const struct game_menu *gm = gmenu();
 	const struct feature_desc *f;
-	const char * const *opts;
 	char cat[SAVEFILE_NAME_LEN + 1];
 	u8 arg = page_arg(page);
 	u8 n = 0, i, j, count;
 
 	switch (page_kind(page)) {
 	case MENU_PAGE_ROOT:
-		if (gm != NULL && gm->nsections != 0) {
+		/*
+		 * The game's sections first. (Round 1's page per DESCRIBE group, for
+		 * a game with no menu table, went with build 56: all four have one.)
+		 */
+		if (gm != NULL) {
 			for (i = 0; i < gm->nsections; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_SECTION, i));
-		} else if (d != NULL) {
-			/* Round 1's menu: the DESCRIBE groups that have a feature. */
-			for (i = 0; i < d->ngroups; i++) {
-				for (j = 0; j < d->nfeatures; j++) {
-					if (d->features[j].group == i) break;
-				}
-				if (j < d->nfeatures) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_GROUP, i));
-			}
 		}
 		if (g_game != NULL && g_game->planet_names != NULL && g_game->planet_load != NULL)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS));
@@ -584,24 +566,18 @@ static u8 page_items(u16 page, u16 *ids)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_SAVES));
 		return n;
 
-	case MENU_PAGE_GROUP:
-		if (d == NULL) return 0;
-		for (i = 0; i < d->nfeatures; i++) {
-			if (d->features[i].group == arg)
-				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, d->features[i].id));
-		}
-		return n;
-
 	case MENU_PAGE_SECTION:
 		if (gm == NULL || arg >= gm->nsections) return 0;
 		for (i = 0; i < gm->sections[arg].nitems; i++) {
 			u8 it = gm->sections[arg].items[i];
-			if (it == MENU_ITEM_SPACER) {
-				n = push_spacer(ids, n);
-			} else if (it >= MENU_ITEM_SLOT) {
+			if (it >= MENU_ITEM_SLOT && it <= MENU_ITEM_POS_LOAD) {
 				if (g_game->save_blob != NULL) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_POS, it));
 			} else if (it >= MENU_ITEM_VALUE(0)) {
-				/* Round 5: a VALUE as a button or a switch (struct menu_value). */
+				/*
+				 * Round 5: a VALUE as a button or a switch (struct menu_value).
+				 * An item past the table's values is no row, and nor is the
+				 * retired MENU_ITEM_SPACER, which comes here (build 56).
+				 */
 				j = (u8)(it - MENU_ITEM_VALUE(0));
 				if (j < gm->nvalues && feature(gm->values[j].id) != NULL)
 					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_VALUE, j));
@@ -609,12 +585,6 @@ static u8 page_items(u16 page, u16 *ids)
 				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, it));
 			}
 		}
-		return drop_spacer(ids, n);
-
-	case MENU_PAGE_CHOICE:
-		f = feature(arg);
-		count = f != NULL ? enum_options(f, &opts) : 0;
-		for (i = 0; i < count; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_OPTION, i));
 		return n;
 
 	case MENU_PAGE_PLANETS: {
@@ -709,22 +679,13 @@ static u8 page_items(u16 page, u16 *ids)
 
 static void page_title(u16 page, char *out, u32 cap)
 {
-	const struct game_describe *d = desc();
 	const struct game_menu *gm = gmenu();
-	const struct feature_desc *f;
 	u8 arg = page_arg(page);
 
 	memset(out, 0, cap);
 	switch (page_kind(page)) {
-	case MENU_PAGE_GROUP:
-		if (d != NULL && arg < d->ngroups) qstrcpy(out, cap, d->groups[arg]);
-		return;
 	case MENU_PAGE_SECTION:
 		if (gm != NULL && arg < gm->nsections) qstrcpy(out, cap, gm->sections[arg].title);
-		return;
-	case MENU_PAGE_CHOICE:
-		f = feature(arg);
-		if (f != NULL) qstrcpy(out, cap, f->label);
 		return;
 	case MENU_PAGE_UNLOCK_CAT:
 		if (unlocks() && arg < g_ul.ncats) qstrcpy(out, cap, g_ul.cats[arg]);
@@ -784,12 +745,14 @@ static u8 value_on(const struct feature_desc *f)
 	return value_number(f, feature_value(f)) > 0;
 }
 
+#ifdef QWARK_TEST
 /*
- * Round 3, what a native slider needs: a VALUE whose range is narrower than
- * its 32-bit field (explicit bounds, or an 8- or 16-bit field) is flagged
- * MROWF_RANGE and carries its value, its bounds and its step as numbers, its
- * label held to the 23 characters such a row leaves room for; one whose range
- * spans MENU_SLIDER_SPAN or fewer is MROWF_SLIDER as well.
+ * Round 3, what a native slider needs (the steppers, the tests' alone): a
+ * VALUE whose range is narrower than its 32-bit field (explicit bounds, or an
+ * 8- or 16-bit field) is flagged MROWF_RANGE and carries its value, its bounds
+ * and its step as numbers, its label held to the 23 characters such a row
+ * leaves room for; one whose range spans MENU_SLIDER_SPAN or fewer is
+ * MROWF_SLIDER as well.
  */
 static void value_range_row(const struct feature_desc *f, struct menu_row *r)
 {
@@ -805,12 +768,15 @@ static void value_range_row(const struct feature_desc *f, struct menu_row *r)
 	r->range[3] = value_step(f);
 	memset(r->label + MROW_RANGE_LABEL - 1, 0, sizeof(r->label) - (MROW_RANGE_LABEL - 1));
 }
+#endif
 
+/*
+ * A feature the game's table lists: a toggle or an action. (Build 56: no
+ * table lists an ENUM, a COLOR or, since round 5, a VALUE, and test_menu.c
+ * holds them to it, so their rows went; a VALUE is still the tests' stepper.)
+ */
 static void feature_row(const struct feature_desc *f, struct menu_row *r)
 {
-	const char * const *opts;
-	u8 count;
-
 	switch (f->kind) {
 	case FEATURE_TOGGLE: {
 		int st = toggle_now(f);
@@ -828,6 +794,7 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 		else
 			row(r, MROW_ACTION, MROWF_ENABLED, f->label, "");
 		break;
+#ifdef QWARK_TEST
 	case FEATURE_VALUE:
 		/*
 		 * Left and Right step the number, the cross changes the step: a
@@ -841,15 +808,7 @@ static void feature_row(const struct feature_desc *f, struct menu_row *r)
 		value_text(f, r->value, sizeof(r->value));
 		if (r->kind == MROW_VALUE) value_range_row(f, r);
 		break;
-	case FEATURE_ENUM:
-		count = enum_options(f, &opts);
-		row(r, MROW_CHOICE, MROWF_ENABLED | steps(), f->label,
-		    count != 0 && opts[enum_index(f, count)] != NULL ? opts[enum_index(f, count)] : "");
-		break;
-	case FEATURE_COLOR:
-		row(r, MROW_INFO, 0, f->label, "#");
-		qfmt_hex(r->value + 1, sizeof(r->value) - 1, feature_value(f) & 0x00FFFFFFu, 6);
-		break;
+#endif
 	default:
 		row(r, MROW_INFO, 0, f->label, NULL);
 		break;
@@ -950,7 +909,6 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 	const struct game_menu *gm = gmenu();
 	const struct feature_desc *f;
 	const struct game_unlock *u;
-	const char * const *opts;
 	char text[LIB_NAME];
 	u8 arg = (u8)id, count;
 	const char *n;
@@ -959,9 +917,6 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 	r->id = id;
 
 	switch ((u8)(id >> 8)) {
-	case MENU_ROW_GROUP:
-		row(r, MROW_LINK, MROWF_ENABLED, d != NULL && arg < d->ngroups ? d->groups[arg] : "", "");
-		break;
 	case MENU_ROW_SECTION:
 		row(r, MROW_LINK, MROWF_ENABLED, gm->sections[arg].title, "");
 		break;
@@ -999,14 +954,6 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 	case MENU_ROW_FEATURE:
 		f = feature(arg);
 		if (f != NULL) feature_row(f, r);
-		break;
-
-	case MENU_ROW_OPTION:
-		f = feature(page_arg(page));
-		if (f == NULL) break;
-		count = enum_options(f, &opts);
-		row(r, MROW_OPTION, MROWF_ENABLED | (enum_index(f, count) == arg ? MROWF_ON : 0),
-		    arg < count && opts[arg] != NULL ? opts[arg] : "", "");
 		break;
 
 	case MENU_ROW_POS:
@@ -1201,7 +1148,9 @@ void menu_model_reset(u8 max_rows, u8 cfg_rows, u8 caps)
 	g_cfg_rows = cfg_rows;
 	g_caps = caps;
 	nav_reset();
+#ifdef QWARK_TEST
 	memset(g_step, 0, sizeof(g_step));
+#endif
 	memset(&g_defer, 0, sizeof(g_defer));
 	g_vc_id = 0xFF;
 	g_note_id = 0;
@@ -1240,27 +1189,30 @@ static u32 g_test_builds;
 u32 menu_test_builds(void) { return g_test_builds; }
 #endif
 
-static void push_row(struct menu_view *v, const struct menu_row *r)
+/*
+ * The view's next row, built where it goes (build 56: not on the stack and
+ * copied in, a copy -Os spelt out word by word once a row was 64 bytes).
+ */
+static void push_row(struct menu_view *v, u16 page, u16 id)
 {
 	if (v->nrows >= MENU_VIEW_MAX) return;
-	v->rows[v->nrows] = *r;
+	build_row(page, id, &v->rows[v->nrows]);
 	v->nrows++;
 }
 
 static void nav_row(struct menu_view *v, u8 which, const char *label)
 {
-	struct menu_row r;
+	struct menu_row *r = &v->rows[v->nrows];
 
-	memset(&r, 0, sizeof(r));
-	r.id = MENU_ROW_ID(MENU_ROW_NAV, which);
-	row(&r, MROW_BACK, MROWF_ENABLED, label, "");
-	push_row(v, &r);
+	if (v->nrows >= MENU_VIEW_MAX) return;
+	r->id = MENU_ROW_ID(MENU_ROW_NAV, which);
+	row(r, MROW_BACK, MROWF_ENABLED, label, "");
+	v->nrows++;
 }
 
 void menu_model_view(struct menu_view *v)
 {
 	struct menu_nav *cur;
-	struct menu_row r;
 	u16 ids[MENU_ITEMS_MAX];
 	u8 n, m, content, i;
 
@@ -1289,17 +1241,11 @@ void menu_model_view(struct menu_view *v)
 	page_title(cur->page, v->title, sizeof(v->title));
 	note_hint(v->hint, sizeof(v->hint));
 
-	for (i = 0; i < content; i++) {
-		build_row(cur->page, ids[cur->start + i], &r);
-		push_row(v, &r);
-	}
+	for (i = 0; i < content; i++) push_row(v, cur->page, ids[cur->start + i]);
 	if ((g_caps & MBOX_CAP_BACK) == 0 && g_depth > 1) nav_row(v, MENU_NAV_BACK, "Back");
 
 	/* A page with nothing on it still has a row, which says so. */
-	if (v->nrows == 0) {
-		build_row(cur->page, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_EMPTY), &r);
-		push_row(v, &r);
-	}
+	if (v->nrows == 0) push_row(v, cur->page, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_EMPTY));
 
 	v->cursor = cur->cursor < v->nrows ? cur->cursor : (u8)(v->nrows - 1);
 
@@ -1312,38 +1258,23 @@ void menu_model_view(struct menu_view *v)
 
 /* ------------------------------------------------------------ the events */
 
-/* Left or Right (dir -1, +1), or the cross on a CONFIG page (0), on a feature row. */
-static int step_feature(const struct feature_desc *f, int dir)
+#ifdef QWARK_TEST
+/* Left or Right (dir -1, +1) on a stepper (the steppers, the tests' alone). */
+static int step_value(const struct feature_desc *f, int dir)
 {
-	const char * const *opts;
 	s64 v, lo, hi, step;
 	u32 raw;
-	u8 count;
 	int rc;
 
-	switch (f->kind) {
-	case FEATURE_TOGGLE:
-		return toggle_set(f, cycle((u8)toggle_now(f), toggle_auto(f) ? 3 : 2, dir));
-	case FEATURE_ENUM:
-		count = enum_options(f, &opts);
-		if (count == 0) return ST_UNSUPPORTED;
-		raw = f->min + cycle(enum_index(f, count), count, dir);
-		rc = features_set(f->id, raw);
-		if (rc == ST_OK) remember_value(f->id, raw);
-		return rc;
-	case FEATURE_VALUE:
-		value_range(f, &lo, &hi);
-		step = value_step(f);
-		v = value_number(f, feature_value(f)) + (dir > 0 ? step : -step);
-		if (v < lo) v = lo;
-		if (v > hi) v = hi;
-		raw = (u32)((u64)v & value_mask(f));
-		rc = features_set(f->id, raw);
-		if (rc == ST_OK) remember_value(f->id, raw);
-		return rc;
-	default:
-		return ST_OK;
-	}
+	value_range(f, &lo, &hi);
+	step = value_step(f);
+	v = value_number(f, feature_value(f)) + (dir > 0 ? step : -step);
+	if (v < lo) v = lo;
+	if (v > hi) v = hi;
+	raw = (u32)((u64)v & value_mask(f));
+	rc = features_set(f->id, raw);
+	if (rc == ST_OK) remember_value(f->id, raw);
+	return rc;
 }
 
 /*
@@ -1365,6 +1296,7 @@ static void cycle_step(const struct feature_desc *f)
 	if (next >= STEP_LEVELS || (s64)g_pow10[next] > hi - lo) next = 0;
 	g_step[f->id] = next;
 }
+#endif
 
 /* A CLOSES action, set up for the driver (round 5: its row says nothing meanwhile). */
 static int defer(u8 kind, u8 arg, const char *label)
@@ -1377,36 +1309,25 @@ static int defer(u8 kind, u8 arg, const char *label)
 }
 
 /*
- * A feature row: the cross (dir 0) or Left and Right (-1, +1). On a CONFIG
- * page the cross moves a choice on, as the game's Cheats screen does; on a
- * MAIN page it opens the choice's options as a page of their own.
+ * A feature row: the cross (dir 0) or Left and Right (-1, +1). A toggle's
+ * cross moves it on as Right does, as the game's Cheats screen does. (Build
+ * 56: an ENUM's page of options and its steps went with its rows.)
  */
-static int act_feature(u8 row, u16 id, const struct feature_desc *f, int dir)
+static int act_feature(u16 id, const struct feature_desc *f, int dir)
 {
-	const char * const *opts;
-	u8 count, start, pos;
-
 	switch (f->kind) {
 	case FEATURE_ACTION:
 		if (dir != 0) return ST_OK;
 		if ((f->flags & FEATURE_FLAG_LOAD_ASIDE) != 0) return defer(DEFER_FEATURE, f->id, f->label);
 		return answer(id, features_trigger(f->id), f->label);
+	case FEATURE_TOGGLE:
+		return answer(id, toggle_set(f, cycle((u8)toggle_now(f), toggle_auto(f) ? 3 : 2, dir)), f->label);
+#ifdef QWARK_TEST
 	case FEATURE_VALUE:
-		if (dir != 0) return answer(id, step_feature(f, dir), f->label);
+		if (dir != 0) return answer(id, step_value(f, dir), f->label);
 		if ((g_caps & MBOX_CAP_STEPS) != 0) cycle_step(f);
 		return ST_OK;
-	case FEATURE_ENUM:
-		if (dir == 0 && page_type(g_nav[g_depth - 1].page) == MBOX_PTYPE_MAIN) {
-			count = enum_options(f, &opts);
-			if (count == 0) return ST_UNSUPPORTED;
-			pos = enum_index(f, count);
-			start = window_at(count, screen_rows(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), (u8)(g_depth + 1)),
-			                  pos, 1);
-			return nav_push(MENU_PAGE_ID(MENU_PAGE_CHOICE, f->id), row, start, (u8)(pos - start));
-		}
-		return answer(id, step_feature(f, dir), f->label);
-	case FEATURE_TOGGLE:
-		return answer(id, step_feature(f, dir), f->label);
+#endif
 	default:
 		return ST_OK;
 	}
@@ -1483,10 +1404,8 @@ static int act(u8 row, u16 id, int dir)
 	const struct feature_desc *f;
 	const char * const *names;
 	u8 arg = (u8)id, count;
-	int rc;
 
 	switch ((u8)(id >> 8)) {
-	case MENU_ROW_GROUP:   return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_GROUP, arg), row, 0, 0);
 	case MENU_ROW_SECTION: return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SECTION, arg), row, 0, 0);
 	case MENU_ROW_PAGE:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(arg, 0), row, 0, 0);
 	case MENU_ROW_UCAT:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_UNLOCK_CAT, arg), row, 0, 0);
@@ -1495,17 +1414,7 @@ static int act(u8 row, u16 id, int dir)
 	case MENU_ROW_FEATURE:
 		f = feature(arg);
 		if (f == NULL) return ST_NOT_FOUND;
-		return act_feature(row, id, f, dir);
-
-	case MENU_ROW_OPTION:
-		if (dir != 0) return ST_OK;
-		if (page_kind(cur->page) != MENU_PAGE_CHOICE) return ST_BAD_ARG;
-		f = feature(page_arg(cur->page));
-		if (f == NULL) return ST_NOT_FOUND;
-		rc = features_set(f->id, f->min + arg);
-		if (rc != ST_OK) return answer(id, rc, f->label);
-		remember_value(f->id, f->min + arg);
-		return nav_pop();
+		return act_feature(id, f, dir);
 
 	case MENU_ROW_POS:
 		if (arg == MENU_ITEM_SLOT) {
@@ -1789,10 +1698,13 @@ static void post(int force)
 		r[MROW_OFF_FLAGS] = v->rows[i].flags;
 		be16_put(r + MROW_OFF_ID, v->rows[i].id);
 		memcpy(r + MROW_OFF_LABEL, v->rows[i].label, MROW_LABEL_LEN);
+#ifdef QWARK_TEST
+		/* A slider's four words (the steppers, the tests' alone: no row the module builds has them). */
 		if ((v->rows[i].flags & MROWF_RANGE) != 0) {
 			u8 k;
 			for (k = 0; k < 4; k++) be32_put(r + MROW_OFF_RANGE + 4u * k, v->rows[i].range[k]);
 		}
+#endif
 		memcpy(r + MROW_OFF_VALUE, v->rows[i].value, MROW_VALUE_LEN);
 	}
 

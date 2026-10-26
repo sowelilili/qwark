@@ -1009,13 +1009,13 @@ static void save_drop(const char *cat, const char *name)
 
 /*
  * Round 5: no game lists a VALUE as a stepper any more, so the steppers and
- * sliders, still the controls of round 1's pages of DESCRIBE groups, are
- * tried on a menu table of the test's own: Deadlocked's three values.
+ * sliders (build 56: the tests' alone, menu.c) are tried on a menu table of
+ * the test's own: Deadlocked's three values.
  */
 static const u8 tv_items[] = { R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE };
-/* Round 5: spacers that would open the page, follow another or end it are left out. */
+/* Build 56: the retired MENU_ITEM_SPACER, and a value the table does not have, are no rows. */
 static const u8 tv_spaced[] = {
-	MENU_ITEM_SPACER, R4_BOLTS, MENU_ITEM_SPACER, MENU_ITEM_SPACER, R4_SKIN, MENU_ITEM_SPACER,
+	MENU_ITEM_SPACER, R4_BOLTS, MENU_ITEM_SPACER, MENU_ITEM_SPACER, R4_GHOST, MENU_ITEM_SPACER,
 	MENU_ITEM_VALUE(7), MENU_ITEM_SPACER
 };
 static const struct menu_section tv_sections[] = {
@@ -1087,10 +1087,9 @@ static void test_model_dl_values(void)
 	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Spacers");
-	check(v.nrows == 3 && strcmp(v.rows[0].label, "Bolts") == 0 && v.rows[1].kind == MROW_INFO &&
-	      v.rows[1].flags == 0 && v.rows[1].label[0] == 0 && strcmp(v.rows[2].label, "Skin") == 0,
-	      "round 5: a spacer opening the page, one after another and one ending it are left out, as is a "
-	      "MENU_ITEM_VALUE the table does not have: Bolts, a spacer, Skin");
+	check(v.nrows == 2 && strcmp(v.rows[0].label, "Bolts") == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0,
+	      "build 56: the retired MENU_ITEM_SPACER is no row, wherever it is, and nor is a MENU_ITEM_VALUE the "
+	      "table does not have: Bolts, Ghost Ratchet");
 	menu_test_menu(NULL);
 }
 
@@ -1250,7 +1249,7 @@ static void test_model_dl(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* The steppers and sliders themselves, on a page of round 1's DESCRIBE groups (Deadlocked's Player). */
+	/* The steppers and sliders themselves, on the tests' own table (build 56: the module has none). */
 	test_model_dl_values();
 	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
@@ -2987,8 +2986,81 @@ static void test_picker(void)
 	check(quit(), "quit Deadlocked");
 }
 
+/*
+ * Build 56: the module serves only the rows the games' tables list. Each of the
+ * four lists a section on its root, and in its sections, its Unlocks page's
+ * actions and its Manips headers only TOGGLE and ACTION features, its values
+ * (MENU_ITEM_VALUE, each a VALUE feature) and the position rows. The steppers,
+ * an ENUM's rows, a COLOR's, the retired MENU_ITEM_SPACER and round 1's
+ * DESCRIBE groups are no longer in the SPRX: without this check a table that
+ * listed one would pass every other test here (the steppers are the tests')
+ * and show nothing of it on a console.
+ */
+extern const struct game_api rac1_game, rac2_game, rac3_game, rac4_game;
+
+static const struct feature_desc *table_feature(const struct game_describe *d, u8 id)
+{
+	u8 i;
+
+	for (i = 0; i < d->nfeatures; i++) {
+		if (d->features[i].id == id) return &d->features[i];
+	}
+	return NULL;
+}
+
+static int table_served(const struct game_describe *d, u8 id)
+{
+	const struct feature_desc *f = table_feature(d, id);
+	return f != NULL && (f->kind == FEATURE_TOGGLE || f->kind == FEATURE_ACTION);
+}
+
+static void test_menu_tables(void)
+{
+	static const struct game_api * const games[] = { &rac1_game, &rac2_game, &rac3_game, &rac4_game };
+	char what[96];
+	u32 k, bad;
+	u8 i, j, it;
+
+	for (k = 0; k < 4; k++) {
+		const struct game_api *g = games[k];
+		const struct game_menu *gm = g->menu;
+		const struct game_describe *d = g->describe();
+
+		qstrcpy(what, sizeof(what), "menu tables: ");
+		qstrcat(what, sizeof(what), g->title_ids[0]);
+		check(gm != NULL && gm->nsections != 0 && d != NULL, what);
+		if (gm == NULL || d == NULL) continue;
+		bad = 0;
+		for (i = 0; i < gm->nsections; i++) {
+			for (j = 0; j < gm->sections[i].nitems; j++) {
+				it = gm->sections[i].items[j];
+				if (it >= MENU_ITEM_SLOT && it <= MENU_ITEM_POS_LOAD) continue;
+				if (it >= MENU_ITEM_VALUE(0) && it < MENU_ITEM_VALUE(MENU_ITEM_VALUES)) {
+					const struct feature_desc *f;
+					if ((u8)(it - MENU_ITEM_VALUE(0)) >= gm->nvalues) { bad++; continue; }
+					f = table_feature(d, gm->values[it - MENU_ITEM_VALUE(0)].id);
+					if (f == NULL || f->kind != FEATURE_VALUE) bad++;
+					continue;
+				}
+				if (!table_served(d, it)) bad++;
+			}
+		}
+		for (i = 0; i < gm->nunlock_actions; i++) {
+			if (!table_served(d, gm->unlock_actions[i])) bad++;
+		}
+		for (i = 0; g->manips != NULL && i < g->manips->nheaders; i++) {
+			for (j = 0; j < g->manips->headers[i].nfeatures; j++) {
+				if (!table_served(d, g->manips->headers[i].features[j])) bad++;
+			}
+		}
+		qstrcat(what, sizeof(what), " lists only toggles, actions, its values and the position rows");
+		check(bad == 0, what);
+	}
+}
+
 void test_menu(void)
 {
+	test_menu_tables();
 	test_model_dl();
 	test_model_paging();
 	test_mailbox();
