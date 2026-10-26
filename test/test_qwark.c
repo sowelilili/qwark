@@ -1759,39 +1759,48 @@ static void test_config(void)
 	}
 
 	/*
-	 * CONFIG_TEXT_MAX. config.txt is read whole into one buffer, so the buffer
-	 * has to hold anything config_save can write: CONFIG_MAX_ENTRIES lines of a
-	 * key, a value and the separators. These two walk the edge of it.
-	 *
-	 * qread_file cannot tell a full buffer from a file that just fits, so the
-	 * largest file it reads is two bytes short of the cap; that is unchanged and
-	 * is what the first of these pins. A file past it answers ST_FULL and
-	 * config_load hands that straight back, applying none of the file.
+	 * config.txt is read whole into the core's text buffer, QTEXT_BYTES, which
+	 * holds anything the key pool can write (config.c). A file bigger than that
+	 * - a hand-edited one - loads none of itself and answers ST_FULL, as it
+	 * always has, and since build 56 it is never written back either: every
+	 * write is ST_FULL, where the next write used to replace the whole file
+	 * with the one key it set.
 	 */
 	{
-		check(write_sized_config(CONFIG_TEXT_MAX - 2) == ST_OK,
+		check(write_sized_config(QTEXT_BYTES - 2) == ST_OK,
 		      "a config.txt at the text limit is written");
 		check(config_load() == ST_OK, "and loads");
 		check_eq_u64(config_get_u32("log", 0), 1, "with its keys in it");
 		check(config_combo_enabled(),
 		      "and a config with no combo.enabled in it leaves the combos on");
 
-		check(write_sized_config(CONFIG_TEXT_MAX - 1) == ST_OK,
+		check(write_sized_config(QTEXT_BYTES - 1) == ST_OK,
 		      "a config.txt one byte past the limit is written");
 		check(config_load() == ST_FULL, "and is refused with ST_FULL");
 		check_eq_u64(config_get_u32("log", 7), 7, "leaving nothing of it loaded");
+		check(config_set_u32("log", 1) == ST_FULL && config_save() == ST_FULL,
+		      "and every write FULL, rather than a file of the one key it set");
+		check(config_load() == ST_FULL, "so the file is still all there");
 
 		/* Put a small config back for whatever runs after this. */
-		check(config_set_u32("log", 1) == ST_OK, "a small config is written back");
-		check(config_load() == ST_OK, "and reloads");
+		{
+			plat_file_t f;
+			if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+				plat_file_write(f, "log = 1\n", 8);
+				plat_file_close(f);
+			}
+		}
+		check(config_load() == ST_OK, "a small config reloads");
+		check(config_set_u32("log", 1) == ST_OK, "and takes writes again");
 	}
 
 	/*
-	 * CONFIG_MAX_ENTRIES, which is 64 since build 37 and was 128. The table fills
-	 * and then refuses, exactly as it did at 128: config_set answers ST_FULL for
-	 * a key there is no room for, and a file with more keys than the table holds
-	 * loads the ones that fit and drops the rest, which is what config_load has
-	 * always done with kv_put's answer.
+	 * Build 56: the old table's 64 keys, which a console that had been used for
+	 * a while outgrew (PROFILE_ENABLE answered it FULL). 65 keys load, all of
+	 * them, and a 66th is written like any other. A file the pool cannot hold
+	 * all of loads what fits and says ST_FULL, and its store is never written
+	 * back: every write is ST_FULL and the file stays as it was, rather than
+	 * being cut down to what was read, which is what the table used to do.
 	 */
 	{
 		plat_file_t f;
@@ -1799,7 +1808,7 @@ static void test_config(void)
 		u32 stored = 0;
 
 		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
-			for (i = 0; i < CONFIG_MAX_ENTRIES + 1u; i++) {
+			for (i = 0; i < 65u; i++) {
 				char line[CONFIG_KEY_MAX + CONFIG_VAL_MAX + 8];
 
 				line[0] = 0;
@@ -1815,19 +1824,45 @@ static void test_config(void)
 
 		check(config_load() == ST_OK, "a config.txt of 65 keys reads");
 
-		for (i = 0; i < CONFIG_MAX_ENTRIES + 1u; i++) {
+		for (i = 0; i < 65u; i++) {
 			char key[32];
 
 			qstrcpy(key, sizeof(key), "fill");
 			qfmt_u32(key + 4, sizeof(key) - 4, i);
-			if (config_get(key) != NULL) stored++;
+			if (config_get_u32(key, 0xFFFFFFFFu) == i) stored++;
 		}
-		check_eq_u64(stored, CONFIG_MAX_ENTRIES,
-		             "64 of them are kept and the 65th is dropped");
-		check(config_get("fill0") != NULL, "the first key is one of the 64");
+		check_eq_u64(stored, 65, "and keeps all 65, where the table kept 64");
+		check(config_set("one_more", "1") == ST_OK, "a 66th key is written");
+		check(config_load() == ST_OK && config_get_u32("fill64", 0) == 64 &&
+		      config_get_u32("one_more", 0) == 1,
+		      "and the file it wrote has all 66");
+		check(config_set_u32("fill3", 1234567890u) == ST_OK && config_get_u32("fill3", 0) == 1234567890u &&
+		      config_set_u32("fill3", 7) == ST_OK && config_get_u32("fill3", 0) == 7 &&
+		      config_get_u32("fill2", 0) == 2 && config_get_u32("fill4", 0) == 4,
+		      "a value that grows and shrinks again leaves its neighbours alone");
 
-		check(config_set("one_too_many", "1") == ST_FULL,
-		      "and a 65th key set through config_set is ST_FULL");
+		/*
+		 * More keys than the pool holds, in a file the text buffer does: 650
+		 * keys of 18 to 20 bytes of pool and a byte more of file each.
+		 */
+		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
+			for (i = 0; i < 650u; i++) {
+				char line[40];
+
+				line[0] = 0;
+				qstrcat(line, sizeof(line), "fill");
+				qfmt_u32(line + 4, sizeof(line) - 4, i);
+				qstrcat(line, sizeof(line), " = 1000000000\n");
+				plat_file_write(f, line, qstrlen(line));
+			}
+			plat_file_close(f);
+		}
+		check(config_load() == ST_FULL, "a config.txt bigger than the pool says FULL");
+		check(config_get("fill0") != NULL, "and keeps what fits");
+		check(config_set("one_more", "1") == ST_FULL && config_set("fill0", "2") == ST_FULL,
+		      "every write is FULL");
+		check(config_load() == ST_FULL && config_get_u32("fill0", 0) == 1000000000u,
+		      "and the file was not touched");
 
 		/* Back to a small config for whatever runs after this. */
 		if (plat_file_open(QWARK_CONFIG, PLAT_OPEN_WRITE, &f) == 0) {
@@ -1836,6 +1871,7 @@ static void test_config(void)
 		}
 		check(config_load() == ST_OK, "a small config reloads");
 		check_eq_u64(config_get_u32("combo.enabled", 0), 1, "with its one key in it");
+		check(config_set_u32("log", 1) == ST_OK, "and takes writes again");
 	}
 
 	group("string and number helpers");

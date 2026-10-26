@@ -17,7 +17,11 @@
  *   the auto flags a mod's auto flag that follows the profile;
  *   the files      a write cut off before its rename read back from ".new", and
  *                  a profile whose folder cannot be made;
- *   RPCS3          no users, so no profiles and no flags.
+ *   RPCS3          no users, so no profiles and no flags;
+ *   the big config a config.txt of everything qwark writes (build 56), which
+ *                  PROFILE_ENABLE answered FULL: copied, written through,
+ *                  switched between users and turned off whole, and a setup
+ *                  that fails, or a file with no room, leaving nothing changed.
  *
  * It runs last and puts back the console's config.txt and position files it
  * found, so the suites after it (none today) see the HDD as it was.
@@ -27,6 +31,7 @@
 #include "../src/core/config.h"
 #include "../src/core/mods.h"
 #include "../src/core/util.h"
+#include "../src/games/game.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/host/plat_host.h"
 #include "test_common.h"
@@ -34,7 +39,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define PR_FILE_MAX 8192
+#define PR_FILE_MAX 24576
 
 static void tick(int n)
 {
@@ -453,8 +458,395 @@ static void test_flow(void)
 	check(!config_profile_active() && !config_profiles_enabled(), "no profile, the switch off");
 }
 
+/* ------------------------------------------------------------------------
+ * Build 56: a config.txt the size of everything qwark itself writes.
+ *
+ * Build 56's PROFILE_ENABLE answered a real console FULL: its config.txt held
+ * the 64 keys the old table had room for, so `profiles.enabled` had none, and
+ * a COPY would have copied at most 64 keys into a profile. This builds the
+ * largest file qwark can write, from the games' own tables: the fixed keys,
+ * the selections and manips of all four games, the auto flag of every toggle
+ * and colour under every title id the games answer to (colours at their
+ * widest value), and a full mod library, QWARK_MAX_MODS mods with the longest
+ * dirnames, auto-flagged on each game's own title.
+ */
+#define BIG_MAX 24576
+
+extern const struct game_api rac1_game;
+extern const struct game_api rac2_game;
+extern const struct game_api rac3_game;
+extern const struct game_api rac4_game;
+
+static char g_big[BIG_MAX];
+static u32  g_big_len;
+static u32  g_big_keys;
+static u32  g_big_user;
+static u32  g_big_pool;
+
+static void big_add(const char *key, const char *value)
+{
+	char probe[CONFIG_KEY_MAX + 8];
+	int n;
+
+	snprintf(probe, sizeof(probe), "\n%s = ", key);
+	if (strstr(g_big, probe) != NULL) return;   /* BCES01503 is three games' title */
+
+	n = snprintf(g_big + g_big_len, BIG_MAX - g_big_len, "%s = %s\n", key, value);
+	if (n > 0) g_big_len += (u32)n;
+	g_big_keys++;
+	g_big_pool += 1 + (u32)strlen(key) + 1 + (u32)strlen(value) + 1;
+	if (config_key_scope(key) == CONFIG_SCOPE_USER) g_big_user++;
+}
+
+static void big_build(void)
+{
+	static const struct game_api * const games[4] = { &rac1_game, &rac2_game, &rac3_game, &rac4_game };
+	static const char * const keys[4] = { "rac1", "rac2", "rac3", "rac4" };
+	static const char * const fixed[] = {
+		"combo.enabled", "menu.help", "menu.enabled", "log", "savefile_helper",
+		"selected.slot", "selected.planet", "selected.planet_flags"
+	};
+	static const char * const combos[] = {
+		"combo.save", "combo.load", "combo.die", "combo.planet", "combo.setaside",
+		"combo.menu", "combo.fastloads"
+	};
+	char key[CONFIG_KEY_MAX + 16];
+	char slug[48];
+	int g, t, i;
+
+	g_big_len = 0;
+	g_big_keys = g_big_user = g_big_pool = 0;
+	g_big_len = (u32)snprintf(g_big, BIG_MAX, "# everything qwark writes\n");
+
+	for (i = 0; i < (int)(sizeof(combos) / sizeof(combos[0])); i++) big_add(combos[i], "0xFFFFFFFF");
+	for (i = 0; i < (int)(sizeof(fixed) / sizeof(fixed[0])); i++) big_add(fixed[i], "1");
+
+	for (g = 0; g < 4; g++) {
+		const struct game_describe *d = games[g]->describe();
+
+		snprintf(key, sizeof(key), "selected.%s.planet", keys[g]);       big_add(key, "255");
+		snprintf(key, sizeof(key), "selected.%s.planet_flags", keys[g]); big_add(key, "255");
+		snprintf(key, sizeof(key), "manip.%s.auto_reset", keys[g]);      big_add(key, "1");
+		snprintf(key, sizeof(key), "manip.%s.remember", keys[g]);        big_add(key, "1");
+		snprintf(key, sizeof(key), "manip.%s.category", keys[g]);        big_add(key, "4294967295");
+
+		for (t = 0; t < 4 && games[g]->title_ids[t] != NULL; t++) {
+			for (i = 0; i < d->nfeatures; i++) {
+				const struct feature_desc *f = &d->features[i];
+
+				if (f->kind != FEATURE_TOGGLE && f->kind != FEATURE_COLOR) continue;
+				if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
+				qslug(f->label, slug, sizeof(slug));
+				snprintf(key, sizeof(key), "%s.auto.%s", games[g]->title_ids[t], slug);
+				big_add(key, f->kind == FEATURE_COLOR ? "2181038079" : "1");
+			}
+			for (i = 0; i < d->nformer; i++) {
+				qslug(d->former[i].label, slug, sizeof(slug));
+				snprintf(key, sizeof(key), "%s.auto.%s", games[g]->title_ids[t], slug);
+				big_add(key, "1");
+			}
+		}
+
+		for (i = 0; i < QWARK_MAX_MODS; i++) {
+			char dir[32];
+			snprintf(dir, sizeof(dir), "mod-%02d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", i);
+			dir[31] = 0;
+			snprintf(key, sizeof(key), "%s.mod.%s.auto", games[g]->title_ids[0], dir);
+			big_add(key, "1");
+		}
+	}
+}
+
+#define BIG_ALL      0
+#define BIG_USER     1
+#define BIG_CONSOLE  2
+
+/*
+ * How many of the big file's lines are in `path`, exactly, of the side asked
+ * for; `*want` is how many there should be.
+ */
+static u32 big_lines_in(const char *path, int side, u32 *want)
+{
+	static char file[BIG_MAX + 2];
+	char line[160];
+	const char *p = g_big;
+	u32 found = 0;
+
+	*want = 0;
+	file[0] = '\n';
+	if (slurp(path, file + 1, sizeof(file) - 1) < 0) file[1] = 0;
+
+	while (*p != 0) {
+		const char *nl = strchr(p, '\n');
+		u32 n = nl ? (u32)(nl - p) : (u32)strlen(p);
+		char probe[170];
+		char key[CONFIG_KEY_MAX + 8];
+		const char *eq;
+		int user;
+
+		if (n >= sizeof(line)) n = sizeof(line) - 1;
+		memcpy(line, p, n);
+		line[n] = 0;
+		p = nl ? nl + 1 : p + n;
+		if (line[0] == '#' || line[0] == 0) continue;
+
+		eq = strstr(line, " = ");
+		if (eq == NULL) continue;
+		memcpy(key, line, (size_t)(eq - line));
+		key[eq - line] = 0;
+		user = config_key_scope(key) == CONFIG_SCOPE_USER;
+		if (side == BIG_USER && !user) continue;
+		if (side == BIG_CONSOLE && user) continue;
+
+		(*want)++;
+		snprintf(probe, sizeof(probe), "\n%s\n", line);
+		if (strstr(file, probe) != NULL) found++;
+	}
+	return found;
+}
+
+/* Every key of the big file reads back through config_get with its value. */
+static u32 big_reads_back(int side, u32 *want)
+{
+	const char *p = g_big;
+	u32 ok = 0;
+
+	*want = 0;
+	while (*p != 0) {
+		const char *nl = strchr(p, '\n');
+		u32 n = nl ? (u32)(nl - p) : (u32)strlen(p);
+		char line[160];
+		const char *eq;
+		const char *v;
+		int user;
+
+		if (n >= sizeof(line)) n = sizeof(line) - 1;
+		memcpy(line, p, n);
+		line[n] = 0;
+		p = nl ? nl + 1 : p + n;
+		if (line[0] == '#' || line[0] == 0) continue;
+
+		eq = strstr(line, " = ");
+		if (eq == NULL) continue;
+		line[eq - line] = 0;
+		user = config_key_scope(line) == CONFIG_SCOPE_USER;
+		if (side == BIG_USER && !user) continue;
+		if (side == BIG_CONSOLE && user) continue;
+
+		(*want)++;
+		v = config_get(line);
+		if (v != NULL && strcmp(v, eq + 3) == 0) ok++;
+	}
+	return ok;
+}
+
+/* A config.txt of filler keys whose pool comes to `bytes`, give or take a key. */
+static void fill_config(u32 bytes)
+{
+	static char text[CONFIG_POOL_BYTES * 2];
+	u32 len = 0;
+	u32 pool = 0;
+	u32 i = 0;
+
+	text[0] = 0;
+	while (pool < bytes) {
+		char line[64];
+		u32 klen, need;
+
+		snprintf(line, sizeof(line), "fill.%05u", (unsigned)i++);
+		klen = (u32)strlen(line);
+		need = 1 + klen + 1 + 1 + 1;
+		if (pool + need > bytes) {
+			/* The last key pads to exactly `bytes`, with a longer value. */
+			u32 room = bytes - pool;
+			char value[64];
+			if (room < 1 + klen + 1 + 1) break;
+			memset(value, '7', sizeof(value));
+			value[room - (1 + klen + 1 + 1) < 31 ? room - (1 + klen + 1 + 1) : 31] = 0;
+			if (value[0] == 0) break;
+			len += (u32)snprintf(text + len, sizeof(text) - len, "%s = %s\n", line, value);
+			pool += 1 + klen + 1 + (u32)strlen(value) + 1;
+			continue;
+		}
+		len += (u32)snprintf(text + len, sizeof(text) - len, "%s = 1\n", line);
+		pool += need;
+	}
+	spill(QWARK_CONFIG, text);
+}
+
+static int same_file(const char *path, const char *text)
+{
+	static char now[BIG_MAX];
+	if (slurp(path, now, sizeof(now)) < 0) return text == NULL;
+	return text != NULL && strcmp(now, text) == 0;
+}
+
+static void test_big_config(void)
+{
+	static char before_cfg[BIG_MAX];
+	static char before_pos[PR_FILE_MAX];
+	static char snap[BIG_MAX];
+	int had_cfg, had_pos;
+	int changed = 0;
+	u32 want = 0;
+	u32 got;
+	char msg[160];
+
+	had_cfg = slurp(QWARK_CONFIG, before_cfg, sizeof(before_cfg)) >= 0;
+	had_pos = slurp(QWARK_POSDIR "/rac1.txt", before_pos, sizeof(before_pos)) >= 0;
+	forget_profile("user-00000001");
+	forget_profile("user-00000002");
+	forget_profile("user-00000003");
+	host_set_has_users(1);
+	host_set_user(1);
+	if (session_state() != SESSION_XMB) quit();
+	config_profile_resolve(0, PROFILE_SETUP_NONE);
+
+	big_build();
+	spill(QWARK_CONFIG, g_big);
+	spill(QWARK_POSDIR "/rac1.txt", "5.2 = 0102030405\n");
+
+	group("profiles: a config.txt of everything qwark writes");
+	snprintf(msg, sizeof(msg), "the file is %u keys, %u of them per user: far past the old table's 64",
+	         (unsigned)g_big_keys, (unsigned)g_big_user);
+	check(g_big_keys > 200 && g_big_user > 180, msg);
+	snprintf(msg, sizeof(msg), "and %u bytes of pool, %u bytes of file, inside the pool's %u",
+	         (unsigned)g_big_pool, (unsigned)g_big_len, (unsigned)CONFIG_POOL_BYTES);
+	check(g_big_pool + 512 < CONFIG_POOL_BYTES, msg);
+	check(config_load() == ST_OK, "it loads whole");
+	got = big_reads_back(BIG_ALL, &want);
+	check_eq_u64(got, want, "every key reads back with its value");
+	check(config_set_u32("pr.extra", 1) == ST_OK, "and there is room for more");
+
+	group("profiles: on, with a copy of all of it");
+	check(config_profiles_enable(1, PROFILE_SETUP_COPY, 1, &changed) == ST_OK && changed,
+	      "PROFILE_ENABLE(1, COPY) is OK, where it was FULL");
+	check(config_profile_active() && config_profile_exists(1) && config_profiles_enabled(),
+	      "user 1's profile is made and active, the switch on");
+	got = big_lines_in(QWARK_PROFILEDIR "/user-00000001/config.txt", BIG_USER, &want);
+	check_eq_u64(got, want, "every per-user line is in the profile's config.txt");
+	got = big_lines_in(QWARK_PROFILEDIR "/user-00000001/config.txt", BIG_CONSOLE, &want);
+	check_eq_u64(got, 0, "and none of the console's");
+	got = big_lines_in(QWARK_CONFIG, BIG_ALL, &want);
+	check_eq_u64(got, want, "config.txt still has every line it had");
+	check(has_line(QWARK_CONFIG, "profiles.enabled = 1"), "and the switch");
+	got = big_reads_back(BIG_ALL, &want);
+	check_eq_u64(got, want, "every key reads the same through the profile");
+	check(has_line(QWARK_PROFILEDIR "/user-00000001/positions/rac1.txt", "5.2 = 0102030405"),
+	      "and the positions came too");
+
+	group("profiles: writes with all of it in");
+	check(config_set_feature_auto("NPEA00423", "HUD colour", 0x80000001u) == ST_OK &&
+	      has_line(QWARK_PROFILEDIR "/user-00000001/config.txt", "NPEA00423.auto.hud_colour = 2147483649"),
+	      "a colour kept for the boot goes into the profile");
+	check(config_set_u32("log", 0) == ST_OK && has_line(QWARK_CONFIG, "log = 0"),
+	      "a console key into config.txt");
+	got = big_lines_in(QWARK_CONFIG, BIG_USER, &want);
+	check_eq_u64(got, want, "which carries the console's own per-user lines through the write");
+	check(has_line(QWARK_CONFIG, "NPEA00423.auto.hud_colour = 2181038079"),
+	      "the console's colour among them, not user 1's");
+	config_set_u32("log", 1);
+	{
+		u8 a;
+		int ok = 1;
+		for (a = 0; a < COMBO_COUNT; a++)
+			if (config_set_combo_override(a, 1, 0x1000u + a) != ST_OK || !config_combo_overridden(a)) ok = 0;
+		check(ok, "COMBO_OVERRIDE on all seven combos");
+		for (a = 0; a < COMBO_COUNT; a++)
+			if (config_set_combo_override(a, 0, 0) != ST_OK || config_combo_overridden(a)) ok = 0;
+		check(ok, "and off all seven again");
+	}
+
+	group("profiles: switching between two users who each have all of it");
+	host_set_user(2);
+	xmb_second();
+	check(config_profile_user() == 2 && !config_profile_exists(2), "user 2 at the XMB, not made");
+	check(config_profiles_enable(1, PROFILE_SETUP_COPY, 2, &changed) == ST_OK && config_profile_exists(2),
+	      "user 2 takes a copy too");
+	config_set_feature_auto("NPEA00423", "HUD colour", 0x80000002u);
+	host_set_user(1);
+	xmb_second();
+	host_set_user(2);
+	xmb_second();
+	host_set_user(1);
+	xmb_second();
+	check(config_profile_user() == 1 && config_feature_auto("NPEA00423", "HUD colour") == 0x80000001u,
+	      "user 1 back, with their own colour");
+	got = big_reads_back(BIG_CONSOLE, &want);
+	check_eq_u64(got, want, "and the console's keys");
+	check(config_set_u32("selected.slot", 4) == ST_OK, "with room to write");
+	got = big_lines_in(QWARK_PROFILEDIR "/user-00000002/config.txt", BIG_USER, &want);
+	check(got + 1 == want && has_line(QWARK_PROFILEDIR "/user-00000002/config.txt",
+	      "NPEA00423.auto.hud_colour = 2147483650"), "user 2's profile is whole, their colour in it");
+
+	group("profiles: off again, all of it back");
+	check(config_profiles_enable(0, 0, 1, &changed) == ST_OK && !config_profile_active(),
+	      "PROFILE_ENABLE(0) turns it off");
+	got = big_reads_back(BIG_USER, &want);
+	check_eq_u64(got, want, "every per-user key is the console's again");
+	got = big_lines_in(QWARK_CONFIG, BIG_ALL, &want);
+	check_eq_u64(got, want, "and config.txt has every line it started with");
+
+	group("profiles: a setup that fails leaves nothing");
+	slurp(QWARK_CONFIG, snap, sizeof(snap));
+	spill(QWARK_PROFILEDIR "/user-00000003", "not a folder");
+	host_set_user(3);
+	check(config_profiles_enable(1, PROFILE_SETUP_COPY, 3, &changed) == ST_IO_ERROR,
+	      "a profile whose folder cannot be made is IO_ERROR");
+	check(!config_profile_active() && !config_profiles_enabled() && !config_profile_exists(3),
+	      "no profile, the switch off");
+	check(same_file(QWARK_CONFIG, snap), "config.txt exactly as it was");
+	got = big_reads_back(BIG_USER, &want);
+	check_eq_u64(got, want, "and the console's settings all there");
+	plat_file_unlink(QWARK_PROFILEDIR "/user-00000003");
+
+	plat_dir_create(QWARK_PROFILEDIR "/user-00000003");
+	spill(QWARK_PROFILEDIR "/user-00000003/positions", "not a folder");
+	check(config_profiles_enable(1, PROFILE_SETUP_COPY, 3, &changed) == ST_IO_ERROR,
+	      "a copy whose positions cannot be written is IO_ERROR");
+	check(!config_profile_active() && !config_profiles_enabled() && !config_profile_exists(3) &&
+	      !exists(QWARK_PROFILEDIR "/user-00000003/config.txt"),
+	      "and takes away the config.txt it had written");
+	check(same_file(QWARK_CONFIG, snap), "config.txt exactly as it was");
+	plat_file_unlink(QWARK_PROFILEDIR "/user-00000003/positions");
+	plat_dir_remove(QWARK_PROFILEDIR "/user-00000003");
+	host_set_user(1);
+
+	group("profiles: a config.txt with no room for the switch");
+	fill_config(CONFIG_POOL_BYTES - 1);
+	slurp(QWARK_CONFIG, snap, sizeof(snap));
+	check(config_load() == ST_OK, "a config.txt that fills the pool to the byte loads");
+	check(config_profiles_enable(1, PROFILE_SETUP_FRESH, 1, &changed) == ST_FULL,
+	      "PROFILE_ENABLE is FULL");
+	check(!config_profile_active() && !config_profiles_enabled(), "with nothing active and the switch off");
+	check(same_file(QWARK_CONFIG, snap), "and config.txt as it was");
+
+	group("profiles: a config.txt bigger than the pool");
+	fill_config(CONFIG_POOL_BYTES + 600);
+	slurp(QWARK_CONFIG, snap, sizeof(snap));
+	check(config_load() == ST_FULL, "loads what fits and says FULL");
+	check(config_get("fill.00000") != NULL, "what fits reads");
+	check(config_set_u32("fill.00000", 2) == ST_FULL && config_save() == ST_FULL,
+	      "every write is FULL, even to a key it holds");
+	check(config_profiles_enable(1, PROFILE_SETUP_COPY, 1, &changed) == ST_FULL,
+	      "PROFILE_ENABLE too");
+	check(same_file(QWARK_CONFIG, snap), "so the part that did not fit is never cut out of the file");
+
+	/* Back as it was. */
+	config_profile_resolve(0, PROFILE_SETUP_NONE);
+	if (had_cfg) spill(QWARK_CONFIG, before_cfg); else plat_file_unlink(QWARK_CONFIG);
+	if (had_pos) spill(QWARK_POSDIR "/rac1.txt", before_pos); else plat_file_unlink(QWARK_POSDIR "/rac1.txt");
+	config_load();
+	forget_profile("user-00000001");
+	forget_profile("user-00000002");
+	forget_profile("user-00000003");
+	group("profiles: the HDD put back after the big config");
+	check(!config_profile_active() && !config_profiles_enabled(), "no profile, the switch off");
+}
+
 void test_profiles(void)
 {
 	test_scopes();
 	test_flow();
+	test_big_config();
 }

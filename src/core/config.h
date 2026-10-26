@@ -67,34 +67,41 @@
 #define CONFIG_VAL_MAX  32
 
 /*
- * What one config.txt holds. It was 128 until build 37.
+ * Build 56: what the key store holds, in bytes rather than in keys.
  *
- * What a title actually writes: the six combo masks, the combo switch, the
- * selected slot, the selected planet and its flags, and `log` and
- * `savefile_helper` - eleven keys - plus one key per feature auto flag and one
- * per mod auto flag, and those two are only written when a user ticks the box.
- * The shipped mod library's busiest title has five mods, and a user who
- * auto-flagged a dozen features in each of the four games is still inside 64.
- * Revision 1.21 adds at most three manip keys per game played, written only
- * when the user changes a manip option or picks a category. Build 53 keeps the
- * selected planet and its flags per game, two keys per game played and eight
- * at most, and a file from before then keeps the console's old pair beside
- * them: the four games' manips and selections together are twenty of the 64.
- * Revision 1.23 adds two console-wide keys, the seventh combo mask and
- * `menu.help`, each written only once a client sets it.
+ * Until build 56 the store was a table of CONFIG_MAX_ENTRIES (64) slots, each
+ * a full CONFIG_KEY_MAX key and CONFIG_VAL_MAX value, and the settings profiles
+ * had a second table like it. A console that had been used for a while held
+ * more than 64 keys: the auto flags of every toggle and colour in four games,
+ * a flag per mod, the manips and the selections. A file with more keys than
+ * the table loaded the first 64 and the next write cut the rest out of it, a
+ * new key was ST_FULL (PROFILE_ENABLE's `profiles.enabled` among them, which
+ * is how build 56 found it), and a toggle's or a mod's auto flag was quietly
+ * not kept.
+ *
+ * Now every key is packed into one pool, "<store><key>\0<value>\0", where
+ * <store> says whose file it is (the console's config.txt or the active
+ * profile's), so a key costs its own length and not the widest one's. While a
+ * profile is active the console's per-user keys are not held at all: they stay
+ * in config.txt, which every write of it carries over from the old file
+ * (config.c, store_save), so the pool holds one set of per-user keys,
+ * whichever is in use, and a COPY reads them out of the file rather than
+ * doubling them.
+ *
+ * What qwark itself can write is bounded: the fixed keys (the combos and their
+ * switch, the menu's, the selections and manips of four games, `log`,
+ * `savefile_helper`, `profiles.enabled`), the auto flag of every toggle and
+ * colour under every title id the four games answer to, and a mod library of
+ * QWARK_MAX_MODS mods with the longest dirnames on each of the four games'
+ * own titles. test/test_profiles.c builds exactly that file, from the games'
+ * own tables: 231 keys, 220 of them per user, 10,416 bytes of pool; 12 KB
+ * holds it with room to spare. The pool's last byte is always 0.
+ *
+ * A file the pool cannot hold all of (a hand-edited one) loads as much as
+ * fits, and its store is then never written back: every write to it answers
+ * ST_FULL rather than cut the file down to what was read.
  */
-#define CONFIG_MAX_ENTRIES 64
-
-/*
- * config.txt is read whole, and config_save writes one line per entry, so the
- * file qwark itself can produce is bounded: CONFIG_MAX_ENTRIES lines of a key, a
- * " = ", a value and a newline. This is that bound with the 8 bytes config_save
- * already budgets per line, so a config qwark wrote always reads back. A file
- * larger than this - a hand-edited one - makes qread_file answer ST_FULL and
- * config_load hand that back without applying any of it, exactly as it did when
- * this was a flat 16384.
- */
-#define CONFIG_TEXT_MAX (CONFIG_MAX_ENTRIES * (CONFIG_KEY_MAX + CONFIG_VAL_MAX + 8) + 1)
+#define CONFIG_POOL_BYTES 12288
 
 /* Creates the directory tree and reads config.txt. */
 int  config_init(void);
@@ -183,9 +190,10 @@ u32  config_feature_auto_default(const char *title, const char *label, int fallb
  */
 u32  config_feature_auto_former(const char *title, const char *label, const char *former,
                                 int fallback);
-void config_set_feature_auto(const char *title, const char *label, u32 value);
+/* Build 56: both answer the write's status, ST_FULL with no room, as config_set does. */
+int  config_set_feature_auto(const char *title, const char *label, u32 value);
 int  config_mod_auto(const char *title, const char *dirname);
-void config_set_mod_auto(const char *title, const char *dirname, int on);
+int  config_set_mod_auto(const char *title, const char *dirname, int on);
 
 /*
  * Revision 1.21, the manip options of one game: "manip.<game>.<field>", where
@@ -239,6 +247,18 @@ int  config_set_profiles_enabled(u8 on);
  * never in a game (session.c); PROFILE_ENABLE, at once, in any state.
  */
 int  config_profile_resolve(u32 user, u8 setup);
+
+/*
+ * PROFILE_ENABLE (build 56): `profiles.enabled` written, then the resolver run
+ * for `user` with `setup`, all or nothing. A config.txt with no room for the
+ * switch answers ST_FULL and changes nothing. A setup that cannot finish (a
+ * folder that cannot be made, a file that cannot be written) takes away the
+ * profile it began, leaves config.txt as it was, the switch included, and
+ * answers why. `*changed` is 1 when the session should read the auto flags
+ * again (session_profile_changed). `on` (0 or 1) and `setup` are the
+ * caller's to check (net.c); the caller holds the core lock.
+ */
+int  config_profiles_enable(u8 on, u8 setup, u32 user, int *changed);
 
 int  config_profile_active(void);          /* per-user keys come from a profile now */
 u32  config_profile_user(void);            /* the active profile's user, 0 none */

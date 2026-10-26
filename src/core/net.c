@@ -1802,12 +1802,13 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	 */
 	case OP_PROFILE_ENABLE: {
 		u16 rc;
+		int changed = 0;
 		if (reqlen < 2 || req[0] > 1 || req[1] > PROFILE_SETUP_FRESH) return ST_BAD_ARG;
 		if (!plat_has_users()) return ST_UNSUPPORTED;
 		core_lock();
-		rc = (u16)config_set_profiles_enabled(req[0]);
-		if (rc == ST_OK && config_profile_resolve(plat_user_id(), req[0] ? req[1] : 0))
-			session_profile_changed();
+		/* Build 56: all or nothing, the switch and the setup (config.h). */
+		rc = (u16)config_profiles_enable(req[0], req[1], plat_user_id(), &changed);
+		if (changed) session_profile_changed();
 		core_unlock();
 		return rc;
 	}

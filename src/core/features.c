@@ -263,7 +263,11 @@ int features_set_auto_value(u8 id, int on, u32 value)
 	 */
 	if ((f->flags & FEATURE_FLAG_LIVE) != 0) return ST_UNSUPPORTED;
 
-	config_set_feature_auto(g_title, f->label, keep);
+	/* Build 56: a flag config.txt has no room for is refused, not reported kept. */
+	{
+		int rc = config_set_feature_auto(g_title, f->label, keep);
+		if (rc != ST_OK) return rc;
+	}
 
 	if (on) g_toggle_auto |= (u64)1 << id;
 	else    g_toggle_auto &= ~((u64)1 << id);

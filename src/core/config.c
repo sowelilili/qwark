@@ -5,8 +5,7 @@
 
 #include <string.h>
 
-/* CONFIG_MAX_ENTRIES and CONFIG_TEXT_MAX are in config.h, beside the key and
- * value widths they are derived from. */
+/* CONFIG_POOL_BYTES is in config.h, with what it is sized for. */
 
 /*
  * positions/<game>.txt. A line is "<planet>.<slot> = <hex>\n": a planet index,
@@ -26,26 +25,36 @@
 #define POS_LINE_MAX       (3 + 1 + 1 + 3 + 2 * QWARK_MAX_BLOB + 1)
 #define POS_TEXT_MAX       (POS_MAX_ENTRIES * POS_LINE_MAX + 2)
 
-struct kv {
-	char key[CONFIG_KEY_MAX];
-	char value[CONFIG_VAL_MAX];
-	u8   used;
-};
+/*
+ * Build 56: the key store (config.h, CONFIG_POOL_BYTES). Every key of both
+ * files is one entry in g_pool: a byte naming the store, the key and its NUL,
+ * the value and its NUL, packed one after another in the order they were
+ * first put. A store is the file its keys go back to: STORE_CONSOLE is
+ * config.txt, STORE_PROFILE the active profile's config.txt.
+ *
+ * Every write is under the core lock (util.h's rule for the text buffer, which
+ * the config ops and the tick thread keep). A read outside it can see a value
+ * move under it; every walk stops at the pool's end, and the pool is followed
+ * by three bytes that are always 0, so that costs a stale answer and never a
+ * read past the end.
+ */
+#define STORE_CONSOLE 0
+#define STORE_PROFILE 1
+#define KV_NONE       0xFFFFFFFFu
 
-static struct kv g_kv[CONFIG_MAX_ENTRIES];
-static u32 g_version;
+static char g_pool[CONFIG_POOL_BYTES + 3];
+static u32  g_pool_used;
+/*
+ * A store whose file did not all fit, or did not all read: it is never written
+ * back, so the part that was not read is never cut out of the file.
+ */
+static u8   g_over[2];
+static u32  g_version;
 
 #if QWARK_PREVIEW
-/*
- * Revision 1.24. The active profile's config.txt, the same shape as the
- * console's: a profile holds only per-user keys and combo overrides, which are
- * at most what the console's file holds of them.
- */
-static struct kv g_pkv[CONFIG_MAX_ENTRIES];
-
 /* Revision 1.24. The active profile (config.h, the resolver). */
 static struct {
-	u8   active;    /* per-user keys come from g_pkv */
+	u8   active;    /* per-user keys come from STORE_PROFILE */
 	u8   exists;    /* its folder and config.txt have been made */
 	u8   seq;       /* SessionInfo byte 30 */
 	u8   pad;
@@ -61,11 +70,19 @@ static char g_pos_title[16];
 /*
  * config.txt and the positions file are read into the core's shared text buffer
  * (util.h), under the core lock like every other user of it, rather than into
- * two buffers of their own. gnu99, so no _Static_assert: a cap that outgrew that
+ * buffers of their own. gnu99, so no _Static_assert: a cap that outgrew that
  * buffer fails the build here rather than running off the end of it.
+ *
+ * Since build 56 config.txt's cap is the buffer itself, QTEXT_BYTES: the file
+ * the pool can write is the pool's bytes plus one more a line (" = " and the
+ * newline where the pool has a store byte and two NULs), and an entry is at
+ * least four pool bytes, so the file is at most 5/4 of the pool. While a
+ * profile is active config.txt also carries the console's per-user lines,
+ * which came out of the same pool when it went active; a file that has grown
+ * past the buffer even so is refused whole (ST_FULL) and never cut down.
  */
-typedef char config_text_fits[CONFIG_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
 typedef char pos_text_fits[POS_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
+typedef char config_text_fits[CONFIG_POOL_BYTES / 4 * 5 < QTEXT_BYTES - 1 ? 1 : -1];
 
 static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.save",
@@ -82,32 +99,81 @@ static const char g_combo_enabled_key[] = "combo.enabled";
 
 /* ------------------------------------------------------------------ store */
 
-static struct kv *kv_find(struct kv *t, const char *key)
+/* The entry after the one at `off`. */
+static u32 kv_next(u32 off)
 {
-	int i;
-	for (i = 0; i < CONFIG_MAX_ENTRIES; i++) {
-		if (t[i].used && qstreq(t[i].key, key)) return &t[i];
-	}
-	return NULL;
+	off += 1 + qstrlen(g_pool + off + 1) + 1;
+	return off + qstrlen(g_pool + off) + 1;
 }
 
-static int kv_put(struct kv *t, const char *key, const char *value)
+static u32 kv_find(u8 store, const char *key)
 {
-	struct kv *e = kv_find(t, key);
-	int i;
+	u32 off;
 
-	if (e == NULL) {
-		for (i = 0; i < CONFIG_MAX_ENTRIES; i++) {
-			if (!t[i].used) { e = &t[i]; break; }
-		}
-		if (e == NULL) return ST_FULL;
-		e->used = 1;
-		qstrcpy(e->key, sizeof(e->key), key);
+	for (off = 0; off < g_pool_used && off < CONFIG_POOL_BYTES; off = kv_next(off)) {
+		if ((u8)g_pool[off] == store + 1 && qstreq(g_pool + off + 1, key)) return off;
 	}
+	return KV_NONE;
+}
 
-	qstrcpy(e->value, sizeof(e->value), value);
+static const char *kv_get(u8 store, const char *key)
+{
+	u32 off = kv_find(store, key);
+	return off == KV_NONE ? NULL : g_pool + off + 2 + qstrlen(g_pool + off + 1);
+}
+
+/*
+ * The `cut` bytes at `at` replaced by `n` bytes of `src`, the rest of the pool
+ * moved up or down behind them. ST_FULL, with nothing changed, when that would
+ * run past the pool. What a shrink leaves past the end is old entries, NULs
+ * and all, and the guard bytes are never written.
+ */
+static int pool_splice(u32 at, u32 cut, const char *src, u32 n)
+{
+	u32 used = g_pool_used;
+
+	if (used - cut + n > CONFIG_POOL_BYTES) return ST_FULL;
+	memmove(g_pool + at + n, g_pool + at + cut, used - at - cut);
+	memcpy(g_pool + at, src, n);
+	g_pool_used = used - cut + n;
 	g_version++;
 	return ST_OK;
+}
+
+/* Every key of one store out of the pool. */
+static void kv_clear(u8 store)
+{
+	u32 off = 0;
+
+	while (off < g_pool_used) {
+		if ((u8)g_pool[off] == store + 1) pool_splice(off, kv_next(off) - off, "", 0);
+		else off = kv_next(off);
+	}
+}
+
+/*
+ * A key and value are cut at CONFIG_KEY_MAX - 1 and CONFIG_VAL_MAX - 1
+ * characters, as the slot table cut them. A new key goes at the end; a key
+ * already there keeps its place, so the file keeps its order. ST_FULL, with
+ * nothing changed, when the pool has no room, or for a store that did not load
+ * whole (g_over), whose file is never written again.
+ */
+static int kv_put(u8 store, const char *key, const char *value)
+{
+	char e[1 + CONFIG_KEY_MAX + CONFIG_VAL_MAX];
+	u32 n;
+	u32 off;
+
+	if (g_over[store]) return ST_FULL;
+	e[0] = (char)(store + 1);
+	qstrcpy(e + 1, CONFIG_KEY_MAX, key);
+	n = 1 + qstrlen(e + 1) + 1;
+	qstrcpy(e + n, CONFIG_VAL_MAX, value);
+	n += qstrlen(e + n) + 1;
+
+	off = kv_find(store, e + 1);
+	if (off == KV_NONE) return pool_splice(g_pool_used, 0, e, n);
+	return pool_splice(off, kv_next(off) - off, e, n);
 }
 
 /* ------------------------------------------------------------ key scopes */
@@ -164,23 +230,17 @@ int config_key_scope(const char *key)
  */
 const char *config_get(const char *key)
 {
-	struct kv *e;
-
 #if QWARK_PREVIEW
 	if (g_prof.active) {
 		int scope = config_key_scope(key);
-		if (scope == CONFIG_SCOPE_USER) {
-			e = kv_find(g_pkv, key);
-			return e ? e->value : NULL;
-		}
+		if (scope == CONFIG_SCOPE_USER) return kv_get(STORE_PROFILE, key);
 		if (scope == CONFIG_SCOPE_COMBO) {
-			e = kv_find(g_pkv, key);
-			if (e != NULL) return e->value;
+			const char *v = kv_get(STORE_PROFILE, key);
+			if (v != NULL) return v;
 		}
 	}
 #endif
-	e = kv_find(g_kv, key);
-	return e ? e->value : NULL;
+	return kv_get(STORE_CONSOLE, key);
 }
 
 u32 config_version(void)
@@ -208,13 +268,13 @@ int config_set(const char *key, const char *value)
 	if (g_prof.active && config_key_scope(key) == CONFIG_SCOPE_USER) {
 		rc = profile_make();
 		if (rc != ST_OK) return rc;
-		rc = kv_put(g_pkv, key, value);
+		rc = kv_put(STORE_PROFILE, key, value);
 		if (rc != ST_OK) return rc;
 		return profile_save();
 	}
 #endif
 
-	rc = kv_put(g_kv, key, value);
+	rc = kv_put(STORE_CONSOLE, key, value);
 	if (rc != ST_OK) return rc;
 	return global_save();
 }
@@ -292,29 +352,47 @@ static int qfile_read(const char *path, char *buf, u32 cap, u32 *len)
 	return qread_file(tmp, buf, cap, len);
 }
 
-/* One "key = value" file into a table, which is emptied first whatever the file is. */
-static int store_load(struct kv *t, const char *path)
+/*
+ * Which of a file's keys a load keeps. LOAD_ALL every one; while a profile is
+ * active the console's store is LOAD_CONSOLE_SIDE, everything but the per-user
+ * keys, which stay in config.txt (store_save carries them), and a COPY is
+ * LOAD_USER_SIDE, the per-user keys alone.
+ */
+#define LOAD_ALL          0
+#define LOAD_CONSOLE_SIDE 1
+#define LOAD_USER_SIDE    2
+
+/*
+ * One "key = value" file into a store, which is emptied first whatever the
+ * file is, read whole into the core's text buffer like the positions file.
+ * ST_NOT_FOUND for no file. A file the pool (or that buffer) cannot hold all
+ * of answers ST_FULL, one that does not read ST_IO_ERROR, and either leaves
+ * the store marked (g_over) so that it is never written back over the file.
+ */
+static int store_load(u8 store, const char *path, int which)
 {
 	char *text = qtext();
 	char *cursor;
 	char *line;
-	u32 len = 0;
 	int rc;
 
-	memset(t, 0, CONFIG_MAX_ENTRIES * sizeof(struct kv));
-	g_version++;
+	kv_clear(store);
+	g_over[store] = 0;
 
-	rc = qfile_read(path, text, CONFIG_TEXT_MAX, &len);
-	if (rc != ST_OK) return rc;
+	rc = qfile_read(path, text, QTEXT_BYTES, NULL);
+	if (rc == ST_NOT_FOUND) return rc;
+	if (rc != ST_OK) {
+		g_over[store] = 1;
+		return rc;
+	}
 
 	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
 		char *eq;
 		char *key;
-		char *value;
 
 		line = qtrim(line);
-		if (line[0] == 0 || line[0] == '#') continue;
+		if (line[0] == '#') continue;
 
 		eq = line;
 		while (*eq != 0 && *eq != '=') eq++;
@@ -322,36 +400,99 @@ static int store_load(struct kv *t, const char *path)
 
 		*eq = 0;
 		key = qtrim(line);
-		value = qtrim(eq + 1);
-
 		if (key[0] == 0) continue;
-		kv_put(t, key, value);
+#if QWARK_PREVIEW
+		if (which != LOAD_ALL &&
+		    (config_key_scope(key) == CONFIG_SCOPE_USER) != (which == LOAD_USER_SIDE))
+			continue;
+#endif
+		if (kv_put(store, key, qtrim(eq + 1)) != ST_OK) g_over[store] = 1;
 	}
-	return ST_OK;
+	return g_over[store] ? ST_FULL : ST_OK;
 }
 
-static int store_save(const struct kv *t, const char *path)
+/*
+ * How much of the core's text buffer store_save has filled, QTEXT_BYTES once it
+ * has run past the end, and a string onto the end of it.
+ */
+static u32 g_put;
+
+static void text_put(const char *s)
 {
+	u32 n = qstrlen(s);
+
+	if (g_put + n >= QTEXT_BYTES) {
+		g_put = QTEXT_BYTES;
+		return;
+	}
+	memmove(qtext() + g_put, s, n);
+	g_put += n;
+}
+
+/*
+ * A store into its file, built whole in the core's text buffer and written in
+ * one go. ST_FULL, and the file as it was, for a store that did not load
+ * whole (writing it would cut out of the file what was not read) or a file
+ * that would not fit the buffer.
+ *
+ * `carry`: while a profile is active, config.txt's per-user lines are the
+ * console's own settings, which are not in the pool (LOAD_CONSOLE_SIDE), so the
+ * write carries them over from the file it replaces: the old file is read into
+ * the buffer (a cut-off write's ".new" when there is no other, qfile_read), its
+ * per-user lines kept where they are, as they were written, and the rest of it
+ * dropped, and the pool's keys follow them. An old file that does not read
+ * leaves the file as it is.
+ */
+static int store_save(u8 store, const char *path, int carry)
+{
+	char *text = qtext();
 	plat_file_t f;
-	int i;
-	int ok = 1;
+	u32 off;
+
+	if (g_over[store]) return ST_FULL;
+	g_put = 0;
+#if QWARK_PREVIEW
+	if (carry) {
+		char *cursor = text;
+		char *line;
+		int rc = qfile_read(path, text, QTEXT_BYTES, NULL);
+
+		if (rc != ST_OK && rc != ST_NOT_FOUND) return rc;
+		/* Each line kept is no longer than the line it was, so it never overtakes the reading. */
+		while ((line = qnext_line(&cursor)) != NULL) {
+			char *end;
+			char c;
+			int user;
+
+			line = qtrim(line);
+			end = line;
+			while (*end != 0 && *end != '=') end++;
+			if (*end != '=') continue;
+			while (end > line && (end[-1] == ' ' || end[-1] == '\t')) end--;
+			c = *end;
+			*end = 0;
+			user = config_key_scope(line) == CONFIG_SCOPE_USER;
+			*end = c;
+			if (!user) continue;
+			text_put(line);
+			text_put("\n");
+		}
+	}
+#else
+	(void)carry;
+#endif
+
+	for (off = 0; off < g_pool_used; off = kv_next(off)) {
+		if ((u8)g_pool[off] != store + 1) continue;
+		text_put(g_pool + off + 1);
+		text_put(" = ");
+		text_put(g_pool + off + 2 + qstrlen(g_pool + off + 1));
+		text_put("\n");
+	}
+	if (g_put >= QTEXT_BYTES) return ST_FULL;
 
 	if (file_begin(path, &f) != ST_OK) return ST_IO_ERROR;
-
-	for (i = 0; i < CONFIG_MAX_ENTRIES && ok; i++) {
-		char line[CONFIG_KEY_MAX + CONFIG_VAL_MAX + 8];
-		if (!t[i].used) continue;
-
-		line[0] = 0;
-		qstrcat(line, sizeof(line), t[i].key);
-		qstrcat(line, sizeof(line), " = ");
-		qstrcat(line, sizeof(line), t[i].value);
-		qstrcat(line, sizeof(line), "\n");
-
-		if (plat_file_write(f, line, qstrlen(line)) != 0) ok = 0;
-	}
-
-	return file_end(path, f, ok);
+	return file_end(path, f, g_put == 0 || plat_file_write(f, text, g_put) == 0);
 }
 
 #if QWARK_PREVIEW
@@ -371,7 +512,11 @@ static void profile_path(const char *folder, const char *leaf, char *out, u32 ca
 
 static int global_save(void)
 {
-	return store_save(g_kv, QWARK_CONFIG);
+#if QWARK_PREVIEW
+	return store_save(STORE_CONSOLE, QWARK_CONFIG, g_prof.active);
+#else
+	return store_save(STORE_CONSOLE, QWARK_CONFIG, 0);
+#endif
 }
 
 #if QWARK_PREVIEW
@@ -382,40 +527,51 @@ static int profile_save(void)
 
 	if (!g_prof.active || !g_prof.exists) return ST_OK;
 	profile_path(g_prof.folder, "config.txt", path, sizeof(path));
-	return store_save(g_pkv, path);
+	return store_save(STORE_PROFILE, path, 0);
 }
 
-/* The active profile's config.txt into g_pkv; nothing for one never made. */
+/*
+ * The active profile's config.txt into its store; nothing for one never made.
+ * One the pool cannot hold all of reads what fits and is never written back.
+ */
 static void profile_load(void)
 {
 	char path[FILE_PATH_MAX];
 
-	memset(g_pkv, 0, sizeof(g_pkv));
-	g_version++;
+	kv_clear(STORE_PROFILE);
+	g_over[STORE_PROFILE] = 0;
 	if (!g_prof.active || !g_prof.exists) return;
 	profile_path(g_prof.folder, "config.txt", path, sizeof(path));
-	store_load(g_pkv, path);   /* one too big to read leaves every key unset, as config.txt does */
+	store_load(STORE_PROFILE, path, LOAD_ALL);
 }
 #endif /* QWARK_PREVIEW */
 
 int config_load(void)
 {
-	int rc = store_load(g_kv, QWARK_CONFIG);
+	int rc;
+
+#if QWARK_PREVIEW
+	rc = store_load(STORE_CONSOLE, QWARK_CONFIG, g_prof.active ? LOAD_CONSOLE_SIDE : LOAD_ALL);
 
 	/*
 	 * Revision 1.24. CONFIG_RELOAD re-reads the active profile with the
 	 * console's file, and says so in the profile sequence. Whether the switch
 	 * itself changed by hand is the XMB's to act on (session.c), never a game's.
 	 */
-#if QWARK_PREVIEW
 	if (g_prof.active) {
 		profile_load();
 		g_prof.seq++;
 	}
+#else
+	rc = store_load(STORE_CONSOLE, QWARK_CONFIG, LOAD_ALL);
 #endif
 
-	if (rc != ST_OK) {
-		plat_log_enable(1);   /* no file, so the default applies */
+	/*
+	 * No file, or one that did not read: the defaults apply. A file the pool
+	 * could not hold all of still applies what it read, and answers ST_FULL.
+	 */
+	if (rc != ST_OK && rc != ST_FULL) {
+		plat_log_enable(1);
 		return rc;
 	}
 
@@ -428,7 +584,7 @@ int config_load(void)
 	/* savefile_helper = 0: never write the savefile helper into a game. */
 	savefile_set_enabled((int)config_get_u32("savefile_helper", 1));
 
-	return ST_OK;
+	return rc;
 }
 
 /* Both files: the console's, and the active profile's when it has been made. */
@@ -649,11 +805,11 @@ u32 config_feature_auto_former(const char *title, const char *label, const char 
 	return config_feature_auto_default(title, label, fallback);
 }
 
-void config_set_feature_auto(const char *title, const char *label, u32 value)
+int config_set_feature_auto(const char *title, const char *label, u32 value)
 {
 	char key[CONFIG_KEY_MAX];
 	feature_key(title, label, key, sizeof(key));
-	config_set_u32(key, value);
+	return config_set_u32(key, value);
 }
 
 int config_mod_auto(const char *title, const char *dirname)
@@ -663,11 +819,11 @@ int config_mod_auto(const char *title, const char *dirname)
 	return config_get_u32(key, 0) != 0;
 }
 
-void config_set_mod_auto(const char *title, const char *dirname, int on)
+int config_set_mod_auto(const char *title, const char *dirname, int on)
 {
 	char key[CONFIG_KEY_MAX];
 	mod_key(title, dirname, key, sizeof(key));
-	config_set_u32(key, on ? 1 : 0);
+	return config_set_u32(key, on ? 1 : 0);
 }
 
 /* ---------------------------------------------------------- manip options */
@@ -766,23 +922,49 @@ static int profile_make(void)
 }
 
 /*
- * PROFILE_ENABLE's COPY, into the profile just made: every per-user key of the
- * console's config.txt, and the console's four position files. The combos are
- * not copied: the console's are in force for every profile until it overrides
- * one. A position file that is not there, or does not read, is not copied.
+ * Build 56. What a setup writes into a profile's folder: the four position
+ * files and config.txt, which is what makes a profile made.
  */
-static void profile_copy_shared(void)
+static const char * const g_prof_files[5] = {
+	"positions/rac1.txt", "positions/rac2.txt", "positions/rac3.txt", "positions/rac4.txt",
+	"config.txt"
+};
+
+/*
+ * A setup that could not finish takes away every file it wrote, so no profile
+ * is left behind half-copied or empty and the next time the switch goes on
+ * the question is asked again. The empty folders it made can stay: a profile
+ * is made when its config.txt is there.
+ */
+static void profile_unmake(void)
 {
-	static const char * const games[4] = { "rac1", "rac2", "rac3", "rac4" };
-	char keep[sizeof(g_pos_title)];
+	char path[FILE_PATH_MAX];
 	int i;
 
-	for (i = 0; i < CONFIG_MAX_ENTRIES; i++) {
-		if (!g_kv[i].used) continue;
-		if (config_key_scope(g_kv[i].key) != CONFIG_SCOPE_USER) continue;
-		kv_put(g_pkv, g_kv[i].key, g_kv[i].value);
+	for (i = 0; i < 5; i++) {
+		profile_path(g_prof.folder, g_prof_files[i], path, sizeof(path));
+		plat_file_unlink(path);
 	}
-	profile_save();
+	g_prof.exists = 0;
+}
+
+/*
+ * PROFILE_ENABLE's COPY, into the profile just made: every per-user key of the
+ * console's config.txt, read from the file (while a profile is active they are
+ * not in the pool), and the console's four position files. The combos are not
+ * copied: the console's are in force for every profile until it overrides one.
+ * A position file that is not there, or does not read, copies as no slots.
+ * Anything but ST_OK, and the caller takes the profile away again.
+ */
+static int profile_copy_shared(void)
+{
+	char keep[sizeof(g_pos_title)];
+	int rc;
+	int i;
+
+	rc = store_load(STORE_PROFILE, QWARK_CONFIG, LOAD_USER_SIDE);
+	if (rc == ST_NOT_FOUND) rc = ST_OK;
+	if (rc == ST_OK) rc = profile_save();
 
 	/*
 	 * The slots, a game at a time, through the slot table itself: read with the
@@ -790,14 +972,15 @@ static void profile_copy_shared(void)
 	 * reads the running game's back once this is done.
 	 */
 	qstrcpy(keep, sizeof(keep), g_pos_title);
-	for (i = 0; i < 4; i++) {
-		qstrcpy(g_pos_title, sizeof(g_pos_title), games[i]);
+	for (i = 0; i < 4 && rc == ST_OK; i++) {
+		qstrcpy(g_pos_title, 5, g_prof_files[i] + 10);   /* "positions/rac1.txt": "rac1" */
 		g_prof.active = 0;
 		pos_load_file();
 		g_prof.active = 1;
-		pos_save_file();
+		rc = pos_save_file();
 	}
 	qstrcpy(g_pos_title, sizeof(g_pos_title), keep);
+	return rc;
 }
 
 int config_profiles_enabled(void)
@@ -811,40 +994,91 @@ int config_set_profiles_enabled(u8 on)
 	return config_set_u32("profiles.enabled", on);
 }
 
-int config_profile_resolve(u32 user, u8 setup)
+/*
+ * The resolver's work (config.h), for the switch as the pool has it: a
+ * PROFILE_ENABLE has written it first. `*changed` is 1 when the active profile
+ * changed, or was made, or a setup failed part-way. The status is the
+ * setup's: on anything but ST_OK no profile is active and nothing the setup
+ * began is left.
+ *
+ * The first profile to go active takes the console's per-user keys out of the
+ * pool: they are config.txt's and stay in it (store_save carries them), so the
+ * pool holds one set of per-user keys, whichever is in use. The last to go
+ * reads them back from the file.
+ */
+static int profile_switch(u32 user, u8 setup, int *changed)
 {
 	int want = plat_has_users() && config_profiles_enabled() && user_valid(user);
-	int make = 0;
+	int make = want && setup != PROFILE_SETUP_NONE && !config_profile_exists(user);
+	int was = g_prof.active;
+	int rc = ST_OK;
 
-	if (want && setup != PROFILE_SETUP_NONE && !config_profile_exists(user)) make = 1;
-
-	if (!make && want == g_prof.active && (!want || user == g_prof.user)) return 0;
+	*changed = 0;
+	if (!make && want == was && (!want || user == g_prof.user)) return ST_OK;
+	*changed = 1;
 
 	/* The slots go back to the file they came from before the folder changes. */
 	pos_save_file();
 
-	memset(g_pkv, 0, sizeof(g_pkv));
 	g_prof.active = 0;
-	g_prof.exists = 0;
-	g_prof.user = 0;
-	g_prof.folder[0] = 0;
-
 	if (want) {
+		/* config.txt's per-user keys out of the pool: the file keeps them. */
+		if (!was) store_load(STORE_CONSOLE, QWARK_CONFIG, LOAD_CONSOLE_SIDE);
 		g_prof.active = 1;
 		g_prof.user = user;
 		config_profile_folder_for(user, g_prof.folder, sizeof(g_prof.folder));
 		g_prof.exists = (u8)config_profile_exists(user);
 
-		if (make && profile_make() == ST_OK && setup == PROFILE_SETUP_COPY) profile_copy_shared();
-		profile_load();
+		if (make) {
+			rc = profile_make();
+			if (rc == ST_OK && setup == PROFILE_SETUP_COPY) rc = profile_copy_shared();
+			if (rc != ST_OK) {
+				profile_unmake();
+				g_prof.active = 0;
+			}
+		}
+	}
+	profile_load();   /* the store emptied, and the active profile's file read */
+	if (!g_prof.active) {
+		g_prof.user = 0;
+		g_prof.folder[0] = 0;
+		if (was || rc != ST_OK) store_load(STORE_CONSOLE, QWARK_CONFIG, LOAD_ALL);
 	}
 
 	pos_load_file();
 	g_prof.seq++;
 	g_version++;
 
-	plat_log("qwark: profile %s", want ? g_prof.folder : "off");
-	return 1;
+	plat_log("qwark: profile %s, %d", g_prof.active ? g_prof.folder : "off", rc);
+	return rc;
+}
+
+int config_profile_resolve(u32 user, u8 setup)
+{
+	int changed;
+
+	profile_switch(user, setup, &changed);
+	return changed;
+}
+
+int config_profiles_enable(u8 on, u8 setup, u32 user, int *changed)
+{
+	const char *was = config_profiles_enabled() ? "1" : "0";
+	int rc;
+
+	/* The switch first: a config.txt with no room for it changes nothing at all. */
+	*changed = 0;
+	rc = config_set_u32("profiles.enabled", on);
+	if (rc == ST_OK) rc = profile_switch(user, setup, changed);
+	if (rc != ST_OK) {
+		/*
+		 * Nothing of a setup that did not finish is left, so the switch goes
+		 * back as well, in config.txt once the setup had begun.
+		 */
+		kv_put(STORE_CONSOLE, "profiles.enabled", was);
+		if (*changed) global_save();
+	}
+	return rc;
 }
 
 int config_profile_active(void)        { return g_prof.active; }
@@ -865,7 +1099,7 @@ u8 config_profile_flags(void)
 int config_combo_overridden(u8 action)
 {
 	if (action >= COMBO_COUNT || !g_prof.active) return 0;
-	return kv_find(g_pkv, g_combo_key[action]) != NULL;
+	return kv_find(STORE_PROFILE, g_combo_key[action]) != KV_NONE;
 }
 
 int config_set_combo_override(u8 action, int set, u32 mask)
@@ -877,10 +1111,9 @@ int config_set_combo_override(u8 action, int set, u32 mask)
 	if (!g_prof.active) return ST_NOT_FOUND;
 
 	if (!set) {
-		struct kv *e = kv_find(g_pkv, g_combo_key[action]);
-		if (e == NULL) return ST_OK;
-		memset(e, 0, sizeof(*e));
-		g_version++;
+		u32 off = kv_find(STORE_PROFILE, g_combo_key[action]);
+		if (off == KV_NONE) return ST_OK;
+		pool_splice(off, kv_next(off) - off, "", 0);
 		return profile_save();
 	}
 
@@ -890,7 +1123,7 @@ int config_set_combo_override(u8 action, int set, u32 mask)
 	buf[0] = '0';
 	buf[1] = 'x';
 	qfmt_hex(buf + 2, sizeof(buf) - 2, mask, 8);
-	rc = kv_put(g_pkv, g_combo_key[action], buf);
+	rc = kv_put(STORE_PROFILE, g_combo_key[action], buf);
 	if (rc != ST_OK) return rc;
 	return profile_save();
 }
