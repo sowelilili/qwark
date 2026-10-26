@@ -12,6 +12,7 @@
 #define QWARK_RAC4_H
 
 #include "game.h"
+#include "switches_bins.h"
 
 /* -------------------------------------------------------- rac4.cs addresses */
 
@@ -432,83 +433,118 @@
 
 /*
  * The HUD's colours (build 56, from the NPEA00423 executable and the PS2
- * prototype's symbols). The HUD draws in a team's colours, out of
- * GuiMain_TeamColors, eleven teams of four words: the team's colour, then the
- * vivid, dark and light variants GuiMain_InitTeamColors (0x35E9D8) works out
- * from it, each channel times 1.5 capped at 255, halved, and halfway to 255.
- * A word is the bytes { alpha, B, G, R } with 0x80 for opaque, as the
- * chargeboot words of RaC2 and RaC3 are. GuiMain_Startup (0x35EAD8) runs the
- * same sums at every level load, but only into a variant that reads 0, which
- * a word with its alpha set never does, so what qwark writes stays until the
- * game restarts.
+ * prototype's symbols). The game keeps a team's colours in GuiMain_TeamColors,
+ * eleven teams of four words: the team's colour, then the vivid, dark and
+ * light variants GuiMain_InitTeamColors (0x35E9D8) works out from it, each
+ * channel times 1.5 capped at 255, halved, and halfway to 255. A word is the
+ * bytes { alpha, B, G, R } with 0x80 for opaque, as the chargeboot words of
+ * RaC2 and RaC3 are.
  *
- * Which team the HUD draws in is GuiMain_GetPlayerHudTeam (0x360EEC): the HUD
- * colour cheat's byte for player 1 (CheatsActivated[2]; [3] is player 2's) less
- * one when the cheat is on, 0 being its Default, and the hero's own team
- * otherwise, which is 1 in the single-player game (checked under RPCS3 with the
- * cheat at Default: the health bar drew in team 1's vivid red). The cheat
- * offers the eleven teams and Default, twelve options, so its byte is 0..11.
- * The same table colours other things: team 0 the weapons' level tint and the
- * Omega mods, team 4 a vehicle's health and the gadgets, team 5 a V99 weapon.
+ * Which team the HUD draws in is the HUD colour cheat's byte for player 1
+ * (CheatsActivated[2]; [3] is player 2's) less one when the cheat is on, 0
+ * being its Default, and the hero's own team otherwise, which is 1 in the
+ * single-player game; multiplayer ignores the cheat. The cheat offers the
+ * eleven teams and Default, twelve options, so its byte is 0..11.
  *
- * All four words are read. The HUD team's, through GuiMain_GetPlayerColor
- * (0x360F78): the colour, vivid and dark by the health bar and the ammo, and
- * the light one too: it is the top-left corner of the prompt and pickup boxes'
- * gradients (HudInfo_PlayerInit, 0x381068: light, colour, dark), what the
- * radar's cursor pulses to from vivid (HudRadar_UpdateCursor, 0x3876D0, by
- * GuiMain_UpdatePulse, 0x360E40) and part of the bot HUD's flash
- * (BotHud_UpdateFlash, 0x376EB0). The cheat menu's swatch is the colour, vivid
- * and dark of the team the cheat picks (MenuCheats_CMDCheatCHEAT_HUD_COLORS,
- * 0x39685C). Straight out of the table, team 4's light word is a gadget's
- * colour and teams 0 and 4's are Omega mods' (GuiMain_GetGadgetColor,
- * GuiMain_GetOmegaColor). The prototype's symbols say the same of each.
+ * Every part of the HUD that draws in the player's colour gets it from
+ * GuiMain_GetPlayerColor (0x360F78), (player, variant), which applies that
+ * rule and reads the table. Nothing else reads the table but
+ * GuiMain_GetTeamColor (0x360EB0, a team named outright), GuiMain_GetOmegaColor,
+ * GuiMain_GetGadgetColor and the two that fill it. GetPlayerColor's callers,
+ * 2026-10-26:
  *
- * Build 56, revision 1.24: the three variants are shades the client may
- * override (FEATURE_FLAG_SHADE). A shade is automatic while its word is 0 or
- * what the sums give from the team's colour, so the table itself is the
- * override state: nothing in qwark to lose, nothing to reset at a game change,
- * and a team the cheat switches to reads as it is.
+ *   gradients, read at build time or every frame
+ *     HealthHud_UpdatePulse (0x37D7A0)    the health bar, vivid to colour
+ *     HealthHud_Update (0x37CC20)         the health bar's trail, vivid
+ *     HealthHud_CreateWidgets (0x37D2A0)  the player EXP bar, dark to colour
+ *     HudAmmo_CreateWidgets               the weapon EXP bar, the same
+ *   flat parts
+ *     HudAmmo_CreateWidgets and HudAmmo_UpdateQuickSelect (0x371590): the
+ *       quick-select slots, the "d-pad"; HudAmmo_UpdateAmmoPulse (0x36F7A8):
+ *       the ammo's low pulse; HudAmmo_GetPulseColor (0x372B48), vivid to dark
+ *     HudRadar_CreateWidgets, HudRadar_UpdateCursor: the radar's outline,
+ *       fill and cursor
+ *     HudInfo_PlayerInit: the prompt and pickup boxes (light, colour, dark)
+ *     BotHud_CreateWidgets (0x3768C8), BotHud_GetIconColor, BotHud_UpdateFlash
+ *     HudComplete_Setup (0x37B160): the end screen's eleven bars
+ *     0x3BBD30, a menu screen's swatch per local player
  *
- * The PS3 port draws the HUD twice as bright as the words say (checked under
- * RPCS3: an EXP bar or the health bar set to 0x40 in a channel draws 0x80, and
- * 0x60 in one draws 0xC0). The PS2 drew an untextured quad's colour as it
- * stood and only multiplied a texture by colour / 0x80; the port draws every
- * quad textured, an untextured one with a white stand-in (WidgetRectangle's
- * Render, 0xB9E48, through 0x614100 and 0x15ADA8, the stand-in being HUD
- * texture 0x16), so 0x80 is full brightness everywhere and the health bar, the
- * EXP bars, the prompt and pickup boxes and the radar all draw at double, the
- * stock HUD as much as any other. The hollow rectangles double their colour
- * again on the CPU (0x157B98: each channel times 2.0, capped at 255). Since
- * 2026-10-26 the correction is the user's toggle, R4_HUD_CORRECT
- * (rac4_panel.c). Off, a colour goes into its word as given and reads as the
- * word, and the stock words are the game's. On, the HUD's team is held halved:
- * a colour goes in halved, rounded up, a readout is each channel doubled,
- * capped at 255, so the HUD draws exactly what was picked (to the even value;
- * 0xFF stays 0xFF), and stock is the game's colour halved. Either way the
- * shades are GuiMain_InitTeamColors' sums on the colour as it reads, which off
- * and on the stock word are the game's own. FEATURE_SET 18 with
- * FEATURE_COLOR_AUTO puts all four words back to the game's own
- * (FEATURE_FLAG_STOCK), and its readout carries AUTO while they are.
+ * The parts that call GetTeamColor name their team outright and are no part
+ * of the theme: the heal and hurt pulses (teams 0 and 1 at quarter alpha),
+ * the vehicle's health (team 4), the menus' team-4 highlights, multiplayer's
+ * scores, the cheat menu's swatches. Until 2026-10-26 qwark wrote the HUD
+ * team's words into the table, which recoloured whichever of those named the
+ * same team too, and the weapons' three words when the cheat picked team 0,
+ * 4 or 5.
  *
- * The HUD copies some words into its widgets when it is built, at a level load
- * (HudInfo_PlayerInit's prompt and pickup boxes, HealthHud_CreateWidgets'
+ * Revision 1.24 (2026-10-26): the theme is qwark's own code (the HUD colour
+ * pieces of the code switches, src/games/switches/sw_rac4.s, own_*).
+ * GetPlayerColor's last word, 0x36102C, branches to a trampoline that, for
+ * player one outside multiplayer, puts qwark's word for the variant in place
+ * of the table's while it is not 0, and then halves it if that part of the
+ * HUD is to be corrected: a gradient (the seven calls above, told apart by
+ * their return address) by RAC4_HUD_GRADIENT_FLAG, any other call by
+ * RAC4_HUD_FLAT_FLAG. The table is never written. On a console qwark writes
+ * the code as the session enters the game (rac4_hud_install); under RPCS3 the
+ * code switches' patch carries it, and the features are WRITES_CODE.
+ *
+ * Why halve: the PS3 port draws an untextured quad twice as bright as its
+ * word says (checked under RPCS3: an EXP bar or the health bar set to 0x40 in
+ * a channel draws 0x80, and 0x60 in one draws 0xC0). The PS2 drew an
+ * untextured quad's colour as it stood and only multiplied a texture by
+ * colour / 0x80; the port draws every quad textured, an untextured one with a
+ * white stand-in (WidgetRectangle's Render, 0xB9E48, through 0x614100 and
+ * Draw2D_DrawQuadColors, 0x15ADA8, the stand-in being HUD texture 0x16), so
+ * 0x80 is full brightness everywhere, and the hollow rectangles double their
+ * colour again on the CPU (Draw2D_DrawRectColorX2, 0x157B98). A halved word
+ * draws as the PS2 drew the whole one.
+ *
+ * qwark's words are RAC4_HUD_WORDS (colour, vivid, dark, light), 0 meaning the
+ * game's own. A shade is automatic while its word is what the sums give from
+ * the colour word (0 for 0), so the words are the whole state. Feature 18
+ * with FEATURE_COLOR_AUTO puts all four to 0 (FEATURE_FLAG_STOCK), and its
+ * readout carries AUTO while they are. Readouts are the colours picked, and
+ * where a word is 0 the HUD team's word in the table.
+ *
+ * The HUD copies some colours into its widgets when it is built, at a level
+ * load (HudInfo_PlayerInit's prompt and pickup boxes, HealthHud_CreateWidgets'
  * player EXP bar, HudAmmo_CreateWidgets' weapon EXP bar and quick-select
  * slots, HudRadar_CreateWidgets' outline and its faint fill), and reads the
- * rest every frame (the health bar, the bot HUD). A set therefore writes those
- * copies too, colour word by colour word in the widgets themselves, keeping
- * each word's alpha, so the whole HUD changes at once (rac4_panel.c). A widget
- * is found as the game finds it: Engine::m_instance's data, canvas 0 (player
- * one's HUD), and handle `panel + element` in the canvas's hash index, 1024
- * slots of { handle, object } at +0x1D4, probing (handle + n * 0x13D573) &
- * 0x3FF (Canvas::GetObject, 0x60F4E0). A widget's colour is +0x30, and a
- * WidgetRectangle's other three corners +0x44, +0x48 and +0x4C (top left, top
- * right, bottom left, bottom right).
+ * rest every frame. A set therefore writes those copies too, as the
+ * trampoline would hand them out, keeping each word's alpha, so the whole HUD
+ * changes at once (rac4_panel.c). A widget is found as the game finds it:
+ * Engine::m_instance's data, canvas 0 (player one's HUD), and handle
+ * panel + element in the canvas's hash index, 1024 slots of { handle, object }
+ * at +0x1D4, probing (handle + n * 0x13D573) & 0x3FF (Canvas::GetObject,
+ * 0x60F4E0). A widget's colour is +0x30, and a WidgetRectangle's other three
+ * corners +0x44, +0x48 and +0x4C (top left, top right, bottom left, bottom
+ * right).
  */
 #define RAC4_TEAM_COLORS       0x009E87CCu  /* GuiMain_TeamColors, u32[11][4] */
 #define RAC4_TEAM_COUNT        11
 #define RAC4_TEAM_COLORS_LEN   (RAC4_TEAM_COUNT * 16)
 #define RAC4_HUD_CHEAT         0x00B1F47Au  /* CheatsActivated[2], the HUD colour cheat */
 #define RAC4_HUD_TEAM_DEFAULT  1            /* the hero's team when the cheat is at Default */
+
+/*
+ * qwark's words and flags (sw_rac4.s), in BSS no code of the game names, after
+ * the code switches' flags: zero at every boot.
+ */
+#define RAC4_HUD_WORDS         SW_RAC4_DATA_HUD_WORDS    /* u32[4]: colour, vivid, dark, light */
+#define RAC4_GUN_WORDS         SW_RAC4_DATA_GUN_WORDS    /* u32[3]: V11, V99, gadget */
+#define RAC4_HUD_WORDS_LEN     28                        /* both, back to back */
+#define RAC4_HUD_FLAT_FLAG     SW_RAC4_FLAG_HUD_FLAT
+#define RAC4_HUD_GRADIENT_FLAG SW_RAC4_FLAG_HUD_GRADIENT
+
+/*
+ * The game's own words at the four sites, in address order: rac4_hud_install
+ * writes nowhere that holds anything else, and check.py holds the executable
+ * to them. GetPlayerColor's ori r3, r4, 0, and GetGadgetColor's three loads.
+ */
+#define RAC4_HUD_ORIG_COLOUR   0x60830000u  /* 0x36102C */
+#define RAC4_HUD_ORIG_GUN_LOW  0x808487CCu  /* 0x3611AC, lwz r4, -0x7834(r4) */
+#define RAC4_HUD_ORIG_GUN_HIGH 0x80630050u  /* 0x3611D0, lwz r3, 0x50(r3) */
+#define RAC4_HUD_ORIG_GADGET   0x8083004Cu  /* 0x361224, lwz r4, 0x4C(r3) */
 
 #define RAC4_ENGINE_DATA       0x011D7F44u  /* Engine::m_instance.mp_data; its +0 is mp_Canvases[] */
 #define RAC4_CANVAS_INDEX      0x1D4u       /* CanvasData.mHashIndex's slots */
@@ -531,15 +567,13 @@
  * from team 0's colour to team 5's (FastTweenColor by
  * Math_InvLerpClamp01(level, 10, 98), the level being the gadget's halfword,
  * GadgetBox_GetGadgetLevel); in multiplayer every level is team 0's colour; a
- * gadget that is no weapon is team 4's light word. So those three words are
- * the weapons' colours, and nothing about the HUD's own team picks them:
- * features 22 to 24 write them as given (an icon is a textured quad, which the
- * port draws as the PS2 did, texture times colour / 0x80; measured under
- * RPCS3, the stock V99 purple 0x732763 draws at most 0x822C70), and STOCK puts
- * the game's own back. They are also team rows: while the HUD colour cheat
- * picks team 0, 4 or 5 the HUD and the weapons share a word, which is why the
- * weapons took the HUD's colour in the user's earlier screenshots. Nothing
- * data-only can part them; the later write wins.
+ * gadget that is no weapon is team 4's light word. Those words are also team
+ * colours the HUD colour cheat picks, so since 2026-10-26 the three loads are
+ * trampolines too (sw_rac4.s) that take RAC4_GUN_WORDS instead while a word is
+ * not 0: the weapons share no word with any team, and 0 is the game's colour.
+ * An icon is a textured quad, which the port draws as the PS2 did (measured
+ * under RPCS3, the stock V99 purple 0x732763 draws at most 0x822C70), so no
+ * brightness correction touches them.
  *
  * HudAmmo_SetGadgetIcon (0x36FE18) sets an icon's colour, from
  * HudAmmo_UpdateEquippedIcons (0x370170, the weapon in hand and the two
@@ -547,8 +581,8 @@
  * which HudAmmo_Update (0x372FC0) calls on its dirty word's bits 0x08 and
  * 0x04. A set raises both, so the icons take the new words at the next frame.
  */
-#define RAC4_GUN_LOW           0x009E87CCu  /* team 0's colour: V11 */
-#define RAC4_GUN_HIGH          0x009E881Cu  /* team 5's colour: V99 */
+#define RAC4_GUN_LOW           0x009E87CCu  /* the game's own: team 0's colour, V11 */
+#define RAC4_GUN_HIGH          0x009E881Cu  /* team 5's colour, V99 */
 #define RAC4_GUN_GADGET        0x009E8818u  /* team 4's light word */
 #define RAC4_HUDAMMO_DIRTY     0x01191BE0u  /* player one's HudAmmo dirty word */
 #define RAC4_HUDAMMO_ICONS     0x0000000Cu
@@ -749,6 +783,8 @@ extern const u8 rac4_fp_switch[4];
 #define R4_GUN_HIGH        23
 #define R4_GUN_GADGET      24
 #define R4_HUD_CORRECT     25
+/* Revision 1.24 (2026-10-26, later): the gradients' correction, apart. */
+#define R4_GRADIENT_CORRECT 26
 
 /* ------------------------------------------------------ rac4_panel.c exports */
 
@@ -759,17 +795,21 @@ int rac4_load_setaside(void);
 u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 u8  rac4_hud_team(u8 cheat);
-u32 rac4_hud_readout(const u8 *team, u8 t, u8 v);
-/* Revision 1.24: readout i of the weapons' colours, out of the whole team table. */
-u32 rac4_gun_readout(const u8 *table, u8 i);
-int rac4_hud_correct(int on);
 /*
- * The HUD's colours as the session goes (rac4_panel.c): `planet` 0xFF starts
- * over for a new process; otherwise, every tick while a level plays, it puts
- * the HUD's team in the brightness the toggle asks for and, the first tick of
- * each level or team, the colours a client asked to have re-applied.
+ * Revision 1.24: readout v of the HUD's colours, out of qwark's four words
+ * (RAC4_HUD_WORDS) and the HUD team's four in the table; readout i of the
+ * weapons' colours, out of qwark's three (RAC4_GUN_WORDS) and the whole table.
  */
-void rac4_hud_tick(u8 planet, u8 cheat);
+u32 rac4_hud_readout(const u8 *words, const u8 *team, u8 v);
+u32 rac4_gun_readout(const u8 *words, const u8 *table, u8 i);
+/* A correction's flag byte, RAC4_HUD_FLAT_FLAG or RAC4_HUD_GRADIENT_FLAG. */
+int rac4_hud_correct(u32 flag, int on);
+int rac4_hud_correct_read(u32 flag, int *on);
+/*
+ * qwark's HUD colour code, on a console, as the session enters the game
+ * (rac4_panel.c). Nothing where code cannot be patched.
+ */
+void rac4_hud_install(void);
 
 int rac4_planet_load(u8 planet, u8 flags);
 /*

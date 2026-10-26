@@ -2192,7 +2192,7 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 24,
+        "features": 25,
         "cheats": FOUR_CHEATS_DL,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
@@ -4023,93 +4023,121 @@ def exercise_game(c, sim, spec, udp=None):
     # ------------------------------------------- FEATURE_SET on a COLOR
     if spec.get("hud_colour"):
         hud_id, table, cheat, hud_ro = spec["hud_colour"]
-        correct, guns = hud_id + 7, hud_id + 4
+        correct, gradient, guns = hud_id + 7, hud_id + 8, hud_id + 4
+        # Revision 1.24, 2026-10-26: the colours are qwark's words, which its
+        # own code in the game hands out instead of the team table's
+        # (src/games/rac4.h): colour, vivid, dark and light, then V11, V99 and
+        # the gadget colour, and the two corrections' flag bytes before them.
+        words, flags = 0x015CD788, 0x015CD783
+        team4 = (0x802699BF, 0x8039E5FF, 0x80134C5F, 0x8092CCDF)
+        stock = struct.pack(">4I", 0x80734C00, 0, 0, 0) + bytes(48) + struct.pack(">4I", *team4) + \
+            struct.pack(">4I", 0x80632773, 0, 0, 0) + bytes(5 * 16)
+        mem_write(c, table, stock)
+        mem_write(c, flags, bytes(2))
+        mem_write(c, words, bytes(28))
 
-        # Revision 1.24, 2026-10-26: the brightness is a toggle, Correct HUD
-        # brightness (25). On, the checks below hold; off is checked at the end.
-        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 1))
-        check(status == ST_OK, "%s: Correct HUD brightness goes on" % name, status)
+        def hud_words():
+            status, body = c.call(OP_MEM_READ, struct.pack(">II", words, 28))
+            return struct.unpack(">7I", body) if status == ST_OK else None
 
-        # The cheat at Default draws in the hero's team, 1; on, in its byte less one.
-        # Revision 1.24: the colour goes in halved, rounded up, because the PS3's
-        # HUD draws every word twice as bright, and the readout is the colour as
-        # the HUD shows it, doubled and capped: an odd channel comes back even.
-        # The shades follow the colour as shown: 1.5 times it capped, half, and
-        # halfway to white, halved back.
-        for byte, team, rgb, words, shown in (
-                (0, 1, 0x00FF4C73, (0x803A2680, 0x80573980, 0x801D1340, 0x805D5380), 0x00FF4C74),
-                (5, 4, 0x00102030, (0x80181008, 0x8024180C, 0x800C0804, 0x804C4844), 0x00102030)):
-            mem_write(c, cheat, bytes([byte]))
-            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, rgb))
-            if check(status == ST_OK, "%s: FEATURE_SET on the HUD colour, cheat byte %d" % (name, byte), status):
-                status, body = c.call(OP_MEM_READ, struct.pack(">II", table + team * 16, 16))
-                check(status == ST_OK and struct.unpack(">4I", body) == words,
-                      "%s: and team %d's four words are the colour and its shades, halved" % (name, team),
-                      body.hex() if body else None)
-                info = fresh_state(c, 0.4)
-                check(info and info["readout"][hud_ro] == shown,
-                      "%s: the readout is the colour the HUD shows, in the team it draws in" % name,
-                      hex(info["readout"][hud_ro]) if info else None)
+        def table_kept():
+            status, body = c.call(OP_MEM_READ, struct.pack(">II", table, 11 * 16))
+            return status == ST_OK and body == stock
 
-        # Revision 1.24: the shades, SHADE COLORs following the colour, ids and
-        # readouts one on from it. With the cheat on team 4: a vivid override
-        # survives a new colour, and AUTO (bit 24) puts it back. The colour is
-        # flagged STOCK.
+        # Every row WRITES_CODE: under RPCS3 they need the code switches.
         status, body = c.call(OP_DESCRIBE)
         rows = {f["id"]: f for f in parse_describe(body)[3]} if status == ST_OK else {}
         shades = [rows.get(hud_id + v) for v in (1, 2, 3)]
-        check(all(f and f["kind"] == FEATURE_COLOR and f["flags"] == 0x40 and f["aux"] == hud_id
+        check(all(f and f["kind"] == FEATURE_COLOR and f["flags"] == 0x42 and f["aux"] == hud_id
                   and f["readout"] == hud_ro + v for v, f in zip((1, 2, 3), shades)),
-              "%s: the vivid, dark and light shades follow the HUD colour on the wire" % name,
+              "%s: the vivid, dark and light shades follow the HUD colour, WRITES_CODE" % name,
               [(f["id"], f["flags"], f["aux"], f["readout"]) for f in shades if f])
         row = rows.get(hud_id)
-        check(row and row["flags"] == 0x80 and row["aux"] == 0,
-              "%s: the HUD colour is flagged STOCK" % name, row and row["flags"])
-        at = table + 4 * 16
-        info = fresh_state(c, 0.4)
-        check(info and [info["readout"][hud_ro + v] for v in (1, 2, 3)]
-              == [0x01183048, 0x01081018, 0x01889098],
-              "%s: each shade's readout is worked out, flagged AUTO" % name,
-              [hex(info["readout"][hud_ro + v]) for v in (1, 2, 3)] if info else None)
-        check(info and info["readout"][hud_ro] & 0x01000000 == 0,
-              "%s: a picked colour's readout carries no AUTO" % name,
-              hex(info["readout"][hud_ro]) if info else None)
+        check(row and row["flags"] == 0x82 and row["aux"] == 0,
+              "%s: the HUD colour is flagged STOCK and WRITES_CODE" % name, row and row["flags"])
+        check(all(rows.get(guns + i) and rows[guns + i]["kind"] == FEATURE_COLOR and rows[guns + i]["flags"] == 0x82
+                  and rows[guns + i]["readout"] == hud_ro + 4 + i for i in range(3)),
+              "%s: the weapon colours are STOCK COLORs, WRITES_CODE" % name)
+        check(all(rows.get(t) and rows[t]["kind"] == FEATURE_TOGGLE and rows[t]["flags"] & 0x02
+                  for t in (correct, gradient))
+              and rows[correct]["label"] == "Correct HUD brightness"
+              and rows[gradient]["label"] == "Correct gradient brightness",
+              "%s: and the two corrections are toggles, the flat parts' and the gradients'" % name,
+              [(rows[t]["label"], rows[t]["flags"]) for t in (correct, gradient) if rows.get(t)])
+
+        # The cheat on team 4, the user's: a colour is qwark's four words, the
+        # table is never written, and the readout is the colour picked.
+        mem_write(c, cheat, bytes([5]))
+        info = fresh_state(c, 0.6)
+        check(info and [info["readout"][hud_ro + v] for v in range(4)]
+              == [0x01BF9926, 0x01FFE539, 0x015F4C13, 0x01DFCC92],
+              "%s: with no colour picked the HUD reads as the cheat's team, every one AUTO" % name,
+              [hex(info["readout"][hud_ro + v]) for v in range(4)] if info else None)
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x00FF4C73))
+        got = hud_words()
+        check(status == ST_OK and got and got[:4] == (0x80734CFF, 0x80AC72FF, 0x8039267F, 0x80B9A5FF),
+              "%s: FEATURE_SET writes the colour and the game's sums on it into qwark's words" % name,
+              [hex(w) for w in got] if got else status)
+        check(table_kept(), "%s: and not a byte of the team table" % name)
+        info = fresh_state(c, 0.6)
+        check(info and [info["readout"][hud_ro + v] for v in range(4)]
+              == [0x00FF4C73, 0x01FF72AC, 0x017F2639, 0x01FFA5B9],
+              "%s: the readouts are the colour picked and its shades, flagged AUTO" % name,
+              [hex(info["readout"][hud_ro + v]) for v in range(4)] if info else None)
+
+        # A vivid override survives a new colour, and AUTO (bit 24) puts it back.
         c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 1, 0x00123456))
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x00FE4C72))
-        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at, 16))
-        check(status == ST_OK and status2 == ST_OK and struct.unpack(">4I", body)
-              == (0x8039267F, 0x802B1A09, 0x801D1340, 0x805C537F),
+        got = hud_words()
+        check(status == ST_OK and got and got[:4] == (0x80724CFE, 0x80563412, 0x8039267F, 0x80B8A5FE),
               "%s: a new colour keeps the vivid override and works out the rest" % name,
-              body.hex() if body else None)
-        info = fresh_state(c, 0.4)
+              [hex(w) for w in got] if got else status)
+        info = fresh_state(c, 0.6)
         check(info and info["readout"][hud_ro + 1] == 0x00123456 and info["readout"][hud_ro] == 0x00FE4C72,
               "%s: the override's readout carries no AUTO, and both read as picked" % name,
               [hex(info["readout"][hud_ro + v]) for v in (0, 1)] if info else None)
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 1, 0x01000000))
-        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at + 4, 4))
-        check(status == ST_OK and status2 == ST_OK and body == bytes.fromhex("80563980"),
-              "%s: AUTO works the vivid shade out again" % name, body.hex() if body else None)
+        got = hud_words()
+        check(status == ST_OK and got and got[1] == 0x80AB72FF,
+              "%s: AUTO works the vivid shade out again" % name, [hex(w) for w in got] if got else status)
 
-        # STOCK: AUTO on the colour puts all four words back to the game's own,
-        # overrides and all, and the colour's readout carries AUTO while they
-        # are. With the brightness corrected the game's colour goes in halved,
-        # and the shades are worked out from it.
+        # STOCK: AUTO on the colour puts all four words to 0, overrides and all.
         c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 2, 0x00445566))
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x01000000))
-        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at, 16))
-        check(status == ST_OK and status2 == ST_OK and struct.unpack(">4I", body)
-              == (0x80134D60, 0x801D7480, 0x800A2730, 0x80496670),
-              "%s: AUTO on the colour puts team 4's stock words back, halved" % name,
-              body.hex() if body else None)
-        info = fresh_state(c, 0.4)
-        check(info and [info["readout"][hud_ro + v] for v in range(4)]
-              == [0x01C09A26, 0x01FFE83A, 0x01604E14, 0x01E0CC92],
-              "%s: and reads as the game's own colours, every one flagged AUTO" % name,
-              [hex(info["readout"][hud_ro + v]) for v in range(4)] if info else None)
+        got = hud_words()
+        check(status == ST_OK and got and got[:4] == (0, 0, 0, 0),
+              "%s: AUTO on the colour puts every word back to 0, the game's own" % name,
+              [hex(w) for w in got] if got else status)
+
+        # The user's two bugs. The gadget colour was team 4's light word, so a
+        # HUD colour with the cheat on team 4 changed it, and the brightness
+        # toggle halved it. Now neither touches the other's word.
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", guns + 2, 0x00FF0000))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x0000FF00))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id + 3, 0x000000FF))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 1))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", gradient, 1))
+        got = hud_words()
+        check(status == ST_OK and got and got[6] == 0x800000FF and got[0] == 0x8000FF00 and got[3] == 0x80FF0000,
+              "%s: the gadget colour keeps its word through a HUD colour and both corrections" % name,
+              [hex(w) for w in got] if got else status)
+        check(table_kept(), "%s: and the team table is still the game's" % name)
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", flags, 2))
+        check(status == ST_OK and body == b"\x01\x01",
+              "%s: each correction is its own flag byte" % name, body.hex() if body else None)
+        info = fresh_state(c, 0.6)
+        check(info and info["readout"][hud_ro + 6] == 0x00FF0000 and info["readout"][hud_ro] == 0x0000FF00,
+              "%s: and the readouts are the colours picked, the corrections or not" % name,
+              [hex(info["readout"][hud_ro + v]) for v in (0, 6)] if info else None)
+        c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 0))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", gradient, 0))
+        c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x01000000))
 
         # The HUD's own copies (rac4.h): a set rewrites the colour words of the
         # widgets the HUD built, each keeping its alpha, in a level that is
-        # playing. A fake canvas 0: engine data, the canvas, its hash index.
+        # playing, as qwark's code would hand them out: the EXP bars by the
+        # gradients' correction, the rest by the flat parts'. A fake canvas 0:
+        # engine data, the canvas, its hash index.
         canvas_data = 0x02001000
         mem_write(c, 0x011D7F44, struct.pack(">I", 0x02000000))
         mem_write(c, 0x02000000, struct.pack(">I", 0x02000100))
@@ -4118,13 +4146,13 @@ def exercise_game(c, sim, spec, udp=None):
             # handle, slot, object, vtable, the four words before, the four after
             (0x00F0000A, 0x00A, 0x02100000, 0x008B96A0,      # player EXP: dark, colour
              (0x80000000, 0x80000000, 0x80000000, 0x80000000),
-             (0x800C0804, 0x80181008, 0x800C0804, 0x80181008)),
+             (0x80181008, 0x80302010, 0x80181008, 0x80302010)),
             (0x00F00106, 0x106, 0x02100100, 0x008B9640,      # a quick-select slot
              (0x00000000, 0xAAAAAAAA, 0xAAAAAAAA, 0xAAAAAAAA),
-             (0x00181008, 0xAAAAAAAA, 0xAAAAAAAA, 0xAAAAAAAA)),
+             (0x00302010, 0xAAAAAAAA, 0xAAAAAAAA, 0xAAAAAAAA)),
             (0x000E0005, 0x178, 0x02100200, 0x008B96A0,      # the pickup box, one probe on
              (0x40000000, 0x40000000, 0x40000000, 0x40000000),
-             (0x404C4844, 0x40181008, 0x40181008, 0x400C0804)),
+             (0x40978F87, 0x40302010, 0x40302010, 0x40181008)),
             (0x000E0002, 0x002, 0x02100300, 0x008B96D0,      # not of its class: left alone
              (0x40000000, 0x40000000, 0x40000000, 0x40000000),
              (0x40000000, 0x40000000, 0x40000000, 0x40000000)))
@@ -4134,73 +4162,65 @@ def exercise_game(c, sim, spec, udp=None):
             mem_write(c, obj, struct.pack(">I", vt))
             mem_write(c, obj + 0x30, struct.pack(">I", before[0]))
             mem_write(c, obj + 0x44, struct.pack(">3I", *before[1:]))
+
+        def widget(obj):
+            st1, w0 = c.call(OP_MEM_READ, struct.pack(">II", obj + 0x30, 4))
+            st2, w1 = c.call(OP_MEM_READ, struct.pack(">II", obj + 0x44, 12))
+            return struct.unpack(">4I", w0 + w1) if st1 == st2 == ST_OK else None
+
         mem_write(c, 0x011923A0, struct.pack(">I", 0x00F00000))   # HealthHud_Screen
         mem_write(c, 0x01191B40, struct.pack(">I", 0x00F00100))   # HudAmmo_Panel
         mem_write(c, 0x00B3C7D4, b"\x00")                         # out of the front end
         mem_write(c, 0x009C3240, struct.pack(">I", 1))            # in a level
         mem_write(c, 0x00B3C5A0, struct.pack(">I", 6))            # but in the space flight
         c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x00102030))
-        status, body = c.call(OP_MEM_READ, struct.pack(">II", 0x02100000 + 0x30, 4))
-        check(status == ST_OK and body == b"\x80\x00\x00\x00",
-              "%s: no widget is written while the game is not playing" % name, body.hex() if body else None)
+        check(widget(0x02100000) == (0x80000000,) * 4,
+              "%s: no widget is written while the game is not playing" % name)
         mem_write(c, 0x00B3C5A0, struct.pack(">I", 0))
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x00102030))
-        got = []
-        for _, _, obj, _, _, after in widgets:
-            st1, w0 = c.call(OP_MEM_READ, struct.pack(">II", obj + 0x30, 4))
-            st2, w1 = c.call(OP_MEM_READ, struct.pack(">II", obj + 0x44, 12))
-            got.append(struct.unpack(">4I", w0 + w1) == after if st1 == st2 == ST_OK else None)
+        got = [widget(obj) == after for _, _, obj, _, _, after in widgets]
         check(status == ST_OK and all(got),
               "%s: and while it plays, the HUD's copies follow the colour at once" % name, got)
-        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x01000000))
-        st1, w0 = c.call(OP_MEM_READ, struct.pack(">II", 0x02100000 + 0x30, 4))
-        st2, w1 = c.call(OP_MEM_READ, struct.pack(">II", 0x02100000 + 0x44, 12))
-        check(status == ST_OK and struct.unpack(">4I", w0 + w1)
-              == (0x800A2730, 0x80134D60, 0x800A2730, 0x80134D60),
-              "%s: and back to the stock words with the colour, halved" % name, (w0 + w1).hex())
 
-        # Revision 1.24, 2026-10-26: the brightness off, in a level, changes the
-        # HUD's team over at once: the game's own words as they ship, in the
-        # table and in the HUD's copies, read as they are. Every set also asks
-        # the HUD to colour its weapon icons again (HudAmmo's dirty word).
+        # The corrections apart: the flat parts' halves the slot and the boxes,
+        # the gradients' the EXP bar, each rounded up, and neither the other.
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 1))
+        check(status == ST_OK and widget(0x02100100)[0] == 0x00181008
+              and widget(0x02100000) == (0x80181008, 0x80302010, 0x80181008, 0x80302010)
+              and widget(0x02100200) == (0x404C4844, 0x40181008, 0x40181008, 0x400C0804),
+              "%s: Correct HUD brightness halves the flat parts' copies and leaves the EXP bar" % name,
+              [widget(o) for o in (0x02100000, 0x02100100, 0x02100200)])
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", gradient, 1))
+        check(status == ST_OK and widget(0x02100000) == (0x800C0804, 0x80181008, 0x800C0804, 0x80181008)
+              and widget(0x02100100)[0] == 0x00181008,
+              "%s: Correct gradient brightness halves the EXP bar's" % name,
+              [widget(o) for o in (0x02100000, 0x02100100)])
+        c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 0))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", hud_id, 0x01000000))
+        check(status == ST_OK and widget(0x02100000) == (0x800A2630, 0x80134D60, 0x800A2630, 0x80134D60)
+              and widget(0x02100100)[0] == 0x002699BF,
+              "%s: and back to stock, the cheat's team's words, the EXP bar halved still" % name,
+              [widget(o) for o in (0x02100000, 0x02100100)])
+        c.call(OP_FEATURE_SET, struct.pack(">BI", gradient, 0))
+
+        # The weapons' colours: qwark's three words, 0 the game's own, and every
+        # set asks the HUD to colour its weapon icons again (HudAmmo's dirty word).
         mem_write(c, 0x01191BE0, struct.pack(">I", 0x00000100))
-        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", correct, 0))
-        status2, body = c.call(OP_MEM_READ, struct.pack(">II", at, 16))
-        check(status == ST_OK and status2 == ST_OK and struct.unpack(">4I", body)
-              == (0x802699BF, 0x8039E5FF, 0x80134C5F, 0x8092CCDF),
-              "%s: the brightness off puts team 4's words back as the game ships them" % name,
-              body.hex() if body else None)
-        st1, w0 = c.call(OP_MEM_READ, struct.pack(">II", 0x02100000 + 0x30, 4))
-        st2, w1 = c.call(OP_MEM_READ, struct.pack(">II", 0x02100000 + 0x44, 12))
-        check(struct.unpack(">4I", w0 + w1) == (0x80134C5F, 0x802699BF, 0x80134C5F, 0x802699BF),
-              "%s: and the HUD's copies with them" % name, (w0 + w1).hex())
+        for i in range(3):
+            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", guns + i, 0x00123456))
+            got = hud_words()
+            check(status == ST_OK and got and got[4 + i] == 0x80563412,
+                  "%s: weapon colour %d goes in as given, its own word" % (name, i),
+                  [hex(w) for w in got] if got else status)
+            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", guns + i, 0x01000000))
+            got = hud_words()
+            check(status == ST_OK and got and got[4 + i] == 0,
+                  "%s: and AUTO puts it back to 0, the game's own" % name, [hex(w) for w in got] if got else status)
+        check(table_kept(), "%s: the team table untouched by any of it" % name)
         status, body = c.call(OP_MEM_READ, struct.pack(">II", 0x01191BE0, 4))
         check(status == ST_OK and body == bytes.fromhex("0000010C"),
               "%s: and the weapon icons are asked for again" % name, body.hex() if body else None)
-        info = fresh_state(c, 0.4)
-        check(info and [info["readout"][hud_ro + v] for v in range(4)]
-              == [0x01BF9926, 0x01FFE539, 0x015F4C13, 0x01DFCC92],
-              "%s: which read as the words, every one flagged AUTO" % name,
-              [hex(info["readout"][hud_ro + v]) for v in range(4)] if info else None)
-
-        # The weapons' colours: STOCK COLORs 22 to 24, readouts 12 to 14, the
-        # words of team 0's colour, team 5's and team 4's light one.
-        status, body = c.call(OP_DESCRIBE)
-        rows = {f["id"]: f for f in parse_describe(body)[3]} if status == ST_OK else {}
-        check(all(rows.get(guns + i) and rows[guns + i]["kind"] == FEATURE_COLOR and rows[guns + i]["flags"] == 0x80
-                  and rows[guns + i]["readout"] == hud_ro + 4 + i for i in range(3))
-              and rows.get(correct) and rows[correct]["kind"] == FEATURE_TOGGLE,
-              "%s: the weapon colours are STOCK COLORs and the brightness a toggle" % name)
-        for i, (addr, stock) in enumerate(((table, 0x80734C00), (table + 0x50, 0x80632773), (table + 0x4C, 0x8092CCDF))):
-            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", guns + i, 0x00123456))
-            status2, body = c.call(OP_MEM_READ, struct.pack(">II", addr, 4))
-            check(status == ST_OK and body == bytes.fromhex("80563412"),
-                  "%s: weapon colour %d goes in as given" % (name, i), body.hex() if body else None)
-            status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", guns + i, 0x01000000))
-            status2, body = c.call(OP_MEM_READ, struct.pack(">II", addr, 4))
-            check(status == ST_OK and struct.unpack(">I", body)[0] == stock,
-                  "%s: and AUTO puts the game's own back" % name, body.hex() if body else None)
-        info = fresh_state(c, 0.4)
+        info = fresh_state(c, 0.6)
         check(info and [info["readout"][hud_ro + 4 + i] for i in range(3)] == [0x01004C73, 0x01732763, 0x01DFCC92],
               "%s: the weapon readouts are the game's own, flagged AUTO" % name,
               [hex(info["readout"][hud_ro + 4 + i]) for i in range(3)] if info else None)
@@ -4218,7 +4238,7 @@ def exercise_game(c, sim, spec, udp=None):
 
         for addr, n in ((0x011D7F44, 4), (0x01191BE0, 4), (0x02000000, 4), (0x02000100, 4), (canvas_data + 0x1D4, 1024 * 8),
                         (0x011923A0, 4), (0x01191B40, 4), (0x009C3240, 4), (0x00B3C5A0, 4),
-                        (table, 11 * 16)):
+                        (table, 11 * 16), (flags, 2), (words, 28)):
             mem_write(c, addr, bytes(n))
         mem_write(c, cheat, bytes([0]))
 
@@ -5319,6 +5339,16 @@ def smoke_rpcs3_planet_loads(c, pine, sim=None):
     pine.boot("NPEA00423", "Ratchet: Deadlocked")
     ok, info = wait_state(c, SESSION_INGAME)
     check(ok and info["game"] == 4, "rpcs3: Deadlocked reaches INGAME", info)
+
+    # Revision 1.24 (2026-10-26): the HUD's colours are qwark's own code in the
+    # game, which only the code switches' patch puts there under RPCS3: without
+    # it every one of them is refused, and nothing is written.
+    for fid, value in ((18, 0x00FF0000), (22, 0x00123456), (25, 1), (26, 1)):
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fid, value))
+        check(status == ST_UNSUPPORTED,
+              "rpcs3: Deadlocked's HUD feature %d needs the code switches: UNSUPPORTED" % fid, status)
+    check(pine.peek(0x015CD783, 0x21) == bytes(0x21),
+          "rpcs3: and not a byte of the HUD's words or flags was written", pine.peek(0x015CD783, 0x21).hex())
 
     # 1.4.1: a planet the save has unlocked, which loads wherever the game is.
     pine.poke(RAC4_LEVEL_SAVES + 3 * RAC4_LEVEL_SIZE + 0x300, b"\x02")

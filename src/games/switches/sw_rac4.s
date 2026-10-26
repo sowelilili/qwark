@@ -400,3 +400,153 @@ fast_loads_movie:
 	mtlr    r0
 	addi    r1, r1, 112
 	blr
+
+# ----------------------------------------------------------- the HUD's colours
+#
+# Revision 1.24 (2026-10-26), qwark's own rather than a toggle's switch: the
+# HUD's theme. On a console qwark writes these same words at these same
+# addresses as the session enters the game (rac4.c, rac4_hud_install, out of
+# the generated src/games/switches_own.c); under RPCS3 they are rows of this
+# patch like any switch. Their only state is data: seven colour words and two
+# flag bytes past the switches' flags, in the same zero-filled stretch of BSS.
+# Every word reads 0 at boot, which leaves every colour the game's own, so the
+# game draws exactly as it ships until qwark writes a word.
+#
+#   SW_DATA_HUD_WORDS  colour, vivid, dark and light: the HUD's four, or 0 for
+#                      the word of the team the game would draw in
+#   SW_DATA_GUN_WORDS  V11's, V99's and a gadget's colour, or 0 for the game's
+#   SW_FLAG_HUD_FLAT   1: draw the HUD's flat parts at half brightness
+#   SW_FLAG_HUD_GRADIENT  1: the same for its gradients
+#
+# The flag bytes are SW_FLAG_ bytes only so that the patch zeroes them at load
+# with the others; no toggle's handler writes them as a switch (rac4_panel.c
+# writes them as plain data on both platforms).
+	.set    SW_FLAG_HUD_FLAT,     0x015CD783
+	.set    SW_FLAG_HUD_GRADIENT, 0x015CD784
+	.set    SW_DATA_HUD_WORDS,    0x015CD788
+	.set    SW_DATA_GUN_WORDS,    0x015CD798
+	.globl  SW_FLAG_HUD_FLAT
+	.globl  SW_FLAG_HUD_GRADIENT
+	.globl  SW_DATA_HUD_WORDS
+	.globl  SW_DATA_GUN_WORDS
+
+# GuiMain_GetPlayerColor (0x360F78) is how every part of the HUD that draws in
+# the player's colour gets it, at build time or every frame: the health bar,
+# the EXP bars, the ammo, the quick-select slots, the radar, the prompt and
+# pickup boxes, the bot HUD, the end screen. 0x36102C, `ori r3, r4, 0`, hands
+# back the word it read out of GuiMain_TeamColors; the trampoline puts qwark's
+# word there instead, for player one outside multiplayer (the player and the
+# games the HUD colour cheat reaches), and a variant 0..3, and then halves it if
+# the caller's part of the HUD is to be corrected. The caller is told apart by
+# the return address GetPlayerColor saved (its frame's 0x90, the low word at
+# 0x94): the seven calls in hud_gradient_sites draw the health bar and the two
+# EXP bars, every other call a flat part. Halving rounds up and keeps the
+# alpha. r5 to r7, r0 and cr7 are the scratch: GetPlayerColor returns from
+# here and reloads r0 and its two saved registers itself.
+	.section .cave.own_hud, "ax"
+own_hud_colour:
+	cmplwi  cr7, r31, 3                # the variant
+	bgt     cr7, 9f
+	cmpwi   cr7, r30, 0                # player one
+	bne     cr7, 9f
+	lis     r5, rac4_game_type@ha
+	lwz     r5, rac4_game_type@l(r5)
+	cmpwi   cr7, r5, 1                 # multiplayer: the team's own colours
+	beq     cr7, 9f
+	lis     r5, SW_DATA_HUD_WORDS@ha
+	addi    r5, r5, SW_DATA_HUD_WORDS@l
+	slwi    r6, r31, 2
+	lwzx    r6, r5, r6
+	cmpwi   cr7, r6, 0
+	beq     cr7, 1f
+	ori     r4, r6, 0                  # qwark's word
+1:	lwz     r6, 0x94(r1)               # where GetPlayerColor returns to
+	lis     r7, hud_gradient_sites@ha
+	addi    r7, r7, hud_gradient_sites@l
+2:	lwz     r0, 0(r7)
+	cmpw    cr7, r0, r6
+	beq     cr7, 3f
+	addi    r7, r7, 4
+	cmpwi   cr7, r0, 0
+	bne     cr7, 2b
+	lbz     r6, SW_FLAG_HUD_FLAT - SW_DATA_HUD_WORDS(r5)
+	b       4f
+3:	lbz     r6, SW_FLAG_HUD_GRADIENT - SW_DATA_HUD_WORDS(r5)
+4:	cmpwi   cr7, r6, 0
+	beq     cr7, 9f
+	lis     r6, 0x007F                 # each channel halved, rounded up
+	ori     r6, r6, 0x7F7F
+	srwi    r7, r4, 1
+	and     r7, r7, r6
+	lis     r6, 0x0001
+	ori     r6, r6, 0x0101
+	and     r6, r4, r6
+	add     r7, r7, r6
+	rlwinm  r4, r4, 0, 0, 7            # the alpha as it was
+	or      r4, r4, r7
+9:	ori     r3, r4, 0                  # the site's own
+	b       own_hud_colour_ret
+
+# GuiMain_GetGadgetColor (0x3610F0) colours a gadget's icon from three words of
+# the team table, which are also team colours the HUD colour cheat can pick:
+# team 0's colour for V11 (and every level in multiplayer), team 5's for V99
+# and team 4's light word for a gadget that is no weapon. Each load becomes a
+# trampoline that takes qwark's word instead while it is not 0, so the weapons'
+# colours share no word with any team. The table's own word is still loaded
+# first, so 0 is the game's colour exactly. cr7 is the scratch: 0x3611B0
+# branches on the cr0 the game set just before the first site.
+own_gun_low:                           # 0x3611AC: lwz r4, -0x7834(r4); r5 is dead
+	lis     r5, SW_DATA_GUN_WORDS@ha
+	lwz     r5, SW_DATA_GUN_WORDS@l(r5)
+	cmpwi   cr7, r5, 0
+	lwz     r4, -0x7834(r4)
+	beq     cr7, 1f
+	ori     r4, r5, 0
+1:	b       own_gun_low_ret
+
+own_gun_high:                          # 0x3611D0: lwz r3, 0x50(r3); r5 is live, r6 dead
+	lis     r6, (SW_DATA_GUN_WORDS + 4)@ha
+	lwz     r0, (SW_DATA_GUN_WORDS + 4)@l(r6)
+	cmpwi   cr7, r0, 0
+	lwz     r3, 0x50(r3)
+	beq     cr7, 1f
+	ori     r3, r0, 0
+1:	b       own_gun_high_ret
+
+own_gun_gadget:                        # 0x361224: lwz r4, 0x4C(r3); r5 is dead
+	lis     r5, (SW_DATA_GUN_WORDS + 8)@ha
+	lwz     r5, (SW_DATA_GUN_WORDS + 8)@l(r5)
+	cmpwi   cr7, r5, 0
+	lwz     r4, 0x4C(r3)
+	beq     cr7, 1f
+	ori     r4, r5, 0
+1:	b       own_gun_gadget_ret
+
+# The return addresses of the calls to GetPlayerColor that draw a gradient,
+# each call's address plus 4, and a 0 to end them: the weapon EXP bar's colour
+# and dark (HudAmmo_CreateWidgets), the health bar's trail (HealthHud_Update),
+# the player EXP bar's colour and dark (HealthHud_CreateWidgets) and the health
+# bar's vivid and colour (HealthHud_UpdatePulse).
+	.balign 4
+hud_gradient_sites:
+	.long   0x0036F62C, 0x0036F640
+	.long   0x0037CF10
+	.long   0x0037D4C8, 0x0037D4DC
+	.long   0x0037D808, 0x0037D81C
+	.long   0
+
+	.section .site.own_hud_colour, "ax"
+	b       own_hud_colour
+own_hud_colour_ret:
+
+	.section .site.own_gun_low, "ax"
+	b       own_gun_low
+own_gun_low_ret:
+
+	.section .site.own_gun_high, "ax"
+	b       own_gun_high
+own_gun_high_ret:
+
+	.section .site.own_gun_gadget, "ax"
+	b       own_gun_gadget
+own_gun_gadget_ret:

@@ -25,7 +25,9 @@ CRT_TAIL += $(shell ppu-lv2-gcc -print-file-name'='crtend.o)
 #
 # No QWARK_EMULATOR here (src/plat/plat.h): a console patches code, so the
 # code switches (src/core/switches.c, src/games/switches_bins.c) are left out
-# altogether, and so is everything else that only exists for RPCS3.
+# altogether, and so is everything else that only exists for RPCS3. Revision
+# 1.24: but not switches_own.c, the pieces a console writes itself (Deadlocked's
+# HUD colours), which build.sh cuts out of the same link.
 #
 PPU_SRCS  = src/plat/ps3/libc.c src/plat/ps3/printf.c src/plat/ps3/plat_ps3.c
 PPU_SRCS += src/main.c
@@ -38,7 +40,7 @@ PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/
 # of /dev_hdd0/qwark/ui.pak (src/core/uipak.c); the module carries none of them.
 #
 PPU_SRCS += src/core/uipak.c
-PPU_SRCS += src/games/sfhelper_bins.c
+PPU_SRCS += src/games/sfhelper_bins.c src/games/switches_own.c
 PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
 PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
 PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c

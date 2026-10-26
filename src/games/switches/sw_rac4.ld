@@ -25,6 +25,9 @@ rac4_flight_actors_delete = 0x002A6994;
 rac4_space_movie          = 0x002AA004;
 rac4_space_scene          = 0x010B7FE0;
 
+/* Revision 1.24: g_gameType, 1 in multiplayer, which the HUD's theme leaves alone. */
+rac4_game_type            = 0x00B36DF4;
+
 SECTIONS
 {
 	/* Back to back, in the order of the sites they serve. */
@@ -50,6 +53,11 @@ SECTIONS
 	.cave.fast_loads_3      0x00667D9C : { *(.cave.fast_loads_3) }
 	/* And the routine a console's fast loads write at the same address (rac4.c). */
 	.cave.fast_loads_movie  0x00667DB8 : { *(.cave.fast_loads_movie) }
+	/*
+	 * Revision 1.24: the HUD's colours, qwark's own (sw_rac4.s), straight
+	 * after the routine, in what was left of the spare span.
+	 */
+	.cave.own_hud           0x00667DEC : { *(.cave.own_hud) }
 
 	.site.refill_ammo       0x001D7D18 : { *(.site.refill_ammo) }
 	.site.fast_loads_1      0x002A8AF4 : { *(.site.fast_loads_1) }
@@ -66,6 +74,10 @@ SECTIONS
 	.site.crash_vendor_3    0x00618034 : { *(.site.crash_vendor_3) }
 	.site.crash_vendor_4    0x0061806C : { *(.site.crash_vendor_4) }
 	.site.crash_bot         0x008088EC : { *(.site.crash_bot) }
+	.site.own_hud_colour    0x0036102C : { *(.site.own_hud_colour) }
+	.site.own_gun_low       0x003611AC : { *(.site.own_gun_low) }
+	.site.own_gun_high      0x003611D0 : { *(.site.own_gun_high) }
+	.site.own_gun_gadget    0x00361224 : { *(.site.own_gun_gadget) }
 
 	/DISCARD/ : {
 		*(.opd)

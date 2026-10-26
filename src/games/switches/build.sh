@@ -19,7 +19,14 @@
 # section at the instruction it replaces, and cut each of those sections out as
 # raw bytes. Every branch - into a trampoline, back out of it, and to the game's
 # own functions - is therefore computed by the link rather than by hand. The
-# flag bytes are the SW_FLAG_* symbols the source defines.
+# flag bytes are the SW_FLAG_* symbols the source defines, and the data words
+# a trampoline reads (revision 1.24) the SW_DATA_* ones.
+#
+# Revision 1.24: a cave or site named own_* is qwark's own on a console too,
+# not only a switch under RPCS3 (Deadlocked's HUD colours, sw_rac4.s). It is
+# part of the patch like every other piece, and it also goes into
+# src/games/switches_own.c, which the SPRX links (switches_bins.c it does
+# not), so that a console writes the same bytes the patch does.
 #
 # The SDK's tools are Windows programs, so every path handed to them here is
 # relative to the repository root.
@@ -31,6 +38,7 @@ DIR=src/games/switches
 OUT=$DIR/out
 GEN_C=src/games/switches_bins.c
 GEN_H=src/games/switches_bins.h
+GEN_OWN=src/games/switches_own.c
 
 CC=ppu-lv2-gcc
 LD=ppu-lv2-ld
@@ -58,8 +66,9 @@ if [ "$1" = "--if-stale" ]; then
 	stale=0
 	[ -f "$GEN_C" ] || stale=1
 	[ -f "$GEN_H" ] || stale=1
+	[ -f "$GEN_OWN" ] || stale=1
 	for s in $sources; do
-		if [ "$s" -nt "$GEN_C" ]; then stale=1; fi
+		if [ "$s" -nt "$GEN_C" ] || [ "$s" -nt "$GEN_OWN" ]; then stale=1; fi
 	done
 
 	if [ "$stale" = "0" ]; then exit 0; fi
@@ -120,6 +129,8 @@ mkdir -p "$OUT"
 : > "$OUT/arrays.c"
 : > "$OUT/descs.txt"
 : > "$OUT/report.txt"
+: > "$OUT/own.c"
+: > "$OUT/own.h"
 
 # ------------------------------------------------------------ build each game
 
@@ -158,6 +169,10 @@ for g in $GAMES; do
 	ncaves=0
 	sites=""
 	nsites=0
+	owncaves=""
+	nowncaves=0
+	ownsites=""
+	nownsites=0
 	: > "$OUT/$g.sitedefs"
 
 	while read -r section size vma; do
@@ -190,6 +205,20 @@ for g in $GAMES; do
 			caves="$caves	{ ${addr}u, sw_${g}_${name}, (u32)sizeof(sw_${g}_${name}) },
 "
 			ncaves=$((ncaves + 1))
+			case "$name" in
+			own_*)
+				{
+					echo "/* $g $section at $addr, $len bytes */"
+					echo "static const u8 sw_${g}_${name}[] = {"
+					emit_bytes "$bin"
+					echo "};"
+					echo
+				} >> "$OUT/own.c"
+				owncaves="$owncaves	{ ${addr}u, sw_${g}_${name}, (u32)sizeof(sw_${g}_${name}) },
+"
+				nowncaves=$((nowncaves + 1))
+				;;
+			esac
 			echo "  $g cave $name $addr $len bytes" >> "$OUT/report.txt"
 			;;
 
@@ -214,6 +243,13 @@ for g in $GAMES; do
 			sites="$sites	{ ${addr}u, ${word}u },   /* $name -> $target */
 "
 			nsites=$((nsites + 1))
+			case "$name" in
+			own_*)
+				ownsites="$ownsites	{ ${addr}u, ${word}u },   /* $name -> $target */
+"
+				nownsites=$((nownsites + 1))
+				;;
+			esac
 			{
 				echo "#define SW_${G}_SITE_$(upper "$name")_ADDR ${addr}u"
 				echo "#define SW_${G}_SITE_$(upper "$name") ${word}u"
@@ -246,6 +282,41 @@ for g in $GAMES; do
 	done < "$OUT/$g.flags"
 
 	[ "$nflags" -gt 0 ] || { echo "switches: $g defines no SW_FLAG_ byte" >&2; exit 1; }
+
+	# Revision 1.24: the data words a trampoline reads, which the patch leaves
+	# as the game has them (zero) and qwark writes.
+	$NM "$elf" | tr -d '' |
+		awk '($2 == "A" || $2 == "a") && $3 ~ /^SW_DATA_/ { print $1, substr($3, 9) }' |
+		sort > "$OUT/$g.data"
+	while read -r value dname; do
+		addr=$(printf '0x%08X' $((0x$value)))
+		echo "#define SW_${G}_DATA_${dname} ${addr}u" >> "$OUT/defines.h"
+		echo "  $g data $dname $addr" >> "$OUT/report.txt"
+	done < "$OUT/$g.data"
+
+	# Revision 1.24: qwark's own pieces, for a console (switches_own.c).
+	if [ "$nowncaves" -gt 0 ] || [ "$nownsites" -gt 0 ]; then
+		[ "$nowncaves" -gt 0 ] && [ "$nownsites" -gt 0 ] || {
+			echo "switches: $g has own_ caves without own_ sites or the other way round" >&2
+			exit 1
+		}
+		{
+			echo "const struct sw_cave sw_${g}_own_caves[] = {"
+			printf '%s' "$owncaves" | sed '$ s/},$/}/'
+			echo "};"
+			echo
+			echo "const struct patch_word sw_${g}_own_sites[] = {"
+			printf '%s' "$ownsites" | sed '$ s/},   /}    /'
+			echo "};"
+			echo
+		} >> "$OUT/own.c"
+		{
+			echo "#define SW_${G}_OWN_NCAVES ${nowncaves}"
+			echo "#define SW_${G}_OWN_NSITES ${nownsites}"
+			echo "extern const struct sw_cave sw_${g}_own_caves[];"
+			echo "extern const struct patch_word sw_${g}_own_sites[];"
+		} >> "$OUT/own.h"
+	fi
 
 	cat "$OUT/$g.sitedefs" >> "$OUT/defines.h"
 	echo >> "$OUT/defines.h"
@@ -313,6 +384,15 @@ struct sw_cave {
 };
 
 /*
+ * Revision 1.24: the pieces named own_*, which a console writes itself
+ * (switches_own.c, the one part of the switches the SPRX links): the caves,
+ * then the sites, each in address order, the same bytes as the patch's.
+ */
+EOF
+	cat "$OUT/own.h"
+	cat <<'EOF'
+
+/*
  * Everything one game's switches are: the caves, the site words that branch
  * into them, and the flag bytes they read. All three are in address order.
  */
@@ -373,5 +453,25 @@ const struct sw_desc *sw_desc_for_game(u8 game_id)
 EOF
 } > "$GEN_C"
 
-echo "switches: regenerated $GEN_C and $GEN_H"
+{
+	cat <<'EOF'
+/*
+ * qwark's own pieces of the code switches, as bytes: the caves and sites named
+ * own_*, which a console writes into the game itself and an RPCS3 patch writes
+ * with the rest (switches_bins.c). Unlike switches_bins.c the SPRX links this.
+ *
+ * GENERATED by src/games/switches/build.sh out of the sources beside it. Do not
+ * edit it by hand; edit the sources and run
+ *
+ *     sh src/games/switches/build.sh
+ *
+ * from the SDK's Cygwin shell.
+ */
+#include "switches_bins.h"
+
+EOF
+	cat "$OUT/own.c"
+} > "$GEN_OWN"
+
+echo "switches: regenerated $GEN_C, $GEN_H and $GEN_OWN"
 cat "$OUT/report.txt"

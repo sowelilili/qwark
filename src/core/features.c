@@ -334,7 +334,11 @@ void features_apply_waiting(void)
 	u64 mask = g_code_waiting;
 
 	g_code_waiting = 0;
-	if (mask != 0) features_apply(mask, FEATURE_TOGGLE);
+	/* Revision 1.24: a WRITES_CODE COLOR waits too (Deadlocked's HUD), colours first. */
+	if (mask != 0) {
+		features_apply(mask, FEATURE_COLOR);
+		features_apply(mask, FEATURE_TOGGLE);
+	}
 }
 #endif
 

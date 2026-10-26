@@ -149,6 +149,12 @@ QWARK_RAC4 = [
     (0x00707430, 0x00707434, "savefile helper hook"),
     (0x015CD71D, 0x015CD780, "savefile helper request bytes"),
     (0x015CD780, 0x015CD783, "code switch flags (RPCS3)"),
+    # Revision 1.24: the HUD colours, qwark's own on a console too (check_rac4_hud).
+    (0x015CD783, 0x015CD7A4, "HUD colour flags and words"),
+    (0x0036102C, 0x00361030, "HUD colour: GetPlayerColor"),
+    (0x003611AC, 0x003611B0, "HUD colour: GetGadgetColor V11"),
+    (0x003611D0, 0x003611D4, "HUD colour: GetGadgetColor V99"),
+    (0x00361224, 0x00361228, "HUD colour: GetGadgetColor gadget"),
     (0x01600000, 0x01700000, "savefile aside buffer"),
     (0x01700000, 0x01700004, "quit flag"),
     (0x01710000, 0x01710004, "loading flag"),
@@ -1321,6 +1327,80 @@ def check_rac4_round6(ok, elf, hdr, code, cave, stub_at, picker):
 
 
 # --------------------------------------------------------------- the checks
+
+def check_rac4_hud(ok, elf, roots):
+    """
+    Revision 1.24 (2026-10-26): Deadlocked's HUD colours, qwark's own code
+    (src/games/switches/sw_rac4.s, own_*; the generated switches_own.c): each
+    site holds in the executable the game's word rac4.h gives, and the table
+    branches from it into the cave; the cave sits in the dead span past the
+    fast-load routine and below the savefile helper, and nothing outside the
+    span branches into it or builds its address; its gradient table names
+    seven calls of GuiMain_GetPlayerColor; the data words and flag bytes are
+    BSS no code of the game names; and no mod's word, cave or code touches any
+    of it.
+    """
+    print("\nNPEA00423 HUD colours (qwark's own)")
+    own = os.path.join(QWARK, "src", "games", "switches_own.c")
+    text = open(own, encoding="utf-8").read()
+    m = re.search(r"static const u8 sw_rac4_own_hud\[\] = \{(.*?)\};", text, re.S)
+    cave = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+    m = re.search(r"sw_rac4_own_caves\[\] = \{\s*\{ (0x[0-9A-Fa-f]+)u,", text)
+    at = int(m.group(1), 16) if m else 0
+    m = re.search(r"sw_rac4_own_sites\[\] = \{(.*?)\};", text, re.S)
+    sites = [(int(a, 16), int(w, 16)) for a, w in
+             re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
+    ok(len(cave) > 0 and len(sites) == 4, "switches_own.c has Deadlocked's cave and four sites")
+    if not cave or len(sites) != 4:
+        return
+
+    h = open(os.path.join(QWARK, "src", "games", "rac4.h"), encoding="utf-8").read()
+    orig = [int(x, 16) for x in re.findall(
+        r"#define RAC4_HUD_ORIG_(?:COLOUR|GUN_LOW|GUN_HIGH|GADGET)\s+(0x[0-9A-Fa-f]+)u", h)]
+    ok(len(orig) == 4 and all(elf.word(a) == o for (a, _), o in zip(sites, orig)),
+       "each site holds the game's word rac4.h names: %s" %
+       ", ".join("0x%08X" % elf.word(a) for a, _ in sites))
+    ok(all(at <= branch_target(a, w) < at + len(cave) and (w & 0xFC000003) == 0x48000000 for a, w in sites),
+       "and each site's word is a plain branch into the cave")
+
+    span_lo, span_hi = 0x00667BCC, 0x00667F70
+    ok(at == 0x00667DEC and at + len(cave) <= span_hi,
+       "the cave, 0x%08X..0x%08X, follows the fast-load routine and ends below the savefile helper" %
+       (at, at + len(cave)))
+    branches, words, pairs = refs_into(elf, at, at + len(cave))
+    outside = [(a, t) for a, t in branches if not span_lo <= a < span_hi]
+    ok(not outside and not pairs and all(0x009A0870 <= a < 0x009A08B0 for a, _ in words),
+       "nothing outside the dead span branches into it or builds its address; only the span's own "
+       "descriptors, which nothing names, hold an address in it")
+    _, dwords, dpairs = refs_into(elf, 0x009A0870, 0x009A08B0)
+    ok(not dwords and not dpairs, "and nothing names those descriptors")
+
+    gp = 0x00360F78
+    table = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(len(cave) - 32, len(cave), 4)]
+    ok(table[-1] == 0 and all(branch_target(r - 4, elf.word(r - 4)) == gp and elf.word(r - 4) & 1
+                              for r in table[:-1]) and len(table) == 8,
+       "the gradient table is seven return addresses of bl GuiMain_GetPlayerColor and a 0: %s" %
+       ", ".join("0x%06X" % (r - 4) for r in table[:-1]))
+
+    data_lo, data_hi = 0x015CD783, 0x015CD7A4
+    rv, rfs, rms, _, _ = elf.rw
+    _, w2, p2 = refs_into(elf, data_lo, data_hi)
+    ok(rv + rfs <= data_lo and data_hi <= rv + rms and not w2 and not p2,
+       "the flag bytes and words, 0x%08X..0x%08X, are BSS no code of the game names" % (data_lo, data_hi))
+
+    ours = [(at, at + len(cave), "HUD cave"), (data_lo, data_hi, "HUD data")]
+    ours += [(a, a + 4, "HUD site") for a, _ in sites]
+    known = mod_entries(roots, "NPEA00423")
+    clashes = []
+    for lo, hi, what in ours:
+        for a, b, label, mod, kind in known:
+            if a < hi and b > lo:
+                clashes.append("%s 0x%08X..0x%08X vs %s/%s %s 0x%08X..0x%08X" % (what, lo, hi, label, mod, kind, a, b))
+        clashes += ["%s: %s" % (what, x) for x in mod_pointers(roots, "NPEA00423", lo, hi)]
+    ok(not clashes, "no overlap with %d mod words and caves, and no mod's code names any of it" % len(known))
+    for c in clashes:
+        print("        " + c)
+
 
 def check_rac4(ok, elf, roots, bonus=None):
     hdr = header_defs(os.path.join(HERE, "mh_rac4.h"))
@@ -3776,6 +3856,7 @@ def main():
 
     print("mod libraries: " + (", ".join("%s (%s)" % (l, p) for l, p in roots) or "none"))
     check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots, bonus)
+    check_rac4_hud(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots)
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
     check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)

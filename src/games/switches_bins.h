@@ -66,6 +66,10 @@
 #define SW_RAC4_FLAG_CRASH_PATCHES 0x015CD780u
 #define SW_RAC4_FLAG_FAST_LOADS 0x015CD781u
 #define SW_RAC4_FLAG_REFILL_AMMO 0x015CD782u
+#define SW_RAC4_FLAG_HUD_FLAT 0x015CD783u
+#define SW_RAC4_FLAG_HUD_GRADIENT 0x015CD784u
+#define SW_RAC4_DATA_HUD_WORDS 0x015CD788u
+#define SW_RAC4_DATA_GUN_WORDS 0x015CD798u
 #define SW_RAC4_SITE_REFILL_AMMO_ADDR 0x001D7D18u
 #define SW_RAC4_SITE_REFILL_AMMO 0x4848FEB4u
 #define SW_RAC4_SITE_FAST_LOADS_1_ADDR 0x002A8AF4u
@@ -74,6 +78,14 @@
 #define SW_RAC4_SITE_FAST_LOADS_2 0x483BEFB0u
 #define SW_RAC4_SITE_FAST_LOADS_3_ADDR 0x002A8CC8u
 #define SW_RAC4_SITE_FAST_LOADS_3 0x483BF0D4u
+#define SW_RAC4_SITE_OWN_HUD_COLOUR_ADDR 0x0036102Cu
+#define SW_RAC4_SITE_OWN_HUD_COLOUR 0x48306DC0u
+#define SW_RAC4_SITE_OWN_GUN_LOW_ADDR 0x003611ACu
+#define SW_RAC4_SITE_OWN_GUN_LOW 0x48306CE4u
+#define SW_RAC4_SITE_OWN_GUN_HIGH_ADDR 0x003611D0u
+#define SW_RAC4_SITE_OWN_GUN_HIGH 0x48306CDCu
+#define SW_RAC4_SITE_OWN_GUN_GADGET_ADDR 0x00361224u
+#define SW_RAC4_SITE_OWN_GUN_GADGET 0x48306CA4u
 #define SW_RAC4_SITE_CRASH_DROPSHIP_1_ADDR 0x0051E1E8u
 #define SW_RAC4_SITE_CRASH_DROPSHIP_1 0x48149A30u
 #define SW_RAC4_SITE_CRASH_DROPSHIP_2_ADDR 0x0051E200u
@@ -103,6 +115,16 @@ struct sw_cave {
 	const u8 *bytes;
 	u32 len;
 };
+
+/*
+ * Revision 1.24: the pieces named own_*, which a console writes itself
+ * (switches_own.c, the one part of the switches the SPRX links): the caves,
+ * then the sites, each in address order, the same bytes as the patch's.
+ */
+#define SW_RAC4_OWN_NCAVES 1
+#define SW_RAC4_OWN_NSITES 4
+extern const struct sw_cave sw_rac4_own_caves[];
+extern const struct patch_word sw_rac4_own_sites[];
 
 /*
  * Everything one game's switches are: the caves, the site words that branch

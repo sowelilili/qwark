@@ -8223,7 +8223,8 @@ static void test_rac3(void)
 #define F4_GUN_HIGH      23
 #define F4_GUN_GADGET    24
 #define F4_HUD_CORRECT   25   /* and the HUD's brightness */
-void rac4_hud_tick(u8 planet, u8 cheat);
+#define F4_GRADIENT_CORRECT 26   /* revision 1.24, later: the gradients' apart */
+void rac4_hud_install(void);
 
 /* src/games/rac4.h, build 54: a planet's unlock, which a PLANET_LOAD of a locked planet runs first. */
 int rac4_planet_unlock(u8 planet);
@@ -8399,7 +8400,7 @@ static void test_rac4(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 24, "Deadlocked declares twenty-four features (build 56 added the HUD's colours and brightness)");
+		check_eq_u64(d->nfeatures, 25, "Deadlocked declares twenty-five features (build 56 added the HUD's colours and brightness)");
 		check_eq_u64(d->nreadouts, 15, "and fifteen readouts");
 		check_eq_u64(d->auto_default,
 		             ((u64)1 << F4_CRASH_PATCHES) | ((u64)1 << F4_SOFTLOCK_FIX),
@@ -9157,56 +9158,47 @@ static void test_rac4(void)
 	check(features_set(F4_SKIN, 22) == ST_BAD_ARG, "a skin past the end is BAD_ARG");
 
 	/*
-	 * Build 56: the HUD colour. GuiMain_TeamColors at 0x9E87CC, four words a
-	 * team, each { 0x80, B, G, R }: the colour, then 1.5 times it capped at
-	 * 255, half of it and halfway to 255. The HUD draws in team 1 with the HUD
-	 * colour cheat (0xB1F47A) at Default and in its byte less one otherwise.
+	 * Build 56: the HUD colour. Revision 1.24 (2026-10-26): qwark's own code
+	 * in the game (rac4.h) hands out qwark's words in place of the team
+	 * table's, so a set writes those words and never the table. The words:
+	 * colour, vivid, dark, light at 0x15CD788, then V11, V99 and the gadget
+	 * colour; the corrections' flag bytes at 0x15CD783 (flat) and 0x15CD784
+	 * (the gradients). The HUD draws in team 1 with the HUD colour cheat
+	 * (0xB1F47A) at Default and in its byte less one otherwise.
 	 */
 	{
-		/*
-		 * Revision 1.24: the words go in halved, rounded up, because the PS3's
-		 * HUD draws them twice as bright, and the shades are the sums on the
-		 * colour as shown, halved back (rac4.h).
-		 */
-		static const u8 want1[16] = {
-			0x80, 0x3A, 0x26, 0x80,  0x80, 0x57, 0x39, 0x80,
-			0x80, 0x1D, 0x13, 0x40,  0x80, 0x5D, 0x53, 0x80
-		};
-		static const u8 want11[16] = {
-			0x80, 0x00, 0x80, 0x01,  0x80, 0x00, 0x80, 0x02,
-			0x80, 0x00, 0x40, 0x01,  0x80, 0x40, 0x80, 0x40
+		static const u8 stock1[16] = {
+			0x80, 0x15, 0x13, 0x6D,  0x80, 0x1F, 0x1C, 0xA3,
+			0x80, 0x0A, 0x09, 0x36,  0x80, 0x8A, 0x89, 0xB6
 		};
 		static const u8 stock4[16] = {
 			0x80, 0x26, 0x99, 0xBF,  0x80, 0x39, 0xE5, 0xFF,
 			0x80, 0x13, 0x4C, 0x5F,  0x80, 0x92, 0xCC, 0xDF
 		};
-		/* Revision 1.24, 2026-10-26: the same with the brightness corrected. */
-		static const u8 stock4h[16] = {
-			0x80, 0x13, 0x4D, 0x60,  0x80, 0x1D, 0x74, 0x80,
-			0x80, 0x0A, 0x27, 0x30,  0x80, 0x49, 0x66, 0x70
-		};
-		u8 got[16], guard[16];
+		static const u8 zeros[28] = { 0 };
+		u8 table[11 * 16], got[11 * 16];
 		u8 info[SESSION_INFO_SIZE];
 		const struct game_describe *d = g->describe();
-		u32 i;
-		int found = 0;
+		u32 i, w;
+		int found = 0, on = -1;
 
 		for (i = 0; i < d->nfeatures; i++) {
 			const struct feature_desc *f = &d->features[i];
 			if (f->id == F4_HUD_COLOUR)
 				found = f->kind == FEATURE_COLOR && f->readout == 8 &&
-				        f->flags == FEATURE_FLAG_STOCK &&
+				        f->flags == (FEATURE_FLAG_STOCK | FEATURE_FLAG_WRITES_CODE) &&
 				        strcmp(f->label, "HUD colour") == 0 &&
 				        strcmp(d->groups[f->group], "Cosmetics") == 0;
 		}
-		check(found, "the HUD colour is a STOCK COLOR in Cosmetics, mirrored by readout 8");
+		check(found, "the HUD colour is a STOCK, WRITES_CODE COLOR in Cosmetics, mirrored by readout 8");
 
 		/* Revision 1.24: its three shades, flagged SHADE and following feature 18. */
 		found = 0;
 		for (i = 0; i < d->nfeatures; i++) {
 			const struct feature_desc *f = &d->features[i];
 			if (f->id >= F4_HUD_VIVID && f->id <= F4_HUD_LIGHT)
-				found += f->kind == FEATURE_COLOR && f->flags == FEATURE_FLAG_SHADE &&
+				found += f->kind == FEATURE_COLOR &&
+				         f->flags == (FEATURE_FLAG_SHADE | FEATURE_FLAG_WRITES_CODE) &&
 				         f->aux == F4_HUD_COLOUR && f->readout == f->id - F4_HUD_VIVID + 9 &&
 				         f->min == 0 && f->max == 0 &&
 				         strcmp(d->groups[f->group], "Cosmetics") == 0;
@@ -9216,274 +9208,223 @@ static void test_rac4(void)
 		      "and the readouts are named");
 
 		/*
-		 * Revision 1.24, 2026-10-26: the weapons' colours, STOCK COLORs mirrored
-		 * by readouts 12 to 14, and the brightness, a plain toggle.
+		 * The weapons' colours, STOCK COLORs mirrored by readouts 12 to 14, and
+		 * the two corrections, toggles; every one WRITES_CODE.
 		 */
 		found = 0;
 		for (i = 0; i < d->nfeatures; i++) {
 			const struct feature_desc *f = &d->features[i];
 			if (f->id >= F4_GUN_LOW && f->id <= F4_GUN_GADGET)
-				found += f->kind == FEATURE_COLOR && f->flags == FEATURE_FLAG_STOCK &&
+				found += f->kind == FEATURE_COLOR &&
+				         f->flags == (FEATURE_FLAG_STOCK | FEATURE_FLAG_WRITES_CODE) &&
 				         f->readout == f->id - F4_GUN_LOW + 12 &&
 				         strcmp(d->readouts[f->readout], f->label) == 0 &&
 				         strcmp(d->groups[f->group], "Cosmetics") == 0;
 			if (f->id == F4_HUD_CORRECT)
-				found += f->kind == FEATURE_TOGGLE && f->flags == 0 &&
+				found += f->kind == FEATURE_TOGGLE && f->flags == FEATURE_FLAG_WRITES_CODE &&
 				         strcmp(f->label, "Correct HUD brightness") == 0;
+			if (f->id == F4_GRADIENT_CORRECT)
+				found += f->kind == FEATURE_TOGGLE && f->flags == FEATURE_FLAG_WRITES_CODE &&
+				         strcmp(f->label, "Correct gradient brightness") == 0 &&
+				         strcmp(d->groups[f->group], "Cosmetics") == 0;
 		}
-		check(found == 4, "the three weapon colours are STOCK COLORs, readouts 12 to 14, and 25 a toggle");
+		check(found == 5, "the three weapon colours are STOCK COLORs, readouts 12 to 14, and 25 and 26 toggles");
 
-		/* The brightness on: the words go in halved, as the checks below expect. */
-		check(features_set(F4_HUD_CORRECT, 1) == ST_OK, "Correct HUD brightness goes on");
+		/* ------------------------------------------- the code, on a console */
+		{
+			u8 cave[4];
 
-		memset(guard, 0x5A, sizeof(guard));
-		host_poke(0x009E87CCu, guard, 16);
-		host_poke(0x009E87CCu + 32, guard, 16);
-		host_poke(0x00B1F47Au, (const u8 *)"\000", 1);
+			host_poke(0x00667DECu, zeros, 4);
+			for (i = 0; i < SW_RAC4_OWN_NSITES; i++) {
+				static const u32 orig[4] = { 0x60830000u, 0x808487CCu, 0x80630050u, 0x8083004Cu };
+				u8 b4[4];
+
+				be32_put(b4, orig[i]);
+				host_poke(sw_rac4_own_sites[i].addr, b4, 4);
+			}
+			be32_put(cave, 0x12345678u);
+			host_poke(0x003611D0u, cave, 4);
+			rac4_hud_install();
+			host_peek(0x00667DECu, cave, 4);
+			mem_read_u32(0x0036102Cu, &w);
+			check(be32_get(cave) == 0 && w == 0x60830000u,
+			      "a site that holds another word keeps the code out altogether");
+
+			be32_put(cave, 0x80630050u);
+			host_poke(0x003611D0u, cave, 4);
+			rac4_hud_install();
+			found = sw_rac4_own_caves[0].addr == 0x00667DECu && sw_rac4_own_caves[0].len <= 0x00667F70u - 0x00667DECu;
+			for (i = 0; found && i < sw_rac4_own_caves[0].len; i += 4) {
+				mem_read_u32(sw_rac4_own_caves[0].addr + i, &w);
+				if (w != be32_get(sw_rac4_own_caves[0].bytes + i)) found = 0;
+			}
+			check(found, "with the game's words there, the cave goes in, below the savefile helper");
+			found = 1;
+			for (i = 0; i < SW_RAC4_OWN_NSITES; i++) {
+				mem_read_u32(sw_rac4_own_sites[i].addr, &w);
+				if (w != sw_rac4_own_sites[i].value || (w & 0xFC000003u) != 0x48000000u) found = 0;
+			}
+			check(found, "and the four sites branch to it");
+			check(sw_rac4_own_sites[0].addr == 0x0036102Cu && sw_rac4_own_sites[1].addr == 0x003611ACu &&
+			      sw_rac4_own_sites[2].addr == 0x003611D0u && sw_rac4_own_sites[3].addr == 0x00361224u,
+			      "GetPlayerColor's last word and GetGadgetColor's three loads");
+			host_poke(0x00667DECu, zeros, 4);
+			rac4_hud_install();
+			mem_read_u32(0x00667DECu, &w);
+			check(w == 0, "a process that has it already is left be");
+			host_poke(0x00667DECu, sw_rac4_own_caves[0].bytes, 4);
+		}
+
+		/* ------------------------------------------------------ the colour */
+		for (i = 0; i < sizeof(table); i++) table[i] = (u8)(0x5A ^ i);
+		memcpy(table + 16, stock1, 16);
+		memcpy(table + 4 * 16, stock4, 16);
+		be32_put(table, 0x80734C00u);          /* team 0's colour, V11 */
+		be32_put(table + 0x50, 0x80632773u);   /* team 5's, V99 */
+		host_poke(0x009E87CCu, table, sizeof(table));
+		host_poke(0x015CD783u, zeros, 2);
+		host_poke(0x015CD788u, zeros, 28);
+		host_poke(0x00B1F47Au, (const u8 *)" ", 1);
+
+		pump(40);
+		session_info_copy(info, sizeof(info));
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x016D1315u,
+		             "with every word 0 the colour reads as team 1's own, flagged AUTO");
+		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01A31C1Fu, "and so does each shade");
+		check_eq_u64(be32_get(info + 64 + 12 * 4), 0x01004C73u, "and the V11 colour, team 0's word");
+
 		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "the HUD colour writes");
-		host_peek(0x009E87CCu + 16, got, 16);
-		check(memcmp(got, want1, 16) == 0, "team 1's four words, the colour and its three variants, halved");
-		host_peek(0x009E87CCu, got, 16);
-		check(memcmp(got, guard, 16) == 0, "team 0 untouched");
-		host_peek(0x009E87CCu + 32, got, 16);
-		check(memcmp(got, guard, 16) == 0, "and team 2");
+		host_peek(0x015CD788u, got, 16);
+		check(be32_get(got) == 0x80734CFFu && be32_get(got + 4) == 0x80AC72FFu &&
+		      be32_get(got + 8) == 0x8039267Fu && be32_get(got + 12) == 0x80B9A5FFu,
+		      "qwark's four words: the colour and the game's sums on it");
+		host_peek(0x009E87CCu, got, sizeof(table));
+		check(memcmp(got, table, sizeof(table)) == 0, "and not a byte of the team table");
 		pump(40);
 		session_info_copy(info, sizeof(info));
-		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C74u, "readout 8 is the colour as shown, to the even value");
-		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01FF72AEu, "readout 9 the vivid shade, flagged AUTO");
-		check_eq_u64(be32_get(info + 64 + 10 * 4), 0x0180263Au, "readout 10 the dark one");
-		check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01FFA6BAu, "readout 11 the light one");
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C73u, "readout 8 is the colour picked");
+		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01FF72ACu, "readout 9 the vivid shade, flagged AUTO");
+		check_eq_u64(be32_get(info + 64 + 10 * 4), 0x017F2639u, "readout 10 the dark one");
+		check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01FFA5B9u, "readout 11 the light one");
+
+		/* The overrides: a shade set by hand stays, the others follow, AUTO puts one back. */
+		check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK &&
+		      features_set(F4_HUD_COLOUR, 0x00102030u) == ST_OK, "a vivid override, then a new colour");
+		host_peek(0x015CD788u, got, 16);
+		check(be32_get(got) == 0x80302010u && be32_get(got + 4) == 0x80563412u &&
+		      be32_get(got + 8) == 0x80181008u && be32_get(got + 12) == 0x80978F87u,
+		      "the override stays and dark and light follow");
+		check(features_set(F4_HUD_VIVID, 0x01000000u) == ST_OK, "AUTO on the vivid shade");
+		host_peek(0x015CD78Cu, got, 4);
+		check_eq_u64(be32_get(got), 0x80483018u, "works it out again");
+		check(features_set(F4_HUD_DARK, 0x01ABCDEFu) == ST_OK, "AUTO ignores the colour bits");
+		host_peek(0x015CD790u, got, 4);
+		check_eq_u64(be32_get(got), 0x80181008u, "and leaves an automatic shade as it was");
+
+		/* STOCK: AUTO on the colour puts every word to 0, overrides and all. */
+		check(features_set(F4_HUD_DARK, 0x00445566u) == ST_OK &&
+		      features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "an override, then AUTO on the colour");
+		host_peek(0x015CD788u, got, 16);
+		check(memcmp(got, zeros, 16) == 0, "every word back to 0, the game's own");
+
+		/* An override over the game's own colour: that shade alone. */
+		host_poke(0x00B1F47Au, (const u8 *)"\005", 1);
+		check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK, "an override over the stock colour");
+		host_peek(0x015CD788u, got, 16);
+		check(be32_get(got) == 0 && be32_get(got + 4) == 0x80563412u && be32_get(got + 8) == 0 &&
+		      be32_get(got + 12) == 0, "writes its own word and leaves the others 0");
+		pump(40);
+		session_info_copy(info, sizeof(info));
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00BF9926u,
+		             "the colour reads as the cheat's team, 4, without AUTO: a shade is overridden");
+		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x00123456u, "the override as picked");
+		check_eq_u64(be32_get(info + 64 + 10 * 4), 0x015F4C13u, "and the dark shade team 4's, automatic");
+		check(features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "and stock again");
 
 		/*
-		 * Revision 1.24, the overrides. A shade set by hand stays when the colour
-		 * changes, the automatic ones follow it, and AUTO puts one back.
+		 * The user's bug: with the cheat on team 4 a HUD set changed the gadget
+		 * colour, team 4's light word. Neither side touches the other's words now.
 		 */
-		{
-			static const u8 over[16] = {
-				0x80, 0x18, 0x10, 0x08,  0x80, 0x2B, 0x1A, 0x09,
-				0x80, 0x0C, 0x08, 0x04,  0x80, 0x4C, 0x48, 0x44
-			};
-			static const u8 back[4] = { 0x80, 0x24, 0x18, 0x0C };
-			static const u8 zeros[16] = { 0 };
+		check(features_set(F4_GUN_GADGET, 0x00FF0000u) == ST_OK &&
+		      features_set(F4_HUD_COLOUR, 0x0000FF00u) == ST_OK &&
+		      features_set(F4_HUD_LIGHT, 0x000000FFu) == ST_OK, "the gadget colour, then the HUD's, cheat on team 4");
+		host_peek(0x015CD7A0u, got, 4);
+		check_eq_u64(be32_get(got), 0x800000FFu, "the gadget colour is still its own word");
+		host_peek(0x009E87CCu, got, sizeof(table));
+		check(memcmp(got, table, sizeof(table)) == 0, "and the table is still the game's");
 
-			check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK, "a vivid override writes");
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, want1, 4) == 0 && memcmp(got + 4, over + 4, 4) == 0 &&
-			      memcmp(got + 8, want1 + 8, 8) == 0, "only the vivid word");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 9 * 4), 0x00123456u, "and its readout drops AUTO");
+		/* ----------------------------------------------- the corrections */
+		check(features_set(F4_HUD_CORRECT, 1) == ST_OK, "Correct HUD brightness goes on");
+		host_peek(0x015CD783u, got, 2);
+		check(got[0] == 1 && got[1] == 0, "its flag byte, and only its");
+		check(features_set(F4_GRADIENT_CORRECT, 1) == ST_OK, "Correct gradient brightness goes on");
+		host_peek(0x015CD783u, got, 2);
+		check(got[0] == 1 && got[1] == 1, "its own byte beside it");
+		host_peek(0x015CD788u, got, 28);
+		check(be32_get(got) == 0x8000FF00u && be32_get(got + 12) == 0x80FF0000u &&
+		      be32_get(got + 24) == 0x800000FFu,
+		      "the corrections change no colour word: the gadget colour is not halved");
+		check(g->toggle_read(F4_GRADIENT_CORRECT, &on) == ST_OK && on == 1,
+		      "and the flag reads back");
+		check(features_set(F4_HUD_CORRECT, 0) == ST_OK && features_set(F4_GRADIENT_CORRECT, 0) == ST_OK,
+		      "both off");
+		host_peek(0x015CD783u, got, 2);
+		check(got[0] == 0 && got[1] == 0, "both bytes 0");
+		check(g->toggle_read(F4_HUD_CORRECT, &on) == ST_OK && on == 0, "and read back off");
 
-			check(features_set(F4_HUD_COLOUR, 0x00102030u) == ST_OK, "a new colour over it");
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, over, 16) == 0, "keeps the override and works out dark and light again");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 9 * 4), 0x00123456u, "the vivid readout still the override");
-			check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01889098u, "the light one AUTO from the new colour");
-
-			check(features_set(F4_HUD_VIVID, 0x01000000u) == ST_OK, "AUTO on the vivid shade");
-			host_peek(0x009E87CCu + 20, got, 4);
-			check(memcmp(got, back, 4) == 0, "works it out from the colour again");
-			check(features_set(F4_HUD_DARK, 0x01ABCDEFu) == ST_OK &&
-			      features_set(F4_HUD_LIGHT, 0x00FFFFFFu) == ST_OK, "AUTO ignores the colour bits");
-			host_peek(0x009E87CCu + 24, got, 8);
-			check(memcmp(got, over + 8, 4) == 0, "the dark word stays worked out");
-			check(got[4] == 0x80 && got[5] == 0x80 && got[6] == 0x80 && got[7] == 0x80, "the light one white, halved");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 11 * 4), 0x00FFFFFFu, "and its readout an override");
-
-			/* A shade the game has not filled yet (0) is automatic. */
-			host_poke(0x009E87CCu + 16 + 4, zeros, 12);
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 10 * 4), 0x01081018u, "a zero word reads AUTO, worked out");
-			check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "the colour again");
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, want1, 16) == 0, "fills every zero shade");
-
-			/*
-			 * STOCK: AUTO on the colour puts the game's own four words back,
-			 * the colour halved and the shades worked out from it, while the
-			 * brightness is corrected.
-			 */
-			host_poke(0x00B1F47Au, (const u8 *)"\005", 1);
-			check(features_set(F4_HUD_DARK, 0x00445566u) == ST_OK &&
-			      features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "AUTO on the colour, team 4");
-			host_peek(0x009E87CCu + 4 * 16, got, 16);
-			check(memcmp(got, stock4h, 16) == 0, "puts its stock words back halved, the override too");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x01C09A26u, "the colour reads as the game's own, flagged AUTO");
-			check_eq_u64(be32_get(info + 64 + 10 * 4), 0x01604E14u, "the dark shade worked out from it");
-			check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK, "an override over the stock colour");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00C09A26u, "takes the colour's AUTO away");
-
-			/* Off, stock is the game's words exactly, and they read as they are. */
-			check(features_set(F4_HUD_CORRECT, 0) == ST_OK &&
-			      features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "the brightness off, then stock");
-			host_peek(0x009E87CCu + 4 * 16, got, 16);
-			check(memcmp(got, stock4, 16) == 0, "puts the game's own words back as they ship");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x01BF9926u, "and the colour reads as the word, flagged AUTO");
-			check_eq_u64(be32_get(info + 64 + 10 * 4), 0x015F4C13u, "the dark shade the game's own sum");
-			check(features_set(F4_HUD_CORRECT, 1) == ST_OK, "the brightness on again");
-			host_poke(0x00B1F47Au, (const u8 *)" ", 1);
-		}
-
-		host_poke(0x00B1F47Au, (const u8 *)"\013", 1);
-		check(features_set(F4_HUD_COLOUR, 0x0002FF00u) == ST_OK, "with the cheat on the last team");
-		host_peek(0x009E87CCu + 10 * 16, got, 16);
-		check(memcmp(got, want11, 16) == 0, "team 10's words, the vivid green capped at 0xFF");
+		/* --------------------------------------------- the weapons' colours */
+		check(features_set(F4_GUN_LOW, 0x00123456u) == ST_OK &&
+		      features_set(F4_GUN_HIGH, 0x00ABCDEFu) == ST_OK, "V11 and V99 write");
+		host_peek(0x015CD798u, got, 12);
+		check(be32_get(got) == 0x80563412u && be32_get(got + 4) == 0x80EFCDABu &&
+		      be32_get(got + 8) == 0x800000FFu, "each its own word");
 		pump(40);
 		session_info_copy(info, sizeof(info));
-		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x0002FF00u, "and the readout follows the cheat");
+		check(be32_get(info + 64 + 12 * 4) == 0x00123456u && be32_get(info + 64 + 13 * 4) == 0x00ABCDEFu &&
+		      be32_get(info + 64 + 14 * 4) == 0x00FF0000u, "and read as picked, no AUTO");
+		check(features_set(F4_GUN_LOW, 0x01000000u) == ST_OK &&
+		      features_set(F4_GUN_HIGH, 0x01000000u) == ST_OK &&
+		      features_set(F4_GUN_GADGET, 0x01FFFFFFu) == ST_OK, "AUTO on each");
+		host_peek(0x015CD798u, got, 12);
+		check(memcmp(got, zeros, 12) == 0, "puts each word to 0, the game's own");
+		pump(40);
+		session_info_copy(info, sizeof(info));
+		check(be32_get(info + 64 + 12 * 4) == 0x01004C73u && be32_get(info + 64 + 14 * 4) == 0x01DFCC92u,
+		      "which reads as the table's, flagged AUTO");
 
-		host_poke(0x00B1F47Au, (const u8 *)"\014", 1);
-		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "a cheat byte past the options");
-		host_peek(0x009E87CCu + 16, got, 16);
-		check(memcmp(got, want1, 16) == 0, "goes to the hero's team, never past the table");
+		/*
+		 * Revision 1.24: FEATURE_SET_AUTO on a COLOR keeps the value in config,
+		 * and the console sets it again as it enters the game: the words are
+		 * zero in a new process.
+		 */
+		check(features_set_auto_value(F4_HUD_COLOUR, 1, 0x00102030u) == ST_OK &&
+		      features_set_auto_value(F4_HUD_VIVID, 1, 0x01000000u) == ST_OK &&
+		      features_set_auto_value(F4_GUN_HIGH, 1, 0x00ABCDEFu) == ST_OK,
+		      "three colours kept for the boot");
+		check((features_toggle_auto() & (((u64)1 << F4_HUD_COLOUR) | ((u64)1 << F4_HUD_VIVID) |
+		                                  ((u64)1 << F4_GUN_HIGH))) ==
+		      (((u64)1 << F4_HUD_COLOUR) | ((u64)1 << F4_HUD_VIVID) | ((u64)1 << F4_GUN_HIGH)),
+		      "their bits are in toggle_auto");
+		check(config_feature_auto("NPEA00423", "HUD colour") == 0x80102030u &&
+		      config_feature_auto("NPEA00423", "HUD vivid shade") == 0x81000000u,
+		      "config keeps each value with bit 31 set");
+		check(features_set_auto_value(F4_MAX_AMMO, 1, 0) == ST_BAD_ARG, "an ACTION still has none");
+		host_poke(0x015CD788u, zeros, 28);
+		features_apply_colors();
+		host_peek(0x015CD788u, got, 28);
+		check(be32_get(got) == 0x80302010u && be32_get(got + 4) == 0x80483018u &&
+		      be32_get(got + 20) == 0x80EFCDABu, "and they go back in");
+		check(features_set_auto_value(F4_HUD_COLOUR, 0, 0) == ST_OK &&
+		      features_set_auto_value(F4_HUD_VIVID, 0, 0) == ST_OK &&
+		      features_set_auto_value(F4_GUN_HIGH, 0, 0) == ST_OK, "and forgotten");
+		check(config_feature_auto("NPEA00423", "HUD colour") == 0 &&
+		      (features_toggle_auto() & ((u64)1 << F4_HUD_COLOUR)) == 0, "config and the bit with it");
+
+		host_poke(0x015CD783u, zeros, 2);
+		host_poke(0x015CD788u, zeros, 28);
+		memset(table, 0, sizeof(table));
+		host_poke(0x009E87CCu, table, sizeof(table));
 		host_poke(0x00B1F47Au, (const u8 *)"\000", 1);
-
-		/*
-		 * Revision 1.24, 2026-10-26: Correct HUD brightness. Off, a colour goes
-		 * in as given and reads as given, and stock is the game's words; on,
-		 * the HUD's team is held halved, stock and all. The toggle changes the
-		 * team over at once in a level and otherwise at the first tick of one
-		 * (rac4_hud_tick), each word still standing for the colour it did.
-		 */
-		{
-			static const u8 off1[16] = {
-				0x80, 0x73, 0x4C, 0xFF,  0x80, 0xAC, 0x72, 0xFF,
-				0x80, 0x39, 0x26, 0x7F,  0x80, 0xB9, 0xA5, 0xFF
-			};
-			static const u8 stock1[16] = {
-				0x80, 0x15, 0x13, 0x6D,  0x80, 0x1F, 0x1C, 0xA3,
-				0x80, 0x0A, 0x09, 0x36,  0x80, 0x8A, 0x89, 0xB6
-			};
-			static const u8 half1[16] = {
-				0x80, 0x0B, 0x0A, 0x37,  0x80, 0x11, 0x0F, 0x53,
-				0x80, 0x06, 0x05, 0x1C,  0x80, 0x45, 0x45, 0x5B
-			};
-			static const u8 guns[12] = {
-				0x80, 0x73, 0x4C, 0x00,  0x80, 0x92, 0xCC, 0xDF,  0x80, 0x63, 0x27, 0x73
-			};
-
-			check(features_set(F4_HUD_CORRECT, 0) == ST_OK &&
-			      features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "a colour with the brightness off");
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, off1, 16) == 0, "goes in as given, the shades the sums on it");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C73u, "and reads back as given");
-			check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01FF72ACu, "the vivid shade AUTO, as given");
-
-			check(features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "stock with it off");
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, stock1, 16) == 0, "is team 1's words as the game ships them");
-			check(features_set(F4_HUD_CORRECT, 1) == ST_OK, "the toggle on");
-			rac4_hud_tick(1, 0);
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, half1, 16) == 0, "a level holds team 1 halved, stock and all");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x016E1416u, "the stock colour still reads AUTO, as it now draws");
-			check(features_set(F4_HUD_CORRECT, 0) == ST_OK, "the toggle off");
-			rac4_hud_tick(1, 0);
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, stock1, 16) == 0, "and team 1 is the game's own words again");
-
-			check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "a colour, off");
-			check(features_set(F4_HUD_CORRECT, 1) == ST_OK, "then on");
-			rac4_hud_tick(1, 0);
-			host_peek(0x009E87CCu + 16, got, 16);
-			check(memcmp(got, want1, 16) == 0, "halves it, as a set with it on would");
-			check(features_set(F4_HUD_CORRECT, 0) == ST_OK, "and off");
-			rac4_hud_tick(1, 0);
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C74u, "the colour back as given, to the even value");
-
-			/*
-			 * The weapons' colours: team 0's colour (V11), team 5's (V99) and
-			 * team 4's light word (a gadget), written as given; AUTO puts the
-			 * game's own back, and a HUD set leaves them alone with the cheat
-			 * at Default.
-			 */
-			host_poke(0x009E87CCu, guns, 4);
-			host_poke(0x009E87CCu + 0x4C, guns + 4, 8);
-			check(features_set(F4_HUD_COLOUR, 0x00102030u) == ST_OK, "a HUD colour, the cheat at Default");
-			host_peek(0x009E87CCu, got, 4);
-			host_peek(0x009E87CCu + 0x4C, got + 4, 8);
-			check(memcmp(got, guns, 12) == 0, "leaves the three weapon words alone");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check(be32_get(info + 64 + 12 * 4) == 0x01004C73u && be32_get(info + 64 + 13 * 4) == 0x01732763u &&
-			      be32_get(info + 64 + 14 * 4) == 0x01DFCC92u, "which read as the game's own, flagged AUTO");
-			check(features_set(F4_GUN_LOW, 0x00123456u) == ST_OK &&
-			      features_set(F4_GUN_HIGH, 0x00ABCDEFu) == ST_OK &&
-			      features_set(F4_GUN_GADGET, 0x00FF0000u) == ST_OK, "the three weapon colours write");
-			host_peek(0x009E87CCu, got, 4);
-			check(be32_get(got) == 0x80563412u, "V11 is team 0's colour word, as given");
-			host_peek(0x009E87CCu + 0x4C, got, 8);
-			check(be32_get(got) == 0x800000FFu && be32_get(got + 4) == 0x80EFCDABu,
-			      "the gadget team 4's light word and V99 team 5's colour");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check(be32_get(info + 64 + 12 * 4) == 0x00123456u && be32_get(info + 64 + 13 * 4) == 0x00ABCDEFu &&
-			      be32_get(info + 64 + 14 * 4) == 0x00FF0000u, "and read back as given, without AUTO");
-			check(features_set(F4_GUN_LOW, 0x01000000u) == ST_OK &&
-			      features_set(F4_GUN_HIGH, 0x01000000u) == ST_OK &&
-			      features_set(F4_GUN_GADGET, 0x01FFFFFFu) == ST_OK, "AUTO on each");
-			host_peek(0x009E87CCu, got, 4);
-			host_peek(0x009E87CCu + 0x4C, got + 4, 8);
-			check(memcmp(got, guns, 12) == 0, "puts the game's own words back");
-
-			/*
-			 * Re-applied at the first tick of each level and team: FEATURE_SET_AUTO
-			 * on a COLOR keeps the value in config and its bit in toggle_auto,
-			 * and rac4_hud_tick sets it into the team the HUD draws in then.
-			 */
-			check(features_set_auto_value(F4_HUD_COLOUR, 1, 0x00102030u) == ST_OK &&
-			      features_set_auto_value(F4_HUD_VIVID, 1, 0x01000000u) == ST_OK &&
-			      features_set_auto_value(F4_GUN_HIGH, 1, 0x00ABCDEFu) == ST_OK,
-			      "FEATURE_SET_AUTO takes a COLOR and its value");
-			check((features_toggle_auto() & (((u64)1 << F4_HUD_COLOUR) | ((u64)1 << F4_HUD_VIVID) |
-			                                  ((u64)1 << F4_GUN_HIGH))) ==
-			      (((u64)1 << F4_HUD_COLOUR) | ((u64)1 << F4_HUD_VIVID) | ((u64)1 << F4_GUN_HIGH)),
-			      "their bits are in toggle_auto");
-			check(config_feature_auto("NPEA00423", "HUD colour") == 0x80102030u &&
-			      config_feature_auto("NPEA00423", "HUD vivid shade") == 0x81000000u,
-			      "config keeps each value with bit 31 set");
-			check(features_set_auto_value(F4_MAX_AMMO, 1, 0) == ST_BAD_ARG, "an ACTION still has none");
-			check(features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "the HUD back to stock");
-			host_poke(0x00B1F47Au, (const u8 *)"\003", 1);
-			rac4_hud_tick(3, 3);
-			host_peek(0x009E87CCu + 16, got, 4);
-			check(memcmp(got, stock1, 4) == 0, "a level with the cheat on team 2 leaves team 1 alone");
-			host_peek(0x009E87CCu + 2 * 16, got, 4);
-			check(be32_get(got) == 0x80302010u, "and puts the HUD colour in team 2");
-			host_peek(0x009E87CCu + 0x50, got, 4);
-			check(be32_get(got) == 0x80EFCDABu, "the V99 colour comes back");
-			pump(40);
-			session_info_copy(info, sizeof(info));
-			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00102030u, "and the HUD colour reads it there");
-			features_set(F4_HUD_COLOUR, 0x01000000u);
-			check(features_set_auto_value(F4_HUD_COLOUR, 0, 0) == ST_OK &&
-			      features_set_auto_value(F4_HUD_VIVID, 0, 0) == ST_OK &&
-			      features_set_auto_value(F4_GUN_HIGH, 0, 0) == ST_OK, "and forgotten");
-			check(config_feature_auto("NPEA00423", "HUD colour") == 0 &&
-			      (features_toggle_auto() & ((u64)1 << F4_HUD_COLOUR)) == 0, "config and the bit with it");
-			features_set(F4_GUN_HIGH, 0x01000000u);
-			features_set(F4_HUD_COLOUR, 0x01000000u);
-			host_poke(0x00B1F47Au, (const u8 *)"\000", 1);
-			features_set(F4_HUD_COLOUR, 0x01000000u);
-			rac4_hud_tick(0xFF, 0);
-		}
 	}
 
 	check(session_die() == ST_OK, "DIE runs");
@@ -13130,7 +13071,7 @@ static void test_mod_previous(void)
 struct swt_cave {
 	u32 addr;
 	u8  nwords;
-	u32 w[40];
+	u32 w[72];
 };
 
 struct swt_game {
@@ -13281,19 +13222,39 @@ static const struct swt_cave g_swt_rac4_caves[] = {
 	 */
 	{ 0x00667DB8u, 13, { 0x3CA0010Bu, 0x80A57FE0u, 0x2C050000u, 0x4D820020u, 0xF821FF91u,
 	                     0x7C0802A6u, 0xF8010080u, 0x4BC3EBC1u, 0x4BC4222Du, 0xE8010080u,
-	                     0x7C0803A6u, 0x38210070u, 0x4E800020u } }
+	                     0x7C0803A6u, 0x38210070u, 0x4E800020u } },
+	/*
+	 * Revision 1.24: qwark's own HUD colours (sw_rac4.s, own_*): GetPlayerColor's
+	 * trampoline, GetGadgetColor's three loads' and the gradient calls' return addresses.
+	 */
+	{ 0x00667DECu, 70, { 0x2B9F0003u, 0x419D0098u, 0x2F9E0000u, 0x409E0090u, 0x3CA000B3u, 0x80A56DF4u,
+	                    0x2F850001u, 0x419E0080u, 0x3CA0015Du, 0x38A5D788u, 0x57E6103Au, 0x7CC5302Eu,
+	                    0x2F860000u, 0x419E0008u, 0x60C40000u, 0x80C10094u, 0x3CE00066u, 0x38E77EE4u,
+	                    0x80070000u, 0x7F803000u, 0x419E0018u, 0x38E70004u, 0x2F800000u, 0x409EFFECu,
+	                    0x88C5FFFBu, 0x48000008u, 0x88C5FFFCu, 0x2F860000u, 0x419E002Cu, 0x3CC0007Fu,
+	                    0x60C67F7Fu, 0x5487F87Eu, 0x7CE73038u, 0x3CC00001u, 0x60C60101u, 0x7C863038u,
+	                    0x7CE73214u, 0x5484000Eu, 0x7C843B78u, 0x60830000u, 0x4BCF91A4u, 0x3CA0015Du,
+	                    0x80A5D798u, 0x2F850000u, 0x808487CCu, 0x419E0008u, 0x60A40000u, 0x4BCF9308u,
+	                    0x3CC0015Du, 0x8006D79Cu, 0x2F800000u, 0x80630050u, 0x419E0008u, 0x60030000u,
+	                    0x4BCF9310u, 0x3CA0015Du, 0x80A5D7A0u, 0x2F850000u, 0x8083004Cu, 0x419E0008u,
+	                    0x60A40000u, 0x4BCF9348u, 0x0036F62Cu, 0x0036F640u, 0x0037CF10u, 0x0037D4C8u,
+	                    0x0037D4DCu, 0x0037D808u, 0x0037D81Cu, 0x00000000u } }
 };
 static const struct patch_word g_swt_rac4_sites[] = {
 	{ 0x001D7D18u, 0x4848FEB4u }, { 0x002A8AF4u, 0x483BF0F4u }, { 0x002A8C50u, 0x483BEFB0u },
 	{ 0x002A8CC8u, 0x483BF0D4u },
+	/* revision 1.24: GetPlayerColor's last word, GetGadgetColor's three loads */
+	{ 0x0036102Cu, 0x48306DC0u }, { 0x003611ACu, 0x48306CE4u }, { 0x003611D0u, 0x48306CDCu },
+	{ 0x00361224u, 0x48306CA4u },
 	{ 0x0051E1E8u, 0x48149A30u }, { 0x0051E200u, 0x48149A38u }, { 0x0051E21Cu, 0x48149A3Cu },
 	{ 0x0051E228u, 0x48149A50u }, { 0x0051E240u, 0x48149A58u }, { 0x0051E24Cu, 0x48149A64u },
 	{ 0x00618008u, 0x4804FCC0u }, { 0x00618024u, 0x4804FCC4u }, { 0x00618034u, 0x4804FCD4u },
 	{ 0x0061806Cu, 0x4804FCBCu }, { 0x008088ECu, 0x4BE5F45Cu }
 };
-static const u32 g_swt_rac4_flags[] = { 0x015CD780u, 0x015CD781u, 0x015CD782u };
+static const u32 g_swt_rac4_flags[] = { 0x015CD780u, 0x015CD781u, 0x015CD782u, 0x015CD783u, 0x015CD784u };
+/* Revision 1.24: the two brightness corrections are flag bytes qwark's HUD code reads. */
 static const struct patch_word g_swt_rac4_toggles[] = {
-	{ 0, 0x015CD780u }, { 2, 0x015CD781u }, { 3, 0x015CD782u }
+	{ 0, 0x015CD780u }, { 2, 0x015CD781u }, { 3, 0x015CD782u }, { 25, 0x015CD783u }, { 26, 0x015CD784u }
 };
 
 #define SWT_N(a) ((u8)(sizeof(a) / sizeof((a)[0])))
@@ -14022,7 +13983,8 @@ static const struct patch_word g_swt_rac2_b50_sites[] = {
 #define SWT_RAC4_B50_STAMP  0xEF1A07C3u
 #define SWT_RAC4_B53A_STAMP 0xBB16AF57u
 #define SWT_RAC4_B53B_STAMP 0xEEC44D7Cu
-#define SWT_RAC4_STAMP      0xE8661079u
+#define SWT_RAC4_B53_STAMP  0xE8661079u   /* builds 53 to 56 before revision 1.24's HUD colours */
+#define SWT_RAC4_STAMP      0xFCF26881u
 
 /* RaC2's dead span, and the part of it the switches take. */
 #define SWT_R2_SPAN_LO  0x0113EC64u
@@ -14642,7 +14604,8 @@ static void test_switches_rac4_fastloads(void)
 	const struct sw_desc *d = sw_desc_for_game(GAME_RAC4);
 	const struct game_api *g = game_for_title("NPEA00423");
 	struct swt_cave old_caves[18];
-	struct patch_word old_sites[15];
+	struct patch_word old_sites[15], pre[15];
+	u8 npre = 0;
 	u32 len = 0, oldlen = 0, i, k;
 	int ok, ran, same, kept;
 	int b;
@@ -14651,8 +14614,8 @@ static void test_switches_rac4_fastloads(void)
 
 	check(d != NULL && g != NULL, "Deadlocked has switches and a table");
 	if (d == NULL || g == NULL) return;
-	check(d->ncaves == 19 && d->nsites == 15, "nineteen caves and fifteen sites");
-	if (d->ncaves != 19 || d->nsites != 15) return;
+	check(d->ncaves == 20 && d->nsites == 19, "twenty caves and nineteen sites (revision 1.24 added the HUD's)");
+	if (d->ncaves != 20 || d->nsites != 19) return;
 
 	check(d->sites[1].addr == R4_FASTLOAD_1 && d->sites[2].addr == R4_TRANS_UPDATE &&
 	      d->sites[3].addr == R4_FL_FRAME,
@@ -14801,6 +14764,12 @@ static void test_switches_rac4_fastloads(void)
 
 	group("build 53: Deadlocked patches from builds 50 to 52 and from earlier in 53 are from another build");
 
+	/* Revision 1.24's HUD colour sites were in no earlier patch, nor its two flag bytes. */
+	for (i = 0; i < SWT_N(g_swt_rac4_sites) && npre < 15; i++)
+		if (g_swt_rac4_sites[i].addr < 0x00360000u || g_swt_rac4_sites[i].addr > 0x00362000u)
+			pre[npre++] = g_swt_rac4_sites[i];
+	check(npre == 15, "the patch before revision 1.24 had fifteen sites");
+
 	for (b = 0; b < 3; b++) {
 		static const u32 stamps[3] = { SWT_RAC4_B50_STAMP, SWT_RAC4_B53A_STAMP, SWT_RAC4_B53B_STAMP };
 		static const char * const names[3] = {
@@ -14811,22 +14780,22 @@ static void test_switches_rac4_fastloads(void)
 		u8 ncaves = b == 2 ? 18 : 15;
 		u8 nsites = b == 2 ? 15 : 14;
 		u32 site = b == 2 ? R4_FL_FRAME : b == 1 ? SWT_R4_B53A_SITE : R4_TRANS_UPDATE;
-		u32 word = b == 2 ? g_swt_rac4_sites[3].value : b == 1 ? SWT_R4_B53A_WORD : SWT_R4_FL2_WORD;
+		u32 word = b == 2 ? pre[3].value : b == 1 ? SWT_R4_B53A_WORD : SWT_R4_FL2_WORD;
 
 		for (i = 0; i < ncaves; i++) old_caves[i] = g_swt_rac4_caves[i];
 		if (b == 2) {
 			old_caves[16].w[0] = SWT_R4_B53B_ON2;
-			for (i = 0; i < 15; i++) old_sites[i] = g_swt_rac4_sites[i];
+			for (i = 0; i < 15; i++) old_sites[i] = pre[i];
 		} else {
 			for (i = 0; i < 6; i++) old_caves[1].w[i] = g_swt_rac4_old_fl1[i];
 			for (i = 0; i < 6; i++)
 				old_caves[2].w[i] = b ? g_swt_rac4_b53a_fl2[i] : g_swt_rac4_b50_fl2[i];
-			for (i = 0; i < 4; i++) old_sites[i] = g_swt_rac4_sites[i];
-			for (i = 4; i < 15; i++) old_sites[i - 1] = g_swt_rac4_sites[i];
+			for (i = 0; i < 4; i++) old_sites[i] = pre[i];
+			for (i = 4; i < 15; i++) old_sites[i - 1] = pre[i];
 			old_sites[2].addr = site;
 			old_sites[2].value = word;
 		}
-		oldlen = swt_reply_of(old_caves, ncaves, old_sites, nsites, d->flags, d->nflags, g_sw_patch2);
+		oldlen = swt_reply_of(old_caves, ncaves, old_sites, nsites, d->flags, 3, g_sw_patch2);
 		check_eq_u64(be32_get(g_sw_patch2 + 4), stamps[b], names[b]);
 
 		check(quit_and_wait(), "quit whatever was running");
@@ -15279,10 +15248,12 @@ static void test_switches(void)
 	check(stamps[3] != SWT_RAC4_B50_STAMP, "and so has Deadlocked's");
 	check(stamps[3] != SWT_RAC4_B53A_STAMP && stamps[3] != SWT_RAC4_B53B_STAMP,
 	      "and again: its fast loads changed twice more in build 53");
-	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one build 53 pins");
-	check_eq_u64(len, SWITCH_PATCH_HEAD + 151u * SWITCH_PATCH_ROW +
-	             SWITCH_PATCH_BYTES_HEAD + 3u * SWITCH_PATCH_BYTE_ROW,
-	             "Deadlocked's, the largest, is 136 cave words, 15 sites and 3 flags");
+	check(stamps[3] != SWT_RAC4_B53_STAMP,
+	      "and once more: revision 1.24 put the HUD's colours in it");
+	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one revision 1.24 pins");
+	check_eq_u64(len, SWITCH_PATCH_HEAD + 225u * SWITCH_PATCH_ROW +
+	             SWITCH_PATCH_BYTES_HEAD + 5u * SWITCH_PATCH_BYTE_ROW,
+	             "Deadlocked's, the largest, is 206 cave words, 19 sites and 5 flags");
 
 	check(quit_and_wait(), "the game goes away");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_NOT_INGAME,

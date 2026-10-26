@@ -15,6 +15,7 @@
 #include "../core/mem.h"
 #include "../core/autosplit.h"
 #include "../core/manips.h"
+#include "../core/features.h"
 
 #include <string.h>
 
@@ -42,15 +43,18 @@ const u8 rac4_fp_switch[4]  = {
  *   8  stats      bolts +0x00, dread +0x0C, skin +0x13, CM +0x26     every 8th
  *   9  challenge  the challenge currently being run                  every 8th
  *  10  savefile   helper byte and its two request bytes              every 8th
- *  11  teamcols   GuiMain_TeamColors, the HUD's colours              every 16th
- *  12  hudcheat   the HUD colour cheat's byte                        every 16th
+ *  11  teamcols   GuiMain_TeamColors, the game's own colours         every 32nd
+ *  12  hudcheat   the HUD colour cheat's byte                        every 32nd
+ *  13  hudwords   qwark's HUD and weapon colour words                every 16th
  *
  * Blocks 4 to 6 are the autosplit watcher's, and the flags block moved from
  * every eighth tick to every tick because the watcher, the softlock fix and
  * the manips' file-load trigger (revision 1.21) all read it. Block 7 takes the
  * even ticks and blocks 8 to 10 the odd ones, so a tick costs exactly eight
- * reads and never pays for two slow blocks at once. Blocks 11 and 12 (build 56)
- * take phase 7 of 8 between them, on alternate rounds.
+ * reads and never pays for two slow blocks at once. Blocks 11 to 13 (build 56)
+ * take phase 7 of 8 between them: qwark's words, which change with a pick,
+ * every other round, and the table and the cheat, which change far less
+ * often, one each in the rounds between (revision 1.24).
  */
 static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_HOT_INPUTS_ADDR, RAC4_HOT_INPUTS_LEN, 1, 0 },
@@ -64,8 +68,9 @@ static const struct game_hot_block rac4_hot[] = {
 	{ RAC4_BOLTS,           RAC4_HOT_STATS_LEN,  8, 1 },
 	{ RAC4_CURRENT_CHALLENGE, 4,                 8, 3 },
 	{ RAC4_SF_HELPER,       4,                   8, 5 },
-	{ RAC4_TEAM_COLORS,     RAC4_TEAM_COLORS_LEN, 16, 7 },
-	{ RAC4_HUD_CHEAT,       1,                   16, 15 }
+	{ RAC4_TEAM_COLORS,     RAC4_TEAM_COLORS_LEN, 32, 7 },
+	{ RAC4_HUD_CHEAT,       1,                   32, 23 },
+	{ RAC4_HUD_WORDS,       RAC4_HUD_WORDS_LEN,  16, 15 }
 };
 
 #define HOT_INPUTS    0
@@ -81,6 +86,7 @@ static const struct game_hot_block rac4_hot[] = {
 #define HOT_SAVEFILE  10
 #define HOT_TEAMCOLS  11
 #define HOT_HUDCHEAT  12
+#define HOT_HUDWORDS  13
 
 #define OFF_ANALOGS   (RAC4_ANALOGS         - RAC4_INPUTS)        /* 0x1DC */
 #define OFF_GAMESTATE (RAC4_GAME_STATE      - RAC4_FRAME_COUNTER) /* 0x04 */
@@ -94,7 +100,6 @@ static const struct game_hot_block rac4_hot[] = {
 /* What the two watchers need and struct game_hot has no room for. */
 static u8 g_game_mode;      /* game state, low byte */
 static u8 g_tutorial;       /* tutorial flags, low byte */
-static u8 g_hud_cheat;      /* the HUD colour cheat's byte (revision 1.24's re-apply) */
 
 /* The manips' file-load trigger's own state (revision 1.21); see rac4_file_load_watch. */
 static int g_fl_primed;
@@ -167,21 +172,20 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC4_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
 	/*
-	 * The colour of the team the HUD draws in, as the wire's 0x00RRGGBB, and
-	 * (revision 1.24) its three shades, each flagged AUTO while automatic; all
-	 * four as the HUD shows them, the colour flagged AUTO while the team's
-	 * words are the game's own (rac4.h).
+	 * The HUD's colour as the wire's 0x00RRGGBB, flagged AUTO while it is the
+	 * game's own, and (revision 1.24) its three shades, each flagged AUTO while
+	 * automatic, and the weapons' colours, each flagged AUTO while the game's
+	 * own: qwark's words, and the game's for a word of 0 (rac4.h).
 	 */
-	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL) {
+	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL && blocks[HOT_HUDWORDS] != NULL) {
 		u8 t = rac4_hud_team(blocks[HOT_HUDCHEAT][0]), v;
 
 		for (v = 0; v < 4; v++)
 			out->readout[RAC4_RO_HUD_COLOUR + v] =
-				rac4_hud_readout(blocks[HOT_TEAMCOLS] + t * 16, t, v);
-		/* Revision 1.24: the weapons' colours, flagged AUTO while the game's own. */
+				rac4_hud_readout(blocks[HOT_HUDWORDS], blocks[HOT_TEAMCOLS] + t * 16, v);
 		for (v = 0; v < 3; v++)
-			out->readout[RAC4_RO_GUN_LOW + v] = rac4_gun_readout(blocks[HOT_TEAMCOLS], v);
-		g_hud_cheat = blocks[HOT_HUDCHEAT][0];
+			out->readout[RAC4_RO_GUN_LOW + v] =
+				rac4_gun_readout(blocks[HOT_HUDWORDS], blocks[HOT_TEAMCOLS], v);
 	}
 
 	/* --------------------------------------------- the autosplit watcher's view */
@@ -598,8 +602,6 @@ static void rac4_on_enter(void)
 	g_tutorial      = 0xFF;
 	g_fl_primed     = 0;
 	g_fl_due        = 0;
-	g_hud_cheat     = 0;
-	rac4_hud_tick(0xFF, 0);
 	classic_health_forget(&rac4_freeze_health);
 
 	/* The watcher starts over; the pause state deliberately does not. */
@@ -627,6 +629,12 @@ static void rac4_on_enter(void)
 
 	if (!plat_can_patch_code()) {
 		plat_log("rac4: quit and loading hooks skipped, this platform cannot patch code");
+		/*
+		 * Revision 1.24: the HUD's colours a client asked to have back at every
+		 * boot. They are WRITES_CODE here, so they wait for the look for the
+		 * code switches and go in when it finds them (features.c).
+		 */
+		features_apply_colors();
 		return;
 	}
 
@@ -636,6 +644,14 @@ static void rac4_on_enter(void)
 	patch_apply(&rac4_loading_hook);
 	mem_write_u8(RAC4_LOADING_VAL, 0);
 	g_loading_hook_on = 1;
+
+	/*
+	 * Revision 1.24: qwark's HUD colour code, and then the colours a client
+	 * asked to have back at every boot. The words are BSS, zero in a new
+	 * process, and nothing in the game writes them, so once is enough.
+	 */
+	rac4_hud_install();
+	features_apply_colors();
 }
 
 /* -------------------------------------- the manips' file-load trigger, 1.21 */
@@ -726,14 +742,6 @@ static void rac4_on_tick(const struct game_hot *hot)
 	classic_health_tick(&rac4_freeze_health);
 	rac4_autosplit_tick();
 	rac4_file_load_watch();
-
-	/*
-	 * Revision 1.24: while a level plays, the HUD's team in the brightness the
-	 * toggle asks for, and the colours a client asked to have re-applied at
-	 * the first tick of each level and each team the HUD takes (rac4_panel.c).
-	 */
-	if (g_game_mode == RAC4_GAME_MODE_NORMAL && hot->current_planet != 0)
-		rac4_hud_tick(hot->current_planet, g_hud_cheat);
 
 	if (g_tutorial != g_prev_tutorial) {
 		g_prev_tutorial = g_tutorial;
@@ -847,28 +855,36 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
 	/*
-	 * Build 56: what the game's HUD colour cheat picks from, any colour, as
-	 * the HUD shows it, with the game's own to go back to (rac4.h).
+	 * Build 56: any colour for the HUD, where the game's HUD colour cheat
+	 * picks from a few, with the game's own to go back to. Since revision
+	 * 1.24 (2026-10-26) qwark's own code in the game (rac4.h), so these rows
+	 * are WRITES_CODE: under RPCS3 they need the code switches' patch.
 	 */
-	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" },
+	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, ST | WC, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" },
 
 	/*
 	 * Revision 1.24: its shades, worked out from it until overridden (rac4.h),
 	 * `aux` naming the colour they follow. Unbounded, so FEATURE_COLOR_AUTO
 	 * gets through.
 	 */
-	{ R4_HUD_VIVID, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_VIVID, 0, 0, "HUD vivid shade" },
-	{ R4_HUD_DARK,  FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_DARK,  0, 0, "HUD dark shade" },
-	{ R4_HUD_LIGHT, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_LIGHT, 0, 0, "HUD light shade" },
+	{ R4_HUD_VIVID, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH | WC, RAC4_RO_HUD_VIVID, 0, 0, "HUD vivid shade" },
+	{ R4_HUD_DARK,  FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH | WC, RAC4_RO_HUD_DARK,  0, 0, "HUD dark shade" },
+	{ R4_HUD_LIGHT, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH | WC, RAC4_RO_HUD_LIGHT, 0, 0, "HUD light shade" },
 
 	/*
 	 * Revision 1.24, 2026-10-26: the weapons' colours, their own and the
 	 * game's to go back to (rac4.h), and the HUD's brightness (rac4_panel.c).
 	 */
-	{ R4_GUN_LOW,     FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW,     0, 0, "Weapon colour V11" },
-	{ R4_GUN_HIGH,    FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW + 1, 0, 0, "Weapon colour V99" },
-	{ R4_GUN_GADGET,  FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW + 2, 0, 0, "Gadget colour" },
-	{ R4_HUD_CORRECT, FEATURE_TOGGLE, G_COSMETICS, 0, 0,  NO, 0, 0, "Correct HUD brightness" }
+	{ R4_GUN_LOW,     FEATURE_COLOR,  G_COSMETICS, 0, ST | WC, RAC4_RO_GUN_LOW,     0, 0, "Weapon colour V11" },
+	{ R4_GUN_HIGH,    FEATURE_COLOR,  G_COSMETICS, 0, ST | WC, RAC4_RO_GUN_LOW + 1, 0, 0, "Weapon colour V99" },
+	{ R4_GUN_GADGET,  FEATURE_COLOR,  G_COSMETICS, 0, ST | WC, RAC4_RO_GUN_LOW + 2, 0, 0, "Gadget colour" },
+	/*
+	 * Revision 1.24, 2026-10-26: the HUD's brightness in two, the flat parts
+	 * (25, its label and so its config key unchanged) and the gradients (26,
+	 * the health bar and the EXP bars).
+	 */
+	{ R4_HUD_CORRECT, FEATURE_TOGGLE, G_COSMETICS, 0, WC, NO, 0, 0, "Correct HUD brightness" },
+	{ R4_GRADIENT_CORRECT, FEATURE_TOGGLE, G_COSMETICS, 0, WC, NO, 0, 0, "Correct gradient brightness" }
 };
 
 #undef NO
@@ -924,7 +940,8 @@ static int rac4_set_toggle(u8 id, int on)
 	case R4_REFILL_AMMO:    return classic_code_toggle(&rac4_ammo, SW_RAC4_FLAG_REFILL_AMMO, on);
 	case R4_FREEZE_HEALTH:  return classic_health_toggle(&rac4_freeze_health, on);
 	case R4_GHOST:          return classic_ghost(RAC4_GHOST_TIMER, on);
-	case R4_HUD_CORRECT:    return rac4_hud_correct(on);
+	case R4_HUD_CORRECT:    return rac4_hud_correct(RAC4_HUD_FLAT_FLAG, on);
+	case R4_GRADIENT_CORRECT: return rac4_hud_correct(RAC4_HUD_GRADIENT_FLAG, on);
 	default:                return ST_NOT_FOUND;
 	}
 }
@@ -946,6 +963,9 @@ static int rac4_toggle_read(u8 id, int *on)
 		/* A planet load's force is not the checkbox; see g_fastload_forced. */
 		if (rc == ST_OK && g_fastload_forced) *on = g_fastload_on;
 		return rc;
+	/* Revision 1.24: the brightness corrections' flag bytes, data everywhere. */
+	case R4_HUD_CORRECT:      return rac4_hud_correct_read(RAC4_HUD_FLAT_FLAG, on);
+	case R4_GRADIENT_CORRECT: return rac4_hud_correct_read(RAC4_HUD_GRADIENT_FLAG, on);
 	default:
 		return ST_NOT_FOUND;
 	}
