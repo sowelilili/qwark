@@ -980,8 +980,12 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 	case OP_HELLO:
 		if (reqlen < 1) return ST_BAD_ARG;
-		*replylen = session_info_copy(reply, replycap);
-		return *replylen ? ST_OK : ST_FULL;
+		/* Revision 1.24: SessionInfo, then the build ID (PROTOCOL.md 3.1.1). */
+		if (replycap < SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE) return ST_FULL;
+		session_info_copy(reply, replycap);
+		be32_put(reply + SESSION_INFO_SIZE, QWARK_BUILD_ID);
+		*replylen = SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE;
+		return ST_OK;
 
 	case OP_HEARTBEAT:
 		return ST_OK;

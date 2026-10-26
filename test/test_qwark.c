@@ -1623,6 +1623,9 @@ static void test_telemetry(void)
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
 	check_eq_u64(packet[5], 56, "and this module is build 56");
+	check_eq_u64(packet[4 + 29] & SESSION_FLAG2_DEV, SESSION_FLAG2_DEV,
+	             "flags2 bit4 DEV: run.sh builds a test build (QWARK_DEV=1)");
+	check_eq_u64(packet[4 + 29] & 0xE0, 0, "and flags2 bits 5 to 7 stay clear");
 	check_eq_u64(packet[6], SESSION_INGAME, "the state byte says INGAME");
 	check_eq_u64(packet[7], GAME_RAC1, "the game byte says RaC1");
 	check(memcmp(packet + 4 + 12, "NPEA00385", 9) == 0, "the title id is in place");
@@ -15948,11 +15951,26 @@ static void test_net_stop_with_client(void)
 		check(recv(client, (char *)header, QWARK_FRAME_HEADER, 0) ==
 		      (int)QWARK_FRAME_HEADER, "and the SessionInfo header comes back");
 
-		/* Drain the SessionInfo payload so the next reply lines up. */
+		/*
+		 * Drain the payload so the next reply lines up. Revision 1.24:
+		 * SessionInfo and then the build ID, which run.sh sets to 0x51A7C0DE
+		 * in this test build, with flags2 bit4 DEV beside it.
+		 */
 		{
-			u8 sink[SESSION_INFO_SIZE];
+			u8 sink[SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE];
 			u32 n = be32_get(header);
-			if (n == SESSION_INFO_SIZE) recv(client, (char *)sink, (int)n, 0);
+			u32 got = 0;
+			check_eq_u64(n, SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE,
+			             "HELLO answers SessionInfo and a build ID, 168 bytes");
+			while (n <= sizeof(sink) && got < n) {
+				int r = recv(client, (char *)sink + got, (int)(n - got), 0);
+				if (r <= 0) break;
+				got += (u32)r;
+			}
+			check(got == n, "and all of it arrives");
+			check_eq_u64(be32_get(sink + SESSION_INFO_SIZE), 0x51A7C0DEu,
+			             "the build ID after SessionInfo is QWARK_BUILD_ID");
+			check(sink[29] & SESSION_FLAG2_DEV, "flags2 bit4 says a test build");
 		}
 
 		test_autosplit_udp(client);

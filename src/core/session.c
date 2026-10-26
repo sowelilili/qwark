@@ -1328,9 +1328,11 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[28] = g_hot.current_planet;
 	/*
 	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
-	 * (bit0 is the USB mods'), and the profile's sequence. out[31] pad.
+	 * (bit0 is the USB mods', bit4 a test build's), and the profile's
+	 * sequence. out[31] pad.
 	 */
-	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0));
+	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
+	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0));
 	out[30] = config_profile_seq();
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);

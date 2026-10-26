@@ -299,6 +299,10 @@ qwark.map
 # Build 55: the console menu's renderers `make` packs beside the module. Only
 # dist/ui.pak, which `make dist` copies, is committed.
 /ui.pak
+# Revision 1.24: the build, DEV bit and build ID make writes beside the
+# module (tools/buildid.py). Only dist/qwark.build, which make dist copies,
+# is committed.
+/qwark.build
 qwark-host.exe
 qwark-host-root/
 qwark-rpcs3.exe

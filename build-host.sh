@@ -47,10 +47,22 @@ CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare 
 # once with STATUS_DLL_NOT_FOUND (0xC0000135) and the client reconnected for ever.
 LDFLAGS="-static -lws2_32 -lwinmm -lpthread"
 
+# Revision 1.24 (PROTOCOL.md 3.1.1): the simulator is a test build, with the
+# build ID of these sources, as `make` makes the SPRX, so the smoke run sees
+# what a client sees from a test module. qwark-rpcs3.exe is neither: the client
+# starts it beside itself, and it ships in a release as it is built here.
+build_id() {
+	for PY in python python3 py; do
+		ID=$("$PY" -I tools/buildid.py 2>/dev/null) && { echo "$ID"; return; }
+	done
+	echo "build-host.sh: no python for tools/buildid.py; qwark-host.exe gets no build ID" >&2
+	echo 0
+}
+
 build_host() {
 	out="${1:-qwark-host.exe}"
 	echo "compiling $out"
-	"$CLANG" $CFLAGS $HOST_SRC -o "$out" $LDFLAGS
+	"$CLANG" $CFLAGS -DQWARK_DEV=1 -DQWARK_BUILD_ID=$(build_id) $HOST_SRC -o "$out" $LDFLAGS
 	echo "built $out"
 }
 

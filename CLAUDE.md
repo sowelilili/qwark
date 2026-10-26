@@ -10,6 +10,8 @@ PS3 (`qwark.sprx`): run `_Make.bat` from Windows, or in a Cygwin login shell:
 /c/cygwin64/bin/bash.exe --login -c "cd '/cygdrive/c/Users/atune/Documents/RaCMAN Development/rewrite/qwark' && make"
 ```
 
+**Test builds and release builds** (revision 1.24, PROTOCOL.md 3.1.1). A plain `make` (and `_Make.bat`) builds a *test* module: it sets SessionInfo `flags2` bit4 DEV, and HELLO carries its build ID, the CRC of the sources (`tools/buildid.py`). `make` writes `qwark.build` (build, dev, id) beside `qwark.sprx`, and `make dist` copies it into `dist/`. The client replaces a DEV module whose ID is not its own module's, so every test build reaches the console without a new build number. A release is `make release` (`make QWARK_DEV=0`, then `make dist`), whose module has no DEV bit and is judged by its number alone; the client's `release.ps1` refuses a `dist/` whose `qwark.build` says `dev 1`. `build-host.sh` makes `qwark-host.exe` a test build with the same ID, and `qwark-rpcs3.exe` neither.
+
 Do not override `CELL_SDK`. Delete the `.prx` and `.sym` leftovers after a build. The compiler is ppu-lv2-gcc 4.1.1: gnu99 only, no C11, no `_Static_assert`, no anonymous unions, no floating-point printf (`printf2` from `printf.c` handles integers and strings only).
 
 Host: `./build-host.sh` from Git Bash, or `build-host.bat` from Windows, builds both

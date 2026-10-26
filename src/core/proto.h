@@ -80,6 +80,10 @@
  * a pad byte until now, is `flags2`, whose bits 1 to 3 are the profile's,
  * and byte 30 `profile_seq`; the byte after each COMBO_LIST action, a pad
  * byte until now, is its flags, bit0 OVERRIDDEN. PROTOCOL.md 5.10.1.
+ * Revision 1.24, test builds (same build 56): SessionInfo flags2 bit4 DEV,
+ * set by a test build (QWARK_DEV, the makefile's default), and a u32 build ID
+ * after HELLO's SessionInfo (QWARK_BUILD_ID, the CRC of the sources), so a
+ * client can tell one test build of a number from another. PROTOCOL.md 3.1.1.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -96,6 +100,22 @@
  * console is older than the one it was built against and say so.
  */
 #define QWARK_BUILD             56
+
+/*
+ * Revision 1.24: which build of that number this is (PROTOCOL.md 3.1.1).
+ * QWARK_DEV is 1 in a test build, which SessionInfo flags2 bit4 reports, and
+ * QWARK_BUILD_ID is the CRC of the module's sources (tools/buildid.py), which
+ * HELLO carries after SessionInfo; 0 is no ID. The makefile sets both, a test
+ * build unless it is told QWARK_DEV=0 (`make release`); build-host.sh sets
+ * them for qwark-host.exe, and qwark-rpcs3.exe, which the client starts beside
+ * itself, keeps these: never DEV, no ID.
+ */
+#ifndef QWARK_DEV
+#define QWARK_DEV               0
+#endif
+#ifndef QWARK_BUILD_ID
+#define QWARK_BUILD_ID          0
+#endif
 
 #define QWARK_PORT              9673
 /*
@@ -590,6 +610,13 @@
  * RPCS3 patch.
  */
 #define SESSION_FLAG2_USB_MODS        0x01
+/*
+ * Revision 1.24, test builds: flags2 bit4 DEV, this module is a test build
+ * (QWARK_DEV), so a client compares the build ID HELLO carries after
+ * SessionInfo with its own module's rather than the build number alone.
+ */
+#define SESSION_FLAG2_DEV             0x10
+#define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */
 #define FEATURE_TOGGLE 0

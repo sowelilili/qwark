@@ -28,7 +28,10 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
 # built without its own set and the PINE tests drive its pine_* half directly.
 # QWARK_EMULATOR, as in build-host.sh: the tests cover the RPCS3 paths too.
 CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
-        -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_PINE_NO_PLAT"
+        -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_PINE_NO_PLAT \
+        -DQWARK_DEV=1 -DQWARK_BUILD_ID=0x51A7C0DE"
+# Revision 1.24: a test build with a fixed build ID, which test_qwark.c reads
+# back out of HELLO and SessionInfo flags2 bit4.
 # -static folds winpthreads into the executable. Without it both programs import
 # libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
 # on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at

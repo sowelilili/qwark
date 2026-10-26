@@ -66,6 +66,8 @@ Revision 1.24, the HUD colour as it is drawn (same build 56): feature flags bit7
 
 Revision 1.24, the weapons' colours, the HUD's brightness and colours kept for the boot (same build 56, 2026-10-26). **FEATURE_SET_AUTO on a COLOR**: the request may carry a `u32 value` after `auto` (6 bytes); `auto` 1 keeps that FEATURE_SET value, AUTO bit included, as the colour to set again by itself, and puts the row's bit in `toggle_auto` (and DESCRIBE's flags bit0), `auto` 0 forgets it. The console sets every kept colour again when the game's colours are there to be set: RaC2 and UYA as the game boots, Deadlocked at the first tick of each level and of each team the HUD takes, once a save has said which team that is (section 5.3.5). The value lives in config as the feature's `<TITLEID>.auto.<slug>` key, so it is per user with settings profiles on; a 2-byte request on a COLOR keeps black. Deadlocked's DESCRIBE gains three readouts, "Weapon colour V11", "Weapon colour V99" and "Gadget colour" (12 to 14), three STOCK COLORs in Cosmetics, 22 to 24 of the same names, mirrored by them, and a TOGGLE, 25 "Correct HUD brightness" (section 5.3.4): the weapons take their colour from three words of the team table at fixed places, which a HUD colour leaves alone unless the HUD colour cheat picks a team they are in, and the brightness correction of the HUD's colours is the user's choice rather than always on. Off, the HUD colour and its shades are written and read as given, the stock words untouched, and the HUD draws them twice as bright, as it draws the stock HUD; on, the HUD's team is held halved, the game's own colours too, and reads as picked. RaC2's and UYA's chargeboot COLORs are flagged STOCK: AUTO puts the game's own words back, and their readouts carry AUTO while the words are the game's. A client before this sends the 2-byte FEATURE_SET_AUTO only for toggles, draws the new COLORs and the toggle as any, and with the toggle off sees the HUD's colours as the words are rather than as the HUD draws them.
 
+Revision 1.24, test builds (same build 56, 2026-10-26): every build between two releases reports the same `qwark_version`, so a client could not tell the test module on a console from the newer one it ships, and never replaced it. A module now says which build of its number it is. SessionInfo `flags2` bit4 **DEV** is set by a test build, which a plain `make` is (`QWARK_DEV`); `make release` builds the module without it. HELLO's reply is SessionInfo followed by a `u32 build_id`, the CRC-32 of the module's sources (`QWARK_BUILD_ID`, tools/buildid.py), 0 for none; GET_STATE and telemetry carry SessionInfo alone, as before. A client compares a DEV module's ID with the ID of the module it ships, which `make` writes beside qwark.sprx as `qwark.build`, and replaces one whose ID differs exactly as it replaces an older build; a module without the bit is judged by its build number alone. `qwark-rpcs3` never sets the bit and sends ID 0. A client from before this revision reads the first 164 bytes of HELLO and ignores the rest, and a module from before it sends 164 bytes, which reads as ID 0. See section 3.1.1.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -161,6 +163,9 @@ u8   flags2             revision 1.24, a pad byte before it.
                         bit2 PROFILES_ON: config.txt's `profiles.enabled` is 1
                         bit3 PROFILE_ACTIVE: a console user's profile is the active one, so the
                              per-user settings are that user's
+                        bit4 DEV (revision 1.24, test builds): the module is a test build, so it is
+                             told from another build of its number by the build ID after HELLO's
+                             SessionInfo (section 3.1.1). Never set by a release build or by qwark-rpcs3
 u8   profile_seq        revision 1.24, a pad byte before it: goes up by one, wrapping, whenever the
                         active profile changes or is read again (section 5.10.1)
 u8   pad
@@ -194,6 +199,28 @@ Build 53 retired these besides the manip rows (section 5.14), and as with those,
 A relabelled feature keeps its id. config.txt keeps a toggle's auto flag under its label (`<TITLE>.auto.<slug>`), so a game names the labels its toggles had, and a toggle reads its flag from the old label's key until one is written under the new label's, which wins from then on. Build 53 relabelled RaC1's Infinite health (2) as Freeze health and UYA's Freeze ammo (0) as Infinite ammo.
 
 A client ships knowing the build it was developed against. When the console reports a *lower* `qwark_version` than that, the client warns the user that the SPRX on the console is out of date and should be re-uploaded; DESCRIBE still answers, so the client keeps working against whatever tables the older module actually has. A *higher* number is not an error: the console is newer than the client, and DESCRIBE remains the authority on what exists.
+
+### 3.1.1 Test builds: `flags2` bit4 DEV and the build ID (revision 1.24)
+
+The build number moves once per release, and a release is many test builds, all reporting the same number. So a module also says which build of its number it is:
+
+- **`flags2` bit4 DEV**: set by a test build. A plain `make` builds one (`QWARK_DEV=1`, the makefile's default, so a build nobody marked is a test build); `make release`, or `make QWARK_DEV=0`, builds a release module, which never sets it. `qwark-rpcs3` never sets it.
+- **`build_id`**, a big-endian `u32` after SessionInfo in HELLO's reply only (168 bytes in all): the CRC-32 of the module's sources (`QWARK_BUILD_ID`; tools/buildid.py: every `.c` and `.h` under `src/` and the makefile, each after its path, carriage returns dropped), so the same sources give the same ID on any machine and a change to them gives another. 0 is no ID: `qwark-rpcs3`, which the client starts beside itself and replaces with itself, and a module before this revision, whose 164-byte reply reads as 0. A release module carries its ID as well; nothing decides on it.
+
+`make` writes `qwark.build` beside `qwark.sprx`, and `make dist` copies it into `dist/`, so a client's release carries the description of the module it ships: three lines of text after a comment, `build 56`, `dev 1` (or `dev 0`) and `id 0x1A2B3C4D`.
+
+The rule, for a client that knows the build and ID of the module it ships, against a console (not `flags` bit1 EMULATOR):
+
+| Console's module | Client's module, same build | Verdict |
+|---|---|---|
+| lower build | any | stale, as before |
+| higher build | any | current, as before |
+| DEV | an ID that differs | stale: replaced as an older build is |
+| DEV | the same ID | current, so it is not sent again and again |
+| no DEV | DEV, an ID that differs | stale: a test build is newer than the release of its number |
+| no DEV | no DEV | current: two release modules of one build are judged by the number alone |
+
+A client that has no `qwark.build` beside its module, or one that names another build than the client expects, falls back to the build number alone. Under RPCS3 the build number alone decides too: `qwark-rpcs3.exe` is started by the client from beside itself and goes with it.
 
 ### 3.2 `flags` bit1 EMULATOR and bit2 NO_CODE_PATCHES (revision 1.6)
 
@@ -279,7 +306,7 @@ When a different title comes back, everything including watches is dropped and t
 
 | Op | Name | Request | Reply |
 |---|---|---|---|
-| 0x0001 | HELLO | `u8 client_protocol_version` | SessionInfo |
+| 0x0001 | HELLO | `u8 client_protocol_version` | SessionInfo, then `u32 build_id` (revision 1.24, section 3.1.1; a module before it sends SessionInfo alone) |
 | 0x0002 | HEARTBEAT | none | none. Any frame counts as a heartbeat for the telemetry subscription; this one exists for idle clients |
 | 0x0003 | NOTIFY | text, at most 255 bytes, no terminator | none. Shows an XMB notification |
 | 0x0004 | PREVIOUS_LIST | none | `u64 toggles, u32 mods, u8 nfreeze, { u8 size, u8 pad[3], u32 addr, u64 value }[nfreeze], u8 npatch, { u32 first_addr, u16 nwords, u16 pad }[npatch]` |
@@ -1482,9 +1509,9 @@ The pages, for a game with a menu table (all four games; `struct game_menu` in s
 | Save files | CONFIG (round 4; MAIN before) | the console library's categories (section 5.13), each a link, its name the label |
 | A save category | CONFIG (round 4; MAIN before) | its saves, each a button, its name the label and its value blank: SAVEFILE_RESTORE once the menu has closed, which leaves the save in the aside buffer, so Load set-aside file loads it again. A row is the save in its place in the folder; 1.4.1: a press counts only while the category lists what it listed when the page was built, and after an upload, a rename or a delete is refused as an event on an old page is, and the page built again shows the change |
 
-Cosmetics are left out, and so are mods and combos for now. A game with no menu table gets round 1's root of DESCRIBE groups, each a page of its features, before Planets and the rest.
+Cosmetics are left out, and so are mods and combos for now. Every game has a menu table; round 1's root of DESCRIBE groups, each a page of its features, for a game without one, is gone from the module (the dead-code cleanup, build 56), and its page ids stay reserved.
 
-**Round 5** (the user's hardware notes on round 4, build 54 as before). A game's menu table (`struct game_menu`, src/games/game.h) can list a VALUE feature as something other than a stepper (`struct menu_value`, `MENU_ITEM_VALUE(i)`): a **button** that writes one value, or a **switch**. Every game's values are listed so, and none is a stepper on its pages any more (round 1's pages of DESCRIBE groups still step them):
+**Round 5** (the user's hardware notes on round 4, build 54 as before). A game's menu table (`struct game_menu`, src/games/game.h) can list a VALUE feature as something other than a stepper (`struct menu_value`, `MENU_ITEM_VALUE(i)`): a **button** that writes one value, or a **switch**. Every game's values are listed so, and none is a stepper on its pages any more (round 1's pages of DESCRIBE groups stepped them; since the cleanup in build 56 the module has no stepper at all):
 
 | Game | Switch | Buttons, and what they write |
 |---|---|---|
@@ -1508,12 +1535,12 @@ The controls:
 | Control | Row | What it does |
 |---|---|---|
 | Checkbox | TOGGLE: Off, On, and Auto for a toggle that has an auto flag (all but LIVE ones) | the cross and Right go to the next, Left to the one before, wrapping. Auto is on with its auto flag ticked, the client's "A" box; Off clears both. Through FEATURE_SET and FEATURE_SET_AUTO's own code. Round 5, the same control for a switch over a VALUE (Challenge mode: Off or On, as above, through FEATURE_SET) and for Manips' Auto-reset (Off, On, On boot, through MANIP_OPTIONS) |
-| Selector | CHOICE: the current option | Left and Right go to the previous or next, wrapping; the cross goes to the next on a CONFIG page, as the game's Cheats screen does, and opens the options as a page of their own on a MAIN page |
+| Selector | CHOICE: the current option | Left and Right go to the previous or next, wrapping; the cross goes to the next, as the game's Cheats screen does (an ENUM row that opened its options as a page of their own on a MAIN page is gone since the cleanup in build 56) |
 | Button | ACTION | the cross runs it, and its value stays blank (round 5, the user's call: the game's own sound for the cross is the cue; round 4 showed "done", and "after closing" for a load). A refusal stands in place of its value for two seconds ("busy", "not in game", "not available", "refused", "failed", "not found", "full"), and in the page's hint as a sentence; so does a refused step of any other row. A button flagged CLOSES (a load: the set-aside file, a planet, a save) closes the menu: qwark asks the renderer to, and runs it once the game is back in ordinary play, or drops it five seconds on with a console notification. A Max button (round 5) writes its value through FEATURE_SET |
-| Value | VALUE, a stepper (round 5: on round 1's pages only; no game's menu table lists one) | Left and Right step it; the cross changes the step, 1, 10, 100 up to 1,000,000 but never past the field's range. A renderer without Left and Right shows the number only. Round 3: a VALUE with bounds narrower than its 32-bit field (explicit ones, or an 8- or 16-bit field) is flagged RANGE and carries its value, its bounds and its step as numbers (section 9.4), and one whose range spans 1000 or fewer is flagged SLIDER as well, for a renderer that draws a native slider (Challenge mode's 0..255, not Bolts). Round 4: a SLIDER row's Left and Right move it a tenth of its range, rounded up, so ten presses cross it end to end (Challenge mode: 26, 0, 26 .. 234, 255), and the cross switches between that and a fine step of 1, which its value shows as "[1]" |
+| Value | VALUE, a stepper (round 5: on round 1's pages only; no game's menu table lists one, and since the cleanup in build 56 the module builds none: what follows is history) | Left and Right step it; the cross changes the step, 1, 10, 100 up to 1,000,000 but never past the field's range. A renderer without Left and Right shows the number only. Round 3: a VALUE with bounds narrower than its 32-bit field (explicit ones, or an 8- or 16-bit field) is flagged RANGE and carries its value, its bounds and its step as numbers (section 9.4), and one whose range spans 1000 or fewer is flagged SLIDER as well, for a renderer that draws a native slider (Challenge mode's 0..255, not Bolts). Round 4: a SLIDER row's Left and Right move it a tenth of its range, rounded up, so ten presses cross it end to end (Challenge mode: 26, 0, 26 .. 234, 255), and the cross switches between that and a fine step of 1, which its value shows as "[1]" |
 | Text | INFO | nothing. Not ENABLED, so every renderer's cursor passes over it, Up and Down alike (round 5: the blank row between a page's parts is one, drawn as an empty row in the grey of a row the cursor skips) |
 
-Every change goes through the code the protocol's ops go through, so `toggle_state`, the auto flags, the manip options and the previous-session record (section 4.1) are exactly what they would be had a client made the change, and a connected client sees it in its next packet. A VALUE or ENUM row shows what the menu last wrote until the readout agrees, at most a quarter of a second.
+Every change goes through the code the protocol's ops go through, so `toggle_state`, the auto flags, the manip options and the previous-session record (section 4.1) are exactly what they would be had a client made the change, and a connected client sees it in its next packet. A VALUE row shows what the menu last wrote until the readout agrees, at most a quarter of a second.
 
 qwark sends text as it is written ("Ghost Ratchet", "Off"); a game's renderer cases it the way that game cases its own menus (section 9.6).
 

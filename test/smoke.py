@@ -29,6 +29,8 @@ ROOT = os.path.dirname(HERE)
 
 sys.path.insert(0, HERE)
 from fake_pine import FakePine, STATUS_PAUSED, STATUS_RUNNING  # noqa: E402  the fake RPCS3 IPC server
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from buildid import build_id  # noqa: E402  the build ID build-host.sh stamps qwark-host.exe with
 
 HOST = "127.0.0.1"
 
@@ -131,6 +133,10 @@ MODUSB_WIRE_SIZE = 120
 MODUSB_AVAILABLE, MODUSB_SAME, MODUSB_NEWER, MODUSB_OLDER, MODUSB_CONFLICT, MODUSB_BROKEN = range(6)
 # SessionInfo byte 29, flags2 (revision 1.24): bit0 USB_MODS.
 SESSION_FLAG2_USB_MODS = 0x01
+# Revision 1.24, test builds (PROTOCOL.md 3.1.1): flags2 bit4 DEV, and HELLO's
+# u32 build ID after SessionInfo.
+SESSION_FLAG2_DEV = 0x10
+HELLO_SIZE = 164 + 4
 OP_DIR_DELETE = 0x0077
 # Revision 1.17: the running game's code switches, in SAVEFILE_PATCH's layout.
 OP_SWITCH_PATCH = 0x0025
@@ -5038,8 +5044,14 @@ def smoke_rpcs3(exe):
         # ------------------------------------------------------------ hello
         status, body = c.call(OP_HELLO, bytes([1]))
         info = parse_session_info(body) if status == ST_OK else None
-        check(status == ST_OK and len(body) == SESSION_INFO_SIZE,
-              "rpcs3: HELLO returns a 164-byte SessionInfo", (status, len(body)))
+        check(status == ST_OK and len(body) == HELLO_SIZE,
+              "rpcs3: HELLO returns a 164-byte SessionInfo and a build ID", (status, len(body)))
+        # Revision 1.24: qwark-rpcs3 is never a test build and has no ID, so
+        # the client judges it by its build number alone.
+        check(status == ST_OK and (body[29] & SESSION_FLAG2_DEV) == 0
+              and body[SESSION_INFO_SIZE:] == bytes(4),
+              "rpcs3: flags2 bit4 DEV is clear and the build ID is 0",
+              (body[29], body[SESSION_INFO_SIZE:].hex()) if status == ST_OK else None)
         check(info and info["build"] == QWARK_BUILD,
               "rpcs3: it reports build %d" % QWARK_BUILD,
               info["build"] if info else None)
@@ -6189,8 +6201,22 @@ def main():
         # ---------------------------------------------------------- hello
         status, body = c.call(OP_HELLO, bytes([1]))
         info = parse_session_info(body) if status == ST_OK else None
-        check(status == ST_OK and len(body) == SESSION_INFO_SIZE,
-              "HELLO returns a 164-byte SessionInfo", (status, len(body)))
+        check(status == ST_OK and len(body) == HELLO_SIZE,
+              "HELLO returns a 164-byte SessionInfo and a build ID", (status, len(body)))
+        # Revision 1.24: build-host.sh makes qwark-host.exe a test build with
+        # the ID of these sources, which is what `make` gives the SPRX.
+        want_id = build_id()
+        got_id = struct.unpack(">I", body[SESSION_INFO_SIZE:HELLO_SIZE])[0] if status == ST_OK else None
+        check(got_id == want_id, "HELLO's build ID is tools/buildid.py's, 0x%08X" % want_id,
+              None if got_id is None else "0x%08X" % got_id)
+        check(status == ST_OK and (body[29] & SESSION_FLAG2_DEV) != 0,
+              "flags2 bit4 DEV: the simulator is a test build", body[29] if status == ST_OK else None)
+        status, state = c.call(OP_GET_STATE)
+        check(status == ST_OK and len(state) >= 4 + SESSION_INFO_SIZE + 1
+              and (state[4 + 29] & SESSION_FLAG2_DEV) != 0
+              and len(state) == 4 + SESSION_INFO_SIZE + 1 + 12 * state[4 + SESSION_INFO_SIZE],
+              "GET_STATE's SessionInfo carries the DEV bit too, and no build ID",
+              len(state) if status == ST_OK else status)
         check(info and info["protocol"] == 1, "protocol version is 1")
         check(info and info["build"] == QWARK_BUILD,
               "HELLO reports build %d" % QWARK_BUILD,

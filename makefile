@@ -65,16 +65,57 @@ PPU_CFLAGS +=	-Wno-inline -Wno-redundant-decls
 
 #PPU_CFLAGS += -finline-limit=20
 
+#
+# Test builds and release builds (revision 1.24, PROTOCOL.md 3.1.1). Every
+# build between two releases reports the same QWARK_BUILD, so the module also
+# reports a build ID, the CRC of its sources (tools/buildid.py), and a test
+# build says it is one in SessionInfo flags2 bit4 DEV. The client replaces a
+# DEV module whose ID is not the ID of the module it ships, so a console never
+# keeps an older test build of the same number; a release module carries no
+# DEV bit and is judged by its build number alone, as every build was before.
+#
+# A plain `make` is a TEST build, QWARK_DEV=1, because that is what nearly
+# every build is, and a test build left unmarked is the bug this fixes. A
+# release is `make release` (a QWARK_DEV=0 module, then `make dist`), and the
+# client's release.ps1 refuses a dist/ whose qwark.build says dev 1. The ID is
+# worked out once, as the makefile is read (the SDK's rules compile the objects
+# before `all`'s own recipe runs), and handed to every make below this one;
+# `all` writes it to qwark.build beside the module once the module is signed,
+# so the two always describe each other.
+#
+QWARK_DEV			?= 1
+ifndef QWARK_BUILD_ID
+QWARK_BUILD_ID		:= $(shell python -I tools/buildid.py)
+endif
+ifeq ($(strip $(QWARK_BUILD_ID)),)
+$(error no build ID: python -I tools/buildid.py did not run)
+endif
+export QWARK_DEV QWARK_BUILD_ID
+PPU_CFLAGS +=	-DQWARK_DEV=$(QWARK_DEV) -DQWARK_BUILD_ID=$(QWARK_BUILD_ID)
+
 ifeq ($(BUILD_TYPE), debug)
 PPU_CFLAGS += -DDEBUG -DDEBUG_FILE
 endif
 
 all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
+	@rm -f qwark.build
 	$(MAKE) $(PPU_OBJS_DEPENDS)
 	$(PPU_PRX_STRIP) --strip-debug --strip-section-header $(PPU_PRX_TARGET)
 	./scetool -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000 -c SPRX --self-ctrl-flags 4000000000000000000000000000000000000000000000000000000000000002 -e $(PPU_PRX_TARGET) $(PPU_SPRX_TARGET)
+	python -I tools/buildid.py --dev $(QWARK_DEV) --id $(QWARK_BUILD_ID) --out qwark.build
+	@tail -n 3 qwark.build
 	$(MAKE) ui.pak
 	@rm -rf objs qwark.prx qwark.sym
+
+#
+# A release: the module with no DEV bit, and dist/ made from it. Commit dist/
+# afterwards, as after any `make dist`. Objects a failed build left behind
+# were compiled with the other DEV bit, so they go first.
+#
+release:
+	@rm -rf objs
+	$(MAKE) all QWARK_DEV=0
+	$(MAKE) dist
 
 #
 # Build 55: ui.pak, the console menu's renderers, packed out of the committed
@@ -183,20 +224,25 @@ pkg: ui.pak
 
 #
 # dist/ is what the PC client's release workflow takes the console side from:
-# the signed module, its ui.pak (build 55), the installer package built from
+# the signed module, its ui.pak (build 55), qwark.build (the module's build
+# number, DEV bit and ID, revision 1.24), the installer package built from
 # those two, and the RPCS3 helper, all committed so a release can be cut
 # without an SDK or a cross build. Run it after `make` and `./build-host.sh`.
 # The module and the pak only ever go out together, and the package is made
 # from the very two it sits beside.
 #
 dist: ui.pak pkg
+	@test -f qwark.build || { echo "make dist: there is no qwark.build beside qwark.sprx; run make first" >&2; exit 1; }
 	@mkdir -p dist
 	@cp qwark.sprx dist/qwark.sprx
+	@cp qwark.build dist/qwark.build
 	@cp ui.pak dist/ui.pak
 	@cp $(INSTALLER_PKG) dist/qwark-installer.pkg
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
 	@ls -l dist
+	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
+	else echo "dist/ holds a RELEASE build (dev 0)"; fi
 
-.PHONY: all sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale pkg dist
+.PHONY: all release sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale pkg dist
 
 include $(CELL_MK_DIR)/sdk.target.mk
