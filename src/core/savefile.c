@@ -3,9 +3,11 @@
 #include "session.h"
 #include "config.h"
 #include "util.h"
+#include "uipak.h"
 #include "../games/sfhelper_bins.h"
 #include "../plat/plat.h"
 
+#include <stddef.h>
 #include <string.h>
 #if QWARK_PREVIEW
 static const char g_sf_who[] = "the savefile helper";
@@ -395,9 +397,45 @@ static int helper_in(void)
 	return g_present == 1;
 }
 
+/*
+ * Build 56. Whether a helper entry out of ui.pak is this game's as the module
+ * knows it: the descriptor's six numbers and its counts, and every cave's bytes
+ * inside the entry, after its records. The CRCs have said the bytes are the
+ * ones pak.py packed for this build; this says they are this game's, and that
+ * nothing the install reads lies past the entry.
+ *
+ * The six numbers are the entry's first six words in struct sf_desc's order,
+ * api_mod to api_trophy, which are consecutive u32s there (the typedef holds
+ * the struct to that).
+ */
+typedef char sf_desc_numbers_in_a_row[
+	offsetof(struct sf_desc, api_trophy) - offsetof(struct sf_desc, api_mod) == 20 ? 1 : -1];
+
+static int entry_ok(const struct sf_desc *d, const u8 *e, u32 len)
+{
+	u32 rec = UIPAK_DESC_SIZE + (u32)d->ncaves * UIPAK_CAVE_SIZE + (u32)d->nhooks * UIPAK_HOOK_SIZE;
+	const u32 *want = &d->api_mod;
+	const u8 *c = e + UIPAK_DESC_SIZE;
+	u32 off, n;
+	u8 i;
+
+	if (len < rec || e[36] != d->ncaves || e[37] != d->nhooks) return 0;
+	for (i = 0; i < 6; i++) {
+		if (be32_get(e + 4u * i) != want[i]) return 0;
+	}
+	for (i = 0; i < d->ncaves; i++, c += UIPAK_CAVE_SIZE) {
+		off = be32_get(c + 4);
+		n = be32_get(c + 8);
+		if (off < rec || off > len || n > len - off) return 0;
+	}
+	return 1;
+}
+
 int savefile_install(void)
 {
 	const struct sf_desc *d;
+	const u8 *e, *c;
+	u32 len;
 	int rc = gate(&d);
 	u8 i;
 
@@ -417,6 +455,21 @@ int savefile_install(void)
 	if (!plat_can_patch_code()) return ST_OK;
 
 	/*
+	 * Build 56: the caves and the hook word are in ui.pak, not in the module.
+	 * The game's entry is read whole into the tick's scratch and checked
+	 * before a byte goes into the game, so a pak that is missing, another
+	 * build's or damaged leaves the game exactly as it was: BUSY, with
+	 * SAVEFILE_ERR_NO_PAK for a client to say why, and SessionInfo flags bit7
+	 * (uipak.c) for it to send the right pak. Nothing below uses the scratch,
+	 * so the bytes are written straight out of it.
+	 */
+	if (uipak_sf_entry(d->game_id, &e, &len) != UIPAK_OK || !entry_ok(d, e, len)) {
+		plat_log("savefile: no usable helper for game %d in ui.pak; nothing written", (int)d->game_id);
+		g_xfer.error = SAVEFILE_ERR_NO_PAK;
+		return ST_BUSY;
+	}
+
+	/*
 	 * A request byte left over from whatever used to live at these addresses
 	 * would fire the moment the hook goes in, so the three go to zero while
 	 * nothing is reading them yet.
@@ -433,13 +486,15 @@ int savefile_install(void)
 	 * into the caves, so the target exists before anything can jump to it.
 	 * Nothing pauses the game; that order is what keeps it off a half-written cave.
 	 */
-	for (i = 0; i < d->ncaves; i++) {
-		rc = mem_write(d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
+	c = e + UIPAK_DESC_SIZE;
+	for (i = 0; i < d->ncaves; i++, c += UIPAK_CAVE_SIZE) {
+		rc = mem_write(be32_get(c), e + be32_get(c + 4), be32_get(c + 8));
 		if (rc != ST_OK) return rc;
 	}
 
-	for (i = 0; i < d->nhooks; i++) {
-		rc = mem_write_u32(d->hooks[i].addr, d->hooks[i].value);
+	/* The hook words' records follow the caves'. */
+	for (i = 0; i < d->nhooks; i++, c += UIPAK_HOOK_SIZE) {
+		rc = mem_write_u32(be32_get(c), be32_get(c + 4));
 		if (rc != ST_OK) return rc;
 	}
 
@@ -452,8 +507,10 @@ int savefile_install(void)
 	g_installed = 1;
 #if QWARK_PREVIEW
 	/* Build 56: qwark's own, for the console menu's guarded mod load (mem.h). */
-	for (i = 0; i < d->ncaves; i++) mem_own(d->caves[i].addr, d->caves[i].len, g_sf_who);
-	for (i = 0; i < d->nhooks; i++) mem_own(d->hooks[i].addr, 4, g_sf_who);
+	for (c = e + UIPAK_DESC_SIZE, i = 0; i < d->ncaves + d->nhooks; i++) {
+		mem_own(be32_get(c), i < d->ncaves ? be32_get(c + 8) : 4u, g_sf_who);
+		c += i < d->ncaves ? UIPAK_CAVE_SIZE : UIPAK_HOOK_SIZE;
+	}
 #endif
 	plat_log("savefile: helper installed for game %d", (int)d->game_id);
 	return ST_OK;

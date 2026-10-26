@@ -11,12 +11,22 @@
  * code the Sony cross compiler produces, and the host builds and the unit tests
  * are clang on a PC with no SDK anywhere near them: they still have to compile
  * the table, install it into the fake console and check the bytes that land.
+ *
+ * Build 56: the PS3 module carries the numbers below but not the bytes, which
+ * it reads out of /dev_hdd0/qwark/ui.pak (src/core/uipak.h, PROTOCOL.md 9.10).
  */
 #ifndef QWARK_SFHELPER_BINS_H
 #define QWARK_SFHELPER_BINS_H
 
 #include "../core/mem.h"
 #include "../core/proto.h"
+
+/*
+ * The helpers' identity in ui.pak: the CRC-32 of the pak's savefile helper
+ * entries, one after another, as src/games/menuhelper/pak.py packs them out of
+ * sfhelper_bins.c. A module takes only a pak whose header carries it.
+ */
+#define SF_PAK_ID 0x8E78C15Cu
 
 /*
  * One run of bytes at one address. A game has one, or two when it needs a stub;
@@ -36,6 +46,11 @@ struct sf_cave {
 struct sf_desc {
 	u8 game_id;
 
+	/*
+	 * Build 56: `caves` and `hooks` are NULL in the PS3 module, which has no
+	 * QWARK_EMULATOR and reads the bytes out of ui.pak; the counts are there in
+	 * every build, and the pak's entry must have the same.
+	 */
 	const struct sf_cave *caves;
 	u8 ncaves;
 

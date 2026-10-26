@@ -18,7 +18,7 @@ The same as the PC client's **Install to boot_plugins.txt**:
 | | |
 |---|---|
 | `/dev_hdd0/plugins/qwark.sprx` | the module |
-| `/dev_hdd0/qwark/ui.pak` | the console menu's file, which must come from the same build |
+| `/dev_hdd0/qwark/ui.pak` | the console menu's renderers and, since build 56, the savefile helpers, which must come from the same build |
 | `/dev_hdd0/boot_plugins.txt` | qwark's line goes first, so it loads before webMAN; every other line stays, in its order |
 | `/dev_hdd0/qwark/boot_plugins.txt.bak` | the list as it was, whenever the installer changes it |
 | `/dev_hdd0/plugins/qwark.sprx.old` | the module that was there before, if there was one |

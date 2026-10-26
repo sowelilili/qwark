@@ -13,8 +13,17 @@
  * the thread it runs on. Each hook word is the branch that reaches a cave,
  * computed from the address the helper actually linked at rather than copied
  * out of a mod.
+ *
+ * Build 56: the caves and the hook words are the emulator builds' alone
+ * (QWARK_EMULATOR), for SAVEFILE_PATCH, the look for a patched-in helper and
+ * the tests. The PS3 module reads them out of ui.pak when it installs the
+ * helper (src/games/menuhelper/pak.py packs them from this file), and keeps
+ * only the descriptors: their numbers, and the counts of caves and hook words
+ * with no table behind them.
  */
 #include "sfhelper_bins.h"
+
+#ifdef QWARK_EMULATOR
 
 /* rac1, .text.stub at 0x004F6800, 116 bytes */
 static const u8 sf_rac1_text_stub[] = {
@@ -569,17 +578,22 @@ static const struct patch_word sf_rac4_hooks[] = {
 	{ 0x00707430u, 0x4BF60B41u }
 };
 
+#define SF_TABLE(x) (x)
+#else
+#define SF_TABLE(x) 0
+#endif /* QWARK_EMULATOR */
+
 static const struct sf_desc sf_descs[] = {
-	{ GAME_RAC1, sf_rac1_caves, 2, sf_rac1_hooks, 1,
+	{ GAME_RAC1, SF_TABLE(sf_rac1_caves), 2, SF_TABLE(sf_rac1_hooks), 1,
 	  0x01080000u, 0x01080001u, 0x01080002u, 0x00FC0000u, 0x000B0000u,
 	  0u },
-	{ GAME_RAC2, sf_rac2_caves, 1, sf_rac2_hooks, 1,
+	{ GAME_RAC2, SF_TABLE(sf_rac2_caves), 1, SF_TABLE(sf_rac2_hooks), 1,
 	  0x01317728u, 0x01317729u, 0x0131772Au, 0x01C00000u, 0x00200000u,
 	  0u },
-	{ GAME_RAC3, sf_rac3_caves, 3, sf_rac3_hooks, 1,
+	{ GAME_RAC3, SF_TABLE(sf_rac3_caves), 3, SF_TABLE(sf_rac3_hooks), 1,
 	  0x00D9FF00u, 0x00D9FF01u, 0x00D9FF02u, 0x01100000u, 0x00200000u,
 	  0x00D9FF1Cu },
-	{ GAME_RAC4, sf_rac4_caves, 2, sf_rac4_hooks, 1,
+	{ GAME_RAC4, SF_TABLE(sf_rac4_caves), 2, SF_TABLE(sf_rac4_hooks), 1,
 	  0x015CD71Du, 0x015CD71Eu, 0x015CD71Fu, 0x01600000u, 0x00100000u,
 	  0u }
 };

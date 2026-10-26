@@ -122,10 +122,17 @@ the module: the pak pak.py packs from menuhelper_bins.c holds exactly what this
 script checked above, read back with a parser of its own here: every renderer,
 its descriptor's numbers, every cave's address, bytes, zeros and kind, every
 hook word and the Help row's count, in the table's order, within what the
-module's reader takes (8 renderers, 8 caves, 32 hook words); its CRC after the
-header is MH_PAK_ID in menuhelper_bins.h, the identity the module is built to
-accept; and a ui.pak beside the module (the one `make` writes, or --pak FILE)
-names this build and is byte for byte that pak.
+module's reader takes (16 entries, 8 caves, 32 hook words); and a ui.pak beside
+the module (the one `make` writes, or --pak FILE) names this build and is byte
+for byte that pak. Build 56, format 2: the pak carries the four savefile
+helpers too, after the renderers, and each is exactly sfhelper_bins.c's (read
+here by a parser of this script's own): the descriptor's six numbers, every
+cave's address and bytes, all code with no zeros, and the hook word, within
+the tick scratch the module reads a helper's entry into (QSCRATCH_BYTES in
+util.h); the header's CRC is that of the rest, and its two identities are the
+CRC-32s of the renderer entries and of the helper entries, which are MH_PAK_ID
+in menuhelper_bins.h and SF_PAK_ID in sfhelper_bins.h, the pak the module is
+built to accept.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -137,6 +144,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 QWARK = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))   # the qwark checkout
 GEN_C = os.path.join(QWARK, "src", "games", "menuhelper_bins.c")
+SF_GEN_C = os.path.join(QWARK, "src", "games", "sfhelper_bins.c")
 MENUBOX = os.path.join(QWARK, "src", "core", "menubox.h")
 SHIM_H = os.path.join(HERE, "mh_shim.h")
 
@@ -3706,16 +3714,23 @@ def load_pak_py():
 
 
 def read_pak(b):
-    """ui.pak's renderers, by a reader of this script's own (PROTOCOL.md 9.10): (build, crc, [renderer])."""
-    magic, fmt, hsize, build, crc, blen, n = struct.unpack(">4sHHIIIB", b[:21])
-    if magic != b"QPAK" or fmt != 1 or hsize != 32 or len(b) != 32 + blen:
-        raise ValueError("not a whole format 1 pak")
-    out = []
+    """
+    ui.pak by a reader of this script's own (PROTOCOL.md 9.10, format 2):
+    (build, renderers' id, helpers' id, [renderer], [helper]), each entry with
+    its kind; raises ValueError for anything that is not a whole pak.
+    """
+    magic, fmt, hsize, build, crc, blen, n, mh_id, sf_id = struct.unpack(">4sHHIIIB3xII", b[:32])
+    if magic != b"QPAK" or fmt != 2 or hsize != 32 or len(b) != 32 + blen or zlib_crc(b[32:]) != crc:
+        raise ValueError("not a whole format 2 pak")
+    out = {1: [], 2: []}
+    raw = {1: b"", 2: b""}
     for i in range(n):
         game, kind, title, at, length, ecrc = struct.unpack(">BB2x12sIII4x", b[32 + 32 * i:64 + 32 * i])
         e = b[at:at + length]
-        if kind != 1 or len(e) != length or zlib_crc(e) != ecrc:
-            raise ValueError("entry %d is not a whole renderer" % i)
+        if kind not in out or len(e) != length or zlib_crc(e) != ecrc:
+            raise ValueError("entry %d is not a whole renderer or helper" % i)
+        if kind == 1 and out[2]:
+            raise ValueError("entry %d: a renderer after a helper" % i)
         words = list(struct.unpack(">9I", e[:36]))
         ncaves, nhooks, nhelp = e[36], e[37], e[38]
         caves, hooks = [], []
@@ -3725,9 +3740,36 @@ def read_pak(b):
         p = 40 + 20 * ncaves
         for k in range(nhooks):
             hooks.append(struct.unpack(">III", e[p + 12 * k:p + 12 * k + 12]))
-        out.append({"game": game, "title": title.rstrip(b"\0").decode("ascii"), "words": words,
-                    "caves": caves, "hooks": hooks, "nhelp": nhelp})
-    return build, crc, out
+        out[kind].append({"game": game, "title": title.rstrip(b"\0").decode("ascii"), "words": words,
+                          "caves": caves, "hooks": hooks, "nhelp": nhelp, "len": length})
+        raw[kind] += e
+    if zlib_crc(raw[1]) != mh_id or zlib_crc(raw[2]) != sf_id:
+        raise ValueError("the identities in the header are not the entries' CRCs")
+    return build, mh_id, sf_id, out[1], out[2]
+
+
+def sf_table():
+    """
+    sfhelper_bins.c's helpers by this script's own reading, in sf_descs' order:
+    (game, [six numbers], [(addr, bytes)], [(addr, value)]).
+    """
+    text = open(SF_GEN_C, encoding="utf-8").read()
+    out = []
+    for d in re.finditer(r"\{ GAME_RAC(\d), SF_TABLE\(sf_(\w+)_caves\), (\d+), SF_TABLE\(sf_\w+_hooks\), (\d+),"
+                         r"(.*?)\}", text, re.S):
+        g = d.group(2)
+        nums = [int(x, 16) if x.startswith("0x") else int(x) for x in re.findall(r"(0x[0-9A-Fa-f]+|\d+)u", d.group(5))]
+        cm = re.search(r"static const struct sf_cave sf_%s_caves\[\] = \{(.*?)\};" % g, text, re.S)
+        caves = []
+        for c in re.finditer(r"\{ (0x[0-9A-Fa-f]+)u, (\w+), ", cm.group(1)):
+            m = re.search(r"static const u8 %s\[\] = \{(.*?)\};" % c.group(2), text, re.S)
+            caves.append((int(c.group(1), 16), bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))))
+        hm = re.search(r"static const struct patch_word sf_%s_hooks\[\] = \{(.*?)\};" % g, text, re.S)
+        hooks = [(int(a, 16), int(v, 16)) for a, v in re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", hm.group(1))]
+        if len(caves) != int(d.group(3)) or len(hooks) != int(d.group(4)):
+            raise ValueError("%s: the descriptor's counts are not its tables'" % g)
+        out.append((int(d.group(1)), nums, caves, hooks))
+    return out
 
 
 def zlib_crc(b):
@@ -3742,21 +3784,24 @@ def table_desc_words(text, g):
 
 
 def check_pak(ok, pak_path=None):
-    """Build 55: ui.pak against the table every check above read (menuhelper_bins.c)."""
+    """Build 55: ui.pak against the table every check above read (menuhelper_bins.c); build 56: and the helpers."""
     try:
         pak = load_pak_py()
         table = pak.parse_table(GEN_C)
+        helpers = pak.parse_sf_table(pak.SF_GEN_C)
         build = pak.qwark_build()
-        data = pak.pak_bytes(table, build)
-        got_build, got_crc, rs = read_pak(data)
-    except (SystemExit, ValueError, OSError) as e:
-        ok(False, "ui.pak: pak.py packs the table into a pak this script can read back (%s)" % e)
+        data = pak.pak_bytes(table, helpers, build)
+        got_build, mh_id, sf_id, rs, hs = read_pak(data)
+        sf_want = sf_table()
+    except (SystemExit, ValueError, OSError, AttributeError) as e:
+        ok(False, "ui.pak: pak.py packs the tables into a pak this script can read back (%s)" % e)
         return
     text = open(GEN_C, encoding="utf-8").read()
     descs = parse_descs(GEN_C)
     games = (("rac4", 4, "Deadlocked"), ("rac3", 3, "UYA"), ("rac2", 2, "RaC2"), ("rac1", 1, "RaC1"))
-    ok(got_build == build and [r["game"] for r in rs] == [g[1] for g in games] and len(rs) <= 8,
-       "ui.pak: build %d, the four renderers in the table's order" % build)
+    ok(got_build == build and [r["game"] for r in rs] == [g[1] for g in games] and
+       [h["game"] for h in hs] == [1, 2, 3, 4] and len(rs) + len(hs) <= 16,
+       "ui.pak: format 2, build %d, the four renderers in the table's order, then the four savefile helpers" % build)
     for (g, game, name), r in zip(games, rs):
         _, _, _, hooks, caves, _ = parse_bins(GEN_C, g)
         want_caves = []
@@ -3770,12 +3815,31 @@ def check_pak(ok, pak_path=None):
            r["title"] == hdr.get("MH_TITLE") and len(r["caves"]) <= 8 and len(r["hooks"]) <= 32,
            "ui.pak: %s's renderer is the table's: the descriptor, %d caves byte for byte with their zeros, "
            "%d hook words, %d of them the Help row's" % (name, len(r["caves"]), len(r["hooks"]), r["nhelp"]))
-    m = re.search(r"^#define\s+MH_PAK_ID\s+(0x[0-9A-Fa-f]{8})u",
-                  open(os.path.join(QWARK, "src", "games", "menuhelper_bins.h"), encoding="utf-8").read(), re.M)
-    pak_id = int(m.group(1), 16) if m else None
-    ok(pak_id == got_crc == zlib_crc(data[32:]),
-       "ui.pak: its CRC after the header, 0x%08X, is MH_PAK_ID in menuhelper_bins.h, the renderers the module "
-       "accepts" % got_crc)
+
+    m = re.search(r"^#define\s+QSCRATCH_BYTES\s+(\d+)u", open(os.path.join(QWARK, "src", "core", "util.h"),
+                                                            encoding="utf-8").read(), re.M)
+    scratch = int(m.group(1)) if m else 0
+    ok(scratch > 0 and pak.MAX_SF_ENTRY == scratch,
+       "ui.pak: pak.py holds a helper's entry to the tick scratch it is read into, %d bytes" % scratch)
+    names = {1: "RaC1", 2: "RaC2", 3: "UYA", 4: "Deadlocked"}
+    for (game, nums, caves, hooks), h in zip(sf_want, hs):
+        ok(h["game"] == game and h["words"] == nums + [0, 0, 0] and
+           [(a, b) for a, b, _, _ in h["caves"]] == caves and all(c[2] == 1 and c[3] == 0 for c in h["caves"]) and
+           [(a, v) for a, v, _ in h["hooks"]] == hooks and all(w[2] == 0 for w in h["hooks"]) and
+           h["nhelp"] == 0 and h["len"] <= scratch,
+           "ui.pak: %s's savefile helper is sfhelper_bins.c's: its six numbers, %d caves byte for byte (%d bytes), "
+           "%d hook word, the entry %d bytes" % (names.get(game, game), len(caves), sum(len(c[1]) for c in caves),
+                                                len(hooks), h["len"]))
+
+    gen_h = open(os.path.join(QWARK, "src", "games", "menuhelper_bins.h"), encoding="utf-8").read()
+    m = re.search(r"^#define\s+MH_PAK_ID\s+(0x[0-9A-Fa-f]{8})u", gen_h, re.M)
+    want_mh = int(m.group(1), 16) if m else None
+    m = re.search(r"^#define\s+SF_PAK_ID\s+(0x[0-9A-Fa-f]{8})u",
+                  open(os.path.join(QWARK, "src", "games", "sfhelper_bins.h"), encoding="utf-8").read(), re.M)
+    want_sf = int(m.group(1), 16) if m else None
+    ok(want_mh == mh_id and want_sf == sf_id,
+       "ui.pak: its identities, renderers 0x%08X and helpers 0x%08X, are MH_PAK_ID and SF_PAK_ID, the pak the "
+       "module accepts" % (mh_id, sf_id))
     path = pak_path or os.path.join(QWARK, "ui.pak")
     if os.path.exists(path):
         file_data = open(path, "rb").read()

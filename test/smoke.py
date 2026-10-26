@@ -223,6 +223,9 @@ R4_MODE_BUSY = (struct.pack(">I", 6), struct.pack(">i", -2))
 # none until the game has saved or loaded once, and their helpers load only a
 # save of their own, so a request against a fresh fake process is BUSY with this.
 SAVEFILE_ERR_NO_SAVE = 7
+# Build 56: the helper's bytes are in ui.pak, and the pak is missing, another
+# build's or damaged; SessionInfo flags bit7 says the same.
+SAVEFILE_ERR_NO_PAK = 8
 
 # RaC1's savefile helper, from src/games/sfhelper_bins.c: its request bytes and
 # its aside buffer, both moved in build 53 (src/games/sfhelper/sf_rac1.h). The
@@ -2600,6 +2603,48 @@ def savefile_info(c):
         "pending": body[3], "size": size, "done": done, "total": total,
         "error": body[16],
     }
+
+
+def exercise_savefile_no_pak(c, name, save_aside_id, setaside_addr, save=None):
+    """
+    Build 56: a console installs the savefile helper out of ui.pak. With the pak
+    gone, the first action that needs the helper is BUSY, SAVEFILE_INFO says
+    why (SAVEFILE_ERR_NO_PAK) and that nothing is installed, the request byte is
+    not raised, and flags bit7 asks a client for the pak; once a client has sent
+    it the flag clears, and the next action (exercise_savefile) installs.
+    """
+    # The game's save, so the set-aside gets as far as the install, and what it
+    # held before, put back at the end for exercise_savefile's no-save checks.
+    before = []
+    for addr, data in save or []:
+        status, old = c.call(OP_MEM_READ, struct.pack(">II", addr, len(data)))
+        before.append((addr, old if status == ST_OK else bytes(len(data))))
+        mem_write(c, addr, data)
+    info = savefile_info(c)
+    if not check(info is not None and info["supported"] and not info["installed"],
+                 "%s: no helper installed yet in this session" % name, info):
+        return
+    good_path = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "ui.pak")
+    with open(good_path, "rb") as f:
+        good = f.read()
+
+    status, _ = c.call(OP_FILE_DELETE, UI_PAK.encode())
+    ok, _ = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, True)
+    check(status == ST_OK and ok, "%s: ui.pak deleted: flags bit7 set" % name, status)
+
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([save_aside_id]))
+    check(status == ST_BUSY, "%s: with no ui.pak the SAVE_ASIDE action is BUSY" % name, status)
+    info = savefile_info(c)
+    check(info is not None and info["error"] == SAVEFILE_ERR_NO_PAK and not info["installed"]
+          and info["pending"] == 0,
+          "%s: SAVEFILE_INFO says the pak is missing (error 8), nothing installed or pending" % name, info)
+    check(mem_read_u8(c, setaside_addr) == 0, "%s: and the request byte was not raised" % name)
+
+    status = send_pak(c, good)
+    ok, _ = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
+    check(status == ST_OK and ok, "%s: a client sends the pak back: flags bit7 clear" % name, status)
+    for addr, data in before:
+        mem_write(c, addr, data)
 
 
 def savefile_names(payload, row_size):
@@ -6468,6 +6513,9 @@ def main():
         save_aside = [f for f in by_id.values()
                       if f["flags"] & FEATURE_FLAG_SAVE_ASIDE]
         if check(len(save_aside) == 1, "RaC1 names one SAVE_ASIDE action", save_aside):
+            # Build 56: first with no ui.pak, which carries the helper's bytes.
+            exercise_savefile_no_pak(c, "RaC1", save_aside[0]["id"], RAC1_SF_API_SETASIDE,
+                                     save=RAC1_SAVE_WRITES)
             # SF_API_SETASIDE from src/games/sfhelper/sf_rac1.h, which build 53
             # moved out of the game's bump arena.
             exercise_savefile(c, "RaC1", save_aside[0]["id"], RAC1_SF_API_SETASIDE,

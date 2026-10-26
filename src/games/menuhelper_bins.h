@@ -22,11 +22,12 @@
 #include "../core/proto.h"
 
 /*
- * The renderers' identity: the CRC-32 of ui.pak after its header, as pak.py
- * packs this table. A module takes only the pak that carries it (and names its
- * build), so the menu that goes into a game is always the module's own.
+ * The renderers' identity: the CRC-32 of ui.pak's renderer entries, one after
+ * another, as pak.py packs this table (build 56; the savefile helpers have
+ * SF_PAK_ID beside it). A module takes only the pak that carries it (and names
+ * its build), so the menu that goes into a game is always the module's own.
  */
-#define MH_PAK_ID 0x5F5C8D3Du
+#define MH_PAK_ID 0xD06745A8u
 
 /*
  * One run of bytes at one address - the mailbox, the state, the read-only

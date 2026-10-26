@@ -59,18 +59,19 @@ void uipak_touch(const char *path)
 }
 
 /*
- * The header's verdict: DAMAGED for something that is not a format 1 pak,
- * OTHER for a pak of another build or other renderers, else OK with the body's
- * length and the entries.
+ * The header's verdict: DAMAGED for something that is not a pak, OTHER for a
+ * pak of another build or format (build 56: build 55's format 1 among them,
+ * and any earlier build 56 test's), or with other renderers or other savefile
+ * helpers, else OK with the body's length and the entries.
  */
 static int header_verdict(const u8 *h, u32 *body, u32 *entries)
 {
 	u32 n = h[20];
 
-	if (be32_get(h) != UIPAK_MAGIC || be16_get(h + 4) != UIPAK_FORMAT ||
-	    be16_get(h + 6) != UIPAK_HEADER_SIZE)
-		return UIPAK_DAMAGED;
-	if (be32_get(h + 8) != QWARK_BUILD || be32_get(h + 12) != MH_PAK_ID) return UIPAK_OTHER;
+	if (be32_get(h) != UIPAK_MAGIC || be16_get(h + 6) != UIPAK_HEADER_SIZE) return UIPAK_DAMAGED;
+	if (be16_get(h + 4) != UIPAK_FORMAT || be32_get(h + 8) != QWARK_BUILD ||
+	    be32_get(h + 24) != MH_PAK_ID || be32_get(h + 28) != SF_PAK_ID)
+		return UIPAK_OTHER;
 	*body = be32_get(h + 16);
 	*entries = n;
 	if (n == 0 || n > UIPAK_MAX_ENTRIES || *body < n * UIPAK_TOC_SIZE || *body > UIPAK_MAX_BODY)
@@ -135,18 +136,20 @@ static void verdict(int st, const u8 *h)
 	g_status = st;
 	switch (st) {
 	case UIPAK_OK:
-		plat_log("ui.pak: build %d, %d renderers", (int)QWARK_BUILD, (int)(h != NULL ? h[20] : 0));
+		plat_log("ui.pak: build %d, %d entries", (int)QWARK_BUILD, (int)(h != NULL ? h[20] : 0));
 		break;
 	case UIPAK_MISSING:
-		plat_log("ui.pak: none at " UIPAK_PATH "; no Trainer menu in a game");
+		plat_log("ui.pak: none at " UIPAK_PATH "; no Trainer menu or savefile helper in a game");
 		break;
 	case UIPAK_OTHER:
-		plat_log("ui.pak: build %d, renderers 0x%08X, not this module's (build %d, 0x%08X); no Trainer menu",
-		         (int)(h != NULL ? be32_get(h + 8) : 0), (int)(h != NULL ? be32_get(h + 12) : 0),
-		         (int)QWARK_BUILD, (int)MH_PAK_ID);
+		plat_log("ui.pak: format %d, build %d, renderers 0x%08X, helpers 0x%08X, not this module's "
+		         "(%d, %d, 0x%08X, 0x%08X); no Trainer menu or savefile helper",
+		         (int)(h != NULL ? be16_get(h + 4) : 0), (int)(h != NULL ? be32_get(h + 8) : 0),
+		         (int)(h != NULL ? be32_get(h + 24) : 0), (int)(h != NULL ? be32_get(h + 28) : 0),
+		         (int)UIPAK_FORMAT, (int)QWARK_BUILD, (int)MH_PAK_ID, (int)SF_PAK_ID);
 		break;
 	default:
-		plat_log("ui.pak: damaged or cut short; no Trainer menu");
+		plat_log("ui.pak: damaged or cut short; no Trainer menu or savefile helper");
 		break;
 	}
 }
@@ -215,46 +218,64 @@ void mh_pak_close(void)
 	g_file = PLAT_FILE_INVALID;
 }
 
+/*
+ * The pak opened, its header this build's and its table of contents sound,
+ * and the entry of `kind` for `game_id` looked up: UIPAK_OK with the file open
+ * in *f and the entry's offset, length and CRC set, the length 0 for a pak
+ * with no such entry; otherwise the reason, with the file closed. `h` gets the
+ * header, for the log. The table of contents is read through the scratch,
+ * which holds it on return.
+ */
+static int find_entry(plat_file_t *f, u8 *h, u8 game_id, u8 kind, u32 *at, u32 *len, u32 *crc)
+{
+	u8 *buf = qscratch();
+	const u8 *t;
+	u32 got, body = 0, n = 0, i;
+	int st;
+
+	*at = *len = *crc = 0;
+	memset(h, 0, UIPAK_HEADER_SIZE);
+	if (plat_file_open(UIPAK_PATH, PLAT_OPEN_READ, f) != 0) return UIPAK_MISSING;
+
+	st = UIPAK_DAMAGED;
+	if (plat_file_read_at(*f, 0, h, UIPAK_HEADER_SIZE, &got) != 0 || got != UIPAK_HEADER_SIZE) goto bad;
+	st = header_verdict(h, &body, &n);
+	if (st != UIPAK_OK) goto bad;
+	st = UIPAK_DAMAGED;
+	if (plat_file_read_at(*f, UIPAK_HEADER_SIZE, buf, n * UIPAK_TOC_SIZE, &got) != 0 ||
+	    got != n * UIPAK_TOC_SIZE || !toc_ok(buf, body, n))
+		goto bad;
+
+	for (i = 0; i < n; i++) {
+		t = buf + i * UIPAK_TOC_SIZE;
+		if (t[0] != game_id || t[1] != kind) continue;
+		*at = be32_get(t + 16);
+		*len = be32_get(t + 20);
+		*crc = be32_get(t + 24);
+		break;
+	}
+	return UIPAK_OK;
+bad:
+	plat_file_close(*f);
+	return st;
+}
+
 const struct mh_desc *mh_pak_desc(u8 game_id, int *status)
 {
 	u8 *buf = qscratch();
 	u8 h[UIPAK_HEADER_SIZE];
 	const struct mh_desc *d = NULL;
 	plat_file_t f;
-	const u8 *e, *t;
-	u32 got, body = 0, n = 0, i, at = 0, len = 0, crc = 0, want, rec;
+	const u8 *e;
+	u32 got, i, at, len, crc, want, rec;
 	int st;
 
 	mh_pak_close();
-	memset(h, 0, sizeof(h));
-	if (plat_file_open(UIPAK_PATH, PLAT_OPEN_READ, &f) != 0) {
-		st = UIPAK_MISSING;
-		goto done;
-	}
-
+	st = find_entry(&f, h, game_id, UIPAK_KIND_RENDERER, &at, &len, &crc);
+	if (st != UIPAK_OK) goto done;
+	/* A pak of this build with no renderer for the game: no menu, as before the pak. */
+	if (len == 0) goto out;
 	st = UIPAK_DAMAGED;
-	if (plat_file_read_at(f, 0, buf, UIPAK_HEADER_SIZE + UIPAK_MAX_ENTRIES * UIPAK_TOC_SIZE, &got) != 0 ||
-	    got < UIPAK_HEADER_SIZE)
-		goto out;
-	memcpy(h, buf, sizeof(h));
-	st = header_verdict(h, &body, &n);
-	if (st != UIPAK_OK) goto out;
-	st = UIPAK_DAMAGED;
-	if (got < UIPAK_HEADER_SIZE + n * UIPAK_TOC_SIZE || !toc_ok(buf + UIPAK_HEADER_SIZE, body, n)) goto out;
-
-	for (i = 0; i < n; i++) {
-		t = buf + UIPAK_HEADER_SIZE + i * UIPAK_TOC_SIZE;
-		if (t[0] != game_id || t[1] != UIPAK_KIND_RENDERER) continue;
-		at = be32_get(t + 16);
-		len = be32_get(t + 20);
-		crc = be32_get(t + 24);
-		break;
-	}
-	if (i == n) {
-		/* A pak of this build with no renderer for the game: no menu, as before the pak. */
-		st = UIPAK_OK;
-		goto out;
-	}
 
 	/* The descriptor and the records, which the reader has room for or the entry is not one. */
 	want = UIPAK_DESC_SIZE + UIPAK_MAX_CAVES * UIPAK_CAVE_SIZE + UIPAK_MAX_HOOKS * UIPAK_HOOK_SIZE;
@@ -359,4 +380,37 @@ int mh_pak_read(const struct mh_cave *c, u32 off, void *buf, u32 len)
 	if (len == 0) return ST_OK;
 	if (plat_file_read_at(g_file, g_cave_at[i] + off, buf, len, &got) != 0 || got != len) return ST_IO_ERROR;
 	return ST_OK;
+}
+
+/* ------------------------------------------------- the helpers, build 56 */
+
+int uipak_sf_entry(u8 game_id, const u8 **entry, u32 *len)
+{
+	u8 *buf = qscratch();
+	u8 h[UIPAK_HEADER_SIZE];
+	plat_file_t f;
+	u32 at, n, crc, got;
+	int st;
+
+	*entry = NULL;
+	*len = 0;
+	st = find_entry(&f, h, game_id, UIPAK_KIND_SFHELPER, &at, &n, &crc);
+	if (st != UIPAK_OK) goto done;
+
+	/*
+	 * Whole, or not at all: the install writes nothing until every byte it will
+	 * write is here and its CRC holds. A pak of this build has a helper for
+	 * every game this build has one for, so none (n 0) is a pak gone wrong.
+	 */
+	st = UIPAK_DAMAGED;
+	if (n >= UIPAK_DESC_SIZE && n <= UIPAK_MAX_SF_ENTRY &&
+	    plat_file_read_at(f, at, buf, n, &got) == 0 && got == n && qcrc32(buf, n) == crc) {
+		*entry = buf;
+		*len = n;
+		st = UIPAK_OK;
+	}
+	plat_file_close(f);
+done:
+	settle(st, h);
+	return st;
 }

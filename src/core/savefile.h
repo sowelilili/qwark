@@ -22,10 +22,13 @@
  * longer goes near them: they are the debug and test path.
  *
  * The helper itself is PowerPC code that lives in the game's process. qwark
- * carries it as bytes in src/games/sfhelper_bins.c and writes it in on the first
- * action that needs it, so a user never loads a mod for it and never knows it is
- * there. It is code, so a platform that cannot patch code cannot have qwark put
- * it there.
+ * writes it in on the first action that needs it, so a user never loads a mod
+ * for it and never knows it is there. It is code, so a platform that cannot
+ * patch code cannot have qwark put it there. Its bytes are built into
+ * src/games/sfhelper_bins.c; since build 56 the PS3 module carries only their
+ * numbers and reads the caves and the hook word out of ui.pak at the install
+ * (src/core/uipak.h), as the console menu's renderers are, while the emulator
+ * builds still link them for SAVEFILE_PATCH.
  *
  * Build 47 gives RPCS3 the other road in. RPCS3 applies its own patch files to
  * the executable as it loads it, before it recompiles anything, so a patch that
@@ -113,6 +116,17 @@
 #define SAVEFILE_ERR_NO_SAVE    7
 
 /*
+ * Build 56. The helper could not be installed because /dev_hdd0/qwark/ui.pak,
+ * which carries its bytes, is missing, another build's or damaged
+ * (src/core/uipak.h). The request answers BUSY and nothing is written into
+ * the game; SessionInfo flags bit7 is set too, and a client that sends the
+ * right pak makes the next try work. Only on a console: RPCS3's helper comes
+ * from the RPCS3 patch, and a helper already installed in this process needs
+ * no pak.
+ */
+#define SAVEFILE_ERR_NO_PAK     8
+
+/*
  * What the helper leaves in a request byte when it drops a request for the same
  * reason - the belt to qwark's braces, because qwark asks on its own tick and
  * the game gets frames of its own between that and the one the helper runs on.
@@ -195,6 +209,10 @@ int savefile_enabled(void);
  * ST_OK when qwark has installed it. Called by set-aside/load actions, valid
  * restores and RaC1's Force autosave. Status, metadata and raw buffer I/O never
  * install code.
+ *
+ * Build 56: the bytes come out of ui.pak, the game's entry read whole and
+ * checked before anything is written. BUSY with `error` SAVEFILE_ERR_NO_PAK,
+ * and nothing written, when the pak cannot give them.
  *
  * Build 47: where code cannot be patched, ST_OK when an RPCS3 patch put the
  * helper in at load and UNSUPPORTED when nothing did. It writes nothing either

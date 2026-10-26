@@ -41,10 +41,11 @@
 # Build 55: the module no longer links the generated file. `make` packs it
 # into ui.pak with pak.py beside this file, and qwark reads the running game's
 # renderer out of that file on the console's HDD (src/core/uipak.c). The last
-# step here asks pak.py for the renderers' identity, the CRC-32 the pak will
-# carry, and writes it into the header as MH_PAK_ID, so a module takes only the
-# pak packed from the renderers it was built with. Python is needed for that,
-# as for check.py.
+# step here asks pak.py for the renderers' identity, the CRC-32 of the pak's
+# renderer entries (build 56; build 55's was the CRC of the whole pak after its
+# header), and writes it into the header as MH_PAK_ID, so a module takes only
+# the pak packed from the renderers it was built with. Python is needed for
+# that, as for check.py.
 set -e
 
 cd "$(dirname "$0")/../../.."
@@ -648,9 +649,10 @@ cat > "$OUT/bins.h.in" <<'EOF'
 #include "../core/proto.h"
 
 /*
- * The renderers' identity: the CRC-32 of ui.pak after its header, as pak.py
- * packs this table. A module takes only the pak that carries it (and names its
- * build), so the menu that goes into a game is always the module's own.
+ * The renderers' identity: the CRC-32 of ui.pak's renderer entries, one after
+ * another, as pak.py packs this table (build 56; the savefile helpers have
+ * SF_PAK_ID beside it). A module takes only the pak that carries it (and names
+ * its build), so the menu that goes into a game is always the module's own.
  */
 #define MH_PAK_ID @MH_PAK_ID@u
 
