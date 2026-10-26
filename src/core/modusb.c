@@ -3,6 +3,10 @@
  * PROTOCOL.md 5.7.2 is the contract.
  */
 #include "modusb.h"
+
+#if !QWARK_PREVIEW
+#error "modusb.c is a preview feature (proto.h, QWARK_PREVIEW): a release build leaves it out"
+#endif
 #include "mods.h"
 #include "mem.h"
 #include "config.h"

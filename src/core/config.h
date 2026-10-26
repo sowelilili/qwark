@@ -28,6 +28,11 @@
  * A profile that has never been set up has no folder: its per-user keys read
  * as unset, so as their defaults, and its first write makes it (empty). The
  * only copy is the one PROFILE_ENABLE asks for as the switch goes on.
+ *
+ * A release (QWARK_PREVIEW 0, proto.h) leaves the profiles out: every key is
+ * config.txt's and the slots are positions/'s, as in 1.4.1, whatever
+ * `profiles.enabled` says (the key is kept, like any other), and nothing
+ * under QWARK_PROFILEDIR is read or written.
  */
 #ifndef QWARK_CONFIG_H
 #define QWARK_CONFIG_H
@@ -197,7 +202,6 @@ int  config_set_manip(const char *game, const char *field, u32 value);
 #define CONFIG_SCOPE_CONSOLE 0
 #define CONFIG_SCOPE_USER    1
 #define CONFIG_SCOPE_COMBO   2
-int  config_key_scope(const char *key);
 
 /* "user-00000001" and its NUL; "name-<slug>" will have to fit too. */
 #define PROFILE_FOLDER_MAX  24
@@ -211,6 +215,10 @@ int  config_key_scope(const char *key);
 #define PROFILE_SETUP_NONE  0
 #define PROFILE_SETUP_COPY  1   /* the console's per-user keys and position files */
 #define PROFILE_SETUP_FRESH 2   /* empty: every per-user key at its default */
+
+#if QWARK_PREVIEW
+
+int  config_key_scope(const char *key);
 
 /* `profiles.enabled`, the console's switch: 0 when the file has never named it. */
 int  config_profiles_enabled(void);
@@ -252,6 +260,20 @@ int  config_profile_exists(u32 user);
  */
 int  config_combo_overridden(u8 action);
 int  config_set_combo_override(u8 action, int set, u32 mask);
+
+#else /* !QWARK_PREVIEW */
+
+/*
+ * A release: no profile is ever active, so SessionInfo's flags2 bits 1 to 3
+ * and byte 30 are 0 and no COMBO_LIST row is overridden, as 1.4.1's pad
+ * bytes were; net.c answers the three profile ops UNSUPPORTED.
+ */
+static __inline int config_profile_active(void)        { return 0; }
+static __inline u8  config_profile_seq(void)           { return 0; }
+static __inline u8  config_profile_flags(void)         { return 0; }
+static __inline int config_combo_overridden(u8 action) { (void)action; return 0; }
+
+#endif /* QWARK_PREVIEW */
 
 /* ------------------------------------------------------------- positions */
 

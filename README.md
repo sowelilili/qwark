@@ -58,6 +58,8 @@ On a console, all four games have a Trainer menu on the TV, with the game's chea
 
 ## Mods on a USB drive
 
+Test builds only, for now: a release module (`make release`) leaves this out, and the per-user settings below too (PROTOCOL.md 3.1.2).
+
 A console can also take mods from a USB drive, in the same layout as its own library, in either of two places on the drive: `qwark/mods/<TITLEID>/<mod>/` or `mods/<TITLEID>/<mod>/` (for example `/dev_usb000/mods/NPEA00423/il-ghost/`). qwark reads every USB port the console has (`/dev_usb000` to `003`, `006` and `007`) when a game boots, when a client rescans and when a client asks for the list; it never reads them in the background. A mod on USB is available, not installed: the client lists it as on the console's USB drive, and qwark copies it into `/dev_hdd0/qwark/mods/` only when it is loaded or its auto-load is turned on. From then on it is an ordinary installed mod.
 
 A mod both places have is compared by the `#- version` in each `patch.txt`, read as dotted numbers (`1.10` is newer than `1.9`; a leading `v` is fine). A newer USB copy is an update: the next time the mod loads, by hand, by its auto-load at boot or by a reapply, qwark takes it first. While the mod is loaded in the running game its files are never touched; the update waits for the next load, and the client says so. An older USB copy, or one with the same version, is left alone, and the console's copy loads. When the versions are equal but the contents differ, or either copy has no version qwark can compare, the console's copy stays too, the log says so and the client shows it. When one mod is on several drives or in both places, the newest is used and the others are ignored; copies with the same version count as the same mod. A mod deleted from the console that is still on the drive shows as available again and is never loaded until somebody loads it.
@@ -85,6 +87,8 @@ All under `/dev_hdd0/qwark/`, plain text so they can be edited by hand:
 The log is there for working out why a console is crashing. When the module starts with a `qwark.log` over 1 MB, that log becomes `qwark.old.log` and a new one begins, so after a crash look at the end of both. `savefile_helper = 0` stops qwark ever writing the savefile helper into a game; the game then reports as having none and the client hides the panel.
 
 ## Per-user settings
+
+Test builds only, for now, as the USB mods above.
 
 With `profiles.enabled = 1` (the client's Settings panel turns it on, off out of the box) each console user keeps their own position slots, planet selection, manip options, In-game menus switch, and which toggles and mods apply themselves, in `profiles/user-<8 digits>/`. The mod and savefile libraries, `ui.pak`, the log and the combos stay the console's, though a user can override one combo at a time. qwark picks up a new user at the XMB, never in a game. Turning the switch on can copy the console's settings into the user signed in then; any other user starts from the defaults. RPCS3 has one user, so it has no profiles. PROTOCOL.md 5.10.1 has every key.
 

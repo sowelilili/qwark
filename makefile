@@ -32,7 +32,7 @@ CRT_TAIL += $(shell ppu-lv2-gcc -print-file-name'='crtend.o)
 PPU_SRCS  = src/plat/ps3/libc.c src/plat/ps3/printf.c src/plat/ps3/plat_ps3.c
 PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
-PPU_SRCS += src/core/features.c src/core/mods.c src/core/modusb.c src/core/session.c src/core/net.c
+PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
 PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/menu.c
 #
 # Build 55: not src/games/menuhelper_bins.c. The console menu's renderers go
@@ -94,6 +94,21 @@ $(error no build ID: python -I tools/buildid.py did not run)
 endif
 export QWARK_DEV QWARK_BUILD_ID
 PPU_CFLAGS +=	-DQWARK_DEV=$(QWARK_DEV) -DQWARK_BUILD_ID=$(QWARK_BUILD_ID)
+
+#
+# The features still being tried out (src/core/proto.h, QWARK_PREVIEW; build
+# 56: the settings profiles and the USB mods). A test build has them and a
+# release leaves them out, compiled out altogether, so the module pays no code
+# for them: QWARK_PREVIEW follows QWARK_DEV unless it is given itself, which is
+# how one of them ships in a release some day while test builds stay marked.
+# It is worked out from QWARK_DEV wherever it is read and never exported, so
+# `make release`'s QWARK_DEV=0 reaches every make below it as preview 0 too.
+#
+QWARK_PREVIEW		?= $(QWARK_DEV)
+PPU_CFLAGS +=	-DQWARK_PREVIEW=$(QWARK_PREVIEW)
+ifneq ($(strip $(QWARK_PREVIEW)),0)
+PPU_SRCS += src/core/modusb.c
+endif
 
 ifeq ($(BUILD_TYPE), debug)
 PPU_CFLAGS += -DDEBUG -DDEBUG_FILE

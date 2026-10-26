@@ -1400,7 +1400,9 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	/*
 	 * Revision 1.24. The mods on the USB drives, read again when the last look
 	 * is over a second old: file reads on this thread, under the core lock, as
-	 * MOD_INFO's are, and only when a client asks.
+	 * MOD_INFO's are, and only when a client asks. UNSUPPORTED in a release,
+	 * which leaves them out (modusb.h, QWARK_PREVIEW), as where code cannot be
+	 * patched.
 	 */
 	case OP_MOD_USB_LIST: {
 		u16 rc;
@@ -1741,6 +1743,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 	}
 
+#if QWARK_PREVIEW
 	/*
 	 * Revision 1.24. One combo's override in the active profile: u8 action,
 	 * u8 set, u8 pad[2], u32 mask. A config write like COMBO_SET, answered in
@@ -1808,6 +1811,17 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		core_unlock();
 		return rc;
 	}
+#else
+	/*
+	 * A release has no settings profiles (proto.h, QWARK_PREVIEW): their ops
+	 * are known and reserved, so UNSUPPORTED rather than UNKNOWN_OP, as the
+	 * RPCS3 patch ops are on a console.
+	 */
+	case OP_COMBO_OVERRIDE:
+	case OP_PROFILE_INFO:
+	case OP_PROFILE_ENABLE:
+		return ST_UNSUPPORTED;
+#endif
 
 	/*
 	 * Protocol 1.12. The persistent switch. It is a config write and nothing
@@ -1831,8 +1845,10 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		u16 rc;
 		core_lock();
 		rc = (u16)config_load();
+#if QWARK_PREVIEW
 		/* Revision 1.24: the profile was read again with it; its auto flags follow. */
 		if (config_profile_active()) session_profile_changed();
+#endif
 		core_unlock();
 		return rc == ST_NOT_FOUND ? ST_OK : rc;
 	}

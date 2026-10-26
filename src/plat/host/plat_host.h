@@ -90,6 +90,14 @@ u32  host_dir_opens(void);
  * it at once; NULL puts it back.
  */
 void host_pull_drive(const char *prefix, u32 after_reads);
+
+/*
+ * The release check (test/test_release.c): counts every use of a path - an
+ * open, a folder walk, a look, a make, a delete or a rename - under each of up
+ * to four `prefixes`, from now on. NULL or 0 stops watching.
+ */
+void host_watch_paths(const char * const *prefixes, u32 n);
+u32  host_watch_hits(u32 index);
 #endif
 
 void host_fail_writes(u32 addr, u32 count);

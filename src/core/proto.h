@@ -117,6 +117,23 @@
 #define QWARK_BUILD_ID          0
 #endif
 
+/*
+ * Revision 1.24: the features still being tried out, which a release leaves
+ * out (PROTOCOL.md 3.1.2): the settings profiles (PROFILE_INFO, PROFILE_ENABLE,
+ * COMBO_OVERRIDE, flags2 bits 1 to 3, byte 30) and the USB mods (MOD_USB_LIST,
+ * flags2 bit0). QWARK_PREVIEW 1 builds them in; 0 compiles them out, and the
+ * module answers their ops UNSUPPORTED, never sets their bits, never looks at
+ * /dev_usb00N and never reads or writes /dev_hdd0/qwark/profiles: settings,
+ * combos and mods are 1.4.1's. The makefile sets it to QWARK_DEV unless told
+ * otherwise, so a test build has them and `make release` does not; the two are
+ * separate switches so a feature can ship in a release while test builds go on
+ * being marked. The host builds and the unit tests set 1 (build-host.sh,
+ * test/run.sh); test/run.sh also builds test/test_release.c with 0.
+ */
+#ifndef QWARK_PREVIEW
+#define QWARK_PREVIEW           QWARK_DEV
+#endif
+
 #define QWARK_PORT              9673
 /*
  * Revision 1.11. One frame's payload, request or reply. It was 65600 - 64 KB

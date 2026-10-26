@@ -224,6 +224,14 @@ The rule, for a client that knows the build and ID of the module it ships, again
 
 A client that has no `qwark.build` beside its module, or one that names another build than the client expects, falls back to the build number alone. Under RPCS3 the build number alone decides too: `qwark-rpcs3.exe` is started by the client from beside itself and goes with it.
 
+### 3.1.2 Features a module may leave out (revision 1.24)
+
+Two features of revision 1.24 are still being tried out, and a module may be built without them: the **settings profiles** (5.10.1: PROFILE_INFO 0x0093, PROFILE_ENABLE 0x0094 and COMBO_OVERRIDE 0x0095; `flags2` bits 1 to 3 and byte 30 `profile_seq`; COMBO_LIST's OVERRIDDEN flag) and the **USB mods** (5.7.2: MOD_USB_LIST 0x0067; `flags2` bit0). Their opcodes and bits stay reserved and documented whether a module has them or not, and are never given to anything else.
+
+A module without them never sets their bits (`flags2` bits 0 to 3 and byte 30 are 0, and no COMBO_LIST row is OVERRIDDEN, as the pad bytes of 1.4.1 were) and answers their four ops UNSUPPORTED. It never looks at `/dev_usb00N` and never reads or writes `/dev_hdd0/qwark/profiles`; every setting is config.txt's and the position slots are `positions/`'s, whatever `profiles.enabled` says (the key is kept, as any key is), and a mod only a USB drive has is unknown to it, as in 1.4.1. A client tells by the bits alone, as it does from a module of an earlier build, and offers nothing of either.
+
+Which modules have them is the build's choice (`QWARK_PREVIEW`, src/core/proto.h): it follows `QWARK_DEV` unless given itself, so a test build (`make`) has both and a release (`make release`) leaves both out, compiled out altogether. Build 56's release module has neither. The simulator (`qwark-host.exe`) and `qwark-rpcs3.exe` are built with them; `qwark-rpcs3` offers neither all the same (5.7.2, 5.10.1).
+
 ### 3.2 `flags` bit1 EMULATOR and bit2 NO_CODE_PATCHES (revision 1.6)
 
 qwark also runs on a PC as `qwark-rpcs3.exe`, driving RPCS3 through its PINE IPC server instead of a console through PS3MAPI. The core, the game tables and every opcode in this document are the same; two things about the platform are not, and both travel in `flags`.
@@ -734,6 +742,8 @@ The answer holds for the session, because a patch goes in at load or not at all.
 
 ### 5.7.2 Mods on a USB drive (revision 1.24)
 
+A module may leave this feature out (3.1.2): then `flags2` bit0 is clear and MOD_USB_LIST is UNSUPPORTED. Build 56's release module does.
+
 A console with a USB drive in it may carry mods there, available to load but not installed. qwark lists them and copies one into the console's library, `/dev_hdd0/qwark/mods/<TITLEID>/<dir>/`, only when it is loaded or its auto-load is turned on; from then on it is an installed mod like any other, in MOD_LIST, auto-loading, reapplied and unloaded as before. Module build 56; SessionInfo `flags2` bit0 USB_MODS says the module has this. qwark never writes to a USB drive.
 
 **Where.** For each USB mount point the console gives storage, `/dev_usb000`, `001`, `002`, `003`, `006` and `007`, two places, in this order:
@@ -879,6 +889,8 @@ Config keys the module reads for itself: `log` (1 by default) writes a line per 
 Keys a client's own ops write. Console-wide rather than per title: the seven combo masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, since revision 1.22 `combo.menu` (0x060F when the file does not name it) and since revision 1.23 `combo.fastloads` (COMBO_SET), `combo.enabled` (COMBO_ENABLE, revision 1.12, 1 when the file does not mention it), `menu.help` (MENU_HELP, revision 1.23, 1 when the file does not mention it) and `selected.slot` (POS_SELECT). Per game since build 53: `selected.<game>.planet` and `selected.<game>.planet_flags` (PLANET_SELECT), `<game>` being `rac1`, `rac2`, `rac3` or `rac4` as in the manips' keys (section 5.14), so the disc trilogy keeps three. Until build 53 the planet selection was one pair for the console, `selected.planet` and `selected.planet_flags`; qwark never writes those two again, and a game whose own key the file does not hold yet reads the old one in its place, so the first PLANET_SELECT in each game is where its own pair begins (section 5.5). Each key is written to the file the moment the op lands, so none of them needs a CONFIG_SAVE to survive a power cycle, and CONFIG_RELOAD picks up a hand edit to any of them without a game restart. With settings profiles on (revision 1.24, section 5.10.1) the per-user ones among them, the selections, the manip options, `menu.help` and the auto flags, are the active profile's and live in its own config.txt; the combo masks and `combo.enabled` stay the console's.
 
 ### 5.10.1 Settings profiles (revision 1.24, build 56)
+
+A module may leave this feature out (3.1.2): then `flags2` bits 1 to 3 and byte 30 are 0, and PROFILE_INFO, PROFILE_ENABLE and COMBO_OVERRIDE are UNSUPPORTED. Build 56's release module does.
 
 A console can have several users, and each can keep settings of their own: a **profile**. Today a profile is a console user's; a later revision adds named profiles, picked from a client, beside them, which is why the layout and the ops talk about profiles rather than users.
 

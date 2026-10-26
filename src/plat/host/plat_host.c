@@ -68,10 +68,46 @@ const char *host_root(void)
 }
 
 /* Maps an absolute console path onto the host root. */
+#ifdef QWARK_TEST
+/* host_watch_paths: the prefixes watched, and how often a path under each was used. */
+#define HOST_WATCH_MAX 4
+static char g_watch[HOST_WATCH_MAX][64];
+static volatile u32 g_watch_hits[HOST_WATCH_MAX];
+
+void host_watch_paths(const char * const *prefixes, u32 n)
+{
+	u32 i;
+
+	for (i = 0; i < HOST_WATCH_MAX; i++) {
+		g_watch[i][0] = 0;
+		g_watch_hits[i] = 0;
+		if (prefixes != NULL && i < n && prefixes[i] != NULL)
+			snprintf(g_watch[i], sizeof(g_watch[i]), "%s", prefixes[i]);
+	}
+}
+
+u32 host_watch_hits(u32 index)
+{
+	return index < HOST_WATCH_MAX ? g_watch_hits[index] : 0;
+}
+
+static void host_watch_note(const char *path)
+{
+	u32 i;
+
+	for (i = 0; i < HOST_WATCH_MAX; i++) {
+		if (g_watch[i][0] != 0 && strncmp(path, g_watch[i], strlen(g_watch[i])) == 0) g_watch_hits[i]++;
+	}
+}
+#endif
+
 static void host_path(const char *in, char *out, u32 cap)
 {
 	u32 i;
 
+#ifdef QWARK_TEST
+	host_watch_note(in);
+#endif
 	snprintf(out, cap, "%s%s", g_root, in);
 
 #ifdef _WIN32

@@ -477,7 +477,7 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 			append(out, cap, "\n\nSome files could not be put back. Check " INST_LIST
 			                 " before you restart. The old list is in " INST_LIST_BAK ".");
 		} else {
-			append(out, cap, "\n\nNothing on the console was changed.");
+			append(out, cap, "\n\nNothing on your console was changed.");
 		}
 		return;
 	}
@@ -490,7 +490,7 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 
 	if (r->lines > BOOTLIST_HEN_LIMIT) {
 		snprintf(line, sizeof(line),
-		         "\n\nThe list has %d plugins. The console loads only the first %d.",
+		         "\n\nThe list has %d plugins. Your console loads only the first %d.",
 		         r->lines, BOOTLIST_HEN_LIMIT);
 		append(out, cap, line);
 	}
@@ -501,13 +501,13 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 	}
 	if (hen) append(out, cap, "\n\nAfter the restart, enable HEN. qwark loads with it.");
 
-	append(out, cap, "\n\nqwark loads when the console starts. Restart now?");
+	append(out, cap, "\n\nqwark loads when your console starts. Restart now?");
 }
 
 void inst_restart_failed_message(unsigned int error, char *out, size_t cap)
 {
 	snprintf(out, cap,
-	         "The console did not restart (error 0x%08x).\n\n"
-	         "qwark is installed. Restart the console from the XMB to load it.",
+	         "Your console did not restart (error 0x%08x).\n\n"
+	         "qwark is installed. Restart your console from the XMB to load it.",
 	         error);
 }

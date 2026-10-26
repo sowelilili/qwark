@@ -77,6 +77,8 @@ struct modusb_entry {
 	u8   pad;
 };
 
+#if QWARK_PREVIEW
+
 /* 0 where code cannot be patched (RPCS3): no scan, no take, no list. */
 int  modusb_enabled(void);
 
@@ -116,5 +118,26 @@ int  modusb_install(const char *dirname);
  * when either does not, which is "no version to compare".
  */
 int  modusb_version_cmp(const char *a, const char *b, int *cmp);
+
+#else /* !QWARK_PREVIEW */
+
+/*
+ * A release (QWARK_PREVIEW 0, proto.h) leaves the USB mods out: modusb.c is not
+ * built, and its callers get these, which do what 1.4.1 did. No scan, so
+ * /dev_usb00N is never looked at; MOD_USB_LIST is UNSUPPORTED and flags2 bit0
+ * stays clear; a load takes nothing first; MOD_SET_AUTO on for a mod the
+ * console does not have is NOT_FOUND.
+ */
+static __inline int  modusb_enabled(void) { return 0; }
+static __inline void modusb_scan(int force) { (void)force; }
+static __inline int  modusb_list_encode(u8 *out, u32 cap, u32 *len)
+{
+	(void)out; (void)cap; (void)len;
+	return ST_UNSUPPORTED;
+}
+static __inline int  modusb_prepare(const char *dirname) { (void)dirname; return ST_OK; }
+static __inline int  modusb_install(const char *dirname) { (void)dirname; return ST_NOT_FOUND; }
+
+#endif /* QWARK_PREVIEW */
 
 #endif /* QWARK_MODUSB_H */

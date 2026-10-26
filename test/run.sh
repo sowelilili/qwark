@@ -29,9 +29,11 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
 # QWARK_EMULATOR, as in build-host.sh: the tests cover the RPCS3 paths too.
 CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
         -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_PINE_NO_PLAT \
-        -DQWARK_DEV=1 -DQWARK_BUILD_ID=0x51A7C0DE"
+        -DQWARK_DEV=1 -DQWARK_PREVIEW=1 -DQWARK_BUILD_ID=0x51A7C0DE"
 # Revision 1.24: a test build with a fixed build ID, which test_qwark.c reads
-# back out of HELLO and SessionInfo flags2 bit4.
+# back out of HELLO and SessionInfo flags2 bit4, and the features a release
+# leaves out (QWARK_PREVIEW, src/core/proto.h), which test_profiles.c and
+# test_usbmods.c cover.
 # -static folds winpthreads into the executable. Without it both programs import
 # libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
 # on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at
@@ -87,6 +89,26 @@ else
 	echo "running $OUT (no python to pick a port, falling back to 9673)"
 fi
 "./$OUT"
+
+# The release configuration (src/core/proto.h, QWARK_PREVIEW): the core as
+# `make release` builds it, with no DEV bit, no preview features and no
+# modusb.c, against test/test_release.c alone, on a fresh fake HDD and a port
+# of its own. It checks that the settings profiles and the USB mods are gone.
+REL_OUT="test/qwark-test-release.exe"
+REL_SRC=$(for f in $SRC; do case "$f" in test/*|src/core/modusb.c|src/plat/host/backend_pine.c) ;; *) printf '%s ' "$f" ;; esac; done)
+REL_CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_DEV=0 -DQWARK_PREVIEW=0 -DQWARK_BUILD_ID=0x51A7C0DE"
+echo "compiling $REL_OUT"
+"$CLANG" $REL_CFLAGS $REL_SRC test/test_game.c test/test_release.c -o "$REL_OUT" $LDFLAGS
+rm -rf "$ROOT"
+mkdir -p "$ROOT/dev_hdd0/qwark"
+if [ -n "${QWARK_TEST_PORT:-}" ]; then
+	for PY in python python3 py; do
+		QWARK_TEST_PORT=$("$PY" -c "$PICK" 2>/dev/null) && break
+	done
+	export QWARK_TEST_PORT
+fi
+echo "running $REL_OUT"
+"./$REL_OUT"
 
 # The installer package's EBOOT (installer/): its boot_plugins.txt edit and its
 # install over a fake HDD, a program of its own.

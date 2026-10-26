@@ -33,13 +33,15 @@ struct kv {
 };
 
 static struct kv g_kv[CONFIG_MAX_ENTRIES];
+static u32 g_version;
+
+#if QWARK_PREVIEW
 /*
  * Revision 1.24. The active profile's config.txt, the same shape as the
  * console's: a profile holds only per-user keys and combo overrides, which are
  * at most what the console's file holds of them.
  */
 static struct kv g_pkv[CONFIG_MAX_ENTRIES];
-static u32 g_version;
 
 /* Revision 1.24. The active profile (config.h, the resolver). */
 static struct {
@@ -50,6 +52,7 @@ static struct {
 	u32  user;      /* the user it is, 0 when none is active */
 	char folder[PROFILE_FOLDER_MAX];
 } g_prof;
+#endif /* QWARK_PREVIEW: a release has no profile, and every key is config.txt's (config.h) */
 
 static int pos_load_file(void);
 /* The positions' title (rac1 .. rac4), which the slot table further down is of. */
@@ -109,6 +112,8 @@ static int kv_put(struct kv *t, const char *key, const char *value)
 
 /* ------------------------------------------------------------ key scopes */
 
+#if QWARK_PREVIEW
+
 static int has_prefix(const char *s, const char *p)
 {
 	while (*p != 0) {
@@ -149,6 +154,7 @@ int config_key_scope(const char *key)
 		return CONFIG_SCOPE_USER;
 	return CONFIG_SCOPE_CONSOLE;
 }
+#endif /* QWARK_PREVIEW */
 
 /*
  * A per-user key of an active profile is the profile's alone: one the profile
@@ -160,6 +166,7 @@ const char *config_get(const char *key)
 {
 	struct kv *e;
 
+#if QWARK_PREVIEW
 	if (g_prof.active) {
 		int scope = config_key_scope(key);
 		if (scope == CONFIG_SCOPE_USER) {
@@ -171,6 +178,7 @@ const char *config_get(const char *key)
 			if (e != NULL) return e->value;
 		}
 	}
+#endif
 	e = kv_find(g_kv, key);
 	return e ? e->value : NULL;
 }
@@ -181,8 +189,10 @@ u32 config_version(void)
 }
 
 static int global_save(void);
+#if QWARK_PREVIEW
 static int profile_save(void);
 static int profile_make(void);
+#endif
 
 /*
  * Every write lands in the active profile's file when the key is a per-user
@@ -194,6 +204,7 @@ int config_set(const char *key, const char *value)
 {
 	int rc;
 
+#if QWARK_PREVIEW
 	if (g_prof.active && config_key_scope(key) == CONFIG_SCOPE_USER) {
 		rc = profile_make();
 		if (rc != ST_OK) return rc;
@@ -201,6 +212,7 @@ int config_set(const char *key, const char *value)
 		if (rc != ST_OK) return rc;
 		return profile_save();
 	}
+#endif
 
 	rc = kv_put(g_kv, key, value);
 	if (rc != ST_OK) return rc;
@@ -342,6 +354,7 @@ static int store_save(const struct kv *t, const char *path)
 	return file_end(path, f, ok);
 }
 
+#if QWARK_PREVIEW
 static void profile_path(const char *folder, const char *leaf, char *out, u32 cap)
 {
 	out[0] = 0;
@@ -354,10 +367,14 @@ static void profile_path(const char *folder, const char *leaf, char *out, u32 ca
 	}
 }
 
+#endif /* QWARK_PREVIEW */
+
 static int global_save(void)
 {
 	return store_save(g_kv, QWARK_CONFIG);
 }
+
+#if QWARK_PREVIEW
 
 static int profile_save(void)
 {
@@ -379,6 +396,7 @@ static void profile_load(void)
 	profile_path(g_prof.folder, "config.txt", path, sizeof(path));
 	store_load(g_pkv, path);   /* one too big to read leaves every key unset, as config.txt does */
 }
+#endif /* QWARK_PREVIEW */
 
 int config_load(void)
 {
@@ -389,10 +407,12 @@ int config_load(void)
 	 * console's file, and says so in the profile sequence. Whether the switch
 	 * itself changed by hand is the XMB's to act on (session.c), never a game's.
 	 */
+#if QWARK_PREVIEW
 	if (g_prof.active) {
 		profile_load();
 		g_prof.seq++;
 	}
+#endif
 
 	if (rc != ST_OK) {
 		plat_log_enable(1);   /* no file, so the default applies */
@@ -414,9 +434,13 @@ int config_load(void)
 /* Both files: the console's, and the active profile's when it has been made. */
 int config_save(void)
 {
+#if QWARK_PREVIEW
 	int rc = global_save();
 	int rc2 = profile_save();
 	return rc != ST_OK ? rc : rc2;
+#else
+	return global_save();
+#endif
 }
 
 int config_init(void)
@@ -673,6 +697,9 @@ int config_set_manip(const char *game, const char *field, u32 value)
 
 /* --------------------------------------------------------------- profiles */
 
+/* A release leaves all of this out (QWARK_PREVIEW, proto.h); config.h has its stand-ins. */
+#if QWARK_PREVIEW
+
 /* The XMB's user numbers are eight digits, 00000001 on; 0 and a negative answer are nobody. */
 static int user_valid(u32 user)
 {
@@ -868,6 +895,8 @@ int config_set_combo_override(u8 action, int set, u32 mask)
 	return profile_save();
 }
 
+#endif /* QWARK_PREVIEW */
+
 /* -------------------------------------------------------------- positions */
 
 /*
@@ -891,11 +920,14 @@ static struct pos_entry g_pos[POS_MAX_ENTRIES];
  */
 static void pos_dir(char *out, u32 cap)
 {
-	if (g_prof.active) profile_path(g_prof.folder, "positions", out, cap);
-	else {
-		out[0] = 0;
-		qstrcat(out, cap, QWARK_POSDIR);
+#if QWARK_PREVIEW
+	if (g_prof.active) {
+		profile_path(g_prof.folder, "positions", out, cap);
+		return;
 	}
+#endif
+	out[0] = 0;
+	qstrcat(out, cap, QWARK_POSDIR);
 }
 
 static void pos_path(char *out, u32 cap)
@@ -973,8 +1005,10 @@ int pos_save_file(void)
 	int ok = 1;
 
 	if (g_pos_title[0] == 0) return ST_OK;
+#if QWARK_PREVIEW
 	/* A profile never made has no folder, and nothing to save: a store makes it. */
 	if (g_prof.active && !g_prof.exists) return ST_OK;
+#endif
 
 	pos_path(path, sizeof(path));
 	if (file_begin(path, &f) != ST_OK) return ST_IO_ERROR;
@@ -1031,11 +1065,13 @@ int pos_store(u8 planet, u8 slot, const u8 *blob, u8 len)
 
 	if (slot >= QWARK_POS_SLOTS || len > QWARK_MAX_BLOB) return ST_BAD_ARG;
 
+#if QWARK_PREVIEW
 	/* Revision 1.24: a slot stored into a profile never made makes it. */
 	{
 		int rc = profile_make();
 		if (rc != ST_OK) return rc;
 	}
+#endif
 
 	e = pos_find(planet, slot);
 	if (e == NULL) {

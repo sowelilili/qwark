@@ -308,6 +308,7 @@ qwark-host-root/
 qwark-rpcs3.exe
 qwark-rpcs3-root/
 test/qwark-test.exe
+test/qwark-test-release.exe
 test/qwark-host-root/
 test/qwark-rpcs3-root/
 

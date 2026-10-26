@@ -26,12 +26,14 @@
  * does not need to be any quicker than the eye.
  */
 #define LIVE_POLL_EVERY  12        /* 10 Hz */
+#if QWARK_PREVIEW
 /*
  * Revision 1.24. How often the XMB's signed-in user is asked for: once a
  * second, at the XMB only. A user can change only there, and it is one VSH
- * call.
+ * call. A release has no profiles (proto.h, QWARK_PREVIEW) and never asks.
  */
 #define PROFILE_POLL_EVERY 120u
+#endif
 
 /*
  * A full second after IS_INGAME, before even the first PID query. Use elapsed
@@ -1235,6 +1237,7 @@ static void step_combos(void)
 
 /* ------------------------------------------------------------- profiles */
 
+#if QWARK_PREVIEW
 void session_profile_changed(void)
 {
 	features_refresh_auto();
@@ -1265,6 +1268,7 @@ void session_profile_poll(void)
 	if (config_profile_resolve(user, PROFILE_SETUP_NONE)) session_profile_changed();
 	core_unlock();
 }
+#endif /* QWARK_PREVIEW */
 
 /* -------------------------------------------------------------- telemetry */
 
@@ -1329,7 +1333,8 @@ static u32 encode_info(u8 *out, u32 cap)
 	/*
 	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
 	 * (bit0 is the USB mods', bit4 a test build's), and the profile's
-	 * sequence. out[31] pad.
+	 * sequence. out[31] pad. A release (QWARK_PREVIEW 0) has neither the
+	 * profiles nor the USB mods, so their bits and byte 30 are 0 there.
 	 */
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
 	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0));
@@ -1546,8 +1551,10 @@ static void session_step(void)
 	/* Build 54. The menu's install and the ten-second reading of the VSH's memory. */
 	vm_tick();
 
+#if QWARK_PREVIEW
 	/* Revision 1.24. A new user at the XMB, and with them their settings profile. */
 	if (g_state == SESSION_XMB && (g_tick % PROFILE_POLL_EVERY) == 0) session_profile_poll();
+#endif
 
 	/*
 	 * Build 55. ui.pak, looked at on the module's first tick and again after

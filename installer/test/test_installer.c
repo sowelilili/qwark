@@ -480,7 +480,7 @@ static void test_install_lists(void)
 	check(r.ok && r.lines == 8, "installed, eight lines");
 	check(file_is(INST_LIST, BOOT "\n/a.sprx\n/b.sprx\n/c.sprx\n/d.sprx\n/e.sprx\n/f.sprx\n/g.sprx\n"), "nobody's line dropped");
 	inst_result_message(&r, 0, msg, sizeof(msg));
-	check(strstr(msg, "The list has 8 plugins. The console loads only the first 6.") != NULL, "the message warns");
+	check(strstr(msg, "The list has 8 plugins. Your console loads only the first 6.") != NULL, "the message warns");
 	check(message_fits(&r), "the message fits a dialog");
 
 	group("six lines exactly");
@@ -514,7 +514,7 @@ static void test_install_lists(void)
 	check(!r.ok && r.step == INST_STEP_READ_LIST, "refused at reading the list");
 	check(strcmp(snapshot(1), g_snap[0]) == 0, "nothing changed");
 	inst_result_message(&r, 0, msg, sizeof(msg));
-	check(strstr(msg, "over 64 KB") != NULL && strstr(msg, "Nothing on the console was changed.") != NULL,
+	check(strstr(msg, "over 64 KB") != NULL && strstr(msg, "Nothing on your console was changed.") != NULL,
 	      "the message says why, and that nothing changed");
 
 	group("a list of exactly 64 KB");
@@ -654,7 +654,7 @@ static void sweep(void (*setup)(void), const char *name)
 			check(strcmp(snapshot(1), before) == 0, what);
 			if (strcmp(g_snap[1], before) != 0) printf("before:\n%safter:\n%s", before, g_snap[1]);
 			if (strcmp(g_snap[1], before) == 0) unchanged++;
-			check(strstr(msg, "Nothing on the console was changed.") != NULL, "the message says nothing changed");
+			check(strstr(msg, "Nothing on your console was changed.") != NULL, "the message says nothing changed");
 		}
 		check(message_fits(&r), "the message fits a dialog");
 	}

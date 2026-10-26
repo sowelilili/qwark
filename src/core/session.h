@@ -153,6 +153,7 @@ void session_previous_dismiss(void);
 void core_lock(void);
 void core_unlock(void);
 
+#if QWARK_PREVIEW   /* a release has no profiles (proto.h) */
 /*
  * Revision 1.24. The active settings profile changed under the running tables
  * (config_profile_resolve, or a CONFIG_RELOAD with a profile active): the
@@ -167,6 +168,7 @@ void session_profile_changed(void);
  * a game. Exposed for the host tests; takes the core lock itself.
  */
 void session_profile_poll(void);
+#endif
 
 /* Position and planet helpers the combo actions and the net handlers share. */
 int  session_position_save(u8 slot);
