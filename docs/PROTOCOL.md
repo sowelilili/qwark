@@ -64,6 +64,8 @@ Revision 1.24, the HUD colour's shades (same build 56): feature flags bit6 **SHA
 
 Revision 1.24, the HUD colour as it is drawn (same build 56): feature flags bit7 **STOCK**, a COLOR with the game's own colour to go back to (section 5.3.4): its readout carries AUTO while it is the game's own, and FEATURE_SET with bit 24 puts it back. Deadlocked's feature 18 is flagged STOCK. The PS3 port draws every HUD colour twice as bright as its word says (each channel doubled, capped at 255; the health bar as much as the EXP bars), so the four Deadlocked readouts 8 to 11 are now the colours as the HUD shows them, each channel of the word doubled and capped, and FEATURE_SET on 18 to 21 writes the word that shows as the value sent, each channel halved and rounded up: the HUD draws what was picked, to the even value. The stock words are untouched, so the stock HUD draws as it always did and reads as it looks (team 1's red `0x6D1315` reads `0xDA262A`). While the team's colour is its stock word an automatic shade is still the game's own sum on the word; otherwise it is the same sum on the colour as shown, halved back. A set also writes the copies the HUD made when it was built (section 5.3.4), so the whole HUD changes at once, not at the next load. A client before this draws the HUD colour as any COLOR, without a way back to stock; the values it sends and shows are those of the drawn colour either way.
 
+Revision 1.24, the weapons' colours, the HUD's brightness and colours kept for the boot (same build 56, 2026-10-26). **FEATURE_SET_AUTO on a COLOR**: the request may carry a `u32 value` after `auto` (6 bytes); `auto` 1 keeps that FEATURE_SET value, AUTO bit included, as the colour to set again by itself, and puts the row's bit in `toggle_auto` (and DESCRIBE's flags bit0), `auto` 0 forgets it. The console sets every kept colour again when the game's colours are there to be set: RaC2 and UYA as the game boots, Deadlocked at the first tick of each level and of each team the HUD takes, once a save has said which team that is (section 5.3.5). The value lives in config as the feature's `<TITLEID>.auto.<slug>` key, so it is per user with settings profiles on; a 2-byte request on a COLOR keeps black. Deadlocked's DESCRIBE gains three readouts, "Weapon colour V11", "Weapon colour V99" and "Gadget colour" (12 to 14), three STOCK COLORs in Cosmetics, 22 to 24 of the same names, mirrored by them, and a TOGGLE, 25 "Correct HUD brightness" (section 5.3.4): the weapons take their colour from three words of the team table at fixed places, which a HUD colour leaves alone unless the HUD colour cheat picks a team they are in, and the brightness correction of the HUD's colours is the user's choice rather than always on. Off, the HUD colour and its shades are written and read as given, the stock words untouched, and the HUD draws them twice as bright, as it draws the stock HUD; on, the HUD's team is held halved, the game's own colours too, and reads as picked. RaC2's and UYA's chargeboot COLORs are flagged STOCK: AUTO puts the game's own words back, and their readouts carry AUTO while the words are the game's. A client before this sends the 2-byte FEATURE_SET_AUTO only for toggles, draws the new COLORs and the toggle as any, and with the toggle off sees the HUD's colours as the words are rather than as the HUD draws them.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -351,7 +353,7 @@ Each game exposes up to 64 features with stable ids. Kinds: 0 TOGGLE, 1 ACTION, 
 | 0x0020 | DESCRIBE | none | `u8 game, u8 ngroups, char[24] group[ngroups], u8 nreadouts, char[24] readout[nreadouts], u8 nfeatures, Feature[nfeatures]`. At most 16 groups, 16 readouts, 64 features |
 | 0x0021 | FEATURE_SET | `u8 id, u32 value` (TOGGLE: 0 or 1; SIGNED VALUE: the low `bits` bits, section 5.3.2) | none. Works on a LIVE toggle too: it writes the byte |
 | 0x0022 | FEATURE_TRIGGER | `u8 id` (ACTION only) | none |
-| 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto` | none. Persisted in config. UNSUPPORTED on a LIVE toggle |
+| 0x0023 | FEATURE_SET_AUTO | `u8 id, u8 auto`, and on a COLOR (revision 1.24) `u32 value` | none. Persisted in config. UNSUPPORTED on a LIVE toggle, BAD_ARG on an ACTION, a VALUE or an ENUM. On a COLOR, `auto` 1 keeps `value` as the colour to set again by itself (section 5.3.5) |
 | 0x0024 | FEATURE_OPTIONS | `u8 id` (ENUM only) | `u8 count, char[24] option[count]` |
 | 0x0025 | SWITCH_PATCH | none | `u16 n, u16 pad, u32 stamp, { u32 addr, u32 value }[n], u16 nb, u16 pad, { u32 addr, u8 value, u8 pad[3] }[nb]`: the running game's code switches as the words and bytes an RPCS3 patch writes (revision 1.17, section 5.12.2). `UNSUPPORTED` from the PS3 module (revision 1.18) |
 
@@ -438,7 +440,7 @@ The shades today:
 | Deadlocked | 20 | HUD dark shade | 18 | each channel halved: the bottom corner of the HUD's gradients |
 | Deadlocked | 21 | HUD light shade | 18 | each channel halfway to 255: the top corner of the prompt and pickup boxes, the radar cursor's pulse, the bot HUD's flash |
 
-Deadlocked's sums are on the colour as the HUD shows it (section 5.3.4), and on the word itself while the colour is the stock one, as the game does.
+Deadlocked's sums are on the colour as it reads (section 5.3.4): the word itself with Correct HUD brightness off, which on the stock colour gives the game's own shades, and the word doubled with it on, halved back.
 
 #### 5.3.4 Stock colours (revision 1.24)
 
@@ -447,11 +449,34 @@ A COLOR row flagged **STOCK** (bit7) has a colour of the game's own to go back t
 - Its readout carries **bit 24 AUTO** (`0x01000000`) while it is the game's own, and not once the user has picked a colour, or overridden one of the shades that follow it.
 - **FEATURE_SET with bit 24 set** (the colour bits are ignored) puts it back to the game's own, and every shade that follows it to automatic.
 
-A client draws a STOCK colour as any COLOR, with a way back to stock beside it while its readout has no AUTO.
+A client draws a STOCK colour as any COLOR, with a way back to stock: since 2026-10-26 the reference client's colour presets offer "(none)", which sends AUTO to every STOCK colour of the block.
 
-Deadlocked's HUD colour (18) is the one today. The PS3 port draws every HUD colour twice as bright as the game's word says: the PS2 drew an untextured quad's colour as it stood and multiplied a texture by colour / 0x80, and the port draws every quad as a textured one, with a white stand-in for the untextured, so 0x80 is full brightness for all of them. So 18 to 21 read and write the colour as the HUD shows it: a readout is each channel of the word doubled, capped at 255, and a value set is halved, rounded up, into the word, so the HUD draws it to the even value (0xFF stays 0xFF). Stock is the team's four words as the game ships them (the colour) and works them out (the shades), and nothing else is changed; team 1's red, `{ 0x80, 0x15, 0x13, 0x6D }`, reads `0xDA262A`.
+The STOCK colours today:
+
+| Game | Feature id | Label | Stock |
+|---|---|---|---|
+| RaC2, UYA | 34, 35, 36 | Chargeboots primary front, back, tint | the words the game ships, alpha and all: `0x40FF8020`, `0x00CF6000`, `0x20FFFF00` (and UYA's tint control the word after it, `0x00008000`). Nothing in either game writes them, so a colour holds from one boot to the next |
+| Deadlocked | 18 | HUD colour | the HUD team's four words, below |
+| Deadlocked | 22, 23, 24 | Weapon colour V11, Weapon colour V99, Gadget colour | team 0's colour `0x80734C00`, team 5's `0x80632773`, team 4's light word `0x8092CCDF` |
+
+**Deadlocked's HUD brightness.** The PS3 port draws every HUD colour twice as bright as the game's word says: the PS2 drew an untextured quad's colour as it stood and multiplied a texture by colour / 0x80, and the port draws every quad as a textured one, with a white stand-in for the untextured, so 0x80 is full brightness for all of them. Since 2026-10-26 the correction is TOGGLE 25, "Correct HUD brightness", off at every boot like any toggle and with an auto flag like any. **Off**, 18 to 21 write the value set into the word as it is and read the word as it is: the HUD draws it twice as bright, as it draws the stock HUD, and stock is the team's four words as the game ships them (the colour) and works them out (the shades); team 1's red, `{ 0x80, 0x15, 0x13, 0x6D }`, reads `0x6D1315`. **On**, the HUD's team is held halved: a value set is halved, rounded up, into the word, and a readout is each channel doubled, capped at 255, so the HUD draws what was picked, to the even value (0xFF stays 0xFF), and stock is the game's own colour halved with its shades worked out from it, so the stock HUD draws as the PS2 drew it; team 1's red reads `0x6E1416`. The shades are the game's sums on the colour as it reads. Only the team the HUD draws in is changed over, each word keeping the colour it stood for: at once when the toggle changes while a save is in play, and otherwise at the first tick of a level, so a toggle kept for the boot never touches the Default team at the main menu for a save that draws in another.
+
+**Deadlocked's weapon colours** (22 to 24). The HUD draws a weapon's icon in the colour GuiMain_GetGadgetColor works out, straight from the team table: grey below V11 (a constant), from team 0's colour at V11 to team 5's at V99, team 0's at every level in multiplayer, and team 4's light word for a gadget that is no weapon. The three are written and read as given: an icon is a textured quad, which the port draws as the PS2 did, so the toggle leaves them alone. They are also team words: while the HUD colour cheat picks team 0, 4 or 5 the HUD and the weapons share one of them (the colour of team 0 or 5, team 4's light shade), and nothing that writes only data can part them; the last write wins, and the toggle's halving reaches the shared word. With the cheat at Default, or on any other team, a HUD colour never changes a weapon's. A set of 18 to 24 also raises the HUD's weapon-icon bits (HudAmmo's dirty word, `0x01191BE0` bits 2 and 3), so the icons take the words at the next frame.
 
 The HUD copies some of the words into its widgets when it is built: the player and weapon EXP bars (dark and colour), the prompt and pickup boxes (light, colour and dark, at half alpha), the quick-select slots and the radar's outline and fill (the colour). A FEATURE_SET on 18 to 21 writes the new words into those copies too, keeping each copy's alpha, while a level is playing or paused, so they change with the health bar and the bot HUD, which read the table every frame. Only player one's HUD (the first canvas) is written; a second player's in co-op takes the colours at the next load, as before.
+
+#### 5.3.5 Colours kept for the boot (revision 1.24)
+
+A COLOR's colour is game memory and goes with the game, so a client that wants it back at the next boot asks the console to keep it: **FEATURE_SET_AUTO** `u8 id, u8 1, u32 value`, `value` being what FEATURE_SET would carry (AUTO included: a shade kept automatic, a STOCK colour kept stock). The console stores it in config as the feature's own auto key, `<TITLEID>.auto.<slug>`, as bit 31 with the value in the low 25 bits (decimal, as every number config writes), so it is per user with settings profiles on (section 5.10.1), and sets the row's bit in `toggle_auto` and its DESCRIBE flags bit0. `auto` 0 forgets it. Nothing is read back from memory: a client keeps the value it shows, and sends FEATURE_SET_AUTO again when it changes a colour it has kept (the reference client does at the end of a pick, after a preset, after "(none)").
+
+When the console sets them, by FEATURE_SET in DESCRIBE order, so a colour goes in before its shades:
+
+| Game | When |
+|---|---|
+| RaC2, UYA | as the session enters INGAME, the chargeboot words being static data nothing in the game writes |
+| Deadlocked | at the first tick a level plays (game mode 0, a planet) for each planet and each team the HUD takes: the team is the save's HUD colour cheat, which reads Default at the main menu, and the HUD copies the words into its widgets as a level loads |
+
+A kept toggle is still applied at INGAME as before; Deadlocked's brightness toggle then waits for the first level to change the HUD's team over.
 
 ### 5.4 Memory (0x003x)
 
@@ -823,7 +848,7 @@ A console can have several users, and each can keep settings of their own: a **p
 
 | Side | Keys and files |
 |---|---|
-| Per user: read from and written to the active profile only | `selected.slot`, `selected.<game>.planet`, `selected.<game>.planet_flags`, the old `selected.planet` and `selected.planet_flags`, `manip.<game>.auto_reset`, `manip.<game>.remember`, `manip.<game>.category`, `menu.help` (In-game menus), `<TITLEID>.auto.<slug>` (a toggle's auto-apply), `<TITLEID>.mod.<dirname>.auto` (which mods load by themselves), `profile.*` (the profile's own), and the position slots |
+| Per user: read from and written to the active profile only | `selected.slot`, `selected.<game>.planet`, `selected.<game>.planet_flags`, the old `selected.planet` and `selected.planet_flags`, `manip.<game>.auto_reset`, `manip.<game>.remember`, `manip.<game>.category`, `menu.help` (In-game menus), `<TITLEID>.auto.<slug>` (a toggle's auto-apply, and since revision 1.24 a COLOR kept for the boot, section 5.3.5), `<TITLEID>.mod.<dirname>.auto` (which mods load by themselves), `profile.*` (the profile's own), and the position slots |
 | Combos, one at a time | the seven masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, `combo.menu`, `combo.fastloads` are the console's, in config.txt, for everyone. The active profile may hold a key of the same name, that combo's **override**, which wins for that combo alone |
 | The console's, always config.txt | `profiles.enabled`, `combo.enabled` (the combo switch), `menu.enabled`, `log`, `savefile_helper`, and any key not named above |
 | The console's files, shared by everyone | the mod library (`mods/`), the savefile library (`savefiles/`), `ui.pak` and `qwark.log` |

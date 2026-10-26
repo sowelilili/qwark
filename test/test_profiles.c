@@ -253,6 +253,12 @@ static void test_flow(void)
 	check(has_line(QWARK_CONFIG, "menu.help = 0"), "and the console's still says 0");
 	config_set_selected_slot(6);
 	check(has_line(QWARK_CONFIG, "selected.slot = 3"), "the slot selection is the profile's too");
+	/* Revision 1.24: a colour kept for the boot is the user's, as a toggle's flag is. */
+	config_set_feature_auto("NPEA00423", "HUD colour", 0x80102030u);
+	check(config_feature_auto("NPEA00423", "HUD colour") == 0x80102030u &&
+	      has_line(QWARK_PROFILEDIR "/user-00000001/config.txt", "NPEA00423.auto.hud_colour = 2148540464") &&
+	      !has_line(QWARK_CONFIG, "NPEA00423.auto.hud_colour"),
+	      "a colour to re-apply at boot goes into the profile's file, value and all");
 	check(config_set_u32("log", 1) == ST_OK && has_line(QWARK_CONFIG, "log = 1") &&
 	      !has_line(QWARK_PROFILEDIR "/user-00000001/config.txt", "log"),
 	      "a console key goes into config.txt and nowhere else");

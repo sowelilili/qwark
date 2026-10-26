@@ -17,6 +17,7 @@
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/savefile.h"
+#include "../core/features.h"
 
 #include <string.h>
 
@@ -788,6 +789,22 @@ static const u32 rac4_team_stock[RAC4_TEAM_COUNT] = {
 	0x80737326u, 0x809973BFu, 0x80264C4Cu, 0x8000004Cu, 0x80808080u
 };
 
+/*
+ * Revision 1.24, 2026-10-26: the HUD's brightness is the user's choice
+ * (R4_HUD_CORRECT, rac4.h). While it is on, every word of the HUD's team holds
+ * its colour halved, rounded up, so the doubled HUD draws it as picked, and
+ * with no colour picked the game's own colours halved, so the stock HUD draws
+ * as the PS2 did; off, a colour goes in as given and the stock words stay the
+ * game's. g_hud_correct is what the toggle asks for and g_hud_on, a bit per
+ * team, how each team's words are held now. Only the HUD's own team is ever
+ * changed over, and only in a level (rac4_hud_tick): a boot at the main menu,
+ * where the cheat still reads Default, never touches team 1 for a save that
+ * draws in another team.
+ */
+static u8  g_hud_correct;
+static u16 g_hud_on;
+static u16 g_hud_seen;      /* the team and planet the colours were last re-applied in */
+
 /* Each of the low three bytes of w: (x * m + a) >> s, capped at 255. */
 static u32 hud_chan(u32 w, u32 m, u32 a, u32 s)
 {
@@ -801,51 +818,61 @@ static u32 hud_chan(u32 w, u32 m, u32 a, u32 s)
 	return out;
 }
 
-#define HUD_SHOWN(w) hud_chan((w), 2, 0, 0)   /* how the HUD draws a word */
-#define HUD_WORD(c)  hud_chan((c), 1, 1, 1)   /* the word it draws as c */
+/* The colour a word of a team held `on` stands for, and the word for one. */
+static u32 hud_log(u32 w, u32 on)  { return on ? hud_chan(w, 2, 0, 0) : (w & 0x00FFFFFFu); }
+static u32 hud_word(u32 c, u32 on) { return 0x80000000u | (on ? hud_chan(c, 1, 1, 1) : (c & 0x00FFFFFFu)); }
 
 /*
- * The word shade v (1 vivid, 2 dark, 3 light) works out to from team t's
- * colour: vivid 3c / 2 capped, dark c / 2, light (c + 255) / 2, on the word
- * itself while it is the stock one (GuiMain_InitTeamColors' sums, the same
- * truncations), otherwise on the colour as shown and halved back.
+ * The word shade v (1 vivid, 2 dark, 3 light) works out to from the colour
+ * word `base`: vivid 3c / 2 capped, dark c / 2, light (c + 255) / 2, the sums
+ * and truncations of GuiMain_InitTeamColors, on the colour the word stands
+ * for. Off, on a stock word, they are the game's own shades.
  */
-static u32 hud_auto(const u8 *team, u8 t, u8 v)
+static u32 hud_auto(u32 base, u8 v, u32 on)
 {
-	u32 base = be32_get(team), m = v == 1 ? 3 : 1, a = v == 3 ? 0xFFu : 0;
-
-	if (base == rac4_team_stock[t]) return hud_chan(base, m, a, 1);
-	return HUD_WORD(hud_chan(HUD_SHOWN(base), m, a, 1));
+	return hud_word(hud_chan(hud_log(base, on), v == 1 ? 3 : 1, v == 3 ? 0xFFu : 0, 1), on);
 }
 
 /* Whether shade v is automatic: its word is 0 or what hud_auto gives. */
-static int hud_is_auto(const u8 *team, u8 t, u8 v)
+static int hud_is_auto(const u8 *team, u8 v, u32 on)
 {
 	u32 w = be32_get(team + 4 * v);
 
-	return w == 0 || ((w ^ hud_auto(team, t, v)) & 0x00FFFFFFu) == 0;
+	return w == 0 || ((w ^ hud_auto(be32_get(team), v, on)) & 0x00FFFFFFu) == 0;
 }
 
 /*
- * The readout of word v of team t, 0x00RRGGBB as the HUD shows it. A shade
- * carries FEATURE_COLOR_AUTO while it is automatic, the colour while all four
- * words are the game's own.
+ * The readout of word v of team t, 0x00RRGGBB as picked: the word doubled
+ * while the team is held halved, the word itself otherwise. A shade carries
+ * FEATURE_COLOR_AUTO while it is automatic, the colour while all four words
+ * are the game's own.
  */
 u32 rac4_hud_readout(const u8 *team, u8 t, u8 v)
 {
-	u32 w = be32_get(team + 4 * v), flag = FEATURE_COLOR_AUTO;
+	u32 on = (g_hud_on >> t) & 1u, w = be32_get(team + 4 * v), flag = FEATURE_COLOR_AUTO;
 	u8 i;
 
 	if (v == 0) {
-		if (w != rac4_team_stock[t]) flag = 0;
+		if (w != hud_word(rac4_team_stock[t], on)) flag = 0;
 		for (i = 1; i < 4; i++)
-			if (!hud_is_auto(team, t, i)) flag = 0;
-	} else if (hud_is_auto(team, t, v)) {
-		w = hud_auto(team, t, v);
+			if (!hud_is_auto(team, i, on)) flag = 0;
+	} else if (hud_is_auto(team, v, on)) {
+		w = hud_auto(be32_get(team), v, on);
 	} else {
 		flag = 0;
 	}
-	return classic_cb_to_rgb(HUD_SHOWN(w)) | flag;
+	return classic_cb_to_rgb(hud_log(w, on)) | flag;
+}
+
+/* Revision 1.24: the weapons' three words (rac4.h), and the game's own. */
+static const u32 rac4_gun_at[3]    = { RAC4_GUN_LOW, RAC4_GUN_HIGH, RAC4_GUN_GADGET };
+static const u32 rac4_gun_stock[3] = { 0x80734C00u, 0x80632773u, 0x8092CCDFu };
+
+u32 rac4_gun_readout(const u8 *table, u8 i)
+{
+	u32 w = be32_get(table + (rac4_gun_at[i] - RAC4_TEAM_COLORS));
+
+	return classic_cb_to_rgb(w) | (w == rac4_gun_stock[i] ? FEATURE_COLOR_AUTO : 0);
 }
 
 /* ------------------------------------------------- the HUD's own copies */
@@ -854,7 +881,10 @@ u32 rac4_hud_readout(const u8 *team, u8 t, u8 v)
  * The widgets the HUD copies team words into when it is built (rac4.h). `at`
  * is a Panel, whose u32 is the handle of its element 0, or below 0x01000000 a
  * handle as it stands. `vars` names the word for the colour and the three
- * other corners, a nibble each from the top, 0xF for one left alone.
+ * other corners, a nibble each from the top, 0xF for one left alone. None is a
+ * weapon's icon: HudAmmo's elements 6 to 14 are the quick-select slots'
+ * frames, which HudAmmo_CreateWidgets paints in the HUD's colour, and the
+ * icons are 0x0F to 0x17, 0x26, 0x27 and 0x33, which the game colours itself.
  */
 struct rac4_hud_widget {
 	u32 at;
@@ -894,9 +924,11 @@ static u32 rac4_widget(u32 handle)
 
 /*
  * Puts team words into the HUD's copies, each keeping its alpha, so a change
- * shows at once rather than at the next load. Only in a level, the game
- * playing or paused, when the HUD is built and not being torn down; a widget
- * that is not there, or not of the class it should be, is left alone.
+ * shows at once rather than at the next load, and (revision 1.24) asks the
+ * HUD to colour its weapon icons again (rac4.h); `team` NULL does only that.
+ * Only in a level, the game playing or paused, when the HUD is built and not
+ * being torn down; a widget that is not there, or not of the class it should
+ * be, is left alone.
  */
 static void rac4_hud_refresh(const u8 *team)
 {
@@ -908,7 +940,7 @@ static void rac4_hud_refresh(const u8 *team)
 	if (mem_read_u32(RAC4_GAME_MODE, &mode) != ST_OK ||
 	    (mode != RAC4_GAME_MODE_NORMAL && mode != RAC4_GAME_MODE_PAUSE)) return;
 
-	for (w = rac4_hud_widgets; w < rac4_hud_widgets + sizeof(rac4_hud_widgets) / sizeof(rac4_hud_widgets[0]); w++) {
+	for (w = rac4_hud_widgets; team != NULL && w < rac4_hud_widgets + sizeof(rac4_hud_widgets) / sizeof(rac4_hud_widgets[0]); w++) {
 		base = w->at;
 		if (base >= 0x01000000u && (mem_read_u32(base, &base) != ST_OK || base == 0)) continue;
 
@@ -927,21 +959,25 @@ static void rac4_hud_refresh(const u8 *team)
 			}
 		}
 	}
+
+	if (mem_read_u32(RAC4_HUDAMMO_DIRTY, &old) == ST_OK)
+		mem_write_u32(RAC4_HUDAMMO_DIRTY, old | RAC4_HUDAMMO_ICONS);
 }
 
 /*
  * Word v of the team the HUD is drawing in: the colour (0), which takes every
  * automatic shade with it and leaves an overridden one alone, or a shade, set
  * to `value` or, with FEATURE_COLOR_AUTO, worked out from the colour again.
- * The colour with FEATURE_COLOR_AUTO puts all four back to the game's own. A
- * picked colour goes in halved (rac4.h). Data only, so it works under RPCS3 as
+ * The colour with FEATURE_COLOR_AUTO puts all four back to the game's own. v 4
+ * sets nothing: it holds the team's words the way the toggle now asks, each
+ * standing for the colour it stood for. Data only, so it works under RPCS3 as
  * on the console; the HUD's own copies follow at once.
  */
 static int rac4_set_hud(u8 v, u32 value)
 {
 	u8 team[16];
 	u8 cheat = 0, t, i, keep = 0;
-	u32 at;
+	u32 at, was, on = g_hud_correct, col;
 	int rc;
 
 	if (mem_read_u8(RAC4_HUD_CHEAT, &cheat) != ST_OK) cheat = 0;
@@ -950,25 +986,73 @@ static int rac4_set_hud(u8 v, u32 value)
 	rc = mem_read(at, team, 16);
 	if (rc != ST_OK) return rc;
 
+	/*
+	 * `keep` bit i: word i stays the colour it stands for. Bit 0 is the
+	 * colour not being the game's own, bits 1 to 3 a shade overridden.
+	 */
+	was = (g_hud_on >> t) & 1u;
+	if (be32_get(team) != hud_word(rac4_team_stock[t], was)) keep = 1;
 	for (i = 1; i < 4; i++)
-		if (!hud_is_auto(team, t, i)) keep |= (u8)(1u << i);
+		if (!hud_is_auto(team, i, was)) keep |= (u8)(1u << i);
 
-	if ((value & FEATURE_COLOR_AUTO) == 0) {
-		be32_put(team + 4 * v, 0x80000000u | HUD_WORD(classic_cb_to_rgb(value)));
-		if (v != 0) keep |= (u8)(1u << v);
-	} else if (v == 0) {
-		be32_put(team, rac4_team_stock[t]);
-		keep = 0;
-	} else {
-		keep &= (u8)~(1u << v);
+	if (v < 4) {
+		if ((value & FEATURE_COLOR_AUTO) == 0) keep |= (u8)(1u << v);
+		else keep &= v != 0 ? (u8)~(1u << v) : 0;
 	}
 
-	for (i = 1; i < 4; i++)
-		if ((keep & (1u << i)) == 0) be32_put(team + 4 * i, 0x80000000u | hud_auto(team, t, i));
+	/* Each word kept is the colour it stood for, or the one picked; the rest are worked out. */
+	for (i = 0; i < 4; i++) {
+		col = i == v && (value & FEATURE_COLOR_AUTO) == 0 ? classic_cb_to_rgb(value)
+		                                                   : hud_log(be32_get(team + 4 * i), was);
+		if (i == 0)
+			be32_put(team, hud_word((keep & 1u) ? col : rac4_team_stock[t], on));
+		else
+			be32_put(team + 4 * i, (keep & (1u << i)) ? hud_word(col, on) : hud_auto(be32_get(team), i, on));
+	}
 
 	rc = mem_write(at, team, 16);
-	if (rc == ST_OK) rac4_hud_refresh(team);
+	if (rc != ST_OK) return rc;
+	g_hud_on = (u16)((g_hud_on & ~(1u << t)) | (on << t));
+	rac4_hud_refresh(team);
+	return ST_OK;
+}
+
+/*
+ * Revision 1.24, R4_HUD_CORRECT. The HUD's team is changed over at once while
+ * a save is in play, and otherwise at the first tick of a level.
+ */
+int rac4_hud_correct(int on)
+{
+	g_hud_correct = (u8)(on != 0);
+	return rac4_in_file() == 1 ? rac4_set_hud(4, 0) : ST_OK;
+}
+
+/* Revision 1.24: weapon colour i (rac4.h), or with FEATURE_COLOR_AUTO the game's own. */
+static int rac4_set_gun(u8 i, u32 value)
+{
+	int rc = mem_write_u32(rac4_gun_at[i], (value & FEATURE_COLOR_AUTO) != 0
+	                       ? rac4_gun_stock[i] : 0x80000000u | classic_cb_to_rgb(value));
+
+	if (rc == ST_OK) rac4_hud_refresh(NULL);
 	return rc;
+}
+
+void rac4_hud_tick(u8 planet, u8 cheat)
+{
+	u8 t = rac4_hud_team(cheat);
+	u16 seen = (u16)((t << 8) | planet);
+
+	if (planet == 0xFF) {
+		g_hud_correct = 0;
+		g_hud_on = 0;
+		g_hud_seen = 0xFFFF;
+		return;
+	}
+	if (((g_hud_on >> t) ^ g_hud_correct) & 1u) rac4_set_hud(4, 0);
+	if (seen != g_hud_seen) {
+		g_hud_seen = seen;
+		features_apply_colors();
+	}
 }
 
 /* ------------------------------------------------------------ the handlers */
@@ -984,6 +1068,9 @@ int rac4_set_value(u8 id, u32 value)
 	case R4_HUD_VIVID:
 	case R4_HUD_DARK:
 	case R4_HUD_LIGHT:    return rac4_set_hud((u8)(id - R4_HUD_COLOUR), value);
+	case R4_GUN_LOW:
+	case R4_GUN_HIGH:
+	case R4_GUN_GADGET:   return rac4_set_gun((u8)(id - R4_GUN_LOW), value);
 	default:              return ST_NOT_FOUND;
 	}
 }

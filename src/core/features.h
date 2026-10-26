@@ -24,7 +24,23 @@ void features_refresh_auto(void);
 
 int  features_set(u8 id, u32 value);
 int  features_trigger(u8 id);
-int  features_set_auto(u8 id, int on);
+/*
+ * FEATURE_SET_AUTO. A TOGGLE's auto flag, as always; revision 1.24, a COLOR's
+ * too: `on` keeps `value`, a FEATURE_SET value (FEATURE_COLOR_AUTO included),
+ * in config as the colour to re-apply, and its bit in toggle_auto; off forgets
+ * it. features_set_auto is the toggles' form.
+ */
+int  features_set_auto_value(u8 id, int on, u32 value);
+#define features_set_auto(id, on) features_set_auto_value((id), (on), 0)
+/*
+ * Revision 1.24. FEATURE_SETs every COLOR whose bit is in toggle_auto with the
+ * value config keeps for it, in DESCRIBE order (features_apply with kind
+ * FEATURE_COLOR, which the INGAME auto-apply leaves alone). A game calls it
+ * when its colours are there to be set: RaC2 and UYA as they boot, Deadlocked
+ * at the first tick of each level, once a save has said which team the HUD
+ * draws in. Tick thread only.
+ */
+#define features_apply_colors() features_apply(features_toggle_auto(), FEATURE_COLOR)
 int  features_options(u8 id, const char * const **options, u8 *count);
 
 /* Encodes the DESCRIBE reply. */
@@ -40,7 +56,8 @@ int  features_describe(u8 *out, u32 cap, u32 *len);
  * in. That is what lets the auto-apply at INGAME and PREVIOUS_REAPPLY, both of
  * which can come before the first look, turn the switches on.
  */
-void features_apply_mask(u64 mask);
+void features_apply(u64 mask, u8 kind);
+#define features_apply_mask(mask) features_apply((mask), FEATURE_TOGGLE)
 
 /*
  * Build 50. The WRITES_CODE toggles features_apply_mask set aside before the

@@ -574,7 +574,7 @@ static void test_rpcs3(void)
 	modusb_scan(1);
 	check_eq_u64(modusb_count(), 0, "no scan: the table is empty");
 	check(modusb_list_encode(buf, sizeof(buf), &len) == ST_UNSUPPORTED, "MOD_USB_LIST is UNSUPPORTED");
-	tick(1);
+	tick(4);   /* SessionInfo is published every fourth tick */
 	session_info_copy(info, sizeof(info));
 	check((info[29] & SESSION_FLAG2_USB_MODS) == 0, "flags2 bit0 is clear");
 	check_eq_u64(modusb_prepare("usbonly"), ST_OK, "a load's preparation does nothing");

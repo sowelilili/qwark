@@ -122,11 +122,24 @@ int  classic_code_read(u32 flag, int *on);
  * Chargeboot colours, RaC2 and RaC3. Both store one colour per word as the four
  * bytes { alpha, B, G, R }, and ChargebootColorPicker wrote 0x40 as the alpha
  * for the front and tint words and 0x25 for the primary back one. The wire
- * carries 0x00RRGGBB, so these two translate.
+ * carries 0x00RRGGBB, so classic_cb_to_rgb translates, both ways (the low
+ * three bytes swapped). Deadlocked's HUD words are laid out the same.
  */
 #define CLASSIC_CB_ALPHA_FRONT 0x40u
 #define CLASSIC_CB_ALPHA_BACK  0x25u
-int  classic_cb_write(u32 addr, u8 alpha, u32 rgb);
 u32  classic_cb_to_rgb(u32 word);
+
+/*
+ * Revision 1.24, 2026-10-26: the three chargeboot COLORs (front, back, tint,
+ * `which` 0..2) of the words that start at `front`, with the games' own to go
+ * back to (FEATURE_FLAG_STOCK). RaC2 and UYA ship the same words, front
+ * 0x40FF8020, back 0x00CF6000 and tint 0x20FFFF00, with 0x00008000 after the
+ * tint, which UYA's tint control writes too (`twin`); nothing in either game
+ * writes them, so they hold from the boot to the next. FEATURE_COLOR_AUTO puts
+ * the stock words back, alpha and all; a readout carries it while the word is
+ * the stock one. classic_cb_readouts fills the three readouts from `ro`.
+ */
+int  classic_cb_set(u32 front, u8 which, u32 value, int twin);
+void classic_cb_readouts(const u8 *words, u32 *ro);
 
 #endif /* QWARK_CLASSIC_H */

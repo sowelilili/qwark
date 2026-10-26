@@ -599,19 +599,20 @@ static void mod_key(const char *title, const char *dirname, char *out, u32 cap)
 	qstrcat(out, cap, ".auto");
 }
 
-int config_feature_auto(const char *title, const char *label)
+u32 config_feature_auto(const char *title, const char *label)
 {
 	return config_feature_auto_default(title, label, 0);
 }
 
-int config_feature_auto_default(const char *title, const char *label, int fallback)
+/* Revision 1.24: the key's number as it stands, which a COLOR's re-apply needs. */
+u32 config_feature_auto_default(const char *title, const char *label, int fallback)
 {
 	char key[CONFIG_KEY_MAX];
 	feature_key(title, label, key, sizeof(key));
-	return config_get_u32(key, fallback ? 1 : 0) != 0;
+	return config_get_u32(key, fallback != 0);
 }
 
-int config_feature_auto_former(const char *title, const char *label, const char *former,
+u32 config_feature_auto_former(const char *title, const char *label, const char *former,
                                int fallback)
 {
 	char key[CONFIG_KEY_MAX];
@@ -624,11 +625,11 @@ int config_feature_auto_former(const char *title, const char *label, const char 
 	return config_feature_auto_default(title, label, fallback);
 }
 
-void config_set_feature_auto(const char *title, const char *label, int on)
+void config_set_feature_auto(const char *title, const char *label, u32 value)
 {
 	char key[CONFIG_KEY_MAX];
 	feature_key(title, label, key, sizeof(key));
-	config_set_u32(key, on ? 1 : 0);
+	config_set_u32(key, value);
 }
 
 int config_mod_auto(const char *title, const char *dirname)

@@ -11,6 +11,7 @@
 #include "classic.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
+#include "../core/features.h"
 #include "../core/autosplit.h"
 #include "../core/savefile.h"
 #include "../core/manips.h"
@@ -95,10 +96,6 @@ static const struct game_hot_block rac3_hot[] = {
 #define OFF_CHALLENGE (RAC3_CHALLENGE_MODE - RAC3_HOT_STATE_ADDR)    /* 0x24E */
 #define OFF_HEALTH_XP (RAC3_HEALTH_XP      - RAC3_HOT_STATE_ADDR)    /* 0x250 */
 #define OFF_ARMOUR    (RAC3_CURRENT_ARMOR  - RAC3_HOT_STATE_ADDR)    /* 0x25C */
-
-#define OFF_CB_BACK   (RAC3_CB_PRIMARY_BACK - RAC3_CB_PRIMARY_FRONT) /* 0x04 */
-#define OFF_CB_TINT_F (RAC3_CB_TINT_FRONT   - RAC3_CB_PRIMARY_FRONT) /* 0x10 */
-#define OFF_CB_TINT_B (RAC3_CB_TINT_BACK    - RAC3_CB_PRIMARY_FRONT) /* 0x14 */
 
 #define OFF_HEALTH     (RAC3_PLAYER_HEALTH - RAC3_HOT_PSTATE_ADDR)   /* 0x28C */
 #define OFF_NEFFY_PH   (RAC3_NEFFY_PHASE   - RAC3_HOT_PSTATE_ADDR)   /* 0x348 */
@@ -201,12 +198,9 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC3_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
-	if (blocks[HOT_COLOURS] != NULL) {
-		const u8 *c = blocks[HOT_COLOURS];
-		out->readout[RAC3_RO_CB_FRONT] = classic_cb_to_rgb(be32_get(c));
-		out->readout[RAC3_RO_CB_BACK]  = classic_cb_to_rgb(be32_get(c + OFF_CB_BACK));
-		out->readout[RAC3_RO_CB_TINT]  = classic_cb_to_rgb(be32_get(c + OFF_CB_TINT_F));
-	}
+	/* Front, back and tint; revision 1.24, flagged AUTO while the game's own. */
+	if (blocks[HOT_COLOURS] != NULL)
+		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC3_RO_CB_FRONT);
 
 	/*
 	 * Revision 1.21: the trophy reset's state, qwark's own and no memory read
@@ -680,6 +674,9 @@ static void rac3_on_enter(void)
 	g_fl_primed = 0;
 	g_fl_armed = 0;
 	g_fl_edge = 0;
+
+	/* Revision 1.24: the chargeboot colours a client asked to have back at every boot. */
+	features_apply_colors();
 }
 
 /*
@@ -972,9 +969,9 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_SET_ASIDE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ R3_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
-	{ R3_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_FRONT,  0, 0, "Chargeboots primary front" },
-	{ R3_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_BACK,   0, 0, "Chargeboots primary back" },
-	{ R3_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, 0, RAC3_RO_CB_TINT,   0, 0, "Chargeboots tint" },
+	{ R3_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC3_RO_CB_FRONT,  0, 0, "Chargeboots primary front" },
+	{ R3_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC3_RO_CB_BACK,   0, 0, "Chargeboots primary back" },
+	{ R3_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC3_RO_CB_TINT,   0, 0, "Chargeboots tint" },
 
 	/*
 	 * Build 53: the trophy reset deletes the console's trophy data for this

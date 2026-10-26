@@ -900,12 +900,13 @@ int rac2_set_value(u8 id, u32 value)
 	}
 
 	case R2_CB_PRIMARY_FRONT:
-		return classic_cb_write(RAC2_CB_PRIMARY_FRONT, CLASSIC_CB_ALPHA_FRONT, value);
 	case R2_CB_PRIMARY_BACK:
-		return classic_cb_write(RAC2_CB_PRIMARY_BACK, CLASSIC_CB_ALPHA_BACK, value);
 	case R2_CB_TINT_FRONT:
-		/* Tint front and back are the same word on RaC2, so one control covers both. */
-		return classic_cb_write(RAC2_CB_TINT_FRONT, CLASSIC_CB_ALPHA_FRONT, value);
+		/*
+		 * Tint front and back are the same word on RaC2, so one control covers
+		 * both. Revision 1.24: FEATURE_COLOR_AUTO puts the game's own back.
+		 */
+		return classic_cb_set(RAC2_CB_PRIMARY_FRONT, (u8)(id - R2_CB_PRIMARY_FRONT), value, 0);
 
 	default:            return ST_NOT_FOUND;
 	}

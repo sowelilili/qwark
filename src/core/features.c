@@ -82,7 +82,8 @@ u64 features_auto_mask(void)
 		const struct feature_desc *f = &d->features[i];
 		int fallback;
 
-		if (f->kind != FEATURE_TOGGLE) continue;
+		/* Revision 1.24: a COLOR has one too, the colour it is to come back as. */
+		if (f->kind != FEATURE_TOGGLE && f->kind != FEATURE_COLOR) continue;
 		if (f->id >= QWARK_MAX_FEATURES) continue;
 		/* A LIVE toggle is the game's byte, not ours: there is nothing to re-apply. */
 		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
@@ -243,20 +244,26 @@ int features_trigger(u8 id)
 	return g_game->trigger(id);
 }
 
-int features_set_auto(u8 id, int on)
+int features_set_auto_value(u8 id, int on, u32 value)
 {
 	const struct feature_desc *f = find_desc(id);
+	u32 keep = on ? 1 : 0;
 
 	if (g_game == NULL) return ST_UNSUPPORTED;
 	if (f == NULL) return ST_NOT_FOUND;
-	if (f->kind != FEATURE_TOGGLE) return ST_BAD_ARG;
+	/* Revision 1.24: a COLOR keeps the value it is to be re-applied with. */
+	if (f->kind == FEATURE_COLOR) {
+		if (on) keep = 0x80000000u | (value & 0x01FFFFFFu);
+	} else if (f->kind != FEATURE_TOGGLE) {
+		return ST_BAD_ARG;
+	}
 	/*
 	 * A LIVE toggle has no auto bit to set: qwark never re-applies it, so
 	 * saying yes here would promise something the module does not do.
 	 */
 	if ((f->flags & FEATURE_FLAG_LIVE) != 0) return ST_UNSUPPORTED;
 
-	config_set_feature_auto(g_title, f->label, on);
+	config_set_feature_auto(g_title, f->label, keep);
 
 	if (on) g_toggle_auto |= (u64)1 << id;
 	else    g_toggle_auto &= ~((u64)1 << id);
@@ -276,7 +283,7 @@ int features_options(u8 id, const char * const **options, u8 *count)
 	return g_game->get_options(id, options, count);
 }
 
-void features_apply_mask(u64 mask)
+void features_apply(u64 mask, u8 kind)
 {
 	const struct game_describe *d;
 	int can_patch = plat_can_patch_code();
@@ -291,7 +298,7 @@ void features_apply_mask(u64 mask)
 
 	for (i = 0; i < d->nfeatures; i++) {
 		const struct feature_desc *f = &d->features[i];
-		if (f->kind != FEATURE_TOGGLE) continue;
+		if (f->kind != kind) continue;
 		if (f->id >= QWARK_MAX_FEATURES) continue;
 		/* Never write a LIVE toggle behind the user's back; the game owns it. */
 		if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
@@ -311,7 +318,9 @@ void features_apply_mask(u64 mask)
 			else              skipped++;
 			continue;
 		}
-		features_set(f->id, 1);
+		/* Revision 1.24: a COLOR goes back to the value config keeps for it. */
+		features_set(f->id, kind == FEATURE_COLOR
+		             ? config_feature_auto(g_title, f->label) & 0x01FFFFFFu : 1);
 	}
 
 	if (skipped != 0)
@@ -325,7 +334,7 @@ void features_apply_waiting(void)
 	u64 mask = g_code_waiting;
 
 	g_code_waiting = 0;
-	if (mask != 0) features_apply_mask(mask);
+	if (mask != 0) features_apply(mask, FEATURE_TOGGLE);
 }
 #endif
 
@@ -375,8 +384,8 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		u8 readout = f->readout;
 		u8 bits = 0;
 
-		if (f->kind == FEATURE_TOGGLE && f->id < QWARK_MAX_FEATURES &&
-		    (g_toggle_auto & ((u64)1 << f->id)) != 0)
+		/* Revision 1.24: a COLOR re-applied at boot says so the same way. */
+		if (f->id < QWARK_MAX_FEATURES && (g_toggle_auto & ((u64)1 << f->id)) != 0)
 			flags |= FEATURE_FLAG_AUTO;
 
 		/*

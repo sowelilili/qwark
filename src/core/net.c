@@ -1086,7 +1086,8 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (reqlen < 2) return ST_BAD_ARG;
 		if (session_game() == NULL) return ST_UNSUPPORTED;
 		core_lock();
-		rc = (u16)features_set_auto(req[0], req[1] != 0);
+		/* Revision 1.24: a COLOR's request carries the value to re-apply, u32 at +2. */
+		rc = (u16)features_set_auto_value(req[0], req[1] != 0, reqlen >= 6 ? be32_get(req + 2) : 0);
 		core_unlock();
 		return rc;
 	}

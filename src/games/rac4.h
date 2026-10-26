@@ -478,15 +478,15 @@
  * texture 0x16), so 0x80 is full brightness everywhere and the health bar, the
  * EXP bars, the prompt and pickup boxes and the radar all draw at double, the
  * stock HUD as much as any other. The hollow rectangles double their colour
- * again on the CPU (0x157B98: each channel times 2.0, capped at 255). So
- * revision 1.24 reads and writes the colours as the HUD shows them: a readout
- * is each channel of its word doubled, capped at 255, and a colour the user
- * picks goes in halved, rounded up, so the HUD draws exactly what was picked
- * (to the even value; 0xFF stays 0xFF). The stock words are left as they are.
- * While the team's colour is its stock word the shades follow the game's own
- * sums on the word, as GuiMain_InitTeamColors does; otherwise they follow the
- * same sums on the colour as shown, halved again, so a picked colour's shades
- * look as the stock ones were meant to. FEATURE_SET 18 with
+ * again on the CPU (0x157B98: each channel times 2.0, capped at 255). Since
+ * 2026-10-26 the correction is the user's toggle, R4_HUD_CORRECT
+ * (rac4_panel.c). Off, a colour goes into its word as given and reads as the
+ * word, and the stock words are the game's. On, the HUD's team is held halved:
+ * a colour goes in halved, rounded up, a readout is each channel doubled,
+ * capped at 255, so the HUD draws exactly what was picked (to the even value;
+ * 0xFF stays 0xFF), and stock is the game's colour halved. Either way the
+ * shades are GuiMain_InitTeamColors' sums on the colour as it reads, which off
+ * and on the stock word are the game's own. FEATURE_SET 18 with
  * FEATURE_COLOR_AUTO puts all four words back to the game's own
  * (FEATURE_FLAG_STOCK), and its readout carries AUTO while they are.
  *
@@ -522,6 +522,36 @@
 #define RAC4_VT_RECTANGLE      0x008B96A0u  /* WidgetRectangle's vtable */
 #define RAC4_VT_HOLLOW         0x008B9670u  /* WidgetHollowRectangle's */
 #define RAC4_VT_SLOT           0x008B9640u  /* the class of the quick-select slots */
+
+/*
+ * The weapons' colours (build 56, revision 1.24, the user's 2026-10-26 request).
+ * The HUD draws a gadget's icon in the colour GuiMain_GetGadgetColor (0x3610F0)
+ * works out, straight out of GuiMain_TeamColors at fixed places: a weapon below
+ * V11 is grey (0x80D0D0D0, a constant in the code); from V11 to V99 it goes
+ * from team 0's colour to team 5's (FastTweenColor by
+ * Math_InvLerpClamp01(level, 10, 98), the level being the gadget's halfword,
+ * GadgetBox_GetGadgetLevel); in multiplayer every level is team 0's colour; a
+ * gadget that is no weapon is team 4's light word. So those three words are
+ * the weapons' colours, and nothing about the HUD's own team picks them:
+ * features 22 to 24 write them as given (an icon is a textured quad, which the
+ * port draws as the PS2 did, texture times colour / 0x80; measured under
+ * RPCS3, the stock V99 purple 0x732763 draws at most 0x822C70), and STOCK puts
+ * the game's own back. They are also team rows: while the HUD colour cheat
+ * picks team 0, 4 or 5 the HUD and the weapons share a word, which is why the
+ * weapons took the HUD's colour in the user's earlier screenshots. Nothing
+ * data-only can part them; the later write wins.
+ *
+ * HudAmmo_SetGadgetIcon (0x36FE18) sets an icon's colour, from
+ * HudAmmo_UpdateEquippedIcons (0x370170, the weapon in hand and the two
+ * beside it) and HudAmmo_UpdateQuickSelectIcons (0x3703E0, the eight slots),
+ * which HudAmmo_Update (0x372FC0) calls on its dirty word's bits 0x08 and
+ * 0x04. A set raises both, so the icons take the new words at the next frame.
+ */
+#define RAC4_GUN_LOW           0x009E87CCu  /* team 0's colour: V11 */
+#define RAC4_GUN_HIGH          0x009E881Cu  /* team 5's colour: V99 */
+#define RAC4_GUN_GADGET        0x009E8818u  /* team 4's light word */
+#define RAC4_HUDAMMO_DIRTY     0x01191BE0u  /* player one's HudAmmo dirty word */
+#define RAC4_HUDAMMO_ICONS     0x0000000Cu
 
 /*
  * The gadget table's shape, and the level a weapon can reach: V10 in a first
@@ -669,6 +699,8 @@ extern const u8 rac4_fp_switch[4];
 #define RAC4_RO_HUD_VIVID  9
 #define RAC4_RO_HUD_DARK   10
 #define RAC4_RO_HUD_LIGHT  11
+/* Revision 1.24: the weapons' colours, in feature order (R4_GUN_LOW..). */
+#define RAC4_RO_GUN_LOW    12
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -712,6 +744,11 @@ extern const u8 rac4_fp_switch[4];
 #define R4_HUD_VIVID       19
 #define R4_HUD_DARK        20
 #define R4_HUD_LIGHT       21
+/* Revision 1.24, 2026-10-26: the weapons' colours and the HUD's brightness. */
+#define R4_GUN_LOW         22
+#define R4_GUN_HIGH        23
+#define R4_GUN_GADGET      24
+#define R4_HUD_CORRECT     25
 
 /* ------------------------------------------------------ rac4_panel.c exports */
 
@@ -723,6 +760,16 @@ u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 u8  rac4_hud_team(u8 cheat);
 u32 rac4_hud_readout(const u8 *team, u8 t, u8 v);
+/* Revision 1.24: readout i of the weapons' colours, out of the whole team table. */
+u32 rac4_gun_readout(const u8 *table, u8 i);
+int rac4_hud_correct(int on);
+/*
+ * The HUD's colours as the session goes (rac4_panel.c): `planet` 0xFF starts
+ * over for a new process; otherwise, every tick while a level plays, it puts
+ * the HUD's team in the brightness the toggle asks for and, the first tick of
+ * each level or team, the colours a client asked to have re-applied.
+ */
+void rac4_hud_tick(u8 planet, u8 cheat);
 
 int rac4_planet_load(u8 planet, u8 flags);
 /*

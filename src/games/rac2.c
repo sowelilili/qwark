@@ -86,9 +86,6 @@ static const struct game_hot_block rac2_hot[] = {
 #define OFF_CHALLENGE  (RAC2_CHALLENGE_MODE - RAC2_HOT_STATE_ADDR)     /* 0x1D6 */
 #define OFF_HEALTH_XP  (RAC2_HEALTH_XP      - RAC2_HOT_STATE_ADDR)     /* 0x1D8 */
 
-#define OFF_CB_BACK    (RAC2_CB_PRIMARY_BACK - RAC2_CB_PRIMARY_FRONT)  /* 0x04 */
-#define OFF_CB_TINT    (RAC2_CB_TINT_FRONT   - RAC2_CB_PRIMARY_FRONT)  /* 0x10 */
-
 #define OFF_HERO_TYPE  (RAC2_HERO_TYPE - RAC2_HOT_PSTATE_ADDR)         /* 0x20 */
 
 #define OFF_LF_ENDAKO_EXIT   (RAC2_LF_ENDAKO_EXIT   - RAC2_HOT_FLAGS_ADDR)  /* 0x31 */
@@ -155,12 +152,9 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_SAVEFILE] != NULL)
 		out->readout[RAC2_RO_SAVEFILE] = blocks[HOT_SAVEFILE][0];
 
-	if (blocks[HOT_COLOURS] != NULL) {
-		const u8 *c = blocks[HOT_COLOURS];
-		out->readout[RAC2_RO_CB_FRONT] = classic_cb_to_rgb(be32_get(c));
-		out->readout[RAC2_RO_CB_BACK]  = classic_cb_to_rgb(be32_get(c + OFF_CB_BACK));
-		out->readout[RAC2_RO_CB_TINT]  = classic_cb_to_rgb(be32_get(c + OFF_CB_TINT));
-	}
+	/* Front, back and tint; revision 1.24, flagged AUTO while the game's own. */
+	if (blocks[HOT_COLOURS] != NULL)
+		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC2_RO_CB_FRONT);
 
 	/* --------------------------------------------- the autosplit watcher's view */
 
@@ -619,6 +613,9 @@ static void rac2_on_enter(void)
 
 	/* Build 53: the crash guards, on a console; see rac2_guards_install. */
 	rac2_guards_install();
+
+	/* Revision 1.24: the chargeboot colours a client asked to have back at every boot. */
+	features_apply_colors();
 }
 
 /*
@@ -812,9 +809,9 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_SET_ASIDE,       FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ R2_LOAD_ASIDE,      FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
-	{ R2_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, 0, RAC2_RO_CB_FRONT, 0, 0, "Chargeboots primary front" },
-	{ R2_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, 0, RAC2_RO_CB_BACK,  0, 0, "Chargeboots primary back" },
-	{ R2_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, 0, RAC2_RO_CB_TINT,  0, 0, "Chargeboots tint" }
+	{ R2_CB_PRIMARY_FRONT, FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC2_RO_CB_FRONT, 0, 0, "Chargeboots primary front" },
+	{ R2_CB_PRIMARY_BACK,  FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC2_RO_CB_BACK,  0, 0, "Chargeboots primary back" },
+	{ R2_CB_TINT_FRONT,    FEATURE_COLOR, G_COSMETICS, 0, FEATURE_FLAG_STOCK, RAC2_RO_CB_TINT,  0, 0, "Chargeboots tint" }
 };
 
 #undef NO

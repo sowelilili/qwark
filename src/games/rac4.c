@@ -94,6 +94,7 @@ static const struct game_hot_block rac4_hot[] = {
 /* What the two watchers need and struct game_hot has no room for. */
 static u8 g_game_mode;      /* game state, low byte */
 static u8 g_tutorial;       /* tutorial flags, low byte */
+static u8 g_hud_cheat;      /* the HUD colour cheat's byte (revision 1.24's re-apply) */
 
 /* The manips' file-load trigger's own state (revision 1.21); see rac4_file_load_watch. */
 static int g_fl_primed;
@@ -177,6 +178,10 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		for (v = 0; v < 4; v++)
 			out->readout[RAC4_RO_HUD_COLOUR + v] =
 				rac4_hud_readout(blocks[HOT_TEAMCOLS] + t * 16, t, v);
+		/* Revision 1.24: the weapons' colours, flagged AUTO while the game's own. */
+		for (v = 0; v < 3; v++)
+			out->readout[RAC4_RO_GUN_LOW + v] = rac4_gun_readout(blocks[HOT_TEAMCOLS], v);
+		g_hud_cheat = blocks[HOT_HUDCHEAT][0];
 	}
 
 	/* --------------------------------------------- the autosplit watcher's view */
@@ -593,6 +598,8 @@ static void rac4_on_enter(void)
 	g_tutorial      = 0xFF;
 	g_fl_primed     = 0;
 	g_fl_due        = 0;
+	g_hud_cheat     = 0;
+	rac4_hud_tick(0xFF, 0);
 	classic_health_forget(&rac4_freeze_health);
 
 	/* The watcher starts over; the pause state deliberately does not. */
@@ -720,6 +727,14 @@ static void rac4_on_tick(const struct game_hot *hot)
 	rac4_autosplit_tick();
 	rac4_file_load_watch();
 
+	/*
+	 * Revision 1.24: while a level plays, the HUD's team in the brightness the
+	 * toggle asks for, and the colours a client asked to have re-applied at
+	 * the first tick of each level and each team the HUD takes (rac4_panel.c).
+	 */
+	if (g_game_mode == RAC4_GAME_MODE_NORMAL && hot->current_planet != 0)
+		rac4_hud_tick(hot->current_planet, g_hud_cheat);
+
 	if (g_tutorial != g_prev_tutorial) {
 		g_prev_tutorial = g_tutorial;
 		if (g_softlock_on && g_tutorial == 0)
@@ -778,7 +793,10 @@ static const char * const rac4_readouts[] = {
 	"HUD colour",
 	"HUD vivid shade",      /* revision 1.24, the HUD colour's shades */
 	"HUD dark shade",
-	"HUD light shade"
+	"HUD light shade",
+	"Weapon colour V11",    /* revision 1.24, the weapons' colours */
+	"Weapon colour V99",
+	"Gadget colour"
 };
 
 #define NR (u8)(sizeof(rac4_readouts) / sizeof(rac4_readouts[0]))
@@ -841,7 +859,16 @@ static const struct feature_desc rac4_features[] = {
 	 */
 	{ R4_HUD_VIVID, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_VIVID, 0, 0, "HUD vivid shade" },
 	{ R4_HUD_DARK,  FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_DARK,  0, 0, "HUD dark shade" },
-	{ R4_HUD_LIGHT, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_LIGHT, 0, 0, "HUD light shade" }
+	{ R4_HUD_LIGHT, FEATURE_COLOR, G_COSMETICS, R4_HUD_COLOUR, SH, RAC4_RO_HUD_LIGHT, 0, 0, "HUD light shade" },
+
+	/*
+	 * Revision 1.24, 2026-10-26: the weapons' colours, their own and the
+	 * game's to go back to (rac4.h), and the HUD's brightness (rac4_panel.c).
+	 */
+	{ R4_GUN_LOW,     FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW,     0, 0, "Weapon colour V11" },
+	{ R4_GUN_HIGH,    FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW + 1, 0, 0, "Weapon colour V99" },
+	{ R4_GUN_GADGET,  FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_GUN_LOW + 2, 0, 0, "Gadget colour" },
+	{ R4_HUD_CORRECT, FEATURE_TOGGLE, G_COSMETICS, 0, 0,  NO, 0, 0, "Correct HUD brightness" }
 };
 
 #undef NO
@@ -897,6 +924,7 @@ static int rac4_set_toggle(u8 id, int on)
 	case R4_REFILL_AMMO:    return classic_code_toggle(&rac4_ammo, SW_RAC4_FLAG_REFILL_AMMO, on);
 	case R4_FREEZE_HEALTH:  return classic_health_toggle(&rac4_freeze_health, on);
 	case R4_GHOST:          return classic_ghost(RAC4_GHOST_TIMER, on);
+	case R4_HUD_CORRECT:    return rac4_hud_correct(on);
 	default:                return ST_NOT_FOUND;
 	}
 }

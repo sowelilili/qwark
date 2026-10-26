@@ -198,18 +198,6 @@ int classic_code_read(u32 flag, int *on)
 
 #endif /* QWARK_EMULATOR */
 
-int classic_cb_write(u32 addr, u8 alpha, u32 rgb)
-{
-	u8 word[4];
-
-	word[0] = alpha;
-	word[1] = (u8)(rgb & 0xFF);          /* B */
-	word[2] = (u8)((rgb >> 8) & 0xFF);   /* G */
-	word[3] = (u8)((rgb >> 16) & 0xFF);  /* R */
-
-	return mem_write(addr, word, 4);
-}
-
 u32 classic_cb_to_rgb(u32 word)
 {
 	u32 b = (word >> 16) & 0xFF;
@@ -217,4 +205,35 @@ u32 classic_cb_to_rgb(u32 word)
 	u32 r = word & 0xFF;
 
 	return (r << 16) | (g << 8) | b;
+}
+
+/* Revision 1.24: front, back, tint and the word after the tint (classic.h). */
+static const u8  classic_cb_off[4]   = { 0x00, 0x04, 0x10, 0x14 };
+static const u8  classic_cb_alpha[3] = { CLASSIC_CB_ALPHA_FRONT, CLASSIC_CB_ALPHA_BACK, CLASSIC_CB_ALPHA_FRONT };
+static const u32 classic_cb_stock[4] = { 0x40FF8020u, 0x00CF6000u, 0x20FFFF00u, 0x00008000u };
+
+/* UYA's twin word takes the tint's alpha, the front one. */
+int classic_cb_set(u32 front, u8 which, u32 value, int twin)
+{
+	u8 at = which;
+	int rc;
+
+	do {
+		rc = mem_write_u32(front + classic_cb_off[at], (value & FEATURE_COLOR_AUTO) != 0
+		                   ? classic_cb_stock[at]
+		                   : ((u32)classic_cb_alpha[which] << 24) | classic_cb_to_rgb(value));
+		at = 3;
+	} while (rc == ST_OK && twin-- > 0);
+	return rc;
+}
+
+void classic_cb_readouts(const u8 *words, u32 *ro)
+{
+	u32 w;
+	u8 i;
+
+	for (i = 0; i < 3; i++) {
+		w = be32_get(words + classic_cb_off[i]);
+		ro[i] = classic_cb_to_rgb(w) | (w == classic_cb_stock[i] ? FEATURE_COLOR_AUTO : 0);
+	}
 }

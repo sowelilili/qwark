@@ -154,14 +154,21 @@ u8   config_selected_planet(const char *game);
 u8   config_selected_planet_flags(const char *game);
 int  config_set_selected_planet(const char *game, u8 planet, u8 flags);
 
-/* Per-game auto flags. `label` is slugged, `dirname` is used verbatim. */
-int  config_feature_auto(const char *title, const char *label);
+/*
+ * Per-game auto flags. `label` is slugged, `dirname` is used verbatim.
+ *
+ * Revision 1.24: a feature's key holds a number rather than a flag, which the
+ * three below answer as it stands, 0 when unset: a toggle's is 1 or 0, and a
+ * COLOR's is 0x80000000 with the FEATURE_SET value to re-apply in the low 25
+ * bits (features.h), 0 when it is not re-applied.
+ */
+u32  config_feature_auto(const char *title, const char *label);
 /*
  * The same, but for a feature whose auto flag ships on: a config file that has
  * never mentioned this feature answers `fallback`, and a user who wrote a 0
  * still wins.
  */
-int  config_feature_auto_default(const char *title, const char *label, int fallback);
+u32  config_feature_auto_default(const char *title, const char *label, int fallback);
 /*
  * Build 53: the same for a toggle that was relabelled (game.h, struct
  * feature_former). The flag under `label` answers whenever the file holds one;
@@ -169,9 +176,9 @@ int  config_feature_auto_default(const char *title, const char *label, int fallb
  * is config_feature_auto_default. Nothing is written: the first
  * FEATURE_SET_AUTO writes the new key, which wins from then on.
  */
-int  config_feature_auto_former(const char *title, const char *label, const char *former,
+u32  config_feature_auto_former(const char *title, const char *label, const char *former,
                                 int fallback);
-void config_set_feature_auto(const char *title, const char *label, int on);
+void config_set_feature_auto(const char *title, const char *label, u32 value);
 int  config_mod_auto(const char *title, const char *dirname);
 void config_set_mod_auto(const char *title, const char *dirname, int on);
 

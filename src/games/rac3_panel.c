@@ -1768,15 +1768,14 @@ int rac3_set_value(u8 id, u32 value)
 	}
 
 	case R3_CB_PRIMARY_FRONT:
-		return classic_cb_write(RAC3_CB_PRIMARY_FRONT, CLASSIC_CB_ALPHA_FRONT, value);
 	case R3_CB_PRIMARY_BACK:
-		return classic_cb_write(RAC3_CB_PRIMARY_BACK, CLASSIC_CB_ALPHA_BACK, value);
-	case R3_CB_TINT_FRONT: {
-		/* Tint front and back mirror each other, so one control writes both words. */
-		int rc = classic_cb_write(RAC3_CB_TINT_FRONT, CLASSIC_CB_ALPHA_FRONT, value);
-		if (rc != ST_OK) return rc;
-		return classic_cb_write(RAC3_CB_TINT_BACK, CLASSIC_CB_ALPHA_FRONT, value);
-	}
+	case R3_CB_TINT_FRONT:
+		/*
+		 * Tint front and back mirror each other, so one control writes both
+		 * words. Revision 1.24: FEATURE_COLOR_AUTO puts the game's own back.
+		 */
+		return classic_cb_set(RAC3_CB_PRIMARY_FRONT, (u8)(id - R3_CB_PRIMARY_FRONT), value,
+		                      id == R3_CB_TINT_FRONT);
 
 	default:           return ST_NOT_FOUND;
 	}
