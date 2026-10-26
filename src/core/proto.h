@@ -638,6 +638,12 @@
  * with that bit puts it back to automatic, and one without it overrides it.
  */
 #define FEATURE_FLAG_SHADE       0x40
+/*
+ * Revision 1.24. A COLOR with the game's own colour to go back to (PROTOCOL.md
+ * 5.3.4): its readout carries FEATURE_COLOR_AUTO while it is the game's own,
+ * and a FEATURE_SET with that bit puts it back.
+ */
+#define FEATURE_FLAG_STOCK       0x80
 #define FEATURE_COLOR_AUTO       0x01000000u
 
 /*

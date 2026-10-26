@@ -468,12 +468,60 @@
  * what the sums give from the team's colour, so the table itself is the
  * override state: nothing in qwark to lose, nothing to reset at a game change,
  * and a team the cheat switches to reads as it is.
+ *
+ * The PS3 port draws the HUD twice as bright as the words say (checked under
+ * RPCS3: an EXP bar or the health bar set to 0x40 in a channel draws 0x80, and
+ * 0x60 in one draws 0xC0). The PS2 drew an untextured quad's colour as it
+ * stood and only multiplied a texture by colour / 0x80; the port draws every
+ * quad textured, an untextured one with a white stand-in (WidgetRectangle's
+ * Render, 0xB9E48, through 0x614100 and 0x15ADA8, the stand-in being HUD
+ * texture 0x16), so 0x80 is full brightness everywhere and the health bar, the
+ * EXP bars, the prompt and pickup boxes and the radar all draw at double, the
+ * stock HUD as much as any other. The hollow rectangles double their colour
+ * again on the CPU (0x157B98: each channel times 2.0, capped at 255). So
+ * revision 1.24 reads and writes the colours as the HUD shows them: a readout
+ * is each channel of its word doubled, capped at 255, and a colour the user
+ * picks goes in halved, rounded up, so the HUD draws exactly what was picked
+ * (to the even value; 0xFF stays 0xFF). The stock words are left as they are.
+ * While the team's colour is its stock word the shades follow the game's own
+ * sums on the word, as GuiMain_InitTeamColors does; otherwise they follow the
+ * same sums on the colour as shown, halved again, so a picked colour's shades
+ * look as the stock ones were meant to. FEATURE_SET 18 with
+ * FEATURE_COLOR_AUTO puts all four words back to the game's own
+ * (FEATURE_FLAG_STOCK), and its readout carries AUTO while they are.
+ *
+ * The HUD copies some words into its widgets when it is built, at a level load
+ * (HudInfo_PlayerInit's prompt and pickup boxes, HealthHud_CreateWidgets'
+ * player EXP bar, HudAmmo_CreateWidgets' weapon EXP bar and quick-select
+ * slots, HudRadar_CreateWidgets' outline and its faint fill), and reads the
+ * rest every frame (the health bar, the bot HUD). A set therefore writes those
+ * copies too, colour word by colour word in the widgets themselves, keeping
+ * each word's alpha, so the whole HUD changes at once (rac4_panel.c). A widget
+ * is found as the game finds it: Engine::m_instance's data, canvas 0 (player
+ * one's HUD), and handle `panel + element` in the canvas's hash index, 1024
+ * slots of { handle, object } at +0x1D4, probing (handle + n * 0x13D573) &
+ * 0x3FF (Canvas::GetObject, 0x60F4E0). A widget's colour is +0x30, and a
+ * WidgetRectangle's other three corners +0x44, +0x48 and +0x4C (top left, top
+ * right, bottom left, bottom right).
  */
 #define RAC4_TEAM_COLORS       0x009E87CCu  /* GuiMain_TeamColors, u32[11][4] */
 #define RAC4_TEAM_COUNT        11
 #define RAC4_TEAM_COLORS_LEN   (RAC4_TEAM_COUNT * 16)
 #define RAC4_HUD_CHEAT         0x00B1F47Au  /* CheatsActivated[2], the HUD colour cheat */
 #define RAC4_HUD_TEAM_DEFAULT  1            /* the hero's team when the cheat is at Default */
+
+#define RAC4_ENGINE_DATA       0x011D7F44u  /* Engine::m_instance.mp_data; its +0 is mp_Canvases[] */
+#define RAC4_CANVAS_INDEX      0x1D4u       /* CanvasData.mHashIndex's slots */
+#define RAC4_CANVAS_PROBE      0x0013D573u
+#define RAC4_CANVAS_FREE       0x017AFBCEu  /* a slot whose object was removed */
+#define RAC4_HEALTHHUD_SCREEN  0x011923A0u  /* each a Panel: the u32 handle of element 0 */
+#define RAC4_HUDAMMO_PANEL     0x01191B40u
+#define RAC4_HUDRADAR_SCREEN   0x01193558u
+#define RAC4_HUDINFO_PROMPT    0x000E0002u  /* HudInfo's boxes: fixed handles */
+#define RAC4_HUDINFO_PICKUP    0x000E0005u
+#define RAC4_VT_RECTANGLE      0x008B96A0u  /* WidgetRectangle's vtable */
+#define RAC4_VT_HOLLOW         0x008B9670u  /* WidgetHollowRectangle's */
+#define RAC4_VT_SLOT           0x008B9640u  /* the class of the quick-select slots */
 
 /*
  * The gadget table's shape, and the level a weapon can reach: V10 in a first
@@ -674,7 +722,7 @@ int rac4_load_setaside(void);
 u8  rac4_savefile_ready(u8 what);
 int rac4_die(void);
 u8  rac4_hud_team(u8 cheat);
-u32 rac4_hud_shade(const u8 *team, u8 v);
+u32 rac4_hud_readout(const u8 *team, u8 t, u8 v);
 
 int rac4_planet_load(u8 planet, u8 flags);
 /*

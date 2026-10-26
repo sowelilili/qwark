@@ -9099,13 +9099,22 @@ static void test_rac4(void)
 	 * colour cheat (0xB1F47A) at Default and in its byte less one otherwise.
 	 */
 	{
+		/*
+		 * Revision 1.24: the words go in halved, rounded up, because the PS3's
+		 * HUD draws them twice as bright, and the shades are the sums on the
+		 * colour as shown, halved back (rac4.h).
+		 */
 		static const u8 want1[16] = {
-			0x80, 0x73, 0x4C, 0xFF,  0x80, 0xAC, 0x72, 0xFF,
-			0x80, 0x39, 0x26, 0x7F,  0x80, 0xB9, 0xA5, 0xFF
+			0x80, 0x3A, 0x26, 0x80,  0x80, 0x57, 0x39, 0x80,
+			0x80, 0x1D, 0x13, 0x40,  0x80, 0x5D, 0x53, 0x80
 		};
 		static const u8 want11[16] = {
-			0x80, 0x00, 0xFF, 0x01,  0x80, 0x00, 0xFF, 0x01,
-			0x80, 0x00, 0x7F, 0x00,  0x80, 0x7F, 0xFF, 0x80
+			0x80, 0x00, 0x80, 0x01,  0x80, 0x00, 0x80, 0x02,
+			0x80, 0x00, 0x40, 0x01,  0x80, 0x40, 0x80, 0x40
+		};
+		static const u8 stock4[16] = {
+			0x80, 0x26, 0x99, 0xBF,  0x80, 0x39, 0xE5, 0xFF,
+			0x80, 0x13, 0x4C, 0x5F,  0x80, 0x92, 0xCC, 0xDF
 		};
 		u8 got[16], guard[16];
 		u8 info[SESSION_INFO_SIZE];
@@ -9117,10 +9126,11 @@ static void test_rac4(void)
 			const struct feature_desc *f = &d->features[i];
 			if (f->id == F4_HUD_COLOUR)
 				found = f->kind == FEATURE_COLOR && f->readout == 8 &&
+				        f->flags == FEATURE_FLAG_STOCK &&
 				        strcmp(f->label, "HUD colour") == 0 &&
 				        strcmp(d->groups[f->group], "Cosmetics") == 0;
 		}
-		check(found, "the HUD colour is a COLOR in Cosmetics, mirrored by readout 8");
+		check(found, "the HUD colour is a STOCK COLOR in Cosmetics, mirrored by readout 8");
 
 		/* Revision 1.24: its three shades, flagged SHADE and following feature 18. */
 		found = 0;
@@ -9142,17 +9152,17 @@ static void test_rac4(void)
 		host_poke(0x00B1F47Au, (const u8 *)"\000", 1);
 		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "the HUD colour writes");
 		host_peek(0x009E87CCu + 16, got, 16);
-		check(memcmp(got, want1, 16) == 0, "team 1's four words, the colour and its three variants");
+		check(memcmp(got, want1, 16) == 0, "team 1's four words, the colour and its three variants, halved");
 		host_peek(0x009E87CCu, got, 16);
 		check(memcmp(got, guard, 16) == 0, "team 0 untouched");
 		host_peek(0x009E87CCu + 32, got, 16);
 		check(memcmp(got, guard, 16) == 0, "and team 2");
 		pump(40);
 		session_info_copy(info, sizeof(info));
-		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C73u, "readout 8 is the colour back");
-		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01FF72ACu, "readout 9 the vivid shade, flagged AUTO");
-		check_eq_u64(be32_get(info + 64 + 10 * 4), 0x017F2639u, "readout 10 the dark one");
-		check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01FFA5B9u, "readout 11 the light one");
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FF4C74u, "readout 8 is the colour as shown, to the even value");
+		check_eq_u64(be32_get(info + 64 + 9 * 4), 0x01FF72AEu, "readout 9 the vivid shade, flagged AUTO");
+		check_eq_u64(be32_get(info + 64 + 10 * 4), 0x0180263Au, "readout 10 the dark one");
+		check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01FFA6BAu, "readout 11 the light one");
 
 		/*
 		 * Revision 1.24, the overrides. A shade set by hand stays when the colour
@@ -9160,10 +9170,10 @@ static void test_rac4(void)
 		 */
 		{
 			static const u8 over[16] = {
-				0x80, 0x30, 0x20, 0x10,  0x80, 0x56, 0x34, 0x12,
-				0x80, 0x18, 0x10, 0x08,  0x80, 0x97, 0x8F, 0x87
+				0x80, 0x18, 0x10, 0x08,  0x80, 0x2B, 0x1A, 0x09,
+				0x80, 0x0C, 0x08, 0x04,  0x80, 0x4C, 0x48, 0x44
 			};
-			static const u8 back[4] = { 0x80, 0x48, 0x30, 0x18 };
+			static const u8 back[4] = { 0x80, 0x24, 0x18, 0x0C };
 			static const u8 zeros[16] = { 0 };
 
 			check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK, "a vivid override writes");
@@ -9180,7 +9190,7 @@ static void test_rac4(void)
 			pump(40);
 			session_info_copy(info, sizeof(info));
 			check_eq_u64(be32_get(info + 64 + 9 * 4), 0x00123456u, "the vivid readout still the override");
-			check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01878F97u, "the light one AUTO from the new colour");
+			check_eq_u64(be32_get(info + 64 + 11 * 4), 0x01889098u, "the light one AUTO from the new colour");
 
 			check(features_set(F4_HUD_VIVID, 0x01000000u) == ST_OK, "AUTO on the vivid shade");
 			host_peek(0x009E87CCu + 20, got, 4);
@@ -9189,7 +9199,7 @@ static void test_rac4(void)
 			      features_set(F4_HUD_LIGHT, 0x00FFFFFFu) == ST_OK, "AUTO ignores the colour bits");
 			host_peek(0x009E87CCu + 24, got, 8);
 			check(memcmp(got, over + 8, 4) == 0, "the dark word stays worked out");
-			check(got[4] == 0x80 && got[5] == 0xFF && got[6] == 0xFF && got[7] == 0xFF, "the light one white");
+			check(got[4] == 0x80 && got[5] == 0x80 && got[6] == 0x80 && got[7] == 0x80, "the light one white, halved");
 			pump(40);
 			session_info_copy(info, sizeof(info));
 			check_eq_u64(be32_get(info + 64 + 11 * 4), 0x00FFFFFFu, "and its readout an override");
@@ -9202,15 +9212,31 @@ static void test_rac4(void)
 			check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "the colour again");
 			host_peek(0x009E87CCu + 16, got, 16);
 			check(memcmp(got, want1, 16) == 0, "fills every zero shade");
+
+			/* STOCK: AUTO on the colour puts the game's own four words back. */
+			host_poke(0x00B1F47Au, (const u8 *)"", 1);
+			check(features_set(F4_HUD_DARK, 0x00445566u) == ST_OK &&
+			      features_set(F4_HUD_COLOUR, 0x01000000u) == ST_OK, "AUTO on the colour, team 4");
+			host_peek(0x009E87CCu + 4 * 16, got, 16);
+			check(memcmp(got, stock4, 16) == 0, "puts its stock words back, the override too");
+			pump(40);
+			session_info_copy(info, sizeof(info));
+			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x01FFFF4Cu, "the colour reads as shown, flagged AUTO");
+			check_eq_u64(be32_get(info + 64 + 10 * 4), 0x01BE9826u, "the dark shade the game's own sum");
+			check(features_set(F4_HUD_VIVID, 0x00123456u) == ST_OK, "an override over the stock colour");
+			pump(40);
+			session_info_copy(info, sizeof(info));
+			check_eq_u64(be32_get(info + 64 + 8 * 4), 0x00FFFF4Cu, "takes the colour's AUTO away");
+			host_poke(0x00B1F47Au, (const u8 *)" ", 1);
 		}
 
 		host_poke(0x00B1F47Au, (const u8 *)"\013", 1);
-		check(features_set(F4_HUD_COLOUR, 0x0001FF00u) == ST_OK, "with the cheat on the last team");
+		check(features_set(F4_HUD_COLOUR, 0x0002FF00u) == ST_OK, "with the cheat on the last team");
 		host_peek(0x009E87CCu + 10 * 16, got, 16);
 		check(memcmp(got, want11, 16) == 0, "team 10's words, the vivid green capped at 0xFF");
 		pump(40);
 		session_info_copy(info, sizeof(info));
-		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x0001FF00u, "and the readout follows the cheat");
+		check_eq_u64(be32_get(info + 64 + 8 * 4), 0x0002FF00u, "and the readout follows the cheat");
 
 		host_poke(0x00B1F47Au, (const u8 *)"\014", 1);
 		check(features_set(F4_HUD_COLOUR, 0x00FF4C73u) == ST_OK, "a cheat byte past the options");

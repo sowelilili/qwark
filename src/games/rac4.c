@@ -167,15 +167,16 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	/*
 	 * The colour of the team the HUD draws in, as the wire's 0x00RRGGBB, and
-	 * (revision 1.24) its three shades, each flagged AUTO while automatic.
+	 * (revision 1.24) its three shades, each flagged AUTO while automatic; all
+	 * four as the HUD shows them, the colour flagged AUTO while the team's
+	 * words are the game's own (rac4.h).
 	 */
 	if (blocks[HOT_TEAMCOLS] != NULL && blocks[HOT_HUDCHEAT] != NULL) {
-		const u8 *team = blocks[HOT_TEAMCOLS] + rac4_hud_team(blocks[HOT_HUDCHEAT][0]) * 16;
-		u8 v;
+		u8 t = rac4_hud_team(blocks[HOT_HUDCHEAT][0]), v;
 
-		out->readout[RAC4_RO_HUD_COLOUR] = classic_cb_to_rgb(be32_get(team));
-		for (v = 1; v < 4; v++)
-			out->readout[RAC4_RO_HUD_COLOUR + v] = rac4_hud_shade(team, v);
+		for (v = 0; v < 4; v++)
+			out->readout[RAC4_RO_HUD_COLOUR + v] =
+				rac4_hud_readout(blocks[HOT_TEAMCOLS] + t * 16, t, v);
 	}
 
 	/* --------------------------------------------- the autosplit watcher's view */
@@ -786,6 +787,7 @@ static const char * const rac4_readouts[] = {
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
 #define SH FEATURE_FLAG_SHADE
+#define ST FEATURE_FLAG_STOCK
 
 static const struct feature_desc rac4_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -826,8 +828,11 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_SET_ASIDE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ R4_LOAD_ASIDE, FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 
-	/* Build 56: what the game's HUD colour cheat picks from, any colour (rac4.h). */
-	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, 0, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" },
+	/*
+	 * Build 56: what the game's HUD colour cheat picks from, any colour, as
+	 * the HUD shows it, with the game's own to go back to (rac4.h).
+	 */
+	{ R4_HUD_COLOUR, FEATURE_COLOR,  G_COSMETICS, 0, ST, RAC4_RO_HUD_COLOUR, 0, 0, "HUD colour" },
 
 	/*
 	 * Revision 1.24: its shades, worked out from it until overridden (rac4.h),
@@ -844,6 +849,7 @@ static const struct feature_desc rac4_features[] = {
 #undef SA
 #undef LA
 #undef SH
+#undef ST
 
 static const struct game_describe rac4_describe_table = {
 	rac4_groups,   (u8)(sizeof(rac4_groups) / sizeof(rac4_groups[0])),

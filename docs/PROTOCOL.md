@@ -62,6 +62,8 @@ Revision 1.24, Deadlocked's HUD colour (same build 56): no opcode or structure c
 
 Revision 1.24, the HUD colour's shades (same build 56): feature flags bit6 **SHADE**, a COLOR the console works out from another COLOR, named by the row's `aux`, until the user overrides it (section 5.3.3). Its readout carries bit 24, **AUTO** (`0x01000000`), while it is worked out; FEATURE_SET with bit 24 set puts it back to automatic, and any value without it overrides it. Deadlocked's DESCRIBE gains three readouts, "HUD vivid shade", "HUD dark shade" and "HUD light shade" (9, 10 and 11), and three features, 19 "HUD vivid shade", 20 "HUD dark shade" and 21 "HUD light shade", COLORs in Cosmetics flagged SHADE with `aux` 18, mirrored by readouts 9 to 11: the three variant words of the team the HUD draws in. All three are read by the game; light, the fourth word, is the top corner of the HUD's prompt and pickup boxes, what the radar's cursor pulses to and part of the bot HUD's flash. Feature 18 now changes only the shades that are automatic and leaves an overridden one as it is. qwark keeps no override state of its own: a shade is automatic while its word is 0 or exactly what the game's sums give from the colour, so the state survives a reconnect and a restart of qwark, follows the team when the game's cheat changes it, and goes with the colours when the game restarts. Nothing is re-applied at boot, as nothing is for any COLOR. A client that does not know the flag draws three more COLORs, each of which overrides its shade, and ignores bit 24 of their readouts, as it ignores everything above `0x00FFFFFF`.
 
+Revision 1.24, the HUD colour as it is drawn (same build 56): feature flags bit7 **STOCK**, a COLOR with the game's own colour to go back to (section 5.3.4): its readout carries AUTO while it is the game's own, and FEATURE_SET with bit 24 puts it back. Deadlocked's feature 18 is flagged STOCK. The PS3 port draws every HUD colour twice as bright as its word says (each channel doubled, capped at 255; the health bar as much as the EXP bars), so the four Deadlocked readouts 8 to 11 are now the colours as the HUD shows them, each channel of the word doubled and capped, and FEATURE_SET on 18 to 21 writes the word that shows as the value sent, each channel halved and rounded up: the HUD draws what was picked, to the even value. The stock words are untouched, so the stock HUD draws as it always did and reads as it looks (team 1's red `0x6D1315` reads `0xDA262A`). While the team's colour is its stock word an automatic shade is still the game's own sum on the word; otherwise it is the same sum on the colour as shown, halved back. A set also writes the copies the HUD made when it was built (section 5.3.4), so the whole HUD changes at once, not at the next load. A client before this draws the HUD colour as any COLOR, without a way back to stock; the values it sends and shows are those of the drawn colour either way.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -359,7 +361,7 @@ u8   id
 u8   kind
 u8   group          index into DESCRIBE groups
 u8   aux            ENUM: option count. SHADE COLOR (revision 1.24): the id of the COLOR it is worked out from. 0 for every other row
-u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2), bit6 SHADE (COLOR only, section 5.3.3, revision 1.24)
+u8   flags          bit0 AUTO (same as toggle_auto), bit1 WRITES_CODE (instruction patch), bit2 SAVE_ASIDE (this ACTION asks the game to copy its current save into the savefile helper's aside buffer), bit3 LOAD_ASIDE (this ACTION asks the game to load what is in that buffer), bit4 LIVE (TOGGLE only, section 5.3.1), bit5 SIGNED (VALUE only, section 5.3.2), bit6 SHADE (COLOR only, section 5.3.3, revision 1.24), bit7 STOCK (COLOR only, section 5.3.4, revision 1.24)
 u8   readout        VALUE, ENUM, COLOR: index into SessionInfo.readout[] that mirrors the current value, 0xFF if none. ACTION: 0xFF, or (revision 1.21) the index of its status readout, below. TOGGLE: 0xFF
 u8   bits           VALUE: the width in bits of the field behind it, 8, 16 or 32. 0 means 32, so a row that names no width reads as it always did. 0 for every other kind (revision 1.7)
 u8   pad
@@ -435,6 +437,21 @@ The shades today:
 | Deadlocked | 19 | HUD vivid shade | 18, HUD colour | each channel times 1.5, capped at 255: the health bar, the ammo, the radar's cursor |
 | Deadlocked | 20 | HUD dark shade | 18 | each channel halved: the bottom corner of the HUD's gradients |
 | Deadlocked | 21 | HUD light shade | 18 | each channel halfway to 255: the top corner of the prompt and pickup boxes, the radar cursor's pulse, the bot HUD's flash |
+
+Deadlocked's sums are on the colour as the HUD shows it (section 5.3.4), and on the word itself while the colour is the stock one, as the game does.
+
+#### 5.3.4 Stock colours (revision 1.24)
+
+A COLOR row flagged **STOCK** (bit7) has a colour of the game's own to go back to.
+
+- Its readout carries **bit 24 AUTO** (`0x01000000`) while it is the game's own, and not once the user has picked a colour, or overridden one of the shades that follow it.
+- **FEATURE_SET with bit 24 set** (the colour bits are ignored) puts it back to the game's own, and every shade that follows it to automatic.
+
+A client draws a STOCK colour as any COLOR, with a way back to stock beside it while its readout has no AUTO.
+
+Deadlocked's HUD colour (18) is the one today. The PS3 port draws every HUD colour twice as bright as the game's word says: the PS2 drew an untextured quad's colour as it stood and multiplied a texture by colour / 0x80, and the port draws every quad as a textured one, with a white stand-in for the untextured, so 0x80 is full brightness for all of them. So 18 to 21 read and write the colour as the HUD shows it: a readout is each channel of the word doubled, capped at 255, and a value set is halved, rounded up, into the word, so the HUD draws it to the even value (0xFF stays 0xFF). Stock is the team's four words as the game ships them (the colour) and works them out (the shades), and nothing else is changed; team 1's red, `{ 0x80, 0x15, 0x13, 0x6D }`, reads `0xDA262A`.
+
+The HUD copies some of the words into its widgets when it is built: the player and weapon EXP bars (dark and colour), the prompt and pickup boxes (light, colour and dark, at half alpha), the quick-select slots and the radar's outline and fill (the colour). A FEATURE_SET on 18 to 21 writes the new words into those copies too, keeping each copy's alpha, while a level is playing or paused, so they change with the health bar and the bot HUD, which read the table every frame. Only player one's HUD (the first canvas) is written; a second player's in co-op takes the colours at the next load, as before.
 
 ### 5.4 Memory (0x003x)
 
