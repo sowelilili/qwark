@@ -92,6 +92,28 @@ u32  host_dir_opens(void);
 void host_pull_drive(const char *prefix, u32 after_reads);
 
 /*
+ * Build 57: a console's cellFs, which is less kind than fopen, for the files
+ * under `prefix` (say "/dev_hdd0/qwark/config.txt"). Each field 0 leaves that
+ * part as fopen has it; NULL for either argument puts everything back.
+ *   read_chunk   every read hands back at most this many bytes, as cellFsRead
+ *                may, so a reader that does not go on reading gets part of it
+ *   open_fails   the next this many opens fail, the file there or not, as a
+ *                busy drive, an FTP server holding the file or too many open
+ *                files make cellFsOpen fail
+ *   write_cut    a file opened for writing takes this many bytes in all; the
+ *                write that would go past it stores what fits and fails
+ *   close_fails  the next this many closes of a file opened for writing report
+ *                a failure, the file closed all the same
+ */
+struct host_file_faults {
+	u32 read_chunk;
+	u32 open_fails;
+	u32 write_cut;
+	u32 close_fails;
+};
+void host_set_file_faults(const char *prefix, const struct host_file_faults *faults);
+
+/*
  * The release check (test/test_release.c): counts every use of a path - an
  * open, a folder walk, a look, a make, a delete or a rename - under each of up
  * to four `prefixes`, from now on. NULL or 0 stops watching.

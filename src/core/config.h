@@ -100,6 +100,11 @@
  * A file the pool cannot hold all of (a hand-edited one) loads as much as
  * fits, and its store is then never written back: every write to it answers
  * ST_FULL rather than cut the file down to what was read.
+ *
+ * Build 57: a write is the old file with the store's keys put in (config.c,
+ * store_save), never the store alone, so a line the store does not hold - a
+ * comment, a key qwark does not know or cannot hold whole, or one a load did
+ * not keep - goes back into the file as it was.
  */
 #define CONFIG_POOL_BYTES 12288
 

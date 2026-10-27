@@ -17669,6 +17669,7 @@ int main(void)
 	test_uipak();
 	test_pine();
 	test_vshmem();
+	test_config_files();
 	test_profiles();
 
 	printf("\n%d checks, %d failures\n", g_checks, g_failures);

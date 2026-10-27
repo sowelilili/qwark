@@ -23,7 +23,7 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
      test/test_game.c test/test_gamemod.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
-     test/test_combo_fastloads.c test/test_profiles.c test/test_qwark.c"
+     test/test_combo_fastloads.c test/test_config_files.c test/test_profiles.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
 # built without its own set and the PINE tests drive its pine_* half directly.
@@ -122,7 +122,7 @@ REL_OUT="test/qwark-test-release.exe"
 REL_SRC=$(for f in $SRC; do case "$f" in test/*|src/core/modusb.c|src/plat/host/backend_pine.c) ;; *) printf '%s ' "$f" ;; esac; done)
 REL_CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_DEV=0 -DQWARK_PREVIEW=0 -DQWARK_BUILD_ID=0x51A7C0DE"
 echo "compiling $REL_OUT"
-"$CLANG" $REL_CFLAGS $REL_SRC test/test_game.c test/test_release.c -o "$REL_OUT" $LDFLAGS
+"$CLANG" $REL_CFLAGS $REL_SRC test/test_game.c test/test_config_files.c test/test_release.c -o "$REL_OUT" $LDFLAGS
 rm -rf "$ROOT"
 mkdir -p "$ROOT/dev_hdd0/qwark"
 if [ -n "${QWARK_TEST_PORT:-}" ]; then

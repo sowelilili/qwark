@@ -45,6 +45,9 @@ void test_uipak(void);
 
 /* test_profiles.c: settings profiles, one per console user, build 56. */
 void test_profiles(void);
+
+/* test_config_files.c: config.txt on a console's HDD and after a hand edit, build 57. In both suites. */
+void test_config_files(void);
 /* test_usbmods.c: mods on a USB drive, build 56. */
 void test_usbmods(void);
 

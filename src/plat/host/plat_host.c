@@ -497,6 +497,30 @@ static int host_under_pull(const char *path)
 }
 
 #define HOST_PULLED(path) (host_under_pull(path) && g_pulled)
+
+/*
+ * host_set_file_faults: what a console's cellFs does and fopen does not, for
+ * the paths under one prefix, and the open files under it.
+ */
+static char g_ff_prefix[64];
+static struct host_file_faults g_ff;
+static u8  g_ff_on[HOST_FILE_SLOTS];
+static u8  g_ff_writing[HOST_FILE_SLOTS];
+static u32 g_ff_wrote[HOST_FILE_SLOTS];
+
+void host_set_file_faults(const char *prefix, const struct host_file_faults *faults)
+{
+	g_ff_prefix[0] = 0;
+	memset(&g_ff, 0, sizeof(g_ff));
+	if (prefix == NULL || faults == NULL) return;
+	snprintf(g_ff_prefix, sizeof(g_ff_prefix), "%s", prefix);
+	g_ff = *faults;
+}
+
+static int host_under_faults(const char *path)
+{
+	return g_ff_prefix[0] != 0 && strncmp(path, g_ff_prefix, strlen(g_ff_prefix)) == 0;
+}
 #else
 #define HOST_PULLED(path) 0
 #endif
@@ -510,6 +534,12 @@ int plat_file_open(const char *path, int mode, plat_file_t *out)
 	*out = PLAT_FILE_INVALID;
 
 	if (HOST_PULLED(path)) return -1;
+#ifdef QWARK_TEST
+	if (host_under_faults(path) && g_ff.open_fails > 0) {
+		g_ff.open_fails--;
+		return -1;
+	}
+#endif
 	host_path(path, real, sizeof(real));
 
 	if (mode == PLAT_OPEN_WRITE) {
@@ -527,6 +557,9 @@ int plat_file_open(const char *path, int mode, plat_file_t *out)
 			*out = i;
 #ifdef QWARK_TEST
 			g_on_pulled[i] = (u8)host_under_pull(path);
+			g_ff_on[i] = (u8)host_under_faults(path);
+			g_ff_writing[i] = (u8)(mode == PLAT_OPEN_WRITE);
+			g_ff_wrote[i] = 0;
 #endif
 			return 0;
 		}
@@ -551,6 +584,7 @@ int plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread)
 			return -1;
 		}
 	}
+	if (g_ff_on[f] && g_ff.read_chunk != 0 && len > g_ff.read_chunk) len = g_ff.read_chunk;
 #endif
 
 	got = fread(buf, 1, len, g_open_files[f]);
@@ -576,6 +610,18 @@ int plat_file_write(plat_file_t f, const void *buf, u32 len)
 {
 	if (f < 0 || f >= HOST_FILE_SLOTS || g_open_files[f] == NULL) return -1;
 	if (len == 0) return 0;
+#ifdef QWARK_TEST
+	if (g_ff_on[f] && g_ff.write_cut != 0) {
+		u32 room = g_ff.write_cut > g_ff_wrote[f] ? g_ff.write_cut - g_ff_wrote[f] : 0;
+		if (len > room) {
+			/* The disk took part of it, as cellFsWrite's count can say. */
+			if (room > 0) fwrite(buf, 1, room, g_open_files[f]);
+			g_ff_wrote[f] += room;
+			return -1;
+		}
+		g_ff_wrote[f] += len;
+	}
+#endif
 	return fwrite(buf, 1, len, g_open_files[f]) == len ? 0 : -1;
 }
 
@@ -584,6 +630,12 @@ int plat_file_close(plat_file_t f)
 	if (f < 0 || f >= HOST_FILE_SLOTS || g_open_files[f] == NULL) return -1;
 	fclose(g_open_files[f]);
 	g_open_files[f] = NULL;
+#ifdef QWARK_TEST
+	if (g_ff_on[f] && g_ff_writing[f] && g_ff.close_fails > 0) {
+		g_ff.close_fails--;
+		return -1;
+	}
+#endif
 	return 0;
 }
 

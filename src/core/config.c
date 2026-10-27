@@ -41,6 +41,11 @@
 #define STORE_CONSOLE 0
 #define STORE_PROFILE 1
 #define KV_NONE       0xFFFFFFFFu
+/*
+ * Build 57: set on an entry's store byte while store_save has written it, and
+ * cleared again before store_save returns, so nothing else ever sees it.
+ */
+#define KV_SAVED      0x80
 
 static char g_pool[CONFIG_POOL_BYTES + 3];
 static u32  g_pool_used;
@@ -76,10 +81,11 @@ static char g_pos_title[16];
  * Since build 56 config.txt's cap is the buffer itself, QTEXT_BYTES: the file
  * the pool can write is the pool's bytes plus one more a line (" = " and the
  * newline where the pool has a store byte and two NULs), and an entry is at
- * least four pool bytes, so the file is at most 5/4 of the pool. While a
- * profile is active config.txt also carries the console's per-user lines,
- * which came out of the same pool when it went active; a file that has grown
- * past the buffer even so is refused whole (ST_FULL) and never cut down.
+ * least four pool bytes, so the file is at most 5/4 of the pool. Every write
+ * also keeps the old file's lines the store does not hold (store_save): while
+ * a profile is active, the console's per-user lines, which came out of the
+ * same pool when it went active. A file that has grown past the buffer even so
+ * is refused whole (ST_FULL) and never cut down.
  */
 typedef char pos_text_fits[POS_TEXT_MAX <= QTEXT_BYTES ? 1 : -1];
 typedef char config_text_fits[CONFIG_POOL_BYTES / 4 * 5 < QTEXT_BYTES - 1 ? 1 : -1];
@@ -111,7 +117,7 @@ static u32 kv_find(u8 store, const char *key)
 	u32 off;
 
 	for (off = 0; off < g_pool_used && off < CONFIG_POOL_BYTES; off = kv_next(off)) {
-		if ((u8)g_pool[off] == store + 1 && qstreq(g_pool + off + 1, key)) return off;
+		if (((u8)g_pool[off] & ~KV_SAVED) == store + 1 && qstreq(g_pool + off + 1, key)) return off;
 	}
 	return KV_NONE;
 }
@@ -146,7 +152,7 @@ static void kv_clear(u8 store)
 	u32 off = 0;
 
 	while (off < g_pool_used) {
-		if ((u8)g_pool[off] == store + 1) pool_splice(off, kv_next(off) - off, "", 0);
+		if (((u8)g_pool[off] & ~KV_SAVED) == store + 1) pool_splice(off, kv_next(off) - off, "", 0);
 		else off = kv_next(off);
 	}
 }
@@ -250,7 +256,7 @@ u32 config_version(void)
 
 static int global_save(void);
 #if QWARK_PREVIEW
-static int profile_save(void);
+static int profile_save(const char *drop);
 static int profile_make(void);
 #endif
 
@@ -270,7 +276,7 @@ int config_set(const char *key, const char *value)
 		if (rc != ST_OK) return rc;
 		rc = kv_put(STORE_PROFILE, key, value);
 		if (rc != ST_OK) return rc;
-		return profile_save();
+		return profile_save(NULL);
 	}
 #endif
 
@@ -323,12 +329,16 @@ static int file_begin(const char *path, plat_file_t *f)
 	return plat_file_open(tmp, PLAT_OPEN_WRITE, f) == 0 ? ST_OK : ST_IO_ERROR;
 }
 
-/* Closes the ".new" and puts it in place, or throws it away when `ok` is not. */
+/*
+ * Closes the ".new" and puts it in place, or throws it away when `ok` is not.
+ * Build 57: a close that fails is a write that may not all be on the disk, so
+ * it throws the ".new" away too, and the old file stays.
+ */
 static int file_end(const char *path, plat_file_t f, int ok)
 {
 	char tmp[FILE_PATH_MAX];
 
-	plat_file_close(f);
+	if (plat_file_close(f) != 0) ok = 0;
 	new_path(path, tmp, sizeof(tmp));
 	if (!ok) {
 		plat_file_unlink(tmp);
@@ -341,22 +351,39 @@ static int file_end(const char *path, plat_file_t f, int ok)
 /*
  * qread_file, and the ".new" a cut-off write left when there is no file. The
  * ".new" stays where it is: the next write of the file replaces it.
+ *
+ * Build 57: qread_file answers ST_NOT_FOUND for any open that fails, and a
+ * console's cellFsOpen fails for more than a missing file (too many open, the
+ * drive busy, an FTP server holding it). A file that is there but would not
+ * open is tried once more and is then ST_IO_ERROR, never "no file": no file
+ * loads as an empty store that may be written, and the next write would have
+ * replaced every setting with the one it made.
  */
+static int read_one(const char *path, char *buf, u32 cap, u32 *len)
+{
+	int rc = qread_file(path, buf, cap, len);
+
+	if (rc != ST_NOT_FOUND || !plat_path_exists(path, NULL, NULL)) return rc;
+	rc = qread_file(path, buf, cap, len);
+	if (rc != ST_NOT_FOUND || !plat_path_exists(path, NULL, NULL)) return rc;
+	return ST_IO_ERROR;
+}
+
 static int qfile_read(const char *path, char *buf, u32 cap, u32 *len)
 {
 	char tmp[FILE_PATH_MAX];
-	int rc = qread_file(path, buf, cap, len);
+	int rc = read_one(path, buf, cap, len);
 
 	if (rc != ST_NOT_FOUND) return rc;
 	new_path(path, tmp, sizeof(tmp));
-	return qread_file(tmp, buf, cap, len);
+	return read_one(tmp, buf, cap, len);
 }
 
 /*
  * Which of a file's keys a load keeps. LOAD_ALL every one; while a profile is
  * active the console's store is LOAD_CONSOLE_SIDE, everything but the per-user
- * keys, which stay in config.txt (store_save carries them), and a COPY is
- * LOAD_USER_SIDE, the per-user keys alone.
+ * keys, which stay in config.txt (store_save keeps every line the store does
+ * not hold), and a COPY is LOAD_USER_SIDE, the per-user keys alone.
  */
 #define LOAD_ALL          0
 #define LOAD_CONSOLE_SIDE 1
@@ -390,6 +417,7 @@ static int store_load(u8 store, const char *path, int which)
 	while ((line = qnext_line(&cursor)) != NULL) {
 		char *eq;
 		char *key;
+		char *value;
 
 		line = qtrim(line);
 		if (line[0] == '#') continue;
@@ -400,99 +428,169 @@ static int store_load(u8 store, const char *path, int which)
 
 		*eq = 0;
 		key = qtrim(line);
+		value = qtrim(eq + 1);
 		if (key[0] == 0) continue;
+		/*
+		 * Build 57: a key or value longer than the store keeps (a hand edit's)
+		 * is not held cut short, which would write it back cut: it is not
+		 * held at all, reads as unset, and store_save keeps its line as it is.
+		 */
+		if (qstrlen(key) >= CONFIG_KEY_MAX || qstrlen(value) >= CONFIG_VAL_MAX) continue;
 #if QWARK_PREVIEW
 		if (which != LOAD_ALL &&
 		    (config_key_scope(key) == CONFIG_SCOPE_USER) != (which == LOAD_USER_SIDE))
 			continue;
+#else
+		(void)which;
 #endif
-		if (kv_put(store, key, qtrim(eq + 1)) != ST_OK) g_over[store] = 1;
+		if (kv_put(store, key, value) != ST_OK) g_over[store] = 1;
 	}
 	return g_over[store] ? ST_FULL : ST_OK;
 }
 
 /*
- * How much of the core's text buffer store_save has filled, QTEXT_BYTES once it
- * has run past the end, and a string onto the end of it.
+ * What store_save sends to the ".new": staged here a piece at a time, under
+ * the core lock like the rest of the store. g_out_rc is the first thing that
+ * went wrong, a write that failed (ST_IO_ERROR) or a file grown past what a
+ * read takes back whole (ST_FULL), and nothing more is written once it is set.
  */
-static u32 g_put;
+#define OUT_STAGE 512
 
-static void text_put(const char *s)
+static char        g_out[OUT_STAGE];
+static u32         g_out_n;
+static u32         g_out_total;
+static int         g_out_rc;
+static plat_file_t g_out_f;
+
+static void out_flush(void)
 {
-	u32 n = qstrlen(s);
+	if (g_out_n != 0 && g_out_rc == ST_OK && plat_file_write(g_out_f, g_out, g_out_n) != 0)
+		g_out_rc = ST_IO_ERROR;
+	g_out_n = 0;
+}
 
-	if (g_put + n >= QTEXT_BYTES) {
-		g_put = QTEXT_BYTES;
+static void out_put(const char *s, u32 n)
+{
+	if (g_out_rc != ST_OK) return;
+	g_out_total += n;
+	if (g_out_total >= QTEXT_BYTES) {
+		g_out_rc = ST_FULL;
 		return;
 	}
-	memmove(qtext() + g_put, s, n);
-	g_put += n;
+	while (n > 0) {
+		u32 take = OUT_STAGE - g_out_n;
+		if (take > n) take = n;
+		memcpy(g_out + g_out_n, s, take);
+		g_out_n += take;
+		s += take;
+		n -= take;
+		if (g_out_n == OUT_STAGE) out_flush();
+	}
+}
+
+static void out_str(const char *s)
+{
+	out_put(s, qstrlen(s));
+}
+
+/* An entry of the pool as its file has it, "key = value". */
+static void out_entry(u32 off)
+{
+	out_str(g_pool + off + 1);
+	out_str(" = ");
+	out_str(g_pool + off + 2 + qstrlen(g_pool + off + 1));
+	out_str("\n");
 }
 
 /*
- * A store into its file, built whole in the core's text buffer and written in
- * one go. ST_FULL, and the file as it was, for a store that did not load
- * whole (writing it would cut out of the file what was not read) or a file
- * that would not fit the buffer.
- *
- * `carry`: while a profile is active, config.txt's per-user lines are the
- * console's own settings, which are not in the pool (LOAD_CONSOLE_SIDE), so the
- * write carries them over from the file it replaces: the old file is read into
- * the buffer (a cut-off write's ".new" when there is no other, qfile_read), its
- * per-user lines kept where they are, as they were written, and the rest of it
- * dropped, and the pool's keys follow them. An old file that does not read
- * leaves the file as it is.
+ * The key of one line of a file, as store_load reads it, into `key`: 0 for a
+ * line that is not a key the store can hold (blank, a comment, no '=', or a
+ * key too long for it). The line itself is not changed.
  */
-static int store_save(u8 store, const char *path, int carry)
+static int line_key(const char *line, char *key)
+{
+	const char *s = line;
+	const char *e;
+	u32 n;
+
+	while (*s == ' ' || *s == '\t') s++;
+	if (*s == 0 || *s == '#') return 0;
+	e = s;
+	while (*e != 0 && *e != '=') e++;
+	if (*e != '=') return 0;
+	while (e > s && (e[-1] == ' ' || e[-1] == '\t')) e--;
+	n = (u32)(e - s);
+	if (n == 0 || n >= CONFIG_KEY_MAX) return 0;
+	memcpy(key, s, n);
+	key[n] = 0;
+	return 1;
+}
+
+/*
+ * A store into its file. Build 57: a write is the file it replaces with the
+ * store's keys put in, never the store alone, so no write takes out of a file
+ * anything the module does not hold. The old file (a cut-off write's ".new"
+ * when there is no other, qfile_read) is read into the core's text buffer and
+ * its lines go out in their order: a key the store holds with the store's
+ * value, the first time it comes (a second line for it is the same key, and
+ * goes); every other line as it was, which is a comment, a blank, a key too
+ * long to hold, a key this store does not have (while a profile is active,
+ * config.txt's per-user keys, LOAD_CONSOLE_SIDE), or one a load did not keep.
+ * The store's keys the file did not have follow, in the store's order. CR LF
+ * and a last line with no newline read as any other line, and go out with LF.
+ * `drop` names the one key to take out of the file, which the store has just
+ * let go of (a combo override removed), or is NULL.
+ *
+ * The file is written to "<path>.new" in pieces and put in place only when
+ * every piece and the close went through (file_end). ST_FULL, and the file as
+ * it was, for a store that did not load whole (g_over), an old file too big
+ * to read whole, or a new one that would be; an old file there but not
+ * readable answers its status and is left as it is.
+ */
+static int store_save(u8 store, const char *path, const char *drop)
 {
 	char *text = qtext();
-	plat_file_t f;
+	char *cursor = text;
+	char *line;
+	char key[CONFIG_KEY_MAX];
 	u32 off;
+	int rc;
 
 	if (g_over[store]) return ST_FULL;
-	g_put = 0;
-#if QWARK_PREVIEW
-	if (carry) {
-		char *cursor = text;
-		char *line;
-		int rc = qfile_read(path, text, QTEXT_BYTES, NULL);
 
-		if (rc != ST_OK && rc != ST_NOT_FOUND) return rc;
-		/* Each line kept is no longer than the line it was, so it never overtakes the reading. */
-		while ((line = qnext_line(&cursor)) != NULL) {
-			char *end;
-			char c;
-			int user;
+	rc = qfile_read(path, text, QTEXT_BYTES, NULL);
+	if (rc == ST_NOT_FOUND) text[0] = 0;
+	else if (rc != ST_OK) return rc;
 
-			line = qtrim(line);
-			end = line;
-			while (*end != 0 && *end != '=') end++;
-			if (*end != '=') continue;
-			while (end > line && (end[-1] == ' ' || end[-1] == '\t')) end--;
-			c = *end;
-			*end = 0;
-			user = config_key_scope(line) == CONFIG_SCOPE_USER;
-			*end = c;
-			if (!user) continue;
-			text_put(line);
-			text_put("\n");
+	if (file_begin(path, &g_out_f) != ST_OK) return ST_IO_ERROR;
+	g_out_n = 0;
+	g_out_total = 0;
+	g_out_rc = ST_OK;
+
+	while ((line = qnext_line(&cursor)) != NULL) {
+		if (line_key(line, key)) {
+			off = kv_find(store, key);
+			if (off != KV_NONE) {
+				if (((u8)g_pool[off] & KV_SAVED) == 0) {
+					out_entry(off);
+					g_pool[off] = (char)((u8)g_pool[off] | KV_SAVED);
+				}
+				continue;
+			}
+			if (drop != NULL && qstreq(key, drop)) continue;
 		}
+		out_str(line);
+		out_str("\n");
 	}
-#else
-	(void)carry;
-#endif
 
 	for (off = 0; off < g_pool_used; off = kv_next(off)) {
-		if ((u8)g_pool[off] != store + 1) continue;
-		text_put(g_pool + off + 1);
-		text_put(" = ");
-		text_put(g_pool + off + 2 + qstrlen(g_pool + off + 1));
-		text_put("\n");
+		if ((u8)g_pool[off] == (u8)(store + 1)) out_entry(off);
+		g_pool[off] = (char)((u8)g_pool[off] & ~KV_SAVED);
 	}
-	if (g_put >= QTEXT_BYTES) return ST_FULL;
+	out_flush();
 
-	if (file_begin(path, &f) != ST_OK) return ST_IO_ERROR;
-	return file_end(path, f, g_put == 0 || plat_file_write(f, text, g_put) == 0);
+	rc = file_end(path, g_out_f, g_out_rc == ST_OK);
+	return g_out_rc != ST_OK ? g_out_rc : rc;
 }
 
 #if QWARK_PREVIEW
@@ -510,24 +608,26 @@ static void profile_path(const char *folder, const char *leaf, char *out, u32 ca
 
 #endif /* QWARK_PREVIEW */
 
+/*
+ * config.txt. While a profile is active its per-user lines are the console's
+ * own settings, which the store does not hold (LOAD_CONSOLE_SIDE), and the
+ * write keeps them as it keeps every line the store does not hold.
+ */
 static int global_save(void)
 {
-#if QWARK_PREVIEW
-	return store_save(STORE_CONSOLE, QWARK_CONFIG, g_prof.active);
-#else
-	return store_save(STORE_CONSOLE, QWARK_CONFIG, 0);
-#endif
+	return store_save(STORE_CONSOLE, QWARK_CONFIG, NULL);
 }
 
 #if QWARK_PREVIEW
 
-static int profile_save(void)
+/* The active profile's config.txt; `drop` as store_save's. */
+static int profile_save(const char *drop)
 {
 	char path[FILE_PATH_MAX];
 
 	if (!g_prof.active || !g_prof.exists) return ST_OK;
 	profile_path(g_prof.folder, "config.txt", path, sizeof(path));
-	return store_save(STORE_PROFILE, path, 0);
+	return store_save(STORE_PROFILE, path, drop);
 }
 
 /*
@@ -592,7 +692,7 @@ int config_save(void)
 {
 #if QWARK_PREVIEW
 	int rc = global_save();
-	int rc2 = profile_save();
+	int rc2 = profile_save(NULL);
 	return rc != ST_OK ? rc : rc2;
 #else
 	return global_save();
@@ -914,7 +1014,7 @@ static int profile_make(void)
 	plat_dir_create(path);
 
 	g_prof.exists = 1;
-	if (profile_save() != ST_OK) {
+	if (profile_save(NULL) != ST_OK) {
 		g_prof.exists = 0;
 		return ST_IO_ERROR;
 	}
@@ -964,7 +1064,7 @@ static int profile_copy_shared(void)
 
 	rc = store_load(STORE_PROFILE, QWARK_CONFIG, LOAD_USER_SIDE);
 	if (rc == ST_NOT_FOUND) rc = ST_OK;
-	if (rc == ST_OK) rc = profile_save();
+	if (rc == ST_OK) rc = profile_save(NULL);
 
 	/*
 	 * The slots, a game at a time, through the slot table itself: read with the
@@ -1002,7 +1102,7 @@ int config_set_profiles_enabled(u8 on)
  * began is left.
  *
  * The first profile to go active takes the console's per-user keys out of the
- * pool: they are config.txt's and stay in it (store_save carries them), so the
+ * pool: they are config.txt's and stay in it (store_save keeps them), so the
  * pool holds one set of per-user keys, whichever is in use. The last to go
  * reads them back from the file.
  */
@@ -1114,7 +1214,7 @@ int config_set_combo_override(u8 action, int set, u32 mask)
 		u32 off = kv_find(STORE_PROFILE, g_combo_key[action]);
 		if (off == KV_NONE) return ST_OK;
 		pool_splice(off, kv_next(off) - off, "", 0);
-		return profile_save();
+		return profile_save(g_combo_key[action]);
 	}
 
 	rc = profile_make();
@@ -1125,7 +1225,7 @@ int config_set_combo_override(u8 action, int set, u32 mask)
 	qfmt_hex(buf + 2, sizeof(buf) - 2, mask, 8);
 	rc = kv_put(STORE_PROFILE, g_combo_key[action], buf);
 	if (rc != ST_OK) return rc;
-	return profile_save();
+	return profile_save(NULL);
 }
 
 #endif /* QWARK_PREVIEW */
@@ -1146,6 +1246,13 @@ struct pos_entry {
 };
 
 static struct pos_entry g_pos[POS_MAX_ENTRIES];
+
+/*
+ * Build 57: the positions file is there but did not read (or is too big to),
+ * so the table is empty without the file being so, and it is never written
+ * over: the next store would have left the file that one slot.
+ */
+static u8 g_pos_bad;
 
 /*
  * Revision 1.24: the slots are the active profile's, in its own positions/
@@ -1177,13 +1284,19 @@ static int pos_load_file(void)
 	char *text = qtext();
 	char *cursor;
 	char *line;
+	int rc;
 
 	memset(g_pos, 0, sizeof(g_pos));
+	g_pos_bad = 0;
 
 	if (g_pos_title[0] == 0) return ST_OK;
 
 	pos_path(path, sizeof(path));
-	if (qfile_read(path, text, POS_TEXT_MAX, NULL) != ST_OK) return ST_OK;
+	rc = qfile_read(path, text, POS_TEXT_MAX, NULL);
+	if (rc != ST_OK) {
+		if (rc != ST_NOT_FOUND) g_pos_bad = 1;
+		return ST_OK;
+	}
 
 	cursor = text;
 	while ((line = qnext_line(&cursor)) != NULL) {
@@ -1238,6 +1351,7 @@ int pos_save_file(void)
 	int ok = 1;
 
 	if (g_pos_title[0] == 0) return ST_OK;
+	if (g_pos_bad) return ST_IO_ERROR;
 #if QWARK_PREVIEW
 	/* A profile never made has no folder, and nothing to save: a store makes it. */
 	if (g_prof.active && !g_prof.exists) return ST_OK;

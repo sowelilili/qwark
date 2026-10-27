@@ -17,6 +17,10 @@
  *   - never use a path under /dev_usb or /dev_hdd0/qwark/profiles, at the XMB
  *     (where the profile look would run), through a boot (the USB look and the
  *     auto-load), over the wire, at a rescan and a load.
+ *
+ * Build 57: then test_config_files.c's config.txt checks, as a release reads
+ * and writes the file (short reads, an open that fails, a write cut short, a
+ * hand edit from Windows).
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
@@ -40,7 +44,8 @@
 static int g_checks;
 static int g_failures;
 
-static void check(int ok, const char *what)
+/* Not static: test_config_files.c, built into this suite too, counts in it (test_common.h). */
+void check(int ok, const char *what)
 {
 	g_checks++;
 	if (ok) {
@@ -60,6 +65,19 @@ static void check_eq(u64 got, u64 want, const char *what)
 		g_failures++;
 		printf("  FAIL  %s: got %llu want %llu\n", what, (unsigned long long)got, (unsigned long long)want);
 	}
+}
+
+/* test_config_files.c, which both suites build. */
+void test_config_files(void);
+
+void check_eq_u64(u64 got, u64 want, const char *what)
+{
+	check_eq(got, want, what);
+}
+
+void group(const char *name)
+{
+	printf("\n%s\n", name);
 }
 
 /* ------------------------------------------------------------ the console */
@@ -362,6 +380,8 @@ int main(void)
 	}
 
 	test_release();
+	/* Build 57: config.txt on a console's HDD and after a hand edit, as a release reads and writes it. */
+	test_config_files();
 
 	session_shutdown();
 	printf("\n%d checks, %d failures\n", g_checks, g_failures);
