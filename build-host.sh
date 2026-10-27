@@ -29,7 +29,8 @@ CORE="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
       src/games/rac2.c src/games/rac2_panel.c \
       src/games/rac3.c src/games/rac3_panel.c \
       src/games/rac4.c src/games/rac4_panel.c \
-      src/games/games.c \
+      src/games/games.c src/games/titles.c src/games/core_import.c \
+      src/core/gamemod.c src/core/core_export.c \
       src/plat/host/plat_host.c"
 
 HOST_SRC="$CORE src/plat/host/backend_fake.c src/plat/host/host_main.c"

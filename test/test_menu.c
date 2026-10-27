@@ -3053,7 +3053,7 @@ static void test_menu_tables(void)
 		const struct game_describe *d = g->describe();
 
 		qstrcpy(what, sizeof(what), "menu tables: ");
-		qstrcat(what, sizeof(what), g->title_ids[0]);
+		qstrcat(what, sizeof(what), game_title_of(g)->title_ids[0]);
 		check(gm != NULL && gm->nsections != 0 && d != NULL, what);
 		if (gm == NULL || d == NULL) continue;
 		bad = 0;

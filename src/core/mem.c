@@ -577,6 +577,23 @@ void patch_forget_all(void)
 	memset(g_patch_complete, 0, sizeof(g_patch_complete));
 }
 
+/*
+ * Revision 1.26: the entries of one kind go, the others stay, nothing written.
+ * A game module's toggles name defs that live in its state area and words in
+ * its segment, so they go when the module does (PROTOCOL.md 9.11).
+ */
+void patch_forget_kind(u8 kind)
+{
+	int i;
+
+	for (i = 0; i < QWARK_MAX_PATCHES; i++) {
+		if (g_patches[i] == NULL || g_patches[i]->kind != kind) continue;
+		g_patches[i] = NULL;
+		g_patch_runs[i] = 0;
+		g_patch_complete[i] = 0;
+	}
+}
+
 u32 patch_count(void)
 {
 	u32 n = 0;

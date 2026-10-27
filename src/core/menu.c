@@ -1805,6 +1805,37 @@ void menu_forget(void)
 
 void menu_enter(const struct game_api *game)
 {
+	menu_enter_id(game != NULL ? game->game_id : GAME_NONE);
+}
+
+/*
+ * Revision 1.26: the session's game going (game modules, PROTOCOL.md 9.11):
+ * the model lets go of the game's tables and its unlock list, which a module
+ * takes with it. The next view takes session_game() afresh, as every one does.
+ */
+void menu_detach(void)
+{
+	g_game = NULL;
+	g_ul.ok = 0;
+	g_ul.list = NULL;
+	g_ul.cats = NULL;
+	g_ul.fields = NULL;
+	g_ul.n = 0;
+	g_ul.ncats = 0;
+}
+
+/* The game arrived after the session started: the page on show is built again. */
+static int g_game_changed;
+
+void menu_game_changed(void)
+{
+	g_game = session_game();
+	g_ul.ok = 0;
+	g_game_changed = 1;
+}
+
+void menu_enter_id(u8 game_id)
+{
 	menu_forget();
 	g_why = 0;
 	g_logged_refusal = 0;
@@ -1819,8 +1850,8 @@ void menu_enter(const struct game_api *game)
 	 * (load), not here, so a session's entry reads no file for it; a game
 	 * the pak has no renderer for is MENU_OFF from then on.
 	 */
-	if (game == NULL || !plat_can_patch_code()) return;
-	g_game_id = game->game_id;
+	if (game_id == GAME_NONE || !plat_can_patch_code()) return;
+	g_game_id = game_id;
 
 	/*
 	 * Round 2: the renderer goes in a few seconds into the session, once the
@@ -2453,6 +2484,12 @@ static void serve(void)
 		                 be16_get(head + MBOX_OFF_EV_ID), be32_get(head + MBOX_OFF_EV_KEY));
 		g_last_ack = ev;
 		mem_write_u32(box(MBOX_OFF_EV_ACK), ev);
+		dirty = 1;
+	}
+
+	/* Revision 1.26: a game module arrived, with the game's own pages. */
+	if (g_game_changed) {
+		g_game_changed = 0;
 		dirty = 1;
 	}
 

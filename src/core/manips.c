@@ -258,6 +258,12 @@ void manips_enter(const struct game_api *game)
 	}
 }
 
+/* Revision 1.26: the game's table goes with its module; the selection stays the core's. */
+void manips_detach(void)
+{
+	g_m = NULL;
+}
+
 void manips_file_loaded(void)
 {
 	const struct manip_group *g = find_group(g_selected);

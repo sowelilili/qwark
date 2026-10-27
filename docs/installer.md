@@ -19,6 +19,7 @@ The same as the PC client's **Install to boot_plugins.txt**:
 |---|---|
 | `/dev_hdd0/plugins/qwark.sprx` | the module |
 | `/dev_hdd0/qwark/ui.pak` | the console menu's renderers and, since build 56, the savefile helpers, which must come from the same build |
+| `/dev_hdd0/qwark/game-1.sprx` .. `game-4.sprx` | a test build's game modules (PROTOCOL.md 9.11), which a test build's package carries and a release's does not; they go in before the module, and one that is not a signed module stops the install before anything is written. Modules already on the console that the package does not carry are left alone |
 | `/dev_hdd0/boot_plugins.txt` | qwark's line goes first, so it loads before webMAN; every other line stays, in its order |
 | `/dev_hdd0/qwark/boot_plugins.txt.bak` | the list as it was, whenever the installer changes it |
 | `/dev_hdd0/plugins/qwark.sprx.old` | the module that was there before, if there was one |
@@ -44,7 +45,7 @@ The restart is lv2's quick restart, the call webMAN MOD's own installer makes. I
 
 ## How it is built
 
-`make pkg` makes it from the `qwark.sprx` and `ui.pak` beside the makefile, so run `make` first; `make dist` makes it too and copies it to `dist/`. The parts:
+`make pkg` makes it from the `qwark.sprx` and `ui.pak` beside the makefile, and any `game-<n>.sprx` there (a test build's, `make games`), so run `make` first; `make dist` makes it too and copies it to `dist/`. The parts:
 
 - `installer/main.c`: the app. A plain screen of its own, which a system message dialog needs to be drawn on, the dialogs, and the restart.
 - `installer/install.c` and `installer/bootlist.c`: the install and the list edit, over a small file interface (`ifs.h`) that is CellFs on the console (`ifs_ps3.c`) and a folder on the PC for the tests.

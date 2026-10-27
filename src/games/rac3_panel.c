@@ -8,6 +8,7 @@
  *
  * All of it runs on the tick thread, through the command ring.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac3.h"
 #include "classic.h"
 #include "../core/mem.h"
@@ -921,7 +922,7 @@ int rac3_get_options(u8 id, const char * const **options, u8 *count)
 /* "NPWR02347_00": nine characters, an underscore, two digits. */
 #define TR_ID_LEN 12
 
-static struct {
+struct rac3_tr {
 	u8   state;
 	u8   request;     /* RAC3_TROPHY_NOW or RAC3_TROPHY_IN_LOAD */
 	u8   retries;
@@ -937,7 +938,7 @@ static struct {
 	u32  ticks;
 	u32  elapsed;     /* ticks since the request went out */
 	char dir[TR_DIR_MAX];
-} g_tr;
+};
 
 /*
  * Revision 1.21: how the last reset ended, for RAC3_RO_TROPHIES once g_tr is
@@ -945,13 +946,33 @@ static struct {
  * of resets that have ended since the module started, so that a client can
  * tell a new result from the one it saw before, the same words or not.
  */
-static struct {
+struct rac3_trs {
 	u8  state;    /* RAC3_TS_NONE, READY or FAILED */
 	u8  reason;   /* FAILED: RAC3_TS_DELETE_STOPPED.. */
 	u8  arg;      /* REFUSED: the status the reset was refused with */
 	u8  seq;
 	u16 secs;
-} g_trs;
+};
+
+/*
+ * Revision 1.26: this file's statics, the two above, in one struct: the
+ * panel's part of the state area a game module is lent (src/games/module.h),
+ * or a static where UYA is linked in.
+ */
+struct rac3_panel_state {
+	struct rac3_tr g_tr;
+	struct rac3_trs g_trs;
+};
+
+#if QWARK_GAME_MODULE
+#define R3P QWARK_STATE_AT(struct rac3_panel_state, QWARK_STATE_PANEL_OFF)
+typedef char rac3_panel_state_fits[sizeof(struct rac3_panel_state) <= QWARK_STATE_PANEL_MAX ? 1 : -1];
+#else
+static struct rac3_panel_state g_rac3_panel_state;
+#define R3P (&g_rac3_panel_state)
+#endif
+#define g_tr  (R3P->g_tr)
+#define g_trs (R3P->g_trs)
 
 /* The helper's request byte, or 0 when this build's table has none. */
 static u32 tr_request_addr(void)

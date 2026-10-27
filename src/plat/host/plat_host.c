@@ -213,17 +213,22 @@ void plat_trace(const char *msg)
 
 void plat_log(const char *fmt, ...)
 {
-	char ts[16];
 	va_list args;
+
+	va_start(args, fmt);
+	plat_vlog(fmt, args);
+	va_end(args);
+}
+
+void plat_vlog(const char *fmt, va_list args)
+{
+	char ts[16];
 
 	if (!g_log_on) return;
 
 	host_stamp(ts, sizeof(ts));
 	fprintf(stderr, "[%s] ", ts);
-
-	va_start(args, fmt);
 	vfprintf(stderr, fmt, args);
-	va_end(args);
 
 	fputc('\n', stderr);
 	fflush(stderr);

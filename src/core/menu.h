@@ -251,6 +251,15 @@ u32  menu_test_builds(void);
 
 /* The session reached INGAME with `game` (NULL for a title qwark does not know). */
 void menu_enter(const struct game_api *game);
+/*
+ * Revision 1.26: the same by the game's id, which the title index knows before
+ * a game module is in (the renderer is ui.pak's, not the module's): the menu
+ * then has the root's own pages until the game arrives (menu_game_changed).
+ * menu_detach lets go of the game's tables as it leaves (PROTOCOL.md 9.11).
+ */
+void menu_enter_id(u8 game_id);
+void menu_game_changed(void);
+void menu_detach(void);
 
 /* The session is leaving the game: everything about this process goes. */
 void menu_forget(void);

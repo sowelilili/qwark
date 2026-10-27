@@ -12,6 +12,8 @@
 #include "manips.h"
 #include "menu.h"
 #include "uipak.h"
+#include "gamemod.h"
+#include "../games/titles.h"
 #include "../plat/plat.h"
 
 #include <string.h>
@@ -104,16 +106,48 @@ static u8   g_select_game = GAME_NONE;
  * process no game table claims: the memory, watch, freeze and patch ops work
  * against it and everything game-specific answers UNSUPPORTED. See step_state's
  * BOOTING case and docs/PROTOCOL.md section 3.3.
+ *
+ * Revision 1.26: and while a game module is not in (src/core/gamemod.c),
+ * waiting for memory or not to be had: the session is the game's (g_entry)
+ * from INGAME's first tick, and the game's code arrives when it does
+ * (game_arrive). Set and cleared under the core lock, which every network
+ * thread that uses it holds (PROTOCOL.md 9.11, the lock audit).
  */
 static const struct game_api *g_game;
+
+/*
+ * Revision 1.26: the title index's entry of the process (src/games/titles.h),
+ * provisional in BOOTING until a fingerprint answers, NULL for a title no game
+ * claims. What the core knows of the game without the game's code: its id,
+ * its quit hook, its boot patches and its pause pair.
+ */
+static const struct game_title *g_entry;
 
 /*
  * BCES01503 hosts RaC1, RaC2 and RaC3, so a title can hand back more than one
  * candidate and BOOTING fingerprints each in turn. For every other title the
  * list is one long and this costs one extra pointer.
  */
-static const struct game_api *g_candidates[GAME_MAX_CANDIDATES];
+static const struct game_title *g_candidates[GAME_MAX_CANDIDATES];
 static u32 g_ncandidates;
+
+/* Revision 1.26: the record of this session waits for the game to arrive (game_arrive). */
+static int g_same;
+
+/*
+ * Revision 1.26: the title index's pause pair (titles.h), Deadlocked's quit
+ * to the XMB: the PAUSE as the session leaves the game, the RESUME the tick
+ * the game is playable again. Owned here rather than by the game because it
+ * spans the trip through the XMB, which a game module does not survive, and
+ * because the RESUME may come before a module is in. `hooked` is whether the
+ * boot patch that sets the resume byte went into this process.
+ */
+static struct {
+	u8 due;          /* a PAUSE went out and its RESUME has not */
+	u8 game;         /* whose */
+	u8 code;         /* the reason code both carry */
+	u8 hooked;
+} g_pause;
 
 static struct game_hot g_hot;
 static u8   g_hotbuf[HOT_POOL_BYTES];
@@ -245,7 +279,7 @@ void session_vsh_memory_read(u8 at)
 		g_vm.w[VM_LOW] = fr;
 		g_vm.w[VM_LOW_AT] = g_vm.w[VM_AT];
 		g_vm.low_at = at;
-		g_vm.low_game = g_game != NULL ? g_game->game_id : GAME_NONE;
+		g_vm.low_game = g_entry != NULL && g_state != SESSION_XMB ? g_entry->game_id : GAME_NONE;
 	}
 	if (g_state == SESSION_INGAME && fr < g_vm.game_low) g_vm.game_low = fr;
 	if (at == VSHMEM_AT_START) g_vm.w[VM_START] = fr;
@@ -483,7 +517,7 @@ void session_previous_dismiss(void)
 
 /* ------------------------------------------------------- the state machine */
 
-static int fingerprint_matches(const struct game_api *g)
+static int fingerprint_matches(const struct game_title *g)
 {
 	u8 buf[64];
 	u16 len;
@@ -516,7 +550,7 @@ static int fingerprint_matches(const struct game_api *g)
  * candidate this is the old check; with three it is also the answer to "which of
  * the trilogy is running".
  */
-static const struct game_api *fingerprinted_game(void)
+static const struct game_title *fingerprinted_game(void)
 {
 	u32 i;
 
@@ -565,6 +599,20 @@ static void enter_quitting(void)
 		g_game->on_quit();
 
 	/*
+	 * Revision 1.26: the title's pause pair (titles.h), Deadlocked's quit. The
+	 * PAUSE goes now, before the state moves, as the game's on_quit sent it
+	 * until then, and only once: a second quit before the RESUME is the same
+	 * trip.
+	 */
+	if (g_state == SESSION_INGAME && g_entry != NULL && g_entry->pause_code != 0 &&
+	    !(g_pause.due && g_pause.game == g_entry->game_id)) {
+		g_pause.due = 1;
+		g_pause.game = g_entry->game_id;
+		g_pause.code = g_entry->pause_code;
+		autosplit_emit(AUTOSPLIT_PAUSE, g_pause.code, 0);
+	}
+
+	/*
 	 * Only an initialized session owns the retained feature/mod/position tables.
 	 * An aborted BOOTING candidate must not change their remembered identity,
 	 * even if its title was read before its fingerprint became available.
@@ -576,7 +624,7 @@ static void enter_quitting(void)
 		 * so "same title" is not enough to decide that the feature and position
 		 * tables still apply: remember which game it actually was.
 		 */
-		g_last_game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+		g_last_game_id = (g_entry != NULL) ? g_entry->game_id : GAME_NONE;
 	}
 
 	/*
@@ -614,21 +662,125 @@ static const char *game_key_for(u8 game_id)
 	}
 }
 
+/*
+ * Revision 1.26: the game's code is here (game modules, gamemod.c), at once
+ * for a linked game, inside enter_ingame, and as a module loads for one that
+ * is a module, a tick or several seconds later. `g` is NULL when there will be
+ * none this session: a title no game claims, or a module that is missing, would
+ * not load or is another build's. Under the core lock.
+ *
+ * What runs here is what needs the game's code; enter_ingame did everything
+ * that does not, in the order it always had, and a linked game runs this
+ * straight after it, so a release module does what it did before game modules.
+ */
+static void game_arrive(const struct game_api *g)
+{
+	g_game = g;
+
+	/*
+	 * A linked game keeps its place in the feature registry over a same-game
+	 * reboot, as it always has; a module's left with the module and comes back
+	 * with the next one. With no game the registry clears rather than keep the
+	 * last game's table, so the auto-apply below writes nothing into a process
+	 * that has nothing of the sort in it.
+	 */
+	if (!g_same || gamemod_modules()) features_set_game(g_game, g_title);
+
+	if (g_game != NULL && g_game->on_enter != NULL) g_game->on_enter();
+
+	/*
+	 * Revision 1.21. A new process is a new game boot: every manip setup is to
+	 * be applied again, and the category is the remembered one or None.
+	 */
+	manips_enter(g_game);
+
+	/* Revision 1.26: a game that came after the menu went in shows its own pages now. */
+	menu_game_changed();
+
+	/*
+	 * Build 56. The USB drives are read once a boot, before the auto-load, so an
+	 * auto-loaded mod takes a newer copy from one and an update shows in the
+	 * client's list from the start. Nothing on a platform that refuses code
+	 * patches.
+	 */
+	modusb_scan(1);
+
+	/* Auto-flagged toggles and mods come back silently. */
+	features_apply_mask(features_auto_mask());
+	mods_apply_mask(mods_auto_mask());
+
+	g_prev.toggles &= ~features_toggle_auto();
+	g_prev.mods    &= ~mods_auto_mask();
+	/* No game, no toggles: the record offers what can still come back. */
+	if (g_game == NULL) g_prev.toggles = 0;
+	prev_update_pending();
+
+	g_combo_armed = 1;
+
+	plat_log("qwark: game %d arrived (%s)", (int)(g_game != NULL ? g_game->game_id : GAME_NONE),
+	         g_game == NULL ? "none" : gamemod_modules() ? "module" : "linked");
+}
+
+/*
+ * Revision 1.26: the title index's boot patches (titles.h), put in as the
+ * session starts, before a game module could be, and never taken out.
+ */
+static void boot_patches(void)
+{
+	u8 i;
+
+	g_pause.hooked = 0;
+	if (g_entry == NULL || g_entry->nboot == 0) return;
+	if (!plat_can_patch_code()) {
+		plat_log("qwark: %s's boot patches skipped, this platform cannot patch code", g_title);
+		return;
+	}
+	for (i = 0; i < g_entry->nboot; i++) {
+		patch_apply(g_entry->boot[i].def);
+		if (g_entry->boot[i].clear_addr != 0) mem_write_u8(g_entry->boot[i].clear_addr, 0);
+	}
+	g_pause.hooked = 1;
+}
+
+/*
+ * Revision 1.26: the RESUME of the title's pause pair, the tick the game is
+ * playable again, which its boot patch says by putting 0xFF in the resume
+ * byte; it goes back to 0 for the next quit. Without the patch (RPCS3) there
+ * is no byte to wait for, so it goes on the first tick back in the game, or
+ * the client's timer would stay stopped for ever. Every tick while INGAME,
+ * module or none, under the core lock, before the game's own tick.
+ */
+static void resume_tick(void)
+{
+	u8 b = 0;
+
+	if (!g_pause.due || g_entry == NULL || g_entry->game_id != g_pause.game) return;
+	if (g_pause.hooked && g_entry->resume_addr != 0) {
+		if (mem_read_u8(g_entry->resume_addr, &b) != ST_OK || b != 0xFF) return;
+		mem_write_u8(g_entry->resume_addr, 0);
+	}
+	g_pause.due = 0;
+	autosplit_emit(AUTOSPLIT_RESUME, g_pause.code, 0);
+}
+
 static void enter_ingame(void)
 {
 	/*
 	 * GAME_NONE is an identity like any other here: an unknown title that
 	 * reboots is the same session coming back, and one that gives way to a game
-	 * qwark knows, or the other way round, is not.
+	 * qwark knows, or the other way round, is not. Revision 1.26: the identity
+	 * is the title index's, which a game module's absence does not change.
 	 */
-	u8 game_id = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+	u8 game_id = (g_entry != NULL) ? g_entry->game_id : GAME_NONE;
 	int same = (g_last_title[0] != 0 && qstreq(g_last_title, g_title) &&
 	            g_last_game_id == game_id);
 
 	core_lock();
+	g_same = same;
+	g_game = NULL;
 
 	/* The planet selection is this game's from the first block that says INGAME. */
-	if (g_game != NULL) g_select_game = game_id;
+	if (g_entry != NULL) g_select_game = game_id;
 
 	if (same) {
 		/* Watches survive and resume; everything that writes goes on the record. */
@@ -659,15 +811,10 @@ static void enter_ingame(void)
 
 	if (!same) {
 		/*
-		 * With no game these three clear rather than load, and all three have
-		 * to run: the feature registry would otherwise still hold the last
-		 * game's table, and the auto-apply below would write its toggles into a
-		 * process that has nothing of the sort in it. The mod table and the
-		 * position file go the same way. Mods stay keyed by the title id, as
-		 * they are for every game, so a folder named after this title is the
-		 * one thing that does carry over.
+		 * Mods stay keyed by the title id, as they are for every game, so a
+		 * folder named after this title is the one thing that does carry over.
+		 * The feature registry is the game's arrival's (game_arrive).
 		 */
-		features_set_game(g_game, g_title);
 		mods_set_title(g_title);
 		pos_use_title(game_key_for(game_id));
 	}
@@ -687,38 +834,24 @@ static void enter_ingame(void)
 	memset(&g_hot, 0, sizeof(g_hot));
 	g_hot_primed = 0;
 
-	if (g_game != NULL && g_game->on_enter != NULL) g_game->on_enter();
-
-	/*
-	 * Revision 1.21. A new process is a new game boot: every manip setup is to
-	 * be applied again, and the category is the remembered one or None.
-	 */
-	manips_enter(g_game);
+	/* Revision 1.26: what cannot wait for the game's code. */
+	boot_patches();
 
 	/*
 	 * Revision 1.22. The console menu starts over: the root page, and on a
 	 * console a renderer that goes in a few seconds into the session once the
-	 * game plays, or at a menu combo before then.
+	 * game plays, or at a menu combo before then. Revision 1.26: by the game's
+	 * id, so the menu's own pages work before a game module is in.
 	 */
-	menu_enter(g_game);
+	menu_enter_id(game_id);
 
 	/*
-	 * Build 56. The USB drives are read once a boot, before the auto-load, so an
-	 * auto-loaded mod takes a newer copy from one and an update shows in the
-	 * client's list from the start. Nothing on a platform that refuses code
-	 * patches.
+	 * Revision 1.26: the game's code. A linked game is here now and arrives at
+	 * once; a module comes through the gate (session_step), or never.
 	 */
-	modusb_scan(1);
-
-	/* Auto-flagged toggles and mods come back silently. */
-	features_apply_mask(features_auto_mask());
-	mods_apply_mask(mods_auto_mask());
-
-	g_prev.toggles &= ~features_toggle_auto();
-	g_prev.mods    &= ~mods_auto_mask();
-	prev_update_pending();
-
-	g_combo_armed = 1;
+	if (gamemod_modules()) features_detach();   /* no game's table until one arrives */
+	if (gamemod_begin(g_entry) == GM_ARRIVED_GAME || g_entry == NULL)
+		game_arrive(gamemod_game());
 
 	core_unlock();
 
@@ -728,13 +861,39 @@ static void enter_ingame(void)
 	session_vsh_memory_read(VSHMEM_AT_GAME);
 }
 
+/*
+ * Revision 1.26: the session's game goes with its process. A game module's
+ * every pointer is dropped under the core lock before the module is (the lock
+ * audit, PROTOCOL.md 9.11): the session's, the feature registry's, the
+ * console menu's, the manips', and the patch table's entries for its toggles,
+ * whose defs live in its state area. A linked game's holders keep theirs, as
+ * they always have.
+ */
+static void drop_game(void)
+{
+	int module;
+
+	core_lock();
+	g_game = NULL;
+	module = gamemod_leaving();
+	if (module) {
+		features_detach();
+		manips_detach();
+		menu_detach();
+		patch_forget_kind(PATCH_KIND_FEATURE);
+	}
+	core_unlock();
+	if (module) gamemod_unload();
+}
+
 static void enter_booting(void)
 {
 	net_set_booting(1);
 	if (g_state == SESSION_INGAME) enter_quitting();
 	mem_set_context(0, 0);
 	g_pid = 0;
-	g_game = NULL;
+	drop_game();
+	g_entry = NULL;
 	g_title[0] = 0;
 	g_ncandidates = 0;
 	g_generation++;
@@ -775,7 +934,7 @@ static void step_state(void)
 		break;
 
 	case SESSION_BOOTING: {
-		const struct game_api *found;
+		const struct game_title *found;
 		char title[16];
 
 		if (!running) { enter_quitting(); break; }
@@ -790,8 +949,7 @@ static void step_state(void)
 		if (g_ncandidates == 0) {
 			if (!plat_game_title(title)) break;
 
-			g_ncandidates = game_candidates_for_title(title, g_candidates,
-			                                          GAME_MAX_CANDIDATES);
+			g_ncandidates = title_candidates(title, g_candidates, GAME_MAX_CANDIDATES);
 			if (g_ncandidates == 0) {
 				/*
 				 * Not a game qwark knows. There is no fingerprint to wait for
@@ -803,6 +961,7 @@ static void step_state(void)
 				 * reports state INGAME, game NONE and this title id.
 				 */
 				g_game = NULL;
+				g_entry = NULL;
 				qstrcpy(g_title, sizeof(g_title), title);
 				plat_log("qwark: %s is not a game qwark knows, memory tools only",
 				         g_title);
@@ -815,7 +974,21 @@ static void step_state(void)
 			 * is already the right one; for BCES01503 it only fills the telemetry
 			 * game byte, which the client shows as "booting".
 			 */
-			g_game = g_candidates[0];
+			g_entry = g_candidates[0];
+			/*
+			 * Revision 1.26: a linked game's table is what it was before game
+			 * modules, the candidate's own, its init() run as the registry
+			 * did; a module's is not here yet, and the game byte says BOOTING's
+			 * guess from the entry.
+			 */
+			if (!gamemod_modules()) {
+				u32 c;
+				for (c = 0; c < g_ncandidates; c++) {
+					const struct game_api *lg = g_candidates[c]->linked;
+					if (lg != NULL && lg->init != NULL) lg->init();
+				}
+				g_game = g_entry->linked;
+			}
 			qstrcpy(g_title, sizeof(g_title), title);
 			plat_log("qwark: session BOOTING (%s) pid %d", g_title, (int)g_pid);
 		}
@@ -827,16 +1000,16 @@ static void step_state(void)
 		found = fingerprinted_game();
 		if (found == NULL) break;
 
-		g_game = found;
+		g_entry = found;
 		enter_ingame();
 		break;
 	}
 
 	case SESSION_INGAME:
 		if (pid != g_pid) { enter_quitting(); break; }
-		if (g_game != NULL && g_game->quit_hook_addr != 0) {
+		if (g_entry != NULL && g_entry->quit_hook_addr != 0) {
 			u8 quit = 0;
-			if (mem_read(g_game->quit_hook_addr, &quit, 1) == ST_OK && quit != 0) {
+			if (mem_read(g_entry->quit_hook_addr, &quit, 1) == ST_OK && quit != 0) {
 				enter_quitting();
 			}
 		}
@@ -858,9 +1031,11 @@ static void step_state(void)
 			 * Telemetry must not keep naming a game that is not running: the
 			 * client watches the `game` byte to know when to re-DESCRIBE. The
 			 * feature and mod tables keep their own pointer, so the previous
-			 * record still re-applies correctly on the way back in.
+			 * record still re-applies correctly on the way back in. Revision
+			 * 1.26: but for a game module's, which goes now (drop_game).
 			 */
-			g_game = NULL;
+			drop_game();
+			g_entry = NULL;
 			g_ncandidates = 0;
 			mem_set_context(0, 0);
 			if (pid == 0) net_set_booting(0);
@@ -1310,7 +1485,13 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[0] = QWARK_PROTOCOL_VERSION;
 	out[1] = QWARK_BUILD;
 	out[2] = g_state;
-	out[3] = (g_game != NULL) ? g_game->game_id : GAME_NONE;
+	/*
+	 * Revision 1.26: the game whose code is here; in BOOTING the guess, as
+	 * before game modules. A game whose module is not in reads as none, which
+	 * is what a client already makes of a process without game features.
+	 */
+	out[3] = (g_game != NULL) ? g_game->game_id
+	       : (g_state == SESSION_BOOTING && g_entry != NULL) ? g_entry->game_id : GAME_NONE;
 	be32_put(out + 4, g_generation);
 	be32_put(out + 8, g_tick);
 
@@ -1337,7 +1518,8 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * profiles nor the USB mods, so their bits and byte 30 are 0 there.
 	 */
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
-	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0));
+	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0)
+	               | (g_state == SESSION_INGAME ? gamemod_flags2() : 0));
 	out[30] = config_profile_seq();
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
@@ -1495,6 +1677,20 @@ static void session_step(void)
 	}
 
 	/*
+	 * Revision 1.26: a game module's file, the memory gate and the load, outside
+	 * the core lock (a load takes up to a quarter of a second on HEN), then its
+	 * arrival under it.
+	 */
+	if (g_state == SESSION_INGAME && g_game == NULL) {
+		int arrived = gamemod_tick();
+		if (arrived != GM_ARRIVED_NOTHING) {
+			core_lock();
+			if (g_state == SESSION_INGAME) game_arrive(gamemod_game());
+			core_unlock();
+		}
+	}
+
+	/*
 	 * The core lock covers every table a network thread can list, so a WATCH_LIST
 	 * or a POS_LIST never sees one half-updated. It is held for the two hot-block
 	 * reads plus the freeze and watch passes, which is microseconds.
@@ -1502,6 +1698,8 @@ static void session_step(void)
 	core_lock();
 	if (g_state == SESSION_INGAME) {
 		read_hot();
+		/* Revision 1.26: the title's pause pair, before the game's own tick. */
+		resume_tick();
 		/*
 		 * The LIVE toggles are game-owned bytes; make toggle_state agree with
 		 * what memory says rather than with the last thing qwark wrote. No
@@ -1616,6 +1814,18 @@ void session_tick_thread(void *arg)
 		}
 		plat_mutex_unlock(&g_ring_mutex);
 	}
+
+	/* Revision 1.26: a game module still loaded goes with the module. */
+	core_lock();
+	g_game = NULL;
+	if (gamemod_leaving()) {
+		features_detach();
+		manips_detach();
+		menu_detach();
+		patch_forget_kind(PATCH_KIND_FEATURE);
+	}
+	core_unlock();
+	gamemod_shutdown();
 
 	plat_log("qwark: tick thread down");
 	plat_trace("qwark:   tick thread returning");

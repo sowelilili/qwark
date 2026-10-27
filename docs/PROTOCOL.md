@@ -74,6 +74,8 @@ Revision 1.25 (2026-10-27, module build 57): build 56 shipped with client 1.4.2 
 
 Revision 1.25, the savefile helpers in ui.pak (module build 57, 2026-10-27): no opcode or structure changes. The four savefile helpers leave the module for `/dev_hdd0/qwark/ui.pak`, beside the renderers, which saves the module about 4.6 KB of code segment (the test module back under three 64 KB pages). The pak is format 2, with the helpers as entries of kind 2 and the renderers' and the helpers' identities in its header, and a module takes only the pak built with it, as before (section 9.10). A console installs the helper out of the pak at the first action that needs it; with no usable pak that action answers `BUSY` and SAVEFILE_INFO `error` is the new **8, SAVEFILE_ERR_NO_PAK**, nothing is written into the game, and SessionInfo `flags` bit7 UI_PAK_BAD is set, as it already was for a bad pak, so a client can send the right one (section 5.12). SAVEFILE_PATCH and RPCS3 are unchanged: the emulator builds still link the helpers' bytes, and the patch is byte for byte what it was.
 
+Revision 1.26, game modules (module build 57, 2026-10-27): a test build's games are SPRX modules of their own, `/dev_hdd0/qwark/game-<n>.sprx`, loaded while their game runs once the VSH has the memory for them and unloaded when it quits (section 9.11). SessionInfo `flags2` bit5 GAME_MODULE_BAD and bit6 GAME_WAITING say when a game's module is not in, and GAME_MODULE (0x0008, section 5.1.2) says why, with the memory gate's figures; it is a control op (section 1.1). A game whose module is not in reads as `game` 0, the session of section 3.3. Deadlocked's quit and loading hooks and the PAUSE and RESUME around its quit to the XMB are the core's now, in every build, so they keep their timing whenever a module loads. A release module links its games in as before: it never sets either bit and answers GAME_MODULE with state 1. No other opcode or structure changes.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -97,9 +99,9 @@ Reply:    u32 length | u16 seq | u16 status | payload[length]
 
 The moment the console reports a game process, qwark leaves it alone for one second, measured by the clock rather than counted in ticks. Nothing reads the process, the XMB is not asked for its title, and nothing moves on the network: existing connections neither receive nor reply, and the telemetry and autosplit datagrams stop. Frames sent into that second are answered, in order, once it ends; nothing is buffered for them beyond what the socket holds. The OS still acknowledges TCP by itself, and other plugins are outside this. Ratchetron and the old autosplitter modules kept the same silence, and the consoles that crashed at launch without it are why. None of this depends on which game is starting, because none of it knows yet: the title is not asked for until the second is over, so a process qwark turns out not to know (section 3.3) is launched through exactly the same silence and reaches INGAME the same way.
 
-For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE and, since build 54, VSH_MEMORY, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
+For the rest of BOOTING, and through QUITTING, the shared request buffers are not handed out. HELLO, HEARTBEAT, SUBSCRIBE, UNSUBSCRIBE, GET_STATE, since build 54 VSH_MEMORY, and since revision 1.26 GAME_MODULE, with at most two payload bytes, use per-connection fixed buffers and keep working. Any other request is drained without them and answered **BUSY**: retry once the session is INGAME. New connections are closed as they arrive. A connection that is holding the request buffers when a transition starts is closed, and the request in flight may get no reply; reconnect as usual.
 
-Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. Since build 55 (revision 1.23) the pair is one 16384-byte frame and the connection's own 937-byte buffer: a request of up to 937 bytes is read into the connection's buffer and the reply goes into the frame; a longer request goes into the frame and its reply into the connection's buffer, at most 937 bytes. No op takes more than 937 bytes and answers more than that (the bulk writes, MEM_WRITE, FILE_WRITE, SAVEFILE_WRITE, PATCH_APPLY, LEVELFLAGS_SET, POS_STORE and FILE_RENAME's two paths, answer in a few bytes, and every large reply comes from a small request), so a client that sends what this document describes sees no difference; a request padded past 937 bytes gets `FULL`, or the op's own `BAD_ARG` for a length past its room, for a reply that would not fit. A second client's bulk request therefore waits for the first to finish rather than being refused, and the six control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
+Since revision 1.11 there is exactly one request buffer and one reply buffer on the console, 16384 bytes each, and one connection holds the pair for the length of one request: the payload is read into it, the command is run, the reply is sent, and it is handed on. Since build 55 (revision 1.23) the pair is one 16384-byte frame and the connection's own 937-byte buffer: a request of up to 937 bytes is read into the connection's buffer and the reply goes into the frame; a longer request goes into the frame and its reply into the connection's buffer, at most 937 bytes. No op takes more than 937 bytes and answers more than that (the bulk writes, MEM_WRITE, FILE_WRITE, SAVEFILE_WRITE, PATCH_APPLY, LEVELFLAGS_SET, POS_STORE and FILE_RENAME's two paths, answer in a few bytes, and every large reply comes from a small request), so a client that sends what this document describes sees no difference; a request padded past 937 bytes gets `FULL`, or the op's own `BAD_ARG` for a length past its room, for a reply that would not fit. A second client's bulk request therefore waits for the first to finish rather than being refused, and the control ops above never wait at all, because they never touch it. Nothing about this is visible on the wire — the ordering guarantee is unchanged, every request still gets exactly one reply carrying its own `seq`, and a client that pipelines sees its replies in request order — but a client that wants two bulk transfers to overlap should know that the console runs them one after the other.
 
 Connected sockets are non-blocking. A payload receive and a reply send each have a two-second deadline, not counting time paused for a launch, and a connection that misses one is closed and the buffers released. Waiting for the next request header has no deadline and holds no buffers.
 
@@ -174,6 +176,14 @@ u8   flags2             revision 1.24, a pad byte before it.
                         bit4 DEV (revision 1.24, test builds): the module is a test build, so it is
                              told from another build of its number by the build ID after HELLO's
                              SessionInfo (section 3.1.1). Never set by a release build or by qwark-rpcs3
+                        Game modules (revision 1.26, section 9.11), INGAME only:
+                        bit5 GAME_MODULE_BAD: the running game's module is missing, is no module,
+                             would not load or start, or is another build's, so the session has no
+                             game features until a client writes the file or the game boots again
+                        bit6 GAME_WAITING: the running game's module is there and is held back
+                             until the VSH has the memory for it; it loads by itself when it has.
+                             Neither bit is ever set by a module whose games are linked in (a release,
+                             qwark-rpcs3). GAME_MODULE (section 5.1.2) has the figures
 u8   profile_seq        revision 1.24, a pad byte before it: goes up by one, wrapping, whenever the
                         active profile changes or is read again (section 5.10.1)
 u8   pad
@@ -290,6 +300,8 @@ Everything else about the session is unchanged: the launch is quiet for its seco
 
 A client should offer the memory panel and hide the game panels when `game` is 0 while `state` is 2. DESCRIBE answering `UNSUPPORTED` is the same answer it gives at the XMB, so no client is surprised by it.
 
+**Revision 1.26: a game whose module is not in** (section 9.11) is this same session: `game` 0 and `title_id` the game's, with `flags2` bit6 GAME_WAITING while the module waits for memory and bit5 GAME_MODULE_BAD when there is none to be had. When the module arrives `game` becomes the game's id and the session is the game's from then on, as if it had just reached INGAME: a client describes it then (the change of `game` is what it already watches for). GAME_MODULE says which game it is meanwhile. The record of section 4.1 is offered once the game arrives.
+
 ## 4. Telemetry packet (UDP)
 
 Sent every fourth tick (30 Hz) to every subscriber. One packet is a complete snapshot; the client keeps only the latest one.
@@ -329,6 +341,7 @@ When a different title comes back, everything including watches is dropped and t
 | 0x0005 | PREVIOUS_REAPPLY | `u8 flags` bit0 toggles, bit1 mods, bit2 freezes, bit3 patches | none. Re-applies the chosen categories, then clears the record |
 | 0x0006 | PREVIOUS_DISMISS | none | none. Clears the record |
 | 0x0007 | VSH_MEMORY | none | 28 bytes, the VSH's free memory as the module last read it (build 54, section 5.1.1). `UNSUPPORTED` where it cannot be read |
+| 0x0008 | GAME_MODULE | none | 40 bytes, the running game's module and the memory gate in front of it (revision 1.26, section 5.1.2) |
 
 ### 5.1.1 VSH_MEMORY, the VSH's free memory (build 54)
 
@@ -378,6 +391,41 @@ vsh mem: lowest 960 KB free in NPEA00423                the game's QUITTING: its
 KB is 1024 bytes, rounded down. The microseconds are how long the syscall took. START, TICK_THREAD, GAME and MENU are always logged. A ten-second reading is logged only as a **low**: when it is under **1 MB** free, and at least 64 KB (one page) under every figure a line has carried before, so a VSH that sits near the edge writes a handful of lines and not one every ten seconds. 1 MB is four times the 256 KB under which webMAN stops serving pages; a module load or an XMB notification can each take a good part of it. The QUITTING line is the lowest of the readings taken while that game was INGAME, its arrival included. `log = 0` silences these as it does every line (section 5.10).
 
 **The simulator.** `qwark-host.exe` has nothing to read until it is given a figure: `--vshmem FREE,TOTAL` on its command line, in KB, gives START and TICK_THREAD one, and the stdin command `vshmem <free KB> <total KB>` sets it and takes a reading at once, as a ten-second one; `vshmem off` makes it unreadable again (what it has kept stays).
+
+### 5.1.2 GAME_MODULE, the running game's module (revision 1.26)
+
+What section 9.11's gate is doing, for a client to say in plain words. A control op (section 1.1), answered in every state from what the tick last wrote, so a client may poll it while `flags2` bit5 or bit6 is set. All big-endian:
+
+```
+u8  state        0 NONE      no game: the XMB, BOOTING, a title no game claims
+                 1 LINKED    the game is linked into the module (a release, qwark-rpcs3)
+                 2 CHECKING  a module is wanted and its file not yet read (a tick at most)
+                 3 WAITING   the module is there; the gate holds it back       (flags2 bit6)
+                 4 LOADED    loaded and started
+                 5 MISSING   no game-<n>.sprx                                  (flags2 bit5)
+                 6 FAILED    no module in the file, or lv2 would not load or start it (bit5)
+                 7 OTHER     the module is another build's                     (flags2 bit5)
+u8  game         the session's game by its title (0 none): the module is game-<game>.sprx
+u8  pages        the module's 64 KB pages, from its header; 0 not read
+u8  flags        bit0 KEEP: config.txt's game.keep is 1
+                 bit1 NOTIFIED: this wait's 30-second notification has gone
+                 bit2 MODULES: this module's games are modules (0 for a release)
+                 bit3 RESIDENT: a module is loaded now (a kept one included)
+u32 lowest_kb    the lowest free figure over the window at the gate's last look, KB
+u32 now_kb       the latest reading, KB
+u32 need_kb      what a load needs: the pages and the 64 KB transient, KB
+u32 floor_kb     game.floor_kb
+u32 window_ms    game.window_ms
+u32 waited_ms    WAITING: how long so far; else 0
+u32 error        FAILED: lv2's error (0x8001xxxx), 0x800000nn for a start that refused with
+                 reason nn, 0x80000100 for a table that was not the module's own game's, 0 for
+                 a file that is no module; OTHER: the reason, 2 another build number, 3 another
+                 build ID, 4 another core table; else 0
+u32 load_us      how long the last load and start took
+u32 module_id    OTHER: the build ID the module says it is
+```
+
+The gate's sum is `lowest_kb - need_kb >= floor_kb`. A client that wants to say how much more the console needs takes `need_kb + floor_kb - lowest_kb`. A later revision only adds at the end.
 
 ### 5.2 Telemetry (0x001x)
 
@@ -888,7 +936,7 @@ The switch and the hold are independent, and either one on its own holds every c
 | 0x0094 | PROFILE_ENABLE | `u8 on, u8 setup` | none (revision 1.24) |
 | 0x0095 | COMBO_OVERRIDE | `u8 action, u8 set, u8 pad[2], u32 mask` | none (revision 1.24) |
 
-Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment, the game's Help row its own again (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up.
+Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment, the game's Help row its own again (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up. Revision 1.26, in a test build whose games are modules: `game.floor_kb` (128), `game.window_ms` (3000) and `game.keep` (0), the memory gate and what happens to a module at the XMB (section 9.11); no op writes them either.
 
 **MENU_HELP** (revision 1.23, build 55) writes `menu.help`, the console menu's Help row: 1 when the file does not mention it, the Trainer row in the game's pause menu where Help was, as build 54 always had it; 0, the game's own Help row in every game, with the rest of the renderer in and the menu combo opening the menu as before, while the combos are on. It is a config write like COMBO_ENABLE, answered in any session state; any value other than 0 or 1 is `BAD_ARG`, and a platform that cannot patch code, which has no menu, answers `UNSUPPORTED` and writes nothing. In a game whose renderer is in, the tick thread puts the Help row's words in or takes them out at the first moment it is safe, and only then (section 9.2), so the change shows the next time the player opens the pause menu, or the next time after this one if it is open. SessionInfo `flags` bit6 MENU_HELP_OFF is set while the key is 0; there is no op to read it back. A hand edit picked up by CONFIG_RELOAD counts as a change like any other. `menu.enabled = 0` takes every word out whatever `menu.help` says.
 
@@ -1941,3 +1989,59 @@ The CRCs are the ordinary reflected CRC-32 of zlib and of every other sum in thi
 A pak whose own part for one game is damaged serves the other games and fails that one; bit7 stays set for the file as a whole. A pak deleted while a game runs leaves the renderer and the helper already in that game alone; the next session has neither.
 
 **RPCS3** has no console menu and installs no helper (its helper comes from the RPCS3 patch, section 5.12.1, out of the table `qwark-rpcs3` links), so `qwark-rpcs3` never opens a pak, never looks for one and never sets bit7. The emulator builds link `sfhelper_bins.c`'s bytes for SAVEFILE_PATCH and the presence look, and the PS3 module links only the helpers' numbers. The simulator, `qwark-host.exe`, reads the pak from its fake HDD (`qwark-host-root/dev_hdd0/qwark/ui.pak`) as a console does, renderers and helpers alike; the smoke run packs it there.
+
+### 9.11 Game modules, and the memory gate in front of them (revision 1.26)
+
+**Why.** The module's code segment is held in the VSH's memory for its whole life, and a third of it is the four games', of which one at most is ever wanted. Since revision 1.26 a **test build** (`make`, `QWARK_DEV=1`, more precisely `QWARK_GAME_MODULES=1`) carries no game: each game is an SPRX of its own, **`/dev_hdd0/qwark/game-<n>.sprx`**, `n` being SessionInfo's game id (1 RaC1 .. 4 Deadlocked), loaded while that game runs and unloaded once it quits. A **release** (`make release`) still links the four games in and behaves as it always has: it never loads a module, never sets `flags2` bit5 or bit6, and answers GAME_MODULE with state 1 LINKED. `qwark-rpcs3.exe` is the same. The simulator links its games but can stand modules in for them (below).
+
+**A module** is one R-X segment and nothing writable: its code, its tables, its function descriptors and its TOC, which lv2 relocates as it loads it. It costs exactly one 64 KB page (`tools/gamemodule.py` refuses a module over 61,440 bytes, any writable or TLS section, and any import). It imports nothing from lv2 or any library: it reaches the core only through the table the core hands its start (`struct core_api`, `src/games/core_api.txt`), and keeps what it changes in a state area the core lends it, zeroed before every load. `make games` builds the four, signs them as `qwark.sprx` is signed, and checks each; `make` builds them with the module, and `make dist` copies them into `dist/`.
+
+**Which module a core takes.** Exactly the ones built with it, as for `ui.pak` (section 9.10): the module's start compares the core's build number, its build ID (section 3.1.1) and the size of its table with its own, and stays resident only when all three match and the game is the one the core asked for; otherwise lv2 drops it again and the session has no game (state 7 OTHER, `flags2` bit5).
+
+**The files and their updates.** The same as `ui.pak`'s. A client writes `game-<n>.sprx` with the file ops beside `ui.pak`, at every install path (the standalone install, the boot-plugin install, the installer package); a standalone update writes `game-<n>.sprx.new`, which the core puts in place of `game-<n>.sprx` the next time that game boots. A module is read only while it loads: lv2 keeps no file open, so a client may replace it at any time, and the next load takes the new one.
+
+**When it loads: the memory gate.** A load takes the module's pages and, for a moment, one page more (the PRX probe measured both, on CFW and on HEN). The VSH's free memory swings by about 448 KB on and off by itself while a game runs, and dips furthest as a game launches. So the core loads a module only when the **lowest** free figure over the last **`game.window_ms`** (3000 ms), less the module's pages and the 64 KB transient, still leaves **`game.floor_kb`** (128 KB):
+
+1. The session reaches INGAME as soon as the fingerprint answers, as before; the game byte reads 0 and `flags2` bit6 GAME_WAITING is set.
+2. The core reads the module's header (its pages, out of the SELF header scetool leaves in the clear). No file: state 5 MISSING. Not a module: state 6 FAILED. Both set `flags2` bit5 GAME_MODULE_BAD and end the wait.
+3. From INGAME's first tick it reads the VSH's free memory ten times a second (the read-only syscall 352 of section 5.1.1).
+4. Once the readings cover a whole window, and every tick-of-ten after that, it takes their lowest. When `lowest - (pages * 64 + 64) >= floor` it loads and starts the module on the tick thread (2 to 23 ms on CFW, 125 to 260 ms on HEN; telemetry pauses for as long), checks that what the module handed back lies inside the module and is this game's, and the game **arrives**: the game byte goes to the game's id, bit6 goes down, and everything a game does at a session's start happens now (below).
+5. Otherwise it waits, and keeps reading. After 30 s of waiting the console shows one notification, "Game support is waiting for memory: your console has N KB free and needs M KB. It loads by itself when there is room.", and the wait goes on; the module loads the moment the gate passes.
+
+A launch's dip is inside the first window, so the gate waits it out without knowing it is there. On the consoles the probe measured (CFW about 750 to 1,000 KB free at the lowest in a game, HEN with webMAN 372 to 540 KB) the gate passes at its first look, `game.window_ms` into the session. If the VSH's memory cannot be read at all, the module loads at the first look.
+
+**config.txt.** Three keys, all optional (section 5.10): `game.floor_kb` (the floor, 128), `game.window_ms` (the window, 3000, at most 60000; 0 judges by one reading) and `game.keep` (0). With `game.keep = 1` a module stays loaded over the XMB and is used again, with nothing allocated and nothing waited for, when the same game boots next; another game's boot unloads it first. The default unloads it, because the XMB is where a user loads other plugins.
+
+**When it unloads.** When the session leaves QUITTING for the XMB (the process is gone), or a new launch replaces the process: under the core lock, every holder of a pointer into the module lets it go (below), then, outside the lock, the core stops and unloads it on the tick thread. The module's own start and stop run on that thread too, inside lv2's calls, and create no thread.
+
+**While the game is not in**, waiting or with no module to be had, the session is what section 3.3 describes, a process with no game: the connection, the memory, watch, freeze and patch ops, the listings, the file, config and combo ops and the console menu's own pages work; every game op answers UNSUPPORTED; readouts, coordinates and the pad are 0, so no combo fires (the menu is still reached by the pause menu's row, section 9.2). `flags2` bit5 or bit6 says why. The previous-session record (section 4.1) is built as the process arrives but offered (`flags` bit0) only once the game arrives, and with no game its toggles are left out of it. A client's write of the session's game's module (FILE_OPEN for writing, then close; FILE_RENAME; FILE_DELETE) has a MISSING, FAILED or OTHER session look at the file again and, when it is good, wait for memory and load it, without a reboot.
+
+**What cannot wait for a module.** The core keeps a **title index** (`src/games/titles.c`): every title id, its game, its fingerprint and quit hook, and two things that belong to a game's first seconds:
+
+| What | Why it cannot wait | How it is kept |
+|---|---|---|
+| The fingerprint, the BCES01503 pick, the quit hook's byte | the session cannot reach INGAME, or see a quit coming, without them | the title index, as before |
+| Deadlocked's quit and loading hooks (boot patches) | the loading hook marks the SCE logo, a few seconds after INGAME, which is where the quit's RESUME belongs | applied by the core as the session starts, in every build, never reverted |
+| Deadlocked's quit to the XMB: its PAUSE and RESUME (the title's pause pair, AUTOSPLIT reason 3) | game time is frozen between the two and started again at the RESUME; a RESUME a module sent seconds late would cost the runner those seconds | emitted by the core: the PAUSE as the session leaves INGAME, the RESUME the tick the loading hook's byte reads 0xFF (the first tick back where the hook cannot go in, as before), module or none; the pair survives the XMB, other games and a missing module |
+
+What a module brings and therefore starts when it arrives, `game.window_ms` or more into the session: the auto-flagged toggles (Deadlocked's crash patches and softlock fix among them) and mods, the manip setups, the autosplit watchers (they start from the game's state at arrival, as at any session's start, so a run started before then is not seen), the game's on-boot work (Deadlocked's HUD colours), the hot-block reads and readouts, and the savefile helper's install (always lazy). No game reaches play in the first seconds of a boot, so on a console with room nothing a user sees moves; on one that waits for memory these wait with the module, and the notification says why.
+
+**The lock audit.** A module's tables, labels and strings are gone once it unloads, so every use of the game's pointer follows two rules: it is taken under the core lock, and what it needs is copied into the reply before the lock goes. The tick thread runs the game's code under the lock; the network threads' uses are DESCRIBE, FEATURE_SET_AUTO and FEATURE_OPTIONS (the feature registry's own copy of the pointer), AUTOSPLIT_DESCRIBE, POS_LIST, PLANET_LIST, MOBY_TABLE and the manip ops, all under the lock since revision 1.26. The holders that kept their own copy, the feature registry, the console menu (and its unlock list) and the manips, drop it under the lock as the module goes, and so do the patch table's entries for the game's toggles, whose definitions live in the state area; the registry keeps what is the core's (the toggle state, the auto flags, the LIVE mask the same game's next record needs). The simulator overwrites an unloaded module's table with 0xA5 bytes, so the unit tests and the smoke run catch any pointer kept past it.
+
+**qwark.log**, every decision with its figures (`grep "game module"`):
+
+```
+game module: game-4.sprx is 1 page(s); it needs 128 KB free plus the 128 KB floor, lowest over 3000 ms
+game module: loading game-4.sprx: 812 KB free at the lowest over 3000 ms, 1240 KB now; it needs 128 KB and leaves 556 KB over the 128 KB floor, after 2950 ms of waiting
+game module: game-4.sprx loaded in 12 ms (id 0x23010500), 1240 KB free before, 1176 KB after
+game module: game-4.sprx waits for memory: 212 KB free at the lowest over 3000 ms (660 KB now), it needs 128 KB plus the 128 KB floor; waiting 3010 ms so far
+game module: still waiting after 30 s; the console is told once
+game module: game-4.sprx unloaded (the game quit): stop 0x00000000, unload 0x00000000
+game module: no game-4.sprx on the console; this game has no game features this session
+game module: game-4.sprx is from another build (refusal 3, its ID 0x1A2B3C4D, ours 0x5E6F7A8B)
+game module: lv2 would not load game-4.sprx: 0x80010004, 180 KB free
+```
+
+A waiting line goes at the first look and then at most every ten seconds.
+
+**The simulator** (`qwark-host.exe`) links its games, as before, until its stdin command `modules on`; from the next boot on it stands modules in for them, through the same gate, against its fake VSH memory (`vshmem`), whose free figure a loaded module takes its pages off. `fakemodule <n>` writes a module for game `n` into the fake HDD, `fakemodule <n> other` one of another build, `broken` one that is no module, `refused` one lv2 will not load, `pages <p>` one of `p` pages and `gone` deletes it; `modules off` links them again.

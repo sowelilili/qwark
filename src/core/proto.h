@@ -134,6 +134,9 @@
 #define QWARK_PREVIEW           QWARK_DEV
 #endif
 
+/* Revision 1.26: QWARK_GAME_MODULES and the others, game modules (src/games/module.h). */
+#include "buildmodes.h"
+
 #define QWARK_PORT              9673
 /*
  * Revision 1.11. One frame's payload, request or reply. It was 65600 - 64 KB
@@ -193,6 +196,12 @@
  * whether it can). A control op, so a launch does not hold it up. PROTOCOL.md 5.1.1.
  */
 #define OP_VSH_MEMORY        0x0007
+/*
+ * Revision 1.26: GAME_MODULE, the running game's module and the memory gate in
+ * front of it (PROTOCOL.md 5.1.2). Answered inline, in any state.
+ */
+#define OP_GAME_MODULE       0x0008
+#define GAME_MODULE_SIZE     40
 #define VSH_MEMORY_SIZE      28
 
 /* VSH_MEMORY's lowest_at: the moment a reading was taken at. */
@@ -633,6 +642,16 @@
  * SessionInfo with its own module's rather than the build number alone.
  */
 #define SESSION_FLAG2_DEV             0x10
+/*
+ * Revision 1.26, game modules (PROTOCOL.md 9.11). bit5 GAME_MODULE_BAD: the
+ * running game's module is missing, would not load or start, or is from
+ * another build, so the session has no game features until a client writes the
+ * file or the game boots again. bit6 GAME_WAITING: the module is there but is
+ * held back until the VSH has the memory for it, and loads by itself once it
+ * has. Neither is ever set by a module whose games are linked in.
+ */
+#define SESSION_FLAG2_GAME_MODULE_BAD 0x20
+#define SESSION_FLAG2_GAME_WAITING    0x40
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */

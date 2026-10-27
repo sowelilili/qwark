@@ -1,3 +1,4 @@
+#include "core_import.h"   /* first: src/games/module.h */
 #include "classic.h"
 #include "../core/mem.h"
 #include "../core/switches.h"
@@ -160,8 +161,11 @@ int classic_patch_toggle(const struct patch_def *def, int on)
  * so that they are this file's own .bss and not common symbols, which the
  * footprint tool could not tell from the SDK's.
  */
-u8 classic_snap[CLASSIC_SNAP_BYTES] = { 0 };
-u8 classic_snap_game = 0;
+#if QWARK_GAME_MODULE
+typedef char classic_state_fits[sizeof(struct classic_state) <= QWARK_STATE_CLASSIC_MAX ? 1 : -1];
+#else
+struct classic_state classic_state;
+#endif
 
 #ifdef QWARK_EMULATOR   /* classic.h: the PS3's are the patch calls themselves */
 

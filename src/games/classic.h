@@ -85,8 +85,24 @@ int  classic_patch_toggle(const struct patch_def *def, int on);
  */
 #define CLASSIC_SNAP_BYTES 2276u
 
-extern u8 classic_snap[CLASSIC_SNAP_BYTES];
-extern u8 classic_snap_game;
+/*
+ * Revision 1.26: both are fields of struct classic_state, which a game module
+ * keeps at the start of the state area the core lends it (src/games/module.h)
+ * and a linked build in classic.c, so a game's source names them as before.
+ */
+struct classic_state {
+	u8 snap[CLASSIC_SNAP_BYTES];
+	u8 snap_game;
+};
+
+#if QWARK_GAME_MODULE
+#define CLASSIC_S QWARK_STATE_AT(struct classic_state, QWARK_STATE_CLASSIC_OFF)
+#else
+extern struct classic_state classic_state;
+#define CLASSIC_S (&classic_state)
+#endif
+#define classic_snap      (CLASSIC_S->snap)
+#define classic_snap_game (CLASSIC_S->snap_game)
 
 /*
  * Build 50, the code switches (src/core/switches.h). A WRITES_CODE toggle is

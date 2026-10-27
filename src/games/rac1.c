@@ -11,8 +11,10 @@
  * JankpotForm.cs for the jankpot block. Where the old code was ambiguous the
  * comment says so.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac1.h"
 #include "classic.h"
+#include "sfhelper_bins.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
@@ -21,9 +23,7 @@
 
 #include <string.h>
 
-/* See rac1.h for what these two are and why both are accepted. */
-const u8 rac1_fp[4]         = { 0x30, 0x64, 0x9C, 0xE0 };
-const u8 rac1_fp_patched[4] = { 0x30, 0x64, 0x00, 0x00 };
+/* Revision 1.26: the fingerprint is the title index's (titles.c). */
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -120,16 +120,66 @@ struct rac1_as_state {
 	u8  loading_screen;
 };
 
-static struct rac1_as_state g_as;
+/*
+ * Revision 1.26: every static of this file that changes, in one struct (the
+ * names below are its fields). A game module has no writable memory of its
+ * own, so there it is part of the state area the core lends it
+ * (src/games/module.h), zeroed before every load; linked in, it is a static.
+ * The initial values are set by init(), which runs as the game arrives.
+ */
+struct rac1_state {
+	struct rac1_as_state g_as;
+	u32 g_load_request;
+	u32 g_planet_word;
+	u8 g_frontend;
+	struct rac1_as_state g_as_prev;
+	int g_as_primed;
+	int g_veldin_fix;
+	int g_fl_primed;
+	int g_fl_latched;
+	int g_fastload_on;
+	int g_fastload_forced;
+	int g_fastload_loading;
+	int g_fastload_aside;
+	u32 g_sf_refusals;
+	struct classic_health rac1_freeze_health;
+	struct patch_def rac1_fastload;
+	struct patch_def rac1_ammo;
+	int init_done;
+};
+
+#if QWARK_GAME_MODULE
+#define R1 QWARK_STATE_AT(struct rac1_state, QWARK_STATE_GAME_OFF)
+typedef char rac1_state_fits[sizeof(struct rac1_state) <= QWARK_STATE_GAME_MAX ? 1 : -1];
+#else
+static struct rac1_state g_rac1_state;
+#define R1 (&g_rac1_state)
+#endif
+
+#define g_as (R1->g_as)
+#define g_load_request (R1->g_load_request)
+#define g_planet_word (R1->g_planet_word)
+#define g_frontend (R1->g_frontend)
+#define g_as_prev (R1->g_as_prev)
+#define g_as_primed (R1->g_as_primed)
+#define g_veldin_fix (R1->g_veldin_fix)
+#define g_fl_primed (R1->g_fl_primed)
+#define g_fl_latched (R1->g_fl_latched)
+#define g_fastload_on (R1->g_fastload_on)
+#define g_fastload_forced (R1->g_fastload_forced)
+#define g_fastload_loading (R1->g_fastload_loading)
+#define g_fastload_aside (R1->g_fastload_aside)
+#define g_sf_refusals (R1->g_sf_refusals)
+#define rac1_freeze_health (R1->rac1_freeze_health)
+#define rac1_fastload (R1->rac1_fastload)
+#define rac1_ammo (R1->rac1_ammo)
+
 
 /*
  * What the manips' file-load trigger reads (revision 1.21), filled by the
  * decode: the load request word, the planet as the signed word it is, and the
  * front end's byte.
  */
-static u32 g_load_request;
-static u32 g_planet_word;
-static u8  g_frontend;
 
 static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -234,11 +284,8 @@ static void rac1_hot_decode(const u8 * const *blocks, struct game_hot *out)
  * of every load counted towards game time and the rest did not. The client sees
  * the pair, subtracts max(0, duration - 7.56 s), and lands on the same total.
  */
-static struct rac1_as_state g_as_prev;
-static int g_as_primed;
 
 /* vars.veldinFix: the Veldin split can otherwise fire twice. */
-static int g_veldin_fix;
 
 /* The four Drek buttons, from vars.buttons. */
 static const f32 rac1_drek_buttons[4][2] = {
@@ -313,8 +360,6 @@ static int rac1_on_a_drek_button(void)
  * back to 0 alone is too early. A fly-in keeps the state at 6 for its length,
  * and the patch with it, which is what the checkbox being on does anyway.
  */
-static int g_fl_primed;
-static int g_fl_latched;
 
 /*
  * Build 53. g_fastload_on is what the Fast loads checkbox holds.
@@ -326,8 +371,6 @@ static int g_fl_latched;
  * the checkbox rather than the force, so it does not flick on for the length
  * of every load.
  */
-static int g_fastload_on;
-static int g_fastload_forced;
 
 /*
  * Build 53. What the restore needs to know about the force beside it, which
@@ -351,8 +394,6 @@ static int g_fastload_forced;
  *                       load's refusal leaves a planet load's force to the end
  *                       of that load.
  */
-static int g_fastload_loading;
-static int g_fastload_aside;
 
 /*
  * Build 53. savefile_load_refusals as rac1_on_tick last saw it, as on RaC2. A
@@ -360,7 +401,6 @@ static int g_fastload_aside;
  * can still drop the request on the game's frame, when no load follows to put
  * them back.
  */
-static u32 g_sf_refusals;
 
 static void rac1_file_load_watch(void)
 {
@@ -423,7 +463,7 @@ static int rac1_in_file(void)
 }
 
 /* Build 53: Freeze health, held at the game's own maximum (rac1.h). */
-static struct classic_health rac1_freeze_health = {
+static const struct classic_health rac1_freeze_health_init = {
 	RAC1_PLAYER_HEALTH, RAC1_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
@@ -599,10 +639,10 @@ static const struct patch_word rac1_ammo_words[] = {
  * leaves it, the trampoline runs the game's own instructions.
  */
 
-static struct patch_def rac1_fastload = {
+static const struct patch_def rac1_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, rac1_fastload_words, 3, NULL
 };
-static struct patch_def rac1_ammo = {
+static const struct patch_def rac1_ammo_init = {
 	"Infinite ammo", PATCH_KIND_FEATURE, rac1_ammo_words, 1, NULL
 };
 
@@ -668,10 +708,12 @@ int rac1_fastload_restore(void)
 
 static void rac1_init(void)
 {
-	static int done = 0;
+	if (R1->init_done) return;
+	R1->init_done = 1;
 
-	if (done) return;
-	done = 1;
+	rac1_freeze_health = rac1_freeze_health_init;
+	rac1_fastload = rac1_fastload_init;
+	rac1_ammo = rac1_ammo_init;
 
 	rac1_fastload.originals = patch_pool_alloc(rac1_fastload.count);
 	rac1_ammo.originals     = patch_pool_alloc(rac1_ammo.count);
@@ -1118,18 +1160,7 @@ static const struct game_menu rac1_menu = {
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac1_game = {
-	{ "NPEA00385", "BCES01503", NULL, NULL },
 	GAME_RAC1,
-
-	RAC1_FP_ADDR,
-	rac1_fp,
-	rac1_fp_patched,
-	NULL,                 /* fp_switch: the old health switch hooks the word after it */
-	NULL,                 /* so no earlier build's branch is there either */
-	sizeof(rac1_fp),
-
-	0,                    /* no quit hook is known for RaC1 yet */
-	RAC1_INPUTS,
 
 	rac1_init,
 
@@ -1185,5 +1216,6 @@ const struct game_api rac1_game = {
 	&rac1_manips,         /* revision 1.21 */
 	NULL,                 /* planet_order: the ids run in the game's order */
 	&rac1_menu,           /* revision 1.22, round 2 */
-	GAME_FEATURE(F_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
+	GAME_FEATURE(F_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
+	sf_desc_for_game      /* revision 1.26: the savefile helper the core installs */
 };

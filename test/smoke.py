@@ -1171,6 +1171,162 @@ def test_ui_pak(sim, c):
     check(status == ST_OK and ok, "ui.pak: the right one sent again: flags bit7 clear", status)
 
 
+# ------------------------------------------------- game modules (1.26)
+
+OP_GAME_MODULE = 0x0008
+GAME_MODULE_SIZE = 40
+SESSION_FLAG2_GAME_MODULE_BAD = 0x20
+SESSION_FLAG2_GAME_WAITING = 0x40
+GM_STATES = ["NONE", "LINKED", "CHECKING", "WAITING", "LOADED", "MISSING", "FAILED", "OTHER"]
+
+
+def game_module(c):
+    """GAME_MODULE (PROTOCOL.md 5.1.2), decoded, or None."""
+    status, b = c.call(OP_GAME_MODULE)
+    if status != ST_OK or len(b) < GAME_MODULE_SIZE:
+        return None
+    w = struct.unpack(">9I", b[4:40])
+    return {"state": GM_STATES[b[0]] if b[0] < len(GM_STATES) else b[0], "game": b[1], "pages": b[2],
+            "flags": b[3], "lowest_kb": w[0], "now_kb": w[1], "need_kb": w[2], "floor_kb": w[3],
+            "window_ms": w[4], "waited_ms": w[5], "error": w[6], "load_us": w[7], "module_id": w[8]}
+
+
+def fake_module_bytes(game, build_id, pages=1):
+    """A module file as the simulator's loader takes one (backend_fake.c,
+    host_write_fake_module): a SELF header with one LOAD segment, then a line
+    naming the game, the build and the ID."""
+    b = bytearray(0x100)
+    b[0:4] = b"SCE\0"
+    struct.pack_into(">I", b, 4, 2)
+    struct.pack_into(">H", b, 0x0A, 1)
+    struct.pack_into(">Q", b, 0x30, 0x80)
+    struct.pack_into(">Q", b, 0x38, 0xC0)
+    b[0x80:0x84] = b"\x7fELF"
+    b[0x84] = 2
+    b[0x85] = 2
+    struct.pack_into(">H", b, 0x80 + 0x38, 1)
+    struct.pack_into(">II", b, 0xC0, 1, 5)
+    struct.pack_into(">Q", b, 0xC0 + 40, pages * 0x10000 - 0x100)
+    line = "QWARKFAKE game=%d build=%d id=0x%08X fail=0x00000000\n" % (game, QWARK_BUILD, build_id)
+    return bytes(b) + line.encode()
+
+
+def wait_game_module(c, pred, timeout=8.0):
+    """Polls GAME_MODULE and GET_STATE until pred(module, info) or `timeout` wall seconds."""
+    end = time.monotonic() + timeout
+    gm, info = None, None
+    while time.monotonic() < end:
+        gm = game_module(c)
+        status, body = c.call(OP_GET_STATE)
+        info = parse_telemetry(body)[0] if status == ST_OK else None
+        if gm is not None and info is not None and pred(gm, info):
+            return True, gm, info
+        time.sleep(0.05)
+    return False, gm, info
+
+
+def game_ops(c):
+    """Every network-thread op that reads the game's own tables (the lock
+    audit, PROTOCOL.md 9.11): their statuses, by name."""
+    out = {}
+    for name, op, payload in (("DESCRIBE", OP_DESCRIBE, b""), ("PLANET_LIST", OP_PLANET_LIST, b""),
+                              ("AUTOSPLIT_DESCRIBE", OP_AUTOSPLIT_DESCRIBE, b""),
+                              ("FEATURE_OPTIONS", OP_FEATURE_OPTIONS, b"\x00"),
+                              ("MOBY_TABLE", OP_MOBY_TABLE, b""),
+                              ("MANIP_LIST", OP_MANIP_LIST, b"")):
+        status, _ = c.call(op, payload)
+        out[name] = status
+    return out
+
+
+def test_game_modules(sim, c):
+    """Revision 1.26: game modules through the simulator's loader, with its
+    fake VSH memory: the gate, the arrival, the unload, a missing module a
+    client then sends, another build's, and the network ops that read the
+    game's tables before, during and after a module's life."""
+    host_root = os.path.join(ROOT, "qwark-host-root")
+    sim.send("vshmem 1000 20480")
+    sim.send("fakemodule 1")
+    sim.send("fakemodule 4")
+    sim.send("modules on")
+    check(sim_line(sim, "ok modules on") is not None, "game modules: the simulator stands modules in for its games")
+
+    gm = game_module(c)
+    check(gm is not None and gm["state"] == "NONE" and (gm["flags"] & 4) != 0,
+          "game modules: GAME_MODULE at the XMB: NONE, and the games are modules", gm)
+
+    sim.send("boot NPEA00385")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok, "game modules: RaC1 reaches INGAME on its fingerprint")
+    ok, gm, info = wait_game_module(
+        c, lambda g, i: g["state"] == "WAITING" and (i["flags2"] & SESSION_FLAG2_GAME_WAITING) != 0, 2.0)
+    check(ok and info["game"] == 0 and (info["flags2"] & SESSION_FLAG2_GAME_WAITING) != 0,
+          "game modules: the module waits: game 0, flags2 bit6", (gm, info and info["flags2"]))
+    check(gm is not None and gm["game"] == 1 and gm["pages"] == 1 and gm["need_kb"] == 128
+          and gm["floor_kb"] == 128 and gm["window_ms"] == 3000,
+          "game modules: GAME_MODULE names RaC1, one page, 128 KB over a 128 KB floor, a 3 s window", gm)
+    ops = game_ops(c)
+    check(all(s == ST_UNSUPPORTED for s in ops.values()),
+          "game modules: every game op answers UNSUPPORTED meanwhile", ops)
+    status, _ = c.call(OP_MEM_READ, struct.pack(">II", 0x00100000, 16))
+    check(status == ST_OK, "game modules: and MEM_READ works", status)
+
+    ok, gm, info = wait_game_module(
+        c, lambda g, i: g["state"] == "LOADED" and i["game"] == 1 and (i["flags2"] & 0x60) == 0, 8.0)
+    check(ok,
+          "game modules: a window later it loads: game 1, bits down", (gm, info and info["game"]))
+    check(sim_line(sim, "game module: loading game-1.sprx: 1000 KB free at the lowest") is not None,
+          "game modules: the log gives the gate's figures")
+    ops = game_ops(c)
+    check(ops["DESCRIBE"] == ST_OK and ops["PLANET_LIST"] == ST_OK and ops["AUTOSPLIT_DESCRIBE"] == ST_OK,
+          "game modules: and the game ops answer", ops)
+
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok and sim_line(sim, "game module: game-1.sprx unloaded") is not None,
+          "game modules: quit to the XMB unloads it")
+    ops = game_ops(c)
+    check(all(s == ST_UNSUPPORTED for s in ops.values()),
+          "game modules: after the unload every game op answers, UNSUPPORTED, from nothing of the module's", ops)
+    status, _ = c.call(OP_POS_LIST)
+    check(status == ST_OK, "game modules: POS_LIST, which needs no game, lists the slots", status)
+    status, _ = c.call(OP_HELLO, bytes([1]))
+    check(status == ST_OK, "game modules: and the simulator is still there to say so", status)
+
+    # A missing module, which a client then sends.
+    sim.send("fakemodule 1 gone")
+    sim.send("boot NPEA00385")
+    ok, gm, info = wait_game_module(
+        c, lambda g, i: g["state"] == "MISSING" and (i["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0, 6.0)
+    check(ok and (info["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0 and info["game"] == 0,
+          "game modules: a missing module: MISSING, flags2 bit5, game 0", (gm, info and info["flags2"]))
+    check(sim_line(sim, "no game-1.sprx on the console") is not None, "game modules: the log says so")
+    check(write_console_file(c, "/dev_hdd0/qwark/game-1.sprx", fake_module_bytes(1, build_id())),
+          "game modules: a client writes game-1.sprx with the file ops")
+    ok, gm, info = wait_game_module(
+        c, lambda g, i: g["state"] == "LOADED" and i["game"] == 1 and (i["flags2"] & 0x60) == 0, 8.0)
+    check(ok,
+          "game modules: and it loads in the same session, bit5 down", gm)
+    sim.send("quit")
+    wait_state(c, SESSION_XMB)
+
+    # Another build's.
+    sim.send("fakemodule 4 other")
+    sim.send("boot NPEA00423")
+    ok, gm, info = wait_game_module(
+        c, lambda g, i: g["state"] == "OTHER" and (i["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0, 8.0)
+    check(ok and gm["error"] == 3 and (info["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0,
+          "game modules: another build's module: OTHER, refused for its build ID, bit5", gm)
+    sim.send("quit")
+    wait_state(c, SESSION_XMB)
+
+    # Back to the games as the rest of the run knows them.
+    sim.send("modules off")
+    sim.send("fakemodule 4")
+    sim.send("vshmem off")
+    check(sim_line(sim, "ok modules off") is not None, "game modules: linked again")
+
+
 def profile_info(c):
     status, body = c.call(OP_PROFILE_INFO)
     if status != ST_OK or len(body) != 64:
@@ -6407,6 +6563,9 @@ def main():
 
         # ------------------------------------------------------------ ui.pak
         test_ui_pak(sim, c)
+
+        # ------------------------------------------------- game modules (1.26)
+        test_game_modules(sim, c)
 
         # -------------------------------------------------------- profiles
         test_profiles(sim, c)

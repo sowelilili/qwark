@@ -35,6 +35,8 @@
 #include "../../core/net.h"
 #include "../../core/config.h"
 #include "../../core/util.h"
+#include "../../core/gamemod.h"
+#include "../../games/titles.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,6 +170,55 @@ static void handle_line(char *line, int *keep_running)
 		       (unsigned)host_mem_reads(), (unsigned)host_write_log_count(),
 		       (unsigned)net_telemetry_sends());
 		session_activity_unlock();
+
+	} else if (qstreq(cmd, "modules")) {
+		/*
+		 * Revision 1.26. `modules on` stands game modules in for the linked
+		 * games from the next boot on (the simulator's loader, backend_fake.c),
+		 * with the memory gate in front of them; `modules off` is linked again.
+		 */
+		char *on = next_token(&cursor);
+		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off"))) {
+			printf("usage: modules on|off\n");
+			fflush(stdout);
+			return;
+		}
+		session_activity_lock();
+		gamemod_set_modules(qstreq(on, "on"));
+		session_activity_unlock();
+		printf("ok modules %s\n", on);
+
+	} else if (qstreq(cmd, "fakemodule")) {
+		/*
+		 * Revision 1.26. Writes /dev_hdd0/qwark/game-<n>.sprx as the simulator's
+		 * loader takes it: `fakemodule <n>` this build's, `fakemodule <n> other`
+		 * another build's, `fakemodule <n> broken` no module at all,
+		 * `fakemodule <n> refused` one lv2 will not load, `fakemodule <n> pages
+		 * <p>` one of p pages, `fakemodule <n> gone` deletes it.
+		 */
+		char *n_s = next_token(&cursor);
+		char *how = n_s != NULL ? next_token(&cursor) : NULL;
+		char *arg = how != NULL ? next_token(&cursor) : NULL;
+		char path[48];
+		int ok = 0, rc;
+		u32 n = n_s != NULL ? qparse_u32(n_s, &ok) : 0;
+		u32 pages = 1;
+
+		if (!ok || n < 1 || n > 4) {
+			printf("usage: fakemodule <1-4> [other|broken|refused|gone|pages <n>]\n");
+			fflush(stdout);
+			return;
+		}
+		title_module_path((u8)n, path, sizeof(path), 0);
+		if (how != NULL && qstreq(how, "pages") && arg != NULL) pages = qparse_u32(arg, &ok);
+		if (how != NULL && qstreq(how, "gone")) rc = plat_file_unlink(path);
+		else if (how != NULL && qstreq(how, "other"))
+			rc = host_write_fake_module(path, (u8)n, QWARK_BUILD, QWARK_BUILD_ID ^ 0x5A5A5A5Au, 1, 0);
+		else if (how != NULL && qstreq(how, "broken")) rc = host_write_fake_module(path, (u8)n, QWARK_BUILD, QWARK_BUILD_ID, 0, 0);
+		else if (how != NULL && qstreq(how, "refused"))
+			rc = host_write_fake_module(path, (u8)n, QWARK_BUILD, QWARK_BUILD_ID, 1, 0x80010004u);
+		else rc = host_write_fake_module(path, (u8)n, QWARK_BUILD, QWARK_BUILD_ID, (u8)pages, 0);
+		printf(rc == 0 ? "ok fakemodule %u\n" : "err fakemodule %u\n", (unsigned)n);
 
 	} else if (qstreq(cmd, "vshmem")) {
 		/*

@@ -10,6 +10,14 @@ static const struct game_api *g_game;
 static char g_title[16];
 static u64 g_toggle_state;
 static u64 g_toggle_auto;
+/*
+ * Revision 1.26: the game's LIVE toggles, worked out as the game is set.
+ * The previous-session record asks for them as the same game boots again,
+ * when a game module from the last session has gone and the next one is not
+ * in yet (session.c, prev_build), so they are kept rather than asked of the
+ * game each time.
+ */
+static u64 g_live;
 
 /*
  * Build 50. WRITES_CODE toggles features_apply_mask was asked for, on a platform
@@ -103,6 +111,11 @@ u64 features_auto_mask(void)
 
 u64 features_live_mask(void)
 {
+	return g_live;
+}
+
+static u64 live_of_game(void)
+{
 	const struct game_describe *d;
 	u64 mask = 0;
 	u8 i;
@@ -168,6 +181,19 @@ void features_set_game(const struct game_api *game, const char *title)
 	g_toggle_state = 0;
 	code_wait_forget();
 	g_toggle_auto = features_auto_mask();
+	g_live = live_of_game();
+}
+
+/*
+ * Revision 1.26: a game module goes (PROTOCOL.md 9.11). The registry lets go
+ * of its table and keeps what the core owns: the toggle state, the auto flags
+ * and the LIVE mask, which the same game's next boot reads into its record
+ * before the next module is in.
+ */
+void features_detach(void)
+{
+	g_game = NULL;
+	code_wait_forget();
 }
 
 void features_forget_state(void)

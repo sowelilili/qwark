@@ -215,6 +215,34 @@ static int check_package(const char *usrdir, char *sprx, char *pak, size_t cap, 
 	return 0;
 }
 
+/*
+ * Revision 1.26: the game modules the package carries, any of the four: each
+ * a signed module. *n says how many, and src[i] is "" for one it does not carry.
+ */
+static int check_games(const char *usrdir, char src[INST_GAMES][512], int *n, inst_result *r)
+{
+	unsigned char head[4];
+	uint64_t size = 0;
+	int g, there, e;
+
+	*n = 0;
+	for (g = 0; g < INST_GAMES; g++) {
+		snprintf(src[g], 512, "%s/game-%d.sprx", usrdir, g + 1);
+		if ((e = probe(src[g], &there)) != 0) {
+			r->game = g + 1;
+			return fail(r, INST_STEP_PACKAGE_GAME, e, NULL);
+		}
+		if (!there) { src[g][0] = '\0'; continue; }
+		if ((e = read_head(src[g], head, 4, &size)) != 0 || memcmp(head, "SCE\0", 4) != 0 ||
+		    size > INST_FILE_MAX) {
+			r->game = g + 1;
+			return fail(r, INST_STEP_PACKAGE_GAME, e > 0 ? e : 0, "it is not a signed module");
+		}
+		(*n)++;
+	}
+	return 0;
+}
+
 /* ------------------------------------------------------------------ the moves */
 
 /*
@@ -272,9 +300,20 @@ static void drop_tmps(move *m, int n)
 
 /* ------------------------------------------------------------------ run */
 
+/* The moves' order, and what is in each. */
+#define M_BACKUP 0
+#define M_GAME   1                       /* .. M_GAME + INST_GAMES - 1 */
+#define M_PAK    (M_GAME + INST_GAMES)
+#define M_SPRX   (M_PAK + 1)
+#define M_LIST   (M_SPRX + 1)
+#define M_COUNT  (M_LIST + 1)
+
+static char g_src_game[INST_GAMES][512];
+
 void inst_run(const char *usrdir, inst_result *r)
 {
 	char src_sprx[512], src_pak[512];
+	int ngames = 0;
 	const char *why = NULL;
 	uint32_t old_len = 0;
 	bootlist_plan plan;
@@ -282,9 +321,17 @@ void inst_run(const char *usrdir, inst_result *r)
 	size_t new_len;
 	int e = 0, rc, i, list_changes, there, lost;
 
-	/* In the order they are moved: the list never names a module that is not in place. */
-	move m[4] = {
+	/*
+	 * In the order they are moved: the list never names a module that is not in
+	 * place, and the game modules (revision 1.26) are in before the module that
+	 * loads them.
+	 */
+	move m[M_COUNT] = {
 		{ INST_LIST_BAK, TMP(INST_LIST_BAK), OLD(INST_LIST_BAK), INST_STEP_PLACE_BACKUP, 0, 0, 0 },
+		{ INST_GAME_1,   TMP(INST_GAME_1),   OLD(INST_GAME_1),   INST_STEP_PLACE_GAME,   0, 0, 0 },
+		{ INST_GAME_2,   TMP(INST_GAME_2),   OLD(INST_GAME_2),   INST_STEP_PLACE_GAME,   0, 0, 0 },
+		{ INST_GAME_3,   TMP(INST_GAME_3),   OLD(INST_GAME_3),   INST_STEP_PLACE_GAME,   0, 0, 0 },
+		{ INST_GAME_4,   TMP(INST_GAME_4),   OLD(INST_GAME_4),   INST_STEP_PLACE_GAME,   0, 0, 0 },
 		{ INST_PAK,      TMP(INST_PAK),      OLD(INST_PAK),      INST_STEP_PLACE_PAK,    0, 0, 0 },
 		{ INST_SPRX,     TMP(INST_SPRX),     OLD(INST_SPRX),     INST_STEP_PLACE_SPRX,   0, 0, 0 },
 		{ INST_LIST,     TMP(INST_LIST),     OLD(INST_LIST),     INST_STEP_PLACE_LIST,   0, 0, 0 },
@@ -295,6 +342,7 @@ void inst_run(const char *usrdir, inst_result *r)
 
 	/* 1. The package, and the list as it is. */
 	if (check_package(usrdir, src_sprx, src_pak, sizeof(src_sprx), r) != 0) return;
+	if (check_games(usrdir, g_src_game, &ngames, r) != 0) return;
 
 	if ((e = probe(INST_LIST, &there)) != 0) {
 		fail(r, INST_STEP_READ_LIST, e, NULL);
@@ -344,49 +392,61 @@ void inst_run(const char *usrdir, inst_result *r)
 		return;
 	}
 
-	drop_tmps(m, 4);
+	drop_tmps(m, M_COUNT);
 
-	if ((e = copy_verified(src_sprx, m[2].tmp, &why)) != 0) {
+	for (i = 0; i < INST_GAMES; i++) {
+		if (g_src_game[i][0] == '\0') continue;
+		if ((e = copy_verified(g_src_game[i], m[M_GAME + i].tmp, &why)) != 0) {
+			r->game = i + 1;
+			fail(r, INST_STEP_COPY_GAME, why ? 0 : e, why);
+			drop_tmps(m, M_COUNT);
+			return;
+		}
+		m[M_GAME + i].staged = 1;
+	}
+
+	if ((e = copy_verified(src_sprx, m[M_SPRX].tmp, &why)) != 0) {
 		fail(r, INST_STEP_COPY_SPRX, why ? 0 : e, why);
-		drop_tmps(m, 4);
+		drop_tmps(m, M_COUNT);
 		return;
 	}
-	m[2].staged = 1;
+	m[M_SPRX].staged = 1;
 
-	if ((e = copy_verified(src_pak, m[1].tmp, &why)) != 0) {
+	if ((e = copy_verified(src_pak, m[M_PAK].tmp, &why)) != 0) {
 		fail(r, INST_STEP_COPY_PAK, why ? 0 : e, why);
-		drop_tmps(m, 4);
+		drop_tmps(m, M_COUNT);
 		return;
 	}
-	m[1].staged = 1;
+	m[M_PAK].staged = 1;
 
 	if (list_changes) {
 		if (r->list_existed) {
-			if ((e = write_verified(m[0].tmp, g_list, old_len, &why)) != 0) {
+			if ((e = write_verified(m[M_BACKUP].tmp, g_list, old_len, &why)) != 0) {
 				fail(r, INST_STEP_WRITE_BACKUP, why ? 0 : e, why);
-				drop_tmps(m, 4);
+				drop_tmps(m, M_COUNT);
 				return;
 			}
-			m[0].staged = 1;
+			m[M_BACKUP].staged = 1;
 		}
-		if ((e = write_verified(m[3].tmp, new_text, (uint32_t)new_len, &why)) != 0) {
+		if ((e = write_verified(m[M_LIST].tmp, new_text, (uint32_t)new_len, &why)) != 0) {
 			fail(r, INST_STEP_WRITE_LIST, why ? 0 : e, why);
-			drop_tmps(m, 4);
+			drop_tmps(m, M_COUNT);
 			return;
 		}
-		m[3].staged = 1;
+		m[M_LIST].staged = 1;
 	}
 
 	/* 3. The moves, and on a failure every one of them undone, newest first. */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < M_COUNT; i++) {
 		if (!m[i].staged) continue;
 		if ((e = move_in(m[i].final, m[i].tmp, m[i].old, &m[i].had, &lost)) != 0) {
+			if (i >= M_GAME && i < M_GAME + INST_GAMES) r->game = i - M_GAME + 1;
 			fail(r, m[i].step, e, NULL);
 			r->undo_failed = lost;
 			while (--i >= 0) {
 				if (m[i].done && move_out(m[i].final, m[i].old, m[i].had) != 0) r->undo_failed = 1;
 			}
-			drop_tmps(m, 4);
+			drop_tmps(m, M_COUNT);
 			return;
 		}
 		m[i].done = 1;
@@ -401,9 +461,13 @@ void inst_run(const char *usrdir, inst_result *r)
 	ifs_unlink(OLD(INST_LIST));
 	ifs_unlink(OLD(INST_PAK));
 	ifs_unlink(OLD(INST_LIST_BAK));
+	for (i = 0; i < INST_GAMES; i++) {
+		if (m[M_GAME + i].done) ifs_unlink(m[M_GAME + i].old);
+	}
 
 	r->ok = 1;
-	r->backed_up = m[0].done;
+	r->games = ngames;
+	r->backed_up = m[M_BACKUP].done;
 }
 
 /* ------------------------------------------------------------------ paths */
@@ -454,6 +518,9 @@ static const char *step_name(int step)
 	case INST_STEP_PLACE_PAK:    return "putting ui.pak in place";
 	case INST_STEP_PLACE_SPRX:   return "putting qwark.sprx in place";
 	case INST_STEP_PLACE_LIST:   return "putting boot_plugins.txt in place";
+	case INST_STEP_PACKAGE_GAME: return "a game module in this package";
+	case INST_STEP_COPY_GAME:    return "copying a game module";
+	case INST_STEP_PLACE_GAME:   return "putting a game module in place";
 	default:                     return "unknown";
 	}
 }
@@ -467,6 +534,10 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 
 	if (!r->ok) {
 		snprintf(out, cap, "qwark was not installed.\n\nThis step failed: %s", step_name(r->step));
+		if (r->game != 0) {
+			snprintf(line, sizeof(line), " (game-%d.sprx)", r->game);
+			append(out, cap, line);
+		}
 		if (r->why != NULL) {
 			snprintf(line, sizeof(line), ": %s.", r->why);
 		} else {
@@ -483,6 +554,10 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 	}
 
 	snprintf(out, cap, "qwark build %d is installed.\n\n", INST_QWARK_BUILD);
+	if (r->games > 0) {
+		snprintf(line, sizeof(line), "Its %d game modules are in " INST_QWARK_DIR ".\n\n", r->games);
+		append(out, cap, line);
+	}
 	append(out, cap, r->outcome == BOOTLIST_ALREADY_FIRST
 	                 ? "boot_plugins.txt already started with qwark."
 	                 : "qwark is now first in boot_plugins.txt.");

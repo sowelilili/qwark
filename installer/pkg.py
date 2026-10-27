@@ -91,9 +91,13 @@ PS3_SYSTEM_VER = "04.7000"
 
 # The files the package installs, and nothing else.
 PKG_FILES = ["ICON0.PNG", "PARAM.SFO", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"]
+# Revision 1.26: a test build's game modules (qwark's PROTOCOL.md 9.11), which
+# a package carries when it is given them (--games) and a release's never has.
+GAME_FILES = ["USRDIR/game-1.sprx", "USRDIR/game-2.sprx", "USRDIR/game-3.sprx", "USRDIR/game-4.sprx"]
 
 # Items, in the SDK packager's order: PARAM.SFO and ICON0.PNG, the folder, EBOOT.BIN first in it.
-ITEM_ORDER = ["PARAM.SFO", "ICON0.PNG", "USRDIR", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"]
+ITEM_ORDER = ["PARAM.SFO", "ICON0.PNG", "USRDIR", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"] + \
+    GAME_FILES
 
 # Item flags: 0x80000000 overwrite, then the kind.
 ITEM_SELF = 0x80000001      # an NPDRM SELF: EBOOT.BIN
@@ -377,6 +381,8 @@ def items_of(root):
             items.append((name, ITEM_DIR, None))
             continue
         if not os.path.isfile(path):
+            if name in GAME_FILES:
+                continue
             die("%s has no %s" % (root, name))
         items.append((name, ITEM_SELF if name == "USRDIR/EBOOT.BIN" else ITEM_RAW, open(path, "rb").read()))
     extra = []
@@ -438,7 +444,20 @@ def cmd_stage(args):
         f.write(read_icon())
     shutil.copyfile(args.sprx, os.path.join(root, "USRDIR", "qwark.sprx"))
     shutil.copyfile(args.pak, os.path.join(root, "USRDIR", "ui.pak"))
-    print("pkg.py: staged %s for build %d (%s)" % (root, build, app_ver(build)))
+    for game in game_paths(args):
+        check_sprx(open(game, "rb").read(), game)
+        shutil.copyfile(game, os.path.join(root, "USRDIR", os.path.basename(game)))
+    print("pkg.py: staged %s for build %d (%s)%s" % (root, build, app_ver(build),
+          ", with %d game modules" % len(game_paths(args)) if game_paths(args) else ""))
+
+
+def game_paths(args):
+    """--games: the game modules a test build's package carries, game-<n>.sprx each."""
+    out = list(getattr(args, "games", None) or [])
+    for g in out:
+        if "USRDIR/" + os.path.basename(g) not in GAME_FILES:
+            die("%s is not a game module's name (game-1.sprx to game-4.sprx)" % g)
+    return out
 
 
 # ---------------------------------------------------------------- check
@@ -529,9 +548,14 @@ EXPECTED_COMPLAINTS = [
 
 def check_contents(problems, files, args, build):
     """files: name -> bytes, from whichever reader unpacked the package."""
-    if sorted(files) != sorted(PKG_FILES):
-        problems.append("the package holds %s, not %s" % (sorted(files), sorted(PKG_FILES)))
+    games = dict(("USRDIR/" + os.path.basename(g), g) for g in game_paths(args))
+    want = PKG_FILES + sorted(games)
+    if sorted(files) != sorted(want):
+        problems.append("the package holds %s, not %s" % (sorted(files), sorted(want)))
         return
+    for name, path in games.items():
+        if files[name] != open(path, "rb").read():
+            problems.append("%s is not %s" % (name, path))
     if files["USRDIR/qwark.sprx"] != open(args.sprx, "rb").read():
         problems.append("USRDIR/qwark.sprx is not %s" % args.sprx)
     if files["USRDIR/ui.pak"] != open(args.pak, "rb").read():
@@ -654,7 +678,9 @@ def cmd_check(args):
             problems.append("make_package_npdrm --check did not get through the package")
         complaints = [line.strip() for line in checked.splitlines()
                       if ("!ERROR!" in line and line.strip() != ">> !ERROR!:") or "Illegal" in line or "corrupt" in line]
-        unexpected = [c for c in complaints if c not in EXPECTED_COMPLAINTS]
+        expected = EXPECTED_COMPLAINTS + [">> !ERROR!: USRDIR/%s is not an NPDRM SELF." % os.path.basename(g)
+                                          for g in game_paths(args)]
+        unexpected = [c for c in complaints if c not in expected]
         if unexpected:
             problems.append("make_package_npdrm --check: %s" % "; ".join(unexpected))
         listing = run([tool, "--list", named]).replace("\\", "/")
@@ -687,6 +713,7 @@ def main():
     st.add_argument("--sprx", required=True)
     st.add_argument("--pak", required=True)
     st.add_argument("--out", required=True)
+    st.add_argument("--games", nargs="*", default=[])
     bd = sub.add_parser("build")
     bd.add_argument("--root", required=True)
     bd.add_argument("--out", required=True)
@@ -696,6 +723,7 @@ def main():
     ck.add_argument("--pak", required=True)
     ck.add_argument("--elf", required=True)
     ck.add_argument("--sdk-bin")
+    ck.add_argument("--games", nargs="*", default=[])
     args = ap.parse_args()
 
     if args.cmd == "content-id":

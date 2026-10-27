@@ -8,6 +8,7 @@
 #include "types.h"
 #define QWARK_PLAT_TYPES_PROVIDED
 #include "../plat.h"
+#include "../../core/buildmodes.h"   /* QWARK_GAME_MODULES, revision 1.26 */
 #include "../plat_net.h"
 
 #include "qwark_ps3.h"
@@ -145,16 +146,22 @@ void plat_trace(const char *msg)
 
 void plat_log(const char *fmt, ...)
 {
-	char line[256];
 	va_list args;
+
+	va_start(args, fmt);
+	plat_vlog(fmt, args);
+	va_end(args);
+}
+
+void plat_vlog(const char *fmt, va_list args)
+{
+	char line[256];
 	int n;
 	int fd = 0;
 
 	if (!g_log_on) return;
 
-	va_start(args, fmt);
 	n = vsnprintf(line, sizeof(line) - 2, fmt, args);
-	va_end(args);
 
 	if (n <= 0) return;
 	if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;
@@ -214,6 +221,10 @@ static struct thread_desc g_tdesc[PLAT_MAX_THREADS];
  * slot for the life of the thread leaked one per client connection and, after
  * PLAT_MAX_THREADS of them, no further client could be accepted.
  */
+#if QWARK_GAME_MODULES
+extern struct qwark_ctx g_qwark_ctx;   /* src/core/gamemod.c */
+#endif
+
 static void thread_entry(u64 arg)
 {
 	u32 i = (u32)arg;
@@ -227,6 +238,17 @@ static void thread_entry(u64 arg)
 		g_tdesc[i].arg = NULL;
 		g_tdesc[i].used = 0;
 	}
+
+	/*
+	 * Revision 1.26, game modules (src/games/module.h): a test module's
+	 * threads carry the core's context in r14, which the core and every game
+	 * module are compiled to leave alone (-ffixed-r14), so whichever of them
+	 * calls into a module, the module finds it there. lv2 starts a thread
+	 * with whatever r14 it likes, so it goes in before anything of qwark runs.
+	 */
+#if QWARK_GAME_MODULES
+	__asm__ volatile ("mr 14, %0" : : "r" (&g_qwark_ctx));
+#endif
 
 	if (fn != NULL) fn(fn_arg);
 
@@ -535,6 +557,74 @@ int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
 	*total_bytes = (u32)mi.total_user_memory;
 	return 0;
 }
+
+#if QWARK_GAME_MODULES
+/* ------------------------------------------------- game modules (1.26) */
+
+/*
+ * liblv2's user-mode sys_prx_* (sysPrxForUser), on the calling thread, the
+ * tick: what the PRX probe ran on CFW and HEN (branch prx-probe,
+ * src/plat/ps3/prx_ps3.c), every module loaded, relocated, started, called,
+ * stopped and unloaded with nothing left behind. No Cobra slot, no start
+ * thread of lv2's, no argument page.
+ */
+#include <sys/prx.h>
+
+int plat_prx_load(const char *path)
+{
+	return (int)sys_prx_load_module(path, 0, NULL);
+}
+
+int plat_prx_start(int id, void *args, u32 size, int *modres)
+{
+	*modres = 0;
+	return sys_prx_start_module((sys_prx_id_t)id, (size_t)size, args, modres, 0, NULL);
+}
+
+int plat_prx_stop(int id, void *args, u32 size, int *modres)
+{
+	*modres = 0;
+	return sys_prx_stop_module((sys_prx_id_t)id, (size_t)size, args, modres, 0, NULL);
+}
+
+int plat_prx_unload(int id)
+{
+	return sys_prx_unload_module((sys_prx_id_t)id, 0, NULL);
+}
+
+/*
+ * The module's segments, as lv2 placed them: what a module's start hands back
+ * must lie inside them. Static, not on the tick thread's stack. The module
+ * info's start entry reads 0xFFFFFFFF before a start (the probe's first
+ * hardware run), so nothing here looks at it.
+ */
+#define PRX_SEGS 4
+static sys_prx_segment_info_t g_prx_segs[PRX_SEGS];
+static char g_prx_name[SYS_PRX_MODULE_FILENAME_SIZE];
+
+int plat_prx_contains(int id, const void *p, u32 len)
+{
+	sys_prx_module_info_t mi;
+	u32 a = (u32)p, i, n;
+
+	memset(&mi, 0, sizeof(mi));
+	memset(g_prx_segs, 0, sizeof(g_prx_segs));
+	mi.size = sizeof(mi);
+	mi.filename = (sys_prx_user_pchar_t)(u32)g_prx_name;
+	mi.filename_size = sizeof(g_prx_name);
+	mi.segments = (sys_prx_user_segment_vector_t)(u32)g_prx_segs;
+	mi.segments_num = PRX_SEGS;
+	if (sys_prx_get_module_info((sys_prx_id_t)id, 0, &mi) != 0) return -1;
+
+	n = mi.segments_num < PRX_SEGS ? (u32)mi.segments_num : PRX_SEGS;
+	for (i = 0; i < n; i++) {
+		u32 base = (u32)g_prx_segs[i].base, memsz = (u32)g_prx_segs[i].memsz;
+		if (g_prx_segs[i].type != 1 || memsz == 0) continue;   /* LOAD segments only */
+		if (a >= base && len <= memsz && a - base <= memsz - len) return 1;
+	}
+	return 0;
+}
+#endif /* QWARK_GAME_MODULES */
 
 /* ---------------------------------------------------------------- sockets */
 

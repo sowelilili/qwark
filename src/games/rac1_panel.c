@@ -8,6 +8,7 @@
  *
  * All of it runs on the tick thread, through the command ring.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac1.h"
 #include "classic.h"
 #include "../core/mem.h"

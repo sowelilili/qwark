@@ -12,6 +12,7 @@
 #include "../games/game.h"
 
 /* Called when the session picks up (or drops) a game. NULL clears everything. */
+void features_detach(void);
 void features_set_game(const struct game_api *game, const char *title);
 
 /* Drops the toggle state without writing anything to the game. */

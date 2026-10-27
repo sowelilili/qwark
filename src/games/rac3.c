@@ -7,8 +7,10 @@
  * Every address comes from racman's RaCTrainer/Games/RAC3. Where the old code
  * was ambiguous the comment says what was assumed.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac3.h"
 #include "classic.h"
+#include "sfhelper_bins.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/features.h"
@@ -19,13 +21,7 @@
 
 #include <string.h>
 
-/* See rac3.h for what these three are and why all three are accepted. */
-const u8 rac3_fp[4]         = { 0x7C, 0x85, 0x31, 0x2E };
-const u8 rac3_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
-const u8 rac3_fp_switch[4]  = {
-	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 24), (u8)(SW_RAC3_SITE_FREEZE_AMMO >> 16),
-	(u8)(SW_RAC3_SITE_FREEZE_AMMO >> 8),  (u8)SW_RAC3_SITE_FREEZE_AMMO
-};
+/* Revision 1.26: the fingerprint is the title index's (titles.c). */
 
 const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
 
@@ -116,34 +112,94 @@ struct rac3_as_state {
 	u8  loading_screen;
 };
 
-static struct rac3_as_state g_as;
+/*
+ * Revision 1.26: every static of this file that changes, in one struct (the
+ * names below are its fields). A game module has no writable memory of its
+ * own, so there it is part of the state area the core lends it
+ * (src/games/module.h), zeroed before every load; linked in, it is a static.
+ * The initial values are set by init(), which runs as the game arrives.
+ */
+struct rac3_state {
+	struct rac3_as_state g_as;
+	u32 g_load_request;
+	u32 g_load_dest;
+	u32 g_planet_word;
+	u32 g_mode;
+	u32 g_mode_timer;
+	int g_fl_primed;
+	int g_fl_armed;
+	int g_fl_edge;
+	u32 g_fl_prev_mode;
+	int g_auto_trophies;
+	int g_trophies_asked;
+	int g_fastload_on;
+	int g_fastload_forced;
+	int g_fastload_loading;
+	int g_fastload_ran;
+	u32 g_sf_refusals;
+	struct rac3_as_state g_as_prev;
+	int g_as_primed;
+	int g_biobliterator;
+	int g_koros_bolts;
+	u8 g_origin_planet;
+	int g_long_load_open;
+	struct classic_health rac3_freeze_health;
+	struct patch_def rac3_ammo;
+	struct patch_def rac3_fastload;
+	int init_done;
+};
+
+#if QWARK_GAME_MODULE
+#define R3 QWARK_STATE_AT(struct rac3_state, QWARK_STATE_GAME_OFF)
+typedef char rac3_state_fits[sizeof(struct rac3_state) <= QWARK_STATE_GAME_MAX ? 1 : -1];
+#else
+static struct rac3_state g_rac3_state;
+#define R3 (&g_rac3_state)
+#endif
+
+#define g_as (R3->g_as)
+#define g_load_request (R3->g_load_request)
+#define g_load_dest (R3->g_load_dest)
+#define g_planet_word (R3->g_planet_word)
+#define g_mode (R3->g_mode)
+#define g_mode_timer (R3->g_mode_timer)
+#define g_fl_primed (R3->g_fl_primed)
+#define g_fl_armed (R3->g_fl_armed)
+#define g_fl_edge (R3->g_fl_edge)
+#define g_fl_prev_mode (R3->g_fl_prev_mode)
+#define g_auto_trophies (R3->g_auto_trophies)
+#define g_trophies_asked (R3->g_trophies_asked)
+#define g_fastload_on (R3->g_fastload_on)
+#define g_fastload_forced (R3->g_fastload_forced)
+#define g_fastload_loading (R3->g_fastload_loading)
+#define g_fastload_ran (R3->g_fastload_ran)
+#define g_sf_refusals (R3->g_sf_refusals)
+#define g_as_prev (R3->g_as_prev)
+#define g_as_primed (R3->g_as_primed)
+#define g_biobliterator (R3->g_biobliterator)
+#define g_koros_bolts (R3->g_koros_bolts)
+#define g_origin_planet (R3->g_origin_planet)
+#define g_long_load_open (R3->g_long_load_open)
+#define rac3_freeze_health (R3->rac3_freeze_health)
+#define rac3_ammo (R3->rac3_ammo)
+#define rac3_fastload (R3->rac3_fastload)
+
 
 /*
  * What the manips' file-load trigger reads (revision 1.21), filled by the
  * decode: the load request word, the destination and the planet as the signed
  * words they are, the game mode and its frame count.
  */
-static u32 g_load_request;
-static u32 g_load_dest;
-static u32 g_planet_word;
-static u32 g_mode;
-static u32 g_mode_timer;
 
 /* The trigger's own state; see rac3_file_load_watch. */
-static int g_fl_primed;
-static int g_fl_armed;
-static int g_fl_edge;
-static u32 g_fl_prev_mode;
 
 /* The trophy auto-reset's (R3_AUTO_TROPHIES); see rac3_file_load_watch. */
-static int g_auto_trophies;
-static int g_trophies_asked;
 
 /*
  * Build 53: Freeze health, held at the game's own maximum (rac3.h) rather than
  * at a flat 200, which is more than a player has until the health XP is full.
  */
-static struct classic_health rac3_freeze_health = {
+static const struct classic_health rac3_freeze_health_init = {
 	RAC3_PLAYER_HEALTH, RAC3_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
@@ -241,7 +297,7 @@ static const struct patch_word rac3_ammo_words[] = {
 };
 
 /* Build 53: named as its checkbox is, "Infinite ammo" rather than "Freeze ammo". */
-static struct patch_def rac3_ammo = {
+static const struct patch_def rac3_ammo_init = {
 	"Infinite ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 1, NULL
 };
 
@@ -372,7 +428,7 @@ static const struct patch_word rac3_fastload_words[] = {
 #define RAC3_FASTLOAD_WORDS \
 	(u16)(sizeof(rac3_fastload_words) / sizeof(rac3_fastload_words[0]))
 
-static struct patch_def rac3_fastload = {
+static const struct patch_def rac3_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, rac3_fastload_words, RAC3_FASTLOAD_WORDS, NULL
 };
 
@@ -382,7 +438,6 @@ static struct patch_def rac3_fastload = {
  */
 
 /* What the checkbox holds. */
-static int g_fastload_on;
 
 /*
  * Fast loads are on because a planet load forced them, not because the
@@ -393,7 +448,6 @@ static int g_fastload_on;
  * does not flick on for the length of every planet load. rac2.c's
  * g_fastload_forced, word for word.
  */
-static int g_fastload_forced;
 
 /*
  * What rac3_fastload_watch has seen since the force: the load request word up
@@ -401,8 +455,6 @@ static int g_fastload_forced;
  * force, so the end of a load that was under way before it cannot pass for the
  * end of the load it is for.
  */
-static int g_fastload_loading;
-static int g_fastload_ran;
 
 /*
  * savefile_load_refusals as rac3_on_tick last saw it, rac2.c's g_sf_refusals:
@@ -410,7 +462,6 @@ static int g_fastload_ran;
  * helper can still drop the request on the game's frame - the game would not
  * pause, or there was no save - when no load follows to put them back.
  */
-static u32 g_sf_refusals;
 
 /*
  * A planet load and a set-aside load force fast loads on and the watcher puts
@@ -462,10 +513,12 @@ int rac3_fastload_forced(void)
 
 static void rac3_init(void)
 {
-	static int done = 0;
+	if (R3->init_done) return;
+	R3->init_done = 1;
 
-	if (done) return;
-	done = 1;
+	rac3_freeze_health = rac3_freeze_health_init;
+	rac3_ammo = rac3_ammo_init;
+	rac3_fastload = rac3_fastload_init;
 
 	rac3_ammo.originals     = patch_pool_alloc(rac3_ammo.count);
 	rac3_fastload.originals = patch_pool_alloc(rac3_fastload.count);
@@ -486,16 +539,10 @@ static void rac3_init(void)
  * code 6, a LOAD_START with FLAT, emitted under exactly that condition, and a
  * LOAD_END when the screen leaves 1 so a client can draw the interval.
  */
-static struct rac3_as_state g_as_prev;
-static int g_as_primed;
 
 /* vars.biobliterator and vars.korosTBs. */
-static int g_biobliterator;
-static int g_koros_bolts;
 
 /* vars.originPlanet, and whether the load in progress was counted as long. */
-static u8  g_origin_planet;
-static int g_long_load_open;
 
 /* vars.llIgnorePlanets, as a test rather than a 37-entry table. */
 static int rac3_ll_ignored(u8 planet)
@@ -1457,18 +1504,7 @@ static const struct game_menu rac3_menu = {
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac3_game = {
-	{ "NPEA00387", "BCES01503", NULL, NULL },
 	GAME_RAC3,
-
-	RAC3_FP_ADDR,
-	rac3_fp,
-	rac3_fp_patched,
-	GAME_FP_SWITCH(rac3_fp_switch),
-	NULL,                 /* the trampoline has never moved */
-	sizeof(rac3_fp),
-
-	0,                    /* no quit hook is known for RaC3 yet */
-	RAC3_INPUTS,
 
 	rac3_init,
 
@@ -1515,5 +1551,6 @@ const struct game_api rac3_game = {
 	&rac3_manips,         /* revision 1.21 */
 	rac3_planet_order,    /* build 53 */
 	&rac3_menu,           /* revision 1.22, round 2 */
-	GAME_FEATURE(R3_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
+	GAME_FEATURE(R3_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
+	sf_desc_for_game      /* revision 1.26: the savefile helper the core installs */
 };

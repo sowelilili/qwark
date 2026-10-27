@@ -1,0 +1,75 @@
+# The core functions a game may call (SPEC-game-modules.md section 4.4).
+#
+# tools/coreapi.py turns this list into
+#
+#   src/games/core_api.h     struct core_api, one function pointer per line below
+#   src/games/core_import.h  the names a game's source uses, renamed to the wrappers
+#   src/games/core_import.c  one wrapper per line: qimp_<name>(...) calls Q->api
+#   src/core/core_export.c   the table itself, the core's real functions
+#
+# Every build that reaches its games through core_api (QWARK_GAME_IMPORT: the
+# host builds and a test module's game modules) goes through these and nothing
+# else, which `python -I tools/coreapi.py nmcheck` holds the host's game objects
+# to. A line is a prototype as the core's header spells it. `[COND]` puts it
+# under #ifdef COND. A variadic one names the va_list function the table holds
+# instead, after `->`. `#include` lines are copied into core_api.h.
+#
+# Change this file, then run `python -I tools/coreapi.py` and commit what it
+# writes; test/run.sh fails while the generated files are stale.
+
+#include "../plat/plat.h"
+#include "../core/proto.h"
+#include "../core/util.h"
+#include "../core/mem.h"
+#include "../core/features.h"
+#include "../core/autosplit.h"
+#include "../core/manips.h"
+#include "../core/savefile.h"
+#include "../core/switches.h"
+
+void autosplit_emit(u8 kind, u8 code, u32 arg)
+void features_apply(u64 mask, u8 kind)
+int features_set(u8 id, u32 value)
+u64 features_toggle_auto(void)
+int freeze_add(u32 addr, u8 size, u64 value, u8 *id_out)
+int freeze_find(u32 addr, u8 size)
+int freeze_remove(u8 id)
+const struct freeze_entry *freeze_slot(u8 id)
+void manips_file_loaded(void)
+int mem_read(u32 addr, void *buf, u32 len)
+int mem_read_u32(u32 addr, u32 *out)
+int mem_read_u8(u32 addr, u8 *out)
+int mem_write(u32 addr, const void *buf, u32 len)
+int mem_write_fill(u32 addr, u8 value, u32 len)
+int mem_write_u32(u32 addr, u32 value)
+int mem_write_u8(u32 addr, u8 value)
+int mem_write_zeros(u32 addr, u32 len)
+int patch_apply(const struct patch_def *def)
+u32 *patch_pool_alloc(u16 words)
+int patch_revert(const struct patch_def *def)
+[QWARK_EMULATOR] int plat_can_patch_code(void)
+void plat_dir_close(plat_dir_t *d)
+int plat_dir_next(plat_dir_t *d, struct plat_dirent *e)
+int plat_dir_open(const char *path, plat_dir_t *d)
+int plat_dir_remove(const char *path)
+int plat_file_close(plat_file_t f)
+int plat_file_open(const char *path, int mode, plat_file_t *out)
+int plat_file_read(plat_file_t f, void *buf, u32 len, u32 *nread)
+int plat_file_unlink(const char *path)
+void plat_log(const char *fmt, ...) -> plat_vlog
+void plat_notify(const char *msg)
+int plat_path_exists(const char *path, int *is_dir, u64 *size)
+u32 plat_user_id(void)
+u32 qfmt_u32(char *dst, u32 cap, u32 value)
+u8 *qscratch(void)
+void qstrcat(char *dst, u32 cap, const char *src)
+void qstrcpy(char *dst, u32 cap, const char *src)
+int qstreq(const char *a, const char *b)
+u32 qstrlen(const char *s)
+int savefile_enabled(void)
+int savefile_install(void)
+int savefile_load_aside(void)
+int savefile_load_ready(void)
+u32 savefile_load_refusals(void)
+int savefile_set_aside(void)
+[QWARK_EMULATOR] int switches_present(void)

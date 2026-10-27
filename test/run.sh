@@ -18,10 +18,11 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/games/rac2.c src/games/rac2_panel.c \
      src/games/rac3.c src/games/rac3_panel.c \
      src/games/rac4.c src/games/rac4_panel.c \
-     src/games/games.c \
+     src/games/games.c src/games/titles.c src/games/core_import.c \
+     src/core/gamemod.c src/core/core_export.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
-     test/test_game.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
+     test/test_game.c test/test_gamemod.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
      test/test_combo_fastloads.c test/test_profiles.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
@@ -42,6 +43,29 @@ LDFLAGS="-static -lws2_32 -lwinmm -lpthread"
 
 echo "compiling $OUT"
 "$CLANG" $CFLAGS $SRC -o "$OUT" $LDFLAGS
+
+# Revision 1.26 (src/games/module.h, tools/coreapi.py): core_api's generated
+# files match core_api.txt, and every game object reaches the core through
+# core_api's wrappers and nothing else, which is what a game module must do.
+PYOK=""
+for PY in python python3 py; do
+	if "$PY" -I tools/coreapi.py --check; then PYOK="$PY"; break; fi
+done
+if [ -z "$PYOK" ]; then
+	echo "test/run.sh: core_api's generated files are stale or there is no python (tools/coreapi.py)" >&2
+	exit 2
+fi
+NM="$(dirname "$CLANG")/llvm-nm.exe"
+GOBJ="test/gameobjs"
+rm -rf "$GOBJ"
+mkdir -p "$GOBJ"
+for f in src/games/classic.c src/games/rac1.c src/games/rac1_panel.c src/games/rac2.c \
+         src/games/rac2_panel.c src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c \
+         src/games/rac4_panel.c src/games/sfhelper_bins.c src/games/switches_own.c; do
+	"$CLANG" $CFLAGS -c "$f" -o "$GOBJ/$(basename "$f" .c).o"
+done
+"$PYOK" -I tools/coreapi.py nmcheck "$NM" "$GOBJ"/*.o
+rm -rf "$GOBJ"
 
 # A fresh fake HDD every run, with the real racman mod fixtures installed.
 rm -rf "$ROOT"

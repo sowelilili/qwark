@@ -14,7 +14,8 @@
 #define TG_PAD     0x00300000u
 #define TG_COORDS  0x00300100u
 
-static const u8 tg_fp[4] = { 0x54, 0x45, 0x53, 0x54 };   /* "TEST" */
+/* Revision 1.26: the title index's fingerprint (src/games/titles.c) reads it. */
+const u8 testgame_fp[4] = { 0x54, 0x45, 0x53, 0x54 };   /* "TEST" */
 
 static const struct game_hot_block tg_hot[] = {
 	{ TG_PAD, 0x104, 1, 0 }
@@ -81,18 +82,7 @@ static const char * const *tg_planet_names(u8 *count)
 }
 
 const struct game_api testgame_game = {
-	{ "TEST00001", NULL, NULL, NULL },
 	GAME_RAC2,
-
-	TG_FP_ADDR,
-	tg_fp,
-	NULL,                 /* no alternative fingerprint */
-	NULL,                 /* and no code switches */
-	NULL,                 /* from any build */
-	sizeof(tg_fp),
-
-	0,
-	TG_PAD,
 
 	tg_init,
 
@@ -132,5 +122,6 @@ const struct game_api testgame_game = {
 	NULL,                 /* manips: and no manip groups */
 	NULL,                 /* planet_order: its planets in id order */
 	NULL,                 /* menu: none, the root's own pages alone */
-	0                     /* fast_loads: no Fast loads toggle, so the combo says so */
+	0,                    /* fast_loads: no Fast loads toggle, so the combo says so */
+	NULL                  /* savefile_desc: no helper */
 };

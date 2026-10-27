@@ -12,8 +12,10 @@
  * Every address comes from racman's RaCTrainer/Games/RAC2. Where the old code
  * was ambiguous the comment says what was assumed.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac2.h"
 #include "classic.h"
+#include "sfhelper_bins.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/features.h"
@@ -23,14 +25,7 @@
 
 #include <string.h>
 
-/* See rac2.h for what these four are and why all four are accepted. */
-const u8 rac2_fp[4]         = { 0x4B, 0xFF, 0xEA, 0x69 };
-const u8 rac2_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
-const u8 rac2_fp_switch[4]  = {
-	(u8)(SW_RAC2_SITE_FAST_LOADS >> 24), (u8)(SW_RAC2_SITE_FAST_LOADS >> 16),
-	(u8)(SW_RAC2_SITE_FAST_LOADS >> 8),  (u8)SW_RAC2_SITE_FAST_LOADS
-};
-const u8 rac2_fp_switch_old[4] = { 0x4B, 0x64, 0x89, 0x60 };
+/* Revision 1.26: the fingerprint is the title index's (titles.c). */
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -96,7 +91,6 @@ static const struct game_hot_block rac2_hot[] = {
  * What the watcher needs and struct game_hot has no room for. Filled by the
  * decode, read by on_tick, so the watcher costs no syscall of its own.
  */
-static u8 g_load_count;
 
 /* What the autosplit watcher reads, named the way rac2-autosplitter.asl names it. */
 struct rac2_as_state {
@@ -111,7 +105,56 @@ struct rac2_as_state {
 	u8  load_screen;
 };
 
-static struct rac2_as_state g_as;
+/*
+ * Revision 1.26: every static of this file that changes, in one struct (the
+ * names below are its fields). A game module has no writable memory of its
+ * own, so there it is part of the state area the core lends it
+ * (src/games/module.h), zeroed before every load; linked in, it is a static.
+ * The initial values are set by init(), which runs as the game arrives.
+ */
+struct rac2_state {
+	u8 g_load_count;
+	struct rac2_as_state g_as;
+	int g_fastload_on;
+	int g_fastload_forced;
+	int g_fastload_aside;
+	int g_death_bosses;
+	int g_death_pbolts;
+	u8 g_prev_load_count;
+	int g_load_primed;
+	u32 g_sf_refusals;
+	struct rac2_as_state g_as_prev;
+	int g_as_primed;
+	struct patch_def rac2_fastload;
+	struct patch_def rac2_ammo;
+	struct classic_health rac2_freeze_health;
+	int init_done;
+};
+
+#if QWARK_GAME_MODULE
+#define R2 QWARK_STATE_AT(struct rac2_state, QWARK_STATE_GAME_OFF)
+typedef char rac2_state_fits[sizeof(struct rac2_state) <= QWARK_STATE_GAME_MAX ? 1 : -1];
+#else
+static struct rac2_state g_rac2_state;
+#define R2 (&g_rac2_state)
+#endif
+
+#define g_load_count (R2->g_load_count)
+#define g_as (R2->g_as)
+#define g_fastload_on (R2->g_fastload_on)
+#define g_fastload_forced (R2->g_fastload_forced)
+#define g_fastload_aside (R2->g_fastload_aside)
+#define g_death_bosses (R2->g_death_bosses)
+#define g_death_pbolts (R2->g_death_pbolts)
+#define g_prev_load_count (R2->g_prev_load_count)
+#define g_load_primed (R2->g_load_primed)
+#define g_sf_refusals (R2->g_sf_refusals)
+#define g_as_prev (R2->g_as_prev)
+#define g_as_primed (R2->g_as_primed)
+#define rac2_fastload (R2->rac2_fastload)
+#define rac2_ammo (R2->rac2_ammo)
+#define rac2_freeze_health (R2->rac2_freeze_health)
+
 
 static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -191,10 +234,10 @@ static const struct patch_word rac2_ammo_words[] = {
  * (src/games/switches/sw_rac2.s), chosen by the flag bytes SW_RAC2_FLAG_* name.
  */
 
-static struct patch_def rac2_fastload = {
+static const struct patch_def rac2_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, rac2_fastload_words, 1, NULL
 };
-static struct patch_def rac2_ammo = {
+static const struct patch_def rac2_ammo_init = {
 	"Infinite ammo", PATCH_KIND_FEATURE, rac2_ammo_words, 1, NULL
 };
 
@@ -337,7 +380,6 @@ static void rac2_guards_install(void)
 }
 
 /* Live toggle state the watcher and the planet load need to see. */
-static int g_fastload_on;
 /*
  * Build 50. Fast loads are on because a load forced them, not because the
  * checkbox is: from rac2_fastload_force until the watcher's restore. On a
@@ -346,7 +388,6 @@ static int g_fastload_on;
  * this is set the read-back reports the checkbox rather than the force, so it
  * does not flick on for the length of every planet load.
  */
-static int g_fastload_forced;
 /*
  * Build 53. The force is a set-aside load's (rac2_load_setaside), whose request
  * the helper can still drop, when no load follows to end it: rac2_on_tick then
@@ -354,11 +395,6 @@ static int g_fastload_forced;
  * dropped, so a set-aside load's refusal leaves a planet load's force to the
  * end of that load. rac1.c's g_fastload_aside.
  */
-static int g_fastload_aside;
-static int g_death_bosses;
-static int g_death_pbolts;
-static u8  g_prev_load_count;
-static int g_load_primed;
 
 /*
  * Build 53. savefile_load_refusals as rac2_on_tick last saw it. A set-aside
@@ -366,13 +402,12 @@ static int g_load_primed;
  * drop the request on the game's frame - the game would not pause - when no
  * load follows to put them back.
  */
-static u32 g_sf_refusals;
 
 /*
  * Build 53: Freeze health, held at the game's own maximum (rac2.h) rather than
  * at the old form's 42069.
  */
-static struct classic_health rac2_freeze_health = {
+static const struct classic_health rac2_freeze_health_init = {
 	RAC2_PLAYER_HEALTH, RAC2_MAX_HEALTH, 0, 0, 0, 0, 0
 };
 
@@ -427,10 +462,12 @@ int rac2_fastload_restore(void)
 
 static void rac2_init(void)
 {
-	static int done = 0;
+	if (R2->init_done) return;
+	R2->init_done = 1;
 
-	if (done) return;
-	done = 1;
+	rac2_fastload = rac2_fastload_init;
+	rac2_ammo = rac2_ammo_init;
+	rac2_freeze_health = rac2_freeze_health_init;
 
 	rac2_fastload.originals = patch_pool_alloc(rac2_fastload.count);
 	rac2_ammo.originals     = patch_pool_alloc(rac2_ammo.count);
@@ -450,8 +487,6 @@ static void rac2_init(void)
  * the same three moments. Nothing closes them: the script never timed the load,
  * it only paid a toll on entering one.
  */
-static struct rac2_as_state g_as_prev;
-static int g_as_primed;
 
 #define RAC2_START_STATE 98   /* playerState when the file starts on Aranos */
 #define RAC2_FLAG_SET    128  /* what the three level-flag bytes read once set */
@@ -1247,18 +1282,7 @@ static const struct game_menu rac2_menu = {
  * slots are keyed on the game, because the coordinate addresses are.
  */
 const struct game_api rac2_game = {
-	{ "NPEA00386", "BCES01503", "RC2ILYOOO", "BLMODYOOO" },
 	GAME_RAC2,
-
-	RAC2_FP_ADDR,
-	rac2_fp,
-	rac2_fp_patched,
-	GAME_FP_SWITCH(rac2_fp_switch),
-	GAME_FP_SWITCH(rac2_fp_switch_old),
-	sizeof(rac2_fp),
-
-	0,                    /* no quit hook is known for RaC2 yet */
-	RAC2_INPUTS,
 
 	rac2_init,
 
@@ -1305,5 +1329,6 @@ const struct game_api rac2_game = {
 	&rac2_manips,         /* revision 1.21 */
 	NULL,                 /* planet_order: the ids run in the game's order */
 	&rac2_menu,           /* revision 1.22, round 2 */
-	GAME_FEATURE(R2_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
+	GAME_FEATURE(R2_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
+	sf_desc_for_game      /* revision 1.26: the savefile helper the core installs */
 };

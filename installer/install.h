@@ -4,7 +4,9 @@
  *
  * It puts the module and the console menu's file where the PC client's
  * "Install to boot_plugins.txt" puts them, and edits the list the way that
- * install does (bootlist.h). It is written so that a failure at any point
+ * install does (bootlist.h). Revision 1.26: a test build's package carries its
+ * game modules too, game-1.sprx to game-4.sprx (qwark's PROTOCOL.md 9.11),
+ * which go beside ui.pak; a release's carries none. It is written so that a failure at any point
  * leaves the console booting what it booted before:
  *
  *  1. It checks the package's own qwark.sprx and ui.pak, reads the list and
@@ -45,6 +47,12 @@
 #define INST_SPRX           BOOTLIST_BOOT_PATH
 #define INST_QWARK_DIR      "/dev_hdd0/qwark"
 #define INST_PAK            "/dev_hdd0/qwark/ui.pak"
+/* Revision 1.26: the game modules a test build's package carries, any of the four. */
+#define INST_GAME_1         "/dev_hdd0/qwark/game-1.sprx"
+#define INST_GAME_2         "/dev_hdd0/qwark/game-2.sprx"
+#define INST_GAME_3         "/dev_hdd0/qwark/game-3.sprx"
+#define INST_GAME_4         "/dev_hdd0/qwark/game-4.sprx"
+#define INST_GAMES          4
 #define INST_LIST           "/dev_hdd0/boot_plugins.txt"
 
 /*
@@ -77,6 +85,10 @@
 #define INST_STEP_PLACE_PAK     10
 #define INST_STEP_PLACE_SPRX    11
 #define INST_STEP_PLACE_LIST    12
+/* Revision 1.26: a game module the package carries. */
+#define INST_STEP_PACKAGE_GAME  13
+#define INST_STEP_COPY_GAME     14
+#define INST_STEP_PLACE_GAME    15
 
 typedef struct inst_result {
 	int ok;             /* installed */
@@ -91,6 +103,8 @@ typedef struct inst_result {
 	int recovered;      /* the list came from boot_plugins.txt.old, an interrupted run's */
 	int backed_up;      /* the old list is in INST_LIST_BAK */
 	int usb_list;       /* a list on a USB drive, which the console reads instead */
+	int games;          /* revision 1.26: game modules installed */
+	int game;           /* the one a game step failed on, 1 to 4 */
 } inst_result;
 
 /* Installs from the package's USRDIR. Never fails half-way: see above. */

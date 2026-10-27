@@ -279,8 +279,8 @@ static void test_launch(void)
 	group("VSH memory: nothing read in a launch");
 
 	if (game_candidates_for_title("NPEA00385", cands, GAME_MAX_CANDIDATES) > 0) g = cands[0];
-	check(g != NULL && g->fp_len > 0 && g->fp_len <= sizeof(zeros), "RaC1 has a fingerprint");
-	if (g == NULL || g->fp_len == 0 || g->fp_len > sizeof(zeros)) return;
+	check(g != NULL && game_title_of(g)->fp_len > 0 && game_title_of(g)->fp_len <= sizeof(zeros), "RaC1 has a fingerprint");
+	if (g == NULL || game_title_of(g)->fp_len == 0 || game_title_of(g)->fp_len > sizeof(zeros)) return;
 	memset(zeros, 0, sizeof(zeros));
 
 	check(session_state() == SESSION_XMB, "at the XMB");
@@ -296,13 +296,13 @@ static void test_launch(void)
 	host_freeze_time(0);
 
 	/* The quiet second over, but the executable not there yet: still BOOTING. */
-	host_poke(g->fp_addr, zeros, g->fp_len);
+	host_poke(game_title_of(g)->fp_addr, zeros, game_title_of(g)->fp_len);
 	step(VSHMEM_EVERY_TICKS + 200);
 	reply(&v);
 	check(session_state() == SESSION_BOOTING && v.free == 4000 * KB,
 	      "nor do 1400 ticks of BOOTING after it");
 
-	host_poke(g->fp_addr, g->fp_bytes, g->fp_len);
+	host_poke(game_title_of(g)->fp_addr, game_title_of(g)->fp_bytes, game_title_of(g)->fp_len);
 	check(step_until(SESSION_INGAME, 100), "the fingerprint arrives and the game is up");
 	reply(&v);
 	check(v.free == 4100 * KB, "and its arrival is read");

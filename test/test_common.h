@@ -7,6 +7,7 @@
 
 #include "../src/plat/plat.h"
 #include "../src/core/menu.h"
+#include "../src/games/titles.h"
 
 void group(const char *name);
 void check(int ok, const char *what);
@@ -46,6 +47,9 @@ void test_uipak(void);
 void test_profiles(void);
 /* test_usbmods.c: mods on a USB drive, build 56. */
 void test_usbmods(void);
+
+/* test_gamemod.c: game modules and the memory gate, revision 1.26. */
+void test_gamemod(void);
 
 /* test_menu_mods.c: the console menu's Mods page, build 56, a preview feature. */
 void test_menu_mods(void);

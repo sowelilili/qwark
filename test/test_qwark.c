@@ -1523,7 +1523,7 @@ static void test_launch_failures(void)
 	check(quit_and_wait(), "RaC1 quits");
 	host_boot("NPEA00386");
 	game_candidates_for_title("NPEA00386", candidates, GAME_MAX_CANDIDATES);
-	host_poke(candidates[0]->fp_addr, zero, candidates[0]->fp_len);
+	host_poke(game_title_of(candidates[0])->fp_addr, zero, game_title_of(candidates[0])->fp_len);
 	pump(122);
 	check(session_state() == SESSION_BOOTING && qstreq(session_title(), "NPEA00386"), "RaC2 title is known but fingerprint is not ready");
 	check(quit_and_wait() && boot_and_wait("NPEA00386"), "aborted RaC2 launch retries successfully");
@@ -8423,7 +8423,7 @@ static void test_rac4(void)
 	check(g != NULL && g->game_id == GAME_RAC4, "the session says Deadlocked");
 	if (g == NULL) return;
 
-	check_eq_u64(g->quit_hook_addr, R4_QUIT_FLAG, "the vtable names the quit flag");
+	check_eq_u64(game_title_of(g)->quit_hook_addr, R4_QUIT_FLAG, "the title index names the quit flag");
 	host_peek(R4_QUIT_FLAG, &b, 1);
 	check_eq_u64(b, 0, "and on_enter cleared it");
 
@@ -14192,10 +14192,10 @@ static void test_switches_rac2_moved(void)
 
 	group("build 53: RaC2's fingerprint takes the game's word, qwark's nop and both branches");
 
-	check(memcmp(g->fp_bytes, w_game, 4) == 0, "the game's own word, bl 0xBE9308");
-	check(g->fp_alt != NULL && memcmp(g->fp_alt, w_nop, 4) == 0, "the console patch's nop");
-	check(g->fp_switch != NULL && memcmp(g->fp_switch, w_new, 4) == 0, "this build's branch, b 0x1141400");
-	check(g->fp_switch_old != NULL && memcmp(g->fp_switch_old, w_old, 4) == 0,
+	check(memcmp(game_title_of(g)->fp_bytes, w_game, 4) == 0, "the game's own word, bl 0xBE9308");
+	check(game_title_of(g)->fp_alt != NULL && memcmp(game_title_of(g)->fp_alt, w_nop, 4) == 0, "the console patch's nop");
+	check(game_title_of(g)->fp_switch != NULL && memcmp(game_title_of(g)->fp_switch, w_new, 4) == 0, "this build's branch, b 0x1141400");
+	check(game_title_of(g)->fp_switch_old != NULL && memcmp(game_title_of(g)->fp_switch_old, w_old, 4) == 0,
 	      "and the old one, b 0x233200");
 	check_eq_u64(SW_RAC2_SITE_FAST_LOADS, 0x48556B60u, "fp_switch is the generated site word");
 
@@ -14673,7 +14673,8 @@ static void test_switches_rac4_fastloads(void)
 	check(d->caves[18].addr + d->caves[18].len <= 0x00667F70u,
 	      "below the savefile helper's cave");
 	check_eq_u64(d->sites[0].value, 0x4848FEB4u, "the fingerprint site, 0x1D7D18, keeps its branch");
-	check(g->fp_switch != NULL && be32_get(g->fp_switch) == d->sites[0].value && g->fp_switch_old == NULL,
+	check(game_title_of(g)->fp_switch != NULL && be32_get(game_title_of(g)->fp_switch) == d->sites[0].value &&
+	      game_title_of(g)->fp_switch_old == NULL,
 	      "so the fingerprint takes the same three words as before and needs no fourth");
 
 	/* Every crash trampoline and refill ammo's, and their sites, byte for byte. */
@@ -16026,7 +16027,7 @@ static void test_hot_tables(void)
 		const struct game_api *g = game_at(i);
 		if (g == NULL) break;
 		check(session_hot_fits(g),
-		      g->title_ids[0] != NULL ? g->title_ids[0] : "a registered game");
+		      title_at(i)->title_ids[0]);
 	}
 
 	check(i >= 4, "all four games were checked");
@@ -17645,6 +17646,7 @@ int main(void)
 	test_toggles_relabelled();
 	test_trilogy();
 	test_autosplit();
+	test_gamemod();
 	test_no_code_patches_planet_load();
 	test_no_code_patches();
 	test_savefile_rpcs3();

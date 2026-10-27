@@ -11,6 +11,9 @@
 #include "../plat.h"
 #include "plat_host.h"
 #include "../../games/game.h"
+#include "../../games/titles.h"
+#include "../../games/module.h"
+#include "../../games/core_api.h"
 #include "../../games/menuhelper_bins.h"
 
 #include <stdio.h>
@@ -33,7 +36,7 @@ static char g_game_title[16];
 static u32 g_next_pid = 0x01000100;
 
 /* Which game this boot seeded, so `pad` writes to the right address. */
-static const struct game_api *g_boot_game;
+static const struct game_title *g_boot_game;
 
 /* The fake console is a console: it patches code and it is not an emulator. */
 static int g_can_patch_code = 1;
@@ -110,8 +113,8 @@ static u8 host_wanted_game_id(const char *which)
 
 void host_boot_as(const char *title, const char *which)
 {
-	const struct game_api *cands[GAME_MAX_CANDIDATES];
-	const struct game_api *game = NULL;
+	const struct game_title *cands[GAME_MAX_CANDIDATES];
+	const struct game_title *game = NULL;
 	u8 wanted;
 	u32 n;
 	u32 i;
@@ -131,7 +134,7 @@ void host_boot_as(const char *title, const char *which)
 	 * Only one candidate's fingerprint is seeded, so BOOTING finds exactly one
 	 * match: that is how the simulator says which of the trilogy is running.
 	 */
-	n = game_candidates_for_title(g_game_title, cands, GAME_MAX_CANDIDATES);
+	n = title_candidates(g_game_title, cands, GAME_MAX_CANDIDATES);
 	wanted = host_wanted_game_id(which);
 
 	for (i = 0; i < n; i++) {
@@ -447,4 +450,200 @@ u32 host_notify_count(void)
 const char *host_notify_last(void)
 {
 	return g_notify_last;
+}
+
+/* ------------------------------------------------ game modules (1.26) */
+
+/*
+ * The simulator's stand-in for lv2's loader (plat.h, plat_prx_*; plat_host.h
+ * host_write_fake_module). A "module" is a file of the simulator's own: a
+ * SELF header shaped as scetool writes one, so the core reads its pages as it
+ * does a real module's, and a line naming the game, the build and the ID the
+ * file stands for. Its start checks the core's argument block the way
+ * src/plat/ps3/game_module.c does and hands back a copy of the linked game's
+ * vtable, which its unload overwrites with 0xA5 bytes: a pointer the core kept
+ * past the unload faults on its next use instead of reaching a game that is
+ * still linked in.
+ */
+#define FAKE_MODULES     4
+#define FAKE_SELF_BYTES  0x100
+#define FAKE_ID_BASE     0x23000000
+
+static struct {
+	int used;
+	u8  game;
+	u8  pages;
+	u8  started;
+	u32 build;
+	u32 build_id;
+	struct game_api copy;
+} g_fake_mod[FAKE_MODULES];
+
+static u32 g_fake_loads;
+
+int host_write_fake_module(const char *path, u8 game, u32 build, u32 build_id, u8 pages, u32 fail)
+{
+	u8 buf[FAKE_SELF_BYTES + 128];
+	char line[128];
+	plat_file_t f;
+	u32 n = 0, wrote = 0;
+	int rc;
+
+	memset(buf, 0, sizeof(buf));
+	if (pages != 0) {
+		u32 memsz = (u32)pages * 0x10000u - 0x100u;
+		memcpy(buf, "SCE\0", 4);
+		be32_put(buf + 4, 2);
+		be16_put(buf + 0x0A, 1);                 /* a SELF */
+		be32_put(buf + 0x34, 0x80);              /* the ELF header's offset */
+		be32_put(buf + 0x3C, 0xC0);              /* the program headers' */
+		memcpy(buf + 0x80, "\177ELF", 4);
+		buf[0x84] = 2;
+		buf[0x85] = 2;
+		be16_put(buf + 0x80 + 0x38, 1);          /* one program header */
+		be32_put(buf + 0xC0, 1);                 /* PT_LOAD */
+		be32_put(buf + 0xC4, 5);                 /* R-X */
+		be32_put(buf + 0xC0 + 44, memsz);        /* p_memsz, the low word */
+		n = FAKE_SELF_BYTES;
+	}
+	snprintf(line, sizeof(line), "QWARKFAKE game=%u build=%u id=0x%08X fail=0x%08X\n",
+	         (unsigned)game, (unsigned)build, (unsigned)build_id, (unsigned)fail);
+	memcpy(buf + n, line, strlen(line));
+	n += (u32)strlen(line);
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return -1;
+	rc = plat_file_write(f, buf, n);
+	wrote = n;
+	plat_file_close(f);
+	return rc == 0 && wrote == n ? 0 : -1;
+}
+
+u32 host_fake_modules_loaded(void)
+{
+	u32 i, n = 0;
+	for (i = 0; i < FAKE_MODULES; i++) n += g_fake_mod[i].used ? 1u : 0u;
+	return n;
+}
+
+u32 host_fake_module_loads(void) { return g_fake_loads; }
+
+static void fake_vsh_take(u8 pages, int give_back)
+{
+	u32 d = (u32)pages * 0x10000u;
+
+	pthread_mutex_lock(&g_mem_lock);
+	if (g_vsh_total != 0) {
+		if (give_back) g_vsh_free += d;
+		else g_vsh_free = g_vsh_free > d ? g_vsh_free - d : 0;
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+int plat_prx_load(const char *path)
+{
+	char buf[FAKE_SELF_BYTES + 128];
+	unsigned game = 0, build = 0, id = 0, fail = 0;
+	plat_file_t f;
+	u32 got = 0, i, pages = 0;
+	const char *line = NULL;
+
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return (int)0x80010006u;   /* ENOENT */
+	if (plat_file_read(f, buf, sizeof(buf) - 1, &got) != 0) got = 0;
+	plat_file_close(f);
+	buf[got] = 0;
+
+	for (i = 0; i + 9 < got; i++) {
+		if (memcmp(buf + i, "QWARKFAKE", 9) == 0) { line = buf + i; break; }
+	}
+	if (line == NULL ||
+	    sscanf(line, "QWARKFAKE game=%u build=%u id=0x%x fail=0x%x", &game, &build, &id, &fail) != 4)
+		return (int)0x8001112Eu;   /* not a module lv2 takes */
+	if (fail != 0) return (int)fail;
+	if (got >= 0xC0 + 48 && memcmp(buf, "SCE", 3) == 0)
+		pages = (be32_get((const u8 *)buf + 0xC0 + 44) + 0xFFFFu) >> 16;
+
+	for (i = 0; i < FAKE_MODULES; i++) {
+		if (g_fake_mod[i].used) continue;
+		memset(&g_fake_mod[i], 0, sizeof(g_fake_mod[i]));
+		g_fake_mod[i].used = 1;
+		g_fake_mod[i].game = (u8)game;
+		g_fake_mod[i].build = build;
+		g_fake_mod[i].build_id = id;
+		g_fake_mod[i].pages = (u8)pages;
+		g_fake_loads++;
+		fake_vsh_take((u8)pages, 0);
+		return FAKE_ID_BASE + (int)i;
+	}
+	return (int)0x80010004u;   /* ENOMEM */
+}
+
+static int fake_slot(int id)
+{
+	int i = id - FAKE_ID_BASE;
+	return (i >= 0 && i < FAKE_MODULES && g_fake_mod[i].used) ? i : -1;
+}
+
+int plat_prx_start(int id, void *argp, u32 size, int *modres)
+{
+	struct qwark_mod_args *a = (struct qwark_mod_args *)argp;
+	const struct game_api *linked;
+	int i = fake_slot(id);
+
+	*modres = 1;
+	if (i < 0) return (int)0x80010005u;   /* ESRCH */
+	if (a == NULL || size < sizeof(*a) || a->magic != QWARK_MOD_MAGIC || a->size != sizeof(*a)) {
+		if (a != NULL && size >= sizeof(*a)) a->refusal = QWARK_MOD_REFUSE_ARGS;
+		return 0;
+	}
+	a->module_game = g_fake_mod[i].game;
+	a->module_build_id = g_fake_mod[i].build_id;
+	a->game = NULL;
+	if (a->build != g_fake_mod[i].build)            a->refusal = QWARK_MOD_REFUSE_BUILD;
+	else if (a->build_id != g_fake_mod[i].build_id) a->refusal = QWARK_MOD_REFUSE_ID;
+	else if (a->api_size != sizeof(struct core_api)) a->refusal = QWARK_MOD_REFUSE_API;
+	else if (a->game_id != g_fake_mod[i].game)       a->refusal = QWARK_MOD_REFUSE_GAME;
+	else a->refusal = QWARK_MOD_REFUSE_NONE;
+	if (a->refusal != QWARK_MOD_REFUSE_NONE) return 0;
+
+	linked = game_linked(g_fake_mod[i].game);
+	if (linked == NULL) { a->refusal = QWARK_MOD_REFUSE_GAME; return 0; }
+	g_fake_mod[i].copy = *linked;
+	g_fake_mod[i].started = 1;
+	a->game = &g_fake_mod[i].copy;
+	*modres = 0;
+	return 0;
+}
+
+int plat_prx_stop(int id, void *argp, u32 size, int *modres)
+{
+	int i = fake_slot(id);
+
+	(void)argp;
+	(void)size;
+	*modres = 0;
+	if (i < 0) return (int)0x80010005u;
+	g_fake_mod[i].started = 0;
+	return 0;
+}
+
+int plat_prx_unload(int id)
+{
+	int i = fake_slot(id);
+
+	if (i < 0) return (int)0x80010005u;
+	memset(&g_fake_mod[i].copy, 0xA5, sizeof(g_fake_mod[i].copy));
+	fake_vsh_take(g_fake_mod[i].pages, 1);
+	g_fake_mod[i].used = 0;
+	return 0;
+}
+
+int plat_prx_contains(int id, const void *p, u32 len)
+{
+	int i = fake_slot(id);
+	const u8 *lo, *q = (const u8 *)p;
+
+	if (i < 0) return 0;
+	lo = (const u8 *)&g_fake_mod[i].copy;
+	return q >= lo && len <= sizeof(g_fake_mod[i].copy) &&
+	       (size_t)(q - lo) <= sizeof(g_fake_mod[i].copy) - len;
 }

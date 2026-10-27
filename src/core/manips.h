@@ -52,6 +52,7 @@ void manips_enter(const struct game_api *game);
  * whatever is due. Tick thread, under the core lock.
  */
 void manips_file_loaded(void);
+void manips_detach(void);
 
 /* 1 while the running game has manip groups. */
 int  manips_supported(void);

@@ -100,6 +100,8 @@ void plat_notify(const char *msg);
 
 /* printf2 semantics: integers and strings only, never a float conversion. */
 void plat_log(const char *fmt, ...);
+/* The same with its arguments as a va_list: what a game module's plat_log calls (core_api). */
+void plat_vlog(const char *fmt, va_list args);
 
 /*
  * Every log line is a file open, write and close on the PS3, so config's
@@ -265,6 +267,28 @@ static __inline int plat_has_users(void) { return 1; }
  * it (session.c, PROTOCOL.md 5.1.1 VSH_MEMORY).
  */
 int  plat_vsh_memory(u32 *free_bytes, u32 *total_bytes);
+
+/* ------------------------------------------------- game modules (1.26) */
+
+/*
+ * A game module's load, start, stop and unload (src/core/gamemod.c), on the
+ * calling thread, the tick. On the PS3 these are liblv2's user-mode sys_prx_*
+ * calls, as the PRX probe ran them on CFW and HEN (src/plat/ps3/plat_ps3.c);
+ * on a PC the simulator stands a copy of the linked game in for a module
+ * (plat_host.c), and qwark-rpcs3 never asks. Each answers what lv2 answers:
+ * load an id (>= 0) or a negative CELL error; the others 0 or one.
+ * `modres` is what the module's start or stop returned: 0 is
+ * SYS_PRX_RESIDENT, 1 SYS_PRX_NO_RESIDENT.
+ *
+ * plat_prx_contains: 1 when [p, p + len) lies inside the loaded module's
+ * segments, 0 when it does not, -1 when that cannot be told. What a module's
+ * start hands back is held to it before anything of it is called.
+ */
+int  plat_prx_load(const char *path);
+int  plat_prx_start(int id, void *args, u32 size, int *modres);
+int  plat_prx_stop(int id, void *args, u32 size, int *modres);
+int  plat_prx_unload(int id);
+int  plat_prx_contains(int id, const void *p, u32 len);
 
 /* ------------------------------------------------------- big-endian helpers */
 

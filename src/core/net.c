@@ -10,6 +10,7 @@
 #include "savefile.h"
 #include "switches.h"
 #include "uipak.h"
+#include "gamemod.h"
 #include "manips.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
@@ -421,7 +422,8 @@ static void file_release(int conn_slot, u32 handle)
 	plat_mutex_lock(&g_file_mutex);
 	if (g_files[handle - 1].used && g_files[handle - 1].conn_slot == conn_slot) {
 		plat_file_close(g_files[handle - 1].f);
-		if (g_files[handle - 1].pak) uipak_touch(UIPAK_PATH);
+		if (g_files[handle - 1].pak & 1) uipak_touch(UIPAK_PATH);
+		if (g_files[handle - 1].pak >> 4) gamemod_touch_game((u8)(g_files[handle - 1].pak >> 4));
 		memset(&g_files[handle - 1], 0, sizeof(g_files[0]));
 	}
 	plat_mutex_unlock(&g_file_mutex);
@@ -435,7 +437,8 @@ static void file_release_conn(int conn_slot)
 	for (i = 0; i < MAX_FILES; i++) {
 		if (!g_files[i].used || g_files[i].conn_slot != conn_slot) continue;
 		plat_file_close(g_files[i].f);
-		if (g_files[i].pak) uipak_touch(UIPAK_PATH);
+		if (g_files[i].pak & 1) uipak_touch(UIPAK_PATH);
+		if (g_files[i].pak >> 4) gamemod_touch_game((u8)(g_files[i].pak >> 4));
 		memset(&g_files[i], 0, sizeof(g_files[0]));
 	}
 	plat_mutex_unlock(&g_file_mutex);
@@ -1056,6 +1059,11 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		*replylen = session_vsh_memory(reply, replycap);
 		return *replylen ? ST_OK : ST_UNSUPPORTED;
 
+	/* Revision 1.26: the running game's module and the memory gate (PROTOCOL.md 5.1.2). */
+	case OP_GAME_MODULE:
+		*replylen = gamemod_info(reply, replycap);
+		return *replylen ? ST_OK : ST_FULL;
+
 	case OP_DESCRIBE: {
 		u16 rc;
 		/*
@@ -1064,9 +1072,14 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		 * the previous game's table, so answer UNSUPPORTED until INGAME rather than
 		 * hand a client a table for a game that is not the one now starting.
 		 */
-		if (session_game() == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
+		/*
+		 * Revision 1.26, the lock audit (PROTOCOL.md 9.11): the game is asked
+		 * for under the core lock, which its going takes too, and the table is
+		 * copied into the reply before the lock is let go.
+		 */
 		core_lock();
-		rc = (u16)features_describe(reply, replycap, replylen);
+		if (session_game() == NULL || session_state() != SESSION_INGAME) rc = ST_UNSUPPORTED;
+		else rc = (u16)features_describe(reply, replycap, replylen);
 		core_unlock();
 		return rc;
 	}
@@ -1088,10 +1101,10 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	case OP_FEATURE_SET_AUTO: {
 		u16 rc;
 		if (reqlen < 2) return ST_BAD_ARG;
-		if (session_game() == NULL) return ST_UNSUPPORTED;
 		core_lock();
 		/* Revision 1.24: a COLOR's request carries the value to re-apply, u32 at +2. */
-		rc = (u16)features_set_auto_value(req[0], req[1] != 0, reqlen >= 6 ? be32_get(req + 2) : 0);
+		if (session_game() == NULL) rc = ST_UNSUPPORTED;
+		else rc = (u16)features_set_auto_value(req[0], req[1] != 0, reqlen >= 6 ? be32_get(req + 2) : 0);
 		core_unlock();
 		return rc;
 	}
@@ -1104,10 +1117,9 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		u32 off;
 
 		if (reqlen < 1) return ST_BAD_ARG;
-		if (session_game() == NULL) return ST_UNSUPPORTED;
 
 		core_lock();
-		rc = (u16)features_options(req[0], &options, &count);
+		rc = session_game() == NULL ? ST_UNSUPPORTED : (u16)features_options(req[0], &options, &count);
 		if (rc != ST_OK) { core_unlock(); return rc; }
 		if (1u + (u32)count * 24u > replycap) { core_unlock(); return ST_FULL; }
 
@@ -1156,7 +1168,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	}
 
 	case OP_AUTOSPLIT_DESCRIBE: {
-		const struct game_api *g = session_game();
+		const struct game_api *g;
 		const struct autosplit_desc *rows = NULL;
 		u8 count = 0;
 		u8 i;
@@ -1167,12 +1179,16 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		 * is still only a guess, and handing a client the wrong game's split
 		 * list is worse than making it wait.
 		 */
-		if (g == NULL || session_state() != SESSION_INGAME) return ST_UNSUPPORTED;
-		if (g->autosplit_describe == NULL) return ST_UNSUPPORTED;
+		core_lock();   /* revision 1.26: the lock audit (PROTOCOL.md 9.11) */
+		g = session_game();
+		if (g == NULL || session_state() != SESSION_INGAME || g->autosplit_describe == NULL) {
+			core_unlock();
+			return ST_UNSUPPORTED;
+		}
 
 		rows = g->autosplit_describe(&count);
-		if (rows == NULL || count == 0) return ST_UNSUPPORTED;
-		if (1u + (u32)count * AUTOSPLIT_DESC_SIZE > replycap) return ST_FULL;
+		if (rows == NULL || count == 0) { core_unlock(); return ST_UNSUPPORTED; }
+		if (1u + (u32)count * AUTOSPLIT_DESC_SIZE > replycap) { core_unlock(); return ST_FULL; }
 
 		reply[0] = count;
 		off = 1;
@@ -1186,6 +1202,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			off += AUTOSPLIT_DESC_SIZE;
 		}
 
+		core_unlock();
 		*replylen = off;
 		return ST_OK;
 	}
@@ -1278,7 +1295,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_OK;
 
 	case OP_POS_LIST: {
-		const struct game_api *g = session_game();
+		const struct game_api *g;
 		u8 planet;
 		u8 s;
 		u32 off;
@@ -1286,6 +1303,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (2u + QWARK_POS_SLOTS * 16u > replycap) return ST_FULL;
 
 		core_lock();
+		g = session_game();   /* revision 1.26: under the lock (PROTOCOL.md 9.11) */
 		planet = session_current_planet();
 		reply[0] = planet;
 		reply[1] = QWARK_POS_SLOTS;
@@ -1327,17 +1345,19 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	}
 
 	case OP_PLANET_LIST: {
-		const struct game_api *g = session_game();
+		const struct game_api *g;
 		const char * const *names;
 		u8 count = 0;
 		u8 i;
 		u32 off;
 
-		if (g == NULL || g->planet_names == NULL) return ST_UNSUPPORTED;
+		core_lock();   /* revision 1.26: the lock audit (PROTOCOL.md 9.11) */
+		g = session_game();
+		if (g == NULL || g->planet_names == NULL) { core_unlock(); return ST_UNSUPPORTED; }
 
 		names = g->planet_names(&count);
-		if (names == NULL) return ST_UNSUPPORTED;
-		if (1u + (u32)count * 25u > replycap) return ST_FULL;
+		if (names == NULL) { core_unlock(); return ST_UNSUPPORTED; }
+		if (1u + (u32)count * 25u > replycap) { core_unlock(); return ST_FULL; }
 
 		reply[0] = count;
 		off = 1;
@@ -1351,6 +1371,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		for (i = 0; i < count; i++)
 			reply[off++] = g->planet_order != NULL ? g->planet_order[i] : i;
 
+		core_unlock();
 		*replylen = off;
 		return ST_OK;
 	}
@@ -1370,15 +1391,16 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	}
 
 	case OP_MOBY_TABLE: {
-		const struct game_api *g = session_game();
+		const struct game_api *g;
 		u32 tbl = 0, end = 0;
 		u16 stride = 0;
 		u16 rc;
 
-		if (g == NULL || g->moby_table == NULL) return ST_UNSUPPORTED;
 		if (replycap < 12) return ST_FULL;
-
-		rc = (u16)g->moby_table(&tbl, &end, &stride);
+		core_lock();   /* revision 1.26: the lock audit (PROTOCOL.md 9.11) */
+		g = session_game();
+		rc = (g == NULL || g->moby_table == NULL) ? ST_UNSUPPORTED : (u16)g->moby_table(&tbl, &end, &stride);
+		core_unlock();
 		if (rc != ST_OK) return rc;
 
 		be32_put(reply, tbl);
@@ -1481,7 +1503,13 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		if (plat_file_open(path, req[0] == 0 ? PLAT_OPEN_READ : PLAT_OPEN_WRITE, &f) != 0)
 			return ST_IO_ERROR;
 
-		if (!file_alloc(slot, f, &handle, (u8)(req[0] == 1 && uipak_names(path)))) {
+		/*
+		 * Build 55: a write of ui.pak has the pak looked at again as it closes
+		 * (bit0); revision 1.26: and one of a game module (the game's id in the
+		 * high nibble), the session's game's module.
+		 */
+		if (!file_alloc(slot, f, &handle,
+		                (u8)(req[0] == 1 ? (uipak_names(path) ? 1 : 0) | (gamemod_names(path) << 4) : 0))) {
 			plat_file_close(f);
 			return ST_FULL;
 		}
@@ -1536,6 +1564,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		rc = plat_file_unlink(path) == 0 ? ST_OK : ST_NOT_FOUND;
 		/* Build 55: after the op, so the look the tick takes sees what it left. */
 		uipak_touch(path);
+		gamemod_touch_game(gamemod_names(path));
 		return rc;
 	}
 
@@ -1628,6 +1657,9 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			/* Build 55: a client putting ui.pak in place, or taking it away. */
 			uipak_touch(from);
 			uipak_touch(to);
+			/* Revision 1.26: and a game module. */
+			gamemod_touch_game(gamemod_names(from));
+			gamemod_touch_game(gamemod_names(to));
 			return rc;
 		}
 	}
@@ -1941,6 +1973,7 @@ static int control_request(u16 op, u32 len)
 	case OP_UNSUBSCRIBE:
 	case OP_GET_STATE:
 	case OP_VSH_MEMORY:   /* build 54: launches are when it matters most */
+	case OP_GAME_MODULE:  /* revision 1.26: and so is a game module's gate */
 		return 1;
 	default: return 0;
 	}

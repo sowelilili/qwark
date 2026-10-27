@@ -40,12 +40,12 @@ PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/
 # of /dev_hdd0/qwark/ui.pak (src/core/uipak.c); the module carries none of them.
 #
 PPU_SRCS += src/core/uipak.c
-PPU_SRCS += src/games/sfhelper_bins.c src/games/switches_own.c
-PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
-PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
-PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c
-PPU_SRCS += src/games/rac4.c src/games/rac4_panel.c
-PPU_SRCS += src/games/games.c
+#
+# Revision 1.26: the title index and the game's arrival, in every build. The
+# games themselves go in below, linked into a release; a test build's are
+# modules of their own (`games`).
+#
+PPU_SRCS += src/core/gamemod.c src/games/titles.c
 PPU_PRX_TARGET = qwark.prx
 PPU_PRX_LDFLAGS += $(PRX_LDFLAGS_EXTRA)
 PPU_PRX_STRIP_FLAGS = -s
@@ -110,6 +110,33 @@ ifneq ($(strip $(QWARK_PREVIEW)),0)
 PPU_SRCS += src/core/modusb.c
 endif
 
+#
+# Revision 1.26, game modules (src/games/module.h, PROTOCOL.md 9.11). A test
+# build's games are not in qwark.sprx: each is game-<n>.sprx of its own, built
+# by `games` below, which the module loads while that game runs and the VSH has
+# the memory for it. The core then hands the games its functions through a
+# table (src/core/core_export.c) and its context through r14, which the core
+# and every module are built to leave alone. A release links the four games in
+# and calls them directly, exactly as before: `make release` pins this to 0.
+# It follows QWARK_DEV unless given itself, and, like QWARK_PREVIEW, is never
+# exported.
+#
+QWARK_GAME_MODULES	?= $(QWARK_DEV)
+PPU_CFLAGS +=	-DQWARK_GAME_MODULES=$(QWARK_GAME_MODULES)
+ifneq ($(strip $(QWARK_GAME_MODULES)),0)
+PPU_SRCS += src/core/core_export.c
+PPU_CFLAGS +=	-ffixed-r14
+GAME_MODULES_ALL = games
+else
+PPU_SRCS += src/games/sfhelper_bins.c src/games/switches_own.c
+PPU_SRCS += src/games/classic.c src/games/rac1.c src/games/rac1_panel.c
+PPU_SRCS += src/games/rac2.c src/games/rac2_panel.c
+PPU_SRCS += src/games/rac3.c src/games/rac3_panel.c
+PPU_SRCS += src/games/rac4.c src/games/rac4_panel.c
+PPU_SRCS += src/games/games.c
+GAME_MODULES_ALL = games-none
+endif
+
 ifeq ($(BUILD_TYPE), debug)
 PPU_CFLAGS += -DDEBUG -DDEBUG_FILE
 endif
@@ -123,6 +150,7 @@ all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
 	@tail -n 3 qwark.build
 	$(MAKE) ui.pak
 	@rm -rf objs qwark.prx qwark.sym
+	$(MAKE) $(GAME_MODULES_ALL)
 
 #
 # A release: the module with no DEV bit, and dist/ made from it. Commit dist/
@@ -133,8 +161,8 @@ all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
 #
 release:
 	@rm -rf objs
-	$(MAKE) all QWARK_DEV=0 QWARK_PREVIEW=0
-	$(MAKE) dist
+	$(MAKE) all QWARK_DEV=0 QWARK_PREVIEW=0 QWARK_GAME_MODULES=0
+	$(MAKE) dist QWARK_DEV=0 QWARK_PREVIEW=0 QWARK_GAME_MODULES=0
 
 #
 # Build 55: ui.pak, the console menu's renderers, packed out of the committed
@@ -144,6 +172,80 @@ release:
 #
 ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
 	python -I src/games/menuhelper/pak.py --out ui.pak
+
+#
+# Revision 1.26: the game modules, game-1.sprx to game-4.sprx (src/games/
+# module.h, PROTOCOL.md 9.11), a test build's games. Each is the game's own
+# sources, classic.c, the savefile helpers' numbers, the wrappers its calls
+# into the core land on (src/games/core_import.c, tools/coreapi.py) and its
+# start and stop (src/plat/ps3/game_module.c), built the SDK's way for a PRX:
+#
+#   ppu-lv2-gcc -mprx -c         QWARK_GAME_MODULE: state in the lent area,
+#                                r14 left alone
+#   tools/gamemodule.py objs     no object holds writable data or TLS
+#   ppu-lv2-gcc -mprx -zgenprx   prelink, libgen and fixup: two LOAD segments,
+#                                R-E and RW-, the latter only .opd, .toc and
+#                                the relocated tables
+#   ppu-lv2-prx-strip            as qwark.sprx's
+#   tools/gamemodule.py merge    one R-E segment (the SDK cannot make one:
+#                                SPEC-game-modules.md 7.2), which lv2 relocates
+#   tools/gamemodule.py check    one R-X LOAD segment, at most 61,440 bytes, no
+#                                writable or TLS section, no import, and the
+#                                stamp naming this build and its ID
+#   scetool                      signed exactly as qwark.sprx is
+#
+# `make` builds them after the module (a release has none: `games-none`
+# deletes any left over), and `make dist` copies whichever there are.
+#
+GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
+					  src/plat/ps3/game_module.c
+GAME_SRCS_1			= src/games/rac1.c src/games/rac1_panel.c
+GAME_SRCS_2			= src/games/rac2.c src/games/rac2_panel.c
+GAME_SRCS_3			= src/games/rac3.c src/games/rac3_panel.c
+GAME_SRCS_4			= src/games/rac4.c src/games/rac4_panel.c src/games/switches_own.c
+GAME_CFLAGS			= -mprx -Os -ffunction-sections -fdata-sections -fno-builtin-printf -std=gnu99 \
+					  -ffixed-r14 -Wall -Wno-unused-parameter -Wno-shadow -Wno-strict-prototypes \
+					  -Wno-missing-prototypes -Wno-missing-declarations -Wno-bad-function-cast \
+					  -Wno-inline -Wno-redundant-decls -Wno-format-nonliteral -Werror \
+					  -DQWARK_DEV=$(QWARK_DEV) -DQWARK_BUILD_ID=$(QWARK_BUILD_ID) \
+					  -DQWARK_PREVIEW=$(QWARK_PREVIEW) -DQWARK_GAME_MODULES=1 -DQWARK_GAME_MODULE=1
+GAME_SCETOOL		= -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 01000002 -5 APP \
+					  -6 0003004000000000 -A 0001000000000000 -c SPRX \
+					  --self-ctrl-flags 4000000000000000000000000000000000000000000000000000000000000002
+GAME_TIMEOUT		= timeout 300
+GAME_DEPS			= $(GAME_COMMON_SRCS) $(wildcard src/games/*.h src/core/*.h src/plat/*.h) \
+					  src/games/rac1.c src/games/rac1_panel.c src/games/rac2.c src/games/rac2_panel.c \
+					  src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c src/games/rac4_panel.c \
+					  src/games/switches_own.c tools/gamemodule.py makefile
+
+games: game-1.sprx game-2.sprx game-3.sprx game-4.sprx
+	@ls -l game-1.sprx game-2.sprx game-3.sprx game-4.sprx
+
+games-none:
+	@rm -f game-1.sprx game-2.sprx game-3.sprx game-4.sprx
+
+game-%.sprx: $(GAME_DEPS)
+	@rm -rf objs/game-$* $@
+	@mkdir -p objs/game-$*
+	@for f in $(GAME_COMMON_SRCS) $(GAME_SRCS_$*); do \
+		echo "  game-$*: $$f"; \
+		$(GAME_TIMEOUT) ppu-lv2-gcc $(GAME_CFLAGS) -DQWARK_MODULE_GAME=$* -c $$f \
+			-o objs/game-$*/$$(basename $$f .c).o || exit 1; \
+	done
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py objs objs/game-$*/*.o
+	$(GAME_TIMEOUT) ppu-lv2-gcc -mprx -zgenprx -nodefaultlibs -Wl,--strip-unused-data \
+		objs/game-$*/*.o -o objs/game-$*/game.sym.prx
+	cp objs/game-$*/game.sym.prx objs/game-$*/game.prx
+	$(GAME_TIMEOUT) $(PPU_PRX_STRIP) --strip-debug --strip-section-header objs/game-$*/game.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/game-$*/game.prx objs/game-$*/game.one.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/game-$*/game.sym.prx objs/game-$*/game.sym.one.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py check objs/game-$*/game.one.prx objs/game-$*/game.sym.one.prx \
+		--game $* --id $(QWARK_BUILD_ID)
+	$(GAME_TIMEOUT) ./scetool $(GAME_SCETOOL) -e objs/game-$*/game.one.prx $@ > objs/game-$*/scetool.txt 2>&1 \
+		|| { head -c 4000 objs/game-$*/scetool.txt; exit 1; }
+	@test -s $@ || { echo "make games: scetool wrote no $@" >&2; exit 1; }
+	@rm -rf objs/game-$*
+	@rmdir objs 2>/dev/null || true
 
 #
 # The savefile helper is PowerPC code that runs inside the game rather than
@@ -227,18 +329,25 @@ INSTALLER_SCETOOL	= -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 010000
 #
 INSTALLER_TIMEOUT	= timeout 300
 
+#
+# Revision 1.26: a test build's package carries its game modules too, which the
+# installer puts beside ui.pak; a release has none (`games-none`).
+#
+INSTALLER_GAMES		= $(wildcard game-1.sprx game-2.sprx game-3.sprx game-4.sprx)
+
 pkg: ui.pak
 	@test -f qwark.sprx || { echo "make pkg: there is no qwark.sprx here to pack; run make first" >&2; exit 1; }
 	$(INSTALLER_TIMEOUT) $(MAKE) -C installer elf
 	@rm -rf $(INSTALLER_BUILD) $(INSTALLER_PKG)
 	@mkdir -p $(INSTALLER_BUILD)
 	$(INSTALLER_TIMEOUT) $(PPU_STRIP) -s -o $(INSTALLER_BUILD)/EBOOT.elf installer/installer.elf
-	$(INSTALLER_TIMEOUT) python -I installer/pkg.py stage --sprx qwark.sprx --pak ui.pak --out $(INSTALLER_BUILD)
+	$(INSTALLER_TIMEOUT) python -I installer/pkg.py stage --sprx qwark.sprx --pak ui.pak --out $(INSTALLER_BUILD) \
+		--games $(INSTALLER_GAMES)
 	$(INSTALLER_TIMEOUT) ./scetool $(INSTALLER_SCETOOL) -f $$(python -I installer/pkg.py content-id) \
 		-e $(INSTALLER_BUILD)/EBOOT.elf $(INSTALLER_BUILD)/pkg/USRDIR/EBOOT.BIN
 	$(INSTALLER_TIMEOUT) python -I installer/pkg.py build --root $(INSTALLER_BUILD)/pkg --out $(INSTALLER_PKG)
 	$(INSTALLER_TIMEOUT) python -I installer/pkg.py check --pkg $(INSTALLER_PKG) --sprx qwark.sprx --pak ui.pak \
-		--elf $(INSTALLER_BUILD)/EBOOT.elf --sdk-bin $(CELL_HOST_PATH)/bin
+		--elf $(INSTALLER_BUILD)/EBOOT.elf --sdk-bin $(CELL_HOST_PATH)/bin --games $(INSTALLER_GAMES)
 	@rm -rf installer/objs installer/installer.elf installer/installer.self
 
 #
@@ -258,10 +367,14 @@ dist: ui.pak pkg
 	@cp ui.pak dist/ui.pak
 	@cp $(INSTALLER_PKG) dist/qwark-installer.pkg
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
+	@rm -f dist/game-1.sprx dist/game-2.sprx dist/game-3.sprx dist/game-4.sprx
+	@if grep -q '^dev 1' qwark.build && [ "$(strip $(QWARK_GAME_MODULES))" != "0" ]; then \
+		for n in 1 2 3 4; do test -f game-$$n.sprx || { echo "make dist: no game-$$n.sprx; run make first" >&2; exit 1; }; \
+		cp game-$$n.sprx dist/game-$$n.sprx; done; fi
 	@ls -l dist
 	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
 	else echo "dist/ holds a RELEASE build (dev 0)"; fi
 
-.PHONY: all release sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale pkg dist
+.PHONY: all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale pkg dist
 
 include $(CELL_MK_DIR)/sdk.target.mk

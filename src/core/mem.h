@@ -98,6 +98,7 @@ int patch_revert(const struct patch_def *def);
  * apply returns IO_ERROR until cleanup succeeds, without recapturing originals. */
 int patch_is_applied(const struct patch_def *def);
 void patch_forget_all(void);        /* drops the table without writing anything */
+void patch_forget_kind(u8 kind);    /* the same for one PATCH_KIND_* (revision 1.26) */
 
 u32 patch_count(void);
 const struct patch_def *patch_at(u32 index);

@@ -9,8 +9,10 @@
  * game store 0xFF where qwark can see it the moment the player asks to quit. Its
  * loading hook comes across too, and marks the other end of the same interval.
  */
+#include "core_import.h"   /* first: src/games/module.h */
 #include "rac4.h"
 #include "classic.h"
+#include "sfhelper_bins.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/autosplit.h"
@@ -19,13 +21,7 @@
 
 #include <string.h>
 
-/* See rac4.h for what these three are and why all three are accepted. */
-const u8 rac4_fp[4]         = { 0x41, 0x82, 0x00, 0x0C };
-const u8 rac4_fp_patched[4] = { 0x60, 0x00, 0x00, 0x00 };
-const u8 rac4_fp_switch[4]  = {
-	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 24), (u8)(SW_RAC4_SITE_REFILL_AMMO >> 16),
-	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 8),  (u8)SW_RAC4_SITE_REFILL_AMMO
-};
+/* Revision 1.26: the fingerprint is the title index's (titles.c). */
 
 /* ------------------------------------------------------------- hot blocks */
 
@@ -98,13 +94,8 @@ static const struct game_hot_block rac4_hot[] = {
 #define OFF_CUTSCENE  (RAC4_CUTSCENE_PTR    - RAC4_HOT_LOAD_ADDR) /* 0x1C */
 
 /* What the two watchers need and struct game_hot has no room for. */
-static u8 g_game_mode;      /* game state, low byte */
-static u8 g_tutorial;       /* tutorial flags, low byte */
 
 /* The manips' file-load trigger's own state (revision 1.21); see rac4_file_load_watch. */
-static int g_fl_primed;
-static int g_fl_due;
-static u8  g_fl_tutorial;
 
 /*
  * The Deadlocked autosplitter SPRX's GameState, field for field. The names are
@@ -121,7 +112,62 @@ struct rac4_as_state {
 	f32 vox_hp;
 };
 
-static struct rac4_as_state g_as;
+/*
+ * Revision 1.26: every static of this file that changes, in one struct (the
+ * names below are its fields). A game module has no writable memory of its
+ * own, so there it is part of the state area the core lends it
+ * (src/games/module.h), zeroed before every load; linked in, it is a static.
+ * The initial values are set by init(), which runs as the game arrives.
+ */
+struct rac4_state {
+	u8 g_game_mode; /* game state, low byte */
+	u8 g_tutorial; /* tutorial flags, low byte */
+	int g_fl_primed;
+	int g_fl_due;
+	u8 g_fl_tutorial;
+	struct rac4_as_state g_as;
+	int g_fastload_on;
+	int g_fastload_forced;
+	int g_softlock_on;
+	u8 g_prev_tutorial;
+	u8 g_prev_game_mode;
+	struct rac4_as_state g_as_prev;
+	int g_as_primed;
+	u32 g_as_origin;
+	struct patch_def rac4_crash;
+	struct patch_def rac4_fastload;
+	struct patch_def rac4_ammo;
+	struct classic_health rac4_freeze_health;
+	int init_done;
+};
+
+#if QWARK_GAME_MODULE
+#define R4 QWARK_STATE_AT(struct rac4_state, QWARK_STATE_GAME_OFF)
+typedef char rac4_state_fits[sizeof(struct rac4_state) <= QWARK_STATE_GAME_MAX ? 1 : -1];
+#else
+static struct rac4_state g_rac4_state;
+#define R4 (&g_rac4_state)
+#endif
+
+#define g_game_mode (R4->g_game_mode)
+#define g_tutorial (R4->g_tutorial)
+#define g_fl_primed (R4->g_fl_primed)
+#define g_fl_due (R4->g_fl_due)
+#define g_fl_tutorial (R4->g_fl_tutorial)
+#define g_as (R4->g_as)
+#define g_fastload_on (R4->g_fastload_on)
+#define g_fastload_forced (R4->g_fastload_forced)
+#define g_softlock_on (R4->g_softlock_on)
+#define g_prev_tutorial (R4->g_prev_tutorial)
+#define g_prev_game_mode (R4->g_prev_game_mode)
+#define g_as_prev (R4->g_as_prev)
+#define g_as_primed (R4->g_as_primed)
+#define g_as_origin (R4->g_as_origin)
+#define rac4_crash (R4->rac4_crash)
+#define rac4_fastload (R4->rac4_fastload)
+#define rac4_ammo (R4->rac4_ammo)
+#define rac4_freeze_health (R4->rac4_freeze_health)
+
 
 static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 {
@@ -207,42 +253,10 @@ static void rac4_hot_decode(const u8 * const *blocks, struct game_hot *out)
 /* --------------------------------------------------------------- patches */
 
 /*
- * The autosplitter's quit hook, verbatim:
- *   li   r3, 0xFF
- *   lis  r4, 0x0170
- *   stb  r3, 0(r4)
- * so the game writes 0xFF to RAC4_QUIT_FLAG on its way out.
+ * Revision 1.26: the quit hook and the loading hook are the core's boot
+ * patches now (src/games/titles.c), in place from a session's start, before
+ * a game module could be.
  */
-static const struct patch_word rac4_quit_hook_words[] = {
-	{ RAC4_QUIT_HOOK_ADDR + 0, 0x386000FFu },
-	{ RAC4_QUIT_HOOK_ADDR + 4, 0x3C800170u },
-	{ RAC4_QUIT_HOOK_ADDR + 8, 0x98640000u }
-};
-
-/*
- * The autosplitter's loading hook, verbatim: ten words of trampoline that save
- * r3 and r4, store 0xFF at RAC4_LOADING_VAL, put them back and branch home,
- *
- *   stwu r1, -16(r1) / stw r3, 8(r1) / stw r4, 12(r1)
- *   li   r3, 0xFF    / lis r4, 0x0171 / stb r3, 0(r4)
- *   lwz  r3, 8(r1)   / lwz r4, 12(r1) / addi r1, r1, 16 / b -160
- *
- * followed by the branch into it at RAC4_LOADING_HOOK_1. The words go in as one
- * patch, trampoline first, so nothing can branch to a half-written cave.
- */
-static const struct patch_word rac4_loading_hook_words[] = {
-	{ RAC4_LOADING_HOOK_2 + 0x00, 0x9421FFF0u },
-	{ RAC4_LOADING_HOOK_2 + 0x04, 0x90610008u },
-	{ RAC4_LOADING_HOOK_2 + 0x08, 0x9081000Cu },
-	{ RAC4_LOADING_HOOK_2 + 0x0C, 0x386000FFu },
-	{ RAC4_LOADING_HOOK_2 + 0x10, 0x3C800171u },
-	{ RAC4_LOADING_HOOK_2 + 0x14, 0x98640000u },
-	{ RAC4_LOADING_HOOK_2 + 0x18, 0x80610008u },
-	{ RAC4_LOADING_HOOK_2 + 0x1C, 0x8081000Cu },
-	{ RAC4_LOADING_HOOK_2 + 0x20, 0x38210010u },
-	{ RAC4_LOADING_HOOK_2 + 0x24, 0x4BFFFF60u },
-	{ RAC4_LOADING_HOOK_1,        0x48000080u }
-};
 
 /*
  * robo's "DL Crash Patches" mod, the same eleven words the Deadlocked
@@ -314,35 +328,24 @@ static const struct patch_word rac4_ammo_words[] = {
 	{ RAC4_AMMO_INSTR, 0x60000000u }
 };
 
-static struct patch_def rac4_quit_hook = {
-	"Quit hook", PATCH_KIND_FEATURE, rac4_quit_hook_words, 3, NULL
-};
-static struct patch_def rac4_loading_hook = {
-	"Loading hook", PATCH_KIND_FEATURE, rac4_loading_hook_words, 11, NULL
-};
-static struct patch_def rac4_crash = {
+static const struct patch_def rac4_crash_init = {
 	"Crash patches", PATCH_KIND_FEATURE, rac4_crash_words, 11, NULL
 };
-static struct patch_def rac4_fastload = {
+static const struct patch_def rac4_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, rac4_fastload_words, RAC4_FASTLOAD_WORDS, NULL
 };
-static struct patch_def rac4_ammo = {
+static const struct patch_def rac4_ammo_init = {
 	"Refill ammo", PATCH_KIND_FEATURE, rac4_ammo_words, 1, NULL
 };
 
-static int g_fastload_on;
 /*
  * Build 50. Fast loads are on because a planet load forced them, not because
  * the checkbox is, until the game-mode watcher puts them back; rac2.c's
  * g_fastload_forced says why the read-back needs to know.
  */
-static int g_fastload_forced;
-static int g_softlock_on;
-static u8  g_prev_tutorial  = 0xFF;
-static u8  g_prev_game_mode;
 
 /* Build 53: Freeze health, held at the hero's own maximum (rac4.h). */
-static struct classic_health rac4_freeze_health = {
+static const struct classic_health rac4_freeze_health_init = {
 	RAC4_PLAYER_HEALTH, RAC4_MAX_HEALTH, 1, 0, 0, 0, 0
 };
 
@@ -382,13 +385,15 @@ int rac4_fastload_restore(void)
 
 static void rac4_init(void)
 {
-	static int done = 0;
+	if (R4->init_done) return;
+	R4->init_done = 1;
 
-	if (done) return;
-	done = 1;
+	g_prev_tutorial = 0xFF;
+	rac4_crash = rac4_crash_init;
+	rac4_fastload = rac4_fastload_init;
+	rac4_ammo = rac4_ammo_init;
+	rac4_freeze_health = rac4_freeze_health_init;
 
-	rac4_quit_hook.originals    = patch_pool_alloc(rac4_quit_hook.count);
-	rac4_loading_hook.originals = patch_pool_alloc(rac4_loading_hook.count);
 	rac4_crash.originals     = patch_pool_alloc(rac4_crash.count);
 	rac4_fastload.originals  = patch_pool_alloc(rac4_fastload.count);
 	rac4_ammo.originals      = patch_pool_alloc(rac4_ammo.count);
@@ -412,8 +417,6 @@ static void rac4_init(void)
  * Deadlocked is the only game that pauses: some categories quit to the VSH on
  * purpose, and the client stops its timer for as long as that lasts.
  */
-static struct rac4_as_state g_as_prev;
-static int g_as_primed;
 
 /*
  * The planet the player is coming from, kept here rather than read out of the
@@ -430,22 +433,14 @@ static int g_as_primed;
  * load out of the menu after it is not a split either. g_as.planet is still read
  * from the game for the Vox split and the readout.
  */
-static u32 g_as_origin;
 
 /*
- * Survives the reboot on purpose: a PAUSE emitted on the way out has to be
- * answered by a RESUME on the way back in, and on_enter runs in between.
+ * Revision 1.26: the quit's PAUSE and its RESUME are the core's (the title
+ * index's pause pair, src/games/titles.h, run by src/core/gamemod.c). The
+ * RESUME belongs to the tick the game puts the SCE logo up, which a game
+ * module loaded seconds into the session would miss, and the pair has to
+ * survive the trip through the XMB, which a module does not.
  */
-static int g_as_paused;
-static int g_as_resume_due;
-
-/*
- * Whether on_enter got the loading hook in. It is a code patch, so on RPCS3 it
- * is not there and RAC4_LOADING_VAL never turns 0xFF; without it the RESUME
- * fires on the first tick back INGAME instead of on the SCE logo. That is a few
- * seconds early against a real console, which is why it is only the fallback.
- */
-static int g_loading_hook_on;
 
 static void rac4_autosplit_tick(void)
 {
@@ -454,34 +449,6 @@ static void rac4_autosplit_tick(void)
 	int planet_split;
 	int vox_split;
 	u32 origin;
-
-	/*
-	 * The pause was emitted from on_quit, before the session left INGAME. The
-	 * RESUME is not the first tick of the new process: qwark reaches INGAME while
-	 * the game is still sitting behind its loading and warning screens, and
-	 * resuming there would hand the runner several free seconds. The old SPRX
-	 * waited for its loading hook to write 0xFF — the SCE logo, the point it
-	 * called STATUS_INGAME and sent CMD_UNPAUSE — so this waits for the same byte
-	 * and then clears it again for the next quit.
-	 */
-	if (g_as_resume_due) {
-		u8 logo = 0;
-
-		if (!g_loading_hook_on) {
-			/*
-			 * No hook, no 0xFF to wait for: resume as soon as the session is
-			 * back INGAME, or the client's timer stays stopped for ever.
-			 */
-			g_as_resume_due = 0;
-			g_as_paused = 0;
-			autosplit_emit(AUTOSPLIT_RESUME, R4_AS_QUIT, 0);
-		} else if (mem_read_u8(RAC4_LOADING_VAL, &logo) == ST_OK && logo == 0xFF) {
-			mem_write_u8(RAC4_LOADING_VAL, 0);
-			g_as_resume_due = 0;
-			g_as_paused = 0;
-			autosplit_emit(AUTOSPLIT_RESUME, R4_AS_QUIT, 0);
-		}
-	}
 
 	/* A fresh process: prime, so no edge fires against the dead one's values. */
 	if (!g_as_primed) {
@@ -546,20 +513,6 @@ static void rac4_autosplit_tick(void)
 	g_as_prev = g_as;
 }
 
-/*
- * The SPRX sent CMD_PAUSE the moment it saw the quit flag, or the process go
- * away underneath it. qwark's session watches the same flag and calls this on
- * its way out of INGAME, before the state moves, so the event still counts.
- */
-static void rac4_on_quit(void)
-{
-	if (g_as_paused) return;
-
-	g_as_paused = 1;
-	g_as_resume_due = 1;
-	autosplit_emit(AUTOSPLIT_PAUSE, R4_AS_QUIT, 0);
-}
-
 #define DF AUTOSPLIT_FLAG_DEFAULT
 #define RT AUTOSPLIT_FLAG_ROUTE
 #define NM AUTOSPLIT_FLAG_NORMALISE
@@ -604,31 +557,17 @@ static void rac4_on_enter(void)
 	g_fl_due        = 0;
 	classic_health_forget(&rac4_freeze_health);
 
-	/* The watcher starts over; the pause state deliberately does not. */
+	/* The watcher starts over (the quit's pause pair is the core's). */
 	memset(&g_as, 0, sizeof(g_as));
 	memset(&g_as_prev, 0, sizeof(g_as_prev));
 	g_as_primed = 0;
 	g_as_origin = RAC4_PLANET_MAINMENU;
 
 	/*
-	 * The quit hook goes in permanently and is never reverted: it is what tells
-	 * the session a quit is coming, and a game that is quitting is not a good
-	 * time to write four bytes back. Clear the flag byte right after, or a fresh
-	 * boot reads whatever was left in that page and the session quits instantly.
-	 *
-	 * The loading hook is the same deal and goes in beside it: it is what tells
-	 * the watcher the game is past the SCE logo and really playable again, which
-	 * is where a RESUME belongs. Its byte is cleared for the same reason.
-	 *
-	 * Neither goes in on a platform that cannot patch code. The session then
-	 * falls back to the process-vanished path for the quit, which still reaches
-	 * on_quit and still emits the PAUSE, and the RESUME above fires on the way
-	 * back in rather than on the logo.
+	 * Revision 1.26: the quit and loading hooks went in as the session started
+	 * (the core's boot patches, src/games/titles.c), where code can be patched.
 	 */
-	g_loading_hook_on = 0;
-
 	if (!plat_can_patch_code()) {
-		plat_log("rac4: quit and loading hooks skipped, this platform cannot patch code");
 		/*
 		 * Revision 1.24: the HUD's colours a client asked to have back at every
 		 * boot. They are WRITES_CODE here, so they wait for the look for the
@@ -637,13 +576,6 @@ static void rac4_on_enter(void)
 		features_apply_colors();
 		return;
 	}
-
-	patch_apply(&rac4_quit_hook);
-	mem_write_u8(RAC4_QUIT_FLAG, 0);
-
-	patch_apply(&rac4_loading_hook);
-	mem_write_u8(RAC4_LOADING_VAL, 0);
-	g_loading_hook_on = 1;
 
 	/*
 	 * Revision 1.24: qwark's HUD colour code, and then the colours a client
@@ -1214,18 +1146,7 @@ static const struct game_menu rac4_menu = {
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api rac4_game = {
-	{ "NPEA00423", NULL, NULL, NULL },
 	GAME_RAC4,
-
-	RAC4_FP_ADDR,
-	rac4_fp,
-	rac4_fp_patched,
-	GAME_FP_SWITCH(rac4_fp_switch),
-	NULL,                 /* the trampoline has never moved */
-	sizeof(rac4_fp),
-
-	RAC4_QUIT_FLAG,       /* the autosplitter's quit hook, installed on_enter */
-	RAC4_INPUTS,
 
 	rac4_init,
 
@@ -1262,7 +1183,7 @@ const struct game_api rac4_game = {
 	rac4_moby_table,
 
 	rac4_on_enter,
-	rac4_on_quit,         /* the autosplit PAUSE, on the way out of INGAME */
+	NULL,                 /* on_quit: the quit's PAUSE is the core's (titles.c) */
 	rac4_on_tick,
 
 	rac4_autosplit_describe,
@@ -1270,5 +1191,6 @@ const struct game_api rac4_game = {
 	&rac4_manips,         /* revision 1.21 */
 	rac4_planet_order,    /* build 53 */
 	&rac4_menu,           /* revision 1.22, round 2 */
-	GAME_FEATURE(R4_FAST_LOADS)  /* revision 1.23: the fast-loads combo's toggle */
+	GAME_FEATURE(R4_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
+	sf_desc_for_game      /* revision 1.26: the savefile helper the core installs */
 };

@@ -11,6 +11,7 @@
 
 #include "../plat/plat.h"
 #include "../core/proto.h"
+#include "module.h"
 
 /*
  * One contiguous read the tick thread performs for the game.
@@ -360,53 +361,19 @@ struct game_menu {
 #define GAME_SF_RESTORE   2
 
 struct game_api {
-	/* Up to four title ids, NULL-terminated. */
-	const char *title_ids[4];
+	/*
+	 * Revision 1.26: the title ids, the fingerprint, the quit hook and the pad
+	 * mask's address went to the title index (titles.h), which the core keeps
+	 * whether or not the game itself is loaded. What is left is the game's.
+	 */
 	u8 game_id;                     /* GAME_RAC1 .. GAME_RAC4 */
 
 	/*
-	 * Proof the executable is mapped: fp_len bytes at fp_addr must equal
-	 * fp_bytes, or fp_alt when that is not NULL. The alternative exists so a
-	 * console where another tool already patched the fingerprint site does not
-	 * stall in BOOTING for ever.
-	 *
-	 * Build 50: or fp_switch when that is not NULL. Three games' fingerprints
-	 * are instructions their code switches replace (src/games/switches/), so
-	 * under RPCS3 with the switch patch in, the site holds the branch into the
-	 * trampoline instead, and that proves the executable just as well. RaC1's
-	 * switch leaves its fingerprint alone and it has none. A console never
-	 * has the switch patch, so the games name it through GAME_FP_SWITCH below
-	 * and on the PS3 it is NULL (build 51).
-	 *
-	 * Build 53: or fp_switch_old when that is not NULL, the branch an earlier
-	 * build's switch patch put at the site before this build moved the
-	 * trampoline it goes to. A game with that patch is still the game; its
-	 * switches are from another build, which the switches' own look says
-	 * (src/core/switches.h), and the client offers to write the patch again.
-	 * Named through GAME_FP_SWITCH as well.
+	 * Called as the game arrives in a session, before on_enter (revision
+	 * 1.26: until then, as the registry first handed it out). A linked game
+	 * sets itself up the first time only; a game module, whose state area the
+	 * core zeroes before every load, at every load.
 	 */
-	u32 fp_addr;
-	const u8 *fp_bytes;
-	const u8 *fp_alt;
-	const u8 *fp_switch;
-	const u8 *fp_switch_old;
-	u16 fp_len;
-
-	/*
-	 * A game-side byte that goes non-zero when the player asked to quit, or 0
-	 * when no such hook is known. Without one the session falls back to
-	 * IS_INGAME plus the PID check.
-	 */
-	u32 quit_hook_addr;
-
-	/*
-	 * Where the controller mask lives. The core reads it out of the hot block,
-	 * but the host simulator needs the address on its own so its `pad` command
-	 * can drive combos.
-	 */
-	u32 pad_mask_addr;
-
-	/* Called once, the first time the registry hands this game out. */
 	void (*init)(void);
 
 	const struct game_hot_block *hot;
@@ -543,6 +510,13 @@ struct game_api {
 	 * leaves it out gets, is none, and the combo then says so.
 	 */
 	u8 fast_loads;
+
+	/*
+	 * Revision 1.26: the game's savefile helper as the core installs it
+	 * (src/games/sfhelper_bins.h), which the core used to look up itself:
+	 * sf_desc_for_game, in every game that has one. NULL for none.
+	 */
+	const struct sf_desc *(*savefile_desc)(u8 game_id);
 };
 
 /* A feature id in a game_api field where 0 means none: the id plus one. */
@@ -560,10 +534,14 @@ struct game_api {
 #define GAME_FP_SWITCH(fp) NULL
 #endif
 
+struct sf_desc;
+struct game_title;
+
 /*
- * The registry. Returns the first game registered for the title, or NULL for a
- * title qwark does not know. BCES01503 hosts three of them, so BOOTING asks for
- * the candidate list instead and fingerprints each one.
+ * The linked registry (games.c), in the builds whose games are linked in: a
+ * release module, the host builds and the tests. The first game of the title,
+ * or NULL for a title qwark does not know; BCES01503 hosts three, so the
+ * session fingerprints the title index's candidates (titles.h) instead.
  */
 const struct game_api *game_for_title(const char *title_id);
 
@@ -572,6 +550,11 @@ const struct game_api *game_for_title(const char *title_id);
  * Returns how many were written. Each candidate has had its init() run.
  */
 u32 game_candidates_for_title(const char *title_id, const struct game_api **out, u32 cap);
+
+/* A game's linked vtable, init() run; NULL for none. */
+const struct game_api *game_linked(u8 game_id);
+/* The title index's entry of a linked vtable. */
+const struct game_title *game_title_of(const struct game_api *g);
 
 /* At most this many games share one title id (BCES01503 hosts RaC1..RaC3). */
 #define GAME_MAX_CANDIDATES 4

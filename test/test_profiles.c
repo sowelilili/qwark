@@ -530,19 +530,19 @@ static void big_build(void)
 		snprintf(key, sizeof(key), "manip.%s.remember", keys[g]);        big_add(key, "1");
 		snprintf(key, sizeof(key), "manip.%s.category", keys[g]);        big_add(key, "4294967295");
 
-		for (t = 0; t < 4 && games[g]->title_ids[t] != NULL; t++) {
+		for (t = 0; t < 4 && game_title_of(games[g])->title_ids[t] != NULL; t++) {
 			for (i = 0; i < d->nfeatures; i++) {
 				const struct feature_desc *f = &d->features[i];
 
 				if (f->kind != FEATURE_TOGGLE && f->kind != FEATURE_COLOR) continue;
 				if ((f->flags & FEATURE_FLAG_LIVE) != 0) continue;
 				qslug(f->label, slug, sizeof(slug));
-				snprintf(key, sizeof(key), "%s.auto.%s", games[g]->title_ids[t], slug);
+				snprintf(key, sizeof(key), "%s.auto.%s", game_title_of(games[g])->title_ids[t], slug);
 				big_add(key, f->kind == FEATURE_COLOR ? "2181038079" : "1");
 			}
 			for (i = 0; i < d->nformer; i++) {
 				qslug(d->former[i].label, slug, sizeof(slug));
-				snprintf(key, sizeof(key), "%s.auto.%s", games[g]->title_ids[t], slug);
+				snprintf(key, sizeof(key), "%s.auto.%s", game_title_of(games[g])->title_ids[t], slug);
 				big_add(key, "1");
 			}
 		}
@@ -551,7 +551,7 @@ static void big_build(void)
 			char dir[32];
 			snprintf(dir, sizeof(dir), "mod-%02d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", i);
 			dir[31] = 0;
-			snprintf(key, sizeof(key), "%s.mod.%s.auto", games[g]->title_ids[0], dir);
+			snprintf(key, sizeof(key), "%s.mod.%s.auto", game_title_of(games[g])->title_ids[0], dir);
 			big_add(key, "1");
 		}
 	}

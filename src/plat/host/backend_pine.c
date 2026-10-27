@@ -1046,6 +1046,13 @@ int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
 	return -1;
 }
 
+/* Revision 1.26: no game modules under RPCS3; its games are linked in. */
+int plat_prx_load(const char *path) { (void)path; return -1; }
+int plat_prx_start(int id, void *args, u32 size, int *modres) { (void)id; (void)args; (void)size; *modres = 1; return -1; }
+int plat_prx_stop(int id, void *args, u32 size, int *modres) { (void)id; (void)args; (void)size; *modres = 0; return -1; }
+int plat_prx_unload(int id) { (void)id; return -1; }
+int plat_prx_contains(int id, const void *p, u32 len) { (void)id; (void)p; (void)len; return -1; }
+
 int plat_mem_read(u32 pid, u32 addr, void *buf, u32 len)
 {
 	(void)pid;

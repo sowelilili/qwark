@@ -146,4 +146,19 @@ void host_set_vsh_memory(u32 free_bytes, u32 total_bytes);
 void host_set_user(u32 user);
 void host_set_has_users(int on);
 
+/*
+ * Revision 1.26, game modules. The simulator's loader (backend_fake.c) takes
+ * a "module" file of its own making: a SELF header the core reads its pages
+ * from, then a line naming the game, the build and the build ID, and,
+ * optionally, a load failure to answer with (`fail`, a CELL error, 0 none).
+ * host_write_fake_module writes one at `path` on the fake HDD; a `pages` of
+ * 0 writes a file with no SELF header at all. Loading a module takes its pages
+ * off the fake VSH's free memory (host_set_vsh_memory) and unloading gives
+ * them back, and an unloaded module's vtable is overwritten with 0xA5 bytes,
+ * so anything the core still holds of it fails at once.
+ */
+int  host_write_fake_module(const char *path, u8 game, u32 build, u32 build_id, u8 pages, u32 fail);
+u32  host_fake_modules_loaded(void);
+u32  host_fake_module_loads(void);
+
 #endif /* QWARK_PLAT_HOST_H */

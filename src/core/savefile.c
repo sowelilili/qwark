@@ -262,8 +262,9 @@ static const struct sf_desc *desc_now(void)
 {
 	const struct game_api *g = session_game();
 
-	if (g == NULL) return NULL;
-	return sf_desc_for_game(g->game_id);
+	/* Revision 1.26: the game's own table (game modules carry theirs). */
+	if (g == NULL || g->savefile_desc == NULL) return NULL;
+	return g->savefile_desc(g->game_id);
 }
 
 /*
