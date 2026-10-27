@@ -338,6 +338,8 @@ int tod_trigger(u8 id)
 	case TF_RESET_SP:    return skill_points_all(0);
 	case TF_UNLOCK_GB:   return gold_bolts_all(1);
 	case TF_RESET_GB:    return gold_bolts_all(0);
+	case TF_SET_ASIDE:   return tod_set_aside();
+	case TF_LOAD_ASIDE:  return tod_load_aside();
 	default:             return ST_NOT_FOUND;
 	}
 }

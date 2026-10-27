@@ -217,6 +217,112 @@ static u32 peek32(u32 addr)
 	return be32_get(b);
 }
 
+/*
+ * Revision 1.28 (pending): ToD's save system (docs/tod-savefile.md), as the
+ * game's boot leaves it once its check has run: g_saveSystem pointing at the
+ * manager, the manager idle with no thread, no slot yet, and g_saveData and the
+ * manager's file image both holding a save (weapon slot i's id is i, level 1).
+ */
+static void tod_save_header(u32 base, u32 level)
+{
+	u32 i;
+
+	for (i = 0; i < 4; i++) poke32(base + i * TOD_WEAPON_STRIDE, i);
+	poke32(base + TOD_SAVE_LEVEL_OFF, level);
+	poke32(base + TOD_SAVE_CHAL_OFF, 0);
+}
+
+static void tod_thread_none(u32 thread)
+{
+	poke32(TOD_SAVE_MANAGER + thread + TOD_ST_ID, 0);
+	poke32(TOD_SAVE_MANAGER + thread + TOD_ST_ID + 4, TOD_THREAD_NONE);
+	poke32(TOD_SAVE_MANAGER + thread + TOD_ST_STATE, 0);
+}
+
+/* Under g_mem_lock. */
+static void seed_tod_save(void)
+{
+	poke32(TOD_SAVE_SYSTEM, TOD_SAVE_MANAGER);
+	poke32(TOD_SAVE_MANAGER, TOD_SAVE_VTABLE);
+	tod_thread_none(TOD_SM_SAVE_THREAD);
+	tod_thread_none(TOD_SM_LOAD_THREAD);
+	tod_thread_none(TOD_SM_DELETE_THREAD);
+	poke32(TOD_SAVE_MANAGER + TOD_SM_STATE, TOD_SS_IDLE);
+	poke32(TOD_SAVE_MANAGER + TOD_SM_SLOT, 0xFFFFFFFFu);
+	poke32(TOD_SAVE_MANAGER + TOD_SM_RESULT, 0);
+	poke32(TOD_SAVE_MANAGER + TOD_SM_AUTOSAVE, 0);
+	tod_save_header(TOD_SAVE_DATA, 1);
+	tod_save_header(TOD_SAVE_IMAGE, 1);
+}
+
+static u8 g_tod_copy[TOD_SAVE_SIZE];
+
+/*
+ * One frame of SaveSystem_update, as far as the save manager's own words go
+ * (src/games/tod_save.c's model of it): no thread is ever real here, so a load
+ * thread id that is not none is one sys_ppu_thread_get_priority answers ESRCH
+ * for, and its state 5 is applied as SaveManager_onLoaded does - the image
+ * into g_saveData, then LoadLevel(level, 1, 0), which in gameplay is the load
+ * request. Idle with an autosave asked for and a slot, it saves: g_saveData
+ * into the image (SaveManager_copyForSave). Returns 1 when it loaded.
+ */
+int host_fake_tod_save_frame(void)
+{
+	u32 state, lt = TOD_SAVE_MANAGER + TOD_SM_LOAD_THREAD;
+	int loaded = 0;
+
+	pthread_mutex_lock(&g_mem_lock);
+	if (!g_game_running || g_boot_game == NULL || g_boot_game->game_id != GAME_TOD ||
+	    peek32(TOD_SAVE_SYSTEM) != TOD_SAVE_MANAGER) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+
+	state = peek32(TOD_SAVE_MANAGER + TOD_SM_STATE);
+	if (state == TOD_SS_LOADING) {
+		if (peek32(lt + TOD_ST_ID + 4) != TOD_THREAD_NONE || peek32(lt + TOD_ST_ID) != 0) {
+			if (peek32(lt + TOD_ST_STATE) == TOD_LT_READ_OK) {
+				u32 level;
+
+				mem_access(TOD_SAVE_IMAGE, g_tod_copy, TOD_SAVE_SIZE, 0);
+				mem_access(TOD_SAVE_DATA, g_tod_copy, TOD_SAVE_SIZE, 1);
+				level = peek32(TOD_SAVE_DATA + TOD_SAVE_LEVEL_OFF);
+				if (peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY) poke32(TOD_LOAD_REQUEST, level);
+				poke32(lt + TOD_ST_STATE, 0);
+				loaded = 1;
+			}
+			poke32(lt + TOD_ST_ID, 0);
+			poke32(lt + TOD_ST_ID + 4, TOD_THREAD_NONE);
+		}
+		poke32(TOD_SAVE_MANAGER + TOD_SM_STATE, TOD_SS_IDLE);
+	} else if (state == 2 || state == 4) {
+		poke32(TOD_SAVE_MANAGER + TOD_SM_STATE, TOD_SS_IDLE);
+	} else if (state == TOD_SS_IDLE && peek32(TOD_SAVE_MANAGER + TOD_SM_AUTOSAVE) != 0 &&
+	           peek32(TOD_SAVE_MANAGER + TOD_SM_SLOT) != 0xFFFFFFFFu) {
+		mem_access(TOD_SAVE_DATA, g_tod_copy, TOD_SAVE_SIZE, 0);
+		mem_access(TOD_SAVE_IMAGE, g_tod_copy, TOD_SAVE_SIZE, 1);
+		poke32(TOD_SAVE_MANAGER + TOD_SM_AUTOSAVE, 0);
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+	return loaded;
+}
+
+/*
+ * The game's own save into `slot`, as a save from its menu or an autosave
+ * leaves it: g_saveData into the image, the slot noted. -1 is a new game's
+ * "no slot yet" again.
+ */
+void host_fake_tod_saved(u32 slot)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	if (slot != 0xFFFFFFFFu) {
+		mem_access(TOD_SAVE_DATA, g_tod_copy, TOD_SAVE_SIZE, 0);
+		mem_access(TOD_SAVE_IMAGE, g_tod_copy, TOD_SAVE_SIZE, 1);
+	}
+	poke32(TOD_SAVE_MANAGER + TOD_SM_SLOT, slot);
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
 /* Under g_mem_lock. */
 static void seed_tod(void)
 {
@@ -232,6 +338,7 @@ static void seed_tod(void)
 	poke32(FAKE_TOD_HERO + TOD_HERO_HEALTH, 0x41200000u);       /* 10.0f */
 	poke32(FAKE_TOD_HERO + TOD_HERO_MAX_HEALTH, 0x41200000u);
 	poke32(TOD_LUA_STATE, FAKE_TOD_STATE);
+	seed_tod_save();
 
 	if (d == NULL) return;
 	for (i = 0; i < d->nhooks; i++) poke32(d->hooks[i].addr, d->hooks[i].orig);
@@ -328,6 +435,7 @@ int host_fake_lua_frame(void)
 }
 
 static volatile int g_fake_lua_on;
+static volatile int g_fake_save_on;
 static int g_fake_lua_started;
 static pthread_t g_fake_lua_thread;
 
@@ -336,9 +444,26 @@ static void *fake_lua_loop(void *arg)
 	(void)arg;
 	for (;;) {
 		if (g_fake_lua_on) host_fake_lua_frame();
+		if (g_fake_save_on) host_fake_tod_save_frame();
 		plat_sleep_us(16000);
 	}
 	return NULL;
+}
+
+static void fake_frames_start(void)
+{
+	if (!g_fake_lua_started) {
+		g_fake_lua_started = 1;
+		pthread_create(&g_fake_lua_thread, NULL, fake_lua_loop, NULL);
+		pthread_detach(g_fake_lua_thread);
+	}
+}
+
+/* Revision 1.28 (pending): ToD's save system a frame every 16 ms, on the same thread. */
+void host_set_fake_tod_save(int on)
+{
+	g_fake_save_on = on ? 1 : 0;
+	if (on) fake_frames_start();
 }
 
 /* A gameplay frame every 16 ms from a thread of its own, for the simulator. */

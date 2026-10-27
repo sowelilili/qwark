@@ -92,6 +92,14 @@ int savefile_enabled(void)
 struct sf_request {
 	u8  armed;
 	/*
+	 * Revision 1.28 (pending): how many ticks the request has been out, which
+	 * a game whose helper is its own save system (struct sf_driver) is handed
+	 * to tell a load that is late from one the game will never take.
+	 */
+#if QWARK_HAS_TOD
+	u16 age;
+#endif
+	/*
 	 * Build 43. The helper answered this request with SAVEFILE_HELPER_REFUSED
 	 * instead of doing the work: the game was not idle on the frame it saw it.
 	 * Set when the byte is read back, cleared when the next request goes out,
@@ -175,9 +183,48 @@ typedef char savefile_copy_chunk_fits[SAVEFILE_COPY_CHUNK <= QSCRATCH_BYTES ? 1 
 static void request_clear(struct sf_request *r)
 {
 	r->armed = 0;
+#if QWARK_HAS_TOD
+	r->age = 0;
+#endif
 	r->settle = 0;
 	r->refused = 0;
 }
+
+/*
+ * Revision 1.28 (pending): the running game's own save system, where its
+ * savefile helper is that and no code of qwark's (savefile.h, struct
+ * sf_driver). Only where QWARK_HAS_TOD: everywhere else it is a constant NULL
+ * and every branch on it folds away.
+ */
+#if QWARK_HAS_TOD
+static const struct sf_driver *drv_now(void)
+{
+	const struct game_api *g = session_game();
+
+	return g != NULL ? g->savefile_driver : NULL;
+}
+#else
+static __inline const struct sf_driver *drv_now(void) { return NULL; }
+#endif
+
+/* Puts the game's save system back where qwark held it, if the game is still there. */
+#if QWARK_HAS_TOD
+static void drv_release(void)
+{
+	const struct sf_driver *drv = drv_now();
+
+	if (drv != NULL && mem_is_ingame()) drv->release();
+}
+#else
+#define drv_release() ((void)0)
+#endif
+
+/*
+ * Revision 1.28 (pending): the title's set-aside file, a STORE or RESTORE with
+ * no category (struct sf_driver, aside_file). A constant 0 in a release, which
+ * has no game that keeps one, so the branches for it fold away.
+ */
+#define SF_ASIDE_FILES QWARK_HAS_TOD
 
 /*
  * Build 43. Whether the running game is somewhere a set-aside or a load may
@@ -223,6 +270,13 @@ static void xfer_stop(u8 error)
 	if (error != SAVEFILE_ERR_NONE && g_xfer.state == SF_STORE_COPY) {
 		plat_file_unlink(g_xfer.path);
 	}
+
+	/*
+	 * Revision 1.28 (pending): a game whose own save system was held for the
+	 * copy has it back, whichever way the copy ended. A RESTORE whose load went
+	 * out has already handed it back to the game's loader, and that is left be.
+	 */
+	if (g_xfer.state != SF_IDLE) drv_release();
 
 	g_xfer.state = SF_IDLE;
 	g_xfer.crc   = 0;
@@ -373,7 +427,11 @@ static int gate_as(const struct sf_desc **out, int look)
 	d = desc_now();
 	if (d == NULL) return ST_UNSUPPORTED;
 
-	if (!plat_can_patch_code()) {
+	/*
+	 * Revision 1.28 (pending): a game whose helper is its own save system has
+	 * no code to look for, under RPCS3 or anywhere else.
+	 */
+	if (!plat_can_patch_code() && drv_now() == NULL) {
 		if (look) present_look(d);
 		if (g_present < 0) return ST_BUSY;
 		if (!g_present) return ST_UNSUPPORTED;
@@ -394,6 +452,8 @@ static int gate(const struct sf_desc **out)
  */
 static int helper_in(void)
 {
+	/* Revision 1.28 (pending): the game's own save system is always in. */
+	if (drv_now() != NULL) return 1;
 	if (plat_can_patch_code()) return g_installed != 0;
 	return g_present == 1;
 }
@@ -442,6 +502,9 @@ int savefile_install(void)
 
 	if (rc != ST_OK) return rc;
 	if (g_installed) return ST_OK;
+
+	/* Revision 1.28 (pending): nothing to write for a game's own save system. */
+	if (drv_now() != NULL) return ST_OK;
 
 	/*
 	 * Build 47. Where code cannot be patched the gate has already found the
@@ -542,6 +605,24 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 	*size = d->aside_size;
 
 	/*
+	 * Revision 1.28 (pending): a game whose helper is its own save system is
+	 * installed on every platform, running while that system is up, and has
+	 * no request bytes of its own to read: what is pending is what qwark asked.
+	 */
+	{
+		const struct sf_driver *drv = drv_now();
+
+		if (drv != NULL) {
+			*installed = 1;
+			*running = drv->running() ? 1 : 0;
+			if (g_set_aside.armed) *pending |= SAVEFILE_PENDING_SET_ASIDE;
+			if (g_load.armed) *pending |= SAVEFILE_PENDING_LOAD;
+			if (g_xfer.state != SF_IDLE) *pending |= SAVEFILE_PENDING_TRANSFER;
+			return ST_OK;
+		}
+	}
+
+	/*
 	 * Build 47. Where code cannot be patched this used to be UNSUPPORTED before
 	 * anything else was asked. It answers now, and `installed` is whether an
 	 * RPCS3 patch put the helper in when the game loaded - which is how a client
@@ -606,11 +687,27 @@ void savefile_transfer(u32 *done, u32 *total, u8 *error)
  */
 static void request_tick(struct sf_request *r, u32 addr)
 {
+	const struct sf_driver *drv = drv_now();
 	u8 byte = 0;
 
 	if (!r->armed) return;
+#if QWARK_HAS_TOD
+	if (r->age < 0xFFFFu) r->age++;
+#endif
 
-	if (mem_read_u8(addr, &byte) != ST_OK) return;
+	/*
+	 * Revision 1.28 (pending): a game whose helper is its own save system has
+	 * no request byte. Its set-aside is done the moment it is asked (the aside
+	 * buffer already is the game's last save), and its load says how it is
+	 * going through the driver, in the byte's own values.
+	 */
+	if (drv != NULL) {
+#if QWARK_HAS_TOD
+		byte = r == &g_load ? drv->load_poll(r->age) : 0;
+#endif
+	} else if (mem_read_u8(addr, &byte) != ST_OK) {
+		return;
+	}
 
 	/*
 	 * Build 43. The helper dropped the request: the game was not idle on the
@@ -624,7 +721,7 @@ static void request_tick(struct sf_request *r, u32 addr)
 	if (byte == SAVEFILE_HELPER_REFUSED || byte == SAVEFILE_HELPER_NO_SAVE) {
 		u8 why = byte == SAVEFILE_HELPER_REFUSED ? SAVEFILE_ERR_NOT_IDLE : SAVEFILE_ERR_NO_SAVE;
 
-		mem_write_u8(addr, 0);
+		if (drv == NULL) mem_write_u8(addr, 0);
 		request_clear(r);
 		r->refused = why;
 		g_xfer.error = why;
@@ -684,8 +781,21 @@ static void xfer_tick(const struct sf_desc *d)
 	 * call and never held across a return to the tick loop: see util.h.
 	 */
 	u8 *copy = qscratch();
+	const struct sf_driver *drv = drv_now();
 	u32 chunks;
 	int rc;
+
+	/*
+	 * Revision 1.28 (pending): a copy into or out of a game's own save buffer
+	 * goes on only while qwark still holds that save system. A save or a load
+	 * of the game's that slipped in under the hold would be writing the same
+	 * buffer, so the copy stops rather than store or load a mixture.
+	 */
+	if (drv != NULL && (g_xfer.state == SF_STORE_COPY || g_xfer.state == SF_RESTORE_COPY) &&
+	    !drv->holding()) {
+		xfer_stop(SAVEFILE_ERR_NOT_IDLE);
+		return;
+	}
 
 	switch (g_xfer.state) {
 
@@ -825,7 +935,7 @@ void savefile_tick(void)
 	 * they need the answer to be there already. Once it has one this is a
 	 * comparison a tick, and on a console a comparison and a call.
 	 */
-	if (g_present < 0 && !plat_can_patch_code()) present_look(desc_now());
+	if (g_present < 0 && !plat_can_patch_code() && drv_now() == NULL) present_look(desc_now());
 
 	if (!g_set_aside.armed && !g_load.armed && g_xfer.state == SF_IDLE) return;
 
@@ -910,10 +1020,38 @@ static u8 aside_ready(const struct sf_desc *d)
 /* Build 53: the game's test for a load, then aside_ready's. */
 static u8 load_ready(const struct sf_desc *d)
 {
+	const struct sf_driver *drv = drv_now();
 	u8 why = game_ready(GAME_SF_LOAD);
 
-	return why != SAVEFILE_ERR_NONE ? why : aside_ready(d);
+	if (why != SAVEFILE_ERR_NONE) return why;
+	/*
+	 * Revision 1.28 (pending): a game's own save buffer has no empty state for
+	 * the helper to fall back from, so whatever is in it is asked about, not
+	 * only what qwark put there.
+	 */
+	return drv != NULL ? drv->aside_ok() : aside_ready(d);
 }
+
+/*
+ * Revision 1.28 (pending). What a set-aside, or a STORE, would be refused for:
+ * the game's test, except that a game whose helper is its own save system and
+ * which has no save of its own yet still has one to store when qwark loaded
+ * it into the buffer itself (a RESTORE in this process) and the game has not
+ * written over it.
+ */
+#if QWARK_HAS_TOD
+static u8 set_aside_ready(void)
+{
+	const struct sf_driver *drv = drv_now();
+	u8 why = game_ready(GAME_SF_SET_ASIDE);
+
+	if (why == SAVEFILE_ERR_NO_SAVE && drv != NULL && g_aside_ours &&
+	    drv->aside_ok() == SAVEFILE_ERR_NONE) why = SAVEFILE_ERR_NONE;
+	return why;
+}
+#else
+#define set_aside_ready() game_ready(GAME_SF_SET_ASIDE)
+#endif
 
 /*
  * Build 53. The front of a set-aside or load somebody asked for - the two
@@ -967,8 +1105,22 @@ static int request(int load, int own)
 	 * pressed the button, instead of a request that quietly comes to nothing.
 	 * Build 53: or that has no save to act on (SAVEFILE_ERR_NO_SAVE).
 	 */
-	why = load ? load_ready(d) : game_ready(GAME_SF_SET_ASIDE);
+	/*
+	 * Revision 1.28 (pending): a game whose helper is its own save system
+	 * loads only from a hold on that system, which a RESTORE already has and
+	 * any other load takes here, before it asks the game anything.
+	 */
+	if (drv_now() != NULL && load && !own) {
+		why = drv_now()->hold();
+		if (why != SAVEFILE_ERR_NONE) {
+			g_xfer.error = why;
+			return ST_BUSY;
+		}
+	}
+
+	why = load ? load_ready(d) : set_aside_ready();
 	if (why != SAVEFILE_ERR_NONE) {
+		if (load && !own) drv_release();
 		g_xfer.error = why;
 		return ST_BUSY;
 	}
@@ -976,8 +1128,21 @@ static int request(int load, int own)
 	rc = savefile_install();
 	if (rc != ST_OK) return rc;
 
-	rc = mem_write_u8(load ? d->api_load : d->api_setaside, 1);
-	if (rc != ST_OK) return rc;
+	if (drv_now() != NULL) {
+		/*
+		 * The set-aside has nothing to do: the aside buffer is the game's
+		 * own last save. The load hands the buffer to the game's loader.
+		 */
+		why = load ? drv_now()->load() : SAVEFILE_ERR_NONE;
+		if (why != SAVEFILE_ERR_NONE) {
+			if (!own) drv_release();
+			g_xfer.error = why;
+			return ST_BUSY;
+		}
+	} else {
+		rc = mem_write_u8(load ? d->api_load : d->api_setaside, 1);
+		if (rc != ST_OK) return rc;
+	}
 
 	/*
 	 * Pending from here, not from the first tick that reads the byte back. The
@@ -986,13 +1151,52 @@ static int request(int load, int own)
 	 */
 	r = load ? &g_load : &g_set_aside;
 	r->armed = 1;
+#if QWARK_HAS_TOD
+	r->age = 0;
+#endif
 	r->settle = 0;
 	r->refused = 0;
 	return ST_OK;
 }
 
-int savefile_set_aside(void) { return request(0, 0); }
-int savefile_load_aside(void) { return request(1, 0); }
+#if QWARK_HAS_TOD
+#define SF_FILE_FN static
+#else
+#define SF_FILE_FN
+#define store_file savefile_store
+#define restore_file savefile_restore
+#endif
+SF_FILE_FN int store_file(const char *category, const char *name);
+SF_FILE_FN int restore_file(const char *category, const char *name);
+
+/*
+ * The two flagged ACTIONs. Revision 1.28 (pending): for a game that keeps its
+ * set-aside on the HDD (struct sf_driver, aside_file), a STORE into the title's
+ * set-aside file and a RESTORE of it, each with `error` started afresh as a
+ * request's is.
+ */
+#if QWARK_HAS_TOD
+static int aside_on_disk(void)
+{
+	const struct sf_driver *drv = drv_now();
+
+	return drv != NULL && drv->aside_file;
+}
+#else
+#define aside_on_disk() 0
+#endif
+
+int savefile_set_aside(void)
+{
+	if (aside_on_disk()) return store_file(NULL, NULL);
+	return request(0, 0);
+}
+
+int savefile_load_aside(void)
+{
+	if (aside_on_disk()) return restore_file(NULL, NULL);
+	return request(1, 0);
+}
 
 int savefile_load_ready(void)
 {
@@ -1058,6 +1262,12 @@ int savefile_patch(u8 *out, u32 cap, u32 *len)
 
 	d = desc_now();
 	if (d == NULL) return ST_UNSUPPORTED;
+
+	/*
+	 * Revision 1.28 (pending): a game whose helper is its own save system has
+	 * nothing for RPCS3 to patch in; INFO says it is installed already.
+	 */
+	if (drv_now() != NULL) return ST_UNSUPPORTED;
 
 	for (i = 0; i < d->ncaves; i++) n += cave_words(&d->caves[i]);
 	n += d->nhooks;
@@ -1259,12 +1469,15 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 
 	rc = gate(d);
 	if (rc != ST_OK) return rc;
-	if (!savefile_name_ok(category) || !savefile_name_ok(name)) return ST_BAD_ARG;
-	/*
-	 * The listing only reports <name>.sav, so a file stored under any other name
-	 * would be one the client could never see again. Refuse it here instead.
-	 */
-	if (!has_sav_ext(name)) return ST_BAD_ARG;
+	/* Revision 1.28 (pending): no category is the title's set-aside file, qwark's own name. */
+	if (!SF_ASIDE_FILES || category != NULL) {
+		if (!savefile_name_ok(category) || !savefile_name_ok(name)) return ST_BAD_ARG;
+		/*
+		 * The listing only reports <name>.sav, so a file stored under any other
+		 * name would be one the client could never see again. Refuse it here.
+		 */
+		if (!has_sav_ext(name)) return ST_BAD_ARG;
+	}
 
 	if (buffer_busy()) {
 		g_xfer.error = SAVEFILE_ERR_BUSY;
@@ -1278,7 +1491,7 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 	 * load nothing was going to take. Build 53: a STORE of a game with no save
 	 * yet is refused here too, with SAVEFILE_ERR_NO_SAVE.
 	 */
-	why = game_ready(what);
+	why = SF_ASIDE_FILES && what == GAME_SF_SET_ASIDE ? set_aside_ready() : game_ready(what);
 	if (why != SAVEFILE_ERR_NONE) {
 		g_xfer.error = why;
 		return ST_BUSY;
@@ -1286,6 +1499,45 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 
 	return ST_OK;
 }
+
+/*
+ * Revision 1.28 (pending): a file of the library, or with `category` NULL the
+ * title's set-aside file, <QWARK_SAVEDIR>/<TITLEID>/SAVEFILE_ASIDE_FILE.
+ */
+#if QWARK_HAS_TOD
+static void transfer_path(char *out, u32 cap, const char *category, const char *name)
+{
+	if (!SF_ASIDE_FILES || category != NULL) {
+		save_path(out, cap, category, name);
+		return;
+	}
+	save_path(out, cap, NULL, NULL);
+	qstrcat(out, cap, "/" SAVEFILE_ASIDE_FILE);
+}
+#else
+#define transfer_path(out, cap, category, name) save_path(out, cap, category, name)
+#endif
+
+/*
+ * Revision 1.28 (pending): a game whose helper is its own save system has it
+ * held for the length of a copy, BUSY with the game's reason when it will not
+ * be. xfer_stop gives it back.
+ */
+#if QWARK_HAS_TOD
+static int transfer_hold(void)
+{
+	const struct sf_driver *drv = drv_now();
+	u8 why;
+
+	if (drv == NULL) return ST_OK;
+	why = drv->hold();
+	if (why == SAVEFILE_ERR_NONE) return ST_OK;
+	g_xfer.error = why;
+	return ST_BUSY;
+}
+#else
+#define transfer_hold() ST_OK
+#endif
 
 static void xfer_begin(u8 state, u32 total, const char *path)
 {
@@ -1297,7 +1549,12 @@ static void xfer_begin(u8 state, u32 total, const char *path)
 	qstrcpy(g_xfer.path, sizeof(g_xfer.path), path);
 }
 
-int savefile_store(const char *category, const char *name)
+/*
+ * SAVEFILE_STORE's body. Revision 1.28 (pending): `category` NULL stores into
+ * the title's set-aside file instead (transfer_path), for a game that keeps its
+ * set-aside on the HDD (struct sf_driver, aside_file).
+ */
+SF_FILE_FN int store_file(const char *category, const char *name)
 {
 	const struct sf_desc *d;
 	char path[SAVEFILE_PATH_MAX];
@@ -1309,10 +1566,16 @@ int savefile_store(const char *category, const char *name)
 	plat_dir_create(QWARK_SAVEDIR);
 	save_path(path, sizeof(path), NULL, NULL);
 	plat_dir_create(path);
-	save_path(path, sizeof(path), category, NULL);
-	plat_dir_create(path);
+	if (!SF_ASIDE_FILES || category != NULL) {
+		save_path(path, sizeof(path), category, NULL);
+		plat_dir_create(path);
+	}
 
-	save_path(path, sizeof(path), category, name);
+	/* Revision 1.28 (pending): a game's own save system is held for the copy. */
+	rc = transfer_hold();
+	if (rc != ST_OK) return rc;
+
+	transfer_path(path, sizeof(path), category, name);
 	xfer_begin(SF_STORE_SETTLE, d->aside_size, path);
 
 	/*
@@ -1331,7 +1594,8 @@ int savefile_store(const char *category, const char *name)
 	return ST_OK;
 }
 
-int savefile_restore(const char *category, const char *name)
+/* SAVEFILE_RESTORE's body; `category` NULL is the set-aside file, as for store_file. */
+SF_FILE_FN int restore_file(const char *category, const char *name)
 {
 	const struct sf_desc *d;
 	char path[SAVEFILE_PATH_MAX];
@@ -1342,9 +1606,18 @@ int savefile_restore(const char *category, const char *name)
 
 	if (rc != ST_OK) return rc;
 
-	save_path(path, sizeof(path), category, name);
+	transfer_path(path, sizeof(path), category, name);
 
 	if (!plat_path_exists(path, &is_dir, &size) || is_dir) {
+		/*
+		 * Revision 1.28 (pending): no set-aside file is nothing set aside yet,
+		 * which the load-set-aside button reports as error 7 like the other
+		 * games' empty aside buffer, not as a file the library lost.
+		 */
+		if (SF_ASIDE_FILES && category == NULL) {
+			g_xfer.error = SAVEFILE_ERR_NO_SAVE;
+			return ST_BUSY;
+		}
 		g_xfer.error = SAVEFILE_ERR_MISSING;
 		return ST_NOT_FOUND;
 	}
@@ -1367,6 +1640,7 @@ int savefile_restore(const char *category, const char *name)
 	/* A valid restore needs the game-side loader. Metadata queries and missing
 	 * or invalid files must not install code as a side effect. */
 	rc = savefile_install();
+	if (rc == ST_OK) rc = transfer_hold();   /* revision 1.28 (pending) */
 	if (rc != ST_OK) {
 		plat_file_close(f);
 		return rc;
@@ -1379,6 +1653,20 @@ int savefile_restore(const char *category, const char *name)
 	plat_log("savefile: restore %s", g_xfer.path);
 	return ST_OK;
 }
+
+#if QWARK_HAS_TOD
+int savefile_store(const char *category, const char *name)
+{
+	if (SF_ASIDE_FILES && (category == NULL || name == NULL)) return ST_BAD_ARG;
+	return store_file(category, name);
+}
+
+int savefile_restore(const char *category, const char *name)
+{
+	if (SF_ASIDE_FILES && (category == NULL || name == NULL)) return ST_BAD_ARG;
+	return restore_file(category, name);
+}
+#endif
 
 /* ------------------------------------------- the library ops, network thread */
 

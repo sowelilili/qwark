@@ -19,6 +19,9 @@
  *   fakelua on|off        the simulated ToD's Lua helper runs a frame every
  *                         16 ms (revision 1.27)
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
+ *   fakesave on|off       the simulated ToD's save system runs a frame every
+ *                         16 ms and takes qwark's loads (revision 1.28, pending)
+ *   fakesave slot <n>|-1  the simulated ToD saved into slot n (or has none)
  *   status                one line of session state
  *   exit                  shut down
  *
@@ -283,6 +286,34 @@ static void handle_line(char *line, int *keep_running)
 		} else {
 			host_set_lua_patch(qstreq(on, "on"));
 			printf("ok luapatch %s\n", on);
+		}
+
+	} else if (qstreq(cmd, "fakesave")) {
+		/*
+		 * Revision 1.28 (pending): `fakesave on` runs the simulated ToD's save
+		 * system a frame every 16 ms (it takes qwark's loads), and `fakesave
+		 * slot <n>` is the game's own save into slot n (-1 for none).
+		 */
+		char *on = next_token(&cursor);
+
+		if (on != NULL && qstreq(on, "slot")) {
+			char *n_s = next_token(&cursor);
+			int ok = 0;
+			u32 n = 0xFFFFFFFFu;
+
+			if (n_s != NULL && qstreq(n_s, "-1")) ok = 1;
+			else if (n_s != NULL) n = qparse_u32(n_s, &ok);
+			if (!ok) {
+				printf("usage: fakesave slot <n>|-1\n");
+			} else {
+				host_fake_tod_saved(n);
+				printf("ok fakesave slot %s\n", n_s);
+			}
+		} else if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off"))) {
+			printf("usage: fakesave on|off|slot <n>\n");
+		} else {
+			host_set_fake_tod_save(qstreq(on, "on"));
+			printf("ok fakesave %s\n", on);
 		}
 
 	} else if (qstreq(cmd, "status")) {

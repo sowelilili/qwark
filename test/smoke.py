@@ -5414,6 +5414,133 @@ def smoke_tod_level_flags(c):
     mem_write(c, TOD_LF, bytes(40))
 
 
+# ToD's save system (revision 1.28, pending; docs/tod-savefile.md, src/games/tod_save.c).
+TOD_SAVE_SYSTEM = 0x1074D400
+TOD_SAVE_MANAGER = 0x1029C560
+TOD_SAVE_VTABLE = 0x10071C60
+TOD_SAVE_IMAGE = 0x102BC268
+TOD_SAVE_DATA = 0x1020BE70
+TOD_SAVE_SIZE = 0x906F0
+TOD_SM_STATE = TOD_SAVE_MANAGER + 0xE0
+TOD_SM_SLOT = TOD_SAVE_MANAGER + 0xEC
+TOD_SM_AUTOSAVE = TOD_SAVE_MANAGER + 0x104
+TOD_LOAD_THREAD = TOD_SAVE_MANAGER + 0x20
+TOD_SS_HELD = 0x5157484C
+TOD_SET_ASIDE = 40
+TOD_LOAD_ASIDE = 41
+
+
+def tod_wait_transfer(c, timeout=6.0):
+    """INFO once nothing is pending, the way the client's transfer loop polls it."""
+    end = time.monotonic() + timeout
+    info = savefile_info(c)
+    while info is not None and info["pending"] != 0 and time.monotonic() < end:
+        time.sleep(0.02)
+        info = savefile_info(c)
+    return info
+
+
+def smoke_tod_savefile(c, sim):
+    """ToD's savefile manager on the simulator: the game's own save system, data writes alone."""
+    sim.send("fakesave on")
+    info = savefile_info(c)
+    check(info is not None and info["supported"] == 1 and info["installed"] == 1 and info["running"] == 1 and
+          info["size"] == TOD_SAVE_SIZE, "ToD: SAVEFILE_INFO: installed and running, 0x906F0 bytes", info)
+    status, _ = c.call(OP_SAVEFILE_PATCH)
+    check(status == ST_UNSUPPORTED, "ToD: SAVEFILE_PATCH, nothing to patch", status)
+
+    sim.send("fakesave slot -1")
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_SET_ASIDE]))
+    info = savefile_info(c)
+    check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NO_SAVE,
+          "ToD: Set aside with no save yet is BUSY, error 7", (status, info))
+
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 1111))
+    sim.send("fakesave slot 3")
+    time.sleep(0.1)
+    status, _ = c.call(OP_SAVEFILE_CATEGORY, bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32("smoke"))
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32("smoke") + fixed32("tod.sav"))
+    check(status == ST_OK, "ToD: SAVEFILE_STORE is accepted", status)
+    info = tod_wait_transfer(c)
+    check(info is not None and info["pending"] == 0 and info["error"] == 0 and info["total"] == TOD_SAVE_SIZE,
+          "ToD: and stores the whole image", info)
+    check(mem_read_u32(c, TOD_SM_STATE) == 1, "ToD: the save system is idle again")
+    status, body = c.call(OP_SAVEFILE_LIST, fixed32("smoke"))
+    names, _ = savefile_names(body, SAVEFILE_ROW_SIZE) if status == ST_OK else ([], None)
+    check(status == ST_OK and "tod.sav" in names, "ToD: SAVEFILE_LIST lists it", names)
+
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_SET_ASIDE]))
+    info = tod_wait_transfer(c)
+    check(status == ST_OK and info and info["error"] == 0, "ToD: Set aside stores the set-aside file", (status, info))
+    status, body = c.call(OP_SAVEFILE_CATEGORIES)
+    names, _ = savefile_names(body, SAVEFILE_NAME_LEN) if status == ST_OK else ([], None)
+    check(status == ST_OK and names == ["smoke"], "ToD: which no category listing shows", names)
+
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 2222))
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
+    check(status == ST_OK, "ToD: SAVEFILE_RESTORE is accepted", status)
+    info = tod_wait_transfer(c)
+    check(info is not None and info["pending"] == 0 and info["error"] == 0, "ToD: and the game takes the load", info)
+    check(mem_read_u32(c, TOD_BOLTS) == 1111 and mem_read_u32(c, TOD_LOAD_REQUEST) == 1,
+          "ToD: g_saveData is the file's and its level is loading",
+          (mem_read_u32(c, TOD_BOLTS), mem_read_u32(c, TOD_LOAD_REQUEST)))
+
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 3333))
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_LOAD_ASIDE]))
+    info = tod_wait_transfer(c)
+    check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 1111,
+          "ToD: Load set-aside loads the set-aside file", (status, info))
+
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 3))
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
+    info = savefile_info(c)
+    check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NOT_IDLE,
+          "ToD: no load outside gameplay, error 6", (status, info))
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    sim.send("fakesave off")
+
+
+def smoke_rpcs3_tod_savefile(c, pine):
+    """ToD's savefile manager under RPCS3: no patch, everything through PINE."""
+    def u32(v):
+        return struct.pack(">I", v)
+
+    pine.poke(TOD_SAVE_SYSTEM, u32(TOD_SAVE_MANAGER))
+    pine.poke(TOD_SAVE_MANAGER, u32(TOD_SAVE_VTABLE))
+    for t in (0x08, 0x20, 0x38):
+        pine.poke(TOD_SAVE_MANAGER + t + 8, u32(0) + u32(0xFFFFFFFF))
+    pine.poke(TOD_SM_STATE, u32(1))
+    pine.poke(TOD_SM_SLOT, u32(0))
+    pine.poke(TOD_SM_AUTOSAVE, u32(0))
+    pine.poke(TOD_SAVE_IMAGE, b"".join(u32(i) + bytes(16) for i in range(4)))
+    pine.poke(TOD_SAVE_IMAGE + 0x906E8, u32(2) + u32(0))
+    info = savefile_info(c)
+    check(info is not None and info["supported"] == 1 and info["installed"] == 1,
+          "rpcs3: ToD's SAVEFILE_INFO says installed with no patch", info)
+    c.call(OP_SAVEFILE_CATEGORY, bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32("smoke"))
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32("smoke") + fixed32("tod.sav"))
+    info = tod_wait_transfer(c, 20.0)
+    check(status == ST_OK and info and info["error"] == 0 and info["done"] == TOD_SAVE_SIZE,
+          "rpcs3: ToD's STORE copies the image out through PINE", (status, info))
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
+    check(status == ST_OK, "rpcs3: ToD's RESTORE is accepted", status)
+    end = time.monotonic() + 20.0
+    while time.monotonic() < end and pine.peek(TOD_SM_STATE, 4) != u32(3):
+        time.sleep(0.05)
+    check(pine.peek(TOD_SM_STATE, 4) == u32(3) and pine.peek(TOD_LOAD_THREAD + 0x10, 4) == u32(5) and
+          pine.peek(TOD_LOAD_THREAD + 8, 8) == u32(0) + u32(0xFFFFFFFE),
+          "rpcs3: the load goes out as data: a load thread that read its file and is gone")
+    # The game's update, by hand: the poll finds no thread and applies the load.
+    pine.poke(TOD_LOAD_THREAD + 8, u32(0) + u32(0xFFFFFFFF))
+    pine.poke(TOD_LOAD_THREAD + 0x10, u32(0))
+    pine.poke(TOD_SM_STATE, u32(1))
+    info = tod_wait_transfer(c, 10.0)
+    check(info is not None and info["pending"] == 0 and info["error"] == 0, "rpcs3: and the RESTORE settles", info)
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
@@ -5431,8 +5558,8 @@ def smoke_tod(c, sim):
     if check(status == ST_OK, "ToD: DESCRIBE answers", status):
         game, groups, readouts, features, _off = parse_describe(body)
         labels = [f["label"] for f in features]
-        check(game == 5 and groups == ["Cheats", "Player", "Progress"],
-              "ToD: game 5, three groups", (game, groups))
+        check(game == 5 and groups == ["Cheats", "Player", "Progress", "Savefile"],
+              "ToD: game 5, four groups", (game, groups))
         check(readouts == ["Bolts", "Raritanium", "Challenge mode"], "ToD: its readouts", readouts)
         for want in ("Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Die", "Bolts",
                      "Raritanium", "Challenge mode", "Unlock all skill points", "Reset gold bolts"):
@@ -5519,6 +5646,7 @@ def smoke_tod(c, sim):
     status, _ = c.call(0xFFE0, struct.pack(">I", 1))
     check(status == ST_UNKNOWN_OP, "ToD: LUA_EXEC's inside half is no op on the wire", status)
     sim.send("fakelua off")
+    smoke_tod_savefile(c, sim)
     smoke_tod_autosplit(c, sim)
 
 
@@ -5647,6 +5775,8 @@ def smoke_rpcs3_tod(c, pine):
     pine.poke(TOD_LUA_STATE, struct.pack(">I", 0x30030000))
     pine.poke(0x1037A459, b"\x00")
 
+    pine.poke(TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    smoke_rpcs3_tod_savefile(c, pine)
     status, body = c.call(OP_LUA_PATCH)
     words = []
     if check(status == ST_OK and len(body) >= 8, "rpcs3: LUA_PATCH answers", status):

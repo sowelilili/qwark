@@ -112,6 +112,40 @@
 #define TOD_TRANSITION_GAME  0x40A00000u  /* 5.0f, the shipped value */
 #define TOD_TRANSITION_FAST  0x00000000u  /* 0.0f */
 
+/*
+ * The save system (docs/tod-savefile.md; Ghidra /ToD/Save/ToDSaveManager).
+ * g_saveManager sits right after g_saveData and holds, at +0x1FD08, the image
+ * of the last GAME.SAV the game wrote or read: SaveManager_copyForSave copies
+ * g_saveData into it before a save, and SaveManager_onLoaded copies it back
+ * and calls LoadLevel(level, 1, 0) after a load. SaveSystem_update (end of
+ * every GameState_Dispatch, main thread) runs the state machine at +0xE0 (dec).
+ */
+#define TOD_SAVE_SYSTEM      0x1074D400u  /* g_saveSystem, ToDSaveManager*: g_saveManager (dec) */
+#define TOD_SAVE_MANAGER     0x1029C560u  /* g_saveManager, 0xB03F8 bytes (dec) */
+#define TOD_SAVE_VTABLE      0x10071C60u  /* vtbl_SaveManager, its first word (dis) */
+#define TOD_SM_SAVE_THREAD   0x08u        /* ToDSaveThread: list save, auto save */
+#define TOD_SM_LOAD_THREAD   0x20u        /* ToDSaveThread: list load, auto load, the boot check */
+#define TOD_SM_DELETE_THREAD 0x38u        /* ToDDeleteThread */
+#define TOD_ST_ID            0x08u        /* u64 thread id, TOD_THREAD_NONE while none */
+#define TOD_ST_STATE         0x10u        /* s32; a load thread's 5 is "file read", which the poll applies */
+#define TOD_SM_STATE         0xE0u        /* s32: 0 not up, 1 idle, 2 saving, 3 loading, 4 deleting */
+#define TOD_SM_SLOT          0xECu        /* s32, the slot last saved or loaded, -1 none (autosave needs one) */
+#define TOD_SM_RESULT        0xF0u        /* s32, what finished: 1 saved, 3 or 4 loaded */
+#define TOD_SM_AUTOSAVE      0x104u       /* s32, an autosave asked for while the system was busy */
+#define TOD_SM_HEAD_LEN      0x108u       /* everything above, one read */
+#define TOD_SAVE_IMAGE       0x102BC268u  /* g_saveManager + 0x1FD08: the aside buffer */
+#define TOD_SAVE_SIZE        0x906F0u     /* GAME.SAV, as the stat callback insists */
+#define TOD_SAVE_LEVEL_OFF   0x906E8u     /* the save's LEVEL_, what onLoaded loads */
+#define TOD_SAVE_CHAL_OFF    0x906ECu     /* challenge mode, at most 1000 */
+#define TOD_SS_IDLE          1u
+#define TOD_SS_LOADING       3u
+#define TOD_SS_HELD          0x5157484Cu  /* qwark's own: SaveSystem_update and _request leave it be (dec) */
+#define TOD_LT_READ_OK       5u
+#define TOD_THREAD_NONE      0xFFFFFFFFu  /* the low word; the high word is 0 */
+#define TOD_THREAD_GONE      0xFFFFFFFEu  /* no thread: sys_ppu_thread_get_priority answers ESRCH (INFER) */
+#define TOD_FRONTEND_EXIT    0x1037A458u  /* g_frontEndExitRequested, u8 (dec) */
+#define TOD_MAX_CHALLENGE    1000u
+
 /* Lua (REPORT-tod-lua section 2). */
 #define TOD_LUA_VM           0x102043CCu  /* g_gameplayLuaVM */
 #define TOD_LUA_STATE        0x102043D0u  /* its lua_State*, 0 between levels */
@@ -279,6 +313,10 @@ struct tod_facts {
 #define TF_GOD_RATCHET      16     /* the old RaCMAN's, the proxy handle (TOD_PROXY_LOW) */
 #define TF_FAST_LOADS       17     /* the transition's minimum time (TOD_TRANSITION_MIN) */
 
+/* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
+#define TF_SET_ASIDE        40
+#define TF_LOAD_ASIDE       41
+
 /*
  * Unlock row ids: WPN_ 1..31 as themselves, then these bases. Since
  * 2026-10-27 the list has OBJ_ 0..11 alone: 32 + 12..14 (the two sector
@@ -351,6 +389,19 @@ int  tod_unlock_set(u8 id, u8 field, u32 value);
 void tod_ammo_tick(u32 flag, u32 root);
 /* A new process: the hold starts over. */
 void tod_panel_reset(void);
+
+/*
+ * tod_save.c, the savefile manager (docs/tod-savefile.md). The two flagged
+ * ACTIONs, which keep the set-aside on the HDD; the core's descriptor and
+ * driver for the game's own save system; and a session's first look, which
+ * gives back a hold or a load a qwark that went away left in the game.
+ */
+int  tod_set_aside(void);
+int  tod_load_aside(void);
+u8   tod_savefile_ready(u8 what);
+const struct sf_desc *tod_savefile_desc(u8 game_id);
+extern const struct sf_driver tod_sf_driver;
+void tod_save_recover(void);
 
 /* The gold bolt `index` (0..31) as its level and its bit: 1, or 0 for none. */
 int  tod_gold_bolt(u8 index, u8 *level, u8 *bit);

@@ -374,4 +374,52 @@ int savefile_name_ok(const char *name);
  */
 u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig);
 
+/* --------------------------------- a game's own save system, revision 1.28 */
+
+/*
+ * Revision 1.28 (pending), Tools of Destruction: a savefile helper that is no
+ * code of qwark's at all. ToD keeps the image of its last save or load in a
+ * buffer of its own save system (docs/tod-savefile.md), and that system loads
+ * whatever is in the buffer when one of its words says a load thread has
+ * finished. So the aside buffer is the game's own buffer, a set-aside needs no
+ * copy, and a load is a few data writes, which is everything RPCS3 needs too:
+ * there is nothing to install, no ui.pak entry and no RPCS3 patch.
+ *
+ * A game with such a system names it in struct game_api's savefile_driver
+ * (QWARK_HAS_TOD builds alone), beside a struct sf_desc whose caves and hooks
+ * are none and whose request bytes are 0. Every entry is tick thread, reads or
+ * writes game memory, and answers in SAVEFILE_ERR_* codes:
+ *
+ *   hold      take the game's save system out of the way of a copy of qwark's
+ *             into or out of the buffer, so none of the game's own saves or
+ *             loads starts under it: ERR_NONE, or the refusal (NOT_IDLE)
+ *   holding   1 while that hold is still in place and nothing of the game's
+ *             started under it; the copy checks it on every tick it moves
+ *   release   undo the hold where it is still in place; harmless otherwise
+ *   load      from the hold, hand the buffer to the game's loader
+ *   load_poll the load's progress after `ticks` ticks, as a helper's request
+ *             byte reads: 0 done, 1 still going, SAVEFILE_HELPER_REFUSED when
+ *             the game never took it and the request has been put back
+ *   aside_ok  ERR_NONE when the buffer holds a save of this game, else NO_SAVE
+ *   running   SAVEFILE_INFO's `running`: the game's save system is up
+ *
+ * `aside_file` 1 keeps the set-aside in a file rather than in the buffer,
+ * because the game's own next save writes over the buffer: SAVE_ASIDE is a
+ * STORE into <QWARK_SAVEDIR>/<TITLEID>/SAVEFILE_ASIDE_FILE and LOAD_ASIDE a
+ * RESTORE of it. The file sits beside the categories rather than in one, so no
+ * listing shows it.
+ */
+struct sf_driver {
+	u8   (*hold)(void);
+	u8   (*holding)(void);
+	void (*release)(void);
+	u8   (*load)(void);
+	u8   (*load_poll)(u16 ticks);
+	u8   (*aside_ok)(void);
+	u8   (*running)(void);
+	u8   aside_file;
+};
+
+#define SAVEFILE_ASIDE_FILE "set-aside.sav"
+
 #endif /* QWARK_SAVEFILE_H */

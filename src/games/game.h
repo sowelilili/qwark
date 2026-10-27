@@ -563,6 +563,17 @@ struct game_api {
 	 * game's memory, so it is asked under the core lock, through the ring.
 	 */
 	const struct levelflag_names *(*levelflag_names)(void);
+
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.28 (pending): a savefile helper that is the game's own save
+	 * system, driven by data writes (src/core/savefile.h, struct sf_driver),
+	 * beside a savefile_desc that names the aside buffer and no code. NULL for
+	 * every game whose helper is code of qwark's; Tools of Destruction's alone
+	 * is set. Not in a release module, which has no ToD.
+	 */
+	const struct sf_driver *savefile_driver;
+#endif
 };
 
 /* A feature id in a game_api field where 0 means none: the id plus one. */
@@ -581,6 +592,7 @@ struct game_api {
 #endif
 
 struct sf_desc;
+struct sf_driver;
 struct lh_desc;
 struct game_title;
 

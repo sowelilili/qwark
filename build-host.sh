@@ -29,7 +29,7 @@ CORE="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
       src/games/rac2.c src/games/rac2_panel.c \
       src/games/rac3.c src/games/rac3_panel.c \
       src/games/rac4.c src/games/rac4_panel.c \
-      src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/tod_flags.c src/games/tod_autosplit.c src/games/luahelper_bins.c \
+      src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/tod_flags.c src/games/tod_autosplit.c src/games/tod_save.c src/games/luahelper_bins.c \
       src/core/luacore.c src/core/luamb.c src/games/luahelper_patch.c \
       src/games/games.c src/games/titles.c src/games/core_import.c \
       src/core/gamemod.c src/core/core_export.c \

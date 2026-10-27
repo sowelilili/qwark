@@ -16,6 +16,7 @@
 #include "tod.h"
 #include "classic.h"
 #include "luahelper_bins.h"
+#include "../core/savefile.h"
 #include "../core/mem.h"
 
 #include <string.h>
@@ -174,6 +175,7 @@ static void tod_on_enter(void)
 	memset(T, 0, sizeof(*T));
 	tod_autosplit_forget(&T->as);
 	tod_panel_reset();
+	tod_save_recover();   /* the savefile manager's round */
 }
 
 static void tod_init(void)
@@ -186,12 +188,14 @@ static void tod_init(void)
 static const char * const tod_groups[] = {
 	"Cheats",
 	"Player",
-	"Progress"
+	"Progress",
+	"Savefile"
 };
 
 #define G_CHEATS   0
 #define G_PLAYER   1
 #define G_PROGRESS 2
+#define G_SAVEFILE 3
 
 /* Indexed by TOD_RO_*; the order is part of the wire contract for this game. */
 static const char * const tod_readouts[] = {
@@ -202,6 +206,8 @@ static const char * const tod_readouts[] = {
 
 #define NO FEATURE_NO_READOUT
 #define LV FEATURE_FLAG_LIVE
+#define SA FEATURE_FLAG_SAVE_ASIDE
+#define LA FEATURE_FLAG_LOAD_ASIDE
 
 /*
  * The ids are tod.h's; 0 to 3 are reserved for the proof of concept's rows.
@@ -232,11 +238,17 @@ static const struct feature_desc tod_features[] = {
 	{ TF_UNLOCK_SP,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
 	{ TF_RESET_SP,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
 	{ TF_UNLOCK_GB,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
-	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" }
+	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" },
+
+	/* The savefile manager (tod_save.c): the game's own save system, data writes alone. */
+	{ TF_SET_ASIDE,     FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
+	{ TF_LOAD_ASIDE,    FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" }
 };
 
 #undef NO
 #undef LV
+#undef SA
+#undef LA
 
 static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),
@@ -311,8 +323,8 @@ const struct game_api tod_game = {
 	tod_planet_names,
 	tod_planet_load,
 	tod_die,
-	NULL,                 /* load_setaside: no savefile helper yet */
-	NULL,                 /* savefile_ready */
+	tod_load_aside,       /* load_setaside: the set-aside file (tod_save.c) */
+	tod_savefile_ready,   /* the save system idle; gameplay for a load */
 
 	tod_unlock_list,
 	tod_unlock_read,
@@ -334,7 +346,8 @@ const struct game_api tod_game = {
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */
 	NULL,                 /* no console menu renderer for ToD */
 	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
-	NULL,                 /* savefile_desc */
+	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
-	tod_levelflag_names   /* revision 1.28 (pending): LEVELFLAGS_NAMES */
+	tod_levelflag_names,  /* revision 1.28 (pending): LEVELFLAGS_NAMES */
+	&tod_sf_driver        /* revision 1.28 (pending): the save system, driven by data */
 };

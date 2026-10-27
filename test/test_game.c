@@ -125,5 +125,6 @@ const struct game_api testgame_game = {
 	0,                    /* fast_loads: no Fast loads toggle, so the combo says so */
 	NULL,                 /* savefile_desc: no helper */
 	NULL,                 /* lua_desc: no Lua (revision 1.27) */
-	NULL                  /* revision 1.28 (pending): no level flag names */
+	NULL,                 /* revision 1.28 (pending): no level flag names */
+	NULL                  /* savefile_driver: none (revision 1.28, pending) */
 };

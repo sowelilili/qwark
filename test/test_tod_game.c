@@ -5,7 +5,8 @@
  * deep), the features, positions, Die, the planet load, the unlock table, and
  * the core's Lua ops (src/core/luacore.c) against the simulator's stand-in for
  * the helper, on a console (qwark installs it) and under RPCS3 (the patch is in
- * at boot, or it is not).
+ * at boot, or it is not), and the savefile manager over the game's own save
+ * system (revision 1.28, pending), against the simulator's stand-in for it.
  *
  * The mailbox's own codec and state machine are test/test_tod.c's.
  */
@@ -14,6 +15,8 @@
 #include "../src/core/features.h"
 #include "../src/core/luacore.h"
 #include "../src/core/luamb.h"
+#include "../src/core/savefile.h"
+#include "../src/core/config.h"
 #include "../src/core/util.h"
 #include "../src/core/autosplit.h"
 #include "../src/games/game.h"
@@ -789,6 +792,224 @@ static void test_tod_autosplit_quit(void)
 	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 1, "a level already up resumes at once");
 }
 
+/* ------------------------------------- the savefile manager, revision 1.28 */
+
+#define SM(off) (TOD_SAVE_MANAGER + (off))
+#define LOAD_ID_LO SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4)
+#define LOAD_ST    SM(TOD_SM_LOAD_THREAD + TOD_ST_STATE)
+
+static u8 sf_info(u8 *installed, u8 *running, u8 *pending, u32 *size, u8 *error)
+{
+	u8 supported = 0;
+	u32 done = 0, total = 0;
+
+	savefile_info(&supported, installed, running, pending, size);
+	savefile_transfer(&done, &total, error);
+	return supported;
+}
+
+/* Ticks, with a frame of the game's save system after each when `frames`, until nothing is pending. */
+static int sf_settle(int frames, int max)
+{
+	u8 installed, running, pending = 0xFF, error;
+	u32 size;
+	int i;
+
+	for (i = 0; i < max; i++) {
+		tick(1);
+		if (frames) host_fake_tod_save_frame();
+		sf_info(&installed, &running, &pending, &size, &error);
+		if (pending == 0) return 1;
+	}
+	return 0;
+}
+
+/* The bytes of a file on the fake HDD, up to cap; the length, or -1. */
+static long sf_file(const char *path, u8 *out, u32 cap)
+{
+	plat_file_t f;
+	u32 got = 0;
+
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return -1;
+	if (plat_file_read(f, out, cap, &got) != 0) got = 0;
+	plat_file_close(f);
+	return (long)got;
+}
+
+static u8 g_sf_buf[TOD_SAVE_SIZE + 16];
+
+static void test_tod_savefile(void)
+{
+	const struct game_api *g;
+	const struct game_describe *dsc;
+	u8 installed = 0, running = 0, pending = 0, error = 0, patch[64];
+	u32 size = 0, len = 0, i;
+	int sa = 0, la = 0;
+	long n;
+
+	group("ToD: the savefile manager, the game's own save system (revision 1.28)");
+	check(quit(), "the game quits");
+	check(boot_tod(), "ToD boots");
+	tick(4);
+	g = session_game();
+	check(g != NULL && g->savefile_driver != NULL && g->load_setaside != NULL && g->savefile_ready != NULL,
+	      "it has a save-system driver, a load-set-aside and a readiness test");
+
+	dsc = g != NULL ? g->describe() : NULL;
+	for (i = 0; dsc != NULL && i < dsc->nfeatures; i++) {
+		if (dsc->features[i].id == TF_SET_ASIDE && (dsc->features[i].flags & FEATURE_FLAG_SAVE_ASIDE)) sa = 1;
+		if (dsc->features[i].id == TF_LOAD_ASIDE && (dsc->features[i].flags & FEATURE_FLAG_LOAD_ASIDE)) la = 1;
+	}
+	check(sa && la, "DESCRIBE has the two flagged savefile ACTIONs, 40 and 41");
+
+	check(sf_info(&installed, &running, &pending, &size, &error) == 1 && installed == 1 && running == 1 &&
+	      pending == 0 && size == TOD_SAVE_SIZE, "INFO: supported, installed, running, 0x906F0 bytes, nothing pending");
+	check(savefile_install() == ST_OK, "an install is OK, with nothing to write");
+
+	/* No slot yet: nothing to set aside, nothing to store. */
+	check(g->trigger(TF_SET_ASIDE) == ST_BUSY, "Set aside with no save yet is BUSY");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NO_SAVE, "with error 7, no save");
+	check(savefile_store("runs", "a.sav") == ST_BUSY, "and so is a STORE");
+	check(g->trigger(TF_LOAD_ASIDE) == ST_BUSY, "Load set-aside with nothing set aside is BUSY");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NO_SAVE && rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE,
+	      "with error 7, and the save system is left idle");
+
+	/* The game saves into slot 2 with 1000 bolts: that is the save. */
+	wr32(TOD_BOLTS, 1000);
+	host_fake_tod_saved(2);
+	check(savefile_store("runs", "a.sav") == ST_OK, "STORE of the game's save is accepted");
+	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_HELD, "the save system is held for the copy");
+	check(sf_settle(0, 200), "the STORE finishes");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NONE && rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE, "cleanly, the save system given back");
+	n = sf_file(QWARK_SAVEDIR "/" TOD_TITLE "/runs/a.sav", g_sf_buf, sizeof(g_sf_buf));
+	check(n == (long)TOD_SAVE_SIZE && be32_get(g_sf_buf + 0x41C) == 1000 && be32_get(g_sf_buf + TOD_WEAPON_STRIDE) == 1,
+	      "the file is the game's save image, 1000 bolts");
+
+	/* An autosave the game asks for during a STORE waits for the hold and then runs. */
+	wr32(TOD_BOLTS, 2000);
+	check(g->trigger(TF_SET_ASIDE) == ST_OK, "Set aside is a STORE into the set-aside file");
+	wr32(SM(TOD_SM_AUTOSAVE), 1);
+	host_fake_tod_save_frame();
+	check(rd32(SM(TOD_SM_AUTOSAVE)) == 1, "an autosave asked for under the hold waits");
+	check(sf_settle(0, 200), "the set-aside finishes");
+	n = sf_file(QWARK_SAVEDIR "/" TOD_TITLE "/" SAVEFILE_ASIDE_FILE, g_sf_buf, sizeof(g_sf_buf));
+	check(n == (long)TOD_SAVE_SIZE && be32_get(g_sf_buf + 0x41C) == 1000,
+	      "set-aside.sav, beside the categories, holds the last save, not the live 2000");
+	host_fake_tod_save_frame();
+	check(rd32(SM(TOD_SM_AUTOSAVE)) == 0 && rd32(TOD_SAVE_IMAGE + 0x41C) == 2000,
+	      "and the autosave runs once the system is given back");
+	check(savefile_categories(g_sf_buf, 4096, &len) == ST_OK && g_sf_buf[0] == 1, "the categories list runs alone");
+
+	/* A load: RESTORE a.sav over a game with 5000 bolts. */
+	wr32(TOD_BOLTS, 5000);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	check(savefile_restore("runs", "a.sav") == ST_OK, "RESTORE is accepted");
+	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_HELD, "the save system is held for the copy");
+	tick(1);
+	wr32(SM(TOD_SM_AUTOSAVE), 1);   /* the game asks for an autosave meanwhile */
+	for (i = 0; i < 40 && rd32(SM(TOD_SM_STATE)) == TOD_SS_HELD; i++) tick(1);
+	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_LOADING && rd32(LOAD_ST) == TOD_LT_READ_OK &&
+	      rd32(LOAD_ID_LO) == TOD_THREAD_GONE && rd32(SM(TOD_SM_AUTOSAVE)) == 0,
+	      "after the copy: a load thread that read its file and is gone, the autosave dropped");
+	check(rd32(TOD_BOLTS) == 5000, "the game's live save is untouched until its update takes it");
+	check(sf_settle(1, 200), "the game's update takes it and the load settles");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NONE, "with no error");
+	check(rd32(TOD_BOLTS) == 1000 && rd32(TOD_LOAD_REQUEST) == 1 && rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE &&
+	      rd32(LOAD_ID_LO) == TOD_THREAD_NONE,
+	      "g_saveData is the file's, its level is loading, the save system idle again");
+
+	/* Load set-aside: the set-aside file again, through the flagged action and the combo's seam. */
+	wr32(TOD_BOLTS, 7);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	check(g->load_setaside() == ST_OK, "Load set-aside (the combo's seam) is accepted");
+	check(sf_settle(1, 300), "and settles");
+	check(rd32(TOD_BOLTS) == 1000, "the set-aside save is loaded");
+
+	/* Refusals. */
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_GAME_STATE, 3);
+	check(savefile_restore("runs", "a.sav") == ST_BUSY, "no load outside gameplay");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NOT_IDLE && rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE, "error 6, nothing held");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LOAD_REQUEST, 4);
+	check(savefile_restore("runs", "a.sav") == ST_BUSY, "nor with a planet load queued");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(SM(TOD_SM_STATE), 2);
+	check(savefile_store("runs", "b.sav") == ST_BUSY && savefile_restore("runs", "a.sav") == ST_BUSY,
+	      "nor a STORE or a RESTORE while the game saves");
+	wr32(SM(TOD_SM_STATE), TOD_SS_IDLE);
+	wr32(SM(TOD_SM_AUTOSAVE), 1);
+	check(savefile_store("runs", "b.sav") == ST_BUSY, "nor with an autosave waiting");
+	wr32(SM(TOD_SM_AUTOSAVE), 0);
+
+	/* A game request that slips in under the hold stops the copy. */
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE starts");
+	wr32(SM(TOD_SM_STATE), 3);
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), 0x01000123u);
+	tick(1);
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NOT_IDLE && (pending & SAVEFILE_PENDING_TRANSFER) == 0 &&
+	      rd32(SM(TOD_SM_STATE)) == 3, "the game's own load under the hold stops it, and is left alone");
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), TOD_THREAD_NONE);
+	wr32(SM(TOD_SM_STATE), TOD_SS_IDLE);
+
+	/* A load the game never takes is put back. */
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE with the game's update stopped");
+	for (i = 0; i < 800; i++) {
+		tick(1);
+		sf_info(&installed, &running, &pending, &size, &error);
+		if (pending == 0) break;
+	}
+	check(pending == 0 && error == SAVEFILE_ERR_NOT_IDLE, "gives up after its wait with error 6");
+	check(rd32(LOAD_ID_LO) == TOD_THREAD_NONE && rd32(LOAD_ST) == 0, "and the load thread is put back");
+	host_fake_tod_save_frame();
+	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE, "which the game's next update takes back to idle");
+
+	/* A file of the right size that is not a ToD save. */
+	memset(g_sf_buf, 0x5A, TOD_SAVE_SIZE);
+	{
+		plat_file_t f;
+		check(plat_file_open(QWARK_SAVEDIR "/" TOD_TITLE "/runs/junk.sav", PLAT_OPEN_WRITE, &f) == 0 &&
+		      plat_file_write(f, g_sf_buf, TOD_SAVE_SIZE) == 0, "a junk file is written");
+		plat_file_close(f);
+	}
+	check(savefile_restore("runs", "junk.sav") == ST_OK, "its RESTORE is accepted");
+	check(sf_settle(1, 100), "and stops");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NO_SAVE && rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE && rd32(TOD_BOLTS) == 1000,
+	      "error 7: not a save of this game, nothing loaded, the system given back");
+
+	/* What a qwark that went away leaves is given back at the next session. */
+	wr32(SM(TOD_SM_STATE), TOD_SS_HELD);
+	wr32(LOAD_ID_LO, TOD_THREAD_GONE);
+	tod_save_recover();
+	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_IDLE && rd32(LOAD_ID_LO) == TOD_THREAD_NONE,
+	      "a stale hold and a stale load are put back");
+
+	check(savefile_patch(patch, sizeof(patch), &len) == ST_UNSUPPORTED, "SAVEFILE_PATCH: nothing to patch in");
+
+	/* Under RPCS3 exactly the same, with no patch. */
+	check(quit(), "the game quits");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(boot_tod(), "ToD boots under RPCS3, no patch of any kind");
+	tick(4);
+	check(sf_info(&installed, &running, &pending, &size, &error) == 1 && installed == 1 && running == 1,
+	      "INFO: installed and running");
+	check(savefile_library_gate() == ST_OK, "the library ops are open");
+	wr32(TOD_BOLTS, 9);
+	check(savefile_restore("runs", "a.sav") == ST_OK && sf_settle(1, 300) && rd32(TOD_BOLTS) == 1000,
+	      "a RESTORE loads through data writes alone");
+	check(quit(), "the game quits");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -796,6 +1017,7 @@ void test_tod_game(void)
 	test_tod_level_flags();
 	test_tod_lua_console();
 	test_tod_lua_rpcs3();
+	test_tod_savefile();
 	quit();
 	check(boot_tod(), "ToD again, for the autosplitter");
 	test_tod_autosplit_rows();
