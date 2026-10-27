@@ -267,6 +267,9 @@
 #define OP_LEVELFLAGS_GET    0x0053
 #define OP_LEVELFLAGS_RESET  0x0054
 #define OP_LEVELFLAGS_SET    0x0055
+/* Revision 1.28 (pending): one bit of the region, and the bits' names (PROTOCOL.md 5.6). */
+#define OP_LEVELFLAGS_BIT    0x0056
+#define OP_LEVELFLAGS_NAMES  0x0057
 
 #define OP_MOD_LIST          0x0060
 #define OP_MOD_LOAD          0x0061
@@ -765,6 +768,9 @@
  * a number box; `max` is the largest meaningful value of a number, 0 for none.
  */
 #define UNLOCK_FIELD_WIRE_SIZE  16
+/* Revision 1.28 (pending), LEVELFLAGS_NAMES: u8 planet, char[23] name; then u16 bit, u16 number, u8 group, u8 len. */
+#define LEVELFLAG_GROUP_WIRE_SIZE 24u
+#define LEVELFLAG_NAME_WIRE_HEAD  6u
 #define UNLOCK_FIELD_NAME_LEN   12
 
 #define UNLOCK_KIND_FLAG    0

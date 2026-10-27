@@ -1553,5 +1553,6 @@ const struct game_api rac3_game = {
 	&rac3_menu,           /* revision 1.22, round 2 */
 	GAME_FEATURE(R3_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
 	sf_desc_for_game,     /* revision 1.26: the savefile helper the core installs */
-	NULL                  /* revision 1.27: no Lua */
+	NULL,                 /* revision 1.27: no Lua */
+	NULL                  /* revision 1.28 (pending): no level flag names */
 };

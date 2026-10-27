@@ -120,6 +120,9 @@ OP_UNLOCK_SET = 0x0051
 OP_LEVELFLAGS_GET = 0x0053
 OP_LEVELFLAGS_RESET = 0x0054
 OP_LEVELFLAGS_SET = 0x0055
+# Revision 1.28 (pending): one bit, and the bits' names.
+OP_LEVELFLAGS_BIT = 0x0056
+OP_LEVELFLAGS_NAMES = 0x0057
 OP_MOD_LIST = 0x0060
 OP_MOD_LOAD = 0x0061
 OP_MOD_UNLOAD = 0x0062
@@ -4247,6 +4250,20 @@ def exercise_game(c, sim, spec, udp=None):
         check(status == ST_OK and set(body[2:]) == {0},
               "%s: and every flag byte is zero" % name, status)
 
+        # Revision 1.28 (pending): one bit through the console's own read and write.
+        status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 5, 1, 2 * 8 + 6))
+        status2, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
+        check(status == ST_OK and status2 == ST_OK and body[2 + 2] == 0x40,
+              "%s: LEVELFLAGS_BIT sets one bit of a byte" % name, (status, body[2:2 + 4]))
+        status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 5, 0, 2 * 8 + 6))
+        status2, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
+        check(status == ST_OK and set(body[2:]) == {0}, "%s: and clears it" % name, status)
+        status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 5, 1, want * 8))
+        check(status == ST_BAD_ARG, "%s: a bit past the region is BAD_ARG" % name, status)
+
+    status, _ = c.call(OP_LEVELFLAGS_NAMES)
+    check(status == ST_UNSUPPORTED, "%s: LEVELFLAGS_NAMES is UNSUPPORTED, its flags have no names" % name, status)
+
     # -------------------------------------------------------- FEATURE_SET
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", spec["value_id"], 4242))
     if check(status == ST_OK, "%s: FEATURE_SET on the bolt count" % name, status):
@@ -5347,6 +5364,53 @@ def wait_game(c, game, timeout=6.0):
     return False, info
 
 
+def parse_levelflag_names(body):
+    """LEVELFLAGS_NAMES: ([(planet, name)], [(bit, number, group, name)])."""
+    ngroups = body[0]
+    groups = [(body[1 + 24 * i], body[2 + 24 * i:25 + 24 * i].split(b"\0")[0].decode()) for i in range(ngroups)]
+    off = 1 + 24 * ngroups
+    n = struct.unpack(">H", body[off:off + 2])[0]
+    off += 2
+    flags = []
+    for _ in range(n):
+        bit, number, group, ln = struct.unpack(">HHBB", body[off:off + 6])
+        flags.append((bit, number, group, body[off + 6:off + 6 + ln].decode()))
+        off += 6 + ln
+    return groups, flags, off == len(body)
+
+
+def smoke_tod_level_flags(c):
+    """ToD's level flags: one bit array, named, set a bit at a time, reset a planet at a time."""
+    status, body = c.call(OP_LEVELFLAGS_NAMES)
+    flags = []
+    if check(status == ST_OK, "ToD: LEVELFLAGS_NAMES answers", status):
+        groups, flags, whole = parse_levelflag_names(body)
+        check(whole and len(groups) == 20 and groups[0] == (0, "Metropolis") and groups[19] == (0xFF, "Other"),
+              "ToD: 20 groups, the 19 planets then Other", groups[:2] + groups[-1:])
+        check(len(flags) == 292 and sorted(f[1] for f in flags) == list(range(292)),
+              "ToD: 292 flags, every number once", len(flags))
+        byname = {f[3]: f for f in flags}
+        f = byname.get("LVL_COBALIA_BRIDGE_EXTENDED")
+        check(f is not None and f[1] == 39 and f[2] == 1 and f[0] == 3 * 8 + 7,
+              "ToD: 39 is Cobalia's, byte 3's top bit", f)
+    TOD_LF = 0x10211398
+    mem_write(c, TOD_LF, bytes(40))
+    status, body = c.call(OP_LEVELFLAGS_GET, bytes([0]))
+    check(status == ST_OK and struct.unpack(">H", body[:2])[0] == 40, "ToD: LEVELFLAGS_GET is the 40 bytes", status)
+    status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 0, 1, 3 * 8 + 7))
+    word = struct.unpack(">Q", bytes(mem_read_u8(c, TOD_LF + i) for i in range(8)))[0]
+    check(status == ST_OK and word == 1 << 39, "ToD: LEVELFLAGS_BIT sets flag 39, the game's bit 39 of word 0",
+          (status, hex(word)))
+    status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 0, 1, 3 * 8 + 6))
+    status, _ = c.call(OP_LEVELFLAGS_RESET, bytes([1]))
+    word = struct.unpack(">Q", bytes(mem_read_u8(c, TOD_LF + i) for i in range(8)))[0]
+    check(status == ST_OK and word == 1 << 38, "ToD: Cobalia's reset clears 39 and leaves Metropolis's 38",
+          (status, hex(word)))
+    status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 0, 1, 40 * 8))
+    check(status == ST_BAD_ARG, "ToD: a bit past the region is BAD_ARG", status)
+    mem_write(c, TOD_LF, bytes(40))
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
@@ -5384,6 +5448,8 @@ def smoke_tod(c, sim):
               "ToD: six unlock categories", cats)
         check(len(rows) == 138 and [f["name"] for f in fields] == ["Owned", "Level", "", "Ammo"],
               "ToD: 138 rows, Owned, Level and Ammo", (len(rows), fields))
+
+    smoke_tod_level_flags(c)
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
     check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)

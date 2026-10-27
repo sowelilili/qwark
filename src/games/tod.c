@@ -93,7 +93,7 @@ static const struct tod_mark tod_marks[] = {
 	{ "no damage",       TOD_NO_DAMAGE,       TOD_DEC,    "g_debugHeroNoDamage: Hero_Update drops the hero's damage events while non-zero; no code writes it" },
 	{ "infinite ammo",   TOD_INFINITE_AMMO,   TOD_DEC,    "g_infiniteAmmo: Weapon_hasAmmo answers true while non-zero; only Lua_hero_set_infinite_ammo writes it; Weapon_useAmmo still counts down" },
 	{ "cheats",          TOD_CHEATS,          TOD_DEC,    "Cheats_enableAll: g_levelFlags+0x31D0, CHEAT_COUNT 14 bytes set to 1 (and +0x31E0 = 0x348)" },
-	{ "level flags",     0x10211398u,         TOD_SCAN,   "g_saveData+0x5528" },
+	{ "level flags",     TOD_LEVEL_FLAGS,     TOD_DEC,    "g_levelFlags, g_saveData+0x5528: GLOBAL_FLAG_ 0..291 as bit n&63 of u64 word n>>6 (Lua_check_flag, Lua_set_flag, Lua_clear_flag, SetProgressionFlag); tolua_gameplay_open names all 292" },
 	{ "lua vm",          TOD_LUA_VM,          TOD_DEC,    "g_gameplayLuaVM; L at +4, allocator at +8 (CLuaVM_executeBuffer)" },
 	{ "lua state",       TOD_LUA_STATE,       TOD_DEC,    "0 between levels; a new pointer each level" },
 	{ "game clock",      TOD_GAME_CLOCK,      TOD_DEC,    "Lua_time_set_scale writes the f32 at +0; +0x14 is game time" },
@@ -131,7 +131,7 @@ const struct tod_facts tod_facts = {
 	0x1020BE70u, 0x14, 32, 0x10, 0x11, 0x04, 0x08, 0x0C,
 	0x102115C4u,
 	0x10214568u, 14,
-	0x10211398u,
+	TOD_LEVEL_FLAGS,
 
 	0x102043CCu, 0x102043D0u, 0x1074DDA8u,
 

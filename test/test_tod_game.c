@@ -271,6 +271,103 @@ static void test_tod_features(void)
 	check(tod_unlock_set(TOD_UL_SP + 59, 0, 0) == ST_OK && rd32(TOD_SKILL_POINTS) == 0, "and the skill point off again");
 }
 
+/* Flag n as the game tests it: bit n & 63 of the big-endian u64 word n >> 6. */
+static int game_flag(u32 n)
+{
+	u8 b[8];
+	u32 hi, lo, bit = n & 63u;
+
+	host_peek(TOD_LEVEL_FLAGS + (n >> 6) * 8u, b, 8);
+	hi = be32_get(b);
+	lo = be32_get(b + 4);
+	return bit >= 32 ? (int)((hi >> (bit - 32)) & 1u) : (int)((lo >> bit) & 1u);
+}
+
+static void set_game_flag(u32 n)
+{
+	u8 b = 0;
+
+	host_peek(TOD_LEVEL_FLAGS + TOD_LF_BYTE(n), &b, 1);
+	b |= (u8)(1u << (n & 7u));
+	host_poke(TOD_LEVEL_FLAGS + TOD_LF_BYTE(n), &b, 1);
+}
+
+static const struct levelflag_name *flag_named(const struct levelflag_names *t, u16 number)
+{
+	u16 i;
+	for (i = 0; t != NULL && i < t->nflags; i++) if (t->flags[i].number == number) return &t->flags[i];
+	return NULL;
+}
+
+static void test_tod_level_flags(void)
+{
+	const struct game_api *g = session_game();
+	const struct levelflag_names *t;
+	const struct levelflag_name *f;
+	u8 region[64], seen[TOD_NLEVEL_FLAGS], zero[TOD_LEVEL_FLAGS_LEN];
+	u16 len = 0, i;
+	u32 wire;
+	int ok;
+
+	group("ToD: the level flags, one u64 bit array for the whole save");
+	check(g->levelflags_get != NULL && g->levelflags_set != NULL && g->levelflags_reset != NULL &&
+	      g->levelflag_names != NULL, "all three hooks and the names");
+	memset(zero, 0, sizeof(zero));
+	host_poke(TOD_LEVEL_FLAGS, zero, TOD_LEVEL_FLAGS_LEN);
+	set_game_flag(39);
+	check(g->levelflags_get(4, region, sizeof(region), &len) == ST_OK && len == TOD_LEVEL_FLAGS_LEN &&
+	      region[3] == 0x80 && game_flag(39) && !game_flag(38) && !game_flag(31),
+	      "40 bytes; flag 39 is word 0's bit 39, byte 3's top bit");
+	check(g->levelflags_get(19, region, sizeof(region), &len) == ST_BAD_ARG &&
+	      g->levelflags_get(0, region, 39, &len) == ST_FULL, "no planet 19, and the region takes 40 bytes");
+	check(TOD_LF_BIT(0) == 7u * 8u && TOD_LF_BIT(63) == 7u && TOD_LF_BIT(64) == 15u * 8u &&
+	      TOD_LF_BIT(291) == (32u + 7u - 4u) * 8u + 3u, "the bit numbers: the big-endian words' bytes");
+	check(g->levelflags_set(0, TOD_LF_BYTE(291), (u8)(1u << (291u & 7u))) == ST_OK && game_flag(291) &&
+	      g->levelflags_set(0, TOD_LEVEL_FLAGS_LEN, 1) == ST_BAD_ARG, "a byte write; none past the region");
+
+	t = g->levelflag_names();
+	check(t != NULL && t->nflags == TOD_NLEVEL_FLAGS && t->ngroups == 20 && t->groups[19].planet == LEVELFLAG_NO_PLANET,
+	      "292 names in 20 groups, the last one no planet's");
+	memset(seen, 0, sizeof(seen));
+	ok = t != NULL;
+	wire = 1u + 20u * LEVELFLAG_GROUP_WIRE_SIZE + 2u;
+	for (i = 0; ok && i < t->nflags; i++) {
+		f = &t->flags[i];
+		ok = f->number < TOD_NLEVEL_FLAGS && !seen[f->number] && f->bit == TOD_LF_BIT(f->number) &&
+		     f->group < t->ngroups && (i == 0 || f->group >= t->flags[i - 1].group) &&
+		     f->name != NULL && qstrlen(f->name) > 0 && qstrlen(f->name) <= 255u;
+		if (ok) seen[f->number] = 1;
+		wire += LEVELFLAG_NAME_WIRE_HEAD + qstrlen(f->name);
+	}
+	check(ok, "every flag once, its bit its number's, the groups in order");
+	check(wire < 12000u, "LEVELFLAGS_NAMES fits a reply with room to spare");
+	for (i = 0, ok = t != NULL; ok && i + 1u < t->ngroups; i++) ok = t->groups[i].planet == i;
+	check(ok, "groups 0 to 18 are the planets, in LEVEL_ order");
+	f = flag_named(t, 39);
+	check(f != NULL && qstreq(f->name, "LVL_COBALIA_BRIDGE_EXTENDED") && f->group == 1, "the legacy names: 39 on Cobalia");
+	f = flag_named(t, 291);
+	check(f != NULL && qstreq(f->name, "LVL_FAST_CLANK_MOVIE_1_PLAYED") && f->group == 3, "291 on Fastoon");
+	f = flag_named(t, 278);
+	check(f != NULL && qstreq(f->name, "SC_PLAYED_BONUS_TARGET_MSG") && f->group == 13, "278 on Space Combat III");
+	f = flag_named(t, 0);
+	check(f != NULL && qstreq(f->name, "GLOBAL_FLAG_TEST") && f->group == 19, "0, the game's own name, under Other");
+
+	/* Cobalia's reset: 39..71, 186 and 187 go; Metropolis's 38, the RYNO's 33 and the neighbours stay. */
+	host_poke(TOD_LEVEL_FLAGS, zero, TOD_LEVEL_FLAGS_LEN);
+	for (i = 30; i < 75; i++) set_game_flag(i);
+	set_game_flag(186);
+	set_game_flag(187);
+	set_game_flag(188);
+	check(g->levelflags_reset(1) == ST_OK, "LEVELFLAGS_RESET on Cobalia");
+	ok = 1;
+	for (i = 39; i <= 71; i++) ok &= !game_flag(i);
+	check(ok && !game_flag(186) && !game_flag(187), "its 35 flags are clear");
+	check(game_flag(38) && game_flag(33) && game_flag(72) && game_flag(74) && game_flag(188),
+	      "and Metropolis's, the RYNO's, the Fight Fest's and Stratus City's are not");
+	check(g->levelflags_reset(19) == ST_BAD_ARG, "no planet 19");
+	host_poke(TOD_LEVEL_FLAGS, zero, TOD_LEVEL_FLAGS_LEN);
+}
+
 static void test_tod_lua_console(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
@@ -348,6 +445,7 @@ void test_tod_game(void)
 {
 	test_tod_session();
 	test_tod_features();
+	test_tod_level_flags();
 	test_tod_lua_console();
 	test_tod_lua_rpcs3();
 	quit();

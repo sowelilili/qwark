@@ -273,6 +273,26 @@ int  tod_gold_bolt(u8 index, u8 *level, u8 *bit);
 /* The XP weapon `wpn` (1..15) has at level index `level` (0..9), whole points; 0 for none. */
 u32  tod_weapon_xp(u8 wpn, u8 level);
 
+/*
+ * The level flags (tod_flags.c, revision 1.28 pending): the game's
+ * GLOBAL_FLAG_ enum, 292 flags, one bit each in five big-endian u64 words at
+ * g_saveData+0x5528. Flag n is bit n & 63 of word n >> 6 (Lua_check_flag,
+ * Lua_set_flag, Lua_clear_flag, SetProgressionFlag), so its byte is
+ * (n >> 6) * 8 + 7 - ((n & 63) >> 3) and its bit there n & 7. The region is
+ * the game's, not a planet's: LEVELFLAGS_GET answers the same 40 bytes for
+ * every planet, and LEVELFLAGS_RESET clears the flags named for that planet.
+ */
+#define TOD_LEVEL_FLAGS      0x10211398u  /* g_levelFlags, ulonglong[5] (dec) */
+#define TOD_NLEVEL_FLAGS     292u         /* GLOBAL_FLAG_COUNT */
+#define TOD_LEVEL_FLAGS_LEN  40u          /* 5 u64 words */
+#define TOD_LF_BYTE(n)       ((((n) >> 6) * 8u) + 7u - (((n) & 63u) >> 3))
+#define TOD_LF_BIT(n)        ((u16)(TOD_LF_BYTE(n) * 8u + ((n) & 7u)))
+
+int  tod_levelflags_get(u8 planet, u8 *out, u16 cap, u16 *len);
+int  tod_levelflags_reset(u8 planet);
+int  tod_levelflags_set(u8 planet, u16 offset, u8 value);
+const struct levelflag_names *tod_levelflag_names(void);
+
 extern const struct tod_facts tod_facts;
 
 /* The game's pad mask in the OG layout. */

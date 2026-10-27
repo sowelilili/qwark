@@ -286,7 +286,9 @@ const struct game_api tod_game = {
 	tod_unlock_read,
 	tod_unlock_set,
 
-	NULL, NULL, NULL,     /* level flags: a later round */
+	tod_levelflags_get,
+	tod_levelflags_reset,
+	tod_levelflags_set,
 
 	NULL,                 /* moby_table: not mapped yet */
 
@@ -301,5 +303,6 @@ const struct game_api tod_game = {
 	NULL,                 /* no console menu renderer for ToD */
 	0,                    /* no fast loads */
 	NULL,                 /* savefile_desc */
-	tod_lua_desc          /* revision 1.27 */
+	tod_lua_desc,         /* revision 1.27 */
+	tod_levelflag_names   /* revision 1.28 (pending): LEVELFLAGS_NAMES */
 };

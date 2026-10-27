@@ -234,7 +234,7 @@ GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c
 GAME_SRCS_rac2		= src/games/rac2.c src/games/rac2_panel.c
 GAME_SRCS_rac3		= src/games/rac3.c src/games/rac3_panel.c
 GAME_SRCS_rac4		= src/games/rac4.c src/games/rac4_panel.c src/games/switches_own.c
-GAME_SRCS_tod		= src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/luahelper_bins.c
+GAME_SRCS_tod		= src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/tod_flags.c src/games/luahelper_bins.c
 GAME_CFLAGS			= -mprx -Os -ffunction-sections -fdata-sections -fno-builtin-printf -std=gnu99 \
 					  -ffixed-r14 -Wall -Wno-unused-parameter -Wno-shadow -Wno-strict-prototypes \
 					  -Wno-missing-prototypes -Wno-missing-declarations -Wno-bad-function-cast \
@@ -248,7 +248,7 @@ GAME_TIMEOUT		= timeout 300
 GAME_DEPS			= $(GAME_COMMON_SRCS) $(wildcard src/games/*.h src/core/*.h src/plat/*.h) \
 					  src/games/rac1.c src/games/rac1_panel.c src/games/rac2.c src/games/rac2_panel.c \
 					  src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c src/games/rac4_panel.c \
-					  src/games/switches_own.c src/games/tod.c src/games/tod_game.c src/games/tod_panel.c \
+					  src/games/switches_own.c src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/tod_flags.c \
 					  src/games/luahelper_bins.c tools/gamemodule.py makefile
 
 games: $(GAME_MODULE_FILES)

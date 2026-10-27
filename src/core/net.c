@@ -798,6 +798,84 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		break;
 	}
 
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.28 (pending). One bit of LEVELFLAGS_GET's region, set or
+	 * cleared on the tick: the byte is read and written back here, a frame
+	 * apart at most, rather than by a client a refresh apart. The reply
+	 * buffer holds the region while it works.
+	 */
+	case OP_LEVELFLAGS_BIT: {
+		const struct game_api *g = session_game();
+		u32 cap;
+		u16 len = 0, bit;
+		u8 byte, mask, want;
+
+		if (reqlen < 4) { cmd->status = ST_BAD_ARG; break; }
+		if (g == NULL || g->levelflags_get == NULL || g->levelflags_set == NULL) {
+			cmd->status = ST_UNSUPPORTED;
+			break;
+		}
+		/* u8 planet, u8 on, u16 bit */
+		bit = be16_get(req + 2);
+		cap = cmd->replycap;
+		if (cap > 0xFFFFu) cap = 0xFFFFu;
+		cmd->status = (u16)g->levelflags_get(req[0], reply, (u16)cap, &len);
+		if (cmd->status != ST_OK) break;
+		if ((u32)(bit >> 3) >= len) { cmd->status = ST_BAD_ARG; break; }
+		byte = reply[bit >> 3];
+		mask = (u8)(1u << (bit & 7u));
+		want = req[1] ? (u8)(byte | mask) : (u8)(byte & (u8)~mask);
+		cmd->status = want == byte ? ST_OK : (u16)g->levelflags_set(req[0], (u16)(bit >> 3), want);
+		break;
+	}
+
+	/*
+	 * Revision 1.28 (pending): u8 ngroups, LevelFlagGroup[ngroups] (u8 planet,
+	 * char[23] name), u16 n, LevelFlagName[n] (u16 bit, u16 number, u8 group,
+	 * u8 len, char name[len]).
+	 */
+	case OP_LEVELFLAGS_NAMES: {
+		const struct game_api *g = session_game();
+		const struct levelflag_names *t;
+		u32 off = 0, need;
+		u16 i;
+
+		if (g == NULL || g->levelflag_names == NULL || (t = g->levelflag_names()) == NULL) {
+			cmd->status = ST_UNSUPPORTED;
+			break;
+		}
+		need = 1u + (u32)t->ngroups * LEVELFLAG_GROUP_WIRE_SIZE + 2u;
+		for (i = 0; i < t->nflags; i++) {
+			u32 n = qstrlen(t->flags[i].name);
+			need += LEVELFLAG_NAME_WIRE_HEAD + (n > 255u ? 255u : n);
+		}
+		if (need > cmd->replycap) { cmd->status = ST_FULL; break; }
+
+		reply[off++] = t->ngroups;
+		for (i = 0; i < t->ngroups; i++) {
+			reply[off] = t->groups[i].planet;
+			qput_fixed(reply + off + 1, LEVELFLAG_GROUP_WIRE_SIZE - 1u, t->groups[i].name);
+			off += LEVELFLAG_GROUP_WIRE_SIZE;
+		}
+		be16_put(reply + off, t->nflags);
+		off += 2;
+		for (i = 0; i < t->nflags; i++) {
+			const struct levelflag_name *f = &t->flags[i];
+			u32 n = qstrlen(f->name);
+			if (n > 255u) n = 255u;
+			be16_put(reply + off, f->bit);
+			be16_put(reply + off + 2, f->number);
+			reply[off + 4] = f->group;
+			reply[off + 5] = (u8)n;
+			memcpy(reply + off + LEVELFLAG_NAME_WIRE_HEAD, f->name, n);
+			off += LEVELFLAG_NAME_WIRE_HEAD + n;
+		}
+		cmd->replylen = off;
+		break;
+	}
+#endif
+
 	/*
 	 * Protocol 1.8. The hold is tick-thread state that step_combos reads every
 	 * tick, so it is set here rather than inline on a network thread. It is not
@@ -1000,6 +1078,10 @@ static int op_needs_ring(u16 op)
 	case OP_LEVELFLAGS_GET:
 	case OP_LEVELFLAGS_RESET:
 	case OP_LEVELFLAGS_SET:
+#if QWARK_HAS_TOD
+	case OP_LEVELFLAGS_BIT:
+	case OP_LEVELFLAGS_NAMES:
+#endif
 	case OP_COMBO_SUSPEND:
 	case OP_SAVEFILE_INFO:
 	case OP_SAVEFILE_READ:

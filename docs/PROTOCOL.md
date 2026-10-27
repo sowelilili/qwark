@@ -80,6 +80,10 @@ Revision 1.26, config files (module build 57, 2026-10-27): no opcode or structur
 
 Revision 1.27, Tools of Destruction (module build 57, 2026-10-27): game 5, Ratchet & Clank Future: Tools of Destruction, the PSN EU executable NPEA00452 v01.00 alone. It is a game module of its own, `tod.sprx` (section 9.11), in a test build and in the PC builds (`qwark-rpcs3.exe`, the simulator); a release module has no ToD at all and treats its boot as a process it does not know (section 3.3). SessionInfo's `game` byte and GAME_MODULE's may now be 5. Three opcodes in the 0x00E0 block run a chunk of the game's own Lua on its own thread, through a helper qwark puts in the game (section 5.15): LUA_EXEC (0x00E0), LUA_STATUS (0x00E1) and, in the emulator builds alone, LUA_PATCH (0x00E2), the helper as RPCS3 patch words in SAVEFILE_PATCH's layout. A console installs the helper on the first LUA_EXEC of a game boot that asks for one in a level, never before; under RPCS3 the client writes the patch, which takes at the next boot. A module without a Lua game (a release, or any game but ToD) answers all three UNSUPPORTED. Everything else ToD offers is the ordinary ops on plain data: DESCRIBE, the unlocks, positions, planets, Die. No other opcode or structure changes.
 
+### Revision 1.28 (pending)
+
+Revision 1.28 (pending), ToD's level flags: two opcodes in the 0x0050 block, in the builds that have Tools of Destruction (`QWARK_HAS_TOD`: a test build and the PC builds; a release module answers both `UNKNOWN_OP`). LEVELFLAGS_BIT (0x0056) sets or clears one bit of the region LEVELFLAGS_GET returns, the console reading and writing its byte on the tick, so a flag the game sets in the same byte meanwhile is not undone by a client's stale copy; it works for every game that answers LEVELFLAGS_GET. LEVELFLAGS_NAMES (0x0057) names the bits of that region for a game whose flags are named one by one, grouped by planet; ToD alone answers it, every other game `UNSUPPORTED`. Tools of Destruction answers LEVELFLAGS_GET, LEVELFLAGS_SET and LEVELFLAGS_RESET, which it did not before (section 5.6). `struct game_api` gained `levelflag_names` at its end. No other opcode or structure changes.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -298,7 +302,7 @@ Two side effects a client should know about, both inside qwark rather than on th
 A title id no game table claims still reaches INGAME. `state` is 2, `game` is 0 NONE, and `title_id` is the id the console reported. It is a real session against a real process: the memory tools work on it exactly as they do on a game.
 
 - **MEM_READ, MEM_WRITE, WATCH_\*, FREEZE_\* and PATCH_\*** work, under the same rules as always. A watch reads live and its value travels in every telemetry packet; PATCH_APPLY is still refused where `flags` bit2 says the platform cannot patch code.
-- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS. PLANET_SELECT, and the planet selection in this block, are the last game's that was INGAME, as at the XMB (build 53, section 5.5).
+- **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, LEVELFLAGS_BIT, LEVELFLAGS_NAMES, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS. PLANET_SELECT, and the planet selection in this block, are the last game's that was INGAME, as at the XMB (build 53, section 5.5).
 - **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the pad is not read.
 
 Everything else about the session is unchanged: the launch is quiet for its second (section 1.1), `generation` advances, QUITTING and the return to the XMB happen when the process goes away, and a same-title reboot keeps its watches and builds the previous-session record (section 4.1) out of what is actually there, which is freezes and client patches.
@@ -657,6 +661,8 @@ POS_STORE replaces the whole blob of a slot and marks it filled, whether or not 
 | 0x0053 | LEVELFLAGS_GET | `u8 planet` | `u16 len, bytes`, the game's flag regions for that planet concatenated |
 | 0x0054 | LEVELFLAGS_RESET | `u8 planet` | none. The same reset PLANET_LOAD's bit0 performs |
 | 0x0055 | LEVELFLAGS_SET | `u8 planet, u8 value, u16 offset` | none. Writes one byte at `offset` into the concatenated region returned by LEVELFLAGS_GET; an offset past its end is BAD_ARG |
+| 0x0056 | LEVELFLAGS_BIT | `u8 planet, u8 on, u16 bit` | none. Revision 1.28 (pending). Sets (`on` non-zero) or clears bit `bit & 7` of byte `bit >> 3` of that region, read and written on the console; a byte past its end is BAD_ARG, a bit already as asked is OK and writes nothing |
+| 0x0057 | LEVELFLAGS_NAMES | none | `u8 ngroups, LevelFlagGroup[ngroups], u16 n, LevelFlagName[n]`. Revision 1.28 (pending). UNSUPPORTED for a game whose flags have no names |
 
 ```
 UnlockFieldDesc (16 bytes), revision 1.3, one per value slot 0..3, always four:
@@ -707,6 +713,25 @@ An entry may withhold a slot its category otherwise offers, and UNLOCK_SET on th
 A whole category may withhold one. The four descriptor rows say what a game names, not what every row carries, so a client draws a column from the descriptors and then a cell only where the row's `fields` bit is set. In RaC3 the level, XP and ammo slots belong to the weapons: its gadgets, items and vid comics are owned or not owned and declare slot 0 alone.
 
 An id is retired rather than renumbered when an entry goes: the remaining rows keep the ids they had, the list simply gets shorter, and UNLOCK_SET on the retired id answers BAD_ARG. RaC3's id 0, the Bomb Glove, is the one retired so far, dropped because UYA has no way to reach the item in game.
+
+```
+LevelFlagGroup (24 bytes), revision 1.28 (pending):
+u8   planet          the PLANET_LIST id the group is that planet's flags,
+                     0xFF for a group that is no planet's
+char name[23]        NUL-padded
+
+LevelFlagName (6 + len bytes):
+u16  bit             the flag's place in LEVELFLAGS_GET's region: byte bit >> 3,
+                     mask 1 << (bit & 7), the numbering LEVELFLAGS_BIT takes
+u16  number          the game's own number for the flag
+u8   group           index into the groups above
+u8   len
+char name[len]       not NUL-terminated
+```
+
+The flags come grouped, the groups in their own order and the flags of a group together, in the order a client lists them. LEVELFLAGS_NAMES is static: it does not depend on the save, and a client asks it once a session and reads the values with LEVELFLAGS_GET.
+
+**Tools of Destruction** (revision 1.28, pending) keeps one table of progression flags for the whole save rather than a region per planet: the game's GLOBAL_FLAG_ enum, flags 0 to 291, one bit each in five big-endian u64 words at `g_saveData`+0x5528 (0x10211398). Flag n is bit n & 63 of word n >> 6, the way the level scripts' check_flag, set_flag and clear_flag test it, so on the wire it is byte (n >> 6) * 8 + 7 - ((n & 63) >> 3), bit n & 7. LEVELFLAGS_GET answers those 40 bytes whatever the planet (any PLANET_LIST id; 19 and up is BAD_ARG), and LEVELFLAGS_SET writes one of them. LEVELFLAGS_RESET clears the flags LEVELFLAGS_NAMES groups under that planet and leaves every other bit, writing only the bytes that change. LEVELFLAGS_NAMES has 20 groups, the 19 planets in LEVEL_ order and then "Other" (0xFF) for the hero's hints, the RYNO's messages and the items, and all 292 flags, named as the old RaCMAN named them, which are the game's own Lua constants; the 34 the old list left out, 0 to 33, have the game's names. PLANET_LOAD's bit0 does nothing in ToD: the game never reset these, and the old client did not either.
 
 A game that does not offer level flags answers all three ops UNSUPPORTED, and a client that gets that is expected to hide its level-flag panel for that game. RaC2 and RaC3 return 0x10 bytes per planet. RaC1 and Deadlocked answer UNSUPPORTED: Deadlocked has no such region, and RaC1's is not laid out the way the old client's viewer assumed, so it is withheld until the format has been worked out. RaC1's PLANET_LOAD bit0 still resets the flags, which is the one thing racman actually did with them.
 
