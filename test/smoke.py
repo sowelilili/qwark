@@ -5519,6 +5519,80 @@ def smoke_tod(c, sim):
     status, _ = c.call(0xFFE0, struct.pack(">I", 1))
     check(status == ST_UNKNOWN_OP, "ToD: LUA_EXEC's inside half is no op on the wire", status)
     sim.send("fakelua off")
+    smoke_tod_autosplit(c, sim)
+
+
+TOD_FRONT_END = 0x1037A459
+TOD_PLAY_TIME = 0x1029C554
+TOD_CURRENT_LEVEL = 0x1029C558
+TOD_MISSIONS_DONE = 0x1021C968
+TOD_AS_ROWS = [
+    (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+    (2, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
+    (5, AUTOSPLIT_SPLIT, 0, 0, "Credits"),
+    (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
+    (4, AUTOSPLIT_LOAD_START, DF | NM, 0, "Level load"),
+    (3, AUTOSPLIT_PAUSE, DF | NM, 19950000, "Quit to XMB"),
+]
+
+
+def smoke_tod_autosplit(c, sim):
+    """Revision 1.28 (pending): ToD's autosplitter, over the wire."""
+    lua_state = struct.pack(">I", 0x30030000)
+    status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
+    if check(status == ST_OK, "ToD: AUTOSPLIT_DESCRIBE answers", status):
+        rows, consumed = parse_autosplit_describe(body)
+        got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
+        check(consumed == len(body) and got == TOD_AS_ROWS, "ToD: its six rows", got)
+
+    mem_write(c, TOD_PLAY_TIME, struct.pack(">f", 600.0))
+    mem_write(c, TOD_FRONT_END, b"\x00")
+    mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 1))
+    mem_write(c, TOD_LUA_STATE, lua_state)
+    module_sleep(c, 0.15)
+    exercise_autosplit_steps(c, "ToD", [
+        {"what": "a load to another planet splits with its id",
+         "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 9))],
+         "then": [(TOD_LUA_STATE, bytes(4))],
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9},
+        {"what": "levelInit ends the load",
+         "then": [(TOD_LUA_STATE, lua_state)],
+         "expect": (AUTOSPLIT_LOAD_END, 4)},
+        {"what": "reloading the same planet is no split",
+         "poke": [(TOD_LUA_STATE, bytes(4))],
+         "then": [(TOD_LUA_STATE, lua_state)],
+         "absent": (AUTOSPLIT_SPLIT, 1)},
+        {"what": "a new game out of the title is RESET",
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_FRONT_END, b"\x01"),
+                  (TOD_PLAY_TIME, bytes(4)), (TOD_CURRENT_LEVEL, bytes(4))],
+         "then": [(TOD_FRONT_END, b"\x00")],
+         "expect": (AUTOSPLIT_RESET, 0)},
+        {"what": "Defeat Tachyon on Fastoon II is the final split",
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_PLAY_TIME, struct.pack(">f", 600.0)),
+                  (TOD_CURRENT_LEVEL, struct.pack(">I", 18)), (TOD_LUA_STATE, lua_state)],
+         "then": [(TOD_MISSIONS_DONE + 18 * 0x7C, struct.pack(">III", 640, 719, 2)),
+                  (TOD_MISSIONS_DONE + 18 * 0x7C + 0x78, struct.pack(">I", 1))],
+         "expect": (AUTOSPLIT_SPLIT, 2), "arg": 640},
+        {"what": "the credits are their own split",
+         "then": [(TOD_GAME_STATE, struct.pack(">I", 11))],
+         "expect": (AUTOSPLIT_SPLIT, 5), "arg": 18},
+    ])
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_MISSIONS_DONE + 18 * 0x7C + 0x78, bytes(4))
+    mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 1))
+
+    # The quit to the XMB: PAUSE as it leaves, RESUME once the game is back.
+    mark, _events, _n = autosplit_events(c, 0)
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "ToD: it quits to the XMB")
+    check(as_wait(c, mark, AUTOSPLIT_PAUSE, 3) is not None, "ToD: and that emits PAUSE with code 3")
+    mark, _events, _n = autosplit_events(c, 0)
+    sim.send("boot %s tod" % TOD_TITLE)
+    ok, _info = wait_game(c, 5)
+    check(ok, "ToD: it comes back")
+    check(as_wait(c, mark, AUTOSPLIT_RESUME, 3) is not None,
+          "ToD: with a level up (the simulator's boot) that is the RESUME")
 
 
 def smoke_rpcs3_tod(c, pine):
@@ -5553,6 +5627,26 @@ def smoke_rpcs3_tod(c, pine):
     check(status == ST_OK and pine.peek(TOD_PROXY_HANDLE + 3, 1) == bytes([154]),
           "rpcs3: ToD's God Ratchet is a PINE write", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
+
+    # Revision 1.28 (pending): the quit's pause pair needs no code under RPCS3.
+    mark, _events, _n = autosplit_events(c, 0)
+    pine.shutdown_game()
+    wait_state(c, SESSION_XMB)
+    check(as_wait(c, mark, AUTOSPLIT_PAUSE, 3) is not None, "rpcs3: ToD's quit emits PAUSE with code 3")
+    pine.poke(TOD_LUA_STATE, bytes(4))
+    pine.poke(0x1037A459, b"\x00")
+    mark, _events, _n = autosplit_events(c, 0)
+    pine.boot(TOD_TITLE, "Ratchet & Clank Future: Tools of Destruction")
+    ok, _info = wait_game(c, 5)
+    check(ok and as_absent(c, mark, AUTOSPLIT_RESUME, 3),
+          "rpcs3: ToD back, still booting: no RESUME yet")
+    pine.poke(0x1037A459, b"\x01")
+    check(as_wait(c, mark, AUTOSPLIT_RESUME, 3) is not None,
+          "rpcs3: the front end up is the RESUME, read through PINE")
+    check(pine.peek(0x1037A459, 1) == b"\x01", "rpcs3: and nothing was written to it")
+    pine.poke(TOD_LUA_STATE, struct.pack(">I", 0x30030000))
+    pine.poke(0x1037A459, b"\x00")
+
     status, body = c.call(OP_LUA_PATCH)
     words = []
     if check(status == ST_OK and len(body) >= 8, "rpcs3: LUA_PATCH answers", status):

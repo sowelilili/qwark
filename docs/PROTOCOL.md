@@ -86,6 +86,8 @@ Revision 1.28 (pending), ToD's level flags: two opcodes in the 0x0050 block, in 
 
 SessionInfo `flags2` bit7 **NO_MENU** (ToD small fixes, 2026-10-27): set while INGAME with a game whose code is in and which has no console menu, Tools of Destruction today (its `game_api.menu` is NULL), so a client hides the console menu's combo and the In-game menus switch for that game rather than offering two controls that do nothing there. Clear outside a game, while a game's module is not in, and in every earlier build, which is what a client already shows both for. No opcode or other structure changes. The number is the lead's to settle at merge.
 
+Revision 1.28 (pending), ToD's autosplitter: no new opcode and no wire structure changes. Tools of Destruction answers AUTOSPLIT_DESCRIBE with six rows and emits START, RESET, SPLIT, LOAD_START and LOAD_END, and PAUSE and RESUME around a quit to the XMB (section 8.5). An EventDesc may now set NORMALISE with `param_us` 0, which takes the whole interval off game time; ToD's level load is the first row that does (section 8.2). The title index (`src/games/titles.h`) gained `resume_watch` and `resume_watch_alt`: a pause pair's RESUME can wait on the game's own memory, read and never written, where there is no boot patch, so it times the same on a console and under RPCS3.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -1522,7 +1524,7 @@ The one thing that is **not** left to taste is timing. The old scripts adjusted 
 
 Two things a client must *not* do with a split follow from the scripts rather than from the wire, because both used to lose a runner a segment. A script's `split` block ran once per update and returned at most one `true`, so **a client takes at most one split per moment the console stamped**, however many candidates that moment carried; and a script checked `reset` before `split` and never ran `split` at all on the update a run began, so **a split the console stamped in the same moment as a START or a RESET is not a split**. Neither rule waits for anything: both are decided on the `time_ms` the events already carry, so nothing is held back and no split reaches LiveSplit a millisecond later than it would have.
 
-Only Deadlocked emits PAUSE and RESUME. Every game but Deadlocked emits LOAD_START; only RaC1 and RaC3 close one with LOAD_END.
+Only Deadlocked and Tools of Destruction emit PAUSE and RESUME. Every game but Deadlocked emits LOAD_START; only RaC1, RaC3 and Tools of Destruction close one with LOAD_END.
 
 Events are emitted only while the session is INGAME.
 
@@ -1561,8 +1563,10 @@ u8  flags     bit0 = a client should enable it by default
               bit3 = NORMALISE  (section 8.3)
 u8  reserved  0
 u32 param_us  the timing parameter, in microseconds; 0 when neither timing flag
-              is set. A row never sets both flags, and a row that sets one always
-              names a non-zero parameter
+              is set. A row never sets both flags, and a row that sets FLAT
+              always names a non-zero parameter. Revision 1.28 (pending): a
+              NORMALISE row may name 0, which leaves no allowance and takes the
+              whole interval off; every other NORMALISE row names one
 char label[24]  NUL-padded, what the client shows as a checkbox
 ```
 
@@ -1661,6 +1665,27 @@ The origin is also what makes code 1 a planet *change* rather than a load. The S
 Code 3 is the quit to the XMB, which some categories use as a strategy. PAUSE goes out when the game leaves the running state â€” the quit hook fires, or the process disappears underneath qwark. RESUME carries the same code 3, and the LC script's arithmetic (stop game time for the whole quit and reload, then add 14.8 s back on the way in) is NORMALISE 14 800 000: the quit costs exactly 14.8 s however slow the console was.
 
 **Where Deadlocked's RESUME comes from.** qwark reaches INGAME as soon as the process is back and its fingerprint reads, which is several seconds before the game is playable â€” it sits behind a loading screen and a warning screen first â€” so resuming there would hand the runner free time the old autosplitter never gave away. qwark therefore installs the old SPRX's **loading hook** alongside its quit hook when Deadlocked enters INGAME: ten words of trampoline at `0x11904`, a `b +0x80` at `0x11884` that reaches it, and a byte at `0x1710000` the game sets to `0xFF` once it has the SCE logo up. Both hooks go in permanently and are never reverted, and both bytes are cleared on entry so a stale one cannot fire. RESUME is emitted on the first tick that byte reads `0xFF`, and the byte is cleared again for the next quit â€” exactly the gate the SPRX's `STATUS_INGAME_PENDING` used before it sent `CMD_UNPAUSE`.
+
+**Tools of Destruction** (revision 1.28, pending) — START/RESET when a load into Metropolis (0) begins on a new file: the title giving way to it (a new game), or a level going down with Metropolis as its destination (a challenge mode started out of the credits). A new file is one with less than a second of play time, `g_playTime` (`g_saveData`+0x906E4, 0x1029C554, a float), which `SaveData_init` sets to 0 and which only gameplay frames add to; no save has it there.
+
+| Code | Kind | Label | Default | Timing | `arg` |
+|---|---|---|---|---|---|
+| 1 | SPLIT | Planet entered | yes (route) | — | the destination, a LEVEL_ id |
+| 2 | SPLIT | Tachyon defeated | yes | — | 640, the mission's id |
+| 5 | SPLIT | Credits | no | — | the level the credits came from |
+| 6 | SPLIT | Mission completed | no | — | the level in the high 16 bits, the mission's id (its label's text id) in the low 16 |
+| 4 | LOAD_START | Level load | yes | NORMALISE 0 | the destination, on both halves |
+| 3 | PAUSE | Quit to XMB | yes | NORMALISE 19 950 000 | 0 |
+
+**What a load is.** A level is up while the gameplay Lua VM's `lua_State` (0x102043D0) is non-zero: `levelInit`, at the end of `Level_StartGameplay(…, 0)` under `Level_Enter`, makes it, and `Level_Exit` puts it back to 0, on every planet load however it was asked for (the planet request, `LoadLevel`, a save, the title). LOAD_START goes out when no level is up outside the title (`g_inFrontEnd`, 0x1037A459) and LOAD_END when one is again, and the client takes all of it off game time. A boot's first seconds, before the title or a level has shown, are the quit's pause, never a load.
+
+**Planet changes and planet resets.** Code 1 goes out as a load begins, with the destination `g_currentLevel` (0x1029C558) holds by then, and only when the destination is not the level the player was on. qwark keeps that origin itself, like Deadlocked's: the level each load went to, and nowhere while the title is up. A planet reloaded (the same level loaded again, by the game or a save) is therefore a load like any other, timed and removed, and never a second split; a death or a checkpoint goes through `Level_StartGameplay(…, 1)`, which keeps the `lua_State`, and emits nothing; the load out of the title, a save's or a new game's, has no origin and never splits, and neither does the quit to the title, which loads nothing. The level word alone moves nothing: `Lua_set_save_level` writes it without a load.
+
+**The end of a run.** Code 2 is Fastoon II's (LEVEL_ 18) completed-mission list (`g_saveData`+0x10AF8 + level × 0x7C: ten 12-byte entries, label text id, description text id, flags, then a u32 count) gaining L19_LABEL_MISSION_DEFEATTACHYON, text id 640, which `Lua_complete_mission` moves there from the open list as the fight ends. qwark reads the list every tick on Fastoon II and every fourth elsewhere, only while a level is up; the first look at a level only learns what is there, so a save arriving with its missions done splits nothing. Code 6 is every mission so completed, off by default, for routes that split on one. Code 5 is `g_gameState` (0x10387F4C) becoming 11, which only `Lua_show_credits` asks for (`GameState_RequestCredits`), outside the title.
+
+**The quit to the XMB.** Code 3 is the title index's pause pair, as Deadlocked's is. PAUSE goes out as the session leaves the game (the game's quit byte `g_quitRequested`, 0x1037A8E8, or the process going). The old ToD autosplitter patched `Memory_InitHeaps` to set a byte and unpaused when it did, then added 19.95 s to game time; `FrontEnd_Enter`, which calls it, sets `g_inFrontEnd` in the same frame, so the RESUME goes out on the first tick that byte reads non-zero, or the `lua_State` does, should the title come and go unseen. Neither is written, so a console and RPCS3 time a quit the same way, and NORMALISE 19 950 000 makes every quit cost the old script's 19.95 s.
+
+From the NPEA00452 executable; not yet run on a console or under RPCS3.
 
 ## 9. The console menu (revision 1.22)
 

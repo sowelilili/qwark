@@ -28,6 +28,14 @@
  *   2  level      the current LEVEL_ +0, challenge mode +4         every tick
  *   3  money      bolts +0, raritanium +4                          every 4th
  *   4  ammo flag  g_infiniteAmmo, which Infinite ammo's hold keys  every 4th
+ *   5  lua state  the gameplay lua_State, 0 between levels         every tick
+ *   6  front end  g_inFrontEnd, 1 on the title                     every 2nd
+ *   7  game state g_gameState, 11 in the credits                   every 2nd
+ *
+ * Blocks 5 to 7 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
+ * pending): the level going down and coming up is a load's two ends, so it
+ * is read every tick; the title and the credits take the even and the odd
+ * ticks between them.
  *
  * The position is the hero's, two pointers deep: hot_decode reads the hero's
  * pointer again whenever the level object changes and every eighth tick
@@ -39,7 +47,10 @@ static const struct game_hot_block tod_hot[] = {
 	{ TOD_LEVEL_OBJ,     4,                  1, 0 },
 	{ TOD_CURRENT_LEVEL, 8,                  1, 0 },
 	{ TOD_BOLTS,         8,                  4, 1 },
-	{ TOD_INFINITE_AMMO, 4,                  4, 2 }
+	{ TOD_INFINITE_AMMO, 4,                  4, 2 },
+	{ TOD_LUA_STATE,     4,                  1, 0 },
+	{ TOD_FRONT_END,     1,                  2, 0 },
+	{ TOD_GAME_STATE,    4,                  2, 1 }
 };
 
 #define HOT_INPUTS 0
@@ -47,6 +58,9 @@ static const struct game_hot_block tod_hot[] = {
 #define HOT_LEVEL  2
 #define HOT_MONEY  3
 #define HOT_AMMO   4
+#define HOT_LUA    5
+#define HOT_FRONT  6
+#define HOT_GSTATE 7
 
 #define HERO_EVERY 8u
 
@@ -59,6 +73,7 @@ struct tod_state {
 	u32 hero;          /* the hero it had, 0 for none */
 	u32 ammo_flag;     /* g_infiniteAmmo, as last read */
 	u32 ticks;
+	struct tod_as_state as;   /* the autosplit watcher's, revision 1.28 (pending) */
 };
 
 #if QWARK_GAME_MODULE
@@ -108,6 +123,7 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		u32 level = be32_get(blocks[HOT_LEVEL]);
 
 		out->current_planet = level < TOD_NPLANETS ? (u8)level : 0;
+		T->as.cur_level = (s32)level;
 		out->readout[TOD_RO_CHALLENGE] = be32_get(blocks[HOT_LEVEL] + 4);
 	}
 
@@ -117,6 +133,11 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	}
 
 	if (blocks[HOT_AMMO] != NULL) T->ammo_flag = be32_get(blocks[HOT_AMMO]);
+
+	/* The autosplit watcher's view; a slow block keeps its last value. */
+	if (blocks[HOT_LUA] != NULL)    T->as.cur_lua = be32_get(blocks[HOT_LUA]);
+	if (blocks[HOT_FRONT] != NULL)  T->as.cur_front = blocks[HOT_FRONT][0];
+	if (blocks[HOT_GSTATE] != NULL) T->as.cur_state = (s32)be32_get(blocks[HOT_GSTATE]);
 
 	if (blocks[HOT_ROOT] != NULL) root = be32_get(blocks[HOT_ROOT]);
 	if ((root & 3u) != 0) root = 0;
@@ -145,11 +166,13 @@ static void tod_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
 	tod_ammo_tick(T->ammo_flag, T->root);
+	tod_autosplit_tick(&T->as);
 }
 
 static void tod_on_enter(void)
 {
 	memset(T, 0, sizeof(*T));
+	tod_autosplit_forget(&T->as);
 	tod_panel_reset();
 }
 
@@ -305,7 +328,7 @@ const struct game_api tod_game = {
 	NULL,                 /* on_quit */
 	tod_on_tick,          /* Infinite ammo's hold */
 
-	NULL,                 /* autosplit_describe: a later round */
+	tod_autosplit_describe, /* revision 1.28 (pending), tod_autosplit.c */
 
 	NULL,                 /* manips */
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */

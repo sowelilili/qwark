@@ -153,7 +153,7 @@ static const struct game_title g_titles[] = {
 		sizeof(rac1_fp),
 		0,                    /* no quit hook is known for RaC1 yet */
 		RAC1_INPUTS,
-		NULL, 0, 0, 0,
+		NULL, 0, 0, 0, 0, 0,
 		LINKED(rac1_game)
 	},
 	{
@@ -163,7 +163,7 @@ static const struct game_title g_titles[] = {
 		sizeof(rac2_fp),
 		0,                    /* no quit hook is known for RaC2 yet */
 		RAC2_INPUTS,
-		NULL, 0, 0, 0,
+		NULL, 0, 0, 0, 0, 0,
 		LINKED(rac2_game)
 	},
 	{
@@ -174,7 +174,7 @@ static const struct game_title g_titles[] = {
 		sizeof(rac3_fp),
 		0,                    /* no quit hook is known for RaC3 yet */
 		RAC3_INPUTS,
-		NULL, 0, 0, 0,
+		NULL, 0, 0, 0, 0, 0,
 		LINKED(rac3_game)
 	},
 	{
@@ -187,15 +187,21 @@ static const struct game_title g_titles[] = {
 		RAC4_INPUTS,
 		rac4_boot, (u8)(sizeof(rac4_boot) / sizeof(rac4_boot[0])),
 		R4_AS_QUIT, RAC4_LOADING_VAL,
+		0, 0,                 /* the loading hook's byte is the gate */
 		LINKED(rac4_game)
 	}
 #if QWARK_HAS_TOD
 	/*
 	 * Revision 1.27: Tools of Destruction, the PSN EU v01.00 alone (BCES00052
-	 * is another executable, every address moved). No code switches, no boot
-	 * patches and no pause pair: nothing it does belongs to a boot's first
-	 * seconds, and its Lua helper goes in on demand (src/core/luacore.c). The
-	 * quit byte is the game's own, set by SystemQuitCallback on its way out.
+	 * is another executable, every address moved). No code switches and no
+	 * boot patches, and its Lua helper goes in on demand (src/core/luacore.c).
+	 * The quit byte is the game's own, set by SystemQuitCallback on its way out.
+	 *
+	 * Revision 1.28 (pending): the pause pair around a quit to the XMB, the
+	 * old ToD autosplitter's. Its RESUME waits for the game's own front end
+	 * (g_inFrontEnd, set by FrontEnd_Enter in the same frame the old SPRX's
+	 * hook in Memory_InitHeaps fired), or a level's lua_State should the front
+	 * end come and go unseen: no patch, so a console and RPCS3 time it alike.
 	 */
 	, {
 		{ TOD_TITLE, NULL, NULL, NULL }, GAME_TOD,
@@ -204,7 +210,9 @@ static const struct game_title g_titles[] = {
 		sizeof(tod_fp),
 		TOD_QUIT_BYTE,
 		TOD_PAD_MASK,
-		NULL, 0, 0, 0,
+		NULL, 0,
+		TOD_AS_QUIT, 0,       /* revision 1.28 (pending): the quit's pause pair, */
+		TOD_FRONT_END, TOD_LUA_STATE, /* resumed on the game's own memory */
 		LINKED(tod_game)
 	}
 #endif
@@ -213,7 +221,7 @@ static const struct game_title g_titles[] = {
 		{ "TEST00001", NULL, NULL, NULL }, GAME_RAC2,
 		TESTGAME_FP_ADDR, testgame_fp, NULL, NULL, NULL, 4,
 		0, TESTGAME_PAD,
-		NULL, 0, 0, 0,
+		NULL, 0, 0, 0, 0, 0,
 		&testgame_game
 	}
 #endif

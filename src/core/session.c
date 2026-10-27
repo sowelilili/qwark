@@ -767,6 +767,18 @@ static void resume_tick(void)
 	if (g_pause.hooked && g_entry->resume_addr != 0) {
 		if (mem_read_u8(g_entry->resume_addr, &b) != ST_OK || b != 0xFF) return;
 		mem_write_u8(g_entry->resume_addr, 0);
+	} else if (g_entry->resume_watch != 0 || g_entry->resume_watch_alt != 0) {
+		/*
+		 * Revision 1.28 (pending): a game that says on its own when it is
+		 * playable again (titles.h, resume_watch). Read, never written.
+		 */
+		u32 w = 0;
+		int up = 0;
+
+		if (g_entry->resume_watch != 0 && mem_read_u8(g_entry->resume_watch, &b) == ST_OK && b != 0) up = 1;
+		if (!up && g_entry->resume_watch_alt != 0 &&
+		    mem_read_u32(g_entry->resume_watch_alt, &w) == ST_OK && w != 0) up = 1;
+		if (!up) return;
 	}
 	g_pause.due = 0;
 	autosplit_emit(AUTOSPLIT_RESUME, g_pause.code, 0);

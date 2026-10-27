@@ -15,6 +15,7 @@
 #include "../src/core/luacore.h"
 #include "../src/core/luamb.h"
 #include "../src/core/util.h"
+#include "../src/core/autosplit.h"
 #include "../src/games/game.h"
 #include "../src/games/titles.h"
 #include "../src/games/tod.h"
@@ -470,6 +471,324 @@ static void test_tod_lua_rpcs3(void)
 	host_set_emulator(0);
 }
 
+/* ------------------------------------------- the autosplitter, rev 1.28 */
+
+#define AS_STATE   0x30030000u   /* the simulator's lua_State (backend_fake.c, seed_tod) */
+
+static u8 g_ev[5 + AUTOSPLIT_RING_SLOTS * AUTOSPLIT_EVENT_SIZE];
+
+/* How many events of this kind and code came after `seq`; *arg the last one's. */
+static u32 as_count(u32 seq, u8 kind, u8 code, u32 *arg)
+{
+	u32 n, i, hits = 0;
+
+	if (autosplit_encode_events(seq, g_ev, sizeof(g_ev)) < 5) return 0;
+	n = g_ev[4];
+	for (i = 0; i < n; i++) {
+		const u8 *e = g_ev + 5 + i * AUTOSPLIT_EVENT_SIZE;
+		if (e[8] != kind || e[9] != code) continue;
+		hits++;
+		if (arg != NULL) *arg = be32_get(e + 12);
+	}
+	return hits;
+}
+
+static u32 as_all(u32 seq)
+{
+	if (autosplit_encode_events(seq, g_ev, sizeof(g_ev)) < 5) return 0;
+	return g_ev[4];
+}
+
+static void wr8(u32 addr, u8 v)
+{
+	host_poke(addr, &v, 1);
+}
+
+static u8 rd8(u32 addr)
+{
+	u8 b = 0;
+	host_peek(addr, &b, 1);
+	return b;
+}
+
+/* A level's completed missions, the first `n` of `ids`. */
+static void put_missions(u32 level, const u32 *ids, u32 n)
+{
+	u32 base = TOD_MISSIONS_DONE + level * TOD_MISSION_LIST_LEN, i;
+
+	for (i = 0; i < n; i++) {
+		wr32(base + i * TOD_MISSION_STRIDE, ids[i]);
+		wr32(base + i * TOD_MISSION_STRIDE + 4, ids[i] + 79);
+		wr32(base + i * TOD_MISSION_STRIDE + 8, 2);
+	}
+	wr32(base + TOD_MISSION_COUNT, n);
+}
+
+static void test_tod_autosplit_rows(void)
+{
+	const struct game_api *g = session_game();
+	const struct autosplit_desc *d;
+	u8 n = 0, i;
+
+	group("ToD: the autosplitter's rows");
+	check(g != NULL && g->autosplit_describe != NULL, "ToD describes an autosplitter");
+	if (g == NULL || g->autosplit_describe == NULL) return;
+	d = g->autosplit_describe(&n);
+	check(n == 6, "six rows");
+	if (n != 6) return;
+	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
+	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE) && qstreq(d[0].label, "Planet entered"),
+	      "code 1 is the planet split, on, with the route");
+	check(d[1].code == TOD_AS_TACHYON && d[1].flags == AUTOSPLIT_FLAG_DEFAULT && qstreq(d[1].label, "Tachyon defeated"),
+	      "Tachyon's defeat is the final split, on by default");
+	check(d[2].code == TOD_AS_CREDITS && d[2].flags == 0 && d[3].code == TOD_AS_MISSION && d[3].flags == 0,
+	      "the credits and every mission are there, off");
+	check(d[4].code == TOD_AS_LOAD && d[4].kind == AUTOSPLIT_LOAD_START &&
+	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[4].param_us == 0,
+	      "a level load is removed whole: NORMALISE with no allowance");
+	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
+	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 19950000u,
+	      "the quit to the XMB costs the old script's 19.95 s");
+	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
+}
+
+static void test_tod_autosplit_planets(void)
+{
+	u32 seq, arg = 0;
+
+	group("ToD: planet splits, loads and planet resets");
+	wr32(TOD_CURRENT_LEVEL, 1);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	wr8(TOD_FRONT_END, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wrf(TOD_PLAY_TIME, 600.0f);
+	tick(4);
+
+	/* Cobalia to Rykan V: the destination is written, then the level goes down. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_CURRENT_LEVEL, 9);
+	tick(2);
+	check(as_all(seq) == 0, "the level word alone is no split (Lua_set_save_level writes it too)");
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 9, "a planet change splits, arg Rykan V");
+	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1, "and its load starts");
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0, "no reset on a played file");
+	tick(30);
+	check(as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 0, "no end while no level is up");
+	wr32(TOD_LUA_STATE, AS_STATE + 0x100);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 1, "levelInit ends the load");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 1, "one split for one trip");
+
+	/* The same planet again: a reload, a load to time, no split. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_LUA_STATE, 0);
+	tick(5);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "reloading the planet is no split");
+	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1 &&
+	      as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 1, "but its load is timed like any other");
+
+	/* A death or a checkpoint keeps the lua_State: nothing at all. */
+	seq = autosplit_latest_seq();
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 0.0f);
+	tick(10);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 10.0f);
+	tick(4);
+	check(as_all(seq) == 0, "a death or a checkpoint emits nothing");
+
+	/* Quit to the title, then a save of another planet: no split either way. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_LUA_STATE, 0);
+	tick(4);
+	wr8(TOD_FRONT_END, 1);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1 &&
+	      as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 1, "the way to the title is a short load, the title none");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "going to the title is no split");
+	seq = autosplit_latest_seq();
+	tick(40);
+	check(as_all(seq) == 0, "the title is not loading");
+	wr32(TOD_CURRENT_LEVEL, 5);
+	tick(2);
+	wr8(TOD_FRONT_END, 0);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1, "the save's load starts as the title goes");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "a save is no run start");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 1, "and ends with its level");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "loading a save is no split");
+
+	/* From there, a planet change splits again. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_CURRENT_LEVEL, 6);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 6, "the next trip splits");
+
+	/* A load shorter than a tick (Fast loads): a new lua_State where the last tick read another. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_CURRENT_LEVEL, 10);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x300);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 10, "a load between two ticks still splits");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 1, "and the same planet's new state does not again");
+}
+
+static void test_tod_autosplit_runs(void)
+{
+	static const u32 before[] = { 634, 635, 636, 637, 638, 639 };
+	u32 ids[7], seq, arg = 0, i;
+
+	group("ToD: run starts, Tachyon and the credits");
+
+	/* A new game: the title, a fresh file, Metropolis. */
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr8(TOD_FRONT_END, 1);
+	tick(4);
+	wrf(TOD_PLAY_TIME, 0.0f);
+	wr32(TOD_CURRENT_LEVEL, 0);
+	tick(2);
+	seq = autosplit_latest_seq();
+	wr8(TOD_FRONT_END, 0);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1,
+	      "a new game is RESET and START");
+	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1, "and its load is timed");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "Metropolis is no planet split");
+
+	/* A Metropolis save with play time on it is no start. */
+	wrf(TOD_PLAY_TIME, 12.0f);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr8(TOD_FRONT_END, 1);
+	tick(4);
+	seq = autosplit_latest_seq();
+	wr8(TOD_FRONT_END, 0);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "a Metropolis save is no run start");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+
+	/* Fastoon II, the fight: the list as the earlier missions left it, then Defeat Tachyon. */
+	wr32(TOD_CURRENT_LEVEL, 18);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	for (i = 0; i < 6; i++) ids[i] = before[i];
+	put_missions(18, ids, 6);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x200);
+	tick(4);
+	seq = autosplit_latest_seq();
+	tick(8);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_TACHYON, NULL) == 0, "missions already done are no split");
+	ids[6] = TOD_MISSION_TACHYON;
+	put_missions(18, ids, 7);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_TACHYON, &arg) == 1 && arg == TOD_MISSION_TACHYON,
+	      "Defeat Tachyon completed: the final split, the same tick");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_MISSION, &arg) == 1 && arg == ((18u << 16) | TOD_MISSION_TACHYON),
+	      "and the mission row, level and label id");
+	tick(10);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_TACHYON, NULL) == 1, "only once");
+
+	/* Another planet's mission is a mission, not Tachyon. */
+	wr32(TOD_CURRENT_LEVEL, 9);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	put_missions(9, ids, 1);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(8);
+	seq = autosplit_latest_seq();
+	ids[1] = TOD_MISSION_TACHYON;
+	put_missions(9, ids, 2);
+	tick(8);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_MISSION, &arg) == 1 && arg == ((9u << 16) | TOD_MISSION_TACHYON),
+	      "a mission on Rykan V is the mission row");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_TACHYON, NULL) == 0, "and never the final split");
+	put_missions(9, ids, 0);
+	wr32(TOD_CURRENT_LEVEL, 18);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x200);
+	tick(4);
+
+	/* The credits. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_GAME_STATE, TOD_STATE_CREDITS);
+	tick(3);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_CREDITS, &arg) == 1 && arg == 18, "the credits split, on Fastoon II");
+
+	/* Challenge mode out of the credits: a fresh file into Metropolis. */
+	seq = autosplit_latest_seq();
+	wrf(TOD_PLAY_TIME, 0.0f);
+	wr32(TOD_CURRENT_LEVEL, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1,
+	      "a challenge mode start is RESET and START");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "and no planet split with it");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	wrf(TOD_PLAY_TIME, 600.0f);
+	put_missions(18, ids, 0);
+	tick(4);
+}
+
+static void test_tod_autosplit_quit(void)
+{
+	u32 seq;
+	int i, in = 0;
+
+	group("ToD: the quit to the XMB pauses, and the game coming back resumes");
+	seq = autosplit_latest_seq();
+	check(quit(), "quit to the XMB");
+	check(as_count(seq, AUTOSPLIT_PAUSE, TOD_AS_QUIT, NULL) == 1, "PAUSE with code 3 as it left");
+
+	/* A boot as the game makes it: no level and no title yet. */
+	seq = autosplit_latest_seq();
+	host_boot_as(TOD_TITLE, "tod");
+	wr32(TOD_LUA_STATE, 0);
+	wr8(TOD_FRONT_END, 0);
+	for (i = 0; i < 4000 && !in; i++) {
+		tick(1);
+		in = session_state() == SESSION_INGAME && session_game() != NULL;
+	}
+	check(in, "ToD is back");
+	tick(120);
+	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 0, "no RESUME while the game boots");
+	check(as_all(seq) == 0, "and no load: a boot is the pause's");
+	wr8(TOD_FRONT_END, 1);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 1, "RESUME the tick the front end is up");
+	tick(10);
+	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 1, "only once");
+	check(rd8(TOD_FRONT_END) == 1, "and the game's byte is left alone");
+
+	/* Missed the title: a level's lua_State resumes it too. */
+	seq = autosplit_latest_seq();
+	check(quit(), "quit again");
+	wr8(TOD_FRONT_END, 0);
+	host_boot_as(TOD_TITLE, "tod");
+	wr8(TOD_FRONT_END, 0);
+	for (i = 0; i < 4000; i++) {
+		tick(1);
+		if (session_state() == SESSION_INGAME) break;
+	}
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 1, "a level already up resumes at once");
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -477,5 +796,11 @@ void test_tod_game(void)
 	test_tod_level_flags();
 	test_tod_lua_console();
 	test_tod_lua_rpcs3();
+	quit();
+	check(boot_tod(), "ToD again, for the autosplitter");
+	test_tod_autosplit_rows();
+	test_tod_autosplit_planets();
+	test_tod_autosplit_runs();
+	test_tod_autosplit_quit();
 	quit();
 }

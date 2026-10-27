@@ -117,6 +117,22 @@
 #define TOD_LUA_STATE        0x102043D0u  /* its lua_State*, 0 between levels */
 #define TOD_GAME_CLOCK       0x1074DDA8u  /* f32 time scale at +0, game time at +0x14 */
 
+/*
+ * The autosplitter (revision 1.28, pending; tod_autosplit.c). Ghidra names,
+ * all read in the decompile (dec) unless the mark says otherwise.
+ */
+#define TOD_FRONT_END        0x1037A459u  /* g_inFrontEnd, u8: 1 from FrontEnd_Enter to FrontEnd_Exit (the title) */
+#define TOD_PLAY_TIME        0x1029C554u  /* g_playTime, f32 g_saveData+0x906E4: + the frame time in g_gameState 4; SaveData_init 0 */
+#define TOD_FRESH_PLAY_TIME  0x3F800000u  /* 1.0f: a file with less play time than this is a new one */
+#define TOD_STATE_CREDITS    11           /* g_gameState: GameState_RequestCredits, from Lua_show_credits */
+#define TOD_MISSIONS_DONE    0x1021C968u  /* g_saveData+0x10AF8: ToDMissionList[20] by LEVEL_, the completed ones */
+#define TOD_MISSION_LIST_LEN 0x7Cu        /* 10 x { u32 label text id, u32 desc text id, u32 flags }, u32 count */
+#define TOD_MISSION_STRIDE   0x0Cu
+#define TOD_MISSION_COUNT    0x78u
+#define TOD_NMISSIONS        10u
+#define TOD_LEVEL_FASTOON_II 18           /* LEVEL_FASTOON_II, Tachyon's */
+#define TOD_MISSION_TACHYON  640u         /* L19_LABEL_MISSION_DEFEATTACHYON, the mission's id */
+
 /* WPN_ classes (csv): 0 the wrench, 1..15 weapons, 16..23 devices, 24..31 gadgets. */
 #define TOD_WPN_FIRST        1u
 #define TOD_WPN_DEVICES      16u
@@ -273,6 +289,48 @@ struct tod_facts {
 #define TOD_UL_SP           64u    /* reserved: + SKILLPOINT, 0..59 */
 #define TOD_UL_GB           128u   /* reserved: + the gold bolt's index, 0..31 (tod_gold_bolt) */
 #define TOD_NGOLD_BOLTS     32u
+
+/*
+ * The autosplitter's reason codes (revision 1.28, pending; PROTOCOL.md 8.5).
+ * Code 1 is every game's planet split; 3 is the title index's pause pair.
+ */
+#define TOD_AS_PLANET       1      /* SPLIT, arg the LEVEL_ just loaded */
+#define TOD_AS_TACHYON      2      /* SPLIT, Fastoon II's "Defeat Tachyon" mission completed */
+#define TOD_AS_QUIT         3      /* PAUSE / RESUME around a quit to the XMB */
+#define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, a level load */
+#define TOD_AS_CREDITS      5      /* SPLIT, the credits start */
+#define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
+#define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
+
+/*
+ * What the watcher keeps, a part of tod_game.c's state (the lent area in a
+ * module). The `cur_` fields are the hot block's, written by its decode.
+ */
+struct tod_as_state {
+	u32 cur_lua;           /* the gameplay lua_State*, 0 between levels */
+	s32 cur_level;         /* g_currentLevel */
+	s32 cur_state;         /* g_gameState */
+	u8  cur_front;         /* g_inFrontEnd */
+	u8  primed;
+	u8  seen;              /* this process has shown its front end or a level */
+	u8  loading;
+	u32 lua;               /* the last tick's */
+	s32 state;
+	u8  front;
+	u8  missions_primed;
+	u8  nmissions;
+	u8  pad;
+	u32 origin;            /* the level the player is on, TOD_AS_NOWHERE when none */
+	u32 mission_level;     /* whose completed list `missions` is */
+	u32 missions[TOD_NMISSIONS];
+	u32 ticks;
+};
+#define TOD_AS_NOWHERE      0xFFFFFFFFu
+
+/* tod_autosplit.c */
+void tod_autosplit_forget(struct tod_as_state *as);
+void tod_autosplit_tick(struct tod_as_state *as);
+const struct autosplit_desc *tod_autosplit_describe(u8 *count);
 
 /* tod_panel.c */
 int  tod_hero(u32 *hero);

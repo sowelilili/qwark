@@ -83,6 +83,19 @@ struct game_title {
 	u8  pause_code;
 	u32 resume_addr;
 
+	/*
+	 * Revision 1.28 (pending): a RESUME that needs no boot patch, for a game
+	 * that says on its own when it is playable again. Where resume_addr is 0
+	 * or its patch is not in, the RESUME waits for the byte at resume_watch to
+	 * read non-zero, or the word at resume_watch_alt to (either may be 0 for
+	 * none). Both are the game's own memory: read, never written, so the same
+	 * gate holds on a console and under RPCS3. Tools of Destruction's front
+	 * end and its gameplay lua_State (tod.h). With neither, the RESUME goes on
+	 * the first tick back in the game, as before.
+	 */
+	u32 resume_watch;
+	u32 resume_watch_alt;
+
 	/* The game's vtable where it is linked in; NULL in a test module, whose games are modules. */
 	const struct game_api *linked;
 };
