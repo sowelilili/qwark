@@ -309,6 +309,7 @@ qwark-rpcs3.exe
 qwark-rpcs3-root/
 test/qwark-test.exe
 test/qwark-test-release.exe
+test/qwark-test-tod.exe
 test/qwark-host-root/
 test/qwark-rpcs3-root/
 
@@ -330,6 +331,9 @@ src/games/switches/out/
 
 # And for the console menu's renderers and src/games/menuhelper_bins.c.
 src/games/menuhelper/out/
+
+# And for the Lua helper and src/games/luahelper_bins.c.
+src/games/luahelper/out/
 
 # The installer package `make pkg` writes, and what it is made from (installer/).
 # Only dist/qwark-installer.pkg, which `make dist` copies, is committed.

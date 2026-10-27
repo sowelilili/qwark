@@ -1,0 +1,27 @@
+/*
+ * The Lua helper's link map. build.sh puts the game's cave address in for
+ * @TEXT_ORG@ and hands the result to ppu-lv2-ld.
+ *
+ * One output section: the entry (lh_entry.S) first, so the hook's branch goes
+ * to the cave's first byte, then the compiled C. Everything the compiler puts
+ * beside code is discarded: the helper reaches the game only through symbols
+ * the link binds to hard addresses, has no data of its own, and its one string
+ * is in .text. Anything else turning up fails the build (build.sh), as for the
+ * savefile helper.
+ */
+OUTPUT_FORMAT("elf64-powerpc-celloslv2")
+
+SECTIONS
+{
+	. = @TEXT_ORG@;
+	.text : { *(.text.entry) *(.text) *(.text.*) }
+
+	/DISCARD/ : {
+		*(.opd)
+		*(.toc)
+		*(.toc1)
+		*(.eh_frame)
+		*(.comment)
+		*(.note*)
+	}
+}

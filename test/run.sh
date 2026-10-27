@@ -134,6 +134,18 @@ fi
 echo "running $REL_OUT"
 "./$REL_OUT"
 
+# Tools of Destruction, phase 1 (docs/tod-poc.md): the Lua mailbox's codec and
+# request state machine, the Lua helper's RPCS3 patch, presence rule and
+# install, and the fact sheet. None of it is linked into qwark yet, so it is a
+# program of its own, against a fake game memory.
+TOD_OUT="test/qwark-test-tod.exe"
+TOD_SRC="src/core/util.c src/core/luamb.c src/games/luahelper_bins.c src/games/luahelper_patch.c \
+         src/games/tod.c test/test_tod.c"
+echo "compiling $TOD_OUT"
+"$CLANG" $CFLAGS $TOD_SRC -o "$TOD_OUT" $LDFLAGS
+echo "running $TOD_OUT"
+"./$TOD_OUT"
+
 # The installer package's EBOOT (installer/): its boot_plugins.txt edit and its
 # install over a fake HDD, a program of its own.
 sh installer/test/run.sh
