@@ -1,7 +1,7 @@
 /*
  * A game module's start and stop (revision 1.26; src/games/module.h,
  * PROTOCOL.md 9.11). One source, four modules: the makefile's `games` builds
- * it with QWARK_MODULE_GAME 1 to 4 into game-<n>.sprx, beside that game's own
+ * it with QWARK_MODULE_GAME 1 to 4 into rac1.sprx to rac4.sprx, beside that game's own
  * sources, classic.c, its savefile helper's numbers and core_import.c.
  *
  * The core calls sys_prx_start_module on its tick thread with a struct

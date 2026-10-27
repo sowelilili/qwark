@@ -7,7 +7,7 @@
  * three and the session fingerprints each candidate in turn: whichever
  * executable is actually mapped answers, and the old disc-collection picker
  * goes away. Under game modules (src/games/module.h) the fingerprint is also
- * what says which game-<n>.sprx to load.
+ * what says which module (rac1.sprx .. rac4.sprx) to load.
  */
 #include "titles.h"
 #include "rac1.h"
@@ -229,13 +229,30 @@ const struct game_title *title_for_game(u8 game_id)
 	return NULL;
 }
 
+/* Each game's module, by game id: the user's names, rac1.sprx .. rac4.sprx. */
+static const char *const g_module_names[] = {
+	NULL,                 /* GAME_NONE */
+	"rac1.sprx",          /* GAME_RAC1 */
+	"rac2.sprx",          /* GAME_RAC2 */
+	"rac3.sprx",          /* GAME_RAC3 */
+	"rac4.sprx"           /* GAME_RAC4 */
+};
+
+#define MODULE_NAMES ((u32)(sizeof(g_module_names) / sizeof(g_module_names[0])))
+
+const char *title_module_name(u8 game_id)
+{
+	return game_id < MODULE_NAMES ? g_module_names[game_id] : NULL;
+}
+
 void title_module_path(u8 game_id, char *out, u32 cap, int dot_new)
 {
-	char n[4];
+	const char *name = title_module_name(game_id);
 
-	n[0] = (char)('0' + (game_id % 10u));
-	n[1] = 0;
-	qstrcpy(out, cap, GAME_MODULE_DIR "game-");
-	qstrcat(out, cap, n);
-	qstrcat(out, cap, dot_new ? ".sprx.new" : ".sprx");
+	if (cap == 0) return;
+	out[0] = 0;
+	if (name == NULL) return;
+	qstrcpy(out, cap, GAME_MODULE_DIR);
+	qstrcat(out, cap, name);
+	if (dot_new) qstrcat(out, cap, ".new");
 }

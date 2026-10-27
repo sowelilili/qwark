@@ -31,7 +31,7 @@ struct game_title;
 #define GM_CHECKING   2   /* a module is wanted; its file has not been looked at yet */
 #define GM_WAITING    3   /* the file is there; the memory gate holds it back */
 #define GM_LOADED     4   /* loaded and started */
-#define GM_MISSING    5   /* no game-<n>.sprx */
+#define GM_MISSING    5   /* no module file (rac1.sprx ..) */
 #define GM_FAILED     6   /* lv2 would not load or start it, or it is not a module of ours */
 #define GM_OTHER      7   /* module_start refused it: another build's */
 
@@ -78,7 +78,7 @@ u8   gamemod_flags2(void);
 u32  gamemod_info(u8 *out, u32 cap);
 
 /*
- * The game whose module `path` is (game-<n>.sprx or its .new under
+ * The game whose module `path` is (rac1.sprx .. rac4.sprx, or its .new, under
  * /dev_hdd0/qwark/), 0 for none; and a client's write, rename or delete of
  * one: the session's game's is looked at again, if it was found wanting.
  */

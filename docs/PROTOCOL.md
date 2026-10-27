@@ -74,7 +74,7 @@ Revision 1.25 (2026-10-27, module build 57): build 56 shipped with client 1.4.2 
 
 Revision 1.25, the savefile helpers in ui.pak (module build 57, 2026-10-27): no opcode or structure changes. The four savefile helpers leave the module for `/dev_hdd0/qwark/ui.pak`, beside the renderers, which saves the module about 4.6 KB of code segment (the test module back under three 64 KB pages). The pak is format 2, with the helpers as entries of kind 2 and the renderers' and the helpers' identities in its header, and a module takes only the pak built with it, as before (section 9.10). A console installs the helper out of the pak at the first action that needs it; with no usable pak that action answers `BUSY` and SAVEFILE_INFO `error` is the new **8, SAVEFILE_ERR_NO_PAK**, nothing is written into the game, and SessionInfo `flags` bit7 UI_PAK_BAD is set, as it already was for a bad pak, so a client can send the right one (section 5.12). SAVEFILE_PATCH and RPCS3 are unchanged: the emulator builds still link the helpers' bytes, and the patch is byte for byte what it was.
 
-Revision 1.26, game modules (module build 57, 2026-10-27): a test build's games are SPRX modules of their own, `/dev_hdd0/qwark/game-<n>.sprx`, loaded while their game runs once the VSH has the memory for them and unloaded when it quits (section 9.11). SessionInfo `flags2` bit5 GAME_MODULE_BAD and bit6 GAME_WAITING say when a game's module is not in, and GAME_MODULE (0x0008, section 5.1.2) says why, with the memory gate's figures; it is a control op (section 1.1). A game whose module is not in reads as `game` 0, the session of section 3.3. Deadlocked's quit and loading hooks and the PAUSE and RESUME around its quit to the XMB are the core's now, in every build, so they keep their timing whenever a module loads. A release module links its games in as before: it never sets either bit and answers GAME_MODULE with state 1. No other opcode or structure changes.
+Revision 1.26, game modules (module build 57, 2026-10-27): a test build's games are SPRX modules of their own, each named for its game, `/dev_hdd0/qwark/rac1.sprx` (RaC1) to `rac4.sprx` (Deadlocked), loaded while their game runs once the VSH has the memory for them and unloaded when it quits (section 9.11). SessionInfo `flags2` bit5 GAME_MODULE_BAD and bit6 GAME_WAITING say when a game's module is not in, and GAME_MODULE (0x0008, section 5.1.2) says why, with the memory gate's figures; it is a control op (section 1.1). A game whose module is not in reads as `game` 0, the session of section 3.3. Deadlocked's quit and loading hooks and the PAUSE and RESUME around its quit to the XMB are the core's now, in every build, so they keep their timing whenever a module loads. A release module links its games in as before: it never sets either bit and answers GAME_MODULE with state 1. No other opcode or structure changes. The file names are the game's, not its number: nothing on the wire carries a name (GAME_MODULE's `game` byte is the game id, as SessionInfo's is), and a client maps the id to the name itself, from a table, so a later game takes a name of its own (Tools of Destruction's will be `tod.sprx`) whatever its id. The first test builds of this revision named them `game-1.sprx` to `game-4.sprx`; nothing with those names shipped, and a core takes them for no game's.
 
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
@@ -402,10 +402,10 @@ u8  state        0 NONE      no game: the XMB, BOOTING, a title no game claims
                  2 CHECKING  a module is wanted and its file not yet read (a tick at most)
                  3 WAITING   the module is there; the gate holds it back       (flags2 bit6)
                  4 LOADED    loaded and started
-                 5 MISSING   no game-<n>.sprx                                  (flags2 bit5)
+                 5 MISSING   no module file (rac1.sprx ..)                     (flags2 bit5)
                  6 FAILED    no module in the file, or lv2 would not load or start it (bit5)
                  7 OTHER     the module is another build's                     (flags2 bit5)
-u8  game         the session's game by its title (0 none): the module is game-<game>.sprx
+u8  game         the session's game by its title (0 none), whose module is the file of section 9.11's table
 u8  pages        the module's 64 KB pages, from its header; 0 not read
 u8  flags        bit0 KEEP: config.txt's game.keep is 1
                  bit1 NOTIFIED: this wait's 30-second notification has gone
@@ -1992,13 +1992,22 @@ A pak whose own part for one game is damaged serves the other games and fails th
 
 ### 9.11 Game modules, and the memory gate in front of them (revision 1.26)
 
-**Why.** The module's code segment is held in the VSH's memory for its whole life, and a third of it is the four games', of which one at most is ever wanted. Since revision 1.26 a **test build** (`make`, `QWARK_DEV=1`, more precisely `QWARK_GAME_MODULES=1`) carries no game: each game is an SPRX of its own, **`/dev_hdd0/qwark/game-<n>.sprx`**, `n` being SessionInfo's game id (1 RaC1 .. 4 Deadlocked), loaded while that game runs and unloaded once it quits. A **release** (`make release`) still links the four games in and behaves as it always has: it never loads a module, never sets `flags2` bit5 or bit6, and answers GAME_MODULE with state 1 LINKED. `qwark-rpcs3.exe` is the same. The simulator links its games but can stand modules in for them (below).
+**Why.** The module's code segment is held in the VSH's memory for its whole life, and a third of it is the four games', of which one at most is ever wanted. Since revision 1.26 a **test build** (`make`, `QWARK_DEV=1`, more precisely `QWARK_GAME_MODULES=1`) carries no game: each game is an SPRX of its own in **`/dev_hdd0/qwark/`**, named for the game, loaded while that game runs and unloaded once it quits:
+
+| game id (SessionInfo `game`, GAME_MODULE `game`) | game | module |
+|---|---|---|
+| 1 | RaC1 | `rac1.sprx` |
+| 2 | RaC2 | `rac2.sprx` |
+| 3 | UYA | `rac3.sprx` |
+| 4 | Deadlocked | `rac4.sprx` |
+
+The name is the game's, from this table (the core's title index, `title_module_name` in `src/games/titles.c`), and never a number formatted into a name: a game added later takes a name of its own (Tools of Destruction's will be `tod.sprx`), and a client keeps the same table. A **release** (`make release`) still links the four games in and behaves as it always has: it never loads a module, never sets `flags2` bit5 or bit6, and answers GAME_MODULE with state 1 LINKED. `qwark-rpcs3.exe` is the same. The simulator links its games but can stand modules in for them (below).
 
 **A module** is one R-X segment and nothing writable: its code, its tables, its function descriptors and its TOC, which lv2 relocates as it loads it. It costs exactly one 64 KB page (`tools/gamemodule.py` refuses a module over 61,440 bytes, any writable or TLS section, and any import). It imports nothing from lv2 or any library: it reaches the core only through the table the core hands its start (`struct core_api`, `src/games/core_api.txt`), and keeps what it changes in a state area the core lends it, zeroed before every load. `make games` builds the four, signs them as `qwark.sprx` is signed, and checks each; `make` builds them with the module, and `make dist` copies them into `dist/`.
 
 **Which module a core takes.** Exactly the ones built with it, as for `ui.pak` (section 9.10): the module's start compares the core's build number, its build ID (section 3.1.1) and the size of its table with its own, and stays resident only when all three match and the game is the one the core asked for; otherwise lv2 drops it again and the session has no game (state 7 OTHER, `flags2` bit5).
 
-**The files and their updates.** The same as `ui.pak`'s. A client writes `game-<n>.sprx` with the file ops beside `ui.pak`, at every install path (the standalone install, the boot-plugin install, the installer package); a standalone update writes `game-<n>.sprx.new`, which the core puts in place of `game-<n>.sprx` the next time that game boots. A module is read only while it loads: lv2 keeps no file open, so a client may replace it at any time, and the next load takes the new one.
+**The files and their updates.** The same as `ui.pak`'s. A client writes a game's module (`rac1.sprx` ..) with the file ops beside `ui.pak`, at every install path (the standalone install, the boot-plugin install, the installer package); a standalone update writes it as `<name>.new` (`rac1.sprx.new` ..), which the core puts in place of `<name>` the next time that game boots. A module is read only while it loads: lv2 keeps no file open, so a client may replace it at any time, and the next load takes the new one.
 
 **When it loads: the memory gate.** A load takes the module's pages and, for a moment, one page more (the PRX probe measured both, on CFW and on HEN). The VSH's free memory swings by about 448 KB on and off by itself while a game runs, and dips furthest as a game launches. So the core loads a module only when the **lowest** free figure over the last **`game.window_ms`** (3000 ms), less the module's pages and the 64 KB transient, still leaves **`game.floor_kb`** (128 KB):
 
@@ -2006,7 +2015,7 @@ A pak whose own part for one game is damaged serves the other games and fails th
 2. The core reads the module's header (its pages, out of the SELF header scetool leaves in the clear). No file: state 5 MISSING. Not a module: state 6 FAILED. Both set `flags2` bit5 GAME_MODULE_BAD and end the wait.
 3. From INGAME's first tick it reads the VSH's free memory ten times a second (the read-only syscall 352 of section 5.1.1).
 4. Once the readings cover a whole window, and every tick-of-ten after that, it takes their lowest. When `lowest - (pages * 64 + 64) >= floor` it loads and starts the module on the tick thread (2 to 23 ms on CFW, 125 to 260 ms on HEN; telemetry pauses for as long), checks that what the module handed back lies inside the module and is this game's, and the game **arrives**: the game byte goes to the game's id, bit6 goes down, and everything a game does at a session's start happens now (below).
-5. Otherwise it waits, and keeps reading. After 30 s of waiting the console shows one notification, "Game support is waiting for memory: your console has N KB free and needs M KB. It loads by itself when there is room.", and the wait goes on; the module loads the moment the gate passes.
+5. Otherwise it waits, and keeps reading. After 30 s of waiting the console shows one notification, "qwark: couldn't load game module (NKB free / MKB needed)", and the wait goes on; the module loads the moment the gate passes.
 
 A launch's dip is inside the first window, so the gate waits it out without knowing it is there. On the consoles the probe measured (CFW about 750 to 1,000 KB free at the lowest in a game, HEN with webMAN 372 to 540 KB) the gate passes at its first look, `game.window_ms` into the session. If the VSH's memory cannot be read at all, the module loads at the first look.
 
@@ -2031,15 +2040,15 @@ What a module brings and therefore starts when it arrives, `game.window_ms` or m
 **qwark.log**, every decision with its figures (`grep "game module"`):
 
 ```
-game module: game-4.sprx is 1 page(s); it needs 128 KB free plus the 128 KB floor, lowest over 3000 ms
-game module: loading game-4.sprx: 812 KB free at the lowest over 3000 ms, 1240 KB now; it needs 128 KB and leaves 556 KB over the 128 KB floor, after 2950 ms of waiting
-game module: game-4.sprx loaded in 12 ms (id 0x23010500), 1240 KB free before, 1176 KB after
-game module: game-4.sprx waits for memory: 212 KB free at the lowest over 3000 ms (660 KB now), it needs 128 KB plus the 128 KB floor; waiting 3010 ms so far
+game module: rac4.sprx is 1 page(s); it needs 128 KB free plus the 128 KB floor, lowest over 3000 ms
+game module: loading rac4.sprx: 812 KB free at the lowest over 3000 ms, 1240 KB now; it needs 128 KB and leaves 556 KB over the 128 KB floor, after 2950 ms of waiting
+game module: rac4.sprx loaded in 12 ms (id 0x23010500), 1240 KB free before, 1176 KB after
+game module: rac4.sprx waits for memory: 212 KB free at the lowest over 3000 ms (660 KB now), it needs 128 KB plus the 128 KB floor; waiting 3010 ms so far
 game module: still waiting after 30 s; the console is told once
-game module: game-4.sprx unloaded (the game quit): stop 0x00000000, unload 0x00000000
-game module: no game-4.sprx on the console; this game has no game features this session
-game module: game-4.sprx is from another build (refusal 3, its ID 0x1A2B3C4D, ours 0x5E6F7A8B)
-game module: lv2 would not load game-4.sprx: 0x80010004, 180 KB free
+game module: rac4.sprx unloaded (the game quit): stop 0x00000000, unload 0x00000000
+game module: no rac4.sprx on the console; this game has no game features this session
+game module: rac4.sprx is from another build (refusal 3, its ID 0x1A2B3C4D, ours 0x5E6F7A8B)
+game module: lv2 would not load rac4.sprx: 0x80010004, 180 KB free
 ```
 
 A waiting line goes at the first look and then at most every ten seconds.

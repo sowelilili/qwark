@@ -1275,7 +1275,7 @@ def test_game_modules(sim, c):
         c, lambda g, i: g["state"] == "LOADED" and i["game"] == 1 and (i["flags2"] & 0x60) == 0, 8.0)
     check(ok,
           "game modules: a window later it loads: game 1, bits down", (gm, info and info["game"]))
-    check(sim_line(sim, "game module: loading game-1.sprx: 1000 KB free at the lowest") is not None,
+    check(sim_line(sim, "game module: loading rac1.sprx: 1000 KB free at the lowest") is not None,
           "game modules: the log gives the gate's figures")
     ops = game_ops(c)
     check(ops["DESCRIBE"] == ST_OK and ops["PLANET_LIST"] == ST_OK and ops["AUTOSPLIT_DESCRIBE"] == ST_OK,
@@ -1283,7 +1283,7 @@ def test_game_modules(sim, c):
 
     sim.send("quit")
     ok, _ = wait_state(c, SESSION_XMB)
-    check(ok and sim_line(sim, "game module: game-1.sprx unloaded") is not None,
+    check(ok and sim_line(sim, "game module: rac1.sprx unloaded") is not None,
           "game modules: quit to the XMB unloads it")
     ops = game_ops(c)
     check(all(s == ST_UNSUPPORTED for s in ops.values()),
@@ -1300,9 +1300,9 @@ def test_game_modules(sim, c):
         c, lambda g, i: g["state"] == "MISSING" and (i["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0, 6.0)
     check(ok and (info["flags2"] & SESSION_FLAG2_GAME_MODULE_BAD) != 0 and info["game"] == 0,
           "game modules: a missing module: MISSING, flags2 bit5, game 0", (gm, info and info["flags2"]))
-    check(sim_line(sim, "no game-1.sprx on the console") is not None, "game modules: the log says so")
-    check(write_console_file(c, "/dev_hdd0/qwark/game-1.sprx", fake_module_bytes(1, build_id())),
-          "game modules: a client writes game-1.sprx with the file ops")
+    check(sim_line(sim, "no rac1.sprx on the console") is not None, "game modules: the log says so")
+    check(write_console_file(c, "/dev_hdd0/qwark/rac1.sprx", fake_module_bytes(1, build_id())),
+          "game modules: a client writes rac1.sprx with the file ops")
     ok, gm, info = wait_game_module(
         c, lambda g, i: g["state"] == "LOADED" and i["game"] == 1 and (i["flags2"] & 0x60) == 0, 8.0)
     check(ok,

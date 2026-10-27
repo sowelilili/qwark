@@ -5,7 +5,7 @@
  * It puts the module and the console menu's file where the PC client's
  * "Install to boot_plugins.txt" puts them, and edits the list the way that
  * install does (bootlist.h). Revision 1.26: a test build's package carries its
- * game modules too, game-1.sprx to game-4.sprx (qwark's PROTOCOL.md 9.11),
+ * game modules too, rac1.sprx to rac4.sprx (qwark's PROTOCOL.md 9.11),
  * which go beside ui.pak; a release's carries none. It is written so that a failure at any point
  * leaves the console booting what it booted before:
  *
@@ -47,11 +47,20 @@
 #define INST_SPRX           BOOTLIST_BOOT_PATH
 #define INST_QWARK_DIR      "/dev_hdd0/qwark"
 #define INST_PAK            "/dev_hdd0/qwark/ui.pak"
-/* Revision 1.26: the game modules a test build's package carries, any of the four. */
-#define INST_GAME_1         "/dev_hdd0/qwark/game-1.sprx"
-#define INST_GAME_2         "/dev_hdd0/qwark/game-2.sprx"
-#define INST_GAME_3         "/dev_hdd0/qwark/game-3.sprx"
-#define INST_GAME_4         "/dev_hdd0/qwark/game-4.sprx"
+/*
+ * Revision 1.26: the game modules a test build's package carries, any of the
+ * four, each named for its game as qwark's title index names it
+ * (src/games/titles.c): INST_GAME_NAME_n is the file, in the package's USRDIR
+ * and in /dev_hdd0/qwark, of game id n.
+ */
+#define INST_GAME_NAME_1    "rac1.sprx"
+#define INST_GAME_NAME_2    "rac2.sprx"
+#define INST_GAME_NAME_3    "rac3.sprx"
+#define INST_GAME_NAME_4    "rac4.sprx"
+#define INST_GAME_1         INST_QWARK_DIR "/" INST_GAME_NAME_1
+#define INST_GAME_2         INST_QWARK_DIR "/" INST_GAME_NAME_2
+#define INST_GAME_3         INST_QWARK_DIR "/" INST_GAME_NAME_3
+#define INST_GAME_4         INST_QWARK_DIR "/" INST_GAME_NAME_4
 #define INST_GAMES          4
 #define INST_LIST           "/dev_hdd0/boot_plugins.txt"
 

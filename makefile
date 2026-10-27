@@ -112,7 +112,8 @@ endif
 
 #
 # Revision 1.26, game modules (src/games/module.h, PROTOCOL.md 9.11). A test
-# build's games are not in qwark.sprx: each is game-<n>.sprx of its own, built
+# build's games are not in qwark.sprx: each is an SPRX of its own named for its
+# game, rac1.sprx (RaC1) to rac4.sprx (Deadlocked), built
 # by `games` below, which the module loads while that game runs and the VSH has
 # the memory for it. The core then hands the games its functions through a
 # table (src/core/core_export.c) and its context through r14, which the core
@@ -174,7 +175,7 @@ ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
 	python -I src/games/menuhelper/pak.py --out ui.pak
 
 #
-# Revision 1.26: the game modules, game-1.sprx to game-4.sprx (src/games/
+# Revision 1.26: the game modules, rac1.sprx to rac4.sprx (src/games/
 # module.h, PROTOCOL.md 9.11), a test build's games. Each is the game's own
 # sources, classic.c, the savefile helpers' numbers, the wrappers its calls
 # into the core land on (src/games/core_import.c, tools/coreapi.py) and its
@@ -197,12 +198,25 @@ ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
 # `make` builds them after the module (a release has none: `games-none`
 # deletes any left over), and `make dist` copies whichever there are.
 #
+# Each module is named for its game, never for its number: GAME_MODULES lists
+# them, GAME_ID_<name> is the game id it is built for (src/core/proto.h) and
+# GAME_SRCS_<name> its own sources. The names are the title index's
+# (src/games/titles.c, title_module_name), which the core loads them by. A
+# later game is a name of its own in both places (Tools of Destruction's will
+# be tod.sprx), whatever its number.
+#
+GAME_MODULES		= rac1 rac2 rac3 rac4
+GAME_MODULE_FILES	= $(GAME_MODULES:%=%.sprx)
+GAME_ID_rac1		= 1
+GAME_ID_rac2		= 2
+GAME_ID_rac3		= 3
+GAME_ID_rac4		= 4
 GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
 					  src/plat/ps3/game_module.c
-GAME_SRCS_1			= src/games/rac1.c src/games/rac1_panel.c
-GAME_SRCS_2			= src/games/rac2.c src/games/rac2_panel.c
-GAME_SRCS_3			= src/games/rac3.c src/games/rac3_panel.c
-GAME_SRCS_4			= src/games/rac4.c src/games/rac4_panel.c src/games/switches_own.c
+GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c
+GAME_SRCS_rac2		= src/games/rac2.c src/games/rac2_panel.c
+GAME_SRCS_rac3		= src/games/rac3.c src/games/rac3_panel.c
+GAME_SRCS_rac4		= src/games/rac4.c src/games/rac4_panel.c src/games/switches_own.c
 GAME_CFLAGS			= -mprx -Os -ffunction-sections -fdata-sections -fno-builtin-printf -std=gnu99 \
 					  -ffixed-r14 -Wall -Wno-unused-parameter -Wno-shadow -Wno-strict-prototypes \
 					  -Wno-missing-prototypes -Wno-missing-declarations -Wno-bad-function-cast \
@@ -218,33 +232,36 @@ GAME_DEPS			= $(GAME_COMMON_SRCS) $(wildcard src/games/*.h src/core/*.h src/plat
 					  src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c src/games/rac4_panel.c \
 					  src/games/switches_own.c tools/gamemodule.py makefile
 
-games: game-1.sprx game-2.sprx game-3.sprx game-4.sprx
-	@ls -l game-1.sprx game-2.sprx game-3.sprx game-4.sprx
+games: $(GAME_MODULE_FILES)
+	@ls -l $(GAME_MODULE_FILES)
 
 games-none:
-	@rm -f game-1.sprx game-2.sprx game-3.sprx game-4.sprx
+	@rm -f $(GAME_MODULE_FILES)
 
-game-%.sprx: $(GAME_DEPS)
-	@rm -rf objs/game-$* $@
-	@mkdir -p objs/game-$*
+# A static pattern: % is a module's name (rac1 ..), and the rule matches those
+# files alone, never qwark.sprx.
+$(GAME_MODULE_FILES): %.sprx: $(GAME_DEPS)
+	@test -n "$(GAME_ID_$*)" || { echo "make games: $@ has no GAME_ID_$*" >&2; exit 1; }
+	@rm -rf objs/$* $@
+	@mkdir -p objs/$*
 	@for f in $(GAME_COMMON_SRCS) $(GAME_SRCS_$*); do \
-		echo "  game-$*: $$f"; \
-		$(GAME_TIMEOUT) ppu-lv2-gcc $(GAME_CFLAGS) -DQWARK_MODULE_GAME=$* -c $$f \
-			-o objs/game-$*/$$(basename $$f .c).o || exit 1; \
+		echo "  $*: $$f"; \
+		$(GAME_TIMEOUT) ppu-lv2-gcc $(GAME_CFLAGS) -DQWARK_MODULE_GAME=$(GAME_ID_$*) -c $$f \
+			-o objs/$*/$$(basename $$f .c).o || exit 1; \
 	done
-	$(GAME_TIMEOUT) python -I tools/gamemodule.py objs objs/game-$*/*.o
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py objs objs/$*/*.o
 	$(GAME_TIMEOUT) ppu-lv2-gcc -mprx -zgenprx -nodefaultlibs -Wl,--strip-unused-data \
-		objs/game-$*/*.o -o objs/game-$*/game.sym.prx
-	cp objs/game-$*/game.sym.prx objs/game-$*/game.prx
-	$(GAME_TIMEOUT) $(PPU_PRX_STRIP) --strip-debug --strip-section-header objs/game-$*/game.prx
-	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/game-$*/game.prx objs/game-$*/game.one.prx
-	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/game-$*/game.sym.prx objs/game-$*/game.sym.one.prx
-	$(GAME_TIMEOUT) python -I tools/gamemodule.py check objs/game-$*/game.one.prx objs/game-$*/game.sym.one.prx \
-		--game $* --id $(QWARK_BUILD_ID)
-	$(GAME_TIMEOUT) ./scetool $(GAME_SCETOOL) -e objs/game-$*/game.one.prx $@ > objs/game-$*/scetool.txt 2>&1 \
-		|| { head -c 4000 objs/game-$*/scetool.txt; exit 1; }
+		objs/$*/*.o -o objs/$*/game.sym.prx
+	cp objs/$*/game.sym.prx objs/$*/game.prx
+	$(GAME_TIMEOUT) $(PPU_PRX_STRIP) --strip-debug --strip-section-header objs/$*/game.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/$*/game.prx objs/$*/game.one.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/$*/game.sym.prx objs/$*/game.sym.one.prx
+	$(GAME_TIMEOUT) python -I tools/gamemodule.py check objs/$*/game.one.prx objs/$*/game.sym.one.prx \
+		--game $(GAME_ID_$*) --id $(QWARK_BUILD_ID) --name $@
+	$(GAME_TIMEOUT) ./scetool $(GAME_SCETOOL) -e objs/$*/game.one.prx $@ > objs/$*/scetool.txt 2>&1 \
+		|| { head -c 4000 objs/$*/scetool.txt; exit 1; }
 	@test -s $@ || { echo "make games: scetool wrote no $@" >&2; exit 1; }
-	@rm -rf objs/game-$*
+	@rm -rf objs/$*
 	@rmdir objs 2>/dev/null || true
 
 #
@@ -333,7 +350,7 @@ INSTALLER_TIMEOUT	= timeout 300
 # Revision 1.26: a test build's package carries its game modules too, which the
 # installer puts beside ui.pak; a release has none (`games-none`).
 #
-INSTALLER_GAMES		= $(wildcard game-1.sprx game-2.sprx game-3.sprx game-4.sprx)
+INSTALLER_GAMES		= $(wildcard $(GAME_MODULE_FILES))
 
 pkg: ui.pak
 	@test -f qwark.sprx || { echo "make pkg: there is no qwark.sprx here to pack; run make first" >&2; exit 1; }
@@ -367,10 +384,10 @@ dist: ui.pak pkg
 	@cp ui.pak dist/ui.pak
 	@cp $(INSTALLER_PKG) dist/qwark-installer.pkg
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
-	@rm -f dist/game-1.sprx dist/game-2.sprx dist/game-3.sprx dist/game-4.sprx
+	@rm -f $(GAME_MODULE_FILES:%=dist/%)
 	@if grep -q '^dev 1' qwark.build && [ "$(strip $(QWARK_GAME_MODULES))" != "0" ]; then \
-		for n in 1 2 3 4; do test -f game-$$n.sprx || { echo "make dist: no game-$$n.sprx; run make first" >&2; exit 1; }; \
-		cp game-$$n.sprx dist/game-$$n.sprx; done; fi
+		for m in $(GAME_MODULE_FILES); do test -f $$m || { echo "make dist: no $$m; run make first" >&2; exit 1; }; \
+		cp $$m dist/$$m; done; fi
 	@ls -l dist
 	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
 	else echo "dist/ holds a RELEASE build (dev 0)"; fi

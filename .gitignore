@@ -348,7 +348,7 @@ installer/test/root/
 !dist/ui.pak
 !dist/qwark-installer.pkg
 # Revision 1.26: a test build's game modules, which make dist copies beside the module.
-!dist/game-*.sprx
+!dist/rac[1-4].sprx
 
 # Python cache from the smoke test
 __pycache__/

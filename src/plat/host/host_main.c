@@ -190,7 +190,8 @@ static void handle_line(char *line, int *keep_running)
 
 	} else if (qstreq(cmd, "fakemodule")) {
 		/*
-		 * Revision 1.26. Writes /dev_hdd0/qwark/game-<n>.sprx as the simulator's
+		 * Revision 1.26. Writes game n's module (/dev_hdd0/qwark/rac<n>.sprx for
+		 * the four, title_module_name) as the simulator's
 		 * loader takes it: `fakemodule <n>` this build's, `fakemodule <n> other`
 		 * another build's, `fakemodule <n> broken` no module at all,
 		 * `fakemodule <n> refused` one lv2 will not load, `fakemodule <n> pages

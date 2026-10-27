@@ -216,7 +216,7 @@ static void test_gate_holds(void)
 	check_eq_u64(host_notify_count() - notes, 0, "nothing on screen yet");
 	step(21 * TICKS_PER_S);
 	check_eq_u64(host_notify_count() - notes, 1, "30 s in, one notification");
-	check(strstr(host_notify_last(), "your console has 200 KB free and needs 256 KB") != NULL,
+	check(qstreq(host_notify_last(), "qwark: couldn't load game module (200KB free / 256KB needed)"),
 	      "naming the KB free and needed");
 	info(&g);
 	check((g.flags & 2) != 0, "GAME_MODULE says it went");
@@ -266,7 +266,7 @@ static void test_missing_and_written(void)
 	check((info_byte(29) & SESSION_FLAG2_GAME_MODULE_BAD) != 0, "flags2 bit5 GAME_MODULE_BAD");
 	check(session_game() == NULL && info_byte(3) == GAME_NONE, "no game");
 	check_eq_u64(host_notify_count() - notes, 1, "one notification");
-	check(strstr(host_notify_last(), "game-1.sprx is missing on your console") != NULL, "which says so");
+	check(strstr(host_notify_last(), "rac1.sprx is missing on your console") != NULL, "which says so");
 	{
 		u8 b[4];
 		check(mem_read(0x00100000, b, 4) == ST_OK, "the memory tools work");
@@ -278,8 +278,18 @@ static void test_missing_and_written(void)
 	t = until_game(5 * TICKS_PER_S);
 	check(t > 0, "the written module loads in the same session");
 	check_eq_u64(info_byte(29) & SESSION_FLAG2_GAME_MODULE_BAD, 0, "and bit5 is down");
-	check_eq_u64(gamemod_names("/dev_hdd0/qwark/game-4.sprx.new"), GAME_RAC4, "game-4.sprx.new is Deadlocked's");
-	check_eq_u64(gamemod_names("/dev_hdd0/qwark/game-4.sprx.old"), 0, "and .old nobody's");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/rac4.sprx.new"), GAME_RAC4, "rac4.sprx.new is Deadlocked's");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/rac4.sprx.old"), 0, "and .old nobody's");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/rac2.sprx"), GAME_RAC2, "rac2.sprx is RaC2's");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/game-1.sprx"), 0, "and the old game-1.sprx nobody's");
+	check(qstreq(title_module_name(GAME_RAC1), "rac1.sprx") && qstreq(title_module_name(GAME_RAC3), "rac3.sprx"),
+	      "each module is named for its game");
+	check(title_module_name(GAME_NONE) == NULL && title_module_name(GAME_RAC4 + 1) == NULL,
+	      "and no game, or one past the four, has none");
+	title_module_path(GAME_RAC4, path, sizeof(path), 1);
+	check(qstreq(path, "/dev_hdd0/qwark/rac4.sprx.new"), "rac4.sprx's update is rac4.sprx.new");
+	title_module_path(GAME_NONE, path, sizeof(path), 0);
+	check(path[0] == 0, "and no game has no path");
 	end();
 }
 

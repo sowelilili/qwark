@@ -126,19 +126,16 @@ static int cfg_keep(void)
 	return config_get_u32("game.keep", 0) != 0;
 }
 
-static void module_path(char *out, u32 cap, int dot_new)
+/* A game's module file, by the game's name (titles.h), for the log and the notifications. */
+static const char *name_of(u8 game_id)
 {
-	title_module_path(g_gm.game_id, out, cap, dot_new);
+	const char *name = title_module_name(game_id);
+	return name != NULL ? name : "the game's module";
 }
 
 static const char *module_name(void)
 {
-	static char name[16];
-	char path[48];
-
-	module_path(path, sizeof(path), 0);
-	qstrcpy(name, sizeof(name), path + sizeof(GAME_MODULE_DIR) - 1);
-	return name;
+	return name_of(g_gm.game_id);
 }
 
 /* --------------------------------------------------------- the begin */
@@ -192,6 +189,11 @@ int gamemod_begin(const struct game_title *t)
 #if QWARK_GAME_MODULES
 /* ------------------------------------------------------------ the file */
 
+static void module_path(char *out, u32 cap, int dot_new)
+{
+	title_module_path(g_gm.game_id, out, cap, dot_new);
+}
+
 /*
  * How many 64 KB pages the module's LOAD segments take, out of its SELF
  * header, which scetool leaves in the clear: the SCE header, then the SELF
@@ -221,7 +223,7 @@ static u8 self_pages(const u8 *h, u32 n)
 	return pages == 0 || pages > 16 ? 0 : (u8)pages;
 }
 
-/* A module an update left as game-<n>.sprx.new takes the old one's place. */
+/* A module an update left as <name>.new (rac1.sprx.new ..) takes the old one's place. */
 static void take_new(void)
 {
 	char path[48], next[48];
@@ -308,13 +310,13 @@ static void notify_waiting(void)
 {
 	char msg[160], kb[12];
 
-	qstrcpy(msg, sizeof(msg), "Game support is waiting for memory: your console has ");
+	qstrcpy(msg, sizeof(msg), "qwark: couldn't load game module (");
 	qfmt_u32(kb, sizeof(kb), g_gm.min_kb);
 	qstrcat(msg, sizeof(msg), kb);
-	qstrcat(msg, sizeof(msg), " KB free and needs ");
+	qstrcat(msg, sizeof(msg), "KB free / ");
 	qfmt_u32(kb, sizeof(kb), g_gm.need_kb + g_gm.floor_kb);
 	qstrcat(msg, sizeof(msg), kb);
-	qstrcat(msg, sizeof(msg), " KB. It loads by itself when there is room.");
+	qstrcat(msg, sizeof(msg), "KB needed)");
 	plat_notify(msg);
 }
 
@@ -344,8 +346,8 @@ static void drop_prx(const char *why)
 	g_args.size = sizeof(g_args);
 	rc_stop = plat_prx_stop(g_prx, &g_args, sizeof(g_args), &modres);
 	rc_unload = plat_prx_unload(g_prx);
-	plat_log("game module: game-%d.sprx unloaded (%s): stop 0x%08X, unload 0x%08X",
-	         (int)g_prx_game, why, (unsigned)rc_stop, (unsigned)rc_unload);
+	plat_log("game module: %s unloaded (%s): stop 0x%08X, unload 0x%08X",
+	         name_of(g_prx_game), why, (unsigned)rc_stop, (unsigned)rc_unload);
 	g_prx = -1;
 	g_prx_game = GAME_NONE;
 	g_prx_api = NULL;
@@ -534,7 +536,8 @@ u8 gamemod_names(const char *path)
 	u8 n;
 
 	if (path == NULL) return 0;
-	for (n = 1; n <= GAME_RAC4; n++) {
+	/* Every game with a module: the names are a table by game id, with no gaps. */
+	for (n = 1; title_module_name(n) != NULL; n++) {
 		char mine[48];
 		u32 len;
 
@@ -572,7 +575,7 @@ void gamemod_unload(void)
 #if QWARK_GAME_MODULES
 	if (g_prx < 0) return;
 	if (cfg_keep()) {
-		plat_log("game module: game-%d.sprx kept over the XMB (game.keep = 1)", (int)g_prx_game);
+		plat_log("game module: %s kept over the XMB (game.keep = 1)", name_of(g_prx_game));
 		return;
 	}
 	drop_prx("the game quit");

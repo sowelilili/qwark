@@ -1,8 +1,9 @@
 /*
  * Game modules (SPEC-game-modules.md, design A1; PROTOCOL.md section 9.11).
  *
- * A test build's core carries no game: each game is its own SPRX,
- * /dev_hdd0/qwark/game-<n>.sprx, loaded when that game is running and there is
+ * A test build's core carries no game: each game is its own SPRX, named for
+ * the game (/dev_hdd0/qwark/rac1.sprx to rac4.sprx, the title index's
+ * title_module_name), loaded when that game is running and there is
  * memory for it (src/core/gamemod.c), and unloaded once it quits. A module has
  * one R-X segment and nothing writable: its code, its tables, its descriptors
  * and its TOC, which lv2 relocates at the load. What it changes it keeps in the

@@ -219,6 +219,11 @@ static int check_package(const char *usrdir, char *sprx, char *pak, size_t cap, 
  * Revision 1.26: the game modules the package carries, any of the four: each
  * a signed module. *n says how many, and src[i] is "" for one it does not carry.
  */
+/* Each game module's file name, by game id less one. */
+static const char *const g_game_names[INST_GAMES] = {
+	INST_GAME_NAME_1, INST_GAME_NAME_2, INST_GAME_NAME_3, INST_GAME_NAME_4
+};
+
 static int check_games(const char *usrdir, char src[INST_GAMES][512], int *n, inst_result *r)
 {
 	unsigned char head[4];
@@ -227,7 +232,7 @@ static int check_games(const char *usrdir, char src[INST_GAMES][512], int *n, in
 
 	*n = 0;
 	for (g = 0; g < INST_GAMES; g++) {
-		snprintf(src[g], 512, "%s/game-%d.sprx", usrdir, g + 1);
+		snprintf(src[g], 512, "%s/%s", usrdir, g_game_names[g]);
 		if ((e = probe(src[g], &there)) != 0) {
 			r->game = g + 1;
 			return fail(r, INST_STEP_PACKAGE_GAME, e, NULL);
@@ -534,8 +539,8 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 
 	if (!r->ok) {
 		snprintf(out, cap, "qwark was not installed.\n\nThis step failed: %s", step_name(r->step));
-		if (r->game != 0) {
-			snprintf(line, sizeof(line), " (game-%d.sprx)", r->game);
+		if (r->game >= 1 && r->game <= INST_GAMES) {
+			snprintf(line, sizeof(line), " (%s)", g_game_names[r->game - 1]);
 			append(out, cap, line);
 		}
 		if (r->why != NULL) {

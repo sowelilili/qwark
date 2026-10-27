@@ -31,7 +31,7 @@ struct game_boot_patch {
 struct game_title {
 	/* Up to four title ids, NULL-terminated. */
 	const char *title_ids[4];
-	u8 game_id;                     /* GAME_RAC1 .. GAME_RAC4: also game-<n>.sprx */
+	u8 game_id;                     /* GAME_RAC1 .. GAME_RAC4: also which module (title_module_name) */
 
 	/*
 	 * Proof the executable is mapped: fp_len bytes at fp_addr must equal
@@ -96,8 +96,17 @@ const struct game_title *title_at(u32 index);
 /* The first entry of a game, NULL for none (GAME_NONE among them). */
 const struct game_title *title_for_game(u8 game_id);
 
-/* The game-<n>.sprx file a game's module is in: "/dev_hdd0/qwark/game-<n>.sprx". */
+/*
+ * The file a game's module is in, named for its game: "rac1.sprx" (RaC1) to
+ * "rac4.sprx" (Deadlocked), NULL for a game id that has none. A table by game
+ * id, never a number formatted into a name, so a later game takes a name of
+ * its own (Tools of Destruction's will be "tod.sprx").
+ */
 #define GAME_MODULE_DIR "/dev_hdd0/qwark/"
+#define GAME_MODULE_NAME_MAX 16      /* the longest name, its NUL and room to spare */
+const char *title_module_name(u8 game_id);
+
+/* "/dev_hdd0/qwark/<name>", or its ".new"; "" for a game with no module. */
 void title_module_path(u8 game_id, char *out, u32 cap, int dot_new);
 
 #endif /* QWARK_TITLES_H */

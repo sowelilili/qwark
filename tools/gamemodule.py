@@ -6,11 +6,12 @@
         segment, which lv2 relocates)
     python -I tools/gamemodule.py merge <in.prx> <out.prx>
         the fixup's two LOAD segments, R-E and RW-, become one R-E segment
-    python -I tools/gamemodule.py check <merged.prx> <merged unstripped.prx> --game N --id 0xID
+    python -I tools/gamemodule.py check <merged.prx> <merged unstripped.prx> --game N --id 0xID [--name F]
         one R-X LOAD segment of at most 61,440 bytes, no writable or TLS
         section beyond the relocated ones, no import, and the stamp
         (src/plat/ps3/game_module.c) naming this build (src/core/proto.h's
-        QWARK_BUILD), this build ID and this game
+        QWARK_BUILD), this build ID and this game; F, the module's file name
+        (rac1.sprx ..), is what the line it prints calls it
     python -I tools/gamemodule.py info <file.prx>
         the program headers and the page count
 
@@ -182,7 +183,7 @@ def build_number():
     return int(m.group(1))
 
 
-def check(prx, sym, game, build_id):
+def check(prx, sym, game, build_id, module=None):
     data = read(prx)
     _phoff, ph = phdrs(data)
     loads = [p for p in ph if p[0] == PT_LOAD]
@@ -214,9 +215,9 @@ def check(prx, sym, game, build_id):
                 % struct.unpack_from(">III", data, found + 4))
         die("%s's stamp is not build %d, ID 0x%08X, game %d (it has %s)"
             % (prx, build_number(), build_id, game, what))
-    print("gamemodule.py: game-%d: one R-X segment of %d bytes (%d spare in its page), "
+    print("gamemodule.py: %s: one R-X segment of %d bytes (%d spare in its page), "
           "no writable data, no import, build %d, ID 0x%08X"
-          % (game, seg[6], PAGE - seg[6], build_number(), build_id))
+          % (module or ("game %d" % game), seg[6], PAGE - seg[6], build_number(), build_id))
 
 
 def info(path):
@@ -238,8 +239,9 @@ def main(argv):
         objs(argv[2:])
     elif len(argv) == 4 and argv[1] == "merge":
         merge(argv[2], argv[3])
-    elif len(argv) == 8 and argv[1] == "check" and argv[4] == "--game" and argv[6] == "--id":
-        check(argv[2], argv[3], int(argv[5]), int(argv[7], 0))
+    elif len(argv) in (8, 10) and argv[1] == "check" and argv[4] == "--game" and argv[6] == "--id" and \
+            (len(argv) == 8 or argv[8] == "--name"):
+        check(argv[2], argv[3], int(argv[5]), int(argv[7], 0), argv[9] if len(argv) == 10 else None)
     elif len(argv) == 3 and argv[1] == "info":
         info(argv[2])
     else:

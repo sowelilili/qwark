@@ -446,12 +446,12 @@ static void test_install_games(void)
 
 	group("a test build's package: its game modules go beside ui.pak");
 	fresh_console();
-	put_file(INST_APP_USRDIR "/game-1.sprx", g_game, sizeof(g_game));
-	put_file(INST_APP_USRDIR "/game-4.sprx", g_game, sizeof(g_game) - 7);
+	put_file(INST_APP_USRDIR "/rac1.sprx", g_game, sizeof(g_game));
+	put_file(INST_APP_USRDIR "/rac4.sprx", g_game, sizeof(g_game) - 7);
 	inst_run(INST_APP_USRDIR, &r);
 	check(r.ok && r.games == 2, "installed, two game modules");
-	check(file_is_bytes(INST_GAME_1, g_game, sizeof(g_game)), "game-1.sprx is the package's");
-	check(file_is_bytes(INST_GAME_4, g_game, sizeof(g_game) - 7), "game-4.sprx is the package's");
+	check(file_is_bytes(INST_GAME_1, g_game, sizeof(g_game)), "rac1.sprx is the package's");
+	check(file_is_bytes(INST_GAME_4, g_game, sizeof(g_game) - 7), "rac4.sprx is the package's");
 	check(!present(INST_GAME_2) && !present(INST_GAME_3), "and the two it does not carry are not made");
 	check(file_is_bytes(INST_SPRX, g_sprx, sizeof(g_sprx)), "the module is in as well");
 	check(no_leftovers(), "no .tmp or .old left");
@@ -462,16 +462,16 @@ static void test_install_games(void)
 	group("running it again replaces them, and leaves no .old behind");
 	inst_run(INST_APP_USRDIR, &r);
 	check(r.ok && r.games == 2, "installed again");
-	check(!present(INST_GAME_1 ".old") && no_leftovers(), "no game-1.sprx.old");
+	check(!present(INST_GAME_1 ".old") && no_leftovers(), "no rac1.sprx.old");
 
 	group("a game module that is no signed module stops the install before anything is written");
 	fresh_console();
-	put_text(INST_APP_USRDIR "/game-3.sprx", "not a module");
+	put_text(INST_APP_USRDIR "/rac3.sprx", "not a module");
 	inst_run(INST_APP_USRDIR, &r);
-	check(!r.ok && r.step == INST_STEP_PACKAGE_GAME && r.game == 3, "refused at game-3.sprx");
+	check(!r.ok && r.step == INST_STEP_PACKAGE_GAME && r.game == 3, "refused at rac3.sprx");
 	check(!present(INST_SPRX) && !present(INST_LIST), "nothing was installed");
 	inst_result_message(&r, 0, msg, sizeof(msg));
-	check(strstr(msg, "game-3.sprx") != NULL && strstr(msg, "Nothing on your console was changed") != NULL,
+	check(strstr(msg, "rac3.sprx") != NULL && strstr(msg, "Nothing on your console was changed") != NULL,
 	      "the message names it and says nothing changed");
 
 	group("a release's package carries none: nothing of them is touched");

@@ -93,7 +93,8 @@ PS3_SYSTEM_VER = "04.7000"
 PKG_FILES = ["ICON0.PNG", "PARAM.SFO", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"]
 # Revision 1.26: a test build's game modules (qwark's PROTOCOL.md 9.11), which
 # a package carries when it is given them (--games) and a release's never has.
-GAME_FILES = ["USRDIR/game-1.sprx", "USRDIR/game-2.sprx", "USRDIR/game-3.sprx", "USRDIR/game-4.sprx"]
+# Each is named for its game, as qwark's title index names it (src/games/titles.c).
+GAME_FILES = ["USRDIR/rac1.sprx", "USRDIR/rac2.sprx", "USRDIR/rac3.sprx", "USRDIR/rac4.sprx"]
 
 # Items, in the SDK packager's order: PARAM.SFO and ICON0.PNG, the folder, EBOOT.BIN first in it.
 ITEM_ORDER = ["PARAM.SFO", "ICON0.PNG", "USRDIR", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"] + \
@@ -452,11 +453,11 @@ def cmd_stage(args):
 
 
 def game_paths(args):
-    """--games: the game modules a test build's package carries, game-<n>.sprx each."""
+    """--games: the game modules a test build's package carries, rac1.sprx to rac4.sprx."""
     out = list(getattr(args, "games", None) or [])
     for g in out:
         if "USRDIR/" + os.path.basename(g) not in GAME_FILES:
-            die("%s is not a game module's name (game-1.sprx to game-4.sprx)" % g)
+            die("%s is not a game module's name (rac1.sprx to rac4.sprx)" % g)
     return out
 
 
