@@ -18,12 +18,14 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/games/rac2.c src/games/rac2_panel.c \
      src/games/rac3.c src/games/rac3_panel.c \
      src/games/rac4.c src/games/rac4_panel.c \
+     src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/luahelper_bins.c \
+     src/core/luacore.c src/core/luamb.c src/games/luahelper_patch.c \
      src/games/games.c src/games/titles.c src/games/core_import.c \
      src/core/gamemod.c src/core/core_export.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
      test/test_game.c test/test_gamemod.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
-     test/test_combo_fastloads.c test/test_config_files.c test/test_profiles.c test/test_qwark.c"
+     test/test_combo_fastloads.c test/test_config_files.c test/test_profiles.c test/test_tod_game.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
 # built without its own set and the PINE tests drive its pine_* half directly.
@@ -61,7 +63,8 @@ rm -rf "$GOBJ"
 mkdir -p "$GOBJ"
 for f in src/games/classic.c src/games/rac1.c src/games/rac1_panel.c src/games/rac2.c \
          src/games/rac2_panel.c src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c \
-         src/games/rac4_panel.c src/games/sfhelper_bins.c src/games/switches_own.c; do
+         src/games/rac4_panel.c src/games/sfhelper_bins.c src/games/switches_own.c \
+         src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/luahelper_bins.c; do
 	"$CLANG" $CFLAGS -c "$f" -o "$GOBJ/$(basename "$f" .c).o"
 done
 "$PYOK" -I tools/coreapi.py nmcheck "$NM" "$GOBJ"/*.o
@@ -134,10 +137,11 @@ fi
 echo "running $REL_OUT"
 "./$REL_OUT"
 
-# Tools of Destruction, phase 1 (docs/tod-poc.md): the Lua mailbox's codec and
-# request state machine, the Lua helper's RPCS3 patch, presence rule and
-# install, and the fact sheet. None of it is linked into qwark yet, so it is a
-# program of its own, against a fake game memory.
+# Tools of Destruction's groundwork (docs/tod-poc.md): the Lua mailbox's codec
+# and request state machine, the Lua helper's RPCS3 patch, presence rule and
+# install, and the fact sheet, as a program of its own against a fake game
+# memory. The game and the Lua ops themselves are test/test_tod_game.c's, in
+# qwark-test.exe.
 TOD_OUT="test/qwark-test-tod.exe"
 TOD_SRC="src/core/util.c src/core/luamb.c src/games/luahelper_bins.c src/games/luahelper_patch.c \
          src/games/tod.c test/test_tod.c"

@@ -448,20 +448,22 @@ static void test_install_games(void)
 	fresh_console();
 	put_file(INST_APP_USRDIR "/rac1.sprx", g_game, sizeof(g_game));
 	put_file(INST_APP_USRDIR "/rac4.sprx", g_game, sizeof(g_game) - 7);
+	put_file(INST_APP_USRDIR "/tod.sprx", g_game, sizeof(g_game) - 13);
 	inst_run(INST_APP_USRDIR, &r);
-	check(r.ok && r.games == 2, "installed, two game modules");
+	check(r.ok && r.games == 3, "installed, three game modules");
 	check(file_is_bytes(INST_GAME_1, g_game, sizeof(g_game)), "rac1.sprx is the package's");
 	check(file_is_bytes(INST_GAME_4, g_game, sizeof(g_game) - 7), "rac4.sprx is the package's");
+	check(file_is_bytes(INST_GAME_5, g_game, sizeof(g_game) - 13), "tod.sprx is the package's (revision 1.27)");
 	check(!present(INST_GAME_2) && !present(INST_GAME_3), "and the two it does not carry are not made");
 	check(file_is_bytes(INST_SPRX, g_sprx, sizeof(g_sprx)), "the module is in as well");
 	check(no_leftovers(), "no .tmp or .old left");
 	inst_result_message(&r, 0, msg, sizeof(msg));
-	check(strstr(msg, "2 game modules") != NULL, "the message says so");
+	check(strstr(msg, "3 game modules") != NULL, "the message says so");
 	check(message_fits(&r), "the message fits a dialog");
 
 	group("running it again replaces them, and leaves no .old behind");
 	inst_run(INST_APP_USRDIR, &r);
-	check(r.ok && r.games == 2, "installed again");
+	check(r.ok && r.games == 3, "installed again");
 	check(!present(INST_GAME_1 ".old") && no_leftovers(), "no rac1.sprx.old");
 
 	group("a game module that is no signed module stops the install before anything is written");

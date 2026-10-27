@@ -57,4 +57,7 @@ void test_gamemod(void);
 /* test_menu_mods.c: the console menu's Mods page, build 56, a preview feature. */
 void test_menu_mods(void);
 
+/* test_tod_game.c: Tools of Destruction and the core's Lua ops, revision 1.27. */
+void test_tod_game(void);
+
 #endif /* QWARK_TEST_COMMON_H */

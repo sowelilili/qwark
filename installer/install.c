@@ -216,12 +216,12 @@ static int check_package(const char *usrdir, char *sprx, char *pak, size_t cap, 
 }
 
 /*
- * Revision 1.26: the game modules the package carries, any of the four: each
+ * Revision 1.26: the game modules the package carries, any of the five: each
  * a signed module. *n says how many, and src[i] is "" for one it does not carry.
  */
 /* Each game module's file name, by game id less one. */
 static const char *const g_game_names[INST_GAMES] = {
-	INST_GAME_NAME_1, INST_GAME_NAME_2, INST_GAME_NAME_3, INST_GAME_NAME_4
+	INST_GAME_NAME_1, INST_GAME_NAME_2, INST_GAME_NAME_3, INST_GAME_NAME_4, INST_GAME_NAME_5
 };
 
 static int check_games(const char *usrdir, char src[INST_GAMES][512], int *n, inst_result *r)
@@ -337,6 +337,7 @@ void inst_run(const char *usrdir, inst_result *r)
 		{ INST_GAME_2,   TMP(INST_GAME_2),   OLD(INST_GAME_2),   INST_STEP_PLACE_GAME,   0, 0, 0 },
 		{ INST_GAME_3,   TMP(INST_GAME_3),   OLD(INST_GAME_3),   INST_STEP_PLACE_GAME,   0, 0, 0 },
 		{ INST_GAME_4,   TMP(INST_GAME_4),   OLD(INST_GAME_4),   INST_STEP_PLACE_GAME,   0, 0, 0 },
+		{ INST_GAME_5,   TMP(INST_GAME_5),   OLD(INST_GAME_5),   INST_STEP_PLACE_GAME,   0, 0, 0 },
 		{ INST_PAK,      TMP(INST_PAK),      OLD(INST_PAK),      INST_STEP_PLACE_PAK,    0, 0, 0 },
 		{ INST_SPRX,     TMP(INST_SPRX),     OLD(INST_SPRX),     INST_STEP_PLACE_SPRX,   0, 0, 0 },
 		{ INST_LIST,     TMP(INST_LIST),     OLD(INST_LIST),     INST_STEP_PLACE_LIST,   0, 0, 0 },

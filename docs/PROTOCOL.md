@@ -78,6 +78,8 @@ Revision 1.26, game modules (module build 57, 2026-10-27): a test build's games 
 
 Revision 1.26, config files (module build 57, 2026-10-27): no opcode or structure changes. A write of config.txt or a profile's config.txt is the file it replaces with the module's keys put in, never the module's keys alone: every line the module does not hold (a comment, a key it does not know, a value or key longer than it keeps, a key a load left out) is written back as it was, so no build from this one on takes a setting out of the file that it did not set itself. A file that is there but will not open is `IO_ERROR`, no longer read as no file at all, and a write whose old file will not read, whose bytes do not all go to the disk or whose close fails leaves the old file in place (section 5.10.1, Files).
 
+Revision 1.27, Tools of Destruction (module build 57, 2026-10-27): game 5, Ratchet & Clank Future: Tools of Destruction, the PSN EU executable NPEA00452 v01.00 alone. It is a game module of its own, `tod.sprx` (section 9.11), in a test build and in the PC builds (`qwark-rpcs3.exe`, the simulator); a release module has no ToD at all and treats its boot as a process it does not know (section 3.3). SessionInfo's `game` byte and GAME_MODULE's may now be 5. Three opcodes in the 0x00E0 block run a chunk of the game's own Lua on its own thread, through a helper qwark puts in the game (section 5.15): LUA_EXEC (0x00E0), LUA_STATUS (0x00E1) and, in the emulator builds alone, LUA_PATCH (0x00E2), the helper as RPCS3 patch words in SAVEFILE_PATCH's layout. A console installs the helper on the first LUA_EXEC of a game boot that asks for one in a level, never before; under RPCS3 the client writes the patch, which takes at the next boot. A module without a Lua game (a release, or any game but ToD) answers all three UNSUPPORTED. Everything else ToD offers is the ordinary ops on plain data: DESCRIBE, the unlocks, positions, planets, Die. No other opcode or structure changes.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -129,7 +131,8 @@ Shared by HELLO, GET_STATE and telemetry. 164 bytes.
 u8   protocol_version   = 1
 u8   qwark_version      module build number (see below); a client compares it with the build it shipped beside
 u8   state              0 XMB, 1 BOOTING, 2 INGAME, 3 QUITTING
-u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked)
+u8   game               0 NONE, 1 RAC1, 2 RAC2, 3 RAC3, 4 RAC4 (Deadlocked),
+                        5 TOD (Tools of Destruction, revision 1.27; never in a release)
                         BCES01503, the disc trilogy, reports 1, 2 or 3 depending
                         on which executable is mapped; the client never picks.
                         0 while INGAME is a process qwark does not know (section 3.3)
@@ -1413,6 +1416,63 @@ RaC2's NG+ No Specials writes M, the NG+ per-run list, without its first write, 
 
 RaC2's charge buffer is no longer written on every load into Aranos: it is part of the NG+ per-run writes. Turning infinite ammo off on a load into Aranos is not a manip and stays. The per-death resets (RaC2 13 and 14) are not manips and stay.
 
+## 5.15 The game's own Lua (0x00Ex), revision 1.27
+
+Tools of Destruction runs Lua 5.0.2 for its level scripts (`../REPORT-tod-lua.md`). qwark can run a chunk of Lua source in the game's gameplay VM, on the game's main thread, right after the game's own scripts have run for the frame, and hand back its first result as text. It is the game's API that the chunk calls (`hero_give_weapon`, `set_level`, `time_set_scale` and 565 others, `../tod-lua/gameplay-api.tsv`). Nothing qwark reads every tick goes through Lua: the readouts, the unlocks and the positions are plain reads and writes of the game's memory, as for every game.
+
+| op | name | request | reply |
+|---|---|---|---|
+| 0x00E0 | LUA_EXEC | `u16 len, u16 flags (0), char src[len]` | the answer, below |
+| 0x00E1 | LUA_STATUS | none | the helper and the game's last script error, below |
+| 0x00E2 | LUA_PATCH | none | the helper as RPCS3 patch words: emulator builds alone |
+
+**The helper.** A few hundred instructions qwark puts in the game: one word replaces the call to the gameplay VM's update (`0x4C461C`) with a call into a code cave past the end of the executable's code (`0x867360`), which calls the update and then looks at a mailbox in RW memory (`0x8CA000`, 0x2600 bytes); a second word turns the game's empty `reportError` (`0x68F8F8`) into a branch that copies every script error into the mailbox. The layout and the handshake are `src/core/luamb.h` and `docs/tod-poc.md` section 1. The helper runs a request with `luaL_loadbuffer` and `lua_pcall` on the gameplay VM's own `lua_State` with its own allocator, and only when it has one, on a gameplay frame: never in a menu, on the pause screen or during a load.
+
+- **On a console** qwark writes the helper itself, out of `tod.sprx`, the first time a LUA_EXEC asks for it in a level: the mailbox's header, the cave, the error tap, and the VM's hook last. Nothing is written into the game until then, and nothing at all when the game has no level up.
+- **Under RPCS3**, which recompiles the game's code, the client writes LUA_PATCH's words into the user's RPCS3 patch file under the game's PPU hash, as it does the savefile helper's (section 5.12.1); RPCS3 applies them as the game loads. qwark looks once a session, as the game arrives, for every word of it (the cave, both hooks and the mailbox's identity); until it has looked LUA_EXEC answers `BUSY` and LUA_STATUS `installed` 2, and without the patch LUA_EXEC is `UNSUPPORTED`. After that, everything is data reads and writes, which PINE does.
+
+**LUA_EXEC.** `len` is 1..8192, `flags` 0; anything else is `BAD_ARG`. The reply comes once the game has answered: a frame or two while the game is playing, and at most about 1.6 s. With frame status `OK`:
+
+```
+s32 lua_status   0 OK: out is the first result as text (a string or a number; empty otherwise)
+                 1 ERRRUN, 3 ERRSYNTAX, 4 ERRMEM, 5 ERRERR: out is Lua's message ("qwark:1: ...")
+                 0x100 NO_STATE    the game had no lua_State when the helper looked
+                 0x101 BAD_LEN     the chunk's length did not pass the helper's check
+                 0x102 CANCELLED   withdrawn before it ran
+                 0x200 TIMEOUT     frames ran but no answer came in 1.5 s
+                 0x201 NOT_RUNNING no gameplay frame ran in 1.5 s (paused, a menu, a load)
+u32 seq          the mailbox's sequence number for the request
+u8  out_type     Lua 5.0's lua_type of the first result: 0 nil, 1 boolean, 3 number,
+                 4 string, 5 table, 6 function, 7 userdata, 8 thread; 0xFF none
+u8  out_flags    bit0 TRUNCATED (the text was longer than 1023 bytes), bit1 TRUE (a true boolean)
+u16 out_len
+char out[out_len]   not NUL-ended
+```
+
+On TIMEOUT and NOT_RUNNING the request has been withdrawn: the helper never runs it later, however long the game stays paused. Frame statuses: `NOT_INGAME` outside a game; `UNSUPPORTED` for a game with no Lua helper, a module with no Lua game, or under RPCS3 without the patch; `NOT_FOUND` when the game has no `lua_State` (between levels, the main menu, a load), with nothing written and nothing queued; `BUSY` while another request is out or being withdrawn (from any client), while the helper is stuck inside a chunk that never returns (a `while true do end` hangs the game's thread, and nothing can stop it), or while qwark has not yet looked for the RPCS3 patch; `IO_ERROR` for a failed access. The game's level changes recreate its `lua_State`, and with it every global a chunk set.
+
+**LUA_STATUS.** No request; `NOT_INGAME` outside a game, `UNSUPPORTED` without Lua, `OK` otherwise (in a level or not):
+
+```
+u8   installed     0 not, 1 the helper is in this process, 2 qwark has not looked yet (RPCS3)
+u8   phase         0 idle, 1 a request is out, 2 one is being withdrawn, 3 the helper is stuck in one
+u16  pad
+u32  heartbeat     +1 every gameplay frame the helper has seen
+u32  state         the game's lua_State*, 0 between levels
+u32  err_seq       +1 every error the game's own scripts reported
+u32  err_vm        the CLuaVM that reported the last one
+char err_script[64]  the script running then, NUL-padded
+u16  err_len
+u16  pad
+char err[err_len]  the game's text, "<Runtime|Syntax|File|Memory Allocation> Error - <message>"
+```
+
+The helper's fields are 0 while `installed` is not 1. An error inside the chunk LUA_EXEC sent comes back in its own reply, not here; errors in coroutines the chunk started, or in level scripts it woke, arrive here on later frames.
+
+**LUA_PATCH.** Emulator builds alone (`qwark-rpcs3.exe` and the simulator; the PS3 module answers `UNSUPPORTED`), and only for a game with a helper. SAVEFILE_PATCH's layout and stamp (section 5.12.1): the cave's words, then the mailbox's two identity words (`0x8CA000 = 0x514C5541`, `0x8CA004 = 0x00012600`), then the error tap, then the VM's hook last; no byte rows. 333 words today.
+
+**The rules a client keeps.** LUA_EXEC changes the game, so a client sends it on a user's action alone, and never on its own after a reconnect (DESIGN 3.7): qwark withdraws, as a game arrives, any request an earlier session left unanswered in the mailbox. On a console the first LUA_EXEC of a boot is a code write.
+
 ## 6. Pad mask layout
 
 OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000.
@@ -2004,8 +2064,9 @@ A pak whose own part for one game is damaged serves the other games and fails th
 | 2 | RaC2 | `rac2.sprx` |
 | 3 | UYA | `rac3.sprx` |
 | 4 | Deadlocked | `rac4.sprx` |
+| 5 | Tools of Destruction (revision 1.27) | `tod.sprx` |
 
-The name is the game's, from this table (the core's title index, `title_module_name` in `src/games/titles.c`), and never a number formatted into a name: a game added later takes a name of its own (Tools of Destruction's will be `tod.sprx`), and a client keeps the same table. A **release** (`make release`) still links the four games in and behaves as it always has: it never loads a module, never sets `flags2` bit5 or bit6, and answers GAME_MODULE with state 1 LINKED. `qwark-rpcs3.exe` is the same. The simulator links its games but can stand modules in for them (below).
+The name is the game's, from this table (the core's title index, `title_module_name` in `src/games/titles.c`), and never a number formatted into a name: a game added later takes a name of its own (Tools of Destruction's is `tod.sprx`, revision 1.27), and a client keeps the same table. A **release** (`make release`) still links the four games in and behaves as it always has, and has no Tools of Destruction at all: no module, no title entry, no Lua ops: it never loads a module, never sets `flags2` bit5 or bit6, and answers GAME_MODULE with state 1 LINKED. `qwark-rpcs3.exe` is the same. The simulator links its games but can stand modules in for them (below).
 
 **A module** is one R-X segment and nothing writable: its code, its tables, its function descriptors and its TOC, which lv2 relocates as it loads it. It costs exactly one 64 KB page (`tools/gamemodule.py` refuses a module over 61,440 bytes, any writable or TLS section, and any import). It imports nothing from lv2 or any library: it reaches the core only through the table the core hands its start (`struct core_api`, `src/games/core_api.txt`), and keeps what it changes in a state area the core lends it, zeroed before every load. `make games` builds the four, signs them as `qwark.sprx` is signed, and checks each; `make` builds them with the module, and `make dist` copies them into `dist/`.
 

@@ -177,6 +177,11 @@
 #define GAME_RAC2 2
 #define GAME_RAC3 3
 #define GAME_RAC4 4
+/*
+ * Revision 1.27: Tools of Destruction (NPEA00452), a game module of its own,
+ * tod.sprx, in a test build and the PC builds; a release has no ToD at all.
+ */
+#define GAME_TOD  5
 
 /* --------------------------------------------------------------- opcodes */
 
@@ -447,6 +452,34 @@
 #define OP_MANIP_SELECT       0x00D1
 #define OP_MANIP_OPTIONS      0x00D2
 #define OP_MANIP_APPLY        0x00D3
+
+/*
+ * Revision 1.27: the game's own Lua (Tools of Destruction; src/core/luacore.c,
+ * src/core/luamb.h, PROTOCOL.md 5.15). Where the games are linked into a
+ * release, which has no Lua game, all three answer UNSUPPORTED.
+ *
+ *   LUA_EXEC    u16 len, u16 flags (0), char src[len] (1..8192) -> s32 lua_status,
+ *               u32 seq, u8 out_type, u8 out_flags, u16 out_len, char out[out_len];
+ *               answered once the game has (at most LUAMB_T_ANSWER_MS and a tick)
+ *   LUA_STATUS  none -> u8 installed, u8 phase, u16 pad, u32 heartbeat, u32 state,
+ *               u32 err_seq, u32 err_vm, char err_script[64], u16 err_len, u16 pad,
+ *               char err[err_len]
+ *   LUA_PATCH   none -> the helper as RPCS3 patch words, SAVEFILE_PATCH's layout;
+ *               the emulator builds only
+ */
+#define OP_LUA_EXEC           0x00E0
+#define OP_LUA_STATUS         0x00E1
+#define OP_LUA_PATCH          0x00E2
+#define LUA_EXEC_HEAD         4u
+#define LUA_EXEC_REPLY_HEAD   12u
+#define LUA_STATUS_HEAD       88u
+#define LUA_INSTALLED_NO      0
+#define LUA_INSTALLED_YES     1
+#define LUA_INSTALLED_CHECKING 2
+#define LUA_PHASE_IDLE        0
+#define LUA_PHASE_SENT        1
+#define LUA_PHASE_CANCELLING  2
+#define LUA_PHASE_HUNG        3
 
 /* A group's flags on the wire. */
 #define MANIP_FLAG_NGPLUS       0x01  /* 1 NG+ (challenge mode), 0 new-game */

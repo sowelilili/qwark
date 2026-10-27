@@ -2,7 +2,18 @@
 
 Written 2026-10-27, for NPEA00452 v01.00 (EBOOT.ELF md5 `df9d68ada99b3f44ffe798ce03a1549c`). It builds on `../REPORT-tod-lua.md` (helper A, sections 2.3 to 2.9, 4, 5 and 7) and on SPEC-game-modules 4.4 and 4.12.
 
-Phase 1 is everything ToD-specific that does not depend on the game-module seam, and **nothing of it is linked into `qwark.sprx` or the host executables yet**:
+**Phase 2 landed on 2026-10-27 (revision 1.27).** ToD is game 5, `tod.sprx`, in a test build and the PC builds, never a release (`QWARK_HAS_TOD`, `src/core/buildmodes.h`); `src/games/tod_game.c` and `tod_panel.c` are the game, all of it plain data reads and writes; `src/core/luacore.c` is LUA_EXEC, LUA_STATUS and LUA_PATCH (PROTOCOL.md 5.15) over this mailbox. Where phase 2 differs from section 2 below:
+
+- **LUA_EXEC's reply** has no `u16 st` of its own: the frame's status is the wire status, and the payload starts at `s32 lua_status` (a 12-byte head). The network thread asks the tick thread twice, through the ring: the send, then every 10 ms whether the answer the tick watches for (`lua_core_tick`) is in; the deadline is the mailbox's own 1.5 s.
+- **LUA_STATUS** has two pad bytes after `err_len` (an 88-byte head), so `err` starts aligned; `installed` 2 is RPCS3's "not looked yet".
+- **The bytes on a console** come out of `tod.sprx`'s read-only segment (item 9's second road): `luahelper_bins.c` keeps its cave under `QWARK_EMULATOR || QWARK_GAME_MODULE`, the core links `luahelper_patch.c` and `luamb.c` alone and installs whatever `game_api.lua_desc` hands it. No pak format 3.
+- **The install** is on the first LUA_EXEC of a process that asks in a level (a `lua_State` up), never on arrival and with no config key: a click is what writes code. `luamb_attach` runs on the first tick after the game arrives, on both platforms.
+- **The PoC rows** (`tod_rows`, section 3) are not DESCRIBE features: ids 0 to 3 are reserved for them, the client's Lua box sends rows 0 and 1 through LUA_EXEC, and planets load through PLANET_LOAD (`tod_planet_load`, which writes `0x1006E764` only with `g_gameState` 4, a level object, and no request pending).
+- **Re-injection** (item 2.1's last paragraph) is not built: mods are a later round.
+
+The rest of this document is the phase-1 record, kept as it was written except where it says otherwise.
+
+Phase 1 was everything ToD-specific that did not depend on the game-module seam:
 
 | file | what it is |
 |---|---|
@@ -212,3 +223,28 @@ Do these on RPCS3 first (nothing to install by hand on the game but a patch), th
 **Verified offline** (decompile, disassembly or `check.py` against the file): every hook word and call target; the r2 of every range the helper touches; the gameplay VM layout it relies on (`L` at +4, allocator at +8); `LuaAlloc_setCurrent`'s global; the signatures of `luaL_loadbuffer(L, buf, size, name)`, `lua_pcall(L, nargs, nresults, errfunc)`, `lua_gettop`, `lua_settop`, `lua_type`, `lua_toboolean`, `lua_tostring`; both reportError paths; the caves' emptiness and that nothing refers to them; the planet request's semantics; `time_set_scale` and `set_level`; bolts, raritanium, weapon slots (owned byte), vendor unlocks and the extras from the bindings that write them.
 
 **Inferred or taken over**: that lv2 and RPCS3 map the caves' pages (check 2); that RPCS3 executes the code cave (check 3); the pad bit order and the hot-block layout (REPORT 7, disassembly, not pressed live); `g_gameState`'s values other than 4; the weapon slot's xp/ammo/mods/level offsets and the position chain (legacy RaCMAN); the 1.5 s and 5 s timeouts (a guess at what a hitch looks like).
+
+## 7. The trainer (phase 2, revision 1.27)
+
+Every row is a plain read or write; nothing here patches code, so all of it works over PINE as on a console. "dec" is the decompile of NPEA00452 (names as in Ghidra, DL-ghidra:/NPEA00452.ELF), "csv" the game's config sheets. Nothing has been run on a game yet.
+
+| feature | id | what qwark does | how known |
+|---|---|---|---|
+| hot block | | `0x10691918` (0x5C: analogs LX LY RX RY, pad mask +0x58, remapped to the OG layout), `0x10740BB4` (the level object), `0x1029C558` (level, then challenge mode), `0x1020C28C` (bolts, raritanium, every 4th tick), `0x10385BE8` (every 4th) | dis / dec |
+| position (telemetry) | | `[[0x10740BB4]+0xC684]+0x1260`, 3 floats; the hero's pointer re-read on a new level object and every 8th tick | dec (`HeroList_getCurrentHero`, `callstack_ratchetptr_1`) |
+| position slots | | 48 bytes at hero+0x1260 (pos, centre, last centre); a load also writes pos to hero+0x1250 (prevPos) and moby+0x30 (moby = [hero+0x14]); never the handle at +0x1290 | dec (`HeroMotion_update`) |
+| Die | 4 | f32 0 to hero+0x1784; `Hero_checkDeath` does the rest | dec |
+| Bolts, Raritanium | 5, 6 | u32 `0x1020C28C`, `0x1020C290`, 0..999,999,999 (`Hero_addBolts`'s cap) | dec |
+| Challenge mode | 7 | u32 `0x1029C55C` (`g_challengeMode`), 0 normal, N the Nth | dec (`ChallengeMode_getCount`) |
+| Infinite ammo | 8 | LIVE: u32 `0x10385BE8` (`g_infiniteAmmo`, only Lua writes it: firing never fails) and, while it is up, every 4th tick the ammo floats of weapons and devices held where they were | dec (`Weapon_hasAmmo`, `Weapon_useAmmo`) |
+| God Ratchet | 9 | LIVE: u32 `0x101F1F00` (`g_debugHeroNoDamage`): `Hero_Update` drops every damage event, on foot and in the ship | dec |
+| skill points | 10, 11, unlock rows 64.. | u64 `0x10214580`, bit i = SKILLPOINT i, 60 | dec (`SkillPoint_set`) |
+| gold bolts | 12, 13, unlock rows 128.. | u32 `0x1020C6E4 + L*0x408`, bit i = the level's bolt i, counts per level from `0x1006E58C` (32 in all) | dec (`LevelSave_collectGoldBolt`) |
+| RYNO plans | 14, 15 | u32 `0x10214564`, all = OR `0x7DEE4`, reset 0 | dec |
+| weapons, devices, gadgets | unlock rows 1..31 | `0x1020BE70 + WPN*0x14`: owned u8 +0x10, level u8 +0x11 written with xp f32 +4 = the csv's XP for that level (the game counts the level from XP), ammo f32 +8 | dec, csv |
+| items | unlock rows 32..46 | s32 `0x1020C174 + OBJ*4`, 0 or 1, OBJ 0..14 | dec (`Hero_hasObject`) |
+| planet load | | s32 level to `0x1006E764` with `g_gameState` (`0x10387F4C`) 4, a level object, and no request pending | dec (`LoadLevel`, `LoadLevel_ProcessPending`) |
+
+**What god ratchet was.** The old RaCMAN wrote `0x9A` (any non-zero byte) into the low byte of `g_heroProxyMobyHandle` (`0x1020BD48`), the handle of a remote-controlled proxy moby (`HeroProxyMoby_*`, probably the Visi-Copter's). While that word is non-zero `Hero_Update` drops the hero's damage and `Hero_registerAsTarget` takes him out of the enemies' target list. A fake handle there is overwritten or cleared by the real proxy moby's spawn and death, and the camera code tries to resolve it. qwark's God Ratchet is the game's own unused debug flag beside it instead, which drops the damage the same way, with nothing else attached; enemies still attack. Neither covers a death plane or a fall.
+
+**Live checks for the trainer**, after section 5's: the hero pointer and the position across a level load and a death; a position slot saved and loaded, standing and mid-jump; Die on foot and in the ship; the pad bits and the analogs' signs against the input display; Infinite ammo with a fast weapon, a device and across a level change; God Ratchet against a boss; a weapon's level V3 and V7 (in and out of challenge mode) and its next kill's XP; a skill point and a gold bolt toggled, then saved and reloaded; the planet load from gameplay, from the pause menu (expect BUSY or a load once unpaused) and between levels (BUSY).

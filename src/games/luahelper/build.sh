@@ -12,9 +12,9 @@
 #
 # --if-stale does nothing when the generated file is up to date, and nothing
 # when the SDK is not on the PATH: the generated file is committed, and the host
-# builds and the tests never need the SDK. (Phase 2 adds `make luahelper` and
-# `luahelper-if-stale` to the makefile, as for the other helpers; until then
-# this script is run by hand. docs/tod-poc.md section 4.)
+# builds and the tests never need the SDK. The makefile's `luahelper` and
+# `luahelper-if-stale` run it, as for the other helpers, and a plain `make`
+# runs the second (docs/tod-poc.md section 4).
 #
 # Per game: compile luahelper.c against the game's header, assemble the entry,
 # link both at the cave with every LH_FN_* bound by --defsym, cut .text out as
@@ -233,13 +233,16 @@ sed '$ s/},$/}/' "$OUT/descs.txt" > "$OUT/descs-final.txt"
  * Each game has one cave, the compiled helper, and two hook words: the branch
  * that replaces the game's call to its gameplay VM's update, and the branch
  * that replaces its empty reportError. Both are computed from the addresses
- * the helper linked at. As for the savefile helper (build 56), the cave's
- * bytes are the emulator builds' alone (QWARK_EMULATOR): an RPCS3 patch is
- * made of them; a console will read them out of ui.pak (docs/tod-poc.md).
+ * the helper linked at. The cave's bytes are where something puts them into
+ * the game: the emulator builds (QWARK_EMULATOR), which make an RPCS3 patch of
+ * them, and the game module (QWARK_GAME_MODULE, tod.sprx), out of whose
+ * read-only segment the core installs them on a console (revision 1.27). The
+ * core itself carries none.
  */
+#include "../core/buildmodes.h"
 #include "luahelper_bins.h"
 
-#ifdef QWARK_EMULATOR
+#if defined(QWARK_EMULATOR) || QWARK_GAME_MODULE
 
 EOF
 	cat "$OUT/arrays.c"
@@ -247,7 +250,7 @@ EOF
 #define LH_TABLE(x) (x)
 #else
 #define LH_TABLE(x) 0
-#endif /* QWARK_EMULATOR */
+#endif /* QWARK_EMULATOR || QWARK_GAME_MODULE */
 
 EOF
 	cat "$OUT/hooks.c"
@@ -304,7 +307,7 @@ struct lh_hook {
 struct lh_desc {
 	const char *title;          /* the executable's title id */
 
-	/* NULL outside QWARK_EMULATOR, as the savefile helper's; the count stays. */
+	/* NULL but in the emulator builds and the game module; the count stays. */
 	const struct lh_cave *caves;
 	u8 ncaves;
 

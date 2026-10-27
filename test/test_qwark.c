@@ -17656,6 +17656,7 @@ int main(void)
 	test_mod_previous();
 	test_usbmods();
 	test_menu_mods();
+	test_tod_game();
 	test_switches();
 	test_reply_sizes();
 	test_planet_order();

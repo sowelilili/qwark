@@ -3,9 +3,9 @@
  * machine (luamb_client.h). luamb.h has the layout and the protocol; this file
  * is the half of it that runs outside the game.
  *
- * Phase 1 links this only into the unit tests. It has no state of its own
- * beyond the struct luamb_client it is handed, and it reaches the game only
- * through struct luamb_io.
+ * Linked where QWARK_HAS_TOD, for src/core/luacore.c. It has no state of its
+ * own beyond the struct luamb_client it is handed (and luamb_read_out's
+ * buffer), and it reaches the game only through struct luamb_io.
  */
 #include "luamb_client.h"
 

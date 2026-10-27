@@ -123,5 +123,6 @@ const struct game_api testgame_game = {
 	NULL,                 /* planet_order: its planets in id order */
 	NULL,                 /* menu: none, the root's own pages alone */
 	0,                    /* fast_loads: no Fast loads toggle, so the combo says so */
-	NULL                  /* savefile_desc: no helper */
+	NULL,                 /* savefile_desc: no helper */
+	NULL                  /* lua_desc: no Lua (revision 1.27) */
 };

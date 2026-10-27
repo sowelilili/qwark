@@ -40,6 +40,19 @@
 #define QWARK_GAME_IMPORT (QWARK_GAME_MODULES || QWARK_GAME_MODULE)
 
 /*
+ * Revision 1.27: Tools of Destruction (game 5) and the core's Lua ops
+ * (src/core/luacore.c) are in the builds whose games are modules and in the
+ * PC builds, never in a release module, which links the four originals and
+ * has no room for a fifth: there the title index has no ToD and the Lua ops
+ * answer UNSUPPORTED.
+ */
+#if QWARK_GAME_MODULES || QWARK_GAME_MODULE || defined(QWARK_HOST)
+#define QWARK_HAS_TOD           1
+#else
+#define QWARK_HAS_TOD           0
+#endif
+
+/*
  * Q, the core's context in a game module (src/games/module.h): r14, a global
  * register variable, which gcc takes only ahead of every function a unit
  * defines, inline ones in headers included, so it is declared here.

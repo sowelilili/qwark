@@ -15,6 +15,9 @@
 #include "../../games/module.h"
 #include "../../games/core_api.h"
 #include "../../games/menuhelper_bins.h"
+#include "../../games/tod.h"
+#include "../../games/luahelper_patch.h"
+#include "../../core/luamb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +44,8 @@ static const struct game_title *g_boot_game;
 /* The fake console is a console: it patches code and it is not an emulator. */
 static int g_can_patch_code = 1;
 static int g_is_emulator;
+
+static void seed_tod(void);
 
 static u8 *page_for(u32 index, int create)
 {
@@ -107,6 +112,7 @@ static u8 host_wanted_game_id(const char *which)
 	if (strcmp(which, "rac4") == 0 || strcmp(which, "4") == 0 ||
 	    strcmp(which, "dl") == 0)
 		return GAME_RAC4;
+	if (strcmp(which, "tod") == 0 || strcmp(which, "5") == 0) return GAME_TOD;
 
 	return 0;
 }
@@ -164,10 +170,186 @@ void host_boot_as(const char *title, const char *which)
 		}
 	}
 
+	/* Revision 1.27: Tools of Destruction's level, hero and Lua state. */
+	if (game != NULL && game->game_id == GAME_TOD) seed_tod();
+
 	pthread_mutex_unlock(&g_mem_lock);
 
 	plat_log("host: booted %s as pid %d%s", g_game_title, (int)g_game_pid,
 	         game != NULL ? "" : " (no registered game, nothing seeded)");
+}
+
+/* ------------------------------------------- Tools of Destruction, rev 1.27 */
+
+/*
+ * A ToD boot is a level, as if the game were in gameplay: g_gameState 4, no
+ * load asked for, a level object whose hero has a moby, 10 hit points, and a
+ * lua_State. Every place the Lua helper hooks holds the game's own word, as
+ * the executable does, unless `luapatch on` asked for the boot RPCS3 makes
+ * with the helper's patch in, which writes the patch's words instead.
+ */
+#define FAKE_TOD_ROOT  0x30000000u
+#define FAKE_TOD_HERO  0x30010000u
+#define FAKE_TOD_MOBY  0x30020000u
+#define FAKE_TOD_STATE 0x30030000u
+
+static int g_lua_patch_at_boot;
+static u8 g_lua_patch[4096];
+
+void host_set_lua_patch(int on)
+{
+	g_lua_patch_at_boot = on ? 1 : 0;
+}
+
+static void poke32(u32 addr, u32 v)
+{
+	u8 b[4];
+
+	be32_put(b, v);
+	mem_access(addr, b, 4, 1);
+}
+
+static u32 peek32(u32 addr)
+{
+	u8 b[4];
+
+	mem_access(addr, b, 4, 0);
+	return be32_get(b);
+}
+
+/* Under g_mem_lock. */
+static void seed_tod(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u8 i;
+
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	poke32(TOD_CURRENT_LEVEL, 1);
+	poke32(TOD_LEVEL_OBJ, FAKE_TOD_ROOT);
+	poke32(FAKE_TOD_ROOT + TOD_HERO_PTR, FAKE_TOD_HERO);
+	poke32(FAKE_TOD_HERO + TOD_HERO_MOBY, FAKE_TOD_MOBY);
+	poke32(FAKE_TOD_HERO + TOD_HERO_HEALTH, 0x41200000u);       /* 10.0f */
+	poke32(FAKE_TOD_HERO + TOD_HERO_MAX_HEALTH, 0x41200000u);
+	poke32(TOD_LUA_STATE, FAKE_TOD_STATE);
+
+	if (d == NULL) return;
+	for (i = 0; i < d->nhooks; i++) poke32(d->hooks[i].addr, d->hooks[i].orig);
+
+	if (g_lua_patch_at_boot) {
+		u32 len = 0, n, k;
+
+		if (lh_patch_build(d, g_lua_patch, sizeof(g_lua_patch), &len) != ST_OK) return;
+		n = be16_get(g_lua_patch);
+		for (k = 0; k < n; k++) {
+			const u8 *row = g_lua_patch + LH_PATCH_HEAD + k * LH_PATCH_ROW;
+			mem_access(be32_get(row), (void *)(row + 4), 4, 1);
+		}
+	}
+}
+
+/*
+ * One gameplay frame of the Lua helper, after src/games/luahelper/luahelper.c,
+ * with a stand-in for Lua that knows a handful of chunks: `_VERSION` answers
+ * "Lua 5.0.2", `time_set_scale(0.5` and `time_set_scale(1` set the game
+ * clock's scale, `error(` is a runtime error, `while true` never comes back
+ * (the helper stays inside it), and anything else answers nothing. Only while
+ * the helper is in (its VM hook in place, the mailbox's identity written).
+ * Returns 1 when it answered a request.
+ */
+int host_fake_lua_frame(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u32 mb, req, ack, cancel, len, L, out_len = 0;
+	s32 status = LUAMB_ST_OK;
+	u8 type = LUAMB_T_NONE;
+	const char *out = "";
+	static char chunk[LUAMB_CHUNK_CAP + 1];
+	int answered = 0;
+
+	if (d == NULL) return 0;
+	pthread_mutex_lock(&g_mem_lock);
+	if (!g_game_running || g_boot_game == NULL || g_boot_game->game_id != GAME_TOD ||
+	    peek32(d->hooks[0].addr) != d->hooks[0].value || peek32(d->mailbox) != LUAMB_MAGIC) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	mb = d->mailbox;
+	L = peek32(d->vm + d->vm_state);
+	poke32(mb + LUAMB_OFF_HEARTBEAT, peek32(mb + LUAMB_OFF_HEARTBEAT) + 1u);
+	poke32(mb + LUAMB_OFF_LAST_STATE, L);
+
+	req = peek32(mb + LUAMB_OFF_REQ);
+	ack = peek32(mb + LUAMB_OFF_ACK);
+	if (req == ack || peek32(mb + LUAMB_OFF_BUSY) == req) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	poke32(mb + LUAMB_OFF_BUSY, req);
+	cancel = peek32(mb + LUAMB_OFF_CANCEL);
+	len = peek32(mb + LUAMB_OFF_CHUNK_LEN);
+
+	if (cancel == req) status = LUAMB_ST_CANCELLED;
+	else if (L == 0) status = LUAMB_ST_NO_STATE;
+	else if (len == 0 || len > LUAMB_CHUNK_CAP) status = LUAMB_ST_BAD_LEN;
+	else {
+		mem_access(mb + LUAMB_OFF_CHUNK, chunk, len, 0);
+		chunk[len] = 0;
+		if (strstr(chunk, "while true") != NULL) {
+			/* Inside the chunk for ever: busy stays up, no ack. */
+			pthread_mutex_unlock(&g_mem_lock);
+			return 0;
+		}
+		if (strstr(chunk, "time_set_scale(0.5") != NULL) poke32(TOD_GAME_CLOCK, 0x3F000000u);
+		else if (strstr(chunk, "time_set_scale(1") != NULL) poke32(TOD_GAME_CLOCK, 0x3F800000u);
+		if (strstr(chunk, "error(") != NULL) {
+			status = LUAMB_ST_ERRRUN;
+			out = "qwark:1: x";
+			type = LUAMB_T_STRING;
+		} else if (strstr(chunk, "_VERSION") != NULL) {
+			out = "Lua 5.0.2";
+			type = LUAMB_T_STRING;
+		}
+	}
+
+	out_len = (u32)strlen(out);
+	mem_access(mb + LUAMB_OFF_OUT, (void *)out, out_len + 1, 1);
+	poke32(mb + LUAMB_OFF_OUT_LEN, out_len);
+	{
+		u8 tf[2] = { type, 0 };
+		mem_access(mb + LUAMB_OFF_OUT_TYPE, tf, 2, 1);
+	}
+	poke32(mb + LUAMB_OFF_STATUS, (u32)status);
+	poke32(mb + LUAMB_OFF_ACK, req);
+	poke32(mb + LUAMB_OFF_BUSY, 0);
+	answered = 1;
+	pthread_mutex_unlock(&g_mem_lock);
+	return answered;
+}
+
+static volatile int g_fake_lua_on;
+static int g_fake_lua_started;
+static pthread_t g_fake_lua_thread;
+
+static void *fake_lua_loop(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		if (g_fake_lua_on) host_fake_lua_frame();
+		plat_sleep_us(16000);
+	}
+	return NULL;
+}
+
+/* A gameplay frame every 16 ms from a thread of its own, for the simulator. */
+void host_set_fake_lua(int on)
+{
+	g_fake_lua_on = on ? 1 : 0;
+	if (on && !g_fake_lua_started) {
+		g_fake_lua_started = 1;
+		pthread_create(&g_fake_lua_thread, NULL, fake_lua_loop, NULL);
+		pthread_detach(g_fake_lua_thread);
+	}
 }
 
 void host_boot(const char *title)

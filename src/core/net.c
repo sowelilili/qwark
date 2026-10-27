@@ -12,11 +12,19 @@
 #include "uipak.h"
 #include "gamemod.h"
 #include "manips.h"
+#include "luacore.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
 
 #include <string.h>
+
+/*
+ * Revision 1.27. Not on the wire: LUA_EXEC's second half, which only lua_exec
+ * posts. op_needs_ring does not know it, so a frame that names it is answered
+ * UNKNOWN_OP like any other op qwark has not got.
+ */
+#define OP_LUA_RESULT 0xFFE0
 
 /*
  * The request arena, revision 1.11.
@@ -910,6 +918,42 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		if (cmd->status == ST_OK) cmd->status = (u16)manips_apply();
 		break;
 
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.27, the game's own Lua (luacore.h). LUA_EXEC runs here in two
+	 * halves, which lua_exec below asks for one after the other: the send, and
+	 * then, as often as it takes, whether the answer the tick watches for is in.
+	 */
+	case OP_LUA_EXEC: {
+		u32 seq = 0;
+
+		cmd->status = (u16)lua_core_exec_start(req, reqlen, &seq);
+		if (cmd->status != ST_OK) break;
+		if (cmd->replycap < 4) { cmd->status = ST_FULL; break; }
+		be32_put(reply, seq);
+		cmd->replylen = 4;
+		break;
+	}
+
+	case OP_LUA_RESULT: {
+		u32 len = 0;
+		int done = 0;
+
+		if (reqlen < 4) { cmd->status = ST_BAD_ARG; break; }
+		cmd->status = (u16)lua_core_exec_result(be32_get(req), reply, cmd->replycap, &len, &done);
+		cmd->replylen = done ? len : 0;
+		break;
+	}
+
+	case OP_LUA_STATUS: {
+		u32 len = 0;
+
+		cmd->status = (u16)lua_core_status(reply, cmd->replycap, &len);
+		if (cmd->status == ST_OK) cmd->replylen = len;
+		break;
+	}
+#endif
+
 	default:
 		cmd->status = ST_UNKNOWN_OP;
 		break;
@@ -965,11 +1009,67 @@ static int op_needs_ring(u16 op)
 	case OP_MANIP_SELECT:
 	case OP_MANIP_OPTIONS:
 	case OP_MANIP_APPLY:
+#if QWARK_HAS_TOD
+	case OP_LUA_EXEC:
+	case OP_LUA_STATUS:
+#endif
 		return 1;
 	default:
 		return 0;
 	}
 }
+
+#if QWARK_HAS_TOD
+/*
+ * LUA_EXEC on the connection's thread: the send through the ring, then a look
+ * through the ring every 10 ms until the tick has the game's answer, which the
+ * mailbox's own deadline (LUAMB_T_ANSWER_MS, src/core/luamb_client.h) bounds
+ * at a second and a half: by then the tick has withdrawn the request and the
+ * answer says TIMEOUT or NOT_RUNNING. LUA_EXEC_POLLS is only a backstop for a
+ * tick thread that stops. The thread holds its buffers for as long as the
+ * game takes, which is a frame or two while the game is playing.
+ */
+#define LUA_EXEC_POLLS   400
+#define LUA_EXEC_POLL_US 10000u
+
+static u16 lua_exec(const u8 *req, u32 reqlen, u8 *reply, u32 replycap, u32 *replylen,
+                    volatile int *cancelled)
+{
+	struct ring_cmd cmd;
+	u8 seq[4];
+	int i;
+
+	*replylen = 0;
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.op = OP_LUA_EXEC;
+	cmd.req = req;
+	cmd.reqlen = reqlen;
+	cmd.reply = reply;
+	cmd.replycap = replycap;
+	session_submit(&cmd);
+	if (cmd.status != ST_OK) return cmd.status;
+	if (cmd.replylen < 4) return ST_IO_ERROR;
+	memcpy(seq, reply, 4);
+
+	for (i = 0; i < LUA_EXEC_POLLS; i++) {
+		plat_sleep_us(LUA_EXEC_POLL_US);
+		if (*cancelled) return ST_BUSY;
+
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.op = OP_LUA_RESULT;
+		cmd.req = seq;
+		cmd.reqlen = 4;
+		cmd.reply = reply;
+		cmd.replycap = replycap;
+		session_submit(&cmd);
+		if (cmd.status != ST_OK || cmd.replylen != 0) {
+			*replylen = cmd.replylen;
+			return cmd.status;
+		}
+	}
+	return ST_BUSY;
+}
+#endif
 
 /* --------------------------------------------------- network-thread handlers */
 
@@ -1925,6 +2025,31 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		return ST_UNSUPPORTED;
 #endif
 
+	/*
+	 * Revision 1.27. The Lua helper as an RPCS3 patch, in the emulator builds
+	 * alone, like the three above; and nowhere in a release, which has no Lua
+	 * game: there LUA_EXEC and LUA_STATUS are UNSUPPORTED here too.
+	 */
+#if QWARK_HAS_TOD && defined(QWARK_EMULATOR)
+	case OP_LUA_PATCH: {
+		u16 rc;
+
+		core_lock();
+		rc = (u16)lua_core_patch(reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+#else
+	case OP_LUA_PATCH:
+#endif
+#if !QWARK_HAS_TOD
+	case OP_LUA_EXEC:
+	case OP_LUA_STATUS:
+#endif
+#if !(QWARK_HAS_TOD && defined(QWARK_EMULATOR))
+		return ST_UNSUPPORTED;
+#endif
+
 	default:
 		return ST_UNKNOWN_OP;
 	}
@@ -2121,6 +2246,15 @@ static void conn_thread(void *arg)
 			break;
 		}
 
+#if QWARK_HAS_TOD
+		if (op == OP_LUA_EXEC) {
+			status = lua_exec(c->req, length, c->reply, replycap, &replylen, &c->cancelled);
+			if (c->cancelled) {
+				release_buffers(c);
+				break;
+			}
+		} else
+#endif
 		if (op_needs_ring(op)) {
 			struct ring_cmd cmd;
 

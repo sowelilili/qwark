@@ -1,5 +1,5 @@
 /*
- * The Tools of Destruction groundwork, phase 1 (docs/tod-poc.md): the Lua
+ * The Tools of Destruction groundwork (docs/tod-poc.md): the Lua
  * mailbox's codec and request state machine (src/core/luamb.c), the helper's
  * RPCS3 patch, presence rule and console install (src/games/luahelper_patch.c),
  * and the fact sheet (src/games/tod.c).
@@ -549,7 +549,7 @@ static void test_facts(void)
 	      mark("planet request")->how == TOD_DEC, "marks: planet request, from the decompile");
 	check(mark("quit byte") && mark("quit byte")->addr == f->quit_byte, "marks: quit byte");
 	check(mark("position root") && mark("position root")->addr == f->pos_root &&
-	      mark("position root")->how == TOD_LEGACY, "marks: positions are legacy");
+	      mark("position root")->how == TOD_DEC, "marks: positions, from the decompile");
 	check(mark("bolts") && mark("bolts")->addr == f->bolts, "marks: bolts");
 	check(mark("raritanium") && mark("raritanium")->addr == f->raritanium, "marks: raritanium");
 	check(mark("weapon unlocked") && mark("weapon unlocked")->addr == f->weapon_unlocked, "marks: weapon unlocks");

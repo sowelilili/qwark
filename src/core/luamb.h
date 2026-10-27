@@ -99,7 +99,7 @@
 
 /*
  * Never in the mailbox: what qwark's side reports when the helper did not
- * answer (luamb.c, and LUA_EXEC's reply in phase 2).
+ * answer (luamb.c, and LUA_EXEC's reply, PROTOCOL.md 5.15).
  */
 #define LUAMB_ST_TIMEOUT    0x200  /* frames ran, but no answer in time        */
 #define LUAMB_ST_NOT_RUNNING 0x201 /* no gameplay frame ran: paused, a menu, a load */

@@ -14,6 +14,9 @@
 #include "rac2.h"
 #include "rac3.h"
 #include "rac4.h"
+#if QWARK_HAS_TOD
+#include "tod.h"
+#endif
 #include "switches_bins.h"
 #include "../core/util.h"
 
@@ -44,6 +47,11 @@ const u8 rac4_fp_switch[4]  = {
 	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 24), (u8)(SW_RAC4_SITE_REFILL_AMMO >> 16),
 	(u8)(SW_RAC4_SITE_REFILL_AMMO >> 8),  (u8)SW_RAC4_SITE_REFILL_AMMO
 };
+
+#if QWARK_HAS_TOD
+/* Revision 1.27: stw r31,0x6e8(r11) in LoadLevel, which nothing patches (tod.h). */
+const u8 tod_fp[4]          = { 0x93, 0xEB, 0x06, 0xE8 };
+#endif
 
 /* ------------------------------------------- Deadlocked's boot patches */
 
@@ -122,6 +130,9 @@ extern const struct game_api rac1_game;
 extern const struct game_api rac2_game;
 extern const struct game_api rac3_game;
 extern const struct game_api rac4_game;
+#if QWARK_HAS_TOD
+extern const struct game_api tod_game;
+#endif
 #define LINKED(g) (&(g))
 #endif
 
@@ -178,6 +189,25 @@ static const struct game_title g_titles[] = {
 		R4_AS_QUIT, RAC4_LOADING_VAL,
 		LINKED(rac4_game)
 	}
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.27: Tools of Destruction, the PSN EU v01.00 alone (BCES00052
+	 * is another executable, every address moved). No code switches, no boot
+	 * patches and no pause pair: nothing it does belongs to a boot's first
+	 * seconds, and its Lua helper goes in on demand (src/core/luacore.c). The
+	 * quit byte is the game's own, set by SystemQuitCallback on its way out.
+	 */
+	, {
+		{ TOD_TITLE, NULL, NULL, NULL }, GAME_TOD,
+		TOD_FP_ADDR, tod_fp, NULL,
+		NULL, NULL,           /* no code switches */
+		sizeof(tod_fp),
+		TOD_QUIT_BYTE,
+		TOD_PAD_MASK,
+		NULL, 0, 0, 0,
+		LINKED(tod_game)
+	}
+#endif
 #ifdef QWARK_TEST
 	, {
 		{ "TEST00001", NULL, NULL, NULL }, GAME_RAC2,
@@ -236,6 +266,9 @@ static const char *const g_module_names[] = {
 	"rac2.sprx",          /* GAME_RAC2 */
 	"rac3.sprx",          /* GAME_RAC3 */
 	"rac4.sprx"           /* GAME_RAC4 */
+#if QWARK_HAS_TOD
+	, "tod.sprx"          /* GAME_TOD, revision 1.27: a name of its own */
+#endif
 };
 
 #define MODULE_NAMES ((u32)(sizeof(g_module_names) / sizeof(g_module_names[0])))

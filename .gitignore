@@ -353,6 +353,8 @@ installer/test/root/
 !dist/qwark-installer.pkg
 # Revision 1.26: a test build's game modules, which make dist copies beside the module.
 !dist/rac[1-4].sprx
+# Revision 1.27: and Tools of Destruction's, named for its game.
+!dist/tod.sprx
 
 # Python cache from the smoke test
 __pycache__/

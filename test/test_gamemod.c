@@ -284,8 +284,12 @@ static void test_missing_and_written(void)
 	check_eq_u64(gamemod_names("/dev_hdd0/qwark/game-1.sprx"), 0, "and the old game-1.sprx nobody's");
 	check(qstreq(title_module_name(GAME_RAC1), "rac1.sprx") && qstreq(title_module_name(GAME_RAC3), "rac3.sprx"),
 	      "each module is named for its game");
-	check(title_module_name(GAME_NONE) == NULL && title_module_name(GAME_RAC4 + 1) == NULL,
-	      "and no game, or one past the four, has none");
+	check(title_module_name(GAME_NONE) == NULL && title_module_name(GAME_TOD + 1) == NULL,
+	      "and no game, or one past ToD, has none");
+	/* Revision 1.27: Tools of Destruction's is a name of its own, never its number's. */
+	check(qstreq(title_module_name(GAME_TOD), "tod.sprx"), "ToD's module is tod.sprx");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/tod.sprx.new"), GAME_TOD, "tod.sprx.new is ToD's");
+	check_eq_u64(gamemod_names("/dev_hdd0/qwark/rac5.sprx"), 0, "and rac5.sprx nobody's");
 	title_module_path(GAME_RAC4, path, sizeof(path), 1);
 	check(qstreq(path, "/dev_hdd0/qwark/rac4.sprx.new"), "rac4.sprx's update is rac4.sprx.new");
 	title_module_path(GAME_NONE, path, sizeof(path), 0);

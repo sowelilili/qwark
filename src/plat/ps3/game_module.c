@@ -1,8 +1,9 @@
 /*
  * A game module's start and stop (revision 1.26; src/games/module.h,
- * PROTOCOL.md 9.11). One source, four modules: the makefile's `games` builds
- * it with QWARK_MODULE_GAME 1 to 4 into rac1.sprx to rac4.sprx, beside that game's own
- * sources, classic.c, its savefile helper's numbers and core_import.c.
+ * PROTOCOL.md 9.11). One source, five modules: the makefile's `games` builds
+ * it with QWARK_MODULE_GAME 1 to 5 into rac1.sprx to rac4.sprx and tod.sprx
+ * (revision 1.27), beside that game's own sources, classic.c, its savefile
+ * helper's numbers and core_import.c.
  *
  * The core calls sys_prx_start_module on its tick thread with a struct
  * qwark_mod_args of its own. Start checks every field the core filled in
@@ -30,7 +31,16 @@
 
 #define QM_PASTE2(a, b, c) a##b##c
 #define QM_PASTE(a, b, c)  QM_PASTE2(a, b, c)
+/*
+ * Revision 1.27: the vtable is named by the makefile (GAME_VTABLE_<name>,
+ * tod_game for Tools of Destruction's game 5), not made of the game's number,
+ * which named rac1_game to rac4_game and no later game's.
+ */
+#ifdef QWARK_MODULE_VTABLE
+#define QM_VTABLE          QWARK_MODULE_VTABLE
+#else
 #define QM_VTABLE          QM_PASTE(rac, QWARK_MODULE_GAME, _game)
+#endif
 #define QM_NAME            QM_PASTE(qwark_game, QWARK_MODULE_GAME, _)
 
 extern const struct game_api QM_VTABLE;

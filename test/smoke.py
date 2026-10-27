@@ -182,6 +182,11 @@ OP_SAVEFILE_RESTORE = 0x00B6
 OP_SAVEFILE_CATEGORY = 0x00B7
 # Revision 1.15: the savefile helper as the words an RPCS3 patch writes.
 OP_SAVEFILE_PATCH = 0x00B8
+# Revision 1.27: the game's own Lua (PROTOCOL.md 5.15).
+OP_DIE = 0x0048
+OP_LUA_EXEC = 0x00E0
+OP_LUA_STATUS = 0x00E1
+OP_LUA_PATCH = 0x00E2
 # Revision 1.21: manip categories.
 OP_MANIP_LIST = 0x00D0
 OP_MANIP_SELECT = 0x00D1
@@ -5291,6 +5296,194 @@ def smoke_rpcs3_mod_pages(c, pine):
     check(not hits, "rpcs3 mod pages: and qwark wrote none of it into the emulator", hits[:4])
 
 
+# ------------------------------------------- Tools of Destruction, rev 1.27
+
+TOD_TITLE = "NPEA00452"
+TOD_FP_ADDR = 0x002EA5F0
+TOD_FP = bytes([0x93, 0xEB, 0x06, 0xE8])
+TOD_BOLTS = 0x1020C28C
+TOD_LEVEL_OBJ = 0x10740BB4
+TOD_LOAD_REQUEST = 0x1006E764
+TOD_GAME_STATE = 0x10387F4C
+TOD_LUA_STATE = 0x102043D0
+TOD_GAME_CLOCK = 0x1074DDA8
+TOD_NO_DAMAGE = 0x101F1F00
+TOD_MAILBOX = 0x008CA000
+TOD_VM_HOOK = 0x004C461C
+TOD_VM_HOOK_ORIG = 0x4BDCC909
+TOD_VM_HOOK_HELPER = 0x483A2D45
+TOD_FAKE_HERO = 0x30010000           # the simulator's (backend_fake.c, seed_tod)
+
+
+def lua_exec(c, src):
+    """LUA_EXEC: (frame status, lua_status, out_type, text) or a None tail."""
+    data = src.encode("ascii")
+    status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", len(data), 0) + data)
+    if status != ST_OK or len(body) < 12:
+        return status, None, None, None
+    lua_status, _seq, out_type, _flags, n = struct.unpack(">iIBBH", body[:12])
+    return status, lua_status, out_type, body[12:12 + n].decode("ascii", "replace")
+
+
+def lua_status(c):
+    status, body = c.call(OP_LUA_STATUS)
+    if status != ST_OK or len(body) < 88:
+        return status, None
+    installed, phase, heartbeat, state = body[0], body[1], *struct.unpack(">II", body[4:12])
+    return status, {"installed": installed, "phase": phase, "heartbeat": heartbeat, "state": state,
+                    "err_seq": struct.unpack(">I", body[12:16])[0]}
+
+
+def wait_game(c, game, timeout=6.0):
+    end = time.monotonic() + timeout
+    info = None
+    while time.monotonic() < end:
+        status, body = c.call(OP_GET_STATE)
+        if status == ST_OK:
+            info, _w, _n = parse_telemetry(body)
+            if info["state"] == SESSION_INGAME and info["game"] == game:
+                return True, info
+        time.sleep(0.05)
+    return False, info
+
+
+def smoke_tod(c, sim):
+    """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "ToD: the last game quits")
+    sim.send("fakelua off")
+    sim.send("boot %s tod" % TOD_TITLE)
+    ok, info = wait_game(c, 5)
+    check(ok, "ToD: NPEA00452 boots as game 5", info)
+
+    status, body = c.call(OP_DESCRIBE)
+    labels = []
+    if check(status == ST_OK, "ToD: DESCRIBE answers", status):
+        game, groups, readouts, features, _off = parse_describe(body)
+        labels = [f["label"] for f in features]
+        check(game == 5 and groups == ["Cheats", "Player", "Progress"],
+              "ToD: game 5, three groups", (game, groups))
+        check(readouts == ["Bolts", "Raritanium", "Challenge mode"], "ToD: its readouts", readouts)
+        for want in ("Infinite ammo", "God Ratchet", "Die", "Bolts", "Raritanium", "Challenge mode",
+                     "Unlock all skill points", "Reset gold bolts", "Unlock all RYNO plans"):
+            check(want in labels, "ToD: DESCRIBE lists %s" % want, labels)
+        check(not any(f["flags"] & 0x02 for f in features), "ToD: no feature writes code")
+
+    status, body = c.call(OP_PLANET_LIST)
+    if check(status == ST_OK, "ToD: PLANET_LIST answers", status):
+        count = body[0]
+        names = [body[1 + 24 * i:25 + 24 * i].split(b"\0")[0].decode() for i in range(count)]
+        check(count == 19 and names[0] == "Metropolis" and names[18] == "Fastoon II",
+              "ToD: the 19 LEVEL_ ids, Metropolis first", names)
+
+    status, body = c.call(OP_UNLOCK_LIST)
+    if check(status == ST_OK, "ToD: UNLOCK_LIST answers", status):
+        cats, fields, rows, _off = parse_unlocks(body)
+        check(cats == ["Weapons", "Devices", "Gadgets", "Items", "Skill points", "Gold bolts"],
+              "ToD: six unlock categories", cats)
+        check(len(rows) == 138 and [f["name"] for f in fields] == ["Owned", "Level", "", "Ammo"],
+              "ToD: 138 rows, Owned, Level and Ammo", (len(rows), fields))
+
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
+    check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 1))
+    check(status == ST_OK and mem_read_u32(c, TOD_NO_DAMAGE) == 1, "ToD: God Ratchet, a data word", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 0))
+    status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
+    check(status == ST_OK and mem_read_u32(c, TOD_LOAD_REQUEST) == 2,
+          "ToD: PLANET_LOAD writes the game's pending request", status)
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    status, _ = c.call(OP_DIE)
+    check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
+          status)
+
+    # Lua: nothing in the game until LUA_EXEC is asked for in a level.
+    status, st = lua_status(c)
+    check(status == ST_OK and st and st["installed"] == 0, "ToD: LUA_STATUS, no helper yet", (status, st))
+    check(mem_read_u32(c, TOD_VM_HOOK) == TOD_VM_HOOK_ORIG, "ToD: the VM hook is the game's own")
+    start = time.monotonic()
+    status, lst, _t, _text = lua_exec(c, "return _VERSION")
+    took = time.monotonic() - start
+    check(status == ST_OK and lst == 0x201 and 1.0 < took < 4.0,
+          "ToD: with no gameplay frame the answer is NOT_RUNNING in about 1.5 s", (status, lst, took))
+    check(mem_read_u32(c, TOD_VM_HOOK) == TOD_VM_HOOK_HELPER, "ToD: the first LUA_EXEC put the helper in")
+    sim.send("fakelua on")
+    status, lst, out_type, text = lua_exec(c, "time_set_scale(0.5) return _VERSION")
+    check(status == ST_OK and lst == 0 and out_type == 4 and text == "Lua 5.0.2",
+          "ToD: the Lua test answers Lua 5.0.2", (status, lst, out_type, text))
+    check(mem_read_u32(c, TOD_GAME_CLOCK) == 0x3F000000, "ToD: and the game runs at half speed")
+    status, lst, _t, text = lua_exec(c, "time_set_scale(1) return _VERSION")
+    check(status == ST_OK and lst == 0 and mem_read_u32(c, TOD_GAME_CLOCK) == 0x3F800000,
+          "ToD: and back to normal speed", (status, lst, text))
+    status, lst, _t, text = lua_exec(c, 'error("x")')
+    check(status == ST_OK and lst == 1 and text == "qwark:1: x", "ToD: a runtime error comes back", (lst, text))
+    status, st = lua_status(c)
+    check(status == ST_OK and st and st["installed"] == 1 and st["heartbeat"] > 0 and st["state"] != 0,
+          "ToD: LUA_STATUS: installed, frames running, a lua_State", st)
+    mem_write(c, TOD_LUA_STATE, bytes(4))
+    status, _l, _t, _x = lua_exec(c, "return _VERSION")
+    check(status == ST_NOT_FOUND, "ToD: no lua_State, NOT_FOUND", status)
+    mem_write(c, TOD_LUA_STATE, struct.pack(">I", 0x30030000))
+    status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 0, 0))
+    check(status == ST_BAD_ARG, "ToD: an empty chunk is BAD_ARG", status)
+    status, body = c.call(OP_LUA_PATCH)
+    check(status == ST_OK and struct.unpack(">H", body[:2])[0] > 300,
+          "ToD: LUA_PATCH hands out the helper's words", status)
+    status, _ = c.call(0xFFE0, struct.pack(">I", 1))
+    check(status == ST_UNKNOWN_OP, "ToD: LUA_EXEC's inside half is no op on the wire", status)
+    sim.send("fakelua off")
+
+
+def smoke_rpcs3_tod(c, pine):
+    """ToD under RPCS3: LUA_EXEC is UNSUPPORTED until the client's patch is in at boot."""
+    pine.shutdown_game()
+    wait_state(c, SESSION_XMB)
+    pine.poke(TOD_FP_ADDR, TOD_FP)
+    pine.poke(TOD_VM_HOOK, struct.pack(">I", TOD_VM_HOOK_ORIG))
+    pine.poke(TOD_LUA_STATE, struct.pack(">I", 0x30030000))
+    pine.poke(TOD_GAME_STATE, struct.pack(">I", 4))
+    pine.poke(TOD_LEVEL_OBJ, struct.pack(">I", 0x30000000))
+    pine.poke(TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    pine.boot(TOD_TITLE, "Ratchet & Clank Future: Tools of Destruction")
+    ok, info = wait_game(c, 5)
+    check(ok, "rpcs3: ToD boots as game 5", info)
+    module_sleep(c, 0.3)
+    status, st = lua_status(c)
+    check(status == ST_OK and st and st["installed"] == 0, "rpcs3: ToD's LUA_STATUS, no patch", (status, st))
+    status, _l, _t, _x = lua_exec(c, "return _VERSION")
+    check(status == ST_UNSUPPORTED, "rpcs3: LUA_EXEC is UNSUPPORTED without the patch", status)
+    check(pine.peek(TOD_VM_HOOK, 4) == struct.pack(">I", TOD_VM_HOOK_ORIG), "rpcs3: and no code was written")
+    status, _ = c.call(OP_PLANET_LOAD, bytes([9, 0]))
+    check(status == ST_OK and pine.peek(TOD_LOAD_REQUEST, 4) == struct.pack(">I", 9),
+          "rpcs3: ToD's planet load is a PINE write", status)
+    status, body = c.call(OP_LUA_PATCH)
+    words = []
+    if check(status == ST_OK and len(body) >= 8, "rpcs3: LUA_PATCH answers", status):
+        n = struct.unpack(">H", body[:2])[0]
+        words = [struct.unpack(">II", body[8 + 8 * i:16 + 8 * i]) for i in range(n)]
+        check(n > 300 and words[-1] == (TOD_VM_HOOK, TOD_VM_HOOK_HELPER),
+              "rpcs3: the helper's words, the VM hook last", (n, words[-1] if words else None))
+    pine.shutdown_game()
+    wait_state(c, SESSION_XMB)
+    for addr, value in words:
+        pine.poke(addr, struct.pack(">I", value))
+    pine.boot(TOD_TITLE, "Ratchet & Clank Future: Tools of Destruction")
+    ok, _ = wait_game(c, 5)
+    check(ok, "rpcs3: ToD comes back with the patch applied at load")
+    module_sleep(c, 0.3)
+    status, st = lua_status(c)
+    check(status == ST_OK and st and st["installed"] == 1, "rpcs3: LUA_STATUS finds the helper", (status, st))
+    status, lst, _t, _x = lua_exec(c, "return _VERSION")
+    check(status == ST_OK and lst == 0x201,
+          "rpcs3: LUA_EXEC goes out through PINE (no frames run here: NOT_RUNNING)", (status, lst))
+    req = pine.peek(TOD_MAILBOX + 8, 4)
+    check(pine.peek(TOD_MAILBOX + 0x600, 15) == b"return _VERSION" and pine.peek(TOD_MAILBOX + 0x10, 4) == req,
+          "rpcs3: the chunk is in the mailbox, and the request withdrawn")
+    pine.shutdown_game()
+    wait_state(c, SESSION_XMB)
+
+
 def smoke_rpcs3(exe):
     """qwark-rpcs3.exe against the fake PINE server: flags, boot, DESCRIBE."""
     if not os.path.exists(exe):
@@ -5525,6 +5718,9 @@ def smoke_rpcs3(exe):
 
         # --------------- UYA's fast loads, a code switch beside Freeze ammo's
         smoke_rpcs3_rac3_switches(c, pine)
+
+        # ------------------------------ Tools of Destruction, revision 1.27
+        smoke_rpcs3_tod(c, pine)
 
         sock.close()
         sock = None
@@ -7410,6 +7606,9 @@ def main():
                   "Deadlocked: and the byte is cleared for the next quit")
 
         exercise_console_menu(c, sim)
+
+        # ------------------------- Tools of Destruction, revision 1.27
+        smoke_tod(c, sim)
 
         # ----------------------- UYA's console menu, revision 1.22
         sim.send("quit")

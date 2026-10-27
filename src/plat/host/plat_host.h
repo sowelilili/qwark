@@ -183,4 +183,16 @@ int  host_write_fake_module(const char *path, u8 game, u32 build, u32 build_id, 
 u32  host_fake_modules_loaded(void);
 u32  host_fake_module_loads(void);
 
+/*
+ * Revision 1.27, the simulator's Tools of Destruction (backend_fake.c): a ToD
+ * boot seeds a level, a hero and a lua_State. host_set_lua_patch makes the next
+ * ToD boots come up with the Lua helper's RPCS3 patch in, as RPCS3 would.
+ * host_fake_lua_frame runs one gameplay frame of the helper against the
+ * mailbox, with a stand-in for Lua that knows a few chunks (1 when it answered
+ * a request); host_set_fake_lua runs one every 16 ms on a thread of its own.
+ */
+void host_set_lua_patch(int on);
+int  host_fake_lua_frame(void);
+void host_set_fake_lua(int on);
+
 #endif /* QWARK_PLAT_HOST_H */

@@ -3,14 +3,15 @@
  * helpers (docs/tod-poc.md sections 3 and 4):
  *
  *   - on RPCS3, as an RPCS3 patch the client writes from the words below
- *     (LUA_PATCH in phase 2, laid out exactly as SAVEFILE_PATCH, PROTOCOL.md
+ *     (LUA_PATCH, revision 1.27, laid out exactly as SAVEFILE_PATCH, PROTOCOL.md
  *     5.12.1), and the presence rule that tells qwark the patch went in;
  *   - on a console, as writes qwark makes itself into the running game, and
  *     the writes that take it out again.
  *
- * Phase 1 links this only into the unit tests. The bytes are the emulator
- * builds' (luahelper_bins.c, QWARK_EMULATOR), so everything here that needs
- * them answers ST_UNSUPPORTED without it.
+ * The core links this where QWARK_HAS_TOD (src/core/luacore.c). The bytes it
+ * writes are a descriptor's (luahelper_bins.c): the emulator builds' own, or a
+ * game module's, which the game hands the core through lua_desc (revision
+ * 1.27); a descriptor without them answers ST_UNSUPPORTED here.
  */
 #ifndef QWARK_LUAHELPER_PATCH_H
 #define QWARK_LUAHELPER_PATCH_H

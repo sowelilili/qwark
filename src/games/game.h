@@ -517,6 +517,14 @@ struct game_api {
 	 * sf_desc_for_game, in every game that has one. NULL for none.
 	 */
 	const struct sf_desc *(*savefile_desc)(u8 game_id);
+
+	/*
+	 * Revision 1.27: the game's Lua helper (src/games/luahelper_bins.h), which
+	 * the core installs and talks to for LUA_EXEC (src/core/luacore.c). NULL
+	 * for a game with no Lua. The answer is the game's memory: in a module it
+	 * goes when the module does, so it is asked under the core lock.
+	 */
+	const struct lh_desc *(*lua_desc)(void);
 };
 
 /* A feature id in a game_api field where 0 means none: the id plus one. */
@@ -535,6 +543,7 @@ struct game_api {
 #endif
 
 struct sf_desc;
+struct lh_desc;
 struct game_title;
 
 /*

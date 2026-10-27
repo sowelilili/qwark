@@ -49,7 +49,7 @@
 #define INST_PAK            "/dev_hdd0/qwark/ui.pak"
 /*
  * Revision 1.26: the game modules a test build's package carries, any of the
- * four, each named for its game as qwark's title index names it
+ * five (revision 1.27 added Tools of Destruction's), each named for its game as qwark's title index names it
  * (src/games/titles.c): INST_GAME_NAME_n is the file, in the package's USRDIR
  * and in /dev_hdd0/qwark, of game id n.
  */
@@ -57,11 +57,13 @@
 #define INST_GAME_NAME_2    "rac2.sprx"
 #define INST_GAME_NAME_3    "rac3.sprx"
 #define INST_GAME_NAME_4    "rac4.sprx"
+#define INST_GAME_NAME_5    "tod.sprx"     /* revision 1.27: Tools of Destruction */
 #define INST_GAME_1         INST_QWARK_DIR "/" INST_GAME_NAME_1
 #define INST_GAME_2         INST_QWARK_DIR "/" INST_GAME_NAME_2
 #define INST_GAME_3         INST_QWARK_DIR "/" INST_GAME_NAME_3
 #define INST_GAME_4         INST_QWARK_DIR "/" INST_GAME_NAME_4
-#define INST_GAMES          4
+#define INST_GAME_5         INST_QWARK_DIR "/" INST_GAME_NAME_5
+#define INST_GAMES          5
 #define INST_LIST           "/dev_hdd0/boot_plugins.txt"
 
 /*

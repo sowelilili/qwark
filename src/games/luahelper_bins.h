@@ -29,7 +29,7 @@ struct lh_hook {
 struct lh_desc {
 	const char *title;          /* the executable's title id */
 
-	/* NULL outside QWARK_EMULATOR, as the savefile helper's; the count stays. */
+	/* NULL but in the emulator builds and the game module; the count stays. */
 	const struct lh_cave *caves;
 	u8 ncaves;
 

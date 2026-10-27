@@ -1,13 +1,12 @@
 /*
  * qwark's side of the Lua mailbox (luamb.h): the header codec and the request
- * state machine that LUA_EXEC will run on the tick thread in phase 2
- * (docs/tod-poc.md section 2).
+ * state machine LUA_EXEC runs on the tick thread (src/core/luacore.c,
+ * revision 1.27, docs/tod-poc.md section 2).
  *
- * Phase 1: nothing in qwark.sprx or the host executables links this yet; the
- * unit tests in test/test_tod.c do. It reaches game memory only through the
- * two callbacks in struct luamb_io, which phase 2 points at mem_read and
- * mem_write, so the rule that only the tick thread touches memory holds as
- * long as only the tick thread calls in.
+ * It reaches game memory only through the two callbacks in struct luamb_io,
+ * which luacore.c points at mem_read and mem_write, so the rule that only the
+ * tick thread touches memory holds as long as only the tick thread calls in.
+ * test/test_tod.c drives it against a fake memory of its own.
  */
 #ifndef QWARK_LUAMB_CLIENT_H
 #define QWARK_LUAMB_CLIENT_H

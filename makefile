@@ -113,7 +113,7 @@ endif
 #
 # Revision 1.26, game modules (src/games/module.h, PROTOCOL.md 9.11). A test
 # build's games are not in qwark.sprx: each is an SPRX of its own named for its
-# game, rac1.sprx (RaC1) to rac4.sprx (Deadlocked), built
+# game, rac1.sprx (RaC1) to rac4.sprx (Deadlocked) and tod.sprx, built
 # by `games` below, which the module loads while that game runs and the VSH has
 # the memory for it. The core then hands the games its functions through a
 # table (src/core/core_export.c) and its context through r14, which the core
@@ -126,6 +126,13 @@ QWARK_GAME_MODULES	?= $(QWARK_DEV)
 PPU_CFLAGS +=	-DQWARK_GAME_MODULES=$(QWARK_GAME_MODULES)
 ifneq ($(strip $(QWARK_GAME_MODULES)),0)
 PPU_SRCS += src/core/core_export.c
+#
+# Revision 1.27: the core's half of a game's own Lua (src/core/luacore.c, the
+# mailbox's state machine, the helper's install and its RPCS3 patch builder),
+# which only a build with Tools of Destruction has; the helper's bytes are in
+# tod.sprx, not here. A release has neither.
+#
+PPU_SRCS += src/core/luacore.c src/core/luamb.c src/games/luahelper_patch.c
 PPU_CFLAGS +=	-ffixed-r14
 GAME_MODULES_ALL = games
 else
@@ -142,7 +149,7 @@ ifeq ($(BUILD_TYPE), debug)
 PPU_CFLAGS += -DDEBUG -DDEBUG_FILE
 endif
 
-all: sfhelper-if-stale switches-if-stale menuhelper-if-stale
+all: sfhelper-if-stale switches-if-stale menuhelper-if-stale luahelper-if-stale
 	@rm -f qwark.build
 	$(MAKE) $(PPU_OBJS_DEPENDS)
 	$(PPU_PRX_STRIP) --strip-debug --strip-section-header $(PPU_PRX_TARGET)
@@ -202,21 +209,32 @@ ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
 # them, GAME_ID_<name> is the game id it is built for (src/core/proto.h) and
 # GAME_SRCS_<name> its own sources. The names are the title index's
 # (src/games/titles.c, title_module_name), which the core loads them by. A
-# later game is a name of its own in both places (Tools of Destruction's will
-# be tod.sprx), whatever its number.
+# later game is a name of its own in both places (Tools of Destruction's is
+# tod.sprx), whatever its number.
 #
-GAME_MODULES		= rac1 rac2 rac3 rac4
+# Revision 1.27: Tools of Destruction is game 5, tod.sprx, a test build's alone
+# (a release links rac1 to rac4 and has no room for a fifth). GAME_VTABLE_<name>
+# is the vtable the module's start hands back (src/plat/ps3/game_module.c).
+#
+GAME_MODULES		= rac1 rac2 rac3 rac4 tod
 GAME_MODULE_FILES	= $(GAME_MODULES:%=%.sprx)
 GAME_ID_rac1		= 1
 GAME_ID_rac2		= 2
 GAME_ID_rac3		= 3
 GAME_ID_rac4		= 4
+GAME_ID_tod			= 5
+GAME_VTABLE_rac1	= rac1_game
+GAME_VTABLE_rac2	= rac2_game
+GAME_VTABLE_rac3	= rac3_game
+GAME_VTABLE_rac4	= rac4_game
+GAME_VTABLE_tod		= tod_game
 GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
 					  src/plat/ps3/game_module.c
 GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c
 GAME_SRCS_rac2		= src/games/rac2.c src/games/rac2_panel.c
 GAME_SRCS_rac3		= src/games/rac3.c src/games/rac3_panel.c
 GAME_SRCS_rac4		= src/games/rac4.c src/games/rac4_panel.c src/games/switches_own.c
+GAME_SRCS_tod		= src/games/tod.c src/games/tod_game.c src/games/tod_panel.c src/games/luahelper_bins.c
 GAME_CFLAGS			= -mprx -Os -ffunction-sections -fdata-sections -fno-builtin-printf -std=gnu99 \
 					  -ffixed-r14 -Wall -Wno-unused-parameter -Wno-shadow -Wno-strict-prototypes \
 					  -Wno-missing-prototypes -Wno-missing-declarations -Wno-bad-function-cast \
@@ -230,7 +248,8 @@ GAME_TIMEOUT		= timeout 300
 GAME_DEPS			= $(GAME_COMMON_SRCS) $(wildcard src/games/*.h src/core/*.h src/plat/*.h) \
 					  src/games/rac1.c src/games/rac1_panel.c src/games/rac2.c src/games/rac2_panel.c \
 					  src/games/rac3.c src/games/rac3_panel.c src/games/rac4.c src/games/rac4_panel.c \
-					  src/games/switches_own.c tools/gamemodule.py makefile
+					  src/games/switches_own.c src/games/tod.c src/games/tod_game.c src/games/tod_panel.c \
+					  src/games/luahelper_bins.c tools/gamemodule.py makefile
 
 games: $(GAME_MODULE_FILES)
 	@ls -l $(GAME_MODULE_FILES)
@@ -242,11 +261,13 @@ games-none:
 # files alone, never qwark.sprx.
 $(GAME_MODULE_FILES): %.sprx: $(GAME_DEPS)
 	@test -n "$(GAME_ID_$*)" || { echo "make games: $@ has no GAME_ID_$*" >&2; exit 1; }
+	@test -n "$(GAME_VTABLE_$*)" || { echo "make games: $@ has no GAME_VTABLE_$*" >&2; exit 1; }
 	@rm -rf objs/$* $@
 	@mkdir -p objs/$*
 	@for f in $(GAME_COMMON_SRCS) $(GAME_SRCS_$*); do \
 		echo "  $*: $$f"; \
-		$(GAME_TIMEOUT) ppu-lv2-gcc $(GAME_CFLAGS) -DQWARK_MODULE_GAME=$(GAME_ID_$*) -c $$f \
+		$(GAME_TIMEOUT) ppu-lv2-gcc $(GAME_CFLAGS) -DQWARK_MODULE_GAME=$(GAME_ID_$*) \
+			-DQWARK_MODULE_VTABLE=$(GAME_VTABLE_$*) -c $$f \
 			-o objs/$*/$$(basename $$f .c).o || exit 1; \
 	done
 	$(GAME_TIMEOUT) python -I tools/gamemodule.py objs objs/$*/*.o
@@ -302,6 +323,17 @@ switches:
 
 switches-if-stale:
 	@sh src/games/switches/build.sh --if-stale
+
+#
+# Revision 1.27: the Lua helper (src/games/luahelper/), the same again: PowerPC
+# code built at the game's addresses into the committed src/games/luahelper_bins.c,
+# whose bytes tod.sprx and the host builds carry.
+#
+luahelper:
+	sh src/games/luahelper/build.sh
+
+luahelper-if-stale:
+	@sh src/games/luahelper/build.sh --if-stale
 
 #
 # qwark-installer.pkg: qwark for a console with no PC. A homebrew app,
@@ -392,6 +424,6 @@ dist: ui.pak pkg
 	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
 	else echo "dist/ holds a RELEASE build (dev 0)"; fi
 
-.PHONY: all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale pkg dist
+.PHONY: all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale luahelper luahelper-if-stale pkg dist
 
 include $(CELL_MK_DIR)/sdk.target.mk

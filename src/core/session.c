@@ -13,6 +13,7 @@
 #include "menu.h"
 #include "uipak.h"
 #include "gamemod.h"
+#include "luacore.h"
 #include "../games/titles.h"
 #include "../plat/plat.h"
 
@@ -658,6 +659,9 @@ static const char *game_key_for(u8 game_id)
 	case GAME_RAC2: return "rac2";
 	case GAME_RAC3: return "rac3";
 	case GAME_RAC4: return "rac4";
+#if QWARK_HAS_TOD
+	case GAME_TOD:  return "tod";
+#endif
 	default:        return "unknown";
 	}
 }
@@ -696,6 +700,11 @@ static void game_arrive(const struct game_api *g)
 
 	/* Revision 1.26: a game that came after the menu went in shows its own pages now. */
 	menu_game_changed();
+
+#if QWARK_HAS_TOD
+	/* Revision 1.27: the game's Lua, if it has any, starts over with the process. */
+	lua_core_enter();
+#endif
 
 	/*
 	 * Build 56. The USB drives are read once a boot, before the auto-load, so an
@@ -1722,6 +1731,10 @@ static void session_step(void)
 		 * one that polls in a tight loop must not lengthen it either.
 		 */
 		savefile_tick();
+#if QWARK_HAS_TOD
+		/* Revision 1.27: the Lua helper's look and attach, and an answer that came in. */
+		lua_core_tick();
+#endif
 		/*
 		 * Build 49. Where code cannot be patched, the look for mods an RPCS3
 		 * patch put in at load, a few reads a tick until every mod of the title

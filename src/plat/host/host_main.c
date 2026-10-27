@@ -6,7 +6,7 @@
  *
  *   boot <TITLEID> [game] a game process appears, its fingerprint is seeded.
  *                         BCES01503 hosts RaC1, RaC2 and RaC3, so the optional
- *                         second word ("rac1".."rac4") says which one to seed
+ *                         second word ("rac1".."rac4", "tod") says which one to seed
  *   quit                  the game process goes away
  *   pad <hex mask>        write the running game's pad mask (drives combos)
  *   poke <addr> <hex>     write bytes into the fake process memory
@@ -16,6 +16,9 @@
  *   user <n>              the fake XMB's signed-in user number (1 at start, 0
  *                         nobody); the session sees it at the XMB within a
  *                         second, never in a game (revision 1.24)
+ *   fakelua on|off        the simulated ToD's Lua helper runs a frame every
+ *                         16 ms (revision 1.27)
+ *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   status                one line of session state
  *   exit                  shut down
  *
@@ -263,6 +266,24 @@ static void handle_line(char *line, int *keep_running)
 		}
 		host_set_user(n);
 		printf("ok user %u\n", (unsigned)n);
+
+	} else if (qstreq(cmd, "fakelua") || qstreq(cmd, "luapatch")) {
+		/*
+		 * Revision 1.27: `fakelua on` runs the simulated ToD's Lua helper a
+		 * frame every 16 ms; `luapatch on` boots ToD with the helper's RPCS3
+		 * patch in, as RPCS3 does once the client has written it.
+		 */
+		char *on = next_token(&cursor);
+
+		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off"))) {
+			printf("usage: %s on|off\n", cmd);
+		} else if (qstreq(cmd, "fakelua")) {
+			host_set_fake_lua(qstreq(on, "on"));
+			printf("ok fakelua %s\n", on);
+		} else {
+			host_set_lua_patch(qstreq(on, "on"));
+			printf("ok luapatch %s\n", on);
+		}
 
 	} else if (qstreq(cmd, "status")) {
 		print_status();
