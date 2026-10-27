@@ -99,7 +99,7 @@
  * client that ships its own copy of the tables can tell that the SPRX on the
  * console is older than the one it was built against and say so.
  */
-#define QWARK_BUILD             56
+#define QWARK_BUILD             57
 
 /*
  * Revision 1.24: which build of that number this is (PROTOCOL.md 3.1.1).
