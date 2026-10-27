@@ -99,7 +99,7 @@ static const struct tod_mark tod_marks[] = {
 	{ "lua vm",          TOD_LUA_VM,          TOD_DEC,    "g_gameplayLuaVM; L at +4, allocator at +8 (CLuaVM_executeBuffer)" },
 	{ "lua state",       TOD_LUA_STATE,       TOD_DEC,    "0 between levels; a new pointer each level" },
 	{ "game clock",      TOD_GAME_CLOCK,      TOD_DEC,    "Lua_time_set_scale writes the f32 at +0; +0x14 is game time" },
-	/* Revision 1.28 (pending): the autosplitter (tod_autosplit.c). */
+	/* Revision 1.28: the autosplitter (tod_autosplit.c). */
 	{ "front end",       TOD_FRONT_END,       TOD_DEC,    "g_inFrontEnd: FrontEnd_Enter sets 1 (the old autosplitter's Memory_InitHeaps hook runs in it), FrontEnd_Exit 0; LoadLevel only notes the level while it is up" },
 	{ "play time",       TOD_PLAY_TIME,       TOD_DEC,    "g_playTime, g_saveData+0x906E4: SaveData_init 0.0; GameState_Dispatch adds the frame time in state 4 (dis)" },
 	{ "missions done",   TOD_MISSIONS_DONE,   TOD_DEC,    "g_saveData+0x10AF8 + level*0x7C: Lua_complete_mission moves {label id, desc id, flags|2} there, count at +0x78; the galactic map indexes them by LEVEL_" },

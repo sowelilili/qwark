@@ -84,7 +84,7 @@ struct game_title {
 	u32 resume_addr;
 
 	/*
-	 * Revision 1.28 (pending): a RESUME that needs no boot patch, for a game
+	 * Revision 1.28: a RESUME that needs no boot patch, for a game
 	 * that says on its own when it is playable again. Where resume_addr is 0
 	 * or its patch is not in, the RESUME waits for the byte at resume_watch to
 	 * read non-zero, or the word at resume_watch_alt to (either may be 0 for

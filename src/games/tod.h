@@ -152,7 +152,7 @@
 #define TOD_GAME_CLOCK       0x1074DDA8u  /* f32 time scale at +0, game time at +0x14 */
 
 /*
- * The autosplitter (revision 1.28, pending; tod_autosplit.c). Ghidra names,
+ * The autosplitter (revision 1.28; tod_autosplit.c). Ghidra names,
  * all read in the decompile (dec) unless the mark says otherwise.
  */
 #define TOD_FRONT_END        0x1037A459u  /* g_inFrontEnd, u8: 1 from FrontEnd_Enter to FrontEnd_Exit (the title) */
@@ -329,7 +329,7 @@ struct tod_facts {
 #define TOD_NGOLD_BOLTS     32u
 
 /*
- * The autosplitter's reason codes (revision 1.28, pending; PROTOCOL.md 8.5).
+ * The autosplitter's reason codes (revision 1.28; PROTOCOL.md 8.5).
  * Code 1 is every game's planet split; 3 is the title index's pause pair.
  */
 #define TOD_AS_PLANET       1      /* SPLIT, arg the LEVEL_ just loaded */
@@ -411,7 +411,7 @@ u32  tod_device_max_ammo(u8 wpn);
 u32  tod_weapon_xp(u8 wpn, u8 level);
 
 /*
- * The level flags (tod_flags.c, revision 1.28 pending): the game's
+ * The level flags (tod_flags.c, revision 1.28): the game's
  * GLOBAL_FLAG_ enum, 292 flags, one bit each in five big-endian u64 words at
  * g_saveData+0x5528. Flag n is bit n & 63 of word n >> 6 (Lua_check_flag,
  * Lua_set_flag, Lua_clear_flag, SetProgressionFlag), so its byte is

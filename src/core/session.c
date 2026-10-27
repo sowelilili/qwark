@@ -769,7 +769,7 @@ static void resume_tick(void)
 		mem_write_u8(g_entry->resume_addr, 0);
 	} else if (g_entry->resume_watch != 0 || g_entry->resume_watch_alt != 0) {
 		/*
-		 * Revision 1.28 (pending): a game that says on its own when it is
+		 * Revision 1.28: a game that says on its own when it is
 		 * playable again (titles.h, resume_watch). Read, never written.
 		 */
 		u32 w = 0;
@@ -1541,7 +1541,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
 	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0)
 	               | (g_state == SESSION_INGAME ? gamemod_flags2() : 0)
-	               /* Revision 1.28 (pending): the running game has no console menu. */
+	               /* Revision 1.28: the running game has no console menu. */
 	               | (g_state == SESSION_INGAME && g_game != NULL && g_game->menu == NULL
 	                  ? SESSION_FLAG2_NO_MENU : 0));
 	out[30] = config_profile_seq();

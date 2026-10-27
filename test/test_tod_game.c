@@ -6,7 +6,7 @@
  * the core's Lua ops (src/core/luacore.c) against the simulator's stand-in for
  * the helper, on a console (qwark installs it) and under RPCS3 (the patch is in
  * at boot, or it is not), and the savefile manager over the game's own save
- * system (revision 1.28, pending), against the simulator's stand-in for it.
+ * system (revision 1.28), against the simulator's stand-in for it.
  *
  * The mailbox's own codec and state machine are test/test_tod.c's.
  */

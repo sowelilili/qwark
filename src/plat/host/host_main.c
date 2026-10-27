@@ -20,7 +20,7 @@
  *                         16 ms (revision 1.27)
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   fakesave on|off       the simulated ToD's save system runs a frame every
- *                         16 ms and takes qwark's loads (revision 1.28, pending)
+ *                         16 ms and takes qwark's loads (revision 1.28)
  *   fakesave slot <n>|-1  the simulated ToD saved into slot n (or has none)
  *   status                one line of session state
  *   exit                  shut down
@@ -290,7 +290,7 @@ static void handle_line(char *line, int *keep_running)
 
 	} else if (qstreq(cmd, "fakesave")) {
 		/*
-		 * Revision 1.28 (pending): `fakesave on` runs the simulated ToD's save
+		 * Revision 1.28: `fakesave on` runs the simulated ToD's save
 		 * system a frame every 16 ms (it takes qwark's loads), and `fakesave
 		 * slot <n>` is the game's own save into slot n (-1 for none).
 		 */

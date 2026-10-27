@@ -104,7 +104,7 @@ struct game_unlock {
 };
 
 /*
- * Revision 1.28 (pending), LEVELFLAGS_NAMES: names for the bits of the region
+ * Revision 1.28, LEVELFLAGS_NAMES: names for the bits of the region
  * levelflags_get returns, for a game whose flags are named one by one (ToD's
  * GLOBAL_FLAG_ enum). `bit` is the bit's place in that region, byte bit >> 3,
  * mask 1 << (bit & 7); `number` is the game's own number for the flag; `group`
@@ -556,7 +556,7 @@ struct game_api {
 	const struct lh_desc *(*lua_desc)(void);
 
 	/*
-	 * Revision 1.28 (pending): the names of the level flags' bits, for
+	 * Revision 1.28: the names of the level flags' bits, for
 	 * LEVELFLAGS_NAMES (struct levelflag_names above). NULL where the flags
 	 * have no names, which is every game but ToD; the op then answers
 	 * UNSUPPORTED and a client shows the bytes as before. The answer is the
@@ -566,7 +566,7 @@ struct game_api {
 
 #if QWARK_HAS_TOD
 	/*
-	 * Revision 1.28 (pending): a savefile helper that is the game's own save
+	 * Revision 1.28: a savefile helper that is the game's own save
 	 * system, driven by data writes (src/core/savefile.h, struct sf_driver),
 	 * beside a savefile_desc that names the aside buffer and no code. NULL for
 	 * every game whose helper is code of qwark's; Tools of Destruction's alone

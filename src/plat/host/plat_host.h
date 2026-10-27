@@ -196,7 +196,7 @@ int  host_fake_lua_frame(void);
 void host_set_fake_lua(int on);
 
 /*
- * Revision 1.28 (pending): its save system (docs/tod-savefile.md).
+ * Revision 1.28: its save system (docs/tod-savefile.md).
  * host_fake_tod_save_frame runs one frame of SaveSystem_update's load and
  * autosave paths (1 when it applied a load); host_set_fake_tod_save runs one
  * every 16 ms; host_fake_tod_saved is the game's own save into a slot (-1: no

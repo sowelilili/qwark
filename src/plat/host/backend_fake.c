@@ -218,7 +218,7 @@ static u32 peek32(u32 addr)
 }
 
 /*
- * Revision 1.28 (pending): ToD's save system (docs/tod-savefile.md), as the
+ * Revision 1.28: ToD's save system (docs/tod-savefile.md), as the
  * game's boot leaves it once its check has run: g_saveSystem pointing at the
  * manager, the manager idle with no thread, no slot yet, and g_saveData and the
  * manager's file image both holding a save (weapon slot i's id is i, level 1).
@@ -459,7 +459,7 @@ static void fake_frames_start(void)
 	}
 }
 
-/* Revision 1.28 (pending): ToD's save system a frame every 16 ms, on the same thread. */
+/* Revision 1.28: ToD's save system a frame every 16 ms, on the same thread. */
 void host_set_fake_tod_save(int on)
 {
 	g_fake_save_on = on ? 1 : 0;

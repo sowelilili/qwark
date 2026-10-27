@@ -74,7 +74,7 @@ struct tod_state {
 	u32 hero;          /* the hero it had, 0 for none */
 	u32 ammo_flag;     /* g_infiniteAmmo, as last read */
 	u32 ticks;
-	struct tod_as_state as;   /* the autosplit watcher's, revision 1.28 (pending) */
+	struct tod_as_state as;   /* the autosplit watcher's, revision 1.28 */
 };
 
 #if QWARK_GAME_MODULE
@@ -340,7 +340,7 @@ const struct game_api tod_game = {
 	NULL,                 /* on_quit */
 	tod_on_tick,          /* Infinite ammo's hold */
 
-	tod_autosplit_describe, /* revision 1.28 (pending), tod_autosplit.c */
+	tod_autosplit_describe, /* revision 1.28, tod_autosplit.c */
 
 	NULL,                 /* manips */
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */
@@ -348,6 +348,6 @@ const struct game_api tod_game = {
 	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
-	tod_levelflag_names,  /* revision 1.28 (pending): LEVELFLAGS_NAMES */
-	&tod_sf_driver        /* revision 1.28 (pending): the save system, driven by data */
+	tod_levelflag_names,  /* revision 1.28: LEVELFLAGS_NAMES */
+	&tod_sf_driver        /* revision 1.28: the save system, driven by data */
 };

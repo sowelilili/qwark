@@ -267,7 +267,7 @@
 #define OP_LEVELFLAGS_GET    0x0053
 #define OP_LEVELFLAGS_RESET  0x0054
 #define OP_LEVELFLAGS_SET    0x0055
-/* Revision 1.28 (pending): one bit of the region, and the bits' names (PROTOCOL.md 5.6). */
+/* Revision 1.28: one bit of the region, and the bits' names (PROTOCOL.md 5.6). */
 #define OP_LEVELFLAGS_BIT    0x0056
 #define OP_LEVELFLAGS_NAMES  0x0057
 
@@ -690,7 +690,7 @@
 #define SESSION_FLAG2_GAME_WAITING    0x40
 
 /*
- * Revision 1.28 (pending). bit7 NO_MENU: the running game has no console
+ * Revision 1.28. bit7 NO_MENU: the running game has no console
  * menu (its game_api.menu is NULL: Tools of Destruction today), so the menu's
  * combo opens nothing and MENU_HELP's switch has no Help row to give. Set
  * while INGAME with a game whose code is in; clear otherwise, and in every
@@ -777,7 +777,7 @@
  * a number box; `max` is the largest meaningful value of a number, 0 for none.
  */
 #define UNLOCK_FIELD_WIRE_SIZE  16
-/* Revision 1.28 (pending), LEVELFLAGS_NAMES: u8 planet, char[23] name; then u16 bit, u16 number, u8 group, u8 len. */
+/* Revision 1.28, LEVELFLAGS_NAMES: u8 planet, char[23] name; then u16 bit, u16 number, u8 group, u8 len. */
 #define LEVELFLAG_GROUP_WIRE_SIZE 24u
 #define LEVELFLAG_NAME_WIRE_HEAD  6u
 #define UNLOCK_FIELD_NAME_LEN   12

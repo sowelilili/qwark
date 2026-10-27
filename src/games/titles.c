@@ -197,7 +197,7 @@ static const struct game_title g_titles[] = {
 	 * boot patches, and its Lua helper goes in on demand (src/core/luacore.c).
 	 * The quit byte is the game's own, set by SystemQuitCallback on its way out.
 	 *
-	 * Revision 1.28 (pending): the pause pair around a quit to the XMB, the
+	 * Revision 1.28: the pause pair around a quit to the XMB, the
 	 * old ToD autosplitter's. Its RESUME waits for the game's own front end
 	 * (g_inFrontEnd, set by FrontEnd_Enter in the same frame the old SPRX's
 	 * hook in Memory_InitHeaps fired), or a level's lua_State should the front
@@ -211,7 +211,7 @@ static const struct game_title g_titles[] = {
 		TOD_QUIT_BYTE,
 		TOD_PAD_MASK,
 		NULL, 0,
-		TOD_AS_QUIT, 0,       /* revision 1.28 (pending): the quit's pause pair, */
+		TOD_AS_QUIT, 0,       /* revision 1.28: the quit's pause pair, */
 		TOD_FRONT_END, TOD_LUA_STATE, /* resumed on the game's own memory */
 		LINKED(tod_game)
 	}

@@ -800,7 +800,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 
 #if QWARK_HAS_TOD
 	/*
-	 * Revision 1.28 (pending). One bit of LEVELFLAGS_GET's region, set or
+	 * Revision 1.28. One bit of LEVELFLAGS_GET's region, set or
 	 * cleared on the tick: the byte is read and written back here, a frame
 	 * apart at most, rather than by a client a refresh apart. The reply
 	 * buffer holds the region while it works.
@@ -831,7 +831,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 	}
 
 	/*
-	 * Revision 1.28 (pending): u8 ngroups, LevelFlagGroup[ngroups] (u8 planet,
+	 * Revision 1.28: u8 ngroups, LevelFlagGroup[ngroups] (u8 planet,
 	 * char[23] name), u16 n, LevelFlagName[n] (u16 bit, u16 number, u8 group,
 	 * u8 len, char name[len]).
 	 */

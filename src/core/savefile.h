@@ -377,7 +377,7 @@ u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *
 /* --------------------------------- a game's own save system, revision 1.28 */
 
 /*
- * Revision 1.28 (pending), Tools of Destruction: a savefile helper that is no
+ * Revision 1.28, Tools of Destruction: a savefile helper that is no
  * code of qwark's at all. ToD keeps the image of its last save or load in a
  * buffer of its own save system (docs/tod-savefile.md), and that system loads
  * whatever is in the buffer when one of its words says a load thread has

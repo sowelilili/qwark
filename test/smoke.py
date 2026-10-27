@@ -120,7 +120,7 @@ OP_UNLOCK_SET = 0x0051
 OP_LEVELFLAGS_GET = 0x0053
 OP_LEVELFLAGS_RESET = 0x0054
 OP_LEVELFLAGS_SET = 0x0055
-# Revision 1.28 (pending): one bit, and the bits' names.
+# Revision 1.28: one bit, and the bits' names.
 OP_LEVELFLAGS_BIT = 0x0056
 OP_LEVELFLAGS_NAMES = 0x0057
 OP_MOD_LIST = 0x0060
@@ -4250,7 +4250,7 @@ def exercise_game(c, sim, spec, udp=None):
         check(status == ST_OK and set(body[2:]) == {0},
               "%s: and every flag byte is zero" % name, status)
 
-        # Revision 1.28 (pending): one bit through the console's own read and write.
+        # Revision 1.28: one bit through the console's own read and write.
         status, _ = c.call(OP_LEVELFLAGS_BIT, struct.pack(">BBH", 5, 1, 2 * 8 + 6))
         status2, body = c.call(OP_LEVELFLAGS_GET, bytes([5]))
         check(status == ST_OK and status2 == ST_OK and body[2 + 2] == 0x40,
@@ -5414,7 +5414,7 @@ def smoke_tod_level_flags(c):
     mem_write(c, TOD_LF, bytes(40))
 
 
-# ToD's save system (revision 1.28, pending; docs/tod-savefile.md, src/games/tod_save.c).
+# ToD's save system (revision 1.28; docs/tod-savefile.md, src/games/tod_save.c).
 TOD_SAVE_SYSTEM = 0x1074D400
 TOD_SAVE_MANAGER = 0x1029C560
 TOD_SAVE_VTABLE = 0x10071C60
@@ -5665,7 +5665,7 @@ TOD_AS_ROWS = [
 
 
 def smoke_tod_autosplit(c, sim):
-    """Revision 1.28 (pending): ToD's autosplitter, over the wire."""
+    """Revision 1.28: ToD's autosplitter, over the wire."""
     lua_state = struct.pack(">I", 0x30030000)
     status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
     if check(status == ST_OK, "ToD: AUTOSPLIT_DESCRIBE answers", status):
@@ -5756,7 +5756,7 @@ def smoke_rpcs3_tod(c, pine):
           "rpcs3: ToD's God Ratchet is a PINE write", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
 
-    # Revision 1.28 (pending): the quit's pause pair needs no code under RPCS3.
+    # Revision 1.28: the quit's pause pair needs no code under RPCS3.
     mark, _events, _n = autosplit_events(c, 0)
     pine.shutdown_game()
     wait_state(c, SESSION_XMB)

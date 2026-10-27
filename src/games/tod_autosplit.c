@@ -1,6 +1,6 @@
 /*
  * Tools of Destruction (NPEA00452 v01.00): the autosplit watcher (revision
- * 1.28, pending; PROTOCOL.md 8.5). The hot block (tod_game.c) hands it the
+ * 1.28; PROTOCOL.md 8.5). The hot block (tod_game.c) hands it the
  * gameplay lua_State, the level, g_gameState and the front end's byte every
  * tick; it reads the play time and the completed missions itself, on the
  * ticks that want them. The quit to the XMB is the title index's pause pair
@@ -206,7 +206,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * Code 3 is the title index's pause pair: the old script held game time for
  * the whole quit and reboot and then added 19.95 s, NORMALISE's sum. Code 4
  * is every level load, removed whole: NORMALISE with no allowance (revision
- * 1.28, pending, lets the parameter be 0 for exactly that). The two final
+ * 1.28, lets the parameter be 0 for exactly that). The two final
  * splits are both offered; Tachyon's is the one on by default.
  */
 static const struct autosplit_desc tod_autosplits[] = {
