@@ -1528,7 +1528,10 @@ static u32 encode_info(u8 *out, u32 cap)
 	 */
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
 	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0)
-	               | (g_state == SESSION_INGAME ? gamemod_flags2() : 0));
+	               | (g_state == SESSION_INGAME ? gamemod_flags2() : 0)
+	               /* Revision 1.28 (pending): the running game has no console menu. */
+	               | (g_state == SESSION_INGAME && g_game != NULL && g_game->menu == NULL
+	                  ? SESSION_FLAG2_NO_MENU : 0));
 	out[30] = config_profile_seq();
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);

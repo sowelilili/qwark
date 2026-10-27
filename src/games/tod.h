@@ -76,6 +76,7 @@
 #define TOD_MAX_LEVEL        10u
 #define TOD_OBJECTS          0x1020C174u  /* s32[23] by OBJ_, a count; "has" = non-zero */
 #define TOD_NOBJ_OWNED       15u          /* OBJ_ 0..14 are owned flags; 15.. are counters */
+#define TOD_NOBJ_LISTED      12u          /* OBJ_ 0..11 on the Unlocks panel; 12..14 have no use there (tod_panel.c) */
 #define TOD_BOLTS            0x1020C28Cu  /* u32 */
 #define TOD_RARITANIUM       0x1020C290u  /* u32 */
 #define TOD_MAX_BOLTS        999999999u   /* Hero_addBolts and Hero_addMinerals cap both there */
@@ -91,6 +92,25 @@
 /* Cheats the game left in (dec; nothing in the game writes them). */
 #define TOD_NO_DAMAGE        0x101F1F00u  /* g_debugHeroNoDamage, u32: the hero's damage is dropped */
 #define TOD_INFINITE_AMMO    0x10385BE8u  /* g_infiniteAmmo, u32: Weapon_hasAmmo always true */
+
+/*
+ * The old RaCMAN's god ratchet: g_heroProxyMobyHandle, the remote-controlled
+ * proxy moby's handle; while the word is non-zero Hero_Update drops the
+ * hero's damage (dec). The old trainer wrote one byte, 154, into its low byte
+ * (TOD_PROXY_LOW) and 0 there to turn it off (TOD_LEGACY).
+ */
+#define TOD_PROXY_HANDLE     0x1020BD48u  /* g_heroProxyMobyHandle, u32 */
+#define TOD_PROXY_LOW        0x1020BD4Bu  /* its low byte, the one the old trainer wrote */
+#define TOD_PROXY_FAKE       154u
+
+/*
+ * Fast loads: g_levelTransitionMinTime, f32 seconds, which
+ * LevelTransition_waitLoad (0x3C5810) spends drawing the transition before it
+ * waits for the load itself (dec). Initialised .data, never written by the game.
+ */
+#define TOD_TRANSITION_MIN   0x10073548u
+#define TOD_TRANSITION_GAME  0x40A00000u  /* 5.0f, the shipped value */
+#define TOD_TRANSITION_FAST  0x00000000u  /* 0.0f */
 
 /* Lua (REPORT-tod-lua section 2). */
 #define TOD_LUA_VM           0x102043CCu  /* g_gameplayLuaVM */
@@ -234,18 +254,24 @@ struct tod_facts {
 #define TF_RARITANIUM       6
 #define TF_CHALLENGE        7
 #define TF_INFINITE_AMMO    8
-#define TF_GOD_RATCHET      9
+#define TF_INFINITE_HEALTH  9      /* "God Ratchet" until 2026-10-27; the label changed, the id did not */
 #define TF_UNLOCK_SP        10
 #define TF_RESET_SP         11
 #define TF_UNLOCK_GB        12
 #define TF_RESET_GB         13
-#define TF_UNLOCK_RYNO      14
-#define TF_RESET_RYNO       15
+/* 14 and 15, the RYNO plans' unlock and reset, are retired, never to be another feature's. */
+#define TF_GOD_RATCHET      16     /* the old RaCMAN's, the proxy handle (TOD_PROXY_LOW) */
+#define TF_FAST_LOADS       17     /* the transition's minimum time (TOD_TRANSITION_MIN) */
 
-/* Unlock row ids: WPN_ 1..31 as themselves, then these bases. */
-#define TOD_UL_OBJ          32u    /* + OBJ_, 0..14 */
-#define TOD_UL_SP           64u    /* + SKILLPOINT, 0..59 */
-#define TOD_UL_GB           128u   /* + the gold bolt's index, 0..31 (tod_gold_bolt) */
+/*
+ * Unlock row ids: WPN_ 1..31 as themselves, then these bases. Since
+ * 2026-10-27 the list has OBJ_ 0..11 alone: 32 + 12..14 (the two sector
+ * upgrades and the washer) and the skill point and gold bolt rows, 64.. and
+ * 128.., are no longer listed, and their ids are reserved.
+ */
+#define TOD_UL_OBJ          32u    /* + OBJ_, 0..11 */
+#define TOD_UL_SP           64u    /* reserved: + SKILLPOINT, 0..59 */
+#define TOD_UL_GB           128u   /* reserved: + the gold bolt's index, 0..31 (tod_gold_bolt) */
 #define TOD_NGOLD_BOLTS     32u
 
 /* tod_panel.c */
@@ -270,6 +296,8 @@ void tod_panel_reset(void);
 
 /* The gold bolt `index` (0..31) as its level and its bit: 1, or 0 for none. */
 int  tod_gold_bolt(u8 index, u8 *level, u8 *bit);
+/* A device's (WPN_ 16..23) full count as f32 bits, what Infinite ammo keeps it at; 0 for none. */
+u32  tod_device_max_ammo(u8 wpn);
 /* The XP weapon `wpn` (1..15) has at level index `level` (0..9), whole points; 0 for none. */
 u32  tod_weapon_xp(u8 wpn, u8 level);
 

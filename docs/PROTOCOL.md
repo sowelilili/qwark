@@ -84,6 +84,8 @@ Revision 1.27, Tools of Destruction (module build 57, 2026-10-27): game 5, Ratch
 
 Revision 1.28 (pending), ToD's level flags: two opcodes in the 0x0050 block, in the builds that have Tools of Destruction (`QWARK_HAS_TOD`: a test build and the PC builds; a release module answers both `UNKNOWN_OP`). LEVELFLAGS_BIT (0x0056) sets or clears one bit of the region LEVELFLAGS_GET returns, the console reading and writing its byte on the tick, so a flag the game sets in the same byte meanwhile is not undone by a client's stale copy; it works for every game that answers LEVELFLAGS_GET. LEVELFLAGS_NAMES (0x0057) names the bits of that region for a game whose flags are named one by one, grouped by planet; ToD alone answers it, every other game `UNSUPPORTED`. Tools of Destruction answers LEVELFLAGS_GET, LEVELFLAGS_SET and LEVELFLAGS_RESET, which it did not before (section 5.6). `struct game_api` gained `levelflag_names` at its end. No other opcode or structure changes.
 
+SessionInfo `flags2` bit7 **NO_MENU** (ToD small fixes, 2026-10-27): set while INGAME with a game whose code is in and which has no console menu, Tools of Destruction today (its `game_api.menu` is NULL), so a client hides the console menu's combo and the In-game menus switch for that game rather than offering two controls that do nothing there. Clear outside a game, while a game's module is not in, and in every earlier build, which is what a client already shows both for. No opcode or other structure changes. The number is the lead's to settle at merge.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -193,6 +195,9 @@ u8   flags2             revision 1.24, a pad byte before it.
                              until the VSH has the memory for it; it loads by itself when it has.
                              Neither bit is ever set by a module whose games are linked in (a release,
                              qwark-rpcs3). GAME_MODULE (section 5.1.2) has the figures
+                        bit7 NO_MENU (revision 1.28, pending): the running game has no console
+                             menu (Tools of Destruction), so its combo opens nothing and MENU_HELP's
+                             switch has no Help row to take. INGAME with the game's code in only
 u8   profile_seq        revision 1.24, a pad byte before it: goes up by one, wrapping, whenever the
                         active profile changes or is read again (section 5.10.1)
 u8   pad

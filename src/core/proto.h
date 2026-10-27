@@ -688,6 +688,15 @@
  */
 #define SESSION_FLAG2_GAME_MODULE_BAD 0x20
 #define SESSION_FLAG2_GAME_WAITING    0x40
+
+/*
+ * Revision 1.28 (pending). bit7 NO_MENU: the running game has no console
+ * menu (its game_api.menu is NULL: Tools of Destruction today), so the menu's
+ * combo opens nothing and MENU_HELP's switch has no Help row to give. Set
+ * while INGAME with a game whose code is in; clear otherwise, and in every
+ * earlier build, so a client goes on drawing both against those.
+ */
+#define SESSION_FLAG2_NO_MENU         0x80
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */

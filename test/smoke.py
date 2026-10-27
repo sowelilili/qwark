@@ -5325,6 +5325,9 @@ TOD_GAME_STATE = 0x10387F4C
 TOD_LUA_STATE = 0x102043D0
 TOD_GAME_CLOCK = 0x1074DDA8
 TOD_NO_DAMAGE = 0x101F1F00
+TOD_PROXY_HANDLE = 0x1020BD48
+TOD_TRANSITION_MIN = 0x10073548
+SESSION_FLAG2_NO_MENU = 0x80
 TOD_MAILBOX = 0x008CA000
 TOD_VM_HOOK = 0x004C461C
 TOD_VM_HOOK_ORIG = 0x4BDCC909
@@ -5420,6 +5423,8 @@ def smoke_tod(c, sim):
     sim.send("boot %s tod" % TOD_TITLE)
     ok, info = wait_game(c, 5)
     check(ok, "ToD: NPEA00452 boots as game 5", info)
+    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) != 0,
+          "ToD: flags2 bit7 NO_MENU, no console menu for this game", info and info["flags2"])
 
     status, body = c.call(OP_DESCRIBE)
     labels = []
@@ -5429,9 +5434,14 @@ def smoke_tod(c, sim):
         check(game == 5 and groups == ["Cheats", "Player", "Progress"],
               "ToD: game 5, three groups", (game, groups))
         check(readouts == ["Bolts", "Raritanium", "Challenge mode"], "ToD: its readouts", readouts)
-        for want in ("Infinite ammo", "God Ratchet", "Die", "Bolts", "Raritanium", "Challenge mode",
-                     "Unlock all skill points", "Reset gold bolts", "Unlock all RYNO plans"):
+        for want in ("Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Die", "Bolts",
+                     "Raritanium", "Challenge mode", "Unlock all skill points", "Reset gold bolts"):
             check(want in labels, "ToD: DESCRIBE lists %s" % want, labels)
+        check("Unlock all RYNO plans" not in labels and "Reset RYNO plans" not in labels,
+              "ToD: the RYNO plans' buttons are retired", labels)
+        ids = dict((f["label"], f["id"]) for f in features)
+        check(ids.get("Infinite health") == 9 and ids.get("God Ratchet") == 16 and ids.get("Fast loads") == 17,
+              "ToD: Infinite health keeps id 9, God Ratchet is 16, Fast loads 17", ids)
         check(not any(f["flags"] & 0x02 for f in features), "ToD: no feature writes code")
 
     status, body = c.call(OP_PLANET_LIST)
@@ -5444,18 +5454,28 @@ def smoke_tod(c, sim):
     status, body = c.call(OP_UNLOCK_LIST)
     if check(status == ST_OK, "ToD: UNLOCK_LIST answers", status):
         cats, fields, rows, _off = parse_unlocks(body)
-        check(cats == ["Weapons", "Devices", "Gadgets", "Items", "Skill points", "Gold bolts"],
-              "ToD: six unlock categories", cats)
-        check(len(rows) == 138 and [f["name"] for f in fields] == ["Owned", "Level", "", "Ammo"],
-              "ToD: 138 rows, Owned, Level and Ammo", (len(rows), fields))
+        check(cats == ["Weapons", "Devices", "Gadgets", "Items"], "ToD: four unlock categories", cats)
+        check(len(rows) == 43 and [f["name"] for f in fields] == ["Owned", "Level", "", "Ammo"],
+              "ToD: 43 rows, Owned, Level and Ammo", (len(rows), fields))
 
     smoke_tod_level_flags(c)
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
     check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 1))
-    check(status == ST_OK and mem_read_u32(c, TOD_NO_DAMAGE) == 1, "ToD: God Ratchet, a data word", status)
+    check(status == ST_OK and mem_read_u32(c, TOD_NO_DAMAGE) == 1, "ToD: Infinite health, a data word", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 1))
+    check(status == ST_OK and mem_read_u32(c, TOD_PROXY_HANDLE) & 0xFF == 154,
+          "ToD: God Ratchet, the old trainer's 154 in the proxy handle's low byte", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
+    check(mem_read_u32(c, TOD_PROXY_HANDLE) & 0xFF == 0, "ToD: and 0 there again")
+    mem_write(c, TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
+    check(status == ST_OK and mem_read_u32(c, TOD_TRANSITION_MIN) == 0,
+          "ToD: Fast loads, the transition's minimum time to 0, a data write", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
+    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000, "ToD: and back to the game's 5 s")
     status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
     check(status == ST_OK and mem_read_u32(c, TOD_LOAD_REQUEST) == 2,
           "ToD: PLANET_LOAD writes the game's pending request", status)
@@ -5523,6 +5543,16 @@ def smoke_rpcs3_tod(c, pine):
     status, _ = c.call(OP_PLANET_LOAD, bytes([9, 0]))
     check(status == ST_OK and pine.peek(TOD_LOAD_REQUEST, 4) == struct.pack(">I", 9),
           "rpcs3: ToD's planet load is a PINE write", status)
+    pine.poke(TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
+    check(status == ST_OK and pine.peek(TOD_TRANSITION_MIN, 4) == bytes(4),
+          "rpcs3: ToD's Fast loads is a PINE write, no patch needed", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
+    check(pine.peek(TOD_TRANSITION_MIN, 4) == struct.pack(">f", 5.0), "rpcs3: and back to 5 s")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 1))
+    check(status == ST_OK and pine.peek(TOD_PROXY_HANDLE + 3, 1) == bytes([154]),
+          "rpcs3: ToD's God Ratchet is a PINE write", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
     status, body = c.call(OP_LUA_PATCH)
     words = []
     if check(status == ST_OK and len(body) >= 8, "rpcs3: LUA_PATCH answers", status):

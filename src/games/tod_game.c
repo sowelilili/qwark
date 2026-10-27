@@ -182,13 +182,24 @@ static const char * const tod_readouts[] = {
 
 /*
  * The ids are tod.h's; 0 to 3 are reserved for the proof of concept's rows.
- * Both cheats are a word of the game's own, so both are LIVE, and neither
- * writes code: they work under RPCS3 as they do on a console.
+ * The cheats are a word of the game's own each, and none writes code: they
+ * work under RPCS3 as they do on a console. Three are LIVE; Fast loads (17)
+ * is not, as the other games' is not, so it can apply itself at boot: the
+ * game puts the word back to 5 seconds on every boot.
+ *
+ * 2026-10-27, the user's first hardware test: id 9, the game's no-damage word,
+ * is "Infinite health" (it was "God Ratchet"), and God Ratchet is the old
+ * RaCMAN's again, id 16, the proxy handle speedrunners use; the client draws
+ * it beside the values, as it does RaC1's goodies menu (gamelayout.json).
+ * The RYNO plans' two buttons, 14 and 15, are retired: the RYNO itself is an
+ * Unlocks row.
  */
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
-	{ TF_INFINITE_AMMO, FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Infinite ammo" },
-	{ TF_GOD_RATCHET,   FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
+	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Fast loads" },
+	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Infinite ammo" },
+	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Infinite health" },
+	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
 
 	{ TF_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ TF_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_BOLTS,      0, TOD_MAX_BOLTS, "Bolts" },
@@ -198,9 +209,7 @@ static const struct feature_desc tod_features[] = {
 	{ TF_UNLOCK_SP,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
 	{ TF_RESET_SP,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
 	{ TF_UNLOCK_GB,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
-	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" },
-	{ TF_UNLOCK_RYNO,   FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all RYNO plans" },
-	{ TF_RESET_RYNO,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset RYNO plans" }
+	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" }
 };
 
 #undef NO
@@ -301,7 +310,7 @@ const struct game_api tod_game = {
 	NULL,                 /* manips */
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */
 	NULL,                 /* no console menu renderer for ToD */
-	0,                    /* no fast loads */
+	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
 	NULL,                 /* savefile_desc */
 	tod_lua_desc,         /* revision 1.27 */
 	tod_levelflag_names   /* revision 1.28 (pending): LEVELFLAGS_NAMES */

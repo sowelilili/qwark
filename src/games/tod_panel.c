@@ -17,11 +17,11 @@
 /* -------------------------------------------------------------- the state */
 
 /*
- * Infinite ammo's hold (below): each weapon's and device's ammo as last held,
- * f32 bits, and the level object they were read under.
+ * Infinite ammo's hold (below): each weapon's ammo as last held, f32 bits, and
+ * the level object they were read under. The devices are kept full instead.
  */
 struct tod_panel_state {
-	u32 held[TOD_WPN_GADGETS];
+	u32 held[TOD_WPN_DEVICES];
 	u32 hold_root;
 	u8  hold_primed;
 	u8  hold_wait;
@@ -97,11 +97,15 @@ int tod_gold_bolt(u8 index, u8 *level, u8 *bit)
 #define CAT_DEVICES 1
 #define CAT_GADGETS 2
 #define CAT_ITEMS   3
-#define CAT_SP      4
-#define CAT_GB      5
 
+/*
+ * 2026-10-27, the user's first hardware test: the skill points' and the gold
+ * bolts' categories are gone (the Collectables buttons cover them), and so are
+ * the three items with no use on the panel (tod_unlocks below). Their row ids
+ * stay reserved (tod.h).
+ */
 static const char * const tod_categories[] = {
-	"Weapons", "Devices", "Gadgets", "Items", "Skill points", "Gold bolts"
+	"Weapons", "Devices", "Gadgets", "Items"
 };
 
 /*
@@ -173,105 +177,14 @@ static const struct game_unlock tod_unlocks[] = {
 	{ TOD_UL_OBJ +  9, CAT_ITEMS, OWNED, "O2 Mask" },
 	{ TOD_UL_OBJ + 10, CAT_ITEMS, OWNED, "Qwark Infobot" },
 	{ TOD_UL_OBJ + 11, CAT_ITEMS, OWNED, "Golden Groovitron" },
-	{ TOD_UL_OBJ + 12, CAT_ITEMS, OWNED, "Verdigris Upgrade" },
-	{ TOD_UL_OBJ + 13, CAT_ITEMS, OWNED, "Praxus Upgrade" },
-	{ TOD_UL_OBJ + 14, CAT_ITEMS, OWNED, "Hexagonal Washer" },
-
-	/* The skill points, SKILLPOINT 0..59, named for their label keys (GEN_LABEL_SKILLPOINT_*). */
-	{ TOD_UL_SP +  0, CAT_SP, OWNED, "Smashing" },
-	{ TOD_UL_SP +  1, CAT_SP, OWNED, "In a Barrel" },
-	{ TOD_UL_SP +  2, CAT_SP, OWNED, "Giant Hunter" },
-	{ TOD_UL_SP +  3, CAT_SP, OWNED, "Wrench Ninja" },
-	{ TOD_UL_SP +  4, CAT_SP, OWNED, "No Bridges" },
-	{ TOD_UL_SP +  5, CAT_SP, OWNED, "Surface to Air" },
-	{ TOD_UL_SP +  6, CAT_SP, OWNED, "Been Around" },
-	{ TOD_UL_SP +  7, CAT_SP, OWNED, "Gonna Be Sick" },
-	{ TOD_UL_SP +  8, CAT_SP, OWNED, "Fast and Fiery" },
-	{ TOD_UL_SP +  9, CAT_SP, OWNED, "One Heckuva" },
-	{ TOD_UL_SP + 10, CAT_SP, OWNED, "Alphabet" },
-	{ TOD_UL_SP + 11, CAT_SP, OWNED, "Down to Size" },
-	{ TOD_UL_SP + 12, CAT_SP, OWNED, "Dancin' Stars" },
-	{ TOD_UL_SP + 13, CAT_SP, OWNED, "Medicine" },
-	{ TOD_UL_SP + 14, CAT_SP, OWNED, "Preemptive" },
-	{ TOD_UL_SP + 15, CAT_SP, OWNED, "Mutanty" },
-	{ TOD_UL_SP + 16, CAT_SP, OWNED, "Consumer" },
-	{ TOD_UL_SP + 17, CAT_SP, OWNED, "Live Strong" },
-	{ TOD_UL_SP + 18, CAT_SP, OWNED, "Untouchable" },
-	{ TOD_UL_SP + 19, CAT_SP, OWNED, "Freight Train" },
-	{ TOD_UL_SP + 20, CAT_SP, OWNED, "Examiner" },
-	{ TOD_UL_SP + 21, CAT_SP, OWNED, "Extinction" },
-	{ TOD_UL_SP + 22, CAT_SP, OWNED, "Like Cold" },
-	{ TOD_UL_SP + 23, CAT_SP, OWNED, "Hoedown" },
-	{ TOD_UL_SP + 24, CAT_SP, OWNED, "Saucy Wrench" },
-	{ TOD_UL_SP + 25, CAT_SP, OWNED, "On the Ceiling" },
-	{ TOD_UL_SP + 26, CAT_SP, OWNED, "Seared Ahi" },
-	{ TOD_UL_SP + 27, CAT_SP, OWNED, "Dead Aim" },
-	{ TOD_UL_SP + 28, CAT_SP, OWNED, "Fire with Fire" },
-	{ TOD_UL_SP + 29, CAT_SP, OWNED, "Six Gun Salute" },
-	{ TOD_UL_SP + 30, CAT_SP, OWNED, "Gotta Catch" },
-	{ TOD_UL_SP + 31, CAT_SP, OWNED, "Stay Still" },
-	{ TOD_UL_SP + 32, CAT_SP, OWNED, "Now Boarding" },
-	{ TOD_UL_SP + 33, CAT_SP, OWNED, "Low Flying" },
-	{ TOD_UL_SP + 34, CAT_SP, OWNED, "Nowhere" },
-	{ TOD_UL_SP + 35, CAT_SP, OWNED, "Collectors" },
-	{ TOD_UL_SP + 36, CAT_SP, OWNED, "Minesweeper" },
-	{ TOD_UL_SP + 37, CAT_SP, OWNED, "What's That R2" },
-	{ TOD_UL_SP + 38, CAT_SP, OWNED, "You Sank My" },
-	{ TOD_UL_SP + 39, CAT_SP, OWNED, "Pretty Lights" },
-	{ TOD_UL_SP + 40, CAT_SP, OWNED, "Places to Be" },
-	{ TOD_UL_SP + 41, CAT_SP, OWNED, "Marksman" },
-	{ TOD_UL_SP + 42, CAT_SP, OWNED, "Can't Touch" },
-	{ TOD_UL_SP + 43, CAT_SP, OWNED, "Pyew Pyew" },
-	{ TOD_UL_SP + 44, CAT_SP, OWNED, "No Up Yours" },
-	{ TOD_UL_SP + 45, CAT_SP, OWNED, "Roflcopter" },
-	{ TOD_UL_SP + 46, CAT_SP, OWNED, "Golden Child" },
-	{ TOD_UL_SP + 47, CAT_SP, OWNED, "Cheapskate" },
-	{ TOD_UL_SP + 48, CAT_SP, OWNED, "Everybody" },
-	{ TOD_UL_SP + 49, CAT_SP, OWNED, "Chorus Line" },
-	{ TOD_UL_SP + 50, CAT_SP, OWNED, "Happy Feet" },
-	{ TOD_UL_SP + 51, CAT_SP, OWNED, "Disco Inferno" },
-	{ TOD_UL_SP + 52, CAT_SP, OWNED, "Bolts in the Bank" },
-	{ TOD_UL_SP + 53, CAT_SP, OWNED, "South Pole" },
-	{ TOD_UL_SP + 54, CAT_SP, OWNED, "Say Hello" },
-	{ TOD_UL_SP + 55, CAT_SP, OWNED, "For the Hoard" },
-	{ TOD_UL_SP + 56, CAT_SP, OWNED, "Inspector" },
-	{ TOD_UL_SP + 57, CAT_SP, OWNED, "Thermonuclear" },
-	{ TOD_UL_SP + 58, CAT_SP, OWNED, "Second Time" },
-	{ TOD_UL_SP + 59, CAT_SP, OWNED, "Hardest Core" },
-
-	/* The gold bolts, level by level in tod_gb_count's order (tod_gold_bolt). */
-	{ TOD_UL_GB +  0, CAT_GB, OWNED, "Cobalia" },
-	{ TOD_UL_GB +  1, CAT_GB, OWNED, "Stratus City 1" },
-	{ TOD_UL_GB +  2, CAT_GB, OWNED, "Stratus City 2" },
-	{ TOD_UL_GB +  3, CAT_GB, OWNED, "Space Combat I" },
-	{ TOD_UL_GB +  4, CAT_GB, OWNED, "Imperial Fight Fest 1" },
-	{ TOD_UL_GB +  5, CAT_GB, OWNED, "Imperial Fight Fest 2" },
-	{ TOD_UL_GB +  6, CAT_GB, OWNED, "Imperial Fight Fest 3" },
-	{ TOD_UL_GB +  7, CAT_GB, OWNED, "Imperial Fight Fest 4" },
-	{ TOD_UL_GB +  8, CAT_GB, OWNED, "Apogee Space Station" },
-	{ TOD_UL_GB +  9, CAT_GB, OWNED, "Pirate Base 1" },
-	{ TOD_UL_GB + 10, CAT_GB, OWNED, "Pirate Base 2" },
-	{ TOD_UL_GB + 11, CAT_GB, OWNED, "Pirate Base 3" },
-	{ TOD_UL_GB + 12, CAT_GB, OWNED, "Space Combat II" },
-	{ TOD_UL_GB + 13, CAT_GB, OWNED, "Rykan V 1" },
-	{ TOD_UL_GB + 14, CAT_GB, OWNED, "Rykan V 2" },
-	{ TOD_UL_GB + 15, CAT_GB, OWNED, "Sargasso 1" },
-	{ TOD_UL_GB + 16, CAT_GB, OWNED, "Sargasso 2" },
-	{ TOD_UL_GB + 17, CAT_GB, OWNED, "Sargasso 3" },
-	{ TOD_UL_GB + 18, CAT_GB, OWNED, "Sargasso 4" },
-	{ TOD_UL_GB + 19, CAT_GB, OWNED, "Iris" },
-	{ TOD_UL_GB + 20, CAT_GB, OWNED, "Zordoom Prison 1" },
-	{ TOD_UL_GB + 21, CAT_GB, OWNED, "Zordoom Prison 2" },
-	{ TOD_UL_GB + 22, CAT_GB, OWNED, "Space Combat III" },
-	{ TOD_UL_GB + 23, CAT_GB, OWNED, "Kerchu City 1" },
-	{ TOD_UL_GB + 24, CAT_GB, OWNED, "Kerchu City 2" },
-	{ TOD_UL_GB + 25, CAT_GB, OWNED, "Slag's Fleet 1" },
-	{ TOD_UL_GB + 26, CAT_GB, OWNED, "Slag's Fleet 2" },
-	{ TOD_UL_GB + 27, CAT_GB, OWNED, "Cragmite Ruins 1" },
-	{ TOD_UL_GB + 28, CAT_GB, OWNED, "Cragmite Ruins 2" },
-	{ TOD_UL_GB + 29, CAT_GB, OWNED, "Meridian City 1" },
-	{ TOD_UL_GB + 30, CAT_GB, OWNED, "Meridian City 2" },
-	{ TOD_UL_GB + 31, CAT_GB, OWNED, "Fastoon II" }
+	/*
+	 * OBJ_ 12..14 are not listed. OBJ_VERDIGRIS_UPGRADE is the ship part Pirate
+	 * Base's last cutscene hands over with Rykan V, and OBJ_PRAXUS_UPGRADE the one
+	 * Zordoom Prison's ship-part vendor would sell; nothing that runs reads either
+	 * (the vendors' script, shippart.lua, is loaded by neither level's main.lua),
+	 * and neither shows in a menu. OBJ_HEXAGONAL_WASHER is the plumber's joke at
+	 * Sargasso, and owning it does nothing.
+	 */
 };
 
 #undef WPN
@@ -280,15 +193,12 @@ static const struct game_unlock tod_unlocks[] = {
 #define TOD_UNLOCK_COUNT ((u8)(sizeof(tod_unlocks) / sizeof(tod_unlocks[0])))
 
 /*
- * The snapshot unlock_list takes (classic.h): the 32 weapon slots, the owned
- * objects, the skill points and each level's gold bolt word, which is a read
- * of its own per level that has any: 3 + 17 reads per list.
+ * The snapshot unlock_list takes (classic.h): the 32 weapon slots and the
+ * listed objects, two reads per list.
  */
 #define SNAP_WEAPONS   0u
 #define SNAP_OBJ       (TOD_NWEAPONS * TOD_WEAPON_STRIDE)              /* 0x280 */
-#define SNAP_SP        (SNAP_OBJ + TOD_NOBJ_OWNED * 4u)
-#define SNAP_GB        (SNAP_SP + 8u)
-#define SNAP_LEN       (SNAP_GB + TOD_NPLANETS * 4u)
+#define SNAP_LEN       (SNAP_OBJ + TOD_NOBJ_LISTED * 4u)
 #define SNAP_VALID     (classic_snap_game == GAME_TOD)
 typedef char tod_snap_fits[SNAP_LEN <= CLASSIC_SNAP_BYTES ? 1 : -1];
 
@@ -302,17 +212,11 @@ int tod_unlock_list(const struct game_unlock **list, u8 *count,
                     const struct unlock_field_desc **fields)
 {
 	u8 *s = classic_snap;
-	u8 l;
 	int rc;
 
 	classic_snap_game = 0;
 	rc = mem_read(TOD_WEAPONS, s + SNAP_WEAPONS, SNAP_OBJ);
-	if (rc == ST_OK) rc = mem_read(TOD_OBJECTS, s + SNAP_OBJ, TOD_NOBJ_OWNED * 4u);
-	if (rc == ST_OK) rc = mem_read(TOD_SKILL_POINTS, s + SNAP_SP, 8);
-	for (l = 0; rc == ST_OK && l < TOD_NPLANETS; l++) {
-		if (tod_gb_count[l] == 0) be32_put(s + SNAP_GB + l * 4u, 0);
-		else rc = mem_read(gb_addr(l), s + SNAP_GB + l * 4u, 4);
-	}
+	if (rc == ST_OK) rc = mem_read(TOD_OBJECTS, s + SNAP_OBJ, TOD_NOBJ_LISTED * 4u);
 	if (rc != ST_OK) return rc;
 	classic_snap_game = GAME_TOD;
 
@@ -339,11 +243,6 @@ static u32 f32_to_count(u32 bits)
 	return (u32)f;
 }
 
-static int sp_bit(u64 word, u8 i)
-{
-	return (int)((word >> i) & 1u);
-}
-
 int tod_unlock_read(const struct game_unlock *e, u32 values[4])
 {
 	const u8 *s = classic_snap;
@@ -359,38 +258,11 @@ int tod_unlock_read(const struct game_unlock *e, u32 values[4])
 		values[3] = id < TOD_WPN_GADGETS ? f32_to_count(be32_get(w + TOD_WS_AMMO)) : 0;
 		return ST_OK;
 	}
-	if (id >= TOD_UL_OBJ && id < TOD_UL_OBJ + TOD_NOBJ_OWNED) {
+	if (id >= TOD_UL_OBJ && id < TOD_UL_OBJ + TOD_NOBJ_LISTED) {
 		values[0] = be32_get(s + SNAP_OBJ + (u32)(id - TOD_UL_OBJ) * 4u) != 0;
 		return ST_OK;
 	}
-	if (id >= TOD_UL_SP && id < TOD_UL_SP + TOD_NSKILL_POINTS) {
-		values[0] = (u32)sp_bit(be64_get(s + SNAP_SP), (u8)(id - TOD_UL_SP));
-		return ST_OK;
-	}
-	if (id >= TOD_UL_GB && id < TOD_UL_GB + TOD_NGOLD_BOLTS) {
-		u8 level, bit;
-
-		if (!tod_gold_bolt((u8)(id - TOD_UL_GB), &level, &bit)) return ST_NOT_FOUND;
-		values[0] = (be32_get(s + SNAP_GB + (u32)level * 4u) >> bit) & 1u;
-		return ST_OK;
-	}
 	return ST_NOT_FOUND;
-}
-
-/* A read-modify-write of one bit of a big-endian word of `width` bytes, 4 or 8. */
-static int set_bit(u32 addr, u8 width, u8 bit, int on)
-{
-	u8 b[8];
-	u64 v;
-	int rc = mem_read(addr, b, width);
-
-	if (rc != ST_OK) return rc;
-	v = width == 8 ? be64_get(b) : (u64)be32_get(b);
-	if (on) v |= (u64)1u << bit;
-	else    v &= ~((u64)1u << bit);
-	if (width == 8) be64_put(b, v);
-	else            be32_put(b, (u32)v);
-	return mem_write(addr, b, width);
 }
 
 /*
@@ -428,16 +300,8 @@ int tod_unlock_set(u8 id, u8 field, u32 value)
 	}
 	if (field != 0) return ST_BAD_ARG;
 
-	if (id >= TOD_UL_OBJ && id < TOD_UL_OBJ + TOD_NOBJ_OWNED)
+	if (id >= TOD_UL_OBJ && id < TOD_UL_OBJ + TOD_NOBJ_LISTED)
 		return mem_write_u32(TOD_OBJECTS + (u32)(id - TOD_UL_OBJ) * 4u, value ? 1u : 0u);
-	if (id >= TOD_UL_SP && id < TOD_UL_SP + TOD_NSKILL_POINTS)
-		return set_bit(TOD_SKILL_POINTS, 8, (u8)(id - TOD_UL_SP), value != 0);
-	if (id >= TOD_UL_GB && id < TOD_UL_GB + TOD_NGOLD_BOLTS) {
-		u8 level, bit;
-
-		if (!tod_gold_bolt((u8)(id - TOD_UL_GB), &level, &bit)) return ST_NOT_FOUND;
-		return set_bit(gb_addr(level), 4, bit, value != 0);
-	}
 	return ST_NOT_FOUND;
 }
 
@@ -457,17 +321,6 @@ static int gold_bolts_all(int on)
 	return ST_OK;
 }
 
-static int ryno_all(int on)
-{
-	u32 v = 0;
-	int rc;
-
-	if (!on) return mem_write_u32(TOD_RYNO_PLANS, 0);
-	rc = mem_read_u32(TOD_RYNO_PLANS, &v);
-	if (rc != ST_OK) return rc;
-	return mem_write_u32(TOD_RYNO_PLANS, v | TOD_RYNO_ALL);
-}
-
 static int skill_points_all(int on)
 {
 	u8 b[8];
@@ -485,8 +338,6 @@ int tod_trigger(u8 id)
 	case TF_RESET_SP:    return skill_points_all(0);
 	case TF_UNLOCK_GB:   return gold_bolts_all(1);
 	case TF_RESET_GB:    return gold_bolts_all(0);
-	case TF_UNLOCK_RYNO: return ryno_all(1);
-	case TF_RESET_RYNO:  return ryno_all(0);
 	default:             return ST_NOT_FOUND;
 	}
 }
@@ -504,23 +355,40 @@ int tod_set_value(u8 id, u32 value)
 /* --------------------------------------------------------------- the cheats */
 
 /*
- * God Ratchet: the game's own "hero takes no damage" word, g_debugHeroNoDamage,
- * which Hero_Update checks before it applies any damage event, on foot and in
- * the ship; nothing in the game writes it. The old RaCMAN's god ratchet wrote
- * a byte of g_heroProxyMobyHandle (0x1020BD48) instead, the remote-control
- * moby's handle, which drops the damage as a side effect and makes the enemies
- * ignore Ratchet; a fake handle there is what a real proxy moby's spawn or
- * death overwrites. Neither stops a death plane or a fall.
+ * Infinite health (id 9, "God Ratchet" until 2026-10-27): the game's own
+ * "hero takes no damage" word, g_debugHeroNoDamage, which Hero_Update checks
+ * before it applies any damage event, on foot and in the ship; nothing in the
+ * game writes it.
+ *
+ * God Ratchet (id 16): the old RaCMAN's, byte for byte, because speedrunners
+ * use the glitch it is. On writes 154 into the low byte of
+ * g_heroProxyMobyHandle (TOD_PROXY_LOW), off writes 0 there; the other three
+ * bytes are left alone, as the old trainer left them. While the handle is
+ * non-zero Hero_Update drops the hero's damage and the enemies stop targeting
+ * him (Hero_registerAsTarget); a real proxy moby's spawn or death overwrites
+ * the fake handle. It reads on while that byte is non-zero, which is what the
+ * old trainer's own test amounted to. Neither cheat stops a death plane or a
+ * fall.
  *
  * Infinite ammo: g_infiniteAmmo, the word hero_set_infinite_ammo sets, makes
  * every weapon fire with none left; the game still counts the ammo down, so
- * while the word is up the tick holds every weapon's ammo where it was
- * (tod_ammo_tick). No code is patched either way.
+ * while the word is up the tick holds every weapon's ammo where it was and
+ * keeps the devices full (tod_ammo_tick). No code is patched either way.
+ *
+ * Fast loads (id 17): g_levelTransitionMinTime, the 5 seconds
+ * LevelTransition_waitLoad holds every planet load's transition for before it
+ * even waits for the load itself, to 0, and back to the game's 5 when off. A
+ * word of .data the game never writes, so a plain data write that works under
+ * RPCS3; a new boot of the game starts at 5 again, and the toggle's auto flag
+ * puts it back.
  */
 int tod_set_toggle(u8 id, int on)
 {
 	switch (id) {
-	case TF_GOD_RATCHET: return mem_write_u32(TOD_NO_DAMAGE, on ? 1u : 0u);
+	case TF_INFINITE_HEALTH: return mem_write_u32(TOD_NO_DAMAGE, on ? 1u : 0u);
+	case TF_GOD_RATCHET:     return mem_write_u8(TOD_PROXY_LOW, on ? (u8)TOD_PROXY_FAKE : 0u);
+	case TF_FAST_LOADS:
+		return mem_write_u32(TOD_TRANSITION_MIN, on ? TOD_TRANSITION_FAST : TOD_TRANSITION_GAME);
 	case TF_INFINITE_AMMO:
 		TP->hold_primed = 0;
 		return mem_write_u32(TOD_INFINITE_AMMO, on ? 1u : 0u);
@@ -532,12 +400,22 @@ int tod_set_toggle(u8 id, int on)
 int tod_toggle_read(u8 id, int *on)
 {
 	u32 v = 0;
+	u8 b = 0;
 	int rc;
 
 	switch (id) {
-	case TF_GOD_RATCHET:   rc = mem_read_u32(TOD_NO_DAMAGE, &v); break;
-	case TF_INFINITE_AMMO: rc = mem_read_u32(TOD_INFINITE_AMMO, &v); break;
-	default:               return ST_NOT_FOUND;
+	case TF_INFINITE_HEALTH: rc = mem_read_u32(TOD_NO_DAMAGE, &v); break;
+	case TF_INFINITE_AMMO:   rc = mem_read_u32(TOD_INFINITE_AMMO, &v); break;
+	case TF_GOD_RATCHET:
+		rc = mem_read_u8(TOD_PROXY_LOW, &b);
+		v = b;
+		break;
+	case TF_FAST_LOADS:
+		rc = mem_read_u32(TOD_TRANSITION_MIN, &v);
+		v = v != TOD_TRANSITION_GAME;
+		break;
+	default:
+		return ST_NOT_FOUND;
 	}
 	if (rc != ST_OK) return rc;
 	*on = v != 0;
@@ -545,11 +423,42 @@ int tod_toggle_read(u8 id, int *on)
 }
 
 /*
+ * The devices' MaxAmmo, WPN_ 16..23, from the game's weapon.csv (Zurkon,
+ * ConfusionGas, Slinkonator, Groovitron, MiniLeech, MaxiLeech, Morph,
+ * Copter), as f32 bits. The devices take no mods, so the slot's level is all
+ * WeaponDef_getMaxAmmo would add, and they have one.
+ */
+static const u32 tod_device_max[TOD_WPN_GADGETS - TOD_WPN_DEVICES] = {
+	0x40800000u,   /* 16 Mr. Zurkon     4 */
+	0x40000000u,   /* 17 Confuzzler     2 */
+	0x40400000u,   /* 18 Deathspring    3 */
+	0x40400000u,   /* 19 Groovitron     3 */
+	0x40000000u,   /* 20 Leech Mine     2 */
+	0x3F800000u,   /* 21 Mega Leech     1 */
+	0x40400000u,   /* 22 Transmorpher   3 */
+	0x40400000u    /* 23 Visi-Copter    3 */
+};
+
+u32 tod_device_max_ammo(u8 wpn)
+{
+	if (wpn < TOD_WPN_DEVICES || wpn >= TOD_WPN_GADGETS) return 0;
+	return tod_device_max[wpn - TOD_WPN_DEVICES];
+}
+
+/*
  * Every fourth tick while g_infiniteAmmo is up: the weapons' and devices'
- * slots in one read, and any owned one whose ammo went down since the last
+ * slots in one read. Any owned weapon whose ammo went down since the last
  * look gets the last value back, while a rise (a pickup, a vendor, a level
  * up) becomes the value held. A new level object, or the toggle going on,
  * starts the hold over from what is there.
+ *
+ * 2026-10-27, the user's first hardware test: that did not make the
+ * Visi-Copter infinite. g_infiniteAmmo is read by Weapon_hasAmmo alone, which
+ * lets the weapon in hand fire on an empty count, and the hold only puts back
+ * a count that went down: a device at 0 (given or ticked Owned with none, or
+ * whose last one went before the toggle) was never raised. So every owned
+ * device is kept full instead, the way the game's own challenge 14 keeps
+ * the Visi-Copters coming (hero_give_weapon with 999, every half second).
  */
 #define HOLD_EVERY 4u
 
@@ -571,15 +480,24 @@ void tod_ammo_tick(u32 flag, u32 root)
 	s = qscratch();
 	if (mem_read(TOD_WEAPONS, s, TOD_WPN_GADGETS * TOD_WEAPON_STRIDE) != ST_OK) return;
 
+	for (w = TOD_WPN_DEVICES; w < TOD_WPN_GADGETS; w++) {
+		const u8 *slot = s + (u32)w * TOD_WEAPON_STRIDE;
+		u32 full = tod_device_max_ammo(w);
+
+		if (slot[TOD_WS_OWNED] == 0) continue;
+		if (f32_from_bits(be32_get(slot + TOD_WS_AMMO)) < f32_from_bits(full))
+			mem_write_u32(slot_addr(w) + TOD_WS_AMMO, full);
+	}
+
 	if (!TP->hold_primed || TP->hold_root != root) {
-		for (w = 0; w < TOD_WPN_GADGETS; w++)
+		for (w = 0; w < TOD_WPN_DEVICES; w++)
 			TP->held[w] = be32_get(s + (u32)w * TOD_WEAPON_STRIDE + TOD_WS_AMMO);
 		TP->hold_root = root;
 		TP->hold_primed = 1;
 		return;
 	}
 
-	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) {
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_DEVICES; w++) {
 		const u8 *slot = s + (u32)w * TOD_WEAPON_STRIDE;
 		u32 now = be32_get(slot + TOD_WS_AMMO);
 

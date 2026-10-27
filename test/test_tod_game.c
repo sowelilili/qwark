@@ -145,6 +145,7 @@ static void test_tod_session(void)
 	check(bef32_get(info + 32) == 100.0f && bef32_get(info + 36) == 200.0f && bef32_get(info + 40) == 30.5f,
 	      "the position is the hero's, two pointers deep");
 	check(info[28] == 9, "the planet is Rykan V's id");
+	check((info[29] & SESSION_FLAG2_NO_MENU) != 0, "flags2 NO_MENU: ToD has no console menu");
 	check(be32_get(info + 64 + 4 * TOD_RO_BOLTS) == 12345 && be32_get(info + 64 + 4 * TOD_RO_CHALLENGE) == 2,
 	      "bolts and challenge mode in their readouts");
 	host_set_pad(0);
@@ -174,8 +175,24 @@ static void test_tod_features(void)
 	check(features_set(TF_BOLTS, 1000000000u) == ST_BAD_ARG, "and not past it");
 	check(features_set(TF_RARITANIUM, 77) == ST_OK && rd32(TOD_RARITANIUM) == 77, "Raritanium");
 	check(features_set(TF_CHALLENGE, 1) == ST_OK && rd32(TOD_CHALLENGE) == 1, "Challenge mode, a word");
-	check(features_set(TF_GOD_RATCHET, 1) == ST_OK && rd32(TOD_NO_DAMAGE) == 1, "God Ratchet is the game's no-damage word");
-	check(features_set(TF_GOD_RATCHET, 0) == ST_OK && rd32(TOD_NO_DAMAGE) == 0, "and off again");
+	check(features_set(TF_INFINITE_HEALTH, 1) == ST_OK && rd32(TOD_NO_DAMAGE) == 1, "Infinite health is the game's no-damage word");
+	check(features_set(TF_INFINITE_HEALTH, 0) == ST_OK && rd32(TOD_NO_DAMAGE) == 0, "and off again");
+	wr32(TOD_PROXY_HANDLE, 0x00110000u);
+	check(features_set(TF_GOD_RATCHET, 1) == ST_OK && rd32(TOD_PROXY_HANDLE) == 0x0011009Au,
+	      "God Ratchet: the old trainer's 154 in the proxy handle's low byte, the rest left alone");
+	check(features_set(TF_GOD_RATCHET, 0) == ST_OK && rd32(TOD_PROXY_HANDLE) == 0x00110000u, "and 0 there to turn it off");
+	wr32(TOD_PROXY_HANDLE, 0);
+	host_poke(TOD_PROXY_LOW, (const u8 *)"\x9A", 1);
+	tick(LIVE_TICKS_FOR_TEST);
+	check((features_toggle_state() >> TF_GOD_RATCHET) & 1u, "LIVE: a non-zero low byte reads as on");
+	wr32(TOD_PROXY_HANDLE, 0);
+	tick(LIVE_TICKS_FOR_TEST);
+	check(!((features_toggle_state() >> TF_GOD_RATCHET) & 1u), "and 0 as off");
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && rd32(TOD_TRANSITION_MIN) == 0,
+	      "Fast loads: the transition's minimum time to 0");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && rd32(TOD_TRANSITION_MIN) == 0x40A00000u, "and back to the game's 5 s");
+	check(g->fast_loads == GAME_FEATURE(TF_FAST_LOADS), "the fast-loads combo flips it");
 	check(features_trigger(TF_DIE) == ST_OK && rdf(FAKE_HERO + TOD_HERO_HEALTH) == 0.0f &&
 	      rdf(FAKE_HERO + TOD_HERO_MAX_HEALTH) == 10.0f, "Die: the hit points to 0, the maximum kept");
 
@@ -187,9 +204,8 @@ static void test_tod_features(void)
 	      rd32(TOD_GOLD_BOLTS + 1 * TOD_LEVEL_SAVE_LEN) == 0x1 && rd32(TOD_GOLD_BOLTS) == 0,
 	      "every gold bolt, each level as many as it has");
 	check(features_trigger(TF_RESET_GB) == ST_OK && rd32(TOD_GOLD_BOLTS + 5 * TOD_LEVEL_SAVE_LEN) == 0, "and none");
-	wr32(TOD_RYNO_PLANS, 0x1);
-	check(features_trigger(TF_UNLOCK_RYNO) == ST_OK && rd32(TOD_RYNO_PLANS) == (0x1u | TOD_RYNO_ALL), "the RYNO plans");
-	check(features_trigger(TF_RESET_RYNO) == ST_OK && rd32(TOD_RYNO_PLANS) == 0, "and none");
+	check(features_trigger(14) == ST_NOT_FOUND && features_trigger(15) == ST_NOT_FOUND,
+	      "the RYNO plans' two buttons are retired");
 
 	group("ToD: Infinite ammo holds the ammo without a code patch");
 	host_poke(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_OWNED, (const u8 *)"\1", 1);
@@ -204,6 +220,17 @@ static void test_tod_features(void)
 	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 59.0f);
 	tick(8);
 	check(rdf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 60.0f, "a pickup is held from then on");
+	host_poke(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_OWNED, (const u8 *)"\1", 1);
+	wrf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 0.0f);
+	wrf(TOD_WEAPONS + 21 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 0.0f);
+	tick(8);
+	check(rdf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "an owned Visi-Copter at 0 is filled, to 3");
+	check(rdf(TOD_WEAPONS + 21 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 0.0f, "a device not owned is left alone");
+	wrf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 2.0f);
+	tick(8);
+	check(rdf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "and one used comes back");
+	check(tod_device_max_ammo(16) == 0x40800000u && tod_device_max_ammo(21) == 0x3F800000u &&
+	      tod_device_max_ammo(15) == 0 && tod_device_max_ammo(24) == 0, "the devices' full counts, 16..23 alone");
 	check(features_set(TF_INFINITE_AMMO, 0) == ST_OK && rd32(TOD_INFINITE_AMMO) == 0, "off");
 	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 3.0f);
 	tick(8);
@@ -239,8 +266,12 @@ static void test_tod_features(void)
 	check(session_planet_load(19, 0) != ST_OK, "no level 19");
 
 	group("ToD: the unlock table");
-	check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK && ncat == 6 && n == 31 + 15 + 60 + 32,
-	      "six categories: 31 weapons, devices and gadgets, 15 items, 60 skill points, 32 gold bolts");
+	check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK && ncat == 4 && n == 31 + 12,
+	      "four categories: 31 weapons, devices and gadgets, and 12 items");
+	found = 1;
+	for (i = 0; i < n; i++)
+		found &= list[i].id < TOD_UL_OBJ + 12 && strcmp(list[i].name, "Hexagonal Washer") != 0;
+	check(found, "no skill point, gold bolt, sector upgrade or washer row");
 	found = 1;
 	for (i = 0; i < n; i++) found &= list[i].name != NULL && qstrlen(list[i].name) <= 24 && list[i].category < ncat;
 	check(found, "every row has a name that fits the wire");
@@ -257,18 +288,16 @@ static void test_tod_features(void)
 	check(tod_unlock_set(3, 0, 1) == ST_OK && tod_unlock_set(3, 3, 120) == ST_OK &&
 	      rdf(TOD_WEAPONS + 3 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 120.0f, "owned, and its ammo as a float");
 	check(tod_unlock_set(TOD_UL_OBJ + 5, 0, 1) == ST_OK && rd32(TOD_OBJECTS + 5 * 4) == 1, "the Charge Boots");
-	check(tod_unlock_set(TOD_UL_SP + 59, 0, 1) == ST_OK && rd32(TOD_SKILL_POINTS) == 0x08000000u, "skill point 59, bit 59");
-	check(tod_unlock_set(TOD_UL_GB + 7, 0, 1) == ST_OK &&
-	      rd32(TOD_GOLD_BOLTS + 5 * TOD_LEVEL_SAVE_LEN) == 0x8, "the IFF's fourth gold bolt");
+	check(tod_unlock_set(TOD_UL_OBJ + 14, 0, 1) == ST_NOT_FOUND && tod_unlock_set(TOD_UL_SP + 59, 0, 1) == ST_NOT_FOUND &&
+	      tod_unlock_set(TOD_UL_GB + 7, 0, 1) == ST_NOT_FOUND, "the unlisted rows' ids answer NOT_FOUND");
 	g->unlock_list(&list, &n, &cats, &ncat, &fields);
 	for (i = 0; i < n && list[i].id != 3; i++) {}
 	memset(values, 0, sizeof(values));
 	check(i < n && g->unlock_read(&list[i], values) == ST_OK && values[0] == 1 && values[1] == 3 && values[3] == 120,
 	      "and read back: owned, V3, 120");
-	for (i = 0; i < n && list[i].id != TOD_UL_GB + 7; i++) {}
+	for (i = 0; i < n && list[i].id != TOD_UL_OBJ + 5; i++) {}
 	memset(values, 0, sizeof(values));
-	check(i < n && g->unlock_read(&list[i], values) == ST_OK && values[0] == 1, "the gold bolt reads as owned");
-	check(tod_unlock_set(TOD_UL_SP + 59, 0, 0) == ST_OK && rd32(TOD_SKILL_POINTS) == 0, "and the skill point off again");
+	check(i < n && g->unlock_read(&list[i], values) == ST_OK && values[0] == 1, "the Charge Boots read as owned");
 }
 
 /* Flag n as the game tests it: bit n & 63 of the big-endian u64 word n >> 6. */
