@@ -574,6 +574,15 @@
  */
 #define AUTOSPLIT_FLAG_FLAT      0x04
 #define AUTOSPLIT_FLAG_NORMALISE 0x08
+/*
+ * Revision 1.29 (pending), on a LOAD_START row only, with neither timing flag
+ * and param_us 0:
+ *
+ *   HOLD       game time stops at the LOAD_START and starts again at the
+ *              matching LOAD_END, an ASL's isLoading returning true for as
+ *              long as the pair is open. Nothing is subtracted afterwards.
+ */
+#define AUTOSPLIT_FLAG_HOLD      0x10
 
 #define AUTOSPLIT_EVENT_SIZE   16
 #define AUTOSPLIT_DESC_SIZE    32

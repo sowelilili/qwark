@@ -156,16 +156,54 @@
  * all read in the decompile (dec) unless the mark says otherwise.
  */
 #define TOD_FRONT_END        0x1037A459u  /* g_inFrontEnd, u8: 1 from FrontEnd_Enter to FrontEnd_Exit (the title) */
-#define TOD_PLAY_TIME        0x1029C554u  /* g_playTime, f32 g_saveData+0x906E4: + the frame time in g_gameState 4; SaveData_init 0 */
-#define TOD_FRESH_PLAY_TIME  0x3F800000u  /* 1.0f: a file with less play time than this is a new one */
 #define TOD_STATE_CREDITS    11           /* g_gameState: GameState_RequestCredits, from Lua_show_credits */
 #define TOD_MISSIONS_DONE    0x1021C968u  /* g_saveData+0x10AF8: ToDMissionList[20] by LEVEL_, the completed ones */
 #define TOD_MISSION_LIST_LEN 0x7Cu        /* 10 x { u32 label text id, u32 desc text id, u32 flags }, u32 count */
 #define TOD_MISSION_STRIDE   0x0Cu
 #define TOD_MISSION_COUNT    0x78u
 #define TOD_NMISSIONS        10u
+#define TOD_LEVEL_METROPOLIS 0            /* LEVEL_METROPOLIS, where a run starts */
 #define TOD_LEVEL_FASTOON_II 18           /* LEVEL_FASTOON_II, Tachyon's */
-#define TOD_MISSION_TACHYON  640u         /* L19_LABEL_MISSION_DEFEATTACHYON, the mission's id */
+
+/*
+ * Revision 1.29 (pending). The old autosplitter's "long load": game time
+ * stopped while the low byte of g_currentLevel (its 0x1029C55B) read 0 and
+ * the low byte of g_loadScreenType (its 0x102034FB) read more than 1.
+ * g_loadScreenType is the movie the loading screen plays: LoadScreen_Init
+ * puts 0 there, or a LoadScreen_PickType pick (2 and up, never 3) when the
+ * load has no level to fly from; LoadScreen_Update picks another (2 and up)
+ * each time one ends while the load is still going, and 1, the arrival,
+ * once LoadScreen_LoadDone has said the load is done. It stays 1 until the
+ * next load screen.
+ */
+#define TOD_LOAD_SCREEN      0x102034F8u  /* g_loadScreenType, s32; its low byte is the legacy's 0x102034FB (dec) */
+#define TOD_LONG_LOAD_MIN    2u           /* the legacy's "> 1" */
+
+/*
+ * Revision 1.29 (pending): the run's start. MOVIE_METROPOLIS_TACHYON, the
+ * level flag the game sets as the first planet is beaten: clear on a new
+ * file, set on every save made after Metropolis.
+ */
+#define TOD_LF_METROPOLIS_TACHYON 185u
+
+/*
+ * Revision 1.29 (pending): Tachyon's defeat. g_mobyPool's ToDMoby slots
+ * (stride 0x180): the object at +0x40, the handle at +0x64. Tachyon is the
+ * object whose vtable is vtbl_TachyonBoss (ToDTachyonBoss); its health
+ * component is at +0x20, the health itself at +0x24. TachyonBoss_OnDamage
+ * holds the health at each phase's threshold and only ever lets it reach 0
+ * on the killing hit, which is where it calls TachyonBoss_SetState(15).
+ */
+#define TOD_MOBY_POOL        0x1066C300u  /* g_mobyPool, ToDMobyPool: the slots at +0, the highest index at +0x10 (dec) */
+#define TOD_MOBY_POOL_MAX    0x10u
+#define TOD_MOBY_STRIDE      0x180u
+#define TOD_MOBY_OBJECT      0x40u        /* ToDMoby.object */
+#define TOD_MOBY_HANDLE      0x64u        /* ToDMoby.handle: a generation in the high half, the index in the low */
+#define TOD_MOBY_LOOK_LEN    0x28u        /* +0x40 .. +0x67, the object and the handle in one read */
+#define TOD_MOBY_MAX         4096u        /* a pool bigger than this is not the pool */
+#define TOD_VTBL_TACHYON     0x10060CB0u  /* vtbl_TachyonBoss (dec) */
+#define TOD_TACHYON_HEALTH   0x24u        /* ToDTachyonBoss.health.health, f32 */
+#define TOD_TACHYON_STATE    0x762u       /* ToDTachyonBoss.state, u8: 15 once dead */
 
 /* WPN_ classes (csv): 0 the wrench, 1..15 weapons, 16..23 devices, 24..31 gadgets. */
 #define TOD_WPN_FIRST        1u
@@ -333,9 +371,9 @@ struct tod_facts {
  * Code 1 is every game's planet split; 3 is the title index's pause pair.
  */
 #define TOD_AS_PLANET       1      /* SPLIT, arg the LEVEL_ just loaded */
-#define TOD_AS_TACHYON      2      /* SPLIT, Fastoon II's "Defeat Tachyon" mission completed */
+#define TOD_AS_TACHYON      2      /* SPLIT, Tachyon's health reaching 0 on Fastoon II (revision 1.29) */
 #define TOD_AS_QUIT         3      /* PAUSE / RESUME around a quit to the XMB */
-#define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, a level load */
+#define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, the old autosplitter's long load (revision 1.29) */
 #define TOD_AS_CREDITS      5      /* SPLIT, the credits start */
 #define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
 #define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
@@ -344,30 +382,49 @@ struct tod_facts {
  * What the watcher keeps, a part of tod_game.c's state (the lent area in a
  * module). The `cur_` fields are the hot block's, written by its decode.
  */
+struct tod_boss {
+	u32 moby;              /* its ToDMoby's address */
+	u32 obj;               /* the ToDTachyonBoss */
+	u32 handle;            /* the slot's handle when it was found */
+	u8  alive;             /* its health read above 0 the last time */
+	u8  pad[3];
+};
+#define TOD_NBOSS           4      /* Fastoon II has two */
+#define TOD_SCAN_PER_TICK   4      /* pool slots looked at per tick: the whole pool in about 3 s */
+
 struct tod_as_state {
 	u32 cur_lua;           /* the gameplay lua_State*, 0 between levels */
 	s32 cur_level;         /* g_currentLevel */
 	s32 cur_state;         /* g_gameState */
 	u8  cur_front;         /* g_inFrontEnd */
+	u8  cur_screen;        /* g_loadScreenType's low byte, the legacy's 0x102034FB */
 	u8  primed;
 	u8  seen;              /* this process has shown its front end or a level */
-	u8  loading;
 	u32 lua;               /* the last tick's */
 	s32 state;
 	u8  front;
 	u8  missions_primed;
 	u8  nmissions;
-	u8  pad;
+	u8  long_load;         /* the legacy's is_loading, as last evaluated */
 	u32 origin;            /* the level the player is on, TOD_AS_NOWHERE when none */
 	u32 mission_level;     /* whose completed list `missions` is */
 	u32 missions[TOD_NMISSIONS];
 	u32 ticks;
+	/* Revision 1.29: Tachyon, looked for on Fastoon II only. */
+	u16 scan;              /* the next pool slot to look at */
+	u8  nboss;
+	u8  tachyon_done;      /* split once per level up */
+	struct tod_boss boss[TOD_NBOSS];
 };
 #define TOD_AS_NOWHERE      0xFFFFFFFFu
 
 /* tod_autosplit.c */
 void tod_autosplit_forget(struct tod_as_state *as);
+/* The old autosplitter's is_loading: the level's low byte 0, the load screen's above 1. */
+int  tod_long_load(s32 level, u8 screen);
 void tod_autosplit_tick(struct tod_as_state *as);
+/* The game is going: a long load still open is closed before the quit's PAUSE (revision 1.29). */
+void tod_autosplit_quit(struct tod_as_state *as);
 const struct autosplit_desc *tod_autosplit_describe(u8 *count);
 
 /* tod_panel.c */

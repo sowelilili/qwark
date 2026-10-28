@@ -32,6 +32,7 @@
  *   5  lua state  the gameplay lua_State, 0 between levels         every tick
  *   6  front end  g_inFrontEnd, 1 on the title                     every 2nd
  *   7  game state g_gameState, 11 in the credits                   every 2nd
+ *   8  load screen g_loadScreenType, the long load's                every tick
  *
  * Blocks 5 to 7 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
  * pending): the level going down and coming up is a load's two ends, so it
@@ -51,7 +52,8 @@ static const struct game_hot_block tod_hot[] = {
 	{ TOD_INFINITE_AMMO, 4,                  4, 2 },
 	{ TOD_LUA_STATE,     4,                  1, 0 },
 	{ TOD_FRONT_END,     1,                  2, 0 },
-	{ TOD_GAME_STATE,    4,                  2, 1 }
+	{ TOD_GAME_STATE,    4,                  2, 1 },
+	{ TOD_LOAD_SCREEN,   4,                  1, 0 }   /* revision 1.29 */
 };
 
 #define HOT_INPUTS 0
@@ -62,6 +64,7 @@ static const struct game_hot_block tod_hot[] = {
 #define HOT_LUA    5
 #define HOT_FRONT  6
 #define HOT_GSTATE 7
+#define HOT_SCREEN 8
 
 #define HERO_EVERY 8u
 
@@ -139,6 +142,8 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_LUA] != NULL)    T->as.cur_lua = be32_get(blocks[HOT_LUA]);
 	if (blocks[HOT_FRONT] != NULL)  T->as.cur_front = blocks[HOT_FRONT][0];
 	if (blocks[HOT_GSTATE] != NULL) T->as.cur_state = (s32)be32_get(blocks[HOT_GSTATE]);
+	/* The low byte, the one the old autosplitter read (0x102034FB). */
+	if (blocks[HOT_SCREEN] != NULL) T->as.cur_screen = blocks[HOT_SCREEN][3];
 
 	if (blocks[HOT_ROOT] != NULL) root = be32_get(blocks[HOT_ROOT]);
 	if ((root & 3u) != 0) root = 0;
@@ -176,6 +181,15 @@ static void tod_on_enter(void)
 	tod_autosplit_forget(&T->as);
 	tod_panel_reset();
 	tod_save_recover();   /* the savefile manager's round */
+}
+
+/*
+ * Revision 1.29: the game is going. A long load still open closes before the
+ * session's PAUSE for the quit goes out. No memory is read here.
+ */
+static void tod_on_quit(void)
+{
+	tod_autosplit_quit(&T->as);
 }
 
 static void tod_init(void)
@@ -337,7 +351,7 @@ const struct game_api tod_game = {
 	NULL,                 /* moby_table: not mapped yet */
 
 	tod_on_enter,
-	NULL,                 /* on_quit */
+	tod_on_quit,          /* revision 1.29: closes the long load */
 	tod_on_tick,          /* Infinite ammo's hold */
 
 	tod_autosplit_describe, /* revision 1.28, tod_autosplit.c */

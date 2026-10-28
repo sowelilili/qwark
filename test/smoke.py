@@ -5651,30 +5651,37 @@ def smoke_tod(c, sim):
 
 
 TOD_FRONT_END = 0x1037A459
-TOD_PLAY_TIME = 0x1029C554
 TOD_CURRENT_LEVEL = 0x1029C558
 TOD_MISSIONS_DONE = 0x1021C968
+TOD_LOAD_SCREEN = 0x102034F8           # g_loadScreenType (revision 1.29)
+TOD_METRO_FLAG_BYTE = 0x10211398 + 2 * 8 + 7 - (57 >> 3)   # MOVIE_METROPOLIS_TACHYON, flag 185
+TOD_METRO_FLAG_BIT = 1 << (185 & 7)
+TOD_MOBY_POOL = 0x1066C300
+TOD_VTBL_TACHYON = 0x10060CB0
+HD = 0x10                              # AUTOSPLIT_FLAG_HOLD, revision 1.29
 TOD_AS_ROWS = [
     (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
     (2, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
     (5, AUTOSPLIT_SPLIT, 0, 0, "Credits"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
-    (4, AUTOSPLIT_LOAD_START, DF | NM, 0, "Level load"),
+    (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
     (3, AUTOSPLIT_PAUSE, DF | NM, 19950000, "Quit to XMB"),
 ]
 
 
 def smoke_tod_autosplit(c, sim):
-    """Revision 1.28: ToD's autosplitter, over the wire."""
+    """Revisions 1.28 and 1.29: ToD's autosplitter, over the wire."""
     lua_state = struct.pack(">I", 0x30030000)
     status, body = c.call(OP_AUTOSPLIT_DESCRIBE)
     if check(status == ST_OK, "ToD: AUTOSPLIT_DESCRIBE answers", status):
         rows, consumed = parse_autosplit_describe(body)
         got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
-        check(consumed == len(body) and got == TOD_AS_ROWS, "ToD: its six rows", got)
+        check(consumed == len(body) and got == TOD_AS_ROWS, "ToD: its six rows, the long load a HOLD", got)
 
-    mem_write(c, TOD_PLAY_TIME, struct.pack(">f", 600.0))
+    pool, boss = 0x30100000, 0x30200000
+    mem_write(c, TOD_METRO_FLAG_BYTE, bytes([TOD_METRO_FLAG_BIT]))
     mem_write(c, TOD_FRONT_END, b"\x00")
+    mem_write(c, TOD_LOAD_SCREEN, struct.pack(">I", 1))
     mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 1))
     mem_write(c, TOD_LUA_STATE, lua_state)
     module_sleep(c, 0.15)
@@ -5683,44 +5690,72 @@ def smoke_tod_autosplit(c, sim):
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 9))],
          "then": [(TOD_LUA_STATE, bytes(4))],
          "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9},
-        {"what": "levelInit ends the load",
-         "then": [(TOD_LUA_STATE, lua_state)],
-         "expect": (AUTOSPLIT_LOAD_END, 4)},
+        {"what": "a long load screen into Rykan V holds nothing (the old splitter's level 0 only)",
+         "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 4))],
+         "absent": (AUTOSPLIT_LOAD_START, 4)},
+        {"what": "Rykan V coming up is no event either",
+         "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 1)), (TOD_LUA_STATE, lua_state)],
+         "absent": [(AUTOSPLIT_LOAD_END, 4), (AUTOSPLIT_SPLIT, 1)]},
         {"what": "reloading the same planet is no split",
          "poke": [(TOD_LUA_STATE, bytes(4))],
          "then": [(TOD_LUA_STATE, lua_state)],
          "absent": (AUTOSPLIT_SPLIT, 1)},
-        {"what": "a new game out of the title is RESET",
-         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_FRONT_END, b"\x01"),
-                  (TOD_PLAY_TIME, bytes(4)), (TOD_CURRENT_LEVEL, bytes(4))],
+        {"what": "a long load screen on the way to Metropolis is LOAD_START",
+         "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 0)), (TOD_LUA_STATE, bytes(4)),
+                  (TOD_LOAD_SCREEN, bytes(4))],
+         "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 5))],
+         "expect": (AUTOSPLIT_LOAD_START, 4)},
+        {"what": "and the arrival screen is its LOAD_END",
+         "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 1))],
+         "expect": (AUTOSPLIT_LOAD_END, 4)},
+        {"what": "a new game out of the title, MOVIE_METROPOLIS_TACHYON clear, is RESET",
+         "poke": [(TOD_FRONT_END, b"\x01"),
+                  (TOD_METRO_FLAG_BYTE, b"\x00"), (TOD_CURRENT_LEVEL, bytes(4))],
          "then": [(TOD_FRONT_END, b"\x00")],
-         "expect": (AUTOSPLIT_RESET, 0)},
-        {"what": "Defeat Tachyon on Fastoon II is the final split",
-         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_PLAY_TIME, struct.pack(">f", 600.0)),
-                  (TOD_CURRENT_LEVEL, struct.pack(">I", 18)), (TOD_LUA_STATE, lua_state)],
-         "then": [(TOD_MISSIONS_DONE + 18 * 0x7C, struct.pack(">III", 640, 719, 2)),
-                  (TOD_MISSIONS_DONE + 18 * 0x7C + 0x78, struct.pack(">I", 1))],
-         "expect": (AUTOSPLIT_SPLIT, 2), "arg": 640},
+         "expect": (AUTOSPLIT_START, 0)},
+        {"what": "a Metropolis save with the flag set is no start",
+         "poke": [(TOD_FRONT_END, b"\x01"),
+                  (TOD_METRO_FLAG_BYTE, bytes([TOD_METRO_FLAG_BIT]))],
+         "then": [(TOD_FRONT_END, b"\x00")],
+         "absent": [(AUTOSPLIT_START, 0), (AUTOSPLIT_RESET, 0)]},
+        {"what": "Tachyon's health reaching 0 on Fastoon II is the final split",
+         "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18)),
+                  (TOD_MOBY_POOL, struct.pack(">I", pool)), (TOD_MOBY_POOL + 0x10, struct.pack(">I", 12)),
+                  (pool + 9 * 0x180 + 0x40, struct.pack(">I", boss)),
+                  (pool + 9 * 0x180 + 0x64, struct.pack(">I", 0x02F90009)),
+                  (boss, struct.pack(">I", TOD_VTBL_TACHYON)), (boss + 0x24, struct.pack(">f", 106192.0)),
+                  (TOD_LUA_STATE, lua_state)],
+         "then": [(boss + 0x24, bytes(4))],
+         "expect": (AUTOSPLIT_SPLIT, 2), "arg": 0},
         {"what": "the credits are their own split",
          "then": [(TOD_GAME_STATE, struct.pack(">I", 11))],
          "expect": (AUTOSPLIT_SPLIT, 5), "arg": 18},
     ])
     mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
-    mem_write(c, TOD_MISSIONS_DONE + 18 * 0x7C + 0x78, bytes(4))
-    mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 1))
+    mem_write(c, TOD_MOBY_POOL, bytes(4))
+    mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 0))
+    mark, _events, _n = autosplit_events(c, 0)
+    mem_write(c, TOD_LOAD_SCREEN, struct.pack(">I", 3))
+    check(as_wait(c, mark, AUTOSPLIT_LOAD_START, 4) is not None,
+          "ToD: level 0 and screen 3 hold with a level up too, as the old condition did")
 
-    # The quit to the XMB: PAUSE as it leaves, RESUME once the game is back.
+    # The quit to the XMB during a long load: the hold closes, PAUSE goes out; RESUME once back.
     mark, _events, _n = autosplit_events(c, 0)
     sim.send("quit")
     ok, _ = wait_state(c, SESSION_XMB)
     check(ok, "ToD: it quits to the XMB")
-    check(as_wait(c, mark, AUTOSPLIT_PAUSE, 3) is not None, "ToD: and that emits PAUSE with code 3")
+    ended = as_wait(c, mark, AUTOSPLIT_LOAD_END, 4)
+    paused = as_wait(c, mark, AUTOSPLIT_PAUSE, 3)
+    check(paused is not None, "ToD: and that emits PAUSE with code 3")
+    check(ended is not None and paused is not None and ended["seq"] < paused["seq"],
+          "ToD: the long load open at the quit closes first", (ended, paused))
     mark, _events, _n = autosplit_events(c, 0)
     sim.send("boot %s tod" % TOD_TITLE)
     ok, _info = wait_game(c, 5)
     check(ok, "ToD: it comes back")
     check(as_wait(c, mark, AUTOSPLIT_RESUME, 3) is not None,
           "ToD: with a level up (the simulator's boot) that is the RESUME")
+    mem_write(c, TOD_LOAD_SCREEN, struct.pack(">I", 1))
 
 
 def smoke_rpcs3_tod(c, pine):
@@ -5756,11 +5791,35 @@ def smoke_rpcs3_tod(c, pine):
           "rpcs3: ToD's God Ratchet is a PINE write", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
 
-    # Revision 1.28: the quit's pause pair needs no code under RPCS3.
+    # Revision 1.29: pausing the emulator is no quit, and emits no PAUSE (as Deadlocked's).
+    mark, _events, _n = autosplit_events(c, 0)
+    pine.status = STATUS_PAUSED
+    module_sleep(c, 0.6)
+    check(as_absent(c, mark, AUTOSPLIT_PAUSE, 3), "rpcs3: pausing the emulator in ToD emits no PAUSE")
+    pine.status = STATUS_RUNNING
+
+    # Revision 1.29: the long load, read through PINE.
+    mark, _events, _n = autosplit_events(c, 0)
+    pine.poke(TOD_CURRENT_LEVEL, bytes(4))
+    pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 4))
+    check(as_wait(c, mark, AUTOSPLIT_LOAD_START, 4) is not None, "rpcs3: ToD's long load is LOAD_START")
+    pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 1))
+    check(as_wait(c, mark, AUTOSPLIT_LOAD_END, 4) is not None, "rpcs3: and the arrival its LOAD_END")
+    pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 2))
+    check(as_wait(c, mark, AUTOSPLIT_LOAD_START, 4) is not None, "rpcs3: a long load open again")
+
+    # Revision 1.28: the quit's pause pair needs no code under RPCS3. Stopping the
+    # emulated game is the quit (RPCS3 has no XMB); the long load closes first.
     mark, _events, _n = autosplit_events(c, 0)
     pine.shutdown_game()
     wait_state(c, SESSION_XMB)
-    check(as_wait(c, mark, AUTOSPLIT_PAUSE, 3) is not None, "rpcs3: ToD's quit emits PAUSE with code 3")
+    paused = as_wait(c, mark, AUTOSPLIT_PAUSE, 3)
+    ended = as_wait(c, mark, AUTOSPLIT_LOAD_END, 4)
+    check(paused is not None, "rpcs3: ToD's quit emits PAUSE with code 3")
+    check(ended is not None and paused is not None and ended["seq"] < paused["seq"],
+          "rpcs3: the long load open at the quit closes before the PAUSE", (ended, paused))
+    pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 1))
+    pine.poke(TOD_CURRENT_LEVEL, struct.pack(">I", 1))
     pine.poke(TOD_LUA_STATE, bytes(4))
     pine.poke(0x1037A459, b"\x00")
     mark, _events, _n = autosplit_events(c, 0)

@@ -101,9 +101,12 @@ static const struct tod_mark tod_marks[] = {
 	{ "game clock",      TOD_GAME_CLOCK,      TOD_DEC,    "Lua_time_set_scale writes the f32 at +0; +0x14 is game time" },
 	/* Revision 1.28: the autosplitter (tod_autosplit.c). */
 	{ "front end",       TOD_FRONT_END,       TOD_DEC,    "g_inFrontEnd: FrontEnd_Enter sets 1 (the old autosplitter's Memory_InitHeaps hook runs in it), FrontEnd_Exit 0; LoadLevel only notes the level while it is up" },
-	{ "play time",       TOD_PLAY_TIME,       TOD_DEC,    "g_playTime, g_saveData+0x906E4: SaveData_init 0.0; GameState_Dispatch adds the frame time in state 4 (dis)" },
 	{ "missions done",   TOD_MISSIONS_DONE,   TOD_DEC,    "g_saveData+0x10AF8 + level*0x7C: Lua_complete_mission moves {label id, desc id, flags|2} there, count at +0x78; the galactic map indexes them by LEVEL_" },
-	{ "Tachyon mission", TOD_MISSION_TACHYON, TOD_INFER,  "L19_LABEL_MISSION_DEFEATTACHYON = 640 (the gameplay Lua constants); that the script completes it as Tachyon falls is to be seen on a game" },
+	/* Revision 1.29. */
+	{ "load screen",     TOD_LOAD_SCREEN,     TOD_DEC,    "g_loadScreenType, the loading screen's movie: LoadScreen_Init 0 (or a LoadScreen_PickType pick, 2..n-1 never 3, with no level to fly from), LoadScreen_Update a new pick while the load runs, 1 once LoadScreen_LoadDone; the old autosplitter read its low byte, 0x102034FB" },
+	{ "Metropolis flag", TOD_LF_METROPOLIS_TACHYON, TOD_INFER, "MOVIE_METROPOLIS_TACHYON, level flag 185: set as the first planet is beaten (seen by the user on a game), clear on a new file" },
+	{ "moby pool",       TOD_MOBY_POOL,       TOD_DEC,    "g_mobyPool: ToDMoby slots of 0x180 at +0, the highest index at +0x10; a handle's low half is the index, checked against the slot's +0x64" },
+	{ "Tachyon",         TOD_VTBL_TACHYON,    TOD_DEC,    "vtbl_TachyonBoss: TachyonBoss_Init/Update/OnDamage/SetState; health component at +0x20 (TachyonBoss_GetComponent 0x6C), health +0x24; OnDamage clamps at each phase's threshold, and only the killing hit takes it to 0 and SetState(15); read live: health 0.0 of 106192, state 15" },
 	{ "credits state",   TOD_STATE_CREDITS,   TOD_DEC,    "g_gameState 11: GameState_RequestCredits (op 2, replace), only from Lua_show_credits" },
 };
 #define TOD_MARKS tod_marks, (u8)(sizeof(tod_marks) / sizeof(tod_marks[0]))
