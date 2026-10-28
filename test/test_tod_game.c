@@ -1393,6 +1393,163 @@ static void test_tod_savefile_boots(void)
 	check(quit(), "the game quits");
 }
 
+/* ------------------- a RESTORE is the set-aside too, revision 1.29 (pending) */
+
+#define SF_ASIDE_PATH QWARK_SAVEDIR "/" TOD_TITLE "/" SAVEFILE_ASIDE_FILE
+#define SF_ASIDE_NEW  SF_ASIDE_PATH ".new"
+
+/* A file's CRC, or 0 when it is not exactly a save's length. */
+static u32 sf_crc(const char *path)
+{
+	long n = sf_file(path, g_sf_buf, sizeof(g_sf_buf));
+
+	if (n != (long)TOD_SAVE_SIZE) return 0;
+	return qcrc32_finish(qcrc32_update(qcrc32_start(), g_sf_buf, TOD_SAVE_SIZE));
+}
+
+/* The bolts a save file holds, or 0xFFFFFFFF when it is not a save's length. */
+static u32 sf_bolts(const char *path)
+{
+	return sf_file(path, g_sf_buf, sizeof(g_sf_buf)) == (long)TOD_SAVE_SIZE ? be32_get(g_sf_buf + 0x41C) : 0xFFFFFFFFu;
+}
+
+static int sf_exists(const char *path)
+{
+	return plat_path_exists(path, NULL, NULL);
+}
+
+/* A RESTORE of runs/<name> that the game takes, ending with error 0 and `bolts` loaded. */
+static int sf_restore_ok(const char *name, u32 bolts)
+{
+	u8 installed, running, pending, error = 0xFF;
+	u32 size;
+
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	if (savefile_restore("runs", name) != ST_OK || !sf_settle(1, 300)) return 0;
+	sf_info(&installed, &running, &pending, &size, &error);
+	return error == SAVEFILE_ERR_NONE && rd32(TOD_BOLTS) == bolts;
+}
+
+static int sf_load_aside_ok(u32 bolts)
+{
+	u8 installed, running, pending, error = 0xFF;
+	u32 size;
+
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	if (sf_trigger(TF_LOAD_ASIDE) != ST_OK || !sf_settle(1, 300)) return 0;
+	sf_info(&installed, &running, &pending, &size, &error);
+	return error == SAVEFILE_ERR_NONE && rd32(TOD_BOLTS) == bolts;
+}
+
+static void sf_faults(u32 open_fails, u32 cut, u32 close_fails)
+{
+	struct host_file_faults f;
+
+	f.read_chunk = 0;
+	f.open_fails = open_fails;
+	f.write_cut = cut;
+	f.close_fails = close_fails;
+	host_set_file_faults(SF_ASIDE_NEW, &f);
+}
+
+/*
+ * The user's report: a file loaded from the Save files panel, then the Load
+ * set-aside combo, and nothing happened until a Set aside by hand. In the four
+ * original games a RESTORE fills the aside buffer it loads, so it is the
+ * set-aside from then on; ToD's set-aside file now gets the same.
+ */
+static void test_tod_savefile_aside(void)
+{
+	char sum[16], want[16];
+	long n;
+	u32 crc_b;
+
+	group("ToD: a RESTORE is the set-aside too, as in the other games (revision 1.29, pending)");
+	check(boot_tod(), "ToD boots");
+	tick(4);
+
+	/* b.sav holds 3000 bolts, and the set-aside 4000, set aside by hand. */
+	wr32(TOD_BOLTS, 3000);
+	host_fake_tod_saved(2);
+	check(savefile_store("runs", "b.sav") == ST_OK && sf_settle(0, 200), "b.sav is stored, 3000 bolts");
+	crc_b = sf_crc(QWARK_SAVEDIR "/" TOD_TITLE "/runs/b.sav");
+	wr32(TOD_BOLTS, 4000);
+	host_fake_tod_saved(2);
+	check(sf_trigger(TF_SET_ASIDE) == ST_OK && sf_settle(0, 200) && sf_bolts(SF_ASIDE_PATH) == 4000,
+	      "Set aside by hand: the set-aside holds 4000");
+
+	/* RESTORE, then Load set-aside: the same bytes. */
+	host_log_clear();
+	wr32(TOD_BOLTS, 5);
+	check(sf_restore_ok("b.sav", 3000), "RESTORE of b.sav loads its 3000");
+	check(host_log_seen("savefile: the restored file is the set-aside now (591600 bytes)"), "and makes it the set-aside, logged");
+	check(crc_b != 0 && sf_crc(SF_ASIDE_PATH) == crc_b, "set-aside.sav is b.sav byte for byte");
+	n = sf_file(SF_ASIDE_PATH SAVEFILE_SUM_EXT, (u8 *)sum, 8);
+	sum[n == 8 ? 8 : 0] = 0;
+	qfmt_hex(want, sizeof(want), crc_b, 8);
+	check(n == 8 && strcmp(sum, want) == 0, "with its sum beside it");
+	check(!sf_exists(SF_ASIDE_NEW), "and no .new left over");
+
+	host_log_clear();
+	wr32(TOD_BOLTS, 6);
+	check(sf_load_aside_ok(3000), "Load set-aside then loads the restored file, not the 4000 set aside before");
+	check(!host_log_seen("is the set-aside now") && !sf_exists(SF_ASIDE_NEW) && sf_crc(SF_ASIDE_PATH) == crc_b,
+	      "and copies nothing onto itself: the set-aside is as it was");
+	wr32(TOD_BOLTS, 7);
+	check(sf_load_aside_ok(3000), "and again");
+
+	/* A snapshot: a later STORE over b.sav leaves it be. */
+	wr32(TOD_BOLTS, 6000);
+	host_fake_tod_saved(2);
+	check(savefile_store("runs", "b.sav") == ST_OK && sf_settle(0, 200), "b.sav is stored over, 6000 bolts");
+	wr32(TOD_BOLTS, 8);
+	check(sf_load_aside_ok(3000) && sf_crc(SF_ASIDE_PATH) == crc_b, "the set-aside is still the 3000 that was restored");
+
+	/* A Set aside by hand after a RESTORE replaces it with the game's save. */
+	check(sf_restore_ok("a.sav", 1000) && sf_bolts(SF_ASIDE_PATH) == 1000, "RESTORE of a.sav: the set-aside is 1000");
+	wr32(TOD_BOLTS, 8000);
+	host_fake_tod_saved(2);
+	check(sf_trigger(TF_SET_ASIDE) == ST_OK && sf_settle(0, 200) && sf_bolts(SF_ASIDE_PATH) == 8000,
+	      "a Set aside by hand after it replaces it with the game's 8000");
+	wr32(TOD_BOLTS, 9);
+	check(sf_load_aside_ok(8000), "which Load set-aside loads");
+
+	/* A RESTORE that does not load leaves the set-aside alone. */
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	check(savefile_restore("runs", "junk.sav") == ST_OK && sf_settle(1, 100), "a junk file's RESTORE runs and stops");
+	check(sf_bolts(SF_ASIDE_PATH) == 8000 && !sf_exists(SF_ASIDE_NEW), "and the set-aside is still 8000, no .new");
+
+	/* The set-aside's copy failing, each way: the load is OK all the same. */
+	sf_faults(1, 0, 0);
+	host_log_clear();
+	check(sf_restore_ok("b.sav", 6000), "the .new cannot be created: the RESTORE still loads, error 0");
+	check(host_log_seen("set-aside.sav.new cannot be created; the load goes on and the set-aside stays as it was"),
+	      "logged");
+	check(sf_bolts(SF_ASIDE_PATH) == 8000 && !sf_exists(SF_ASIDE_NEW), "the set-aside is still 8000");
+
+	sf_faults(0, 100000, 0);
+	host_log_clear();
+	check(sf_restore_ok("b.sav", 6000), "a write of the .new fails part way: the RESTORE still loads, error 0");
+	check(host_log_seen("the set-aside's copy could not be written at") &&
+	      host_log_seen("savefile: the restored file is not the set-aside; the load goes on"), "logged");
+	check(sf_bolts(SF_ASIDE_PATH) == 8000 && !sf_exists(SF_ASIDE_NEW), "the set-aside is still 8000, the .new gone");
+
+	sf_faults(0, 0, 1);
+	host_log_clear();
+	check(sf_restore_ok("b.sav", 6000), "the .new's close fails: the RESTORE still loads, error 0");
+	check(host_log_seen("the set-aside's copy could not be closed"), "logged");
+	check(sf_bolts(SF_ASIDE_PATH) == 8000 && !sf_exists(SF_ASIDE_NEW), "the set-aside is still 8000");
+	host_set_file_faults(NULL, NULL);
+	wr32(TOD_BOLTS, 10);
+	check(sf_load_aside_ok(8000), "and Load set-aside loads it");
+
+	/* With the faults gone, a RESTORE is the set-aside again. */
+	check(sf_restore_ok("b.sav", 6000) && sf_bolts(SF_ASIDE_PATH) == 6000, "a RESTORE with the disk well again is the set-aside");
+	/* a.sav back in, as the groups before this one leave the game for the autosplitter's. */
+	check(sf_restore_ok("a.sav", 1000) && sf_bolts(SF_ASIDE_PATH) == 1000, "and a.sav back in, the set-aside with it");
+	check(quit(), "the game quits");
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -1402,6 +1559,7 @@ void test_tod_game(void)
 	test_tod_lua_rpcs3();
 	test_tod_savefile();
 	test_tod_savefile_boots();
+	test_tod_savefile_aside();
 	quit();
 	check(boot_tod(), "ToD again, for the autosplitter");
 	test_tod_autosplit_rows();

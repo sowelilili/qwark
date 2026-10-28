@@ -5516,6 +5516,74 @@ def smoke_tod_savefile(c, sim):
     check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 1111,
           "ToD: Load set-aside loads the set-aside file", (status, info))
 
+    # Revision 1.29 (pending): a RESTORE is the set-aside too, as the other games' aside buffer is.
+    tod_dir = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "savefiles", "NPEA00452")
+    aside = os.path.join(tod_dir, "set-aside.sav")
+
+    def file_bytes(path):
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def aside_bolts():
+        data = file_bytes(aside)
+        return struct.unpack_from(">I", data, 0x41C)[0] if data and len(data) == TOD_SAVE_SIZE else None
+
+    def restore(name, bolts):
+        mem_write(c, TOD_BOLTS, struct.pack(">I", bolts))
+        mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+        status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32(name))
+        return status, tod_wait_transfer(c)
+
+    def load_aside(bolts):
+        mem_write(c, TOD_BOLTS, struct.pack(">I", bolts))
+        mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+        status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_LOAD_ASIDE]))
+        return status, tod_wait_transfer(c)
+
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 5555))
+    sim.send("fakesave slot 3")
+    time.sleep(0.1)
+    status, _ = c.call(OP_SAVEFILE_STORE, fixed32("smoke") + fixed32("tod2.sav"))
+    info = tod_wait_transfer(c)
+    check(status == ST_OK and info and info["error"] == 0, "ToD: a second file, 5555 bolts, is stored", (status, info))
+    status, info = restore("tod2.sav", 6)
+    check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 5555,
+          "ToD: RESTORE of it loads its 5555", (status, info))
+    tod2 = file_bytes(os.path.join(tod_dir, "smoke", "tod2.sav"))
+    check(tod2 is not None and file_bytes(aside) == tod2, "ToD: and set-aside.sav is now that file, byte for byte")
+    check(sim_logged(sim, "savefile: the restored file is the set-aside now"), "ToD: which qwark.log says")
+    status, info = load_aside(7)
+    check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 5555,
+          "ToD: Load set-aside after a load reloads that file (it loaded the older set-aside before)", (status, info))
+    check(file_bytes(aside) == tod2 and not os.path.exists(aside + ".new"),
+          "ToD: and a Load set-aside copies nothing onto itself")
+
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 7777))
+    sim.send("fakesave slot 3")
+    time.sleep(0.1)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_SET_ASIDE]))
+    info = tod_wait_transfer(c)
+    check(status == ST_OK and info and info["error"] == 0 and aside_bolts() == 7777,
+          "ToD: a Set aside by hand after the load replaces it with the game's save", (status, info, aside_bolts()))
+    status, info = load_aside(8)
+    check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 7777,
+          "ToD: which Load set-aside then loads", (status, info))
+
+    # The set-aside's copy cannot be written (a folder where its .new goes): the load is OK all the same.
+    os.mkdir(aside + ".new")
+    try:
+        status, info = restore("tod2.sav", 9)
+        check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 5555,
+              "ToD: a RESTORE whose set-aside copy cannot be written still loads, error 0", (status, info))
+        check(sim_logged(sim, "set-aside.sav.new cannot be created; the load goes on and the set-aside stays as it was"),
+              "ToD: qwark.log says why the set-aside stayed")
+        check(aside_bolts() == 7777, "ToD: and the set-aside is still the one set aside by hand", aside_bolts())
+    finally:
+        os.rmdir(aside + ".new")
+
     # No slot, and an autosave the game asked for that can never run: a load still goes.
     sim.send("fakesave slot -1")
     time.sleep(0.1)

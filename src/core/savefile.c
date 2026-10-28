@@ -170,9 +170,28 @@ struct sf_transfer {
 	u32  crc;
 	plat_file_t file;
 	char path[SAVEFILE_PATH_MAX];
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.29 (pending): a RESTORE of a library file, for a game that keeps
+	 * its set-aside in a file (struct sf_driver, aside_file), also writes what it
+	 * copies into <set-aside file>.new, which becomes the set-aside once the game
+	 * has taken the load (aside_end). SF_ASIDE_NONE, OPEN while the copy writes
+	 * it, WRITTEN once it is all there and closed. `crc` is its sum.
+	 */
+	u8   aside;
+	plat_file_t aside_file;
+#endif
 };
 
 static struct sf_transfer g_xfer;
+
+#if QWARK_HAS_TOD
+#define SF_ASIDE_NONE    0
+#define SF_ASIDE_OPEN    1
+#define SF_ASIDE_WRITTEN 2
+
+static void aside_end(int commit);
+#endif
 
 /*
  * Revision 1.29 (pending): SAVEFILE_INFO's `why`, beside `error` and cleared
@@ -280,6 +299,16 @@ static void xfer_stop(u8 error)
 		plat_file_close(g_xfer.file);
 		g_xfer.have_file = 0;
 	}
+
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.29 (pending): a RESTORE whose load the game took has its file
+	 * as the set-aside now, as the other games' aside buffer has it; any other
+	 * end throws the copy away and leaves the set-aside as it was. Nothing here
+	 * changes how the RESTORE itself ended.
+	 */
+	if (g_xfer.aside != SF_ASIDE_NONE) aside_end(error == SAVEFILE_ERR_NONE);
+#endif
 
 	/*
 	 * A store that stopped part way through leaves a file that is the right
@@ -797,6 +826,109 @@ static void sum_write(const char *path, u32 crc)
 
 static int request(int load, int own);
 
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29 (pending): a RESTORE is also a set-aside, as in the other games.
+ *
+ * Their set-aside is the aside buffer in the game's memory, and a RESTORE fills
+ * that buffer before it loads it, so Load set-aside then loads the file that was
+ * restored and a Set aside replaces it with the game's save. A game that keeps
+ * its set-aside in a file (struct sf_driver, aside_file) gets the same from the
+ * RESTORE's own copy: every chunk it reads out of the library file also goes
+ * into <set-aside file>.new, and once the game has taken the load (xfer_stop
+ * with no error) that becomes the set-aside file, with its sum. It is a copy of
+ * the bytes the game loaded, so a later STORE over the library file leaves it
+ * be, as the other games' buffer would.
+ *
+ * Nothing the set-aside's copy does changes the RESTORE: a .new that cannot be
+ * opened, written or put in place is logged and dropped, and the set-aside
+ * stays what it was. A RESTORE of the set-aside file itself (Load set-aside)
+ * starts none. Tick thread, out of the copy's chunks: no buffer of its own.
+ */
+static void transfer_path(char *out, u32 cap, const char *category, const char *name);
+
+static void aside_new_path(char *out, u32 cap)
+{
+	transfer_path(out, cap, NULL, NULL);
+	qstrcat(out, cap, ".new");
+}
+
+static void aside_drop(const char *what)
+{
+	char tmp[SAVEFILE_PATH_MAX];
+
+	if (g_xfer.aside == SF_ASIDE_OPEN) plat_file_close(g_xfer.aside_file);
+	g_xfer.aside = SF_ASIDE_NONE;
+	aside_new_path(tmp, sizeof(tmp));
+	plat_file_unlink(tmp);
+	if (what != NULL) plat_log("savefile: %s; the load goes on and the set-aside stays as it was", what);
+}
+
+/* From restore_file, once the RESTORE is on its way: the .new opened, or nothing. */
+static void aside_begin(void)
+{
+	char tmp[SAVEFILE_PATH_MAX];
+
+	g_xfer.aside = SF_ASIDE_NONE;
+	aside_new_path(tmp, sizeof(tmp));
+	if (plat_file_open(tmp, PLAT_OPEN_WRITE, &g_xfer.aside_file) != 0) {
+		plat_log("savefile: %s cannot be created; the load goes on and the set-aside stays as it was", tmp);
+		return;
+	}
+	g_xfer.aside = SF_ASIDE_OPEN;
+}
+
+static void aside_chunk(const u8 *copy, u32 n)
+{
+	if (plat_file_write(g_xfer.aside_file, copy, n) != 0) {
+		plat_log("savefile: the set-aside's copy could not be written at %d of %d bytes", (int)g_xfer.done, (int)g_xfer.total);
+		aside_drop("the restored file is not the set-aside");
+		return;
+	}
+	g_xfer.crc = qcrc32_update(g_xfer.crc, copy, n);
+}
+
+/* The whole file is in the .new: closed, and kept for the load's end. */
+static void aside_written(void)
+{
+	g_xfer.aside = SF_ASIDE_WRITTEN;
+	if (plat_file_close(g_xfer.aside_file) != 0)
+		aside_drop("the set-aside's copy could not be closed");
+}
+
+/*
+ * From xfer_stop. `commit` is the RESTORE having ended well, which only the
+ * game taking its load does; the .new is then the set-aside file. A console's
+ * cellFs and Windows both refuse a rename over a file that exists, so the old
+ * set-aside goes first, as config.c's file_end does it.
+ */
+static void aside_end(int commit)
+{
+	char path[SAVEFILE_PATH_MAX];
+	char tmp[SAVEFILE_PATH_MAX];
+
+	if (!commit || g_xfer.aside != SF_ASIDE_WRITTEN) {
+		aside_drop(NULL);
+		return;
+	}
+	g_xfer.aside = SF_ASIDE_NONE;
+	transfer_path(path, sizeof(path), NULL, NULL);
+	aside_new_path(tmp, sizeof(tmp));
+	plat_file_unlink(path);
+	if (plat_file_rename(tmp, path) != 0) {
+		plat_log("savefile: %s could not be put in place as the set-aside; the load is in, but nothing is set aside", tmp);
+		plat_file_unlink(tmp);
+		/* The old set-aside's sum, with no set-aside beside it any more. */
+		qstrcpy(tmp, sizeof(tmp), path);
+		qstrcat(tmp, sizeof(tmp), SAVEFILE_SUM_EXT);
+		plat_file_unlink(tmp);
+		return;
+	}
+	sum_write(path, qcrc32_finish(g_xfer.crc));
+	plat_log("savefile: the restored file is the set-aside now (%d bytes)", (int)g_xfer.total);
+}
+#endif
+
 /*
  * One tick of the copy. Called from savefile_tick with the running game's
  * descriptor, so every branch here already knows the game is there.
@@ -902,6 +1034,9 @@ static void xfer_tick(const struct sf_desc *d)
 				xfer_stop(SAVEFILE_ERR_SHORT);
 				return;
 			}
+#if QWARK_HAS_TOD
+			if (g_xfer.aside == SF_ASIDE_OPEN) aside_chunk(copy, got);
+#endif
 			/* Build 53: what is in the buffer is the file's from here on (g_aside_ours). */
 			g_aside_ours = 1;
 			if (mem_write(d->aside_addr + g_xfer.done, copy, got) != ST_OK) {
@@ -916,6 +1051,9 @@ static void xfer_tick(const struct sf_desc *d)
 
 		plat_file_close(g_xfer.file);
 		g_xfer.have_file = 0;
+#if QWARK_HAS_TOD
+		if (g_xfer.aside == SF_ASIDE_OPEN) aside_written();
+#endif
 
 		/*
 		 * The whole file is in the buffer, so now the game may have it - if the
@@ -1717,6 +1855,10 @@ SF_FILE_FN int restore_file(const char *category, const char *name)
 	g_xfer.have_file = 1;
 
 	plat_log("savefile: restore %s", g_xfer.path);
+#if QWARK_HAS_TOD
+	/* Revision 1.29 (pending): a library file is the set-aside too; the set-aside itself is not copied onto itself. */
+	if (category != NULL && aside_on_disk()) aside_begin();
+#endif
 	return ST_OK;
 }
 

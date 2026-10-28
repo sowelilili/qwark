@@ -29,7 +29,9 @@
  * The set-aside itself lives on the HDD, <QWARK_SAVEDIR>/NPEA00452/
  * set-aside.sav, because the game's next autosave writes over its buffer: the
  * Set aside action is a STORE into that file and Load set-aside a RESTORE of
- * it (aside_file below), so a set-aside survives autosaves and reboots.
+ * it (aside_file below), so a set-aside survives autosaves and reboots. A
+ * RESTORE of a library file the game takes also becomes the set-aside, as the
+ * other games' RESTORE fills their aside buffer (savefile.c, aside_end).
  *
  * Tick thread throughout, through the command ring and savefile_tick. No state
  * of its own: the hold and the load are read back out of the game every time.
