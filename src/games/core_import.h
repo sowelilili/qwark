@@ -63,6 +63,7 @@
 #define savefile_load_ready qimp_savefile_load_ready
 #define savefile_load_refusals qimp_savefile_load_refusals
 #define savefile_set_aside qimp_savefile_set_aside
+#define savefile_why qimp_savefile_why
 #ifdef QWARK_EMULATOR
 #define switches_present qimp_switches_present
 #endif

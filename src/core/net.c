@@ -916,7 +916,8 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		be32_put(reply + 8, done);
 		be32_put(reply + 12, total);
 		reply[16] = error;
-		reply[17] = 0;
+		/* Revision 1.29 (pending): which of the game's checks `error` came from. */
+		reply[17] = savefile_why_now();
 		reply[18] = 0;
 		reply[19] = 0;
 		cmd->replylen = SAVEFILE_INFO_SIZE;

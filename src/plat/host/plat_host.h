@@ -139,6 +139,13 @@ u32  host_write_log_count(void);
 int  host_write_log_at(u32 index, u32 *addr, u32 *len);
 
 /*
+ * The log lines plat_log has written, printed or not: host_log_seen is 1 when
+ * one of the last 64 since host_log_clear contains `needle`.
+ */
+void host_log_clear(void);
+int  host_log_seen(const char *needle);
+
+/*
  * The console notifications plat_notify has shown: how many since the program
  * started, and the text of the latest ("" before the first). Only
  * backend_fake.c defines these.

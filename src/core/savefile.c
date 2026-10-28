@@ -175,6 +175,29 @@ struct sf_transfer {
 static struct sf_transfer g_xfer;
 
 /*
+ * Revision 1.29 (pending): SAVEFILE_INFO's `why`, beside `error` and cleared
+ * with it (WHY_CLEAR). Only a game whose save system qwark drives sets it
+ * (savefile_why), so a release, which has none, has no byte to keep.
+ */
+#if QWARK_HAS_TOD
+static u8 g_why;
+
+void savefile_why(u8 why)
+{
+	g_why = why;
+}
+
+u8 savefile_why_now(void)
+{
+	return g_why;
+}
+
+#define WHY_CLEAR() (g_why = SAVEFILE_WHY_NONE)
+#else
+#define WHY_CLEAR() ((void)0)
+#endif
+
+/*
  * gnu99, so no _Static_assert: a copy chunk bigger than the shared scratch
  * buffer fails the build here rather than running off the end of it.
  */
@@ -288,7 +311,8 @@ static void xfer_stop(u8 error)
 	 * polls once more after the pending bit clears wants to read. The next STORE
 	 * or RESTORE puts all three back.
 	 */
-	if (error != SAVEFILE_ERR_NONE) plat_log("savefile: transfer failed, error %d", (int)error);
+	if (error != SAVEFILE_ERR_NONE)
+		plat_log("savefile: transfer failed, error %d (why %d)", (int)error, (int)savefile_why_now());
 }
 
 void savefile_forget(void)
@@ -735,7 +759,10 @@ static void request_tick(struct sf_request *r, u32 addr)
 		 * is the RESTORE's.
 		 */
 		if (r == &g_load && g_xfer.state != SF_RESTORE_LOAD) g_load_refusals++;
-		if (why == SAVEFILE_ERR_NOT_IDLE)
+		if (drv != NULL)
+			plat_log("savefile: the game's save system did not take the %s, error %d (why %d)",
+			         r == &g_load ? "load" : "set-aside", (int)why, (int)savefile_why_now());
+		else if (why == SAVEFILE_ERR_NOT_IDLE)
 			plat_log("savefile: the helper refused the request, the game was not idle");
 		else
 			plat_log("savefile: the helper refused the request, there was no save");
@@ -793,6 +820,9 @@ static void xfer_tick(const struct sf_desc *d)
 	 */
 	if (drv != NULL && (g_xfer.state == SF_STORE_COPY || g_xfer.state == SF_RESTORE_COPY) &&
 	    !drv->holding()) {
+		savefile_why(SAVEFILE_WHY_HOLD_LOST);
+		plat_log("savefile: the copy stopped at %d of %d bytes: the game's save system started a save or load of its own",
+		         (int)g_xfer.done, (int)g_xfer.total);
 		xfer_stop(SAVEFILE_ERR_NOT_IDLE);
 		return;
 	}
@@ -1046,7 +1076,12 @@ static u8 set_aside_ready(void)
 	u8 why = game_ready(GAME_SF_SET_ASIDE);
 
 	if (why == SAVEFILE_ERR_NO_SAVE && drv != NULL && g_aside_ours &&
-	    drv->aside_ok() == SAVEFILE_ERR_NONE) why = SAVEFILE_ERR_NONE;
+	    drv->aside_ok() == SAVEFILE_ERR_NONE) {
+		/* The game's "no slot yet" is not this request's reason any more. */
+		why = SAVEFILE_ERR_NONE;
+		WHY_CLEAR();
+		plat_log("savefile: the game has no slot yet, but the buffer holds the save qwark restored; going ahead");
+	}
 	return why;
 }
 #else
@@ -1073,9 +1108,11 @@ static u8 set_aside_ready(void)
 static int asked(void)
 {
 	g_xfer.error = SAVEFILE_ERR_NONE;
+	WHY_CLEAR();
 
 	if (g_xfer.state != SF_IDLE) {
 		g_xfer.error = SAVEFILE_ERR_BUSY;
+		plat_log("savefile: request refused, a STORE or RESTORE is still copying");
 		return ST_BUSY;
 	}
 	return ST_OK;
@@ -1114,6 +1151,8 @@ static int request(int load, int own)
 		why = drv_now()->hold();
 		if (why != SAVEFILE_ERR_NONE) {
 			g_xfer.error = why;
+			plat_log("savefile: load refused, the game's save system could not be held, error %d (why %d)",
+			         (int)why, (int)savefile_why_now());
 			return ST_BUSY;
 		}
 	}
@@ -1122,6 +1161,9 @@ static int request(int load, int own)
 	if (why != SAVEFILE_ERR_NONE) {
 		if (load && !own) drv_release();
 		g_xfer.error = why;
+		plat_log("savefile: %s refused by the game, error %d (why %d)",
+		         load ? (own ? "the restore's load" : "load") : (own ? "the store's set-aside" : "set-aside"),
+		         (int)why, (int)savefile_why_now());
 		return ST_BUSY;
 	}
 
@@ -1137,6 +1179,8 @@ static int request(int load, int own)
 		if (why != SAVEFILE_ERR_NONE) {
 			if (!own) drv_release();
 			g_xfer.error = why;
+			plat_log("savefile: the load could not be handed to the game's save system, error %d (why %d)",
+			         (int)why, (int)savefile_why_now());
 			return ST_BUSY;
 		}
 	} else {
@@ -1456,6 +1500,12 @@ static int buffer_busy(void)
  * The shared front half of STORE and RESTORE. `what` is GAME_SF_SET_ASIDE for a
  * STORE and GAME_SF_RESTORE for a RESTORE (build 53).
  */
+/* For the log lines: what a transfer_gate caller is. */
+static const char *what_name(u8 what)
+{
+	return what == GAME_SF_SET_ASIDE ? "store" : "restore";
+}
+
 static int transfer_gate(const struct sf_desc **d, const char *category, const char *name, u8 what)
 {
 	int rc;
@@ -1466,9 +1516,13 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 	 * it (asked has the why). xfer_begin clears it again for one that starts.
 	 */
 	g_xfer.error = SAVEFILE_ERR_NONE;
+	WHY_CLEAR();
 
 	rc = gate(d);
-	if (rc != ST_OK) return rc;
+	if (rc != ST_OK) {
+		plat_log("savefile: %s refused, no helper for the running game (%d)", what_name(what), rc);
+		return rc;
+	}
 	/* Revision 1.28: no category is the title's set-aside file, qwark's own name. */
 	if (!SF_ASIDE_FILES || category != NULL) {
 		if (!savefile_name_ok(category) || !savefile_name_ok(name)) return ST_BAD_ARG;
@@ -1481,6 +1535,8 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 
 	if (buffer_busy()) {
 		g_xfer.error = SAVEFILE_ERR_BUSY;
+		plat_log("savefile: %s refused, the aside buffer is busy (transfer state %d, set-aside %d, load %d)",
+		         what_name(what), (int)g_xfer.state, (int)g_set_aside.armed, (int)g_load.armed);
 		return ST_BUSY;
 	}
 
@@ -1494,6 +1550,8 @@ static int transfer_gate(const struct sf_desc **d, const char *category, const c
 	why = SF_ASIDE_FILES && what == GAME_SF_SET_ASIDE ? set_aside_ready() : game_ready(what);
 	if (why != SAVEFILE_ERR_NONE) {
 		g_xfer.error = why;
+		plat_log("savefile: %s refused by the game, error %d (why %d)", what_name(what), (int)why,
+		         (int)savefile_why_now());
 		return ST_BUSY;
 	}
 
@@ -1533,6 +1591,8 @@ static int transfer_hold(void)
 	why = drv->hold();
 	if (why == SAVEFILE_ERR_NONE) return ST_OK;
 	g_xfer.error = why;
+	plat_log("savefile: the game's save system could not be held for the copy, error %d (why %d)",
+	         (int)why, (int)savefile_why_now());
 	return ST_BUSY;
 }
 #else
@@ -1543,6 +1603,7 @@ static void xfer_begin(u8 state, u32 total, const char *path)
 {
 	g_xfer.state = state;
 	g_xfer.error = SAVEFILE_ERR_NONE;
+	WHY_CLEAR();
 	g_xfer.done  = 0;
 	g_xfer.total = total;
 	g_xfer.crc   = qcrc32_start();
@@ -1616,9 +1677,11 @@ SF_FILE_FN int restore_file(const char *category, const char *name)
 		 */
 		if (SF_ASIDE_FILES && category == NULL) {
 			g_xfer.error = SAVEFILE_ERR_NO_SAVE;
+			plat_log("savefile: restore refused, nothing set aside yet (no %s)", path);
 			return ST_BUSY;
 		}
 		g_xfer.error = SAVEFILE_ERR_MISSING;
+		plat_log("savefile: restore refused, no such file %s", path);
 		return ST_NOT_FOUND;
 	}
 
@@ -1629,11 +1692,14 @@ SF_FILE_FN int restore_file(const char *category, const char *name)
 	 */
 	if (size != (u64)d->aside_size) {
 		g_xfer.error = SAVEFILE_ERR_SHORT;
+		plat_log("savefile: restore refused, %s is %d bytes and a save of this game is %d",
+		         path, (int)size, (int)d->aside_size);
 		return ST_BAD_ARG;
 	}
 
 	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) {
 		g_xfer.error = SAVEFILE_ERR_IO;
+		plat_log("savefile: restore refused, %s cannot be opened", path);
 		return ST_IO_ERROR;
 	}
 

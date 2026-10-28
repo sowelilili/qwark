@@ -41,6 +41,8 @@
 #include "../core/savefile.h"
 #include "../core/util.h"
 
+#include <string.h>
+
 /*
  * How long a load may wait for the game's update to take it before it is put
  * back: five seconds of the 120 Hz tick. The update runs every frame in every
@@ -73,6 +75,7 @@ static int ss_read(u8 *h)
 {
 	u32 sys = 0;
 
+	memset(h, 0, TOD_SM_HEAD_LEN);
 	if (mem_read_u32(TOD_SAVE_SYSTEM, &sys) != ST_OK || sys != TOD_SAVE_MANAGER) return 0;
 	if (mem_read(TOD_SAVE_MANAGER, h, TOD_SM_HEAD_LEN) != ST_OK) return 0;
 	return ss_word(h, 0) == TOD_SAVE_VTABLE;
@@ -82,7 +85,19 @@ static int ss_read(u8 *h)
  * Idle: no save, load or delete under way and none waiting. In qwark's hold
  * the autosave the game asked for meanwhile is not in the way: a load drops it
  * (load_from_hold) and a STORE's release lets it go ahead.
+ *
+ * Nor is one waiting with no slot. SaveSystem_request's op 4 (the autosave),
+ * with `slot` -1, notes the op and returns, and leaves autoSavePending as it
+ * was, so a pending autosave of a boot with no slot (a new game never saved,
+ * one an autosave asked for during a hold or the boot check) stays 1 for good
+ * and SaveSystem_update asks again on every frame for nothing. Counting it
+ * refused every load of such a boot, with error 6, until a save from the menu.
  */
+static int ss_autosave_waits(const u8 *h)
+{
+	return ss_word(h, TOD_SM_AUTOSAVE) != 0 && ss_word(h, TOD_SM_SLOT) != TOD_NO_SLOT;
+}
+
 static int ss_idle(const u8 *h)
 {
 	u32 st = ss_word(h, TOD_SM_STATE);
@@ -91,7 +106,42 @@ static int ss_idle(const u8 *h)
 	if (!held && st != TOD_SS_IDLE) return 0;
 	if (!ss_no_thread(h, TOD_SM_SAVE_THREAD) || !ss_no_thread(h, TOD_SM_LOAD_THREAD) ||
 	    !ss_no_thread(h, TOD_SM_DELETE_THREAD)) return 0;
-	return held || ss_word(h, TOD_SM_AUTOSAVE) == 0;
+	return held || !ss_autosave_waits(h);
+}
+
+/*
+ * A refusal: noted for SAVEFILE_INFO's `why` (savefile_why) and answered with
+ * `err`. The caller has logged the line that says which check it was.
+ */
+static u8 refuse(u8 err, u8 why)
+{
+	savefile_why(why);
+	return err;
+}
+
+/*
+ * Why the save system is not up or not idle, logged with every word the test
+ * read, and the refusal for it: the qwark.log line a console user sends in.
+ * `what` is what was refused.
+ */
+static u8 ss_refuse(const u8 *h, int read_ok, const char *what)
+{
+	u32 sys = 0;
+
+	if (!read_ok) {
+		mem_read_u32(TOD_SAVE_SYSTEM, &sys);
+		plat_log("tod: %s refused, the save system is not up (g_saveSystem 0x%08X, vtable 0x%08X)",
+		         what, sys, ss_word(h, 0));
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NO_SYSTEM);
+	}
+	plat_log("tod: %s refused, the save system is busy: state 0x%08X, autosave %d, slot %d, "
+	         "threads save %08X:%08X load %08X:%08X (state %d) delete %08X:%08X",
+	         what, ss_word(h, TOD_SM_STATE), (int)ss_word(h, TOD_SM_AUTOSAVE), (int)ss_word(h, TOD_SM_SLOT),
+	         ss_word(h, TOD_SM_SAVE_THREAD + TOD_ST_ID), ss_word(h, TOD_SM_SAVE_THREAD + TOD_ST_ID + 4),
+	         ss_word(h, TOD_SM_LOAD_THREAD + TOD_ST_ID), ss_word(h, TOD_SM_LOAD_THREAD + TOD_ST_ID + 4),
+	         (int)ss_word(h, TOD_SM_LOAD_THREAD + TOD_ST_STATE),
+	         ss_word(h, TOD_SM_DELETE_THREAD + TOD_ST_ID), ss_word(h, TOD_SM_DELETE_THREAD + TOD_ST_ID + 4));
+	return refuse(SAVEFILE_ERR_NOT_IDLE, ss_word(h, TOD_SM_STATE) == 0 ? SAVEFILE_WHY_NO_SYSTEM : SAVEFILE_WHY_SAVING);
 }
 
 static u8 tod_sf_holding(void)
@@ -117,12 +167,20 @@ static u8 tod_sf_holding(void)
 static u8 tod_sf_hold(void)
 {
 	u8 h[TOD_SM_HEAD_LEN];
+	int ok = ss_read(h);
 
-	if (!ss_read(h) || !ss_idle(h)) return SAVEFILE_ERR_NOT_IDLE;
+	if (!ok || !ss_idle(h)) return ss_refuse(h, ok, "the hold");
 	if (ss_word(h, TOD_SM_STATE) == TOD_SS_HELD) return SAVEFILE_ERR_NONE;
 
-	if (mem_write_u32(TOD_SAVE_MANAGER + TOD_SM_STATE, TOD_SS_HELD) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
-	return tod_sf_holding() ? SAVEFILE_ERR_NONE : SAVEFILE_ERR_NOT_IDLE;
+	if (mem_write_u32(TOD_SAVE_MANAGER + TOD_SM_STATE, TOD_SS_HELD) != ST_OK) {
+		plat_log("tod: the hold refused, the save system's state could not be written");
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NO_SYSTEM);
+	}
+	if (tod_sf_holding()) return SAVEFILE_ERR_NONE;
+
+	/* The game's own request got in between the look and the write: it is the game's. */
+	ok = ss_read(h);
+	return ss_refuse(h, ok, "the hold (a request of the game's came first)");
 }
 
 static void tod_sf_release(void)
@@ -148,7 +206,12 @@ static u8 tod_sf_load(void)
 	static const u8 gone[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFE };
 	const u32 lt = TOD_SAVE_MANAGER + TOD_SM_LOAD_THREAD;
 
-	if (!tod_sf_holding()) return SAVEFILE_ERR_NOT_IDLE;
+	if (!tod_sf_holding()) {
+		u8 h[TOD_SM_HEAD_LEN];
+		int ok = ss_read(h);
+
+		return ss_refuse(h, ok, "the load (the hold was gone)");
+	}
 
 	if (mem_write_u32(lt + TOD_ST_STATE, TOD_LT_READ_OK) != ST_OK ||
 	    mem_write(lt + TOD_ST_ID, gone, sizeof(gone)) != ST_OK ||
@@ -158,8 +221,11 @@ static u8 tod_sf_load(void)
 		/* Nothing goes to the game half set up: the thread as it was, the hold kept. */
 		mem_write_u32(lt + TOD_ST_STATE, 0);
 		mem_write_u32(lt + TOD_ST_ID + 4, TOD_THREAD_NONE);
-		return SAVEFILE_ERR_NOT_IDLE;
+		plat_log("tod: the load refused, a write into the save system failed; the load thread put back");
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NO_SYSTEM);
 	}
+	plat_log("tod: load handed to the game: load thread state 5, id 00000000:%08X, manager state 3",
+	         TOD_THREAD_GONE);
 	return SAVEFILE_ERR_NONE;
 }
 
@@ -179,11 +245,26 @@ static u8 tod_sf_load_poll(u16 ticks)
 	const u32 lt = TOD_SM_LOAD_THREAD;
 
 	/* A read that fails is a game that cannot be asked this tick, not an answer. */
-	if (!ss_read(h)) return ticks < TOD_LOAD_WAIT_TICKS ? 1 : SAVEFILE_HELPER_REFUSED;
+	if (!ss_read(h)) {
+		if (ticks < TOD_LOAD_WAIT_TICKS) return 1;
+		plat_log("tod: the load was not taken in %d ticks, and the save system cannot be read", (int)ticks);
+		savefile_why(SAVEFILE_WHY_NOT_TAKEN);
+		return SAVEFILE_HELPER_REFUSED;
+	}
 
 	if (ss_word(h, lt + TOD_ST_ID) == 0 && ss_word(h, lt + TOD_ST_ID + 4) == TOD_THREAD_GONE) {
 		if (ticks < TOD_LOAD_WAIT_TICKS) return 1;
+		/*
+		 * The game's update never got past this id: the poll is not running
+		 * (no frame of GameState_Dispatch), the manager's state is no longer
+		 * 3, or sys_ppu_thread_get_priority answered something else than ESRCH
+		 * for it. The words say which of the first two.
+		 */
+		plat_log("tod: the load was not taken in %d ticks: manager state 0x%08X, load thread state %d, "
+		         "id still 00000000:%08X; put back", (int)ticks, ss_word(h, TOD_SM_STATE),
+		         (int)ss_word(h, lt + TOD_ST_STATE), TOD_THREAD_GONE);
 		load_put_back();
+		savefile_why(SAVEFILE_WHY_NOT_TAKEN);
 		return SAVEFILE_HELPER_REFUSED;
 	}
 
@@ -210,14 +291,26 @@ static u8 tod_sf_aside_ok(void)
 	u32 i;
 
 	if (mem_read(TOD_SAVE_IMAGE, head, sizeof(head)) != ST_OK ||
-	    mem_read(TOD_SAVE_IMAGE + TOD_SAVE_LEVEL_OFF, tail, sizeof(tail)) != ST_OK)
-		return SAVEFILE_ERR_NOT_IDLE;
+	    mem_read(TOD_SAVE_IMAGE + TOD_SAVE_LEVEL_OFF, tail, sizeof(tail)) != ST_OK) {
+		plat_log("tod: the save image cannot be read");
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NO_SYSTEM);
+	}
 
 	for (i = 0; i < 4; i++) {
-		if (be32_get(head + i * TOD_WEAPON_STRIDE) != i) return SAVEFILE_ERR_NO_SAVE;
+		if (be32_get(head + i * TOD_WEAPON_STRIDE) != i) {
+			plat_log("tod: not a ToD save: weapon slot %d's id is 0x%08X, not %d (an encrypted GAME.SAV, or another file)",
+			         (int)i, be32_get(head + i * TOD_WEAPON_STRIDE), (int)i);
+			return refuse(SAVEFILE_ERR_NO_SAVE, SAVEFILE_WHY_NOT_A_SAVE);
+		}
 	}
-	if (be32_get(tail) >= TOD_NPLANETS) return SAVEFILE_ERR_NO_SAVE;
-	if (be32_get(tail + 4) > TOD_MAX_CHALLENGE) return SAVEFILE_ERR_NO_SAVE;
+	if (be32_get(tail) >= TOD_NPLANETS) {
+		plat_log("tod: not a ToD save: its level is %d, and the game has %d", (int)be32_get(tail), (int)TOD_NPLANETS);
+		return refuse(SAVEFILE_ERR_NO_SAVE, SAVEFILE_WHY_NOT_A_SAVE);
+	}
+	if (be32_get(tail + 4) > TOD_MAX_CHALLENGE) {
+		plat_log("tod: not a ToD save: its challenge mode is %d, over %d", (int)be32_get(tail + 4), (int)TOD_MAX_CHALLENGE);
+		return refuse(SAVEFILE_ERR_NO_SAVE, SAVEFILE_WHY_NOT_A_SAVE);
+	}
 	return SAVEFILE_ERR_NONE;
 }
 
@@ -261,29 +354,62 @@ const struct sf_desc *tod_savefile_desc(u8 game_id)
  * struct game_api's savefile_ready. The save system first: idle, or in qwark's
  * own hold. Then a set-aside (a STORE) needs a save, which the game has once it
  * has saved into a slot or loaded one in this process (TOD_SM_SLOT, which an
- * autosave needs too), and a load or a RESTORE needs gameplay with no planet
- * load queued and the front end not on its way out: the frames the game's own
- * load from its pause menu runs in. SaveManager_onLoaded's LoadLevel then
- * fades out and loads like any planet load.
+ * autosave needs too); savefile.c lets one through without a slot when qwark
+ * restored the buffer itself. A load or a RESTORE needs no slot at all, since
+ * it brings its own save: it needs what the planet load needs (tod_planet_load:
+ * g_gameState 4, a level up, no planet load queued) and the title screen gone.
+ * SaveManager_onLoaded's LoadLevel(level, 1, 0) then only writes the planet
+ * load request, which fades out and loads like any planet load.
+ *
+ * Build 57 also asked g_frontEndExitRequested, for "the front end on its way
+ * out". FrontEnd_requestLevel sets it, and nothing ever clears it (its three
+ * references are that write and FrontEnd_Update's two reads), so once a boot
+ * had left the title it read 1 in every frame of gameplay after, and every
+ * RESTORE and Load set-aside was refused with error 6. g_inFrontEnd, which
+ * FrontEnd_Exit clears, is the title test, and a front end on its way out is
+ * one that is still up.
+ *
+ * Every refusal logs the check that failed and the words it saw.
  */
 u8 tod_savefile_ready(u8 what)
 {
 	u8 h[TOD_SM_HEAD_LEN];
-	u32 state = 0, request = 0, slot;
-	u8 leaving = 0;
+	u32 state = 0, request = 0, root = 0, slot;
+	u8 front = 0;
+	const char *what_s = what == GAME_SF_SET_ASIDE ? "set-aside" : what == GAME_SF_LOAD ? "load" : "restore";
+	int ok = ss_read(h);
 
-	if (!ss_read(h) || !ss_idle(h)) return SAVEFILE_ERR_NOT_IDLE;
+	if (!ok || !ss_idle(h)) return ss_refuse(h, ok, what_s);
 
 	if (what == GAME_SF_SET_ASIDE) {
 		slot = ss_word(h, TOD_SM_SLOT);
-		if ((slot & 0x80000000u) != 0) return SAVEFILE_ERR_NO_SAVE;
+		if (slot == TOD_NO_SLOT) {
+			plat_log("tod: set-aside refused, the game has not saved into a slot or loaded one since it started (slot -1)");
+			return refuse(SAVEFILE_ERR_NO_SAVE, SAVEFILE_WHY_NO_SLOT);
+		}
 		return tod_sf_aside_ok();
 	}
 
 	if (mem_read_u32(TOD_GAME_STATE, &state) != ST_OK ||
 	    mem_read_u32(TOD_LOAD_REQUEST, &request) != ST_OK ||
-	    mem_read_u8(TOD_FRONTEND_EXIT, &leaving) != ST_OK) return SAVEFILE_ERR_NOT_IDLE;
-	if (state != TOD_STATE_GAMEPLAY || request != 0xFFFFFFFFu || leaving != 0) return SAVEFILE_ERR_NOT_IDLE;
+	    mem_read_u32(TOD_LEVEL_OBJ, &root) != ST_OK ||
+	    mem_read_u8(TOD_FRONT_END, &front) != ST_OK) {
+		plat_log("tod: %s refused, the game's state cannot be read", what_s);
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY);
+	}
+	if (front != 0) {
+		plat_log("tod: %s refused, the title screen is up (g_inFrontEnd %d, g_gameState %d)", what_s, (int)front, (int)state);
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_TITLE);
+	}
+	if (state != TOD_STATE_GAMEPLAY || root == 0) {
+		plat_log("tod: %s refused, not in gameplay (g_gameState %d, wants %d; level object 0x%08X)",
+		         what_s, (int)state, TOD_STATE_GAMEPLAY, root);
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY);
+	}
+	if (request != 0xFFFFFFFFu) {
+		plat_log("tod: %s refused, a planet load is queued (g_planetLoadRequest %d)", what_s, (int)request);
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_PLANET_LOAD);
+	}
 	return SAVEFILE_ERR_NONE;
 }
 

@@ -2,7 +2,7 @@
 
 Game 5, NPEA00452 v01.00 (EBOOT.ELF md5 df9d68ada99b3f44ffe798ce03a1549c). Written 2026-10-27, from the shipped executable in Ghidra (DL-ghidra:/NPEA00452.ELF), its disassembly, and the GAME.SAV files a user's RPCS3 keeps. **Verdict: viable, and implemented.** It needs no code in the game at all: everything is data writes, so a console and RPCS3 behave the same, with no ui.pak entry and no RPCS3 patch.
 
-Nothing below has run on a console or a real RPCS3 yet. Section 6 lists the live checks.
+Build 57 ran on a console (CFW, 2026-10-27): STOREs and the set-aside worked, and every load was refused with error 6 and nothing in qwark.log. Section 8 has why and the fix (revision 1.29, pending). Nothing has run under a real RPCS3 yet. Section 6 lists the live checks.
 
 ## 1. What the user gets
 
@@ -126,7 +126,8 @@ Alternatives considered and dropped:
   - **aside_ok**: a load is refused with error 7 unless the image is a ToD save: weapon slot i's id is i for i < 4, the level is below 19 and challenge mode at most 1000.
   - SAVEFILE_INFO says installed on every platform and running while the save system is up; SAVEFILE_PATCH answers UNSUPPORTED (nothing to patch). The RPCS3 presence look is skipped.
   - `aside_file`: SAVE_ASIDE and LOAD_ASIDE are a STORE into and a RESTORE of `set-aside.sav` beside the categories. A Load set-aside with no file is BUSY with error 7.
-- **Readiness** (`tod_savefile_ready`): the save system idle (state 1, or qwark's hold; no thread on any of the three; no autosave waiting outside the hold). A set-aside or STORE needs a save: `slot` != -1 (the game has saved into a slot or loaded one this boot) or a save qwark itself restored into the image. A load needs gameplay (`g_gameState` 4) with no planet load queued and the front end not on its way out.
+- **Readiness** (`tod_savefile_ready`): the save system idle (state 1, or qwark's hold; no thread on any of the three; no autosave waiting outside the hold that can run, which needs a slot). A set-aside or STORE needs a save: `slot` != -1 (the game has saved into a slot or loaded one this boot) or a save qwark itself restored into the image. A load or a RESTORE needs no slot, since it brings its own save; it needs what the planet load needs (`g_gameState` 4, a level object, no planet load queued) and the title screen gone (`g_inFrontEnd` 0).
+- **Every refusal logs** the check that failed and the words it read, as a `tod:` line, and the core adds a `savefile:` line with the error and SAVEFILE_INFO's `why` (revision 1.29, pending), which the client turns into words.
 - **Recovery**: on the way into a session `tod_save_recover` gives back a hold, or puts back a load thread, that a qwark which went away (a crash, a module update) left in the game; otherwise the game would never save again.
 - The two ACTIONs are features 40 and 41 in a fourth group, "Savefile"; `load_setaside` (the combo) is Load set-aside.
 
@@ -160,12 +161,32 @@ Nothing ToD-specific is needed: the Save files panel keys on the two flagged ACT
 4. Set aside, play to the next checkpoint (an autosave), Load set-aside: the set-aside save, not the checkpoint.
 5. Open the game's own save screen in the pause menu while a STORE is copying (under RPCS3, where the copy is slower): the game's screen does not open or qwark stops with error 6; either way, both saves still work afterwards.
 6. Kill qwark-rpcs3 during a RESTORE's copy, start it again: "tod: the save system was still held; given back" in its log, and the game autosaves again.
-7. A load from the title screen: refused with error 6, or (if the front end is state 4) the front end's direct load.
+7. A load from the title screen: refused with error 6 and `why` 3 ("tod: restore refused, the title screen is up").
+8. Revision 1.29, on the console: boot, Continue from the title, RESTORE in gameplay: the fade and the save's planet. Then the same after a new game that has never saved, and after a load from the game's own menu. If one is refused, qwark.log's `tod:` line names the check and its words; if the load is put back after five seconds ("the load was not taken in 600 ticks"), lv2 did not answer ESRCH for the id.
 
 ## 7. Ghidra
 
 Program DL-ghidra:/NPEA00452.ELF, saved.
 
+- Revision 1.29: the labels `SaveSystem_request_opJumpTable` (0x6BB7C0, `int[7]`, `SaveSystem_request`'s cases by op) and `GameState_Dispatch_stateJumpTable` (0x4C5F3C, `int[14]`, by `g_gameState` + 2).
+
 - Structs `/ToD/Save/ToDSaveManager` (0xB03F8), `ToDSaveThread` (0x18), `ToDDeleteThread` (0x10); `ToDSaveManager` applied at 0x1029C560, `ToDSaveManager *` at 0x1074D400.
 - Globals: `g_saveManager`, `g_saveSystem`, `vtbl_SaveManager`, `vtbl_SaveSystem`, `g_saveTitleId` (0x10387050), `g_inFrontEnd` (0x1037A459), `g_frontEndExitRequested` (0x1037A458), `s_SaveDirFormat` (0x1002A150).
 - Functions: `SaveManager_setupBuffers/copyForSave/onLoaded/onOperationDone/getFileLevelInfo/dtor/deletingDtor`, `SaveData_init`, `SaveData_initHeroBlock`, `SaveData_staticInitDestroy`, `SaveSystem_ctor/request/update/updateGlobal/waitIdle/fillListSettings/slotFromDirName/requestSaveUI/requestLoadUI/requestDelete`, the cross-TOC stubs `SaveSystem_request_xtoc`, `SaveSystem_request_xtoc0`, `SaveSystem_updateGlobal_xtoc`, `SaveThread_startListSave/startAutoSave/poll/isRunning/listSaveMain/autoSaveMain`, `LoadThread_startListLoad/startAutoLoad/startCheck/poll/isRunning/listLoadMain/autoLoadMain/checkMain/listCallback/fileCallback/checkFixedCallback/statCallback/autoFixedCallback`, `DeleteThread_start/main/poll/isRunning`, `MenuLua_request_save_interface/request_load_interface/save_load_is_interface_displayed`, `FrontEnd_isActive/requestExit/init/shutdown`, `StageCore_setSaveTitleId/hddGameThread/sysCacheMountThread`. Prototypes set on the main ones. 0x388730 and 0x3889F8 were first named `SaveManager_prepareSave` and `SaveManager_applyLoad` here; another agent renamed them `SaveManager_copyForSave` and `SaveManager_onLoaded` the same day, and those names are kept.
+
+## 8. Build 57 on a console: every load refused (revision 1.29, pending)
+
+The user's console (build 57 test, ID 0x17416F3D) stored two files and set one aside, and every load of them was refused with error 6, "the game can't load a save right now". qwark.log had no `savefile: restore` line, so the refusal came from `transfer_gate`'s readiness test before the copy, which logged nothing. The planet load, on the same console, worked.
+
+The two gates differed in one word. The load gate also asked `g_frontEndExitRequested` (0x1037A458) to read 0, meaning "the front end is not on its way out". That byte has three references in the executable: `FrontEnd_requestLevel` (0x3BB7A4) writes 1 to it, `LoadLevel` calls that while the front end is up (the title's continue, its load and a new game), and `FrontEnd_Update` reads it twice. Nothing ever writes 0. So after any boot that leaves the title it reads 1 for the rest of the process, and every RESTORE and Load set-aside was refused. A STORE never asked it, which is why storing worked. The simulator started the byte at 0, so no test saw it.
+
+The fix: the load gate is the planet load's (`g_gameState` 4, a level object, `g_planetLoadRequest` -1) plus `g_inFrontEnd` (0x1037A459) 0, which `FrontEnd_Exit` clears; a front end on its way out is still up. The simulator now starts every ToD boot with the exit flag at 1, as a console has it.
+
+A second refusal of the same kind, found on the way: `SaveSystem_request`'s op 4 (the autosave, its case in `SaveSystem_request_opJumpTable` 0x6BB7C0) with `slot` -1 only notes the op and returns, and leaves `autoSavePending` set. An autosave asked for while the system was busy (during qwark's own hold, or the boot check) in a boot with no slot then stays pending for good, `SaveSystem_update` asks again every frame for nothing, and the old idle test counted it: every load and store of that boot was refused with error 6 until a save from the menu. A pending autosave now counts only with a slot.
+
+The rest of the load path, re-read for the next failure:
+
+- `LoadThread_poll` (0x6EC328) compares the 64-bit thread id with 0x00000000FFFFFFFF, makes syscall 48 (`sys_ppu_thread_get_priority`) with it, and compares the answer with 0x80010005 (ESRCH); on a state of 5 it calls the vtable's +0x14, `SaveManager_onLoaded`. `LoadThread_isRunning` is the same 64-bit compare. qwark's id 0x00000000FFFFFFFE is neither, so the poll asks the kernel, and the load then rests on lv2 answering ESRCH for an id it never handed out (RPCS3 does). If it does not, qwark puts the thread back after 600 ticks with `why` 6 and logs the manager's words.
+- `GameState_Dispatch` (`GameState_Dispatch_stateJumpTable` 0x4C5F3C, `g_gameState` -2 to 11): the gameplay case (4) runs `Game_UpdateFrame` and joins the common tail, which calls `SaveSystem_updateGlobal`, so the poll runs in every gameplay frame.
+- `SaveManager_onLoaded` copies the image into `g_saveData` and calls `LoadLevel(level, 1, 0)`, which in `g_gameState` 4 only writes `g_planetLoadRequest`: the path the working planet load takes.
+- The hold (state 0x5157484C) worked on the console: every STORE took it and gave it back.

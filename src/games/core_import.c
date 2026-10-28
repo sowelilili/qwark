@@ -244,6 +244,11 @@ int qimp_savefile_set_aside(void)
 	return Q->api->x_savefile_set_aside();
 }
 
+void qimp_savefile_why(u8 why)
+{
+	Q->api->x_savefile_why(why);
+}
+
 #ifdef QWARK_EMULATOR
 int qimp_switches_present(void)
 {

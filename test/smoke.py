@@ -2766,6 +2766,8 @@ def savefile_info(c):
         "supported": body[0], "installed": body[1], "running": body[2],
         "pending": body[3], "size": size, "done": done, "total": total,
         "error": body[16],
+        # Revision 1.29 (pending): which of the game's checks `error` came from.
+        "why": body[17],
     }
 
 
@@ -5428,6 +5430,22 @@ TOD_LOAD_THREAD = TOD_SAVE_MANAGER + 0x20
 TOD_SS_HELD = 0x5157484C
 TOD_SET_ASIDE = 40
 TOD_LOAD_ASIDE = 41
+TOD_FRONTEND_EXIT = 0x1037A458
+SAVEFILE_WHY_NOT_GAMEPLAY = 1
+SAVEFILE_WHY_PLANET_LOAD = 2
+SAVEFILE_WHY_SAVING = 4
+SAVEFILE_WHY_NO_SLOT = 8
+
+
+def sim_logged(sim, needle, timeout=2.0):
+    """Whether the simulator has written a log line containing `needle` (it may take a moment to arrive)."""
+    end = time.monotonic() + timeout
+    while True:
+        if any(needle in line for line in list(sim.lines)):
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.02)
 
 
 def tod_wait_transfer(c, timeout=6.0):
@@ -5452,8 +5470,10 @@ def smoke_tod_savefile(c, sim):
     sim.send("fakesave slot -1")
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_SET_ASIDE]))
     info = savefile_info(c)
-    check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NO_SAVE,
-          "ToD: Set aside with no save yet is BUSY, error 7", (status, info))
+    check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NO_SAVE and info["why"] == SAVEFILE_WHY_NO_SLOT,
+          "ToD: Set aside with no save yet is BUSY, error 7, why 8 (no slot)", (status, info))
+    check(sim_logged(sim, "tod: set-aside refused, the game has not saved into a slot"),
+          "ToD: and qwark.log says which check")
 
     mem_write(c, TOD_BOLTS, struct.pack(">I", 1111))
     sim.send("fakesave slot 3")
@@ -5478,8 +5498,11 @@ def smoke_tod_savefile(c, sim):
 
     mem_write(c, TOD_BOLTS, struct.pack(">I", 2222))
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    # Build 57's console report: every boot leaves the title's exit flag at 1, and it refused every load.
+    mem_write(c, TOD_FRONTEND_EXIT, b"\x01")
+    mem_write(c, TOD_FRONT_END, b"\x00")
     status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
-    check(status == ST_OK, "ToD: SAVEFILE_RESTORE is accepted", status)
+    check(status == ST_OK, "ToD: SAVEFILE_RESTORE is accepted, after the title as on a console", status)
     info = tod_wait_transfer(c)
     check(info is not None and info["pending"] == 0 and info["error"] == 0, "ToD: and the game takes the load", info)
     check(mem_read_u32(c, TOD_BOLTS) == 1111 and mem_read_u32(c, TOD_LOAD_REQUEST) == 1,
@@ -5493,13 +5516,38 @@ def smoke_tod_savefile(c, sim):
     check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 1111,
           "ToD: Load set-aside loads the set-aside file", (status, info))
 
-    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 3))
-    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
-    info = savefile_info(c)
-    check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NOT_IDLE,
-          "ToD: no load outside gameplay, error 6", (status, info))
-    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    # No slot, and an autosave the game asked for that can never run: a load still goes.
+    sim.send("fakesave slot -1")
+    time.sleep(0.1)
+    mem_write(c, TOD_SM_AUTOSAVE, struct.pack(">I", 1))
+    mem_write(c, TOD_BOLTS, struct.pack(">I", 4444))
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
+    info = tod_wait_transfer(c)
+    check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 1111,
+          "ToD: a boot with no slot and a stuck autosave loads too", (status, info))
+    mem_write(c, TOD_SM_AUTOSAVE, struct.pack(">I", 0))
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+
+    # Each refusal: error 6, the `why` byte, and its qwark.log line. (The title screen's is the
+    # unit tests': raising g_inFrontEnd here would walk the autosplitter into a load from the title.)
+    for poke, undo, why, line, what in (
+            ((TOD_GAME_STATE, struct.pack(">I", 3)), (TOD_GAME_STATE, struct.pack(">I", 4)),
+             SAVEFILE_WHY_NOT_GAMEPLAY, "tod: restore refused, not in gameplay (g_gameState 3", "outside gameplay"),
+            ((TOD_LOAD_REQUEST, struct.pack(">I", 5)), (TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF"),
+             SAVEFILE_WHY_PLANET_LOAD, "tod: restore refused, a planet load is queued (g_planetLoadRequest 5)",
+             "with a planet load queued"),
+            # A save thread of the game's running (the simulator's save frame puts a state of 2 back at once).
+            ((TOD_SAVE_MANAGER + 0x08 + 12, struct.pack(">I", 0x01000123)),
+             (TOD_SAVE_MANAGER + 0x08 + 12, struct.pack(">I", 0xFFFFFFFF)),
+             SAVEFILE_WHY_SAVING, "threads save 00000000:01000123", "while the game saves")):
+        mem_write(c, *poke)
+        status, _ = c.call(OP_SAVEFILE_RESTORE, fixed32("smoke") + fixed32("tod.sav"))
+        info = savefile_info(c)
+        mem_write(c, *undo)
+        check(status == ST_BUSY and info and info["error"] == SAVEFILE_ERR_NOT_IDLE and info["why"] == why,
+              "ToD: no load %s: error 6, why %d" % (what, why), (status, info))
+        check(sim_logged(sim, line), "ToD: and qwark.log says so", line)
     sim.send("fakesave off")
 
 
@@ -5517,6 +5565,9 @@ def smoke_rpcs3_tod_savefile(c, pine):
     pine.poke(TOD_SM_AUTOSAVE, u32(0))
     pine.poke(TOD_SAVE_IMAGE, b"".join(u32(i) + bytes(16) for i in range(4)))
     pine.poke(TOD_SAVE_IMAGE + 0x906E8, u32(2) + u32(0))
+    # As a real boot leaves it once the title is gone (build 57 refused every load on this).
+    pine.poke(TOD_FRONTEND_EXIT, b"\x01")
+    pine.poke(TOD_FRONT_END, b"\x00")
     info = savefile_info(c)
     check(info is not None and info["supported"] == 1 and info["installed"] == 1,
           "rpcs3: ToD's SAVEFILE_INFO says installed with no patch", info)

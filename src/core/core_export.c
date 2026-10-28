@@ -60,6 +60,7 @@ const struct core_api core_api_table = {
 	.x_savefile_load_ready = savefile_load_ready,
 	.x_savefile_load_refusals = savefile_load_refusals,
 	.x_savefile_set_aside = savefile_set_aside,
+	.x_savefile_why = savefile_why,
 #ifdef QWARK_EMULATOR
 	.x_switches_present = switches_present,
 #endif

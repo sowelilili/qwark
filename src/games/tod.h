@@ -130,6 +130,7 @@
 #define TOD_ST_STATE         0x10u        /* s32; a load thread's 5 is "file read", which the poll applies */
 #define TOD_SM_STATE         0xE0u        /* s32: 0 not up, 1 idle, 2 saving, 3 loading, 4 deleting */
 #define TOD_SM_SLOT          0xECu        /* s32, the slot last saved or loaded, -1 none (autosave needs one) */
+#define TOD_NO_SLOT          0xFFFFFFFFu  /* `slot` -1: SaveSystem_request's op 4 then does nothing, autoSavePending left set (dis) */
 #define TOD_SM_RESULT        0xF0u        /* s32, what finished: 1 saved, 3 or 4 loaded */
 #define TOD_SM_AUTOSAVE      0x104u       /* s32, an autosave asked for while the system was busy */
 #define TOD_SM_HEAD_LEN      0x108u       /* everything above, one read */
@@ -143,7 +144,7 @@
 #define TOD_LT_READ_OK       5u
 #define TOD_THREAD_NONE      0xFFFFFFFFu  /* the low word; the high word is 0 */
 #define TOD_THREAD_GONE      0xFFFFFFFEu  /* no thread: sys_ppu_thread_get_priority answers ESRCH (INFER) */
-#define TOD_FRONTEND_EXIT    0x1037A458u  /* g_frontEndExitRequested, u8 (dec) */
+#define TOD_FRONTEND_EXIT    0x1037A458u  /* g_frontEndExitRequested, u8: set by FrontEnd_requestLevel and never cleared (xrefs) */
 #define TOD_MAX_CHALLENGE    1000u
 
 /* Lua (REPORT-tod-lua section 2). */

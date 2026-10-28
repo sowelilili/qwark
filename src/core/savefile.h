@@ -127,6 +127,25 @@
 #define SAVEFILE_ERR_NO_PAK     8
 
 /*
+ * Revision 1.29 (pending): SAVEFILE_INFO's `why`, the byte after `error`
+ * (pad[0] before). Which of the game's checks a refusal, or a copy or a load
+ * that stopped, came from, so a client can say it in words rather than only
+ * "not idle". It is cleared with `error` and set only by a game whose save
+ * system qwark drives itself (struct sf_driver, Tools of Destruction today);
+ * every other game leaves it 0, which says nothing more than `error` does.
+ */
+#define SAVEFILE_WHY_NONE         0
+#define SAVEFILE_WHY_NOT_GAMEPLAY 1  /* 6: not in gameplay (g_gameState, or no level up) */
+#define SAVEFILE_WHY_PLANET_LOAD  2  /* 6: a planet load is queued or under way */
+#define SAVEFILE_WHY_TITLE        3  /* 6: the title screen (the front end is up) */
+#define SAVEFILE_WHY_SAVING       4  /* 6: the game's save system is saving, loading or deleting */
+#define SAVEFILE_WHY_NO_SYSTEM    5  /* 6: the game's save system is not up, or not the one qwark knows */
+#define SAVEFILE_WHY_NOT_TAKEN    6  /* 6: the game did not take the load within its wait */
+#define SAVEFILE_WHY_NOT_A_SAVE   7  /* 7: the file, or the buffer, is not a save of this game */
+#define SAVEFILE_WHY_NO_SLOT      8  /* 7: the game has not saved or loaded a slot since it started */
+#define SAVEFILE_WHY_HOLD_LOST    9  /* 6: a save or load of the game's own started under the copy */
+
+/*
  * What the helper leaves in a request byte when it drops a request for the same
  * reason - the belt to qwark's braces, because qwark asks on its own tick and
  * the game gets frames of its own between that and the one the helper runs on.
@@ -264,6 +283,20 @@ int savefile_patch(u8 *out, u32 cap, u32 *len);
  * until the next set-aside or load is asked for.
  */
 void savefile_transfer(u32 *done, u32 *total, u8 *error);
+
+/*
+ * Revision 1.29 (pending): SAVEFILE_INFO's `why` (SAVEFILE_WHY_*), and the
+ * call a game's save-system driver notes it with, tick thread, just before it
+ * answers a refusal. Both live beside `error` and are cleared with it. A
+ * release has no game that sets it, and answers 0.
+ */
+#if QWARK_HAS_TOD
+void savefile_why(u8 why);
+u8   savefile_why_now(void);
+#else
+#define savefile_why(why) ((void)(why))
+#define savefile_why_now() ((u8)0)
+#endif
 
 /* SAVEFILE_READ and SAVEFILE_WRITE, bounded to the aside buffer. */
 int savefile_read(u32 offset, u32 len, u8 *out, u32 *outlen);

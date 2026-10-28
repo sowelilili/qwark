@@ -253,6 +253,18 @@ static void seed_tod_save(void)
 	poke32(TOD_SAVE_MANAGER + TOD_SM_AUTOSAVE, 0);
 	tod_save_header(TOD_SAVE_DATA, 1);
 	tod_save_header(TOD_SAVE_IMAGE, 1);
+
+	/*
+	 * Build 57's refusal: every real boot reaches gameplay through the title's
+	 * LoadLevel, whose FrontEnd_requestLevel sets g_frontEndExitRequested, and
+	 * nothing ever clears it again. The title itself is gone (g_inFrontEnd 0).
+	 */
+	{
+		u8 one = 1, zero = 0;
+
+		mem_access(TOD_FRONTEND_EXIT, &one, 1, 1);
+		mem_access(TOD_FRONT_END, &zero, 1, 1);
+	}
 }
 
 static u8 g_tod_copy[TOD_SAVE_SIZE];

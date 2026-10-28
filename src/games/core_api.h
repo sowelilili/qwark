@@ -70,6 +70,7 @@ struct core_api {
 	int (*x_savefile_load_ready)(void);
 	u32 (*x_savefile_load_refusals)(void);
 	int (*x_savefile_set_aside)(void);
+	void (*x_savefile_why)(u8 why);
 #ifdef QWARK_EMULATOR
 	int (*x_switches_present)(void);
 #endif

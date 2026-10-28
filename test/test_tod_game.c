@@ -1225,6 +1225,174 @@ static void test_tod_savefile(void)
 	host_set_emulator(0);
 }
 
+static int sf_trigger(u8 id)
+{
+	const struct game_api *g = session_game();
+
+	return g != NULL ? g->trigger(id) : ST_NOT_INGAME;
+}
+
+/* The refusal a RESTORE of runs/a.sav gets now: its error, with `why` and a log line to match. */
+static int sf_refused(const char *log, u8 err, u8 why)
+{
+	u8 installed, running, pending, error = 0;
+	u32 size;
+	int rc;
+
+	host_log_clear();
+	rc = savefile_restore("runs", "a.sav");
+	sf_info(&installed, &running, &pending, &size, &error);
+	return rc == ST_BUSY && error == err && savefile_why_now() == why && host_log_seen(log) &&
+	       rd32(SM(TOD_SM_STATE)) != TOD_SS_HELD;
+}
+
+/*
+ * Build 57's console report: STORE worked, every load was refused with error 6
+ * and logged nothing. The gate asked g_frontEndExitRequested, which the title
+ * sets on its way out and nothing clears. Here: loads after every kind of
+ * boot, and every refusal with its `why` and its qwark.log line.
+ */
+static void test_tod_savefile_boots(void)
+{
+	u8 installed = 0, running = 0, pending = 0, error = 0;
+	u32 size = 0, i;
+
+	group("ToD: savefile loads after any boot, and why a refusal was (revision 1.29, pending)");
+	check(boot_tod(), "ToD boots");
+	tick(4);
+
+	/* The user's boot: through the title's continue, so the exit flag is 1 for good. */
+	check(rd8(TOD_FRONTEND_EXIT) == 1 && rd8(TOD_FRONT_END) == 0,
+	      "after the title, g_frontEndExitRequested still reads 1 and g_inFrontEnd 0");
+	wr32(TOD_BOLTS, 77);
+	host_log_clear();
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE in gameplay after the title is accepted");
+	check(sf_settle(1, 300) && rd32(TOD_BOLTS) == 1000, "and loads (build 57 refused it with error 6)");
+	check(host_log_seen("load handed to the game: load thread state 5, id 00000000:FFFFFFFE, manager state 3"),
+	      "the load is logged as it goes out");
+
+	/* A boot with no slot at all, and an autosave of the game's left waiting for good. */
+	host_fake_tod_saved(0xFFFFFFFFu);
+	wr32(SM(TOD_SM_AUTOSAVE), 1);
+	wr32(TOD_BOLTS, 78);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	check(savefile_restore("runs", "a.sav") == ST_OK, "no slot, an autosave pending that can never run: a RESTORE is accepted");
+	check(sf_settle(1, 300) && rd32(TOD_BOLTS) == 1000, "and loads");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_BOLTS, 79);
+	check(sf_trigger(TF_LOAD_ASIDE) == ST_OK && sf_settle(1, 300) && rd32(TOD_BOLTS) == 1000,
+	      "Load set-aside too");
+	wr32(SM(TOD_SM_AUTOSAVE), 1);
+	check(savefile_store("runs", "c.sav") == ST_OK && sf_settle(0, 200),
+	      "and a STORE of the save qwark restored, with no slot");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NONE, "cleanly");
+	wr32(SM(TOD_SM_AUTOSAVE), 0);
+
+	/* Each refusal: error, why, and the line in qwark.log. */
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr8(TOD_FRONT_END, 1);
+	check(sf_refused("tod: restore refused, the title screen is up (g_inFrontEnd 1", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_TITLE), "the title screen: error 6, why 3, logged");
+	check(host_log_seen("savefile: restore refused by the game, error 6 (why 3)"), "and the core's line says so too");
+	wr8(TOD_FRONT_END, 0);
+
+	wr32(TOD_GAME_STATE, 3);
+	check(sf_refused("tod: restore refused, not in gameplay (g_gameState 3, wants 4", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_NOT_GAMEPLAY), "another game state: why 1, logged with its value");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LEVEL_OBJ, 0);
+	check(sf_refused("level object 0x00000000", SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY),
+	      "no level up: why 1");
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+
+	wr32(TOD_LOAD_REQUEST, 4);
+	check(sf_refused("tod: restore refused, a planet load is queued (g_planetLoadRequest 4)", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_PLANET_LOAD), "a planet load queued: why 2");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+
+	wr32(SM(TOD_SM_STATE), 2);
+	check(sf_refused("tod: restore refused, the save system is busy: state 0x00000002", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_SAVING), "the game saving: why 4, with the manager's words");
+	wr32(SM(TOD_SM_STATE), TOD_SS_IDLE);
+	host_fake_tod_saved(2);
+	wr32(SM(TOD_SM_AUTOSAVE), 1);
+	check(sf_refused("autosave 1, slot 2", SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_SAVING),
+	      "an autosave about to run, with a slot: why 4");
+	wr32(SM(TOD_SM_AUTOSAVE), 0);
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), 0x01000123u);
+	check(sf_refused("load 00000000:01000123", SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_SAVING),
+	      "a load thread of the game's running: why 4");
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), TOD_THREAD_NONE);
+
+	wr32(TOD_SAVE_SYSTEM, 0);
+	check(sf_refused("tod: restore refused, the save system is not up (g_saveSystem 0x00000000", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_NO_SYSTEM), "no save system: why 5");
+	wr32(TOD_SAVE_SYSTEM, TOD_SAVE_MANAGER);
+
+	/* A set-aside with no slot, and nothing of qwark's in the buffer: why 8. */
+	check(quit() && boot_tod(), "a fresh boot");
+	tick(4);
+	host_log_clear();
+	check(sf_trigger(TF_SET_ASIDE) == ST_BUSY && savefile_why_now() == SAVEFILE_WHY_NO_SLOT &&
+	      host_log_seen("tod: set-aside refused, the game has not saved into a slot or loaded one since it started"),
+	      "Set aside with no slot: error 7, why 8, logged");
+
+	/* The file is no save of ToD: why 7, the failing word logged. */
+	host_log_clear();
+	check(savefile_restore("runs", "junk.sav") == ST_OK && sf_settle(1, 100), "a junk file's RESTORE runs and stops");
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NO_SAVE && savefile_why_now() == SAVEFILE_WHY_NOT_A_SAVE &&
+	      host_log_seen("tod: not a ToD save: weapon slot 0's id is 0x5A5A5A5A"),
+	      "error 7, why 7, and the word that is wrong");
+
+	/* A missing file and one of the wrong size are the core's, logged too. */
+	host_log_clear();
+	check(savefile_restore("runs", "none.sav") == ST_NOT_FOUND && host_log_seen("savefile: restore refused, no such file"),
+	      "a missing file is logged");
+	{
+		plat_file_t f;
+		check(plat_file_open(QWARK_SAVEDIR "/" TOD_TITLE "/runs/short.sav", PLAT_OPEN_WRITE, &f) == 0 &&
+		      plat_file_write(f, g_sf_buf, 100) == 0, "a short file is written");
+		plat_file_close(f);
+	}
+	check(savefile_restore("runs", "short.sav") == ST_BAD_ARG &&
+	      host_log_seen("short.sav is 100 bytes and a save of this game is 591600"), "and a short one");
+
+	/* A load the game's update never takes: why 6, logged with the manager's words. */
+	host_log_clear();
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE with the game's update stopped");
+	for (i = 0; i < 800; i++) {
+		tick(1);
+		sf_info(&installed, &running, &pending, &size, &error);
+		if (pending == 0) break;
+	}
+	check(error == SAVEFILE_ERR_NOT_IDLE && savefile_why_now() == SAVEFILE_WHY_NOT_TAKEN &&
+	      host_log_seen("tod: the load was not taken in 600 ticks: manager state 0x00000003, load thread state 5"),
+	      "not taken: error 6, why 6, logged");
+	host_fake_tod_save_frame();
+
+	/* A load of the game's own under the copy: why 9. */
+	host_log_clear();
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE starts");
+	wr32(SM(TOD_SM_STATE), 3);
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), 0x01000123u);
+	tick(1);
+	sf_info(&installed, &running, &pending, &size, &error);
+	check(error == SAVEFILE_ERR_NOT_IDLE && savefile_why_now() == SAVEFILE_WHY_HOLD_LOST &&
+	      host_log_seen("savefile: the copy stopped at") && host_log_seen("transfer failed, error 6 (why 9)"),
+	      "the hold lost: error 6, why 9, logged");
+	wr32(SM(TOD_SM_LOAD_THREAD + TOD_ST_ID + 4), TOD_THREAD_NONE);
+	wr32(SM(TOD_SM_STATE), TOD_SS_IDLE);
+
+	/* The next request starts with no reason. */
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	check(savefile_restore("runs", "a.sav") == ST_OK && savefile_why_now() == SAVEFILE_WHY_NONE,
+	      "a request that goes out clears `why`");
+	check(sf_settle(1, 300), "and settles");
+	check(quit(), "the game quits");
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -1233,6 +1401,7 @@ void test_tod_game(void)
 	test_tod_lua_console();
 	test_tod_lua_rpcs3();
 	test_tod_savefile();
+	test_tod_savefile_boots();
 	quit();
 	check(boot_tod(), "ToD again, for the autosplitter");
 	test_tod_autosplit_rows();

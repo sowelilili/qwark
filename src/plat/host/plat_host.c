@@ -220,9 +220,49 @@ void plat_log(const char *fmt, ...)
 	va_end(args);
 }
 
+/*
+ * The last LOG_KEEP lines, whether or not they are printed, for the tests
+ * (host_log_seen). Any thread logs, so under a lock of their own.
+ */
+#define LOG_KEEP     64
+#define LOG_LINE_MAX 320
+
+static char g_log_kept[LOG_KEEP][LOG_LINE_MAX];
+static u32 g_log_next;
+static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void host_log_clear(void)
+{
+	pthread_mutex_lock(&g_log_lock);
+	memset(g_log_kept, 0, sizeof(g_log_kept));
+	g_log_next = 0;
+	pthread_mutex_unlock(&g_log_lock);
+}
+
+int host_log_seen(const char *needle)
+{
+	u32 i;
+	int found = 0;
+
+	pthread_mutex_lock(&g_log_lock);
+	for (i = 0; i < LOG_KEEP && !found; i++) {
+		if (g_log_kept[i][0] != 0 && strstr(g_log_kept[i], needle) != NULL) found = 1;
+	}
+	pthread_mutex_unlock(&g_log_lock);
+	return found;
+}
+
 void plat_vlog(const char *fmt, va_list args)
 {
 	char ts[16];
+	va_list copy;
+
+	va_copy(copy, args);
+	pthread_mutex_lock(&g_log_lock);
+	vsnprintf(g_log_kept[g_log_next % LOG_KEEP], LOG_LINE_MAX, fmt, copy);
+	g_log_next++;
+	pthread_mutex_unlock(&g_log_lock);
+	va_end(copy);
 
 	if (!g_log_on) return;
 
