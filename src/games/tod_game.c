@@ -194,7 +194,8 @@ static void tod_on_quit(void)
 
 static void tod_init(void)
 {
-	/* Nothing to set up: every field starts at 0, as the core leaves the area. */
+	/* Every field starts at 0, as the core leaves the area; Fast loads' patch is the panel's. */
+	tod_panel_init();
 }
 
 /* -------------------------------------------------------------- describe */
@@ -222,13 +223,23 @@ static const char * const tod_readouts[] = {
 #define LV FEATURE_FLAG_LIVE
 #define SA FEATURE_FLAG_SAVE_ASIDE
 #define LA FEATURE_FLAG_LOAD_ASIDE
+#define WC FEATURE_FLAG_WRITES_CODE
 
 /*
  * The ids are tod.h's; 0 to 3 are reserved for the proof of concept's rows.
- * The cheats are a word of the game's own each, and none writes code: they
- * work under RPCS3 as they do on a console. Three are LIVE; Fast loads (17)
- * is not, as the other games' is not, so it can apply itself at boot: the
- * game puts the word back to 5 seconds on every boot.
+ * The cheats but one are a word of the game's own each and write no code:
+ * they work under RPCS3 as they do on a console. Fast loads (17) is
+ * WRITES_CODE since 2026-10-28 (the load screen's cut, tod.h), a patch on a
+ * console and its code switch's flag byte under RPCS3.
+ *
+ * 2026-10-28: only God Ratchet (16) is LIVE, read back out of the proxy
+ * handle's byte, which the game itself overwrites, as RaC1's goodies are.
+ * Infinite ammo (8) and Infinite health (9) are not, as the other games' ammo
+ * and health cheats are not, so like Fast loads they can apply themselves at
+ * boot ("on boot", config's <title>.auto.<label>): each is a word only qwark
+ * writes (Lua's hero_set_infinite_ammo writes g_infiniteAmmo too, and no
+ * script of the game calls it), zero at every boot, so qwark's own bit says
+ * what it holds. The ammo hold follows the game's word, whoever wrote it.
  *
  * 2026-10-27, the user's first hardware test: id 9, the game's no-damage word,
  * is "Infinite health" (it was "God Ratchet"), and God Ratchet is the old
@@ -239,9 +250,9 @@ static const char * const tod_readouts[] = {
  */
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
-	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Fast loads" },
-	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Infinite ammo" },
-	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "Infinite health" },
+	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
+	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
+	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
 
 	{ TF_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
@@ -263,6 +274,7 @@ static const struct feature_desc tod_features[] = {
 #undef LV
 #undef SA
 #undef LA
+#undef WC
 
 static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),

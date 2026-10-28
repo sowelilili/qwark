@@ -3658,6 +3658,122 @@ def check_rac1(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
+# ------------------------------------------------- Tools of Destruction (2026-10-28)
+
+TOD_TOC = 0x008AB078            # LoadScreen_Update's TOC range (its descriptor's r2)
+
+
+def check_tod(ok, elf):
+    """
+    2026-10-28: Tools of Destruction's Fast loads (src/games/tod.h,
+    TOD_FASTLOAD_AT). The console's seventeen words of LoadScreen_Update
+    (tod_panel.c) and the code switch (switches_bins.c, sw_tod.s), against
+    NPEA00452.ELF: the words they replace are the game's as tod.h describes
+    them, every TOC word and function they reach is what they take it for,
+    the switch's trampoline is the console's words with its branches out
+    pointed at the same places, its cave a dead function nothing names, and its
+    flag byte past the RW segment's BSS, in its page, where nothing points.
+    """
+    print("\nNPEA00452 Fast loads (the load screen's cut)")
+
+    panel = open(os.path.join(QWARK, "src", "games", "tod_panel.c"), encoding="utf-8").read()
+    m = re.search(r"tod_fastload_words\[\] = \{(.*?)\};", panel, re.S)
+    words = [(int(a, 16), int(w, 16)) for a, w in
+             re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
+    hdr = dict((k, int(v, 0)) for k, v in
+               re.findall(r"^#define\s+(\w+)\s+(0x[0-9A-Fa-f]+|\d+)u?\b",
+                          open(os.path.join(QWARK, "src", "games", "tod.h"), encoding="utf-8").read(), re.M))
+    at = hdr.get("TOD_FASTLOAD_AT")
+    ok(len(words) == 17 and len(words) == hdr.get("TOD_FASTLOAD_NWORDS") and at == 0x0025E588 and
+       all(a == at + 4 * i for i, (a, _) in enumerate(words)),
+       "tod_panel.c's seventeen words run from TOD_FASTLOAD_AT, 0x25E588")
+    if len(words) != 17 or at is None:
+        return
+
+    # The function they sit in, as tod.h says it is.
+    ok(elf.word(0x00883C38) == 0x0025E560 and elf.word(0x00883C3C) == TOD_TOC,
+       "LoadScreen_Update (0x25E560) runs with r2 0x8AB078, its descriptor's")
+    ok(elf.word(0x0025E584) == 0x2C000000 | (7 << 23) and elf.word(0x0025E580) == 0x80030058,
+       "cr7 at the patch is the cinematic player's state (+0x58) against 0")
+    ok(elf.word(at) == 0x409E0074 and branch_target(at, elf.word(at)) == 0x0025E5FC,
+       "the first word replaced is the game's bne cr7 to the epilogue at 0x25E5FC")
+    ok(elf.word(0x0025E5FC) == 0xE8810120 and elf.word(0x0025E610) == 0x4E800020,
+       "0x25E5FC is the epilogue: ld r4, 0x120(r1) .. blr")
+    ok(elf.word(0x0025E614) == 0x7FE3FB78 and branch_target(0x0025E618, elf.word(0x0025E618)) == 0x0025DC20 and
+       elf.word(0x0025E620) == 0x907D0000,
+       "0x25E614 picks the next long-load screen (LoadScreen_PickType) and stores it through r29")
+    ok(branch_target(0x0025E5F4, elf.word(0x0025E5F4)) == 0x00081B04 and at + 68 <= 0x0025E5F4,
+       "the long-load screen's play at 0x25E5F4 lies past the seventeen, untouched")
+    ok(elf.word(TOD_TOC + 0x7D74) == 0x102034FC and elf.word(TOD_TOC + 0x7D78) == 0x102034F8 and
+       elf.word(TOD_TOC + 0x7D84) == 0x3F800000,
+       "r2 + 0x7D74, 0x7D78 and 0x7D84: &g_loadScreenLoadDone, &g_loadScreenType and 1.0f")
+    ok(elf.word(0x00084EF4) == 0x38600000 and branch_target(0x00084EF8, elf.word(0x00084EF8)) == 0x00084E54 and
+       branch_target(0x00084E6C, elf.word(0x00084E6C)) == 0x00083F1C,
+       "0x84EF4 is li r3, 0 into 0x84E54, the level exit's stop of the cinematic player (0x83F1C)")
+    ok(branch_target(0x00084E3C, elf.word(0x00084E3C)) == 0x00083EF0 and
+       branch_target(0x002691DC, elf.word(0x002691DC)) == 0x00084E28,
+       "0x84E28 is the player's reset (0x83EF0), Level_StartGameplay's through 0x2691D0")
+    ok(branch_target(0x0026778C, elf.word(0x0026778C)) == 0x0025ED38,
+       "0x25ED38 is the fade set Level_Enter calls through 0x267780")
+
+    # The sense of each branch.
+    want = {5: 0x0025E5C8, 7: 0x0025E5B0, 8: 0x0025E5C8, 9: 0x0025E614, 11: 0x0025ED38,
+            12: 0x00084EF4, 13: 0x00084E28, 16: 0x0025E5FC}
+    ok(all(branch_target(words[i][0], words[i][1]) == t for i, t in want.items()) and
+       all((words[i][1] & 1) == (1 if i in (11, 12, 13) else 0) for i in want),
+       "every branch of the seventeen lands where tod.h says, the three calls linked")
+
+    # The code switch.
+    bins = open(os.path.join(QWARK, "src", "games", "switches_bins.c"), encoding="utf-8").read()
+    m = re.search(r"static const u8 sw_tod_fast_loads\[\] = \{(.*?)\};", bins, re.S)
+    cave = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+    m = re.search(r"sw_tod_sites\[\] = \{\s*\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", bins)
+    site = (int(m.group(1), 16), int(m.group(2), 16)) if m else None
+    m = re.search(r"sw_tod_flags\[\] = \{\s*(0x[0-9A-Fa-f]+)u", bins)
+    flag = int(m.group(1), 16) if m else None
+    m = re.search(r"\{ (0x[0-9A-Fa-f]+)u, sw_tod_fast_loads,", bins)
+    cave_at = int(m.group(1), 16) if m else None
+    ok(len(cave) == 96 and site is not None and flag is not None and cave_at == 0x003EB578,
+       "switches_bins.c has ToD's cave, 96 bytes at 0x3EB578, its site and its flag")
+    if len(cave) != 96 or site is None or flag is None:
+        return
+    cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, 96, 4)]
+    ok(site[0] == at and branch_target(at, site[1]) == cave_at and (site[1] & 3) == 0,
+       "the site is the patch's first word, a plain b into the cave")
+    ok(cw[3] >> 26 == 16 and branch_target(cave_at + 12, cw[3]) == cave_at + 28 and
+       cw[4] == 0x419E0008 and branch_target(cave_at + 20, cw[5]) == 0x0025E5FC and
+       branch_target(cave_at + 24, cw[6]) == at + 4,
+       "with the flag clear the trampoline is the game's bne cr7, taken or not")
+    same = True
+    for i in range(17):
+        c, w = cw[7 + i], words[i][1]
+        if c == w:
+            continue
+        tc, tw = branch_target(cave_at + 28 + 4 * i, c), branch_target(at + 4 * i, w)
+        if c >> 26 == 18 and w >> 26 == 18 and tc == tw and (c & 3) == (w & 3) and not at <= tw < at + 68:
+            continue
+        same = False
+    ok(same, "its second half is the seventeen words, its branches out pointed at the same places")
+
+    lo, hi = 0x003EB578, 0x003EB708
+    ok(cave_at + 96 <= hi, "the trampoline fits the dead function 0x3EB578..0x3EB708")
+    ok(elf.word(lo - 4) == 0x4E800020 and elf.word(hi - 4) == 0x4E800020,
+       "which ends a function before it and ends with its own blr")
+    branches, named, pairs = refs_into(elf, lo, hi)
+    outside = [a for a, _ in branches if not lo <= a < hi]
+    ok(not outside and not pairs, "nothing outside it branches into it or builds its address")
+    ok([a for a, _ in named] == [0x0088CAF0], "one word names it, its own descriptor 0x88CAF0")
+    b2, n2, p2 = refs_into(elf, 0x0088CAF0, 0x0088CAF8)
+    ok(not b2 and not n2 and not p2, "and nothing names the descriptor")
+
+    last = max(elf.segs, key=lambda s: s[0])
+    end = last[0] + last[2]
+    ok(end <= flag < (end + 0xFFF) & ~0xFFF,
+       "the flag 0x%08X is past the RW segment's BSS (it ends 0x%08X), in its 4 KB page" % (flag, end))
+    b3, n3, p3 = refs_into(elf, end, (end + 0xFFF) & ~0xFFF)
+    ok(not b3 and not n3 and not p3, "and nothing in the executable points past the BSS")
+
+
 def parse_descs(path):
     """Each renderer's (nhooks, nhelp) from menuhelper_bins.c's mh_descs, by game ("rac4" ..)."""
     text = open(path, encoding="utf-8").read()
@@ -3924,6 +4040,11 @@ def main():
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
     check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)
+    tod_elf = os.path.join(eboots, "NPEA00452.elf")
+    if os.path.exists(tod_elf):
+        check_tod(ok, Elf(tod_elf))
+    else:
+        print("\nNPEA00452: no %s, Tools of Destruction's checks skipped" % tod_elf)
     check_help_rows(ok)
     check_pak(ok, args.pak)
 

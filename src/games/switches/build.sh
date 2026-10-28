@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Builds the code switches for all four games and regenerates the committed
-# source qwark carries them in, src/games/switches_bins.c and .h.
+# Builds the code switches for all four games and Tools of Destruction, and
+# regenerates the committed source qwark carries them in,
+# src/games/switches_bins.c and .h.
 #
 # Run it from a Cygwin login shell that has the Sony SDK on its PATH, which is
 # the same shell `make` runs in:
@@ -48,7 +49,7 @@ OBJDUMP=ppu-lv2-objdump
 
 ASFLAGS="-Wa,-mregnames"
 
-GAMES="rac1 rac2 rac3 rac4"
+GAMES="rac1 rac2 rac3 rac4 tod"
 
 # ---------------------------------------------------------------- staleness
 
@@ -119,6 +120,7 @@ game_number() {
 	rac2) echo 2 ;;
 	rac3) echo 3 ;;
 	rac4) echo 4 ;;
+	tod)  echo 5 ;;
 	esac
 }
 

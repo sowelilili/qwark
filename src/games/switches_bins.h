@@ -109,6 +109,11 @@
 #define SW_RAC4_SITE_CRASH_BOT_ADDR 0x008088ECu
 #define SW_RAC4_SITE_CRASH_BOT 0x4BE5F45Cu
 
+/* tod: its flag bytes, then its sites */
+#define SW_TOD_FLAG_FAST_LOADS 0x108A8560u
+#define SW_TOD_SITE_FAST_LOADS_ADDR 0x0025E588u
+#define SW_TOD_SITE_FAST_LOADS 0x4818CFF0u
+
 /* One trampoline, or the one piece of data a trampoline reads. */
 struct sw_cave {
 	u32 addr;

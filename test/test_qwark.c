@@ -13293,6 +13293,25 @@ static const struct patch_word g_swt_rac4_toggles[] = {
 	{ 0, 0x015CD780u }, { 2, 0x015CD781u }, { 3, 0x015CD782u }, { 25, 0x015CD783u }, { 26, 0x015CD784u }
 };
 
+/*
+ * 2026-10-28: Tools of Destruction's Fast loads (src/games/switches/sw_tod.s),
+ * one site in LoadScreen_Update and its trampoline in a dead function, read
+ * back from the linked switch instruction by instruction: the flag's test and
+ * the game's own bne, then the seventeen words a console writes at 0x25E588
+ * (src/games/tod_panel.c), the five branches out of them pointed at the same
+ * places.
+ */
+static const struct swt_cave g_swt_tod_caves[] = {
+	{ 0x003EB578u, 24, { 0x3D20108Bu, 0x89298560u, 0x2C890000u, 0x40860010u, 0x419E0008u,
+	                     0x4BE73070u, 0x4BE72FFCu, 0x81227D74u, 0x89290000u, 0x83A27D78u,
+	                     0x807D0000u, 0x2C830001u, 0x4186002Cu, 0x2F090000u, 0x409A000Cu,
+	                     0x409E0020u, 0x4BE7305Cu, 0xC0227D84u, 0x4BE73779u, 0x4BC99931u,
+	                     0x4BC99861u, 0x38000001u, 0x901D0000u, 0x4BE73028u } }
+};
+static const struct patch_word g_swt_tod_sites[] = { { 0x0025E588u, 0x4818CFF0u } };
+static const u32 g_swt_tod_flags[] = { 0x108A8560u };
+static const struct patch_word g_swt_tod_toggles[] = { { 17, 0x108A8560u } };
+
 #define SWT_N(a) ((u8)(sizeof(a) / sizeof((a)[0])))
 
 static const struct swt_game g_swt_games[] = {
@@ -13307,8 +13326,13 @@ static const struct swt_game g_swt_games[] = {
 	  g_swt_rac3_toggles, SWT_N(g_swt_rac3_toggles) },
 	{ "NPEA00423", GAME_RAC4, g_swt_rac4_caves, SWT_N(g_swt_rac4_caves),
 	  g_swt_rac4_sites, SWT_N(g_swt_rac4_sites), g_swt_rac4_flags, SWT_N(g_swt_rac4_flags),
-	  g_swt_rac4_toggles, SWT_N(g_swt_rac4_toggles) }
+	  g_swt_rac4_toggles, SWT_N(g_swt_rac4_toggles) },
+	/* 2026-10-28: the fifth, which has no savefile helper to keep apart from. */
+	{ "NPEA00452", GAME_TOD, g_swt_tod_caves, SWT_N(g_swt_tod_caves),
+	  g_swt_tod_sites, SWT_N(g_swt_tod_sites), g_swt_tod_flags, SWT_N(g_swt_tod_flags),
+	  g_swt_tod_toggles, SWT_N(g_swt_tod_toggles) }
 };
+#define SWT_NGAMES SWT_N(g_swt_games)
 
 /* Feature ids the tests below drive by name. */
 #define SWT_R1_FAST    0
@@ -15210,13 +15234,13 @@ static void test_switches_console(void)
 
 static void test_switches(void)
 {
-	u32 len = 0, len2 = 0;
+	u32 len = 0, len2 = 0, len_dl = 0;
 	u32 stamps[4];
 	u32 i;
 
 	/* ------------------------------------------------ the generated table */
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < SWT_NGAMES; i++) {
 		char name[64];
 
 		name[0] = 0;
@@ -15247,7 +15271,7 @@ static void test_switches(void)
 
 	group("build 50: SWITCH_PATCH on a console");
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < SWT_NGAMES; i++) {
 		const struct sw_desc *d = sw_desc_for_game(g_swt_games[i].game_id);
 		u32 reads;
 
@@ -15261,7 +15285,8 @@ static void test_switches(void)
 		if (d != NULL) swt_check_patch(d, g_sw_patch, len);
 		check_eq_u64(host_mem_reads() - reads, 0, "it reads nothing out of the game");
 		check_eq_u64(host_write_log_count(), 0, "and writes nothing into it");
-		stamps[i] = be32_get(g_sw_patch + 4);
+		if (i < 4) stamps[i] = be32_get(g_sw_patch + 4);
+		if (g_swt_games[i].game_id == GAME_RAC4) len_dl = len;
 
 		check(switches_patch(g_sw_patch2, SWITCH_PATCH_HEAD + 8u, &len2) == ST_FULL,
 		      "a reply buffer too small for it is FULL");
@@ -15288,7 +15313,7 @@ static void test_switches(void)
 	check(stamps[3] != SWT_RAC4_B53_STAMP,
 	      "and once more: revision 1.24 put the HUD's colours in it");
 	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one revision 1.24 pins");
-	check_eq_u64(len, SWITCH_PATCH_HEAD + 225u * SWITCH_PATCH_ROW +
+	check_eq_u64(len_dl, SWITCH_PATCH_HEAD + 225u * SWITCH_PATCH_ROW +
 	             SWITCH_PATCH_BYTES_HEAD + 5u * SWITCH_PATCH_BYTE_ROW,
 	             "Deadlocked's, the largest, is 206 cave words, 19 sites and 5 flags");
 
@@ -15306,7 +15331,7 @@ static void test_switches(void)
 	host_set_can_patch_code(0);
 	host_set_emulator(1);
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < SWT_NGAMES; i++) {
 		char name[64];
 
 		name[0] = 0;

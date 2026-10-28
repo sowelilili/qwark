@@ -19,11 +19,13 @@
 #include "../src/core/config.h"
 #include "../src/core/util.h"
 #include "../src/core/autosplit.h"
+#include "../src/core/switches.h"
 #include "../src/games/game.h"
 #include "../src/games/titles.h"
 #include "../src/games/tod.h"
 #include "../src/games/luahelper_bins.h"
 #include "../src/games/luahelper_patch.h"
+#include "../src/games/switches_bins.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/host/plat_host.h"
 #include "test_common.h"
@@ -181,6 +183,22 @@ static void test_tod_features(void)
 	check(features_set(TF_CHALLENGE, 1) == ST_OK && rd32(TOD_CHALLENGE) == 1, "Challenge mode, a word");
 	check(features_set(TF_INFINITE_HEALTH, 1) == ST_OK && rd32(TOD_NO_DAMAGE) == 1, "Infinite health is the game's no-damage word");
 	check(features_set(TF_INFINITE_HEALTH, 0) == ST_OK && rd32(TOD_NO_DAMAGE) == 0, "and off again");
+	{
+		const struct game_describe *dd = g->describe();
+		u8 k, live = 0, ammo_live = 1, health_live = 1;
+
+		for (k = 0; k < dd->nfeatures; k++) {
+			if ((dd->features[k].flags & FEATURE_FLAG_LIVE) == 0) {
+				if (dd->features[k].id == TF_INFINITE_AMMO) ammo_live = 0;
+				if (dd->features[k].id == TF_INFINITE_HEALTH) health_live = 0;
+				continue;
+			}
+			live++;
+			if (dd->features[k].id != TF_GOD_RATCHET) live = 99;
+		}
+		check(!ammo_live && !health_live, "Infinite ammo and Infinite health are not LIVE, so they can come back on boot");
+		check(live == 1, "God Ratchet alone is LIVE, as RaC1's goodies are");
+	}
 	wr32(TOD_PROXY_HANDLE, 0x00110000u);
 	check(features_set(TF_GOD_RATCHET, 1) == ST_OK && rd32(TOD_PROXY_HANDLE) == 0x0011009Au,
 	      "God Ratchet: the old trainer's 154 in the proxy handle's low byte, the rest left alone");
@@ -192,11 +210,7 @@ static void test_tod_features(void)
 	wr32(TOD_PROXY_HANDLE, 0);
 	tick(LIVE_TICKS_FOR_TEST);
 	check(!((features_toggle_state() >> TF_GOD_RATCHET) & 1u), "and 0 as off");
-	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
-	check(features_set(TF_FAST_LOADS, 1) == ST_OK && rd32(TOD_TRANSITION_MIN) == 0,
-	      "Fast loads: the transition's minimum time to 0");
-	check(features_set(TF_FAST_LOADS, 0) == ST_OK && rd32(TOD_TRANSITION_MIN) == 0x40A00000u, "and back to the game's 5 s");
-	check(g->fast_loads == GAME_FEATURE(TF_FAST_LOADS), "the fast-loads combo flips it");
+	check(g->fast_loads == GAME_FEATURE(TF_FAST_LOADS), "the fast-loads combo flips Fast loads (test_tod_fastloads)");
 	check(features_trigger(TF_DIE) == ST_OK && rdf(FAKE_HERO + TOD_HERO_HEALTH) == 0.0f &&
 	      rdf(FAKE_HERO + TOD_HERO_MAX_HEALTH) == 10.0f, "Die: the hit points to 0, the maximum kept");
 
@@ -241,7 +255,7 @@ static void test_tod_features(void)
 	check(rdf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "and the ammo is the game's again");
 	wr32(TOD_INFINITE_AMMO, 1);
 	tick(LIVE_TICKS_FOR_TEST);
-	check((features_toggle_state() >> TF_INFINITE_AMMO) & 1u, "LIVE: the flag set by the game reads as on");
+	check(!((features_toggle_state() >> TF_INFINITE_AMMO) & 1u), "not LIVE: the word set behind qwark's back is not its bit");
 	wr32(TOD_INFINITE_AMMO, 0);
 	tick(LIVE_TICKS_FOR_TEST);
 
@@ -472,6 +486,259 @@ static void test_tod_lua_rpcs3(void)
 	host_set_lua_patch(0);
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
+}
+
+/* ----------------------------------------- Fast loads, 2026-10-28 */
+
+/*
+ * The game's own words at 0x25E588..0x25E5CC (EBOOT.ELF md5 df9d68ad...,
+ * LoadScreen_Update + 0x28), and the seventeen a console writes over them,
+ * assembled and read back by hand (tod.h, TOD_FASTLOAD_AT). The eighteenth is
+ * the first word after the patch, which stays the game's.
+ */
+static const u32 g_fl_orig[18] = {
+	0x409E0074u, 0x83A27D78u, 0x807D0000u, 0x2C030001u, 0x41820064u, 0x81227D74u,
+	0x7FE3FB78u, 0x88A90000u, 0x2C850000u, 0x41860068u, 0x809F003Cu, 0x4BFFFCDDu,
+	0x38E00001u, 0x90FD0000u, 0x7D6C42E6u, 0x2F8B0000u, 0x41DEFFF8u, 0x817D0000u
+};
+static const u32 g_fl_words[17] = {
+	0x81227D74u, 0x89290000u, 0x83A27D78u, 0x807D0000u, 0x2C830001u, 0x4186002Cu,
+	0x2F090000u, 0x409A000Cu, 0x409E0020u, 0x48000068u, 0xC0227D84u, 0x48000785u,
+	0x4BE2693Du, 0x4BE2686Du, 0x38000001u, 0x901D0000u, 0x48000034u
+};
+
+#define FL_FLAG 0x108A8560u
+
+static void fl_seed_game(void)
+{
+	u32 i;
+
+	for (i = 0; i < 18; i++) wr32(TOD_FASTLOAD_AT + 4u * i, g_fl_orig[i]);
+}
+
+static int fl_words_are(const u32 *w, u32 n)
+{
+	u32 i;
+
+	for (i = 0; i < n; i++)
+		if (rd32(TOD_FASTLOAD_AT + 4u * i) != w[i]) return 0;
+	return 1;
+}
+
+static u8 fl_rd8(u32 addr)
+{
+	u8 b = 0xEE;
+
+	host_peek(addr, &b, 1);
+	return b;
+}
+
+/* Where a b or bc at `at` lands, or 0 for any other word. */
+static u32 fl_target(u32 at, u32 w)
+{
+	u32 op = w >> 26, d;
+
+	if (op == 18) {
+		d = w & 0x03FFFFFCu;
+		if (d & 0x02000000u) d |= 0xFC000000u;
+	} else if (op == 16) {
+		d = w & 0x0000FFFCu;
+		if (d & 0x00008000u) d |= 0xFFFF0000u;
+	} else {
+		return 0;
+	}
+	return (w & 2u) ? d : at + d;
+}
+
+/* A SWITCH_PATCH reply's rows and flag bytes, poked in as RPCS3 applies them at load. */
+static void fl_poke_patch(const u8 *reply, u32 len)
+{
+	u32 n = be16_get(reply), off = SWITCH_PATCH_HEAD, nb, i;
+
+	for (i = 0; i < n && off + SWITCH_PATCH_ROW <= len; i++, off += SWITCH_PATCH_ROW)
+		host_poke(be32_get(reply + off), reply + off + 4, 4);
+	if (off + SWITCH_PATCH_BYTES_HEAD > len) return;
+	nb = be16_get(reply + off);
+	off += SWITCH_PATCH_BYTES_HEAD;
+	for (i = 0; i < nb && off + SWITCH_PATCH_BYTE_ROW <= len; i++, off += SWITCH_PATCH_BYTE_ROW)
+		host_poke(be32_get(reply + off), reply + off + 4, 1);
+}
+
+static u8 g_fl_patch[QWARK_MAX_PAYLOAD];
+
+static void test_tod_fastloads(void)
+{
+	const struct game_describe *dsc;
+	const struct sw_desc *sw = sw_desc_for_game(GAME_TOD);
+	const struct lh_desc *lh = lh_desc_for_title(TOD_TITLE);
+	u32 len = 0, i;
+	int found = 0, same = 1, apart = 1, on = -1;
+	u8 b = 0;
+
+	group("ToD: Fast loads, the load screen's cut, on a console");
+	check(boot_tod(), "ToD boots on a console");
+	if (session_game() == NULL) return;
+	dsc = session_game()->describe();
+	for (i = 0; i < dsc->nfeatures; i++)
+		if (dsc->features[i].id == TF_FAST_LOADS)
+			found = dsc->features[i].kind == FEATURE_TOGGLE &&
+			        (dsc->features[i].flags & FEATURE_FLAG_WRITES_CODE) != 0 &&
+			        (dsc->features[i].flags & FEATURE_FLAG_LIVE) == 0 &&
+			        qstreq(dsc->features[i].label, "Fast loads");
+	check(found, "id 17, Fast loads, a WRITES_CODE toggle and not LIVE, so it can come back at boot");
+	check(TOD_FASTLOAD_AT == 0x0025E588u && TOD_FASTLOAD_NWORDS == 17u && TOD_LOAD_SCREEN_DONE == 0x102034FCu,
+	      "the patch is seventeen words of LoadScreen_Update from 0x25E588");
+
+	fl_seed_game();
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	host_write_log_reset();
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17),
+	      "on: the seventeen words, as assembled");
+	check(host_write_log_count() == 1, "in one write");
+	check(rd32(TOD_FASTLOAD_AT + 68u) == g_fl_orig[17], "and not a word past them");
+	check(rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME, "g_levelTransitionMinTime is left at 5 s");
+	check(fl_rd8(FL_FLAG) == 0, "and the switch's flag byte is not a console's business");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17), "on again is no change");
+	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_NOT_FOUND, "a console reads no flag: qwark's bit says");
+	check((features_toggle_state() >> TF_FAST_LOADS) & 1u, "and it is set");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_words_are(g_fl_orig, 18), "off: the game's own words back");
+	check(!((features_toggle_state() >> TF_FAST_LOADS) & 1u), "and the bit clear");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK, "off again is not an error");
+
+	/* The words' sense, read off them: what each branch reaches. */
+	check(fl_target(0x25E59Cu, g_fl_words[5]) == 0x25E5C8u && fl_target(0x25E5A8u, g_fl_words[8]) == 0x25E5C8u &&
+	      fl_target(0x25E5C8u, g_fl_words[16]) == 0x25E5FCu,
+	      "the arrival up and a cinematic playing return through the epilogue");
+	check(fl_target(0x25E5A4u, g_fl_words[7]) == 0x25E5B0u, "the load done goes to the cut");
+	check(fl_target(0x25E5ACu, g_fl_words[9]) == 0x25E614u, "nothing playing picks the next long-load screen, as the game");
+	check(fl_target(0x25E5B4u, g_fl_words[11]) == 0x25ED38u && (g_fl_words[11] & 1u) &&
+	      fl_target(0x25E5B8u, g_fl_words[12]) == 0x084EF4u && (g_fl_words[12] & 1u) &&
+	      fl_target(0x25E5BCu, g_fl_words[13]) == 0x084E28u && (g_fl_words[13] & 1u),
+	      "the cut calls the fade, the cinematic stop and the player reset");
+	check(g_fl_words[14] == 0x38000001u && g_fl_words[15] == 0x901D0000u && g_fl_words[2] == 0x83A27D78u,
+	      "and stores the arrival's 1 through &g_loadScreenType");
+	check(fl_target(0x25E588u, g_fl_orig[0]) == 0x25E5FCu,
+	      "the first word replaced is the game's bne cr7 to the same epilogue");
+
+	group("ToD: Fast loads' code switch is the console's words");
+	check(sw != NULL && sw->ncaves == 1 && sw->nsites == 1 && sw->nflags == 1, "one cave, one site, one flag");
+	if (sw != NULL && sw->ncaves == 1 && sw->caves[0].len == 4u * 24u) {
+		u32 cave = sw->caves[0].addr;
+
+		for (i = 0; i < 17; i++) {
+			u32 cw = be32_get(sw->caves[0].bytes + 4u * (7u + i));
+			u32 tc = fl_target(cave + 4u * (7u + i), cw);
+			u32 ts = fl_target(TOD_FASTLOAD_AT + 4u * i, g_fl_words[i]);
+
+			if (cw == g_fl_words[i]) continue;
+			/* A branch out of the seventeen: the same place, and the same link bit. */
+			if ((cw >> 26) == 18 && (g_fl_words[i] >> 26) == 18 && tc == ts &&
+			    (cw & 3u) == (g_fl_words[i] & 3u) &&
+			    (ts < TOD_FASTLOAD_AT || ts >= TOD_FASTLOAD_AT + 68u)) continue;
+			same = 0;
+		}
+		check(same, "the trampoline's second half is the seventeen words, its branches out to the same places");
+		check(be32_get(sw->caves[0].bytes + 16) == 0x419E0008u &&
+		      fl_target(cave + 20u, be32_get(sw->caves[0].bytes + 20)) == 0x25E5FCu &&
+		      fl_target(cave + 24u, be32_get(sw->caves[0].bytes + 24)) == 0x25E58Cu,
+		      "and with the flag clear it is the game's bne cr7, taken or not");
+	} else {
+		check(0, "the cave is the 24 words this test knows");
+	}
+	check(sw != NULL && sw->sites[0].addr == TOD_FASTLOAD_AT && sw->flags[0] == FL_FLAG &&
+	      SW_TOD_FLAG_FAST_LOADS == FL_FLAG, "the site is the console's first word, the flag past the BSS");
+	if (sw != NULL && lh != NULL) {
+		u8 c, k;
+
+		for (c = 0; c < lh->ncaves; c++)
+			for (k = 0; k < sw->ncaves; k++)
+				if (sw->caves[k].addr < lh->caves[c].addr + lh->caves[c].len &&
+				    lh->caves[c].addr < sw->caves[k].addr + sw->caves[k].len) apart = 0;
+		for (c = 0; c < lh->nhooks; c++)
+			if (lh->hooks[c].addr == sw->sites[0].addr ||
+			    (lh->hooks[c].addr >= sw->caves[0].addr &&
+			     lh->hooks[c].addr < sw->caves[0].addr + sw->caves[0].len)) apart = 0;
+		if (FL_FLAG >= 0x008CA000u && FL_FLAG < 0x008D0000u) apart = 0;
+	} else {
+		apart = 0;
+	}
+	check(apart, "and none of it is the Lua helper's caves, hooks or mailbox");
+
+	group("ToD: Fast loads under RPCS3, the switch or UNSUPPORTED");
+	check(quit(), "the game quits");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(boot_tod(), "ToD boots under RPCS3 without the patch");
+	tick(6);
+	fl_seed_game();
+	check(switches_state() == 0, "the look finds no switches");
+	host_write_log_reset();
+	check(features_set(TF_FAST_LOADS, 1) == ST_UNSUPPORTED && fl_words_are(g_fl_orig, 18) &&
+	      host_write_log_count() == 0, "so Fast loads is UNSUPPORTED and writes nothing");
+	check(switches_patch(g_fl_patch, sizeof(g_fl_patch), &len) == ST_OK &&
+	      be16_get(g_fl_patch) == 25u, "SWITCH_PATCH: 24 cave words and the site");
+	check(quit(), "the game quits");
+	host_boot_as(TOD_TITLE, "tod");
+	fl_poke_patch(g_fl_patch, len);
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	tick(6);
+	check(session_game() != NULL && session_game()->game_id == GAME_TOD, "ToD boots with the patch applied at load");
+	check(switches_state() == 1, "and the look finds it");
+	check(rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "the site is the branch to the trampoline");
+	host_write_log_reset();
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_rd8(FL_FLAG) == 1 && host_write_log_count() == 1,
+	      "on: the flag byte to 1, one write");
+	check(rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "and no code");
+	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 1, "the flag reads back as on");
+	host_poke(FL_FLAG, &b, 1);
+	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 0, "and a flag cleared behind qwark's back as off");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && features_set(TF_FAST_LOADS, 0) == ST_OK &&
+	      fl_rd8(FL_FLAG) == 0 && rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "off: the flag to 0, still no code");
+	check(quit(), "the game quits");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+	check(boot_tod(), "and comes back on a console");
+
+}
+
+/* -------------------------------------------- on boot, 2026-10-28 */
+
+/*
+ * Infinite ammo and Infinite health flagged "on boot": FEATURE_SET_AUTO takes
+ * them (a LIVE toggle it refuses), a new boot of the game writes their words
+ * as the session enters it, and the ammo hold runs on what the boot wrote.
+ * God Ratchet, LIVE, still has no auto flag.
+ */
+static void test_tod_on_boot(void)
+{
+	u32 slot = TOD_WEAPONS + 2 * TOD_WEAPON_STRIDE;
+	int i;
+
+	group("ToD: Infinite ammo and Infinite health on boot");
+	check(boot_tod(), "ToD boots");
+	check(features_set_auto(TF_INFINITE_AMMO, 1) == ST_OK, "Infinite ammo takes the auto flag");
+	check(features_set_auto(TF_INFINITE_HEALTH, 1) == ST_OK, "and so does Infinite health");
+	check(features_set_auto(TF_GOD_RATCHET, 1) == ST_UNSUPPORTED, "God Ratchet, LIVE, does not");
+	check(quit(), "the game quits");
+	host_boot_as(TOD_TITLE, "tod");
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	tick(4);
+	check(rd32(TOD_INFINITE_AMMO) == 1 && rd32(TOD_NO_DAMAGE) == 1, "a new boot: both words written as the session enters it");
+	check(((features_toggle_state() >> TF_INFINITE_AMMO) & 1u) && ((features_toggle_state() >> TF_INFINITE_HEALTH) & 1u),
+	      "and both bits set");
+	check(fl_rd8(TOD_PROXY_LOW) == 0, "God Ratchet is left alone");
+	host_poke(slot + TOD_WS_OWNED, (const u8 *)"\1", 1);
+	wrf(slot + TOD_WS_AMMO, 20.0f);
+	tick(12);
+	wrf(slot + TOD_WS_AMMO, 15.0f);
+	tick(8);
+	check(rdf(slot + TOD_WS_AMMO) == 20.0f, "the ammo hold runs on the boot's write");
+	check(features_set_auto(TF_INFINITE_AMMO, 0) == ST_OK && features_set_auto(TF_INFINITE_HEALTH, 0) == ST_OK,
+	      "the auto flags come off");
+	features_set(TF_INFINITE_AMMO, 0);
+	features_set(TF_INFINITE_HEALTH, 0);
+	check(rd32(TOD_INFINITE_AMMO) == 0 && rd32(TOD_NO_DAMAGE) == 0, "and the cheats with them");
+	session_previous_dismiss();
 }
 
 /* ------------------------------------------- the autosplitter, rev 1.28 */
@@ -1568,5 +1835,7 @@ void test_tod_game(void)
 	test_tod_autosplit_long_load();
 	test_tod_autosplit_runs();
 	test_tod_autosplit_quit();
+	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
+	test_tod_on_boot();
 	quit();
 }

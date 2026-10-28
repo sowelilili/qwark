@@ -5329,6 +5329,14 @@ TOD_GAME_CLOCK = 0x1074DDA8
 TOD_NO_DAMAGE = 0x101F1F00
 TOD_PROXY_HANDLE = 0x1020BD48
 TOD_TRANSITION_MIN = 0x10073548
+# 2026-10-28: Fast loads, the load screen's cut (src/games/tod.h, TOD_FASTLOAD_AT):
+# seventeen words of LoadScreen_Update on a console, a code switch under RPCS3.
+TOD_FASTLOAD_AT = 0x0025E588
+TOD_FASTLOAD_FIRST = 0x81227D74          # lwz r9, 0x7D74(r2), the patch's first word
+TOD_FASTLOAD_LAST = 0x48000034           # b 0x25E5FC, its seventeenth
+TOD_FASTLOAD_SITE = 0x4818CFF0           # b 0x3EB578, the switch's site word
+TOD_FASTLOAD_CAVE = 0x003EB578
+TOD_FASTLOAD_FLAG = 0x108A8560
 SESSION_FLAG2_NO_MENU = 0x80
 TOD_MAILBOX = 0x008CA000
 TOD_VM_HOOK = 0x004C461C
@@ -5674,6 +5682,7 @@ def smoke_tod(c, sim):
 
     status, body = c.call(OP_DESCRIBE)
     labels = []
+    features = []
     if check(status == ST_OK, "ToD: DESCRIBE answers", status):
         game, groups, readouts, features, _off = parse_describe(body)
         labels = [f["label"] for f in features]
@@ -5688,7 +5697,9 @@ def smoke_tod(c, sim):
         ids = dict((f["label"], f["id"]) for f in features)
         check(ids.get("Infinite health") == 9 and ids.get("God Ratchet") == 16 and ids.get("Fast loads") == 17,
               "ToD: Infinite health keeps id 9, God Ratchet is 16, Fast loads 17", ids)
-        check(not any(f["flags"] & 0x02 for f in features), "ToD: no feature writes code")
+        check([f["label"] for f in features if f["flags"] & 0x02] == ["Fast loads"],
+              "ToD: Fast loads alone writes code (a code switch under RPCS3)",
+              [f["label"] for f in features if f["flags"] & 0x02])
 
     status, body = c.call(OP_PLANET_LIST)
     if check(status == ST_OK, "ToD: PLANET_LIST answers", status):
@@ -5717,11 +5728,26 @@ def smoke_tod(c, sim):
     c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
     check(mem_read_u32(c, TOD_PROXY_HANDLE) & 0xFF == 0, "ToD: and 0 there again")
     mem_write(c, TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
+    mem_write(c, TOD_FASTLOAD_AT, struct.pack(">I", 0x409E0074))   # the game's bne cr7, 0x25E5FC
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
-    check(status == ST_OK and mem_read_u32(c, TOD_TRANSITION_MIN) == 0,
-          "ToD: Fast loads, the transition's minimum time to 0, a data write", status)
+    check(status == ST_OK and mem_read_u32(c, TOD_FASTLOAD_AT) == TOD_FASTLOAD_FIRST and
+          mem_read_u32(c, TOD_FASTLOAD_AT + 64) == TOD_FASTLOAD_LAST,
+          "ToD: Fast loads, the load screen's cut: seventeen words of LoadScreen_Update", status)
+    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000 and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0,
+          "ToD: the transition's minimum time and the switch's flag left alone")
     c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
-    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000, "ToD: and back to the game's 5 s")
+    check(mem_read_u32(c, TOD_FASTLOAD_AT) == 0x409E0074, "ToD: and off, the game's own word back")
+    # 2026-10-28: Infinite ammo (8) and Infinite health (9) can come back on boot; God Ratchet (16), LIVE, cannot.
+    live = dict((f["label"], f["flags"] & 0x10) for f in features) if features else {}
+    check(live.get("Infinite ammo") == 0 and live.get("Infinite health") == 0 and live.get("God Ratchet") == 0x10,
+          "ToD: Infinite ammo and Infinite health are not LIVE, God Ratchet is", live)
+    status_a, _ = c.call(OP_FEATURE_SET_AUTO, bytes([8, 1]))
+    status_h, _ = c.call(OP_FEATURE_SET_AUTO, bytes([9, 1]))
+    status_g, _ = c.call(OP_FEATURE_SET_AUTO, bytes([16, 1]))
+    check(status_a == ST_OK and status_h == ST_OK and status_g == ST_UNSUPPORTED,
+          "ToD: FEATURE_SET_AUTO takes ammo and health, and refuses God Ratchet", (status_a, status_h, status_g))
+    c.call(OP_FEATURE_SET_AUTO, bytes([8, 0]))
+    c.call(OP_FEATURE_SET_AUTO, bytes([9, 0]))
     status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
     check(status == ST_OK and mem_read_u32(c, TOD_LOAD_REQUEST) == 2,
           "ToD: PLANET_LOAD writes the game's pending request", status)
@@ -5877,6 +5903,39 @@ def smoke_tod_autosplit(c, sim):
     mem_write(c, TOD_LOAD_SCREEN, struct.pack(">I", 1))
 
 
+def smoke_rpcs3_tod_fastloads(c, pine):
+    """ToD's Fast loads under RPCS3: its code switch, applied at boot, then a flag byte."""
+    status, stamp, words, single, _body = savefile_patch(c, OP_SWITCH_PATCH)
+    rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
+    check(status == ST_OK and len(rows) == 25 and
+          all(TOD_FASTLOAD_CAVE <= a < TOD_FASTLOAD_CAVE + 96 for a, _ in rows[:24]) and
+          rows[24] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and single == [(TOD_FASTLOAD_FLAG, 0)],
+          "rpcs3: ToD's SWITCH_PATCH: 24 trampoline words, the site, the flag at 0",
+          (status, [(hex(a), hex(v)) for a, v in rows[-2:]], single))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
+    check(status == ST_UNSUPPORTED, "rpcs3: and until it is in, Fast loads is refused", status)
+
+    pine.shutdown_game()
+    wait_state(c, SESSION_XMB)
+    for addr, value in words or []:
+        pine.poke(addr, value)
+    for addr, value in single or []:
+        pine.poke(addr, bytes([value]))
+    pine.boot(TOD_TITLE, "Ratchet & Clank Future: Tools of Destruction")
+    ok, info = wait_game(c, 5)
+    check(ok, "rpcs3: ToD boots with its code switch applied at load", info)
+    ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, True)
+    check(ok, "rpcs3: and bit4 CODE_SWITCHES is set", hex(info["flags"]) if info else None)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
+    check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x01" and
+          pine.peek(TOD_FASTLOAD_AT, 4) == struct.pack(">I", TOD_FASTLOAD_SITE),
+          "rpcs3: Fast loads on is its flag byte, a PINE write, the code left as RPCS3 loaded it", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
+    check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x00", "rpcs3: and off", status)
+    for addr, _value in words or []:
+        pine.poke(addr, bytes(4))
+
+
 def smoke_rpcs3_tod(c, pine):
     """ToD under RPCS3: LUA_EXEC is UNSUPPORTED until the client's patch is in at boot."""
     pine.shutdown_game()
@@ -5899,12 +5958,10 @@ def smoke_rpcs3_tod(c, pine):
     status, _ = c.call(OP_PLANET_LOAD, bytes([9, 0]))
     check(status == ST_OK and pine.peek(TOD_LOAD_REQUEST, 4) == struct.pack(">I", 9),
           "rpcs3: ToD's planet load is a PINE write", status)
-    pine.poke(TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
+    pine.poke(TOD_FASTLOAD_AT, struct.pack(">I", 0x409E0074))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
-    check(status == ST_OK and pine.peek(TOD_TRANSITION_MIN, 4) == bytes(4),
-          "rpcs3: ToD's Fast loads is a PINE write, no patch needed", status)
-    c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
-    check(pine.peek(TOD_TRANSITION_MIN, 4) == struct.pack(">f", 5.0), "rpcs3: and back to 5 s")
+    check(status == ST_UNSUPPORTED and pine.peek(TOD_FASTLOAD_AT, 4) == struct.pack(">I", 0x409E0074),
+          "rpcs3: ToD's Fast loads writes code, so without its switch it is UNSUPPORTED", status)
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 1))
     check(status == ST_OK and pine.peek(TOD_PROXY_HANDLE + 3, 1) == bytes([154]),
           "rpcs3: ToD's God Ratchet is a PINE write", status)
@@ -5954,6 +6011,7 @@ def smoke_rpcs3_tod(c, pine):
     pine.poke(0x1037A459, b"\x00")
 
     pine.poke(TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    smoke_rpcs3_tod_fastloads(c, pine)
     smoke_rpcs3_tod_savefile(c, pine)
     status, body = c.call(OP_LUA_PATCH)
     words = []

@@ -104,13 +104,47 @@
 #define TOD_PROXY_FAKE       154u
 
 /*
- * Fast loads: g_levelTransitionMinTime, f32 seconds, which
- * LevelTransition_waitLoad (0x3C5810) spends drawing the transition before it
- * waits for the load itself (dec). Initialised .data, never written by the game.
+ * g_levelTransitionMinTime, f32 seconds (the memory panel's row). Fast loads
+ * wrote 0 here until 2026-10-28, which did nothing on a planet load: in
+ * LevelTransition_waitLoad (0x3C5810) the wait is only for a load that plays
+ * a story FMV instead of the flight (g_levelTransitionFmvBuffer 0x1037AB28 set:
+ * Metropolis and Cobalia on a file that has not seen their intros), and there
+ * it holds back the start of the load while the FMV plays on regardless (dec).
  */
 #define TOD_TRANSITION_MIN   0x10073548u
 #define TOD_TRANSITION_GAME  0x40A00000u  /* 5.0f, the shipped value */
-#define TOD_TRANSITION_FAST  0x00000000u  /* 0.0f */
+
+/*
+ * Fast loads (id 17), a code patch since 2026-10-28 (dec). A planet load's
+ * screen is the level_transitions level playing cinematics: the departure
+ * (g_loadScreenType 0) when there is a level to fly from, then long-load
+ * screens (2 and up) for as long as the data is not in, then the arrival (1).
+ * Each one plays to its end; LoadScreen_Update (0x25E560, every frame) starts
+ * the next only once the player is idle, and the arrival only once
+ * LoadScreen_LoadDone has set g_loadScreenLoadDone, which the loader thread's
+ * LevelTransition_waitLoad calls every 200 ms once the data is read. The load
+ * is over when LoadScreen_LoadDone finds the arrival (1) with the player idle.
+ * So a load lasts at least the departure and the arrival, and the rest of
+ * whichever long-load screen is playing when the data comes in.
+ *
+ * The patch is seventeen words of LoadScreen_Update from 0x25E588, the
+ * `bne cr7` that returns while a cinematic plays, on: the arrival up (1),
+ * as the game; the load done, the cut; otherwise as the game (a cinematic
+ * playing returns, with none the next long-load screen is picked). The cut:
+ * the screen black at once (0x25ED38(1.0), what Level_Enter does for the
+ * planet), the cinematic stopped as a level's exit stops it (0x84EF4), the
+ * player reset as Level_StartGameplay resets it (0x84E28), and 1 in
+ * g_loadScreenType; LoadScreen_LoadDone's next look finds the load over, and
+ * no arrival plays. The words after them, the arrival's own start, are no
+ * longer reached; 0x25E5F4 (the long-load screen's play) and on are untouched.
+ * The originals are the game's own (patch_def keeps them).
+ *
+ * Under RPCS3 the code switch does the same (src/games/switches/sw_tod.s,
+ * SW_TOD_FLAG_FAST_LOADS): its trampoline's second half is these words.
+ */
+#define TOD_FASTLOAD_AT      0x0025E588u  /* LoadScreen_Update + 0x28 */
+#define TOD_FASTLOAD_NWORDS  17u
+#define TOD_LOAD_SCREEN_DONE 0x102034FCu  /* g_loadScreenLoadDone, u8 */
 
 /*
  * The save system (docs/tod-savefile.md; Ghidra /ToD/Save/ToDSaveManager).
@@ -350,7 +384,7 @@ struct tod_facts {
 #define TF_RESET_GB         13
 /* 14 and 15, the RYNO plans' unlock and reset, are retired, never to be another feature's. */
 #define TF_GOD_RATCHET      16     /* the old RaCMAN's, the proxy handle (TOD_PROXY_LOW) */
-#define TF_FAST_LOADS       17     /* the transition's minimum time (TOD_TRANSITION_MIN) */
+#define TF_FAST_LOADS       17     /* the load screen's cut, a code patch (TOD_FASTLOAD_AT) */
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40
@@ -447,6 +481,7 @@ int  tod_unlock_set(u8 id, u8 field, u32 value);
 void tod_ammo_tick(u32 flag, u32 root);
 /* A new process: the hold starts over. */
 void tod_panel_reset(void);
+void tod_panel_init(void);   /* once a module: Fast loads' patch */
 
 /*
  * tod_save.c, the savefile manager (docs/tod-savefile.md). The two flagged

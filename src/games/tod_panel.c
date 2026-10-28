@@ -9,6 +9,7 @@
 #include "core_import.h"   /* first: src/games/module.h */
 #include "tod.h"
 #include "classic.h"
+#include "switches_bins.h"
 #include "../core/mem.h"
 #include "../core/util.h"
 
@@ -27,17 +28,70 @@ struct tod_panel_state {
 	u8  hold_wait;
 };
 
+/*
+ * 2026-10-28: and what outlives a process, which tod_panel_reset leaves alone:
+ * Fast loads' patch, whose originals come out of the core's pool once (init).
+ */
+struct tod_panel_area {
+	struct tod_panel_state s;
+	struct patch_def fastload;
+	u8 init_done;
+};
+
 #if QWARK_GAME_MODULE
-#define TP QWARK_STATE_AT(struct tod_panel_state, QWARK_STATE_PANEL_OFF)
-typedef char tod_panel_state_fits[sizeof(struct tod_panel_state) <= QWARK_STATE_PANEL_MAX ? 1 : -1];
+#define TPA QWARK_STATE_AT(struct tod_panel_area, QWARK_STATE_PANEL_OFF)
+typedef char tod_panel_state_fits[sizeof(struct tod_panel_area) <= QWARK_STATE_PANEL_MAX ? 1 : -1];
 #else
-static struct tod_panel_state g_tod_panel;
-#define TP (&g_tod_panel)
+static struct tod_panel_area g_tod_panel;
+#define TPA (&g_tod_panel)
 #endif
+#define TP (&TPA->s)
 
 void tod_panel_reset(void)
 {
 	memset(TP, 0, sizeof(*TP));
+}
+
+/*
+ * Fast loads, tod.h (TOD_FASTLOAD_AT): LoadScreen_Update's seventeen words
+ * from 0x25E588 on a console. Under RPCS3 the code switch's second half is the
+ * same words (src/games/switches/sw_tod.s, fast_loads_on), but for the five
+ * branches out of them, which the link points at the same places; test/
+ * test_tod_game.c holds the two to that.
+ */
+static const struct patch_word tod_fastload_words[] = {
+	{ 0x0025E588u, 0x81227D74u },   /* lwz r9, 0x7D74(r2): &g_loadScreenLoadDone */
+	{ 0x0025E58Cu, 0x89290000u },   /* lbz r9, 0(r9) */
+	{ 0x0025E590u, 0x83A27D78u },   /* lwz r29, 0x7D78(r2): &g_loadScreenType, the pick's too */
+	{ 0x0025E594u, 0x807D0000u },   /* lwz r3, 0(r29) */
+	{ 0x0025E598u, 0x2C830001u },   /* cmpwi cr1, r3, 1 */
+	{ 0x0025E59Cu, 0x4186002Cu },   /* beq cr1, 0x25E5C8: the arrival is up, as the game */
+	{ 0x0025E5A0u, 0x2F090000u },   /* cmpwi cr6, r9, 0 */
+	{ 0x0025E5A4u, 0x409A000Cu },   /* bne cr6, 0x25E5B0: the load is done, the cut */
+	{ 0x0025E5A8u, 0x409E0020u },   /* bne cr7, 0x25E5C8: a cinematic plays, as the game */
+	{ 0x0025E5ACu, 0x48000068u },   /* b 0x25E614: none, the next long-load screen */
+	{ 0x0025E5B0u, 0xC0227D84u },   /* lfs f1, 0x7D84(r2): 1.0f */
+	{ 0x0025E5B4u, 0x48000785u },   /* bl 0x25ED38: the screen black at once */
+	{ 0x0025E5B8u, 0x4BE2693Du },   /* bl 0x84EF4: the cinematic stopped */
+	{ 0x0025E5BCu, 0x4BE2686Du },   /* bl 0x84E28: the player reset */
+	{ 0x0025E5C0u, 0x38000001u },   /* li r0, 1 */
+	{ 0x0025E5C4u, 0x901D0000u },   /* stw r0, 0(r29): the arrival's 1 */
+	{ 0x0025E5C8u, 0x48000034u }    /* b 0x25E5FC: the return */
+};
+
+typedef char tod_fastload_count_ok[sizeof(tod_fastload_words) / sizeof(tod_fastload_words[0]) ==
+                                   TOD_FASTLOAD_NWORDS ? 1 : -1];
+
+static const struct patch_def tod_fastload_init = {
+	"Fast loads", PATCH_KIND_FEATURE, tod_fastload_words, (u16)TOD_FASTLOAD_NWORDS, NULL
+};
+
+void tod_panel_init(void)
+{
+	if (TPA->init_done) return;
+	TPA->init_done = 1;
+	TPA->fastload = tod_fastload_init;
+	TPA->fastload.originals = patch_pool_alloc(TPA->fastload.count);
 }
 
 /* ----------------------------------------------------------------- tables */
@@ -377,12 +431,15 @@ int tod_set_value(u8 id, u32 value)
  * while the word is up the tick holds every weapon's ammo where it was and
  * keeps the devices full (tod_ammo_tick). No code is patched either way.
  *
- * Fast loads (id 17): g_levelTransitionMinTime, the 5 seconds
- * LevelTransition_waitLoad holds every planet load's transition for before it
- * even waits for the load itself, to 0, and back to the game's 5 when off. A
- * word of .data the game never writes, so a plain data write that works under
- * RPCS3; a new boot of the game starts at 5 again, and the toggle's auto flag
- * puts it back.
+ * 2026-10-28: Infinite ammo and Infinite health are no longer LIVE (tod_game.c),
+ * so they come back on boot when flagged, and their state is qwark's bit;
+ * God Ratchet alone is read back here.
+ *
+ * Fast loads (id 17), WRITES_CODE since 2026-10-28: the load screen's cut
+ * (tod.h), the patch above on a console, after plat_can_patch_code() as every
+ * code toggle (patch_apply asks), and under RPCS3 the code switch's flag byte
+ * (classic_code_toggle). A new boot of the game has neither, and the toggle's
+ * auto flag or the previous-session prompt puts it back, as the other games'.
  */
 int tod_set_toggle(u8 id, int on)
 {
@@ -390,7 +447,7 @@ int tod_set_toggle(u8 id, int on)
 	case TF_INFINITE_HEALTH: return mem_write_u32(TOD_NO_DAMAGE, on ? 1u : 0u);
 	case TF_GOD_RATCHET:     return mem_write_u8(TOD_PROXY_LOW, on ? (u8)TOD_PROXY_FAKE : 0u);
 	case TF_FAST_LOADS:
-		return mem_write_u32(TOD_TRANSITION_MIN, on ? TOD_TRANSITION_FAST : TOD_TRANSITION_GAME);
+		return classic_code_toggle(&TPA->fastload, SW_TOD_FLAG_FAST_LOADS, on);
 	case TF_INFINITE_AMMO:
 		TP->hold_primed = 0;
 		return mem_write_u32(TOD_INFINITE_AMMO, on ? 1u : 0u);
@@ -406,16 +463,12 @@ int tod_toggle_read(u8 id, int *on)
 	int rc;
 
 	switch (id) {
-	case TF_INFINITE_HEALTH: rc = mem_read_u32(TOD_NO_DAMAGE, &v); break;
-	case TF_INFINITE_AMMO:   rc = mem_read_u32(TOD_INFINITE_AMMO, &v); break;
 	case TF_GOD_RATCHET:
 		rc = mem_read_u8(TOD_PROXY_LOW, &b);
 		v = b;
 		break;
-	case TF_FAST_LOADS:
-		rc = mem_read_u32(TOD_TRANSITION_MIN, &v);
-		v = v != TOD_TRANSITION_GAME;
-		break;
+	/* The switch's flag byte under RPCS3; NOT_FOUND without it, where qwark's bit says. */
+	case TF_FAST_LOADS:      return classic_code_read(SW_TOD_FLAG_FAST_LOADS, on);
 	default:
 		return ST_NOT_FOUND;
 	}
