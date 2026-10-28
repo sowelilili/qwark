@@ -509,11 +509,40 @@ static const u32 g_fl_words[17] = {
 
 #define FL_FLAG 0x108A8560u
 
+/*
+ * Revision 1.29: the game's words at qwark's own pieces' three sites, read in
+ * Ghidra (LevelTransition_update or r3, r28, r28 and addi r12, r28, 0x14;
+ * LevelTransition_waitLoad lwz r9, 0x2BBC(r2)), and the cave's words at its
+ * start, the dead function's, which a console has before the cave goes in.
+ */
+static const u32 g_fl_site_at[3]   = { 0x003C5744u, 0x003C57DCu, 0x003C58C8u };
+static const u32 g_fl_site_orig[3] = { 0x7F83E378u, 0x399C0014u, 0x81222BBCu };
+
 static void fl_seed_game(void)
 {
 	u32 i;
 
 	for (i = 0; i < 18; i++) wr32(TOD_FASTLOAD_AT + 4u * i, g_fl_orig[i]);
+	for (i = 0; i < 3; i++) wr32(g_fl_site_at[i], g_fl_site_orig[i]);
+}
+
+static int fl_sites_are(int patched)
+{
+	u32 i;
+
+	for (i = 0; i < 3; i++)
+		if (rd32(g_fl_site_at[i]) != (patched ? sw_tod_own_sites[i].value : g_fl_site_orig[i])) return 0;
+	return 1;
+}
+
+static int fl_cave_in(void)
+{
+	u8 b[256];
+	const struct sw_cave *c = &sw_tod_own_caves[0];
+
+	if (c->len > sizeof(b)) return 0;
+	host_peek(c->addr, b, c->len);
+	return memcmp(b, c->bytes, c->len) == 0;
 }
 
 static int fl_words_are(const u32 *w, u32 n)
@@ -591,17 +620,27 @@ static void test_tod_fastloads(void)
 
 	fl_seed_game();
 	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	b = 0;
+	host_poke(FL_FLAG, &b, 1);
+	check(!fl_cave_in(), "the dead function holds no cave of qwark's before");
 	host_write_log_reset();
 	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17),
 	      "on: the seventeen words, as assembled");
-	check(host_write_log_count() == 1, "in one write");
 	check(rd32(TOD_FASTLOAD_AT + 68u) == g_fl_orig[17], "and not a word past them");
-	check(rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME, "g_levelTransitionMinTime is left at 5 s");
-	check(fl_rd8(FL_FLAG) == 0, "and the switch's flag byte is not a console's business");
-	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17), "on again is no change");
+	check(fl_cave_in() && fl_sites_are(1), "revision 1.29: qwark's own cave in, and its three sites branch to it");
+	check(fl_rd8(FL_FLAG) == 1, "the flag byte its pieces read, at 1");
+	check(rd32(TOD_TRANSITION_MIN) == 0, "and g_levelTransitionMinTime at 0: a story FMV load reads at once");
+	check(host_write_log_count() > 1, "in a few writes, the cave before the branches");
+	host_write_log_reset();
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17) && fl_sites_are(1),
+	      "on again is no change");
 	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_NOT_FOUND, "a console reads no flag: qwark's bit says");
 	check((features_toggle_state() >> TF_FAST_LOADS) & 1u, "and it is set");
-	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_words_are(g_fl_orig, 18), "off: the game's own words back");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_words_are(g_fl_orig, 18) && fl_sites_are(0),
+	      "off: the game's own words back, at the three sites too");
+	check(fl_rd8(FL_FLAG) == 0 && rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME,
+	      "the flag at 0 and g_levelTransitionMinTime at the game's 5 s");
+	check(fl_cave_in(), "the cave stays: nothing reaches it without the sites");
 	check(!((features_toggle_state() >> TF_FAST_LOADS) & 1u), "and the bit clear");
 	check(features_set(TF_FAST_LOADS, 0) == ST_OK, "off again is not an error");
 
@@ -621,8 +660,9 @@ static void test_tod_fastloads(void)
 	      "the first word replaced is the game's bne cr7 to the same epilogue");
 
 	group("ToD: Fast loads' code switch is the console's words");
-	check(sw != NULL && sw->ncaves == 1 && sw->nsites == 1 && sw->nflags == 1, "one cave, one site, one flag");
-	if (sw != NULL && sw->ncaves == 1 && sw->caves[0].len == 4u * 24u) {
+	check(sw != NULL && sw->ncaves == 2 && sw->nsites == 4 && sw->nflags == 1,
+	      "two caves (the switch, qwark's own), four sites, one flag");
+	if (sw != NULL && sw->ncaves == 2 && sw->caves[0].len == 4u * 24u) {
 		u32 cave = sw->caves[0].addr;
 
 		for (i = 0; i < 17; i++) {
@@ -647,6 +687,33 @@ static void test_tod_fastloads(void)
 	}
 	check(sw != NULL && sw->sites[0].addr == TOD_FASTLOAD_AT && sw->flags[0] == FL_FLAG &&
 	      SW_TOD_FLAG_FAST_LOADS == FL_FLAG, "the site is the console's first word, the flag past the BSS");
+	if (sw != NULL && sw->ncaves == 2 && sw->nsites == 4) {
+		const struct sw_cave *own = &sw->caves[1];
+		int sites_ok = 1, back_ok = 1;
+
+		for (i = 0; i < 3; i++) {
+			u32 site = sw->sites[1 + i].addr, to = fl_target(site, sw->sites[1 + i].value), k, w;
+			int found_orig = 0, found_back = 0;
+
+			if (site != g_fl_site_at[i] || sw->sites[1 + i].value != sw_tod_own_sites[i].value ||
+			    to < own->addr || to >= own->addr + own->len) sites_ok = 0;
+			/* Its piece runs the site's own word on the way back, and comes back to site + 4. */
+			for (k = to; k + 4u <= own->addr + own->len; k += 4u) {
+				w = be32_get(own->bytes + (k - own->addr));
+				if (w == g_fl_site_orig[i]) found_orig = 1;
+				if ((w >> 26) == 18 && (w & 3u) == 0 && fl_target(k, w) == site + 4u) { found_back = 1; break; }
+			}
+			if (!found_orig || !found_back) back_ok = 0;
+		}
+		check(sites_ok && own->addr == sw->caves[0].addr + sw->caves[0].len && own->addr + own->len <= 0x003EB708u,
+		      "qwark's own three sites branch into its cave, right after the switch in the dead function");
+		check(back_ok, "and each piece runs the word its site replaced and comes back after it");
+		check(own->len == sw_tod_own_caves[0].len && memcmp(own->bytes, sw_tod_own_caves[0].bytes, own->len) == 0 &&
+		      SW_TOD_DATA_FMV_IN == TOD_FL_FMV_IN && TOD_FL_FMV_IN == FL_FLAG + 4u,
+		      "a console writes the same bytes the patch does, and the FMV stamp is the word after the flag");
+	} else {
+		check(0, "qwark's own cave and sites are in the table");
+	}
 	if (sw != NULL && lh != NULL) {
 		u8 c, k;
 
@@ -676,7 +743,7 @@ static void test_tod_fastloads(void)
 	check(features_set(TF_FAST_LOADS, 1) == ST_UNSUPPORTED && fl_words_are(g_fl_orig, 18) &&
 	      host_write_log_count() == 0, "so Fast loads is UNSUPPORTED and writes nothing");
 	check(switches_patch(g_fl_patch, sizeof(g_fl_patch), &len) == ST_OK &&
-	      be16_get(g_fl_patch) == 25u, "SWITCH_PATCH: 24 cave words and the site");
+	      be16_get(g_fl_patch) == 24u + 63u + 4u, "SWITCH_PATCH: 24 and 63 cave words and the four sites");
 	check(quit(), "the game quits");
 	host_boot_as(TOD_TITLE, "tod");
 	fl_poke_patch(g_fl_patch, len);
@@ -685,20 +752,257 @@ static void test_tod_fastloads(void)
 	check(session_game() != NULL && session_game()->game_id == GAME_TOD, "ToD boots with the patch applied at load");
 	check(switches_state() == 1, "and the look finds it");
 	check(rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "the site is the branch to the trampoline");
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
 	host_write_log_reset();
-	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_rd8(FL_FLAG) == 1 && host_write_log_count() == 1,
-	      "on: the flag byte to 1, one write");
-	check(rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "and no code");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_rd8(FL_FLAG) == 1 && rd32(TOD_TRANSITION_MIN) == 0 &&
+	      host_write_log_count() == 2, "on: the flag byte to 1 and g_levelTransitionMinTime to 0, two writes");
+	check(rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS && rd32(g_fl_site_at[0]) == SW_TOD_SITE_OWN_DEPARTURE,
+	      "and no code");
 	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 1, "the flag reads back as on");
 	host_poke(FL_FLAG, &b, 1);
 	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 0, "and a flag cleared behind qwark's back as off");
 	check(features_set(TF_FAST_LOADS, 1) == ST_OK && features_set(TF_FAST_LOADS, 0) == ST_OK &&
-	      fl_rd8(FL_FLAG) == 0 && rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "off: the flag to 0, still no code");
+	      fl_rd8(FL_FLAG) == 0 && rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS &&
+	      rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME, "off: the flag to 0 and the 5 s back, still no code");
 	check(quit(), "the game quits");
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
 	check(boot_tod(), "and comes back on a console");
 
+}
+
+/* --------------------------------- qwark's own loads' fade, revision 1.29 */
+
+static void fade_world(void)
+{
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	wr32(TOD_LUA_STATE, 0x30030000u);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_GAME);
+	wr32(TOD_LOAD_FADE_DONE, 0x3F800000u);
+}
+
+static void test_tod_load_fade(void)
+{
+	int i;
+
+	group("ToD: no fade-out before a load qwark asks for (revision 1.29)");
+	check(TOD_LOAD_FADE_TIME == 0x008BA51Cu && TOD_LOAD_FADE_QUICK == 0x3A800000u &&
+	      f32_from_bits(TOD_LOAD_FADE_QUICK) * 1024.0f == 1.0f, "k_loadLevelFadeTime, and 2^-10 s for it");
+	fade_world();
+	check(session_planet_load(2, 0) == ST_OK && rd32(TOD_LOAD_REQUEST) == 2 &&
+	      rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK, "PLANET_LOAD: the short fade, then the request");
+	check(rd32(TOD_LOAD_FADE_DONE) == 0x3F800000u, "k_loadLevelFadeDone left at 1.0");
+	tick(3);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK, "kept while the request waits");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);   /* LoadLevel_ProcessPending took it */
+	tick(1);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "the game's 0.5 s back once the load has left the request");
+	tick(3);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "and left alone after");
+
+	/* A tick that never saw the request: the level going is the load's start too. */
+	fade_world();
+	check(session_planet_load(3, 0) == ST_OK && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK, "another");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_LUA_STATE, 0);
+	tick(1);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "Level_Exit seen first: the time back as well");
+
+	/* A load the game never takes: back after the wait. */
+	fade_world();
+	check(session_planet_load(4, 0) == ST_OK, "and one the game never takes");
+	tick(TOD_FADE_WAIT_TICKS - 2);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK, "kept for its wait");
+	tick(4);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "then the game's time back");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+
+	/* Refused loads write nothing. */
+	fade_world();
+	wr32(TOD_GAME_STATE, 3);
+	check(session_planet_load(2, 0) == ST_BUSY && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME,
+	      "a refused PLANET_LOAD leaves the fade alone");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+
+	/* A qwark that went away with it armed: the next session's arrival puts it back. */
+	fade_world();
+	check(session_planet_load(5, 0) == ST_OK && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK, "armed");
+	check(quit(), "and the game quits with it so");
+	host_boot_as(TOD_TITLE, "tod");
+	wr32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_QUICK);   /* the memory as that boot found it */
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	check(session_game() != NULL && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME,
+	      "a session's arrival writes the game's 0.5 s");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(2);
+}
+
+/* ------------------------------------------ Remove cutscenes, revision 1.29 */
+
+#define CUT_TOC     0x30200000u
+#define CUT_TABLE   0x30210000u
+#define CUT_STRINGS 0x30230000u
+
+/* A record's two files: each a path string, 0 for none. */
+struct cut_rec {
+	const char *name;
+	const char *file;
+	const char *alt;
+};
+
+static const struct cut_rec g_cut_recs[] = {
+	{ "l00_s00_attr_fmv", "l00_s00_attr_fmv.bik", "fmv/l00_s00_attr_fmv_textless.bik" },
+	{ "l01_s01_ntro_fmv", "l01_s01_ntro_fmv.bik", NULL },
+	{ "l01_s02_walk_fmv", "movies/l01_s02_walk_fmv.bik", NULL },
+	{ "l01_s03_tach_fmv", "l01_s03_tach_fmv.bik", NULL },
+	{ "l02_s01_hypr_fmv", "l02_s01_hypr_fmv.bik", NULL },
+	{ "l02_s02_zoni_fmv", "l02_s02_zoni_fmv.bik", NULL },
+	{ "l4b_s05_end1_fmv", "l4b_s05_end1_fmv.bik", NULL },
+	{ "l7b_s01_end2_fmv", "l7b_s01_end2_fmv.bik", NULL },
+	{ "l17_s03a_rmid_fmv", "l17_s03a_rmid_fmv.bik", NULL },
+	{ "l17_s03_rmid_fmv", "l17_s03_rmid_fmv.bik", NULL }
+};
+
+#define CUT_NRECS ((u32)(sizeof(g_cut_recs) / sizeof(g_cut_recs[0])))
+
+static u32 g_cut_file_at[CUT_NRECS], g_cut_alt_at[CUT_NRECS];
+
+static void cut_build(void)
+{
+	u8 rec[TOD_FMV_STRIDE];
+	u32 at = CUT_STRINGS, i;
+
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, CUT_TOC);
+	wr32(CUT_TOC + TOD_TOC_FMVS, CUT_TABLE);
+	wr32(CUT_TABLE - 4u, CUT_NRECS);
+	for (i = 0; i < CUT_NRECS; i++) {
+		memset(rec, 0, sizeof(rec));
+		host_poke(at, (const u8 *)g_cut_recs[i].name, (u32)strlen(g_cut_recs[i].name) + 1);
+		be32_put(rec, at);
+		at += 0x40;
+		host_poke(at, (const u8 *)g_cut_recs[i].file, (u32)strlen(g_cut_recs[i].file) + 1);
+		be32_put(rec + TOD_FMV_FILE, at);
+		be32_put(rec + TOD_FMV_FILE + 4, 0x1000);
+		g_cut_file_at[i] = at;
+		at += 0x40;
+		g_cut_alt_at[i] = 0;
+		if (g_cut_recs[i].alt != NULL) {
+			host_poke(at, (const u8 *)g_cut_recs[i].alt, (u32)strlen(g_cut_recs[i].alt) + 1);
+			be32_put(rec + TOD_FMV_ALT, at);
+			be32_put(rec + TOD_FMV_ALT + 4, 0x1000);
+			g_cut_alt_at[i] = at;
+			at += 0x40;
+		}
+		host_poke(CUT_TABLE + i * TOD_FMV_STRIDE, rec, sizeof(rec));
+	}
+}
+
+static int cut_str_is(u32 at, const char *want)
+{
+	char b[64];
+
+	host_peek(at, (u8 *)b, sizeof(b));
+	return memcmp(b, want, strlen(want) + 1) == 0;
+}
+
+/* Every path as cut_build wrote it (0), or the eight's names' first letters 0 (1). */
+static int cut_all(int removed)
+{
+	u32 i;
+
+	for (i = 0; i < CUT_NRECS; i++) {
+		const char *f = g_cut_recs[i].file;
+		int listed = !(i == 5 || i == 6 || i == 9);   /* zoni, end1 and the other rmid stay */
+		u32 base = (u32)(strrchr(f, '/') != NULL ? strrchr(f, '/') - f + 1 : 0);
+
+		if (removed && listed) {
+			char want[64];
+
+			memcpy(want, f, strlen(f) + 1);
+			want[base] = 0;
+			if (!cut_str_is(g_cut_file_at[i], want)) return 0;
+			if (!cut_str_is(g_cut_file_at[i] + base + 1, f + base + 1)) return 0;
+		} else if (!cut_str_is(g_cut_file_at[i], f)) {
+			return 0;
+		}
+		if (!cut_str_is(g_cut_file_at[i] - 0x40, g_cut_recs[i].name)) return 0;   /* names untouched */
+	}
+	/* The attract FMV's textless file, behind its folder. */
+	if (removed) return cut_str_is(g_cut_alt_at[0], "fmv/") && cut_str_is(g_cut_alt_at[0] + 5, "00_s00_attr_fmv_textless.bik");
+	return cut_str_is(g_cut_alt_at[0], g_cut_recs[0].alt);
+}
+
+/* The eight's first letters at 0 by hand, as a qwark that went away left them. */
+static void cut_blank(void)
+{
+	static const u8 zero = 0;
+	u32 i;
+
+	for (i = 0; i < CUT_NRECS; i++) {
+		const char *f = g_cut_recs[i].file;
+		u32 base = (u32)(strrchr(f, '/') != NULL ? strrchr(f, '/') - f + 1 : 0);
+
+		if (i == 5 || i == 6 || i == 9) continue;
+		host_poke(g_cut_file_at[i] + base, &zero, 1);
+	}
+	host_poke(g_cut_alt_at[0] + 4, &zero, 1);
+}
+
+static void test_tod_cutscenes(void)
+{
+	const struct game_describe *dsc;
+	int found = 0, n, i;
+
+	group("ToD: Remove cutscenes, the eight FMVs' files missing (revision 1.29)");
+	check(session_game() != NULL, "ToD is up");
+	if (session_game() == NULL) return;
+	dsc = session_game()->describe();
+	for (i = 0; i < dsc->nfeatures; i++)
+		if (dsc->features[i].id == TF_REMOVE_CUTSCENES)
+			found = dsc->features[i].kind == FEATURE_TOGGLE &&
+			        (dsc->features[i].flags & (FEATURE_FLAG_WRITES_CODE | FEATURE_FLAG_LIVE)) == 0 &&
+			        qstreq(dsc->features[i].label, "Remove cutscenes");
+	check(found && TF_REMOVE_CUTSCENES == 18, "id 18, Remove cutscenes, a toggle of data writes, not LIVE");
+
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, 0);
+	check(tod_cutscenes_apply(1) == -1, "no table yet: nothing to do");
+	check(features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK, "on with no table is still on");
+	cut_build();
+	tick(TOD_CUT_EVERY + 2);
+	check(cut_all(1), "the table that comes later is seen to by the tick");
+	check(features_set(TF_REMOVE_CUTSCENES, 0) == ST_OK && cut_all(0), "off: every path back, letter for letter");
+
+	cut_build();
+	check(features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK && cut_all(1),
+	      "on: the eight's files, and the attract's textless one behind its folder, at once");
+	check(tod_cutscenes_apply(1) == 0 && cut_all(1), "again: nothing more to write");
+	check(rd32(CUT_TABLE + 5u * TOD_FMV_STRIDE) == g_cut_file_at[5] - 0x40u,
+	      "the records themselves (their names) are not touched");
+	n = tod_cutscenes_apply(0);
+	check(n == 8 && cut_all(0), "the way back is read off the paths alone: eight strings, no state");
+	check(features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK && cut_all(1), "on once more");
+
+	/* The archive read again (a new table): the tick removes them again while wanted. */
+	cut_build();
+	tick(TOD_CUT_EVERY + 2);
+	check(cut_all(1), "a table read again is seen to");
+
+	/* A new session: as the game has them, before the auto flags come back. */
+	check(quit(), "the game quits with them removed");
+	host_boot_as(TOD_TITLE, "tod");
+	cut_build();
+	cut_blank();   /* the memory as that boot found it */
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	check(session_game() != NULL && cut_all(0), "the next session's arrival puts them back");
+	check(features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK && cut_all(1) &&
+	      features_set(TF_REMOVE_CUTSCENES, 0) == ST_OK && cut_all(0), "and the toggle works there");
+
+	/* Nonsense tables are left alone. */
+	wr32(CUT_TABLE - 4u, TOD_FMV_MAX + 1u);
+	check(tod_cutscenes_apply(1) == -1 && cut_all(0), "a count past TOD_FMV_MAX is no table");
+	wr32(CUT_TABLE - 4u, CUT_NRECS);
 }
 
 /* -------------------------------------------- on boot, 2026-10-28 */
@@ -2165,6 +2469,8 @@ void test_tod_game(void)
 	test_tod_autosplit_ending();
 	test_tod_autosplit_quit();
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
+	test_tod_load_fade();
+	test_tod_cutscenes();
 	test_tod_on_boot();
 	quit();
 }

@@ -93,7 +93,7 @@ static const struct tod_mark tod_marks[] = {
 	{ "no damage",       TOD_NO_DAMAGE,       TOD_DEC,    "g_debugHeroNoDamage: Hero_Update drops the hero's damage events while non-zero; no code writes it" },
 	{ "infinite ammo",   TOD_INFINITE_AMMO,   TOD_DEC,    "g_infiniteAmmo: Weapon_hasAmmo answers true while non-zero; only Lua_hero_set_infinite_ammo writes it; Weapon_useAmmo still counts down" },
 	{ "proxy handle",    TOD_PROXY_HANDLE,    TOD_DEC,    "g_heroProxyMobyHandle: Hero_Update drops the hero's damage while non-zero; the old RaCMAN's god ratchet wrote 154 into its low byte, 0x1020BD4B" },
-	{ "transition time", TOD_TRANSITION_MIN,  TOD_DEC,    "g_levelTransitionMinTime, f32 5.0 in .data: LevelTransition_waitLoad (0x3C5810) waits that long before the load, only on a load that plays a story FMV (Metropolis or Cobalia, first time); nothing writes it" },
+	{ "transition time", TOD_TRANSITION_MIN,  TOD_DEC,    "g_levelTransitionMinTime, f32 5.0 in .data: LevelTransition_waitLoad (0x3C5810) waits that long before the load, only on a load that plays a story FMV (Metropolis or Cobalia while LVL_FAST_SHIP_FIXED is clear); Fast loads writes 0 while on (revision 1.29)" },
 	{ "cheats",          TOD_CHEATS,          TOD_DEC,    "Cheats_enableAll: g_levelFlags+0x31D0, CHEAT_COUNT 14 bytes set to 1 (and +0x31E0 = 0x348)" },
 	{ "level flags",     TOD_LEVEL_FLAGS,     TOD_DEC,    "g_levelFlags, g_saveData+0x5528: GLOBAL_FLAG_ 0..291 as bit n&63 of u64 word n>>6 (Lua_check_flag, Lua_set_flag, Lua_clear_flag, SetProgressionFlag); tolua_gameplay_open names all 292" },
 	{ "lua vm",          TOD_LUA_VM,          TOD_DEC,    "g_gameplayLuaVM; L at +4, allocator at +8 (CLuaVM_executeBuffer)" },

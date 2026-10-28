@@ -181,6 +181,7 @@ static void tod_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
 	tod_ammo_tick(T->ammo_flag, T->root);
+	tod_panel_tick();   /* revision 1.29: qwark's own loads' fade, Remove cutscenes */
 	tod_autosplit_tick(&T->as);
 }
 
@@ -189,6 +190,7 @@ static void tod_on_enter(void)
 	memset(T, 0, sizeof(*T));
 	tod_autosplit_forget(&T->as);
 	tod_panel_reset();
+	tod_panel_enter();    /* revision 1.29: the fade time and the FMVs as the game has them */
 	tod_save_recover();   /* the savefile manager's round */
 }
 
@@ -256,10 +258,15 @@ static const char * const tod_readouts[] = {
  * it beside the values, as it does RaC1's goodies menu (gamelayout.json).
  * The RYNO plans' two buttons, 14 and 15, are retired: the RYNO itself is an
  * Unlocks row.
+ *
+ * Revision 1.29: Remove cutscenes (18), the user's eight FMVs' files made
+ * missing by data writes (tod.h, TOD_ARCHIVE_GAME), so not WRITES_CODE, and
+ * not LIVE, so it can come back at boot like Fast loads beside it.
  */
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
 	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
+	{ TF_REMOVE_CUTSCENES, FEATURE_TOGGLE, G_CHEATS,  0, 0,  NO, 0, 0, "Remove cutscenes" },
 	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
 	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },

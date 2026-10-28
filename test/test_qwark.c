@@ -13306,9 +13306,32 @@ static const struct swt_cave g_swt_tod_caves[] = {
 	                     0x4BE73070u, 0x4BE72FFCu, 0x81227D74u, 0x89290000u, 0x83A27D78u,
 	                     0x807D0000u, 0x2C830001u, 0x4186002Cu, 0x2F090000u, 0x409A000Cu,
 	                     0x409E0020u, 0x4BE7305Cu, 0xC0227D84u, 0x4BE73779u, 0x4BC99931u,
-	                     0x4BC99861u, 0x38000001u, 0x901D0000u, 0x4BE73028u } }
+	                     0x4BC99861u, 0x38000001u, 0x901D0000u, 0x4BE73028u } },
+	/*
+	 * Revision 1.29: qwark's own pieces straight after it (own_departure,
+	 * own_fmv_cut, own_fmv_in), each opening on the same flag's test, read
+	 * back from the link (ppu-lv2-objdump) instruction by instruction.
+	 */
+	{ 0x003EB5D8u, 63, { 0x3D20108Bu, 0x89498560u, 0x2F8A0000u, 0x419E004Cu, 0x3D201020u,
+	                     0x894934FCu, 0x2F8A0000u, 0x419E003Cu, 0x814934F8u, 0x2F8A0001u,
+	                     0x419E0030u, 0x3D20101Du, 0x81494FA8u, 0x2F8A0002u, 0x409E0020u,
+	                     0x39400003u, 0x91494FA8u, 0x39400001u, 0x99494FB0u, 0x3D601075u,
+	                     0x814BDDBCu, 0x91494FACu, 0x7F83E378u, 0x4BFDA114u, 0x3D20108Bu,
+	                     0x89498560u, 0x2F8A0000u, 0x419E0064u, 0x81498564u, 0x3D601038u,
+	                     0x816BAA1Cu, 0x7F8A5800u, 0x409E0050u, 0x387C0014u, 0x38800001u,
+	                     0x4BFD30B5u, 0x60000000u, 0x81222BB4u, 0x81422B9Cu, 0x814A0000u,
+	                     0x81690000u, 0x556C103Au, 0x7D8A602Eu, 0x2F8C0000u, 0x419E000Cu,
+	                     0x396B0001u, 0x4BFFFFECu, 0x91690000u, 0xC022F4BCu, 0x4BE7C0E5u,
+	                     0xE8410028u, 0x4BFDA058u, 0x399C0014u, 0x4BFDA134u, 0x3D20108Bu,
+	                     0x89498560u, 0x2F8A0000u, 0x419E0010u, 0x3D401038u, 0x814AAA1Cu,
+	                     0x91498564u, 0x81222BBCu, 0x4BFDA1FCu } }
 };
-static const struct patch_word g_swt_tod_sites[] = { { 0x0025E588u, 0x4818CFF0u } };
+static const struct patch_word g_swt_tod_sites[] = {
+	{ 0x0025E588u, 0x4818CFF0u },   /* LoadScreen_Update -> 0x3EB578 */
+	{ 0x003C5744u, 0x48025E94u },   /* own_departure -> 0x3EB5D8 */
+	{ 0x003C57DCu, 0x48025E5Cu },   /* own_fmv_cut -> 0x3EB638 */
+	{ 0x003C58C8u, 0x48025DE8u }    /* own_fmv_in -> 0x3EB6B0 */
+};
 static const u32 g_swt_tod_flags[] = { 0x108A8560u };
 static const struct patch_word g_swt_tod_toggles[] = { { 17, 0x108A8560u } };
 

@@ -176,6 +176,7 @@ for g in $GAMES; do
 	ownsites=""
 	nownsites=0
 	: > "$OUT/$g.sitedefs"
+	: > "$OUT/$g.own.c"
 
 	while read -r section size vma; do
 		name=$(echo "$section" | sed 's/^\.[a-z]*\.//')
@@ -215,7 +216,7 @@ for g in $GAMES; do
 					emit_bytes "$bin"
 					echo "};"
 					echo
-				} >> "$OUT/own.c"
+				} >> "$OUT/$g.own.c"
 				owncaves="$owncaves	{ ${addr}u, sw_${g}_${name}, (u32)sizeof(sw_${g}_${name}) },
 "
 				nowncaves=$((nowncaves + 1))
@@ -311,7 +312,18 @@ for g in $GAMES; do
 			printf '%s' "$ownsites" | sed '$ s/},   /}    /'
 			echo "};"
 			echo
-		} >> "$OUT/own.c"
+		} >> "$OUT/$g.own.c"
+		# Revision 1.29: Tools of Destruction's are only where ToD is, and
+		# only in its own module of the modules: a release links this file,
+		# and Deadlocked's module does too.
+		if [ "$g" = "tod" ]; then
+			echo "#if QWARK_HAS_TOD && (!defined(QWARK_MODULE_GAME) || QWARK_MODULE_GAME == 5)" >> "$OUT/own.c"
+			cat "$OUT/$g.own.c" >> "$OUT/own.c"
+			echo "#endif /* QWARK_HAS_TOD */" >> "$OUT/own.c"
+			echo >> "$OUT/own.c"
+		else
+			cat "$OUT/$g.own.c" >> "$OUT/own.c"
+		fi
 		{
 			echo "#define SW_${G}_OWN_NCAVES ${nowncaves}"
 			echo "#define SW_${G}_OWN_NSITES ${nownsites}"
@@ -469,6 +481,7 @@ EOF
  *
  * from the SDK's Cygwin shell.
  */
+#include "../core/buildmodes.h"   /* first: QWARK_HAS_TOD, and a module's r14 */
 #include "switches_bins.h"
 
 EOF

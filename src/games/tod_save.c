@@ -202,6 +202,9 @@ static void tod_sf_release(void)
  * SaveManager_onOperationDone out of it, and the autosave the game may have
  * asked for during the hold is dropped, so the loaded save is not written over
  * the user's slot the moment it is in. The manager's state goes last.
+ *
+ * Revision 1.29: the planet load request onLoaded writes fades out for a frame
+ * only (tod.h, TOD_LOAD_FADE_TIME), as qwark's every load.
  */
 static u8 tod_sf_load(void)
 {
@@ -215,6 +218,7 @@ static u8 tod_sf_load(void)
 		return ss_refuse(h, ok, "the load (the hold was gone)");
 	}
 
+	tod_fade_arm();
 	if (mem_write_u32(lt + TOD_ST_STATE, TOD_LT_READ_OK) != ST_OK ||
 	    mem_write(lt + TOD_ST_ID, gone, sizeof(gone)) != ST_OK ||
 	    mem_write_u32(TOD_SAVE_MANAGER + TOD_SM_RESULT, 0) != ST_OK ||
@@ -223,6 +227,7 @@ static u8 tod_sf_load(void)
 		/* Nothing goes to the game half set up: the thread as it was, the hold kept. */
 		mem_write_u32(lt + TOD_ST_STATE, 0);
 		mem_write_u32(lt + TOD_ST_ID + 4, TOD_THREAD_NONE);
+		tod_fade_disarm();
 		plat_log("tod: the load refused, a write into the save system failed; the load thread put back");
 		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NO_SYSTEM);
 	}
@@ -266,6 +271,7 @@ static u8 tod_sf_load_poll(u16 ticks)
 		         "id still 00000000:%08X; put back", (int)ticks, ss_word(h, TOD_SM_STATE),
 		         (int)ss_word(h, lt + TOD_ST_STATE), TOD_THREAD_GONE);
 		load_put_back();
+		tod_fade_disarm();
 		savefile_why(SAVEFILE_WHY_NOT_TAKEN);
 		return SAVEFILE_HELPER_REFUSED;
 	}

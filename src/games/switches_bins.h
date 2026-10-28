@@ -111,8 +111,15 @@
 
 /* tod: its flag bytes, then its sites */
 #define SW_TOD_FLAG_FAST_LOADS 0x108A8560u
+#define SW_TOD_DATA_FMV_IN 0x108A8564u
 #define SW_TOD_SITE_FAST_LOADS_ADDR 0x0025E588u
 #define SW_TOD_SITE_FAST_LOADS 0x4818CFF0u
+#define SW_TOD_SITE_OWN_DEPARTURE_ADDR 0x003C5744u
+#define SW_TOD_SITE_OWN_DEPARTURE 0x48025E94u
+#define SW_TOD_SITE_OWN_FMV_CUT_ADDR 0x003C57DCu
+#define SW_TOD_SITE_OWN_FMV_CUT 0x48025E5Cu
+#define SW_TOD_SITE_OWN_FMV_IN_ADDR 0x003C58C8u
+#define SW_TOD_SITE_OWN_FMV_IN 0x48025DE8u
 
 /* One trampoline, or the one piece of data a trampoline reads. */
 struct sw_cave {
@@ -130,6 +137,10 @@ struct sw_cave {
 #define SW_RAC4_OWN_NSITES 4
 extern const struct sw_cave sw_rac4_own_caves[];
 extern const struct patch_word sw_rac4_own_sites[];
+#define SW_TOD_OWN_NCAVES 1
+#define SW_TOD_OWN_NSITES 3
+extern const struct sw_cave sw_tod_own_caves[];
+extern const struct patch_word sw_tod_own_sites[];
 
 /*
  * Everything one game's switches are: the caves, the site words that branch

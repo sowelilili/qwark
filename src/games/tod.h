@@ -104,12 +104,16 @@
 #define TOD_PROXY_FAKE       154u
 
 /*
- * g_levelTransitionMinTime, f32 seconds (the memory panel's row). Fast loads
- * wrote 0 here until 2026-10-28, which did nothing on a planet load: in
+ * g_levelTransitionMinTime, f32 seconds (the memory panel's row). In
  * LevelTransition_waitLoad (0x3C5810) the wait is only for a load that plays
- * a story FMV instead of the flight (g_levelTransitionFmvBuffer 0x1037AB28 set:
- * Metropolis and Cobalia on a file that has not seen their intros), and there
- * it holds back the start of the load while the FMV plays on regardless (dec).
+ * a story FMV instead of the flight (g_levelTransitionFmvBuffer 0x1037AB28 set),
+ * and there it holds back the start of the data's read while the FMV plays on
+ * regardless (dec). LevelTransition_begin picks that FMV list for a load to
+ * Metropolis (l01_s01_ntro_fmv) or Cobalia (l02_s01_hypr_fmv, l02_s02_zoni_fmv)
+ * while LVL_FAST_SHIP_FIXED (level flag 106) is clear, every time, and adds the
+ * FMVs to the seen-movies list (g_levelFlags + 0x30D8) there and then, before
+ * they play. Fast loads writes 0 here while it is on and 5.0 back when it goes
+ * off (revision 1.29, tod_panel.c); nothing of the game's writes it.
  */
 #define TOD_TRANSITION_MIN   0x10073548u
 #define TOD_TRANSITION_GAME  0x40A00000u  /* 5.0f, the shipped value */
@@ -141,10 +145,91 @@
  *
  * Under RPCS3 the code switch does the same (src/games/switches/sw_tod.s,
  * SW_TOD_FLAG_FAST_LOADS): its trampoline's second half is these words.
+ *
+ * Revision 1.29 (the user's hardware test: the departure still played in full,
+ * then the cut). LoadScreen_Update runs from Game_UpdateFrame, and a realtime
+ * cinematic plays in g_gameState 9, whose GameState_Dispatch case is
+ * MovieQueue_update alone, so the cut could only come between two load screen
+ * cinematics. The departure does not hold the data back: LevelTransition_begin
+ * (the level_transitions level, LoadScreen_Init, the departure) is the transition
+ * tier's activation, and the loader thread takes g_levelLoadTier, whose load is
+ * LevelTransition_waitLoad, a frame or two later and reads at once on a planet
+ * load; LoadScreen_LoadDone sets g_loadScreenLoadDone the moment the read is done
+ * and its 200 ms poll waits only for the arrival (1) with the player idle. So
+ * when the data is in during the departure, the departure's rest was all wait.
+ * Three pieces of qwark's own (sw_tod.s, own_*, which read the same flag byte;
+ * a console writes them with the patch and sets the flag) end that wait:
+ *
+ *   own_departure  LevelTransition_update (g_levelLoadTier's update, a load's
+ *                  frames only), the planet path: the data in, the arrival not
+ *                  up and the player playing (2), the player to 3, as its own
+ *                  end and its skip put it there: the cinematic fades to black
+ *                  (the "short fade" the user saw after the departure), the
+ *                  queue lets state 9 go, and the cut above follows.
+ *   own_fmv_in     LevelTransition_waitLoad, the loader thread, once a story
+ *                  FMV load's data is read: the load's FMV start time into
+ *                  TOD_FL_FMV_IN, the word after the flag.
+ *   own_fmv_cut    LevelTransition_update, the FMV path with an FMV open: its
+ *                  own load's stamp there, the FMV closed as its end closes it
+ *                  (FmvPlayer_stop), the list run out, the screen black; the
+ *                  next frame sets g_levelTransitionFmvDone as the game does,
+ *                  and the loader's 200 ms poll ends the load.
+ *
+ * With g_levelTransitionMinTime at 0 the story FMV load reads at once and ends
+ * when the data is in; the FMV is not needed for anything after it.
  */
 #define TOD_FASTLOAD_AT      0x0025E588u  /* LoadScreen_Update + 0x28 */
 #define TOD_FASTLOAD_NWORDS  17u
+#define TOD_FASTLOAD_NSITES  3u           /* qwark's own pieces' sites, after the seventeen */
 #define TOD_LOAD_SCREEN_DONE 0x102034FCu  /* g_loadScreenLoadDone, u8 */
+#define TOD_FL_FMV_IN        0x108A8564u  /* SW_TOD_DATA_FMV_IN: the FMV load's stamp, past the BSS */
+
+/*
+ * Revision 1.29: no fade-out before a load qwark starts. A planet load in
+ * gameplay is g_planetLoadRequest (PLANET_LOAD writes it, and a savefile load's
+ * SaveManager_onLoaded writes it through LoadLevel(level, 1, 0)), which
+ * LoadLevel_ProcessPending takes from Game_UpdateFrame: ScreenFade_Start(
+ * k_loadLevelFadeTime, 0) every frame and the load once ScreenFade_GetProgress
+ * reaches k_loadLevelFadeDone (1.0). The fade time is a word of the TOC
+ * (r2 0x8BB068, -0xB4C), in the RW segment, read by ProcessPending alone.
+ * ScreenFade_update (0x27DF1C) moves the progress by min(the rest, dt / time),
+ * so it lands on 1.0 exactly; a time of 2^-10 s gets there in one frame (0
+ * would be dt * inf, NaN on a frame with no time). qwark writes the short time
+ * just before its own request and the game's 0.5 back once its load has left
+ * the request (tod_fade_tick), or after TOD_FADE_WAIT_TICKS, and as a session
+ * enters, so the game's own loads keep their fade.
+ */
+#define TOD_LOAD_FADE_TIME   0x008BA51Cu  /* k_loadLevelFadeTime, f32 */
+#define TOD_LOAD_FADE_DONE   0x008BA524u  /* k_loadLevelFadeDone, f32 1.0, left alone */
+#define TOD_LOAD_FADE_GAME   0x3F000000u  /* 0.5f */
+#define TOD_LOAD_FADE_QUICK  0x3A800000u  /* 2^-10 s: one frame */
+#define TOD_FADE_WAIT_TICKS  720u         /* six seconds of the tick: a load the game never took */
+
+/*
+ * Revision 1.29: Remove cutscenes (id 18). Every FMV is a ToDFmvRecord of the
+ * game archive's table (g_archiveGame.toc + 0x2C, the count in the word before
+ * it, 0x1F4 bytes each): its name at +0, its file at +4 and the localised file
+ * at +0x94 (used while +0x98 is not 0 and the file exists), each a char* into
+ * the table. Movie_requestPlay and the level transition's FMV list find the
+ * record by name and play its file; when the file will not open
+ * (FUN_005FAB70: "Failed to play Bink movie"), FmvState_enter goes on to
+ * FmvState_next, as at an FMV's end, and FmvPlayer_play to FmvPlayer_stop, so
+ * a missing file is an FMV over at once. That is what the runners' deleted
+ * files do, and what this does to the user's eight: the first letter of the
+ * file's name (after any '/') at 0, so the path names its folder. Every one of
+ * the eight begins with 'l', which is what goes back.
+ */
+#define TOD_ARCHIVE_GAME     0x102042ACu  /* g_archiveGame, TodArchive */
+#define TOD_ARCHIVE_TOC      0x108u       /* TodArchive.toc */
+#define TOD_TOC_FMVS         0x2Cu        /* the FMV records */
+#define TOD_FMV_STRIDE       0x1F4u
+#define TOD_FMV_FILE         0x04u        /* ToDFmvFile: char *path, u32 size */
+#define TOD_FMV_ALT          0x94u
+#define TOD_FMV_LOOK_LEN     0x9Cu        /* the record's head: both files */
+#define TOD_FMV_MAX          1024u        /* a table longer than this is not the table */
+#define TOD_FMV_PATH_LEN     64u
+#define TOD_CUT_EVERY        240u         /* ticks between two looks while on: the table may come or go */
+#define TOD_CUT_KEEP         16u          /* the bytes a look checks before it reads the table again */
 
 /*
  * The save system (docs/tod-savefile.md; Ghidra /ToD/Save/ToDSaveManager).
@@ -442,6 +527,7 @@ struct tod_facts {
 /* 14 and 15, the RYNO plans' unlock and reset, are retired, never to be another feature's. */
 #define TF_GOD_RATCHET      16     /* the old RaCMAN's, the proxy handle (TOD_PROXY_LOW) */
 #define TF_FAST_LOADS       17     /* the load screen's cut, a code patch (TOD_FASTLOAD_AT) */
+#define TF_REMOVE_CUTSCENES 18     /* revision 1.29: eight FMVs' files made missing (TOD_ARCHIVE_GAME) */
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40
@@ -540,6 +626,19 @@ void tod_ammo_tick(u32 flag, u32 root);
 /* A new process: the hold starts over. */
 void tod_panel_reset(void);
 void tod_panel_init(void);   /* once a module: Fast loads' patch */
+/*
+ * Revision 1.29. A session's arrival: the fade time and the eight FMVs as the
+ * game has them, before the auto-flagged toggles come back. The tick: the
+ * fade time back once qwark's load has begun, and the FMVs looked after.
+ */
+void tod_panel_enter(void);
+void tod_panel_tick(void);
+/* qwark's own load is about to be asked for: its fade-out a frame long. */
+void tod_fade_arm(void);
+/* and it was not: the game's fade time back. */
+void tod_fade_disarm(void);
+/* The eight FMVs' files missing (1) or back (0): how many were changed, or -1 for no table. */
+int  tod_cutscenes_apply(int remove);
 
 /*
  * tod_save.c, the savefile manager (docs/tod-savefile.md). The two flagged

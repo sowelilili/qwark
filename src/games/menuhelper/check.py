@@ -3735,6 +3735,7 @@ def check_tod(ok, elf):
     cave_at = int(m.group(1), 16) if m else None
     ok(len(cave) == 96 and site is not None and flag is not None and cave_at == 0x003EB578,
        "switches_bins.c has ToD's cave, 96 bytes at 0x3EB578, its site and its flag")
+    own_ok = check_tod_own(ok, elf, bins)
     if len(cave) != 96 or site is None or flag is None:
         return
     cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, 96, 4)]
@@ -3756,7 +3757,7 @@ def check_tod(ok, elf):
     ok(same, "its second half is the seventeen words, its branches out pointed at the same places")
 
     lo, hi = 0x003EB578, 0x003EB708
-    ok(cave_at + 96 <= hi, "the trampoline fits the dead function 0x3EB578..0x3EB708")
+    ok(cave_at + 96 <= hi and own_ok, "the trampoline and qwark's own pieces fit the dead function 0x3EB578..0x3EB708")
     ok(elf.word(lo - 4) == 0x4E800020 and elf.word(hi - 4) == 0x4E800020,
        "which ends a function before it and ends with its own blr")
     branches, named, pairs = refs_into(elf, lo, hi)
@@ -3770,8 +3771,131 @@ def check_tod(ok, elf):
     end = last[0] + last[2]
     ok(end <= flag < (end + 0xFFF) & ~0xFFF,
        "the flag 0x%08X is past the RW segment's BSS (it ends 0x%08X), in its 4 KB page" % (flag, end))
+    m = re.search(r"#define SW_TOD_DATA_FMV_IN (0x[0-9A-Fa-f]+)u", open(os.path.join(QWARK, "src", "games",
+                  "switches_bins.h"), encoding="utf-8").read())
+    stamp = int(m.group(1), 16) if m else None
+    ok(stamp == flag + 4 and stamp + 4 <= (end + 0xFFF) & ~0xFFF,
+       "revision 1.29: the FMV load's stamp is the word after the flag, in the same page")
+
+    check_tod_fade(ok, elf)
+    check_tod_cutscenes(ok, elf)
     b3, n3, p3 = refs_into(elf, end, (end + 0xFFF) & ~0xFFF)
     ok(not b3 and not n3 and not p3, "and nothing in the executable points past the BSS")
+
+
+def check_tod_own(ok, elf, bins):
+    """
+    Revision 1.29: qwark's own pieces of Fast loads (sw_tod.s, own_*): the cave
+    after the switch's, the three sites and the game's words at them, the words
+    the pieces read and write, and the calls they make, against NPEA00452.ELF.
+    Returns whether the cave fits the dead function.
+    """
+    print("\nNPEA00452 Fast loads, qwark's own pieces (revision 1.29)")
+    own = open(os.path.join(QWARK, "src", "games", "switches_own.c"), encoding="utf-8").read()
+    m = re.search(r"static const u8 sw_tod_own_fast_loads\[\] = \{(.*?)\};", own, re.S)
+    cave = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else b""
+    m = re.search(r"sw_tod_own_caves\[\] = \{\s*\{ (0x[0-9A-Fa-f]+)u,", own)
+    at = int(m.group(1), 16) if m else None
+    m = re.search(r"sw_tod_own_sites\[\] = \{(.*?)\};", own, re.S)
+    sites = [(int(a, 16), int(w, 16)) for a, w in
+             re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
+    m = re.search(r"sw_tod_sites\[\] = \{(.*?)\};", bins, re.S)
+    all_sites = [(int(a, 16), int(w, 16)) for a, w in
+                 re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
+    ok(len(cave) == 252 and at == 0x003EB5D8 and len(sites) == 3 and all_sites[1:] == sites,
+       "switches_own.c: the cave, 252 bytes at 0x3EB5D8, and three sites, the switch table's own")
+    if len(cave) != 252 or at is None or len(sites) != 3:
+        return False
+    cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, len(cave), 4)]
+    word = lambda a: cw[(a - at) // 4]
+    end = at + len(cave)
+
+    # The sites: the game's words there, what each piece runs on the way back.
+    orig = {0x003C5744: 0x7F83E378, 0x003C57DC: 0x399C0014, 0x003C58C8: 0x81222BBC}
+    for s_at, s_w in sites:
+        t = branch_target(s_at, s_w)
+        back = [a for a in range(t, end, 4) if word(a) >> 26 == 18 and (word(a) & 3) == 0 and
+                branch_target(a, word(a)) == s_at + 4]
+        ok(elf.word(s_at) == orig.get(s_at) and at <= t < end and (s_w & 3) == 0 and back and
+           orig[s_at] in [word(a) for a in range(t, back[0], 4)],
+           "0x%X holds the game's 0x%08X, and its piece runs it and comes back to 0x%X" % (s_at, orig.get(s_at, 0), s_at + 4))
+    ok(elf.word(0x003C5748) == 0x38800001 and branch_target(0x003C574C, elf.word(0x003C574C)) == 0x003C5C88,
+       "0x3C5744 is LevelTransition_update's planet path: the frame's dispatch (0x3C5C88) after it")
+    ok(elf.word(0x003C57E0) == 0x38800001 and branch_target(0x003C57E8, elf.word(0x003C57E8)) == 0x003BE810,
+       "0x3C57DC is its FMV path with an FMV open: FmvPlayer_update(&tier->fmv, 1) after it")
+    ok(branch_target(0x003C58A0, elf.word(0x003C58A0)) == 0x003C68E0 and elf.word(0x003C58C4) >> 26 == 16 and
+       branch_target(0x003C58C4, elf.word(0x003C58C4)) == 0x003C5914,
+       "0x3C58C8 is LevelTransition_waitLoad after the read (0x3C68E0), on the FMV path only")
+    ok(elf.word(0x0088BB70) == 0x003C55FC and elf.word(0x0088BB74) == 0x008BB068 and
+       elf.word(0x0088BB78) == 0x003C5810 and elf.word(0x0088BB7C) == 0x008BB068 and
+       elf.word(0x10073578) == 0x0088BB70 and elf.word(0x10073564) == 0x0088BB78,
+       "both run with r2 0x8BB068: vtbl_LevelLoadTier's update and load")
+
+    # What they read and write.
+    ok(elf.word(0x008AB078 - 0x4DC4) == 0x101D4F50 and elf.word(0x008AB078 - 0x4CDC) == 0x1074DDA8,
+       "g_moviePlayer 0x101D4F50 and g_gameClock 0x1074DDA8, MoviePlayer_get's and MoviePlayer_update's")
+    ok(elf.word(0x00084DF4) == 0x3B600003 and elf.word(0x00084DF8) == 0x8342B324 and
+       elf.word(0x00084E00) == 0x937F0000 and elf.word(0x00084E04) == 0x997F0008 and
+       elf.word(0x00084E08) == 0xC17A0014 and elf.word(0x00084E0C) == 0xD17F0004,
+       "MoviePlayer_update's skip puts the state (+0x58) at 3, +0x60 at 1, +0x5C the game time (+0x14)")
+    ok(elf.word(0x008BB068 + 0x2BB4) == 0x1037AB2C and elf.word(0x008BB068 + 0x2B9C) == 0x1037AB24 and
+       elf.word(0x008BB068 + 0x2BBC) == 0x1037AB20 and elf.word(0x008BB068 - 0xB44) == 0x3F800000,
+       "r2 + 0x2BB4, 0x2B9C, 0x2BBC: the FMV list's index, the list and its done flag; -0xB44 1.0f")
+    ok(elf.word(0x008BDDA0) == 0x1037AA18,
+       "LevelTransition_begin's FMV start time is g_levelTransitionFmvStartTime 0x1037AA18 (the low word at +4)")
+    ok(elf.word(0x0088B8F0) == 0x003BE718 and elf.word(0x0088B8F4) == 0x008BB068 and
+       elf.word(0x003BE8B8) >> 26 == 18 and branch_target(0x003BE8B8, elf.word(0x003BE8B8)) == 0x003BE718,
+       "FmvPlayer_stop (0x3BE718), r2 0x8BB068, is where FmvPlayer_update ends an FMV")
+    ok(elf.word(0x00267780) == 0xF8410028 and branch_target(0x0026778C, elf.word(0x0026778C)) == 0x0025ED38 and
+       branch_target(0x003C57F4, elf.word(0x003C57F4)) == 0x00267780,
+       "0x267780 is the stub to ScreenFade_Set that LevelTransition_update calls")
+    ok(elf.word(0x003C56FC) == 0x80622BB0 and elf.word(0x003C57FC) >> 26 == 18 and
+       branch_target(0x003C57FC, elf.word(0x003C57FC)) == 0x003C56FC,
+       "0x3C56FC, the lwmutex's unlock, is where the FMV path's frame ends")
+    calls = [branch_target(a, word(a)) for a in range(at, end, 4) if word(a) >> 26 == 18 and word(a) & 1]
+    ok(calls == [0x003BE718, 0x00267780], "the pieces call FmvPlayer_stop and the fade's stub, nothing else")
+    return end <= 0x003EB708
+
+
+def check_tod_fade(ok, elf):
+    """Revision 1.29: k_loadLevelFadeTime, which qwark shortens for its own loads (tod.h)."""
+    print("\nNPEA00452 qwark's own loads' fade (revision 1.29)")
+    ok(elf.word(0x0088754C) == 0x008BB068 and elf.word(0x00887548) == 0x002EA484,
+       "LoadLevel_ProcessPending (0x2EA484) runs with r2 0x8BB068")
+    ok(elf.word(0x002EA4A4) == 0xC042F4B8 and elf.word(0x002EA4A8) == 0xC022F4B4 and
+       branch_target(0x002EA4AC, elf.word(0x002EA4AC)) == 0x00268CE0 and elf.word(0x002EA4BC) == 0xC002F4BC,
+       "it starts the fade with r2 - 0xB4C and - 0xB48 and waits for r2 - 0xB44")
+    ok(elf.word(0x008BA51C) == 0x3F000000 and elf.word(0x008BA520) == 0 and elf.word(0x008BA524) == 0x3F800000,
+       "k_loadLevelFadeTime 0.5, the start's 0.0 and k_loadLevelFadeDone 1.0")
+    v, fs, ms, off, fl = elf.rw
+    ok(v <= 0x008BA51C < v + fs and (fl & 2) != 0, "the TOC word is in the RW segment")
+    readers = [a for a, w in elf.words(elf.text) if (w >> 16) & 31 == 2 and (w & 0xFFFF) == 0xF4B4 and
+               w >> 26 in (32, 48, 50, 34, 40, 42)]
+    lfs = [a for a in readers if elf.word(a) >> 26 in (48, 50)]
+    ok(lfs == [0x002EA4A8], "one float load in the executable reads r2 - 0xB4C: ProcessPending's")
+    others = [a for a in readers if a not in lfs]
+    ok(all(not 0x002E0000 <= a < 0x00300000 for a in others),
+       "and the other words with that offset are other TOCs' (no ProcessPending neighbour)")
+    br, named, pairs = refs_into(elf, 0x008BA51C, 0x008BA520)
+    ok(not br and not named and not pairs, "nothing names the word's address")
+    ok(elf.word(0x0027DF1C) is not None and elf.word(0x008B2E70) is not None,
+       "ScreenFade_update (0x27DF1C) is there to move the progress")
+
+
+def check_tod_cutscenes(ok, elf):
+    """Revision 1.29: the FMV records Remove cutscenes reads (tod.h, TOD_ARCHIVE_GAME)."""
+    print("\nNPEA00452 Remove cutscenes (revision 1.29)")
+    ok(elf.word(0x008BB03C) == 0x102042AC and elf.word(0x008BD894) == 0x102042AC,
+       "Fmv_findRecord's and the FMV player's lookups both read g_archiveGame 0x102042AC")
+    body = [elf.word(a) for a in range(0x0031581C, 0x00315958, 4)]
+    ok(any(w >> 26 == 32 and w & 0xFFFF == 0x108 for w in body) and
+       any(w >> 26 in (14, 32) and w & 0xFFFF == 0x2C for w in body) and
+       any(w >> 26 == 14 and w & 0xFFFF == 500 for w in body),
+       "Fmv_findRecord walks toc (+0x108) + 0x2C, 500 bytes a record")
+    body = [elf.word(a) for a in range(0x003BEA1C, 0x003BEB38, 4)]
+    ok(any(w >> 26 == 14 and w & 0xFFFF == 0x94 for w in body) and
+       any(w >> 26 == 14 and w & 0xFFFF == 4 for w in body),
+       "the FMV player's lookup hands out the record's file at +4 or its localised one at +0x94")
 
 
 def parse_descs(path):

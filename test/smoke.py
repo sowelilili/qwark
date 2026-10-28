@@ -5337,6 +5337,17 @@ TOD_FASTLOAD_LAST = 0x48000034           # b 0x25E5FC, its seventeenth
 TOD_FASTLOAD_SITE = 0x4818CFF0           # b 0x3EB578, the switch's site word
 TOD_FASTLOAD_CAVE = 0x003EB578
 TOD_FASTLOAD_FLAG = 0x108A8560
+# Revision 1.29: qwark's own pieces (sw_tod.s, own_*): their cave after the
+# switch's, and their three sites with the game's words there and the branches.
+TOD_OWN_CAVE = 0x003EB5D8
+TOD_OWN_CAVE_LEN = 252
+TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025E94),   # LevelTransition_update, a planet load
+                 (0x003C57DC, 0x399C0014, 0x48025E5C),   # LevelTransition_update, an FMV open
+                 (0x003C58C8, 0x81222BBC, 0x48025DE8)]   # LevelTransition_waitLoad, the data read
+TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
+TOD_FADE_GAME = 0x3F000000                      # 0.5f
+TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
+TOD_ARCHIVE_TOC = 0x102042AC + 0x108            # g_archiveGame.toc
 SESSION_FLAG2_NO_MENU = 0x80
 TOD_MAILBOX = 0x008CA000
 TOD_VM_HOOK = 0x004C461C
@@ -5729,14 +5740,46 @@ def smoke_tod(c, sim):
     check(mem_read_u32(c, TOD_PROXY_HANDLE) & 0xFF == 0, "ToD: and 0 there again")
     mem_write(c, TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
     mem_write(c, TOD_FASTLOAD_AT, struct.pack(">I", 0x409E0074))   # the game's bne cr7, 0x25E5FC
+    for at, orig, _site in TOD_OWN_SITES:
+        mem_write(c, at, struct.pack(">I", orig))
+    mem_write(c, TOD_FASTLOAD_FLAG, b"\x00")
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_OK and mem_read_u32(c, TOD_FASTLOAD_AT) == TOD_FASTLOAD_FIRST and
           mem_read_u32(c, TOD_FASTLOAD_AT + 64) == TOD_FASTLOAD_LAST,
           "ToD: Fast loads, the load screen's cut: seventeen words of LoadScreen_Update", status)
-    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000 and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0,
-          "ToD: the transition's minimum time and the switch's flag left alone")
+    check(all(mem_read_u32(c, at) == site for at, _o, site in TOD_OWN_SITES) and
+          mem_read_u32(c, TOD_OWN_CAVE) == 0x3D20108B and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1,
+          "ToD: revision 1.29: qwark's own cave, its three sites and the flag they read")
+    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0,
+          "ToD: and g_levelTransitionMinTime at 0, a story FMV load's 5 s gone")
     c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
-    check(mem_read_u32(c, TOD_FASTLOAD_AT) == 0x409E0074, "ToD: and off, the game's own word back")
+    check(mem_read_u32(c, TOD_FASTLOAD_AT) == 0x409E0074 and
+          all(mem_read_u32(c, at) == orig for at, orig, _s in TOD_OWN_SITES),
+          "ToD: and off, the game's own words back")
+    check(mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000 and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0,
+          "ToD: with the game's 5 s and the flag at 0")
+
+    # Revision 1.29: Remove cutscenes (18), the eight FMVs' files made missing.
+    ids = dict((f["label"], f["id"]) for f in features) if features else {}
+    check(ids.get("Remove cutscenes") == 18, "ToD: DESCRIBE lists Remove cutscenes, id 18", ids)
+    toc, table, strings = 0x30200000, 0x30210000, 0x30230000
+    mem_write(c, TOD_ARCHIVE_TOC, struct.pack(">I", toc))
+    mem_write(c, toc + 0x2C, struct.pack(">I", table))
+    mem_write(c, table - 4, struct.pack(">I", 2))
+    rec = bytearray(0x1F4)
+    struct.pack_into(">I", rec, 4, strings)
+    mem_write(c, table, bytes(rec))
+    struct.pack_into(">I", rec, 4, strings + 0x40)
+    mem_write(c, table + 0x1F4, bytes(rec))
+    mem_write(c, strings, b"l01_s01_ntro_fmv.bik\x00")
+    mem_write(c, strings + 0x40, b"l02_s02_zoni_fmv.bik\x00")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 18, 1))
+    check(status == ST_OK and mem_read_u8(c, strings) == 0 and mem_read_u8(c, strings + 1) == ord("0") and
+          mem_read_u8(c, strings + 0x40) == ord("l"),
+          "ToD: Remove cutscenes on: the intro's file missing, the Zoni FMV's left", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 18, 0))
+    check(status == ST_OK and mem_read_u8(c, strings) == ord("l"), "ToD: and off, the intro's file back", status)
+    mem_write(c, TOD_ARCHIVE_TOC, bytes(4))
     # 2026-10-28: Infinite ammo (8) and Infinite health (9) can come back on boot; God Ratchet (16), LIVE, cannot.
     live = dict((f["label"], f["flags"] & 0x10) for f in features) if features else {}
     check(live.get("Infinite ammo") == 0 and live.get("Infinite health") == 0 and live.get("God Ratchet") == 0x10,
@@ -5748,10 +5791,16 @@ def smoke_tod(c, sim):
           "ToD: FEATURE_SET_AUTO takes ammo and health, and refuses God Ratchet", (status_a, status_h, status_g))
     c.call(OP_FEATURE_SET_AUTO, bytes([8, 0]))
     c.call(OP_FEATURE_SET_AUTO, bytes([9, 0]))
+    mem_write(c, TOD_LOAD_FADE_TIME, struct.pack(">I", TOD_FADE_GAME))
     status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
     check(status == ST_OK and mem_read_u32(c, TOD_LOAD_REQUEST) == 2,
           "ToD: PLANET_LOAD writes the game's pending request", status)
+    check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_QUICK,
+          "ToD: revision 1.29: with the fade-out a frame long")
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    module_sleep(c, 0.2)
+    check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME,
+          "ToD: and the game's 0.5 s back once the load has left the request")
     status, _ = c.call(OP_DIE)
     check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
           status)
@@ -5957,11 +6006,14 @@ def smoke_rpcs3_tod_fastloads(c, pine):
     """ToD's Fast loads under RPCS3: its code switch, applied at boot, then a flag byte."""
     status, stamp, words, single, _body = savefile_patch(c, OP_SWITCH_PATCH)
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    check(status == ST_OK and len(rows) == 25 and
-          all(TOD_FASTLOAD_CAVE <= a < TOD_FASTLOAD_CAVE + 96 for a, _ in rows[:24]) and
-          rows[24] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and single == [(TOD_FASTLOAD_FLAG, 0)],
-          "rpcs3: ToD's SWITCH_PATCH: 24 trampoline words, the site, the flag at 0",
-          (status, [(hex(a), hex(v)) for a, v in rows[-2:]], single))
+    ncave = 24 + TOD_OWN_CAVE_LEN // 4
+    check(status == ST_OK and len(rows) == ncave + 4 and
+          all(TOD_FASTLOAD_CAVE <= a < TOD_OWN_CAVE + TOD_OWN_CAVE_LEN for a, _ in rows[:ncave]) and
+          rows[ncave] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and
+          rows[ncave + 1:] == [(at, site) for at, _o, site in TOD_OWN_SITES] and
+          single == [(TOD_FASTLOAD_FLAG, 0)],
+          "rpcs3: ToD's SWITCH_PATCH: 24 trampoline words and qwark's own 63, the four sites, the flag at 0",
+          (status, len(rows), [(hex(a), hex(v)) for a, v in rows[-4:]], single))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_UNSUPPORTED, "rpcs3: and until it is in, Fast loads is refused", status)
 
@@ -5976,12 +6028,15 @@ def smoke_rpcs3_tod_fastloads(c, pine):
     check(ok, "rpcs3: ToD boots with its code switch applied at load", info)
     ok, info = wait_info_flag(c, SESSION_FLAG_CODE_SWITCHES, True)
     check(ok, "rpcs3: and bit4 CODE_SWITCHES is set", hex(info["flags"]) if info else None)
+    pine.poke(TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x01" and
           pine.peek(TOD_FASTLOAD_AT, 4) == struct.pack(">I", TOD_FASTLOAD_SITE),
           "rpcs3: Fast loads on is its flag byte, a PINE write, the code left as RPCS3 loaded it", status)
+    check(pine.peek(TOD_TRANSITION_MIN, 4) == bytes(4), "rpcs3: and g_levelTransitionMinTime at 0")
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
-    check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x00", "rpcs3: and off", status)
+    check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x00" and
+          pine.peek(TOD_TRANSITION_MIN, 4) == struct.pack(">f", 5.0), "rpcs3: and off, the 5 s back", status)
     for addr, _value in words or []:
         pine.poke(addr, bytes(4))
 
@@ -6031,6 +6086,8 @@ def smoke_rpcs3_tod(c, pine):
     check(as_wait(c, mark, AUTOSPLIT_LOAD_START, 4) is not None, "rpcs3: ToD's long load is LOAD_START")
     pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 1))
     check(as_wait(c, mark, AUTOSPLIT_LOAD_END, 4) is not None, "rpcs3: and the arrival its LOAD_END")
+    # A mark of its own: the first LOAD_START above must not answer for this one.
+    mark, _events, _n = autosplit_events(c, 0)
     pine.poke(TOD_LOAD_SCREEN, struct.pack(">I", 2))
     check(as_wait(c, mark, AUTOSPLIT_LOAD_START, 4) is not None, "rpcs3: a long load open again")
 

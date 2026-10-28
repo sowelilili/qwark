@@ -11,6 +11,7 @@
 #include "classic.h"
 #include "switches_bins.h"
 #include "../core/mem.h"
+#include "../core/switches.h"
 #include "../core/util.h"
 
 #include <string.h>
@@ -26,6 +27,20 @@ struct tod_panel_state {
 	u32 hold_root;
 	u8  hold_primed;
 	u8  hold_wait;
+
+	/* Revision 1.29: qwark's own load's short fade (tod_fade_arm). */
+	u8  fade_armed;
+	u8  fade_seen;         /* its request was seen waiting */
+	u16 fade_ticks;
+
+	/* Revision 1.29: Remove cutscenes, wanted, and the ticks to the next look. */
+	u8  cut_wanted;
+	u16 cut_wait;
+	/* The table last seen, and the bytes put at 0 in it: a look checks these alone. */
+	u32 cut_toc;
+	u32 cut_table;
+	u8  cut_n;
+	u32 cut_at[TOD_CUT_KEEP];
 };
 
 /*
@@ -57,7 +72,9 @@ void tod_panel_reset(void)
  * from 0x25E588 on a console. Under RPCS3 the code switch's second half is the
  * same words (src/games/switches/sw_tod.s, fast_loads_on), but for the five
  * branches out of them, which the link points at the same places; test/
- * test_tod_game.c holds the two to that.
+ * test_tod_game.c holds the two to that. Revision 1.29: then the three sites of
+ * qwark's own pieces, the branches the switches' link computed, whose caves
+ * (switches_own.c) go in first and read the flag byte themselves.
  */
 static const struct patch_word tod_fastload_words[] = {
 	{ 0x0025E588u, 0x81227D74u },   /* lwz r9, 0x7D74(r2): &g_loadScreenLoadDone */
@@ -76,14 +93,20 @@ static const struct patch_word tod_fastload_words[] = {
 	{ 0x0025E5BCu, 0x4BE2686Du },   /* bl 0x84E28: the player reset */
 	{ 0x0025E5C0u, 0x38000001u },   /* li r0, 1 */
 	{ 0x0025E5C4u, 0x901D0000u },   /* stw r0, 0(r29): the arrival's 1 */
-	{ 0x0025E5C8u, 0x48000034u }    /* b 0x25E5FC: the return */
+	{ 0x0025E5C8u, 0x48000034u },   /* b 0x25E5FC: the return */
+	{ SW_TOD_SITE_OWN_DEPARTURE_ADDR, SW_TOD_SITE_OWN_DEPARTURE },   /* LevelTransition_update, a planet load */
+	{ SW_TOD_SITE_OWN_FMV_CUT_ADDR,   SW_TOD_SITE_OWN_FMV_CUT },     /* LevelTransition_update, an FMV open */
+	{ SW_TOD_SITE_OWN_FMV_IN_ADDR,    SW_TOD_SITE_OWN_FMV_IN }       /* LevelTransition_waitLoad, the data read */
 };
 
+#define TOD_FASTLOAD_DEF_WORDS (TOD_FASTLOAD_NWORDS + TOD_FASTLOAD_NSITES)
+
 typedef char tod_fastload_count_ok[sizeof(tod_fastload_words) / sizeof(tod_fastload_words[0]) ==
-                                   TOD_FASTLOAD_NWORDS ? 1 : -1];
+                                   TOD_FASTLOAD_DEF_WORDS ? 1 : -1];
+typedef char tod_fastload_sites_ok[SW_TOD_OWN_NSITES == TOD_FASTLOAD_NSITES && SW_TOD_OWN_NCAVES == 1 ? 1 : -1];
 
 static const struct patch_def tod_fastload_init = {
-	"Fast loads", PATCH_KIND_FEATURE, tod_fastload_words, (u16)TOD_FASTLOAD_NWORDS, NULL
+	"Fast loads", PATCH_KIND_FEATURE, tod_fastload_words, (u16)TOD_FASTLOAD_DEF_WORDS, NULL
 };
 
 void tod_panel_init(void)
@@ -408,6 +431,245 @@ int tod_set_value(u8 id, u32 value)
 	}
 }
 
+/* ------------------------------------------------ Fast loads, revision 1.29 */
+
+/*
+ * qwark's own pieces' caves on a console (switches_own.c), the way Deadlocked's
+ * HUD colours go in: written where they differ, before any site branches to
+ * them, and never taken out, since nothing reaches them without the sites.
+ */
+static int tod_own_caves(void)
+{
+	u8 buf[64];
+	u32 i, off, n;
+
+	for (i = 0; i < SW_TOD_OWN_NCAVES; i++) {
+		const struct sw_cave *c = &sw_tod_own_caves[i];
+
+		for (off = 0; off < c->len; off += n) {
+			n = c->len - off > sizeof(buf) ? (u32)sizeof(buf) : c->len - off;
+			if (mem_read(c->addr + off, buf, n) == ST_OK && memcmp(buf, c->bytes + off, n) == 0) continue;
+			if (mem_write(c->addr + off, c->bytes + off, n) != ST_OK) return ST_IO_ERROR;
+		}
+	}
+	return ST_OK;
+}
+
+/*
+ * Fast loads, either way (tod.h). Under RPCS3 with the switches in, the flag
+ * byte, which the switch and qwark's own pieces both read. On a console, after
+ * plat_can_patch_code(): on, the caves, the flag at 1 and the patch (the
+ * seventeen words and the three sites); off, the patch out and the flag at 0.
+ * Then, both ways, g_levelTransitionMinTime: 0 while on, the game's 5.0 back
+ * off. With neither (RPCS3 without the switches) it is UNSUPPORTED and writes
+ * nothing, as before.
+ */
+static int tod_fast_loads(int on)
+{
+	int rc;
+
+	if (switches_present()) {
+		rc = mem_write_u8(SW_TOD_FLAG_FAST_LOADS, on ? 1u : 0u);
+	} else if (!plat_can_patch_code()) {
+		return ST_UNSUPPORTED;
+	} else if (on) {
+		rc = tod_own_caves();
+		if (rc == ST_OK) rc = mem_write_u8(SW_TOD_FLAG_FAST_LOADS, 1);
+		if (rc == ST_OK) rc = classic_patch_toggle(&TPA->fastload, 1);
+	} else {
+		rc = classic_patch_toggle(&TPA->fastload, 0);
+		if (rc == ST_OK) rc = mem_write_u8(SW_TOD_FLAG_FAST_LOADS, 0);
+	}
+	if (rc != ST_OK) return rc;
+	return mem_write_u32(TOD_TRANSITION_MIN, on ? 0u : TOD_TRANSITION_GAME);
+}
+
+/* ------------------------------------- qwark's own loads' fade, revision 1.29 */
+
+void tod_fade_arm(void)
+{
+	TP->fade_armed = 1;
+	TP->fade_seen = 0;
+	TP->fade_ticks = 0;
+	mem_write_u32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_QUICK);
+}
+
+void tod_fade_disarm(void)
+{
+	TP->fade_armed = 0;
+	mem_write_u32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_GAME);
+}
+
+/*
+ * Once a tick while armed: the game's time back once the load has left the
+ * request (seen waiting, then -1: RequestLevelLoadState is in), once the level
+ * is gone (Level_Exit, whichever tick saw the request), or after
+ * TOD_FADE_WAIT_TICKS, a load the game never took. A read that fails is no
+ * answer; the tick count still runs.
+ */
+static void tod_fade_tick(void)
+{
+	u32 request = 0, lua = 1;
+
+	if (!TP->fade_armed) return;
+	if (mem_read_u32(TOD_LOAD_REQUEST, &request) == ST_OK) {
+		if (request != 0xFFFFFFFFu) TP->fade_seen = 1;
+		else if (TP->fade_seen) { tod_fade_disarm(); return; }
+	}
+	if (mem_read_u32(TOD_LUA_STATE, &lua) == ST_OK && lua == 0) { tod_fade_disarm(); return; }
+	if (++TP->fade_ticks >= TOD_FADE_WAIT_TICKS) tod_fade_disarm();
+}
+
+/* ------------------------------------------ Remove cutscenes, revision 1.29 */
+
+/* The user's eight, exactly: the runners delete these files. */
+static const char * const tod_cut_names[] = {
+	"l00_s00_attr_fmv",
+	"l00_s00_attr_fmv_textless",
+	"l01_s01_ntro_fmv",
+	"l01_s02_walk_fmv",
+	"l01_s03_tach_fmv",
+	"l02_s01_hypr_fmv",
+	"l7b_s01_end2_fmv",
+	"l17_s03a_rmid_fmv"
+};
+
+#define TOD_NCUT ((u32)(sizeof(tod_cut_names) / sizeof(tod_cut_names[0])))
+
+static char cut_lower(char c)
+{
+	return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+/* Whether `stem` (up to a '.' or the end, `n` bytes at most) is `name` from its letter `from`. */
+static int cut_stem_is(const char *stem, u32 n, const char *name, u32 from)
+{
+	u32 i = 0;
+
+	name += from;
+	while (i < n && stem[i] != 0 && stem[i] != '.') {
+		if (name[i] == 0 || cut_lower(stem[i]) != name[i]) return 0;
+		i++;
+	}
+	return name[i] == 0;
+}
+
+/*
+ * One file's path, `TOD_FMV_PATH_LEN` bytes of it read at `at`. As the game
+ * has it: the name after the last '/' one of the eight, and `remove` writes 0
+ * over its first letter. As this left it: a 0 at the start or after a '/'
+ * before any other, and one of the eight's from its second letter after it;
+ * `!remove` writes the letter back. 1 for a write, 0 for none; `*blank` the
+ * byte that is 0 when the path is one of the eight's left missing, or 0.
+ */
+static int cut_path(u32 at, int remove, u32 *blank)
+{
+	char p[TOD_FMV_PATH_LEN];
+	u32 i, end, base = 0, k;
+
+	*blank = 0;
+	if (at == 0) return 0;
+	if (mem_read(at, p, sizeof(p)) != ST_OK) return 0;
+	for (end = 0; end < sizeof(p) && p[end] != 0; end++)
+		if (p[end] == '/') base = end + 1;
+	if (end >= sizeof(p) - 1) return 0;
+
+	if (base == end) {
+		/* Ours: the 0 stands for the letter. */
+		for (k = 0; k < TOD_NCUT; k++) {
+			if (!cut_stem_is(p + end + 1, (u32)sizeof(p) - end - 1, tod_cut_names[k], 1)) continue;
+			if (remove) {
+				*blank = at + end;
+				return 0;
+			}
+			return mem_write_u8(at + end, (u8)tod_cut_names[k][0]) == ST_OK;
+		}
+		return 0;
+	}
+	if (!remove) return 0;
+	for (i = 0; i < TOD_NCUT; i++)
+		if (cut_stem_is(p + base, end - base, tod_cut_names[i], 0)) {
+			if (mem_write_u8(at + base, 0) != ST_OK) return 0;
+			*blank = at + base;
+			return 1;
+		}
+	return 0;
+}
+
+static void cut_keep(u32 blank)
+{
+	if (blank != 0 && TP->cut_n < TOD_CUT_KEEP) TP->cut_at[TP->cut_n++] = blank;
+}
+
+int tod_cutscenes_apply(int remove)
+{
+	u8 rec[TOD_FMV_LOOK_LEN];
+	u32 toc = 0, table = 0, count = 0, i, blank;
+	int changed = 0;
+
+	TP->cut_toc = 0;
+	TP->cut_table = 0;
+	TP->cut_n = 0;
+	if (mem_read_u32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, &toc) != ST_OK || toc == 0 || (toc & 3u)) return -1;
+	if (mem_read_u32(toc + TOD_TOC_FMVS, &table) != ST_OK || table == 0 || (table & 3u)) return -1;
+	if (mem_read_u32(table - 4u, &count) != ST_OK || count == 0 || count > TOD_FMV_MAX) return -1;
+
+	for (i = 0; i < count; i++) {
+		if (mem_read(table + i * TOD_FMV_STRIDE, rec, sizeof(rec)) != ST_OK) return -1;
+		changed += cut_path(be32_get(rec + TOD_FMV_FILE), remove, &blank);
+		cut_keep(blank);
+		changed += cut_path(be32_get(rec + TOD_FMV_ALT), remove, &blank);
+		cut_keep(blank);
+	}
+	if (remove) {
+		TP->cut_toc = toc;
+		TP->cut_table = table;
+	}
+	return changed;
+}
+
+/*
+ * Whether the table is the one last seen and every byte put at 0 in it still
+ * is: then a look reads no more than this, which under RPCS3 is a few PINE
+ * round trips rather than the whole table's.
+ */
+static int cut_still(void)
+{
+	u32 toc = 0, table = 0;
+	u8 b = 1, i;
+
+	if (TP->cut_toc == 0 || TP->cut_n == 0) return 0;
+	if (mem_read_u32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, &toc) != ST_OK || toc != TP->cut_toc) return 0;
+	if (mem_read_u32(toc + TOD_TOC_FMVS, &table) != ST_OK || table != TP->cut_table) return 0;
+	for (i = 0; i < TP->cut_n; i++)
+		if (mem_read_u8(TP->cut_at[i], &b) != ST_OK || b != 0) return 0;
+	return 1;
+}
+
+static void tod_cut_tick(void)
+{
+	if (!TP->cut_wanted) return;
+	if (TP->cut_wait != 0) {
+		TP->cut_wait--;
+		return;
+	}
+	TP->cut_wait = TOD_CUT_EVERY;
+	if (cut_still()) return;
+	if (tod_cutscenes_apply(1) > 0) plat_log("tod: Remove cutscenes: the FMVs' files are missing again");
+}
+
+void tod_panel_enter(void)
+{
+	tod_fade_disarm();
+	tod_cutscenes_apply(0);
+}
+
+void tod_panel_tick(void)
+{
+	tod_fade_tick();
+	tod_cut_tick();
+}
+
 /* --------------------------------------------------------------- the cheats */
 
 /*
@@ -438,16 +700,24 @@ int tod_set_value(u8 id, u32 value)
  * Fast loads (id 17), WRITES_CODE since 2026-10-28: the load screen's cut
  * (tod.h), the patch above on a console, after plat_can_patch_code() as every
  * code toggle (patch_apply asks), and under RPCS3 the code switch's flag byte
- * (classic_code_toggle). A new boot of the game has neither, and the toggle's
+ * (tod_fast_loads below). A new boot of the game has neither, and the toggle's
  * auto flag or the previous-session prompt puts it back, as the other games'.
+ *
+ * Remove cutscenes (id 18, revision 1.29): data writes alone (tod.h,
+ * TOD_ARCHIVE_GAME), not LIVE either, so it can come back at boot; the tick
+ * keeps it while it is wanted, since the table may come after the toggle.
  */
 int tod_set_toggle(u8 id, int on)
 {
 	switch (id) {
 	case TF_INFINITE_HEALTH: return mem_write_u32(TOD_NO_DAMAGE, on ? 1u : 0u);
 	case TF_GOD_RATCHET:     return mem_write_u8(TOD_PROXY_LOW, on ? (u8)TOD_PROXY_FAKE : 0u);
-	case TF_FAST_LOADS:
-		return classic_code_toggle(&TPA->fastload, SW_TOD_FLAG_FAST_LOADS, on);
+	case TF_FAST_LOADS:      return tod_fast_loads(on);
+	case TF_REMOVE_CUTSCENES:
+		TP->cut_wanted = on ? 1u : 0u;
+		TP->cut_wait = TOD_CUT_EVERY;
+		tod_cutscenes_apply(on);
+		return ST_OK;
 	case TF_INFINITE_AMMO:
 		TP->hold_primed = 0;
 		return mem_write_u32(TOD_INFINITE_AMMO, on ? 1u : 0u);
@@ -620,6 +890,7 @@ int tod_die(void)
  * the game's own set_level does in gameplay, so only in gameplay (g_gameState 4,
  * a level object up), and never over a load already asked for: a request is
  * never taken back once written, as that would leave a fade with no load.
+ * Revision 1.29: the fade a frame long, as for every load qwark asks for.
  */
 int tod_planet_load(u8 planet, u8 flags)
 {
@@ -633,5 +904,9 @@ int tod_planet_load(u8 planet, u8 flags)
 	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_OBJ, &root);
 	if (rc != ST_OK) return rc;
 	if (state != TOD_STATE_GAMEPLAY || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
-	return mem_write_u32(TOD_LOAD_REQUEST, planet);
+	/* Revision 1.29: no fade-out first (tod.h, TOD_LOAD_FADE_TIME). */
+	tod_fade_arm();
+	rc = mem_write_u32(TOD_LOAD_REQUEST, planet);
+	if (rc != ST_OK) tod_fade_disarm();
+	return rc;
 }
