@@ -827,21 +827,26 @@ static void test_tod_autosplit_rows(void)
 	check(g != NULL && g->autosplit_describe != NULL, "ToD describes an autosplitter");
 	if (g == NULL || g->autosplit_describe == NULL) return;
 	d = g->autosplit_describe(&n);
-	check(n == 6, "six rows");
-	if (n != 6) return;
+	check(n == 8, "eight rows");
+	if (n != 8) return;
 	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
 	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE) && qstreq(d[0].label, "Planet entered"),
 	      "code 1 is the planet split, on, with the route");
-	check(d[1].code == TOD_AS_TACHYON && d[1].flags == AUTOSPLIT_FLAG_DEFAULT && qstreq(d[1].label, "Tachyon defeated"),
-	      "Tachyon's defeat is the final split, on by default");
-	check(d[2].code == TOD_AS_CREDITS && d[2].flags == 0 && d[3].code == TOD_AS_MISSION && d[3].flags == 0,
+	check(d[1].code == TOD_AS_END_FADE && d[1].kind == AUTOSPLIT_SPLIT && d[1].flags == AUTOSPLIT_FLAG_DEFAULT &&
+	      qstreq(d[1].label, "Final fade to black"),
+	      "the fade to black after Tachyon is the final split, on by default (rev 1.29)");
+	check(d[2].code == TOD_AS_TACHYON && d[2].flags == 0 && qstreq(d[2].label, "Tachyon defeated"),
+	      "Tachyon's last hit is still there, off");
+	check(d[3].code == TOD_AS_END_FMV && d[3].flags == 0 && qstreq(d[3].label, "Ending FMV"),
+	      "the ending FMV is there, off");
+	check(d[4].code == TOD_AS_CREDITS && d[4].flags == 0 && d[5].code == TOD_AS_MISSION && d[5].flags == 0,
 	      "the credits and every mission are there, off");
-	check(d[4].code == TOD_AS_LOAD && d[4].kind == AUTOSPLIT_LOAD_START &&
-	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[4].param_us == 0 &&
-	      qstreq(d[4].label, "Long load"),
+	check(d[6].code == TOD_AS_LOAD && d[6].kind == AUTOSPLIT_LOAD_START &&
+	      d[6].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[6].param_us == 0 &&
+	      qstreq(d[6].label, "Long load"),
 	      "the long load holds game time (HOLD, rev 1.29), no NORMALISE");
-	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
-	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 19950000u,
+	check(d[7].code == TOD_AS_QUIT && d[7].kind == AUTOSPLIT_PAUSE &&
+	      d[7].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[7].param_us == 19950000u,
 	      "the quit to the XMB costs the old script's 19.95 s");
 	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
 }
@@ -1085,24 +1090,42 @@ static void test_tod_autosplit_runs(void)
 	wr8(TOD_FRONT_END, 0);
 	wr32(TOD_LOAD_SCREEN, 4);   /* no level to fly from: a long load screen at once */
 	tick(4);
-	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1,
-	      "a new game is RESET and START, whatever the play time says");
-	check(as_first(seq, AUTOSPLIT_RESET, 0) < as_first(seq, AUTOSPLIT_START, 0) &&
-	      as_first(seq, AUTOSPLIT_START, 0) < as_first(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD),
-	      "RESET, START, then the long load's hold, in that order");
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "a new game is a RESET as its load begins, and no START yet (rev 1.29)");
+	check(as_first(seq, AUTOSPLIT_RESET, 0) < as_first(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD),
+	      "RESET, then the long load's hold");
 	wr32(TOD_LOAD_SCREEN, 1);
-	wr32(TOD_LUA_STATE, AS_STATE);
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 1, "the hold ends at the arrival");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "and still no START: no level is up");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1 &&
+	      as_first(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD) < as_first(seq, AUTOSPLIT_START, 0),
+	      "Metropolis up in gameplay with no cinematic: START, after the hold");
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "Metropolis is no planet split");
+	tick(10);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "one START");
 
-	/* A Metropolis reloaded from Metropolis, flag still clear: the run goes on. */
+	/* A death or a checkpoint on Metropolis keeps the lua_State: nothing. */
+	seq = autosplit_latest_seq();
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 0.0f);
+	wr32(TOD_GAME_STATE, 5);
+	tick(6);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 10.0f);
+	tick(6);
+	check(as_all(seq) == 0, "a death on Metropolis is no reset and no start");
+
+	/* Metropolis loaded again on Metropolis, flag still clear (a new game or a save there): a new run. */
 	seq = autosplit_latest_seq();
 	wr32(TOD_LUA_STATE, 0);
 	tick(2);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "Metropolis reloaded on a fresh file is a RESET as the load begins");
 	wr32(TOD_LUA_STATE, AS_STATE);
 	tick(2);
-	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0, "Metropolis reloaded from Metropolis is no reset");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "and START at control");
 
 	/* A Metropolis save made after the first planet: flag set, no start, no split. */
 	metropolis_beaten(1);
@@ -1206,15 +1229,309 @@ static void test_tod_autosplit_runs(void)
 	tick(2);
 	wr32(TOD_LUA_STATE, 0);
 	tick(2);
-	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1,
-	      "a challenge mode start is RESET and START");
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "a challenge mode start is a RESET");
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "and no planet split with it");
-	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "Metropolis up while the credits' state holds: no START");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "gameplay: START");
 	put_missions(18, ids, 0);
 	wr32(TOD_MOBY_POOL, 0);
 	metropolis_beaten(1);
 	tick(4);
+}
+
+/*
+ * Revision 1.29: the START waits for control. A new game's load, the level
+ * coming up in something other than gameplay, a cinematic, a death, the
+ * title and other loads, case by case.
+ */
+#define AS_MP_STATE  (TOD_MOVIE_PLAYER + TOD_MP_STATE)
+#define AS_MP_MOVIE  (TOD_MOVIE_PLAYER + TOD_MP_MOVIE)
+
+/* A new game out of the title: flag 185 clear, Metropolis, the load under way. */
+static void new_game_load(void)
+{
+	metropolis_beaten(1);
+	wr32(TOD_CURRENT_LEVEL, 3);
+	tick(2);
+	wr32(TOD_LUA_STATE, 0);
+	wr8(TOD_FRONT_END, 1);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(4);
+	metropolis_beaten(0);
+	wr32(TOD_CURRENT_LEVEL, 0);
+	tick(2);
+	wr8(TOD_FRONT_END, 0);
+	tick(4);
+}
+
+static void test_tod_autosplit_start_control(void)
+{
+	u32 seq;
+
+	group("ToD: a run starts when Ratchet is the player's (rev 1.29)");
+	wr32(TOD_MOVIE_QUEUE_N, 0);
+	wr32(AS_MP_STATE, 0);
+	wr32(TOD_LOAD_SCREEN, 1);
+
+	/* The level up in another state (the frame before ApplyPending), then gameplay. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "the load: RESET, no START");
+	wr32(TOD_GAME_STATE, 3);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(6);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "Metropolis up, game state 3: no START");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "game state 4: START");
+
+	/* A realtime cinematic fading out, playing, or one queued: no START until it is over. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	wr32(AS_MP_STATE, 1);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(4);
+	wr32(AS_MP_STATE, 2);
+	wr32(TOD_GAME_STATE, TOD_STATE_CINEMATIC);
+	tick(4);
+	wr32(AS_MP_STATE, 4);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_MOVIE_QUEUE_N, 1);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "a cinematic, or one waiting in the queue: no START");
+	wr32(TOD_MOVIE_QUEUE_N, 0);
+	wr32(AS_MP_STATE, 0);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the player idle and the queue empty: START");
+
+	/* A death before control keeps the START waiting, and START comes once. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	wr32(TOD_GAME_STATE, 5);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 0.0f);
+	tick(6);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 10.0f);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1,
+	      "a death before control: no START, no second RESET");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(6);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "and START once control comes");
+
+	/* A reload before control: a second RESET, one START, at the second level's control. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	wr32(TOD_GAME_STATE, 3);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+	wr32(TOD_LUA_STATE, 0);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 2 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "Metropolis reloaded before control: RESET again, no START");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "gameplay with no level up is not control");
+	wr32(TOD_LUA_STATE, AS_STATE + 0x40);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the level up: START, once");
+
+	/* Back to the title before control drops the START. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	wr8(TOD_FRONT_END, 1);
+	tick(4);
+	wr8(TOD_FRONT_END, 0);
+	metropolis_beaten(1);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      "the title before control, then a played file: no START");
+
+	/* A load elsewhere before control drops it too. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	wr32(TOD_CURRENT_LEVEL, 1);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x80);   /* a whole load between two ticks, into Cobalia */
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "another planet's load before control: no START");
+
+	/* A Metropolis save with the flag set never starts, whatever control says. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_LUA_STATE, 0);
+	wr8(TOD_FRONT_END, 1);
+	tick(4);
+	metropolis_beaten(1);
+	wr32(TOD_CURRENT_LEVEL, 0);
+	tick(2);
+	wr8(TOD_FRONT_END, 0);
+	tick(4);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(6);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0,
+	      "a Metropolis save with flag 185 set: no RESET, no START at control");
+
+	/* A load shorter than a tick into Metropolis: RESET and START in the same tick. */
+	seq = autosplit_latest_seq();
+	metropolis_beaten(0);
+	wr32(TOD_LUA_STATE, AS_STATE + 0xC0);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1 &&
+	      as_first(seq, AUTOSPLIT_RESET, 0) < as_first(seq, AUTOSPLIT_START, 0),
+	      "a whole load between two ticks: RESET, then START");
+	metropolis_beaten(1);
+	wr32(TOD_CURRENT_LEVEL, 3);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(2);
+}
+
+/* A level movie in the fake tables: index `id` named `name`, its name kept at `at`. */
+static void put_movie(u32 id, u32 rec, u32 at, const char *name)
+{
+	host_poke(at, (const u8 *)name, (u32)strlen(name) + 1u);
+	wr32(rec - 4u, at);
+	wr32(TOD_MOVIE_RECORDS + id * 4u, rec);
+}
+
+/* g_gameState 7 with an FMV record on top of the state stack. */
+static void put_fmv(u32 depth, u32 rec, u32 at, const char *name)
+{
+	u32 entry = TOD_GS_STACK + depth * TOD_GS_STRIDE;
+
+	host_poke(at, (const u8 *)name, (u32)strlen(name) + 1u);
+	wr32(rec, at);
+	wr32(TOD_GS_DEPTH, depth);
+	wr32(entry, rec);
+	wr32(entry + TOD_GS_ID, TOD_STATE_FMV);
+	wr32(TOD_GAME_STATE, TOD_STATE_FMV);
+}
+
+static void test_tod_autosplit_ending(void)
+{
+	u32 seq, arg = 1;
+
+	group("ToD: the end of a run, the fade to black and the ending FMV (rev 1.29)");
+	put_movie(5, 0x30400100u, 0x30400800u, "l4b_s03_boss_rt");
+	put_movie(6, 0x30400200u, 0x30400840u, TOD_END_CINEMATIC);
+	wr32(AS_MP_STATE, 0);
+	wr32(AS_MP_MOVIE, 1);
+	wr32(TOD_MOVIE_QUEUE_N, 0);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_CURRENT_LEVEL, 18);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x600);
+	tick(4);
+
+	/* Another cinematic's fade to black is not the end. */
+	seq = autosplit_latest_seq();
+	wr32(AS_MP_MOVIE, 5);
+	wr32(AS_MP_STATE, 1);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);
+	tick(2);
+	wr32(AS_MP_STATE, 2);
+	wr32(TOD_GAME_STATE, TOD_STATE_CINEMATIC);
+	tick(4);
+	check(as_all(seq) == 0, "the boss cinematic going black: nothing");
+	wr32(AS_MP_STATE, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
+	tick(2);
+
+	/* The ending cinematic queued: the fade runs, and the split is the tick it reads 1.0. */
+	seq = autosplit_latest_seq();
+	wr32(AS_MP_MOVIE, 6);
+	wr32(AS_MP_STATE, 1);
+	tick(2);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.5f);
+	tick(2);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.99f);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 0, "the fade on its way to black: no split");
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, &arg) == 1 && arg == 0,
+	      "black, the player still in state 1: the final split, the same tick, arg 0");
+	wr32(AS_MP_STATE, 2);
+	wr32(TOD_GAME_STATE, TOD_STATE_CINEMATIC);
+	tick(4);
+	wr32(AS_MP_STATE, 3);
+	tick(2);
+	wr32(AS_MP_STATE, 4);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 1, "the cinematic itself splits nothing more");
+
+	/* Then the FMVs: another first (nothing), then l4b_s05_end1_fmv (code 8), once. */
+	put_fmv(0, 0x30400400u, 0x30400880u, "l7b_s01_end2_fmv");
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FMV, NULL) == 0, "another FMV is not the ending's");
+	put_fmv(0, 0x30400300u, 0x304008C0u, TOD_END_FMV);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FMV, &arg) == 1 && arg == 0, "l4b_s05_end1_fmv starting: code 8");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(2);
+	put_fmv(0, 0x30400300u, 0x304008C0u, TOD_END_FMV);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FMV, NULL) == 1, "once a level up");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+
+	/* A missed state 1: the player found already playing the ending still splits. */
+	seq = autosplit_latest_seq();
+	wr32(AS_MP_STATE, 0);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x700);
+	tick(4);
+	wr32(AS_MP_MOVIE, 6);
+	wr32(AS_MP_STATE, 2);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 1, "state 2 of the ending, state 1 unseen: the split");
+
+	/* A first look that finds the ending under way (a module come in late) learns it. */
+	seq = autosplit_latest_seq();
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE + 0x800);
+	tick(6);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 0,
+	      "the ending already playing at the first look: no split");
+
+	/* Not off Fastoon II. */
+	seq = autosplit_latest_seq();
+	wr32(AS_MP_STATE, 0);
+	wr32(TOD_CURRENT_LEVEL, 9);
+	wr32(TOD_LUA_STATE, 0);
+	tick(2);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(4);
+	wr32(AS_MP_STATE, 1);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 0, "the same movie index on another planet: nothing");
+
+	wr32(AS_MP_STATE, 0);
+	wr32(AS_MP_MOVIE, 0);
+	wr32(TOD_MOVIE_RECORDS + 5u * 4u, 0);
+	wr32(TOD_MOVIE_RECORDS + 6u * 4u, 0);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_GS_DEPTH, 0);
+	wr32(TOD_GS_STACK, 0);
+	wr32(TOD_GS_STACK + TOD_GS_ID, TOD_STATE_GAMEPLAY);
+	tick(2);
 }
 
 static void test_tod_autosplit_quit(void)
@@ -1834,6 +2151,8 @@ void test_tod_game(void)
 	test_tod_autosplit_planets();
 	test_tod_autosplit_long_load();
 	test_tod_autosplit_runs();
+	test_tod_autosplit_start_control();
+	test_tod_autosplit_ending();
 	test_tod_autosplit_quit();
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_on_boot();

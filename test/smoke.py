@@ -5804,9 +5804,17 @@ TOD_METRO_FLAG_BIT = 1 << (185 & 7)
 TOD_MOBY_POOL = 0x1066C300
 TOD_VTBL_TACHYON = 0x10060CB0
 HD = 0x10                              # AUTOSPLIT_FLAG_HOLD, revision 1.29
+TOD_MOVIE_PLAYER = 0x101D4F50           # g_moviePlayer: state +0x58, movie +0x64 (revision 1.29)
+TOD_MOVIE_QUEUE_N = 0x101D4F44          # g_movieQueue's count
+TOD_MOVIE_RECORDS = 0x101D50C4          # g_movieRecords, the name's char* just before each record
+TOD_FADE_PROGRESS = 0x5B62C             # [g_bigObj5B8F0] + this, f32, 1.0 black
+TOD_GS_DEPTH = 0x10387DC8               # g_gameStateDepth
+TOD_GS_STACK = 0x10387DCC               # g_gameStateStack, 0x30 each, the state id at +0x20
 TOD_AS_ROWS = [
     (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
-    (2, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
+    (7, AUTOSPLIT_SPLIT, DF, 0, "Final fade to black"),
+    (2, AUTOSPLIT_SPLIT, 0, 0, "Tachyon defeated"),
+    (8, AUTOSPLIT_SPLIT, 0, 0, "Ending FMV"),
     (5, AUTOSPLIT_SPLIT, 0, 0, "Credits"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
@@ -5821,7 +5829,8 @@ def smoke_tod_autosplit(c, sim):
     if check(status == ST_OK, "ToD: AUTOSPLIT_DESCRIBE answers", status):
         rows, consumed = parse_autosplit_describe(body)
         got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
-        check(consumed == len(body) and got == TOD_AS_ROWS, "ToD: its six rows, the long load a HOLD", got)
+        check(consumed == len(body) and got == TOD_AS_ROWS,
+              "ToD: its eight rows, the fade to black the final split, the long load a HOLD", got)
 
     pool, boss = 0x30100000, 0x30200000
     mem_write(c, TOD_METRO_FLAG_BYTE, bytes([TOD_METRO_FLAG_BIT]))
@@ -5853,17 +5862,31 @@ def smoke_tod_autosplit(c, sim):
         {"what": "and the arrival screen is its LOAD_END",
          "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 1))],
          "expect": (AUTOSPLIT_LOAD_END, 4)},
-        {"what": "a new game out of the title, MOVIE_METROPOLIS_TACHYON clear, is RESET",
-         "poke": [(TOD_FRONT_END, b"\x01"),
+        {"what": "a new game out of the title, MOVIE_METROPOLIS_TACHYON clear, is RESET as the load begins",
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_FRONT_END, b"\x01"),
                   (TOD_METRO_FLAG_BYTE, b"\x00"), (TOD_CURRENT_LEVEL, bytes(4))],
          "then": [(TOD_FRONT_END, b"\x00")],
+         "expect": (AUTOSPLIT_RESET, 0)},
+        {"what": "and no START while the load lasts",
+         "then": [],
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "Metropolis up in another game state is not control yet",
+         "poke": [(TOD_GAME_STATE, struct.pack(">I", 3))],
+         "then": [(TOD_LUA_STATE, lua_state)],
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "a realtime cinematic still playing is not control either",
+         "poke": [(TOD_MOVIE_PLAYER + 0x58, struct.pack(">I", 2))],
+         "then": [(TOD_GAME_STATE, struct.pack(">I", 4))],
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "gameplay with the movie player idle is control: START (revision 1.29)",
+         "then": [(TOD_MOVIE_PLAYER + 0x58, bytes(4))],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a Metropolis save with the flag set is no start",
-         "poke": [(TOD_FRONT_END, b"\x01"),
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_FRONT_END, b"\x01"),
                   (TOD_METRO_FLAG_BYTE, bytes([TOD_METRO_FLAG_BIT]))],
-         "then": [(TOD_FRONT_END, b"\x00")],
+         "then": [(TOD_FRONT_END, b"\x00"), (TOD_LUA_STATE, lua_state)],
          "absent": [(AUTOSPLIT_START, 0), (AUTOSPLIT_RESET, 0)]},
-        {"what": "Tachyon's health reaching 0 on Fastoon II is the final split",
+        {"what": "Tachyon's health reaching 0 on Fastoon II is code 2",
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18)),
                   (TOD_MOBY_POOL, struct.pack(">I", pool)), (TOD_MOBY_POOL + 0x10, struct.pack(">I", 12)),
                   (pool + 9 * 0x180 + 0x40, struct.pack(">I", boss)),
@@ -5872,11 +5895,33 @@ def smoke_tod_autosplit(c, sim):
                   (TOD_LUA_STATE, lua_state)],
          "then": [(boss + 0x24, bytes(4))],
          "expect": (AUTOSPLIT_SPLIT, 2), "arg": 0},
+        {"what": "the ending cinematic fading out is not the end yet",
+         "poke": [(0x30400840, b"l4b_s04_dimx_rt\x00"), (0x304001FC, struct.pack(">I", 0x30400840)),
+                  (TOD_MOVIE_RECORDS + 6 * 4, struct.pack(">I", 0x30400200)),
+                  (TOD_MOVIE_PLAYER + 0x64, struct.pack(">I", 6)),
+                  (0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.5))],
+         "then": [(TOD_MOVIE_PLAYER + 0x58, struct.pack(">I", 1))],
+         "absent": (AUTOSPLIT_SPLIT, 7)},
+        {"what": "the screen black before it is the final split (revision 1.29)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 1.0))],
+         "expect": (AUTOSPLIT_SPLIT, 7), "arg": 0},
+        {"what": "the ending FMV taking the game state is code 8",
+         "poke": [(TOD_MOVIE_PLAYER + 0x58, struct.pack(">I", 4)),
+                  (0x304008C0, b"l4b_s05_end1_fmv\x00"), (0x30400300, struct.pack(">I", 0x304008C0)),
+                  (TOD_GS_DEPTH, bytes(4)), (TOD_GS_STACK, struct.pack(">I", 0x30400300)),
+                  (TOD_GS_STACK + 0x20, struct.pack(">I", 7))],
+         "then": [(TOD_GAME_STATE, struct.pack(">I", 7))],
+         "expect": (AUTOSPLIT_SPLIT, 8), "arg": 0},
         {"what": "the credits are their own split",
          "then": [(TOD_GAME_STATE, struct.pack(">I", 11))],
          "expect": (AUTOSPLIT_SPLIT, 5), "arg": 18},
     ])
     mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_MOVIE_PLAYER + 0x58, bytes(4))
+    mem_write(c, TOD_MOVIE_RECORDS + 6 * 4, bytes(4))
+    mem_write(c, TOD_GS_STACK, bytes(4))
+    mem_write(c, TOD_GS_STACK + 0x20, struct.pack(">I", 4))
+    mem_write(c, 0x30000000 + TOD_FADE_PROGRESS, bytes(4))
     mem_write(c, TOD_MOBY_POOL, bytes(4))
     mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", 0))
     mark, _events, _n = autosplit_events(c, 0)

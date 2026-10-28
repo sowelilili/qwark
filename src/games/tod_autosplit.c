@@ -25,11 +25,21 @@
  *                       LoadLevel there only notes the level; the load starts
  *                       when the front end gives way.
  *   a new run           MOVIE_METROPOLIS_TACHYON (level flag 185) clear as a
- *                       load into Metropolis starts. The game sets it as the
- *                       first planet is beaten, so a new file and a challenge
- *                       mode (SaveData_prepareChallengeMode builds the file
- *                       from a fresh one) have it clear and every later save
- *                       has it set. The file is in place by the load's start.
+ *                       load into Metropolis starts, from anywhere. The game
+ *                       sets it as the first planet is beaten, so a new file
+ *                       and a challenge mode (SaveData_prepareChallengeMode
+ *                       builds the file from a fresh one) have it clear and
+ *                       every later save has it set. The file is in place by
+ *                       the load's start, and the RESET goes out there.
+ *   control             the START (revision 1.29): Metropolis up, g_gameState
+ *                       4 and no realtime cinematic in g_moviePlayer or
+ *                       g_movieQueue. Level_Enter makes the lua_State, puts
+ *                       the screen at black and starts its 1 s fade in, and
+ *                       its Level_StartGameplay asks for state 4, which
+ *                       GameState_ApplyPending makes the next frame. A new
+ *                       game's intro FMV (l01_s01_ntro_fmv) plays inside the
+ *                       load, from LevelTransition_begin's FMV list, so it is
+ *                       over (or skipped) before any of that.
  *   the long load       the old autosplitter's is_loading, exactly: the low
  *                       byte of g_currentLevel 0 and the low byte of
  *                       g_loadScreenType above 1 (tod.h). Game time stops
@@ -40,12 +50,20 @@
  *                       the killing hit, in the same call that sets the boss's
  *                       state to 15. Read on a running game (RPCS3, the fight's
  *                       last moment): slot 761, health 0.0 of 106192, state 15.
+ *   the end of a run    the screen black before l4b_s04_dimx_rt (revision
+ *                       1.29). TachyonEnding_update queues that cinematic,
+ *                       then l4b_s05_end1_fmv and l7b_s01_end2_fmv, once
+ *                       Tachyon's death has played out; MoviePlayer_update
+ *                       fades to black first and holds its state 1 until
+ *                       ScreenFade's progress reads 1.0. The FMVs follow the
+ *                       whole cinematic, as g_gameState 7 (Movie_requestPlay).
  *   the credits         g_gameState becoming 11: Lua_show_credits ->
  *                       GameState_RequestCredits, the only request for 11.
  */
 #include "core_import.h"   /* first: src/games/module.h */
 #include "tod.h"
 #include "../core/mem.h"
+#include "../core/util.h"
 #include "../core/autosplit.h"
 
 #include <string.h>
@@ -95,6 +113,7 @@ void tod_autosplit_forget(struct tod_as_state *as)
 	memset(as, 0, sizeof(*as));
 	as->origin = TOD_AS_NOWHERE;
 	as->mission_level = TOD_AS_NOWHERE;
+	as->movie_seen = -1;
 }
 
 /*
@@ -225,6 +244,126 @@ static void tachyon_tick(struct tod_as_state *as)
 	}
 }
 
+/*
+ * Whether the char* at `ptr_addr` names `want`: the pointer, then the name
+ * and its NUL in one read. Anything that cannot be read is no match.
+ */
+static int name_is(u32 ptr_addr, const char *want)
+{
+	u8 buf[TOD_MOVIE_NAME_LEN];
+	u32 p = 0, n = qstrlen(want) + 1u;
+
+	if (n > sizeof(buf)) return 0;
+	if (mem_read_u32(ptr_addr, &p) != ST_OK || p == 0) return 0;
+	if (mem_read(p, buf, n) != ST_OK) return 0;
+	return memcmp(buf, want, n) == 0;
+}
+
+/* A movie player state that is a cinematic under way: 1 fading out .. 4 done. */
+static int movie_busy(u32 state)
+{
+	return state >= 1u && state <= 4u;
+}
+
+/*
+ * Ratchet is the player's: the game is in its gameplay state (Level_Enter's
+ * Level_StartGameplay asks for state 4 as the level comes up, and every
+ * cinematic, FMV, menu and the credits is another state), and no realtime
+ * cinematic is playing or waiting to (g_moviePlayer idle, g_movieQueue
+ * empty). Nothing that cannot be read is control.
+ */
+static int control_now(const struct tod_as_state *as)
+{
+	u8 look[TOD_MP_LOOK_LEN];
+	u32 queued = 0;
+
+	if (as->cur_state != TOD_STATE_GAMEPLAY) return 0;
+	if (mem_read(TOD_MOVIE_PLAYER + TOD_MP_STATE, look, sizeof(look)) != ST_OK) return 0;
+	if (movie_busy(be32_get(look))) return 0;
+	if (mem_read_u32(TOD_MOVIE_QUEUE_N, &queued) != ST_OK) return 0;
+	return queued == 0;
+}
+
+/*
+ * The screen black before the ending cinematic, and the ending FMV, on
+ * Fastoon II. TachyonEnding_update queues TOD_END_CINEMATIC once Tachyon's
+ * death has played out, with a fade to black first: MoviePlayer_update holds
+ * it in state 1 until ScreenFade's progress reads 1.0, and only then asks for
+ * the cinematic. So code 7 is that test, the same tick the game makes it (or
+ * the player already past it, should a tick have missed state 1). The two
+ * FMVs follow the cinematic; code 8 is the first of them taking the game
+ * state, 7, with its record on top of the state stack. A first look that
+ * finds either already under way (a module that came in late) learns it.
+ */
+static void ending_tick(struct tod_as_state *as)
+{
+	u8 look[TOD_MP_LOOK_LEN];
+	int fade_now = 0, fmv_now = 0;
+
+	if (mem_read(TOD_MOVIE_PLAYER + TOD_MP_STATE, look, sizeof(look)) == ST_OK) {
+		u32 state = be32_get(look);
+		s32 movie = (s32)be32_get(look + (TOD_MP_MOVIE - TOD_MP_STATE));
+
+		if (movie_busy(state) && movie >= 0 && movie < (s32)TOD_NMOVIES) {
+			if (movie != as->movie_seen) {
+				u32 rec = 0;
+
+				as->movie_is_end = 0;
+				if (mem_read_u32(TOD_MOVIE_RECORDS + (u32)movie * 4u, &rec) == ST_OK && rec > 4u)
+					as->movie_is_end = (u8)name_is(rec - 4u, TOD_END_CINEMATIC);
+				as->movie_seen = movie;
+			}
+			if (as->movie_is_end) {
+				if (state >= 2u) {
+					fade_now = 1;
+				} else {
+					u32 lo = 0, fade = 0;
+
+					if (mem_read_u32(TOD_LEVEL_OBJ, &lo) == ST_OK && lo != 0 &&
+					    mem_read_u32(lo + TOD_FADE_PROGRESS, &fade) == ST_OK)
+						fade_now = (fade & 0x80000000u) == 0 && fade >= TOD_FADE_BLACK;
+				}
+			}
+		}
+	}
+
+	if (as->cur_state == TOD_STATE_FMV && !as->end_fmv_done) {
+		u32 depth = 0, id = 0;
+
+		if (mem_read_u32(TOD_GS_DEPTH, &depth) == ST_OK && depth <= TOD_GS_MAX_DEPTH) {
+			u32 entry = TOD_GS_STACK + depth * TOD_GS_STRIDE, rec = 0;
+
+			if (mem_read_u32(entry + TOD_GS_ID, &id) == ST_OK && id == (u32)TOD_STATE_FMV &&
+			    mem_read_u32(entry, &rec) == ST_OK && rec != 0)
+				fmv_now = name_is(rec, TOD_END_FMV);   /* ToDFmvRecord.name, +0 */
+		}
+	}
+
+	if (!as->end_primed) {
+		as->end_primed = 1;
+		if (fade_now) as->end_fade_done = 1;
+		if (fmv_now) as->end_fmv_done = 1;
+		return;
+	}
+	if (fade_now && !as->end_fade_done) {
+		autosplit_emit(AUTOSPLIT_SPLIT, TOD_AS_END_FADE, 0);
+		as->end_fade_done = 1;
+	}
+	if (fmv_now && !as->end_fmv_done) {
+		autosplit_emit(AUTOSPLIT_SPLIT, TOD_AS_END_FMV, 0);
+		as->end_fmv_done = 1;
+	}
+}
+
+static void ending_forget(struct tod_as_state *as)
+{
+	as->end_primed = 0;
+	as->end_fade_done = 0;
+	as->end_fmv_done = 0;
+	as->movie_seen = -1;
+	as->movie_is_end = 0;
+}
+
 void tod_autosplit_tick(struct tod_as_state *as)
 {
 	u32 lua = as->cur_lua;
@@ -254,8 +393,9 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	front_left = (as->front != 0 && front == 0);  /* the title gave way to a load */
 
 	/*
-	 * A whole load between two ticks, which Fast loads (g_levelTransitionMinTime
-	 * at 0) makes shorter but nothing seen yet makes that short: a new
+	 * A whole load between two ticks, which Fast loads (the load screen cut
+	 * once the data is in, tod.h) makes shorter but nothing seen yet makes
+	 * that short: a new
 	 * lua_State where the last tick read another. Its split is not lost. The
 	 * pool the state comes from is reset each level, so the same pointer back
 	 * proves nothing either way.
@@ -263,18 +403,25 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	if (as->lua != 0 && lua != 0 && lua != as->lua) left = entered = 1;
 
 	/*
-	 * A run starts with a load into Metropolis on a file that has not beaten
-	 * it: out of the title (a new game) or out of another level (a challenge
-	 * mode started from the credits). A Metropolis reloaded from Metropolis is
-	 * the run going on. Both ends of a script's start and reset, as in the
-	 * other games; with the flag set it is an ordinary planet change, below.
+	 * A run is a load into Metropolis on a file that has not beaten it: out
+	 * of the title (a new game, or a Metropolis save made before its end),
+	 * out of another level (a challenge mode started from the credits), or
+	 * out of Metropolis itself (a new game or such a save loaded while
+	 * there). The RESET goes out as the load begins, which is when the runner
+	 * threw the last run away; the START waits for control (revision 1.29),
+	 * below. Any other load, or the title coming back, drops a START still
+	 * waiting. With the flag set it is an ordinary planet change, below.
 	 */
-	if ((left || front_left) && level == TOD_LEVEL_METROPOLIS &&
-	    as->origin != (u32)TOD_LEVEL_METROPOLIS && fresh_file()) {
-		autosplit_emit(AUTOSPLIT_RESET, 0, 0);
-		autosplit_emit(AUTOSPLIT_START, 0, 0);
-		started = 1;
+	if (left || front_left) {
+		as->start_wait = TOD_SW_NONE;
+		if (level == TOD_LEVEL_METROPOLIS && fresh_file()) {
+			autosplit_emit(AUTOSPLIT_RESET, 0, 0);
+			as->start_wait = entered ? TOD_SW_LEVEL : TOD_SW_LOADING;
+			started = 1;
+		}
 	}
+	if (front != 0) as->start_wait = TOD_SW_NONE;
+	if (entered && as->start_wait == TOD_SW_LOADING) as->start_wait = TOD_SW_LEVEL;
 
 	/*
 	 * The long load, the old autosplitter's pause and unpause on the edges of
@@ -300,6 +447,19 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	if (entered && front == 0) as->origin = level_ok(level) ? (u32)level : TOD_AS_NOWHERE;
 	if (front != 0) as->origin = TOD_AS_NOWHERE;
 
+	/*
+	 * Control (revision 1.29): Metropolis is up and the game is in gameplay
+	 * with no cinematic, which on a new game is the frame after Level_Enter,
+	 * the first of the fade in from black, the intro FMV having played (or
+	 * been skipped) inside the load. A death or a checkpoint before it keeps
+	 * the START waiting; nothing reloads Metropolis without a new RESET.
+	 */
+	if (as->start_wait == TOD_SW_LEVEL && lua != 0 && front == 0 &&
+	    level == TOD_LEVEL_METROPOLIS && control_now(as)) {
+		autosplit_emit(AUTOSPLIT_START, 0, 0);
+		as->start_wait = TOD_SW_NONE;
+	}
+
 	/* The credits, from a level (Lua_show_credits), never the title's. */
 	if (state == TOD_STATE_CREDITS && as->state != TOD_STATE_CREDITS && front == 0)
 		autosplit_emit(AUTOSPLIT_SPLIT, TOD_AS_CREDITS, level_ok(level) ? (u32)level : 0);
@@ -308,10 +468,16 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	if (lua == 0 || front != 0 || !level_ok(level) || left) {
 		as->missions_primed = 0;
 		boss_forget(as);
+		ending_forget(as);
 	} else {
 		if ((as->ticks % MISSIONS_EVERY) == 0 || !as->missions_primed) missions_tick(as, level);
-		if (level == TOD_LEVEL_FASTOON_II) tachyon_tick(as);
-		else if (as->nboss != 0) boss_forget(as);
+		if (level == TOD_LEVEL_FASTOON_II) {
+			tachyon_tick(as);
+			ending_tick(as);
+		} else {
+			if (as->nboss != 0) boss_forget(as);
+			if (as->end_primed) ending_forget(as);
+		}
 	}
 
 	as->lua = lua;
@@ -328,16 +494,20 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * Code 3 is the title index's pause pair: the old script held game time for
  * the whole quit and reboot and then added 19.95 s, NORMALISE's sum. Code 4
  * is the old autosplitter's long load, game time held for as long as it
- * lasts (HOLD, revision 1.29). The two final splits are both offered;
- * Tachyon's is the one on by default.
+ * lasts (HOLD, revision 1.29). Of the final splits, code 7, the screen black
+ * after Tachyon's last hit, is the community's end of a run and the one on
+ * by default (revision 1.29); Tachyon's health reaching 0 (code 2) is 2.5 s
+ * or so before it, and the ending FMV (code 8) after the whole cinematic.
  */
 static const struct autosplit_desc tod_autosplits[] = {
-	{ TOD_AS_PLANET,  AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
-	{ TOD_AS_TACHYON, AUTOSPLIT_SPLIT,      DF,      0, "Tachyon defeated" },
-	{ TOD_AS_CREDITS, AUTOSPLIT_SPLIT,      0,       0, "Credits" },
-	{ TOD_AS_MISSION, AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
-	{ TOD_AS_LOAD,    AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
-	{ TOD_AS_QUIT,    AUTOSPLIT_PAUSE,      DF | NM, TOD_QUIT_PAUSE_US, "Quit to XMB" }
+	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
+	{ TOD_AS_END_FADE, AUTOSPLIT_SPLIT,      DF,      0, "Final fade to black" },
+	{ TOD_AS_TACHYON,  AUTOSPLIT_SPLIT,      0,       0, "Tachyon defeated" },
+	{ TOD_AS_END_FMV,  AUTOSPLIT_SPLIT,      0,       0, "Ending FMV" },
+	{ TOD_AS_CREDITS,  AUTOSPLIT_SPLIT,      0,       0, "Credits" },
+	{ TOD_AS_MISSION,  AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
+	{ TOD_AS_LOAD,     AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
+	{ TOD_AS_QUIT,     AUTOSPLIT_PAUSE,      DF | NM, TOD_QUIT_PAUSE_US, "Quit to XMB" }
 };
 
 #undef DF

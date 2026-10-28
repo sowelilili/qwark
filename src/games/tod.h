@@ -240,6 +240,41 @@
 #define TOD_TACHYON_HEALTH   0x24u        /* ToDTachyonBoss.health.health, f32 */
 #define TOD_TACHYON_STATE    0x762u       /* ToDTachyonBoss.state, u8: 15 once dead */
 
+/*
+ * Revision 1.29 (pending): the run's two ends as the community times them.
+ *
+ * The realtime cinematics: g_moviePlayer (ToDMoviePlayer) plays one level
+ * movie at a time, by its index in the level's movie list (MovieTable_build,
+ * at every level load: g_movieRecords[index] is the record, whose name is
+ * the char* just before it). MoviePlayer_update's states: 0 idle, 1 fading
+ * out (it waits for ScreenFade's progress to reach 1.0, black, and then asks
+ * for g_gameState 9), 2 playing, 3 fading back in, 4 done (MovieQueue_update
+ * then plays what is queued next). g_movieQueue holds what waits, its count
+ * at +0x404. A named FMV is not the player's: Movie_requestPlay replaces the
+ * top of the game-state stack with state 7 and the FMV's record (ToDFmvRecord,
+ * its name the char* at +0).
+ */
+#define TOD_MOVIE_PLAYER     0x101D4F50u  /* g_moviePlayer, ToDMoviePlayer (dec) */
+#define TOD_MP_STATE         0x58u        /* s32 0..4, above */
+#define TOD_MP_MOVIE         0x64u        /* s32, the movie's index in g_movieRecords */
+#define TOD_MP_LOOK_LEN      0x10u        /* +0x58 .. +0x67: the state and the movie in one read */
+#define TOD_MOVIE_QUEUE_N    0x101D4F44u  /* g_movieQueue (0x101D4B40) + 0x404, s32: movies waiting */
+#define TOD_MOVIE_RECORDS    0x101D50C4u  /* g_movieRecords, record pointers [0x200] by index; the name at [-4] */
+#define TOD_NMOVIES          0x200u
+#define TOD_FADE_PROGRESS    0x5B62Cu     /* [TOD_LEVEL_OBJ] + this: f32, 0 clear .. 1.0 black (ScreenFade_GetProgress) */
+#define TOD_FADE_BLACK       0x3F800000u  /* 1.0f, MoviePlayer_update's own "faded out" test */
+#define TOD_STATE_FMV        7            /* g_gameState: a named FMV (Movie_requestPlay) */
+#define TOD_STATE_CINEMATIC  9            /* g_gameState: a realtime cinematic playing */
+#define TOD_GS_DEPTH         0x10387DC8u  /* g_gameStateDepth, s32: the top of g_gameStateStack */
+#define TOD_GS_STACK         0x10387DCCu  /* g_gameStateStack, ToDGameStateEntry[], 0x30 each: the arg at +0 */
+#define TOD_GS_STRIDE        0x30u
+#define TOD_GS_MAX_DEPTH     8u           /* ApplyPending pushes no deeper (7 entries fit before g_gameStatePending) */
+#define TOD_GS_ID            0x20u        /* ToDGameStateEntry.stateId */
+/* The ending: TachyonEnding_update queues the cinematic, then the two FMVs. */
+#define TOD_END_CINEMATIC    "l4b_s04_dimx_rt"
+#define TOD_END_FMV          "l4b_s05_end1_fmv"
+#define TOD_MOVIE_NAME_LEN   17u          /* the longer name and its NUL */
+
 /* WPN_ classes (csv): 0 the wrench, 1..15 weapons, 16..23 devices, 24..31 gadgets. */
 #define TOD_WPN_FIRST        1u
 #define TOD_WPN_DEVICES      16u
@@ -411,6 +446,8 @@ struct tod_facts {
 #define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, the old autosplitter's long load (revision 1.29) */
 #define TOD_AS_CREDITS      5      /* SPLIT, the credits start */
 #define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
+#define TOD_AS_END_FADE     7      /* SPLIT, the screen black before the ending cinematic (revision 1.29) */
+#define TOD_AS_END_FMV      8      /* SPLIT, the ending FMV l4b_s05_end1_fmv starting (revision 1.29) */
 #define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
 
 /*
@@ -450,7 +487,18 @@ struct tod_as_state {
 	u8  nboss;
 	u8  tachyon_done;      /* split once per level up */
 	struct tod_boss boss[TOD_NBOSS];
+	/* Revision 1.29: the start at control, the end at the fade and the FMV. */
+	u8  start_wait;        /* TOD_SW_*: a new run's RESET is out and its START waits */
+	u8  end_primed;        /* the ending's first look at this level up is taken */
+	u8  end_fade_done;     /* code 7 is out, or was learnt, this level up */
+	u8  end_fmv_done;      /* code 8 the same */
+	s32 movie_seen;        /* the player's movie index last named, -1 none */
+	u8  movie_is_end;      /* whether that index is TOD_END_CINEMATIC */
+	u8  pad2[3];
 };
+#define TOD_SW_NONE         0      /* no run waiting */
+#define TOD_SW_LOADING      1      /* the load is under way: no level up since the RESET */
+#define TOD_SW_LEVEL        2      /* Metropolis is up: START on the first tick of control */
 #define TOD_AS_NOWHERE      0xFFFFFFFFu
 
 /* tod_autosplit.c */
