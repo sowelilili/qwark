@@ -108,12 +108,17 @@ static const struct tod_mark tod_marks[] = {
 	{ "moby pool",       TOD_MOBY_POOL,       TOD_DEC,    "g_mobyPool: ToDMoby slots of 0x180 at +0, the highest index at +0x10; a handle's low half is the index, checked against the slot's +0x64" },
 	{ "Tachyon",         TOD_VTBL_TACHYON,    TOD_DEC,    "vtbl_TachyonBoss: TachyonBoss_Init/Update/OnDamage/SetState; health component at +0x20 (TachyonBoss_GetComponent 0x6C), health +0x24; OnDamage clamps at each phase's threshold, and only the killing hit takes it to 0 and SetState(15); read live: health 0.0 of 106192, state 15" },
 	{ "credits state",   TOD_STATE_CREDITS,   TOD_DEC,    "g_gameState 11: GameState_RequestCredits (op 2, replace), only from Lua_show_credits" },
-	/* Revision 1.29: the run's start at control and its end at the fade to black. */
+	/* Revision 1.29: the run's end at the fade to black. */
 	{ "movie player",    TOD_MOVIE_PLAYER,    TOD_DEC,    "g_moviePlayer, ToDMoviePlayer: MoviePlayer_update's state at +0x58, 0 idle, 1 fading out until ScreenFade_GetProgress reads 1.0, 2 playing (g_gameState 9), 3 fading in, 4 done; the movie's index at +0x64" },
 	{ "movie queue",     TOD_MOVIE_QUEUE_N,   TOD_DEC,    "g_movieQueue+0x404, the count MovieQueue_push and MovieQueue_pop keep; MovieQueue_update plays the next when the player is done" },
 	{ "movie records",   TOD_MOVIE_RECORDS,   TOD_SCAN,   "g_movieRecords, MovieTable_build at each level load: [index] a record whose name is the char* before it; read live on Fastoon II: 6 is l4b_s04_dimx_rt" },
 	{ "screen fade",     TOD_FADE_PROGRESS,   TOD_DEC,    "[g_bigObj5B8F0]+0x5B62C, f32: ScreenFade_GetProgress; Level_Enter sets 1.0 and fades in over 1 s" },
 	{ "state stack",     TOD_GS_STACK,        TOD_DEC,    "g_gameStateStack, 0x30 an entry, the top at g_gameStateDepth 0x10387DC8: GameState_ApplyPending; Movie_requestPlay puts state 7 and the FMV's record (name at +0) on top" },
+	/* Revision 1.29: a level load apart from a death, and the fade in that starts a run. */
+	{ "load job",        TOD_LOAD_JOB,        TOD_DIS,    "the tier loader's job: GameState_startTierLoads stores the requested state's ToDGameStateStack*, GameState_tierLoaderThread puts 0 back once the tier stack is that list (0x630794, 0x63081C)" },
+	{ "level tiers",     TOD_LOAD_JOB_LEVEL,  TOD_DEC,    "g_gameStateStacks[3], state 3: the core tier, 0x1037AA38, the level transition's 0x1037AB30, g_levelLoadTier, g_levelTierState; RequestLevelLoadState asks GameState_Request(3, 3), Hero_respawnWhenBlack (a death) GameState_Request(3, 1)" },
+	{ "level load tier", TOD_LEVEL_LOAD_TIER, TOD_DEC,    "g_levelLoadTier, ToDGameTier: load LevelTransition_waitLoad, enter LevelLoad_onComplete; +6 loaded (GameTier_load, GameTier_unload): 0 through a planet load until the data is in, never touched by a death" },
+	{ "fade target",     TOD_FADE_TARGET,     TOD_DEC,    "[g_bigObj5B8F0]+0x5B634, f32: ScreenFade_Set(p) p, ScreenFade_StartIn 0.0, ScreenFade_Start 1.0; Level_Enter does Set(1.0) then StartIn(1.0, 0)" },
 };
 #define TOD_MARKS tod_marks, (u8)(sizeof(tod_marks) / sizeof(tod_marks[0]))
 #else

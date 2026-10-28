@@ -222,23 +222,40 @@
 #define TOD_LF_METROPOLIS_TACHYON 185u
 
 /*
- * Revision 1.29 (pending): Tachyon's defeat. g_mobyPool's ToDMoby slots
- * (stride 0x180): the object at +0x40, the handle at +0x64. Tachyon is the
- * object whose vtable is vtbl_TachyonBoss (ToDTachyonBoss); its health
- * component is at +0x20, the health itself at +0x24. TachyonBoss_OnDamage
- * holds the health at each phase's threshold and only ever lets it reach 0
- * on the killing hit, which is where it calls TachyonBoss_SetState(15).
+ * g_mobyPool's ToDMoby slots (stride 0x180): the object at +0x40, the
+ * handle at +0x64. Tachyon is the object whose vtable is vtbl_TachyonBoss
+ * (ToDTachyonBoss), its health at +0x24. The fact sheet's; the autosplitter
+ * read Tachyon's health for its code 2 until revision 1.29 retired it.
  */
 #define TOD_MOBY_POOL        0x1066C300u  /* g_mobyPool, ToDMobyPool: the slots at +0, the highest index at +0x10 (dec) */
-#define TOD_MOBY_POOL_MAX    0x10u
-#define TOD_MOBY_STRIDE      0x180u
-#define TOD_MOBY_OBJECT      0x40u        /* ToDMoby.object */
-#define TOD_MOBY_HANDLE      0x64u        /* ToDMoby.handle: a generation in the high half, the index in the low */
-#define TOD_MOBY_LOOK_LEN    0x28u        /* +0x40 .. +0x67, the object and the handle in one read */
-#define TOD_MOBY_MAX         4096u        /* a pool bigger than this is not the pool */
 #define TOD_VTBL_TACHYON     0x10060CB0u  /* vtbl_TachyonBoss (dec) */
-#define TOD_TACHYON_HEALTH   0x24u        /* ToDTachyonBoss.health.health, f32 */
-#define TOD_TACHYON_STATE    0x762u       /* ToDTachyonBoss.state, u8: 15 once dead */
+
+/*
+ * Revision 1.29 (pending): a level load, and nothing else. The game's top
+ * level is a stack of tiers (ToDGameTier: the vtable at +0, `loaded` at +6,
+ * `entered` at +7), and each of its states is a list of them
+ * (g_gameStateStacks, ToDGameStateStack, 0x88 bytes each). State 3, a level,
+ * is the core tier, 0x1037AA38, the level transition's (LevelTransition_begin
+ * its enter), g_levelLoadTier (LevelTransition_waitLoad its load,
+ * LevelLoad_onComplete its enter) and g_levelTierState (Level_Enter, Level_Exit).
+ * A planet load asks for state 3 with its top three tiers marked to go
+ * (RequestLevelLoadState: GameState_Request(3, 3)); a death or a checkpoint
+ * asks for it with only the top one marked (Hero_respawnWhenBlack, once the
+ * death's fade is black: GameState_Request(3, 1)), so only the level tier
+ * goes and comes back: Level_Exit and Level_Enter, a new lua_State and a new
+ * fade in, while g_levelLoadTier stays loaded. A quit to the title asks for
+ * state 2. GameState_Update unloads the tiers, then GameState_startTierLoads
+ * gives the loader thread the state's list, its job, which it puts back to 0
+ * once the stack is that list. So a level load is under way exactly while
+ * the job is state 3's list and g_levelLoadTier is not loaded: from the
+ * frame the old level goes until the new one's data is in, seconds with
+ * Fast loads on or off. A death never unloads that tier, and the title is
+ * another job (dec, dis).
+ */
+#define TOD_LOAD_JOB         0x1073B3A0u  /* the tier loader's job: a ToDGameStateStack*, 0 when idle (dis 0x630794) */
+#define TOD_LOAD_JOB_LEVEL   0x10073300u  /* g_gameStateStacks[3], state 3's tiers: the level's */
+#define TOD_LEVEL_LOAD_TIER  0x1037A908u  /* g_levelLoadTier, a ToDGameTier */
+#define TOD_TIER_LOADED      6u           /* ToDGameTier.loaded, u8: GameTier_load sets it, GameTier_unload clears it */
 
 /*
  * Revision 1.29 (pending): the run's two ends as the community times them.
@@ -263,17 +280,22 @@
 #define TOD_NMOVIES          0x200u
 #define TOD_FADE_PROGRESS    0x5B62Cu     /* [TOD_LEVEL_OBJ] + this: f32, 0 clear .. 1.0 black (ScreenFade_GetProgress) */
 #define TOD_FADE_BLACK       0x3F800000u  /* 1.0f, MoviePlayer_update's own "faded out" test */
+/*
+ * Revision 1.29: the fade's target (ToDScreenFade, [TOD_LEVEL_OBJ] +
+ * 0x5B600: the progress at +0x2C, the rate at +0x30, the target at +0x34).
+ * ScreenFade_Set(p) puts p in the progress and the target and 0 in the rate;
+ * ScreenFade_StartIn(t, delay) puts 0.0 in the target and 1/t in the rate,
+ * ScreenFade_Start the same towards 1.0. Level_Enter does Set(1.0), then
+ * StartIn(1.0, 0): black, then one second in.
+ */
+#define TOD_FADE_TARGET      0x5B634u     /* [TOD_LEVEL_OBJ] + this: f32, 0.0 fading in (or clear), 1.0 out (or black) */
 #define TOD_STATE_FMV        7            /* g_gameState: a named FMV (Movie_requestPlay) */
 #define TOD_STATE_CINEMATIC  9            /* g_gameState: a realtime cinematic playing */
 #define TOD_GS_DEPTH         0x10387DC8u  /* g_gameStateDepth, s32: the top of g_gameStateStack */
 #define TOD_GS_STACK         0x10387DCCu  /* g_gameStateStack, ToDGameStateEntry[], 0x30 each: the arg at +0 */
-#define TOD_GS_STRIDE        0x30u
-#define TOD_GS_MAX_DEPTH     8u           /* ApplyPending pushes no deeper (7 entries fit before g_gameStatePending) */
-#define TOD_GS_ID            0x20u        /* ToDGameStateEntry.stateId */
 /* The ending: TachyonEnding_update queues the cinematic, then the two FMVs. */
 #define TOD_END_CINEMATIC    "l4b_s04_dimx_rt"
-#define TOD_END_FMV          "l4b_s05_end1_fmv"
-#define TOD_MOVIE_NAME_LEN   17u          /* the longer name and its NUL */
+#define TOD_MOVIE_NAME_LEN   16u          /* the name and its NUL */
 
 /* WPN_ classes (csv): 0 the wrench, 1..15 weapons, 16..23 devices, 24..31 gadgets. */
 #define TOD_WPN_FIRST        1u
@@ -441,35 +463,27 @@ struct tod_facts {
  * Code 1 is every game's planet split; 3 is the title index's pause pair.
  */
 #define TOD_AS_PLANET       1      /* SPLIT, arg the LEVEL_ just loaded */
-#define TOD_AS_TACHYON      2      /* SPLIT, Tachyon's health reaching 0 on Fastoon II (revision 1.29) */
+/* 2, Tachyon's health reaching 0, was retired in revision 1.29: never reuse it. */
 #define TOD_AS_QUIT         3      /* PAUSE / RESUME around a quit to the XMB */
 #define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, the old autosplitter's long load (revision 1.29) */
 #define TOD_AS_CREDITS      5      /* SPLIT, the credits start */
 #define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
-#define TOD_AS_END_FADE     7      /* SPLIT, the screen black before the ending cinematic (revision 1.29) */
-#define TOD_AS_END_FMV      8      /* SPLIT, the ending FMV l4b_s05_end1_fmv starting (revision 1.29) */
+#define TOD_AS_END_FADE     7      /* SPLIT, "Tachyon defeated": the screen black before the ending cinematic (revision 1.29) */
+/* 8, the ending FMV, was retired in revision 1.29: never reuse it. */
 #define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
 
 /*
  * What the watcher keeps, a part of tod_game.c's state (the lent area in a
  * module). The `cur_` fields are the hot block's, written by its decode.
  */
-struct tod_boss {
-	u32 moby;              /* its ToDMoby's address */
-	u32 obj;               /* the ToDTachyonBoss */
-	u32 handle;            /* the slot's handle when it was found */
-	u8  alive;             /* its health read above 0 the last time */
-	u8  pad[3];
-};
-#define TOD_NBOSS           4      /* Fastoon II has two */
-#define TOD_SCAN_PER_TICK   4      /* pool slots looked at per tick: the whole pool in about 3 s */
-
 struct tod_as_state {
 	u32 cur_lua;           /* the gameplay lua_State*, 0 between levels */
 	s32 cur_level;         /* g_currentLevel */
 	s32 cur_state;         /* g_gameState */
 	u8  cur_front;         /* g_inFrontEnd */
 	u8  cur_screen;        /* g_loadScreenType's low byte, the legacy's 0x102034FB */
+	u8  cur_tier;          /* g_levelLoadTier's loaded byte (revision 1.29) */
+	u32 cur_job;           /* the tier loader's job (revision 1.29) */
 	u8  primed;
 	u8  seen;              /* this process has shown its front end or a level */
 	u32 lua;               /* the last tick's */
@@ -482,23 +496,19 @@ struct tod_as_state {
 	u32 mission_level;     /* whose completed list `missions` is */
 	u32 missions[TOD_NMISSIONS];
 	u32 ticks;
-	/* Revision 1.29: Tachyon, looked for on Fastoon II only. */
-	u16 scan;              /* the next pool slot to look at */
-	u8  nboss;
-	u8  tachyon_done;      /* split once per level up */
-	struct tod_boss boss[TOD_NBOSS];
-	/* Revision 1.29: the start at control, the end at the fade and the FMV. */
+	/* Revision 1.29: the start at the fade in, the end at the fade to black. */
 	u8  start_wait;        /* TOD_SW_*: a new run's RESET is out and its START waits */
 	u8  end_primed;        /* the ending's first look at this level up is taken */
 	u8  end_fade_done;     /* code 7 is out, or was learnt, this level up */
-	u8  end_fmv_done;      /* code 8 the same */
+	u8  movie_is_end;      /* whether movie_seen is TOD_END_CINEMATIC */
 	s32 movie_seen;        /* the player's movie index last named, -1 none */
-	u8  movie_is_end;      /* whether that index is TOD_END_CINEMATIC */
+	u8  loading;           /* a level load was under way at the last tick */
 	u8  pad2[3];
+	u32 start_lua;         /* the lua_State whose fade in the START waits for */
 };
 #define TOD_SW_NONE         0      /* no run waiting */
 #define TOD_SW_LOADING      1      /* the load is under way: no level up since the RESET */
-#define TOD_SW_LEVEL        2      /* Metropolis is up: START on the first tick of control */
+#define TOD_SW_LEVEL        2      /* Metropolis is up: START as its fade in starts */
 #define TOD_AS_NOWHERE      0xFFFFFFFFu
 
 /* tod_autosplit.c */

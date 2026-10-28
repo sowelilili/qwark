@@ -33,11 +33,14 @@
  *   6  front end  g_inFrontEnd, 1 on the title                     every 2nd
  *   7  game state g_gameState, 11 in the credits                   every 2nd
  *   8  load screen g_loadScreenType, the long load's                every tick
+ *   9  load job   the tier loader's job, a level load's               every 2nd
+ *  10  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
  *
- * Blocks 5 to 7 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
- * pending): the level going down and coming up is a load's two ends, so it
- * is read every tick; the title and the credits take the even and the odd
- * ticks between them.
+ * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
+ * pending): the level coming up is read every tick; the title and the
+ * credits take the even and the odd ticks between them, and a level load
+ * (revision 1.29), which lasts seconds, is the two words of blocks 9 and 10,
+ * read on the same tick so that they agree.
  *
  * The position is the hero's, two pointers deep: hot_decode reads the hero's
  * pointer again whenever the level object changes and every eighth tick
@@ -53,7 +56,9 @@ static const struct game_hot_block tod_hot[] = {
 	{ TOD_LUA_STATE,     4,                  1, 0 },
 	{ TOD_FRONT_END,     1,                  2, 0 },
 	{ TOD_GAME_STATE,    4,                  2, 1 },
-	{ TOD_LOAD_SCREEN,   4,                  1, 0 }   /* revision 1.29 */
+	{ TOD_LOAD_SCREEN,   4,                  1, 0 },  /* revision 1.29 */
+	{ TOD_LOAD_JOB,      4,                  2, 0 },  /* revision 1.29 */
+	{ TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1, 2, 0 }
 };
 
 #define HOT_INPUTS 0
@@ -65,6 +70,8 @@ static const struct game_hot_block tod_hot[] = {
 #define HOT_FRONT  6
 #define HOT_GSTATE 7
 #define HOT_SCREEN 8
+#define HOT_JOB    9
+#define HOT_TIER   10
 
 #define HERO_EVERY 8u
 
@@ -144,6 +151,8 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_GSTATE] != NULL) T->as.cur_state = (s32)be32_get(blocks[HOT_GSTATE]);
 	/* The low byte, the one the old autosplitter read (0x102034FB). */
 	if (blocks[HOT_SCREEN] != NULL) T->as.cur_screen = blocks[HOT_SCREEN][3];
+	if (blocks[HOT_JOB] != NULL)    T->as.cur_job = be32_get(blocks[HOT_JOB]);
+	if (blocks[HOT_TIER] != NULL)   T->as.cur_tier = blocks[HOT_TIER][0];
 
 	if (blocks[HOT_ROOT] != NULL) root = be32_get(blocks[HOT_ROOT]);
 	if ((root & 3u) != 0) root = 0;

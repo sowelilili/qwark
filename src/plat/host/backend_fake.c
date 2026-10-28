@@ -350,6 +350,13 @@ static void seed_tod(void)
 	poke32(FAKE_TOD_HERO + TOD_HERO_HEALTH, 0x41200000u);       /* 10.0f */
 	poke32(FAKE_TOD_HERO + TOD_HERO_MAX_HEALTH, 0x41200000u);
 	poke32(TOD_LUA_STATE, FAKE_TOD_STATE);
+	/* A level up after its load: g_levelLoadTier loaded, the tier loader idle (revision 1.29). */
+	{
+		u8 one = 1;
+
+		mem_access(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, &one, 1, 1);
+		poke32(TOD_LOAD_JOB, 0);
+	}
 	seed_tod_save();
 
 	if (d == NULL) return;
