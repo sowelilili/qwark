@@ -783,6 +783,17 @@ static void fade_world(void)
 	wr32(TOD_LOAD_FADE_DONE, 0x3F800000u);
 }
 
+/* LVL_FAST_SHIP_FIXED (106) in the game's level flags, set or clear. */
+static void fade_flag_106(int set)
+{
+	u8 b = 0;
+	const u32 at = TOD_LEVEL_FLAGS + TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED);
+
+	host_peek(at, &b, 1);
+	b = set ? (u8)(b | (1u << (TOD_LF_FAST_SHIP_FIXED & 7u))) : (u8)(b & ~(1u << (TOD_LF_FAST_SHIP_FIXED & 7u)));
+	host_poke(at, &b, 1);
+}
+
 static void test_tod_load_fade(void)
 {
 	int i;
@@ -825,6 +836,43 @@ static void test_tod_load_fade(void)
 	check(session_planet_load(2, 0) == ST_BUSY && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME,
 	      "a refused PLANET_LOAD leaves the fade alone");
 	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+
+	/* 2026-10-31: a story FMV load fades for a few frames: no load screen hides the cut. */
+	check(TOD_LOAD_FADE_STORY == 0x3DA00000u && f32_from_bits(TOD_LOAD_FADE_STORY) * 64.0f == 5.0f &&
+	      TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED) == 10u && (TOD_LF_FAST_SHIP_FIXED & 7u) == 2u,
+	      "5/64 s for a story load, and LVL_FAST_SHIP_FIXED is bit 42 of g_saveData+0x5530");
+	fade_flag_106(0);
+	check(tod_story_load(0, TOD_LEVEL_FLAGS) && tod_story_load(1, TOD_LEVEL_FLAGS) &&
+	      !tod_story_load(2, TOD_LEVEL_FLAGS) && !tod_story_load(18, TOD_LEVEL_FLAGS),
+	      "flag 106 clear: Metropolis and Cobalia are story loads, the rest are not");
+	fade_world();
+	check(session_planet_load(0, 0) == ST_OK && rd32(TOD_LOAD_REQUEST) == 0 &&
+	      rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_STORY, "PLANET_LOAD to a fresh Metropolis: the few frames' fade");
+	tick(2);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_STORY, "kept while the request waits");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(1);
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "and the game's 0.5 s back as for any load");
+	fade_world();
+	check(session_planet_load(1, 0) == ST_OK && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_STORY,
+	      "Cobalia's story load the same");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(1);
+	fade_world();
+	check(session_planet_load(2, 0) == ST_OK && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK,
+	      "any other planet keeps the one frame");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(1);
+	fade_flag_106(1);
+	check(!tod_story_load(0, TOD_LEVEL_FLAGS) && !tod_story_load(1, TOD_LEVEL_FLAGS),
+	      "flag 106 set: no story load");
+	fade_world();
+	check(session_planet_load(0, 0) == ST_OK && rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_QUICK,
+	      "so Metropolis with the ship fixed has the load screen and the one frame");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(1);
+	fade_flag_106(0);
+	check(tod_story_load(0, 0xFFFFFF00u), "a flag that cannot be read counts as clear: the longer fade");
 
 	/* A qwark that went away with it armed: the next session's arrival puts it back. */
 	fade_world();
@@ -989,13 +1037,32 @@ static void test_tod_cutscenes(void)
 	tick(TOD_CUT_EVERY + 2);
 	check(cut_all(1), "a table read again is seen to");
 
-	/* A new session: as the game has them, before the auto flags come back. */
+	/*
+	 * 2026-10-31: the toggle ships auto-flagged (the user's call), so with no
+	 * config.txt key for it a new session puts the files back as it arrives
+	 * and the auto flag takes them out again.
+	 */
+	check((features_auto_mask() & ((u64)1 << TF_REMOVE_CUTSCENES)) != 0 &&
+	      (features_toggle_auto() & ((u64)1 << TF_REMOVE_CUTSCENES)) != 0,
+	      "on boot by default, with no config.txt key for it");
 	check(quit(), "the game quits with them removed");
 	host_boot_as(TOD_TITLE, "tod");
 	cut_build();
 	cut_blank();   /* the memory as that boot found it */
 	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
-	check(session_game() != NULL && cut_all(0), "the next session's arrival puts them back");
+	tick(8);
+	check(session_game() != NULL && cut_all(1), "the next session: the default auto flag removes them again");
+
+	/* A key set off wins over the default: the arrival puts them back, and nothing takes them out. */
+	check(features_set_auto(TF_REMOVE_CUTSCENES, 0) == ST_OK &&
+	      (features_auto_mask() & ((u64)1 << TF_REMOVE_CUTSCENES)) == 0, "the auto flag off, a config.txt key of 0");
+	check(quit(), "the game quits with them removed");
+	host_boot_as(TOD_TITLE, "tod");
+	cut_build();
+	cut_blank();
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	tick(8);
+	check(session_game() != NULL && cut_all(0), "the next session's arrival puts them back, and they stay");
 	check(features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK && cut_all(1) &&
 	      features_set(TF_REMOVE_CUTSCENES, 0) == ST_OK && cut_all(0), "and the toggle works there");
 
@@ -1153,6 +1220,12 @@ static void level_enters(u32 lua)
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);
 	wrf(FAKE_ROOT + TOD_FADE_TARGET, 0.0f);
 	wr32(TOD_LOAD_JOB, 0);
+}
+
+/* Half a second into Level_Enter's fade in: its progress down to 0.5, the run's START (2026-10-31). */
+static void fade_halfway(void)
+{
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.5f);
 }
 
 /* A whole planet load, `level` written first as LoadLevel does. */
@@ -1487,9 +1560,12 @@ static void test_tod_autosplit_runs(void)
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "the data in, no level up yet: no START");
 	level_enters(AS_STATE);
 	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "Level_Enter's fade in from black starts: no START yet");
+	fade_halfway();
+	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1 &&
 	      as_first(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD) < as_first(seq, AUTOSPLIT_START, 0),
-	      "Level_Enter's fade in from black: START, after the hold");
+	      "half a second into it: START, after the hold");
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "Metropolis is no planet split");
 	tick(10);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "one START");
@@ -1522,6 +1598,7 @@ static void test_tod_autosplit_runs(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "and START at its fade in");
 
@@ -1534,6 +1611,7 @@ static void test_tod_autosplit_runs(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0,
 	      "a Metropolis save with the flag set is no run start");
@@ -1577,6 +1655,7 @@ static void test_tod_autosplit_runs(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "and START at the fade in");
 	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
@@ -1609,7 +1688,7 @@ static void test_tod_autosplit_start_fade(void)
 {
 	u32 seq;
 
-	group("ToD: a run starts as the fade in that shows Ratchet starts (rev 1.29)");
+	group("ToD: a run starts halfway into the fade in that shows Ratchet (rev 1.29)");
 	wr32(TOD_LOAD_SCREEN, 1);
 
 	/* The level up, still black with its fade not started (Level_Enter between its two calls). */
@@ -1620,18 +1699,48 @@ static void test_tod_autosplit_start_fade(void)
 	load_data_in();
 	tick(2);
 	wr32(TOD_LUA_STATE, AS_STATE);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);
 	wrf(FAKE_ROOT + TOD_FADE_TARGET, 1.0f);
 	wr32(TOD_LOAD_JOB, 0);
 	tick(6);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "Metropolis up, the screen held black: no START");
 	wrf(FAKE_ROOT + TOD_FADE_TARGET, 0.0f);
 	tick(1);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "ScreenFade_StartIn's target 0.0: START, the same tick");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "ScreenFade_StartIn's target 0.0, still black: no START yet");
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.51f);
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "0.51 of the way: not yet");
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.5f);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "half a second in, the progress at 0.5: START, the same tick");
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.25f);
 	tick(4);
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the rest of the fade in adds nothing");
+
+	/* A tick that misses the crossing, and a fade the game starts again: still one START, at or past 0.5. */
+	seq = autosplit_latest_seq();
+	new_game_load();
+	load_data_in();
+	tick(2);
+	level_enters(AS_STATE);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.7f);
+	tick(2);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 1.0f);   /* Set(1.0), then StartIn again */
+	tick(2);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "a fade in started again from black: no START");
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.3f);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the tick that finds it past 0.5 (0.3): START");
+	seq = autosplit_latest_seq();
+	new_game_load();
+	load_data_in();
+	tick(2);
+	level_enters(AS_STATE);
+	wr32(FAKE_ROOT + TOD_FADE_PROGRESS, 0x80000000u);
+	tick(1);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "a progress of -0.0 is past the half too");
 
 	/* A target of -0.0 is 0.0; a fade that cannot be read is no fade in. */
 	seq = autosplit_latest_seq();
@@ -1642,6 +1751,7 @@ static void test_tod_autosplit_start_fade(void)
 	wr32(TOD_LUA_STATE, AS_STATE);
 	wr32(TOD_LOAD_JOB, 0);
 	wr32(FAKE_ROOT + TOD_FADE_TARGET, 0x80000000u);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.25f);
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "no level object: no START");
 	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
@@ -1656,8 +1766,9 @@ static void test_tod_autosplit_start_fade(void)
 	tick(6);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "the data in and a fade going in, no lua_State: no START");
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(2);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "Level_Enter: START");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "Level_Enter, and its fade in halfway: START");
 
 	/* A death before the fade in (a new lua_State, no load): that level up is not the run's any more. */
 	seq = autosplit_latest_seq();
@@ -1669,6 +1780,7 @@ static void test_tod_autosplit_start_fade(void)
 	wr32(TOD_LOAD_JOB, 0);
 	tick(4);
 	death(AS_STATE + 0x40);
+	fade_halfway();
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1,
 	      "a death before the fade in: no START at the death's fade in, no second RESET");
@@ -1689,6 +1801,7 @@ static void test_tod_autosplit_start_fade(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE + 0x40);
+	fade_halfway();
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the level up and its fade in: START, once");
 
@@ -1701,6 +1814,7 @@ static void test_tod_autosplit_start_fade(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
 	      "the title before the fade in, then a played file: no START");
@@ -1727,6 +1841,7 @@ static void test_tod_autosplit_start_fade(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(6);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0,
 	      "a Metropolis save with flag 185 set: no RESET, no START at its fade in");
@@ -1740,6 +1855,7 @@ static void test_tod_autosplit_start_fade(void)
 	load_data_in();
 	tick(2);
 	level_enters(AS_STATE);
+	fade_halfway();
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 1,
 	      "with the load screen cut: RESET at the load, START at the fade in");
@@ -1991,6 +2107,7 @@ static void test_tod_savefile(void)
 
 	/* The game saves into slot 2 with 1000 bolts: that is the save. */
 	wr32(TOD_BOLTS, 1000);
+	fade_flag_106(0);   /* 2026-10-31: a save whose Cobalia is a story FMV load */
 	host_fake_tod_saved(2);
 	check(savefile_store("runs", "a.sav") == ST_OK, "STORE of the game's save is accepted");
 	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_HELD, "the save system is held for the copy");
@@ -2027,6 +2144,10 @@ static void test_tod_savefile(void)
 	check(rd32(SM(TOD_SM_STATE)) == TOD_SS_LOADING && rd32(LOAD_ST) == TOD_LT_READ_OK &&
 	      rd32(LOAD_ID_LO) == TOD_THREAD_GONE && rd32(SM(TOD_SM_AUTOSAVE)) == 0,
 	      "after the copy: a load thread that read its file and is gone, the autosave dropped");
+	/* 2026-10-31: the save's own level and flag 106 say how long its fade-out is. */
+	check(rd32(TOD_SAVE_IMAGE + TOD_SAVE_LEVEL_OFF) == TOD_LEVEL_COBALIA &&
+	      rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_STORY,
+	      "the save's Cobalia with its flag 106 clear is a story load: the few frames' fade");
 	check(rd32(TOD_BOLTS) == 5000, "the game's live save is untouched until its update takes it");
 	check(sf_settle(1, 200), "the game's update takes it and the load settles");
 	sf_info(&installed, &running, &pending, &size, &error);

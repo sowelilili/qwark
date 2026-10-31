@@ -486,12 +486,22 @@ static int tod_fast_loads(int on)
 
 /* ------------------------------------- qwark's own loads' fade, revision 1.29 */
 
-void tod_fade_arm(void)
+/* LevelTransition_begin's test (tod.h, TOD_LOAD_FADE_STORY). */
+int tod_story_load(u32 level, u32 flags_at)
+{
+	u8 b = 0;
+
+	if (level != TOD_LEVEL_METROPOLIS && level != TOD_LEVEL_COBALIA) return 0;
+	if (mem_read_u8(flags_at + TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED), &b) != ST_OK) return 1;
+	return (b & (1u << (TOD_LF_FAST_SHIP_FIXED & 7u))) == 0;
+}
+
+void tod_fade_arm(int story)
 {
 	TP->fade_armed = 1;
 	TP->fade_seen = 0;
 	TP->fade_ticks = 0;
-	mem_write_u32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_QUICK);
+	mem_write_u32(TOD_LOAD_FADE_TIME, story ? TOD_LOAD_FADE_STORY : TOD_LOAD_FADE_QUICK);
 }
 
 void tod_fade_disarm(void)
@@ -890,7 +900,9 @@ int tod_die(void)
  * the game's own set_level does in gameplay, so only in gameplay (g_gameState 4,
  * a level object up), and never over a load already asked for: a request is
  * never taken back once written, as that would leave a fade with no load.
- * Revision 1.29: the fade a frame long, as for every load qwark asks for.
+ * Revision 1.29: the fade a frame long, as for every load qwark asks for, but
+ * a few frames for a story FMV load, which has no load screen (tod.h,
+ * TOD_LOAD_FADE_STORY): the level flags are the game's own here.
  */
 int tod_planet_load(u8 planet, u8 flags)
 {
@@ -905,7 +917,7 @@ int tod_planet_load(u8 planet, u8 flags)
 	if (rc != ST_OK) return rc;
 	if (state != TOD_STATE_GAMEPLAY || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
 	/* Revision 1.29: no fade-out first (tod.h, TOD_LOAD_FADE_TIME). */
-	tod_fade_arm();
+	tod_fade_arm(tod_story_load(planet, TOD_LEVEL_FLAGS));
 	rc = mem_write_u32(TOD_LOAD_REQUEST, planet);
 	if (rc != ST_OK) tod_fade_disarm();
 	return rc;

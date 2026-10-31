@@ -296,7 +296,12 @@ static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),
 	tod_readouts, (u8)(sizeof(tod_readouts) / sizeof(tod_readouts[0])),
 	tod_features, (u8)(sizeof(tod_features) / sizeof(tod_features[0])),
-	0,            /* no toggle ships auto-flagged */
+	/*
+	 * 2026-10-31, the user's call: Remove cutscenes ships auto-flagged, as
+	 * Deadlocked's crash patches do: run-legal, and no runner plays with the
+	 * eight FMVs. A config.txt key for it, on or off, still wins.
+	 */
+	(u64)1 << TF_REMOVE_CUTSCENES,
 	NULL, 0       /* nothing relabelled */
 };
 

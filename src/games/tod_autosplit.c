@@ -183,18 +183,26 @@ static int movie_busy(u32 state)
 }
 
 /*
- * The fade in that shows Ratchet has started (revision 1.29): the screen
- * fade's target reads 0.0, which ScreenFade_StartIn puts there as
- * Level_Enter starts its one second in from black. A -0.0 is 0.0 too.
- * Nothing that cannot be read has started.
+ * The fade in that shows Ratchet is halfway (revision 1.29, the user's timing
+ * of 2026-10-31): the screen fade's target reads 0.0, which ScreenFade_StartIn
+ * puts there as Level_Enter starts its one second in from black (rate 1.0
+ * from 1.0), and its progress has come down to 0.5 or less, half a second
+ * later. The test is "at most", not "equal", so a tick that misses the
+ * crossing still sees it, a little late, and a fade the game starts again
+ * (Set(1.0), StartIn) is simply waited for again. A -0.0 is 0.0 too, and a
+ * negative progress is below 0.5. Nothing that cannot be read is halfway.
  */
-static int fade_in_started(void)
+static int fade_in_halfway(void)
 {
-	u32 lo = 0, target = 1;
+	u8 look[TOD_FADE_LOOK_LEN];
+	u32 lo = 0, target, progress;
 
 	if (mem_read_u32(TOD_LEVEL_OBJ, &lo) != ST_OK || lo == 0 || (lo & 3u) != 0) return 0;
-	if (mem_read_u32(lo + TOD_FADE_TARGET, &target) != ST_OK) return 0;
-	return (target & 0x7FFFFFFFu) == 0;
+	if (mem_read(lo + TOD_FADE_PROGRESS, look, sizeof(look)) != ST_OK) return 0;
+	progress = be32_get(look);
+	target = be32_get(look + (TOD_FADE_TARGET - TOD_FADE_PROGRESS));
+	if ((target & 0x7FFFFFFFu) != 0) return 0;
+	return (progress & 0x80000000u) != 0 || progress <= TOD_FADE_HALF;
 }
 
 /*
@@ -346,10 +354,11 @@ void tod_autosplit_tick(struct tod_as_state *as)
 
 	/*
 	 * The START (revision 1.29): the run's Metropolis is up and its fade in
-	 * from black has started, Level_Enter's ScreenFade_StartIn, which shows
-	 * Ratchet. Only a run's load gets here; a death's fade in never does.
+	 * from black, Level_Enter's ScreenFade_StartIn, which shows Ratchet, is
+	 * halfway (2026-10-31: the user's timing, half a second after the fade
+	 * in starts). Only a run's load gets here; a death's fade in never does.
 	 */
-	if (as->start_wait == TOD_SW_LEVEL && front == 0 && level == TOD_LEVEL_METROPOLIS && fade_in_started()) {
+	if (as->start_wait == TOD_SW_LEVEL && front == 0 && level == TOD_LEVEL_METROPOLIS && fade_in_halfway()) {
 		autosplit_emit(AUTOSPLIT_START, 0, 0);
 		as->start_wait = TOD_SW_NONE;
 	}

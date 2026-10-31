@@ -206,6 +206,30 @@
 #define TOD_FADE_WAIT_TICKS  720u         /* six seconds of the tick: a load the game never took */
 
 /*
+ * Revision 1.29 (2026-10-31): a story FMV load's fade-out. LevelTransition_begin
+ * (0x3C8360) plays a list of FMVs instead of the load screen when bit 42 of
+ * g_saveData+0x5530 (LVL_FAST_SHIP_FIXED, level flag 106) is clear and the
+ * level's name is "metropolis" or "cobalia" (Str_compareNoCase), LEVEL_ 0 and 1.
+ * Such a load has no departure: with its FMV gone (Remove cutscenes, or the
+ * file deleted from the disc's copy, which qwark cannot see) nothing at all
+ * comes between the old level's last frame and the black, and a fade-out of
+ * one frame flashes. So qwark's own load of that kind fades for
+ * TOD_LOAD_FADE_STORY, 5/64 s: five frames at 60 Hz (three at 30), long
+ * enough to read as a fade rather than a cut, and still a sixth of the game's
+ * 0.5 s. A load that is not a story FMV load keeps the one-frame fade.
+ *
+ * tod_story_load answers whether a load of `level` with the level flags at
+ * `flags_at` (g_levelFlags for PLANET_LOAD, the save image's for a savefile
+ * load, whose flags SaveManager_onLoaded copies in before its LoadLevel) takes
+ * that path; a flag that cannot be read counts as clear, the longer fade being
+ * the one that never flashes.
+ */
+#define TOD_LOAD_FADE_STORY  0x3DA00000u  /* 5/64 s = 0.078125: five frames at 60 Hz */
+#define TOD_LF_FAST_SHIP_FIXED 106u       /* LVL_FAST_SHIP_FIXED */
+#define TOD_LEVEL_COBALIA    1            /* LEVEL_COBALIA, the other story FMV load */
+int  tod_story_load(u32 level, u32 flags_at);
+
+/*
  * Revision 1.29: Remove cutscenes (id 18). Every FMV is a ToDFmvRecord of the
  * game archive's table (g_archiveGame.toc + 0x2C, the count in the word before
  * it, 0x1F4 bytes each): its name at +0, its file at +4 and the localised file
@@ -374,6 +398,8 @@
  * StartIn(1.0, 0): black, then one second in.
  */
 #define TOD_FADE_TARGET      0x5B634u     /* [TOD_LEVEL_OBJ] + this: f32, 0.0 fading in (or clear), 1.0 out (or black) */
+#define TOD_FADE_LOOK_LEN    0x0Cu        /* the progress, the rate and the target in one read */
+#define TOD_FADE_HALF        0x3F000000u  /* 0.5f: the run's START, half a second into Level_Enter's fade in (2026-10-31) */
 #define TOD_STATE_FMV        7            /* g_gameState: a named FMV (Movie_requestPlay) */
 #define TOD_STATE_CINEMATIC  9            /* g_gameState: a realtime cinematic playing */
 #define TOD_GS_DEPTH         0x10387DC8u  /* g_gameStateDepth, s32: the top of g_gameStateStack */
@@ -633,8 +659,11 @@ void tod_panel_init(void);   /* once a module: Fast loads' patch */
  */
 void tod_panel_enter(void);
 void tod_panel_tick(void);
-/* qwark's own load is about to be asked for: its fade-out a frame long. */
-void tod_fade_arm(void);
+/*
+ * qwark's own load is about to be asked for: its fade-out a frame long, or
+ * TOD_LOAD_FADE_STORY for a story FMV load (`story`, tod_story_load's answer).
+ */
+void tod_fade_arm(int story);
 /* and it was not: the game's fade time back. */
 void tod_fade_disarm(void);
 /* The eight FMVs' files missing (1) or back (0): how many were changed, or -1 for no table. */

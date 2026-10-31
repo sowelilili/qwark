@@ -204,12 +204,16 @@ static void tod_sf_release(void)
  * the user's slot the moment it is in. The manager's state goes last.
  *
  * Revision 1.29: the planet load request onLoaded writes fades out for a frame
- * only (tod.h, TOD_LOAD_FADE_TIME), as qwark's every load.
+ * only (tod.h, TOD_LOAD_FADE_TIME), as qwark's every load, or a few frames
+ * when the save's level is a story FMV load (TOD_LOAD_FADE_STORY), judged by
+ * the image's own level and level flags, which onLoaded copies in before its
+ * LoadLevel. A level that cannot be read is no story load.
  */
 static u8 tod_sf_load(void)
 {
 	static const u8 gone[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFE };
 	const u32 lt = TOD_SAVE_MANAGER + TOD_SM_LOAD_THREAD;
+	u32 level;
 
 	if (!tod_sf_holding()) {
 		u8 h[TOD_SM_HEAD_LEN];
@@ -218,7 +222,9 @@ static u8 tod_sf_load(void)
 		return ss_refuse(h, ok, "the load (the hold was gone)");
 	}
 
-	tod_fade_arm();
+	level = 0xFFFFFFFFu;
+	mem_read_u32(TOD_SAVE_IMAGE + TOD_SAVE_LEVEL_OFF, &level);
+	tod_fade_arm(tod_story_load(level, TOD_SAVE_IMAGE + (TOD_LEVEL_FLAGS - TOD_SAVE_DATA)));
 	if (mem_write_u32(lt + TOD_ST_STATE, TOD_LT_READ_OK) != ST_OK ||
 	    mem_write(lt + TOD_ST_ID, gone, sizeof(gone)) != ST_OK ||
 	    mem_write_u32(TOD_SAVE_MANAGER + TOD_SM_RESULT, 0) != ST_OK ||

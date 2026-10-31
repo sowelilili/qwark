@@ -5350,6 +5350,9 @@ TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025E94),   # LevelTransition_updat
 TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
+TOD_FADE_STORY = 0x3DA00000                     # 5/64 s, a story FMV load's (2026-10-31)
+TOD_LF_SHIP_BYTE = 0x10211398 + 10              # LVL_FAST_SHIP_FIXED, level flag 106: byte 10 of g_levelFlags
+TOD_LF_SHIP_BIT = 1 << 2                        # and its bit
 TOD_ARCHIVE_TOC = 0x102042AC + 0x108            # g_archiveGame.toc
 SESSION_FLAG2_NO_MENU = 0x80
 TOD_MAILBOX = 0x008CA000
@@ -5765,6 +5768,15 @@ def smoke_tod(c, sim):
     # Revision 1.29: Remove cutscenes (18), the eight FMVs' files made missing.
     ids = dict((f["label"], f["id"]) for f in features) if features else {}
     check(ids.get("Remove cutscenes") == 18, "ToD: DESCRIBE lists Remove cutscenes, id 18", ids)
+    # 2026-10-31: it ships auto-flagged, so with no config.txt key its auto bit is set; a key of 0 wins.
+    info = fresh_state(c)
+    check(info and info["toggle_auto"] & (1 << 18) != 0, "ToD: Remove cutscenes is on boot by default",
+          hex(info["toggle_auto"]) if info else None)
+    status, _ = c.call(OP_FEATURE_SET_AUTO, bytes([18, 0]))
+    info = fresh_state(c)
+    check(status == ST_OK and info and info["toggle_auto"] & (1 << 18) == 0,
+          "ToD: and FEATURE_SET_AUTO off clears it", hex(info["toggle_auto"]) if info else status)
+    c.call(OP_FEATURE_SET_AUTO, bytes([18, 1]))
     toc, table, strings = 0x30200000, 0x30210000, 0x30230000
     mem_write(c, TOD_ARCHIVE_TOC, struct.pack(">I", toc))
     mem_write(c, toc + 0x2C, struct.pack(">I", table))
@@ -5804,6 +5816,19 @@ def smoke_tod(c, sim):
     module_sleep(c, 0.2)
     check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME,
           "ToD: and the game's 0.5 s back once the load has left the request")
+    # 2026-10-31: a story FMV load (Metropolis or Cobalia, LVL_FAST_SHIP_FIXED clear) has no load
+    # screen, so its fade-out is a few frames long; with the flag set it is a planet load as any.
+    ship = mem_read_u8(c, TOD_LF_SHIP_BYTE)
+    for flag, want, what in ((0, TOD_FADE_STORY, "a fresh Metropolis, flag 106 clear: the fade-out 5/64 s"),
+                             (TOD_LF_SHIP_BIT, TOD_FADE_QUICK, "Metropolis with flag 106 set: one frame")):
+        mem_write(c, TOD_LF_SHIP_BYTE, bytes([(ship & ~TOD_LF_SHIP_BIT) | flag]))
+        status, _ = c.call(OP_PLANET_LOAD, bytes([0, 0]))
+        check(status == ST_OK and mem_read_u32(c, TOD_LOAD_FADE_TIME) == want, "ToD: PLANET_LOAD to " + what, status)
+        module_sleep(c, 0.1)
+        mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+        module_sleep(c, 0.2)
+    mem_write(c, TOD_LF_SHIP_BYTE, bytes([ship]))
+    check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME, "ToD: and the game's fade back after both")
     status, _ = c.call(OP_DIE)
     check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
           status)
@@ -5968,7 +5993,7 @@ def smoke_tod_autosplit(c, sim):
               "ToD: its six rows, code 7 \"Tachyon defeated\" the final split, 2 and 8 retired, "
               "the long load a HOLD", got)
 
-    one, zero = struct.pack(">f", 1.0), struct.pack(">f", 0.0)
+    one, zero, half = struct.pack(">f", 1.0), struct.pack(">f", 0.0), struct.pack(">f", 0.5)
     # A planet load begins: Level_Exit, the level's tiers out, the loader on state 3 (revision 1.29).
     load_begins = [(TOD_LUA_STATE, bytes(4)), (TOD_LOAD_TIER, b"\x00"),
                    (TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL)),
@@ -6023,8 +6048,11 @@ def smoke_tod_autosplit(c, sim):
         {"what": "Metropolis up with the screen still held black is not the start yet",
          "then": [(TOD_LUA_STATE, lua_state), (0x30000000 + TOD_FADE_TARGET, one), (TOD_LOAD_JOB, bytes(4))],
          "absent": (AUTOSPLIT_START, 0)},
-        {"what": "Level_Enter's fade in from black starting is START (revision 1.29)",
-         "then": [(0x30000000 + TOD_FADE_TARGET, zero)],
+        {"what": "Level_Enter's fade in from black starting is not the START yet (2026-10-31)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, one), (0x30000000 + TOD_FADE_TARGET, zero)],
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "half a second into it, the progress at 0.5, is START (revision 1.29, the user's timing)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, half)],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a death on Metropolis on that fresh file is no RESET, no START and no split",
          "poke": [(0x30000000 + TOD_FADE_TARGET, one), (TOD_LUA_STATE, bytes(4)),
@@ -6035,15 +6063,15 @@ def smoke_tod_autosplit(c, sim):
         {"what": "Metropolis loaded again out of Metropolis on the fresh file is a RESET",
          "then": load_begins,
          "expect": (AUTOSPLIT_RESET, 0)},
-        {"what": "and its fade in the START",
+        {"what": "and its fade in, past halfway, the START",
          "poke": [(TOD_LOAD_TIER, b"\x01")],
-         "then": level_enters(lua_state),
+         "then": level_enters(lua_state) + [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.3))],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a Metropolis save with the flag set is no start",
          "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_LOAD_TIER, b"\x00"), (TOD_FRONT_END, b"\x01"),
                   (TOD_METRO_FLAG_BYTE, bytes([TOD_METRO_FLAG_BIT]))],
          "then": [(TOD_FRONT_END, b"\x00"), (TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL))] +
-                 level_enters(lua_state),
+                 level_enters(lua_state) + [(0x30000000 + TOD_FADE_PROGRESS, half)],
          "absent": [(AUTOSPLIT_START, 0), (AUTOSPLIT_RESET, 0)]},
         {"what": "the ending cinematic fading out is not the end yet",
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18))] + load_begins + level_enters(lua_other) +
