@@ -1121,8 +1121,11 @@ def test_vsh_memory(sim, c):
 
 
 def pack_pak(path, build=None):
-    """ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with another build."""
-    args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else [])
+    """
+    ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with
+    another build: with ToD's renderer (--tod), as a test build packs it.
+    """
+    args = [sys.executable, "-I", PAK_PY, "--out", path, "--tod"] + (["--build", str(build)] if build else [])
     return subprocess.run(args, capture_output=True, text=True).returncode == 0
 
 
@@ -5842,6 +5845,91 @@ def smoke_tod(c, sim):
     sim.send("fakelua off")
     smoke_tod_savefile(c, sim)
     smoke_tod_autosplit(c, sim)
+    smoke_tod_menu(c, sim)
+
+
+# ------------------------------------- ToD's console menu, a prototype (2026-10-31)
+
+TOD_MENU_BOX = 0x008CD000
+TOD_MENU_BOX_SIZE = 0x400
+TOD_MENU_CODE = (0x00868000, 0x0086E000)
+TOD_MENU_SITES = {0x003C5CD8: 0x4BEA4D69, 0x005D144C: 0x480603E1}
+TOD_COMBO_MENU = 0x40 | 0x80 | 0x10 | 0x20 | 0x400 | 0x800    # L1 R1 L2 R2 L3 R3 in ToD's own bit order
+
+
+def smoke_tod_menu(c, sim):
+    """2026-10-31: ToD's console menu renderer, a prototype, over the wire: off
+    without config.txt's menu.tod (NO_MENU set, nothing in the game); with it,
+    the install a few seconds into the session, its two words, the mailbox, the
+    pages and the combo; and NO_MENU clear."""
+    box, size = TOD_MENU_BOX, TOD_MENU_BOX_SIZE
+
+    def hooks():
+        return dict((a, mem_read_u32(c, a)) for a in TOD_MENU_SITES)
+
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "ToD menu: the last game quits")
+    sim.send("boot %s tod" % TOD_TITLE)
+    ok, info = wait_game(c, 5)
+    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) != 0,
+          "ToD menu: ToD boots, flags2 NO_MENU set without menu.tod", info and info["flags2"])
+    module_sleep(c, 4.0)
+    check(mem_read_u32(c, box) != MENU_MAGIC and hooks() == TOD_MENU_SITES,
+          "ToD menu: without menu.tod, four seconds in, nothing of the menu in the game",
+          dict((hex(a), hex(w)) for a, w in hooks().items()))
+
+    cfg_path = "/dev_hdd0/qwark/config.txt"
+    cfg = read_console_file(c, cfg_path) or b""
+    cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.tod"))
+    check(write_console_file(c, cfg_path, cfg + b"menu.tod = 1\n"), "ToD menu: config.txt says menu.tod = 1")
+    status, _ = c.call(OP_CONFIG_RELOAD)
+    check(status == ST_OK, "ToD menu: CONFIG_RELOAD", status)
+    sim.send("quit")
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "ToD menu: quit, for a session that reads the key")
+    sim.send("boot %s tod" % TOD_TITLE)
+    ok, info = wait_game(c, 5)
+    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) == 0,
+          "ToD menu: with menu.tod = 1, flags2 NO_MENU is clear", info and info["flags2"])
+
+    wait_while(c, lambda: mem_read_u32(c, box) != MENU_MAGIC, 8.0, 0.2)
+    check(mem_read_u32(c, box) == MENU_MAGIC, "ToD menu: a few seconds into the session its mailbox is in the game")
+    h = hooks()
+    check(all((w >> 26) == 18 and (w & 1) and TOD_MENU_CODE[0] <= bl_target(a, w) < TOD_MENU_CODE[1]
+              for a, w in h.items()),
+          "ToD menu: both words are bls into the renderer's code", dict((hex(a), hex(w)) for a, w in h.items()))
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
+    check(status == ST_OK and body[8] == 14 and body[9] == 0x40 and body[10] == 14 and body[14] == 5 and
+          body[15] == 14, "ToD menu: fourteen rows of 0x40 on either page type, renderer 5",
+          body.hex() if status == ST_OK else status)
+
+    page = menu_page(c, box, size)
+    check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and page[3][:4] == ["Game", "Cheats",
+                                                                                            "Planets", "Unlocks"],
+          "ToD menu: the root page is posted, titled Trainer: Game, Cheats, Planets, Unlocks ...",
+          page[2:4] if page else None)
+    check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size), "ToD menu: an event is acked")
+    module_sleep(c, 0.1)
+    page = menu_page(c, box, size)
+    check(page is not None and page[2] == "Cheats" and page[5] == MBOX_PTYPE_CONFIG and
+          page[3] == ["Fast loads", "Remove cutscenes", "Infinite ammo", "Infinite health", "God Ratchet",
+                      "Max bolts", "Max raritanium"],
+          "ToD menu: Cheats, a CONFIG page: the five toggles, Max bolts and Max raritanium", page[2:4] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back is acked")
+    module_sleep(c, 0.1)
+
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+    press(sim, c, "0x0", 0.15)
+    press(sim, c, "0x%x" % TOD_COMBO_MENU, 0)
+    wait_while(c, lambda: c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))[1][0] == 0, 0.25, 0.005)
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
+    press(sim, c, "0x0", 0.1)
+    check(status == ST_OK and body[0] == 1, "ToD menu: the menu combo asks the renderer to open", body)
+    mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
+
+    check(write_console_file(c, cfg_path, cfg), "ToD menu: menu.tod taken out of config.txt again")
+    c.call(OP_CONFIG_RELOAD)
 
 
 TOD_FRONT_END = 0x1037A459

@@ -1693,6 +1693,11 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 /* A CLOSES action waits this long for the menu to close and the game to play. */
 #define DEFER_US         5000000ull
 
+#if QWARK_HAS_TOD
+/* 2026-10-31: config.txt's switch for Tools of Destruction's renderer, a prototype (0 by default). */
+#define MENU_TOD_KEY     "menu.tod"
+#endif
+
 /* Notified once a session, per reason. */
 #define WHY_NO_RENDERER  0x01
 #define WHY_REFUSED      0x02
@@ -1803,6 +1808,15 @@ void menu_forget(void)
 	memset(&g_defer, 0, sizeof(g_defer));
 }
 
+int menu_none(const struct game_api *game)
+{
+	if (game == NULL || game->menu == NULL) return 1;
+#if QWARK_HAS_TOD
+	if (game->game_id == GAME_TOD && config_get_u32(MENU_TOD_KEY, 0) == 0) return 1;
+#endif
+	return 0;
+}
+
 void menu_enter(const struct game_api *game)
 {
 	menu_enter_id(game != NULL ? game->game_id : GAME_NONE);
@@ -1852,6 +1866,15 @@ void menu_enter_id(u8 game_id)
 	 */
 	if (game_id == GAME_NONE || !plat_can_patch_code()) return;
 	g_game_id = game_id;
+#if QWARK_HAS_TOD
+	/*
+	 * 2026-10-31: Tools of Destruction's renderer is a prototype, read from
+	 * the executable and not yet run on a console, so it goes into the game
+	 * only where config.txt says `menu.tod = 1` (docs/tod-menu.md); otherwise
+	 * the session has no menu, as before.
+	 */
+	if (game_id == GAME_TOD && config_get_u32(MENU_TOD_KEY, 0) == 0) return;
+#endif
 
 	/*
 	 * Round 2: the renderer goes in a few seconds into the session, once the
@@ -2564,6 +2587,12 @@ void menu_tick(void)
 void menu_combo(void)
 {
 	if (g_state == MENU_OFF) {
+#if QWARK_HAS_TOD
+		if (g_game_id == GAME_TOD && plat_can_patch_code() && config_get_u32(MENU_TOD_KEY, 0) == 0) {
+			unavailable(WHY_NO_RENDERER, "Trainer menu: a prototype in ToD, off until config.txt has menu.tod=1");
+			return;
+		}
+#endif
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
 		            ? "Trainer menu: not available in this game yet"
 		            : "Trainer menu: not available under RPCS3");

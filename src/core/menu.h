@@ -273,6 +273,14 @@ void menu_tick(void);
  */
 void menu_combo(void);
 
+/*
+ * Revision 1.29 (pending), SessionInfo flags2 bit7 NO_MENU: whether `game` has
+ * no console menu at all, its table missing, or (2026-10-31) Tools of
+ * Destruction while config.txt's menu.tod, its prototype renderer's switch,
+ * is not 1.
+ */
+int menu_none(const struct game_api *game);
+
 int  menu_state(void);
 /* The delay before a session's install, three seconds; the tests shorten it. */
 u64  menu_install_delay_us(void);

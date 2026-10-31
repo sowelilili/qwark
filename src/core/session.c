@@ -1542,7 +1542,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	               | (QWARK_DEV ? SESSION_FLAG2_DEV : 0)
 	               | (g_state == SESSION_INGAME ? gamemod_flags2() : 0)
 	               /* Revision 1.28: the running game has no console menu. */
-	               | (g_state == SESSION_INGAME && g_game != NULL && g_game->menu == NULL
+	               | (g_state == SESSION_INGAME && g_game != NULL && menu_none(g_game)
 	                  ? SESSION_FLAG2_NO_MENU : 0));
 	out[30] = config_profile_seq();
 

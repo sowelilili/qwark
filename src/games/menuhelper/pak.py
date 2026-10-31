@@ -14,6 +14,17 @@ From the qwark checkout:
     python -I src/games/menuhelper/pak.py --id              the renderers' identity
     python -I src/games/menuhelper/pak.py --sf-id           the helpers' identity
     python -I src/games/menuhelper/pak.py --show FILE       what a pak holds
+    python -I src/games/menuhelper/pak.py --out ui.pak --tod  the same with ToD's renderer
+    python -I src/games/menuhelper/pak.py --tod-id          its identity
+
+2026-10-31: Tools of Destruction's renderer, a prototype, is in the same
+table (game 5) but only the builds that have ToD (QWARK_HAS_TOD: a test build,
+the host builds) pack it, with --tod: an entry of kind 3 after the helpers,
+outside the header's identities, so a release's pak is byte for byte the
+four renderers' and the four helpers' as before. A module with ToD takes that
+entry only when its CRC-32 is MH_TOD_PAK_ID, which build.sh writes into
+menuhelper_bins.h with --tod-id. A module without ToD never looks at kind 3,
+so it takes a test build's pak as readily as its own.
 
 `make` runs the first beside qwark.sprx, the host tests and smoke.py run it
 into their fake HDDs, menuhelper/build.sh runs the second into
@@ -79,6 +90,8 @@ CAVE_SIZE = 20
 HOOK_SIZE = 12
 KIND_RENDERER = 1
 KIND_SFHELPER = 2
+KIND_TOD = 3            # 2026-10-31: Tools of Destruction's renderer, outside the identities
+GAME_TOD = 5
 # What the module's loader has room for (src/core/uipak.h).
 MAX_ENTRIES = 16
 MAX_CAVES = 8
@@ -105,11 +118,13 @@ def title_of(g):
     return m.group(1) if m else ""
 
 
-def parse_table(path=GEN_C):
+def parse_table(path=GEN_C, tod=False):
     """
     Every renderer in menuhelper_bins.c, in mh_descs' order: a dict with the
     game, its short name, the descriptor's numbers, the caves (address, bytes,
-    code, zeros) and the hook words (address, value, the game's word).
+    code, zeros) and the hook words (address, value, the game's word). The
+    four originals' (kind 1) by default; with `tod`, Tools of Destruction's
+    alone (kind 3).
     """
     text = open(path, encoding="utf-8").read()
 
@@ -141,10 +156,13 @@ def parse_table(path=GEN_C):
         if len(caves) != ncaves or len(hooks) != nhooks:
             raise SystemExit("pak: %s's table has %d caves and %d hooks, its descriptor says %d and %d" %
                              (g, len(caves), len(hooks), ncaves, nhooks))
+        if (game == GAME_TOD) != tod:
+            continue
         out.append({"game": game, "g": g, "title": title_of(g), "words": words,
-                    "caves": caves, "hooks": hooks, "nhelp": nhelp})
+                    "caves": caves, "hooks": hooks, "nhelp": nhelp,
+                    "kind": KIND_TOD if tod else KIND_RENDERER})
     if not out:
-        raise SystemExit("pak: no renderer in %s" % path)
+        raise SystemExit("pak: no %srenderer in %s" % ("ToD " if tod else "", path))
     return out
 
 
@@ -218,9 +236,12 @@ def identity(parts):
     return crc32(b"".join(entry_bytes(r) for r in parts))
 
 
-def body_bytes(renderers, helpers):
-    """Everything after the header: the table of contents and the entries, the renderers first."""
-    parts = list(renderers) + list(helpers)
+def body_bytes(renderers, helpers, extra=()):
+    """
+    Everything after the header: the table of contents and the entries, the
+    renderers first, then the helpers, then any ToD renderer (kind 3).
+    """
+    parts = list(renderers) + list(helpers) + list(extra)
     if len(parts) > MAX_ENTRIES:
         raise SystemExit("pak: %d entries, the loader takes %d" % (len(parts), MAX_ENTRIES))
     entries = [entry_bytes(r) for r in parts]
@@ -234,10 +255,10 @@ def body_bytes(renderers, helpers):
     return toc + data
 
 
-def pak_bytes(renderers, helpers, build):
-    body = body_bytes(renderers, helpers)
+def pak_bytes(renderers, helpers, build, extra=()):
+    body = body_bytes(renderers, helpers, extra)
     head = struct.pack(">4sHHIIIB3xII", MAGIC, FORMAT, HEADER_SIZE, build, crc32(body), len(body),
-                       len(renderers) + len(helpers), identity(renderers), identity(helpers))
+                       len(renderers) + len(helpers) + len(extra), identity(renderers), identity(helpers))
     return head + body
 
 
@@ -258,8 +279,8 @@ def parse_pak(b):
         raise ValueError("%d bytes after the header, the header says %d" % (len(b) - HEADER_SIZE, blen))
     if crc32(b[HEADER_SIZE:]) != crc:
         raise ValueError("the CRC does not hold")
-    out = {KIND_RENDERER: [], KIND_SFHELPER: []}
-    raw = {KIND_RENDERER: b"", KIND_SFHELPER: b""}
+    out = {KIND_RENDERER: [], KIND_SFHELPER: [], KIND_TOD: []}
+    raw = {KIND_RENDERER: b"", KIND_SFHELPER: b"", KIND_TOD: b""}
     for i in range(n):
         game, kind, _, title, at, length, ecrc, _ = struct.unpack(
             ">BBH12s4I", b[HEADER_SIZE + TOC_SIZE * i:HEADER_SIZE + TOC_SIZE * (i + 1)])
@@ -284,7 +305,7 @@ def parse_pak(b):
         raw[kind] += e
     if crc32(raw[KIND_RENDERER]) != mh_id or crc32(raw[KIND_SFHELPER]) != sf_id:
         raise ValueError("the identities at 24 and 28 are not the entries'")
-    return build, mh_id, sf_id, out[KIND_RENDERER], out[KIND_SFHELPER]
+    return build, mh_id, sf_id, out[KIND_RENDERER], out[KIND_SFHELPER] + out[KIND_TOD]
 
 
 def main():
@@ -296,6 +317,9 @@ def main():
     ap.add_argument("--table", default=GEN_C, help="the generated menuhelper_bins.c")
     ap.add_argument("--sf-table", default=SF_GEN_C, help="the generated sfhelper_bins.c")
     ap.add_argument("--show", help="print what a pak holds")
+    ap.add_argument("--tod", action="store_true",
+                    help="pack Tools of Destruction's renderer too (kind 3), as the builds with ToD do")
+    ap.add_argument("--tod-id", action="store_true", help="print ToD's renderer's identity (MH_TOD_PAK_ID)")
     args = ap.parse_args()
 
     if args.show:
@@ -311,8 +335,9 @@ def main():
                   (r["game"], r["title"], len(r["caves"]), len(r["hooks"]), r["nhelp"],
                    sum(len(c[1]) for c in r["caves"])))
         for r in hs:
-            print("  game %d: savefile helper, %d caves, %d hook words, %d bytes of caves" %
-                  (r["game"], len(r["caves"]), len(r["hooks"]), sum(len(c[1]) for c in r["caves"])))
+            print("  game %d: %s, %d caves, %d hook words, %d bytes of caves" %
+                  (r["game"], "ToD renderer" if r["kind"] == KIND_TOD else "savefile helper",
+                   len(r["caves"]), len(r["hooks"]), sum(len(c[1]) for c in r["caves"])))
         return 0
 
     if args.id:
@@ -321,16 +346,21 @@ def main():
     if args.sf_id:
         print("0x%08X" % identity(parse_sf_table(args.sf_table)))
         return 0
+    if args.tod_id:
+        print("0x%08X" % identity(parse_table(args.table, tod=True)))
+        return 0
     if not args.out:
         ap.error("--out, --id, --sf-id or --show")
     renderers = parse_table(args.table)
     helpers = parse_sf_table(args.sf_table)
     build = qwark_build() if args.build is None else args.build
-    data = pak_bytes(renderers, helpers, build)
+    extra = parse_table(args.table, tod=True) if args.tod else []
+    data = pak_bytes(renderers, helpers, build, extra)
     with open(args.out, "wb") as f:
         f.write(data)
-    print("pak: %s, build %d, renderers 0x%08X, helpers 0x%08X, %d bytes" %
-          (args.out, build, identity(renderers), identity(helpers), len(data)))
+    print("pak: %s, build %d, renderers 0x%08X, helpers 0x%08X%s, %d bytes" %
+          (args.out, build, identity(renderers), identity(helpers),
+           ", ToD 0x%08X" % identity(extra) if extra else "", len(data)))
     return 0
 
 

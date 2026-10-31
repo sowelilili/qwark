@@ -151,7 +151,7 @@ static void test_tod_session(void)
 	check(bef32_get(info + 32) == 100.0f && bef32_get(info + 36) == 200.0f && bef32_get(info + 40) == 30.5f,
 	      "the position is the hero's, two pointers deep");
 	check(info[28] == 9, "the planet is Rykan V's id");
-	check((info[29] & SESSION_FLAG2_NO_MENU) != 0, "flags2 NO_MENU: ToD has no console menu");
+	check((info[29] & SESSION_FLAG2_NO_MENU) != 0, "flags2 NO_MENU: ToD has no console menu while menu.tod, its prototype's switch, is 0");
 	check(be32_get(info + 64 + 4 * TOD_RO_BOLTS) == 12345 && be32_get(info + 64 + 4 * TOD_RO_CHALLENGE) == 2,
 	      "bolts and challenge mode in their readouts");
 	host_set_pad(0);

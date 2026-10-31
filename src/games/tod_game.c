@@ -337,6 +337,62 @@ static const struct lh_desc *tod_lua_desc(void)
 	return lh_desc_for_title(TOD_TITLE);
 }
 
+/* ----------------------------------------------------------- console menu */
+
+/*
+ * 2026-10-31: the console menu's pages for ToD (src/core/menu.c), for its
+ * renderer, a prototype (src/games/menuhelper/mh_tod.c, docs/tod-menu.md),
+ * after the four games' tables and the client's ToD panels. Game: the
+ * position rows, Die, Challenge mode as a switch, the set-aside pair. Cheats:
+ * the toggles, then Max bolts and Max raritanium. Unlocks: the weapons Locked,
+ * V1 and V10 (the level field, as the game numbers it), the rest Locked or
+ * Unlocked, and the four skill point and gold bolt buttons on a page of their
+ * own, Collectables, as the other games have theirs. Every planet with a name
+ * may be loaded, as PLANET_LOAD loads it.
+ */
+static const u8 tod_menu_game[] = {
+	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
+	TF_DIE, MENU_ITEM_VALUE(0),
+	TF_SET_ASIDE, TF_LOAD_ASIDE
+};
+
+static const u8 tod_menu_cheats[] = {
+	TF_FAST_LOADS, TF_REMOVE_CUTSCENES, TF_INFINITE_AMMO, TF_INFINITE_HEALTH, TF_GOD_RATCHET,
+	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
+};
+
+static const struct menu_value tod_menu_values[] = {
+	{ TF_CHALLENGE,  MENU_VALUE_SWITCH, 1,             NULL },
+	{ TF_BOLTS,      MENU_VALUE_SET,    TOD_MAX_BOLTS, "Max bolts" },
+	{ TF_RARITANIUM, MENU_VALUE_SET,    TOD_MAX_BOLTS, "Max raritanium" }
+};
+
+static const struct menu_section tod_menu_sections[] = {
+	{ "Game",   tod_menu_game,   (u8)sizeof(tod_menu_game) },
+	{ "Cheats", tod_menu_cheats, (u8)sizeof(tod_menu_cheats) }
+};
+
+static const u8 tod_menu_unlock_actions[] = {
+	TF_UNLOCK_SP, TF_RESET_SP, TF_UNLOCK_GB, TF_RESET_GB
+};
+
+static const char * const tod_unlock_names[] = { "Locked", "Unlocked", "Max" };
+static const u32 tod_unlock_values[] = { 0, 1, TOD_MAX_LEVEL };
+
+static const struct game_menu tod_menu = {
+	tod_menu_sections, (u8)(sizeof(tod_menu_sections) / sizeof(tod_menu_sections[0])),
+	tod_menu_unlock_actions, (u8)sizeof(tod_menu_unlock_actions),
+	tod_unlock_names, tod_unlock_values,
+	(u8)(sizeof(tod_unlock_names) / sizeof(tod_unlock_names[0])),
+	1, "V",               /* the level, field 1: V1 .. V10 */
+	NULL,                 /* every planet with a name */
+	NULL,                 /* every weapon goes to V10 */
+	NULL,                 /* no action with a status */
+	"Collectables",       /* the four buttons on a page of their own */
+	NULL,                 /* no planet picker */
+	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0]))
+};
+
 /* ---------------------------------------------------------------- vtable */
 
 const struct game_api tod_game = {
@@ -386,7 +442,7 @@ const struct game_api tod_game = {
 
 	NULL,                 /* manips */
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */
-	NULL,                 /* no console menu renderer for ToD */
+	&tod_menu,            /* 2026-10-31: the console menu's pages (a prototype renderer, menu.tod) */
 	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */

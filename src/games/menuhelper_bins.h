@@ -30,6 +30,15 @@
 #define MH_PAK_ID 0xD06745A8u
 
 /*
+ * 2026-10-31: Tools of Destruction's renderer, a prototype, which only the
+ * builds that have ToD (QWARK_HAS_TOD) pack and read: ui.pak carries it as an
+ * entry of kind 3, outside MH_PAK_ID, so a release's pak and module are the
+ * four renderers' alone. A module with ToD takes that entry only when its
+ * CRC-32 is this.
+ */
+#define MH_TOD_PAK_ID 0x88A29AADu
+
+/*
  * One run of bytes at one address - the mailbox, the state, the read-only
  * data, or the code - and then `zeros` bytes of 0, which the module carries as
  * a count rather than as bytes.

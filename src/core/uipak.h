@@ -53,6 +53,12 @@
 #define UIPAK_HOOK_SIZE     12u
 #define UIPAK_KIND_RENDERER 1u
 #define UIPAK_KIND_SFHELPER 2u
+/*
+ * 2026-10-31: Tools of Destruction's renderer, a prototype, which only the
+ * builds with ToD pack and read (QWARK_HAS_TOD): outside the header's
+ * identities, taken only when its CRC is MH_TOD_PAK_ID (pak.py --tod).
+ */
+#define UIPAK_KIND_TOD      3u
 /* What the reader has room for; pak.py and check.py hold the pak to it. */
 #define UIPAK_MAX_ENTRIES   16u
 #define UIPAK_MAX_CAVES     8u

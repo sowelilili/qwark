@@ -3898,6 +3898,166 @@ def check_tod_cutscenes(ok, elf):
        "the FMV player's lookup hands out the record's file at +4 or its localised one at +0x94")
 
 
+def check_tod_menu(ok, elf):
+    """
+    2026-10-31: Tools of Destruction's console menu renderer, a prototype
+    (mh_tod.h, docs/tod-menu.md), against NPEA00452.ELF: its two hook words are
+    the game's `bl`s where mh_tod.h says, the stubs go on to the same calls,
+    every descriptor it calls is the game's own with the top range's r2 and the
+    function the header names, every word of the game it reads or writes is
+    the one the game's own code reads or writes there, and its three areas are
+    past the segments' ends, clear of the Lua helper's, where nothing points.
+    """
+    hdr = header_defs(os.path.join(HERE, "mh_tod.h"))
+    box_defs = header_defs(MENUBOX)
+    shim_defs = header_defs(SHIM_H)
+    box, data, code, hooks, caves, core = parse_bins(GEN_C, "tod")
+    print("\nNPEA00452 console menu renderer (a prototype)")
+    if box is None or data is None or code is None or core is None:
+        ok(False, "menuhelper_bins.c has tod's mailbox, data, code and the core's place in it")
+        return
+    W = elf.word
+    cave, cave_end = hdr["MH_CAVE"], hdr["MH_CAVE_END"]
+    mbx, mbx_end = hdr["MH_BOX"], hdr["MH_BOX_END"]
+    dat, dat_end = hdr["MH_DATA"], hdr["MH_DATA_END"]
+    tv, tfs, tms, _, _ = elf.text
+    rv, rfs, rms, _, _ = elf.rw
+
+    ok(len(caves) == 4 and [c[:3] for c in caves] ==
+       [(mbx, "mh_tod_box", 0), (dat, "mh_tod_state", 0), (caves[2][0], "mh_tod_data", 0), (cave, "mh_tod_code", 1)],
+       "four caves: the mailbox at 0x%08X, the state at 0x%08X, the read-only data, the code at 0x%08X" %
+       (mbx, dat, cave))
+    ok(cave + len(code) <= cave_end and mbx + len(box) <= mbx_end and dat + len(data) <= dat_end,
+       "code %d bytes (of %d), mailbox %d bytes (of %d), data %d bytes (of %d)" %
+       (len(code), cave_end - cave, len(box), mbx_end - mbx, len(data), dat_end - dat))
+
+    # The core, as in every renderer.
+    check_core(ok, hdr, code, cave, core)
+
+    # The areas: past the segments' ends in their last pages, clear of the Lua helper's, named by nothing.
+    lh = open(os.path.join(QWARK, "src", "games", "luahelper_bins.c"), encoding="utf-8").read()
+    m = re.search(r"/\* tod, \.text at (0x[0-9A-Fa-f]+), (\d+) bytes \*/", lh)
+    lh_end = int(m.group(1), 16) + int(m.group(2)) if m else None
+    lh_hdr = header_defs(os.path.join(QWARK, "src", "games", "luahelper", "lh_tod.h"))
+    m = re.search(r"^#define\s+LUAMB_SIZE\s+(0x[0-9A-Fa-f]+)", open(os.path.join(QWARK, "src", "core", "luamb.h"),
+                                                                  encoding="utf-8").read(), re.M)
+    lmb_end = lh_hdr.get("LH_MAILBOX", 0) + (int(m.group(1), 16) if m else (1 << 30))
+    ok(cave >= tv + tms and cave_end <= page_end(tv + tms) and lh_end is not None and cave >= lh_end,
+       "code area 0x%08X..0x%08X is past the text segment's end (0x%08X), in its last page, after the Lua "
+       "helper's code (to 0x%08X)" % (cave, cave_end, tv + tms, lh_end or 0))
+    for lo, hi, what in ((mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+        ok(lo >= rv + rms and hi <= page_end(rv + rms) and lo >= lmb_end,
+           "%s area 0x%08X..0x%08X is past the OPD segment's end (0x%08X), in its last page, after the Lua "
+           "helper's mailbox (to 0x%08X)" % (what, lo, hi, rv + rms, lmb_end))
+    # The code area: as the Lua helper's check has it, a word naming it is data when it is not 4-aligned
+    # (code); the bytes the renderer takes are the ones that matter.
+    for lo, hi, what in ((cave, cave + len(code), "code"), (mbx, mbx_end, "mailbox"), (dat, dat_end, "data")):
+        br, wd, pr = refs_into(elf, lo, hi)
+        wd = [x for x in wd if x[1] % 4 == 0]
+        ok(not wd and not pr, "no word and no lis/addi pair in the executable names the %s the renderer takes%s" %
+           (what, "" if not br else " (%d data words decode as branches into it)" % len(br)))
+
+    # The images.
+    magic, version, size = struct.unpack(">IHH", box[0:8])
+    ok(len(box) == hdr["MH_MBOX_SIZE"] and magic == box_defs["MBOX_MAGIC"] and version == box_defs["MBOX_VERSION"] and
+       box[8] == hdr["MH_ROWS"] == 14 and box[9] == box_defs["MBOX_ROW_SIZE"] and box[10] == hdr["MH_MAIN_ROWS"] and
+       box[11] == hdr["MH_CAPS"] and (box[11] & box_defs["MBOX_CAP_PICKER"]) == 0 and box[14] == 5 and
+       box[15] == hdr["MH_CFG_ROWS"] and all(b == 0 for b in box[16:]),
+       "the mailbox image: 'QMNU', fourteen rows of either type, caps 0x%02X (no picker), renderer 5, zeros after" %
+       box[11])
+    shim_off = hdr["MH_SHIM"] - hdr["MH_STATE"]
+    ok(struct.unpack(">I", data[0:4])[0] == hdr["MH_MAGIC"] and all(b == 0 for b in data[4:shim_off + hdr["SH_SIZE"]]) and
+       shim_off == (shim_defs["ST_SET0"] + 2 * shim_set_layout(shim_defs, hdr["MH_ROWS"])[1] + 7) & ~7,
+       "the data image: the core's state with its magic 'QMH5', the shim's at MH_SHIM (+0x%X), zeros" % shim_off)
+
+    # The hook words: the game's bl at each site, and where the stubs go on to.
+    frame, pad = hdr["MH_SITE_FRAME"], hdr["MH_SITE_PAD"]
+    ok(len(hooks) == 2 and hooks[0][0] == frame and hooks[0][2] == hdr["MH_ORIG_FRAME"] and
+       hooks[1][0] == pad and hooks[1][2] == hdr["MH_ORIG_PAD"] and
+       W(frame) == hdr["MH_ORIG_FRAME"] and W(pad) == hdr["MH_ORIG_PAD"],
+       "two words, the frame's end then the pads' read, each the game's word there today")
+    ok(branch_target(frame, W(frame)) == hdr["GAME_FRAME_END"] and W(frame) & 1 and
+       branch_target(pad, W(pad)) == hdr["GAME_PAD_TAIL"] and W(pad) & 1 and W(pad + 4) == 0x60000000,
+       "0x%08X is bl 0x%08X, 0x%08X bl 0x%08X with a nop after it (the same TOC range)" %
+       (frame, hdr["GAME_FRAME_END"], pad, hdr["GAME_PAD_TAIL"]))
+    fe = hdr["GAME_FRAME_END"]
+    ok(W(fe) == 0xF8410028 and W(fe + 4) == 0x3C420001 and W(fe + 8) == 0x3842FFEC and
+       branch_target(fe + 12, W(fe + 12)) == 0x006B9900,
+       "0x%08X is the cross-range trampoline to the frame limiter and flip (0x6B9900): std r2,40(r1), "
+       "r2 += 0xFFEC, b" % fe)
+    ok(branch_target(0x003C5CBC, W(0x003C5CBC)) == 0x004C5DF0 and
+       branch_target(0x003C5D08, W(0x003C5D08)) == 0x0026A720 and
+       branch_target(0x0026A72C, W(0x0026A72C)) == 0x0025DCA8 and
+       branch_target(0x003C5D10, W(0x003C5D10)) == frame,
+       "the site is LevelTransition_runFrame's: after GameState_Dispatch (0x4C5DF0), and where the load screen's "
+       "arrival text (LoadScreen_DrawArrival 0x25DCA8) is drawn just before it")
+    ok(W(0x005D1498) == 0x4E800020 and W(0x005D1494) == 0x382100F0,
+       "the pads' read returns right after it: Pad_Update's epilogue, its blr at 0x5D1498")
+
+    # The stubs: the frame stub ends in `b GAME_FRAME_END`, the pad stub calls GAME_PAD_TAIL.
+    words = [(cave + i, struct.unpack(">I", code[i:i + 4])[0]) for i in range(0, len(code) - 3, 4)]
+    fstub = branch_target(frame, hooks[0][1]) if hooks else None
+    pstub = branch_target(pad, hooks[1][1]) if len(hooks) > 1 else None
+    fb = [a for a, w in words if fstub is not None and pstub is not None and fstub <= a < pstub and
+          w >> 26 == 18 and branch_target(a, w) == fe and not w & 1]
+    pb = [a for a, w in words if pstub is not None and pstub <= a < pstub + 0x40 and w >> 26 == 18 and
+          branch_target(a, w) == hdr["GAME_PAD_TAIL"] and w & 1]
+    ok(fstub == cave and len(fb) == 1 and len(pb) == 1,
+       "the stubs: the frame's goes on to 0x%08X with a plain b (the game's LR kept), the pad's calls 0x%08X" %
+       (fe, hdr["GAME_PAD_TAIL"]))
+
+    # The descriptors it calls: the game's, the top range's r2, the functions the header names.
+    opds = dict((k, v) for k, v in hdr.items() if k.startswith("OPD_") and not k.endswith("#comment"))
+    good = True
+    for k, v in opds.items():
+        want = int(hdr[k + "#comment"], 16)
+        if W(v) != want or W(v + 4) != hdr["TM_LUA_TOC"]:
+            good = False
+            print("        %s 0x%08X holds 0x%08X 0x%08X, not 0x%08X" % (k, v, W(v) or 0, W(v + 4) or 0, want))
+    ok(good and len(opds) == 6, "the six descriptors are the game's: %s" %
+       ", ".join("0x%08X" % int(hdr[k + "#comment"], 16) for k in sorted(opds)))
+    built = set(int(x.split(": ")[1], 16) for x in code_pointers(code, cave, rv, rv + rfs))
+    rest = parse_rest(GEN_C, "tod")
+    held = set(v for v in (struct.unpack(">I", rest[i:i + 4])[0] for i in range(0, len(rest) - 3, 4))
+               if rv <= v < rv + rfs)
+    ok(built | held == set(opds.values()),
+       "the code reaches exactly those six of the game's descriptors (%d built in the code, %d in its TOC)" %
+       (len(built), len(held)))
+
+    # The game's words it uses, as the game's own code uses them.
+    def slot(r2, off):
+        return W((r2 + off) & 0xFFFFFFFF)
+
+    def simm(w):
+        v = w & 0xFFFF
+        return v - 0x10000 if v & 0x8000 else v
+    ok(slot(0x008BB068, 0x6E04) == hdr["TM_STATE"] and W(0x004C5F0C) == 0x80626E04,
+       "TM_STATE 0x%08X is g_gameState, the word GameState_Dispatch switches on (lwz r3,0x6E04(r2) at 0x4C5F0C)" %
+       hdr["TM_STATE"])
+    jt = 0x004C5F3C
+    ok(jt + W(jt + 4 * (hdr["TM_STATE_PLAY"] + 2)) == 0x004C6048 and
+       branch_target(0x004C6068, W(0x004C6068)) == 0x004C542C and
+       jt + W(jt + 4 * (hdr["TM_STATE_PAUSE"] + 2)) == 0x004C60F4 and
+       branch_target(0x004C60F4, W(0x004C60F4)) == 0x00268A50 and branch_target(0x00268A5C, W(0x00268A5C)) == 0x0002406C,
+       "state 4 is Game_UpdateFrame's case (0x4C542C), state 5 the pause menu's update (0x2406C)")
+    ok(W(0x008C1E10) == hdr["TM_PENDING"],
+       "TM_PENDING 0x%08X is g_gameStatePendingOp (its slot 0x8C1E10, GameState_queueOverlay's and ApplyPending's)" %
+       hdr["TM_PENDING"])
+    ok(W(0x002956F8) == 0xD0290000 and slot(0x008BB068, simm(W(0x002956F4))) == hdr["TM_CLOCK"],
+       "TM_CLOCK 0x%08X is the word Lua_time_set_scale stores its argument in (stfs f1,0(r9) at 0x2956F8)" %
+       hdr["TM_CLOCK"])
+    ok(W(0x008C3B2C) == hdr["TM_PAD0"] + 0x61,
+       "TM_PAD0 0x%08X is Pad_Update's block for pad 0, its slot 0x8C3B2C holding the block + 0x61" % hdr["TM_PAD0"])
+    ok(W(0x008B2E1C) == hdr["TM_SCREEN_RECT"] and W(0x0025DDDC) == 0x80627DA4,
+       "TM_SCREEN_RECT 0x%08X is the screen rectangle LoadScreen_DrawArrival places its text in (lwz r3,0x7DA4(r2))" %
+       hdr["TM_SCREEN_RECT"])
+    si = int(hdr["OPD_SPRITE_INIT#comment"], 16)
+    ok(W(si + 0x58) == 0x91230018 and W(si + 0x54) == 0x9123001C and W(si + 0x50) == 0x91230020 and
+       W(si + 0x18) == 0x91230018 or hdr["SPR_COLOURS"] == 0x18 and
+       any(W(si + 4 * k) == 0x91230018 for k in range(0x18)),
+       "Sprite_Init writes the corner colours from +0x18")
+
+
 def parse_descs(path):
     """Each renderer's (nhooks, nhelp) from menuhelper_bins.c's mh_descs, by game ("rac4" ..)."""
     text = open(path, encoding="utf-8").read()
@@ -3962,15 +4122,17 @@ def read_pak(b):
     magic, fmt, hsize, build, crc, blen, n, mh_id, sf_id = struct.unpack(">4sHHIIIB3xII", b[:32])
     if magic != b"QPAK" or fmt != 2 or hsize != 32 or len(b) != 32 + blen or zlib_crc(b[32:]) != crc:
         raise ValueError("not a whole format 2 pak")
-    out = {1: [], 2: []}
-    raw = {1: b"", 2: b""}
+    out = {1: [], 2: [], 3: []}
+    raw = {1: b"", 2: b"", 3: b""}
     for i in range(n):
         game, kind, title, at, length, ecrc = struct.unpack(">BB2x12sIII4x", b[32 + 32 * i:64 + 32 * i])
         e = b[at:at + length]
         if kind not in out or len(e) != length or zlib_crc(e) != ecrc:
             raise ValueError("entry %d is not a whole renderer or helper" % i)
-        if kind == 1 and out[2]:
+        if kind == 1 and (out[2] or out[3]):
             raise ValueError("entry %d: a renderer after a helper" % i)
+        if kind == 2 and out[3]:
+            raise ValueError("entry %d: a helper after ToD's renderer" % i)
         words = list(struct.unpack(">9I", e[:36]))
         ncaves, nhooks, nhelp = e[36], e[37], e[38]
         caves, hooks = [], []
@@ -4080,10 +4242,27 @@ def check_pak(ok, pak_path=None):
     ok(want_mh == mh_id and want_sf == sf_id,
        "ui.pak: its identities, renderers 0x%08X and helpers 0x%08X, are MH_PAK_ID and SF_PAK_ID, the pak the "
        "module accepts" % (mh_id, sf_id))
+    # 2026-10-31: a build with ToD packs its renderer too, kind 3, outside the identities.
+    try:
+        tod = pak.parse_table(GEN_C, tod=True)
+        data_tod = pak.pak_bytes(table, helpers, build, tod)
+        b2, mh2, sf2, rs2, hs2 = read_pak(data_tod)
+        tod_entry = pak.entry_bytes(tod[0])
+    except (SystemExit, ValueError, OSError, AttributeError, IndexError) as e:
+        ok(False, "ui.pak: pak.py packs ToD's renderer as a third kind this script can read back (%s)" % e)
+        return
+    m = re.search(r"^#define\s+MH_TOD_PAK_ID\s+(0x[0-9A-Fa-f]{8})u", gen_h, re.M)
+    ok(mh2 == mh_id and sf2 == sf_id and rs2 == rs and len(tod) == 1 and tod[0]["game"] == 5 and
+       data_tod[32 + 8 * 32] == 5 and data_tod[33 + 8 * 32] == 3 and data_tod[:8] == data[:8] and
+       m is not None and int(m.group(1), 16) == zlib_crc(tod_entry) and data_tod.endswith(tod_entry),
+       "ui.pak with ToD (pak.py --tod, a test build's): the same identities, the four renderers and helpers as "
+       "they are, then ToD's renderer, game 5, kind 3, last, its CRC MH_TOD_PAK_ID (%d bytes in all)" % len(data_tod))
     path = pak_path or os.path.join(QWARK, "ui.pak")
     if os.path.exists(path):
         file_data = open(path, "rb").read()
-        ok(file_data == data, "ui.pak: %s is this build's pak, byte for byte (%d bytes)" % (path, len(data)))
+        ok(file_data == data or file_data == data_tod,
+           "ui.pak: %s is this build's pak, byte for byte (%d bytes, %s)" %
+           (path, len(file_data), "a release's" if file_data == data else "with ToD's renderer, a test build's"))
     elif pak_path:
         ok(False, "ui.pak: %s exists" % pak_path)
     else:
@@ -4167,6 +4346,7 @@ def main():
     tod_elf = os.path.join(eboots, "NPEA00452.elf")
     if os.path.exists(tod_elf):
         check_tod(ok, Elf(tod_elf))
+        check_tod_menu(ok, Elf(tod_elf))
     else:
         print("\nNPEA00452: no %s, Tools of Destruction's checks skipped" % tod_elf)
     check_help_rows(ok)

@@ -212,8 +212,16 @@ static void test_reader(void)
 	      g_good_len < sizeof(g_good), "run.sh packed ui.pak into the fake HDD");
 	check(be32_get(g_good) == UIPAK_MAGIC && be16_get(g_good + 4) == 2 && UIPAK_FORMAT == 2 &&
 	      be16_get(g_good + 6) == UIPAK_HEADER_SIZE && be32_get(g_good + 8) == QWARK_BUILD &&
-	      be32_get(g_good + 16) == g_good_len - UIPAK_HEADER_SIZE && g_good[20] == 8,
-	      "its header: QPAK, format 2, this build, the length of the rest, four renderers and four helpers");
+	      be32_get(g_good + 16) == g_good_len - UIPAK_HEADER_SIZE && g_good[20] == 9,
+	      "its header: QPAK, format 2, this build, the length of the rest, four renderers and four helpers, "
+	      "and (2026-10-31, a build with ToD) ToD's renderer");
+	{
+		const u8 *e = g_good + UIPAK_HEADER_SIZE + 8 * UIPAK_TOC_SIZE;
+		u32 at = be32_get(e + 16), len = be32_get(e + 20);
+		check(e[0] == GAME_TOD && e[1] == UIPAK_KIND_TOD && be32_get(e + 24) == MH_TOD_PAK_ID &&
+		      at + len == g_good_len && qcrc32(g_good + at, len) == MH_TOD_PAK_ID,
+		      "the last entry ToD's renderer, kind 3, outside the identities, its CRC MH_TOD_PAK_ID");
+	}
 	check(be32_get(g_good + 12) == qcrc32(g_good + UIPAK_HEADER_SIZE, g_good_len - UIPAK_HEADER_SIZE),
 	      "and the CRC of the rest");
 	check(be32_get(g_good + 24) == MH_PAK_ID && be32_get(g_good + 28) == SF_PAK_ID,
@@ -720,7 +728,7 @@ static void test_sf_failures(void)
 	put_pak(g_bad, spoiled(28, b, 4, 0));
 	sf_refused("other helpers", UIPAK_OTHER);
 
-	/* A byte of Deadlocked's helper code, the pak's last entry: its CRC fails, and the file's. */
+	/* A byte of Deadlocked's helper code, the pak's last helper: its CRC fails, and the file's. */
 	at = be32_get(g_good + UIPAK_HEADER_SIZE + 7 * UIPAK_TOC_SIZE + 16);
 	at += be32_get(g_good + at + UIPAK_DESC_SIZE + UIPAK_CAVE_SIZE + 4) + 100;
 	b[0] = (u8)(g_good[at] ^ 0x01);
@@ -744,7 +752,10 @@ static void test_sf_failures(void)
 	}
 	check(quit(), "quit");
 
-	put_pak(g_good, g_good_len - 200);
+	/* 2026-10-31: ToD's renderer follows the helpers; cut into Deadlocked's, the last helper. */
+	at = be32_get(g_good + UIPAK_HEADER_SIZE + 7 * UIPAK_TOC_SIZE + 16) +
+	     be32_get(g_good + UIPAK_HEADER_SIZE + 7 * UIPAK_TOC_SIZE + 20);
+	put_pak(g_good, at - 200);
 	sf_refused("cut into Deadlocked's helper", UIPAK_DAMAGED);
 
 	put_good();

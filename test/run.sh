@@ -24,7 +24,7 @@ SRC="src/core/util.c src/core/mem.c src/core/config.c src/core/features.c \
      src/core/gamemod.c src/core/core_export.c \
      src/plat/host/plat_host.c src/plat/host/backend_fake.c \
      src/plat/host/backend_pine.c \
-     test/test_game.c test/test_gamemod.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
+     test/test_game.c test/test_gamemod.c test/test_pine.c test/test_menu.c test/test_menu_core.c test/test_menu_uya.c test/test_menu_rac2.c test/test_menu_rac1.c test/test_menu_tod.c test/test_vshmem.c test/test_menu_help.c test/test_uipak.c test/test_usbmods.c test/test_menu_mods.c \
      test/test_combo_fastloads.c test/test_config_files.c test/test_profiles.c test/test_tod_game.c test/test_qwark.c"
 
 # backend_fake.c owns the plat_* game entry points here, so backend_pine.c is
@@ -78,9 +78,11 @@ cp -r test/fixtures/mods/. "$ROOT/dev_hdd0/qwark/mods/"
 # Build 55: the console menu's renderers as a console reads them, ui.pak in the
 # fake HDD, packed by the same pak.py `make` runs. test_uipak.c makes its own
 # bad copies of it (another build, cut short, damaged) and puts this one back.
+# 2026-10-31: --tod, as a build with Tools of Destruction packs it (its
+# renderer, a prototype, an entry of kind 3).
 PAK=""
 for PY in python python3 py; do
-	if "$PY" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" >/dev/null 2>&1; then
+	if "$PY" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" --tod >/dev/null 2>&1; then
 		PAK="$ROOT/dev_hdd0/qwark/ui.pak"
 		break
 	fi
