@@ -40,16 +40,21 @@ int plat_file_close(plat_file_t f) { (void)f; return 0; }
  * Three windows of the game: the code around both hook sites and the cave,
  * the RW page with the mailbox, and the .bss word holding the lua_State*.
  */
-#define CODE_LO 0x00480000u
+#define CODE_LO 0x00020000u
 #define CODE_HI 0x00870000u
 #define RW_LO   0x008CA000u
 #define RW_HI   0x008D0000u
 #define VM_LO   0x10204000u
 #define VM_HI   0x10205000u
+/* Revision 1.29: the pause menu's system pointer, and a fake menu system past it. */
+#define MS_LO   0x101CB000u
+#define MS_HI   0x101CE000u
+#define FAKE_MS 0x101CB400u
 
 static u8 g_code[CODE_HI - CODE_LO];
 static u8 g_rw[RW_HI - RW_LO];
 static u8 g_vm[VM_HI - VM_LO];
+static u8 g_ms[MS_HI - MS_LO];
 static int g_fail_reads, g_fail_writes;
 
 static u8 *at(u32 addr, u32 len)
@@ -57,6 +62,7 @@ static u8 *at(u32 addr, u32 len)
 	if (addr >= CODE_LO && addr + len <= CODE_HI) return g_code + (addr - CODE_LO);
 	if (addr >= RW_LO && addr + len <= RW_HI) return g_rw + (addr - RW_LO);
 	if (addr >= VM_LO && addr + len <= VM_HI) return g_vm + (addr - VM_LO);
+	if (addr >= MS_LO && addr + len <= MS_HI) return g_ms + (addr - MS_LO);
 	return NULL;
 }
 
@@ -93,8 +99,11 @@ static void reset_game(u32 L)
 	memset(g_code, 0, sizeof(g_code));
 	memset(g_rw, 0, sizeof(g_rw));
 	memset(g_vm, 0, sizeof(g_vm));
+	memset(g_ms, 0, sizeof(g_ms));
 	wr32(0x004C461Cu, 0x4BDCC909u);
 	wr32(0x0068F8F8u, 0x4E800020u);
+	wr32(0x000242B0u, 0x4BFED721u);       /* revision 1.29: the pause menu's update */
+	wr32(0x004C5ABCu, 0x4BDA1825u);       /* and the pause test */
 	wr32(g_d->vm + g_d->vm_state, L);
 }
 
@@ -175,6 +184,8 @@ static void helper_frame(void)
 	wr32(MB + LUAMB_OFF_LAST_STATE, L);
 	r = rd32(MB + LUAMB_OFF_REQ);
 	if (r == rd32(MB + LUAMB_OFF_ACK)) return;
+	/* Version 2: a request for the pause menu's VM is not the gameplay frame's. */
+	if (*at(MB + LUAMB_OFF_TARGET, 1) != LUAMB_TARGET_GAMEPLAY) return;
 	wr32(MB + LUAMB_OFF_BUSY, r);
 	if (g_claim_then_stop) return;
 
@@ -243,14 +254,15 @@ static void test_codec(void)
 	h.req = 7; h.ack = 6; h.cancel = 3; h.busy = 7; h.status = LUAMB_ST_CANCELLED;
 	h.chunk_len = 100; h.out_len = 5; h.out_type = LUAMB_T_TABLE; h.out_flags = 3;
 	h.heartbeat = 0xA1B2C3D4u; h.last_state = 0x30001000u; h.err_seq = 9; h.err_vm = 0x102043CCu; h.err_len = 12;
+	h.target = LUAMB_TARGET_MENU; h.menu_beat = 0x55AA0001u;
 	luamb_hdr_encode(&h, raw);
 	luamb_hdr_decode(raw, &g);
 	check(memcmp(&h, &g, sizeof(h)) == 0, "codec: a header survives encode and decode");
 	check(raw[0] == 'Q' && raw[1] == 'L' && raw[2] == 'U' && raw[3] == 'A', "codec: the magic reads QLUA");
 	check(raw[LUAMB_OFF_REQ + 3] == 7 && raw[LUAMB_OFF_REQ] == 0, "codec: big-endian");
 	check(luamb_hdr_valid(&g), "codec: a good header is valid");
-	g.version = 2;
-	check(!luamb_hdr_valid(&g), "codec: another version is not");
+	g.version = LUAMB_VERSION - 1;
+	check(!luamb_hdr_valid(&g), "codec: another version is not (version 1, before the menu target)");
 
 	luamb_ident_bytes(id);
 	check(be32_get(id) == LUAMB_MAGIC && be16_get(id + 4) == LUAMB_VERSION && be16_get(id + 6) == LUAMB_SIZE,
@@ -335,6 +347,72 @@ static void test_requests(void)
 	g_fail_writes = 0;
 	/* A failed write may have left the chunk half written but never raised req. */
 	check(rd32(MB + LUAMB_OFF_REQ) == rd32(MB + LUAMB_OFF_ACK), "io: no request raised by a failed send");
+}
+
+/*
+ * Version 2 (revision 1.29): a request for the pause menu's VM, which only
+ * the pause menu's frame takes; the gameplay frame leaves it, and its
+ * timeout reads the menu's heartbeat.
+ */
+static void menu_frame(void)
+{
+	u32 r = rd32(MB + LUAMB_OFF_REQ);
+
+	wr32(MB + LUAMB_OFF_MENU_BEAT, rd32(MB + LUAMB_OFF_MENU_BEAT) + 1);
+	if (r == rd32(MB + LUAMB_OFF_ACK) || *at(MB + LUAMB_OFF_TARGET, 1) != LUAMB_TARGET_MENU) return;
+	wr32(MB + LUAMB_OFF_STATUS, LUAMB_ST_OK);
+	wr32(MB + LUAMB_OFF_OUT_LEN, 0);
+	wr32(MB + LUAMB_OFF_ACK, r);
+}
+
+static void test_target(void)
+{
+	struct luamb_result res;
+	u32 now = 90000, st = 0;
+	int rc, i;
+
+	reset_game(0x30001000u);
+	put_ident();
+	luamb_client_init(&g_c, MB, g_d->vm + g_d->vm_state);
+	check(luamb_target_state(&g_c, &g_io, LUAMB_TARGET_MENU, &st) == 0 && st == 0,
+	      "target: a client with no menu VM has no menu lua_State");
+	luamb_client_menu(&g_c, g_d->menu_ptr, g_d->menu_off);
+	luamb_attach(&g_c, &g_io, now);
+	check(g_d->menu_ptr >= MS_LO && g_d->menu_ptr < MS_HI, "target: the pause menu's pointer is in the fake memory");
+	check(luamb_send_to(&g_c, &g_io, "return 1", 8, now, LUAMB_TARGET_MENU) == LUAMB_SEND_NO_STATE,
+	      "target: no pause up, no menu lua_State: NO_STATE");
+	wr32(g_d->menu_ptr, FAKE_MS);
+	check(luamb_send_to(&g_c, &g_io, "return 1", 8, now, LUAMB_TARGET_MENU) == LUAMB_SEND_NO_STATE,
+	      "target: a menu system with no VM yet: NO_STATE");
+	wr32(FAKE_MS + g_d->menu_off, 0x30060000u);
+	check(luamb_target_state(&g_c, &g_io, LUAMB_TARGET_MENU, &st) == 0 && st == 0x30060000u,
+	      "target: the menu's lua_State, two reads away");
+	check(luamb_send_to(&g_c, &g_io, "return 1", 8, now, LUAMB_TARGET_MENU) == LUAMB_SEND_OK &&
+	      *at(MB + LUAMB_OFF_TARGET, 1) == LUAMB_TARGET_MENU, "target: sent, the target byte written");
+	g_ran = 0;
+	helper_frame();
+	check(g_ran == 0 && rd32(MB + LUAMB_OFF_ACK) != rd32(MB + LUAMB_OFF_REQ) && rd32(MB + LUAMB_OFF_BUSY) == 0,
+	      "target: the gameplay frame leaves a menu request alone");
+	menu_frame();
+	now += 16;
+	rc = luamb_poll(&g_c, &g_io, now, &res);
+	check(rc == LUAMB_POLL_DONE && res.status == LUAMB_ST_OK, "target: the pause menu's frame answers it");
+
+	/* Gameplay frames only: the menu's heartbeat stands still, so NOT_RUNNING. */
+	luamb_send_to(&g_c, &g_io, "return 1", 8, now, LUAMB_TARGET_MENU);
+	for (i = 0, rc = LUAMB_POLL_PENDING; i < 400 && rc == LUAMB_POLL_PENDING; i++) {
+		helper_frame();
+		now += 16;
+		rc = luamb_poll(&g_c, &g_io, now, &res);
+	}
+	check(rc == LUAMB_POLL_DONE && res.status == LUAMB_ST_NOT_RUNNING,
+	      "target: no pause menu frame in time is NOT_RUNNING, the gameplay frames notwithstanding");
+
+	/* And a gameplay request goes back to target 0. */
+	rc = run("return 1 + 1", 1, &now, &res);
+	check(rc == 0 && res.status == LUAMB_ST_OK && *at(MB + LUAMB_OFF_TARGET, 1) == LUAMB_TARGET_GAMEPLAY,
+	      "target: the next gameplay request says so, and runs");
+	wr32(g_d->menu_ptr, 0);
 }
 
 static void test_timeouts(void)
@@ -457,9 +535,14 @@ static void test_patch(void)
 	check(be32_get(reply + off + 8) == g_d->mailbox + 4 &&
 	      be32_get(reply + off + 12) == ((LUAMB_VERSION << 16) | LUAMB_SIZE), "patch: then version and size");
 	off += 2 * LH_PATCH_ROW;
+	check(g_d->nhooks == 4 && be32_get(reply + off) == g_d->hooks[3].addr &&
+	      be32_get(reply + off + LH_PATCH_ROW) == g_d->hooks[2].addr,
+	      "patch: the menu's two hooks first (revision 1.29), the pause test, then the menu's update");
+	off += 2 * LH_PATCH_ROW;
 	check(be32_get(reply + off) == g_d->hooks[1].addr, "patch: the error tap before the VM hook");
 	check(be32_get(reply + off + LH_PATCH_ROW) == g_d->hooks[0].addr &&
 	      be32_get(reply + off + LH_PATCH_ROW + 4) == g_d->hooks[0].value, "patch: the VM hook last");
+	check(len <= QWARK_MAX_PAYLOAD, "patch: one reply holds it");
 	check(be16_get(reply + len - 4) == 0, "patch: no single bytes");
 	check(lh_patch_build(g_d, reply, len - 1, &len) == ST_FULL, "patch: refuses a short buffer");
 
@@ -594,6 +677,7 @@ int main(void)
 	test_codec();
 	test_requests();
 	test_timeouts();
+	test_target();
 	test_attach();
 	test_patch();
 	test_facts();

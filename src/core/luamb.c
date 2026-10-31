@@ -25,11 +25,13 @@ void luamb_hdr_decode(const u8 *raw, struct luamb_hdr *h)
 	h->out_len    = be32_get(raw + LUAMB_OFF_OUT_LEN);
 	h->out_type   = raw[LUAMB_OFF_OUT_TYPE];
 	h->out_flags  = raw[LUAMB_OFF_OUT_FLAGS];
+	h->target     = raw[LUAMB_OFF_TARGET];
 	h->heartbeat  = be32_get(raw + LUAMB_OFF_HEARTBEAT);
 	h->last_state = be32_get(raw + LUAMB_OFF_LAST_STATE);
 	h->err_seq    = be32_get(raw + LUAMB_OFF_ERR_SEQ);
 	h->err_vm     = be32_get(raw + LUAMB_OFF_ERR_VM);
 	h->err_len    = be32_get(raw + LUAMB_OFF_ERR_LEN);
+	h->menu_beat  = be32_get(raw + LUAMB_OFF_MENU_BEAT);
 }
 
 void luamb_hdr_encode(const struct luamb_hdr *h, u8 *raw)
@@ -49,11 +51,13 @@ void luamb_hdr_encode(const struct luamb_hdr *h, u8 *raw)
 	be32_put(raw + LUAMB_OFF_OUT_LEN, h->out_len);
 	raw[LUAMB_OFF_OUT_TYPE] = h->out_type;
 	raw[LUAMB_OFF_OUT_FLAGS] = h->out_flags;
+	raw[LUAMB_OFF_TARGET] = h->target;
 	be32_put(raw + LUAMB_OFF_HEARTBEAT, h->heartbeat);
 	be32_put(raw + LUAMB_OFF_LAST_STATE, h->last_state);
 	be32_put(raw + LUAMB_OFF_ERR_SEQ, h->err_seq);
 	be32_put(raw + LUAMB_OFF_ERR_VM, h->err_vm);
 	be32_put(raw + LUAMB_OFF_ERR_LEN, h->err_len);
+	be32_put(raw + LUAMB_OFF_MENU_BEAT, h->menu_beat);
 }
 
 void luamb_ident_bytes(u8 out[8])
@@ -105,6 +109,9 @@ void luamb_client_init(struct luamb_client *c, u32 base, u32 state_ptr)
 {
 	c->base = base;
 	c->state_ptr = state_ptr;
+	c->menu_ptr = 0;
+	c->menu_off = 0;
+	c->target = LUAMB_TARGET_GAMEPLAY;
 	c->phase = LUAMB_C_IDLE;
 	c->seq = 0;
 	c->t_sent = 0;
@@ -122,6 +129,38 @@ void luamb_client_init(struct luamb_client *c, u32 base, u32 state_ptr)
  * between, LUAMB_POLL_IDLE when the slot is free, LUAMB_POLL_PENDING when the
  * helper still holds it.
  */
+void luamb_client_menu(struct luamb_client *c, u32 menu_ptr, u32 menu_off)
+{
+	c->menu_ptr = menu_ptr;
+	c->menu_off = menu_off;
+}
+
+int luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, u8 target, u32 *state)
+{
+	u8 b[4];
+	u32 ms;
+
+	*state = 0;
+	if (target == LUAMB_TARGET_GAMEPLAY) {
+		if (io->read(io->ctx, c->state_ptr, b, 4) != 0) return -1;
+		*state = be32_get(b);
+		return 0;
+	}
+	if (target != LUAMB_TARGET_MENU || c->menu_ptr == 0) return 0;
+	if (io->read(io->ctx, c->menu_ptr, b, 4) != 0) return -1;
+	ms = be32_get(b);
+	if (ms == 0) return 0;
+	if (io->read(io->ctx, ms + c->menu_off, b, 4) != 0) return -1;
+	*state = be32_get(b);
+	return 0;
+}
+
+/* The heartbeat that counts the frames of the target's VM. */
+static u32 beat(const struct luamb_hdr *h, u8 target)
+{
+	return target == LUAMB_TARGET_MENU ? h->menu_beat : h->heartbeat;
+}
+
 static int withdraw(struct luamb_client *c, const struct luamb_io *io, u32 now_ms,
                     struct luamb_hdr *h)
 {
@@ -164,8 +203,14 @@ int luamb_attach(struct luamb_client *c, const struct luamb_io *io, u32 now_ms)
 int luamb_send(struct luamb_client *c, const struct luamb_io *io,
                const char *src, u32 len, u32 now_ms)
 {
+	return luamb_send_to(c, io, src, len, now_ms, LUAMB_TARGET_GAMEPLAY);
+}
+
+int luamb_send_to(struct luamb_client *c, const struct luamb_io *io,
+                  const char *src, u32 len, u32 now_ms, u8 target)
+{
 	struct luamb_hdr h;
-	u8 b[4];
+	u8 t = target;
 	u32 L, next;
 
 	if (c->phase != LUAMB_C_IDLE) return LUAMB_SEND_BUSY;
@@ -180,8 +225,7 @@ int luamb_send(struct luamb_client *c, const struct luamb_io *io,
 	 */
 	if (h.req != h.ack && h.cancel != h.req) return LUAMB_SEND_BUSY;
 
-	if (io->read(io->ctx, c->state_ptr, b, 4) != 0) return LUAMB_SEND_IO;
-	L = be32_get(b);
+	if (luamb_target_state(c, io, target, &L) != 0) return LUAMB_SEND_IO;
 	if (L == 0) return LUAMB_SEND_NO_STATE;
 
 	next = h.req + 1u;
@@ -189,13 +233,16 @@ int luamb_send(struct luamb_client *c, const struct luamb_io *io,
 
 	if (io->write(io->ctx, c->base + LUAMB_OFF_CHUNK, src, len) != 0) return LUAMB_SEND_IO;
 	if (write_u32(io, c->base + LUAMB_OFF_CHUNK_LEN, len) != 0) return LUAMB_SEND_IO;
+	/* Version 2: the VM it is for, before req like the rest. */
+	if (io->write(io->ctx, c->base + LUAMB_OFF_TARGET, &t, 1) != 0) return LUAMB_SEND_IO;
 	/* req last: it is what the helper acts on. */
 	if (write_u32(io, c->base + LUAMB_OFF_REQ, next) != 0) return LUAMB_SEND_IO;
 
 	c->phase = LUAMB_C_SENT;
 	c->seq = next;
+	c->target = target;
 	c->t_sent = now_ms;
-	c->hb_sent = h.heartbeat;
+	c->hb_sent = beat(&h, target);
 	c->hung = 0;
 	return LUAMB_SEND_OK;
 }
@@ -238,7 +285,7 @@ int luamb_poll(struct luamb_client *c, const struct luamb_io *io, u32 now_ms,
 	if ((u32)(now_ms - c->t_sent) < LUAMB_T_ANSWER_MS) return LUAMB_POLL_PENDING;
 
 	{
-		u32 hb = h.heartbeat;
+		u32 hb = beat(&h, c->target);
 
 		rc = withdraw(c, io, now_ms, &h);
 		if (rc == LUAMB_POLL_IO) return rc;
@@ -249,7 +296,9 @@ int luamb_poll(struct luamb_client *c, const struct luamb_io *io, u32 now_ms,
 		/*
 		 * No answer in time. With frames running it is a timeout; with the
 		 * heartbeat standing still, no gameplay frame ran at all (paused, a
-		 * menu, a load), which the client can say in so many words.
+		 * menu, a load), which the client can say in so many words. Version
+		 * 2: for the pause menu's VM its own heartbeat, which stands still
+		 * while no pause menu is up.
 		 */
 		res->seq = c->seq;
 		res->status = hb != c->hb_sent ? LUAMB_ST_TIMEOUT : LUAMB_ST_NOT_RUNNING;

@@ -34,10 +34,12 @@
  * The mailbox (src/core/luamb.h, LUAMB_SIZE bytes): the tail of the OPD/TOC
  * segment's last 64 KB page. That segment (PT_LOAD 1, RW) is 0x870000..
  * 0x8C9A08, and its TLS image ends at 0x8C9BF8; 0x8CA000..0x8D0000 is beyond
- * both, inside the page, and unreferenced (check.py).
+ * both, inside the page, and unreferenced (check.py). The Lua mailbox has
+ * its start, to 0x8CC600; revision 1.29's console menu (lh_menu.h) has its
+ * own two blocks further on, at 0x8CD000 and 0x8CE000.
  */
 #define LH_MAILBOX     0x008CA000
-#define LH_MAILBOX_END 0x008D0000
+#define LH_MAILBOX_END 0x008CC600
 
 /* ------------------------------------------------------------------ hooks */
 
@@ -65,6 +67,37 @@
  */
 #define LH_ERR_HOOK_ADDR 0x0068F8F8
 #define LH_ERR_HOOK_ORIG 0x4E800020
+
+/*
+ * Revision 1.29 (pending), the console menu (lh_menu.h, docs/tod-menu.md):
+ * two more hooks, both cross-TOC calls whose caller reloads r2 from its own
+ * stack afterwards (`ld r2,40(r1)` follows), so each entry stores the caller's
+ * r2 there first, as the trampoline it replaces would.
+ *
+ * The pause menu's frame: PauseMenu_update's call of AnarkMenuSystem_update
+ * through the trampoline 0x119D0, r3 = the pause's menu system (lwz r3,0(r31),
+ * r31 = &g_pauseMenuSystem), reached only while the pause menu is up (its
+ * state 2 or 3), on the main thread. The entry calls the trampoline, then the
+ * menu half of the helper on the menu system's lua_State.
+ */
+#define LH_MENU_HOOK_ADDR  0x000242B0
+#define LH_MENU_HOOK_ORIG  0x4BFED721
+#define LH_TR_MENU_UPDATE  0x000119D0
+#define LH_MENU_UPDATE     0x00653D30
+
+/*
+ * Game_UpdateFrame's test of the pause action (InputMapper_isPressed(
+ * g_gameInputMapper, 1) through the trampoline 0x2672E0), the last of the
+ * checks before it opens the pause menu with PauseMenu_request. The entry
+ * calls the test itself (the trampoline's target, in the Lua range) and then
+ * lm_pause_check, which answers "pressed" for qwark's open request.
+ */
+#define LH_PAUSE_HOOK_ADDR 0x004C5ABC
+#define LH_PAUSE_HOOK_ORIG 0x4BDA1825
+#define LH_TR_BTN_PRESSED  0x002672E0
+
+/* The word after both: ld r2,40(r1), the caller's own r2 back. */
+#define LH_TOC_RELOAD      0xE8410028
 
 /* ------------------------------------------------------------------ TOCs */
 
@@ -95,6 +128,17 @@
 /* g_luaCurrentScriptName, char[64], set before each level script resumes. */
 #define LH_SCRIPT_NAME 0x10740DB0
 
+/* ----------------------------------------------------- the pause menu */
+
+/*
+ * The pause's menu system (AnarkMenuSystem, 0x14B0 bytes, built per pause by
+ * PauseMenuLoadingThread): g_pauseMenuSystem holds it, 0 with no pause, and
+ * its lua_State* is at +0x106C, the Anark presentation's own VM (Lua 5.0.2,
+ * the menu package's bindings, the presentation's behaviours).
+ */
+#define LH_PAUSE_MS        0x101CB220
+#define LH_MS_STATE        0x0000106C
+
 /* ------------------------------------------------------- game functions */
 
 /* The middle range's; called with the caller's r2. */
@@ -109,5 +153,26 @@
 #define LH_FN_TOBOOLEAN         0x00693654
 #define LH_FN_TOSTRING          0x0069373C
 #define LH_FN_LOADBUFFER        0x00694A64
+
+/*
+ * Revision 1.29: the menu half's. AnarkMenu_luaAllocator returns the
+ * allocator every Anark VM runs on (AnarkMenuSystem_update makes it current
+ * first); the rest are Lua 5.0.2's API, for the glue's C function qw().
+ * InputMapper_isPressed is the pause hook's original target.
+ */
+#define LH_FN_ANARK_ALLOC       0x00653048
+#define LH_FN_BTN_PRESSED       0x0068B654
+#define LH_FN_PUSHNIL           0x00690EB8
+#define LH_FN_PUSHNUMBER        0x00690ED4
+#define LH_FN_PUSHLSTRING       0x00690EF4
+#define LH_FN_PUSHCCLOSURE      0x0069107C
+#define LH_FN_GETTABLE          0x00691FC4
+#define LH_FN_SETTABLE          0x006923F8
+#define LH_FN_TONUMBER          0x0069354C
+#define LH_FN_PUSHSTRING        0x00693E50
+
+/* Lua 5.0's pseudo-index of the globals, and its type of a function. */
+#define LH_GLOBALSINDEX         (-10001)
+#define LH_T_FUNCTION           6
 
 #endif /* QWARK_LH_TOD_H */

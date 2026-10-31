@@ -29,11 +29,13 @@ struct luamb_hdr {
 	u32 out_len;
 	u8  out_type;
 	u8  out_flags;
+	u8  target;       /* version 2: LUAMB_TARGET_* */
 	u32 heartbeat;
 	u32 last_state;
 	u32 err_seq;
 	u32 err_vm;
 	u32 err_len;
+	u32 menu_beat;    /* version 2: the pause menu's frames */
 };
 
 void luamb_hdr_decode(const u8 *raw, struct luamb_hdr *h);   /* LUAMB_HDR_SIZE bytes */
@@ -101,6 +103,14 @@ struct luamb_result {
 struct luamb_client {
 	u32 base;         /* the mailbox */
 	u32 state_ptr;    /* the address of the game's lua_State* (vm + vm_state) */
+	/*
+	 * Version 2: the pause menu's lua_State, two reads away: the word at
+	 * menu_ptr is the menu system, 0 with no pause up, and its lua_State* is
+	 * at that plus menu_off. menu_ptr 0: the game has no menu VM.
+	 */
+	u32 menu_ptr;
+	u32 menu_off;
+	u8  target;       /* the request outstanding's, LUAMB_TARGET_* */
 	u8  phase;
 	u32 seq;          /* the request outstanding or withdrawn */
 	u32 t_sent;
@@ -111,6 +121,15 @@ struct luamb_client {
 
 void luamb_client_init(struct luamb_client *c, u32 base, u32 state_ptr);
 
+/* Version 2: where the pause menu's lua_State is (struct luamb_client's menu_ptr, menu_off). */
+void luamb_client_menu(struct luamb_client *c, u32 menu_ptr, u32 menu_off);
+
+/*
+ * The lua_State `target` has now: the gameplay VM's word, or the menu's chain.
+ * 0 for none, or a target the client knows no VM for; -1 on a failed read.
+ */
+int  luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, u8 target, u32 *state);
+
 /*
  * Takes up whatever an earlier session left in the mailbox: a request still
  * outstanding (req != ack) is withdrawn, so it can never run late. Call it on
@@ -120,6 +139,14 @@ int  luamb_attach(struct luamb_client *c, const struct luamb_io *io, u32 now_ms)
 
 int  luamb_send(struct luamb_client *c, const struct luamb_io *io,
                 const char *src, u32 len, u32 now_ms);
+
+/*
+ * Version 2: the same for a VM of `target`'s: the gameplay VM (luamb_send's),
+ * or the pause menu's, whose frames time the request (menu_beat). NO_STATE
+ * when that VM has no lua_State now.
+ */
+int  luamb_send_to(struct luamb_client *c, const struct luamb_io *io,
+                   const char *src, u32 len, u32 now_ms, u8 target);
 
 int  luamb_poll(struct luamb_client *c, const struct luamb_io *io, u32 now_ms,
                 struct luamb_result *res);

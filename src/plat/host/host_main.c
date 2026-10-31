@@ -18,6 +18,8 @@
  *                         second, never in a game (revision 1.24)
  *   fakelua on|off        the simulated ToD's Lua helper runs a frame every
  *                         16 ms (revision 1.27)
+ *   fakepause on|off      the simulated ToD in its pause menu, whose frame the
+ *                         fakelua thread runs instead (revision 1.29)
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   fakesave on|off       the simulated ToD's save system runs a frame every
  *                         16 ms and takes qwark's loads (revision 1.28)
@@ -269,6 +271,21 @@ static void handle_line(char *line, int *keep_running)
 		}
 		host_set_user(n);
 		printf("ok user %u\n", (unsigned)n);
+
+	} else if (qstreq(cmd, "fakepause")) {
+		/*
+		 * Revision 1.29: `fakepause on` puts the simulated ToD in its pause
+		 * menu, whose frame the fakelua thread then runs instead of a
+		 * gameplay frame; off, back to play.
+		 */
+		char *on = next_token(&cursor);
+
+		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off"))) {
+			printf("usage: fakepause on|off\n");
+		} else {
+			host_set_fake_pause(qstreq(on, "on"));
+			printf("ok fakepause %s\n", on);
+		}
 
 	} else if (qstreq(cmd, "fakelua") || qstreq(cmd, "luapatch")) {
 		/*

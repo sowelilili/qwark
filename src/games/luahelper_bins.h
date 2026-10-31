@@ -33,7 +33,7 @@ struct lh_desc {
 	const struct lh_cave *caves;
 	u8 ncaves;
 
-	/* The VM hook first, then the error tap. */
+	/* The VM hook first, then the error tap, then the menu's two (revision 1.29). */
 	const struct lh_hook *hooks;
 	u8 nhooks;
 
@@ -41,6 +41,17 @@ struct lh_desc {
 	u32 mailbox_size;
 	u32 vm;                     /* the gameplay VM object */
 	u32 vm_state;               /* the lua_State* is the word at vm + vm_state, 0 between levels */
+
+	/*
+	 * Revision 1.29, the console menu: the pause menu's VM, whose lua_State*
+	 * is at menu_off into the menu system that the word at menu_ptr holds (0
+	 * with no pause), and the menu's Lua glue, which qwark sends it (NULL but
+	 * in the emulator builds and the game module; the length stays).
+	 */
+	u32 menu_ptr;
+	u32 menu_off;
+	const u8 *glue;
+	u32 glue_len;
 };
 
 /* NULL for an executable with no Lua helper. */

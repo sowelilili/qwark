@@ -16,6 +16,7 @@
 #include "tod.h"
 #include "classic.h"
 #include "luahelper_bins.h"
+#include "luahelper/lh_menu.h"
 #include "../core/savefile.h"
 #include "../core/mem.h"
 
@@ -345,11 +346,12 @@ static const struct lh_desc *tod_lua_desc(void)
 /* ----------------------------------------------------------- console menu */
 
 /*
- * 2026-10-31: the console menu's pages for ToD (src/core/menu.c), for its
- * renderer, a prototype (src/games/menuhelper/mh_tod.c, docs/tod-menu.md),
- * after the four games' tables and the client's ToD panels. Game: the
- * position rows, Die, Challenge mode as a switch, the set-aside pair. Cheats:
- * the toggles, then Max bolts and Max raritanium. Unlocks: the weapons Locked,
+ * The console menu's pages for ToD (src/core/menu.c), shown by the game's own
+ * pause menu (revision 1.29, docs/tod-menu.md), after the four games' tables
+ * and the client's ToD panels. Game: the position rows, Die, Challenge mode
+ * as a switch, the set-aside pair. Cheats: the toggles, then Max bolts and Max
+ * raritanium. Manips: Remove cutscenes, where the client's ToD layout puts it
+ * (its DESCRIBE group stays Cheats). Unlocks: the weapons Locked,
  * V1 and V10 (the level field, as the game numbers it), the rest Locked or
  * Unlocked, and the four skill point and gold bolt buttons on a page of their
  * own, Collectables, as the other games have theirs. Every planet with a name
@@ -362,8 +364,12 @@ static const u8 tod_menu_game[] = {
 };
 
 static const u8 tod_menu_cheats[] = {
-	TF_FAST_LOADS, TF_REMOVE_CUTSCENES, TF_INFINITE_AMMO, TF_INFINITE_HEALTH, TF_GOD_RATCHET,
+	TF_FAST_LOADS, TF_INFINITE_AMMO, TF_INFINITE_HEALTH, TF_GOD_RATCHET,
 	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
+};
+
+static const u8 tod_menu_manips[] = {
+	TF_REMOVE_CUTSCENES
 };
 
 static const struct menu_value tod_menu_values[] = {
@@ -374,7 +380,8 @@ static const struct menu_value tod_menu_values[] = {
 
 static const struct menu_section tod_menu_sections[] = {
 	{ "Game",   tod_menu_game,   (u8)sizeof(tod_menu_game) },
-	{ "Cheats", tod_menu_cheats, (u8)sizeof(tod_menu_cheats) }
+	{ "Cheats", tod_menu_cheats, (u8)sizeof(tod_menu_cheats) },
+	{ "Manips", tod_menu_manips, (u8)sizeof(tod_menu_manips) }
 };
 
 static const u8 tod_menu_unlock_actions[] = {
@@ -396,6 +403,25 @@ static const struct game_menu tod_menu = {
 	"Collectables",       /* the four buttons on a page of their own */
 	NULL,                 /* no planet picker */
 	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0]))
+};
+
+/*
+ * Revision 1.29: the menu's renderer is the game's own pause menu, through
+ * the Lua helper's pause-menu half and its glue (src/games/luahelper/lh_menu.h).
+ * The mailbox is the console menu's, 32 rows of either type; Trainer replaces
+ * the Options list's Help row; the pause menu's state, the state stack and the
+ * game state say when no menu can be up.
+ */
+static const struct menu_native tod_menu_native = {
+	LM_BOX, LM_BOX_SIZE, LM_ROWS, LM_CAPS,
+	LM_STATE, LM_STATE_SIZE,
+	LM_STATE + LM_HELP,
+	LM_STATE + LM_GLUE,
+	LM_STATE + LM_LOADS,
+	LM_GLUE_WANTED, LM_GLUE_STOPPED,
+	TOD_PAUSE_STATE, TOD_PAUSE_UP,
+	TOD_STATE_PENDING_OP, 0,
+	TOD_GAME_STATE, TOD_STATE_PAUSE
 };
 
 /* ---------------------------------------------------------------- vtable */
@@ -447,11 +473,12 @@ const struct game_api tod_game = {
 
 	NULL,                 /* manips */
 	NULL,                 /* planet_order: the LEVEL_ ids are the game's order */
-	&tod_menu,            /* 2026-10-31: the console menu's pages (a prototype renderer, menu.tod) */
+	&tod_menu,            /* the console menu's pages, shown by the game's pause menu (revision 1.29) */
 	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
 	tod_levelflag_names,  /* revision 1.28: LEVELFLAGS_NAMES */
 	&tod_sf_driver,       /* revision 1.28: the save system, driven by data */
-	tod_debug_text        /* revision 1.29: DEBUG_TEXT, the level cache's pages (tod_cache.c) */
+	tod_debug_text,       /* revision 1.29: DEBUG_TEXT, the level cache's pages (tod_cache.c) */
+	&tod_menu_native      /* revision 1.29: the console menu is the game's pause menu */
 };

@@ -795,4 +795,15 @@ u32 tod_pad_to_og(u32 tod_mask);
  */
 int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 
+/*
+ * Revision 1.29 (pending): the console menu, the game's own pause menu
+ * (docs/tod-menu.md; the helper's side is src/games/luahelper/lh_menu.h).
+ * What says no menu can be up: the pause menu's state 0 (none) with nothing
+ * queued on the state stack, and the game not in its pause (g_gameState 5).
+ */
+#define TOD_PAUSE_STATE      0x101CB218u  /* g_pauseMenuState: 0 none, 1 loading, 2..3 up, 4 closing (dec) */
+#define TOD_PAUSE_UP         3u
+#define TOD_STATE_PENDING_OP 0x10387DBCu  /* g_gameStatePendingOp, 0 with nothing queued (dec) */
+#define TOD_STATE_PAUSE      5u           /* g_gameState: the pause menu (PauseMenu_update) */
+
 #endif /* QWARK_TOD_H */

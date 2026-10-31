@@ -274,10 +274,9 @@ void menu_tick(void);
 void menu_combo(void);
 
 /*
- * Revision 1.29 (pending), SessionInfo flags2 bit7 NO_MENU: whether `game` has
- * no console menu at all, its table missing, or (2026-10-31) Tools of
- * Destruction while config.txt's menu.tod, its prototype renderer's switch,
- * is not 1.
+ * Revision 1.28, SessionInfo flags2 bit7 NO_MENU: whether `game` has no
+ * console menu at all, its table missing. (Revision 1.29: Tools of
+ * Destruction has one, its own pause menu, struct menu_native.)
  */
 int menu_none(const struct game_api *game);
 

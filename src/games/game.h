@@ -581,8 +581,59 @@ struct game_api {
 	 * under the core lock. NULL for a game with none, every game but ToD.
 	 */
 	int (*debug_text)(u8 page, u8 *out, u32 cap, u32 *len);
+
+	/*
+	 * Revision 1.29 (pending): a console menu that is the game's own UI
+	 * (struct menu_native below), served by the core as it serves a renderer
+	 * of ui.pak's, which such a game has none of. NULL for every game but
+	 * Tools of Destruction.
+	 */
+	const struct menu_native *menu_native;
 #endif
 };
+
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29 (pending): a console menu drawn by the game's own menu system,
+ * through a helper of the game's, where the four original games have a
+ * renderer of qwark's in ui.pak (src/core/menu.c, docs/tod-menu.md). Tools of
+ * Destruction's is its pause menu: the Lua helper's pause-menu half and a Lua
+ * glue in the pause menu's VM (src/games/luahelper/lh_menu.h). The core
+ * writes the mailbox's header itself (a renderer's data image elsewhere),
+ * serves it exactly as a renderer's (src/core/menubox.h), and keeps the
+ * helper's few words of its own:
+ *
+ *   help_addr   u8, the core's: 1 the menu's Trainer row in place of the
+ *               game's Help row (config.txt's menu.help), 0 the game's own
+ *   glue_addr   u32, the helper's: glue_wanted when a pause menu's VM wants
+ *               the glue, which the core sends it (lua_core_menu_glue) once
+ *               per value of the u32 at loads_addr; glue_stopped when the
+ *               glue failed in that VM, which the core logs
+ *
+ * The helper's block (state_addr, state_size) is zeroed at the install. What
+ * says the game plays, or that nothing of the menu can be up, is struct
+ * mh_desc's mode, pending and screen words, with the same meaning.
+ */
+struct menu_native {
+	u32 mailbox;
+	u16 mailbox_size;
+	u8  row_cap;
+	u8  caps;
+	u32 state_addr;
+	u32 state_size;
+	u32 help_addr;
+	u32 glue_addr;
+	u32 loads_addr;
+	u32 glue_wanted;
+	u32 glue_stopped;
+	u32 mode_addr;
+	u32 mode_paused;
+	u32 pending_addr;
+	u32 pending_none;
+	u32 screen_addr;
+	u32 screen_id;
+};
+#endif
 
 /* A feature id in a game_api field where 0 means none: the id plus one. */
 #define GAME_FEATURE(id) ((u8)((id) + 1))

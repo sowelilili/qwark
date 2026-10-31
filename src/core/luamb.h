@@ -18,16 +18,21 @@
  * Every field is big-endian, as the game stores it. Each word has exactly one
  * writer, which is what makes the protocol safe without a lock:
  *
- *   qwark  magic, version, size (once, at install), req, cancel, chunk_len, chunk
+ *   qwark  magic, version, size (once, at install), req, cancel, chunk_len, chunk,
+ *          target
  *   helper ack, busy, status, out_len, out_type, out_flags, heartbeat, last_state,
- *          out, and the error tap's err_seq, err_vm, err_len, err_script, err
+ *          menu_beat, out, and the error tap's err_seq, err_vm, err_len,
+ *          err_script, err
  *
  * The protocol (docs/tod-poc.md section 1 has the reasoning):
  *
- *   qwark sends    only while req == ack: chunk, chunk_len, then req = req + 1
- *   helper, every gameplay frame, after the VM's own update:
+ *   qwark sends    only while req == ack: chunk, chunk_len, target, then
+ *                  req = req + 1
+ *   helper, every gameplay frame, after the VM's own update (and, version 2,
+ *   every frame of the pause menu, after the menu's own update, for target
+ *   MENU; menu_beat for heartbeat there):
  *                  heartbeat += 1
- *                  r = req; if r == ack, nothing to do
+ *                  r = req; if r == ack, or target is the other VM's, nothing to do
  *                  busy = r; sync
  *                  if cancel == r: status = CANCELLED
  *                  else if the state is 0: status = NO_STATE
@@ -46,7 +51,13 @@
 
 /* 'QLUA'. Written by the installer, not by the helper, which runs only on it. */
 #define LUAMB_MAGIC   0x514C5541
-#define LUAMB_VERSION 1
+/*
+ * Version 2 (revision 1.29, pending): the request's target, gameplay VM or the
+ * pause menu's (`target`), and the pause menu's heartbeat. A version 1 helper
+ * would run a request meant for the menu in the gameplay VM, so the two never
+ * meet: the identity words differ, and qwark looks for its own.
+ */
+#define LUAMB_VERSION 2
 
 /* ------------------------------------------------------------------ layout */
 
@@ -62,13 +73,14 @@
 #define LUAMB_OFF_OUT_LEN    0x020  /* u32 bytes in out, before its NUL         helper */
 #define LUAMB_OFF_OUT_TYPE   0x024  /* u8  lua_type of the result, LUAMB_T_*    helper */
 #define LUAMB_OFF_OUT_FLAGS  0x025  /* u8  LUAMB_OUT_*                          helper */
-                                    /* u16 0                                           */
+#define LUAMB_OFF_TARGET     0x026  /* u8  LUAMB_TARGET_*, the VM the request is for  qwark */
+                                    /* u8  0                                           */
 #define LUAMB_OFF_HEARTBEAT  0x028  /* u32 +1 every gameplay frame              helper */
 #define LUAMB_OFF_LAST_STATE 0x02C  /* u32 the lua_State* of the last frame     helper */
 #define LUAMB_OFF_ERR_SEQ    0x030  /* u32 +1 every error the game reports      helper */
 #define LUAMB_OFF_ERR_VM     0x034  /* u32 the CLuaVM* that reported it         helper */
 #define LUAMB_OFF_ERR_LEN    0x038  /* u32 bytes in err, before its NUL         helper */
-                                    /* u32 0                                           */
+#define LUAMB_OFF_MENU_BEAT  0x03C  /* u32 +1 every frame of the pause menu     helper */
 #define LUAMB_OFF_ERR_SCRIPT 0x040  /* char[64] the script running, NUL-ended   helper */
 #define LUAMB_OFF_ERR        0x100  /* char[256] the error text, NUL-ended      helper */
 #define LUAMB_OFF_OUT        0x200  /* char[1024] the result or the error       helper */
@@ -104,6 +116,14 @@
 #define LUAMB_ST_TIMEOUT    0x200  /* frames ran, but no answer in time        */
 #define LUAMB_ST_NOT_RUNNING 0x201 /* no gameplay frame ran: paused, a menu, a load */
 #define LUAMB_ST_HUNG       0x202  /* the helper is inside the chunk, past the hang limit */
+
+/*
+ * target (version 2). The gameplay VM's tick serves only GAMEPLAY requests and
+ * the pause menu's tick only MENU ones, each on its own lua_State; a request
+ * for the other one waits, and times out as any request no frame answers.
+ */
+#define LUAMB_TARGET_GAMEPLAY 0
+#define LUAMB_TARGET_MENU     1
 
 /* out_type: Lua 5.0's lua_type, plus NONE for an empty stack. */
 #define LUAMB_T_NONE     0xFF

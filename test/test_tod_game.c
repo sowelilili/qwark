@@ -151,7 +151,7 @@ static void test_tod_session(void)
 	check(bef32_get(info + 32) == 100.0f && bef32_get(info + 36) == 200.0f && bef32_get(info + 40) == 30.5f,
 	      "the position is the hero's, two pointers deep");
 	check(info[28] == 9, "the planet is Rykan V's id");
-	check((info[29] & SESSION_FLAG2_NO_MENU) != 0, "flags2 NO_MENU: ToD has no console menu while menu.tod, its prototype's switch, is 0");
+	check((info[29] & SESSION_FLAG2_NO_MENU) == 0, "flags2 NO_MENU clear: ToD's console menu is its own pause menu (revision 1.29)");
 	check(be32_get(info + 64 + 4 * TOD_RO_BOLTS) == 12345 && be32_get(info + 64 + 4 * TOD_RO_CHALLENGE) == 2,
 	      "bolts and challenge mode in their readouts");
 	host_set_pad(0);
@@ -453,15 +453,17 @@ static void test_tod_lua_console(void)
 		u32 seq;
 		check(lua_core_exec_start(req, 4, &seq) == ST_BAD_ARG, "an empty chunk is refused");
 		be16_put(req, 4);
-		be16_put(req + 2, 1);
-		check(lua_core_exec_start(req, 8, &seq) == ST_BAD_ARG, "and flags other than 0");
+		be16_put(req + 2, 2);
+		check(lua_core_exec_start(req, 8, &seq) == ST_BAD_ARG, "and flags other than 0 or 1 (revision 1.29)");
+		be16_put(req + 2, LUA_EXEC_MENU);
+		check(lua_core_exec_start(req, 8, &seq) == ST_NOT_FOUND, "flags 1, the pause menu's VM, with no pause: NOT_FOUND");
 	}
 }
 
 static void test_tod_lua_rpcs3(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
-	u8 reply[4096];
+	static u8 reply[QWARK_MAX_PAYLOAD];
 	u32 len = 0;
 
 	group("ToD: Lua under RPCS3: the patch, or UNSUPPORTED");
@@ -474,7 +476,9 @@ static void test_tod_lua_rpcs3(void)
 	check(exec("return _VERSION", 4, reply, &len) == ST_UNSUPPORTED && rd32(d->hooks[0].addr) == d->hooks[0].orig,
 	      "LUA_EXEC is UNSUPPORTED and writes no code");
 	check(lua_core_patch(reply, sizeof(reply), &len) == ST_OK && be16_get(reply) == lh_patch_count(d) &&
-	      lh_patch_count(d) > 300, "LUA_PATCH: the helper's words");
+	      lh_patch_count(d) > 300 &&
+	      LH_PATCH_HEAD + lh_patch_count(d) * LH_PATCH_ROW + LH_PATCH_BYTES_HEAD <= QWARK_MAX_PAYLOAD,
+	      "LUA_PATCH: the helper's words, all in one reply");
 	check(quit(), "the game quits");
 	host_set_lua_patch(1);
 	check(boot_tod(), "and boots with the patch in");

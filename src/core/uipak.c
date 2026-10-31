@@ -271,22 +271,6 @@ const struct mh_desc *mh_pak_desc(u8 game_id, int *status)
 	int st;
 
 	mh_pak_close();
-#if QWARK_HAS_TOD
-	/*
-	 * 2026-10-31: ToD's renderer is kind 3, which a release's pak has none
-	 * of, and is this module's only by its own CRC (the header's identities
-	 * leave it out). Another build's ToD renderer is no renderer.
-	 */
-	if (game_id == GAME_TOD) {
-		st = find_entry(&f, h, game_id, UIPAK_KIND_TOD, &at, &len, &crc);
-		if (st != UIPAK_OK) goto done;
-		if (len != 0 && crc != MH_TOD_PAK_ID) {
-			plat_log("ui.pak: its ToD renderer 0x%08X is not this module's 0x%08X; no menu in ToD",
-			         (int)crc, (int)MH_TOD_PAK_ID);
-			len = 0;
-		}
-	} else
-#endif
 	st = find_entry(&f, h, game_id, UIPAK_KIND_RENDERER, &at, &len, &crc);
 	if (st != UIPAK_OK) goto done;
 	/* A pak of this build with no renderer for the game: no menu, as before the pak. */

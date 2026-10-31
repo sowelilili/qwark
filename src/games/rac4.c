@@ -1198,5 +1198,6 @@ const struct game_api rac4_game = {
 #if QWARK_HAS_TOD
 	, NULL                /* revision 1.28: its helper is code, not a savefile_driver */
 	, NULL                /* revision 1.29: no debug pages */
+	, NULL                /* revision 1.29: its menu is a renderer of ui.pak's, not the game's own */
 #endif
 };

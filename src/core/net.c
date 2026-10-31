@@ -2100,11 +2100,15 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	 * Revision 1.23. `menu.help`, a config write and nothing else, exactly like
 	 * COMBO_ENABLE: it answers whatever the session state is, and the tick
 	 * thread puts the Help row's words in or back at the next moment it is safe
-	 * to (menu.c). Where code cannot be patched there is no menu to set.
+	 * to (menu.c). Where code cannot be patched there is no menu to set, but
+	 * (revision 1.29) in a build with Tools of Destruction, whose menu is the
+	 * game's own pause menu and works under RPCS3 too.
 	 */
 	case OP_MENU_HELP:
 		if (reqlen < 1 || req[0] > 1) return ST_BAD_ARG;
+#if !QWARK_HAS_TOD
 		if (!plat_can_patch_code()) return ST_UNSUPPORTED;
+#endif
 		{
 			u16 rc;
 			core_lock();

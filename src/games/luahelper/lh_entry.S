@@ -52,8 +52,88 @@
  * caller; it needs nothing here. Its symbol is .lh_err_tap.
  */
 
+/*
+ * Revision 1.29, the console menu: the pause menu's frame (LH_MENU_HOOK_ADDR),
+ * which replaces PauseMenu_update's `bl` to the trampoline of
+ * AnarkMenuSystem_update. r3 is the pause's menu system and r2 the low
+ * range's TOC; the caller reloads its r2 from 40(r1) afterwards, which the
+ * trampoline would have stored there, so the entry stores it first. Then:
+ * the trampoline, as the game called it (it stores r2 again, in this frame's
+ * slot, and runs the update with the Lua range's r2), and lh_menu_tick with
+ * the Lua range's TOC set here.
+ */
+	.globl  .lh_menu_hook
+.lh_menu_hook:
+	std     r2, 40(r1)
+	mflr    r0
+	std     r0, 0x10(r1)
+	stdu    r1, -0x80(r1)
+	std     r31, 0x78(r1)
+	mr      r31, r3
+
+	bl      .lh_tr_menu_update
+
+	mr      r3, r31
+	lis     r2, LH_LUA_TOC@ha
+	addi    r2, r2, LH_LUA_TOC@l
+	bl      .lh_menu_tick
+	nop
+
+	ld      r31, 0x78(r1)
+	addi    r1, r1, 0x80
+	ld      r0, 0x10(r1)
+	mtlr    r0
+	blr
+
+/*
+ * The pause test (LH_PAUSE_HOOK_ADDR), which replaces Game_UpdateFrame's `bl`
+ * to the trampoline of InputMapper_isPressed(mapper, 1). The same r2 rule:
+ * the caller's goes to 40(r1) first. The test itself is in the Lua range, so
+ * with that r2 the entry calls it directly, r3 and r4 as the game set them,
+ * then lm_pause_check(answer), whose answer the game gets.
+ */
+	.globl  .lh_pause_hook
+.lh_pause_hook:
+	std     r2, 40(r1)
+	mflr    r0
+	std     r0, 0x10(r1)
+	stdu    r1, -0x70(r1)
+	lis     r2, LH_LUA_TOC@ha
+	addi    r2, r2, LH_LUA_TOC@l
+
+	bl      .lh_btn_pressed
+	nop
+	bl      .lm_pause_check
+	nop
+
+	addi    r1, r1, 0x70
+	ld      r0, 0x10(r1)
+	mtlr    r0
+	blr
+
+/*
+ * qw()'s descriptor, which the pause menu's Lua calls it through, as it calls
+ * every C function: its entry and its TOC, the Lua range's.
+ */
+	.align  3
+	.globl  lh_qw_desc
+lh_qw_desc:
+	.long   .lh_qw
+	.long   LH_LUA_TOC
+
 /* lua_load's chunk name: "=" means "use the rest as it is" in messages. */
 	.globl  lh_chunkname
 lh_chunkname:
 	.asciz  "=qwark"
+
+/* Revision 1.29: the menu's script name in the err area (past the "="), and two globals. */
+	.globl  lh_menuname
+lh_menuname:
+	.asciz  "=qwark-menu"
+	.globl  lh_qwname
+lh_qwname:
+	.asciz  "qw"
+	.globl  lh_framename
+lh_framename:
+	.asciz  "qwark_frame"
 	.align  2

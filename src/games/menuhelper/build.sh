@@ -63,7 +63,7 @@ OBJDUMP=ppu-lv2-objdump
 
 CFLAGS="-Os -std=gnu99 -nostdlib -fno-builtin -ffreestanding -mno-altivec -Wall -Wextra -Werror -I$DIR"
 
-RENDERERS="rac4 rac3 rac2 rac1 tod"
+RENDERERS="rac4 rac3 rac2 rac1"
 
 fail() {
 	echo "menuhelper: $*" >&2
@@ -319,32 +319,6 @@ rac1_query() {
 	echo "$(need "$1" R1_STATE) $(need "$1" R1_STATE_PAUSE) $(need "$1" R1_RESUME_PAGE) $(need "$1" R1_RESUME_NONE) $(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP)))) $(need "$1" R1_SCREEN_UP)"
 }
 
-# ------------------------------------------- per game: Tools of Destruction
-
-# 2026-10-31, a prototype (mh_tod.h): two `bl`s, the frame's end and the
-# pads' last step, each going on to the call it replaced; no Help row.
-tod_entry() { echo mh_frame_stub; }
-
-tod_ldflags() {
-	echo "--defsym game_frame_end=$(need "$1" GAME_FRAME_END) --defsym game_pad_tail=$(need "$1" GAME_PAD_TAIL)"
-}
-
-tod_hooks() {
-	hdr=$1; elf=$2
-	for r in FRAME:mh_frame_stub PAD:mh_pad_stub; do
-		name=${r%%:*}; stub=${r#*:}
-		site=$(need "$hdr" MH_SITE_$name)
-		at=$(needsym "$elf" "$stub")
-		echo "$site $(blword "$site" "$at") $(need "$hdr" MH_ORIG_$name) bl $stub ($at)"
-	done
-}
-
-# The menu is down when the shim's own word says so; the game's state stack has nothing queued.
-tod_query() {
-	up=$(printf '0x%08X' $(($(need "$1" MH_SHIM) + $(need "$1" SH_UP))))
-	echo "$up 0x00000001 $(need "$1" TM_PENDING) 0x00000000 $up 0x00000001"
-}
-
 # ---------------------------------------------------- several code areas
 
 # An object's code sections, one a line: object section size alignment.
@@ -558,13 +532,8 @@ for g in $RENDERERS; do
 			fail "$g: hook word $k follows a Help row word; the Help row's must be the last"
 		fi
 	done < "$obj/hooks.txt"
-	# A game whose pause menu has no row the renderer takes over (ToD) says so: no Help words at all.
-	if [ -n "$(getdef "$hdr" MH_NO_HELP_ROW)" ]; then
-		[ $nhelp -eq 0 ] && [ $nsites -eq 0 ] || fail "$g: MH_NO_HELP_ROW, yet $nhelp Help row words"
-	else
-		[ $nhelp -gt 0 ] && [ $nhelp -eq $nsites ] ||
-			fail "$g: $nhelp Help row words in the table, the header names $nsites sites"
-	fi
+	[ $nhelp -gt 0 ] && [ $nhelp -eq $nsites ] ||
+		fail "$g: $nhelp Help row words in the table, the header names $nsites sites"
 	query=$(${g}_query "$hdr")
 	set -- $query
 	[ $# -eq 6 ] || fail "$g: what says the menu is down is not six words"
@@ -688,15 +657,6 @@ cat > "$OUT/bins.h.in" <<'EOF'
 #define MH_PAK_ID @MH_PAK_ID@u
 
 /*
- * 2026-10-31: Tools of Destruction's renderer, a prototype, which only the
- * builds that have ToD (QWARK_HAS_TOD) pack and read: ui.pak carries it as an
- * entry of kind 3, outside MH_PAK_ID, so a release's pak and module are the
- * four renderers' alone. A module with ToD takes that entry only when its
- * CRC-32 is this.
- */
-#define MH_TOD_PAK_ID @MH_TOD_PAK_ID@u
-
-/*
  * One run of bytes at one address - the mailbox, the state, the read-only
  * data, or the code - and then `zeros` bytes of 0, which the module carries as
  * a count rather than as bytes.
@@ -806,12 +766,7 @@ case "$pak_id" in
 	0x????????) ;;
 	*) fail "pak.py --id answered '$pak_id'" ;;
 esac
-tod_id=$(python -I "$DIR/pak.py" --tod-id --table "$GEN_C" | tr -d '\r')
-case "$tod_id" in
-	0x????????) ;;
-	*) fail "pak.py --tod-id answered '$tod_id'" ;;
-esac
-sed -e "s/@MH_PAK_ID@/$pak_id/" -e "s/@MH_TOD_PAK_ID@/$tod_id/" "$OUT/bins.h.in" > "$GEN_H"
+sed "s/@MH_PAK_ID@/$pak_id/" "$OUT/bins.h.in" > "$GEN_H"
 
 echo "menuhelper: regenerated $GEN_C and $GEN_H (renderers $pak_id)"
 cat "$OUT/report.txt"

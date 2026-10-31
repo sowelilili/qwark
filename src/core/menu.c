@@ -8,6 +8,9 @@
 #include "savefile.h"
 #include "uipak.h"
 #include "../plat/plat.h"
+#if QWARK_HAS_TOD
+#include "luacore.h"
+#endif
 #if QWARK_PREVIEW
 #include "mods.h"
 #include "modusb.h"
@@ -1693,16 +1696,13 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 /* A CLOSES action waits this long for the menu to close and the game to play. */
 #define DEFER_US         5000000ull
 
-#if QWARK_HAS_TOD
-/* 2026-10-31: config.txt's switch for Tools of Destruction's renderer, a prototype (0 by default). */
-#define MENU_TOD_KEY     "menu.tod"
-#endif
 
 /* Notified once a session, per reason. */
 #define WHY_NO_RENDERER  0x01
 #define WHY_REFUSED      0x02
 #define WHY_OFF          0x04
 #define WHY_NO_PAK       0x08
+#define WHY_NO_HELPER    0x10
 
 #define NO_PAK_TEXT      "Trainer menu: ui.pak missing or from another build"
 
@@ -1756,6 +1756,29 @@ static struct {
 	int logged;        /* and the log has said so, once a session */
 } g_help = { 1, -1, 0, 0 };
 
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29 (pending): a game whose menu is its own UI (struct
+ * menu_native, Tools of Destruction's pause menu), which has no renderer in
+ * ui.pak: the session's g_mh is this one, made from the game's description,
+ * with no cave and no hook. Its helper is the game's Lua helper
+ * (lua_core_helper_ready), its mailbox header the core's to write
+ * (native_install), its Help row a byte (help_sync), and its glue the
+ * core's to send when the game asks (native_glue).
+ */
+static struct mh_desc g_native_mh;
+static const struct menu_native *g_native;
+static u32  g_native_loads;      /* the helper's loads word when the glue last went */
+static u32  g_native_stopped;    /* the same, when a stop was last logged */
+static u8   g_native_why;        /* 1: no helper (RPCS3 without the patch) */
+
+/* Whether `game_id` has a menu of its own UI, before its module is in. */
+static int native_game(u8 game_id)
+{
+	return game_id == GAME_TOD;
+}
+#endif
+
 int menu_state(void) { return g_state; }
 u64 menu_install_delay_us(void) { return g_install_delay; }
 void menu_set_install_delay_us(u64 us) { g_install_delay = us; }
@@ -1799,6 +1822,10 @@ void menu_forget(void)
 {
 	g_state = MENU_OFF;
 	g_mh = NULL;
+#if QWARK_HAS_TOD
+	g_native = NULL;
+	g_native_why = 0;
+#endif
 	mh_pak_close();
 	g_posted = 0;
 	g_hstate = MBOX_HSTATE_CLOSED;
@@ -1811,9 +1838,6 @@ void menu_forget(void)
 int menu_none(const struct game_api *game)
 {
 	if (game == NULL || game->menu == NULL) return 1;
-#if QWARK_HAS_TOD
-	if (game->game_id == GAME_TOD && config_get_u32(MENU_TOD_KEY, 0) == 0) return 1;
-#endif
 	return 0;
 }
 
@@ -1864,17 +1888,18 @@ void menu_enter_id(u8 game_id)
 	 * (load), not here, so a session's entry reads no file for it; a game
 	 * the pak has no renderer for is MENU_OFF from then on.
 	 */
-	if (game_id == GAME_NONE || !plat_can_patch_code()) return;
-	g_game_id = game_id;
+	if (game_id == GAME_NONE) return;
 #if QWARK_HAS_TOD
 	/*
-	 * 2026-10-31: Tools of Destruction's renderer is a prototype, read from
-	 * the executable and not yet run on a console, so it goes into the game
-	 * only where config.txt says `menu.tod = 1` (docs/tod-menu.md); otherwise
-	 * the session has no menu, as before.
+	 * Revision 1.29: a menu that is the game's own UI needs no code of the
+	 * menu's own, only the game's Lua helper, which RPCS3 takes as a patch,
+	 * so it has a menu there too.
 	 */
-	if (game_id == GAME_TOD && config_get_u32(MENU_TOD_KEY, 0) == 0) return;
+	if (!plat_can_patch_code() && !native_game(game_id)) return;
+#else
+	if (!plat_can_patch_code()) return;
 #endif
+	g_game_id = game_id;
 
 	/*
 	 * Round 2: the renderer goes in a few seconds into the session, once the
@@ -2013,6 +2038,106 @@ static int write_cave(const struct mh_cave *c)
 	return c->zeros != 0 ? write_zeros(c->addr + c->len, c->zeros) : ST_OK;
 }
 
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29: a menu of the game's own UI goes in. Its helper first (a
+ * console writes the game's Lua helper now if it has not; RPCS3 has it as a
+ * patch or not at all), then the mailbox: taken over as it stands when it is
+ * already this layout (the module loaded again into a running game), else the
+ * helper's block zeroed and a header written, the identity last, so the helper
+ * never reads half of one; then what install() does with any mailbox.
+ */
+static int native_install(void)
+{
+	const struct menu_native *n = g_native;
+	u8 head[MBOX_HEAD_SIZE];
+	u8 z[64];
+	u32 off;
+	int rc = lua_core_helper_ready();
+
+	if (rc == ST_UNSUPPORTED) {
+		if (!g_logged_refusal) {
+			plat_log(plat_can_patch_code() ? "menu: this game's Lua helper cannot go in; no menu"
+			                               : "menu: no Lua helper in the game (qwark's RPCS3 patch); no menu");
+			g_logged_refusal = 1;
+		}
+		g_native_why = 1;
+		return INSTALL_REFUSED;
+	}
+	if (rc != ST_OK) return rc;
+	g_native_why = 0;
+
+	if (mem_read(n->mailbox, head, MBOX_READ_HEAD) != ST_OK) return ST_IO_ERROR;
+	if (be32_get(head + MBOX_OFF_MAGIC) != MBOX_MAGIC || be16_get(head + MBOX_OFF_VERSION) != MBOX_VERSION ||
+	    be16_get(head + MBOX_OFF_SIZE) != n->mailbox_size || head[MBOX_OFF_ROW_CAP] != n->row_cap) {
+		memset(z, 0, sizeof(z));
+		for (off = 0; off < n->state_size; off += sizeof(z)) {
+			u32 len = n->state_size - off < sizeof(z) ? n->state_size - off : (u32)sizeof(z);
+			if (mem_write(n->state_addr + off, z, len) != ST_OK) return ST_IO_ERROR;
+		}
+		memset(head, 0, sizeof(head));
+		be16_put(head + MBOX_OFF_VERSION, MBOX_VERSION);
+		be16_put(head + MBOX_OFF_SIZE, n->mailbox_size);
+		head[MBOX_OFF_ROW_CAP] = n->row_cap;
+		head[MBOX_OFF_ROW_SIZE] = MBOX_ROW_SIZE;
+		head[MBOX_OFF_MAX_ROWS] = n->row_cap;
+		head[MBOX_OFF_CAPS] = n->caps;
+		head[MBOX_OFF_RENDERER] = g_game_id;
+		head[MBOX_OFF_CFG_ROWS] = n->row_cap;
+		if (mem_write(n->mailbox + 4, head + 4, sizeof(head) - 4) != ST_OK) return ST_IO_ERROR;
+		be32_put(head, MBOX_MAGIC);
+		if (mem_write(n->mailbox, head, 4) != ST_OK) return ST_IO_ERROR;
+		g_native_loads = 0;
+		g_native_stopped = 0;
+	}
+
+	/* Taken as install() takes any renderer's mailbox (its tail, the same words). */
+	g_page_seq = (be32_get(head + MBOX_OFF_PAGE_SEQ) + 1u) & ~1u;
+	g_last_ack = be32_get(head + MBOX_OFF_EV_SEQ);
+	g_pick_seq = be32_get(head + MBOX_OFF_PICK_SEQ);
+	if (be32_get(head + MBOX_OFF_EV_ACK) != g_last_ack &&
+	    mem_write_u32(box(MBOX_OFF_EV_ACK), g_last_ack) != ST_OK)
+		return ST_IO_ERROR;
+	g_hstate = head[MBOX_OFF_HSTATE];
+	g_frames = be32_get(head + MBOX_OFF_FRAMES);
+	g_row_cap = head[MBOX_OFF_ROW_CAP] > MENU_VIEW_MAX ? MENU_VIEW_MAX : head[MBOX_OFF_ROW_CAP];
+	g_row_size = head[MBOX_OFF_ROW_SIZE];
+	menu_model_reset(g_row_cap, g_row_cap, head[MBOX_OFF_CAPS]);
+	g_posted = 0;
+	post(1);
+	if (!g_posted) return ST_IO_ERROR;
+	g_last_poll = now_tick();
+	plat_log("menu: the game's own menu served for game %d, mailbox 0x%08X", (int)g_game_id, (int)n->mailbox);
+	return ST_OK;
+}
+
+/*
+ * The helper asks for the glue once per new pause menu VM (its loads word
+ * moves and its glue word says wanted): sent once for that value, when the
+ * Lua mailbox is free, and a glue that stopped in a VM is logged once.
+ */
+static void native_glue(void)
+{
+	const struct menu_native *n = g_native;
+	u32 glue = 0, loads = 0;
+
+	if (mem_read_u32(n->glue_addr, &glue) != ST_OK || mem_read_u32(n->loads_addr, &loads) != ST_OK) return;
+	if (glue == n->glue_wanted && loads != g_native_loads) {
+		int rc = lua_core_menu_glue();
+
+		if (rc == ST_OK) {
+			g_native_loads = loads;
+		} else if (rc != ST_BUSY) {
+			g_native_loads = loads;
+			plat_log("menu: the pause menu's glue could not be sent (%d)", rc);
+		}
+	} else if (glue == n->glue_stopped && loads != g_native_stopped) {
+		g_native_stopped = loads;
+		plat_log("menu: the pause menu's glue stopped on an error (LUA_STATUS has it)");
+	}
+}
+#endif
+
 /*
  * Puts the renderer into the game: every hook site must hold the game's own
  * word or the renderer's. All the game's: the data images (the mailbox, the
@@ -2053,6 +2178,10 @@ static int install(void)
 	int ours = 0;
 	u8 i;
 	int rc;
+
+#if QWARK_HAS_TOD
+	if (g_native != NULL) return native_install();
+#endif
 
 	for (i = 0; i < d->nhooks; i++) {
 		if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return ST_IO_ERROR;
@@ -2177,6 +2306,15 @@ static int uninstall(void)
 	u32 w;
 	int i;
 
+#if QWARK_HAS_TOD
+	/* A menu of the game's own UI has no hook: without the mailbox's identity the helper and the glue let it go. */
+	if (g_native != NULL) {
+		if (mem_write_u32(d->mailbox + MBOX_OFF_MAGIC, 0) != ST_OK) return ST_IO_ERROR;
+		plat_log("menu: switched off, the game's own menu let go");
+		return ST_OK;
+	}
+#endif
+
 	for (i = (int)d->nhooks - 1; i >= 0; i--) {
 		if (mem_read_u32(d->hooks[i].addr, &w) != ST_OK) return ST_IO_ERROR;
 		if (w != d->hooks[i].value) continue;
@@ -2224,6 +2362,29 @@ static int load(void)
 	int st;
 
 	if (g_mh != NULL) return 1;
+#if QWARK_HAS_TOD
+	if (native_game(g_game_id)) {
+		/* Its description is the game module's, there once the module is (revision 1.26). */
+		const struct game_api *g = session_game();
+		const struct menu_native *n = g != NULL && g->game_id == g_game_id ? g->menu_native : NULL;
+
+		if (n == NULL) return 0;
+		memset(&g_native_mh, 0, sizeof(g_native_mh));
+		g_native_mh.game_id = g_game_id;
+		g_native_mh.mailbox = n->mailbox;
+		g_native_mh.mailbox_size = n->mailbox_size;
+		g_native_mh.state = n->state_addr;
+		g_native_mh.mode_addr = n->mode_addr;
+		g_native_mh.mode_paused = n->mode_paused;
+		g_native_mh.pending_addr = n->pending_addr;
+		g_native_mh.pending_none = n->pending_none;
+		g_native_mh.screen_addr = n->screen_addr;
+		g_native_mh.screen_id = n->screen_id;
+		g_native = n;
+		g_mh = &g_native_mh;
+		return 1;
+	}
+#endif
 	g_mh = mh_pak_desc(g_game_id, &st);
 	if (g_mh != NULL) return 1;
 	if (st == UIPAK_OK) g_state = MENU_OFF;
@@ -2257,6 +2418,13 @@ static int try_install(void)
 	}
 	if (rc == INSTALL_REFUSED) {
 		g_state = MENU_REFUSED;
+#if QWARK_HAS_TOD
+	} else if (rc == ST_BUSY) {
+		/* Revision 1.29: the game's Lua helper not looked for yet (RPCS3), a moment from now. */
+		g_state = MENU_IDLE;
+		g_install_at = plat_time_us() + 250000ull;
+		return 0;
+#endif
 	} else {
 		plat_log("menu: install failed (%d); trying again in ten seconds", rc);
 		g_state = MENU_IDLE;
@@ -2332,6 +2500,19 @@ static void help_sync(void)
 	int i;
 
 	if (g_help.in == want) return;
+#if QWARK_HAS_TOD
+	/*
+	 * A menu of the game's own UI: a byte, which its glue reads every frame
+	 * and puts into the Help row the next time the pause menu's list shows,
+	 * so it may change at any time.
+	 */
+	if (g_native != NULL) {
+		if (mem_write_u8(g_native->help_addr, (u8)want) != ST_OK) return;
+		if (g_help.in >= 0) plat_log("menu: the Help row is %s", want ? "the menu's again" : "the game's own");
+		g_help.in = want;
+		return;
+	}
+#endif
 	if (plat_time_us() < g_help.retry || !help_safe()) return;
 
 	for (i = first; want && i < (int)d->nhooks; i++) {
@@ -2529,6 +2710,10 @@ static void serve(void)
 
 	deferred_tick();
 
+#if QWARK_HAS_TOD
+	if (g_native != NULL) native_glue();
+#endif
+
 	/* Revision 1.23: a menu.help change, or a swap still waiting, once it is safe. */
 	if (g_state == MENU_READY) help_sync();
 }
@@ -2587,12 +2772,6 @@ void menu_tick(void)
 void menu_combo(void)
 {
 	if (g_state == MENU_OFF) {
-#if QWARK_HAS_TOD
-		if (g_game_id == GAME_TOD && plat_can_patch_code() && config_get_u32(MENU_TOD_KEY, 0) == 0) {
-			unavailable(WHY_NO_RENDERER, "Trainer menu: a prototype in ToD, off until config.txt has menu.tod=1");
-			return;
-		}
-#endif
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
 		            ? "Trainer menu: not available in this game yet"
 		            : "Trainer menu: not available under RPCS3");
@@ -2611,6 +2790,12 @@ void menu_combo(void)
 	 * cost). Build 55: and after ui.pak was found wanting, it is read again.
 	 */
 	if (g_state != MENU_READY && !(load() && try_install())) {
+#if QWARK_HAS_TOD
+		if (g_native != NULL && g_native_why == 1)
+			unavailable(WHY_NO_HELPER, plat_can_patch_code() ? "Trainer menu: the game's Lua helper cannot go in"
+			                                                 : "Trainer menu: needs qwark's RPCS3 patch (Lua helper)");
+		else
+#endif
 		if (g_state == MENU_REFUSED)
 			unavailable(WHY_REFUSED, "Trainer menu: another mod holds the menu's hooks");
 		else if (g_state == MENU_NOPAK)

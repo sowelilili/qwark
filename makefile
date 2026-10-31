@@ -178,17 +178,8 @@ release:
 # to /dev_hdd0/qwark/ui.pak beside the module's data, and a module takes only
 # the pak built with it (src/core/uipak.h). Python, as for check.py.
 #
-# 2026-10-31: a build with Tools of Destruction (QWARK_GAME_MODULES, a test
-# build) packs ToD's renderer too, a prototype, as an entry outside the
-# renderers' identity (pak.py --tod); a release packs exactly what it did
-# before. Packed every time, so a release after a test build never ships the
-# test build's pak.
-#
-ifneq ($(strip $(QWARK_GAME_MODULES)),0)
-PAK_TOD = --tod
-endif
 ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
-	python -I src/games/menuhelper/pak.py --out ui.pak $(PAK_TOD)
+	python -I src/games/menuhelper/pak.py --out ui.pak
 
 #
 # Revision 1.26: the game modules, rac1.sprx to rac4.sprx (src/games/
@@ -433,6 +424,6 @@ dist: ui.pak pkg
 	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
 	else echo "dist/ holds a RELEASE build (dev 0)"; fi
 
-.PHONY: ui.pak all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale luahelper luahelper-if-stale pkg dist
+.PHONY: all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale luahelper luahelper-if-stale pkg dist
 
 include $(CELL_MK_DIR)/sdk.target.mk

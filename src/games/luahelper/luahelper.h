@@ -27,6 +27,7 @@
 #endif
 
 #include "../../core/luamb.h"
+#include "lh_menu.h"
 
 #ifndef __ASSEMBLER__
 
@@ -54,9 +55,29 @@ int    lh_type(lh_u32 L, int idx);
 int    lh_toboolean(lh_u32 L, int idx);
 lh_u32 lh_tostring(lh_u32 L, int idx);
 
-/* The C halves of the two entries (luahelper.c). */
+/*
+ * Revision 1.29, the menu half's. lua_Number is float in this game: a number
+ * goes in and comes out in f1, as the game's own callers pass it. A string's
+ * length is a size_t, 32 bits here. lh_pushcclosure takes the address of a
+ * function descriptor ({ entry, TOC }), which is what the game's Lua calls
+ * through.
+ */
+lh_u32 lh_anark_alloc(void);
+void   lh_pushnil(lh_u32 L);
+void   lh_pushnumber(lh_u32 L, float n);
+void   lh_pushlstring(lh_u32 L, lh_u32 s, lh_u32 len);
+void   lh_pushstring(lh_u32 L, lh_u32 s);
+void   lh_pushcclosure(lh_u32 L, lh_u32 desc, int n);
+void   lh_gettable(lh_u32 L, int idx);
+void   lh_settable(lh_u32 L, int idx);
+float  lh_tonumber(lh_u32 L, int idx);
+
+/* The C halves of the entries (luahelper.c, lh_menu.c). */
 void lh_tick(lh_u32 vm);
 void lh_err_tap(lh_u32 vm, lh_u32 msg);
+void lh_menu_tick(lh_u32 ms);
+int  lh_qw(lh_u32 L);
+int  lm_pause_check(int pressed);
 
 #endif /* __ASSEMBLER__ */
 

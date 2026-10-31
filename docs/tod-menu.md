@@ -1,129 +1,90 @@
-# Tools of Destruction's console menu (2026-10-31, a prototype)
+# Tools of Destruction's console menu: the game's own pause menu (revision 1.29, pending)
 
-The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`): the reverse engineering behind it, and what the prototype in `src/games/menuhelper/mh_tod.*` does.
+The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`), drawn by the game's own pause menu as the four original games' menus are: a **TRAINER** row in place of the pause menu's Help row, and qwark's pages on the game's own Cheats screen. This file has the reverse engineering, the design, and the test lists for a console and RPCS3.
 
-Everything here was read from the executable and the game's data alone, in Ghidra (DL-ghidra:/NPEA00452.ELF) and with the SDK's objdump. **Nothing has run on a console or on RPCS3 yet.** The prototype is off unless config.txt has `menu.tod=1`, so a normal ToD session is exactly what it was.
+Read from the executable, the pause menu's data (`built/anark/pause/built.dat` in `global_cached.psarc`, its 28 compiled Lua 5.0.2 chunks decompiled) and Ghidra (DL-ghidra:/NPEA00452.ELF). **Nothing here has run on a console or on RPCS3 yet** (section 7). Confidence marks as in the other ToD reports: **high** read end to end; **medium** read, the effect in game inferred; **low** a lead.
 
-Confidence marks, as in the other ToD reports: **high** the code path was read end to end; **medium** read, the effect in game inferred; **low** a lead.
+It replaces the prototype of 2026-10-31 (commit 55ef029: a panel of its own drawn with `Text_Draw`/`Sprite_Draw` from a frame hook at 0x3C5CD8 and a pad hook at 0x5D144C, ui.pak kind 3, `menu.tod`). The prototype is gone: no renderer of ToD's is in ui.pak any more, `menu.tod` means nothing, and the two hooks are never written. Its findings about the HUD's drawing calls are in that commit's version of this file.
 
-## 1. How the four originals' menus differ from what ToD allows
+## 1. The pause menu (high)
 
-The four renderers draw the menu with each game's own menu widgets, inside the game's own pause, and turn its Help row into the Trainer row. ToD's pause menu is an Anark presentation (`built/anark/pause/built.dat`, 28 compiled Lua chunks, `onHelp`, `helpHandler`, text tags in `anark_loc_text_tags.*.pkg`) run by the menu's own Lua VM: there is no list of rows in the executable that a word could turn. So ToD's renderer draws its own panel over the frame with the game's HUD primitives, as the draft's "option A" did, and opens with the combo.
+- **The state.** Start in play reaches `Game_UpdateFrame`'s last test, `thunk_InputMapper_isPressed(g_gameInputMapper, 1)` at **0x4C5ABC**, once every earlier check has passed (no menu up, no load request, `thunk_Game_isPauseBlocked(0)` clear, `g_planetLoadRequest` -1, the level more than 120 frames old). It then calls `thunk_PauseMenu_request` (0x23BB4): `g_pauseMenuRequest` (0x101CB228, `/ToD/Anark/PauseMenuRequest`) filled, and an overlay queued on the state stack (`GameState_queueOverlay`, op 2, state 5).
+- `PauseMenu_enter` (0x248B4) sets `g_pauseMenuState` (0x101CB218) to 1 and starts `PauseMenuLoadingThread` (0x24A60): it builds an `AnarkMenuSystem` (0x14B0 bytes, `/ToD/Anark/AnarkMenuSystem`, `AnarkMenuSystem_ctor` 0x654768) out of the pause's arena into **`g_pauseMenuSystem` (0x101CB220)**, loads the presentation, opens the menu package's bindings (`tolua_menu_open`) on its VM, sets +0x10AB (the next update starts the presentation) and leaves. `g_pauseMenuState` 2 and 3 are "up", 4 closing (`PauseMenu_close` 0x23C9C, which `exit_pause_menu` reaches), 0 none (`PauseMenu_exit` 0x24610).
+- **The frame.** `PauseMenu_update` (0x2406C, `g_gameState` 5's update, main thread) calls `thunk_AnarkMenuSystem_update` at **0x242B0** (`bl 0x119D0`, then `ld r2,40(r1)`) with r3 = `g_pauseMenuSystem`, only in states 2 and 3. `AnarkMenuSystem_update` (0x653D30) makes the Anark VMs' allocator current (`AnarkMenu_luaAllocator` 0x653048 returns `g_anarkLuaAllocator`, 0x1073DC40), reads the pads (`Input_UpdatePads`), runs the presentation and its Lua, and forces a full GC every second.
+- **The menu VM.** The system's **lua_State is at +0x106C** (`AnarkMenuSystem_getLuaState` 0x653BBC; set by `AnarkMenuSystem_startPresentation` 0x654DD4 from the Lua object at +0x1058). It is a new state for every pause (the arena is reset, so the address can repeat). Lua 5.0.2, the base, table, string and math libraries, the menu package (179 functions: `exit_pause_menu`, `get_num_cheats`, `set_cheat_state` ...), the Anark framework (`scene`, `Presentation`, `Node`, `Event`, `Color`, `LOC`), and `SetLocalizedText` (Lua source embedded at 0x100FA7A0: a number is a text tag, a string is shown as it is).
+- **The config VM** (`g_configLuaVM` 0x101E7E50) is the tuning sheets' and is not the menu's; the galactic map, vendors and front end are other `AnarkMenuSystem`s with other callers of the update (0x360BC, 0x39A38, the loading thread), which the menu does not touch.
 
-## 2. The findings
+## 2. The pause menu's structure (high, from the decompiled chunks)
 
-### 2.1 The frame, and a hook that runs in play and in the pause (high)
+The presentation is a scene of slides; each screen's behaviour is a Lua chunk run with `self` the behaviour node, its methods assigned onto it (`self.handleSelect = function ...`), and the nodes it uses found by path properties (`this.parent.ScrollableList`).
 
-- `GameMain_Loop` 0x4C2DE4 runs `GameState_Update` 0x630CE4 for ever. It updates the **top tier** of the state's tier stack only (`GameTierStack_updateTop` 0x640CDC, `GameTier_update` 0x640A14 through the tier's vtable +0x20).
-- In a level the top tier is `g_levelTierState` (0x1037A620, `vtbl_LevelTierState` 0x10073470), whose update is `Level_Update` 0x3C0540, which calls `LevelTransition_runFrame` 0x3C5C88 every frame. The load loops (`LevelTransition_waitLoad`) call it too, with a second argument of 1.
-- `LevelTransition_runFrame` is one whole frame: `0x2681F0` (into 0x6C2058), `GameState_Dispatch` 0x4C5DF0 (the frame's update and its draws, by `g_gameState`), `0x4C290C` (empty), `0x555510` (moby deletions), then, only on a load frame, **`LoadScreen_DrawArrival` 0x25DCA8**, the load screen's "arriving at" text, and then **`bl 0x26AA40`**, `thunk_Frame_limitAndFlip`, the cross-range trampoline to `Frame_limitAndFlip` 0x6B9900 (the frame limiter, then `Gcm_endFrameFlip` 0x539D68, which ends the command buffer and calls `cellGcmSetFlip`).
-- `g_gameState` (0x10387F4C), as `GameState_Dispatch`'s jump table at 0x4C5F3C reads it: 4 play (`Game_UpdateFrame` 0x4C542C), **5 the pause menu (`PauseMenu_update` 0x2406C**, through the trampoline 0x268A50), 7 an FMV (0x3170DC), 9 a realtime cinematic (0x84EFC), 3 a level load, 11 the credits. Ghidra's enum `ToDGameStateId` gained `TOD_GAMESTATE_PAUSE_MENU = 5`.
-- **The hook: 0x3C5CD8, `bl 0x26AA40` (word 0x4BEA4D69).** It runs every frame of a level, in play, paused, in a cinematic and on the load screens, after the frame has been drawn and before the flip, the very place the game itself draws the arrival text with the same `Text_Draw`. The stub runs the menu and then branches to the trampoline with the game's r2 and LR, exactly as the replaced `bl` would. The front end (the title menus) is another tier and does not reach it, which is right: the menu is for a level.
-- `Game_UpdateSystems` is not usable for this: `Game_UpdateFrame` sets flag 0x10 and skips it in the pause (REPORT-tod-lua 2.3).
+- **`ListUpdater`** (the pause's lists, one behaviour): `SetupMenus` builds `self.menuData[menu][i] = { text tag, callback }`. MAIN_MENU_INDEX 1 is Mission, Quick select, Weapons, Inventory, Gadgets, Items, Options, Extras (space combat and arena levels have their own first rows). **OPTIONS_MENU_INDEX 2: Game options (45 is Help's tag...) — 1 Game options, 2 Controls, 3 Moves, 4 Help (`{45, self.onHelp}`), 5 Save, 6 Load.** EXTRAS 3: Skill points, Cheats, Concept art, Cinematics, Skins. `handleSelect` calls the row's callback; `ActivateItem` shows a row's label with `SetLocalizedText(item, menuData[i][1])`. `onHelp` is `scene:goToSlide(12)`, `onCheats` `scene:goToSlide(16)`; every screen's back is `scene:goToSlide(21)`, the list (`blankHandler`), whose activation puts the list back on its own slide (`currentSlide`: 3 main, 7 options, 9 extras).
+- **`cheatHandler`** (slide 16, the Cheats screen): a `ScrollableList` (`listBehavior`, six visible rows `cheat1`..`cheat6`, each a `label` and a `value` text; it scrolls any count) driven by the handler's `getNumListItems`, `setListItemValue(i, item)`, `isSelectable(i)`, `onSelectedItemChanged`, `handleSelect`/`handleRight` (`changeCheatState(1)`), `handleLeft` (`changeCheatState(-1)`) and `handleBack` (slide 21); the list calls them through `self.listUpdater:...`, by name at every call. The screen's title is the text node `Page_name2` ("CHEATS"), its description `Description` (`itemDesc`), and `skillpoint_label`/`skillpoint_value` the counter. Its own values come from globals (`get_num_cheats`, `is_cheat_unlocked`, `get_cheat_name`, `get_cheat_state_name`, `get_cheat_desc`, `set_cheat_state` ...).
+- The options screens (`optHandler`, `controlHandler`) are label/value lists too; the Cheats screen is the one whose rows are plain label and value text set from Lua, which is what qwark's rows are.
 
-### 2.2 The 2D primitives (high for the calls; medium for their look, which no one has seen)
+## 3. The design
 
-**The debug-text lead is a dead end.** The menu package's `screen_out` (0xB334C) ends in `bl 0x885BC` at 0xB33E8 (the DB-only patch there, `bl puts`, is someone's experiment, left as it is). 0x885BC is the third word of a tolua field setter (0x885B4, a float to int at +0x28), not a function: the debug print it once called was stripped and the linker left the relocation pointing into the next function. It would crash if called. There is no debug text routine in retail.
+```
+qwark (C, src/core/menu.c)          menubox (0x8CD000)          the Lua helper (C, in the game)       the glue (Lua, pause VM)
+ the pages, rows, values,  --post--> page, seqlock    --take-->  lh_menu.c: copy, rows,      <--qw()-- TRAINER row, Cheats screen,
+ what a row does           <--ack--- events           <--post--  events, hstate, requests    --qw()--> presses, back, open/close
+```
 
-**Text: `Text_Draw` 0x688C64** (descriptor 0x898140, r2 0x8CB054), the call the load screen's arrival text and the loading pages (`LoadScreen_DrawImageAndText` 0x3BE474) make, and under the HUD's text box widget (`HudTextBox_draw` 0x68A92C) the same layout code:
-- `r3` the string (UTF-8 through `Text_NextChar` 0x6BFEC4; ASCII is itself; 0xE0xx are the button glyphs, 0xE2xx and 0xFxxx colour codes);
-- `r4` a 16-byte position, x and y first, in the HUD's screen units (below);
-- `r6` the colour, RGBA (alpha in the low byte, 0xFF opaque), multiplied by the HUD's alpha stack;
-- `r8` the font (0 or 1; the arrival text uses 1);
-- the 9th integer argument (the caller's stack at 0x74) the shadow's colour, RGBA, 0 for none;
-- `f1` the size, `f2` a wrap width (0 none), `f3`/`f4` the alignment (0 left/top, 0.5 centre, 1 right/bottom), `f5`/`f6` the shadow's offset, `f7` the line spacing (-1 the font's).
+- **qwark's side is unchanged.** The menu's model, pages and rows (`menu.c`, ToD's `game_api.menu` in `tod_game.c`) and the mailbox (`menubox.h`, version 3) are every game's. ToD's mailbox is at 0x8CD000 (0x880 bytes: 32 rows of 0x40, either page type, caps STEPS | BACK | REQUEST, renderer 5). What is new for menu.c is only that the "renderer" is the game's own (`game_api.menu_native`, `struct menu_native`): no ui.pak entry, no cave and no hook of the menu's; its install is the game's Lua helper (`lua_core_helper_ready`) and a mailbox header menu.c writes itself; `menu.help` is a byte (0x8CE000); `menu.enabled` 0 clears the mailbox's identity.
+- **The Lua helper's pause-menu half** (`src/games/luahelper/`, revision 1.29), C in the same cave as the gameplay half, two more hooks:
+  - **0x242B0** (`bl 0x119D0` -> `bl .lh_menu_hook`): calls the update as the game did, then `lh_menu_tick(ms)` on the pause menu's lua_State with the Anark allocator current: for a new VM it registers the C function `qw` and asks qwark for the glue (`LM_GLUE` WANTED, `LM_LOADS` + 1); it serves requests for the menu's VM (the Lua mailbox's target MENU, below); and it calls the glue's `qwark_frame` every frame under `lua_pcall` (an error goes to the Lua mailbox's err area as "qwark-menu" and stops the glue for that pause; LUA_STATUS shows it).
+  - **0x4C5ABC** (`bl 0x2672E0` -> `bl .lh_pause_hook`): the pause test itself, then `lm_pause_check`: qwark's open request in play answers "pressed", so the game opens its pause exactly as for Start, past every check of its own, and the glue opens the menu in it.
+  - `lh_menu.c` is the bridge's C, the same jobs as the four renderers' `mh_core.c`: the page copied out of the mailbox under its seqlock into a block of its own (0x8CE040), so the glue reads rows only from there; a press posted as an event with the shown page's key and the row's id, one in flight at a time; hstate and the frame count; the requests. A gameplay frame (`lm_gameplay_frame`) closes the menu (any way out of the pause) and makes the next pause a new VM. Host-tested on the PC (`test/test_tod_menu.c`).
+- **The glue** (`src/games/luahelper/lh_glue.lua`, about 7.6 KB once its comments are out): **qwark sends it** to each new pause menu VM as a request of target MENU (`lua_core_menu_glue`, from menu.c's serve, once per `LM_LOADS`), because in the cave it would make the helper's RPCS3 patch (LUA_PATCH) bigger than a reply. It finds the nodes by name (`cheatHandler`, the `ListUpdater` with `menuData`, `Page_name2`, `skillpoint_*`), and wraps, never replaces:
+  - Options' row 4 becomes `{ "TRAINER", open }` while the Help byte is 1, the game's `{45, onHelp}` otherwise (checked to be Help before anything is touched);
+  - `open()`: hstate open, then the Cheats screen (slide 16), as `onCheats` goes there;
+  - while the menu is up, the handler's methods and the cheat globals answer from qwark's page (`qw(1, i)`): the label at the left, the value at the right (">" for a link), INFO rows not selectable, the title in `Page_name2`, qwark's last answer in the description; the cross posts ACTIVATE, Left/Right post LEFT/RIGHT on rows that step, Triangle posts BACK, or at qwark's root leaves to the list (slide 21); `changeCheatState`, `set_cheat_state` and `Node.goToSlide(21)` are caught too, for presses the game might route around the wrapped methods;
+  - every frame `qwark_frame` polls (`qw(0)`): a new key restarts the list with the cursor where qwark keeps it, new values refresh the visible rows, a request is taken (open; close leaves the menu and `exit_pause_menu()`), and with qwark gone (identity cleared) the menu leaves and Help is the game's again;
+  - the cursor at the window's edge of a page longer than 32 rows posts SCROLL_UP/DOWN, as the renderers do.
+- **The combo** (edge-triggered by qwark's combo arming, as for every game: one request per press, a held combo fires nothing more): menu closed -> REQ_OPEN; in play the pause test takes it (the pause opens, the glue opens the menu on its first frames once the pause has settled, 15 frames), in the pause the glue takes it; menu up -> REQ_CLOSE, which leaves the pause. A request nobody takes in 0.5 s is withdrawn by qwark as for every game; one the pause test took waits up to 30 gameplay frames for the pause to come up.
+- **The Lua mailbox, version 2** (`luamb.h`): `target` (byte 0x26, qwark's: 0 gameplay VM, 1 the pause menu's) and `menu_beat` (0x3C, +1 every pause menu frame). The gameplay frame serves only target 0, the pause menu's frame only target 1; a MENU request's timeout reads `menu_beat`. LUA_EXEC's `flags` bit0 picks the menu's VM (NOT_FOUND with no pause up). The gameplay half is otherwise as it was.
+- **C first.** Every value, label and decision is qwark's, in C; nothing polled goes through Lua (the glue's qw() calls read the helper's copy in the game's memory); the only Lua is what the game's menu system needs to show rows and hand back presses.
 
-It fills a `ToDTextDrawVisitor` (0x90 bytes, `vtbl_TextDrawVisitor` 0x100FC520) and runs `TextVisitor_run` 0x6C0510, which lays the text out; the visitor's `begin` (`TextDrawVisitor_begin` 0x687F28) takes vertex memory from the high push buffer and sets the HUD's vertex and fragment programs and alpha blending, `glyph` (0x687A58) writes four corners a glyph, `flush` (0x6874A0) writes the texture and the draw straight into the GCM command buffer (`g_gcmContext` 0x1066B708). So it draws at once: it has to run where 2D drawing is valid, which the arrival text proves for the hook above. A glyph's screen place is `(glyph + cursor) * size + position`, then `g_hudScaleX/Y` and `g_hudOffsetX/Y` (0x10740BC4/BC0, 0x10740BCC/BC8) take it to the GPU's space.
+## 4. What is native and what is not
 
-The fonts: `Font_Load` 0x6BE7F0 reads `built/fonts/<region>/font.dat` (IGHW sections 0x29000..0x29500: two fonts, 378 code points, the glyph table, the texture pages in `font.tp`); `Font_Select` 0x6BCF00 makes one current (`g_fontCurrent`, `g_fontCurrentData`, `g_fontCurrentIndex`); `Font_Height` 0x6BE4DC is its line height in unscaled units (a text's on-screen height is that times the size); `Font_TextWidth` 0x6BF328 a string's width; `Font_ScaleSize` 0x6BD168 the point size the arrival text uses (24 points, font 1); `Font_SetButtonLayout` 0x6BD514 remaps the button glyphs for the cross/circle swap.
+- Native: the pause menu, its Options list and its row, the Cheats screen with its list widget, scrolling, highlight, description box, title, its sounds where the game plays them (the glue adds the list's own success and back cues), the game's input, the game's own pause (no frozen clock, no pad blanking), Start/back behaving as the pause does.
+- Not native: the rows' text is qwark's English labels, not localised; MAIN and CONFIG pages are both shown on the Cheats screen's two-column list (a link's value column says ">"); there is no slider (no ToD row has a range).
 
-**Filled rectangles: `Sprite_Draw` 0x683A44** (descriptor 0x897F38), `(ToDHudRect *rect, ToDHudSprite *sprite)`: a textured quad in the HUD's units, four corner colours, alpha, blend, rotation, an optional shadow. `Sprite_Init` 0x682D30 (0x897EE8) fills a `ToDHudSprite` (0x40 bytes) with the game's defaults: `g_defaultTexture` (0x1066B970, the texture every failed lookup falls back to), UVs 0..1, white corners, alpha 1, blend 0x400 (SRC_ALPHA, ONE_MINUS_SRC_ALPHA). With that texture and four corner colours of one RGBA, a sprite is a filled rectangle. *Inferred*: that the default texture is plain white (it is the fallback of 73 texture slots across the game's code); if it is a checker, the panel shows the checker tinted.
+## 5. Memory
 
-**The HUD's alpha stack:** `Hud_ResetAlpha` 0x682DBC (depth 0, alpha 1.0), `Hud_PushAlpha` 0x682DD8, `Hud_MulAlpha` 0x682E3C, `Hud_PopAlpha` 0x682E0C, `Hud_GetAlpha` 0x682E20, on `g_hudAlphaDepth` 0x10740B30 and `g_hudAlphaStack` 0x10740B34. Every text and sprite flush multiplies its alpha by the top. The game's own full-screen pages start with `Hud_ResetAlpha`, and so does the menu.
+| What | Where | Size |
+|---|---|---|
+| the Lua helper's code (both halves) | 0x867360.. | 4,680 bytes (cave to 0x870000) |
+| the Lua mailbox | 0x8CA000..0x8CC600 | 0x2600 |
+| the menu's mailbox | 0x8CD000..0x8CD880 | 0x880 |
+| the helper's menu block (help byte, glue word, the page's copy) | 0x8CE000..0x8CE890 | 0x890 |
 
-**The screen:** `g_hudScreenRect` (0x10740BD0, `ToDHudRect`) is `(0, 0, height * aspect, height)`, which `StageCore_Main` sets through `Hud_SetScreenSize` 0x6894D4 from the display's height and aspect: display pixels, 720 high at 720p. The menu lays itself out in fractions of it, so it is the same on every display mode.
+All in the code and OPD segments' last 64 KB pages, unreferenced by the executable (`check.py`). The four hooks go in reverse order: the pause test, the pause menu's update, the error tap, the VM hook last. LUA_PATCH is now about 1,180 words.
 
-**The Anark UI** draws through the same calls (its text boxes are `HudTextBox_draw`, its images `HudSprite_draw` 0x68A574 on `Sprite_Draw`), so the menu's text and the pause menu's are the same font. Driving an Anark presentation from native code would need its scene graph; not looked at further.
+## 6. RPCS3
 
-### 2.3 The pad, and keeping it from the game (high)
+Supported, which none of the four originals' menus is: the menu needs no code of its own beyond the Lua helper, which RPCS3 takes as the LUA_PATCH patch at boot; the menu's mailbox, the help byte and the glue are data writes and a request over PINE. `qwark-rpcs3` installs the menu once it has found the patch (LUA_STATUS installed 1); without the patch the combo says "needs qwark's RPCS3 patch (Lua helper)". MENU_HELP answers OK in `qwark-rpcs3` now. The open question is the Lua helper's own live check 3 (docs/tod-poc.md 5): whether RPCS3 runs code in the segment padding at 0x867360.
 
-- `Pad_Update` 0x5D0F50 reads the four pads (`cellPadGetData`) into four `ToDPadState` blocks of 100 bytes at `g_padAnalogs` 0x10691918: the sticks at 0, four sensor floats at 0x10, twelve pressures at 0x20, then the u32 masks pressed 0x50, released 0x54, **held 0x58 (`g_padMask` 0x10691970)** and the previous held 0x5C, a flags byte and the connected byte. The edges are `(previous ^ held) & held` and `& ~held`, the previous being the held mask as the read found it.
-- It is called from play (`InputDemo_update` 0x66978C, from `Game_UpdateSystems`) and from the Anark menus (`Input_UpdatePads` 0x6E5380 from `AnarkMenuSystem_update` 0x653D30), so a pad hook inside it covers play and the pause alike, where `InputDemo_update` alone would not.
-- **The hook: 0x5D144C, `Pad_Update`'s last call, `bl 0x63182C` (word 0x480603E1, a nop after it, the same TOC range).** The stub notes pad 0's held mask for the menu and, while the menu is up, zeroes every block's floats and edges and its held mask, then calls 0x63182C (an unnamed step over the pads' blocks) and returns. The game sees no stick and no button. At the end of the menu's frame the shim writes pad 0's real held mask back, so the game's next read takes no press for a button that was down all along (no Start leaking into the game when Start closes the menu) and qwark's hot block, which reads `g_padMask`, sees the combos.
-- The Anark menu system has a pad block of its own (its input object, filled by `Input_UpdatePads` from these blocks) and a byte at +0x10AA that clears it: not needed, since the menu blanks its source.
+## 7. Test lists
 
-### 2.4 Opening the menu
+**Console** (a test build: `tod.sprx`, no ui.pak needed for ToD; `menu.enabled` and `menu.help` at their defaults):
 
-- **The combo (built).** qwark's menu combo puts an open request in the mailbox as for every game. The frame hook takes it on the next frame with `g_gameState` 4 (play) or 5 (the game's pause) and nothing queued on the state stack (`g_gameStatePendingOp` 0x10387DBC is 0); in any other state (a load, a cinematic, an FMV, the credits) it leaves the request, and qwark withdraws it half a second on, as for the other games. Start, Select, Triangle or Circle on the root, or the combo again, close it.
-- **A "Trainer" row in the pause menu (not built): feasible, about a week.** The pause is `built/anark/pause/built.dat`, an Anark presentation with its own Lua: `onOptions`, `onGameOptions`, `onControls`, **`onHelp`** and `helpHandler` are compiled Lua functions of the menu VM, and the row's label is a text tag ("HELP") in `anark_loc_text_tags.<lang>.pkg`. Three ways, cheapest first:
-  1. **The menu VM's Lua.** After `PauseMenuLoadingThread` brings the pause up ("Pause Menu brought up in %.2f milliseconds"), redefine the global `onHelp` in the pause's `CLuaContext` to a chunk that calls `exit_pause_menu()` and sets a byte the renderer reads, and rewrite the "HELP" tag's string in the loaded localisation table. It needs a native entry into the *menu* VM on its own thread (the Lua helper only knows the gameplay VM, `g_gameplayLuaVM`), the context's address once the pause is up, and a byte the menu VM can write (a binding such as `set_cheat_state` aimed at a spare cheat byte, or a native closure registered by the helper). Medium to hard; every piece is the Lua helper's kind of work.
-  2. **The presentation's data**: patch the compiled chunk in memory after the load. The chunk is bytecode in an IGHW container; changing it means a new constant and a new call, and a different layout per language. Hard.
-  3. **The text alone**: relabel HELP to TRAINER (the tag table) and open the menu when the help screen opens (`g_gameState` stays 5; the help log's own Lua runs). Cheap, but the help screen would open under the menu. A fallback.
-- So the prototype opens by combo only, and has no Help row (`MH_NO_HELP_ROW`, `nhelp` 0).
+1. qwark.log a few seconds into a level: "lua: helper installed", then "menu: the game's own menu served for game 5, mailbox 0x008CD000". Play a minute (walking, a death, a cutscene, the pause): nothing differs.
+2. Start -> Options: the fourth row reads **TRAINER**. qwark.log has no "glue failed"/"glue stopped" line; LUA_STATUS shows no "qwark-menu" error. (If the row still says HELP, check LUA_STATUS's err.)
+3. TRAINER: the Cheats screen shows "Trainer" in its header and qwark's root (Game, Cheats, Manips, Planets, Unlocks, Save files ...), ">" beside each; the skill points counter empty. Up/Down move and scroll; the highlight follows; Triangle goes back to the Options list.
+4. Cheats > Infinite ammo: the cross (or Right) turns it On (the client's checkbox follows); Left back Off. Max bolts: the cross. Back with Triangle to the root, Triangle again to Options.
+5. Game > Save position, leave the pause, move, pause, Trainer > Game > Load position.
+6. Planets > a planet: the pause closes and the planet loads.
+7. The combo in play: the pause opens and the Trainer opens on its own about half a second later. The combo again: the pause closes. Hold the combo for a second: it opens once and stays open.
+8. The combo in the pause (on its first list, then from inside Weapons): the Trainer opens.
+9. Start inside the Trainer: the pause closes as from any screen; the next combo opens it again (qwark saw the close).
+10. The game's own Cheats screen (Extras > Cheats) after using the Trainer: the game's cheats, title and counter as before.
+11. The client's In-game menus switch off (MENU_HELP 0): Options says HELP again at the next pause, and Help works; the combo still opens the Trainer.
+12. `menu.enabled = 0`: no TRAINER, the combo says the menu is off.
+13. A space combat level and an arena challenge: Options > TRAINER there too.
 
-### 2.5 Pausing (medium)
+**RPCS3** (with the client's new Lua helper patch written and the game restarted): the same list. Before it, live check 3 of docs/tod-poc.md (the heartbeat at 0x8CA028 counting in play), and the menu heartbeat at 0x8CA03C counting while paused.
 
-- The four originals' menus live inside the game's pause. ToD's renderer, opened from play, freezes the game instead: it writes 0.0 to the game clock's time scale (`g_gameClock` 0x1074DDA8 + 0, the word `Lua_time_set_scale` 0x2956F4 writes, which the game's own slow-motion effects write too, 0x4020BC) every frame it is up, and puts back the scale it found as it closes. With the scale at 0 the frame's delta is 0, and `Game_UpdateFrame` then sets its flags 0x1B, which skip the gameplay systems (`Game_UpdateSystems`, the camera's update): the world stops but is still drawn. *Inferred, not seen:* that nothing in play moves with a delta of 0.
-- Opened over the game's own pause (state 5) it touches no clock: the game is paused already.
-- A level load, a cinematic or the credits taking the game out of states 4 and 5 closes the menu, the clock put back.
+## 8. Ghidra (DL-ghidra:/NPEA00452.ELF)
 
-### 2.6 Caves (high, from the file; the mapping is the Lua helper's open question)
-
-| What | Where | Size | Used |
-|---|---|---|---|
-| Lua helper's code | 0x867360..0x867884 | 1,316 bytes | the Lua helper (unchanged) |
-| **menu code** | **0x868000..0x86E000** | 24 KB | 8,780 bytes (the core 4,952) |
-| Lua helper's mailbox | 0x8CA000..0x8CC600 | 9.5 KB | the Lua helper (unchanged) |
-| **menu mailbox** | **0x8CD000..0x8CD800** | 2 KB | 1,024 bytes (14 rows) |
-| **menu data** | **0x8CE000..0x8D0000** | 8 KB | 2,876 bytes (the core's state 0x8B0, the shim's 0xC0, read-only data, TOC, descriptors) |
-| fast loads' switch and pieces | a dead function at 0x3EB578 | 400 bytes | 308 (unchanged; 52 left, not touched) |
-
-The code cave is the padding of the R-X segment's last 64 KB page (the segment ends at 0x867360, the next starts at 0x870000), the data caves the padding of the OPD/TOC segment's last page (it ends at 0x8C9A08, its TLS image at 0x8C9BF8). Nothing in the executable refers to any of them (check.py). They exist only if lv2 maps whole 64 KB pages, which the Lua helper relies on too and which is its live check 2: on a console where they are not, ps3mapi's write fails and the install is refused, with nothing hooked. More room if ever needed: the code page has 7.8 KB after the menu's area, the data page 2 KB between the two mailboxes and 5.3 KB at the end of the menu's data; the RW BSS page past 0x108A8570 (the fast loads' flag byte at 0x108A8560) is another 31 KB if lv2 maps it whole.
-
-### 2.7 RPCS3
-
-None of the four originals' renderers runs under RPCS3: `menu_enter_id` installs nothing where code cannot be patched, and PROTOCOL.md 9.10 says so ("RPCS3 has no console menu"); the client greys the menu combo there. ToD's prototype is the same. Bringing it to RPCS3 would take, for any game:
-- the renderer's code caves and hook words as rows of the RPCS3 patch the client writes (ToD's SWITCH_PATCH, or a new MENU_PATCH op, as LUA_PATCH is for the Lua helper), and an install path in `menu.c` that, under `QWARK_EMULATOR`, writes only the data caves over PINE and checks the hook words are the patch's;
-- for ToD in particular, that RPCS3's PPU recompiler runs code in the segment padding at 0x868000 (the Lua helper's open live check 3; the fast loads' switch avoided the question by using a dead function, which has 52 bytes left, far too few for 8.7 KB).
-
-A protocol and client change, so not done here.
-
-## 3. The prototype
-
-Files: `src/games/menuhelper/mh_tod.h` (addresses, words, layout), `mh_tod.c` (the shim), `mh_tod_stubs.S` (the two stubs), `mh_tod_state.S` (the images); `build.sh` (`tod_entry`, `tod_ldflags`, `tod_hooks`, `tod_query`, `MH_NO_HELP_ROW`), `pak.py` (`--tod`, `--tod-id`, kind 3), `check.py` (`check_tod_menu`, the pak with ToD); `src/core/uipak.c` (kind 3 under `QWARK_HAS_TOD`, `MH_TOD_PAK_ID`), `menu.c` (`menu.tod`, `menu_none`), `session.c` (NO_MENU through `menu_none`), `src/games/tod_game.c` (ToD's menu table); the makefile packs ToD's entry in a test build only. `mh_core.c`, `mh_shim.h` and `menubox.h` are unchanged, and the four originals' renderers are byte for byte what they were (`MH_PAK_ID` 0xD06745A8).
-
-**What it does.** With `menu.tod=1` in config.txt, a few seconds into a ToD session qwark writes the mailbox, the state, the read-only data and the code out of ui.pak's ToD entry and then the two words. The combo in play or in the game's pause opens a panel over the frame:
-- a darkened box from 20% to 80% of the screen's width, from 15% of its height down;
-- the page's title centred in gold, then up to fourteen rows of qwark's page (a MAIN page's one string a row, with ">" for a link; a CONFIG page's label at the left and its value right-aligned, a toggle that is on in green), grey rows the cursor skips;
-- the cursor's bar behind its row, "^" and "v" where the page goes on past the window, and a line of the controls;
-- text in the arrival text's font 1 at 2.8% of the screen's height with a soft shadow, rows every 3.6%.
-
-Up and Down move (held, they repeat), the cross selects, Left and Right step, L1 and R1 jump a window, Triangle or Circle go back, Start or Select close, as in the other games. The pages are ToD's table: Game (the position slot, Save and Load position, Die, Challenge mode, Set aside file, Load set-aside file), Cheats (Fast loads, Remove cutscenes, Infinite ammo, Infinite health, God Ratchet, Max bolts, Max raritanium), Planets, Unlocks (weapons Locked, V1, V10; devices, gadgets and items Locked or Unlocked; Collectables, the four skill point and gold bolt buttons), Mods (a test build's preview) and Save files: every row does what the client's row does, through the same functions.
-
-**What it does not do (yet).**
-- No pause-menu row (2.4). No sounds: the game's UI sounds are the Anark presentation's and were not traced.
-- The look is the menu's own, not the game's: no native frame, no button glyphs in the controls line (the font has them as 0xE0xx code points; the right UTF-8 for them was not worked out), no slider for a VALUE row (none of ToD's rows has a range anyway).
-- No RPCS3 (2.7).
-- Long labels are not cut: a label over about 40 characters can run under its value.
-
-## 4. Tests
-
-Host (`test/test_menu_tod.c`, 62 checks): the pages; the install only with `menu.tod=1` and NO_MENU following it, the combo's notification without it, the two words, menu.enabled = 0 and back; the renderer against mocks of Text_Draw, Sprite_Init, Sprite_Draw and the HUD calls: the request left in a cinematic and withdrawn, the opening in play (the clock frozen and put back) and in the pause (the clock untouched), what is drawn and where, the pad blanked and the held mask put back, navigation and repeat, a toggle switched, back, close, a load closing the menu, the combo closing it. `test_uipak.c` holds the pak's ninth entry to kind 3 and `MH_TOD_PAK_ID`. Smoke (`smoke_tod_menu`): over the wire, nothing in the game without the key, then with it the install, the two words, the mailbox, the root and Cheats pages, an event and the combo, and NO_MENU clear. `check.py` (`check_tod_menu`) holds the renderer to NPEA00452.ELF and the pak with ToD to the table.
-
-## 5. On a console: the test list
-
-Set `menu.tod=1` in `/dev_hdd0/qwark/config.txt` (and `combo.enabled` not 0), install the test build (module, `tod.sprx` and the test build's `ui.pak`, which has the ToD entry), boot ToD and load a save into a level.
-
-1. **qwark.log**: "menu: renderer installed for game 5, mailbox 0x008CD000" a few seconds in. If instead the install failed (a write error at 0x868000 or 0x8CD000), the caves' pages are not mapped: say so, and nothing else was touched.
-2. **Play on as normal for a minute**, with the menu never opened: walking, shooting, the pause menu, a death, a cutscene. Nothing should differ (both hooks run every frame; this is the crash test).
-3. **The combo (L1+R1+L2+R2+L3+R3) in play**: the panel appears (photo); the world stops (enemies, particles, the clock); Ratchet does not move with the sticks; the HUD still draws under it.
-   - Is the panel dark, or a texture, or invisible (the default texture's question)? Is the text readable, the right size, in place? (photo)
-4. Up/Down through the root, with and without holding; Cheats; Infinite ammo on (the client's checkbox follows); back with Triangle; Start: the panel goes, the world moves again, and **no pause menu opens** from that Start.
-5. Open again, Game > Save position, close, move away, open, Load position.
-6. **In the game's pause menu**: Start, then the combo: the panel over the pause; Triangle on the root closes it back to the pause; the pause menu should not have reacted to any press meanwhile.
-7. Planets > a planet: the menu closes, the planet loads (from play). From the pause, the load is refused as busy (the game takes a planet load only in play), with a console notification.
-8. The combo during a cutscene or a load: nothing happens (by design).
-9. Unlocks > Weapons: a weapon Locked → V1 → V10; Save files lists the library.
-10. Optional: 1080p and 4:3 output: the panel scales with the screen.
-
-On RPCS3 there is nothing to test: like every game's menu it is console-only, and the combo there says so.
+Functions: PauseMenu_enter 0x248B4, PauseMenu_exit 0x24610, PauseMenuLoadingThread 0x24A60, PauseMenu_request 0x23BB4 (thunk 0x26AAB0), PauseMenu_close 0x23C9C, PauseMenu_exitFromLua 0x24F0C, PauseMenu_callScreen 0x24F64, MenuLua_exit_pause_menu 0x287A8, MenuLua_call_pause_menu 0x28834, thunk_AnarkMenuSystem_update 0x119D0, AnarkMenu_luaAllocator 0x653048, AnarkMenuSystem_getLuaState 0x653BBC (thunk 0x140C0), AnarkMenuSystem_ctor 0x654768 (thunk 0x11A30), AnarkMenuSystem_startPresentation 0x654DD4, InputMapper_isPressed 0x68B654 (thunk 0x2672E0), InputSystem_registerMapper 0x68B744, InputSystem_unregisterMapper 0x68B5A4, GameplayState_enter 0x4C4224, GameplayState_exit 0x4C4270, Game_isPauseBlocked 0x1F7598 (thunk 0x26AAF0), tolua_Node_getChildByIndex 0x7775F4, tolua_Node_getNumChildren 0x7774C4, CLuaObject_getChildByIndex 0x76B688 (1-based), CLuaObject_getNumChildren 0x76B604. Globals: g_pauseMenuSystem 0x101CB220, g_pauseMenuState 0x101CB218, g_pauseMenuRequest 0x101CB228, g_gameInputMapper 0x10387D70, g_anarkLuaAllocator 0x1073DC40. Structs: /ToD/Anark/AnarkMenuSystem, /ToD/Anark/PauseMenuRequest. Prototypes: AnarkMenuSystem_update, InputMapper_isPressed.

@@ -36,6 +36,8 @@ static s8  g_present;                  /* RPCS3: -1 not looked yet, 0 no, 1 the 
 static u8  g_installed;                /* a console: lh_install done this process */
 static u8  g_attached;                 /* luamb_attach done this process */
 static u8  g_have_result;
+/* Revision 1.29: the menu glue's request, out (its seq) or none (0); its answer is never a LUA_EXEC's. */
+static u32 g_glue_seq;
 static struct luamb_result g_res;
 static char g_out[LUAMB_OUT_CAP];
 static u32 g_out_len;
@@ -59,6 +61,12 @@ static u32 now_ms(void)
 	return (u32)(plat_time_us() / 1000u);
 }
 
+static void client_init(const struct lh_desc *d)
+{
+	luamb_client_init(&g_lc, d->mailbox, d->vm + d->vm_state);
+	luamb_client_menu(&g_lc, d->menu_ptr, d->menu_off);
+}
+
 /* The running game's helper, under the core lock; NULL for none. */
 static const struct lh_desc *desc_now(void)
 {
@@ -77,10 +85,11 @@ void lua_core_enter(void)
 	g_installed = 0;
 	g_attached = 0;
 	g_have_result = 0;
+	g_glue_seq = 0;
 	g_out_len = 0;
 	g_out[0] = 0;
 	memset(&g_res, 0, sizeof(g_res));
-	if (d != NULL) luamb_client_init(&g_lc, d->mailbox, d->vm + d->vm_state);
+	if (d != NULL) client_init(d);
 	else memset(&g_lc, 0, sizeof(g_lc));
 }
 
@@ -120,18 +129,86 @@ void lua_core_tick(void)
 	rc = luamb_poll(&g_lc, &g_io, now_ms(), &res);
 	if (rc != LUAMB_POLL_DONE) return;
 
-	g_res = res;
 	rc = luamb_read_out(&g_lc, &g_io, &res, g_out, sizeof(g_out));
+	if (g_glue_seq != 0 && res.seq == g_glue_seq) {
+		/* Revision 1.29: the menu's glue, the core's own request. */
+		g_glue_seq = 0;
+		if (res.status != LUAMB_ST_OK)
+			plat_log("menu: the pause menu's glue failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
+		g_out_len = 0;
+		g_out[0] = 0;
+		return;
+	}
+	g_res = res;
 	g_out_len = rc > 0 ? (u32)rc : 0;
 	g_have_result = 1;
 	if (res.status != LUAMB_ST_OK)
 		plat_log("lua: request %u answered %d", (unsigned)res.seq, (int)res.status);
 }
 
+/*
+ * The helper in the game: on a console written now if this process has not
+ * yet (ST_BAD_ARG from lh_install, another executable, is UNSUPPORTED); under
+ * RPCS3 the patch's, looked for once a session.
+ */
+static int ensure_helper(const struct lh_desc *d)
+{
+	int rc;
+
+	if (plat_can_patch_code()) {
+		if (!g_installed) {
+			rc = lh_install(d, &g_io);
+			if (rc == ST_BAD_ARG) return ST_UNSUPPORTED;
+			if (rc != ST_OK) return rc;
+			g_installed = 1;
+			client_init(d);
+			g_attached = 1;
+			plat_log("lua: helper installed");
+		}
+	} else {
+		if (g_present < 0) return ST_BUSY;
+		if (g_present == 0) return ST_UNSUPPORTED;
+	}
+	return g_attached ? ST_OK : ST_BUSY;
+}
+
+int lua_core_helper_ready(void)
+{
+	const struct lh_desc *d;
+
+	if (!mem_is_ingame()) return ST_NOT_INGAME;
+	d = desc_now();
+	if (d == NULL) return ST_UNSUPPORTED;
+	if (d != g_desc) lua_core_enter();
+	return ensure_helper(d);
+}
+
+int lua_core_menu_glue(void)
+{
+	const struct lh_desc *d = desc_now();
+	int rc;
+
+	if (d == NULL || d->glue == NULL || d->glue_len == 0) return ST_UNSUPPORTED;
+	if (d != g_desc) lua_core_enter();
+	rc = ensure_helper(d);
+	if (rc != ST_OK) return rc;
+	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
+	switch (luamb_send_to(&g_lc, &g_io, (const char *)d->glue, d->glue_len, now_ms(), LUAMB_TARGET_MENU)) {
+	case LUAMB_SEND_OK:       break;
+	case LUAMB_SEND_BUSY:     return ST_BUSY;
+	case LUAMB_SEND_NO_STATE: return ST_NOT_FOUND;
+	case LUAMB_SEND_IO:       return ST_IO_ERROR;
+	default:                  return ST_UNSUPPORTED;
+	}
+	g_glue_seq = g_lc.seq;
+	return ST_OK;
+}
+
 int lua_core_exec_start(const u8 *req, u32 reqlen, u32 *seq)
 {
 	const struct lh_desc *d;
-	u32 len, state = 0;
+	u32 len, flags, state = 0;
+	u8 target;
 	int rc;
 
 	*seq = 0;
@@ -142,32 +219,23 @@ int lua_core_exec_start(const u8 *req, u32 reqlen, u32 *seq)
 
 	if (reqlen < LUA_EXEC_HEAD) return ST_BAD_ARG;
 	len = be16_get(req);
-	if (be16_get(req + 2) != 0 || len == 0 || len > LUAMB_CHUNK_CAP || reqlen < LUA_EXEC_HEAD + len)
+	flags = be16_get(req + 2);
+	/* Revision 1.29: flags bit0, the pause menu's VM rather than the gameplay VM. */
+	if ((flags & ~(u32)LUA_EXEC_MENU) != 0 || len == 0 || len > LUAMB_CHUNK_CAP || reqlen < LUA_EXEC_HEAD + len)
 		return ST_BAD_ARG;
+	target = (flags & LUA_EXEC_MENU) != 0 ? LUAMB_TARGET_MENU : LUAMB_TARGET_GAMEPLAY;
+	if (target == LUAMB_TARGET_MENU && d->menu_ptr == 0) return ST_UNSUPPORTED;
 
 	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
 
-	/* No level, no Lua: nothing is written, and nothing is installed either. */
-	if (mem_read_u32(g_lc.state_ptr, &state) != ST_OK) return ST_IO_ERROR;
+	/* No level (or no pause menu), no Lua: nothing is written, and nothing is installed either. */
+	if (luamb_target_state(&g_lc, &g_io, target, &state) != 0) return ST_IO_ERROR;
 	if (state == 0) return ST_NOT_FOUND;
 
-	if (plat_can_patch_code()) {
-		if (!g_installed) {
-			rc = lh_install(d, &g_io);
-			if (rc == ST_BAD_ARG) return ST_UNSUPPORTED;   /* another executable */
-			if (rc != ST_OK) return rc;
-			g_installed = 1;
-			luamb_client_init(&g_lc, d->mailbox, d->vm + d->vm_state);
-			g_attached = 1;
-			plat_log("lua: helper installed");
-		}
-	} else {
-		if (g_present < 0) return ST_BUSY;
-		if (g_present == 0) return ST_UNSUPPORTED;
-	}
-	if (!g_attached) return ST_BUSY;
+	rc = ensure_helper(d);
+	if (rc != ST_OK) return rc;
 
-	switch (luamb_send(&g_lc, &g_io, (const char *)(req + LUA_EXEC_HEAD), len, now_ms())) {
+	switch (luamb_send_to(&g_lc, &g_io, (const char *)(req + LUA_EXEC_HEAD), len, now_ms(), target)) {
 	case LUAMB_SEND_OK:        break;
 	case LUAMB_SEND_BUSY:      return ST_BUSY;
 	case LUAMB_SEND_NO_HELPER: return ST_UNSUPPORTED;

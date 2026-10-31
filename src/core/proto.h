@@ -475,6 +475,8 @@
 #define OP_LUA_PATCH          0x00E2
 #define LUA_EXEC_HEAD         4u
 #define LUA_EXEC_REPLY_HEAD   12u
+/* Revision 1.29 (pending), LUA_EXEC's flags: bit0, the pause menu's VM (ToD's console menu's), not the gameplay VM. */
+#define LUA_EXEC_MENU         0x0001u
 #define LUA_STATUS_HEAD       88u
 #define LUA_INSTALLED_NO      0
 #define LUA_INSTALLED_YES     1

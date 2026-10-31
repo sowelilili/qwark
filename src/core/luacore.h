@@ -44,6 +44,28 @@ int  lua_core_exec_result(u32 seq, u8 *reply, u32 cap, u32 *len, int *done);
 /* LUA_STATUS's reply. */
 int  lua_core_status(u8 *reply, u32 cap, u32 *len);
 
+/*
+ * Revision 1.29 (pending), Tools of Destruction's console menu (menu.c's
+ * native renderer, docs/tod-menu.md), whose pause-menu half is the Lua
+ * helper's.
+ *
+ * lua_core_helper_ready: the helper in the game, for the menu. On a console
+ * it is installed now if it is not yet (the menu's install, a few seconds
+ * into play, is the user's choice of menu.enabled as for every game's
+ * renderer); under RPCS3 it is the patch's: ST_BUSY until qwark has looked,
+ * ST_UNSUPPORTED without it. ST_OK when the helper is in.
+ *
+ * lua_core_menu_glue: the menu's Lua glue sent to the pause menu's VM (a
+ * request of target MENU), which the helper asked for (lh_menu.h, LM_GLUE
+ * WANTED). ST_OK when it went out, ST_BUSY while another request is out
+ * (try again next tick). Its answer is the core's: logged when it failed,
+ * never a LUA_EXEC's.
+ */
+#if QWARK_HAS_TOD
+int  lua_core_helper_ready(void);
+int  lua_core_menu_glue(void);
+#endif
+
 #ifdef QWARK_EMULATOR
 /* LUA_PATCH's reply. Under the core lock, on a network thread: it reads no memory. */
 int  lua_core_patch(u8 *reply, u32 cap, u32 *len);

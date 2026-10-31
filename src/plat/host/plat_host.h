@@ -203,6 +203,16 @@ int  host_fake_lua_frame(void);
 void host_set_fake_lua(int on);
 
 /*
+ * Revision 1.29, the console menu (the game's pause menu): host_set_fake_pause
+ * puts the simulated ToD in its pause, a menu system with a VM, or takes it
+ * out; host_fake_menu_frame runs one frame of the helper's pause-menu half
+ * (a new VM asks for the glue, a menu request is served), which the
+ * host_set_fake_lua thread runs in place of the gameplay frame while paused.
+ */
+void host_set_fake_pause(int on);
+int  host_fake_menu_frame(void);
+
+/*
  * Revision 1.28: its save system (docs/tod-savefile.md).
  * host_fake_tod_save_frame runs one frame of SaveSystem_update's load and
  * autosave paths (1 when it applied a load); host_set_fake_tod_save runs one

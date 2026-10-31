@@ -1121,11 +1121,8 @@ def test_vsh_memory(sim, c):
 
 
 def pack_pak(path, build=None):
-    """
-    ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with
-    another build: with ToD's renderer (--tod), as a test build packs it.
-    """
-    args = [sys.executable, "-I", PAK_PY, "--out", path, "--tod"] + (["--build", str(build)] if build else [])
+    """ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with another build."""
+    args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else [])
     return subprocess.run(args, capture_output=True, text=True).returncode == 0
 
 
@@ -5728,8 +5725,8 @@ def smoke_tod(c, sim):
     sim.send("boot %s tod" % TOD_TITLE)
     ok, info = wait_game(c, 5)
     check(ok, "ToD: NPEA00452 boots as game 5", info)
-    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) != 0,
-          "ToD: flags2 bit7 NO_MENU, no console menu for this game", info and info["flags2"])
+    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) == 0,
+          "ToD: flags2 bit7 NO_MENU clear, the pause menu is its console menu (revision 1.29)", info and info["flags2"])
 
     status, body = c.call(OP_DESCRIBE)
     labels = []
@@ -5868,10 +5865,11 @@ def smoke_tod(c, sim):
     check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
           status)
 
-    # Lua: nothing in the game until LUA_EXEC is asked for in a level.
+    # Lua: the helper goes in with the console menu a few seconds into play (revision 1.29), or with
+    # the first LUA_EXEC in a level, whichever comes first.
     status, st = lua_status(c)
-    check(status == ST_OK and st and st["installed"] == 0, "ToD: LUA_STATUS, no helper yet", (status, st))
-    check(mem_read_u32(c, TOD_VM_HOOK) == TOD_VM_HOOK_ORIG, "ToD: the VM hook is the game's own")
+    check(status == ST_OK and st and st["installed"] == (1 if mem_read_u32(c, TOD_VM_HOOK) != TOD_VM_HOOK_ORIG else 0),
+          "ToD: LUA_STATUS says whether the helper is in, as the VM hook does", (status, st))
     start = time.monotonic()
     status, lst, _t, _text = lua_exec(c, "return _VERSION")
     took = time.monotonic() - start
@@ -5908,88 +5906,101 @@ def smoke_tod(c, sim):
     smoke_tod_menu(c, sim)
 
 
-# ------------------------------------- ToD's console menu, a prototype (2026-10-31)
+# ------------------------- ToD's console menu, the game's own pause menu (revision 1.29)
 
 TOD_MENU_BOX = 0x008CD000
-TOD_MENU_BOX_SIZE = 0x400
-TOD_MENU_CODE = (0x00868000, 0x0086E000)
-TOD_MENU_SITES = {0x003C5CD8: 0x4BEA4D69, 0x005D144C: 0x480603E1}
+TOD_MENU_BOX_SIZE = 0x880
+TOD_MENU_STATE = 0x008CE000
+TOD_LM_HELP, TOD_LM_GLUE, TOD_LM_LOADS = 0x00, 0x08, 0x0C
+TOD_LM_GLUE_LOADED = 1
+TOD_LUA_MB = 0x008CA000
+TOD_LUA_CAVE = (0x00867360, 0x00870000)
+TOD_LUA_SITES = {0x004C461C: 0x4BDCC909, 0x0068F8F8: 0x4E800020, 0x000242B0: 0x4BFED721, 0x004C5ABC: 0x4BDA1825}
 TOD_COMBO_MENU = 0x40 | 0x80 | 0x10 | 0x20 | 0x400 | 0x800    # L1 R1 L2 R2 L3 R3 in ToD's own bit order
+LUA_EXEC_MENU = 0x0001
 
 
 def smoke_tod_menu(c, sim):
-    """2026-10-31: ToD's console menu renderer, a prototype, over the wire: off
-    without config.txt's menu.tod (NO_MENU set, nothing in the game); with it,
-    the install a few seconds into the session, its two words, the mailbox, the
-    pages and the combo; and NO_MENU clear."""
+    """Revision 1.29: ToD's console menu, the game's own pause menu, over the
+    wire: NO_MENU clear; a few seconds in, the Lua helper with its two menu
+    hooks and the menu's mailbox written by qwark (no ui.pak); the pages; the
+    pause's VM asking for the glue and qwark sending it; LUA_EXEC to the menu's
+    VM; the combo's request; menu.help's byte."""
     box, size = TOD_MENU_BOX, TOD_MENU_BOX_SIZE
-
-    def hooks():
-        return dict((a, mem_read_u32(c, a)) for a in TOD_MENU_SITES)
 
     sim.send("quit")
     ok, _ = wait_state(c, SESSION_XMB)
     check(ok, "ToD menu: the last game quits")
-    sim.send("boot %s tod" % TOD_TITLE)
-    ok, info = wait_game(c, 5)
-    check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) != 0,
-          "ToD menu: ToD boots, flags2 NO_MENU set without menu.tod", info and info["flags2"])
-    module_sleep(c, 4.0)
-    check(mem_read_u32(c, box) != MENU_MAGIC and hooks() == TOD_MENU_SITES,
-          "ToD menu: without menu.tod, four seconds in, nothing of the menu in the game",
-          dict((hex(a), hex(w)) for a, w in hooks().items()))
-
-    cfg_path = "/dev_hdd0/qwark/config.txt"
-    cfg = read_console_file(c, cfg_path) or b""
-    cfg = b"".join(line + b"\n" for line in cfg.splitlines() if not line.startswith(b"menu.tod"))
-    check(write_console_file(c, cfg_path, cfg + b"menu.tod = 1\n"), "ToD menu: config.txt says menu.tod = 1")
-    status, _ = c.call(OP_CONFIG_RELOAD)
-    check(status == ST_OK, "ToD menu: CONFIG_RELOAD", status)
-    sim.send("quit")
-    ok, _ = wait_state(c, SESSION_XMB)
-    check(ok, "ToD menu: quit, for a session that reads the key")
+    sim.send("fakepause off")
+    sim.send("fakelua on")
     sim.send("boot %s tod" % TOD_TITLE)
     ok, info = wait_game(c, 5)
     check(ok and (info["flags2"] & SESSION_FLAG2_NO_MENU) == 0,
-          "ToD menu: with menu.tod = 1, flags2 NO_MENU is clear", info and info["flags2"])
+          "ToD menu: ToD boots, flags2 NO_MENU clear: the game's pause menu is its console menu",
+          info and info["flags2"])
 
     wait_while(c, lambda: mem_read_u32(c, box) != MENU_MAGIC, 8.0, 0.2)
     check(mem_read_u32(c, box) == MENU_MAGIC, "ToD menu: a few seconds into the session its mailbox is in the game")
-    h = hooks()
-    check(all((w >> 26) == 18 and (w & 1) and TOD_MENU_CODE[0] <= bl_target(a, w) < TOD_MENU_CODE[1]
-              for a, w in h.items()),
-          "ToD menu: both words are bls into the renderer's code", dict((hex(a), hex(w)) for a, w in h.items()))
+    h = dict((a, mem_read_u32(c, a)) for a in TOD_LUA_SITES)
+    check(all((w >> 26) == 18 and TOD_LUA_CAVE[0] <= bl_target(a, w) < TOD_LUA_CAVE[1] for a, w in h.items()),
+          "ToD menu: the Lua helper is in, its four words branches into its cave",
+          dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
-    check(status == ST_OK and body[8] == 14 and body[9] == 0x40 and body[10] == 14 and body[14] == 5 and
-          body[15] == 14, "ToD menu: fourteen rows of 0x40 on either page type, renderer 5",
+    check(status == ST_OK and struct.unpack(">H", body[6:8])[0] == size and body[8] == 32 and body[9] == 0x40 and
+          body[10] == 32 and body[11] == 0x0D and body[14] == 5 and body[15] == 32,
+          "ToD menu: 32 rows of 0x40 on either page type, Left/Right, back, requests, game 5",
           body.hex() if status == ST_OK else status)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 1, "ToD menu: the Help byte says Trainer")
 
     page = menu_page(c, box, size)
-    check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and page[3][:4] == ["Game", "Cheats",
-                                                                                            "Planets", "Unlocks"],
-          "ToD menu: the root page is posted, titled Trainer: Game, Cheats, Planets, Unlocks ...",
+    check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
+          page[3][:5] == ["Game", "Cheats", "Manips", "Planets", "Unlocks"],
+          "ToD menu: the root page is posted, titled Trainer: Game, Cheats, Manips, Planets, Unlocks ...",
           page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_ACTIVATE, 1, box, size), "ToD menu: an event is acked")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
     check(page is not None and page[2] == "Cheats" and page[5] == MBOX_PTYPE_CONFIG and
-          page[3] == ["Fast loads", "Remove cutscenes", "Infinite ammo", "Infinite health", "God Ratchet",
-                      "Max bolts", "Max raritanium"],
-          "ToD menu: Cheats, a CONFIG page: the five toggles, Max bolts and Max raritanium", page[2:4] if page else None)
+          page[3] == ["Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Max bolts", "Max raritanium"],
+          "ToD menu: Cheats, a CONFIG page: the four toggles, Max bolts and Max raritanium",
+          page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back is acked")
     module_sleep(c, 0.1)
 
+    # The pause: its VM asks for the glue, and qwark sends it as a request for the menu's VM.
+    loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)
+    sim.send("fakepause on")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_GLUE) != TOD_LM_GLUE_LOADED, 3.0, 0.05)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_GLUE) == TOD_LM_GLUE_LOADED and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads + 1,
+          "ToD menu: a pause's VM asks for the glue, qwark sends it, the pause menu's frame runs it")
+    status, body = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x600, 64))
+    check(status == ST_OK and b"qw" in body, "ToD menu: the request was the glue's Lua", body[:40])
+    status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 15, LUA_EXEC_MENU) + b"return _VERSION")
+    check(status == ST_OK and struct.unpack(">i", body[:4])[0] == 0 and body[12:21] == b"Lua 5.0.2",
+          "ToD menu: LUA_EXEC flags 1 runs in the pause menu's VM", (status, body[:24]))
+    sim.send("fakepause off")
+    module_sleep(c, 0.2)
+    status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 15, LUA_EXEC_MENU) + b"return _VERSION")
+    check(status == ST_NOT_FOUND, "ToD menu: and NOT_FOUND with no pause up", status)
+
+    # The combo: an open request, which the game's pause test takes.
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
     press(sim, c, "0x0", 0.15)
     press(sim, c, "0x%x" % TOD_COMBO_MENU, 0)
     wait_while(c, lambda: c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))[1][0] == 0, 0.25, 0.005)
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box + MBOX_OFF_REQUEST, 1))
     press(sim, c, "0x0", 0.1)
-    check(status == ST_OK and body[0] == 1, "ToD menu: the menu combo asks the renderer to open", body)
+    check(status == ST_OK and body[0] == 1, "ToD menu: the menu combo asks for the menu", body)
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")
 
-    check(write_console_file(c, cfg_path, cfg), "ToD menu: menu.tod taken out of config.txt again")
-    c.call(OP_CONFIG_RELOAD)
+    # menu.help: the byte follows it.
+    status, _ = c.call(OP_MENU_HELP, bytes([0]))
+    check(status == ST_OK, "ToD menu: MENU_HELP 0", status)
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 != 0, 1.0, 0.05)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 0, "ToD menu: the Help byte says the game's Help")
+    c.call(OP_MENU_HELP, bytes([1]))
+    sim.send("fakelua off")
 
 
 TOD_FRONT_END = 0x1037A459
@@ -6294,6 +6305,24 @@ def smoke_rpcs3_tod(c, pine):
     req = pine.peek(TOD_MAILBOX + 8, 4)
     check(pine.peek(TOD_MAILBOX + 0x600, 15) == b"return _VERSION" and pine.peek(TOD_MAILBOX + 0x10, 4) == req,
           "rpcs3: the chunk is in the mailbox, and the request withdrawn")
+
+    # Revision 1.29: ToD's console menu, the game's own pause menu, goes in with the patch: the
+    # mailbox, the Help byte and the glue are data writes and a request, all through PINE.
+    def box_magic():
+        return struct.unpack(">I", pine.peek(TOD_MENU_BOX, 4))[0]
+    wait_while(c, lambda: box_magic() != MENU_MAGIC, 8.0, 0.2)
+    check(box_magic() == MENU_MAGIC and pine.peek(TOD_MENU_STATE + TOD_LM_HELP, 1) == b"\x01",
+          "rpcs3: ToD's console menu goes in over PINE: its mailbox, the Help byte")
+    req = struct.unpack(">I", pine.peek(TOD_MAILBOX + 8, 4))[0]
+    pine.poke(0x101CB220, struct.pack(">I", 0x30040000))
+    pine.poke(0x30040000 + 0x106C, struct.pack(">I", 0x30050000))
+    pine.poke(TOD_MENU_STATE + TOD_LM_GLUE, struct.pack(">I", 2))
+    pine.poke(TOD_MENU_STATE + TOD_LM_LOADS, struct.pack(">I", 1))
+    wait_while(c, lambda: struct.unpack(">I", pine.peek(TOD_MAILBOX + 8, 4))[0] == req, 3.0, 0.05)
+    check(struct.unpack(">I", pine.peek(TOD_MAILBOX + 8, 4))[0] == req + 1 and
+          pine.peek(TOD_MAILBOX + 0x26, 1) == b"\x01" and pine.peek(TOD_MAILBOX + 0x600, 12) == b"local Q = qw",
+          "rpcs3: a pause menu VM's ask for the glue: qwark sends it, a request for the menu's VM")
+    pine.poke(0x101CB220, bytes(4))
     pine.shutdown_game()
     wait_state(c, SESSION_XMB)
 
@@ -6653,10 +6682,11 @@ def smoke_rpcs3_planet_loads(c, pine, sim=None):
           "rpcs3: the menu combo writes no console menu renderer into the game",
           menu_writes)
 
-    # Revision 1.23: no menu, so no MENU_HELP; and the fast-loads combo is
-    # refused as the Fast loads checkbox is, without the code switches.
-    status, _ = c.call(OP_MENU_HELP, bytes([0]))
-    check(status == ST_UNSUPPORTED, "rpcs3: MENU_HELP is UNSUPPORTED", status)
+    # Revision 1.23: no menu in the four games, so no MENU_HELP; revision 1.29: Tools of
+    # Destruction's menu is its own pause menu and works here, so qwark-rpcs3 takes the switch.
+    # The fast-loads combo is refused as the Fast loads checkbox is, without the code switches.
+    status, _ = c.call(OP_MENU_HELP, bytes([1]))
+    check(status == ST_OK, "rpcs3: MENU_HELP is taken (revision 1.29: ToD's menu works under RPCS3)", status)
     # Revision 1.24: one user, so no profiles.
     status, p = profile_info(c)
     check(status == ST_OK and p and p["flags"] == 0 and p["user"] == 0,

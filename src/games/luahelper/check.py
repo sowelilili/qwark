@@ -23,7 +23,13 @@ What it checks, all against the file:
     page, and nothing in the executable refers to them;
   - the helper in luahelper_bins.c fits its cave, both hook words reach the
     entries they should, and every branch out of the helper lands on one of
-    the functions above.
+    the functions above;
+  - revision 1.29, the console menu: the pause menu's update and the pause
+    test are each the game's `bl` to a cross-TOC trampoline, an r2 reload
+    after it, the pause menu's system and its lua_State where lh_tod.h says,
+    the Anark allocator's getter what the helper takes it for, and the
+    menu's two RW blocks (src/games/luahelper/lh_menu.h) past the Lua
+    mailbox, inside the page, unreferenced.
 Exit status 0 when all pass.
 """
 import argparse
@@ -36,6 +42,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 QWARK = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 HDR = os.path.join(HERE, "lh_tod.h")
+MENU_H = os.path.join(HERE, "lh_menu.h")
 LUAMB_H = os.path.join(QWARK, "src", "core", "luamb.h")
 BINS_C = os.path.join(QWARK, "src", "games", "luahelper_bins.c")
 DEFAULT_ELF = "C:/Users/atune/Documents/ToD_lunacy/EBOOT.ELF"
@@ -207,6 +214,17 @@ def toc_refs_into(elf, lo, hi):
     return out
 
 
+def trampoline_target(elf, at):
+    """(target, r2 delta) of a cross-TOC trampoline: std r2,40(r1); addis r2,r2,hi; addi r2,r2,lo; b target."""
+    w = [elf.u32(at + 4 * k) for k in range(4)]
+    if w[0] != 0xF8410028 or w[1] >> 16 != 0x3C42 or w[2] >> 16 != 0x3842:
+        return None
+    t = branch_target(w[3], at + 12)
+    if t is None or t[1]:
+        return None
+    return t[0], (s16(w[1] & 0xFFFF) << 16) + s16(w[2] & 0xFFFF)
+
+
 def patch_words(text, cave, hooks, h, mb):
     words = []
     for at in range(0, len(text), 4):
@@ -272,13 +290,58 @@ def main():
             break
     r.check(reaches, "CGameplayLuaVM_reportError calls a cross-TOC trampoline that branches to 0x%X" % es)
 
+    print("the console menu's hooks (revision 1.29)")
+    lm = defines(MENU_H)
+    for name, tr_name, target, prev_ok in (
+            ("LH_MENU_HOOK", "LH_TR_MENU_UPDATE", h["LH_MENU_UPDATE"],
+             lambda p: p == 0x807F0000),                                   # lwz r3,0(r31)
+            ("LH_PAUSE_HOOK", "LH_TR_BTN_PRESSED", h["LH_FN_BTN_PRESSED"],
+             lambda p: p == 0x38800001)):                                  # li r4,1
+        at, orig = h[name + "_ADDR"], h[name + "_ORIG"]
+        w = elf.u32(at)
+        r.check(w == orig, "0x%X holds 0x%08X" % (at, orig))
+        r.check(branch_target(w, at) == (h[tr_name], True), "it is bl 0x%X, a trampoline" % h[tr_name])
+        r.check(elf.u32(at + 4) == h["LH_TOC_RELOAD"], "ld r2,40(r1) follows: the caller takes its r2 back itself")
+        r.check(prev_ok(elf.u32(at - 4)), "the instruction before it sets up r3 or r4 as the entry expects (0x%08X)"
+                % elf.u32(at - 4))
+        tt = trampoline_target(elf, h[tr_name])
+        r.check(tt is not None and tt[0] == target and
+                (toc_for(at) + tt[1]) & 0xFFFFFFFF == toc_for(target),
+                "the trampoline 0x%X branches to 0x%X with that function's own r2 (0x%X)"
+                % (h[tr_name], target, toc_for(target) or 0))
+    r.check(toc_for(h["LH_FN_BTN_PRESSED"]) == h["LH_LUA_TOC"],
+            "the pause test is in the Lua range, so the entry calls it directly with LH_LUA_TOC")
+    # PauseMenu_update: r31 is &g_pauseMenuSystem, loaded from the low range's TOC.
+    msite = h["LH_MENU_HOOK_ADDR"]
+    found = False
+    for a in range(msite - 0x200, msite, 4):
+        x = elf.u32(a)
+        if x >> 26 == 32 and (x >> 21) & 31 == 31 and (x >> 16) & 31 == 2:
+            slot = (toc_for(a) + s16(x & 0xFFFF)) & 0xFFFFFFFF
+            if elf.u32(slot) == h["LH_PAUSE_MS"]:
+                found = True
+    r.check(found, "PauseMenu_update loads r31 from the TOC slot holding g_pauseMenuSystem 0x%X" % h["LH_PAUSE_MS"])
+    upd = h["LH_MENU_UPDATE"]
+    refs = [a for a in range(upd, upd + 0x400, 4)
+            if elf.u32(a) >> 26 == 32 and (elf.u32(a) & 0xFFFF) == h["LH_MS_STATE"]]
+    r.check(bool(refs), "AnarkMenuSystem_update reads the menu system's lua_State at +0x%X" % h["LH_MS_STATE"])
+    a = h["LH_FN_ANARK_ALLOC"]
+    w0 = elf.u32(a)
+    slot = (h["LH_LUA_TOC"] + s16(w0 & 0xFFFF)) & 0xFFFFFFFF
+    calls = [branch_target(elf.u32(x), x) for x in range(upd, upd + 0x40, 4)]
+    r.check(w0 >> 26 == 32 and (w0 >> 21) & 31 == 3 and (w0 >> 16) & 31 == 2 and elf.u32(a + 4) == BLR and
+            (a, True) in calls,
+            "the Anark allocator's getter is lwz r3,(r2) slot 0x%X (0x%X); blr, the one AnarkMenuSystem_update "
+            "makes current" % (slot, elf.u32(slot) or 0))
+
     print("the functions the helper calls")
     fns = {k: v for k, v in h.items() if k.startswith("LH_FN_")}
     opds = find_opds(elf, list(fns.values()))
     for name, addr in sorted(fns.items(), key=lambda kv: kv[1]):
         want = h["LH_GAME_TOC"] if name == "LH_FN_VM_UPDATE" else h["LH_LUA_TOC"]
         tocs = sorted({t for _, t in opds[addr]})
-        r.check(toc_for(addr) == want and tocs == [want],
+        # Revision 1.29: a function no descriptor names (called only directly) is held to its range alone.
+        r.check(toc_for(addr) == want and tocs in ([want], []),
                 "%s 0x%X: descriptor TOC %s, called with 0x%X"
                 % (name, addr, ",".join("0x%X" % t for t in tocs) or "none", want))
     # LuaAlloc_setCurrent: lwz r9,X(r2); stw r3,0(r9); blr, with the TOC slot holding the allocator global.
@@ -322,6 +385,17 @@ def main():
     r2_hits = toc_refs_into(elf, rw[0] + rw[2] - (rw[0] + rw[2]) % 0x200, mbx_end)
     r.check(not r2_hits, "no TOC-relative access reaches past the TOC (0x%X..)" % (rw[0] + rw[2])
             + ("" if not r2_hits else ": " + ", ".join("0x%X -> 0x%X" % x for x in r2_hits[:8])))
+    # Revision 1.29: the console menu's mailbox and the helper's block.
+    box, box_size = lm["LM_BOX"], lm["LM_BOX_SIZE"]
+    st, st_size = lm["LM_STATE"], lm["LM_STATE_SIZE"]
+    page_end = (rw[0] + rw[2] + PAGE - 1) // PAGE * PAGE
+    r.check(mbx + mb["LUAMB_SIZE"] <= box and box + box_size <= st and st + st_size <= page_end,
+            "the menu's mailbox 0x%X..0x%X and block 0x%X..0x%X follow the Lua mailbox, inside the page"
+            % (box, box + box_size, st, st + st_size))
+    hits = [x for x in refs_into(elf, box, st + st_size) if not (x[0] == "word" and x[2] in tocs)]
+    hits += toc_refs_into(elf, box, st + st_size)
+    r.check(not hits, "nothing in the executable refers to them"
+            + ("" if not hits else ": " + ", ".join(str(x) for x in hits[:8])))
 
     print("the helper (luahelper_bins.c)")
     bcave, text, hooks = helper_bytes()
@@ -335,7 +409,12 @@ def main():
     et = branch_target(err_word, es)
     r.check(err_orig == h["LH_ERR_HOOK_ORIG"] and et is not None and not et[1] and cave <= et[0] < cave + len(text),
             "the error tap word 0x%08X is b (no link) into the helper" % err_word)
-    allowed = set(fns.values())
+    for name in ("LH_MENU_HOOK", "LH_PAUSE_HOOK"):
+        word, orig = hk.get(h[name + "_ADDR"], (0, 0))
+        t = branch_target(word, h[name + "_ADDR"])
+        r.check(orig == h[name + "_ORIG"] and t is not None and t[1] and cave <= t[0] < cave + len(text),
+                "%s's word 0x%08X is bl into the helper" % (name, word))
+    allowed = set(fns.values()) | {v for k, v in h.items() if k.startswith("LH_TR_")}
     bad = []
     for at in range(0, len(text), 4):
         w = struct.unpack(">I", text[at:at + 4])[0]
@@ -346,7 +425,7 @@ def main():
             + ("" if not bad else ": " + ", ".join("0x%X -> 0x%X" % x for x in bad)))
     toc_sets = [at for at in range(0, len(text) - 4, 4)
                 if text[at:at + 4] == struct.pack(">I", 0x3C400000 | ((h["LH_LUA_TOC"] + 0x8000) >> 16))]
-    r.check(len(toc_sets) == 1, "the entry sets r2 to 0x%X once, before lh_tick" % h["LH_LUA_TOC"])
+    r.check(len(toc_sets) == 3, "the three entries that call C set r2 to 0x%X, once each" % h["LH_LUA_TOC"])
 
     if args.yml:
         words = patch_words(text, cave, hooks, h, mb)

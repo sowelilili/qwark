@@ -18,6 +18,8 @@
 #include "../../games/tod.h"
 #include "../../games/luahelper_patch.h"
 #include "../../core/luamb.h"
+#include "../../core/menubox.h"
+#include "../../games/luahelper/lh_menu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,9 +194,12 @@ void host_boot_as(const char *title, const char *which)
 #define FAKE_TOD_HERO  0x30010000u
 #define FAKE_TOD_MOBY  0x30020000u
 #define FAKE_TOD_STATE 0x30030000u
+/* Revision 1.29: the pause's menu system and its VM, while `fakepause` is on. */
+#define FAKE_TOD_MS         0x30040000u
+#define FAKE_TOD_MENU_STATE 0x30050000u
 
 static int g_lua_patch_at_boot;
-static u8 g_lua_patch[4096];
+static u8 g_lua_patch[QWARK_MAX_PAYLOAD];
 
 void host_set_lua_patch(int on)
 {
@@ -375,42 +380,28 @@ static void seed_tod(void)
 }
 
 /*
- * One gameplay frame of the Lua helper, after src/games/luahelper/luahelper.c,
- * with a stand-in for Lua that knows a handful of chunks: `_VERSION` answers
- * "Lua 5.0.2", `time_set_scale(0.5` and `time_set_scale(1` set the game
- * clock's scale, `error(` is a runtime error, `while true` never comes back
- * (the helper stays inside it), and anything else answers nothing. Only while
- * the helper is in (its VM hook in place, the mailbox's identity written).
+ * The Lua helper's lh_serve (src/games/luahelper/luahelper.c), with a
+ * stand-in for Lua that knows a handful of chunks: `_VERSION` answers "Lua
+ * 5.0.2", `time_set_scale(0.5` and `time_set_scale(1` set the game clock's
+ * scale, `error(` is a runtime error, `while true` never comes back (the
+ * helper stays inside it), and anything else answers nothing. Revision 1.29:
+ * a request for the other VM (target) is left; a chunk that defines
+ * qwark_frame (the console menu's glue) says so in *glue. Under g_mem_lock.
  * Returns 1 when it answered a request.
  */
-int host_fake_lua_frame(void)
+static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 {
-	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
-	u32 mb, req, ack, cancel, len, L, out_len = 0;
+	u32 req, ack, cancel, len, out_len = 0;
 	s32 status = LUAMB_ST_OK;
-	u8 type = LUAMB_T_NONE;
+	u8 type = LUAMB_T_NONE, t = 0;
 	const char *out = "";
 	static char chunk[LUAMB_CHUNK_CAP + 1];
-	int answered = 0;
-
-	if (d == NULL) return 0;
-	pthread_mutex_lock(&g_mem_lock);
-	if (!g_game_running || g_boot_game == NULL || g_boot_game->game_id != GAME_TOD ||
-	    peek32(d->hooks[0].addr) != d->hooks[0].value || peek32(d->mailbox) != LUAMB_MAGIC) {
-		pthread_mutex_unlock(&g_mem_lock);
-		return 0;
-	}
-	mb = d->mailbox;
-	L = peek32(d->vm + d->vm_state);
-	poke32(mb + LUAMB_OFF_HEARTBEAT, peek32(mb + LUAMB_OFF_HEARTBEAT) + 1u);
-	poke32(mb + LUAMB_OFF_LAST_STATE, L);
 
 	req = peek32(mb + LUAMB_OFF_REQ);
 	ack = peek32(mb + LUAMB_OFF_ACK);
-	if (req == ack || peek32(mb + LUAMB_OFF_BUSY) == req) {
-		pthread_mutex_unlock(&g_mem_lock);
-		return 0;
-	}
+	if (req == ack || peek32(mb + LUAMB_OFF_BUSY) == req) return 0;
+	mem_access(mb + LUAMB_OFF_TARGET, &t, 1, 0);
+	if (t != target) return 0;
 	poke32(mb + LUAMB_OFF_BUSY, req);
 	cancel = peek32(mb + LUAMB_OFF_CANCEL);
 	len = peek32(mb + LUAMB_OFF_CHUNK_LEN);
@@ -423,11 +414,11 @@ int host_fake_lua_frame(void)
 		chunk[len] = 0;
 		if (strstr(chunk, "while true") != NULL) {
 			/* Inside the chunk for ever: busy stays up, no ack. */
-			pthread_mutex_unlock(&g_mem_lock);
 			return 0;
 		}
 		if (strstr(chunk, "time_set_scale(0.5") != NULL) poke32(TOD_GAME_CLOCK, 0x3F000000u);
 		else if (strstr(chunk, "time_set_scale(1") != NULL) poke32(TOD_GAME_CLOCK, 0x3F800000u);
+		if (glue != NULL && strstr(chunk, "function qwark_frame()") != NULL) *glue = 1;
 		if (strstr(chunk, "error(") != NULL) {
 			status = LUAMB_ST_ERRRUN;
 			out = "qwark:1: x";
@@ -448,9 +439,117 @@ int host_fake_lua_frame(void)
 	poke32(mb + LUAMB_OFF_STATUS, (u32)status);
 	poke32(mb + LUAMB_OFF_ACK, req);
 	poke32(mb + LUAMB_OFF_BUSY, 0);
-	answered = 1;
+	return 1;
+}
+
+/* Whether the simulated ToD has the Lua helper in (its VM hook, the mailbox's identity). Under g_mem_lock. */
+static const struct lh_desc *fake_lua_in(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+
+	if (d == NULL || !g_game_running || g_boot_game == NULL || g_boot_game->game_id != GAME_TOD ||
+	    peek32(d->hooks[0].addr) != d->hooks[0].value || peek32(d->mailbox) != LUAMB_MAGIC)
+		return NULL;
+	return d;
+}
+
+/*
+ * One gameplay frame of the Lua helper, after luahelper.c's lh_tick: the
+ * heartbeat, the lua_State, the console menu's bookkeeping of a gameplay
+ * frame (lh_menu.c's lm_gameplay_frame: no pause menu, so none of its VM and
+ * the menu closed) and a gameplay request. Returns 1 when it answered one.
+ */
+int host_fake_lua_frame(void)
+{
+	const struct lh_desc *d;
+	u32 mb, L;
+	int answered;
+
+	pthread_mutex_lock(&g_mem_lock);
+	d = fake_lua_in();
+	if (d == NULL) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	mb = d->mailbox;
+	L = peek32(d->vm + d->vm_state);
+	poke32(mb + LUAMB_OFF_HEARTBEAT, peek32(mb + LUAMB_OFF_HEARTBEAT) + 1u);
+	poke32(mb + LUAMB_OFF_LAST_STATE, L);
+	poke32(LM_STATE + LM_L, 0);
+	{
+		u8 z = 0;
+		mem_access(LM_STATE + LM_TRIED, &z, 1, 1);
+		if (peek32(LM_BOX) == MBOX_MAGIC) {
+			u8 closed = MBOX_HSTATE_CLOSED;
+			mem_access(LM_BOX + MBOX_OFF_HSTATE, &closed, 1, 1);
+		}
+	}
+	answered = fake_lua_serve(mb, L, LUAMB_TARGET_GAMEPLAY, NULL);
 	pthread_mutex_unlock(&g_mem_lock);
 	return answered;
+}
+
+/*
+ * Revision 1.29: one frame of the pause menu, after luahelper.c's
+ * lh_menu_tick, while `fakepause` is on: the menu heartbeat, a new pause
+ * menu VM given its qw and asking for the glue (LM_GLUE WANTED, LM_LOADS
+ * moved), a menu request served, and the glue taken for loaded once a chunk
+ * that defines qwark_frame ran. Returns 1 when it answered a request.
+ */
+static volatile int g_fake_pause_on;
+
+int host_fake_menu_frame(void)
+{
+	const struct lh_desc *d;
+	u32 mb, ms, L;
+	int answered, glue = 0;
+	u8 tried = 0;
+
+	pthread_mutex_lock(&g_mem_lock);
+	d = fake_lua_in();
+	if (d == NULL || peek32(d->hooks[2].addr) != d->hooks[2].value) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	mb = d->mailbox;
+	poke32(mb + LUAMB_OFF_MENU_BEAT, peek32(mb + LUAMB_OFF_MENU_BEAT) + 1u);
+	ms = peek32(d->menu_ptr);
+	L = ms != 0 ? peek32(ms + d->menu_off) : 0;
+	if (L == 0) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	if (peek32(LM_STATE + LM_L) != L || peek32(LM_STATE + LM_MS) != ms) {
+		poke32(LM_STATE + LM_L, L);
+		poke32(LM_STATE + LM_MS, ms);
+		mem_access(LM_STATE + LM_TRIED, &tried, 1, 1);
+	}
+	mem_access(LM_STATE + LM_TRIED, &tried, 1, 0);
+	if (!tried) {
+		tried = 1;
+		mem_access(LM_STATE + LM_TRIED, &tried, 1, 1);
+		poke32(LM_STATE + LM_LOADS, peek32(LM_STATE + LM_LOADS) + 1u);
+		poke32(LM_STATE + LM_GLUE, LM_GLUE_WANTED);
+	}
+	answered = fake_lua_serve(mb, L, LUAMB_TARGET_MENU, &glue);
+	if (glue && peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED) poke32(LM_STATE + LM_GLUE, LM_GLUE_LOADED);
+	pthread_mutex_unlock(&g_mem_lock);
+	return answered;
+}
+
+/* `fakepause on`: the game in its pause menu, a menu system with a VM; off, none. */
+void host_set_fake_pause(int on)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+
+	if (d == NULL) return;
+	pthread_mutex_lock(&g_mem_lock);
+	poke32(d->menu_ptr, on ? FAKE_TOD_MS : 0);
+	poke32(FAKE_TOD_MS + d->menu_off, on ? FAKE_TOD_MENU_STATE : 0);
+	poke32(TOD_PAUSE_STATE, on ? TOD_PAUSE_UP : 0);
+	poke32(TOD_GAME_STATE, on ? TOD_STATE_PAUSE : TOD_STATE_GAMEPLAY);
+	pthread_mutex_unlock(&g_mem_lock);
+	g_fake_pause_on = on ? 1 : 0;
 }
 
 static volatile int g_fake_lua_on;
@@ -462,7 +561,9 @@ static void *fake_lua_loop(void *arg)
 {
 	(void)arg;
 	for (;;) {
-		if (g_fake_lua_on) host_fake_lua_frame();
+		/* Revision 1.29: in the pause, the pause menu's frame runs and no gameplay frame does. */
+		if (g_fake_lua_on && !g_fake_pause_on) host_fake_lua_frame();
+		if (g_fake_lua_on && g_fake_pause_on) host_fake_menu_frame();
 		if (g_fake_save_on) host_fake_tod_save_frame();
 		plat_sleep_us(16000);
 	}

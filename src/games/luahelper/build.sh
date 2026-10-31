@@ -41,7 +41,7 @@ ASFLAGS="-Wa,-mregnames -I$DIR"
 # game tag : header : title : LH_GAME number
 GAMES="tod"
 
-sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h"
+sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua src/core/menubox.h"
 for g in $GAMES; do sources="$sources $DIR/lh_$g.h"; done
 
 if [ "$1" = "--if-stale" ]; then
@@ -136,6 +136,12 @@ for g in $GAMES; do
 	hook_orig=$(need "$hdr" LH_HOOK_ORIG)
 	err_addr=$(need "$hdr" LH_ERR_HOOK_ADDR)
 	err_orig=$(need "$hdr" LH_ERR_HOOK_ORIG)
+	pause_ms=$(need "$hdr" LH_PAUSE_MS)
+	ms_state=$(need "$hdr" LH_MS_STATE)
+	menu_addr=$(need "$hdr" LH_MENU_HOOK_ADDR)
+	menu_orig=$(need "$hdr" LH_MENU_HOOK_ORIG)
+	pause_addr=$(need "$hdr" LH_PAUSE_HOOK_ADDR)
+	pause_orig=$(need "$hdr" LH_PAUSE_HOOK_ORIG)
 	vm=$(need "$hdr" LH_VM)
 	vm_state=$(need "$hdr" LH_VM_STATE)
 	mb_size=$(need src/core/luamb.h LUAMB_SIZE)
@@ -145,10 +151,23 @@ for g in $GAMES; do
 		exit 1
 	}
 
+	# Every LH_FN_ (a function with its own descriptor) and, revision 1.29,
+	# every LH_TR_ (one of the game's cross-TOC trampolines, which runs with
+	# its caller's r2) becomes a symbol: .lh_<name>, .lh_tr_<name>.
 	defsyms=$(tr -d '\r' < "$hdr" |
-		sed -n 's/^#define[ \t][ \t]*LH_FN_\([A-Z0-9_]*\)[ \t][ \t]*\(0x[0-9A-Fa-f]*\)[ \t]*$/\1 \2/p' |
+		sed -n -e 's/^#define[ \t][ \t]*LH_FN_\([A-Z0-9_]*\)[ \t][ \t]*\(0x[0-9A-Fa-f]*\)[ \t]*$/\1 \2/p' \
+		       -e 's/^#define[ \t][ \t]*LH_\(TR_[A-Z0-9_]*\)[ \t][ \t]*\(0x[0-9A-Fa-f]*\)[ \t]*$/\1 \2/p' |
 		awk '{ printf "--defsym .lh_%s=%s ", tolower($1), $2 }')
 	[ -n "$defsyms" ] || { echo "luahelper: $hdr names no LH_FN_ function" >&2; exit 1; }
+
+	# Revision 1.29: the console menu's glue, its comments and indentation
+	# taken out (a line that starts with "--" is a comment, and no line of the
+	# glue has code before one). qwark sends it to the pause menu's VM as a
+	# request (it is far too big for the RPCS3 patch), so it goes into
+	# luahelper_bins.c beside the cave, and has to fit a request.
+	glue=$OUT/$g-glue.lua
+	chunk_cap=$(need src/core/luamb.h LUAMB_CHUNK_CAP)
+	tr -d '\r' < "$DIR/lh_glue.lua" | sed -e 's/^[ \t]*//' -e '/^--/d' -e '/^$/d' > "$glue"
 
 	$CC $CFLAGS -DLH_GAME=$num -c -o "$OUT/$g.o" "$DIR/luahelper.c"
 	# Through the driver, as the savefile helper's stubs are: it stamps the
@@ -181,11 +200,16 @@ for g in $GAMES; do
 
 	entry=$(symbol "$OUT/$g.elf" .lh_hook)
 	tap=$(symbol "$OUT/$g.elf" .lh_err_tap)
-	[ -n "$entry" ] && [ -n "$tap" ] || { echo "luahelper: $g is missing .lh_hook or .lh_err_tap" >&2; exit 1; }
+	menu=$(symbol "$OUT/$g.elf" .lh_menu_hook)
+	pause=$(symbol "$OUT/$g.elf" .lh_pause_hook)
+	[ -n "$entry" ] && [ -n "$tap" ] && [ -n "$menu" ] && [ -n "$pause" ] ||
+		{ echo "luahelper: $g is missing .lh_hook, .lh_err_tap, .lh_menu_hook or .lh_pause_hook" >&2; exit 1; }
 	[ $((entry)) -eq $((cave)) ] || { echo "luahelper: $g .lh_hook is at $entry, not at the cave" >&2; exit 1; }
 
 	hook_word=$(branch_word "$hook_addr" "$entry" 1)
 	err_word=$(branch_word "$err_addr" "$tap" 0)
+	menu_word=$(branch_word "$menu_addr" "$menu" 1)
+	pause_word=$(branch_word "$pause_addr" "$pause" 1)
 
 	{
 		echo "/* $g, .text at $cave, $size bytes */"
@@ -201,18 +225,37 @@ for g in $GAMES; do
 
 	{
 		echo "static const struct lh_hook lh_${g}_hooks[] = {"
-		echo "	{ ${hook_addr}u, ${hook_word}u, ${hook_orig}u },   /* bl .lh_hook    -> $entry */"
-		echo "	{ ${err_addr}u, ${err_word}u, ${err_orig}u }    /* b  .lh_err_tap -> $tap */"
+		echo "	{ ${hook_addr}u, ${hook_word}u, ${hook_orig}u },   /* bl .lh_hook       -> $entry */"
+		echo "	{ ${err_addr}u, ${err_word}u, ${err_orig}u },   /* b  .lh_err_tap    -> $tap */"
+		echo "	{ ${menu_addr}u, ${menu_word}u, ${menu_orig}u },   /* bl .lh_menu_hook  -> $menu */"
+		echo "	{ ${pause_addr}u, ${pause_word}u, ${pause_orig}u }    /* bl .lh_pause_hook -> $pause */"
 		echo "};"
 		echo
 	} >> "$OUT/hooks.c"
 
-	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 2," >> "$OUT/descs.txt"
-	echo "	  ${mailbox}u, LUAMB_SIZE, ${vm}u, ${vm_state}u }," >> "$OUT/descs.txt"
+	glue_size=$(wc -c < "$glue" | tr -d ' ')
+	[ "$glue_size" -le $((chunk_cap)) ] || {
+		echo "luahelper: $g glue is $glue_size bytes, more than a request's $chunk_cap" >&2
+		exit 1
+	}
+	{
+		echo "/* $g, the console menu's glue (lh_glue.lua), $glue_size bytes of Lua */"
+		echo "static const u8 lh_${g}_glue[] = {"
+		emit_bytes "$glue"
+		echo "};"
+		echo
+	} >> "$OUT/arrays.c"
+
+	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 4," >> "$OUT/descs.txt"
+	echo "	  ${mailbox}u, LUAMB_SIZE, ${vm}u, ${vm_state}u," >> "$OUT/descs.txt"
+	echo "	  ${pause_ms}u, ${ms_state}u, LH_TABLE(lh_${g}_glue), ${glue_size}u }," >> "$OUT/descs.txt"
 
 	echo "  $g .text $cave $size bytes (cave to $cave_end)" >> "$OUT/report.txt"
 	echo "  $g hook $hook_addr = $hook_word (bl $entry), was $hook_orig" >> "$OUT/report.txt"
 	echo "  $g err  $err_addr = $err_word (b $tap), was $err_orig" >> "$OUT/report.txt"
+	echo "  $g menu $menu_addr = $menu_word (bl $menu), was $menu_orig" >> "$OUT/report.txt"
+	echo "  $g pause $pause_addr = $pause_word (bl $pause), was $pause_orig" >> "$OUT/report.txt"
+	echo "  $g glue $glue_size bytes of Lua (a request holds $((chunk_cap)))" >> "$OUT/report.txt"
 	echo "  $g mailbox $mailbox, $mb_size bytes" >> "$OUT/report.txt"
 done
 
@@ -230,10 +273,11 @@ sed '$ s/},$/}/' "$OUT/descs.txt" > "$OUT/descs-final.txt"
  *
  * from the SDK's Cygwin shell.
  *
- * Each game has one cave, the compiled helper, and two hook words: the branch
- * that replaces the game's call to its gameplay VM's update, and the branch
- * that replaces its empty reportError. Both are computed from the addresses
- * the helper linked at. The cave's bytes are where something puts them into
+ * Each game has one cave, the compiled helper, and four hook words: the branch
+ * that replaces the game's call to its gameplay VM's update, the branch that
+ * replaces its empty reportError, and (revision 1.29, the console menu) the
+ * calls that replace the pause menu's update and the test of the pause
+ * button. All are computed from the addresses the helper linked at. The cave's bytes are where something puts them into
  * the game: the emulator builds (QWARK_EMULATOR), which make an RPCS3 patch of
  * them, and the game module (QWARK_GAME_MODULE, tod.sprx), out of whose
  * read-only segment the core installs them on a console (revision 1.27). The
@@ -311,7 +355,7 @@ struct lh_desc {
 	const struct lh_cave *caves;
 	u8 ncaves;
 
-	/* The VM hook first, then the error tap. */
+	/* The VM hook first, then the error tap, then the menu's two (revision 1.29). */
 	const struct lh_hook *hooks;
 	u8 nhooks;
 
@@ -319,6 +363,17 @@ struct lh_desc {
 	u32 mailbox_size;
 	u32 vm;                     /* the gameplay VM object */
 	u32 vm_state;               /* the lua_State* is the word at vm + vm_state, 0 between levels */
+
+	/*
+	 * Revision 1.29, the console menu: the pause menu's VM, whose lua_State*
+	 * is at menu_off into the menu system that the word at menu_ptr holds (0
+	 * with no pause), and the menu's Lua glue, which qwark sends it (NULL but
+	 * in the emulator builds and the game module; the length stays).
+	 */
+	u32 menu_ptr;
+	u32 menu_off;
+	const u8 *glue;
+	u32 glue_len;
 };
 
 /* NULL for an executable with no Lua helper. */
