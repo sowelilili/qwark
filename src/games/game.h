@@ -573,6 +573,14 @@ struct game_api {
 	 * is set. Not in a release module, which has no ToD.
 	 */
 	const struct sf_driver *savefile_driver;
+
+	/*
+	 * Revision 1.29 (pending): DEBUG_TEXT, the game's debug pages
+	 * (proto.h): writes the whole reply for `page` (0xFF the list) into out,
+	 * `cap` bytes, and its length into *len. Read only, on the tick thread,
+	 * under the core lock. NULL for a game with none, every game but ToD.
+	 */
+	int (*debug_text)(u8 page, u8 *out, u32 cap, u32 *len);
 #endif
 };
 

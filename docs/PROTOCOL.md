@@ -110,6 +110,8 @@ Revision 1.29, ToD's story FMV loads' fade-out, the START at half the fade in, a
 
 Revision 1.29, Tools of Destruction's console menu, a prototype (pending, 2026-10-31): no opcode and no wire structure moved. **SessionInfo `flags2` bit7 NO_MENU** now follows config.txt's new key **`menu.tod`** in a Tools of Destruction session: ToD has a menu table (`game_api.menu`) and a renderer, a prototype read from the executable and not yet run on a console (`docs/tod-menu.md`), which goes into the game only where `menu.tod = 1`; with the key 0 or absent, the default, NO_MENU stays set and nothing of the menu goes in, as before, and the menu combo's notification says the key turns it on. With the key at 1 NO_MENU is clear in ToD and the menu combo opens the menu (in play, which it freezes, or over the game's own pause); ToD has no pause-menu row (no Help row words, `nhelp` 0), so the In-game menus switch (MENU_HELP) changes nothing there. The key is read as a session enters the game. **ui.pak** (section 9.10) gains an entry kind: **3, Tools of Destruction's renderer**, after the helpers, which only a build that has ToD packs (`pak.py --tod`: a test build, the host builds) and reads; it is outside the header's identities, so a release's pak is byte for byte what it was and a module without ToD takes a test build's pak as readily as its own; a module with ToD takes that entry only when its CRC-32 is the module's `MH_TOD_PAK_ID`, and otherwise has no menu in ToD. Under RPCS3 there is still no console menu, in ToD as in every game. Section 9.12 has the renderer.
 
+Revision 1.29, a game's debug pages, Tools of Destruction's level cache (pending, 2026-10-31): one opcode, **DEBUG_TEXT (0x00E8)**, in the builds that have Tools of Destruction (a release module answers it `UNKNOWN_OP`). A game may offer read-only pages of text it makes from its own memory, which a client shows as they come: the page list (request 0xFF) gives each page's title and a SLOW flag, and a page (request n) its text (section 5.16). ToD alone answers it, with two pages about the game's level cache (`../REPORT-tod-level-cache.md`): **Now**, the level warmer, what an opening cutscene waits for and the save thread, a dozen small reads, and **Cache**, the FIOS block cache summed per file, newest first, a 70 KB read, flagged SLOW. Every other game, and a session outside a game, answers `UNSUPPORTED`. Nothing is written to the game. Inside qwark, `struct game_api` gained `debug_text` at its end, after `savefile_driver`, in the builds that have ToD. No other opcode or structure changes.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -1538,6 +1540,24 @@ The helper's fields are 0 while `installed` is not 1. An error inside the chunk 
 **LUA_PATCH.** Emulator builds alone (`qwark-rpcs3.exe` and the simulator; the PS3 module answers `UNSUPPORTED`), and only for a game with a helper. SAVEFILE_PATCH's layout and stamp (section 5.12.1): the cave's words, then the mailbox's two identity words (`0x8CA000 = 0x514C5541`, `0x8CA004 = 0x00012600`), then the error tap, then the VM's hook last; no byte rows. 333 words today.
 
 **The rules a client keeps.** LUA_EXEC changes the game, so a client sends it on a user's action alone, and never on its own after a reconnect (DESIGN 3.7): qwark withdraws, as a game arrives, any request an earlier session left unanswered in the mailbox. On a console the first LUA_EXEC of a boot is a code write.
+
+## 5.16 A game's debug pages (0x00E8), revision 1.29 (pending)
+
+Read-only text a game makes from its own memory, for a client to show as it comes: the client keeps no address and no layout of the game's. Only the builds that have Tools of Destruction know the op (a release module answers `UNKNOWN_OP`); among the games only ToD answers it, and every other game, and a session outside a game, answers `UNSUPPORTED`.
+
+| op | name | request | reply |
+|---|---|---|---|
+| 0x00E8 | DEBUG_TEXT | `u8 page` | page 0xFF: `u8 npages`, then npages x `{ u8 flags, char title[23] }`; page n: `u16 len, u16 pad, char text[len]` |
+
+- **flags** bit0 **SLOW**: the page reads a lot of the game's memory (ToD's Cache page reads 70 KB, which under RPCS3 is thousands of PINE reads). A client asks for a SLOW page on the user's word alone, never on a timer; a page without the flag it may refresh a few times a second while it is on screen.
+- **text** is ASCII, lines ended by `\n`, at most 65535 bytes. A value the game could not give is said in the text; the page still answers `OK`.
+- A page past `npages` is `BAD_ARG`.
+- The op runs on the tick thread under the core lock, like every op that reads the game, and writes nothing.
+
+**Tools of Destruction's pages** (`src/games/tod_cache.c`, `../REPORT-tod-level-cache.md` sections 2 and 9):
+
+- **0, Now**: the game state and the planet; the level warmer (`g_levelPrefetch`): on or off, its two gates and the pending flag, the file it is reading and how far, and its four files; the movie player (`g_moviePlayer`) and the cinematic it plays, and, while one waits to start, how long it has waited against the 2 s limit on its sounds' pre-roll, how many sounds pre-roll, and whether the autosave holds it; the save thread's state.
+- **1, Cache** (SLOW): the FIOS block cache on `/dev_hdd1` (`g_fiosSchedulerCache`): blocks in use, free and filling; then one line per file, newest block first (the order in which eviction takes them, backwards), with its block count, the archive's own block count for a level archive, the newest and oldest block's age in seconds behind the newest block in the cache, the lowest and highest block's offset in the file in MiB, and the path. At most 40 files are named; the blocks of any more are counted on a last line.
 
 ## 6. Pad mask layout
 

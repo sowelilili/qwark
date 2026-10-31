@@ -1557,5 +1557,6 @@ const struct game_api rac3_game = {
 	NULL                  /* revision 1.28: no level flag names */
 #if QWARK_HAS_TOD
 	, NULL                /* revision 1.28: its helper is code, not a savefile_driver */
+	, NULL                /* revision 1.29: no debug pages */
 #endif
 };

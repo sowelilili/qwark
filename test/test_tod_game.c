@@ -2569,6 +2569,173 @@ static void test_tod_savefile_aside(void)
 	check(quit(), "the game quits");
 }
 
+/* -------------------------------------------- the debug pages, revision 1.29 */
+
+#define DBG_DESC    0x30300000u
+#define DBG_STR     0x30301000u
+#define DBG_CACHE   0x30310000u
+#define DBG_BLOCKS  0x30311000u
+#define DBG_PATHS   0x30312000u
+#define DBG_TOC     0x30313000u
+#define DBG_LEVELS  0x30313100u
+
+static void wrstr(u32 addr, const char *s)
+{
+	host_poke(addr, (const u8 *)s, (u32)strlen(s) + 1u);
+}
+
+static void wr64(u32 addr, u64 v)
+{
+	wr32(addr, (u32)(v >> 32));
+	wr32(addr + 4u, (u32)v);
+}
+
+/* A cache block descriptor: lastUse, the offset in its file, the path handle. */
+static void dbg_block(u32 i, u64 use, u32 off, u32 handle)
+{
+	u32 at = DBG_BLOCKS + i * TOD_FC_DESC_LEN;
+
+	wr64(at + TOD_FC_LAST_USE, use);
+	wr64(at + TOD_FC_OFFSET, off);
+	wr32(at + TOD_FC_VALID, 0x100000u);
+	wr32(at + TOD_FC_PATH, handle);
+}
+
+static int dbg_page(u8 page, char *text, u32 cap)
+{
+	static u8 reply[8192];
+	u32 len = 0, n;
+
+	text[0] = 0;
+	if (tod_debug_text(page, reply, sizeof(reply), &len) != ST_OK || len < DEBUG_TEXT_HEAD) return 0;
+	n = be16_get(reply);
+	if (n + DEBUG_TEXT_HEAD != len || n + 1 > cap) return 0;
+	memcpy(text, reply + DEBUG_TEXT_HEAD, n);
+	text[n] = 0;
+	return 1;
+}
+
+static void test_tod_debug_pages(void)
+{
+	static const char * const paths[4] = {
+		"/built/levels/stratus city/streaming_sound.dat",
+		"/built/levels/stratus city/streaming_dialogue.us.dat",
+		"/packed/levels/stratus city/level_textures.psarc",
+		"/packed/levels/fastoon/level_cached.psarc"
+	};
+	static const u32 sizes[4] = { 66934784u, 9117696u, 228119424u, 124780544u };
+	char text[4096];
+	u8 list[64];
+	u32 len = 0, i, old_toc = rd32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC);
+	u32 old_sm = rd32(TOD_SAVE_MANAGER + TOD_SM_STATE), old_op = rd32(TOD_SAVE_MANAGER + TOD_SM_LAST_OP);
+	u32 old_gs = rd32(TOD_GAME_STATE), old_level = rd32(TOD_CURRENT_LEVEL);
+	const char *a, *b;
+
+	group("ToD: the level cache's debug pages, DEBUG_TEXT (revision 1.29)");
+	check(session_game() != NULL && session_game()->debug_text == tod_debug_text, "ToD answers DEBUG_TEXT");
+	check(tod_debug_text(DEBUG_TEXT_LIST, list, sizeof(list), &len) == ST_OK &&
+	      len == 1u + 2u * (1u + DEBUG_TITLE_LEN) && list[0] == 2 &&
+	      list[1] == 0 && qstreq((const char *)list + 2, "Now") &&
+	      list[1 + 1 + DEBUG_TITLE_LEN] == DEBUG_PAGE_SLOW && qstreq((const char *)list + 3 + DEBUG_TITLE_LEN, "Cache"),
+	      "the list: Now, and Cache flagged SLOW");
+	check(tod_debug_text(2, list, sizeof(list), &len) == ST_BAD_ARG, "a page past the list is BAD_ARG");
+
+	/* The warmer three files in, reading Stratus City's textures. */
+	for (i = 0; i < 4; i++) {
+		wrstr(DBG_STR + i * 0x80u, paths[i]);
+		wr32(DBG_DESC + i * 8u, DBG_STR + i * 0x80u);
+		wr32(DBG_DESC + i * 8u + 4u, sizes[i]);
+		wr32(TOD_PREFETCH + TOD_PF_SIZE + i * 4u, sizes[i]);
+		wr32(TOD_PREFETCH + TOD_PF_FILE + i * 4u, DBG_DESC + i * 8u);
+	}
+	wr32(TOD_PREFETCH + TOD_PF_CUR, DBG_DESC + 2u * 8u);
+	wr32(TOD_PREFETCH + TOD_PF_STATE, 3);
+	wr32(TOD_PREFETCH + TOD_PF_OFFSET, 16u << 20);
+	wr32(TOD_PREFETCH + TOD_PF_END, sizes[2]);
+	wr32(TOD_PREFETCH + TOD_PF_BUSY, 1);
+	wr8(TOD_PREFETCH + TOD_PF_ENABLED, 1);
+	wr8(TOD_PF_GATE_LEVEL, 1);
+	wr8(TOD_PF_GATE_MOVIE, 1);
+	wr32(TOD_GAME_STATE, 4);
+	wr32(TOD_CURRENT_LEVEL, 2);
+
+	/* An opening cutscene black, its sounds pre-rolling, held by the autosave. */
+	wrstr(DBG_STR + 0x400u, "l03_s01_rcff_rt");
+	wr32(DBG_STR + 0x500u, DBG_STR + 0x400u);
+	wr32(TOD_MOVIE_RECORDS + 6u * 4u, DBG_STR + 0x504u);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 1);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_MOVIE, 6);
+	wrf(TOD_MOVIE_PLAYER + TOD_MP_FADE_TIMER, 1.25f);
+	wr32(TOD_CINEMATIC + TOD_CINE_SOUNDS, 3);
+	wr32(TOD_SAVE_MANAGER + TOD_SM_STATE, 2);
+	wr32(TOD_SAVE_MANAGER + TOD_SM_LAST_OP, TOD_SAVE_OP_AUTO);
+
+	check(dbg_page(TOD_DEBUG_NOW, text, sizeof(text)), "page 0, Now, answers");
+	check(strstr(text, "Game state 4 (gameplay), level 2 (Stratus City)") != NULL, "the game state and the planet");
+	check(strstr(text, "Warmer: on (level gate 1, movie gate 1, pending 0)") != NULL, "the warmer on, with its gates");
+	check(strstr(text, "file 3 of 4: /packed/levels/stratus city/level_textures.psarc") != NULL &&
+	      strstr(text, "at 16.0 MiB of 217.6 MiB (7%), a read in flight") != NULL,
+	      "the file it reads and how far it is");
+	check(strstr(text, "4 next level: 119.0 MiB  /packed/levels/fastoon/level_cached.psarc") != NULL,
+	      "its four files, the next level's last");
+	check(strstr(text, "Cutscene: l03_s01_rcff_rt, player 1 (black, waiting to start)") != NULL &&
+	      strstr(text, "waited 1.25 s; the sounds' limit is 2.00 s, 3 sounds pre-rolling") != NULL,
+	      "the cutscene, how long it has waited and its sounds");
+	check(strstr(text, "held: the autosave is running") != NULL && strstr(text, "Save thread: saving (autosave)") != NULL,
+	      "the autosave that holds it");
+
+	wr32(TOD_SAVE_MANAGER + TOD_SM_STATE, old_sm);
+	wr32(TOD_SAVE_MANAGER + TOD_SM_LAST_OP, old_op);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 0);
+	wr32(TOD_PREFETCH + TOD_PF_CUR, 0);
+	wr32(TOD_PREFETCH + TOD_PF_STATE, 4);
+	check(dbg_page(TOD_DEBUG_NOW, text, sizeof(text)) && strstr(text, "idle: every file read") != NULL &&
+	      strstr(text, "Cutscene: none, player 0 (idle)") != NULL && strstr(text, "held") == NULL,
+	      "the warmer idle, no cutscene, nothing held");
+
+	/* The cache: no object yet, then eight blocks, three of them two files'. */
+	wr32(TOD_FIOS_CACHE, 0);
+	check(dbg_page(TOD_DEBUG_CACHE, text, sizeof(text)) && strstr(text, "not set up") != NULL, "no cache object yet");
+	wr32(TOD_FIOS_CACHE, DBG_CACHE);
+	wr32(DBG_CACHE + TOD_FC_BLOCK_SIZE, 0x100000u);
+	wr32(DBG_CACHE + TOD_FC_NBLOCKS, 8);
+	wr32(DBG_CACHE + TOD_FC_BLOCKS, DBG_BLOCKS);
+	dbg_block(0, TOD_FC_FREE, 0, 0);
+	dbg_block(1, 5000000000ull, 0, 1);
+	dbg_block(2, 6000000000ull, 1u << 20, 1);
+	dbg_block(3, 9000000000ull, 0, 2);
+	dbg_block(4, TOD_FC_FILLING, 0, 0);
+	wr32(TOD_FIOS_PATHS, DBG_PATHS);
+	wr32(DBG_PATHS + TOD_FPATH_STRS, DBG_PATHS + 0x100u);
+	wr32(DBG_PATHS + TOD_FPATH_COUNT, 2);
+	wr32(DBG_PATHS + 0x100u, DBG_STR + 2u * 0x80u);
+	wr32(DBG_PATHS + 0x104u, DBG_STR + 3u * 0x80u);
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, DBG_TOC);
+	wr32(DBG_TOC + TOD_TOC_LEVELS, DBG_LEVELS);
+	wr32(DBG_LEVELS - 4u, 2);
+	wrstr(DBG_STR + 0x600u, "fastoon");
+	wrstr(DBG_STR + 0x680u, "stratus city");
+	wr32(DBG_LEVELS, DBG_STR + 0x600u);
+	wr32(DBG_LEVELS + 0x04u + 4u, sizes[3]);                    /* fastoon's cached */
+	wr32(DBG_LEVELS + TOD_LA_STRIDE, DBG_STR + 0x680u);
+	wr32(DBG_LEVELS + TOD_LA_STRIDE + 0x2Cu + 4u, sizes[2]);    /* stratus city's textures */
+
+	check(dbg_page(TOD_DEBUG_CACHE, text, sizeof(text)), "page 1, Cache, answers");
+	check(strstr(text, "3 of 8 blocks in use (1.0 MiB each), 4 free, 1 filling") != NULL, "the counts");
+	check(strstr(text, "4.00 s older than the newest") != NULL, "how old the oldest block is");
+	a = strstr(text, "  1 / 119  0.00 .. 0.00  0..0  /packed/levels/fastoon/level_cached.psarc");
+	b = strstr(text, "  2 / 218  3.00 .. 4.00  0..1  /packed/levels/stratus city/level_textures.psarc");
+	check(a != NULL && b != NULL && a < b, "per file, newest first, with the archive's block count");
+
+	wr32(DBG_CACHE + TOD_FC_NBLOCKS, TOD_FC_MAX_BLOCKS + 1u);
+	check(dbg_page(TOD_DEBUG_CACHE, text, sizeof(text)) && strstr(text, "does not look right") != NULL,
+	      "a block count past the limit is not the table");
+	wr32(TOD_FIOS_CACHE, 0);
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, old_toc);
+	wr32(TOD_GAME_STATE, old_gs);
+	wr32(TOD_CURRENT_LEVEL, old_level);
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -2592,6 +2759,7 @@ void test_tod_game(void)
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_load_fade();
 	test_tod_cutscenes();
+	test_tod_debug_pages();
 	test_tod_on_boot();
 	quit();
 }

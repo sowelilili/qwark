@@ -126,5 +126,6 @@ const struct game_api testgame_game = {
 	NULL,                 /* savefile_desc: no helper */
 	NULL,                 /* lua_desc: no Lua (revision 1.27) */
 	NULL,                 /* revision 1.28: no level flag names */
-	NULL                  /* savefile_driver: none (revision 1.28) */
+	NULL,                 /* savefile_driver: none (revision 1.28) */
+	NULL                  /* debug_text: no debug pages (revision 1.29) */
 };

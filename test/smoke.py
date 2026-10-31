@@ -5685,11 +5685,45 @@ def smoke_rpcs3_tod_savefile(c, pine):
     check(info is not None and info["pending"] == 0 and info["error"] == 0, "rpcs3: and the RESTORE settles", info)
 
 
+# Revision 1.29 (pending): DEBUG_TEXT, ToD's level cache pages (src/games/tod_cache.c).
+OP_DEBUG_TEXT = 0x00E8
+TOD_PREFETCH = 0x1037A704
+TOD_FIOS_CACHE = 0x106ACBA4
+
+
+def debug_page_text(body):
+    n = struct.unpack(">H", body[:2])[0]
+    return body[4:4 + n].decode("ascii", "replace"), len(body) == 4 + n
+
+
+def smoke_tod_debug_text(c):
+    """DEBUG_TEXT: the page list, then page 0 with the warmer idle and page 1 with no cache yet."""
+    status, body = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
+    if check(status == ST_OK and len(body) == 1 + 2 * 24, "ToD: DEBUG_TEXT lists its pages", (status, len(body))):
+        titles = [(body[1 + 24 * i], body[2 + 24 * i:25 + 24 * i].split(b"\0")[0].decode()) for i in range(body[0])]
+        check(titles == [(0, "Now"), (1, "Cache")], "ToD: Now, and Cache flagged SLOW", titles)
+    mem_write(c, TOD_PREFETCH + 0x48, struct.pack(">I", 0))
+    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
+    status, body = c.call(OP_DEBUG_TEXT, bytes([0]))
+    text, whole = debug_page_text(body) if status == ST_OK else ("", False)
+    check(status == ST_OK and whole and "Warmer:" in text and "idle: every file read" in text and "Save thread:" in text,
+          "ToD: page 0 shows the warmer, idle, and the save thread", (status, text[:200]))
+    mem_write(c, TOD_FIOS_CACHE, struct.pack(">I", 0))
+    status, body = c.call(OP_DEBUG_TEXT, bytes([1]))
+    text, whole = debug_page_text(body) if status == ST_OK else ("", False)
+    check(status == ST_OK and whole and "not set up" in text, "ToD: page 1 says when the cache is not set up",
+          (status, text[:120]))
+    status, _ = c.call(OP_DEBUG_TEXT, bytes([2]))
+    check(status == ST_BAD_ARG, "ToD: a page past the list is BAD_ARG", status)
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
     ok, _ = wait_state(c, SESSION_XMB)
     check(ok, "ToD: the last game quits")
+    status, _ = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
+    check(status == ST_UNSUPPORTED, "DEBUG_TEXT outside a game is UNSUPPORTED", status)
     sim.send("fakelua off")
     sim.send("boot %s tod" % TOD_TITLE)
     ok, info = wait_game(c, 5)
@@ -5733,6 +5767,7 @@ def smoke_tod(c, sim):
               "ToD: 43 rows, Owned, Level and Ammo", (len(rows), fields))
 
     smoke_tod_level_flags(c)
+    smoke_tod_debug_text(c)
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
     check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)

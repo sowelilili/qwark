@@ -1031,6 +1031,24 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		if (cmd->status == ST_OK) cmd->replylen = len;
 		break;
 	}
+
+	/*
+	 * Revision 1.29 (pending): the game's debug pages, text it makes from its
+	 * own memory, read only. Outside a game, or for a game with none, UNSUPPORTED.
+	 */
+	case OP_DEBUG_TEXT: {
+		const struct game_api *g = session_game();
+		u32 len = 0;
+
+		if (reqlen < 1) { cmd->status = ST_BAD_ARG; break; }
+		if (g == NULL || g->debug_text == NULL || session_state() != SESSION_INGAME) {
+			cmd->status = ST_UNSUPPORTED;
+			break;
+		}
+		cmd->status = (u16)g->debug_text(req[0], reply, cmd->replycap, &len);
+		if (cmd->status == ST_OK) cmd->replylen = len;
+		break;
+	}
 #endif
 
 	default:
@@ -1095,6 +1113,7 @@ static int op_needs_ring(u16 op)
 #if QWARK_HAS_TOD
 	case OP_LUA_EXEC:
 	case OP_LUA_STATUS:
+	case OP_DEBUG_TEXT:
 #endif
 		return 1;
 	default:

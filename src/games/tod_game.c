@@ -452,5 +452,6 @@ const struct game_api tod_game = {
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
 	tod_levelflag_names,  /* revision 1.28: LEVELFLAGS_NAMES */
-	&tod_sf_driver        /* revision 1.28: the save system, driven by data */
+	&tod_sf_driver,       /* revision 1.28: the save system, driven by data */
+	tod_debug_text        /* revision 1.29: DEBUG_TEXT, the level cache's pages (tod_cache.c) */
 };

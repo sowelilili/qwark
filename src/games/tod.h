@@ -709,6 +709,81 @@ int  tod_levelflags_reset(u8 planet);
 int  tod_levelflags_set(u8 planet, u16 offset, u8 value);
 const struct levelflag_names *tod_levelflag_names(void);
 
+/*
+ * Revision 1.29 (pending): the level cache's debug pages (tod_cache.c,
+ * DEBUG_TEXT; REPORT-tod-level-cache.md sections 2 and 9). Read only: nothing
+ * here is ever written. All read in the decompile (dec).
+ *
+ * The level warmer, g_levelPrefetch (LevelPrefetch, 0x58 bytes): four files
+ * set up at every level load (the level's streaming sound and dialogue, its
+ * textures, the next story planet's level_cached), read 256 KB a frame in
+ * gameplay through the FIOS block cache, which fills it. `state` is how many
+ * files it has started; idle once `state` is 4 and `curFile` 0.
+ * GameState_Dispatch writes `enabled` every frame: off in game states 5..9
+ * (an FMV, a cinematic), else the two gates ANDed.
+ */
+#define TOD_PREFETCH         0x1037A704u  /* g_levelPrefetch, LevelPrefetch */
+#define TOD_PF_LEN           0x58u
+#define TOD_PF_SIZE          0x00u        /* u32[4] the files' sizes */
+#define TOD_PF_FILE          0x10u        /* TodFileDesc *[4]: { char *path; u32 size } */
+#define TOD_PF_READY         0x24u        /* u32, a read may be issued */
+#define TOD_PF_BUSY          0x28u        /* u32, a read in flight */
+#define TOD_PF_OFFSET        0x30u        /* u32, where the next read starts */
+#define TOD_PF_END           0x34u        /* u32, the current file's end */
+#define TOD_PF_CUR           0x48u        /* TodFileDesc *, 0 when idle */
+#define TOD_PF_STATE         0x4Cu        /* u32, 0..4 */
+#define TOD_PF_ENABLED       0x54u        /* u8 */
+#define TOD_PF_NFILES        4u
+#define TOD_PF_PENDING       0x1037AA10u  /* g_levelPrefetchPending, u8: set by LevelLoad_onComplete */
+#define TOD_PF_GATE_LEVEL    0x1037E8E0u  /* g_levelPrefetchGateLevel, u8: Level_Enter, PrefetchGateMoby_update */
+#define TOD_PF_GATE_MOVIE    0x10062D18u  /* g_levelPrefetchGateMovie, u8: Level_Enter, MoviePlayer_update idle */
+
+/*
+ * The libFIOS scheduler cache on /dev_hdd1: g_fiosSchedulerCache points at
+ * the cache object, whose `blocks` are FiosCacheBlockDesc[numBlocks], 0x28
+ * bytes each. A block's `lastUse` (u64, FiosTime_nowNs: ns of the clock) is 2
+ * when the slot is free and 3 while it fills; a hit refreshes it, and the
+ * smallest is evicted first. Its path is g_fiosPathTable's string for
+ * `pathHandle`: [table + 0x5C][handle - 1], `handle` 1 .. [table + 0x64].
+ */
+#define TOD_FIOS_CACHE       0x106ACBA4u  /* g_fiosSchedulerCache, FiosSchedulerCache * */
+#define TOD_FC_BLOCK_SIZE    0xD8u        /* u32, 1 MiB */
+#define TOD_FC_NBLOCKS       0xDCu        /* u32, 0x700 */
+#define TOD_FC_BLOCKS        0xE0u        /* FiosCacheBlockDesc * */
+#define TOD_FC_DESC_LEN      0x28u
+#define TOD_FC_LAST_USE      0x00u        /* u64 */
+#define TOD_FC_OFFSET        0x18u        /* u64, the block's offset in its file */
+#define TOD_FC_VALID         0x20u        /* u32: bit 31 persist, the rest the valid bytes */
+#define TOD_FC_PATH          0x24u        /* u32, the path handle */
+#define TOD_FC_FREE          2u
+#define TOD_FC_FILLING       3u
+#define TOD_FC_MAX_BLOCKS    4096u        /* a count past this is not the table */
+#define TOD_FIOS_PATHS       0x1086C910u  /* g_fiosPathTable, its table * */
+#define TOD_FPATH_STRS       0x5Cu        /* char *[] */
+#define TOD_FPATH_COUNT      0x64u        /* u32 */
+
+/*
+ * What an opening cutscene waits for (MoviePlayer_update, state 1): the save
+ * thread not running an autosave, the fade at black, and every sound the
+ * cinematic started paused (Cinematic_prerollSounds, g_cinematic) ready, or
+ * `fadeTimer` past g_moviePrerollTimeout, 2.0 s.
+ */
+#define TOD_MP_FADE_TIMER    0xD4u        /* f32, seconds since the player's fade started */
+#define TOD_CINEMATIC        0x10632390u  /* g_cinematic, ToDCinematic */
+#define TOD_CINE_SOUNDS      0xA50u       /* u32, the sounds the pre-roll started */
+#define TOD_PREROLL_LIMIT_CS 200u         /* g_moviePrerollTimeout, 2.0 s, in hundredths */
+#define TOD_SM_LAST_OP       0xF8u        /* s32, SaveSystem_request's op: 4 an autosave */
+#define TOD_SAVE_OP_AUTO     4u
+#define TOD_TOC_LEVELS       0x28u        /* game.toc: TodLevelArchives[count], the count at [-1] */
+#define TOD_LA_STRIDE        0x40u        /* { char *name; TodArchiveRef cached, uncached, textures } */
+#define TOD_LA_MAX           64u
+
+/* The pages DEBUG_TEXT serves: page 0xFF lists them (proto.h). */
+#define TOD_DEBUG_NOW        0
+#define TOD_DEBUG_CACHE      1
+#define TOD_DEBUG_NPAGES     2
+int tod_debug_text(u8 page, u8 *out, u32 cap, u32 *len);
+
 extern const struct tod_facts tod_facts;
 
 /* The game's pad mask in the OG layout. */

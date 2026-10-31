@@ -484,6 +484,25 @@
 #define LUA_PHASE_CANCELLING  2
 #define LUA_PHASE_HUNG        3
 
+/*
+ * Revision 1.29 (pending): a game's debug pages, read-only text a game makes
+ * from its own memory (PROTOCOL.md 5.16). Tools of Destruction alone answers
+ * it, in the builds that have it; every other game, and a session outside a
+ * game, UNSUPPORTED; a release module UNKNOWN_OP.
+ *
+ *   DEBUG_TEXT  u8 page
+ *     page 0xFF -> u8 npages, then npages x { u8 flags, char title[23] }
+ *     page n    -> u16 len, u16 pad, char text[len] (ASCII, lines end in '\n')
+ *
+ * A page flagged SLOW reads a lot of the game's memory: a client asks for it
+ * on the user's word, never on a timer. BAD_ARG for a page past npages.
+ */
+#define OP_DEBUG_TEXT         0x00E8
+#define DEBUG_TEXT_LIST       0xFFu
+#define DEBUG_PAGE_SLOW       0x01u
+#define DEBUG_TITLE_LEN       23u
+#define DEBUG_TEXT_HEAD       4u
+
 /* A group's flags on the wire. */
 #define MANIP_FLAG_NGPLUS       0x01  /* 1 NG+ (challenge mode), 0 new-game */
 #define MANIP_FLAG_EXTENSION    0x02  /* a category extension, shown with less emphasis */
