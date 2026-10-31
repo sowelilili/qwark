@@ -19,6 +19,7 @@
  * test supplies, big-endian byte by byte, as test/test_menu.c runs mh_core.c.
  */
 #include "lh_menu.h"
+#include "lh_tod.h"
 #include "../../core/menubox.h"
 
 #ifdef LH_HOST
@@ -174,6 +175,46 @@ static void lm_menu_frame(void)
 }
 
 /*
+ * Revision 1.29, the crash fix (lh_tod.h, LH_PAUSE_STATE and on; docs/
+ * tod-menu.md 9): whether the pause menu's system `ms` is one the helper may
+ * enter, with the presentation pushed around what it does there. 0 when it
+ * is; else the LM_WHY_* bits of every reason it is not. The game's own words
+ * only, read before anything is called: the pause is up and this is its menu
+ * system, the system has its Lua state, runtime, presentation and Lua bridge,
+ * the presentation's first update is behind it, the system is not stopping
+ * and has updated LM_READY_FRAMES times, and nothing is pushed (the runtime's
+ * count and the bridge's presentation both 0), as after every update of it.
+ */
+static lm_u32 lm_ready(lm_u32 ms)
+{
+	lm_u32 why = 0, st, rt, br;
+
+	st = lm32(LH_PAUSE_STATE);
+	if (ms == 0 || lm32(LH_PAUSE_MS) != ms || (st != 2 && st != 3)) return LM_WHY_SYSTEM;
+	rt = lm32(ms + LH_MS_RUNTIME);
+	br = lm32(ms + LH_MS_BRIDGE);
+	if (lm32(ms + LH_MS_STATE) == 0 || rt == 0 || br == 0 || lm32(ms + LH_MS_PRES) == 0) return LM_WHY_PARTS;
+	if (lm8(ms + LH_MS_FIRST) != 0) why |= LM_WHY_FIRST;
+	if (lm8(ms + LH_MS_STOPPED) != 0) why |= LM_WHY_STOPPED;
+	if (lm32(ms + LH_MS_FRAMES) < LM_READY_FRAMES) why |= LM_WHY_YOUNG;
+	if (lm32(rt + LH_RT_PUSHED) != 0 || lm32(br + LH_BR_PRES) != 0) why |= LM_WHY_PUSHED;
+	return why;
+}
+
+/* Whether the push took: the bridge holds the menu system's presentation. */
+static int lm_pushed(lm_u32 ms)
+{
+	return lm32(lm32(ms + LH_MS_BRIDGE) + LH_BR_PRES) == lm32(ms + LH_MS_PRES);
+}
+
+/* A pause menu frame kept out of the menu's VM for `why`, or (0) let in: LM_WHY and LM_WAITS. */
+static void lm_kept_out(lm_u32 why)
+{
+	lmw32(LMS(LM_WHY), why);
+	lmw32(LMS(LM_WAITS), why != 0 ? lm32(LMS(LM_WAITS)) + 1 : 0);
+}
+
+/*
  * Every gameplay frame. No pause menu is up, so the menu is not either,
  * whatever closed it (Start in the Cheats screen, a load from the pause): the
  * mailbox says closed, and the next pause is a new one for the glue. A pause
@@ -186,6 +227,7 @@ static void lm_gameplay_frame(void)
 
 	lmw32(LMS(LM_L), 0);
 	lmw8(LMS(LM_TRIED), 0);
+	if (lm32(LMS(LM_WAITS)) != 0) lmw32(LMS(LM_WAITS), 0);
 	if (p != 0) lmw8(LMS(LM_PENDING), p - 1);
 	if (lm_on() && lm8(LMB(MBOX_OFF_HSTATE)) != MBOX_HSTATE_CLOSED) lm_hstate(0);
 }

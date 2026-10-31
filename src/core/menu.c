@@ -1771,6 +1771,11 @@ static const struct menu_native *g_native;
 static u32  g_native_loads;      /* the helper's loads word when the glue last went */
 static u32  g_native_stopped;    /* the same, when a stop was last logged */
 static u8   g_native_why;        /* 1: no helper (RPCS3 without the patch) */
+static u32  g_native_note;       /* the glue's note last logged */
+static u8   g_native_waited;     /* a long wait of the helper's logged, until it ends */
+
+/* Pause menu frames the helper waits for the presentation before the core says so (about five seconds). */
+#define NATIVE_WAIT_LOG 300
 
 /* Whether `game_id` has a menu of its own UI, before its module is in. */
 static int native_game(u8 game_id)
@@ -2089,6 +2094,8 @@ static int native_install(void)
 		if (mem_write(n->mailbox, head, 4) != ST_OK) return ST_IO_ERROR;
 		g_native_loads = 0;
 		g_native_stopped = 0;
+		g_native_note = 0;
+		g_native_waited = 0;
 	}
 
 	/* Taken as install() takes any renderer's mailbox (its tail, the same words). */
@@ -2109,6 +2116,39 @@ static int native_install(void)
 	g_last_poll = now_tick();
 	plat_log("menu: the game's own menu served for game %d, mailbox 0x%08X", (int)g_game_id, (int)n->mailbox);
 	return ST_OK;
+}
+
+/*
+ * Revision 1.29, the crash fix: what the helper and the glue say of a pause
+ * menu, logged once each. The helper waits, the glue never entered, while
+ * the game's own words say the pause's presentation is not up (lh_menu.c,
+ * lm_ready): a wait of NATIVE_WAIT_LOG frames is said once, with its reasons.
+ * The glue's note, each time it differs from the last one said: the Trainer
+ * row is in, or it found no Options list or Cheats screen and leaves the
+ * pause menu the game's.
+ */
+static void native_notes(void)
+{
+	const struct menu_native *n = g_native;
+	u32 waits = 0, why = 0, note = 0;
+
+	if (mem_read_u32(n->waits_addr, &waits) == ST_OK) {
+		if (waits < NATIVE_WAIT_LOG) {
+			g_native_waited = 0;
+		} else if (!g_native_waited) {
+			g_native_waited = 1;
+			mem_read_u32(n->why_addr, &why);
+			plat_log("menu: the pause menu is not ready for the Trainer after %u frames (why 0x%X); Help stays the game's",
+			         (unsigned)waits, (unsigned)why);
+		}
+	}
+	if (mem_read_u32(n->note_addr, &note) != ST_OK || note == 0) return;
+	if (note == g_native_note) return;
+	g_native_note = note;
+	if (note == n->note_in)
+		plat_log("menu: the pause menu's glue is in: TRAINER in Options");
+	else if (note == n->note_none)
+		plat_log("menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's");
 }
 
 /*
@@ -2133,8 +2173,9 @@ static void native_glue(void)
 		}
 	} else if (glue == n->glue_stopped && loads != g_native_stopped) {
 		g_native_stopped = loads;
-		plat_log("menu: the pause menu's glue stopped on an error (LUA_STATUS has it)");
+		plat_log("menu: the pause menu's glue stopped on an error and put Help back (LUA_STATUS has it)");
 	}
+	native_notes();
 }
 #endif
 

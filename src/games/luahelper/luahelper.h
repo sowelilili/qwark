@@ -72,6 +72,10 @@ void   lh_gettable(lh_u32 L, int idx);
 void   lh_settable(lh_u32 L, int idx);
 float  lh_tonumber(lh_u32 L, int idx);
 
+/* Revision 1.29, the crash fix: the Anark runtime's push and pop of a presentation (lh_tod.h). */
+void   lh_pres_push(lh_u32 runtime, lh_u32 presentation);
+void   lh_pres_pop(lh_u32 runtime);
+
 /* The C halves of the entries (luahelper.c, lh_menu.c). */
 void lh_tick(lh_u32 vm);
 void lh_err_tap(lh_u32 vm, lh_u32 msg);

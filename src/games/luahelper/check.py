@@ -334,6 +334,55 @@ def main():
             "the Anark allocator's getter is lwz r3,(r2) slot 0x%X (0x%X); blr, the one AnarkMenuSystem_update "
             "makes current" % (slot, elf.u32(slot) or 0))
 
+    print("the pause's presentation, pushed around the glue (revision 1.29, the crash fix)")
+    # AnarkMenuSystem_reset (0x653B40): the game's own call into the presentation from outside an update.
+    reset = 0x653B40
+    rw = [elf.u32(reset + 4 * k) for k in range(26)]
+    lwz = lambda rt, ra, d: (32 << 26) | (rt << 21) | (ra << 16) | (d & 0xFFFF)
+    r.check(rw[6] == lwz(4, 3, h["LH_MS_PRES"]) and rw[7] == lwz(3, 3, h["LH_MS_RUNTIME"]) and
+            branch_target(rw[8], reset + 32) == (h["LH_FN_PRES_PUSH"], True) and rw[9] == NOP,
+            "AnarkMenuSystem_reset pushes (runtime +0x%X, presentation +0x%X) with this TOC, a nop after"
+            % (h["LH_MS_RUNTIME"], h["LH_MS_PRES"]))
+    r.check(rw[22] == lwz(3, 29, h["LH_MS_RUNTIME"]) and
+            branch_target(rw[23], reset + 92) == (h["LH_FN_PRES_POP"], True) and rw[24] == NOP,
+            "and pops (runtime) the same way")
+    # The runtime's pushed count: both begin with addi r0,r3,0xAC, the deque whose +0x10 is the count.
+    deq = 0x380300AC
+    r.check(elf.u32(h["LH_FN_PRES_PUSH"] + 0x10) == deq and elf.u32(h["LH_FN_PRES_POP"] + 0x10) == deq and
+            h["LH_RT_PUSHED"] == (deq & 0xFFFF) + 0x10,
+            "push and pop keep the runtime's presentation deque at +0xAC, its count at +0x%X" % h["LH_RT_PUSHED"])
+    # The Lua bridge's listeners: push stores the presentation at +8 (stw r4,8(r31)), pop clears it (stw r0,8(r31)).
+    on_push, on_pop = 0x74C108, 0x74E0B8
+    stw = lambda rs, ra, d: (36 << 26) | (rs << 21) | (ra << 16) | (d & 0xFFFF)
+    r.check(stw(4, 31, h["LH_BR_PRES"]) in [elf.u32(on_push + 4 * k) for k in range(12)] and
+            stw(0, 31, h["LH_BR_PRES"]) in [elf.u32(on_pop + 4 * k) for k in range(40)],
+            "the Lua bridge's push listener stores the presentation at +%d, its pop listener clears it" % h["LH_BR_PRES"])
+    # A Node's lookups: CLuaObject_getPresentation is *(*(obj + 8) + 8), the bridge's presentation.
+    gp = 0x75FB68
+    r.check([elf.u32(gp + 4 * k) for k in range(3)] == [lwz(9, 3, 8), lwz(3, 9, h["LH_BR_PRES"]), BLR] and
+            branch_target(elf.u32(0x76B618), 0x76B618) == (gp, True),
+            "CLuaObject_getNumChildren finds its element through the bridge's presentation (0x%X)" % gp)
+    # The menu system's words: the bridge, runtime and presentation stored by startPresentation; firstUpdate,
+    # stopped and frames read by AnarkMenuSystem_update.
+    sp = 0x654DD4
+    disp = lambda base, n, op: {elf.u32(a) & 0xFFFF for a in range(base, base + n, 4) if elf.u32(a) >> 26 == op}
+    sp_st = disp(sp, 0x300, 36)
+    r.check({h["LH_MS_BRIDGE"], h["LH_MS_PRES"], h["LH_MS_STATE"]} <= sp_st and h["LH_MS_RUNTIME"] in disp(sp, 0x40, 32),
+            "AnarkMenuSystem_startPresentation stores the bridge +0x%X, the presentation +0x%X, the lua_State +0x%X"
+            % (h["LH_MS_BRIDGE"], h["LH_MS_PRES"], h["LH_MS_STATE"]))
+    up_lbz, up_lwz = disp(upd, 0x400, 34), disp(upd, 0x400, 32)
+    r.check(h["LH_MS_FIRST"] in up_lbz and h["LH_MS_FRAMES"] in up_lwz and h["LH_MS_RUNTIME"] in up_lwz and
+            h["LH_MS_STOPPED"] in disp(upd, 0x400, 38),
+            "AnarkMenuSystem_update reads firstUpdate +0x%X, frames +0x%X and the runtime, and sets stopped +0x%X"
+            % (h["LH_MS_FIRST"], h["LH_MS_FRAMES"], h["LH_MS_STOPPED"]))
+    found = False
+    for a in range(msite - 0x200, msite, 4):
+        x = elf.u32(a)
+        if x >> 26 == 32 and (x >> 16) & 31 == 2 and toc_for(a) is not None:
+            if elf.u32((toc_for(a) + s16(x & 0xFFFF)) & 0xFFFFFFFF) == h["LH_PAUSE_STATE"]:
+                found = True
+    r.check(found, "PauseMenu_update tests g_pauseMenuState 0x%X before the update" % h["LH_PAUSE_STATE"])
+
     print("the functions the helper calls")
     fns = {k: v for k, v in h.items() if k.startswith("LH_FN_")}
     opds = find_opds(elf, list(fns.values()))

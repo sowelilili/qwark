@@ -269,6 +269,10 @@ int lh_qw(lh_u32 L)
 		lh_push_int(L, (int)lm_take_request());
 		return 1;
 	}
+	if (op == LM_OP_NOTE) {
+		LH_WORD(LMS(LM_NOTE)) = (lh_u32)a;
+		return 0;
+	}
 	return 0;
 }
 
@@ -303,6 +307,7 @@ static void lh_menu_load(lh_u32 L)
 	lh_u32 a;
 
 	LH_BYTE(LMS(LM_TRIED)) = 1;
+	LH_WORD(LMS(LM_NOTE)) = 0;
 	lm_hstate(0);
 
 	LH_TEXT_ADDR(lh_qwname, a);
@@ -316,50 +321,72 @@ static void lh_menu_load(lh_u32 L)
 	LH_WORD(LMS(LM_GLUE)) = LM_GLUE_WANTED;
 }
 
+/*
+ * The pause menu's frame, after AnarkMenuSystem_update (lh_entry.S). Every
+ * Anark object the menu's Lua touches is found through the presentation the
+ * runtime has pushed, and here, after the update, none is: so nothing goes
+ * into the VM unless the game's own words say the presentation is up
+ * (lm_ready), and then only with it pushed, as AnarkMenuSystem_reset calls
+ * into it from outside an update, and popped again before the game goes on.
+ * Every Lua call in between is a pcall or cannot fail; the push is checked to
+ * have taken (the bridge holds the presentation) before any of it.
+ */
 void lh_menu_tick(lh_u32 ms)
 {
-	lh_u32 L, prev, alloc, a;
+	lh_u32 L, prev, alloc, a, rt, why;
 	int top, st;
 
 	if (LH_WORD(MB + LUAMB_OFF_MAGIC) != LUAMB_MAGIC) return;
 	LH_WORD(MB + LUAMB_OFF_MENU_BEAT) = LH_WORD(MB + LUAMB_OFF_MENU_BEAT) + 1;
-	if (ms == 0) return;
+	why = lm_ready(ms);
+	if (why != 0) {
+		lm_kept_out(why);
+		return;
+	}
 	L = LH_WORD(ms + LH_MS_STATE);
-	if (L == 0) return;
+	rt = LH_WORD(ms + LH_MS_RUNTIME);
 
 	prev = LH_WORD(LH_CUR_ALLOC);
 	alloc = lh_anark_alloc();
 	lh_alloc_set_current(alloc);
 	top = lh_gettop(L);
+	lh_pres_push(rt, LH_WORD(ms + LH_MS_PRES));
 
-	/* Another pause, or another menu system: the glue has to go in again. */
-	if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
-		LH_WORD(LMS(LM_L)) = L;
-		LH_WORD(LMS(LM_MS)) = ms;
-		LH_BYTE(LMS(LM_TRIED)) = 0;
-	}
-	if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
-	lh_settop(L, top);
+	if (!lm_pushed(ms)) {
+		why = LM_WHY_PUSH;
+	} else {
+		/* Another pause, or another menu system: the glue has to go in again. */
+		if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
+			LH_WORD(LMS(LM_L)) = L;
+			LH_WORD(LMS(LM_MS)) = ms;
+			LH_BYTE(LMS(LM_TRIED)) = 0;
+		}
+		if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
+		lh_settop(L, top);
 
-	/* qwark's requests for this VM: the glue first of all. */
-	lh_serve(L, alloc, LUAMB_TARGET_MENU);
+		/* qwark's requests for this VM: the glue first of all. */
+		lh_serve(L, alloc, LUAMB_TARGET_MENU);
 
-	if (lh_get_frame_fn(L)) {
-		if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
-		st = lh_pcall(L, 0, 0, 0);
-		if (st != 0) {
-			/* The glue broke: said once, and qwark_frame gone until the next pause. */
-			lh_menu_error(L, ms);
-			lh_settop(L, top);
-			LH_TEXT_ADDR(lh_framename, a);
-			lh_pushstring(L, a);
-			lh_pushnil(L);
-			lh_settable(L, LH_GLOBALSINDEX);
-			LH_WORD(LMS(LM_GLUE)) = LM_GLUE_STOPPED;
-			lm_hstate(0);
+		if (lh_get_frame_fn(L)) {
+			if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
+			st = lh_pcall(L, 0, 0, 0);
+			if (st != 0) {
+				/* The glue broke (it put Help back first): said once, and qwark_frame gone until the next pause. */
+				lh_menu_error(L, ms);
+				lh_settop(L, top);
+				LH_TEXT_ADDR(lh_framename, a);
+				lh_pushstring(L, a);
+				lh_pushnil(L);
+				lh_settable(L, LH_GLOBALSINDEX);
+				LH_WORD(LMS(LM_GLUE)) = LM_GLUE_STOPPED;
+				lm_hstate(0);
+			}
 		}
 	}
+
+	lh_pres_pop(rt);
 	lh_settop(L, top);
-	lm_menu_frame();
 	lh_alloc_set_current(prev);
+	lm_kept_out(why);
+	if (why == 0) lm_menu_frame();
 }

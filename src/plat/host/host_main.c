@@ -19,7 +19,8 @@
  *   fakelua on|off        the simulated ToD's Lua helper runs a frame every
  *                         16 ms (revision 1.27)
  *   fakepause on|off      the simulated ToD in its pause menu, whose frame the
- *                         fakelua thread runs instead (revision 1.29)
+ *                         fakelua thread runs instead (revision 1.29); `wait`,
+ *                         one whose presentation never comes up
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   fakesave on|off       the simulated ToD's save system runs a frame every
  *                         16 ms and takes qwark's loads (revision 1.28)
@@ -280,10 +281,11 @@ static void handle_line(char *line, int *keep_running)
 		 */
 		char *on = next_token(&cursor);
 
-		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off"))) {
-			printf("usage: fakepause on|off\n");
+		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off") && !qstreq(on, "wait"))) {
+			printf("usage: fakepause on|off|wait\n");
 		} else {
-			host_set_fake_pause(qstreq(on, "on"));
+			/* wait (the crash fix): a pause whose presentation never comes up, which the helper never enters. */
+			host_set_fake_pause(qstreq(on, "on") ? 1 : qstreq(on, "wait") ? 2 : 0);
 			printf("ok fakepause %s\n", on);
 		}
 

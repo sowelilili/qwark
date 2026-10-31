@@ -208,6 +208,8 @@ void host_set_fake_lua(int on);
  * out; host_fake_menu_frame runs one frame of the helper's pause-menu half
  * (a new VM asks for the glue, a menu request is served), which the
  * host_set_fake_lua thread runs in place of the gameplay frame while paused.
+ * `on` 2 (the crash fix): a pause whose presentation never comes up (its
+ * first update never runs), which the helper must never enter.
  */
 void host_set_fake_pause(int on);
 int  host_fake_menu_frame(void);

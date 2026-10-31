@@ -5913,6 +5913,8 @@ TOD_MENU_BOX_SIZE = 0x880
 TOD_MENU_STATE = 0x008CE000
 TOD_LM_HELP, TOD_LM_GLUE, TOD_LM_LOADS = 0x00, 0x08, 0x0C
 TOD_LM_GLUE_LOADED = 1
+TOD_LM_WHY, TOD_LM_WAITS = 0x24, 0x28        # the crash fix: why the helper kept a pause frame out, how many
+TOD_LM_WHY_FIRST = 0x004
 TOD_LUA_MB = 0x008CA000
 TOD_LUA_CAVE = (0x00867360, 0x00870000)
 TOD_LUA_SITES = {0x004C461C: 0x4BDCC909, 0x0068F8F8: 0x4E800020, 0x000242B0: 0x4BFED721, 0x004C5ABC: 0x4BDA1825}
@@ -5983,6 +5985,22 @@ def smoke_tod_menu(c, sim):
     module_sleep(c, 0.2)
     status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 15, LUA_EXEC_MENU) + b"return _VERSION")
     check(status == ST_NOT_FOUND, "ToD menu: and NOT_FOUND with no pause up", status)
+
+    # The crash fix: a pause whose presentation never comes up is never entered, and the frames kept out count.
+    loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)
+    sim.send("fakepause wait")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WAITS) < 20, 2.0, 0.05)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WAITS) >= 20 and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WHY) == TOD_LM_WHY_FIRST and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads,
+          "ToD menu: a pause not up yet: the helper keeps out, no glue asked for, the wait counted")
+    sim.send("fakepause on")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads, 2.0, 0.05)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WAITS) == 0 and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads + 1,
+          "ToD menu: once it is up the helper goes in and asks for the glue")
+    sim.send("fakepause off")
+    module_sleep(c, 0.2)
 
     # The combo: an open request, which the game's pause test takes.
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")

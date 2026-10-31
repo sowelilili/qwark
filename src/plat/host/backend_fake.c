@@ -20,6 +20,7 @@
 #include "../../core/luamb.h"
 #include "../../core/menubox.h"
 #include "../../games/luahelper/lh_menu.h"
+#include "../../games/luahelper/lh_tod.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,6 +198,10 @@ void host_boot_as(const char *title, const char *which)
 /* Revision 1.29: the pause's menu system and its VM, while `fakepause` is on. */
 #define FAKE_TOD_MS         0x30040000u
 #define FAKE_TOD_MENU_STATE 0x30050000u
+/* The crash fix: its Lua bridge, Anark runtime and presentation (lh_tod.h LH_MS_*). */
+#define FAKE_TOD_BRIDGE     0x30060000u
+#define FAKE_TOD_RUNTIME    0x30060100u
+#define FAKE_TOD_PRES       0x30060200u
 
 static int g_lua_patch_at_boot;
 static u8 g_lua_patch[QWARK_MAX_PAYLOAD];
@@ -419,7 +424,8 @@ static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 		if (strstr(chunk, "time_set_scale(0.5") != NULL) poke32(TOD_GAME_CLOCK, 0x3F000000u);
 		else if (strstr(chunk, "time_set_scale(1") != NULL) poke32(TOD_GAME_CLOCK, 0x3F800000u);
 		if (glue != NULL && strstr(chunk, "function qwark_frame()") != NULL) *glue = 1;
-		if (strstr(chunk, "error(") != NULL) {
+		/* The glue raises errors of its own inside qwark_frame, which loading it never runs. */
+		if (strstr(chunk, "error(") != NULL && strstr(chunk, "function qwark_frame()") == NULL) {
 			status = LUAMB_ST_ERRRUN;
 			out = "qwark:1: x";
 			type = LUAMB_T_STRING;
@@ -515,10 +521,19 @@ int host_fake_menu_frame(void)
 	poke32(mb + LUAMB_OFF_MENU_BEAT, peek32(mb + LUAMB_OFF_MENU_BEAT) + 1u);
 	ms = peek32(d->menu_ptr);
 	L = ms != 0 ? peek32(ms + d->menu_off) : 0;
-	if (L == 0) {
+	/*
+	 * The crash fix: lh_menu.c's lm_ready, in short. A menu system whose
+	 * presentation's first update has not run is never entered; the frames
+	 * kept out are counted (LM_WHY, LM_WAITS).
+	 */
+	if (L == 0 || peek32(ms + LH_MS_PRES) == 0 || (peek32(ms + (LH_MS_FIRST & ~3u)) & 0xFFu) != 0) {
+		poke32(LM_STATE + LM_WHY, L == 0 || peek32(ms + LH_MS_PRES) == 0 ? LM_WHY_PARTS : LM_WHY_FIRST);
+		poke32(LM_STATE + LM_WAITS, peek32(LM_STATE + LM_WAITS) + 1u);
 		pthread_mutex_unlock(&g_mem_lock);
 		return 0;
 	}
+	poke32(LM_STATE + LM_WHY, 0);
+	poke32(LM_STATE + LM_WAITS, 0);
 	if (peek32(LM_STATE + LM_L) != L || peek32(LM_STATE + LM_MS) != ms) {
 		poke32(LM_STATE + LM_L, L);
 		poke32(LM_STATE + LM_MS, ms);
@@ -546,6 +561,14 @@ void host_set_fake_pause(int on)
 	pthread_mutex_lock(&g_mem_lock);
 	poke32(d->menu_ptr, on ? FAKE_TOD_MS : 0);
 	poke32(FAKE_TOD_MS + d->menu_off, on ? FAKE_TOD_MENU_STATE : 0);
+	/* The crash fix: its presentation up (lm_ready), or (2) never, its first update still to come. */
+	poke32(FAKE_TOD_MS + LH_MS_BRIDGE, on ? FAKE_TOD_BRIDGE : 0);
+	poke32(FAKE_TOD_MS + LH_MS_RUNTIME, on ? FAKE_TOD_RUNTIME : 0);
+	poke32(FAKE_TOD_MS + LH_MS_PRES, on ? FAKE_TOD_PRES : 0);
+	poke32(FAKE_TOD_MS + LH_MS_FRAMES, on ? 2u : 0u);
+	poke32(FAKE_TOD_MS + (LH_MS_FIRST & ~3u), on == 2 ? 1u : 0u);
+	poke32(FAKE_TOD_RUNTIME + LH_RT_PUSHED, 0);
+	poke32(FAKE_TOD_BRIDGE + LH_BR_PRES, 0);
 	poke32(TOD_PAUSE_STATE, on ? TOD_PAUSE_UP : 0);
 	poke32(TOD_GAME_STATE, on ? TOD_STATE_PAUSE : TOD_STATE_GAMEPLAY);
 	pthread_mutex_unlock(&g_mem_lock);

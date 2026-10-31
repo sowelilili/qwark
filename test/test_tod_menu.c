@@ -423,6 +423,167 @@ static void test_glue(void)
 	tick(4);
 }
 
+/* -------------------------------------------- the gate (the crash fix) */
+
+/*
+ * A menu system of the pause, laid out as AnarkMenuSystem_startPresentation
+ * leaves it once the loading thread's first update ran (lh_tod.h).
+ */
+#define GATE_MS      0x30070000u
+#define GATE_BRIDGE  0x30072000u
+#define GATE_RUNTIME 0x30072100u
+#define GATE_PRES    0x30072200u
+
+static void gate_layout(void)
+{
+	poke32(LH_PAUSE_MS, GATE_MS);
+	poke32(LH_PAUSE_STATE, 3);
+	poke32(GATE_MS + LH_MS_STATE, 0x30074000u);
+	poke32(GATE_MS + LH_MS_BRIDGE, GATE_BRIDGE);
+	poke32(GATE_MS + LH_MS_RUNTIME, GATE_RUNTIME);
+	poke32(GATE_MS + LH_MS_PRES, GATE_PRES);
+	poke8(GATE_MS + LH_MS_FIRST, 0);
+	poke8(GATE_MS + LH_MS_STOPPED, 0);
+	poke32(GATE_MS + LH_MS_FRAMES, 2);
+	poke32(GATE_RUNTIME + LH_RT_PUSHED, 0);
+	poke32(GATE_BRIDGE + LH_BR_PRES, 0);
+}
+
+static void test_gate(void)
+{
+	u32 i;
+
+	group("ToD's console menu: the helper enters the pause menu's VM only with its presentation up (the crash fix)");
+	check(LH_FN_PRES_PUSH == 0x0079647Cu && LH_FN_PRES_POP == 0x0079558Cu && LH_MS_BRIDGE == 0x1058u &&
+	      LH_MS_RUNTIME == 0x1068u && LH_MS_PRES == 0x1090u && LH_MS_FIRST == 0x10ABu && LH_BR_PRES == 8u &&
+	      LH_RT_PUSHED == 0xBCu, "the runtime's push and pop, the menu system's words, as AnarkMenuSystem_reset uses them");
+
+	gate_layout();
+	check(lm_ready(GATE_MS) == 0, "the pause up, its presentation started and nothing pushed: let in");
+	check(lm_ready(0) == LM_WHY_SYSTEM, "no menu system: kept out");
+	poke32(LH_PAUSE_STATE, 1);
+	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "g_pauseMenuState 1 (the loading thread at work): kept out");
+	poke32(LH_PAUSE_STATE, 4);
+	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "g_pauseMenuState 4 (closing): kept out");
+	poke32(LH_PAUSE_STATE, 2);
+	check(lm_ready(GATE_MS) == 0, "g_pauseMenuState 2: let in");
+	poke32(LH_PAUSE_MS, GATE_MS + 0x2000u);
+	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "another menu system than g_pauseMenuSystem's: kept out");
+
+	gate_layout();
+	poke32(GATE_MS + LH_MS_STATE, 0);
+	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no lua_State: kept out");
+	gate_layout();
+	poke32(GATE_MS + LH_MS_PRES, 0);
+	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no presentation: kept out");
+	gate_layout();
+	poke32(GATE_MS + LH_MS_BRIDGE, 0);
+	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no Lua bridge: kept out");
+	gate_layout();
+	poke32(GATE_MS + LH_MS_RUNTIME, 0);
+	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no runtime: kept out");
+
+	gate_layout();
+	poke8(GATE_MS + LH_MS_FIRST, 1);
+	check(lm_ready(GATE_MS) == LM_WHY_FIRST, "the presentation's first update still to come: kept out");
+	gate_layout();
+	poke8(GATE_MS + LH_MS_STOPPED, 1);
+	check(lm_ready(GATE_MS) == LM_WHY_STOPPED, "the menu system stopping: kept out");
+	gate_layout();
+	poke32(GATE_MS + LH_MS_FRAMES, 1);
+	check(lm_ready(GATE_MS) == LM_WHY_YOUNG, "one update only: kept out");
+	gate_layout();
+	poke32(GATE_RUNTIME + LH_RT_PUSHED, 1);
+	check(lm_ready(GATE_MS) == LM_WHY_PUSHED, "a presentation pushed already: kept out");
+	gate_layout();
+	poke32(GATE_BRIDGE + LH_BR_PRES, GATE_PRES);
+	check(lm_ready(GATE_MS) == LM_WHY_PUSHED, "the bridge holding a presentation: kept out");
+	poke8(GATE_MS + LH_MS_FIRST, 1);
+	poke32(GATE_MS + LH_MS_FRAMES, 0);
+	check(lm_ready(GATE_MS) == (LM_WHY_FIRST | LM_WHY_YOUNG | LM_WHY_PUSHED), "every reason at once, each said");
+
+	/* The push taking: the bridge holds the presentation (AnarkLuaBridge_onPresentationPush). */
+	gate_layout();
+	check(!lm_pushed(GATE_MS), "nothing pushed: the bridge holds no presentation");
+	poke32(GATE_BRIDGE + LH_BR_PRES, GATE_PRES);
+	check(lm_pushed(GATE_MS), "pushed: it holds the menu system's");
+	poke32(GATE_BRIDGE + LH_BR_PRES, GATE_PRES + 0x100u);
+	check(!lm_pushed(GATE_MS), "another presentation: not taken");
+
+	/* The frames kept out, counted for qwark's log. */
+	lm_kept_out(0);
+	for (i = 0; i < 5; i++) lm_kept_out(LM_WHY_FIRST);
+	check(lm32(LMS(LM_WAITS)) == 5 && lm32(LMS(LM_WHY)) == LM_WHY_FIRST, "five frames kept out: counted, the reason kept");
+	lm_kept_out(0);
+	check(lm32(LMS(LM_WAITS)) == 0 && lm32(LMS(LM_WHY)) == 0, "a frame let in: the count from 0 again");
+	lm_kept_out(LM_WHY_PARTS);
+	lm_gameplay_frame();
+	check(lm32(LMS(LM_WAITS)) == 0, "a gameplay frame: no pause, no wait");
+
+	/* The core says a long wait once, and the glue's notes. */
+	poke32(LH_PAUSE_MS, 0);
+	poke32(LH_PAUSE_STATE, 0);
+	check(wait_ready() || menu_state() == MENU_READY, "the menu is in");
+	host_log_clear();
+	poke32(LM_STATE + LM_WHY, LM_WHY_FIRST);
+	poke32(LM_STATE + LM_WAITS, 299);
+	tick(4);
+	check(!host_log_seen("not ready for the Trainer"), "a short wait: nothing said");
+	poke32(LM_STATE + LM_WAITS, 300);
+	tick(4);
+	check(host_log_seen("menu: the pause menu is not ready for the Trainer after 300 frames (why 0x4)"),
+	      "a long one: said, with its reasons");
+	host_log_clear();
+	poke32(LM_STATE + LM_WAITS, 400);
+	tick(4);
+	check(!host_log_seen("not ready for the Trainer"), "and once");
+	poke32(LM_STATE + LM_WAITS, 0);
+	poke32(LM_STATE + LM_WHY, 0);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
+	tick(4);
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options"), "the glue in: said");
+	host_log_clear();
+	poke32(LM_STATE + LM_NOTE, 0);
+	tick(4);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
+	tick(4);
+	check(!host_log_seen("glue is in"), "the next pause the same: not said again");
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
+	tick(4);
+	check(host_log_seen("menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's"),
+	      "a pause where it found nothing: said");
+	poke32(LM_STATE + LM_NOTE, 0);
+	poke32(LH_PAUSE_MS, 0);
+	poke32(LH_PAUSE_STATE, 0);
+}
+
+/* The fake console's pause whose presentation never comes up: the helper never enters it, the core says so. */
+static void test_gate_fake(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u32 loads = peek32(LM_STATE + LM_LOADS), seq = peek32(d->mailbox + LUAMB_OFF_REQ);
+	int i;
+
+	group("ToD's console menu: a pause that never comes up is never entered");
+	host_log_clear();
+	host_set_fake_pause(2);
+	for (i = 0; i < 310; i++) host_fake_menu_frame();
+	tick(8);
+	check(peek32(LM_STATE + LM_LOADS) == loads && peek32(d->mailbox + LUAMB_OFF_REQ) == seq &&
+	      peek32(LM_STATE + LM_WAITS) >= 300 && peek32(LM_STATE + LM_WHY) == LM_WHY_FIRST,
+	      "no glue asked for, none sent; the frames kept out counted");
+	check(host_log_seen("not ready for the Trainer"), "and the log says so");
+	host_set_fake_pause(1);
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(LM_STATE + LM_WAITS) == 0 && peek32(LM_STATE + LM_LOADS) == loads + 1,
+	      "the presentation up: let in, the glue asked for");
+	host_fake_menu_frame();
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	tick(4);
+}
+
 /* ---------------------------------------------------------------- RPCS3 */
 
 static void test_rpcs3(void)
@@ -465,6 +626,8 @@ void test_tod_menu(void)
 	test_bridge();
 	test_requests();
 	test_glue();
+	test_gate();
+	test_gate_fake();
 	test_rpcs3();
 	check(quit() || session_state() == SESSION_XMB, "ToD quits");
 }

@@ -139,6 +139,39 @@
 #define LH_PAUSE_MS        0x101CB220
 #define LH_MS_STATE        0x0000106C
 
+/*
+ * Revision 1.29, the crash fix (docs/tod-menu.md 9). A Node's Lua object (a
+ * CLuaObject: +8 the menu system's Lua bridge, +0xC the element's handle)
+ * finds its element in the presentation the bridge holds at +8, which only
+ * the Anark runtime's push sets (AnarkRuntime_pushPresentation, whose
+ * listener AnarkLuaBridge_onPresentationPush stores it) and its pop clears:
+ * the runtime pushes a presentation around each update of it and around
+ * each call into it from outside, AnarkMenuSystem_reset (0x653B40) for one.
+ * After AnarkMenuSystem_update has returned, where the menu hook runs, the
+ * bridge holds 0, and getNumChildren, getChildByIndex, a child by name,
+ * goToSlide ... read through it (CLuaObject_getNumChildren 0x76B604 ->
+ * AnarkPresentation_findElement 0x79A588 -> lwz r3,0x20C(0) at 0x79A388).
+ * So the helper pushes the pause's presentation as AnarkMenuSystem_reset
+ * does, runs the glue, and pops it, only when the game's own words say the
+ * presentation is up (lh_menu.c, lm_ready):
+ *
+ *   g_pauseMenuState 2 or 3 (PauseMenu_update's own test before the update)
+ *   the menu system's lua bridge, runtime and presentation set (by
+ *     AnarkMenuSystem_startPresentation), firstUpdate clear (the loading
+ *     thread's first update ran), stopped clear, two updates at least
+ *   the runtime's pushed count 0 and the bridge's presentation 0: nothing
+ *     pushed, as after any update
+ */
+#define LH_PAUSE_STATE     0x101CB218   /* g_pauseMenuState, u32: 2 and 3 the pause menu up */
+#define LH_MS_BRIDGE       0x00001058   /* AnarkMenuSystem: the Lua bridge (AnarkLuaBridge)  */
+#define LH_MS_RUNTIME      0x00001068   /* AnarkMenuSystem: the Anark runtime                */
+#define LH_MS_PRES         0x00001090   /* AnarkMenuSystem: the presentation                 */
+#define LH_MS_STOPPED      0x000010A0   /* u8: set by command 4                              */
+#define LH_MS_FRAMES       0x000010A4   /* u32: +1 every update                              */
+#define LH_MS_FIRST        0x000010AB   /* u8: the next update is the presentation's first   */
+#define LH_RT_PUSHED       0x000000BC   /* AnarkRuntime: how many presentations are pushed   */
+#define LH_BR_PRES         0x00000008   /* AnarkLuaBridge: the presentation pushed, else 0   */
+
 /* ------------------------------------------------------- game functions */
 
 /* The middle range's; called with the caller's r2. */
@@ -170,6 +203,14 @@
 #define LH_FN_SETTABLE          0x006923F8
 #define LH_FN_TONUMBER          0x0069354C
 #define LH_FN_PUSHSTRING        0x00693E50
+
+/*
+ * Revision 1.29, the crash fix: the Anark runtime's push and pop of a
+ * presentation, (runtime, presentation) and (runtime), as
+ * AnarkMenuSystem_reset calls them with this TOC (a nop after each call).
+ */
+#define LH_FN_PRES_PUSH         0x0079647C
+#define LH_FN_PRES_POP          0x0079558C
 
 /* Lua 5.0's pseudo-index of the globals, and its type of a function. */
 #define LH_GLOBALSINDEX         (-10001)

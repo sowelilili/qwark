@@ -57,6 +57,14 @@
 #define LM_VGEN         0x1C   /* u32 +1 at every page taken                                    helper */
 #define LM_MS           0x20   /* u32 the menu system LM_L belongs to                           helper */
 /*
+ * Revision 1.29, the crash fix (docs/tod-menu.md 9): the helper enters the
+ * pause menu's VM only on a frame lm_ready() passes, with the presentation
+ * pushed. These say how that went, for qwark's log.
+ */
+#define LM_WHY          0x24   /* u32 LM_WHY_* of the last pause menu frame kept out, 0 after one let in  helper */
+#define LM_WAITS        0x28   /* u32 pause menu frames in a row kept out (0 at one let in, and in play)  helper */
+#define LM_NOTE         0x2C   /* u32 the glue's LM_NOTE_* for this VM, 0 until it says              glue   */
+/*
  * The page as taken: the mailbox's bytes from MBOX_OFF_PAGE_KEY to the last
  * row, at the same offsets less MBOX_OFF_PAGE_KEY. The glue reads rows only
  * from here, never from the mailbox qwark is writing.
@@ -71,6 +79,26 @@
 #define LM_GLUE_STOPPED 3      /* qwark_frame raised an error and is no longer called; the
                                 * message is the Lua mailbox's err, "qwark-menu"              */
 
+/* LM_NOTE: what the glue found in this pause menu (qw(LM_OP_NOTE, n)). */
+#define LM_NOTE_IN      1      /* the Options list and the Cheats screen: TRAINER is in                  */
+#define LM_NOTE_NONE    2      /* not found in its tries: the pause menu is the game's alone, Help stays */
+
+/*
+ * LM_WHY: what kept a pause menu frame out of the menu's VM (lm_ready), any
+ * of them. Nothing the helper or the glue does in that VM touches an Anark
+ * object outside these all being clear.
+ */
+#define LM_WHY_SYSTEM   0x001  /* g_pauseMenuSystem is not this menu system, or the pause is not up (2, 3) */
+#define LM_WHY_PARTS    0x002  /* no lua_State, runtime, presentation or Lua bridge yet                  */
+#define LM_WHY_FIRST    0x004  /* the presentation's first update has not run (firstUpdate)             */
+#define LM_WHY_STOPPED  0x008  /* the menu system is stopping                                            */
+#define LM_WHY_YOUNG    0x010  /* fewer than LM_READY_FRAMES updates of the menu system                  */
+#define LM_WHY_PUSHED   0x020  /* a presentation is pushed already, or the bridge holds one              */
+#define LM_WHY_PUSH     0x040  /* pushing the presentation did not make it the bridge's                  */
+
+/* Updates of a menu system before the helper enters its VM. */
+#define LM_READY_FRAMES 2
+
 /* How many gameplay frames a pause the combo asked for has to come up in. */
 #define LM_PENDING_FRAMES 30
 
@@ -81,5 +109,6 @@
 #define LM_OP_EVENT     3      /* (kind, i) -> 1 posted, 0 one still waits for qwark             */
 #define LM_OP_STATE     4      /* (h) the mailbox's hstate: 1 open (frames from 0), 0 closed    */
 #define LM_OP_TAKE      5      /* -> the request taken: 0 none, 1 open, 2 close                 */
+#define LM_OP_NOTE      6      /* (n) LM_NOTE = n, for qwark's log                             */
 
 #endif /* QWARK_LH_MENU_H */

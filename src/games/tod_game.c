@@ -421,7 +421,9 @@ static const struct menu_native tod_menu_native = {
 	LM_GLUE_WANTED, LM_GLUE_STOPPED,
 	TOD_PAUSE_STATE, TOD_PAUSE_UP,
 	TOD_STATE_PENDING_OP, 0,
-	TOD_GAME_STATE, TOD_STATE_PAUSE
+	TOD_GAME_STATE, TOD_STATE_PAUSE,
+	LM_STATE + LM_WHY, LM_STATE + LM_WAITS,
+	LM_STATE + LM_NOTE, LM_NOTE_IN, LM_NOTE_NONE
 };
 
 /* ---------------------------------------------------------------- vtable */

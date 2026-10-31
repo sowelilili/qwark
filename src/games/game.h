@@ -609,6 +609,12 @@ struct game_api {
  *               the glue, which the core sends it (lua_core_menu_glue) once
  *               per value of the u32 at loads_addr; glue_stopped when the
  *               glue failed in that VM, which the core logs
+ *   why_addr,   u32 each, the helper's (revision 1.29, the crash fix): why it
+ *   waits_addr  kept the last pause menu frame out of the menu's VM, and for
+ *               how many frames in a row; the core logs a long wait once
+ *   note_addr   u32, the glue's: note_in once it found the pause's Options
+ *               list and Cheats screen, note_none when it gave up looking;
+ *               the core logs each once per VM
  *
  * The helper's block (state_addr, state_size) is zeroed at the install. What
  * says the game plays, or that nothing of the menu can be up, is struct
@@ -632,6 +638,11 @@ struct menu_native {
 	u32 pending_none;
 	u32 screen_addr;
 	u32 screen_id;
+	u32 why_addr;
+	u32 waits_addr;
+	u32 note_addr;
+	u32 note_in;
+	u32 note_none;
 };
 #endif
 
