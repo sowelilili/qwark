@@ -94,6 +94,10 @@ static struct {
 	u8   kind;
 	u8   arg;
 	u8   waiting;           /* the driver has asked for the close */
+#if QWARK_HAS_TOD
+	u8   flags;             /* revision 1.29: a planet's load flags, 0xFF the selected ones */
+	u8   closed;            /* revision 1.29: the menu was seen closed since */
+#endif
 	u64  until;
 	char cat[SAVEFILE_NAME_LEN + 1];
 	char name[SAVEFILE_NAME_LEN + 1];
@@ -660,11 +664,22 @@ static u8 page_items(u16 page, u16 *ids)
 			u8 it = gm->sections[arg].items[i];
 			if (it >= MENU_ITEM_SLOT && it <= MENU_ITEM_POS_LOAD) {
 				if (g_game->save_blob != NULL) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_POS, it));
+#if QWARK_HAS_TOD
+			} else if (it == MENU_ITEM_SPACER) {
+				/*
+				 * Revision 1.29: a blank row between a section's parts again
+				 * (ToD's Manips: Remove cutscenes, then the cache's three), as
+				 * the Manips page makes its own: never the page's first row
+				 * nor after another, and none left at the end (below). A
+				 * release build has no ToD and no section that lists one.
+				 */
+				n = push_spacer(ids, n);
+#endif
 			} else if (it >= MENU_ITEM_VALUE(0)) {
 				/*
 				 * Round 5: a VALUE as a button or a switch (struct menu_value).
-				 * An item past the table's values is no row, and nor is the
-				 * retired MENU_ITEM_SPACER, which comes here (build 56).
+				 * An item past the table's values is no row, and in a release
+				 * build nor is MENU_ITEM_SPACER, which comes here (build 56).
 				 */
 				j = (u8)(it - MENU_ITEM_VALUE(0));
 				if (j < gm->nvalues && feature(gm->values[j].id) != NULL)
@@ -678,6 +693,9 @@ static u8 page_items(u16 page, u16 *ids)
 #endif
 			}
 		}
+#if QWARK_HAS_TOD
+		if (n > 0 && ids[n - 1] == SPACER_ID) n--;
+#endif
 		return n;
 
 	case MENU_PAGE_PLANETS: {
@@ -1420,6 +1438,10 @@ static int defer(u8 kind, u8 arg, const char *label)
 	g_defer.kind = kind;
 	g_defer.arg = arg;
 	g_defer.waiting = 0;
+#if QWARK_HAS_TOD
+	g_defer.flags = 0xFF;
+	g_defer.closed = 0;
+#endif
 	set_text(g_defer.label, sizeof(g_defer.label), label);
 	return ST_OK;
 }
@@ -2570,8 +2592,43 @@ static int game_playing(void)
 
 	if (mem_read_u32(d->mode_addr, &mode) != ST_OK) return 0;
 	if (mem_read_u32(d->pending_addr, &pending) != ST_OK) return 0;
+#if QWARK_HAS_TOD
+	/*
+	 * Revision 1.29, the fifth console test (docs/tod-menu.md 13): and for
+	 * the game's own pause menu, the game back in play. Tools of
+	 * Destruction's pause says it is gone (its state 0) at the end of the
+	 * frame that tore it down, and only asks for play the frame after
+	 * (GameState_requestGameplay), so for a frame or more nothing is queued
+	 * and the game is still in its pause: a load run then was refused BUSY.
+	 */
+	if (g_native != NULL) {
+		u32 screen = 0;
+
+		if (mem_read_u32(d->screen_addr, &screen) != ST_OK) return 0;
+		if (screen != g_native->play_state) return 0;
+	}
+#endif
 	return mode == 0 && pending == d->pending_none;
 }
+
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29, the fifth console test: the game's own pause menu up, and
+ * in it the glue that takes qwark's close (the pause's state its "up" one,
+ * the game in its pause, the glue loaded in this pause's VM).
+ */
+static int native_paused(void)
+{
+	u32 mode = 0, screen = 0, glue = 0;
+
+	if (g_native == NULL) return 0;
+	if (mem_read_u32(g_native->mode_addr, &mode) != ST_OK ||
+	    mem_read_u32(g_native->screen_addr, &screen) != ST_OK ||
+	    mem_read_u32(g_native->glue_addr, &glue) != ST_OK)
+		return 0;
+	return mode == g_native->mode_paused && screen == g_native->screen_id && glue == g_native->glue_loaded;
+}
+#endif
 
 /*
  * Revision 1.23: whether the Help row's words may change now, which is
@@ -2672,16 +2729,102 @@ static int run_deferred(void)
 {
 	switch (g_defer.kind) {
 	case DEFER_FEATURE: return features_trigger(g_defer.arg);
+#if QWARK_HAS_TOD
+	case DEFER_PLANET:  return session_planet_load(g_defer.arg, g_defer.flags);
+#else
 	case DEFER_PLANET:  return session_planet_load(g_defer.arg, 0xFF);
+#endif
 	case DEFER_RESTORE: return savefile_restore(g_defer.cat, g_defer.name);
 	default:            return ST_OK;
 	}
 }
 
+#if QWARK_HAS_TOD
+/* Revision 1.29: a waiting CLOSES action given up, and why, on the console and in the log. */
+static void defer_cancel(const char *why)
+{
+	plat_log("menu: %s was cancelled: %s", g_defer.label, why);
+	tell(g_defer.label, " was cancelled: ", why);
+	g_defer.kind = DEFER_NONE;
+	if (g_req == MBOX_REQ_CLOSE) {
+		mem_write_u8(box(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+		g_req = 0;
+	}
+}
+
+/*
+ * Revision 1.29, the fifth console test (docs/tod-menu.md 13): a CLOSES
+ * action waiting on the game's own pause menu. The glue closes the pause as
+ * the game's own Quit does (exit_pause_menu) when it takes qwark's close;
+ * the action runs once the game is back in play (game_playing), never while
+ * the pause is still being torn down. Meanwhile:
+ *
+ *   - the menu seen closed and then up again: the player went on in the
+ *     pause (a pause the close did not reach), so the action is cancelled;
+ *   - the game neither in its pause nor in play (quit to the title, a load
+ *     of the game's own): cancelled;
+ *   - the pause still up with no close waiting (one nobody took is withdrawn
+ *     after half a second, and one the client's load asked for comes with
+ *     the menu down): asked again;
+ *   - the pause gone with a close still waiting: withdrawn, so it never
+ *     closes the next pause.
+ *
+ * Answers 1 when it cancelled.
+ */
+static int native_defer_tick(void)
+{
+	u32 screen = 0;
+
+	if (g_hstate == MBOX_HSTATE_CLOSED) {
+		g_defer.closed = 1;
+	} else if (g_defer.closed) {
+		defer_cancel("the menu came up again");
+		return 1;
+	}
+	if (mem_read_u32(g_native->screen_addr, &screen) == ST_OK &&
+	    screen != g_native->screen_id && screen != g_native->play_state) {
+		defer_cancel("the game left its pause another way");
+		return 1;
+	}
+	if (native_paused()) {
+		if (g_req == 0) request(MBOX_REQ_CLOSE);
+	} else if (g_req == MBOX_REQ_CLOSE) {
+		mem_write_u8(box(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+		g_req = 0;
+	}
+	return 0;
+}
+
+/*
+ * Revision 1.29, the fifth console test: a planet the client asked for while
+ * Tools of Destruction is in its pause, which no load can start from. Taken
+ * as the menu's own Planets rows take one: the pause closed by the glue, the
+ * planet loaded once the game plays (deferred_tick). ST_OK when it is taken
+ * so; ST_UNSUPPORTED when it is not for this (no game pause menu of the
+ * glue's up), and the game answers as before. Tick thread.
+ */
+int menu_pause_defer(u8 planet, u8 flags)
+{
+	const char * const *names;
+	u8 count = 0;
+
+	if (g_native == NULL || g_state != MENU_READY || (g_caps & MBOX_CAP_REQUEST) == 0 || !native_paused())
+		return ST_UNSUPPORTED;
+	if (g_game == NULL || g_game->planet_names == NULL || g_game->planet_load == NULL) return ST_UNSUPPORTED;
+	names = g_game->planet_names(&count);
+	if (planet >= count) return ST_UNSUPPORTED;
+	defer(DEFER_PLANET, planet, names[planet]);
+	g_defer.flags = flags;
+	plat_log("menu: the pause is up; %s loads once it has closed", names[planet] != NULL ? names[planet] : "the planet");
+	return ST_OK;
+}
+#endif
+
 /*
  * A CLOSES action (a load: the set-aside file, a planet, a save of the
  * library): asked for, the menu asked to close; run once it has and the game
- * plays again, or dropped five seconds on.
+ * plays again, or dropped five seconds on. Revision 1.29: in the game's own
+ * pause menu, native_defer_tick too.
  */
 static void deferred_tick(void)
 {
@@ -2698,6 +2841,9 @@ static void deferred_tick(void)
 		g_defer.waiting = 1;
 		g_defer.until = plat_time_us() + DEFER_US;
 		if (g_hstate == MBOX_HSTATE_OPEN) request(MBOX_REQ_CLOSE);
+#if QWARK_HAS_TOD
+		else if (native_paused()) request(MBOX_REQ_CLOSE);
+#endif
 		return;
 	}
 
@@ -2707,6 +2853,10 @@ static void deferred_tick(void)
 		g_defer.kind = DEFER_NONE;
 		return;
 	}
+
+#if QWARK_HAS_TOD
+	if (g_native != NULL && native_defer_tick()) return;
+#endif
 
 	if (plat_time_us() >= g_defer.until) {
 		tell(g_defer.label, " was dropped, the game did not go back to play", "");
@@ -2735,6 +2885,10 @@ static void take_pick(s32 planet)
 	}
 	g_defer.kind = DEFER_PLANET;
 	g_defer.arg = (u8)planet;
+#if QWARK_HAS_TOD
+	g_defer.flags = 0xFF;
+	g_defer.closed = 0;
+#endif
 	g_defer.waiting = 1;
 	g_defer.until = plat_time_us() + DEFER_US;
 	set_text(g_defer.label, sizeof(g_defer.label), names[planet]);

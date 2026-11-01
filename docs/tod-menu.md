@@ -2,7 +2,7 @@
 
 The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`), drawn by the game's own pause menu as the four original games' menus are: a **TRAINER** row in place of the pause menu's Help row, and qwark's pages on the pause's own list and its GAME OPTIONS screen (since the fourth console test, section 12; until then the Cheats screen). This file has the reverse engineering, the design, and the test lists for a console and RPCS3.
 
-Read from the executable, the pause menu's data (`built/anark/pause/built.dat` in `global_cached.psarc`, its 28 compiled Lua 5.0.2 chunks decompiled) and Ghidra (DL-ghidra:/NPEA00452.ELF). **Its first console test crashed as the pause opened (section 9), and so did the test of that fix, in the game's Lua allocator (section 10); the third test (build 34e848e) ran without a crash, but the glue never found what it looked for, so Help stayed Help and the combo opened the plain pause (section 11), whose fix ran in the fourth test (build e44961c): the row was in, but its links were dead, its pages wore the Cheats screen's title and counter, and the game's own Cheats screen broke; section 12 has why and the rework, which has not run yet** (section 7). Confidence marks as in the other ToD reports: **high** read end to end; **medium** read, the effect in game inferred; **low** a lead.
+Read from the executable, the pause menu's data (`built/anark/pause/built.dat` in `global_cached.psarc`, its 28 compiled Lua 5.0.2 chunks decompiled) and Ghidra (DL-ghidra:/NPEA00452.ELF). **Its first console test crashed as the pause opened (section 9), and so did the test of that fix, in the game's Lua allocator (section 10); the third test (build 34e848e) ran without a crash, but the glue never found what it looked for, so Help stayed Help and the combo opened the plain pause (section 11), whose fix ran in the fourth test (build e44961c): the row was in, but its links were dead, its pages wore the Cheats screen's title and counter, and the game's own Cheats screen broke; section 12 has why and the rework, which ran in the fifth test (build 87a143a): it works, but the list's frame kept the size of the menu it was entered from, loads from the Trainer said busy, and Manips wanted a spacer; section 13 has why and the fixes, which have not run yet** (section 13.6). Confidence marks as in the other ToD reports: **high** read end to end; **medium** read, the effect in game inferred; **low** a lead.
 
 It replaces the prototype of 2026-10-31 (commit 55ef029: a panel of its own drawn with `Text_Draw`/`Sprite_Draw` from a frame hook at 0x3C5CD8 and a pad hook at 0x5D144C, ui.pak kind 3, `menu.tod`). The prototype is gone: no renderer of ToD's is in ui.pak any more, `menu.tod` means nothing, and the two hooks are never written. Its findings about the HUD's drawing calls are in that commit's version of this file.
 
@@ -75,7 +75,7 @@ Supported, which none of the four originals' menus is: the menu needs no code of
 3. TRAINER (section 12): the Options list itself becomes the Trainer's root, GAME, CHEATS, MANIPS, PLANETS, UNLOCKS, SAVE FILES ..., in the list's own style, the cursor on the first; no screen change, no CHEATS title, no skill-point text. Up/Down move; Triangle goes back to the Options list with the cursor on TRAINER.
 4. TRAINER > CHEATS (the cross): the GAME OPTIONS screen with CHEATS in its header and the section's rows, label left and value right (qwark.log adds "menu: the Trainer met the game's Game Options screen on its slide; its page is in" the first time in a pause, the game's own options perhaps showing for a frame first). Infinite ammo: the cross (or Right) turns it ON (the client's checkbox follows); Left back OFF. Max bolts: the cross. The description box says qwark's answer. Triangle back to the root list, Triangle again to Options.
 5. Game > Save position, leave the pause, move, pause, Trainer > Game > Load position.
-6. Planets: six planets at a time; Down past the sixth slides to the next ones (and Up back). A planet: the pause closes and the planet loads.
+6. Planets: six planets at a time; Down past the sixth slides to the next ones (and Up back). A planet: the pause closes and the planet loads (section 13: once the game plays, never "busy").
 7. The combo in play: the pause opens and the Trainer's root replaces the main list within a few frames (the glue has to arrive in each new pause first: section 12). The combo again: the pause closes. Hold the combo for a second: it opens once and stays open.
 8. The combo in the pause (on its first list, then from inside Weapons): the Trainer opens.
 9. Start inside the Trainer: the pause closes as from any screen; the next combo opens it again (qwark saw the close).
@@ -230,3 +230,65 @@ The glue is 7,859 bytes as sent (a request holds 8,192): the constants it names 
 ### 12.7 Ghidra (DL-ghidra:/NPEA00452.ELF)
 
 tolua_menu_get_current_skillpoints00 0x2EAAC, tolua_menu_is_cheat_unlocked00 0x2FBF0, tolua_menu_get_cheat_desc00 0x2FD88, tolua_menu_get_starting_screen00 0x286D4, PauseMenu_getStartingScreen 0x24EB4. `/ToD/Anark/PauseMenuRequest` already had `startScreen` (+0x10) and `returnScreen` (+0x14).
+
+## 13. The fifth console test: sizes, loads from the pause, a spacer (revision 1.29, pending)
+
+**What the user saw** (build 87a143a's module, 2026-11-01, `rewrite/probe-logs/trainer-root-too-many-rows.png`, `trainer-root-too-few-rows.png`): the Trainer works, but
+
+1. its root sat in the pause list's frame at the size of the menu it was entered from: from the main list (eight rows) one empty row too many; from Options (six rows) SAVE FILES below the frame; and Game Options-based pages were not sized to their rows either;
+2. a planet or a save file loaded from the Trainer answered "busy";
+3. Manips wanted a blank row between Remove cutscenes and the cutscene cache's rows.
+
+### 13.1 How the game sizes its list (high, from built.dat)
+
+The pause list's frame is not sized by Lua. **It is the slide of the list's own component** (element 0x12CD, the `ListUpdater`'s `parent`), and each menu goes to the slide that frames its row count: `onOptions` is `doScreenChange(7, setOptionsText)`, `onExtras` `doScreenChange(9, ...)`, `onMenuBack` goes to 3 (or 1 in a space combat or arena level), each through `self.parent:goToSlide(n)` with `self.currentSlide = n` (which `onActivate` goes back to whenever the list comes back), then the menu's `currentMenuIndex` and the `ScrollableList`'s `resetList`. The `ScrollableList` itself always has nine row nodes (`numVisibleRows` 9, `bigGroup.buttonBG3.buttonText.button1`..`button9`) and clears the rows past `getNumListItems()` (`DeactivateItem`: text "" and opacity 0); it knows nothing of the frame.
+
+The slides are in built.dat's action lists for component 0x12CD (a record: `set` or `animate`, an element id, a property, a value: `set` with a type 9 float, 5 int, 2 bool or 0x88 vector, `animate` with curve ids, each list headed by `set <component> slide <n>` and a count). Slide 0 is the master; the odd slides are the layouts the `ListUpdater` uses; the even ones (the same rows 45 apart, the unused ones `active` 0) no chunk goes to. Each odd slide sets every row's position (40 apart, centred), the separator lines `Line1`..`Line8` between them (the ones past the rows opacity 0), the frame's three pieces, `pause_top` (0x1329) at y = T, `pause_expander` (0x132F) at scale y (2T - 100) / 100, `pause_top2` (0x1334) at y = -T, and animates the two corner brackets (`LL_corner` 0x1337, `UR_corner` 0x1350) and `buttonBG3`'s fade in:
+
+| slide | rows | T (frame half height) | expander scale y | used by |
+|---|---|---|---|---|
+| 1 | 9 | 170 | 2.4 | space combat and arena menus |
+| 3 | 8 | 148 | 1.96 | the main list |
+| 5 | 7 | 126 | 1.52 | (no menu of the game's) |
+| 7 | 6 | 100 | 1.0 | Options |
+| 9 | 5 | 80 | 0.6 | Extras |
+| 11 | 3 (45 apart) | 50 | expander off | (no menu of the game's) |
+
+Live, read-only (the console on the Trainer's root, entered from Options): the list's `currentSlide` 7, `pause_top` y 100, `pause_expander` scale y 1.0, `pause_top2` y -100, slide 7's own values.
+
+Game Options (`optHandler`, scene slide 9) has no such slides: its six rows (`option1`..`option6`, each `optLabel`, `optValue`, `bar` with its border and arrows) sit in a screen-sized panel (`shell_BG`: the four `shell_BG_quarter`s, the description box, the header), and no slide touches the rows. The game always has six options there to show.
+
+### 13.2 How the Trainer sizes them now
+
+- **MAIN pages** (`lh_glue.lua`, `lframe`): a page of n rows goes to the list's slide for n, as `doScreenChange` does, `currentSlide` set with it so the list's own `onActivate` (back from Game Options) keeps it: n 9 and up slide 1, 8 slide 3, 7 slide 5, 6 slide 7, 5 slide 9, and the next larger where the game has no slide (4 rows on slide 9's five-row frame, 1 and 2 on slide 11's three-row one). The root (six or seven rows), Unlocks (five) and their windows all have a slide of their own. Leaving the Trainer puts the list back on the slide it was on (`T.sl`, read at the take-over), with `currentSlide`.
+- **CONFIG pages** (`orows`): Game Options' rows past the page's end are hidden (the row node's opacity 0, which takes its text, bar, border and arrows with it), and every row is shown again (100, the template's value; no slide or chunk of the game's sets it) when Game Options is given back. The cursor never went there (`max` is the page's count). The panel keeps its size: it is the screen's, not the rows'.
+- Nothing of either is in C: they are presentation of the game's own slides and nodes. The glue had 333 bytes left; qw()'s operations and the mailbox's events are numbers where they are used now (a comment at the top names them), which gave the room: 7,994 of 8,192 bytes. The helper's code and LUA_PATCH are unchanged (7,756 bytes, about 1,945 words).
+
+### 13.3 Why a load from the Trainer said "busy" (high)
+
+A planet row, a save file and Load set-aside are CLOSES actions (menu.c `defer`): qwark asks the menu to close (the glue takes it: the Trainer down, `exit_pause_menu()`), then runs the load once the game plays (`game_playing`: the pause's state 0 and nothing queued on the state stack). Tools of Destruction's pause goes away in two steps (`PauseMenu_update`'s state cases, `PauseMenu_update_stateCases` 0x24160): in state 4 (`PauseMenu_update_closing` 0x24174) it destroys the menu system and fades, and when the fade is done sets `g_pauseMenuState` 0; only the next frame, in state 0 (`PauseMenu_update_closed` 0x243F8), does it call `GameState_requestGameplay` (thunk 0x11690), which queues the move back to play. So for a frame or more the pause says 0, nothing is queued, and `g_gameState` is still 5. qwark's tick saw that often enough, ran the load, and `tod_planet_load` (and `tod_savefile_ready`) refused it: they want `g_gameState` 4.
+
+### 13.4 Loads from the pause now
+
+- **The wait** (menu.c `game_playing`): for a game whose menu is its own pause menu, the game back in play also means its game state is the play state (`struct menu_native` `play_state`, ToD's 4). A load the Trainer asked for runs on the first tick in plain play, never in the pause's last frames; the game's own gates stay as they were.
+- **The client while paused** (session.c `session_planet_load` -> menu.c `menu_pause_defer`): a PLANET_LOAD while the pause is up with the glue in it (`g_pauseMenuState` 3, `g_gameState` 5, the glue loaded) is taken as a planet row is: answered OK, the pause closed, the planet loaded once the game plays. Elsewhere it goes to the game as before (BUSY in any other state). A SAVEFILE_RESTORE or LOAD_ASIDE from the client in the pause is still refused: the client follows a RESTORE's transfer to its end, and a deferred one would look finished to it; the Trainer's save files and Load set-aside do close the pause and load.
+- **Closing the pause** (menu.c `native_defer_tick`): qwark's close request goes to the glue whether the Trainer is up or not (the glue takes requests once the pause's list is up), and is asked again while the pause is still up (a request nobody takes is withdrawn after half a second), and withdrawn once the pause is closing, so it never closes the next pause. The glue's close is the game's own Quit: `leave(false)`, then `exit_pause_menu()` (`MenuLua_exit_pause_menu` -> `PauseMenu_close`).
+- **Cancelled** (logged "menu: ... was cancelled: ...", and on the console "Trainer: ... was cancelled: ..."): when the menu comes up again after its close (the player went on in the same pause), or when the game is neither in its pause nor in play (an FMV, the title) before it plays; and, as for every game, dropped five seconds on if the game never plays. A new load replaces the one waiting.
+- Tests: `test/test_tod_menu.c` (`test_pause_loads`: the Trainer's planet through the pause's last frames, the client's, both cancellations, play), `test/test_glue.py` (a close with the Trainer down and on Game Options), smoke (the simulator's pause now goes away as the game's does when the glue takes a close, its state 0 for twelve frames with the game still in it; `fakepause hold` is one whose glue never takes it).
+
+### 13.5 The spacer
+
+Manips is a section of ToD's menu table (`tod_menu_manips`), and a section lists features by id. `MENU_ITEM_SPACER`, retired in build 56, is a row again in the builds with Tools of Destruction: the Manips page's own spacer (`push_spacer`, MENU_ROW_TEXT / MENU_TEXT_SPACER, an INFO row with no label and no ENABLED flag), never a section's first or last row nor after another. Manips is now Remove cutscenes, the blank, Cache cutscenes, its status, Cache cutscenes on reset, Disable cutscene caching: six rows, one Game Options page. The cursor passes over it as over any row it cannot stand on (`lm_next`, the game's own `changeSelection` given the next row), and the cross there posts nothing. A release build (no ToD) lists no spacer and treats one as before.
+
+### 13.6 What the next console test should show
+
+1. Pause > Options > TRAINER: the root in a frame of exactly its rows (seven on a console with the Mods row: the frame grows from Options' six), no empty row and no row outside. Triangle: Options in its six-row frame again. The combo from the main list: the root in its own frame; Triangle at the root: the main list in its eight-row frame.
+2. Unlocks: five rows, five-row frame. Cheats (six rows on Game Options): as before. A page of fewer than six rows (Manips has six; Planets' last window, Unlocks' categories, a save category): only its rows, the rest of the panel empty.
+3. Manips: Remove cutscenes, a blank row, Cache cutscenes ...; Down from Remove cutscenes lands on Cache cutscenes, Up back.
+4. Planets > a planet: the pause closes and the planet loads (no "busy"). Save files > a save: the same. Game > Load set-aside: the same.
+5. The client's planet load while paused (Trainer down, or up): the pause closes and the planet loads.
+6. qwark.log has no "was cancelled" or "was dropped" line for those.
+
+### 13.7 Ghidra (DL-ghidra:/NPEA00452.ELF)
+
+Labels in `PauseMenu_update`: `PauseMenu_update_stateCases` 0x24160 (its jump table by `g_pauseMenuState`), `PauseMenu_update_closing` 0x24174 (state 4), `PauseMenu_update_closed` 0x243F8 (state 0, which calls `thunk_GameState_requestGameplay`).

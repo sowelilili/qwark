@@ -18,7 +18,10 @@
 --   ListUpdater     the pause's list: menuData as SetupMenus builds it,
 --                   handleSelect, handleBack, onMenuBack, ActivateItem, and
 --                   its ScrollableList (resetList, setSelectedIndex, the
---                   cursor's moves, nine rows);
+--                   cursor's moves, nine rows); its parent the list's
+--                   component, whose slide is its frame (the fifth console
+--                   test: 1, 3, 5, 7, 9 and 11 frame nine, eight, seven, six,
+--                   five and three rows), which its onActivate goes back to;
 --   optHandler      GAME OPTIONS: optArray, onActivate, changeSelection,
 --                   updateItemData, adjustOption, onUp/onDown/onLeft/onRight
 --                   and onBack (scene:goToSlide(1)), six rows, its title;
@@ -73,7 +76,12 @@ local function text(s)
 end
 
 -- The game's own goToSlide (AnarkLibraryExtensions'), as far as the glue can tell: the slide changes at the next update.
+-- The list's component (the ListUpdater's parent) has slides of its own, its frame's, noted apart.
 local function goToSlide(self, n)
+  if self == W.lcomp then
+    W.lslide = n
+    return
+  end
   W.slide = n
   W.activate = n
   W.slides[table.getn(W.slides) + 1] = n
@@ -213,7 +221,13 @@ local function world(c)
   luf.setListItemValue = function(self, i, item) SetLocalizedText(item, self.menuData[self.currentMenuIndex][i][1]) end
   luf.clearListItemValue = function(self, i, item) SetLocalizedText(item, "") end
   luf.onSelectedItemChanged = function(self, i, item, reset) self.currentIndex = i end
-  luf.onActivate = function(self) self.listBehavior:updateAllItems() end
+  luf.onActivate = function(self)
+    self.parent:goToSlide(self.currentSlide)
+    self.listBehavior:updateAllItems()
+  end
+  W.lcomp = mk({ name = "list" })
+  W.lslide = 7
+  luf.parent = W.lcomp
   local md = { {}, {}, {}, {}, {} }
   for i = 1, 8 do md[1][i] = { 32 + i, luf.onSave } end
   for i = 1, 5 do md[3][i] = { 47 + i, luf.onSave } end
@@ -402,6 +416,10 @@ end
 -- The game's own list and Game Options, as the game left them: every method and field the glue may put.
 local function gameslists()
   if W.luf.onMenuBack == nil or W.luf.currentMenuIndex == 6 or W.md[6] ~= nil then return false end
+  if W.luf.currentSlide ~= 7 or W.lslide ~= 7 then return false end
+  for i = 1, 6 do
+    if W.orows[i].opacity ~= nil and W.orows[i].opacity ~= 100 then return false end
+  end
   for k, v in pairs(W.ogame) do
     if W.of[k] ~= v then return false end
   end
@@ -447,6 +465,7 @@ local function cases(name)
   trainer()
   check(W.hstate == 1 and W.luf.currentMenuIndex == 6 and btns(6) == "GAME,CHEATS,MANIPS,PLANETS,UNLOCKS," and
         W.ls.selectedItemIndex == 1 and W.slide == 3, name .. ": TRAINER: the root in the pause's list, capitals, no screen change: " .. btns(6))
+  check(W.lslide == 9 and W.luf.currentSlide == 9, name .. ": the root's five rows: the list's five-row frame, slide 9 (Options' was 7)")
   -- A link: the cross is the list's own handleSelect, the row's callback ours.
   W.ls:move(1)
   W.lu:handleSelect()
@@ -463,6 +482,8 @@ local function cases(name)
   check(r[1].optLabel.textString == "INFINITE AMMO" and r[1].optValue.textString == "OFF" and r[2].optValue.textString == "X" and
         r[3].optValue.textString == "" and r[4].optLabel.textString == "GHOST" and r[5].optLabel.textString == "" and
         W.opttitle.textString == "CHEATS", name .. ": its rows, values and title, Game Options' rows past the page empty")
+  check(r[1].opacity == 100 and r[4].opacity == 100 and r[5].opacity == 0 and r[6].opacity == 0 and W.lslide == 9,
+        name .. ": a page of four rows: Game Options' fifth and sixth rows hidden")
   frames(1)
   check(W.of.currentSelection == 1 and W.hl == 1 and W.of.max == 4, name .. ": the cursor where qwark keeps it, four rows to move in")
   W.o:onDown()
@@ -496,6 +517,22 @@ local function cases(name)
   frames(2)
   check(W.luf.currentMenuIndex == 6 and btns(2) == "GAME,CHEATS" and W.ls.selectedItemIndex == 2,
         name .. ": the root in the list again, the cursor on CHEATS")
+  check(W.lslide == 9 and r[5].opacity == 100 and r[6].opacity == 100,
+        name .. ": the list's activation keeps the Trainer's frame; Game Options' rows all shown again")
+  -- The fifth console test: each row count its own frame (a page of n rows: the slide that frames n, or the next larger).
+  local want = { 11, 11, 11, 9, 9, 7, 5, 3, 1, 1, 1 }
+  local got = {}
+  for n = 1, 11 do
+    local rows = {}
+    for k = 1, n do rows[k] = { "R" .. k, "", 1, 1 } end
+    page("Trainer", rows, 0, 1)
+    frames(1)
+    got[n] = W.lslide == want[n] and W.luf.currentSlide == want[n] and btns(1) == "R1" and W.slide == 1
+  end
+  check(got[1] and got[2] and got[3] and got[4] and got[5] and got[6] and got[7] and got[8] and got[9] and got[10] and got[11],
+        name .. ": one to eleven rows: slides 11, 11, 11, 9, 9, 7, 5, 3, 1, 1, 1")
+  page("Trainer", ROOT, 0, 1, 1)
+  frames(3)
 
   -- Triangle at the root: out, the list Options again with the cursor on TRAINER.
   W.lu:handleBack()
@@ -534,6 +571,24 @@ local function cases(name)
   W.req = 2
   frames(1)
   check(W.hstate == 0 and W.exited == 1 and gameslists(), name .. ": the combo again: the menu down, the pause left, all the game's")
+
+  -- The fifth console test: a load asked for while the Trainer is down (the client's, in the pause): qwark's close leaves the pause.
+  world({ lu = 0, opt = true })
+  frames(1)
+  W.req = 2
+  frames(1)
+  check(W.hstate == 0 and W.exited == 1 and gameslists(), name .. ": a close with the Trainer down: the pause left, nothing of the game's touched")
+  -- And from the Trainer on a CONFIG page (a planet): the menu leaves Game Options, then the pause.
+  world({ lu = 0, opt = true })
+  frames(1)
+  trainer()
+  page("Planets", { { "A", "", 3, 1 }, { "B", "", 3, 1 } }, 1, 0)
+  frames(3)
+  check(W.orows[3].opacity == 0, name .. ": Planets of two rows: Game Options' third row hidden")
+  W.req = 2
+  frames(1)
+  check(W.hstate == 0 and W.exited == 1 and gameslists() and W.orows[3].opacity == 100,
+        name .. ": the planet's close: the Trainer down, the pause left, Game Options' rows and the list's frame the game's")
 
   -- The combo from a screen of the game's: the list brought back first.
   world({ lu = 0, opt = true, slide = 2 })

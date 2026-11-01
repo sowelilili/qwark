@@ -300,9 +300,14 @@ static void test_bridge(void)
 	press(MBOX_EV_ACTIVATE, find_row("Manips"));
 	title(t);
 	check(strcmp(t, "MANIPS") == 0 && find_row("Remove cutscenes") == 0, "Manips: Remove cutscenes, as the client has it");
-	check(find_row("Cache cutscenes") == 1 && find_row("Cutscene cache") == 2 &&
-	      find_row("Cache cutscenes on reset") == 3 && find_row("Disable cutscene caching") == 4,
+	check(find_row("Cache cutscenes") == 2 && find_row("Cutscene cache") == 3 &&
+	      find_row("Cache cutscenes on reset") == 4 && find_row("Disable cutscene caching") == 5 && lm_nrows() == 6,
 	      "revision 1.29: then Cache cutscenes with its status row under it, and its two toggles");
+	/* The fifth console test: a blank row between them, which the cursor passes over (lm_next). */
+	check(lm8(lm_row(1) + MROW_OFF_KIND) == MROW_INFO && (lm_flags(1) & MROWF_ENABLED) == 0 &&
+	      strcmp(row_label(1, b), "") == 0 && lm_next(0, 1, lm_nrows()) == 2 && lm_next(2, -1, lm_nrows()) == 0,
+	      "the fifth console test: a blank row after Remove cutscenes, which the cursor steps over both ways");
+	check(lm_press(MBOX_EV_ACTIVATE, 1) == 0, "and the cross there posts nothing");
 	press(MBOX_EV_BACK, -1);
 
 	/* An event made on another page is refused, and changes nothing. */
@@ -462,6 +467,124 @@ static void test_requests(void)
 	check(peek8(LM_BOX + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && lm32(LMS(LM_L)) == 0 && lm8(LMS(LM_TRIED)) == 0 &&
 	      peek32(LM_BOX + MBOX_OFF_FRAMES) == frames, "a gameplay frame closes it, and the next pause is a new VM");
 	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_ROOT, 0), "qwark sees the close: its root for the next open");
+}
+
+/* ------------------------------------------------- loads from the pause */
+
+/*
+ * Revision 1.29, the fifth console test (docs/tod-menu.md 13): a planet
+ * picked in the Trainer, or asked for by the client, while the game is in
+ * its pause. The glue's part is played here: it takes qwark's close
+ * (lm_take_request), leaves the menu (lm_hstate) and calls exit_pause_menu,
+ * after which the game's pause goes 4 (closing), then 0 a frame or more
+ * before the game itself is back in play (g_gameState 4), as the console's
+ * does.
+ */
+static void pause_up(void)
+{
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	poke32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	poke32(TOD_PAUSE_STATE, TOD_PAUSE_UP);
+	poke32(LMS(LM_GLUE), LM_GLUE_LOADED);
+	tick(4);
+}
+
+static void pause_gone(void)
+{
+	poke32(TOD_PAUSE_STATE, 0);
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	poke32(LMS(LM_GLUE), LM_GLUE_NONE);
+	lm_gameplay_frame();
+	tick(6);
+}
+
+static void test_pause_loads(void)
+{
+	int r, i;
+	u32 planet;
+
+	group("ToD's console menu: a load from the pause (the fifth console test)");
+
+	/* The Trainer on Planets in the pause, a planet picked. */
+	pause_up();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	r = 1;
+	planet = lm8(lm_row((u32)r) + MROW_OFF_ID + 1);
+	check(lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && lm8(lm_row((u32)r) + MROW_OFF_ID) == MENU_ROW_PLANET,
+	      "the Trainer's Planets in the pause");
+	press(MBOX_EV_ACTIVATE, r);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "a planet: qwark asks the menu (and with it the pause) to close, and loads nothing yet");
+
+	/* The glue takes the close: the menu down, exit_pause_menu; the pause closing, then gone with the game still in it. */
+	check(lm_take_request() == 2, "the glue takes the close");
+	lm_hstate(0);
+	poke32(TOD_PAUSE_STATE, 4);
+	tick(6);
+	poke32(TOD_PAUSE_STATE, 0);
+	for (i = 0; i < 24; i++) tick(1);
+	check(peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "the pause gone but the game still in it (g_gameState 5, nothing queued): no load, and no BUSY");
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(6);
+	check(peek32(TOD_LOAD_REQUEST) == planet, "the game plays: the planet loads");
+	pause_gone();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
+
+	/* The client's PLANET_LOAD in the pause, the Trainer down: the glue closes the pause, then the planet loads. */
+	pause_up();
+	check(session_planet_load((u8)planet, 0) == ST_OK && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "the client's planet in the pause: OK, nothing loaded yet");
+	tick(4);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "with the menu down qwark still asks the glue to close the pause");
+	check(lm_take_request() == 2, "which the glue takes");
+	poke32(TOD_PAUSE_STATE, 0);
+	tick(12);
+	check(peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu, "not while the game is still in its pause");
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(6);
+	check(peek32(TOD_LOAD_REQUEST) == planet, "and loaded once it plays");
+	pause_gone();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
+
+	/* Cancelled: the game leaves its pause another way (an FMV, the title) before it ever plays. */
+	pause_up();
+	session_planet_load((u8)planet, 0);
+	tick(4);
+	poke32(TOD_GAME_STATE, TOD_STATE_FMV);
+	tick(4);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE, "the game left its pause another way: the close withdrawn");
+	pause_gone();
+	tick(30);
+	check(peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu, "and the load cancelled: nothing loads when it plays again");
+
+	/* Cancelled: the menu closed and came up again in the same pause (the close never reached the pause). */
+	pause_up();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	press(MBOX_EV_ACTIVATE, 1);
+	lm_hstate(0);
+	tick(4);
+	lm_hstate(1);
+	tick(4);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE, "the menu up again after its close: the load cancelled, no close waiting");
+	lm_hstate(0);
+	pause_gone();
+	tick(30);
+	check(peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu, "and nothing loads later");
+
+	/* Not in a pause: PLANET_LOAD is the game's own answer, as before. */
+	check(session_planet_load((u8)planet, 0) == ST_OK && peek32(TOD_LOAD_REQUEST) == planet,
+	      "in play the client's planet loads at once");
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
 }
 
 /* ------------------------------------------------------------ the glue */
@@ -1005,6 +1128,7 @@ void test_tod_menu(void)
 	test_bridge();
 	test_screens();
 	test_requests();
+	test_pause_loads();
 	test_glue();
 	test_gate();
 	test_diag();

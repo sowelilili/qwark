@@ -401,8 +401,9 @@ static const u8 tod_menu_cheats[] = {
 	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
 };
 
+/* Revision 1.29, the fifth console test: a blank row between Remove cutscenes and the cache's rows. */
 static const u8 tod_menu_manips[] = {
-	TF_REMOVE_CUTSCENES,
+	TF_REMOVE_CUTSCENES, MENU_ITEM_SPACER,
 	TF_CACHE_CUTSCENES, TF_CACHE_ON_RESET, TF_NO_CUTSCENE_CACHE   /* revision 1.29 */
 };
 
@@ -461,7 +462,9 @@ static const struct menu_native tod_menu_native = {
 	LM_STATE + LM_NOTE, LM_NOTE_IN, LM_NOTE_NONE,
 	LM_STATE + LM_ROOM, LM_STATE + LM_SHORT,
 	LM_NOTE_NOCH, LM_NOTE_IN_LIST, LM_NOTE_LATE,
-	LM_MAX_ROWS, LM_CFG_ROWS
+	LM_MAX_ROWS, LM_CFG_ROWS,
+	TOD_STATE_GAMEPLAY,   /* the fifth console test: a load from the pause waits for play (g_gameState 4) */
+	LM_GLUE_LOADED        /* and the glue in the pause closes it for one the client asked for */
 };
 
 /* ---------------------------------------------------------------- vtable */

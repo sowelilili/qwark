@@ -6028,6 +6028,8 @@ def smoke_tod(c, sim):
 # ------------------------- ToD's console menu, the game's own pause menu (revision 1.29)
 
 TOD_MENU_BOX = 0x008CD000
+TOD_PAUSE_STATE = 0x101CB218            # g_pauseMenuState (the fifth console test)
+TOD_STATE_PAUSE, TOD_STATE_GAMEPLAY = 5, 4
 TOD_MENU_BOX_SIZE = 0x880
 TOD_MENU_STATE = 0x008CE000
 TOD_LM_HELP, TOD_LM_GLUE, TOD_LM_LOADS = 0x00, 0x08, 0x0C
@@ -6089,6 +6091,19 @@ def smoke_tod_menu(c, sim):
           "ToD menu: Cheats, a CONFIG page: the four toggles, Max bolts and Max raritanium",
           page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back is acked")
+    module_sleep(c, 0.1)
+    # The fifth console test: Manips, a blank row between Remove cutscenes and the cutscene cache's rows.
+    page = menu_page(c, box, size)
+    manips = page[3].index("Manips") if page and "Manips" in page[3] else 2
+    check(menu_event(c, MBOX_EV_ACTIVATE, manips, box, size), "ToD menu: into Manips")
+    module_sleep(c, 0.1)
+    page = menu_page(c, box, size)
+    flags = page[4][MBOX_OFF_ROWS + MBOX_ROW_SIZE + 3] if page else None
+    check(page is not None and page[2] == "Manips" and page[3][:3] == ["Remove cutscenes", "", "Cache cutscenes"] and
+          flags is not None and (flags & 0x01) == 0,
+          "ToD menu: Manips: Remove cutscenes, a blank row the cursor passes over, Cache cutscenes ...",
+          (page[2:4], flags) if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back from Manips")
     module_sleep(c, 0.1)
     # The fourth console test: a CONFIG page longer than Game Options' six rows comes a window at a time.
     page = menu_page(c, box, size)
@@ -6166,6 +6181,47 @@ def smoke_tod_menu(c, sim):
           "ToD menu: a short Lua pool: the helper keeps out, no glue asked for, the shortage counted")
     sim.send("fakepause off")
     module_sleep(c, 0.2)
+
+    # The fifth console test: a planet asked for in the pause. The glue closes the pause, which goes away as the
+    # game's does (its state 0 a dozen frames before the game plays again), and the planet loads only then.
+    loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)
+    sim.send("fakepause on")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads or
+               mem_read_u32(c, TOD_MENU_STATE + TOD_LM_GLUE) != TOD_LM_GLUE_LOADED, 3.0, 0.05)
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    status, _ = c.call(OP_PLANET_LOAD, bytes([3, 0]))
+    check(status == ST_OK and mem_read_u32(c, TOD_LOAD_REQUEST) == 0xFFFFFFFF,
+          "ToD menu: PLANET_LOAD in the pause is taken, nothing loaded yet", status)
+    seen = []
+
+    def load_state():
+        s = (mem_read_u32(c, TOD_LOAD_REQUEST), mem_read_u32(c, TOD_GAME_STATE), mem_read_u32(c, TOD_PAUSE_STATE))
+        if not seen or seen[-1] != s:
+            seen.append(s)
+        return s[0] == 0xFFFFFFFF
+    wait_while(c, load_state, 4.0, 0.005)
+    check(mem_read_u32(c, TOD_LOAD_REQUEST) == 3 and (0xFFFFFFFF, TOD_STATE_PAUSE, 0) in seen and
+          all(s[1] == TOD_STATE_GAMEPLAY for s in seen if s[0] != 0xFFFFFFFF),
+          "ToD menu: the glue closed the pause, and the planet loaded once the game played (not in the pause's last "
+          "frames)", seen)
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    module_sleep(c, 0.2)
+    # Cancelled: a pause whose glue never takes the close, left another way (an FMV) before the game plays.
+    loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)
+    sim.send("fakepause hold")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads or
+               mem_read_u32(c, TOD_MENU_STATE + TOD_LM_GLUE) != TOD_LM_GLUE_LOADED, 3.0, 0.05)
+    status, _ = c.call(OP_PLANET_LOAD, bytes([3, 0]))
+    wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 2, 1.0, 0.01)
+    check(status == ST_OK and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 2,
+          "ToD menu: another planet in a pause: qwark asks the glue to close it", status)
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 7))
+    wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0, 1.0, 0.01)
+    check(mem_read_u8(c, box + MBOX_OFF_REQUEST) == 0,
+          "ToD menu: the game left its pause another way: the load cancelled, the close withdrawn")
+    sim.send("fakepause off")
+    module_sleep(c, 0.5)
+    check(mem_read_u32(c, TOD_LOAD_REQUEST) == 0xFFFFFFFF, "ToD menu: and nothing loads once the game plays")
 
     # The combo: an open request, which the game's pause test takes.
     mem_write(c, box + MBOX_OFF_REQUEST, b"\x00")

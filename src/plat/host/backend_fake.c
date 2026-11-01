@@ -524,6 +524,19 @@ int host_fake_lua_frame(void)
 static volatile int g_fake_pause_on;
 static volatile int g_fake_pool;     /* 0 room, 1 short, 2 tight */
 static u32 g_fake_pool_frames;
+/*
+ * Revision 1.29, the fifth console test (docs/tod-menu.md 13): the glue
+ * taking qwark's close (exit_pause_menu) and the pause going away as the
+ * game's does: its state 4 (closing) a few frames, then 0 for a dozen more
+ * with the game still in its pause and nothing queued (the frame before
+ * GameState_requestGameplay, longer here so a load run in it would be
+ * seen), then play. `fakepause hold`: a glue that never takes a request.
+ */
+static volatile int g_fake_hold;
+static int g_fake_closing;
+#define FAKE_CLOSE_DOWN 3
+#define FAKE_CLOSE_GAP  12
+static void fake_pause_words(int on);
 
 int host_fake_menu_frame(void)
 {
@@ -535,6 +548,19 @@ int host_fake_menu_frame(void)
 	pthread_mutex_lock(&g_mem_lock);
 	d = fake_lua_in();
 	if (d == NULL || peek32(d->hooks[2].addr) != d->hooks[2].value) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	if (g_fake_closing > 0) {
+		/* The fifth console test: a pause the glue closed, going away as the game's does. */
+		g_fake_closing++;
+		if (g_fake_closing > 1 + FAKE_CLOSE_DOWN + FAKE_CLOSE_GAP) {
+			fake_pause_words(0);
+			g_fake_closing = 0;
+			g_fake_pause_on = 0;
+		} else if (g_fake_closing > 1 + FAKE_CLOSE_DOWN) {
+			poke32(TOD_PAUSE_STATE, 0);
+		}
 		pthread_mutex_unlock(&g_mem_lock);
 		return 0;
 	}
@@ -581,6 +607,21 @@ int host_fake_menu_frame(void)
 	}
 	answered = fake_lua_serve(mb, L, LUAMB_TARGET_MENU, g_fake_pool == 2 ? NULL : &glue);
 	if (glue && peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED) poke32(LM_STATE + LM_GLUE, LM_GLUE_LOADED);
+	/* The fifth console test: the glue in takes qwark's close (lm_take_request), leaves the menu and the pause. */
+	if (!answered && !g_fake_hold && peek32(LM_STATE + LM_GLUE) == LM_GLUE_LOADED && peek32(LM_BOX) == MBOX_MAGIC) {
+		u8 req = 0;
+
+		mem_access(LM_BOX + MBOX_OFF_REQUEST, &req, 1, 0);
+		if (req == MBOX_REQ_CLOSE) {
+			u8 b = MBOX_REQ_NONE;
+
+			mem_access(LM_BOX + MBOX_OFF_REQUEST, &b, 1, 1);
+			b = MBOX_HSTATE_CLOSED;
+			mem_access(LM_BOX + MBOX_OFF_HSTATE, &b, 1, 1);
+			poke32(TOD_PAUSE_STATE, 4);
+			g_fake_closing = 1;
+		}
+	}
 	pthread_mutex_unlock(&g_mem_lock);
 	return answered;
 }
@@ -588,7 +629,8 @@ int host_fake_menu_frame(void)
 /*
  * `fakepause on`: the game in its pause menu, a menu system with a VM; off,
  * none. 2 (wait): one whose presentation never comes up. 3 (short) and 4
- * (tight): one whose Lua pool is short (host_fake_menu_frame).
+ * (tight): one whose Lua pool is short (host_fake_menu_frame). 5 (hold, the
+ * fifth console test): one whose glue never takes a request.
  */
 void host_set_fake_pause(int on)
 {
@@ -597,8 +639,21 @@ void host_set_fake_pause(int on)
 	if (d == NULL) return;
 	g_fake_pool = on == 3 ? 1 : on == 4 ? 2 : 0;
 	g_fake_pool_frames = 0;
+	g_fake_hold = on == 5;
 	if (on >= 3) on = 1;
 	pthread_mutex_lock(&g_mem_lock);
+	g_fake_closing = 0;
+	fake_pause_words(on);
+	pthread_mutex_unlock(&g_mem_lock);
+	g_fake_pause_on = on ? 1 : 0;
+}
+
+/* The pause's words, as host_set_fake_pause wants them. Under g_mem_lock. */
+static void fake_pause_words(int on)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+
+	if (d == NULL) return;
 	poke32(d->menu_ptr, on ? FAKE_TOD_MS : 0);
 	poke32(FAKE_TOD_MS + d->menu_off, on ? FAKE_TOD_MENU_STATE : 0);
 	/* The crash fix: its presentation up (lm_ready), or (2) never, its first update still to come. */
@@ -611,8 +666,6 @@ void host_set_fake_pause(int on)
 	poke32(FAKE_TOD_BRIDGE + LH_BR_PRES, 0);
 	poke32(TOD_PAUSE_STATE, on ? TOD_PAUSE_UP : 0);
 	poke32(TOD_GAME_STATE, on ? TOD_STATE_PAUSE : TOD_STATE_GAMEPLAY);
-	pthread_mutex_unlock(&g_mem_lock);
-	g_fake_pause_on = on ? 1 : 0;
 }
 
 static volatile int g_fake_lua_on;

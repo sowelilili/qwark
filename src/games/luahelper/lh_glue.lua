@@ -36,6 +36,11 @@
 --     answer; Up and Down move as its changeSelection does, the cross and
 --     Right are its adjustOption(1), Left adjustOption(-1), Triangle onBack.
 --
+-- Sizes (the fifth console test, docs/tod-menu.md 13): the list's frame is
+-- its component's slide, one a row count (the game's menus go to 3, 7 and 9
+-- for their eight, six and five rows), so a MAIN page goes to the slide of
+-- its own count; Game Options' rows past a page's end are hidden.
+--
 -- Take-over is scoped. Nothing of the game's is touched while the Trainer is
 -- not up, but the Help row; entering it (TRAINER, or the menu combo) puts
 -- the Trainer's fields and methods on the list, and showing a CONFIG page
@@ -61,10 +66,9 @@
 local Q = qw
 local SL = SetLocalizedText
 
--- qw()'s operations (lh_menu.h).
-local OP_POLL, OP_ROW, OP_TEXT, OP_EVENT, OP_STATE, OP_TAKE, OP_NOTE, OP_PRESS, OP_EDGE, OP_NEXT = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
--- The mailbox's events (src/core/menubox.h).
-local EV_ACTIVATE, EV_LEFT, EV_RIGHT, EV_BACK = 1, 2, 3, 4
+-- qw()'s operations (lh_menu.h LM_OP_*), as numbers where they are used (the fifth console test: the request's room went on the frames' sizes):
+-- 0 POLL, 1 ROW, 2 TEXT, 3 EVENT, 4 STATE, 5 TAKE, 6 NOTE, 7 PRESS, 8 EDGE, 9 NEXT.
+-- The mailbox's events (src/core/menubox.h MBOX_EV_*), the same way: 1 ACTIVATE, 2 LEFT, 3 RIGHT, 4 BACK.
 -- The numbers below, named where they are used (a request holds 8,192 bytes, so no local names them):
 -- LM_NOTE_* for qwark's log, 1 in (Game Options known), 2 no list, 3 no Game Options screen, 4 in (Game Options not met yet), 5 Game Options met late;
 -- K_LINK 1 (menubox.h); REQ_OPEN 1, REQ_CLOSE 2;
@@ -136,7 +140,7 @@ end
 
 -- Row i of the page (1-based): label, value, kind, flags; nil past the end.
 local function row(i)
-  return Q(OP_ROW, i)
+  return Q(1, i)
 end
 
 local function cue(event, class)
@@ -155,14 +159,14 @@ end
 
 -- The cross on row i, posted where the row takes it (lh_menu.c, lm_press); a cue where the screen plays none of its own.
 local function activate(i, q)
-  if Q(OP_PRESS, EV_ACTIVATE, i) == 1 and q then cue(EVENT_SUCCESS, CLASS_BUTTON) end
+  if Q(7, 1, i) == 1 and q then cue(EVENT_SUCCESS, CLASS_BUTTON) end
 end
 
 -- The cursor came to row i: at the window's edge of a page that goes on, qwark slides the window (lh_menu.c, lm_edge); once a row.
 local function scroll(i)
   if i == T.seen then return end
   T.seen = i
-  Q(OP_EDGE, i)
+  Q(8, i)
 end
 
 -- ------------------------------------------------------- the pause's list
@@ -185,9 +189,21 @@ local function lsel(i)
   call(LS, "setSelectedIndex", math.min(i, T.n), true)
 end
 
+-- The list's frame for 1 to 9 rows: the slide of the list's own component (the ListUpdater's parent) that frames that many, the next larger for four rows or fewer than three (its slides 1, 3, 5, 7, 9 and 11 frame nine, eight, seven, six, five and three).
+local LSL = { 11, 11, 11, 9, 9, 7, 5, 3, 1 }
+
+-- The list on slide s as the game's doScreenChange puts it there (the slide, and currentSlide, which the list's onActivate goes back to).
+local function lframe(s)
+  if s and s ~= get(LU, "currentSlide") then
+    pcall(assign, LU, "currentSlide", s)
+    pcall(G.slide, get(LU, "parent"), s)
+  end
+end
+
 -- The list on the Trainer's take-over: its back, its cursor's moves, its menu; each recorded.
 local function lon()
   T.ci = get(LU, "currentIndex")
+  T.sl = get(LU, "currentSlide")
   put(LU, "onMenuBack", G.back)
   local changed = get(LU, "onSelectedItemChanged")
   if type(changed) == "function" then
@@ -217,9 +233,17 @@ local function oitem(self, i)
   end
 end
 
+-- Game Options' rows past the first n hidden, the others shown (n 9: all, as the game has them).
+local function orows(n)
+  local rw = get(O, "row")
+  if type(rw) == "table" then
+    for k = 1, table.getn(rw) do pcall(assign, rw[k], "opacity", k > n and 0 or 100) end
+  end
+end
+
 -- The page's own texts there: the title, qwark's last answer in the description, and in each option's (changeSelection shows it).
 local function otexts()
-  local t, h = Q(OP_TEXT)
+  local t, h = Q(2)
   text(G.title, t)
   text(get(O, "desc"), h)
   local op = get(O, "option")
@@ -236,6 +260,7 @@ local function oshow(c)
   for k = 1, math.max(T.n, table.getn(rw)) do op[k] = { enabled = true } end
   pcall(assign, O, "option", op)
   pcall(assign, O, "max", math.min(T.n, table.getn(rw)))
+  orows(T.n)
   otexts()
   oitem(O)
   pcall(G.osel, O, math.min(c, T.n) - (tonumber(get(O, "currentSelection")) or 1))
@@ -245,7 +270,7 @@ end
 -- Up or Down there: to the next row the cursor stands on (lh_menu.c, lm_next), as the game's changeSelection moves it, and the window slides at its edge.
 local function osel(self, d)
   local i = tonumber(get(O, "currentSelection")) or 1
-  local j = Q(OP_NEXT, i, d, tonumber(get(O, "max")) or 1)
+  local j = Q(9, i, d, tonumber(get(O, "max")) or 1)
   if j ~= i then
     pcall(G.osel, O, j - i)
     scroll(j)
@@ -263,7 +288,7 @@ local function oon()
   put(O, "changeSelection", osel)
   put(O, "adjustOption", function(self, d)
     local i = tonumber(get(O, "currentSelection")) or 1
-    if Q(OP_PRESS, d < 0 and EV_LEFT or EV_RIGHT, i) ~= 1 and d > 0 then activate(i, true) end
+    if Q(7, d < 0 and 2 or 3, i) ~= 1 and d > 0 then activate(i, true) end
   end)
   put(O, "onBack", G.back)
   put(G.title, "textString", get(G.title, "textString"))
@@ -275,6 +300,7 @@ end
 
 -- Game Options the game's again.
 local function ooff()
+  orows(9)
   if T.om then unwind(T.omk) end
   T.om = nil
 end
@@ -290,6 +316,7 @@ local function page(gen, vgen, n, cur, pt, pf)
       slide(1)
       T.wait = 2
     end
+    lframe(LSL[math.min(T.n, 9)])
     lfill()
     call(LS, "resetList")
     lsel(T.cur)
@@ -326,10 +353,10 @@ end
 -- The menu up: the Trainer's menu in the pause's list (the list brought back first if a screen of the game's is up).
 local function open()
   if T.on or not LU then return end
-  local on, help, gen, vgen, n, cur, pt, pf = Q(OP_POLL)
+  local on, help, gen, vgen, n, cur, pt, pf = Q(0)
   if on ~= 1 then return end
   T.on = true
-  Q(OP_STATE, 1)
+  Q(4, 1)
   lon()
   if not active(LU) then
     slide(21)
@@ -342,10 +369,11 @@ end
 leave = function(nav)
   if not T.on then return end
   T.on = false
-  Q(OP_STATE, 0)
+  Q(4, 0)
   local om = T.om
   ooff()
   unwind(0)
+  lframe(T.sl)
   T.wait = nil
   if nav then
     if om then slide(1) end
@@ -360,7 +388,7 @@ back = function()
     cue(EVENT_LOST_FOCUS, CLASS_MENU)
     leave(true)
   else
-    Q(OP_EVENT, EV_BACK, 1)
+    Q(3, 4, 1)
   end
 end
 
@@ -394,7 +422,7 @@ end
 -- The scene and Node first, then the list and Game Options, each as it turns up.
 local function setup()
   T.tries = T.tries + 1
-  if not LU and T.tries == 300 then Q(OP_NOTE, 2) end
+  if not LU and T.tries == 300 then Q(6, 2) end
   if not T.ready then
     S = scene
     if not obj(S) then S = get(Presentation, "scene") end
@@ -411,7 +439,7 @@ local function setup()
     local had = LU
     look()
     if LU and not had then
-      Q(OP_NOTE, O and 1 or 4)
+      Q(6, O and 1 or 4)
     end
   end
   return true
@@ -430,7 +458,7 @@ end
 local function frame()
   T.age = T.age + 1
   if not setup() then return end
-  local on, help, gen, vgen, n, cur, pt, pf = Q(OP_POLL)
+  local on, help, gen, vgen, n, cur, pt, pf = Q(0)
   if on ~= 1 then
     leave(true)
     helprow(0)
@@ -439,7 +467,7 @@ local function frame()
   helprow(help)
   -- qwark's request: taken once the pause's list is up (or the Trainer is), so the combo's pause opens on the Trainer as soon as it can; from a screen of the game's once the pause has settled (30 frames).
   if T.on or (LU and (active(LU) or T.age > 30)) then
-    local req = Q(OP_TAKE)
+    local req = Q(5)
     if req == 1 then open()
     elseif req == 2 then
       leave(false)
@@ -453,12 +481,12 @@ local function frame()
       T.om = nil
       oon()
       T.wait = 1
-      Q(OP_NOTE, 5)
+      Q(6, 5)
     else
       T.ow = T.ow - 1
       if T.ow <= 0 then
         leave(true)
-        Q(OP_NOTE, 3)
+        Q(6, 3)
       end
       return
     end

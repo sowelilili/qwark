@@ -269,10 +269,12 @@ struct game_manips {
 #define MENU_ITEM_POS_SAVE  0xF1
 #define MENU_ITEM_POS_LOAD  0xF2
 /*
- * Retired in build 56: round 5's blank row between a section's parts (Game's
- * position rows and its save-file rows until round 6, which put Challenge mode
- * there). No section has listed one since, and the menu lists none; the
- * Manips page makes its own.
+ * Round 5's blank row between a section's parts (Game's position rows and its
+ * save-file rows until round 6, which put Challenge mode there), retired in
+ * build 56 and back in revision 1.29 for Tools of Destruction's Manips
+ * section (Remove cutscenes, then the cutscene cache's rows). The cursor
+ * passes over it; the menu never makes it a section's first or last row, nor
+ * puts two together, as the Manips page makes its own.
  */
 #define MENU_ITEM_SPACER    0xF3
 /* Round 5: row i of the game's `values` (struct menu_value, below), 0 .. 15. */
@@ -667,6 +669,17 @@ struct menu_native {
 	 */
 	u8  max_rows;
 	u8  cfg_rows;
+	/*
+	 * Revision 1.29, the fifth console test: screen_addr's value in plain
+	 * play. A load the menu runs once it has closed waits for it (menu.c,
+	 * game_playing): the pause's own words say it is gone a frame or more
+	 * before the game is back in play (docs/tod-menu.md 13). glue_loaded:
+	 * glue_addr's value once the glue is in the pause's VM, which closes
+	 * the pause for such a load asked for from the client (menu.c,
+	 * menu_pause_defer).
+	 */
+	u32 play_state;
+	u32 glue_loaded;
 };
 #endif
 

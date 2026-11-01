@@ -280,6 +280,17 @@ void menu_combo(void);
  */
 int menu_none(const struct game_api *game);
 
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29, the fifth console test (docs/tod-menu.md 13): a planet load
+ * the client asked for while the game is in its own pause menu (Tools of
+ * Destruction), taken as the menu's Planets rows take one: the pause closed,
+ * the planet loaded once the game plays. ST_OK when taken; ST_UNSUPPORTED
+ * when no such pause is up, and the game answers. Tick thread.
+ */
+int menu_pause_defer(u8 planet, u8 flags);
+#endif
+
 int  menu_state(void);
 /* The delay before a session's install, three seconds; the tests shorten it. */
 u64  menu_install_delay_us(void);

@@ -1033,7 +1033,11 @@ static void save_drop(const char *cat, const char *name)
  * the test's own: Deadlocked's three values.
  */
 static const u8 tv_items[] = { R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE };
-/* Build 56: the retired MENU_ITEM_SPACER, and a value the table does not have, are no rows. */
+/*
+ * Build 56: a value the table does not have is no row. MENU_ITEM_SPACER,
+ * retired in build 56, is a blank row again in revision 1.29 (ToD's Manips),
+ * but never first, last or after another.
+ */
 static const u8 tv_spaced[] = {
 	MENU_ITEM_SPACER, R4_BOLTS, MENU_ITEM_SPACER, MENU_ITEM_SPACER, R4_GHOST, MENU_ITEM_SPACER,
 	MENU_ITEM_VALUE(7), MENU_ITEM_SPACER
@@ -1107,9 +1111,11 @@ static void test_model_dl_values(void)
 	menu_model_reset(8, 16, CAPS_ALL);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Spacers");
-	check(v.nrows == 2 && strcmp(v.rows[0].label, "Bolts") == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0,
-	      "build 56: the retired MENU_ITEM_SPACER is no row, wherever it is, and nor is a MENU_ITEM_VALUE the "
-	      "table does not have: Bolts, Ghost Ratchet");
+	check(v.nrows == 3 && strcmp(v.rows[0].label, "Bolts") == 0 && strcmp(v.rows[1].label, "") == 0 &&
+	      v.rows[1].kind == MROW_INFO && (v.rows[1].flags & MROWF_ENABLED) == 0 &&
+	      strcmp(v.rows[2].label, "Ghost Ratchet") == 0,
+	      "revision 1.29: MENU_ITEM_SPACER a blank row the cursor passes, but not first, last or doubled, and no row "
+	      "for a MENU_ITEM_VALUE the table does not have: Bolts, a blank, Ghost Ratchet");
 	menu_test_menu(NULL);
 }
 

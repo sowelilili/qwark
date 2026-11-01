@@ -1261,6 +1261,10 @@ int session_planet_load(u8 planet, u8 flags)
 	if (planet == 0xFF) planet = config_selected_planet(game);
 	if (flags == 0xFF)  flags = config_selected_planet_flags(game);
 
+#if QWARK_HAS_TOD
+	/* Revision 1.29: from the game's own pause menu, the pause closed first and the load after (menu.c). */
+	if (menu_pause_defer(planet, flags) == ST_OK) return ST_OK;
+#endif
 	return g_game->planet_load(planet, flags);
 }
 
