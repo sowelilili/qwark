@@ -88,19 +88,44 @@ static inline lh_u32 lh_chunk_name(void)
 }
 
 /*
+ * Revision 1.29, the second crash (docs/tod-menu.md 10, lh_menu.c lm_room):
+ * whether the Anark Lua pool has room for `small` and `big` blocks, with a
+ * full collection of the pause menu's VM first if it has not and one may be
+ * made (the game's own, which AnarkMenuSystem_update makes once a second):
+ * 2 room; 1 short after a collection made now; 0 short and none made (held
+ * off after one that did not help, or the pool under the floor). The Anark
+ * allocator is current.
+ */
+static int lh_room(lh_u32 L, lh_u32 pool, lh_u32 small, lh_u32 big)
+{
+	lh_u32 r = lm_room(pool, small, big);
+
+	if (lm_room_ok(r, small, big)) return 2;
+	if (!lm_may_collect(r)) return 0;
+	lh_setgcthreshold(L, 0);
+	if (lm_room_ok(lm_room(pool, small, big), small, big)) return 2;
+	lm_short();
+	return 1;
+}
+
+/*
  * The request in the mailbox, if there is one for `target` (luamb.h), run on
  * `L` with `alloc` current; the answer written back. The gameplay VM's frame
- * and the pause menu's both come here, each for its own target.
+ * and the pause menu's both come here, each for its own target. Answers
+ * whether there was one. Revision 1.29: one for the pause menu's VM (the glue
+ * above all) runs only with LM_ROOM_LOAD_* left in its pool, NO_ROOM
+ * otherwise, and the parser's garbage is collected after it if it left the
+ * pool short of that.
  */
-static void lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
+static int lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 {
 	lh_u32 r, len, s;
 	lh_u32 out_len = 0, out_type = LUAMB_T_NONE, out_flags = 0;
 	int st, cut;
 
 	r = LH_WORD(MB + LUAMB_OFF_REQ);
-	if (r == LH_WORD(MB + LUAMB_OFF_ACK)) return;
-	if (LH_BYTE(MB + LUAMB_OFF_TARGET) != target) return;
+	if (r == LH_WORD(MB + LUAMB_OFF_ACK)) return 0;
+	if (LH_BYTE(MB + LUAMB_OFF_TARGET) != target) return 0;
 
 	/*
 	 * Claim it, then look for a withdrawal: qwark writes cancel and then
@@ -118,6 +143,8 @@ static void lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 		st = LUAMB_ST_NO_STATE;
 	} else if (len == 0 || len > LUAMB_CHUNK_CAP) {
 		st = LUAMB_ST_BAD_LEN;
+	} else if (target == LUAMB_TARGET_MENU && lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG) != 2) {
+		st = LUAMB_ST_NO_ROOM;
 	} else {
 		lh_u32 prev = LH_WORD(LH_CUR_ALLOC);
 		int top, t;
@@ -140,6 +167,7 @@ static void lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 			}
 		}
 		lh_settop(L, top);
+		if (target == LUAMB_TARGET_MENU) lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG);
 		lh_alloc_set_current(prev);
 	}
 
@@ -151,6 +179,7 @@ static void lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 	LH_WORD(MB + LUAMB_OFF_ACK) = r;
 	lh_sync();
 	LH_WORD(MB + LUAMB_OFF_BUSY) = 0;
+	return 1;
 }
 
 void lh_tick(lh_u32 vm)
@@ -287,13 +316,46 @@ static int lh_get_frame_fn(lh_u32 L)
 	return lh_type(L, -1) == LH_T_FUNCTION;
 }
 
-/* The pause menu's VM failed: its message (on top of the stack) into the err area, as "qwark-menu". */
-static void lh_menu_error(lh_u32 L, lh_u32 ms)
+/*
+ * The glue stops in this VM: `msg` (a text, or 0) into the err area as
+ * "qwark-menu", qwark_frame gone until the next pause, the menu down, and
+ * LM_GLUE says so (qwark logs it once). The stack back at `top` after the
+ * message is copied, for it may be the message's own slot.
+ */
+static void lh_menu_stop(lh_u32 L, lh_u32 ms, int top, lh_u32 msg)
 {
-	lh_u32 name;
+	lh_u32 a;
 
-	LH_TEXT_ADDR(lh_menuname, name);
-	lh_report(ms, lh_type(L, -1) == LUAMB_T_STRING ? lh_tostring(L, -1) : 0, name + 1);
+	LH_TEXT_ADDR(lh_menuname, a);
+	lh_report(ms, msg, a + 1);
+	lh_settop(L, top);
+	LH_TEXT_ADDR(lh_framename, a);
+	lh_pushstring(L, a);
+	lh_pushnil(L);
+	lh_settable(L, LH_GLOBALSINDEX);
+	LH_WORD(LMS(LM_GLUE)) = LM_GLUE_STOPPED;
+	lm_hstate(0);
+}
+
+/*
+ * Revision 1.29, the second crash: the pool short even after a collection,
+ * with the glue in. The glue's qwark_quit puts back everything it wrapped and
+ * the Help row, so what it holds in the VM is garbage the game's next
+ * collection gives back to the game, which needs the room more; then the glue
+ * is stopped as on an error. qwark_quit allocates next to nothing (its name
+ * is already a string of the VM's, and it makes no closure).
+ */
+static void lh_menu_quit(lh_u32 L, lh_u32 ms, int top)
+{
+	lh_u32 a;
+
+	LH_TEXT_ADDR(lh_quitname, a);
+	lh_pushstring(L, a);
+	lh_gettable(L, LH_GLOBALSINDEX);
+	if (lh_type(L, -1) == LH_T_FUNCTION) lh_pcall(L, 0, 0, 0);
+	lh_settop(L, top);
+	LH_TEXT_ADDR(lh_shortmsg, a);
+	lh_menu_stop(L, ms, top, a);
 }
 
 /*
@@ -330,11 +392,21 @@ static void lh_menu_load(lh_u32 L)
  * into it from outside an update, and popped again before the game goes on.
  * Every Lua call in between is a pcall or cannot fail; the push is checked to
  * have taken (the bridge holds the presentation) before any of it.
+ *
+ * Revision 1.29, the second crash (docs/tod-menu.md 10): the pause menu's
+ * Lua pool faults when it runs out, so before anything (the push included,
+ * whose listener sets a Lua global) the helper counts its room, and with too
+ * little makes the full collection the game's own update makes once a
+ * second, here where the game makes it (after the update, nothing pushed).
+ * Still short: nothing goes into the VM this frame, and a glue already in
+ * takes itself out (lh_menu_quit). A frame that ran a request does not also
+ * run qwark_frame: the glue's load and its first look at the pause are never
+ * one frame's garbage.
  */
 void lh_menu_tick(lh_u32 ms)
 {
-	lh_u32 L, prev, alloc, a, rt, why;
-	int top, st;
+	lh_u32 L, prev, alloc, rt, why;
+	int top, room;
 
 	if (LH_WORD(MB + LUAMB_OFF_MAGIC) != LUAMB_MAGIC) return;
 	LH_WORD(MB + LUAMB_OFF_MENU_BEAT) = LH_WORD(MB + LUAMB_OFF_MENU_BEAT) + 1;
@@ -350,41 +422,37 @@ void lh_menu_tick(lh_u32 ms)
 	alloc = lh_anark_alloc();
 	lh_alloc_set_current(alloc);
 	top = lh_gettop(L);
-	lh_pres_push(rt, LH_WORD(ms + LH_MS_PRES));
 
-	if (!lm_pushed(ms)) {
-		why = LM_WHY_PUSH;
-	} else {
-		/* Another pause, or another menu system: the glue has to go in again. */
-		if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
-			LH_WORD(LMS(LM_L)) = L;
-			LH_WORD(LMS(LM_MS)) = ms;
-			LH_BYTE(LMS(LM_TRIED)) = 0;
-		}
-		if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
-		lh_settop(L, top);
+	room = lh_room(L, alloc, LM_ROOM_SMALL, LM_ROOM_BIG);
+	if (room != 2) why = LM_WHY_MEMORY;
+	if (room == 2 || (room == 1 && LH_WORD(LMS(LM_GLUE)) == LM_GLUE_LOADED)) {
+		lh_pres_push(rt, LH_WORD(ms + LH_MS_PRES));
 
-		/* qwark's requests for this VM: the glue first of all. */
-		lh_serve(L, alloc, LUAMB_TARGET_MENU);
+		if (!lm_pushed(ms)) {
+			why |= LM_WHY_PUSH;
+		} else if (room == 1) {
+			lh_menu_quit(L, ms, top);
+		} else {
+			/* Another pause, or another menu system: the glue has to go in again. */
+			if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
+				LH_WORD(LMS(LM_L)) = L;
+				LH_WORD(LMS(LM_MS)) = ms;
+				LH_BYTE(LMS(LM_TRIED)) = 0;
+			}
+			if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
+			lh_settop(L, top);
 
-		if (lh_get_frame_fn(L)) {
-			if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
-			st = lh_pcall(L, 0, 0, 0);
-			if (st != 0) {
+			/* qwark's requests for this VM, the glue first of all; or else the glue's frame. */
+			if (!lh_serve(L, alloc, LUAMB_TARGET_MENU) && lh_get_frame_fn(L)) {
+				if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
 				/* The glue broke (it put Help back first): said once, and qwark_frame gone until the next pause. */
-				lh_menu_error(L, ms);
-				lh_settop(L, top);
-				LH_TEXT_ADDR(lh_framename, a);
-				lh_pushstring(L, a);
-				lh_pushnil(L);
-				lh_settable(L, LH_GLOBALSINDEX);
-				LH_WORD(LMS(LM_GLUE)) = LM_GLUE_STOPPED;
-				lm_hstate(0);
+				if (lh_pcall(L, 0, 0, 0) != 0)
+					lh_menu_stop(L, ms, top, lh_type(L, -1) == LUAMB_T_STRING ? lh_tostring(L, -1) : 0);
 			}
 		}
+		lh_pres_pop(rt);
 	}
 
-	lh_pres_pop(rt);
 	lh_settop(L, top);
 	lh_alloc_set_current(prev);
 	lm_kept_out(why);

@@ -20,7 +20,9 @@
  *                         16 ms (revision 1.27)
  *   fakepause on|off      the simulated ToD in its pause menu, whose frame the
  *                         fakelua thread runs instead (revision 1.29); `wait`,
- *                         one whose presentation never comes up
+ *                         one whose presentation never comes up; `short`, one
+ *                         whose Lua pool is short even after a collection,
+ *                         `tight`, one too short for the glue's load
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   fakesave on|off       the simulated ToD's save system runs a frame every
  *                         16 ms and takes qwark's loads (revision 1.28)
@@ -281,11 +283,18 @@ static void handle_line(char *line, int *keep_running)
 		 */
 		char *on = next_token(&cursor);
 
-		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off") && !qstreq(on, "wait"))) {
-			printf("usage: fakepause on|off|wait\n");
+		if (on == NULL || (!qstreq(on, "on") && !qstreq(on, "off") && !qstreq(on, "wait") &&
+		                   !qstreq(on, "short") && !qstreq(on, "tight"))) {
+			printf("usage: fakepause on|off|wait|short|tight\n");
 		} else {
-			/* wait (the crash fix): a pause whose presentation never comes up, which the helper never enters. */
-			host_set_fake_pause(qstreq(on, "on") ? 1 : qstreq(on, "wait") ? 2 : 0);
+			/*
+			 * wait (the crash fix): a pause whose presentation never comes up,
+			 * which the helper never enters. short and tight (the second
+			 * crash): one whose Lua pool is short, of every frame or of the
+			 * glue's load.
+			 */
+			host_set_fake_pause(qstreq(on, "on") ? 1 : qstreq(on, "wait") ? 2 :
+			                    qstreq(on, "short") ? 3 : qstreq(on, "tight") ? 4 : 0);
 			printf("ok fakepause %s\n", on);
 		}
 

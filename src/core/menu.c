@@ -1773,6 +1773,9 @@ static u32  g_native_stopped;    /* the same, when a stop was last logged */
 static u8   g_native_why;        /* 1: no helper (RPCS3 without the patch) */
 static u32  g_native_note;       /* the glue's note last logged */
 static u8   g_native_waited;     /* a long wait of the helper's logged, until it ends */
+static u32  g_native_short;      /* the helper's shortage count last seen (revision 1.29, the second crash) */
+static u32  g_native_short_loads; /* the loads word when a shortage was last logged, once a pause */
+static u8   g_native_short_said; /* and whether one ever was */
 
 /* Pause menu frames the helper waits for the presentation before the core says so (about five seconds). */
 #define NATIVE_WAIT_LOG 300
@@ -2096,6 +2099,9 @@ static int native_install(void)
 		g_native_stopped = 0;
 		g_native_note = 0;
 		g_native_waited = 0;
+		g_native_short = 0;
+		g_native_short_loads = 0;
+		g_native_short_said = 0;
 	}
 
 	/* Taken as install() takes any renderer's mailbox (its tail, the same words). */
@@ -2126,11 +2132,29 @@ static int native_install(void)
  * The glue's note, each time it differs from the last one said: the Trainer
  * row is in, or it found no Options list or Cheats screen and leaves the
  * pause menu the game's.
+ *
+ * Revision 1.29, the second crash (docs/tod-menu.md 10): the pause menu's Lua
+ * pool short even after a full collection, which keeps the helper and the
+ * glue out of the VM (and takes a glue that was in back out), said once a
+ * pause with what was left; and what was left beside the glue's "in".
  */
 static void native_notes(void)
 {
 	const struct menu_native *n = g_native;
-	u32 waits = 0, why = 0, note = 0;
+	u32 waits = 0, why = 0, note = 0, shortage = 0, room = 0, loads = 0;
+
+	mem_read_u32(n->room_addr, &room);
+	if (mem_read_u32(n->short_addr, &shortage) == ST_OK && shortage != g_native_short) {
+		g_native_short = shortage;
+		mem_read_u32(n->loads_addr, &loads);
+		if (!g_native_short_said || loads != g_native_short_loads) {
+			g_native_short_said = 1;
+			g_native_short_loads = loads;
+			plat_log("menu: the pause menu's Lua pool is short even after a collection (%u blocks left for small "
+			         "objects, %u in its largest class); the Trainer stays out of it, Help is the game's",
+			         (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
+		}
+	}
 
 	if (mem_read_u32(n->waits_addr, &waits) == ST_OK) {
 		if (waits < NATIVE_WAIT_LOG) {
@@ -2146,7 +2170,8 @@ static void native_notes(void)
 	if (note == g_native_note) return;
 	g_native_note = note;
 	if (note == n->note_in)
-		plat_log("menu: the pause menu's glue is in: TRAINER in Options");
+		plat_log("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: %u blocks or more left "
+		         "for small objects, %u in its largest class)", (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 	else if (note == n->note_none)
 		plat_log("menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's");
 }

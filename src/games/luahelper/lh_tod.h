@@ -172,6 +172,39 @@
 #define LH_RT_PUSHED       0x000000BC   /* AnarkRuntime: how many presentations are pushed   */
 #define LH_BR_PRES         0x00000008   /* AnarkLuaBridge: the presentation pushed, else 0   */
 
+/*
+ * Revision 1.29, the second crash (docs/tod-menu.md 10): the Lua pool every
+ * Anark VM allocates from. AnarkMenu_luaAllocator's g_anarkLuaAllocator is a
+ * LUA::PoolAllocator, set up afresh at every pause (Memory_InitHeaps, from
+ * PauseMenu_startLoading) and released at its end (Memory_FreeAnarkHeaps):
+ * 18 classes of fixed blocks, 4 to 640 bytes (g_anarkLuaPoolDesc, about
+ * 0.7 MB in all), and a heap only for what is bigger. A block comes from the
+ * first class that holds it or the next one up with a block left, never from
+ * the heap; with every class from its own up used up, LuaPoolAllocator_alloc
+ * (0x6D37F8) looks one chunk past its table (its loop runs count - class + 1
+ * times) and takes the first blocks of class 0 for a chunk: the console's
+ * crash, lwz r31,0(r11) at 0x6D38C8 with r11 = 0x801B. So the helper counts
+ * the blocks left before it lets the menu's Lua run (lh_menu.c, lm_room).
+ *
+ *   pool:  +0 its class table (u32 count, the block sizes), +4 its chunks,
+ *          one a class, LH_PC_SIZE bytes each, +0xC the class a size starts
+ *          at, an int per 4 bytes ((size - 1) / 4)
+ *   chunk: +0 the blocks, +4 the free list (a free block's first word is the
+ *          next one, 0 ends it), +8 the blocks' bytes, +0xC a block's stride
+ *          (its size and a 4-byte header), +0x10 the bytes ever handed out
+ */
+#define LH_ANARK_POOL      0x1073DC40   /* g_anarkLuaAllocator, what lh_anark_alloc() returns */
+#define LH_PA_DESC         0x00000000
+#define LH_PA_CHUNKS       0x00000004
+#define LH_PA_INDEX        0x0000000C
+#define LH_PA_CLASSES      0x00000020   /* the most classes a table may say it has      */
+#define LH_PC_SIZE         0x00000020
+#define LH_PC_BASE         0x00000000
+#define LH_PC_FREE         0x00000004
+#define LH_PC_BYTES        0x00000008
+#define LH_PC_STRIDE       0x0000000C
+#define LH_PC_USED         0x00000010
+
 /* ------------------------------------------------------- game functions */
 
 /* The middle range's; called with the caller's r2. */
@@ -211,6 +244,13 @@
  */
 #define LH_FN_PRES_PUSH         0x0079647C
 #define LH_FN_PRES_POP          0x0079558C
+
+/*
+ * Revision 1.29, the second crash: lua_setgcthreshold(L, 0), a full
+ * collection, which AnarkMenuSystem_update itself makes of the menu's VM
+ * once a second (0x653EC8).
+ */
+#define LH_FN_SETGCTHRESHOLD    0x00691504
 
 /* Lua 5.0's pseudo-index of the globals, and its type of a function. */
 #define LH_GLOBALSINDEX         (-10001)

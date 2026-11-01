@@ -396,6 +396,8 @@ static void seed_tod(void)
  */
 static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 {
+	/* `fakepause tight` (the second crash): a menu request finds the pool short of a load's room (glue NULL). */
+	int no_room = target == LUAMB_TARGET_MENU && glue == NULL;
 	u32 req, ack, cancel, len, out_len = 0;
 	s32 status = LUAMB_ST_OK;
 	u8 type = LUAMB_T_NONE, t = 0;
@@ -414,7 +416,10 @@ static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 	if (cancel == req) status = LUAMB_ST_CANCELLED;
 	else if (L == 0) status = LUAMB_ST_NO_STATE;
 	else if (len == 0 || len > LUAMB_CHUNK_CAP) status = LUAMB_ST_BAD_LEN;
-	else {
+	else if (no_room) {
+		status = LUAMB_ST_NO_ROOM;
+		poke32(LM_STATE + LM_SHORT, peek32(LM_STATE + LM_SHORT) + 1u);
+	} else {
 		mem_access(mb + LUAMB_OFF_CHUNK, chunk, len, 0);
 		chunk[len] = 0;
 		if (strstr(chunk, "while true") != NULL) {
@@ -501,8 +506,18 @@ int host_fake_lua_frame(void)
  * menu VM given its qw and asking for the glue (LM_GLUE WANTED, LM_LOADS
  * moved), a menu request served, and the glue taken for loaded once a chunk
  * that defines qwark_frame ran. Returns 1 when it answered a request.
+ *
+ * The second crash (docs/tod-menu.md 10): the pause menu's Lua pool, which
+ * lh_menu.c's lm_room counts, as `fakepause short` and `fakepause tight` set
+ * it. Short: too little even after a collection, so no frame goes in (LM_WHY
+ * MEMORY), a collection every LM_ROOM_HOLD frames counts in LM_SHORT, and a
+ * glue that was in stops (LM_GLUE STOPPED, as lh_menu_quit leaves it). Tight:
+ * enough for a frame of the glue, not for its load, so a menu request is
+ * answered NO_ROOM after a collection that did not help.
  */
 static volatile int g_fake_pause_on;
+static volatile int g_fake_pool;     /* 0 room, 1 short, 2 tight */
+static u32 g_fake_pool_frames;
 
 int host_fake_menu_frame(void)
 {
@@ -532,6 +547,18 @@ int host_fake_menu_frame(void)
 		pthread_mutex_unlock(&g_mem_lock);
 		return 0;
 	}
+	if (g_fake_pool == 1) {
+		poke32(LM_STATE + LM_ROOM, (2u << 16) | 300u);
+		if (g_fake_pool_frames++ % LM_ROOM_HOLD == 0) {
+			poke32(LM_STATE + LM_SHORT, peek32(LM_STATE + LM_SHORT) + 1u);
+			if (peek32(LM_STATE + LM_GLUE) == LM_GLUE_LOADED) poke32(LM_STATE + LM_GLUE, LM_GLUE_STOPPED);
+		}
+		poke32(LM_STATE + LM_WHY, LM_WHY_MEMORY);
+		poke32(LM_STATE + LM_WAITS, peek32(LM_STATE + LM_WAITS) + 1u);
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	poke32(LM_STATE + LM_ROOM, g_fake_pool == 2 ? (20u << 16) | 1500u : (150u << 16) | 4000u);
 	poke32(LM_STATE + LM_WHY, 0);
 	poke32(LM_STATE + LM_WAITS, 0);
 	if (peek32(LM_STATE + LM_L) != L || peek32(LM_STATE + LM_MS) != ms) {
@@ -546,18 +573,25 @@ int host_fake_menu_frame(void)
 		poke32(LM_STATE + LM_LOADS, peek32(LM_STATE + LM_LOADS) + 1u);
 		poke32(LM_STATE + LM_GLUE, LM_GLUE_WANTED);
 	}
-	answered = fake_lua_serve(mb, L, LUAMB_TARGET_MENU, &glue);
+	answered = fake_lua_serve(mb, L, LUAMB_TARGET_MENU, g_fake_pool == 2 ? NULL : &glue);
 	if (glue && peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED) poke32(LM_STATE + LM_GLUE, LM_GLUE_LOADED);
 	pthread_mutex_unlock(&g_mem_lock);
 	return answered;
 }
 
-/* `fakepause on`: the game in its pause menu, a menu system with a VM; off, none. */
+/*
+ * `fakepause on`: the game in its pause menu, a menu system with a VM; off,
+ * none. 2 (wait): one whose presentation never comes up. 3 (short) and 4
+ * (tight): one whose Lua pool is short (host_fake_menu_frame).
+ */
 void host_set_fake_pause(int on)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
 
 	if (d == NULL) return;
+	g_fake_pool = on == 3 ? 1 : on == 4 ? 2 : 0;
+	g_fake_pool_frames = 0;
+	if (on >= 3) on = 1;
 	pthread_mutex_lock(&g_mem_lock);
 	poke32(d->menu_ptr, on ? FAKE_TOD_MS : 0);
 	poke32(FAKE_TOD_MS + d->menu_off, on ? FAKE_TOD_MENU_STATE : 0);

@@ -16,6 +16,18 @@
 -- presentation is up (lh_menu.c, lm_ready). What is here never calls a
 -- method on anything but a userdata it got from the game, through pcall.
 --
+-- Memory (the second crash, docs/tod-menu.md 10): the pause menu's Lua
+-- allocates from a small pool of fixed blocks, set up afresh each pause,
+-- that faults when a size runs out instead of falling back to its heap, and
+-- Lua 5.0 collects only when its byte count doubles, which says nothing of
+-- that pool. So nothing here makes garbage frame after frame: no closure per
+-- call (pcall gets a function and its arguments), no vararg function (each
+-- call of one makes a table), no walk of the scene (each node it reaches
+-- becomes a Lua object the game keeps). The helper counts the pool before
+-- every frame, collects when it runs low, and calls qwark_quit when even a
+-- collection leaves too little: everything wrapped goes back, and the glue
+-- is garbage.
+--
 -- Nothing is decided here. The pages, their rows, what a row does and the
 -- live values are qwark's, in C (src/core/menu.c), posted into the console
 -- menu's mailbox exactly as for the four original games; the Lua helper
@@ -64,14 +76,16 @@ local REQ_OPEN, REQ_CLOSE = 1, 2
 local SLIDE_CHEATS, SLIDE_LIST = 16, 21
 -- Frames of a new pause before a request is taken: the pause settles first.
 local SETTLE = 15
--- The look for the pause's nodes: every tenth frame, this many times, and at most this many nodes a look.
-local TRIES, BUDGET = 30, 400
+-- The look for the pause's nodes: every tenth frame, this many times.
+local TRIES = 30
 
 -- The menu's state for this pause.
 local T = { on = false, age = 0, ready = false, tries = 0, gen = -1, vgen = -1,
             n = 1, pf = 0, seen = 0, help = -1 }
 -- The game's own functions, as they were before the glue wrapped them.
 local G = {}
+-- Every function the glue put into a game's table, and the game's own it took the place of: what qwark_quit puts back.
+local WO, WK, WG, NW = {}, {}, {}, 0
 local S, LU, CH, TITLE, SPL, SPV
 
 local function has(x, bit)
@@ -83,10 +97,19 @@ local function obj(o)
   return type(o) == "userdata"
 end
 
+-- o[k] and o[k] = v, for pcall to call with their arguments: no closure made a call.
+local function index(o, k)
+  return o[k]
+end
+
+local function assign(o, k, v)
+  o[k] = v
+end
+
 -- A field of an Anark object, nil for one it does not have, never an error.
 local function get(o, k)
   if not obj(o) then return nil end
-  local ok, v = pcall(function() return o[k] end)
+  local ok, v = pcall(index, o, k)
   if ok then return v end
   return nil
 end
@@ -103,28 +126,14 @@ local function call(o, k, a)
 end
 
 local function settext(o, s)
-  if obj(o) then pcall(function() o.textString = s end) end
+  if obj(o) then pcall(assign, o, "textString", s) end
 end
 
--- Every node under r, at most BUDGET of them and 64 children a node, until f answers true.
-local function walk(r, f)
-  local st, sp, left = { r }, 1, BUDGET
-  while sp > 0 and left > 0 do
-    local n = st[sp]
-    st[sp] = nil
-    sp = sp - 1
-    left = left - 1
-    if f(n) then return true end
-    local c = math.min(tonumber(call(n, "getNumChildren")) or 0, 64)
-    for i = 1, c do
-      local ch = call(n, "getChildByIndex", i)
-      if obj(ch) then
-        sp = sp + 1
-        st[sp] = ch
-      end
-    end
-  end
-  return false
+-- o[k] = f in place of the game's g, kept so qwark_quit can put g back.
+local function put(o, k, f, g)
+  NW = NW + 1
+  WO[NW], WK[NW], WG[NW] = o, k, g
+  o[k] = f
 end
 
 -- Row i of the page (1-based): label, value, kind, flags; nil past the end.
@@ -224,21 +233,21 @@ end
 local function wrap(o, k, f)
   local g = get(o, k)
   if type(g) ~= "function" then return end
-  o[k] = function(self, a, b, c)
+  put(o, k, function(self, a, b, c)
     if T.on then return f(self, a, b, c) end
     return g(self, a, b, c)
-  end
+  end, g)
 end
 
--- A global function of the game's, the same way.
+-- A global function of the game's, the same way (no vararg: those it wraps take three arguments at most).
 local function wrapg(k, f)
   local g = G[k] or GL[k]
   if type(g) ~= "function" then return end
   G[k] = g
-  GL[k] = function(...)
-    if T.on then return f(unpack(arg)) end
-    return g(unpack(arg))
-  end
+  put(GL, k, function(a, b, c)
+    if T.on then return f(a, b, c) end
+    return g(a, b, c)
+  end, g)
 end
 
 local function install()
@@ -262,10 +271,10 @@ local function install()
   end)
   local changed = get(CH, "onSelectedItemChanged")
   if type(changed) == "function" then
-    CH.onSelectedItemChanged = function(self, i, item, reset)
+    put(CH, "onSelectedItemChanged", function(self, i, item, reset)
       changed(self, i, item, reset)
       if T.on and i then scroll(i) end
-    end
+    end, changed)
   end
   -- What the screen's own code that stays (onActivate, onUpdate, onSelectedItemChanged) asks of the game; with the menu up qwark answers.
   -- The rest of its cheat calls are in the methods wrapped above, which the list and the handler reach by name.
@@ -274,10 +283,10 @@ local function install()
   wrapg("get_current_skillpoints", function() return "" end)
   -- Back out of the Cheats screen by its slide, for a game whose Triangle reaches it so.
   G.slide = Node.goToSlide
-  Node.goToSlide = function(self, n)
+  put(Node, "goToSlide", function(self, n)
     if T.on and n == SLIDE_LIST then back() return end
     return G.slide(self, n)
-  end
+  end, G.slide)
 end
 
 -- The pause's options list and Cheats screen, by what they hold: menuData's Help row, changeCheatState.
@@ -291,7 +300,7 @@ local function isCH(n)
   return type(get(n, "changeCheatState")) == "function" and type(get(n, "getNumListItems")) == "function"
 end
 
--- The pause's nodes, once they are all there; looked for every tenth frame, TRIES times at most.
+-- The pause's nodes, once they are all there; looked for every tenth frame, TRIES times at most, among the registry's behaviours only.
 local function setup()
   if T.ready or T.gave then return T.ready end
   T.tries = T.tries + 1
@@ -308,14 +317,13 @@ local function setup()
     if not lu and isLU(n) then lu = n elseif not ch and isCH(n) then ch = n end
     return lu ~= nil and ch ~= nil
   end
-  -- Every behaviour that called _useOnActivateDeactivate (AnarkLibraryExtensions), both of these among them; the tree only if not.
+  -- Every behaviour that called _useOnActivateDeactivate (AnarkLibraryExtensions), both of these among them.
   local reg = get(S, "_table_ActDeactRegisters")
   if type(reg) == "table" then
     for n in pairs(reg) do
       if obj(n) and f(n) then break end
     end
   end
-  if not (lu and ch) then walk(S, f) end
   if not (lu and ch) then return false end
   LU, CH = lu, ch
   local bg = get(get(CH, "parent"), "shell_BG")
@@ -389,4 +397,17 @@ function qwark_frame()
     T.on = false
     error(e, 0)
   end
+end
+
+-- The helper's way out when the pool stays short: the menu down, the Help row and every wrapped function the game's again, qwark_frame gone.
+function qwark_quit()
+  pcall(leave, false)
+  pcall(helprow, 0)
+  T.on, T.gave = false, true
+  for i = NW, 1, -1 do
+    pcall(assign, WO[i], WK[i], WG[i])
+  end
+  NW = 0
+  qwark_frame = nil
+  qwark_quit = nil
 end

@@ -65,6 +65,16 @@
 #define LM_WAITS        0x28   /* u32 pause menu frames in a row kept out (0 at one let in, and in play)  helper */
 #define LM_NOTE         0x2C   /* u32 the glue's LM_NOTE_* for this VM, 0 until it says              glue   */
 /*
+ * Revision 1.29, the second crash (docs/tod-menu.md 10): the Anark VMs' Lua
+ * pool, which faults when it runs out (lh_tod.h, LH_ANARK_POOL), counted
+ * before the helper lets the menu's Lua run (lh_menu.c, lm_room).
+ */
+#define LM_ROOM         0x30   /* u32 the pool at its last count: (blocks the largest class has left,
+                                *     to 0xFFFF) << 16 | (blocks a 20-byte block can still come from,
+                                *     counted as far as was needed, to 0xFFFF)                   helper */
+#define LM_SHORT        0x34   /* u32 +1 at every full collection that left the pool short     helper */
+#define LM_HOLD         0x38   /* u32 pause menu frames before the next collection may be made helper */
+/*
  * The page as taken: the mailbox's bytes from MBOX_OFF_PAGE_KEY to the last
  * row, at the same offsets less MBOX_OFF_PAGE_KEY. The glue reads rows only
  * from here, never from the mailbox qwark is writing.
@@ -95,9 +105,36 @@
 #define LM_WHY_YOUNG    0x010  /* fewer than LM_READY_FRAMES updates of the menu system                  */
 #define LM_WHY_PUSHED   0x020  /* a presentation is pushed already, or the bridge holds one              */
 #define LM_WHY_PUSH     0x040  /* pushing the presentation did not make it the bridge's                  */
+#define LM_WHY_MEMORY   0x080  /* the Anark Lua pool is short, even after a full collection (LM_ROOM)    */
 
 /* Updates of a menu system before the helper enters its VM. */
 #define LM_READY_FRAMES 2
+
+/*
+ * Revision 1.29, the second crash: the pool's blocks the helper wants left
+ * (lm_room), counted for a block of LM_ROOM_BLOCK bytes (an upvalue, a small
+ * closure, a short string: the size class most of the menu's Lua objects
+ * fall in, and every larger class it may take one from) and in the largest
+ * class alone (a table's nodes, a long string, a parser's arrays).
+ *
+ *   a frame of the glue      LM_ROOM_SMALL and LM_ROOM_BIG, or a full
+ *                            collection first, as the game's own update makes
+ *   a request run in the VM  LM_ROOM_LOAD_*, the glue's load above all (the
+ *     (the glue)             parser's garbage), and a collection after it
+ *   any collection at all    LM_ROOM_FLOOR_* (a collection allocates too)
+ *
+ * A collection that leaves the pool short holds the next one off for
+ * LM_ROOM_HOLD frames, and takes the glue out of the VM (qwark_quit) if it
+ * is in: what it keeps there is the game's room, which it needs more.
+ */
+#define LM_ROOM_BLOCK      20
+#define LM_ROOM_SMALL      1024
+#define LM_ROOM_BIG        16
+#define LM_ROOM_LOAD_SMALL 3072
+#define LM_ROOM_LOAD_BIG   48
+#define LM_ROOM_FLOOR_SMALL 128
+#define LM_ROOM_FLOOR_BIG  4
+#define LM_ROOM_HOLD       60
 
 /* How many gameplay frames a pause the combo asked for has to come up in. */
 #define LM_PENDING_FRAMES 30

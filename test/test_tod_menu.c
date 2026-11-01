@@ -584,6 +584,201 @@ static void test_gate_fake(void)
 	tick(4);
 }
 
+/* --------------------------------- the Lua pool (the second crash) */
+
+/*
+ * A LUA::PoolAllocator as LuaPoolAllocator_setup lays one out (lh_tod.h
+ * LH_PA_*, LH_PC_*), four classes of 8, 24, 64 and 640 bytes, whose blocks
+ * the tests hand out (used) and free (onto a chunk's list) by hand.
+ */
+#define POOL        0x30080000u
+#define POOL_DESC   0x30080800u
+#define POOL_CHUNKS 0x30081000u
+#define POOL_BLOCKS 0x30090000u
+
+static const u32 pool_size[4] = { 8, 24, 64, 640 };
+static const u32 pool_count[4] = { 16, 10, 6, 4 };
+
+static u32 pool_chunk(u32 k) { return POOL_CHUNKS + k * LH_PC_SIZE; }
+static u32 pool_block(u32 k, u32 i) { return POOL_BLOCKS + k * 0x4000u + i * (pool_size[k] + 4u); }
+
+static void pool_layout(void)
+{
+	u32 k, i;
+
+	poke32(POOL + LH_PA_DESC, POOL_DESC);
+	poke32(POOL + LH_PA_CHUNKS, POOL_CHUNKS);
+	poke32(POOL_DESC, 4);
+	for (k = 0; k < 4; k++) poke32(POOL_DESC + 4u + 4u * k, pool_size[k]);
+	for (i = 0; i < 160; i++) {
+		u32 size = 4u * i + 4u;
+		poke32(POOL + LH_PA_INDEX + 4u * i, size <= 8 ? 0 : size <= 24 ? 1 : size <= 64 ? 2 : 3);
+	}
+	for (k = 0; k < 4; k++) {
+		u32 c = pool_chunk(k);
+
+		poke32(c + LH_PC_BASE, pool_block(k, 0));
+		poke32(c + LH_PC_FREE, 0);
+		poke32(c + LH_PC_BYTES, pool_count[k] * (pool_size[k] + 4u));
+		poke32(c + LH_PC_STRIDE, pool_size[k] + 4u);
+		poke32(c + LH_PC_USED, 0);
+	}
+}
+
+static void pool_use_up(u32 k)
+{
+	poke32(pool_chunk(k) + LH_PC_USED, peek32(pool_chunk(k) + LH_PC_BYTES));
+}
+
+/* Block i of class k freed, as LuaPoolAllocator_realloc frees one: its first word the old head. */
+static void pool_free(u32 k, u32 i)
+{
+	poke32(pool_block(k, i), peek32(pool_chunk(k) + LH_PC_FREE));
+	poke32(pool_chunk(k) + LH_PC_FREE, pool_block(k, i));
+}
+
+static void test_room(void)
+{
+	u32 r, i;
+
+	group("ToD's console menu: the Anark Lua pool counted before the menu's Lua runs (the second crash)");
+	check(LH_ANARK_POOL == 0x1073DC40u && LH_FN_SETGCTHRESHOLD == 0x00691504u && LH_PC_SIZE == 0x20u &&
+	      LH_PC_FREE == 4u && LH_PC_STRIDE == 0xCu && LH_PC_USED == 0x10u && LH_PA_INDEX == 0xCu,
+	      "g_anarkLuaAllocator's words, as LuaPoolAllocator_alloc reads them");
+
+	pool_layout();
+	r = lm_room(POOL, 1000, 100);
+	check(r == ((4u << 16) | 20u) && lm32(LMS(LM_ROOM)) == r,
+	      "a fresh pool: 20 blocks for a 20-byte object (24, 64 and 640 bytes), 4 of the largest; kept in LM_ROOM");
+	check(lm_room_ok(r, 20, 4) && !lm_room_ok(r, 21, 4) && !lm_room_ok(r, 20, 5), "and judged against what is wanted");
+
+	pool_use_up(1);
+	pool_use_up(2);
+	pool_use_up(3);
+	r = lm_room(POOL, 1000, 100);
+	check(r == 0 && !lm_room_ok(r, LM_ROOM_FLOOR_SMALL, LM_ROOM_FLOOR_BIG),
+	      "the console's crash: every class from 24 bytes up used up, the 8-byte class not: no room at all");
+
+	pool_free(1, 2);
+	pool_free(1, 7);
+	pool_free(1, 4);
+	pool_free(3, 1);
+	pool_free(3, 3);
+	check(lm_room(POOL, 1000, 100) == ((2u << 16) | 5u), "blocks freed onto the lists: counted, the largest class's too");
+	check(lm_room(POOL, 2, 1) == ((1u << 16) | 2u), "counted only as far as wanted, from the largest class down");
+	poke32(pool_block(1, 4), 0x801Bu);
+	check(lm_room(POOL, 1000, 100) == ((2u << 16) | 3u), "a link that is no block of its chunk ends the count");
+	poke32(pool_block(1, 4), pool_block(1, 7) + 2u);
+	check(lm_room(POOL, 1000, 100) == ((2u << 16) | 3u), "nor is one between two blocks");
+
+	pool_layout();
+	poke32(pool_chunk(2) + LH_PC_STRIDE, 0);
+	check(lm_room(POOL, 1000, 100) == ((4u << 16) | 14u), "a chunk with no stride counts nothing, and no division by it");
+	pool_layout();
+	poke32(POOL + LH_PA_DESC, 0);
+	check(lm_room(POOL, 1000, 100) == 0, "a pool released (Memory_FreeAnarkHeaps clears its table): no room");
+	pool_layout();
+	poke32(POOL_DESC, LH_PA_CLASSES + 1u);
+	check(lm_room(POOL, 1000, 100) == 0, "a table of too many classes: no room");
+	pool_layout();
+	poke32(POOL + LH_PA_INDEX + 4u * ((LM_ROOM_BLOCK - 1u) / 4u), 0xFFFFFFFFu);
+	check(lm_room(POOL, 1000, 100) == 0, "no class for a 20-byte object: no room");
+	pool_layout();
+	poke32(POOL + LH_PA_CHUNKS, 0);
+	check(lm_room(POOL, 1000, 100) == 0, "no chunks: no room");
+
+	/* The collections: never under the floor, held off after one that did not help. */
+	poke32(LM_STATE + LM_HOLD, 0);
+	poke32(LM_STATE + LM_SHORT, 0);
+	check(lm_may_collect((LM_ROOM_FLOOR_BIG << 16) | LM_ROOM_FLOOR_SMALL), "short but over the floor: a collection");
+	check(!lm_may_collect((LM_ROOM_FLOOR_BIG << 16) | (LM_ROOM_FLOOR_SMALL - 1u)) &&
+	      !lm_may_collect(((LM_ROOM_FLOOR_BIG - 1u) << 16) | 0xFFFFu), "under the floor: none (it allocates too)");
+	lm_short();
+	check(lm32(LMS(LM_SHORT)) == 1 && lm32(LMS(LM_HOLD)) == LM_ROOM_HOLD, "a collection that left it short: counted, the next held");
+	for (i = 0; i < LM_ROOM_HOLD; i++)
+		if (lm_may_collect(0xFFFFFFFFu)) break;
+	check(i == LM_ROOM_HOLD && lm_may_collect(0xFFFFFFFFu), "held for LM_ROOM_HOLD frames, then one again");
+	lm_short();
+	lm_gameplay_frame();
+	check(lm32(LMS(LM_HOLD)) == 0, "a gameplay frame: the next pause starts unheld");
+	check(LM_ROOM_SMALL < LM_ROOM_LOAD_SMALL && LM_ROOM_BIG < LM_ROOM_LOAD_BIG &&
+	      LM_ROOM_FLOOR_SMALL < LM_ROOM_SMALL && LM_ROOM_FLOOR_BIG < LM_ROOM_BIG,
+	      "a load wants more than a frame, a frame more than a collection");
+	poke32(LM_STATE + LM_SHORT, 0);
+	poke32(LM_STATE + LM_ROOM, 0);
+}
+
+/* The core's lines for the pool, and the fake console's short pools. */
+static void test_room_log(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u32 mb = d->mailbox, seq, loads;
+	int i;
+
+	group("ToD's console menu: a short Lua pool keeps the Trainer out, and the log says so");
+	check(wait_ready() || menu_state() == MENU_READY, "the menu is in");
+	host_log_clear();
+	loads = peek32(LM_STATE + LM_LOADS);
+	poke32(LM_STATE + LM_ROOM, (2u << 16) | 300u);
+	poke32(LM_STATE + LM_SHORT, 1);
+	tick(4);
+	check(host_log_seen("menu: the pause menu's Lua pool is short even after a collection (300 blocks left for small "
+	                    "objects, 2 in its largest class); the Trainer stays out of it, Help is the game's"),
+	      "a collection that left the pool short: said, with what was left");
+	host_log_clear();
+	poke32(LM_STATE + LM_SHORT, 2);
+	tick(4);
+	check(!host_log_seen("Lua pool is short"), "again in the same pause: not said again");
+	poke32(LM_STATE + LM_LOADS, loads + 1u);
+	poke32(LM_STATE + LM_SHORT, 3);
+	tick(4);
+	check(host_log_seen("Lua pool is short"), "in the next pause: said again");
+	poke32(LM_STATE + LM_LOADS, loads);
+	poke32(LM_STATE + LM_ROOM, (150u << 16) | 1024u);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
+	tick(4);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
+	tick(4);
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: 1024 blocks or more "
+	                    "left for small objects, 150 in its largest class)"), "the glue in: said with the pool's room");
+	poke32(LM_STATE + LM_NOTE, 0);
+
+	/* The fake console: a pool short even after collections, every frame kept out. */
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	host_log_clear();
+	loads = peek32(LM_STATE + LM_LOADS);
+	seq = peek32(mb + LUAMB_OFF_REQ);
+	host_set_fake_pause(3);
+	for (i = 0; i < 70; i++) host_fake_menu_frame();
+	tick(8);
+	check(peek32(LM_STATE + LM_WHY) == LM_WHY_MEMORY && peek32(LM_STATE + LM_LOADS) == loads &&
+	      peek32(mb + LUAMB_OFF_REQ) == seq, "a pause with a short pool: never entered, no glue asked for or sent");
+	check(host_log_seen("Lua pool is short even after a collection (300 blocks left"), "and the log says so");
+
+	/* A pool with room for a frame but not for the glue's load: the request answered NO_ROOM, said once. */
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	host_log_clear();
+	host_set_fake_pause(4);
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1 && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MENU,
+	      "a tight pool: the glue asked for and sent");
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_ACK) == seq + 1 && (s32)peek32(mb + LUAMB_OFF_STATUS) == LUAMB_ST_NO_ROOM &&
+	      peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED, "the helper answers NO_ROOM and runs nothing");
+	check(host_log_seen("menu: the pause menu's glue was not run: its Lua pool is short even after a collection; "
+	                    "Help stays the game's"), "the log says so");
+	for (i = 0; i < 4; i++) host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1, "and nothing is sent again in that pause");
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	tick(4);
+}
+
 /* ---------------------------------------------------------------- RPCS3 */
 
 static void test_rpcs3(void)
@@ -628,6 +823,8 @@ void test_tod_menu(void)
 	test_glue();
 	test_gate();
 	test_gate_fake();
+	test_room();
+	test_room_log();
 	test_rpcs3();
 	check(quit() || session_state() == SESSION_XMB, "ToD quits");
 }

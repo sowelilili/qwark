@@ -209,7 +209,9 @@ void host_set_fake_lua(int on);
  * (a new VM asks for the glue, a menu request is served), which the
  * host_set_fake_lua thread runs in place of the gameplay frame while paused.
  * `on` 2 (the crash fix): a pause whose presentation never comes up (its
- * first update never runs), which the helper must never enter.
+ * first update never runs), which the helper must never enter. 3 and 4 (the
+ * second crash): a pause whose Lua pool is short even after a collection, or
+ * too short only for the glue's load (docs/tod-menu.md 10).
  */
 void host_set_fake_pause(int on);
 int  host_fake_menu_frame(void);

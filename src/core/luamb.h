@@ -37,6 +37,7 @@
  *                  if cancel == r: status = CANCELLED
  *                  else if the state is 0: status = NO_STATE
  *                  else if chunk_len is 0 or too long: status = BAD_LEN
+ *                  else (MENU, revision 1.29) if its Lua pool is short: NO_ROOM
  *                  else run it: luaL_loadbuffer + lua_pcall(L, 0, 1, 0)
  *                  out, out_len, out_type, out_flags, status; sync
  *                  ack = r; busy = 0
@@ -108,6 +109,12 @@
 #define LUAMB_ST_NO_STATE   0x100  /* the game had no lua_State: between levels */
 #define LUAMB_ST_BAD_LEN    0x101  /* chunk_len 0 or over LUAMB_CHUNK_CAP      */
 #define LUAMB_ST_CANCELLED  0x102  /* qwark withdrew it before it ran          */
+/*
+ * Revision 1.29 (pending), the second crash (docs/tod-menu.md 10): a request
+ * for the pause menu's VM not run, its Lua pool too short for it even after
+ * a full collection. Only target MENU answers it.
+ */
+#define LUAMB_ST_NO_ROOM    0x103
 
 /*
  * Never in the mailbox: what qwark's side reports when the helper did not

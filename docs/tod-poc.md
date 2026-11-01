@@ -103,6 +103,7 @@ The timeout is reported as **NOT_RUNNING** when the `heartbeat` did not move sin
 | 0x100 | NO_STATE | helper | `L` was 0 |
 | 0x101 | BAD_LEN | helper | `chunk_len` 0 or over the cap |
 | 0x102 | CANCELLED | helper | withdrawn before it ran |
+| 0x103 | NO_ROOM | helper | revision 1.29, target MENU only: the pause menu's Lua pool is short even after a collection (docs/tod-menu.md 10) |
 | 0x200 | TIMEOUT | qwark | frames ran but no answer in time |
 | 0x201 | NOT_RUNNING | qwark | no gameplay frame ran in time |
 | 0x202 | HUNG | qwark | the helper has been inside a chunk past the hang limit (a client-side state, see 2.1) |

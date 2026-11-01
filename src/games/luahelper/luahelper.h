@@ -76,6 +76,9 @@ float  lh_tonumber(lh_u32 L, int idx);
 void   lh_pres_push(lh_u32 runtime, lh_u32 presentation);
 void   lh_pres_pop(lh_u32 runtime);
 
+/* Revision 1.29, the second crash: lua_setgcthreshold, 0 for a full collection now (lh_tod.h). */
+void   lh_setgcthreshold(lh_u32 L, int kbytes);
+
 /* The C halves of the entries (luahelper.c, lh_menu.c). */
 void lh_tick(lh_u32 vm);
 void lh_err_tap(lh_u32 vm, lh_u32 msg);

@@ -133,7 +133,9 @@ void lua_core_tick(void)
 	if (g_glue_seq != 0 && res.seq == g_glue_seq) {
 		/* Revision 1.29: the menu's glue, the core's own request. */
 		g_glue_seq = 0;
-		if (res.status != LUAMB_ST_OK)
+		if (res.status == LUAMB_ST_NO_ROOM)
+			plat_log("menu: the pause menu's glue was not run: its Lua pool is short even after a collection; Help stays the game's");
+		else if (res.status != LUAMB_ST_OK)
 			plat_log("menu: the pause menu's glue failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
 		g_out_len = 0;
 		g_out[0] = 0;

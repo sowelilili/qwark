@@ -5915,6 +5915,8 @@ TOD_LM_HELP, TOD_LM_GLUE, TOD_LM_LOADS = 0x00, 0x08, 0x0C
 TOD_LM_GLUE_LOADED = 1
 TOD_LM_WHY, TOD_LM_WAITS = 0x24, 0x28        # the crash fix: why the helper kept a pause frame out, how many
 TOD_LM_WHY_FIRST = 0x004
+TOD_LM_ROOM, TOD_LM_SHORT = 0x30, 0x34     # the second crash: the pause menu's Lua pool, and collections that left it short
+TOD_LM_WHY_MEMORY = 0x080
 TOD_LUA_MB = 0x008CA000
 TOD_LUA_CAVE = (0x00867360, 0x00870000)
 TOD_LUA_SITES = {0x004C461C: 0x4BDCC909, 0x0068F8F8: 0x4E800020, 0x000242B0: 0x4BFED721, 0x004C5ABC: 0x4BDA1825}
@@ -5999,6 +6001,19 @@ def smoke_tod_menu(c, sim):
     check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WAITS) == 0 and
           mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads + 1,
           "ToD menu: once it is up the helper goes in and asks for the glue")
+    sim.send("fakepause off")
+    module_sleep(c, 0.2)
+
+    # The second crash: a pause whose Lua pool stays short even after a collection is never entered.
+    loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)
+    short = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_SHORT)
+    sim.send("fakepause short")
+    wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_SHORT) == short, 2.0, 0.05)
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_WHY) == TOD_LM_WHY_MEMORY and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_SHORT) > short and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_ROOM) == (2 << 16) | 300 and
+          mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS) == loads,
+          "ToD menu: a short Lua pool: the helper keeps out, no glue asked for, the shortage counted")
     sim.send("fakepause off")
     module_sleep(c, 0.2)
 

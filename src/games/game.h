@@ -615,6 +615,12 @@ struct game_api {
  *   note_addr   u32, the glue's: note_in once it found the pause's Options
  *               list and Cheats screen, note_none when it gave up looking;
  *               the core logs each once per VM
+ *   room_addr,  u32 each, the helper's (revision 1.29, the second crash):
+ *   short_addr  the pause menu's Lua pool at its last count (blocks left in
+ *               its largest class << 16 | blocks a small object can still
+ *               come from), and +1 at every full collection that left it
+ *               short of what the helper wants; the core logs a shortage
+ *               once a pause, and the room beside note_in
  *
  * The helper's block (state_addr, state_size) is zeroed at the install. What
  * says the game plays, or that nothing of the menu can be up, is struct
@@ -643,6 +649,8 @@ struct menu_native {
 	u32 note_addr;
 	u32 note_in;
 	u32 note_none;
+	u32 room_addr;
+	u32 short_addr;
 };
 #endif
 

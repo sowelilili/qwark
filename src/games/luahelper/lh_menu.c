@@ -207,6 +207,91 @@ static int lm_pushed(lm_u32 ms)
 	return lm32(lm32(ms + LH_MS_BRIDGE) + LH_BR_PRES) == lm32(ms + LH_MS_PRES);
 }
 
+/*
+ * Revision 1.29, the second crash (lh_tod.h LH_ANARK_POOL, docs/tod-menu.md
+ * 10): the Anark VMs' Lua pool faults when a block is asked of it and every
+ * class from the block's own up is used up, so the helper counts what is
+ * left before it lets the menu's Lua run. Reads only, of the pool's own
+ * words, every one checked before it is followed.
+ *
+ * Blocks chunk `c` has never handed out.
+ */
+static lm_u32 lm_fresh(lm_u32 c)
+{
+	lm_u32 bytes = lm32(c + LH_PC_BYTES), used = lm32(c + LH_PC_USED), stride = lm32(c + LH_PC_STRIDE);
+
+	return stride != 0 && used < bytes ? (bytes - used) / stride : 0;
+}
+
+/* Blocks on chunk c's free list, counted to `cap`; a link that is not one of its blocks ends the count. */
+static lm_u32 lm_freed(lm_u32 c, lm_u32 cap)
+{
+	lm_u32 base = lm32(c + LH_PC_BASE), bytes = lm32(c + LH_PC_BYTES), stride = lm32(c + LH_PC_STRIDE);
+	lm_u32 p = lm32(c + LH_PC_FREE), n = 0;
+
+	if (stride == 0) return 0;
+	while (p != 0 && n < cap && p >= base && p - base < bytes && (p - base) % stride == 0) {
+		n++;
+		p = lm32(p);
+	}
+	return n;
+}
+
+/*
+ * The pool's room (LM_ROOM's form, kept there too): the blocks its largest
+ * class has left, counted to `big`, and the blocks an LM_ROOM_BLOCK-byte
+ * block can still come from (its class and every larger one), counted to
+ * `small`; the blocks never handed out first, the free lists only as far as
+ * needed, from the largest class down. 0 for a pool not set up (between
+ * pauses its table is 0) or one whose words make no sense.
+ */
+static lm_u32 lm_room(lm_u32 pool, lm_u32 small, lm_u32 big)
+{
+	lm_u32 desc = lm32(pool + LH_PA_DESC), ch = lm32(pool + LH_PA_CHUNKS), n = 0, first, k, top = 0, sum = 0;
+
+	if (desc != 0) n = lm32(desc);
+	first = lm32(pool + LH_PA_INDEX + (LM_ROOM_BLOCK - 1) / 4 * 4);
+	if (ch != 0 && n != 0 && n <= LH_PA_CLASSES && first < n) {
+		k = ch + (n - 1) * LH_PC_SIZE;
+		top = lm_fresh(k);
+		if (top < big) top += lm_freed(k, big - top);
+		for (k = first; k < n; k++) sum += lm_fresh(ch + k * LH_PC_SIZE);
+		for (k = n; k > first && sum < small; k--) sum += lm_freed(ch + (k - 1) * LH_PC_SIZE, small - sum);
+	}
+	if (top > 0xFFFF) top = 0xFFFF;
+	if (sum > 0xFFFF) sum = 0xFFFF;
+	lmw32(LMS(LM_ROOM), (top << 16) | sum);
+	return (top << 16) | sum;
+}
+
+static int lm_room_ok(lm_u32 room, lm_u32 small, lm_u32 big)
+{
+	return (room & 0xFFFF) >= small && (room >> 16) >= big;
+}
+
+/*
+ * Whether a full collection may be made, the pool at `room`: not while one
+ * that left it short holds the next off (LM_HOLD, counted down here), nor
+ * under the floor, where the collection itself might find no block.
+ */
+static int lm_may_collect(lm_u32 room)
+{
+	lm_u32 h = lm32(LMS(LM_HOLD));
+
+	if (h != 0) {
+		lmw32(LMS(LM_HOLD), h - 1);
+		return 0;
+	}
+	return lm_room_ok(room, LM_ROOM_FLOOR_SMALL, LM_ROOM_FLOOR_BIG);
+}
+
+/* A collection left the pool short: counted for qwark's log, and the next one held off. */
+static void lm_short(void)
+{
+	lmw32(LMS(LM_SHORT), lm32(LMS(LM_SHORT)) + 1);
+	lmw32(LMS(LM_HOLD), LM_ROOM_HOLD);
+}
+
 /* A pause menu frame kept out of the menu's VM for `why`, or (0) let in: LM_WHY and LM_WAITS. */
 static void lm_kept_out(lm_u32 why)
 {
@@ -228,6 +313,7 @@ static void lm_gameplay_frame(void)
 	lmw32(LMS(LM_L), 0);
 	lmw8(LMS(LM_TRIED), 0);
 	if (lm32(LMS(LM_WAITS)) != 0) lmw32(LMS(LM_WAITS), 0);
+	if (lm32(LMS(LM_HOLD)) != 0) lmw32(LMS(LM_HOLD), 0);
 	if (p != 0) lmw8(LMS(LM_PENDING), p - 1);
 	if (lm_on() && lm8(LMB(MBOX_OFF_HSTATE)) != MBOX_HSTATE_CLOSED) lm_hstate(0);
 }

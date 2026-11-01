@@ -136,4 +136,11 @@ lh_qwname:
 	.globl  lh_framename
 lh_framename:
 	.asciz  "qwark_frame"
+/* Revision 1.29, the second crash: the glue's way out, and what the err area says of it. */
+	.globl  lh_quitname
+lh_quitname:
+	.asciz  "qwark_quit"
+	.globl  lh_shortmsg
+lh_shortmsg:
+	.asciz  "the pause menu's Lua pool ran short: the Trainer took itself out"
 	.align  2

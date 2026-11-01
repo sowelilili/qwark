@@ -383,6 +383,59 @@ def main():
                 found = True
     r.check(found, "PauseMenu_update tests g_pauseMenuState 0x%X before the update" % h["LH_PAUSE_STATE"])
 
+    print("the Anark Lua pool, counted before the menu's Lua runs (revision 1.29, the second crash)")
+    a = h["LH_FN_ANARK_ALLOC"]
+    slot = (h["LH_LUA_TOC"] + s16(elf.u32(a) & 0xFFFF)) & 0xFFFFFFFF
+    r.check(elf.u32(slot) == h["LH_ANARK_POOL"],
+            "AnarkMenu_luaAllocator returns g_anarkLuaAllocator 0x%X" % h["LH_ANARK_POOL"])
+    # LuaPoolAllocator_alloc: the pool's and the chunks' words, read as lh_tod.h says.
+    pa = 0x6D37F8
+    body = [elf.u32(pa + 4 * k) for k in range(0x80)]
+    rlwinm = lambda ra, rs, sh, mb, me: (21 << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1)
+    want = [lwz(4, 30, h["LH_PA_DESC"]), lwz(7, 4, 0), lwz(12, 8, h["LH_PA_INDEX"]), lwz(0, 30, h["LH_PA_CHUNKS"]),
+            rlwinm(11, 8, 5, 0, 26), lwz(9, 11, h["LH_PC_FREE"]), lwz(6, 11, h["LH_PC_USED"]),
+            lwz(5, 11, h["LH_PC_BYTES"]), lwz(11, 10, h["LH_PC_STRIDE"]), lwz(0, 10, h["LH_PC_BASE"])]
+    r.check(all(w in body for w in want) and h["LH_PC_SIZE"] == 1 << 5,
+            "LuaPoolAllocator_alloc 0x%X reads the table +%d (its count +0), the class of a size +0x%X, the chunks "
+            "+%d (0x%X bytes each), and a chunk's blocks +%d, free list +%d, bytes +%d, stride +0x%X, used +0x%X"
+            % (pa, h["LH_PA_DESC"], h["LH_PA_INDEX"], h["LH_PA_CHUNKS"], h["LH_PC_SIZE"], h["LH_PC_BASE"],
+               h["LH_PC_FREE"], h["LH_PC_BYTES"], h["LH_PC_STRIDE"], h["LH_PC_USED"]))
+    # The fault: its search runs count - class + 1 chunks (subf r3,r8,r10; addi r7,r31,1), one past the table.
+    subf = (31 << 26) | (3 << 21) | (8 << 16) | (10 << 11) | (40 << 1)
+    addi = (14 << 26) | (7 << 21) | (31 << 16) | 1
+    i = body.index(subf) if subf in body else -1
+    r.check(i >= 0 and addi in body[i:i + 6] and elf.u32(pa + 0x1A8) == 0x4182FF10,
+            "its search for a chunk with a block runs count - class + 1 times, one chunk past its table, and takes "
+            "that one when every chunk before was used up: the pool must never run out")
+    # LuaAlloc_realloc: the current allocator's word, then the pool's realloc, which allocates through alloc.
+    ra = 0x68FB14
+    r.check(branch_target(elf.u32(ra + 0x18), ra + 0x18) == (0x6D3C8C, True) and
+            (pa, True) in [branch_target(elf.u32(0x6D3C8C + 4 * k), 0x6D3C8C + 4 * k) for k in range(0x30)],
+            "luaM_realloc's LuaAlloc_realloc goes to LuaPoolAllocator_realloc 0x6D3C8C, which allocates through 0x%X" % pa)
+    # Memory_InitHeaps sets g_anarkLuaAllocator up from g_anarkLuaPoolDesc.
+    desc_slot, pool_slot, desc = 0x8C55A0, 0x8C5564, 0x100FA4A0
+    n = elf.u32(desc)
+    sizes = [elf.u32(desc + 4 + 4 * k) for k in range(n or 0)]
+    setup_calls = [x for x in range(0x6534A0, 0x653880, 4) if branch_target(elf.u32(x), x) == (0x6D39EC, True)]
+    r.check(elf.u32(desc_slot) == desc and elf.u32(pool_slot) == h["LH_ANARK_POOL"] and len(setup_calls) == 2,
+            "Memory_InitHeaps 0x6534A0 sets the pool up (LuaPoolAllocator_setup 0x6D39EC) from g_anarkLuaPoolDesc 0x%X"
+            % desc)
+    first = [k for k, z in enumerate(sizes) if z >= lm["LM_ROOM_BLOCK"]]
+    r.check(0 < n <= h["LH_PA_CLASSES"] and sizes == sorted(sizes) and sizes[-1] == 640 and first and
+            sizes[first[0]] == 24,
+            "its %d classes run from %d to %d bytes; a %d-byte object starts at the %d-byte class"
+            % (n, sizes[0] if sizes else 0, sizes[-1] if sizes else 0, lm["LM_ROOM_BLOCK"],
+               sizes[first[0]] if first else 0))
+    # The collection the helper makes is the game's own: AnarkMenuSystem_update's, once a second.
+    r.check(elf.u32(0x653EB8) == 0x38800000 and elf.u32(0x653EC0) == lwz(3, 30, h["LH_MS_STATE"]) and
+            branch_target(elf.u32(0x653EC8), 0x653EC8) == (h["LH_FN_SETGCTHRESHOLD"], True) and
+            elf.u32(0x653ECC) == NOP,
+            "AnarkMenuSystem_update collects the menu's VM with lua_setgcthreshold(L, 0) 0x%X, this TOC, a nop after"
+            % h["LH_FN_SETGCTHRESHOLD"])
+    gc = h["LH_FN_SETGCTHRESHOLD"]
+    r.check((0x69EA58, True) in [branch_target(elf.u32(gc + 4 * k), gc + 4 * k) for k in range(0x18)],
+            "and lua_setgcthreshold collects (luaC_collectgarbage 0x69EA58) once the threshold is under the count")
+
     print("the functions the helper calls")
     fns = {k: v for k, v in h.items() if k.startswith("LH_FN_")}
     opds = find_opds(elf, list(fns.values()))
