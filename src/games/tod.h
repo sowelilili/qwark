@@ -823,22 +823,39 @@ int  tod_fresh_run_load(s32 level);
 
 /*
  * Revision 1.29 (pending): the cutscene cache (tod_cache.c;
- * REPORT-tod-level-cache.md sections 5.A and 10). A planet's opening cutscene
- * streams its audio from its streaming_sound.dat, inside its
+ * REPORT-tod-level-cache.md sections 2.3, 5.A and 10). A planet's opening
+ * cutscene streams its audio from its streaming_sound.dat, inside its
  * level_uncached.psarc, through the FIOS block cache, which those reads never
  * fill; only the level warmer does, and it caches the current planet's sound
  * once its gameplay (and so its opening cutscene) has begun. All data writes.
  *
- * Cache cutscenes (19) hands the warmer, while it is idle in gameplay, one
- * range at a time with its single-range form: Fastoon's sound, then Stratus
- * City's, each the planet's game.toc .uncached descriptor in `curFile`
- * (LevelPrefetch_update reads [offset, offset + chunkSize) of *curFile, and
- * LevelPrefetch_readDoneCallback steps on by 256 KB to fileEnd; state 4 then
- * puts curFile back to 0). Cache cutscenes on reset (20) asks for the same on
- * a new run's load into Metropolis. Disable cutscene caching (21) frees, in
- * the in-RAM block table, every block of the planet's level_uncached.psarc
- * (and Metropolis's sound in global_uncached.psarc) during each level load,
- * so the planet's opening cutscene always starts cold (dec).
+ * Cache cutscenes (19) has the warmer read Stratus City's sound, then
+ * Fastoon's, ahead of the level's own files: while the warmer reads one of
+ * its own slots k (state k + 1), the planet's game.toc .uncached descriptor
+ * goes into file[k] with fileSize[k] its sound's end, state back to k, and
+ * the slot's own read cut short (fileEnd a little past where it is), so the
+ * warmer's step takes ours next and reads it from 0; the next planet, then
+ * the game's own file back, go into the same slot while ours is read, and
+ * state k again each time, so the game's file is read again after ours (its
+ * offset put on where it was cut) and the warmer goes on as the game set it
+ * up. With the warmer idle, the single-range form instead: chunkSize, offset
+ * and fileEnd, curFile, state 4, readReady last. A level load does not end a
+ * request: what is left is picked up on the next level, and the FIOS block
+ * table is read first (at the request and at each load) so cached blocks are
+ * skipped. Cache cutscenes on reset (20) asks for the same on a new run's
+ * load into Metropolis. Disable cutscene caching (21) frees, in the in-RAM
+ * block table, every block of the planet's level_uncached.psarc (and
+ * Metropolis's sound in global_uncached.psarc) during each level load, so the
+ * planet's opening cutscene always starts cold (dec).
+ *
+ * The warmer's writes, from LevelPrefetch_update and its read's callback, and
+ * why each of ours is safe: `state` and file[]/fileSize[] are read only when
+ * chunkSize is 0, at the end of a file, so with TOD_CC_MARGIN left of the
+ * file in hand they are ours to write; the callback does offset += chunkSize,
+ * chunkSize = min(fileEnd - offset, 256 KB), so a new fileEnd at or past every
+ * offset it can reach, and a new offset at least 256 KB before fileEnd, keep
+ * every chunk inside the file. A cut whose offset has already reached it is
+ * undone at once (the old fileEnd back).
  */
 #define TOD_PF_CHUNK         0x2Cu        /* u32, the read the warmer issues next; 0 steps the state */
 #define TOD_PF_CHUNK_MAX     0x40000u     /* 256 KB, the warmer's read */
@@ -853,13 +870,21 @@ int  tod_fresh_run_load(s32 level);
 #define TOD_CC_PIECE         32u          /* block descriptors a tick reads, 1280 bytes */
 #define TOD_CC_HANDLES       24u          /* path handles a walk remembers */
 #define TOD_CC_PATH_LEN      64u
+#define TOD_CC_MARGIN        0x200000u    /* 2 MiB of the file in hand left: the slot and state are ours to write */
+#define TOD_CC_GRACE         0x100000u    /* a slot's own read cut 1 MiB past where it is */
+#define TOD_CC_SLACK         0x200000u    /* ours left the warmer within 2 MiB of its end: it is in */
+#define TOD_CC_MAP_WORDS     4u           /* 128 blocks a planet's range can span */
+#define TOD_CC_BLOCK         0x100000u    /* the cache's block, 1 MiB: what is left of a range starts on one */
+#define TOD_CC_TICK_HZ       120u
 
 /*
  * Cache cutscenes' status word, TOD_RO_CUTSCENE_CACHE (PROTOCOL.md 5.14):
  *   bits 28..31  state   TOD_CC_NONE .. TOD_CC_FAILED
  *   bits 24..27  detail  WAITING: TOD_CC_WAIT_*; CACHING: the planet, 1
  *                        Fastoon, 2 Stratus City; FAILED: TOD_CC_WHY_*
- *   bits 16..23  percent CACHING: of that planet's sound; DONE: 100
+ *   bits 16..23  CACHING: the percentage of that planet's sound read; DONE:
+ *                the read rate in tenths of a MiB/s (at most 255), 0 when
+ *                everything was cached already
  *   bits 8..15   seconds since the request, or how long it ran, at most 255
  *   bits 0..7    runs ended since the game started, modulo 256
  * A boot of the game comes back to NONE: the cache is cleared at every boot.
@@ -870,22 +895,25 @@ int  tod_fresh_run_load(s32 level);
 #define TOD_CC_DONE          3u
 #define TOD_CC_FAILED        4u
 #define TOD_CC_WAIT_PLAY     1u           /* not in gameplay */
-#define TOD_CC_WAIT_WARMER   2u           /* the warmer is still reading the level's own files */
-#define TOD_CC_WHY_LEVEL     1u           /* a level load, or the title, before it finished */
+#define TOD_CC_WAIT_WARMER   2u           /* the warmer has no file in hand to go ahead of, or is near its end */
+#define TOD_CC_WHY_LEVEL     1u           /* the title before it finished */
 #define TOD_CC_WHY_TABLE     2u           /* game.toc's level table cannot be read, or its planet is not in it */
 #define TOD_CC_WHY_STALLED   3u           /* the warmer stopped reading */
 #define TOD_CC_WHY_DISABLED  4u           /* Disable cutscene caching is on */
 #define TOD_CC_WHY_READ      5u           /* the game's memory could not be read or written */
 #define TOD_CC_WHY_QUIT      6u           /* the game is going */
-#define TOD_CC_NPLANETS      2u           /* Fastoon, then Stratus City */
+#define TOD_CC_WHY_LATE_SC   7u           /* a load into Stratus City before its sound was in */
+#define TOD_CC_WHY_LATE_FN   8u           /* a load into Fastoon before its sound was in */
+#define TOD_CC_NPLANETS      2u           /* 0 Fastoon, 1 Stratus City; Stratus City is read first */
+#define TOD_CC_NO_PLANET     0xFFu
 
 struct tod_cc_state {
 	u8  state;             /* TOD_CC_* */
 	u8  detail;
-	u8  planet;            /* the one cached or waited for, 0 Fastoon, 1 Stratus City */
+	u8  planet;            /* the one queued or read, 0 Fastoon, 1 Stratus City */
 	u8  pct;
 	u8  seq;
-	u8  seen_play;         /* the request has seen gameplay: a load after that ends it */
+	u8  seen_play;         /* the request has seen gameplay: the title after that ends it */
 	u8  is_auto;           /* asked by Cache cutscenes on reset */
 	u8  read_fails;
 	u8  auto_on;           /* Cache cutscenes on reset */
@@ -893,17 +921,35 @@ struct tod_cc_state {
 	u8  loading;           /* a level load at the last tick */
 	u8  primed;
 	u8  wait;              /* ticks to the next look at the warmer */
-	u8  ev_active;         /* a walk of the block table is under way */
+	u8  ev_active;         /* a walk of the block table is under way, Disable's */
 	u8  ev_metro;          /* and its planet is Metropolis */
 	u8  ev_nh;
+	u8  pending;           /* bit p: planet p's sound still to read */
+	u8  planned;           /* pdesc/pfs/pfe looked up since the request or the last load */
+	u8  in_hand;           /* `planet`'s range has been seen in the warmer's hands */
+	u8  borrow;            /* slot `slot` holds ours: the game's own is in slot_desc/slot_size */
+	u8  slot;
+	u8  queued;            /* while `planet` is read: what comes next is in the slot */
+	u8  next;              /* that next planet, or TOD_CC_NO_PLANET for the game's own file */
+	u8  sc_active;         /* a walk of the block table for the request (shares the ev_ fields) */
 	u32 ticks;             /* since the request */
 	u32 secs;              /* how long the last run ran */
-	u32 desc;              /* the .uncached descriptor in curFile */
-	u32 start;             /* the range */
+	u32 desc;              /* `planet`'s .uncached descriptor */
+	u32 start;             /* its range still to read */
 	u32 end;
 	u32 last_off;
 	u32 stall;
-	/* The walk: the table, where it is, the path table, and what it learnt. */
+	u32 slot_desc;         /* the game's own file in the borrowed slot */
+	u32 slot_size;
+	u32 slot_cut;          /* where its read was cut, the offset to put it back on */
+	u32 bytes;             /* read for this request */
+	u32 rd_ticks;          /* ticks with ours in the warmer's hands and it on */
+	u32 pdesc[TOD_CC_NPLANETS];   /* each planet's .uncached descriptor */
+	u32 pfs[TOD_CC_NPLANETS];     /* its whole sound range */
+	u32 pfe[TOD_CC_NPLANETS];
+	u32 need_lo[TOD_CC_NPLANETS]; /* what is left of it (0, 0: all of it) */
+	u32 need_hi[TOD_CC_NPLANETS];
+	/* The walks: the table, where it is, the path table, and what it learnt. */
 	u32 ev_blocks;
 	u32 ev_n;
 	u32 ev_i;
@@ -912,8 +958,13 @@ struct tod_cc_state {
 	u16 ev_freed;
 	u16 ev_missed;
 	u32 ev_handle[TOD_CC_HANDLES];
-	u8  ev_verdict[TOD_CC_HANDLES];   /* 0 another file, 1 the planet's level_uncached, 2 global_uncached */
+	u8  ev_verdict[TOD_CC_HANDLES];   /* Disable's: 0 another file, 1 the planet's level_uncached, 2 global_uncached;
+	                                     the request's: 0 another file, 1 + the planet */
 	char ev_path[TOD_CC_PATH_LEN];
+	u32 sc_bsize;
+	u32 sc_first[TOD_CC_NPLANETS];    /* the first block of each planet's range, and how many */
+	u32 sc_count[TOD_CC_NPLANETS];
+	u32 sc_map[TOD_CC_NPLANETS][TOD_CC_MAP_WORDS];   /* the blocks of it in the cache */
 };
 
 void tod_cc_forget(struct tod_cc_state *cc);

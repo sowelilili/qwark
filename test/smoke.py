@@ -5725,7 +5725,8 @@ def tod_cc_word(c):
 
 
 def smoke_tod_cutscene_cache(c, features):
-    """Cache cutscenes over the wire: the warmer handed Fastoon's sound, then Stratus City's; the status readout."""
+    """Cache cutscenes over the wire: Stratus City's sound, then Fastoon's, to the idle warmer, then ahead of its
+    own slot; the status readout."""
     by_id = dict((f["id"], f) for f in features) if features else {}
     f19, f20, f21 = by_id.get(19), by_id.get(20), by_id.get(21)
     check(f19 is not None and f19["label"] == "Cache cutscenes" and f19["kind"] == 1 and f19["readout"] == 3 and
@@ -5757,32 +5758,76 @@ def smoke_tod_cutscene_cache(c, features):
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
     fastoon, stratus = TOD_CC_LEVELS + 0x18, TOD_CC_LEVELS + 0x40 + 0x18
-    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 1 and
-          mem_read_u32(c, TOD_PREFETCH + 0x48) == fastoon and mem_read_u32(c, TOD_PREFETCH + 0x34) == 52633177 and
-          mem_read_u32(c, TOD_PREFETCH + 0x24) == 1,
-          "ToD: Cache cutscenes: the warmer has Fastoon's sound, readout 3 says caching Fastoon",
+    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == stratus and mem_read_u32(c, TOD_PREFETCH + 0x30) == 9716 and
+          mem_read_u32(c, TOD_PREFETCH + 0x34) == 66944500 and mem_read_u32(c, TOD_PREFETCH + 0x24) == 1,
+          "ToD: Cache cutscenes: the idle warmer has Stratus City's sound, readout 3 says caching Stratus City",
           (status, hex(word or 0), hex(mem_read_u32(c, TOD_PREFETCH + 0x48))))
-    mem_write(c, TOD_PREFETCH + 0x30, struct.pack(">I", 52633177 // 2))
+    mem_write(c, TOD_PREFETCH + 0x30, struct.pack(">I", 9716 + 66934784 // 2))
+    module_sleep(c, 0.1)
     word = tod_cc_word(c)
-    check(word is not None and 48 <= (word >> 16) & 0xFF <= 50, "ToD: half way, 49%", hex(word or 0))
+    check(word is not None and 49 <= (word >> 16) & 0xFF <= 51, "ToD: half way, 50%", hex(word or 0))
     mem_write(c, TOD_PREFETCH + 0x48, bytes(4))                     # the warmer done with it
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
-    check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
-          mem_read_u32(c, TOD_PREFETCH + 0x48) == stratus and mem_read_u32(c, TOD_PREFETCH + 0x34) == 66944500,
-          "ToD: then Stratus City's", hex(word or 0))
+    check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 1 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == fastoon and mem_read_u32(c, TOD_PREFETCH + 0x34) == 52633177,
+          "ToD: then Fastoon's", hex(word or 0))
     mem_write(c, TOD_PREFETCH + 0x48, bytes(4))
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
-    check(word is not None and word >> 28 == 3 and (word >> 16) & 0xFF == 100 and word & 0xFF == 1,
-          "ToD: and done, one run ended", hex(word or 0))
+    check(word is not None and word >> 28 == 3 and (word >> 16) & 0xFF != 0 and word & 0xFF == 1,
+          "ToD: and done, one run ended, with a read rate", hex(word or 0))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 1))
     status2, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
     word = tod_cc_word(c)
     check(status == ST_OK and status2 == ST_BUSY and word is not None and word >> 28 == 4 and (word >> 24) & 15 == 4,
           "ToD: with Disable cutscene caching on, the trigger is BUSY and the readout says why", (status, status2))
     c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 0))
+    smoke_tod_cc_ahead(c, fastoon, stratus)
     mem_write(c, TOD_ARCHIVE_TOC, bytes(4))
+
+
+def tod_cc_step(c, desc, end):
+    """The warmer's step taking `desc` from slot 0: state 1, offset 0, the first chunk."""
+    mem_write(c, TOD_PREFETCH + 0x2C, struct.pack(">III", 0x40000, 0, end))
+    mem_write(c, TOD_PREFETCH + 0x48, struct.pack(">II", desc, 1))
+    module_sleep(c, 0.15)
+
+
+def smoke_tod_cc_ahead(c, fastoon, stratus):
+    """Revision 1.29: Cache cutscenes ahead of the warmer's own slot 0, its read cut, and the slot given back."""
+    game, mib = TOD_CC_STR + 0x800, 0x100000
+    mem_write(c, game, struct.pack(">II", TOD_CC_STR + 0x900, 8 * mib))
+    mem_write(c, TOD_PREFETCH, struct.pack(">IIII", 8 * mib, 3 * mib, 0, 0))
+    mem_write(c, TOD_PREFETCH + 0x10, struct.pack(">IIII", game, 0, 0, 0))
+    mem_write(c, TOD_PREFETCH + 0x24, struct.pack(">IIIII", 1, 1, 0x40000, mib, 8 * mib))
+    mem_write(c, TOD_PREFETCH + 0x48, struct.pack(">II", game, 1))   # its slot 0, 1 MiB in
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
+    module_sleep(c, 0.2)
+    word = tod_cc_word(c)
+    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
+          mem_read_u32(c, TOD_PREFETCH + 0x10) == stratus and mem_read_u32(c, TOD_PREFETCH) == 66944500 and
+          mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0 and mem_read_u32(c, TOD_PREFETCH + 0x34) == 2 * mib and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == game,
+          "ToD: Cache cutscenes with the warmer on its own slot 0: Stratus City's sound in the slot, state 0, "
+          "the slot's read cut 1 MiB on", (status, hex(word or 0), hex(mem_read_u32(c, TOD_PREFETCH + 0x10))))
+    tod_cc_step(c, stratus, 66944500)
+    check(mem_read_u32(c, TOD_PREFETCH + 0x10) == fastoon and mem_read_u32(c, TOD_PREFETCH) == 52633177 and
+          mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0,
+          "ToD: Stratus City's read: Fastoon's next in the same slot", hex(mem_read_u32(c, TOD_PREFETCH + 0x10)))
+    tod_cc_step(c, fastoon, 52633177)
+    word = tod_cc_word(c)
+    check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 1 and
+          mem_read_u32(c, TOD_PREFETCH + 0x10) == game and mem_read_u32(c, TOD_PREFETCH) == 8 * mib and
+          mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0,
+          "ToD: Fastoon's read: the slot's own file back in it, state 0", hex(word or 0))
+    tod_cc_step(c, game, 8 * mib)
+    word = tod_cc_word(c)
+    check(word is not None and word >> 28 == 3 and word & 0xFF == 3 and mem_read_u32(c, TOD_PREFETCH + 0x30) == 2 * mib,
+          "ToD: the slot's own file taken up again, put on to where it was cut; done", hex(word or 0))
+    mem_write(c, TOD_PREFETCH + 0x24, bytes(0x2C))
+    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
 
 
 def smoke_tod(c, sim):

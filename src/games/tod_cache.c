@@ -608,18 +608,27 @@ int tod_debug_text(u8 page, u8 *out, u32 cap, u32 *len)
 
 /*
  * Cache cutscenes (19), Cache cutscenes on reset (20) and Disable cutscene
- * caching (21); tod.h has what the game does and the status word's layout,
- * REPORT-tod-level-cache.md sections 5.A and 10 the evidence. Everything here
- * is a data write, so it works the same on a console and under RPCS3 (where
- * cutscenes load in well under a second anyway). It never blocks: the tick
- * looks at the warmer every TOD_CC_EVERY ticks, one 0x58-byte read, and the
- * warmer does the reading inside the game, 256 KB a frame, while the game
- * plays on. Its state is tod_game.c's (struct tod_cc_state, the lent area in
- * a module), cleared as a session enters, as the cache is at every boot.
+ * caching (21); tod.h has what the game does, why each write is safe, and the
+ * status word's layout, REPORT-tod-level-cache.md sections 2.3, 5.A and 10
+ * the evidence. Everything here is a data write, so it works the same on a
+ * console and under RPCS3 (where cutscenes load in well under a second
+ * anyway). It never blocks: the tick looks at the warmer every TOD_CC_EVERY
+ * ticks, one 0x58-byte read, and the warmer does the reading inside the game,
+ * 256 KB a frame, while the game plays on.
+ *
+ * A request goes ahead of the game's own warm-up, which in a run is the
+ * current planet's sound, dialogue and textures and the next planet's
+ * level_cached: about 380 MiB that a runner never stays long enough on
+ * Metropolis to see read. Stratus City's sound goes first, Fastoon's next,
+ * and a level load hands what is left to the next level. Its state is
+ * tod_game.c's (struct tod_cc_state, the lent area in a module), cleared as a
+ * session enters, as the cache is at every boot.
  */
 
 static const char * const cc_dir[TOD_CC_NPLANETS]  = { "fastoon", "stratus city" };
 static const char * const cc_name[TOD_CC_NPLANETS] = { "Fastoon", "Stratus City" };
+/* Each planet's LEVEL_: a load into it before its sound is in is too late. */
+static const s32 cc_level[TOD_CC_NPLANETS] = { 3, 2 };
 
 /*
  * streaming_sound.dat in each planet's level_uncached.psarc, from the psarc's
@@ -642,7 +651,7 @@ static const char * const cc_level_dir[TOD_NPLANETS] = {
 
 static u32 cc_secs(u32 ticks)
 {
-	return (ticks + 60u) / 120u;
+	return (ticks + TOD_CC_TICK_HZ / 2u) / TOD_CC_TICK_HZ;
 }
 
 static int cc_active(const struct tod_cc_state *cc)
@@ -650,37 +659,291 @@ static int cc_active(const struct tod_cc_state *cc)
 	return cc->state == TOD_CC_WAITING || cc->state == TOD_CC_CACHING;
 }
 
-/* In gameplay on a level: what the warmer needs and what the range is handed over in. */
+/* In gameplay on a level: what the warmer needs and what a range is handed over in. */
 static int cc_in_play(const struct tod_as_state *as, int loading)
 {
 	return as->cur_state == TOD_STATE_GAMEPLAY && as->cur_lua != 0 && as->cur_front == 0 && !loading;
 }
 
+/* What was read, in tenths of a MiB/s over the ticks it was read in: 0 for nothing read. */
+static u8 cc_rate(const struct tod_cc_state *cc)
+{
+	u64 r;
+
+	if (cc->bytes == 0) return 0;
+	if (cc->rd_ticks == 0) return 255;
+	r = (u64)cc->bytes * 10u * TOD_CC_TICK_HZ / ((u64)cc->rd_ticks << 20);
+	if (r == 0) r = 1;
+	return (u8)(r > 255u ? 255u : r);
+}
+
 static void cc_end(struct tod_cc_state *cc, u8 state, u8 detail)
 {
 	static const char * const why[] = {
-		"", "a level load or the title came first", "game.toc's level table cannot be read",
+		"", "the title came first", "game.toc's level table cannot be read",
 		"the warmer stopped reading", "Disable cutscene caching is on", "the game cannot be read",
-		"the game is going"
+		"the game is going", "the run reached Stratus City first", "the run reached Fastoon first"
 	};
 
 	cc->secs = cc_secs(cc->ticks);
 	cc->state = state;
 	cc->detail = detail;
-	cc->pct = state == TOD_CC_DONE ? 100u : 0u;
+	cc->pct = state == TOD_CC_DONE ? cc_rate(cc) : 0u;
 	cc->desc = 0;
+	cc->borrow = 0;
+	cc->in_hand = 0;
+	cc->sc_active = 0;
 	cc->seq++;
 	if (state == TOD_CC_DONE)
-		plat_log("tod: Cache cutscenes: Fastoon and Stratus City are cached (%u s)", cc->secs);
+		plat_log("tod: Cache cutscenes: Fastoon and Stratus City are cached (%u s, %u KiB read in %u ticks)",
+		         cc->secs, cc->bytes >> 10, cc->rd_ticks);
 	else
 		plat_log("tod: Cache cutscenes: stopped, %s", why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
 }
+
+/* The planet to read next, other than `not`: Stratus City first, a planet earlier in a run. */
+static u8 cc_first_pending(const struct tod_cc_state *cc, u8 not)
+{
+	if ((cc->pending & 2u) && not != 1u) return 1;
+	if ((cc->pending & 1u) && not != 0u) return 0;
+	return TOD_CC_NO_PLANET;
+}
+
+/*
+ * Each planet's .uncached descriptor in game.toc's level table (heap
+ * addresses, so looked up at each request and each load) and its whole sound
+ * range: LevelPrefetch_setup's own choice of the sound file, the .jp twin
+ * when the parameter is 2. 0, or why not.
+ */
+static u8 cc_plan(struct tod_cc_state *cc)
+{
+	u8 rec[TOD_LA_STRIDE];
+	u32 at, param = 0, p;
+	int jp;
+
+	if (cc->planned) return 0;
+	jp = mem_read_u32(TOD_SOUND_PARAM, &param) == ST_OK && param == TOD_SOUND_PARAM_JP;
+	for (p = 0; p < TOD_CC_NPLANETS; p++) {
+		u32 s = cc_sound_at[p], e = cc_sound_at[p] + cc_sound_len[p];
+
+		at = level_entry(cc_dir[p], rec);
+		if (at == 0) return TOD_CC_WHY_TABLE;
+		if (jp) {
+			s = e;
+			e += cc_sound_len[p];
+		}
+		if (be32_get(rec + TOD_LA_UNCACHED) == 0 || e > be32_get(rec + TOD_LA_UNCACHED + 4u)) return TOD_CC_WHY_TABLE;
+		cc->pdesc[p] = at + TOD_LA_UNCACHED;
+		cc->pfs[p] = s;
+		cc->pfe[p] = e;
+	}
+	cc->planned = 1;
+	return 0;
+}
+
+/* What is left of planet p's range. */
+static void cc_range(const struct tod_cc_state *cc, u8 p, u32 *start, u32 *end)
+{
+	*start = cc->pfs[p];
+	*end = cc->pfe[p];
+	if (cc->need_hi[p] != 0) {
+		if (cc->need_lo[p] > *start) *start = cc->need_lo[p];
+		if (cc->need_hi[p] < *end) *end = cc->need_hi[p];
+	}
+}
+
+static u8 cc_pct_at(const struct tod_cc_state *cc, u32 off)
+{
+	u32 s = cc->pfs[cc->planet], e = cc->pfe[cc->planet];
+
+	if (off <= s) return 0;
+	if (off >= e) return 100;
+	return (u8)((u64)(off - s) * 100u / (e - s));
+}
+
+/* Planet p is the one queued or read now. */
+static void cc_take(struct tod_cc_state *cc, u8 p)
+{
+	cc->planet = p;
+	cc->desc = cc->pdesc[p];
+	cc_range(cc, p, &cc->start, &cc->end);
+	cc->in_hand = 0;
+	cc->queued = 0;
+	cc->next = TOD_CC_NO_PLANET;
+	cc->stall = 0;
+	cc->state = TOD_CC_CACHING;
+	cc->detail = (u8)(p + 1u);
+	cc->pct = cc_pct_at(cc, cc->start);
+}
+
+static void cc_planet_in(struct tod_cc_state *cc, u8 p)
+{
+	cc->pending &= (u8)~(1u << p);
+	cc->need_lo[p] = 0;
+	cc->need_hi[p] = 0;
+	plat_log("tod: Cache cutscenes: %s's sound is in", cc_name[p]);
+}
+
+/* The warmer let `planet` go short of its end: what is left starts on the block it was in. */
+static void cc_left_at(struct tod_cc_state *cc)
+{
+	u32 at = cc->last_off & ~(TOD_CC_BLOCK - 1u);
+
+	if (!cc->in_hand || at <= cc->start || at >= cc->end) return;
+	cc->need_lo[cc->planet] = at;
+	cc->need_hi[cc->planet] = cc->end;
+}
+
+/* The offset in the warmer's hands, of ours: what it read, counted inside our range only. */
+static int cc_progress(struct tod_cc_state *cc, u32 off)
+{
+	if (off > cc->end) off = cc->end;
+	if (off > cc->last_off) {
+		if (off > cc->start) cc->bytes += off - (cc->last_off > cc->start ? cc->last_off : cc->start);
+		cc->last_off = off;
+		cc->stall = 0;
+		return 1;
+	}
+	if (off < cc->last_off) cc->last_off = off;   /* an offset of ours the callback wrote over */
+	return 0;
+}
+
+/* ------------------------------------------- the request's block-table walk */
+
+/* What a path handle names for the request: 1 + the planet whose level_uncached.psarc it is, or 0. */
+static u8 sc_verdict(struct tod_cc_state *cc, u32 handle)
+{
+	char path[TOD_CC_PATH_LEN], want[TOD_CC_PATH_LEN];
+	u32 str = 0, j, p;
+	u8 v = 0;
+
+	for (j = 0; j < cc->ev_nh; j++) if (cc->ev_handle[j] == handle) return cc->ev_verdict[j];
+	if (cc->ev_strs != 0 && handle >= 1u && handle <= cc->ev_npaths &&
+	    mem_read_u32(cc->ev_strs + (handle - 1u) * 4u, &str) == ST_OK) {
+		rd_str(str, path, sizeof(path));
+		for (p = 0; p < TOD_CC_NPLANETS && v == 0; p++) {
+			qstrcpy(want, sizeof(want), "/packed/levels/");
+			qstrcat(want, sizeof(want), cc_dir[p]);
+			qstrcat(want, sizeof(want), "/level_uncached.psarc");
+			if (qstreq(path, want)) v = (u8)(p + 1u);
+		}
+	}
+	if (cc->ev_nh < TOD_CC_HANDLES) {
+		cc->ev_handle[cc->ev_nh] = handle;
+		cc->ev_verdict[cc->ev_nh] = v;
+		cc->ev_nh++;
+	}
+	return v;
+}
+
+/*
+ * The request's walk over the block table, at the request and at each level
+ * load: which 1 MiB blocks of each planet's range the cache holds already, so
+ * that only what is not is read. It shares Disable's walk fields, and the two
+ * never run together (Disable ends a request and keeps any from starting).
+ * Without the table, or the level table, nothing is known and the whole
+ * range is read.
+ */
+static void sc_begin(struct tod_cc_state *cc)
+{
+	u32 cache = 0, n = 0, blocks = 0, paths = 0, bsize = 0, p;
+
+	cc->sc_active = 0;
+	cc->ev_active = 0;
+	memset(cc->sc_map, 0, sizeof(cc->sc_map));
+	cc->sc_count[0] = 0;
+	cc->sc_count[1] = 0;
+	if (cc_plan(cc) != 0) return;
+	if (mem_read_u32(TOD_FIOS_CACHE, &cache) != ST_OK || cache == 0 || (cache & 3u)) return;
+	if (mem_read_u32(cache + TOD_FC_NBLOCKS, &n) != ST_OK || mem_read_u32(cache + TOD_FC_BLOCKS, &blocks) != ST_OK ||
+	    mem_read_u32(cache + TOD_FC_BLOCK_SIZE, &bsize) != ST_OK)
+		return;
+	if (n == 0 || n > TOD_FC_MAX_BLOCKS || blocks == 0 || (blocks & 3u) || bsize < 0x10000u) return;
+	if (mem_read_u32(TOD_FIOS_PATHS, &paths) != ST_OK || paths == 0 || (paths & 3u) ||
+	    mem_read_u32(paths + TOD_FPATH_STRS, &cc->ev_strs) != ST_OK ||
+	    mem_read_u32(paths + TOD_FPATH_COUNT, &cc->ev_npaths) != ST_OK)
+		return;
+	for (p = 0; p < TOD_CC_NPLANETS; p++) {
+		u32 first = cc->pfs[p] / bsize, count = (cc->pfe[p] - 1u) / bsize - first + 1u;
+
+		cc->sc_first[p] = first;
+		cc->sc_count[p] = count <= TOD_CC_MAP_WORDS * 32u ? count : 0u;
+	}
+	cc->sc_bsize = bsize;
+	cc->ev_blocks = blocks;
+	cc->ev_n = n;
+	cc->ev_i = 0;
+	cc->ev_nh = 0;
+	cc->sc_active = 1;
+}
+
+/* The walk's end: each planet's first and last block not in the cache bound what is left of it. */
+static void sc_finish(struct tod_cc_state *cc)
+{
+	u32 p, i, lo, hi;
+
+	cc->sc_active = 0;
+	for (p = 0; p < TOD_CC_NPLANETS; p++) {
+		u32 n = cc->sc_count[p], i0 = n, i1 = 0;
+
+		if (!(cc->pending & (1u << p)) || n == 0) continue;
+		for (i = 0; i < n; i++) {
+			if (cc->sc_map[p][i >> 5] & (1u << (i & 31u))) continue;
+			if (i0 == n) i0 = i;
+			i1 = i;
+		}
+		if (i0 == n) {
+			cc->pending &= (u8)~(1u << p);
+			cc->need_lo[p] = 0;
+			cc->need_hi[p] = 0;
+			plat_log("tod: Cache cutscenes: %s's sound is in the cache already", cc_name[p]);
+			continue;
+		}
+		lo = (cc->sc_first[p] + i0) * cc->sc_bsize;
+		hi = (cc->sc_first[p] + i1 + 1u) * cc->sc_bsize;
+		cc->need_lo[p] = lo > cc->pfs[p] ? lo : cc->pfs[p];
+		cc->need_hi[p] = hi < cc->pfe[p] ? hi : cc->pfe[p];
+		plat_log("tod: Cache cutscenes: %s's sound, %u of its %u blocks to read", cc_name[p], i1 - i0 + 1u, n);
+	}
+}
+
+/* One piece of the walk, TOD_CC_PIECE descriptors a tick: a filling block counts as in. */
+static void sc_step(struct tod_cc_state *cc)
+{
+	u8 buf[TOD_CC_PIECE * TOD_FC_DESC_LEN];
+	u32 piece = cc->ev_n - cc->ev_i < TOD_CC_PIECE ? cc->ev_n - cc->ev_i : TOD_CC_PIECE, k;
+
+	if (mem_read(cc->ev_blocks + cc->ev_i * TOD_FC_DESC_LEN, buf, piece * TOD_FC_DESC_LEN) != ST_OK) {
+		cc->sc_active = 0;   /* nothing known: the whole ranges */
+		return;
+	}
+	for (k = 0; k < piece; k++) {
+		const u8 *d = buf + k * TOD_FC_DESC_LEN;
+		u64 use = be64_get(d + TOD_FC_LAST_USE), off = be64_get(d + TOD_FC_OFFSET);
+		u32 blk, rel;
+		u8 v, p;
+
+		if (use == 0 || use == TOD_FC_FREE || (off >> 32) != 0) continue;
+		v = sc_verdict(cc, be32_get(d + TOD_FC_PATH));
+		if (v == 0) continue;
+		p = (u8)(v - 1u);
+		blk = (u32)off / cc->sc_bsize;
+		if (blk < cc->sc_first[p]) continue;
+		rel = blk - cc->sc_first[p];
+		if (rel >= cc->sc_count[p]) continue;
+		cc->sc_map[p][rel >> 5] |= 1u << (rel & 31u);
+	}
+	cc->ev_i += piece;
+	if (cc->ev_i >= cc->ev_n) sc_finish(cc);
+}
+
+/* ------------------------------------------------ handing ranges over */
 
 static void cc_request(struct tod_cc_state *cc, int is_auto, int in_play)
 {
 	cc->state = TOD_CC_WAITING;
 	cc->detail = in_play ? TOD_CC_WAIT_WARMER : TOD_CC_WAIT_PLAY;
-	cc->planet = 0;
+	cc->planet = 1;
 	cc->pct = 0;
 	cc->ticks = 0;
 	cc->seen_play = (u8)(in_play != 0);
@@ -689,48 +952,39 @@ static void cc_request(struct tod_cc_state *cc, int is_auto, int in_play)
 	cc->stall = 0;
 	cc->wait = 0;
 	cc->desc = 0;
+	cc->pending = 3u;
+	cc->planned = 0;
+	cc->in_hand = 0;
+	cc->borrow = 0;
+	cc->queued = 0;
+	cc->bytes = 0;
+	cc->rd_ticks = 0;
+	memset(cc->need_lo, 0, sizeof(cc->need_lo));
+	memset(cc->need_hi, 0, sizeof(cc->need_hi));
+	sc_begin(cc);
 }
 
 /*
- * The warmer is idle: `cc->planet`'s sound to it, with the single-range form.
- * The planet's entry is looked up in game.toc each time (heap addresses).
- * chunkSize, offset and fileEnd in one write, then curFile and state, then
- * readReady last: LevelPrefetch_update does nothing while readReady is 0,
- * which it is whenever the warmer is idle.
+ * The warmer idle: `p`'s range with the single-range form. chunkSize, offset
+ * and fileEnd in one write, then curFile and state, then readReady last:
+ * LevelPrefetch_update does nothing while readReady is 0, which it is
+ * whenever the warmer is idle.
  */
-static void cc_start(struct tod_cc_state *cc)
+static void cc_single(struct tod_cc_state *cc, u8 p)
 {
-	u8 rec[TOD_LA_STRIDE], w[12];
-	u32 at, size, path, param = 0, start = 0, end, chunk;
-	u8 p = cc->planet;
+	u8 w[12];
+	u32 chunk;
 
-	at = level_entry(cc_dir[p], rec);
-	if (at == 0) {
-		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_TABLE);
-		return;
-	}
-	path = be32_get(rec + TOD_LA_UNCACHED);
-	size = be32_get(rec + TOD_LA_UNCACHED + 4u);
-	end = cc_sound_at[p] + cc_sound_len[p];
-	/* LevelPrefetch_setup's own choice of the sound file: the .jp twin when the parameter is 2. */
-	if (mem_read_u32(TOD_SOUND_PARAM, &param) == ST_OK && param == TOD_SOUND_PARAM_JP) {
-		start = end;
-		end += cc_sound_len[p];
-	}
-	if (path == 0 || end > size) {
-		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_TABLE);
-		return;
-	}
-
-	chunk = end - start < TOD_PF_CHUNK_MAX ? end - start : TOD_PF_CHUNK_MAX;
+	cc_take(cc, p);
+	chunk = cc->end - cc->start < TOD_PF_CHUNK_MAX ? cc->end - cc->start : TOD_PF_CHUNK_MAX;
 	be32_put(w, chunk);
-	be32_put(w + 4, start);
-	be32_put(w + 8, end);
+	be32_put(w + 4, cc->start);
+	be32_put(w + 8, cc->end);
 	if (mem_write(TOD_PREFETCH + TOD_PF_CHUNK, w, 12) != ST_OK) {
 		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
 		return;
 	}
-	be32_put(w, at + TOD_LA_UNCACHED);
+	be32_put(w, cc->desc);
 	be32_put(w + 4, TOD_PF_NFILES);
 	if (mem_write(TOD_PREFETCH + TOD_PF_CUR, w, 8) != ST_OK) {
 		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
@@ -741,16 +995,87 @@ static void cc_start(struct tod_cc_state *cc)
 		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
 		return;
 	}
+	cc->in_hand = 1;
+	cc->last_off = cc->start;
+	plat_log("tod: Cache cutscenes: %s's sound, bytes %u to %u, the warmer idle", cc_name[p], cc->start, cc->end);
+}
 
-	cc->state = TOD_CC_CACHING;
-	cc->detail = (u8)(p + 1u);
-	cc->pct = 0;
-	cc->desc = at + TOD_LA_UNCACHED;
-	cc->start = start;
-	cc->end = end;
-	cc->last_off = start;
-	cc->stall = 0;
-	plat_log("tod: Cache cutscenes: %s's sound, bytes %u to %u of its level_uncached.psarc", cc_name[p], start, end);
+/* A slot's file and size, the step's next take. */
+static int cc_put_slot(u32 k, u32 desc, u32 size)
+{
+	return mem_write_u32(TOD_PREFETCH + TOD_PF_SIZE + k * 4u, size) == ST_OK &&
+	       mem_write_u32(TOD_PREFETCH + TOD_PF_FILE + k * 4u, desc) == ST_OK;
+}
+
+/*
+ * Ahead of the game's own: the warmer reads its slot k (state k + 1, curFile
+ * file[k]) with more than TOD_CC_MARGIN of it left. `p`'s descriptor and end
+ * go into slot k, state back to k, and the slot's own read is cut
+ * TOD_CC_GRACE past where it is, so the step takes ours next, from 0. A cut
+ * the offset has already reached is undone (the slot read whole, then ours,
+ * then the game's next slot).
+ */
+static void cc_borrow(struct tod_cc_state *cc, u8 p, const u8 *pf)
+{
+	u32 k = be32_get(pf + TOD_PF_STATE) - 1u, off = be32_get(pf + TOD_PF_OFFSET), fend = be32_get(pf + TOD_PF_END);
+	u32 cut = off + TOD_CC_GRACE, now = 0;
+
+	cc_take(cc, p);
+	cc->slot = (u8)k;
+	cc->slot_desc = be32_get(pf + TOD_PF_CUR);
+	cc->slot_size = be32_get(pf + TOD_PF_SIZE + k * 4u);
+	cc->slot_cut = 0;
+	cc->last_off = off;   /* the slot's own offset, until ours is in hand */
+	if (!cc_put_slot(k, cc->desc, cc->end) || mem_write_u32(TOD_PREFETCH + TOD_PF_STATE, k) != ST_OK) {
+		cc_put_slot(k, cc->slot_desc, cc->slot_size);
+		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
+		return;
+	}
+	cc->borrow = 1;
+	if (cut < fend && mem_write_u32(TOD_PREFETCH + TOD_PF_END, cut) == ST_OK) {
+		if (mem_read_u32(TOD_PREFETCH + TOD_PF_OFFSET, &now) == ST_OK && now < cut) cc->slot_cut = cut;
+		else mem_write_u32(TOD_PREFETCH + TOD_PF_END, fend);
+	}
+	plat_log("tod: Cache cutscenes: %s's sound, bytes %u to %u, ahead of the warmer's slot %u (cut at %u)",
+	         cc_name[p], cc->start, cc->end, k, cc->slot_cut);
+}
+
+/*
+ * Ours in hand in the borrowed slot, with room before its end: the slot gets
+ * what follows it, the next planet or the game's own file, and state k again
+ * so that the step takes it. The game's file needs state k only if its read
+ * was cut; whole, the warmer goes on to its next slot.
+ */
+static void cc_queue_next(struct tod_cc_state *cc)
+{
+	u8 n = cc_first_pending(cc, cc->planet);
+	u32 s, e;
+	int ok;
+
+	if (n != TOD_CC_NO_PLANET) {
+		cc_range(cc, n, &s, &e);
+		ok = cc_put_slot(cc->slot, cc->pdesc[n], e) && mem_write_u32(TOD_PREFETCH + TOD_PF_STATE, cc->slot) == ST_OK;
+	} else {
+		ok = cc_put_slot(cc->slot, cc->slot_desc, cc->slot_size) &&
+		     (cc->slot_cut == 0 || mem_write_u32(TOD_PREFETCH + TOD_PF_STATE, cc->slot) == ST_OK);
+	}
+	cc->next = n;
+	cc->queued = 1;
+	if (!ok) cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
+}
+
+/* Give the slot back if it still holds one of ours (a load's LevelPrefetch_setup fills it anew). */
+static void cc_unborrow(struct tod_cc_state *cc, const u8 *pf)
+{
+	u32 f;
+
+	if (!cc->borrow) return;
+	cc->borrow = 0;
+	f = be32_get(pf + TOD_PF_FILE + cc->slot * 4u);
+	if (f == cc->pdesc[0] || f == cc->pdesc[1]) {
+		cc_put_slot(cc->slot, cc->slot_desc, cc->slot_size);
+		plat_log("tod: Cache cutscenes: slot %u given back unread", (u32)cc->slot);
+	}
 }
 
 /* The warmer idle: every file started, none in hand, none in flight, and the game letting it run. */
@@ -760,63 +1085,171 @@ static int cc_idle(const u8 *pf)
 	       be32_get(pf + TOD_PF_BUSY) == 0 && pf[TOD_PF_ENABLED] != 0;
 }
 
-/* One look at the warmer: start the next range when it is idle, follow the one it reads. */
+/* The warmer on one of its own slots with room to go ahead of it. */
+static int cc_borrowable(const u8 *pf)
+{
+	u32 st = be32_get(pf + TOD_PF_STATE), cur = be32_get(pf + TOD_PF_CUR);
+	u32 off = be32_get(pf + TOD_PF_OFFSET), end = be32_get(pf + TOD_PF_END);
+
+	return st >= 1u && st <= TOD_PF_NFILES && cur != 0 && cur == be32_get(pf + TOD_PF_FILE + (st - 1u) * 4u) &&
+	       be32_get(pf + TOD_PF_CHUNK) != 0 && end > off && end - off > TOD_CC_MARGIN;
+}
+
+/* Waiting: a range to the warmer, ahead of its own slot or with it idle. */
+static void cc_wait(struct tod_cc_state *cc, const u8 *pf, int play)
+{
+	u8 p, why;
+
+	if (cc->pending == 0) {
+		cc_end(cc, TOD_CC_DONE, 0);
+		return;
+	}
+	if (!play) {
+		cc->detail = TOD_CC_WAIT_PLAY;
+		return;
+	}
+	cc->detail = TOD_CC_WAIT_WARMER;
+	if (cc->sc_active) return;   /* a moment: the block table first */
+	why = cc_plan(cc);
+	if (why != 0) {
+		cc_end(cc, TOD_CC_FAILED, why);
+		return;
+	}
+	p = cc_first_pending(cc, TOD_CC_NO_PLANET);
+	if (cc_idle(pf)) cc_single(cc, p);
+	else if (cc_borrowable(pf)) cc_borrow(cc, p, pf);
+}
+
+/*
+ * Following ours. Returns 0 when the request is waiting again (the caller
+ * looks for the next range at once), 1 otherwise.
+ */
+static int cc_follow(struct tod_cc_state *cc, const u8 *pf, int play)
+{
+	u32 cur = be32_get(pf + TOD_PF_CUR), st = be32_get(pf + TOD_PF_STATE);
+	u32 off = be32_get(pf + TOD_PF_OFFSET), end = be32_get(pf + TOD_PF_END);
+	int on = play && pf[TOD_PF_ENABLED] != 0;
+
+	if (cur == cc->desc) {
+		if (!cc->in_hand) {
+			cc->in_hand = 1;
+			cc->last_off = 0;   /* a slot's file is read from 0 */
+		}
+		if (!cc_progress(cc, off) && on) {
+			cc->stall += TOD_CC_EVERY;
+			if (cc->stall >= TOD_CC_STALL_TICKS) {
+				cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_STALLED);
+				return 1;
+			}
+		}
+		if (on && cc->last_off >= cc->start) cc->rd_ticks += TOD_CC_EVERY;
+		cc->pct = cc_pct_at(cc, off);
+		/* From 0 on to where what is left starts, at least 256 KB before its end. */
+		if (off < cc->start && cc->start - off >= TOD_CC_BLOCK && cc->start + TOD_PF_CHUNK_MAX <= end)
+			mem_write_u32(TOD_PREFETCH + TOD_PF_OFFSET, cc->start);
+		if (cc->borrow && !cc->queued && st == cc->slot + 1u && end > off && end - off > TOD_CC_MARGIN)
+			cc_queue_next(cc);
+		return 1;
+	}
+
+	if (cc->in_hand) {
+		/*
+		 * The warmer let ours go: a step at its end (a load the tick sees
+		 * first). Only the end of ours makes the single-range form idle, or
+		 * the borrowed slot's step take what was queued after it; anything
+		 * else is a step too if ours was all but read, or the warmer set up
+		 * anew under it.
+		 */
+		u32 after = cc->slot + 1u + (cc->next == TOD_CC_NO_PLANET && cc->slot_cut == 0 ? 1u : 0u);
+
+		if ((cur == 0 && st == TOD_PF_NFILES) ||
+		    (cc->borrow && cc->queued && cur != 0 && st == after && st <= TOD_PF_NFILES &&
+		     cur == be32_get(pf + TOD_PF_FILE + (st - 1u) * 4u)) ||
+		    cc->last_off >= cc->end || cc->end - cc->last_off <= TOD_CC_SLACK) {
+			if (cc->last_off < cc->end)
+				cc->bytes += cc->end - (cc->last_off > cc->start ? cc->last_off : cc->start);
+			cc_planet_in(cc, cc->planet);
+		} else {
+			cc_left_at(cc);
+			plat_log("tod: Cache cutscenes: %s's sound let go at %u of %u", cc_name[cc->planet], cc->last_off, cc->end);
+		}
+		cc->in_hand = 0;
+		if (cc->borrow && cc->queued && cc->next != TOD_CC_NO_PLANET && cur == cc->pdesc[cc->next] &&
+		    st == cc->slot + 1u && (cc->pending & (1u << cc->next))) {
+			cc_take(cc, cc->next);   /* the next planet, from the same slot */
+			return 1;
+		}
+		if (cc->borrow && cur == cc->slot_desc && st == cc->slot + 1u) {
+			/* The game's own file again, from 0: on to where it was cut. */
+			if (cc->slot_cut != 0 && off < cc->slot_cut && cc->slot_cut + TOD_PF_CHUNK_MAX <= end)
+				mem_write_u32(TOD_PREFETCH + TOD_PF_OFFSET, cc->slot_cut);
+			cc->borrow = 0;
+		}
+		cc_unborrow(cc, pf);
+		cc->state = TOD_CC_WAITING;
+		return 0;
+	}
+
+	/* Queued, not yet taken: the slot's own read runs on to its cut. */
+	if (cc->borrow && cur == cc->slot_desc && st == cc->slot) {
+		if (off != cc->last_off) {
+			cc->last_off = off;
+			cc->stall = 0;
+		} else if (on) {
+			cc->stall += TOD_CC_EVERY;
+			if (cc->stall >= TOD_CC_STALL_TICKS) cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_STALLED);
+		}
+		return 1;
+	}
+
+	/* Neither: the warmer was set up anew under it, or let it go unread. */
+	cc_unborrow(cc, pf);
+	cc->state = TOD_CC_WAITING;
+	return 0;
+}
+
+/* One look at the warmer: follow the range it has, or hand it the next. */
 static void cc_look(struct tod_cc_state *cc, const struct tod_as_state *as, int loading)
 {
 	u8 pf[TOD_PF_LEN];
 	int play = cc_in_play(as, loading);
-	u32 cur, off;
 
 	if (mem_read(TOD_PREFETCH, pf, sizeof(pf)) != ST_OK) {
 		if (++cc->read_fails >= TOD_CC_READ_FAILS) cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_READ);
 		return;
 	}
 	cc->read_fails = 0;
-	cur = be32_get(pf + TOD_PF_CUR);
+	if (play) cc->seen_play = 1;
+	if (cc->state == TOD_CC_CACHING && cc_follow(cc, pf, play)) return;
+	if (cc->state == TOD_CC_WAITING) cc_wait(cc, pf, play);
+}
 
-	if (cc->state == TOD_CC_CACHING) {
-		if (cur == cc->desc) {
-			off = be32_get(pf + TOD_PF_OFFSET);
-			if (off != cc->last_off) {
-				cc->last_off = off;
-				cc->stall = 0;
-			} else if (play && pf[TOD_PF_ENABLED] != 0) {
-				cc->stall += TOD_CC_EVERY;
-				if (cc->stall >= TOD_CC_STALL_TICKS) {
-					cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_STALLED);
-					return;
-				}
-			}
-			if (off > cc->end) off = cc->end;
-			cc->pct = (u8)(off <= cc->start ? 0u : (u32)((u64)(off - cc->start) * 100u / (cc->end - cc->start)));
-			return;
-		}
-		/* Not ours: LevelPrefetch_setup has run (a level load the tick missed). */
-		if (cur != 0 || be32_get(pf + TOD_PF_STATE) != TOD_PF_NFILES) {
-			cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_LEVEL);
-			return;
-		}
-		/* curFile back to 0 with state 4: the range is in. */
-		plat_log("tod: Cache cutscenes: %s's sound is in", cc_name[cc->planet]);
-		if (++cc->planet >= TOD_CC_NPLANETS) {
-			cc_end(cc, TOD_CC_DONE, 0);
-			return;
-		}
-		cc->state = TOD_CC_WAITING;
-		cc->pct = 0;
-	}
+/*
+ * A level load has begun under a request: LevelPrefetch_setup will give the
+ * warmer the new level's files, so what was in hand is let go (no write: the
+ * setup fills every slot anew) and what is left goes ahead on the new level.
+ * A load into a planet whose sound is not in yet is too late for it.
+ */
+static void cc_load(struct tod_cc_state *cc, s32 level)
+{
+	u32 p;
 
-	/* Waiting. */
-	if (!play) {
-		cc->detail = TOD_CC_WAIT_PLAY;
-		return;
+	if (cc->state == TOD_CC_CACHING) cc_left_at(cc);
+	cc->state = TOD_CC_WAITING;
+	cc->detail = TOD_CC_WAIT_PLAY;
+	cc->in_hand = 0;
+	cc->borrow = 0;
+	cc->queued = 0;
+	cc->desc = 0;
+	for (p = 0; p < TOD_CC_NPLANETS; p++) {
+		if ((cc->pending & (1u << p)) && level == cc_level[p]) {
+			cc_end(cc, TOD_CC_FAILED, p == 1u ? TOD_CC_WHY_LATE_SC : TOD_CC_WHY_LATE_FN);
+			return;
+		}
 	}
-	cc->seen_play = 1;
-	if (!cc_idle(pf)) {
-		cc->detail = TOD_CC_WAIT_WARMER;
-		return;
-	}
-	cc_start(cc);
+	cc->planned = 0;
+	sc_begin(cc);
+	plat_log("tod: Cache cutscenes: a level load, the rest goes ahead on the next level");
 }
 
 /* ------------------------------------------- Disable cutscene caching */
@@ -853,6 +1286,7 @@ static void ev_begin(struct tod_cc_state *cc, s32 level)
 	u32 cache = 0, n = 0, blocks = 0, paths = 0;
 
 	cc->ev_active = 0;
+	cc->sc_active = 0;
 	if (level < 0 || level >= (s32)TOD_NPLANETS) return;
 	if (mem_read_u32(TOD_FIOS_CACHE, &cache) != ST_OK || cache == 0 || (cache & 3u)) return;
 	if (mem_read_u32(cache + TOD_FC_NBLOCKS, &n) != ST_OK || mem_read_u32(cache + TOD_FC_BLOCKS, &blocks) != ST_OK) return;
@@ -950,13 +1384,8 @@ void tod_cc_tick(struct tod_cc_state *cc, const struct tod_as_state *as)
 
 	if (cc_active(cc)) cc->ticks++;
 
-	/*
-	 * A level load or the title ends a range in hand, and a request that has
-	 * seen gameplay: LevelPrefetch_setup gives the warmer the next level's
-	 * files. The auto's own request, made as its load began, waits on.
-	 */
-	if ((cc->state == TOD_CC_CACHING && (loading || as->cur_front != 0)) ||
-	    (cc->state == TOD_CC_WAITING && cc->seen_play && (loading || as->cur_front != 0)))
+	/* The title ends a request that has seen gameplay; one made at the title waits through the load out of it. */
+	if (cc_active(cc) && as->cur_front != 0 && (cc->seen_play || cc->state == TOD_CC_CACHING))
 		cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_LEVEL);
 
 	if (began) {
@@ -964,10 +1393,13 @@ void tod_cc_tick(struct tod_cc_state *cc, const struct tod_as_state *as)
 		/* A new run's load: the autosplitter's RESET, by the same two tests. */
 		if (cc->auto_on && !cc->evict_on && tod_fresh_run_load(as->cur_level)) {
 			cc_request(cc, 1, 0);
-			plat_log("tod: Cache cutscenes on reset: a new run, waiting for Metropolis's warmer");
+			plat_log("tod: Cache cutscenes on reset: a new run, ahead of Metropolis's warmer");
+		} else if (cc_active(cc)) {
+			cc_load(cc, as->cur_level);
 		}
 	}
 	if (cc->ev_active) ev_step(cc, loading);
+	if (cc->sc_active) sc_step(cc);
 
 	if (cc_active(cc)) {
 		if (cc->wait != 0) {
@@ -983,12 +1415,14 @@ void tod_cc_quit(struct tod_cc_state *cc)
 {
 	if (cc_active(cc)) cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_QUIT);
 	cc->ev_active = 0;
+	cc->sc_active = 0;
 }
 
 /*
- * Cache cutscenes: a request, which waits for gameplay and the warmer. One at
- * a time (BUSY while one runs); refused while Disable cutscene caching is on,
- * which would free the blocks again at the planet's load.
+ * Cache cutscenes: a request, which goes ahead of the warmer's own work in
+ * gameplay and carries on through level loads. One at a time (BUSY while one
+ * runs); refused while Disable cutscene caching is on, which would free the
+ * blocks again at the planet's load.
  */
 int tod_cc_trigger(struct tod_cc_state *cc, const struct tod_as_state *as)
 {
@@ -1005,8 +1439,9 @@ int tod_cc_trigger(struct tod_cc_state *cc, const struct tod_as_state *as)
 
 /*
  * The two toggles, qwark's own state (not LIVE, so either may come back at
- * boot). Disable cutscene caching ends a request under way and keeps the
- * auto from asking.
+ * boot). Disable cutscene caching ends a request under way (a range already
+ * in the warmer's slot is read, and freed again at its planet's load) and
+ * keeps the auto from asking.
  */
 int tod_cc_set(struct tod_cc_state *cc, u8 id, int on)
 {
@@ -1035,8 +1470,8 @@ u32 tod_cc_status(const struct tod_cc_state *cc)
 void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 {
 	static const char * const why[] = {
-		"Failed", "Level changed", "No level table", "Warmer stopped", "Caching disabled",
-		"Game not readable", "Game closed"
+		"Failed", "Title came first", "No level table", "Warmer stopped", "Caching disabled",
+		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon"
 	};
 	u32 detail = (word >> 24) & 15u, pct = (word >> 16) & 0xFFu, secs = (word >> 8) & 0xFFu;
 
@@ -1052,9 +1487,18 @@ void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 		qstrcat(out, cap, "%");
 		return;
 	case TOD_CC_DONE:
-		qstrcpy(out, cap, "Done, ");
+		/* "Done 104s 12.3MB/s", or nothing read: every block was in already. */
+		if (pct == 0) {
+			qstrcpy(out, cap, "Already cached");
+			return;
+		}
+		qstrcpy(out, cap, "Done ");
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), secs);
-		qstrcat(out, cap, " s");
+		qstrcat(out, cap, "s ");
+		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct / 10u);
+		qstrcat(out, cap, ".");
+		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct % 10u);
+		qstrcat(out, cap, "MB/s");
 		return;
 	case TOD_CC_FAILED:
 		qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
