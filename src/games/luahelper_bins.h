@@ -52,6 +52,14 @@ struct lh_desc {
 	u32 menu_off;
 	const u8 *glue;
 	u32 glue_len;
+	/*
+	 * Revision 1.29, the third console test: the look qwark sends that VM
+	 * once when the glue's own look failed (lh_diag.lua), whose answer is
+	 * a line of text for qwark.log. NULL but where the glue is; the length
+	 * stays.
+	 */
+	const u8 *diag;
+	u32 diag_len;
 };
 
 /* NULL for an executable with no Lua helper. */

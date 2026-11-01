@@ -1781,6 +1781,8 @@ static u8   g_native_waited;     /* a long wait of the helper's logged, until it
 static u32  g_native_short;      /* the helper's shortage count last seen (revision 1.29, the second crash) */
 static u32  g_native_short_loads; /* the loads word when a shortage was last logged, once a pause */
 static u8   g_native_short_said; /* and whether one ever was */
+static u8   g_native_diag;       /* the third console test: the helper's look to send (1) */
+static u8   g_native_diag_done;  /* and the failures it went for once: bit0 no list, bit1 no Cheats screen */
 
 /* Pause menu frames the helper waits for the presentation before the core says so (about five seconds). */
 #define NATIVE_WAIT_LOG 300
@@ -2107,6 +2109,8 @@ static int native_install(void)
 		g_native_short = 0;
 		g_native_short_loads = 0;
 		g_native_short_said = 0;
+		g_native_diag = 0;
+		g_native_diag_done = 0;
 	}
 
 	/* Taken as install() takes any renderer's mailbox (its tail, the same words). */
@@ -2142,7 +2146,21 @@ static int native_install(void)
  * pool short even after a full collection, which keeps the helper and the
  * glue out of the VM (and takes a glue that was in back out), said once a
  * pause with what was left; and what was left beside the glue's "in".
+ *
+ * Revision 1.29, the third console test (docs/tod-menu.md 11): the glue
+ * finds the Options list and the Cheats screen apart, so it says more: the
+ * list in with the Cheats screen not met yet, the Cheats screen met late,
+ * and no Cheats screen when the Trainer went to its slide. After either
+ * failure (no list, no Cheats screen) the helper's look (lh_diag.lua) is
+ * sent once a session for each, and what it saw is logged.
  */
+static void native_diag_want(u8 bit)
+{
+	if ((g_native_diag_done & bit) != 0) return;
+	g_native_diag_done |= bit;
+	g_native_diag = 1;
+}
+
 static void native_notes(void)
 {
 	const struct menu_native *n = g_native;
@@ -2174,11 +2192,22 @@ static void native_notes(void)
 	if (mem_read_u32(n->note_addr, &note) != ST_OK || note == 0) return;
 	if (note == g_native_note) return;
 	g_native_note = note;
-	if (note == n->note_in)
+	if (note == n->note_in) {
 		plat_log("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: %u blocks or more left "
 		         "for small objects, %u in its largest class)", (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
-	else if (note == n->note_none)
-		plat_log("menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's");
+	} else if (note == n->note_in_list) {
+		plat_log("menu: the pause menu's glue is in: TRAINER in Options, the Cheats screen met when the Trainer "
+		         "opens (its Lua pool: %u blocks or more left for small objects, %u in its largest class)",
+		         (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
+	} else if (note == n->note_late) {
+		plat_log("menu: the Trainer met the game's Cheats screen on its slide; its page is in");
+	} else if (note == n->note_none) {
+		plat_log("menu: the pause menu's glue found no Options list; Help stays the game's");
+		native_diag_want(1);
+	} else if (note == n->note_noch) {
+		plat_log("menu: the Trainer found no Cheats screen on its slide and went back to the pause's list");
+		native_diag_want(2);
+	}
 }
 
 /*
@@ -2204,6 +2233,11 @@ static void native_glue(void)
 	} else if (glue == n->glue_stopped && loads != g_native_stopped) {
 		g_native_stopped = loads;
 		plat_log("menu: the pause menu's glue stopped on an error and put Help back (LUA_STATUS has it)");
+	} else if (g_native_diag) {
+		int rc = lua_core_menu_diag();
+
+		if (rc != ST_BUSY) g_native_diag = 0;
+		if (rc != ST_OK && rc != ST_BUSY) plat_log("menu: the glue's look could not be sent (%d)", rc);
 	}
 	native_notes();
 }

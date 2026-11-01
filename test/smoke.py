@@ -5989,6 +5989,7 @@ TOD_LM_WHY, TOD_LM_WAITS = 0x24, 0x28        # the crash fix: why the helper kep
 TOD_LM_WHY_FIRST = 0x004
 TOD_LM_ROOM, TOD_LM_SHORT = 0x30, 0x34     # the second crash: the pause menu's Lua pool, and collections that left it short
 TOD_LM_WHY_MEMORY = 0x080
+TOD_LM_NOTE, TOD_LM_NOTE_NONE = 0x2C, 2     # the third console test: the glue's note, "no Options list"
 TOD_LUA_MB = 0x008CA000
 TOD_LUA_CAVE = (0x00867360, 0x00870000)
 TOD_LUA_SITES = {0x004C461C: 0x4BDCC909, 0x0068F8F8: 0x4E800020, 0x000242B0: 0x4BFED721, 0x004C5ABC: 0x4BDA1825}
@@ -6055,6 +6056,20 @@ def smoke_tod_menu(c, sim):
     status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 15, LUA_EXEC_MENU) + b"return _VERSION")
     check(status == ST_OK and struct.unpack(">i", body[:4])[0] == 0 and body[12:21] == b"Lua 5.0.2",
           "ToD menu: LUA_EXEC flags 1 runs in the pause menu's VM", (status, body[:24]))
+
+    # The third console test: the glue's look found no Options list, so qwark sends the helper's look, once.
+    req = mem_read_u32(c, TOD_LUA_MB + 0x08)
+    mem_write(c, TOD_MENU_STATE + TOD_LM_NOTE, struct.pack(">I", TOD_LM_NOTE_NONE))
+    wait_while(c, lambda: mem_read_u32(c, TOD_LUA_MB + 0x0C) != req + 1, 3.0, 0.05)
+    status, chunk = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x600, 64))
+    status2, out = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x200, 16))
+    check(status == ST_OK and status2 == ST_OK and mem_read_u32(c, TOD_LUA_MB + 0x08) == req + 1 and
+          b"qwark_state" in chunk and out.startswith(b"g=301,"),
+          "ToD menu: a look of the glue's that failed: qwark sends the helper's look, the pause menu's frame answers",
+          (chunk[:40], out))
+    module_sleep(c, 0.3)
+    check(mem_read_u32(c, TOD_LUA_MB + 0x08) == req + 1, "ToD menu: and only once")
+    mem_write(c, TOD_MENU_STATE + TOD_LM_NOTE, struct.pack(">I", 0))
     sim.send("fakepause off")
     module_sleep(c, 0.2)
     status, body = c.call(OP_LUA_EXEC, struct.pack(">HH", 15, LUA_EXEC_MENU) + b"return _VERSION")
@@ -6425,7 +6440,7 @@ def smoke_rpcs3_tod(c, pine):
     pine.poke(TOD_MENU_STATE + TOD_LM_LOADS, struct.pack(">I", 1))
     wait_while(c, lambda: struct.unpack(">I", pine.peek(TOD_MAILBOX + 8, 4))[0] == req, 3.0, 0.05)
     check(struct.unpack(">I", pine.peek(TOD_MAILBOX + 8, 4))[0] == req + 1 and
-          pine.peek(TOD_MAILBOX + 0x26, 1) == b"\x01" and pine.peek(TOD_MAILBOX + 0x600, 12) == b"local Q = qw",
+          pine.peek(TOD_MAILBOX + 0x26, 1) == b"\x01" and pine.peek(TOD_MAILBOX + 0x600, 10) == b"local Q=qw",
           "rpcs3: a pause menu VM's ask for the glue: qwark sends it, a request for the menu's VM")
     pine.poke(0x101CB220, bytes(4))
     pine.shutdown_game()

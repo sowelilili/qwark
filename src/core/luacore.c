@@ -38,6 +38,8 @@ static u8  g_attached;                 /* luamb_attach done this process */
 static u8  g_have_result;
 /* Revision 1.29: the menu glue's request, out (its seq) or none (0); its answer is never a LUA_EXEC's. */
 static u32 g_glue_seq;
+/* Revision 1.29, the third console test: the look's (lua_core_menu_diag), the same way. */
+static u32 g_diag_seq;
 static struct luamb_result g_res;
 static char g_out[LUAMB_OUT_CAP];
 static u32 g_out_len;
@@ -76,6 +78,32 @@ static const struct lh_desc *desc_now(void)
 	return g->lua_desc();
 }
 
+/*
+ * Revision 1.29, the third console test: the look's answer (lh_diag.lua), a
+ * line of up to LUAMB_OUT_CAP - 1 characters, into qwark.log in pieces a log
+ * line holds.
+ */
+#define DIAG_PIECE 180
+
+static void log_diag(u32 n)
+{
+	char piece[DIAG_PIECE + 1];
+	u32 off = 0, k, parts = (n + DIAG_PIECE - 1) / DIAG_PIECE;
+
+	if (n == 0) {
+		plat_log("menu: what the glue saw: nothing");
+		return;
+	}
+	for (k = 1; off < n; k++) {
+		u32 len = n - off < DIAG_PIECE ? n - off : DIAG_PIECE;
+
+		memcpy(piece, g_out + off, len);
+		piece[len] = 0;
+		plat_log("menu: what the glue saw (%u/%u): %s", (unsigned)k, (unsigned)parts, piece);
+		off += len;
+	}
+}
+
 void lua_core_enter(void)
 {
 	const struct lh_desc *d = desc_now();
@@ -86,6 +114,7 @@ void lua_core_enter(void)
 	g_attached = 0;
 	g_have_result = 0;
 	g_glue_seq = 0;
+	g_diag_seq = 0;
 	g_out_len = 0;
 	g_out[0] = 0;
 	memset(&g_res, 0, sizeof(g_res));
@@ -137,6 +166,19 @@ void lua_core_tick(void)
 			plat_log("menu: the pause menu's glue was not run: its Lua pool is short even after a collection; Help stays the game's");
 		else if (res.status != LUAMB_ST_OK)
 			plat_log("menu: the pause menu's glue failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
+		g_out_len = 0;
+		g_out[0] = 0;
+		return;
+	}
+	if (g_diag_seq != 0 && res.seq == g_diag_seq) {
+		/* Revision 1.29, the third console test: what the glue saw, for qwark.log. */
+		g_diag_seq = 0;
+		if (res.status == LUAMB_ST_NO_ROOM)
+			plat_log("menu: the glue's look was not run: the pause menu's Lua pool is short");
+		else if (res.status != LUAMB_ST_OK)
+			plat_log("menu: the glue's look failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
+		else
+			log_diag(rc > 0 ? (u32)rc : 0);
 		g_out_len = 0;
 		g_out[0] = 0;
 		return;
@@ -203,6 +245,28 @@ int lua_core_menu_glue(void)
 	default:                  return ST_UNSUPPORTED;
 	}
 	g_glue_seq = g_lc.seq;
+	return ST_OK;
+}
+
+/* Revision 1.29, the third console test: the helper's look at the pause (lh_diag.lua), as the glue is sent. */
+int lua_core_menu_diag(void)
+{
+	const struct lh_desc *d = desc_now();
+	int rc;
+
+	if (d == NULL || d->diag == NULL || d->diag_len == 0) return ST_UNSUPPORTED;
+	if (d != g_desc) lua_core_enter();
+	rc = ensure_helper(d);
+	if (rc != ST_OK) return rc;
+	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
+	switch (luamb_send_to(&g_lc, &g_io, (const char *)d->diag, d->diag_len, now_ms(), LUAMB_TARGET_MENU)) {
+	case LUAMB_SEND_OK:       break;
+	case LUAMB_SEND_BUSY:     return ST_BUSY;
+	case LUAMB_SEND_NO_STATE: return ST_NOT_FOUND;
+	case LUAMB_SEND_IO:       return ST_IO_ERROR;
+	default:                  return ST_UNSUPPORTED;
+	}
+	g_diag_seq = g_lc.seq;
 	return ST_OK;
 }
 

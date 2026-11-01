@@ -147,6 +147,17 @@ static int press(u32 kind, int row)
 	return ok;
 }
 
+/* Whether the n bytes at p hold the string s. */
+static int has_bytes(const u8 *p, u32 n, const char *s)
+{
+	u32 k, len = (u32)strlen(s);
+
+	for (k = 0; k + len <= n; k++) {
+		if (memcmp(p + k, s, len) == 0) return 1;
+	}
+	return 0;
+}
+
 static int hooks_in(const struct lh_desc *d, int ours)
 {
 	u8 i;
@@ -173,6 +184,9 @@ static void test_install(void)
 	check(d->menu_ptr == 0x101CB220u && d->menu_off == 0x106Cu && d->glue != NULL &&
 	      d->glue_len > 1000 && d->glue_len <= LUAMB_CHUNK_CAP,
 	      "and the pause menu's VM, and its glue, which fits one request");
+	check(d->diag != NULL && d->diag_len > 500 && d->diag_len <= LUAMB_CHUNK_CAP &&
+	      has_bytes(d->diag, d->diag_len, "qwark_state") && has_bytes(d->glue, d->glue_len, "qwark_state=T"),
+	      "revision 1.29, the third console test: the helper's look, which reads the glue's qwark_state");
 	check(LM_BOX_SIZE == MBOX_OFF_ROWS + LM_ROWS * MBOX_ROW_SIZE &&
 	      LM_STATE_SIZE == LM_PAGE + LM_BOX_SIZE - MBOX_OFF_PAGE_KEY && LM_BOX + LM_BOX_SIZE <= LM_STATE &&
 	      LM_STATE + LM_STATE_SIZE <= 0x008D0000u && d->mailbox + d->mailbox_size <= LM_BOX,
@@ -551,13 +565,94 @@ static void test_gate(void)
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
 	tick(4);
 	check(!host_log_seen("glue is in"), "the next pause the same: not said again");
-	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
-	tick(4);
-	check(host_log_seen("menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's"),
-	      "a pause where it found nothing: said");
 	poke32(LM_STATE + LM_NOTE, 0);
 	poke32(LH_PAUSE_MS, 0);
 	poke32(LH_PAUSE_STATE, 0);
+}
+
+/*
+ * Revision 1.29, the third console test (docs/tod-menu.md 11): the glue's
+ * finer notes, and the helper's look (lh_diag.lua) qwark sends once after a
+ * failure of each kind, its answer logged in pieces a log line holds. The
+ * glue's own cases are test/test_glue.py's, which runs it in a real Lua.
+ */
+static void test_diag(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u32 mb = d->mailbox, seq;
+	int i;
+
+	group("ToD's console menu: the glue's notes, and the look qwark sends when it found nothing");
+	check(wait_ready() || menu_state() == MENU_READY, "the menu is in");
+	host_set_fake_pause(1);
+	for (i = 0; i < 4; i++) {
+		host_fake_menu_frame();
+		tick(8);
+	}
+	check(peek32(LM_STATE + LM_GLUE) == LM_GLUE_LOADED, "a pause, its glue in");
+
+	host_log_clear();
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN_LIST);
+	tick(4);
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options, the Cheats screen met when the "
+	                    "Trainer opens"), "the list in, the Cheats screen not met yet: said");
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_LATE);
+	tick(4);
+	check(host_log_seen("menu: the Trainer met the game's Cheats screen on its slide; its page is in"),
+	      "the Cheats screen met on its slide: said");
+
+	/* No Options list: said, and the look sent, a request for the menu's VM. */
+	seq = peek32(mb + LUAMB_OFF_REQ);
+	host_log_clear();
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
+	tick(8);
+	check(host_log_seen("menu: the pause menu's glue found no Options list; Help stays the game's"),
+	      "no Options list: said");
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1 && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MENU &&
+	      peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->diag_len &&
+	      memcmp(host_mem_ptr(mb + LUAMB_OFF_CHUNK), d->diag, d->diag_len) == 0,
+	      "and the look goes to the pause menu's VM");
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_ACK) == seq + 1 &&
+	      host_log_seen("menu: what the glue saw (1/2): g=301,301,1,0,-,0 s=uuutffn sl=nil reg=t,23,23,4 ") &&
+	      host_log_seen("menu: what the glue saw (2/2): ") && host_log_seen("ListUpdater:mh+ end"),
+	      "its answer in qwark.log, in two lines (a log line holds 180 characters of it)");
+	check(!host_log_seen("lua: request"), "and not as a LUA_EXEC's answer");
+
+	/* Once: the next pause that finds no list sends nothing more. */
+	poke32(LM_STATE + LM_NOTE, 0);
+	tick(4);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
+	tick(8);
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1, "once a session: no second look for the same failure");
+
+	/* No Cheats screen: said, and its own look, here into a pool short of a load's room. */
+	host_log_clear();
+	host_set_fake_pause(4);
+	poke32(LM_STATE + LM_NOTE, LM_NOTE_NOCH);
+	tick(8);
+	check(host_log_seen("menu: the Trainer found no Cheats screen on its slide and went back to the pause's list"),
+	      "the Trainer found no Cheats screen: said");
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 2 && peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->diag_len,
+	      "and its look sent");
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_ACK) == seq + 2 &&
+	      host_log_seen("menu: the glue's look was not run: the pause menu's Lua pool is short"),
+	      "a pool short of a load's room: NO_ROOM, said");
+	check(!host_log_seen("what the glue saw"), "and nothing else");
+
+	/* The tight pool's shortage was counted and said for this pause: the next tests start from none, in another. */
+	poke32(LM_STATE + LM_NOTE, 0);
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	poke32(LM_STATE + LM_SHORT, 0);
+	tick(4);
+	poke32(LM_STATE + LM_LOADS, peek32(LM_STATE + LM_LOADS) + 1u);
+	tick(4);
 }
 
 /* The fake console's pause whose presentation never comes up: the helper never enters it, the core says so. */
@@ -825,6 +920,7 @@ void test_tod_menu(void)
 	test_requests();
 	test_glue();
 	test_gate();
+	test_diag();
 	test_gate_fake();
 	test_room();
 	test_room_log();

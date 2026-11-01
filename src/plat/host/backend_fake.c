@@ -391,9 +391,12 @@ static void seed_tod(void)
  * scale, `error(` is a runtime error, `while true` never comes back (the
  * helper stays inside it), and anything else answers nothing. Revision 1.29:
  * a request for the other VM (target) is left; a chunk that defines
- * qwark_frame (the console menu's glue) says so in *glue. Under g_mem_lock.
- * Returns 1 when it answered a request.
+ * qwark_frame (the console menu's glue) says so in *glue; the helper's look
+ * (lh_diag.lua, the third console test) answers FAKE_DIAG_OUT, a line longer
+ * than a log line holds. Under g_mem_lock. Returns 1 when it answered a
+ * request.
  */
+#define FAKE_DIAG_OUT "g=301,301,1,0,-,0 s=uuutffn sl=nil reg=t,23,23,4 blankHandler: optHandler:+ " 	"controlHandler: moveHandler: helpHandler: TextScroller: invhandler: skillHandler: itemhandler: " 	"slideStepper: quickHandler: cineListUpdater: ScrollableList:+ skinHandler: gadgetHandler: " 	"weaponHandler: conceptHandler: ListUpdater:+ ScrollableList: ListUpdater:mh+ end"
 static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 {
 	/* `fakepause tight` (the second crash): a menu request finds the pool short of a load's room (glue NULL). */
@@ -436,6 +439,9 @@ static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 			type = LUAMB_T_STRING;
 		} else if (strstr(chunk, "_VERSION") != NULL) {
 			out = "Lua 5.0.2";
+			type = LUAMB_T_STRING;
+		} else if (strstr(chunk, "qwark_state") != NULL && strstr(chunk, "table.concat") != NULL) {
+			out = FAKE_DIAG_OUT;
 			type = LUAMB_T_STRING;
 		}
 	}

@@ -28,6 +28,19 @@
 -- collection leaves too little: everything wrapped goes back, and the glue
 -- is garbage.
 --
+-- Finding the pause's behaviours (the third console test, docs/tod-menu.md
+-- 11): by what they hold, among the keys of scene._table_ActDeactRegisters,
+-- the table every behaviour joins in its onInitialize. The pause's list
+-- (ListUpdater: the menuData row whose callback is its own onHelp, in
+-- whichever menu holds it) is all the TRAINER row needs; the Cheats screen
+-- (cheatHandler: changeCheatState) only the Trainer page, and a behaviour
+-- of a slide not shown yet may not have joined, so it is looked for again
+-- every frame once the Trainer goes to its slide, and the page waits for it.
+-- The combo needs neither: only the scene and Node.goToSlide. The list is
+-- looked for every tenth frame and, past TRIES looks, every sixtieth for the
+-- rest of the pause; the notes say what came of it, and qwark sends a look
+-- of its own (lh_diag.lua, its answer in qwark.log) when one is a failure.
+--
 -- Nothing is decided here. The pages, their rows, what a row does and the
 -- live values are qwark's, in C (src/core/menu.c), posted into the console
 -- menu's mailbox exactly as for the four original games; the Lua helper
@@ -36,8 +49,9 @@
 -- function, qw(op, ...), lh_menu.h's LM_OP_*. What is here is the glue
 -- the game's menu system needs:
 --
---   * Options' Help row becomes TRAINER (pause.ListUpdater's menuData,
---     OPTIONS_MENU_INDEX, row 4) while qwark says so (menu.help);
+--   * Options' Help row becomes TRAINER (the ListUpdater's menuData row
+--     whose callback is its onHelp: OPTIONS_MENU_INDEX's fourth) while qwark
+--     says so (menu.help);
 --   * TRAINER, or qwark's open request (the menu combo), shows the page on
 --     the game's Cheats screen (slide 16): its handler (cheatHandler) and
 --     its ScrollableList draw qwark's rows, the label at the left and the
@@ -64,8 +78,8 @@ local GL = _G or getfenv(0)
 
 -- qw()'s operations (lh_menu.h).
 local OP_POLL, OP_ROW, OP_TEXT, OP_EVENT, OP_STATE, OP_TAKE, OP_NOTE = 0, 1, 2, 3, 4, 5, 6
--- What the glue tells qwark's log (LM_NOTE_*): in, or gave up.
-local NOTE_IN, NOTE_NONE = 1, 2
+-- What the glue tells qwark's log (LM_NOTE_*): in (the Cheats screen known, or not yet), no list, no Cheats screen, the Cheats screen found late.
+local NOTE_IN, NOTE_NONE, NOTE_NOCH, NOTE_IN_LIST, NOTE_LATE = 1, 2, 3, 4, 5
 -- The mailbox's words (src/core/menubox.h).
 local K_LINK = 1
 local F_ENABLED, F_STEPS = 1, 4
@@ -76,12 +90,15 @@ local REQ_OPEN, REQ_CLOSE = 1, 2
 local SLIDE_CHEATS, SLIDE_LIST = 16, 21
 -- Frames of a new pause before a request is taken: the pause settles first.
 local SETTLE = 15
--- The look for the pause's nodes: every tenth frame, this many times.
+-- The look for the pause's list: every tenth frame this many times, then every sixtieth.
 local TRIES = 30
+-- Frames the Trainer waits on the Cheats screen's slide for its behaviour before it gives up.
+local WAITCH = 90
 
--- The menu's state for this pause.
+-- The menu's state for this pause (qwark_state: lh_diag.lua reads it).
 local T = { on = false, age = 0, ready = false, tries = 0, gen = -1, vgen = -1,
-            n = 1, pf = 0, seen = 0, help = -1 }
+            n = 1, pf = 0, seen = 0, help = -1, chw = 0 }
+qwark_state = T
 -- The game's own functions, as they were before the glue wrapped them.
 local G = {}
 -- Every function the glue put into a game's table, and the game's own it took the place of: what qwark_quit puts back.
@@ -175,7 +192,7 @@ local function open()
   if on ~= 1 then return end
   T.on = true
   T.gen, T.vgen, T.n, T.pf, T.seen = gen, vgen, math.max(n, 1), pf, 0
-  T.cur, T.wait = cur + 1, 2
+  T.cur, T.wait, T.chw = cur + 1, 2, WAITCH
   T.title = T.title or get(TITLE, "textString")
   T.spl = T.spl or get(SPL, "textString")
   Q(OP_STATE, 1)
@@ -250,7 +267,14 @@ local function wrapg(k, f)
   end, g)
 end
 
-local function install()
+-- The Cheats screen's own: its methods, its title and counter. Once, when its behaviour is found.
+local function installCH()
+  local bg = get(get(CH, "parent"), "shell_BG")
+  TITLE = get(bg, "Page_name2")
+  SPL = get(bg, "skillpoint_label")
+  SPV = get(CH, "totalSkillpoints") or get(bg, "skillpoint_value")
+  T.title = T.title or get(TITLE, "textString")
+  T.spl = T.spl or get(SPL, "textString")
   wrap(CH, "getNumListItems", function(self) return T.n end)
   wrap(CH, "isSelectable", function(self, i) return flag(i, F_ENABLED) end)
   wrap(CH, "setListItemValue", function(self, i, item)
@@ -276,6 +300,10 @@ local function install()
       if T.on and i then scroll(i) end
     end, changed)
   end
+end
+
+-- The game's globals and Node's goToSlide: once, when the scene is found.
+local function installG()
   -- What the screen's own code that stays (onActivate, onUpdate, onSelectedItemChanged) asks of the game; with the menu up qwark answers.
   -- The rest of its cheat calls are in the methods wrapped above, which the list and the handler reach by name.
   wrapg("is_cheat_unlocked", function(i) return flag(i + 1, F_ENABLED) end)
@@ -289,62 +317,68 @@ local function install()
   end, G.slide)
 end
 
--- The pause's options list and Cheats screen, by what they hold: menuData's Help row, changeCheatState.
-local function isLU(n)
-  local md, oi = get(n, "menuData"), get(n, "OPTIONS_MENU_INDEX")
-  local o = type(md) == "table" and oi and md[oi]
-  return type(o) == "table" and type(o[4]) == "table" and o[4][2] == get(n, "onHelp") and o[4][2] ~= nil
-end
-
+-- The pause's Cheats screen, by what it holds.
 local function isCH(n)
   return type(get(n, "changeCheatState")) == "function" and type(get(n, "getNumListItems")) == "function"
 end
 
--- The pause's nodes, once they are all there; looked for every tenth frame, TRIES times at most, among the registry's behaviours only.
-local function setup()
-  if T.ready or T.gave then return T.ready end
-  T.tries = T.tries + 1
-  if math.mod(T.tries, 10) ~= 1 then return false end
-  if T.tries > TRIES * 10 then
-    T.gave = true
-    Q(OP_NOTE, NOTE_NONE)
-    return false
-  end
-  S = scene
-  if not obj(S) or type(Node) ~= "table" or type(Node.goToSlide) ~= "function" then return false end
-  local lu, ch
-  local function f(n)
-    if not lu and isLU(n) then lu = n elseif not ch and isCH(n) then ch = n end
-    return lu ~= nil and ch ~= nil
-  end
-  -- Every behaviour that called _useOnActivateDeactivate (AnarkLibraryExtensions), both of these among them.
+-- One look among the registry's behaviours (AnarkLibraryExtensions: every one that called _useOnActivateDeactivate) for what is still missing:
+-- the list, by the menuData row whose callback is its own onHelp, in whichever menu holds it; the Cheats screen.
+local function look()
   local reg = get(S, "_table_ActDeactRegisters")
-  if type(reg) == "table" then
-    for n in pairs(reg) do
-      if obj(n) and f(n) then break end
+  if type(reg) ~= "table" then return end
+  for n in pairs(reg) do
+    if obj(n) then
+      local md, h = get(n, "menuData"), get(n, "onHelp")
+      if not LU and type(md) == "table" and type(h) == "function" then
+        for m, rows in pairs(md) do
+          if type(rows) == "table" then
+            for r, it in pairs(rows) do
+              if type(it) == "table" and it[2] == h then LU, T.lm, T.lr, G.help = n, m, r, it end
+            end
+          end
+        end
+      end
+      if not CH and isCH(n) then
+        CH = n
+        installCH()
+        T.gen = -1
+        if T.on then Q(OP_NOTE, NOTE_LATE) end
+      end
     end
   end
-  if not (lu and ch) then return false end
-  LU, CH = lu, ch
-  local bg = get(get(CH, "parent"), "shell_BG")
-  TITLE = get(bg, "Page_name2")
-  SPL = get(bg, "skillpoint_label")
-  SPV = get(CH, "totalSkillpoints") or get(bg, "skillpoint_value")
-  local options = LU.menuData[LU.OPTIONS_MENU_INDEX]
-  G.help = options[4]
-  G.trainer = { "TRAINER", function(self) open() end }
-  install()
-  T.ready = true
-  Q(OP_NOTE, NOTE_IN)
+end
+
+-- The scene and Node first (all the combo needs), then the list and the Cheats screen, each as it turns up.
+local function setup()
+  T.tries = T.tries + 1
+  if not LU and T.tries == TRIES * 10 then Q(OP_NOTE, NOTE_NONE) end
+  if not T.ready then
+    S = scene
+    if not obj(S) then S = get(Presentation, "scene") end
+    if not obj(S) or type(Node) ~= "table" or type(Node.goToSlide) ~= "function" then return false end
+    G.trainer = { "TRAINER", function(self) open() end }
+    installG()
+    T.ready = true
+  end
+  if not (LU and CH) and ((T.on and not CH) or math.mod(T.tries, T.tries > TRIES * 10 and 60 or 10) == 1) then
+    local had = LU
+    look()
+    if LU and not had then
+      if CH then Q(OP_NOTE, NOTE_IN) else Q(OP_NOTE, NOTE_IN_LIST) end
+    end
+  end
   return true
 end
 
--- Options' fourth row: TRAINER while qwark says so, the game's Help otherwise.
+-- Options' Help row (where the look found it): TRAINER while qwark says so, the game's Help otherwise.
 local function helprow(h)
   if h == T.help or not LU then return end
+  local rows = get(LU, "menuData")
+  rows = type(rows) == "table" and rows[T.lm]
+  if type(rows) ~= "table" then return end
   T.help = h
-  local options = LU.menuData[LU.OPTIONS_MENU_INDEX]
-  if h == 1 then options[4] = G.trainer else options[4] = G.help end
+  if h == 1 then rows[T.lr] = G.trainer else rows[T.lr] = G.help end
 end
 
 local function frame()
@@ -366,6 +400,15 @@ local function frame()
     end
   end
   if not T.on then return end
+  -- The Trainer on the Cheats screen's slide before its behaviour turned up: waited for, then back to the list.
+  if not CH then
+    T.chw = T.chw - 1
+    if T.chw <= 0 then
+      leave(true)
+      Q(OP_NOTE, NOTE_NOCH)
+    end
+    return
+  end
   local ls = get(CH, "listBehavior")
   if gen ~= T.gen or math.max(n, 1) ~= T.n then
     T.gen, T.vgen, T.n, T.pf, T.seen = gen, vgen, math.max(n, 1), pf, 0
@@ -377,7 +420,7 @@ local function frame()
     texts()
     call(ls, "updateAllItems")
   end
-  -- Two frames after open(): the Cheats screen is up, with its first row; the cursor goes where qwark keeps it.
+  -- Two frames after open() (or after the Cheats screen turned up): the screen is up, with its first row; the cursor goes where qwark keeps it.
   if T.cur then
     T.wait = T.wait - 1
     if T.wait <= 0 then
@@ -403,7 +446,7 @@ end
 function qwark_quit()
   pcall(leave, false)
   pcall(helprow, 0)
-  T.on, T.gave = false, true
+  T.on = false
   for i = NW, 1, -1 do
     pcall(assign, WO[i], WK[i], WG[i])
   end

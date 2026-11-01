@@ -41,7 +41,7 @@ ASFLAGS="-Wa,-mregnames -I$DIR"
 # game tag : header : title : LH_GAME number
 GAMES="tod"
 
-sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua src/core/menubox.h"
+sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua $DIR/lh_diag.lua src/core/menubox.h"
 for g in $GAMES; do sources="$sources $DIR/lh_$g.h"; done
 
 if [ "$1" = "--if-stale" ]; then
@@ -91,6 +91,27 @@ emit_bytes() {
 			}
 		}
 		END { if (n % 12 != 0) printf "\n" }'
+}
+
+# A Lua file's comment lines, indentation and empty lines out (no line of
+# ours has code before a comment).
+lua_strip() {
+	tr -d '\r' < "$1" | sed -e 's/^[ \t]*//' -e '/^--/d' -e '/^$/d'
+}
+
+# Revision 1.29: and the spaces around = == ~= <= >= + - * / < > and ",".
+# Safe for our Lua alone, so it is checked: no string literal of the file
+# holds a space (only spaces are taken out, so a literal without one comes
+# through as it was), and no "- -" (which would become a comment); ".."
+# keeps its spaces (a number before it would become a malformed number).
+lua_min() {
+	bad=$(awk -F'"' '{ for (i = 2; i <= NF; i += 2) if ($i ~ / /) print NR ": " $i }' "$1")
+	[ -z "$bad" ] || { echo "luahelper: $1 has a string with a space, which lua_min cannot keep: $bad" >&2; exit 1; }
+	if grep -n -- '- -' "$1" >&2; then
+		echo "luahelper: $1 has \"- -\", which lua_min would make a comment" >&2
+		exit 1
+	fi
+	sed -e 's/ *\(==\|~=\|<=\|>=\|=\|[-+*\/<>,]\) */\1/g' "$1"
 }
 
 game_number() {
@@ -164,10 +185,17 @@ for g in $GAMES; do
 	# taken out (a line that starts with "--" is a comment, and no line of the
 	# glue has code before one). qwark sends it to the pause menu's VM as a
 	# request (it is far too big for the RPCS3 patch), so it goes into
-	# luahelper_bins.c beside the cave, and has to fit a request.
+	# luahelper_bins.c beside the cave, and has to fit a request. Since the
+	# third console test (docs/tod-menu.md 11) the spaces around its
+	# operators and commas go too (lua_min): that is what keeps it in one.
+	# The look qwark sends when the glue's look failed (lh_diag.lua) is
+	# only stripped; it is small.
 	glue=$OUT/$g-glue.lua
+	diag=$OUT/$g-diag.lua
 	chunk_cap=$(need src/core/luamb.h LUAMB_CHUNK_CAP)
-	tr -d '\r' < "$DIR/lh_glue.lua" | sed -e 's/^[ \t]*//' -e '/^--/d' -e '/^$/d' > "$glue"
+	lua_strip "$DIR/lh_glue.lua" > "$OUT/$g-glue-full.lua"
+	lua_min "$OUT/$g-glue-full.lua" > "$glue"
+	lua_strip "$DIR/lh_diag.lua" > "$diag"
 
 	$CC $CFLAGS -DLH_GAME=$num -c -o "$OUT/$g.o" "$DIR/luahelper.c"
 	# Through the driver, as the savefile helper's stubs are: it stamps the
@@ -238,17 +266,28 @@ for g in $GAMES; do
 		echo "luahelper: $g glue is $glue_size bytes, more than a request's $chunk_cap" >&2
 		exit 1
 	}
+	diag_size=$(wc -c < "$diag" | tr -d ' ')
+	[ "$diag_size" -le $((chunk_cap)) ] || {
+		echo "luahelper: $g diag is $diag_size bytes, more than a request's $chunk_cap" >&2
+		exit 1
+	}
 	{
 		echo "/* $g, the console menu's glue (lh_glue.lua), $glue_size bytes of Lua */"
 		echo "static const u8 lh_${g}_glue[] = {"
 		emit_bytes "$glue"
 		echo "};"
 		echo
+		echo "/* $g, the look qwark sends when the glue's failed (lh_diag.lua), $diag_size bytes of Lua */"
+		echo "static const u8 lh_${g}_diag[] = {"
+		emit_bytes "$diag"
+		echo "};"
+		echo
 	} >> "$OUT/arrays.c"
 
 	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 4," >> "$OUT/descs.txt"
 	echo "	  ${mailbox}u, LUAMB_SIZE, ${vm}u, ${vm_state}u," >> "$OUT/descs.txt"
-	echo "	  ${pause_ms}u, ${ms_state}u, LH_TABLE(lh_${g}_glue), ${glue_size}u }," >> "$OUT/descs.txt"
+	echo "	  ${pause_ms}u, ${ms_state}u, LH_TABLE(lh_${g}_glue), ${glue_size}u," >> "$OUT/descs.txt"
+	echo "	  LH_TABLE(lh_${g}_diag), ${diag_size}u }," >> "$OUT/descs.txt"
 
 	echo "  $g .text $cave $size bytes (cave to $cave_end)" >> "$OUT/report.txt"
 	echo "  $g hook $hook_addr = $hook_word (bl $entry), was $hook_orig" >> "$OUT/report.txt"
@@ -256,6 +295,7 @@ for g in $GAMES; do
 	echo "  $g menu $menu_addr = $menu_word (bl $menu), was $menu_orig" >> "$OUT/report.txt"
 	echo "  $g pause $pause_addr = $pause_word (bl $pause), was $pause_orig" >> "$OUT/report.txt"
 	echo "  $g glue $glue_size bytes of Lua (a request holds $((chunk_cap)))" >> "$OUT/report.txt"
+	echo "  $g diag $diag_size bytes of Lua" >> "$OUT/report.txt"
 	echo "  $g mailbox $mailbox, $mb_size bytes" >> "$OUT/report.txt"
 done
 
@@ -374,6 +414,14 @@ struct lh_desc {
 	u32 menu_off;
 	const u8 *glue;
 	u32 glue_len;
+	/*
+	 * Revision 1.29, the third console test: the look qwark sends that VM
+	 * once when the glue's own look failed (lh_diag.lua), whose answer is
+	 * a line of text for qwark.log. NULL but where the glue is; the length
+	 * stays.
+	 */
+	const u8 *diag;
+	u32 diag_len;
 };
 
 /* NULL for an executable with no Lua helper. */

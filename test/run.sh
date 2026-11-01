@@ -150,6 +150,14 @@ echo "compiling $TOD_OUT"
 echo "running $TOD_OUT"
 "./$TOD_OUT"
 
+# Revision 1.29, the third console test (docs/tod-menu.md 11): ToD's pause
+# menu glue and the helper's look, run by a real Lua against a stand-in pause
+# menu (test/glue_harness.lua), the source and the bytes qwark sends. It needs
+# a Lua DLL on the PC (QWARK_TEST_LUA, or a known place) and says SKIP
+# without one.
+echo "running test/test_glue.py"
+"$PYOK" -I test/test_glue.py
+
 # The installer package's EBOOT (installer/): its boot_plugins.txt edit and its
 # install over a fake HDD, a program of its own.
 sh installer/test/run.sh

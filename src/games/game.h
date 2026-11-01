@@ -614,7 +614,13 @@ struct game_api {
  *               how many frames in a row; the core logs a long wait once
  *   note_addr   u32, the glue's: note_in once it found the pause's Options
  *               list and Cheats screen, note_none when it gave up looking;
- *               the core logs each once per VM
+ *               the core logs each once per VM. The third console test
+ *               (docs/tod-menu.md 11) added note_in_list (the list, the
+ *               Cheats screen not met yet), note_late (the Cheats screen met
+ *               once the Trainer went to its slide) and note_noch (the
+ *               Trainer waited for it in vain); after note_none or
+ *               note_noch the core sends the helper's look
+ *               (lua_core_menu_diag) once and logs what it saw
  *   room_addr,  u32 each, the helper's (revision 1.29, the second crash):
  *   short_addr  the pause menu's Lua pool at its last count (blocks left in
  *               its largest class << 16 | blocks a small object can still
@@ -651,6 +657,9 @@ struct menu_native {
 	u32 note_none;
 	u32 room_addr;
 	u32 short_addr;
+	u32 note_noch;
+	u32 note_in_list;
+	u32 note_late;
 };
 #endif
 

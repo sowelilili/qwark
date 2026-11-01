@@ -89,9 +89,18 @@
 #define LM_GLUE_STOPPED 3      /* qwark_frame raised an error and is no longer called; the
                                 * message is the Lua mailbox's err, "qwark-menu"              */
 
-/* LM_NOTE: what the glue found in this pause menu (qw(LM_OP_NOTE, n)). */
-#define LM_NOTE_IN      1      /* the Options list and the Cheats screen: TRAINER is in                  */
-#define LM_NOTE_NONE    2      /* not found in its tries: the pause menu is the game's alone, Help stays */
+/*
+ * LM_NOTE: what the glue found in this pause menu (qw(LM_OP_NOTE, n)), the
+ * last thing it said. Revision 1.29, the third console test (docs/tod-menu.md
+ * 11): the Options list and the Cheats screen are looked for apart, the
+ * Cheats screen at the latest when the Trainer goes to its slide; NONE and
+ * NOCH are failures, after which qwark sends lh_diag.lua's look (once).
+ */
+#define LM_NOTE_IN      1      /* the Options list and the Cheats screen: TRAINER is in                    */
+#define LM_NOTE_NONE    2      /* no Options list in its first tries: Help stays the game's (it looks on)  */
+#define LM_NOTE_NOCH    3      /* the Trainer waited on the Cheats screen's slide and none came: back out   */
+#define LM_NOTE_IN_LIST 4      /* the Options list: TRAINER is in; the Cheats screen not met yet           */
+#define LM_NOTE_LATE    5      /* the Cheats screen met only once the Trainer went to its slide            */
 
 /*
  * LM_WHY: what kept a pause menu frame out of the menu's VM (lm_ready), any

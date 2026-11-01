@@ -60,10 +60,16 @@ int  lua_core_status(u8 *reply, u32 cap, u32 *len);
  * WANTED). ST_OK when it went out, ST_BUSY while another request is out
  * (try again next tick). Its answer is the core's: logged when it failed,
  * never a LUA_EXEC's.
+ *
+ * lua_core_menu_diag (the third console test, docs/tod-menu.md 11): the
+ * helper's look at the pause (lh_diag.lua) sent the same way, which menu.c
+ * asks for once when the glue's own look failed; its answer, a line of
+ * text, goes into qwark.log ("menu: what the glue saw ...").
  */
 #if QWARK_HAS_TOD
 int  lua_core_helper_ready(void);
 int  lua_core_menu_glue(void);
+int  lua_core_menu_diag(void);
 #endif
 
 #ifdef QWARK_EMULATOR
