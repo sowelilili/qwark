@@ -5714,6 +5714,77 @@ def smoke_tod_debug_text(c):
     check(status == ST_BAD_ARG, "ToD: a page past the list is BAD_ARG", status)
 
 
+# Revision 1.29 (pending): the cutscene cache (src/games/tod_cache.c), ids 19..21, readout 3.
+TOD_CC_TOC, TOD_CC_LEVELS, TOD_CC_STR = 0x30250000, 0x30250100, 0x30251000
+TOD_LEVEL_TIER_LOADED = 0x1037A908 + 6
+
+
+def tod_cc_word(c):
+    info = fresh_state(c, 0.15)
+    return info["readout"][3] if info else None
+
+
+def smoke_tod_cutscene_cache(c, features):
+    """Cache cutscenes over the wire: the warmer handed Fastoon's sound, then Stratus City's; the status readout."""
+    by_id = dict((f["id"], f) for f in features) if features else {}
+    f19, f20, f21 = by_id.get(19), by_id.get(20), by_id.get(21)
+    check(f19 is not None and f19["label"] == "Cache cutscenes" and f19["kind"] == 1 and f19["readout"] == 3 and
+          f19["flags"] & 0x12 == 0,
+          "ToD: 19 Cache cutscenes, an ACTION of data writes naming readout 3", f19)
+    check(f20 is not None and f20["label"] == "Cache cutscenes on reset" and f20["flags"] & 0x12 == 0 and
+          f21 is not None and f21["label"] == "Disable cutscene caching" and f21["flags"] & 0x12 == 0,
+          "ToD: 20 Cache cutscenes on reset and 21 Disable cutscene caching, toggles, not LIVE", (f20, f21))
+    # game.toc's level table, fastoon and stratus city; gameplay; the warmer idle.
+    mem_write(c, TOD_ARCHIVE_TOC, struct.pack(">I", TOD_CC_TOC))
+    mem_write(c, TOD_CC_TOC + 0x28, struct.pack(">I", TOD_CC_LEVELS))
+    mem_write(c, TOD_CC_LEVELS - 4, struct.pack(">I", 2))
+    for i, (name, size) in enumerate((("fastoon", 215391833), ("stratus city", 278255092))):
+        mem_write(c, TOD_CC_STR + 0x40 * i, name.encode() + b"\0")
+        mem_write(c, TOD_CC_STR + 0x100 + 0x80 * i, b"/packed/levels/x/level_uncached.psarc\0")
+        rec = struct.pack(">I", TOD_CC_STR + 0x40 * i) + bytes(0x14) + \
+            struct.pack(">II", TOD_CC_STR + 0x100 + 0x80 * i, size) + bytes(0x40 - 0x20)
+        mem_write(c, TOD_CC_LEVELS + 0x40 * i, rec)
+    mem_write(c, TOD_LUA_STATE, struct.pack(">I", 0x30030000))
+    mem_write(c, TOD_FRONT_END, b"\x00")
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_LOAD_JOB, bytes(4))
+    mem_write(c, TOD_LEVEL_TIER_LOADED, b"\x01")
+    mem_write(c, TOD_PREFETCH + 0x24, bytes(0x2C))                  # readReady .. curFile 0
+    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
+    mem_write(c, TOD_PREFETCH + 0x54, b"\x01")
+    module_sleep(c, 0.1)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
+    module_sleep(c, 0.2)
+    word = tod_cc_word(c)
+    fastoon, stratus = TOD_CC_LEVELS + 0x18, TOD_CC_LEVELS + 0x40 + 0x18
+    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 1 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == fastoon and mem_read_u32(c, TOD_PREFETCH + 0x34) == 52633177 and
+          mem_read_u32(c, TOD_PREFETCH + 0x24) == 1,
+          "ToD: Cache cutscenes: the warmer has Fastoon's sound, readout 3 says caching Fastoon",
+          (status, hex(word or 0), hex(mem_read_u32(c, TOD_PREFETCH + 0x48))))
+    mem_write(c, TOD_PREFETCH + 0x30, struct.pack(">I", 52633177 // 2))
+    word = tod_cc_word(c)
+    check(word is not None and 48 <= (word >> 16) & 0xFF <= 50, "ToD: half way, 49%", hex(word or 0))
+    mem_write(c, TOD_PREFETCH + 0x48, bytes(4))                     # the warmer done with it
+    module_sleep(c, 0.2)
+    word = tod_cc_word(c)
+    check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == stratus and mem_read_u32(c, TOD_PREFETCH + 0x34) == 66944500,
+          "ToD: then Stratus City's", hex(word or 0))
+    mem_write(c, TOD_PREFETCH + 0x48, bytes(4))
+    module_sleep(c, 0.2)
+    word = tod_cc_word(c)
+    check(word is not None and word >> 28 == 3 and (word >> 16) & 0xFF == 100 and word & 0xFF == 1,
+          "ToD: and done, one run ended", hex(word or 0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 1))
+    status2, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
+    word = tod_cc_word(c)
+    check(status == ST_OK and status2 == ST_BUSY and word is not None and word >> 28 == 4 and (word >> 24) & 15 == 4,
+          "ToD: with Disable cutscene caching on, the trigger is BUSY and the readout says why", (status, status2))
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 0))
+    mem_write(c, TOD_ARCHIVE_TOC, bytes(4))
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
@@ -5736,7 +5807,7 @@ def smoke_tod(c, sim):
         labels = [f["label"] for f in features]
         check(game == 5 and groups == ["Cheats", "Player", "Progress", "Savefile"],
               "ToD: game 5, four groups", (game, groups))
-        check(readouts == ["Bolts", "Raritanium", "Challenge mode"], "ToD: its readouts", readouts)
+        check(readouts == ["Bolts", "Raritanium", "Challenge mode", "Cutscene cache"], "ToD: its readouts", readouts)
         for want in ("Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Die", "Bolts",
                      "Raritanium", "Challenge mode", "Unlock all skill points", "Reset gold bolts"):
             check(want in labels, "ToD: DESCRIBE lists %s" % want, labels)
@@ -5765,6 +5836,7 @@ def smoke_tod(c, sim):
 
     smoke_tod_level_flags(c)
     smoke_tod_debug_text(c)
+    smoke_tod_cutscene_cache(c, features)
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
     check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)

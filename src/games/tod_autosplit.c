@@ -101,6 +101,22 @@ static int fresh_file(void)
 	return (b & (1u << (TOD_LF_METROPOLIS_TACHYON & 7u))) == 0;
 }
 
+/*
+ * Revision 1.29 (pending): the two tests a run's start is made of, shared
+ * with Cache cutscenes on reset (tod_cache.c). A planet load under way: the
+ * loader on the level's tiers, the level's data out (tod.h). A run's load:
+ * into Metropolis, on a fresh file; the flag is read only for Metropolis.
+ */
+int tod_level_loading(u32 job, u8 tier)
+{
+	return job == TOD_LOAD_JOB_LEVEL && tier == 0;
+}
+
+int tod_fresh_run_load(s32 level)
+{
+	return level == TOD_LEVEL_METROPOLIS && fresh_file();
+}
+
 void tod_autosplit_forget(struct tod_as_state *as)
 {
 	memset(as, 0, sizeof(*as));
@@ -277,7 +293,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	as->ticks++;
 
 	/* A planet load under way: the loader on the level's tiers, the level's data out (tod.h). */
-	loading = as->cur_job == TOD_LOAD_JOB_LEVEL && as->cur_tier == 0;
+	loading = tod_level_loading(as->cur_job, as->cur_tier);
 
 	/* A new process, or the module just in: learn where things stand. */
 	if (!as->primed) {
@@ -311,7 +327,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	 */
 	if (load_began) {
 		as->start_wait = TOD_SW_NONE;
-		if (level == TOD_LEVEL_METROPOLIS && fresh_file()) {
+		if (tod_fresh_run_load(level)) {
 			autosplit_emit(AUTOSPLIT_RESET, 0, 0);
 			as->start_wait = TOD_SW_LOADING;
 			started = 1;

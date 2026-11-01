@@ -282,6 +282,9 @@ static void test_bridge(void)
 	press(MBOX_EV_ACTIVATE, find_row("Manips"));
 	title(t);
 	check(strcmp(t, "Manips") == 0 && find_row("Remove cutscenes") == 0, "Manips: Remove cutscenes, as the client has it");
+	check(find_row("Cache cutscenes") == 1 && find_row("Cutscene cache") == 2 &&
+	      find_row("Cache cutscenes on reset") == 3 && find_row("Disable cutscene caching") == 4,
+	      "revision 1.29: then Cache cutscenes with its status row under it, and its two toggles");
 	press(MBOX_EV_BACK, -1);
 
 	/* An event made on another page is refused, and changes nothing. */

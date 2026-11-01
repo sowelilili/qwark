@@ -6,8 +6,10 @@
         segment, which lv2 relocates)
     python -I tools/gamemodule.py merge <in.prx> <out.prx>
         the fixup's two LOAD segments, R-E and RW-, become one R-E segment
-    python -I tools/gamemodule.py check <merged.prx> <merged unstripped.prx> --game N --id 0xID [--name F]
-        one R-X LOAD segment of at most 61,440 bytes, no writable or TLS
+    python -I tools/gamemodule.py check <merged.prx> <merged unstripped.prx> --game N --id 0xID [--name F [--pages P]]
+        one R-X LOAD segment of at most 61,440 bytes (P pages less 4 KB with
+        --pages, revision 1.29: the makefile's GAME_PAGES_<name>, 1 unless a
+        module is given more), no writable or TLS
         section beyond the relocated ones, no import, and the stamp
         (src/plat/ps3/game_module.c) naming this build (src/core/proto.h's
         QWARK_BUILD), this build ID and this game; F, the module's file name
@@ -183,7 +185,7 @@ def build_number():
     return int(m.group(1))
 
 
-def check(prx, sym, game, build_id, module=None):
+def check(prx, sym, game, build_id, module=None, pages=1):
     data = read(prx)
     _phoff, ph = phdrs(data)
     loads = [p for p in ph if p[0] == PT_LOAD]
@@ -192,9 +194,10 @@ def check(prx, sym, game, build_id, module=None):
     seg = loads[0]
     if seg[1] & (PF_W | PF_SPU_W) or not seg[1] & PF_X:
         die("%s's segment is not R-X (flags 0x%x)" % (prx, seg[1]))
-    if seg[6] > MAX_MEMSZ:
-        die("%s is %d bytes, over the %d a game module may be (one 64 KB page, 4 KB to spare)"
-            % (prx, seg[6], MAX_MEMSZ))
+    limit = MAX_MEMSZ + (pages - 1) * PAGE
+    if seg[6] > limit:
+        die("%s is %d bytes, over the %d a game module may be (%d 64 KB page(s), 4 KB to spare)"
+            % (prx, seg[6], limit, pages))
     for name, _type, flags, size in sections(read(sym)):
         if not size or not flags & SHF_ALLOC:
             continue
@@ -215,9 +218,9 @@ def check(prx, sym, game, build_id, module=None):
                 % struct.unpack_from(">III", data, found + 4))
         die("%s's stamp is not build %d, ID 0x%08X, game %d (it has %s)"
             % (prx, build_number(), build_id, game, what))
-    print("gamemodule.py: %s: one R-X segment of %d bytes (%d spare in its page), "
+    print("gamemodule.py: %s: one R-X segment of %d bytes (%d spare in its %d page(s)), "
           "no writable data, no import, build %d, ID 0x%08X"
-          % (module or ("game %d" % game), seg[6], PAGE - seg[6], build_number(), build_id))
+          % (module or ("game %d" % game), seg[6], pages * PAGE - seg[6], pages, build_number(), build_id))
 
 
 def info(path):
@@ -239,9 +242,12 @@ def main(argv):
         objs(argv[2:])
     elif len(argv) == 4 and argv[1] == "merge":
         merge(argv[2], argv[3])
-    elif len(argv) in (8, 10) and argv[1] == "check" and argv[4] == "--game" and argv[6] == "--id" and \
-            (len(argv) == 8 or argv[8] == "--name"):
-        check(argv[2], argv[3], int(argv[5]), int(argv[7], 0), argv[9] if len(argv) == 10 else None)
+    elif len(argv) in (8, 10, 12) and argv[1] == "check" and argv[4] == "--game" and argv[6] == "--id" and \
+            (len(argv) == 8 or argv[8] == "--name") and (len(argv) < 12 or argv[10] == "--pages"):
+        pages = int(argv[11]) if len(argv) == 12 else 1
+        if not 1 <= pages <= 4:
+            die("--pages %d: a game module has 1 to 4 pages" % pages)
+        check(argv[2], argv[3], int(argv[5]), int(argv[7], 0), argv[9] if len(argv) >= 10 else None, pages)
     elif len(argv) == 3 and argv[1] == "info":
         info(argv[2])
     else:

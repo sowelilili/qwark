@@ -86,6 +86,7 @@ struct tod_state {
 	u32 ammo_flag;     /* g_infiniteAmmo, as last read */
 	u32 ticks;
 	struct tod_as_state as;   /* the autosplit watcher's, revision 1.28 */
+	struct tod_cc_state cc;   /* the cutscene cache's, revision 1.29 (tod_cache.c) */
 };
 
 #if QWARK_GAME_MODULE
@@ -146,6 +147,9 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_AMMO] != NULL) T->ammo_flag = be32_get(blocks[HOT_AMMO]);
 
+	/* Revision 1.29: Cache cutscenes' status, qwark's own state and no memory read. */
+	out->readout[TOD_RO_CUTSCENE_CACHE] = tod_cc_status(&T->cc);
+
 	/* The autosplit watcher's view; a slow block keeps its last value. */
 	if (blocks[HOT_LUA] != NULL)    T->as.cur_lua = be32_get(blocks[HOT_LUA]);
 	if (blocks[HOT_FRONT] != NULL)  T->as.cur_front = blocks[HOT_FRONT][0];
@@ -184,12 +188,14 @@ static void tod_on_tick(const struct game_hot *hot)
 	tod_ammo_tick(T->ammo_flag, T->root);
 	tod_panel_tick();   /* revision 1.29: qwark's own loads' fade, Remove cutscenes */
 	tod_autosplit_tick(&T->as);
+	tod_cc_tick(&T->cc, &T->as);   /* revision 1.29: the cutscene cache, after the watcher (the same hot block) */
 }
 
 static void tod_on_enter(void)
 {
 	memset(T, 0, sizeof(*T));
 	tod_autosplit_forget(&T->as);
+	tod_cc_forget(&T->cc);   /* a new boot: the cache was cleared with it */
 	tod_panel_reset();
 	tod_panel_enter();    /* revision 1.29: the fade time and the FMVs as the game has them */
 	tod_save_recover();   /* the savefile manager's round */
@@ -202,6 +208,23 @@ static void tod_on_enter(void)
 static void tod_on_quit(void)
 {
 	tod_autosplit_quit(&T->as);
+	tod_cc_quit(&T->cc);
+}
+
+/*
+ * Revision 1.29: the cutscene cache's three features are tod_cache.c's, with
+ * their state here; everything else goes on to tod_panel.c.
+ */
+static int tod_game_set_toggle(u8 id, int on)
+{
+	if (id == TF_CACHE_ON_RESET || id == TF_NO_CUTSCENE_CACHE) return tod_cc_set(&T->cc, id, on);
+	return tod_set_toggle(id, on);
+}
+
+static int tod_game_trigger(u8 id)
+{
+	if (id == TF_CACHE_CUTSCENES) return tod_cc_trigger(&T->cc, &T->as);
+	return tod_trigger(id);
 }
 
 static void tod_init(void)
@@ -228,7 +251,8 @@ static const char * const tod_groups[] = {
 static const char * const tod_readouts[] = {
 	"Bolts",
 	"Raritanium",
-	"Challenge mode"
+	"Challenge mode",
+	"Cutscene cache"      /* revision 1.29: Cache cutscenes' status word (tod.h, TOD_CC_*) */
 };
 
 #define NO FEATURE_NO_READOUT
@@ -263,6 +287,12 @@ static const char * const tod_readouts[] = {
  * Revision 1.29: Remove cutscenes (18), the user's eight FMVs' files made
  * missing by data writes (tod.h, TOD_ARCHIVE_GAME), so not WRITES_CODE, and
  * not LIVE, so it can come back at boot like Fast loads beside it.
+ *
+ * Revision 1.29: the cutscene cache (tod_cache.c), data writes alone. Cache
+ * cutscenes (19) names its status readout, as UYA's Reset trophies does;
+ * Cache cutscenes on reset (20) and Disable cutscene caching (21) are qwark's
+ * own state and not LIVE, so they can come back at boot. The client's ToD
+ * layout puts all three on its Manips page.
  */
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -271,6 +301,9 @@ static const struct feature_desc tod_features[] = {
 	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
 	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
+	{ TF_CACHE_CUTSCENES, FEATURE_ACTION, G_CHEATS,   0, 0,  TOD_RO_CUTSCENE_CACHE, 0, 0, "Cache cutscenes" },
+	{ TF_CACHE_ON_RESET,  FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Cache cutscenes on reset" },
+	{ TF_NO_CUTSCENE_CACHE, FEATURE_TOGGLE, G_CHEATS, 0, 0,  NO, 0, 0, "Disable cutscene caching" },
 
 	{ TF_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ TF_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_BOLTS,      0, TOD_MAX_BOLTS, "Bolts" },
@@ -369,7 +402,8 @@ static const u8 tod_menu_cheats[] = {
 };
 
 static const u8 tod_menu_manips[] = {
-	TF_REMOVE_CUTSCENES
+	TF_REMOVE_CUTSCENES,
+	TF_CACHE_CUTSCENES, TF_CACHE_ON_RESET, TF_NO_CUTSCENE_CACHE   /* revision 1.29 */
 };
 
 static const struct menu_value tod_menu_values[] = {
@@ -399,7 +433,7 @@ static const struct game_menu tod_menu = {
 	1, "V",               /* the level, field 1: V1 .. V10 */
 	NULL,                 /* every planet with a name */
 	NULL,                 /* every weapon goes to V10 */
-	NULL,                 /* no action with a status */
+	tod_cc_menu_status,   /* revision 1.29: Cache cutscenes' status (a page that shows status rows) */
 	"Collectables",       /* the four buttons on a page of their own */
 	NULL,                 /* no planet picker */
 	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0]))
@@ -440,9 +474,9 @@ const struct game_api tod_game = {
 
 	tod_describe,
 
-	tod_set_toggle,
+	tod_game_set_toggle,  /* tod_panel.c's, and the cutscene cache's toggles */
 	tod_toggle_read,
-	tod_trigger,
+	tod_game_trigger,     /* tod_panel.c's, and Cache cutscenes */
 	tod_set_value,
 	NULL,                 /* get_options: no ENUM */
 

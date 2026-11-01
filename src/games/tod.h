@@ -532,6 +532,7 @@ struct tod_facts {
 #define TOD_RO_BOLTS       0
 #define TOD_RO_RARITANIUM  1
 #define TOD_RO_CHALLENGE   2
+#define TOD_RO_CUTSCENE_CACHE 3   /* revision 1.29: Cache cutscenes' status word (TOD_CC_*) */
 
 /*
  * Feature ids, stable: new ones go on the end. 0 to 3 are the proof of
@@ -554,6 +555,10 @@ struct tod_facts {
 #define TF_GOD_RATCHET      16     /* the old RaCMAN's, the proxy handle (TOD_PROXY_LOW) */
 #define TF_FAST_LOADS       17     /* the load screen's cut, a code patch (TOD_FASTLOAD_AT) */
 #define TF_REMOVE_CUTSCENES 18     /* revision 1.29: eight FMVs' files made missing (TOD_ARCHIVE_GAME) */
+/* Revision 1.29: the cutscene cache (tod_cache.c, TOD_CC_*); 22 and 23 are this round's, unused. */
+#define TF_CACHE_CUTSCENES  19     /* ACTION: Fastoon's and Stratus City's sound into the FIOS cache */
+#define TF_CACHE_ON_RESET   20     /* TOGGLE: the same, by itself, on a new run's Metropolis */
+#define TF_NO_CUTSCENE_CACHE 21    /* TOGGLE: each level load drops its planet's cached sound */
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40
@@ -805,5 +810,119 @@ int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 #define TOD_PAUSE_UP         3u
 #define TOD_STATE_PENDING_OP 0x10387DBCu  /* g_gameStatePendingOp, 0 with nothing queued (dec) */
 #define TOD_STATE_PAUSE      5u           /* g_gameState: the pause menu (PauseMenu_update) */
+
+/*
+ * Revision 1.29 (pending): a run's start, shared by the autosplitter's RESET
+ * and Cache cutscenes on reset. A level load is under way while the tier
+ * loader's job is state 3's list and g_levelLoadTier is not loaded (above);
+ * a load into Metropolis is a new run while the file has
+ * MOVIE_METROPOLIS_TACHYON clear (a flag that cannot be read: no run).
+ */
+int  tod_level_loading(u32 job, u8 tier);
+int  tod_fresh_run_load(s32 level);
+
+/*
+ * Revision 1.29 (pending): the cutscene cache (tod_cache.c;
+ * REPORT-tod-level-cache.md sections 5.A and 10). A planet's opening cutscene
+ * streams its audio from its streaming_sound.dat, inside its
+ * level_uncached.psarc, through the FIOS block cache, which those reads never
+ * fill; only the level warmer does, and it caches the current planet's sound
+ * once its gameplay (and so its opening cutscene) has begun. All data writes.
+ *
+ * Cache cutscenes (19) hands the warmer, while it is idle in gameplay, one
+ * range at a time with its single-range form: Fastoon's sound, then Stratus
+ * City's, each the planet's game.toc .uncached descriptor in `curFile`
+ * (LevelPrefetch_update reads [offset, offset + chunkSize) of *curFile, and
+ * LevelPrefetch_readDoneCallback steps on by 256 KB to fileEnd; state 4 then
+ * puts curFile back to 0). Cache cutscenes on reset (20) asks for the same on
+ * a new run's load into Metropolis. Disable cutscene caching (21) frees, in
+ * the in-RAM block table, every block of the planet's level_uncached.psarc
+ * (and Metropolis's sound in global_uncached.psarc) during each level load,
+ * so the planet's opening cutscene always starts cold (dec).
+ */
+#define TOD_PF_CHUNK         0x2Cu        /* u32, the read the warmer issues next; 0 steps the state */
+#define TOD_PF_CHUNK_MAX     0x40000u     /* 256 KB, the warmer's read */
+#define TOD_LA_UNCACHED      0x18u        /* TodLevelArchives.uncached: { char *path; u32 size; ... } */
+#define TOD_SOUND_PARAM      0x100EB570u  /* g_systemParam122 (Sys_readSystemParams): 2 picks streaming_sound.jp.dat (dec) */
+#define TOD_SOUND_PARAM_JP   2u
+#define TOD_GLOBAL_UNCACHED  "/packed/game/global_uncached.psarc"
+#define TOD_METRO_SOUND_END  59748728u    /* Metropolis's streaming_sound.dat in global_uncached.psarc ends here: blocks 0..56 */
+#define TOD_CC_EVERY         4u           /* ticks between two looks at the warmer */
+#define TOD_CC_STALL_TICKS   3600u        /* 30 s in gameplay with the warmer on and no read done: stalled */
+#define TOD_CC_READ_FAILS    3u
+#define TOD_CC_PIECE         32u          /* block descriptors a tick reads, 1280 bytes */
+#define TOD_CC_HANDLES       24u          /* path handles a walk remembers */
+#define TOD_CC_PATH_LEN      64u
+
+/*
+ * Cache cutscenes' status word, TOD_RO_CUTSCENE_CACHE (PROTOCOL.md 5.14):
+ *   bits 28..31  state   TOD_CC_NONE .. TOD_CC_FAILED
+ *   bits 24..27  detail  WAITING: TOD_CC_WAIT_*; CACHING: the planet, 1
+ *                        Fastoon, 2 Stratus City; FAILED: TOD_CC_WHY_*
+ *   bits 16..23  percent CACHING: of that planet's sound; DONE: 100
+ *   bits 8..15   seconds since the request, or how long it ran, at most 255
+ *   bits 0..7    runs ended since the game started, modulo 256
+ * A boot of the game comes back to NONE: the cache is cleared at every boot.
+ */
+#define TOD_CC_NONE          0u
+#define TOD_CC_WAITING       1u
+#define TOD_CC_CACHING       2u
+#define TOD_CC_DONE          3u
+#define TOD_CC_FAILED        4u
+#define TOD_CC_WAIT_PLAY     1u           /* not in gameplay */
+#define TOD_CC_WAIT_WARMER   2u           /* the warmer is still reading the level's own files */
+#define TOD_CC_WHY_LEVEL     1u           /* a level load, or the title, before it finished */
+#define TOD_CC_WHY_TABLE     2u           /* game.toc's level table cannot be read, or its planet is not in it */
+#define TOD_CC_WHY_STALLED   3u           /* the warmer stopped reading */
+#define TOD_CC_WHY_DISABLED  4u           /* Disable cutscene caching is on */
+#define TOD_CC_WHY_READ      5u           /* the game's memory could not be read or written */
+#define TOD_CC_WHY_QUIT      6u           /* the game is going */
+#define TOD_CC_NPLANETS      2u           /* Fastoon, then Stratus City */
+
+struct tod_cc_state {
+	u8  state;             /* TOD_CC_* */
+	u8  detail;
+	u8  planet;            /* the one cached or waited for, 0 Fastoon, 1 Stratus City */
+	u8  pct;
+	u8  seq;
+	u8  seen_play;         /* the request has seen gameplay: a load after that ends it */
+	u8  is_auto;           /* asked by Cache cutscenes on reset */
+	u8  read_fails;
+	u8  auto_on;           /* Cache cutscenes on reset */
+	u8  evict_on;          /* Disable cutscene caching */
+	u8  loading;           /* a level load at the last tick */
+	u8  primed;
+	u8  wait;              /* ticks to the next look at the warmer */
+	u8  ev_active;         /* a walk of the block table is under way */
+	u8  ev_metro;          /* and its planet is Metropolis */
+	u8  ev_nh;
+	u32 ticks;             /* since the request */
+	u32 secs;              /* how long the last run ran */
+	u32 desc;              /* the .uncached descriptor in curFile */
+	u32 start;             /* the range */
+	u32 end;
+	u32 last_off;
+	u32 stall;
+	/* The walk: the table, where it is, the path table, and what it learnt. */
+	u32 ev_blocks;
+	u32 ev_n;
+	u32 ev_i;
+	u32 ev_strs;
+	u32 ev_npaths;
+	u16 ev_freed;
+	u16 ev_missed;
+	u32 ev_handle[TOD_CC_HANDLES];
+	u8  ev_verdict[TOD_CC_HANDLES];   /* 0 another file, 1 the planet's level_uncached, 2 global_uncached */
+	char ev_path[TOD_CC_PATH_LEN];
+};
+
+void tod_cc_forget(struct tod_cc_state *cc);
+void tod_cc_tick(struct tod_cc_state *cc, const struct tod_as_state *as);
+void tod_cc_quit(struct tod_cc_state *cc);
+int  tod_cc_trigger(struct tod_cc_state *cc, const struct tod_as_state *as);
+int  tod_cc_set(struct tod_cc_state *cc, u8 id, int on);
+u32  tod_cc_status(const struct tod_cc_state *cc);
+/* The status word as the console menu's row under Cache cutscenes says it. */
+void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap);
 
 #endif /* QWARK_TOD_H */

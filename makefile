@@ -228,6 +228,12 @@ GAME_VTABLE_rac2	= rac2_game
 GAME_VTABLE_rac3	= rac3_game
 GAME_VTABLE_rac4	= rac4_game
 GAME_VTABLE_tod		= tod_game
+# Revision 1.29 (pending): the pages a module may take, 1 unless given here.
+# Tools of Destruction's test-build module outgrew one page with the cutscene
+# cache (it was 440 bytes under the line before it); the core's memory gate
+# reads the pages from the file (src/core/gamemod.c), and the PRX probe's D4
+# loaded a two-page RX-only module on CFW and HEN.
+GAME_PAGES_tod		= 2
 GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
 					  src/plat/ps3/game_module.c
 GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c
@@ -278,7 +284,7 @@ $(GAME_MODULE_FILES): %.sprx: $(GAME_DEPS)
 	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/$*/game.prx objs/$*/game.one.prx
 	$(GAME_TIMEOUT) python -I tools/gamemodule.py merge objs/$*/game.sym.prx objs/$*/game.sym.one.prx
 	$(GAME_TIMEOUT) python -I tools/gamemodule.py check objs/$*/game.one.prx objs/$*/game.sym.one.prx \
-		--game $(GAME_ID_$*) --id $(QWARK_BUILD_ID) --name $@
+		--game $(GAME_ID_$*) --id $(QWARK_BUILD_ID) --name $@ --pages $(or $(GAME_PAGES_$*),1)
 	$(GAME_TIMEOUT) ./scetool $(GAME_SCETOOL) -e objs/$*/game.one.prx $@ > objs/$*/scetool.txt 2>&1 \
 		|| { head -c 4000 objs/$*/scetool.txt; exit 1; }
 	@test -s $@ || { echo "make games: scetool wrote no $@" >&2; exit 1; }

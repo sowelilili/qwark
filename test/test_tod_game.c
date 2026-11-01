@@ -2740,6 +2740,498 @@ static void test_tod_debug_pages(void)
 	wr32(TOD_CURRENT_LEVEL, old_level);
 }
 
+/* -------------------------------------- the cutscene cache, revision 1.29 */
+
+/*
+ * Cache cutscenes (19), Cache cutscenes on reset (20) and Disable cutscene
+ * caching (21), tod_cache.c. The state machine is driven directly, with a
+ * state and a watcher's view of its own, against a stand-in for the game's
+ * warmer that does what LevelPrefetch_update and its read's callback do;
+ * then once through the session, the feature table and the readout.
+ */
+#define CC_TOC       0x30400000u
+#define CC_LEVELS    0x30400100u
+#define CC_STR       0x30401000u
+#define CC_CACHE     0x30410000u
+#define CC_BLOCKS    0x30411000u
+#define CC_PATHS     0x30420000u
+#define CC_PF        TOD_PREFETCH
+#define CC_FASTOON   (CC_LEVELS + 0u * TOD_LA_STRIDE + TOD_LA_UNCACHED)
+#define CC_STRATUS   (CC_LEVELS + 2u * TOD_LA_STRIDE + TOD_LA_UNCACHED)
+#define CC_F_END     52633177u
+#define CC_S_END     66944500u
+#define CC_NBLOCKS   70u
+#define CC_LUA       0x30030000u
+
+static u64 rd64(u32 addr)
+{
+	return ((u64)rd32(addr) << 32) | rd32(addr + 4u);
+}
+
+/* game.toc's level table: fastoon, metropolis, stratus city, with their level_uncached sizes. */
+static void cc_toc(void)
+{
+	static const char * const dirs[3] = { "fastoon", "metropolis", "stratus city" };
+	static const u32 sizes[3] = { 215391833u, 233549981u, 278255092u };
+	u32 i;
+
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, CC_TOC);
+	wr32(CC_TOC + TOD_TOC_LEVELS, CC_LEVELS);
+	wr32(CC_LEVELS - 4u, 3);
+	for (i = 0; i < 3; i++) {
+		wrstr(CC_STR + i * 0x40u, dirs[i]);
+		wrstr(CC_STR + 0x100u + i * 0x80u, "/packed/levels/x/level_uncached.psarc");
+		wr32(CC_LEVELS + i * TOD_LA_STRIDE, CC_STR + i * 0x40u);
+		wr32(CC_LEVELS + i * TOD_LA_STRIDE + TOD_LA_UNCACHED, CC_STR + 0x100u + i * 0x80u);
+		wr32(CC_LEVELS + i * TOD_LA_STRIDE + TOD_LA_UNCACHED + 4u, sizes[i]);
+	}
+}
+
+/* The warmer idle in gameplay: every file read, none in hand. */
+static void cc_warmer_idle(void)
+{
+	wr32(CC_PF + TOD_PF_READY, 0);
+	wr32(CC_PF + TOD_PF_BUSY, 0);
+	wr32(CC_PF + TOD_PF_CHUNK, 0);
+	wr32(CC_PF + TOD_PF_CUR, 0);
+	wr32(CC_PF + TOD_PF_STATE, TOD_PF_NFILES);
+	wr8(CC_PF + TOD_PF_ENABLED, 1);
+}
+
+/*
+ * One frame of the game's warmer, as LevelPrefetch_update and
+ * LevelPrefetch_readDoneCallback (a read done at once): nothing unless on and
+ * readReady; chunkSize 0 in state 4 lets curFile and readBusy go; otherwise
+ * the read, offset on by chunkSize, the next chunk min(fileEnd - offset, 256 KB).
+ */
+static void cc_frame(void)
+{
+	u32 off, end, chunk;
+
+	if (rd8(CC_PF + TOD_PF_ENABLED) == 0 || rd32(CC_PF + TOD_PF_READY) == 0) return;
+	wr32(CC_PF + TOD_PF_READY, 0);
+	chunk = rd32(CC_PF + TOD_PF_CHUNK);
+	if (chunk == 0) {
+		if (rd32(CC_PF + TOD_PF_STATE) >= TOD_PF_NFILES) {
+			wr32(CC_PF + TOD_PF_CUR, 0);
+			wr32(CC_PF + TOD_PF_BUSY, 0);
+		}
+		return;
+	}
+	if (rd32(CC_PF + TOD_PF_CUR) == 0) return;
+	wr32(CC_PF + TOD_PF_BUSY, 1);
+	off = rd32(CC_PF + TOD_PF_OFFSET) + chunk;
+	end = rd32(CC_PF + TOD_PF_END);
+	wr32(CC_PF + TOD_PF_OFFSET, off);
+	wr32(CC_PF + TOD_PF_CHUNK, end - off < TOD_PF_CHUNK_MAX ? end - off : TOD_PF_CHUNK_MAX);
+	wr32(CC_PF + TOD_PF_READY, 1);
+}
+
+/* A watcher's view: in gameplay on `level`, the loader idle. */
+static void cc_play(struct tod_as_state *as, s32 level, u32 lua)
+{
+	as->cur_level = level;
+	as->cur_lua = lua;
+	as->cur_state = TOD_STATE_GAMEPLAY;
+	as->cur_front = 0;
+	as->cur_job = 0;
+	as->cur_tier = 1;
+}
+
+/* A planet load under way into `level`: the level gone, the loader on its tiers. */
+static void cc_loading(struct tod_as_state *as, s32 level)
+{
+	as->cur_level = level;
+	as->cur_lua = 0;
+	as->cur_state = 3;
+	as->cur_job = TOD_LOAD_JOB_LEVEL;
+	as->cur_tier = 0;
+}
+
+/* `n` ticks of the state machine, each with `frames` frames of the warmer after it. */
+static void cc_run(struct tod_cc_state *cc, const struct tod_as_state *as, u32 n, u32 frames)
+{
+	u32 i, f;
+
+	for (i = 0; i < n; i++) {
+		tod_cc_tick(cc, as);
+		for (f = 0; f < frames; f++) cc_frame();
+	}
+}
+
+static u32 cc_st(const struct tod_cc_state *cc)   { return tod_cc_status(cc) >> 28; }
+static u32 cc_det(const struct tod_cc_state *cc)  { return (tod_cc_status(cc) >> 24) & 15u; }
+static u32 cc_pct(const struct tod_cc_state *cc)  { return (tod_cc_status(cc) >> 16) & 0xFFu; }
+
+/* A cache block: lastUse, its offset, its path handle. */
+static void cc_block(u32 i, u64 use, u32 off, u32 handle)
+{
+	u32 at = CC_BLOCKS + i * TOD_FC_DESC_LEN;
+
+	wr64(at + TOD_FC_LAST_USE, use);
+	wr64(at + TOD_FC_OFFSET, off);
+	wr32(at + TOD_FC_VALID, 0x100000u);
+	wr32(at + TOD_FC_PATH, handle);
+}
+
+static u64 cc_use(u32 i)
+{
+	return rd64(CC_BLOCKS + i * TOD_FC_DESC_LEN + TOD_FC_LAST_USE);
+}
+
+/*
+ * The block table: 70 blocks (three pieces of the walk), in use with a time
+ * of 1000 + i, by handle: 1 Stratus City's level_uncached, 2 its textures,
+ * 3 Fastoon's level_uncached, 4 global_uncached, 5 Metropolis's
+ * level_uncached. Block 5 is filling and block 6 free (Stratus City's both),
+ * and the last Stratus City block is number 66, in the third piece.
+ */
+static void cc_blocks(void)
+{
+	static const char * const paths[5] = {
+		"/packed/levels/stratus city/level_uncached.psarc",
+		"/packed/levels/stratus city/level_textures.psarc",
+		"/packed/levels/fastoon/level_uncached.psarc",
+		"/packed/game/global_uncached.psarc",
+		"/packed/levels/metropolis/level_uncached.psarc"
+	};
+	u32 i;
+
+	wr32(TOD_FIOS_CACHE, CC_CACHE);
+	wr32(CC_CACHE + TOD_FC_BLOCK_SIZE, 0x100000u);
+	wr32(CC_CACHE + TOD_FC_NBLOCKS, CC_NBLOCKS);
+	wr32(CC_CACHE + TOD_FC_BLOCKS, CC_BLOCKS);
+	wr32(TOD_FIOS_PATHS, CC_PATHS);
+	wr32(CC_PATHS + TOD_FPATH_STRS, CC_PATHS + 0x100u);
+	wr32(CC_PATHS + TOD_FPATH_COUNT, 5);
+	for (i = 0; i < 5; i++) {
+		wrstr(CC_PATHS + 0x200u + i * 0x80u, paths[i]);
+		wr32(CC_PATHS + 0x100u + i * 4u, CC_PATHS + 0x200u + i * 0x80u);
+	}
+	for (i = 0; i < CC_NBLOCKS; i++) cc_block(i, 1000u + i, (i % 8u) << 20, 2);   /* textures, by default */
+	for (i = 0; i < 5; i++) cc_block(i, 1000u + i, i << 20, 1);
+	cc_block(5, TOD_FC_FILLING, 5u << 20, 1);
+	cc_block(6, TOD_FC_FREE, 6u << 20, 1);
+	cc_block(66, 1066u, 63u << 20, 1);
+	for (i = 10; i < 15; i++) cc_block(i, 1000u + i, (i - 10u) << 20, 3);
+	cc_block(20, 1020u, 0, 4);
+	cc_block(21, 1021u, 56u << 20, 4);
+	cc_block(22, 1022u, 57u << 20, 4);
+	cc_block(30, 1030u, 113u << 20, 5);
+}
+
+static void test_tod_cutscene_cache(void)
+{
+	struct tod_cc_state cc;
+	struct tod_as_state as;
+	const struct game_describe *dsc;
+	u32 old_toc = rd32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC), info_word, i, freed;
+	u8 info[SESSION_INFO_SIZE];
+	char text[24];
+	int ok_19 = 0, ok_20 = 0, ok_21 = 0;
+
+	group("ToD: Cache cutscenes, its auto on reset and Disable cutscene caching (revision 1.29)");
+	check(session_game() != NULL, "ToD is up");
+	if (session_game() == NULL) return;
+	dsc = session_game()->describe();
+	for (i = 0; i < dsc->nfeatures; i++) {
+		const struct feature_desc *f = &dsc->features[i];
+		u8 bad = (u8)(f->flags & (FEATURE_FLAG_WRITES_CODE | FEATURE_FLAG_LIVE));
+		if (f->id == TF_CACHE_CUTSCENES)
+			ok_19 = f->kind == FEATURE_ACTION && !bad && f->readout == TOD_RO_CUTSCENE_CACHE && qstreq(f->label, "Cache cutscenes");
+		if (f->id == TF_CACHE_ON_RESET)
+			ok_20 = f->kind == FEATURE_TOGGLE && !bad && qstreq(f->label, "Cache cutscenes on reset");
+		if (f->id == TF_NO_CUTSCENE_CACHE)
+			ok_21 = f->kind == FEATURE_TOGGLE && !bad && qstreq(f->label, "Disable cutscene caching");
+	}
+	check(ok_19 && TF_CACHE_CUTSCENES == 19, "19 Cache cutscenes, an ACTION naming its status readout, data writes");
+	check(ok_20 && ok_21, "20 Cache cutscenes on reset and 21 Disable cutscene caching, toggles, not LIVE");
+	check(dsc->nreadouts == 4 && qstreq(dsc->readouts[TOD_RO_CUTSCENE_CACHE], "Cutscene cache"),
+	      "readout 3, Cutscene cache, last");
+
+	/* ---- the action: waiting, Fastoon, Stratus City, done */
+	cc_toc();
+	wr32(TOD_SOUND_PARAM, 0);
+	memset(&as, 0, sizeof(as));
+	tod_cc_forget(&cc);
+	cc_play(&as, 3, CC_LUA);
+	cc_warmer_idle();
+	wr32(CC_PF + TOD_PF_CUR, CC_STR);        /* the warmer reading the level's own textures */
+	wr32(CC_PF + TOD_PF_STATE, 3);
+	wr32(CC_PF + TOD_PF_BUSY, 1);
+	cc_run(&cc, &as, 2, 0);
+	check(tod_cc_status(&cc) == 0, "no run this boot: the word is 0");
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "Cache cutscenes is taken");
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING && cc_det(&cc) == TOD_CC_WAIT_WARMER,
+	      "the warmer busy with the level's own files: waiting for it");
+	check(rd32(CC_PF + TOD_PF_CUR) == CC_STR && rd32(CC_PF + TOD_PF_STATE) == 3, "and the warmer is left alone");
+	check(tod_cc_trigger(&cc, &as) == ST_BUSY, "one at a time: BUSY while one waits");
+	cc_warmer_idle();
+	wr8(CC_PF + TOD_PF_ENABLED, 0);
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING && rd32(CC_PF + TOD_PF_CUR) == 0, "idle but switched off (a pause): still waiting");
+	wr8(CC_PF + TOD_PF_ENABLED, 1);
+	cc_run(&cc, &as, 4, 0);
+	check(cc_st(&cc) == TOD_CC_CACHING && cc_det(&cc) == 1 && cc_pct(&cc) == 0, "idle: caching Fastoon, 0%");
+	check(rd32(CC_PF + TOD_PF_CUR) == CC_FASTOON && rd32(CC_PF + TOD_PF_OFFSET) == 0 &&
+	      rd32(CC_PF + TOD_PF_END) == CC_F_END && rd32(CC_PF + TOD_PF_CHUNK) == TOD_PF_CHUNK_MAX &&
+	      rd32(CC_PF + TOD_PF_STATE) == TOD_PF_NFILES && rd32(CC_PF + TOD_PF_READY) == 1,
+	      "the single-range form: Fastoon's .uncached descriptor, 0 to its sound's end, 256 KB, state 4, readReady");
+	cc_run(&cc, &as, 25, 4);   /* 100 reads of 256 KB: 25 MiB */
+	check(cc_st(&cc) == TOD_CC_CACHING && cc_pct(&cc) >= 45 && cc_pct(&cc) <= 52, "about half way: its percentage");
+	cc_run(&cc, &as, 40, 4);
+	check(cc_st(&cc) == TOD_CC_CACHING && cc_det(&cc) == 2 && rd32(CC_PF + TOD_PF_CUR) == CC_STRATUS &&
+	      rd32(CC_PF + TOD_PF_END) == CC_S_END && rd32(CC_PF + TOD_PF_OFFSET) < CC_S_END,
+	      "Fastoon in, Stratus City next, to its sound's end");
+	cc_run(&cc, &as, 80, 4);
+	check(cc_st(&cc) == TOD_CC_DONE && cc_pct(&cc) == 100 && (tod_cc_status(&cc) & 0xFFu) == 1,
+	      "both in: done, 100%, one run ended");
+	check(rd32(CC_PF + TOD_PF_CUR) == 0 && rd32(CC_PF + TOD_PF_BUSY) == 0 && rd32(CC_PF + TOD_PF_STATE) == TOD_PF_NFILES,
+	      "and the warmer idle again, as the game leaves it");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	check(strncmp(text, "Done, ", 6) == 0, "the menu's row: Done, N s");
+
+	/* ---- the Japanese sound file, the archive too small, no table */
+	wr32(TOD_SOUND_PARAM, TOD_SOUND_PARAM_JP);
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
+	cc_run(&cc, &as, 4, 0);
+	check(rd32(CC_PF + TOD_PF_OFFSET) == CC_F_END && rd32(CC_PF + TOD_PF_END) == CC_F_END + 52625408u,
+	      "the game's parameter 2: streaming_sound.jp.dat, the twin after it");
+	wr32(TOD_SOUND_PARAM, 0);
+	cc_run(&cc, &as, 200, 4);
+	check(cc_st(&cc) == TOD_CC_DONE, "and done");
+	wr32(CC_LEVELS + TOD_LA_UNCACHED + 4u, 1000u);
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "a level table whose Fastoon archive is too small for the range");
+	cc_run(&cc, &as, 4, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_TABLE && rd32(CC_PF + TOD_PF_CUR) == 0,
+	      "fails before writing anything");
+	wr32(CC_LEVELS + TOD_LA_UNCACHED + 4u, 215391833u);
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, 0);
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "no level table at all");
+	cc_run(&cc, &as, 4, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_TABLE, "fails: no level table");
+	cc_toc();
+
+	/* ---- cancelled: a level load, the title, a quit; a death and a pause are not */
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
+	cc_run(&cc, &as, 20, 4);
+	check(cc_st(&cc) == TOD_CC_CACHING, "caching Fastoon");
+	as.cur_lua = 0;                               /* a death: Level_Exit, the level tier alone */
+	as.cur_job = TOD_LOAD_JOB_LEVEL;
+	as.cur_state = 3;
+	cc_run(&cc, &as, 8, 0);
+	cc_play(&as, 3, CC_LUA + 0x20u);
+	cc_run(&cc, &as, 4, 4);
+	check(cc_st(&cc) == TOD_CC_CACHING && rd32(CC_PF + TOD_PF_CUR) == CC_FASTOON,
+	      "a death (no load: g_levelLoadTier stays loaded) goes on");
+	as.cur_state = TOD_STATE_PAUSE;
+	wr8(CC_PF + TOD_PF_ENABLED, 0);
+	cc_run(&cc, &as, TOD_CC_STALL_TICKS + 40u, 4);
+	check(cc_st(&cc) == TOD_CC_CACHING, "paused far longer than the stall limit: no read, but no stall either");
+	as.cur_state = TOD_STATE_GAMEPLAY;
+	wr8(CC_PF + TOD_PF_ENABLED, 1);
+	i = rd32(CC_PF + TOD_PF_OFFSET);
+	cc_loading(&as, 1);
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LEVEL,
+	      "a level load mid-way: failed, a level change");
+	check(rd32(CC_PF + TOD_PF_OFFSET) == i, "and nothing more is written (LevelPrefetch_setup will reset it)");
+	cc_play(&as, 1, CC_LUA);
+	cc_warmer_idle();
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again, on the next planet");
+	cc_run(&cc, &as, 8, 1);
+	as.cur_front = 1;
+	as.cur_lua = 0;
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LEVEL, "the title mid-way: failed too");
+	cc_play(&as, 1, CC_LUA);
+	cc_warmer_idle();
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
+	cc_run(&cc, &as, 8, 1);
+	tod_cc_quit(&cc);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_QUIT, "the game going: failed, the game closed");
+	cc_warmer_idle();
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
+	cc_run(&cc, &as, 8, 0);            /* the range handed over, and no frame of the warmer runs */
+	cc_run(&cc, &as, TOD_CC_STALL_TICKS + 8u, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_STALLED,
+	      "in gameplay with the warmer on and no read for 30 s: the warmer stalled");
+	wr32(CC_PF + TOD_PF_CUR, 0);
+	wr32(CC_PF + TOD_PF_READY, 0);
+
+	/* A request made at the title waits through the load into a level. */
+	as.cur_front = 1;
+	as.cur_lua = 0;
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "asked for at the title");
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING && cc_det(&cc) == TOD_CC_WAIT_PLAY, "waiting for gameplay");
+	as.cur_front = 0;
+	cc_loading(&as, 0);
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING, "the load out of the title does not end it");
+	cc_play(&as, 0, CC_LUA);
+	cc_warmer_idle();
+	cc_run(&cc, &as, 4, 0);
+	check(cc_st(&cc) == TOD_CC_CACHING, "gameplay and the warmer idle: caching");
+	cc_run(&cc, &as, 200, 4);
+
+	/* ---- Disable cutscene caching ends one, and refuses the button */
+	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
+	cc_run(&cc, &as, 8, 1);
+	check(tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 1) == ST_OK && cc_st(&cc) == TOD_CC_FAILED &&
+	      cc_det(&cc) == TOD_CC_WHY_DISABLED, "Disable cutscene caching on: the run under way ends");
+	check(tod_cc_trigger(&cc, &as) == ST_BUSY && cc_det(&cc) == TOD_CC_WHY_DISABLED,
+	      "and the button is refused while it is on, saying why");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	check(qstreq(text, "Caching disabled"), "the menu's row says so");
+	tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 0);
+	cc_run(&cc, &as, 200, 4);
+	cc_warmer_idle();
+
+	/* ---- the auto: a fresh file's Metropolis load, and nothing else */
+	tod_cc_forget(&cc);
+	memset(&as, 0, sizeof(as));
+	cc_play(&as, 3, CC_LUA);
+	cc_run(&cc, &as, 2, 0);
+	check(tod_cc_set(&cc, TF_CACHE_ON_RESET, 1) == ST_OK, "Cache cutscenes on reset on");
+	metropolis_beaten(0);
+	cc_loading(&as, 3);
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_NONE, "a load into Fastoon, flag clear: nothing");
+	cc_play(&as, 3, CC_LUA);
+	cc_run(&cc, &as, 2, 0);
+	metropolis_beaten(1);
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_NONE, "a load into Metropolis on a save past it (flag set): nothing");
+	cc_play(&as, TOD_LEVEL_METROPOLIS, CC_LUA);
+	cc_run(&cc, &as, 4, 0);
+	as.cur_lua = CC_LUA + 0x40u;               /* a death on Metropolis, flag clear: no load */
+	metropolis_beaten(0);
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_NONE, "a death on Metropolis with the flag clear: nothing");
+	wr32(CC_PF + TOD_PF_CUR, CC_STR);
+	wr32(CC_PF + TOD_PF_STATE, 0);
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING && cc_det(&cc) == TOD_CC_WAIT_PLAY,
+	      "a fresh file's load into Metropolis: asked for at once, waiting for gameplay");
+	cc_run(&cc, &as, 30, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING, "the run's own load does not end it");
+	cc_play(&as, TOD_LEVEL_METROPOLIS, CC_LUA);
+	wr32(CC_PF + TOD_PF_STATE, 1);              /* the warmer on Metropolis's own files */
+	cc_run(&cc, &as, 8, 0);
+	check(cc_st(&cc) == TOD_CC_WAITING && cc_det(&cc) == TOD_CC_WAIT_WARMER, "gameplay: waiting for the warmer");
+	cc_warmer_idle();
+	cc_run(&cc, &as, 4, 0);
+	check(cc_st(&cc) == TOD_CC_CACHING && rd32(CC_PF + TOD_PF_CUR) == CC_FASTOON, "the warmer idle: Fastoon first");
+	cc_loading(&as, TOD_LEVEL_COBALIA);
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LEVEL,
+	      "the runner leaves Metropolis first: cancelled, a level change");
+	cc_play(&as, TOD_LEVEL_COBALIA, CC_LUA);
+	cc_warmer_idle();
+	cc_run(&cc, &as, 40, 0);
+	check(cc_st(&cc) == TOD_CC_FAILED && rd32(CC_PF + TOD_PF_CUR) == 0, "and it is not taken up again on Cobalia");
+	metropolis_beaten(0);
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 2, 0);
+	cc_play(&as, TOD_LEVEL_METROPOLIS, CC_LUA);
+	cc_warmer_idle();
+	cc_run(&cc, &as, 400, 4);
+	check(cc_st(&cc) == TOD_CC_DONE, "a reset to a new file again: the whole run, done");
+	tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 1);
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_DONE, "with Disable cutscene caching on, a fresh file's load asks for nothing");
+	cc_play(&as, TOD_LEVEL_METROPOLIS, CC_LUA);
+	cc_run(&cc, &as, 2, 0);
+	tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 0);
+	tod_cc_set(&cc, TF_CACHE_ON_RESET, 0);
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 2, 0);
+	check(cc_st(&cc) == TOD_CC_DONE, "and with the auto off, nothing either");
+	metropolis_beaten(1);
+
+	/* ---- Disable cutscene caching: the planet's sound blocks, during its load, in pieces */
+	tod_cc_forget(&cc);
+	memset(&as, 0, sizeof(as));
+	cc_play(&as, 3, CC_LUA);
+	cc_blocks();
+	cc_run(&cc, &as, 2, 0);
+	tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 1);
+	cc_run(&cc, &as, 20, 0);
+	check(cc_use(0) == 1000u, "on, but no load: nothing is touched");
+	cc_loading(&as, 2);                         /* into Stratus City */
+	cc_run(&cc, &as, 1, 0);
+	check(cc_use(0) == TOD_FC_FREE && cc_use(4) == TOD_FC_FREE && cc_use(66) == 1066u,
+	      "the load's first tick: the first piece alone, its Stratus City sound blocks freed");
+	cc_run(&cc, &as, 2, 0);
+	check(cc_use(66) == TOD_FC_FREE, "the third tick, the last piece: its block 66 too");
+	check(cc_use(5) == TOD_FC_FILLING && cc_use(6) == TOD_FC_FREE, "a filling block is left alone, a free one stays free");
+	check(cc_use(7) == 1007u && cc_use(10) == 1010u && cc_use(20) == 1020u && cc_use(30) == 1030u,
+	      "Stratus City's textures, Fastoon's sound, global_uncached and Metropolis's archive are left alone");
+	for (i = 0, freed = 0; i < CC_NBLOCKS; i++) freed += cc_use(i) == TOD_FC_FREE;
+	check(freed == 7, "seven blocks free: five freed, one already free, block 66 (and nothing else)");
+	cc_play(&as, 2, CC_LUA);
+	cc_run(&cc, &as, 4, 0);
+	cc_blocks();
+	cc_loading(&as, TOD_LEVEL_METROPOLIS);
+	cc_run(&cc, &as, 4, 0);
+	check(cc_use(30) == TOD_FC_FREE && cc_use(20) == TOD_FC_FREE && cc_use(21) == TOD_FC_FREE && cc_use(22) == 1022u,
+	      "into Metropolis: its level_uncached, and global_uncached blocks 0..56 (its sound), not block 57");
+	check(cc_use(0) == 1000u && cc_use(10) == 1010u, "and no other planet's");
+	cc_play(&as, TOD_LEVEL_METROPOLIS, CC_LUA);
+	cc_run(&cc, &as, 4, 0);
+	cc_blocks();
+	cc_block(40, 1040u, 0, 3);                  /* a Fastoon sound block in the second piece */
+	cc_loading(&as, 3);                         /* into Fastoon, ending after one tick */
+	cc_run(&cc, &as, 1, 0);
+	cc_play(&as, 3, CC_LUA);
+	cc_run(&cc, &as, 4, 0);
+	check(cc_use(10) == TOD_FC_FREE && cc_use(14) == TOD_FC_FREE, "into Fastoon: its sound blocks in the first piece");
+	check(cc_use(40) == 1040u, "the load over after one tick: the walk stops, nothing in gameplay is touched");
+	tod_cc_set(&cc, TF_NO_CUTSCENE_CACHE, 0);
+	cc_blocks();
+	cc_loading(&as, 2);
+	cc_run(&cc, &as, 4, 0);
+	check(cc_use(0) == 1000u, "off: a load frees nothing (and what was freed refills through the warmer)");
+	cc_play(&as, 2, CC_LUA);
+	cc_run(&cc, &as, 2, 0);
+	wr32(TOD_FIOS_CACHE, 0);
+
+	/* ---- through the session: the feature, the readout */
+	cc_toc();
+	cc_warmer_idle();
+	wr32(TOD_LUA_STATE, CC_LUA);
+	wr8(TOD_FRONT_END, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LOAD_JOB, 0);
+	wr8(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1);
+	tick(4);
+	check(features_trigger(TF_CACHE_CUTSCENES) == ST_OK, "FEATURE_TRIGGER 19 is taken");
+	tick(12);
+	session_info_copy(info, sizeof(info));
+	info_word = be32_get(info + 64 + 4 * TOD_RO_CUTSCENE_CACHE);
+	check((info_word >> 28) == TOD_CC_CACHING && ((info_word >> 24) & 15u) == 1 && rd32(CC_PF + TOD_PF_CUR) == CC_FASTOON,
+	      "SessionInfo's readout 3 says caching Fastoon, and the warmer has its range");
+	for (i = 0; i < 200; i++) {
+		cc_frame();
+		cc_frame();
+		cc_frame();
+		tick(1);
+	}
+	session_info_copy(info, sizeof(info));
+	info_word = be32_get(info + 64 + 4 * TOD_RO_CUTSCENE_CACHE);
+	check((info_word >> 28) == TOD_CC_DONE && ((info_word >> 16) & 0xFFu) == 100, "and done");
+	check(features_set(TF_NO_CUTSCENE_CACHE, 1) == ST_OK && features_trigger(TF_CACHE_CUTSCENES) == ST_BUSY,
+	      "with Disable cutscene caching on, the trigger is BUSY");
+	check(features_set(TF_NO_CUTSCENE_CACHE, 0) == ST_OK && features_set(TF_CACHE_ON_RESET, 1) == ST_OK &&
+	      features_set(TF_CACHE_ON_RESET, 0) == ST_OK, "both toggles answer OK through the feature table");
+	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, old_toc);
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -2764,6 +3256,7 @@ void test_tod_game(void)
 	test_tod_load_fade();
 	test_tod_cutscenes();
 	test_tod_debug_pages();
+	test_tod_cutscene_cache();
 	test_tod_on_boot();
 	quit();
 }

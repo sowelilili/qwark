@@ -669,8 +669,13 @@ static u8 page_items(u16 page, u16 *ids)
 				j = (u8)(it - MENU_ITEM_VALUE(0));
 				if (j < gm->nvalues && feature(gm->values[j].id) != NULL)
 					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_VALUE, j));
-			} else if (feature(it) != NULL) {
+			} else if ((f = feature(it)) != NULL) {
 				n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_FEATURE, it));
+#if QWARK_HAS_TOD
+				/* Revision 1.29: an ACTION's status row after it, as on the Manips page (ToD's Cache cutscenes). */
+				if (f->kind == FEATURE_ACTION && f->readout < QWARK_MAX_READOUTS && gm->action_status != NULL)
+					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_STATUS, it));
+#endif
 			}
 		}
 		return n;
