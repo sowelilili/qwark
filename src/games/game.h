@@ -660,6 +660,13 @@ struct menu_native {
 	u32 note_noch;
 	u32 note_in_list;
 	u32 note_late;
+	/*
+	 * Revision 1.29, the fourth console test: the rows the game's screens
+	 * take at once, a MAIN page's and a CONFIG page's (the mailbox's
+	 * max_rows and cfg_rows; 0 for row_cap).
+	 */
+	u8  max_rows;
+	u8  cfg_rows;
 };
 #endif
 

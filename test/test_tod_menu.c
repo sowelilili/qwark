@@ -38,6 +38,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 /* ------------------------------------------------- the helper, on the PC */
 
@@ -119,13 +120,16 @@ static const char *row_value(u32 i, char *buf)
 	return buf;
 }
 
+/* A row by its label, qwark's spelling: the helper's copy has it in capitals (lm_upper, the fourth console test). */
 static int find_row(const char *label)
 {
-	char b[48];
+	char b[48], u[48];
 	u32 i;
 
+	for (i = 0; label[i] != 0 && i < sizeof(u) - 1; i++) u[i] = (char)toupper((unsigned char)label[i]);
+	u[i] = 0;
 	for (i = 0; i < lm_nrows(); i++) {
-		if (strcmp(row_label(i, b), label) == 0) return (int)i;
+		if (strcmp(row_label(i, b), u) == 0) return (int)i;
 	}
 	return -1;
 }
@@ -202,10 +206,10 @@ static void test_install(void)
 	check(wait_ready(), "nothing queued: the menu goes in");
 	check(hooks_in(d, 1) && peek32(d->mailbox) == LUAMB_MAGIC, "the Lua helper is in, its four words with it");
 	check(menu_mailbox() == LM_BOX && peek32(LM_BOX) == MBOX_MAGIC && peek8(LM_BOX + MBOX_OFF_ROW_CAP) == LM_ROWS &&
-	      peek8(LM_BOX + MBOX_OFF_ROW_SIZE) == MBOX_ROW_SIZE && peek8(LM_BOX + MBOX_OFF_MAX_ROWS) == LM_ROWS &&
-	      peek8(LM_BOX + MBOX_OFF_CFG_ROWS) == LM_ROWS && peek8(LM_BOX + MBOX_OFF_CAPS) == LM_CAPS &&
+	      peek8(LM_BOX + MBOX_OFF_ROW_SIZE) == MBOX_ROW_SIZE && peek8(LM_BOX + MBOX_OFF_MAX_ROWS) == LM_MAX_ROWS &&
+	      peek8(LM_BOX + MBOX_OFF_CFG_ROWS) == LM_CFG_ROWS && peek8(LM_BOX + MBOX_OFF_CAPS) == LM_CAPS &&
 	      peek8(LM_BOX + MBOX_OFF_RENDERER) == GAME_TOD && (peek32(LM_BOX + 4) & 0xFFFF) == LM_BOX_SIZE,
-	      "the menu's mailbox, written by the core: 32 rows of either type, Left/Right, back and requests, game 5");
+	      "the menu's mailbox, written by the core: 32 row slots, 9 at once in the list, 6 on Game Options, Left/Right, back and requests, game 5");
 	check(peek8(LM_STATE + LM_HELP) == 1, "menu.help 1: the Help byte says Trainer");
 	check(peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) != 0 && (peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) & 1) == 0,
 	      "and the root is posted");
@@ -248,7 +252,7 @@ static void test_bridge(void)
 	title(t);
 	check(lm8(LMS(LM_HAVE)) == 1 && lm32(LMS(LM_SEQ)) == peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) &&
 	      lm32(LMS(LM_KEY)) == peek32(LM_BOX + MBOX_OFF_PAGE_KEY), "the root taken: its seq and key kept");
-	check(strcmp(t, "Trainer") == 0 && find_row("Game") == 0 && find_row("Cheats") == 1 &&
+	check(strcmp(t, "TRAINER") == 0 && find_row("Game") == 0 && find_row("Cheats") == 1 &&
 	      find_row("Manips") == 2 && find_row("Planets") > 2 && find_row("Unlocks") > 2,
 	      "the root: Trainer, Game, Cheats, Manips, Planets, Unlocks ...");
 	check((lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_ROOT) != 0 && lm8(lm_row(1) + MROW_OFF_KIND) == MROW_LINK &&
@@ -267,12 +271,12 @@ static void test_bridge(void)
 	/* Into Cheats: an event, qwark's answer, a new key. */
 	check(press(MBOX_EV_ACTIVATE, find_row("Cheats")), "the cross on Cheats goes out");
 	title(t);
-	check(lm32(LMS(LM_GEN)) == gen + 1 && strcmp(t, "Cheats") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
+	check(lm32(LMS(LM_GEN)) == gen + 1 && strcmp(t, "CHEATS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
 	      "qwark answers with Cheats, a CONFIG page, a new key");
 	check(find_row("Fast loads") == 0 && find_row("Infinite ammo") >= 0 && find_row("Remove cutscenes") < 0 &&
 	      find_row("Max bolts") >= 0, "Cheats: Fast loads, the toggles, Max bolts; Remove cutscenes not here");
 	r = find_row("Infinite ammo");
-	check(r >= 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_TOGGLE && strcmp(row_value((u32)r, b), "Off") == 0 &&
+	check(r >= 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_TOGGLE && strcmp(row_value((u32)r, b), "OFF") == 0 &&
 	      (lm8(lm_row((u32)r) + MROW_OFF_FLAGS) & MROWF_STEPS) != 0, "Infinite ammo: a toggle, Off, Left and Right step it");
 
 	/* One press in flight: the second waits for qwark. */
@@ -285,7 +289,7 @@ static void test_bridge(void)
 	      "the event: the row, its id echoed, the key of the page it was made on");
 	tick(6);
 	lm_take();
-	check((features_toggle_state() & (1ull << TF_INFINITE_AMMO)) != 0 && strcmp(row_value((u32)r, b), "On") == 0,
+	check((features_toggle_state() & (1ull << TF_INFINITE_AMMO)) != 0 && strcmp(row_value((u32)r, b), "ON") == 0,
 	      "qwark turns Infinite ammo on, and the page it posts says On");
 	check(press(MBOX_EV_LEFT, r) && (features_toggle_state() & (1ull << TF_INFINITE_AMMO)) == 0,
 	      "Left steps it back off");
@@ -295,7 +299,7 @@ static void test_bridge(void)
 	check(press(MBOX_EV_BACK, -1) && lm32(LMS(LM_GEN)) == gen + 1 && find_row("Game") == 0, "back: the root again");
 	press(MBOX_EV_ACTIVATE, find_row("Manips"));
 	title(t);
-	check(strcmp(t, "Manips") == 0 && find_row("Remove cutscenes") == 0, "Manips: Remove cutscenes, as the client has it");
+	check(strcmp(t, "MANIPS") == 0 && find_row("Remove cutscenes") == 0, "Manips: Remove cutscenes, as the client has it");
 	check(find_row("Cache cutscenes") == 1 && find_row("Cutscene cache") == 2 &&
 	      find_row("Cache cutscenes on reset") == 3 && find_row("Disable cutscene caching") == 4,
 	      "revision 1.29: then Cache cutscenes with its status row under it, and its two toggles");
@@ -308,6 +312,88 @@ static void test_bridge(void)
 	press(MBOX_EV_ACTIVATE, k);
 	check(find_row("Game") == 0 && lm32(LMS(LM_GEN)) == gen && peek32(LM_BOX + MBOX_OFF_EV_ACK) ==
 	      peek32(LM_BOX + MBOX_OFF_EV_SEQ), "a stale key: qwark answers the press and does nothing, the root stays");
+	features_set(TF_INFINITE_AMMO, 0);
+}
+
+/*
+ * Revision 1.29, the fourth console test (docs/tod-menu.md 12): what the
+ * helper decides for the glue now. A press goes out only where the row
+ * takes it (lm_press), the cursor's next row skips what it cannot stand on
+ * (lm_next), a window's edge asks qwark for the next window (lm_edge), and
+ * the copy is in capitals (lm_upper), past nothing a RANGE row keeps.
+ */
+static void test_screens(void)
+{
+	char b[48], t[40];
+	int r, s, i;
+	u32 n, gen, ev;
+
+	group("ToD's console menu: presses, windows and capitals for the pause's list and Game Options (lh_menu.c)");
+	lm_take();
+	poke32(LMS(LM_KEY), peek32(LM_BOX + MBOX_OFF_PAGE_KEY));
+	title(t);
+	check(strcmp(t, "TRAINER") == 0 && strcmp(row_label(0, b), "GAME") == 0 && lm_nrows() <= LM_MAX_ROWS &&
+	      lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_MAIN, "the root: a MAIN page in capitals, nine rows at most (the pause's list)");
+
+	/* Cheats: an INFO row takes no cross, a toggle takes Left and Right, a button the cross but no step. */
+	press(MBOX_EV_ACTIVATE, find_row("Cheats"));
+	check(lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && lm_nrows() <= LM_CFG_ROWS,
+	      "Cheats: a CONFIG page, six rows at most (Game Options)");
+	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
+	r = find_row("Infinite ammo");
+	s = -1;
+	for (i = 0; i < (int)lm_nrows(); i++) if ((lm_flags((u32)i) & MROWF_ENABLED) == 0) s = i;
+	check(r >= 0 && lm_press(MBOX_EV_ACTIVATE, LM_ROWS) == 0 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
+	      "a press past the page posts nothing");
+	if (s >= 0) check(lm_press(MBOX_EV_ACTIVATE, (u32)s) == 0 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
+	                  "the cross on a row the cursor cannot stand on posts nothing");
+	check(lm_press(MBOX_EV_RIGHT, (u32)r) == 1 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_RIGHT,
+	      "Right on Infinite ammo, which steps: posted");
+	tick(6);
+	lm_take();
+	check((features_toggle_state() & (1ull << TF_INFINITE_AMMO)) != 0 && strcmp(row_value((u32)r, b), "ON") == 0,
+	      "and qwark turns it on, ON in capitals");
+	check(lm_press(MBOX_EV_LEFT, (u32)r) == 1, "Left posted too");
+	tick(6);
+	lm_take();
+	i = find_row("Max bolts");
+	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
+	check(i >= 0 && (lm_flags((u32)i) & MROWF_STEPS) == 0 && lm_press(MBOX_EV_RIGHT, (u32)i) == 0 &&
+	      peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev, "Right on Max bolts, a button that does not step: nothing (the glue's cross then)");
+
+	/* The next row the cursor stands on, wrapping inside the window's rows. */
+	n = lm_nrows();
+	check(lm_next(0, 1, n) == (lm_flags(1) & MROWF_ENABLED ? 1u : lm_next(1, 1, n)) && lm_next(0, -1, n) < n &&
+	      lm_next(n, 1, n) == n && lm_next(0, 1, 0) == 0, "lm_next: down, up wrapping, out of range left alone");
+	if (s >= 0 && s + 1 < (int)n && s > 0)
+		check(lm_next((u32)s - 1, 1, n) != (u32)s, "lm_next steps over the row the cursor cannot stand on");
+	press(MBOX_EV_BACK, -1);
+
+	/* Planets: longer than Game Options' six rows, so a window; its last row asks for the next. */
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS &&
+	      (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_DOWN) != 0 && (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_UP) == 0,
+	      "Planets: six rows, more below");
+	gen = lm32(LMS(LM_GEN));
+	strcpy(t, row_label(0, b));
+	check(lm_edge(2) == 0 && lm_edge(0) == 0, "lm_edge inside the window, and at its top with nothing above: nothing");
+	check(lm_edge(LM_CFG_ROWS - 1) == 1 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN,
+	      "at its last row: SCROLL_DOWN");
+	tick(6);
+	lm_take();
+	check(lm32(LMS(LM_GEN)) == gen + 1 && (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_UP) != 0 &&
+	      strcmp(row_label(0, b), t) != 0, "qwark slides the window: more above now, other planets");
+	check(lm_edge(0) == 1 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP, "at its top: SCROLL_UP");
+	tick(6);
+	lm_take();
+	press(MBOX_EV_BACK, -1);
+	check(find_row("Game") == 0, "back at the root");
+
+	/* The capitals stop at a string's end: a RANGE row's words past its label are left as they are. */
+	poke32(lm_row(0) + MROW_OFF_RANGE, 0x61626364u);
+	lm_caps(lm_row(0) + MROW_OFF_LABEL, MROW_LABEL_LEN);
+	check(lm32(lm_row(0) + MROW_OFF_RANGE) == 0x61626364u, "lm_caps stops at the label's NUL: a RANGE row's words kept");
 	features_set(TF_INFINITE_AMMO, 0);
 }
 
@@ -594,11 +680,11 @@ static void test_diag(void)
 	host_log_clear();
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN_LIST);
 	tick(4);
-	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options, the Cheats screen met when the "
-	                    "Trainer opens"), "the list in, the Cheats screen not met yet: said");
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options, Game Options met when the "
+	                    "Trainer shows a page there"), "the list in, Game Options not met yet: said");
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_LATE);
 	tick(4);
-	check(host_log_seen("menu: the Trainer met the game's Cheats screen on its slide; its page is in"),
+	check(host_log_seen("menu: the Trainer met the game's Game Options screen on its slide; its page is in"),
 	      "the Cheats screen met on its slide: said");
 
 	/* No Options list: said, and the look sent, a request for the menu's VM. */
@@ -634,7 +720,7 @@ static void test_diag(void)
 	host_set_fake_pause(4);
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_NOCH);
 	tick(8);
-	check(host_log_seen("menu: the Trainer found no Cheats screen on its slide and went back to the pause's list"),
+	check(host_log_seen("menu: the Trainer found no Game Options screen on its slide and went back to the pause's list"),
 	      "the Trainer found no Cheats screen: said");
 	check(peek32(mb + LUAMB_OFF_REQ) == seq + 2 && peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->diag_len,
 	      "and its look sent");
@@ -917,6 +1003,7 @@ void test_tod_menu(void)
 {
 	test_install();
 	test_bridge();
+	test_screens();
 	test_requests();
 	test_glue();
 	test_gate();

@@ -453,6 +453,7 @@ MBOX_OFF_PICK_SEQ = 0x28
 MBOX_OFF_PICK_PLANET = 0x2C
 MBOX_OFF_PAGE_KEY = 0x30
 MBOX_OFF_NROWS = 0x34
+MBOX_OFF_PFLAGS = 0x36
 MBOX_OFF_PTYPE = 0x37
 MBOX_OFF_TITLE = 0x38
 MBOX_CAP_PICKER = 0x10
@@ -464,6 +465,7 @@ MBOX_EV_ACTIVATE = 1
 MBOX_EV_LEFT = 2
 MBOX_EV_RIGHT = 3
 MBOX_EV_BACK = 4
+MBOX_EV_SCROLL_DOWN = 8
 MBOX_EV_PICKER_OTHERS = 9
 
 PLANET_FLAG_RESET_LEVELFLAGS = 0x01
@@ -6069,9 +6071,9 @@ def smoke_tod_menu(c, sim):
           dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
     check(status == ST_OK and struct.unpack(">H", body[6:8])[0] == size and body[8] == 32 and body[9] == 0x40 and
-          body[10] == 32 and body[11] == 0x0D and body[14] == 5 and body[15] == 32,
-          "ToD menu: 32 rows of 0x40 on either page type, Left/Right, back, requests, game 5",
-          body.hex() if status == ST_OK else status)
+          body[10] == 9 and body[11] == 0x0D and body[14] == 5 and body[15] == 6,
+          "ToD menu: 32 row slots of 0x40, a MAIN page 9 at once (the pause's list), a CONFIG page 6 (Game Options), "
+          "Left/Right, back, requests, game 5", body.hex() if status == ST_OK else status)
     check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 1, "ToD menu: the Help byte says Trainer")
 
     page = menu_page(c, box, size)
@@ -6087,6 +6089,22 @@ def smoke_tod_menu(c, sim):
           "ToD menu: Cheats, a CONFIG page: the four toggles, Max bolts and Max raritanium",
           page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back is acked")
+    module_sleep(c, 0.1)
+    # The fourth console test: a CONFIG page longer than Game Options' six rows comes a window at a time.
+    page = menu_page(c, box, size)
+    planets = page[3].index("Planets") if page and "Planets" in page[3] else 3
+    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: into Planets")
+    module_sleep(c, 0.1)
+    page = menu_page(c, box, size)
+    check(page is not None and page[2] == "Planets" and len(page[3]) == 6 and page[4][MBOX_OFF_PFLAGS] & 0x04,
+          "ToD menu: Planets on Game Options: six planets, more below", (page[2:4], page[4][MBOX_OFF_PFLAGS]) if page else None)
+    first = page[3][0] if page else None
+    check(menu_event(c, MBOX_EV_SCROLL_DOWN, 5, box, size), "ToD menu: the window's edge asks for the next")
+    module_sleep(c, 0.1)
+    page = menu_page(c, box, size)
+    check(page is not None and page[3][0] != first and page[4][MBOX_OFF_PFLAGS] & 0x02,
+          "ToD menu: the next window, more above", page[3] if page else None)
+    check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back to the root")
     module_sleep(c, 0.1)
 
     # The pause: its VM asks for the glue, and qwark sends it as a request for the menu's VM.

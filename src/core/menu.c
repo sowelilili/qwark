@@ -2062,6 +2062,12 @@ static int write_cave(const struct mh_cave *c)
  * helper's block zeroed and a header written, the identity last, so the helper
  * never reads half of one; then what install() does with any mailbox.
  */
+/* Revision 1.29, the fourth console test: a screen's rows at once, row_cap for 0 or more. */
+static u8 native_rows(u8 rows)
+{
+	return rows == 0 || rows > g_native->row_cap ? g_native->row_cap : rows;
+}
+
 static int native_install(void)
 {
 	const struct menu_native *n = g_native;
@@ -2084,7 +2090,8 @@ static int native_install(void)
 
 	if (mem_read(n->mailbox, head, MBOX_READ_HEAD) != ST_OK) return ST_IO_ERROR;
 	if (be32_get(head + MBOX_OFF_MAGIC) != MBOX_MAGIC || be16_get(head + MBOX_OFF_VERSION) != MBOX_VERSION ||
-	    be16_get(head + MBOX_OFF_SIZE) != n->mailbox_size || head[MBOX_OFF_ROW_CAP] != n->row_cap) {
+	    be16_get(head + MBOX_OFF_SIZE) != n->mailbox_size || head[MBOX_OFF_ROW_CAP] != n->row_cap ||
+	    head[MBOX_OFF_MAX_ROWS] != native_rows(n->max_rows) || head[MBOX_OFF_CFG_ROWS] != native_rows(n->cfg_rows)) {
 		memset(z, 0, sizeof(z));
 		for (off = 0; off < n->state_size; off += sizeof(z)) {
 			u32 len = n->state_size - off < sizeof(z) ? n->state_size - off : (u32)sizeof(z);
@@ -2095,10 +2102,10 @@ static int native_install(void)
 		be16_put(head + MBOX_OFF_SIZE, n->mailbox_size);
 		head[MBOX_OFF_ROW_CAP] = n->row_cap;
 		head[MBOX_OFF_ROW_SIZE] = MBOX_ROW_SIZE;
-		head[MBOX_OFF_MAX_ROWS] = n->row_cap;
+		head[MBOX_OFF_MAX_ROWS] = native_rows(n->max_rows);
 		head[MBOX_OFF_CAPS] = n->caps;
 		head[MBOX_OFF_RENDERER] = g_game_id;
-		head[MBOX_OFF_CFG_ROWS] = n->row_cap;
+		head[MBOX_OFF_CFG_ROWS] = native_rows(n->cfg_rows);
 		if (mem_write(n->mailbox + 4, head + 4, sizeof(head) - 4) != ST_OK) return ST_IO_ERROR;
 		be32_put(head, MBOX_MAGIC);
 		if (mem_write(n->mailbox, head, 4) != ST_OK) return ST_IO_ERROR;
@@ -2124,7 +2131,7 @@ static int native_install(void)
 	g_frames = be32_get(head + MBOX_OFF_FRAMES);
 	g_row_cap = head[MBOX_OFF_ROW_CAP] > MENU_VIEW_MAX ? MENU_VIEW_MAX : head[MBOX_OFF_ROW_CAP];
 	g_row_size = head[MBOX_OFF_ROW_SIZE];
-	menu_model_reset(g_row_cap, g_row_cap, head[MBOX_OFF_CAPS]);
+	menu_model_reset(head[MBOX_OFF_MAX_ROWS], head[MBOX_OFF_CFG_ROWS], head[MBOX_OFF_CAPS]);
 	g_posted = 0;
 	post(1);
 	if (!g_posted) return ST_IO_ERROR;
@@ -2196,16 +2203,16 @@ static void native_notes(void)
 		plat_log("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: %u blocks or more left "
 		         "for small objects, %u in its largest class)", (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 	} else if (note == n->note_in_list) {
-		plat_log("menu: the pause menu's glue is in: TRAINER in Options, the Cheats screen met when the Trainer "
-		         "opens (its Lua pool: %u blocks or more left for small objects, %u in its largest class)",
+		plat_log("menu: the pause menu's glue is in: TRAINER in Options, Game Options met when the Trainer "
+		         "shows a page there (its Lua pool: %u blocks or more left for small objects, %u in its largest class)",
 		         (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 	} else if (note == n->note_late) {
-		plat_log("menu: the Trainer met the game's Cheats screen on its slide; its page is in");
+		plat_log("menu: the Trainer met the game's Game Options screen on its slide; its page is in");
 	} else if (note == n->note_none) {
 		plat_log("menu: the pause menu's glue found no Options list; Help stays the game's");
 		native_diag_want(1);
 	} else if (note == n->note_noch) {
-		plat_log("menu: the Trainer found no Cheats screen on its slide and went back to the pause's list");
+		plat_log("menu: the Trainer found no Game Options screen on its slide and went back to the pause's list");
 		native_diag_want(2);
 	}
 }

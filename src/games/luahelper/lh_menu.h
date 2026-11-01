@@ -9,7 +9,7 @@
  * games there. What is ToD's alone is who reads it: no renderer of ui.pak, but
  * the Lua helper (lh_menu.c), from the pause menu's own frame, on behalf of a
  * few hundred lines of Lua in the pause menu's VM (lh_glue.lua) that show the
- * page with the game's Cheats screen.
+ * page with the game's own list and GAME OPTIONS screen.
  *
  * This header is plain #defines, shared by the helper (ppu-lv2-gcc, no libc),
  * the host tests and qwark (src/games/tod_game.c, through tod.h): the block's
@@ -21,10 +21,9 @@
 
 /*
  * The mailbox: the RW page past the Lua helper's mailbox (0x8CA000..0x8CC600),
- * unreferenced by the executable (check.py). Thirty-two rows, MENU_VIEW_MAX:
- * the Cheats screen's list scrolls on its own, so a page of up to 32 rows is
- * posted whole, and only a longer one (a save category of the console's
- * library) comes a window at a time.
+ * unreferenced by the executable (check.py). Thirty-two row slots, MENU_VIEW_MAX;
+ * since the fourth console test a page takes LM_MAX_ROWS or LM_CFG_ROWS of
+ * them (below), and a longer one comes a window at a time.
  */
 #define LM_BOX          0x008CD000
 #define LM_ROWS         32
@@ -38,6 +37,19 @@
  * and no picker.
  */
 #define LM_CAPS         0x0D         /* MBOX_CAP_STEPS | MBOX_CAP_BACK | MBOX_CAP_REQUEST */
+
+/*
+ * Revision 1.29, the fourth console test (docs/tod-menu.md 12): the rows a
+ * page takes at once. A MAIN page (the root, Unlocks) is a menu of the
+ * pause's own list, whose ScrollableList shows nine rows and has nine row
+ * nodes, so it cannot scroll past them (it wants one spare): nine at once.
+ * A CONFIG page is shown on the game's GAME OPTIONS screen, six fixed rows
+ * (optHandler's optionGroup, option1..option6, read on the console): six at
+ * once. A longer page comes a window at a time (MBOX_PAGE_MORE_*), the glue
+ * asking for the next at the window's edge (LM_OP_EDGE).
+ */
+#define LM_MAX_ROWS     9
+#define LM_CFG_ROWS     6
 
 /* ------------------------------------------------------------ the state */
 
@@ -92,15 +104,17 @@
 /*
  * LM_NOTE: what the glue found in this pause menu (qw(LM_OP_NOTE, n)), the
  * last thing it said. Revision 1.29, the third console test (docs/tod-menu.md
- * 11): the Options list and the Cheats screen are looked for apart, the
- * Cheats screen at the latest when the Trainer goes to its slide; NONE and
- * NOCH are failures, after which qwark sends lh_diag.lua's look (once).
+ * 11): the Options list and the page's screen are looked for apart, the
+ * screen at the latest when the Trainer goes to its slide; NONE and NOCH are
+ * failures, after which qwark sends lh_diag.lua's look (once). Since the
+ * fourth test (docs/tod-menu.md 12) the page's screen is GAME OPTIONS, not
+ * the Cheats screen; the numbers are the same.
  */
-#define LM_NOTE_IN      1      /* the Options list and the Cheats screen: TRAINER is in                    */
+#define LM_NOTE_IN      1      /* the Options list and Game Options: TRAINER is in                         */
 #define LM_NOTE_NONE    2      /* no Options list in its first tries: Help stays the game's (it looks on)  */
-#define LM_NOTE_NOCH    3      /* the Trainer waited on the Cheats screen's slide and none came: back out   */
-#define LM_NOTE_IN_LIST 4      /* the Options list: TRAINER is in; the Cheats screen not met yet           */
-#define LM_NOTE_LATE    5      /* the Cheats screen met only once the Trainer went to its slide            */
+#define LM_NOTE_NOCH    3      /* the Trainer waited on Game Options' slide and none came: back out         */
+#define LM_NOTE_IN_LIST 4      /* the Options list: TRAINER is in; Game Options not met yet                */
+#define LM_NOTE_LATE    5      /* Game Options met only once the Trainer went to its slide                 */
 
 /*
  * LM_WHY: what kept a pause menu frame out of the menu's VM (lm_ready), any
@@ -156,5 +170,8 @@
 #define LM_OP_STATE     4      /* (h) the mailbox's hstate: 1 open (frames from 0), 0 closed    */
 #define LM_OP_TAKE      5      /* -> the request taken: 0 none, 1 open, 2 close                 */
 #define LM_OP_NOTE      6      /* (n) LM_NOTE = n, for qwark's log                             */
+#define LM_OP_PRESS     7      /* (kind, i) the press posted where row i takes it -> 1, else 0 (1.29, the fourth test) */
+#define LM_OP_EDGE      8      /* (i) the cursor came to row i: SCROLL_* posted at a window's edge -> 1, else 0      */
+#define LM_OP_NEXT      9      /* (i, d, m) the next row from i the cursor may stand on, d rows on, of the first m, wrapping -> its index */
 
 #endif /* QWARK_LH_MENU_H */

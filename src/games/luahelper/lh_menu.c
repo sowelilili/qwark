@@ -76,6 +76,32 @@ static lm_u32 lm_row(lm_u32 i)
 	return LMP(MBOX_OFF_ROWS) + i * MBOX_ROW_SIZE;
 }
 
+/* A string field of `len` bytes in capitals, up to its NUL (a RANGE row keeps words past its label's). */
+static void lm_caps(lm_u32 a, lm_u32 len)
+{
+	lm_u32 c;
+
+	for (; len > 0 && (c = lm8(a)) != 0; a++, len--)
+		if (c >= 'a' && c <= 'z') lmw8(a, c - 0x20);
+}
+
+/*
+ * Revision 1.29, the fourth console test (docs/tod-menu.md 12): the taken
+ * page's title and its rows' labels and values in capitals, as the pause
+ * menu's own lists and screens write theirs (qwark's hint, a sentence, is
+ * left as it is). Only the copy changes, which only the glue reads.
+ */
+static void lm_upper(lm_u32 n)
+{
+	lm_u32 i;
+
+	lm_caps(LMP(MBOX_OFF_TITLE), MBOX_TITLE_LEN);
+	for (i = 0; i < n; i++) {
+		lm_caps(lm_row(i) + MROW_OFF_LABEL, MROW_LABEL_LEN);
+		lm_caps(lm_row(i) + MROW_OFF_VALUE, MROW_VALUE_LEN);
+	}
+}
+
 /*
  * Takes the page qwark last posted, if it has posted one not taken yet:
  * page_seq even and the same before and after the copy, or nothing is kept
@@ -99,6 +125,7 @@ static void lm_take(void)
 	lm_sync();
 	if (lm32(LMB(MBOX_OFF_PAGE_SEQ)) != s1) return;
 
+	lm_upper(n);
 	key = lm32(LMP(MBOX_OFF_PAGE_KEY));
 	if (lm8(LMS(LM_HAVE)) == 0 || key != lm32(LMS(LM_KEY)))
 		lmw32(LMS(LM_GEN), lm32(LMS(LM_GEN)) + 1);
@@ -129,6 +156,68 @@ static int lm_post(lm_u32 kind, lm_u32 row)
 	lm_sync();
 	lmw32(LMB(MBOX_OFF_EV_SEQ), seq + 1);
 	return 1;
+}
+
+/* Row r's flags (0-based) in the taken page, 0 past its end. */
+static lm_u32 lm_flags(lm_u32 r)
+{
+	return r < lm_nrows() ? lm8(lm_row(r) + MROW_OFF_FLAGS) : 0;
+}
+
+/*
+ * Revision 1.29, the fourth console test (docs/tod-menu.md 12): a press on
+ * row `row` (0-based), posted only where the row takes it, as every
+ * renderer's core decides: the cross on a row the cursor may stand on (an
+ * INFO row takes none), Left and Right on a row that steps; anything else
+ * (BACK) as it is. 1 posted, 0 not.
+ */
+static int lm_press(lm_u32 kind, lm_u32 row)
+{
+	lm_u32 f = lm_flags(row);
+
+	if (kind == MBOX_EV_ACTIVATE && (f & MROWF_ENABLED) == 0) return 0;
+	if ((kind == MBOX_EV_LEFT || kind == MBOX_EV_RIGHT) && (f & MROWF_STEPS) == 0) return 0;
+	return lm_post(kind, row);
+}
+
+/*
+ * The cursor came to row `row` (0-based) of a window the page goes on past:
+ * at the window's last row the cursor can stand on, with more below, qwark is
+ * asked for the window that goes on (SCROLL_DOWN); at its first, with more
+ * above, for the one before (SCROLL_UP); as the renderers' core asks. 1
+ * posted, 0 not.
+ */
+static int lm_edge(lm_u32 row)
+{
+	lm_u32 pf = lm8(LMP(MBOX_OFF_PFLAGS)), n = lm_nrows(), k, before = 0, after = 0;
+
+	for (k = 0; k < n; k++) {
+		if ((lm_flags(k) & MROWF_ENABLED) == 0) continue;
+		if (k < row) before = 1;
+		if (k > row) after = 1;
+	}
+	if ((pf & MBOX_PAGE_MORE_DOWN) != 0 && !after) return lm_post(MBOX_EV_SCROLL_DOWN, row);
+	if ((pf & MBOX_PAGE_MORE_UP) != 0 && !before) return lm_post(MBOX_EV_SCROLL_UP, row);
+	return 0;
+}
+
+/*
+ * From row `row` (0-based) of the first `m` rows, `d` rows on (+1 down, -1
+ * up), wrapping, to the next the cursor may stand on, as the game's lists
+ * move; `row` itself when no other is (Game Options' changeSelection moves
+ * by the difference). Revision 1.29, the fourth console test.
+ */
+static lm_u32 lm_next(lm_u32 row, int d, lm_u32 m)
+{
+	lm_u32 j = row, k;
+
+	if (m > lm_nrows()) m = lm_nrows();
+	if (m == 0 || row >= m) return row;
+	for (k = 0; k < m; k++) {
+		j = d < 0 ? (j == 0 ? m - 1 : j - 1) : (j + 1 >= m ? 0 : j + 1);
+		if (j == row || (lm_flags(j) & MROWF_ENABLED) != 0) return j;
+	}
+	return row;
 }
 
 /*

@@ -298,6 +298,18 @@ int lh_qw(lh_u32 L)
 		lh_push_int(L, (int)lm_take_request());
 		return 1;
 	}
+	if (op == LM_OP_PRESS) {
+		lh_push_int(L, b >= 1 ? lm_press((lh_u32)a, (lh_u32)b - 1) : 0);
+		return 1;
+	}
+	if (op == LM_OP_EDGE) {
+		lh_push_int(L, a >= 1 ? lm_edge((lh_u32)a - 1) : 0);
+		return 1;
+	}
+	if (op == LM_OP_NEXT) {
+		lh_push_int(L, a >= 1 ? (int)lm_next((lh_u32)a - 1, b, (lh_u32)lh_int_arg(L, 4)) + 1 : 1);
+		return 1;
+	}
 	if (op == LM_OP_NOTE) {
 		LH_WORD(LMS(LM_NOTE)) = (lh_u32)a;
 		return 0;

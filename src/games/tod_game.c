@@ -442,8 +442,9 @@ static const struct game_menu tod_menu = {
 /*
  * Revision 1.29: the menu's renderer is the game's own pause menu, through
  * the Lua helper's pause-menu half and its glue (src/games/luahelper/lh_menu.h).
- * The mailbox is the console menu's, 32 rows of either type; Trainer replaces
- * the Options list's Help row; the pause menu's state, the state stack and the
+ * The mailbox is the console menu's, 32 row slots, a MAIN page nine rows at
+ * once (the pause's list) and a CONFIG page six (Game Options); Trainer
+ * replaces the Options list's Help row; the pause menu's state, the state stack and the
  * game state say when no menu can be up.
  */
 static const struct menu_native tod_menu_native = {
@@ -459,7 +460,8 @@ static const struct menu_native tod_menu_native = {
 	LM_STATE + LM_WHY, LM_STATE + LM_WAITS,
 	LM_STATE + LM_NOTE, LM_NOTE_IN, LM_NOTE_NONE,
 	LM_STATE + LM_ROOM, LM_STATE + LM_SHORT,
-	LM_NOTE_NOCH, LM_NOTE_IN_LIST, LM_NOTE_LATE
+	LM_NOTE_NOCH, LM_NOTE_IN_LIST, LM_NOTE_LATE,
+	LM_MAX_ROWS, LM_CFG_ROWS
 };
 
 /* ---------------------------------------------------------------- vtable */
