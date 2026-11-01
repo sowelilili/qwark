@@ -1,6 +1,6 @@
 # qwark
 
-PS3 VSH plugin (SPRX) that owns the RaCMAN trainer logic for the four original Ratchet & Clank games, and, in test builds and the PC builds, Tools of Destruction (game 5, revision 1.27). Read `../DESIGN.md` (architecture, section 3) and `docs/PROTOCOL.md` (the wire contract) before changing anything.
+PS3 VSH plugin (SPRX) that owns the RaCMAN trainer logic for the four original Ratchet & Clank games, and, in test builds and the PC builds, Tools of Destruction (game 5, revision 1.27). Read `../docs/DESIGN.md` (architecture, section 3) and `docs/PROTOCOL.md` (the wire contract) before changing anything.
 
 ## Build
 

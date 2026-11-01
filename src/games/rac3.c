@@ -1376,7 +1376,7 @@ static const struct game_manips rac3_manips = {
 
 /*
  * Revision 1.22: the console menu's pages for UYA (src/core/menu.c), after
- * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac3",
+ * rewrite/docs/console-ui-framework.md and the client's gamelayout.json for "rac3",
  * as Deadlocked's are. Game is the quick block of the client's Game panel;
  * Cheats the four cheats every game has and the quick-select pause, the one
  * switch of the Game panel's "Options" column. Round 5 (the user's hardware

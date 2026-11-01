@@ -5,7 +5,7 @@
  * calls. mh_rac2.c is the shim; mh_core.c the core.
  *
  * RaC2's pause is the PS2 game's data-driven pause manager (0x15B2F50) with
- * the HD port's C++ pages drawing it (rewrite/REPORT-rac2-uya-ui.md section
+ * the HD port's C++ pages drawing it (rewrite/docs/REPORT-rac2-uya-ui.md section
  * 3): a screen is a static struct {rect[14], parent, id, focus, items[14]},
  * an item four descriptors {update, draw, enter, exit}, and a screen opens
  * when its address goes into the manager's next screen; the manager then calls
@@ -273,7 +273,7 @@
 #define CFG_COLOR_EDGE      0x55F0C070
 
 /*
- * The ship's planet select (rewrite/REPORT-planet-pickers.md section 4). The
+ * The ship's planet select (rewrite/docs/REPORT-planet-pickers.md section 4). The
  * game opens it for pause reason 4 as screen 15, 0x134DD90: item 0 the galaxy
  * (0x134DEC0, the HD page at *0x133E8A8 + 0x4C680), item 1 the PS2 list of
  * discovered planets (0x134E0DC: update 0xBBE528, draw 0xBCBC58, enter

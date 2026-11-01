@@ -1092,7 +1092,7 @@ static const struct game_manips rac1_manips = {
 
 /*
  * Revision 1.22: the console menu's pages for RaC1 (src/core/menu.c), after
- * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac1",
+ * rewrite/docs/console-ui-framework.md and the client's gamelayout.json for "rac1",
  * as UYA's are. Game is the quick block of the client's Game panel and its
  * savefile tab (Force autosave beside the two set-aside buttons); Cheats the
  * four cheats every game has. Round 5 (the user's hardware notes): Die is left

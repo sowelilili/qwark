@@ -1,7 +1,7 @@
 /*
  * The console menu (revision 1.22, build 54): a menu on the TV that gives a
  * console with no PC the features the client offers. PROTOCOL.md section 9 has
- * the rules; rewrite/SPEC-console-ui.md the design.
+ * the rules; rewrite/docs/SPEC-console-ui.md the design.
  *
  * qwark owns it. This file holds two halves:
  *
@@ -50,7 +50,7 @@
 
 /*
  * Page ids: a kind in the high byte, its argument in the low byte. Round 2
- * (rewrite/console-ui-framework.md): the root, the game's sections, planets,
+ * (rewrite/docs/console-ui-framework.md): the root, the game's sections, planets,
  * manips, unlocks and save files. Build 56: every game has a menu table
  * (game.h, struct game_menu), so round 1's page per DESCRIBE group went, and
  * no table lists an ENUM, so its page of options went too.

@@ -1074,7 +1074,7 @@ static const struct game_manips rac4_manips = {
 
 /*
  * Revision 1.22, round 2: the console menu's pages for Deadlocked
- * (src/core/menu.c), after rewrite/console-ui-framework.md. Game is the quick
+ * (src/core/menu.c), after rewrite/docs/console-ui-framework.md. Game is the quick
  * block of the client's Game panel; Cheats the four cheats every game has and
  * the Game panel's other actions. Round 5 (the user's hardware notes): Die is
  * left to the combos, and the values go to Cheats, after its toggles: the

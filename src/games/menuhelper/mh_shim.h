@@ -22,7 +22,7 @@
  * calls the core through the mh_core_* functions and reads what the core
  * composed through the mh_* macros. Both are compiled with the game's header
  * (mh_<game>.h) included first, which defines the numbers in the first table.
- * PROTOCOL.md section 9.6 and rewrite/SPEC-console-ui.md describe the same for
+ * PROTOCOL.md section 9.6 and rewrite/docs/SPEC-console-ui.md describe the same for
  * someone writing a shim.
  *
  * Plain #defines and declarations; the assembler includes this file too, so

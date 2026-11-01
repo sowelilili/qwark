@@ -1195,7 +1195,7 @@ static const struct game_manips rac2_manips = {
 
 /*
  * Revision 1.22: the console menu's pages for RaC2 (src/core/menu.c), after
- * rewrite/console-ui-framework.md and the client's gamelayout.json for "rac2",
+ * rewrite/docs/console-ui-framework.md and the client's gamelayout.json for "rac2",
  * as Deadlocked's and UYA's are. Game is the quick block; Cheats the four
  * cheats every game has, then the rest of the Game panel's Player section,
  * the two resets on death. Round 5 (the user's hardware notes): Die is left

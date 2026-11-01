@@ -8,7 +8,7 @@
  * does, but without GuiMenu's screen table: each pause screen is a GuiState
  * "thread" {state; init, deinit, update, pre, post} that the pause launcher or
  * another screen starts with SwapTo, which queues it and has the running one
- * reset itself (rewrite/REPORT-rac2-uya-ui.md section 2). The shim brings two
+ * reset itself (rewrite/docs/REPORT-rac2-uya-ui.md section 2). The shim brings two
  * GuiStates of its own, the menu's screen, and moves between them as the game
  * moves between its screens. It shows qwark's pages with two of the game's own
  * widgets:
@@ -409,7 +409,7 @@
 
 /*
  * The GALACTIC MAP, the game's own planet picker (getter 0x2CE130, GuiState
- * 0x1379F00; rewrite/REPORT-planet-pickers.md section 5), which the Planets
+ * 0x1379F00; rewrite/docs/REPORT-planet-pickers.md section 5), which the Planets
  * row opens over the menu (MBOX_CAP_PICKER). The shim starts it on a GuiState
  * of its own: the map's init and deinit wrapped, its pre- and post-render the
  * game's, and its update wrapped, which takes the cross, Triangle, Square and
