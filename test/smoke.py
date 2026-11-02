@@ -5333,20 +5333,26 @@ TOD_NO_DAMAGE = 0x101F1F00
 TOD_PROXY_HANDLE = 0x1020BD48
 TOD_TRANSITION_MIN = 0x10073548
 # 2026-10-28: Fast loads, the load screen's cut (src/games/tod.h, TOD_FASTLOAD_AT):
-# seventeen words of LoadScreen_Update on a console, a code switch under RPCS3.
+# twenty-five words of LoadScreen_Update on a console, a code switch under RPCS3.
 TOD_FASTLOAD_AT = 0x0025E588
+TOD_FASTLOAD_N = 25
 TOD_FASTLOAD_FIRST = 0x81227D74          # lwz r9, 0x7D74(r2), the patch's first word
-TOD_FASTLOAD_LAST = 0x48000034           # b 0x25E5FC, its seventeenth
+TOD_FASTLOAD_LAST = 0x48000014           # b 0x25E5FC, its twenty-fifth
 TOD_FASTLOAD_SITE = 0x4818CFF0           # b 0x3EB578, the switch's site word
 TOD_FASTLOAD_CAVE = 0x003EB578
+TOD_FASTLOAD_CAVE_WORDS = 32             # the flag's test and the game's bne (7), then the twenty-five
 TOD_FASTLOAD_FLAG = 0x108A8560
+# Revision 1.29: the cut makes the transition prop's two handles invalid (tod.h,
+# TOD_PROP_*): words 14 to 21, lis r9, 0x101D .. stw r11, 0x60EC(r9).
+TOD_FASTLOAD_PROP = [0x3D20101D, 0x3D400400, 0x394AFFFF, 0x3960FFFF,
+                     0x914960E0, 0x916960E4, 0x914960E8, 0x916960EC]
 # Revision 1.29: qwark's own pieces (sw_tod.s, own_*): their cave after the
 # switch's, and their three sites with the game's words there and the branches.
-TOD_OWN_CAVE = 0x003EB5D8
+TOD_OWN_CAVE = 0x003EB5F8
 TOD_OWN_CAVE_LEN = 252
-TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025E94),   # LevelTransition_update, a planet load
-                 (0x003C57DC, 0x399C0014, 0x48025E5C),   # LevelTransition_update, an FMV open
-                 (0x003C58C8, 0x81222BBC, 0x48025DE8)]   # LevelTransition_waitLoad, the data read
+TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025EB4),   # LevelTransition_update, a planet load
+                 (0x003C57DC, 0x399C0014, 0x48025E7C),   # LevelTransition_update, an FMV open
+                 (0x003C58C8, 0x81222BBC, 0x48025E08)]   # LevelTransition_waitLoad, the data read
 TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
@@ -5863,8 +5869,10 @@ def smoke_tod(c, sim):
     mem_write(c, TOD_FASTLOAD_FLAG, b"\x00")
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_OK and mem_read_u32(c, TOD_FASTLOAD_AT) == TOD_FASTLOAD_FIRST and
-          mem_read_u32(c, TOD_FASTLOAD_AT + 64) == TOD_FASTLOAD_LAST,
-          "ToD: Fast loads, the load screen's cut: seventeen words of LoadScreen_Update", status)
+          mem_read_u32(c, TOD_FASTLOAD_AT + 4 * (TOD_FASTLOAD_N - 1)) == TOD_FASTLOAD_LAST,
+          "ToD: Fast loads, the load screen's cut: twenty-five words of LoadScreen_Update", status)
+    check([mem_read_u32(c, TOD_FASTLOAD_AT + 4 * (14 + i)) for i in range(8)] == TOD_FASTLOAD_PROP,
+          "ToD: revision 1.29: the cut makes the transition prop's two handles invalid")
     check(all(mem_read_u32(c, at) == site for at, _o, site in TOD_OWN_SITES) and
           mem_read_u32(c, TOD_OWN_CAVE) == 0x3D20108B and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1,
           "ToD: revision 1.29: qwark's own cave, its three sites and the flag they read")
@@ -6387,14 +6395,17 @@ def smoke_rpcs3_tod_fastloads(c, pine):
     """ToD's Fast loads under RPCS3: its code switch, applied at boot, then a flag byte."""
     status, stamp, words, single, _body = savefile_patch(c, OP_SWITCH_PATCH)
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    ncave = 24 + TOD_OWN_CAVE_LEN // 4
+    ncave = TOD_FASTLOAD_CAVE_WORDS + TOD_OWN_CAVE_LEN // 4
     check(status == ST_OK and len(rows) == ncave + 4 and
           all(TOD_FASTLOAD_CAVE <= a < TOD_OWN_CAVE + TOD_OWN_CAVE_LEN for a, _ in rows[:ncave]) and
           rows[ncave] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and
           rows[ncave + 1:] == [(at, site) for at, _o, site in TOD_OWN_SITES] and
           single == [(TOD_FASTLOAD_FLAG, 0)],
-          "rpcs3: ToD's SWITCH_PATCH: 24 trampoline words and qwark's own 63, the four sites, the flag at 0",
+          "rpcs3: ToD's SWITCH_PATCH: 32 trampoline words and qwark's own 63, the four sites, the flag at 0",
           (status, len(rows), [(hex(a), hex(v)) for a, v in rows[-4:]], single))
+    row_at = dict(rows)
+    check([row_at.get(TOD_FASTLOAD_CAVE + 4 * (7 + 14 + i)) for i in range(8)] == TOD_FASTLOAD_PROP,
+          "rpcs3: revision 1.29: its trampoline makes the transition prop's handles invalid as the console's cut does")
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_UNSUPPORTED, "rpcs3: and until it is in, Fast loads is refused", status)
 

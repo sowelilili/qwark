@@ -45,7 +45,7 @@ SECTIONS
 {
 	.cave.fast_loads      0x003EB578 : { *(.cave.fast_loads) }
 	/* Revision 1.29: qwark's own pieces, straight after the switch. */
-	.cave.own_fast_loads  0x003EB5D8 : { *(.cave.own_fast_loads) }
+	.cave.own_fast_loads  0x003EB5F8 : { *(.cave.own_fast_loads) }
 
 	.site.fast_loads      0x0025E588 : { *(.site.fast_loads) }
 	.site.own_departure   0x003C5744 : { *(.site.own_departure) }

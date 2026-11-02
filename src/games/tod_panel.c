@@ -68,7 +68,7 @@ void tod_panel_reset(void)
 }
 
 /*
- * Fast loads, tod.h (TOD_FASTLOAD_AT): LoadScreen_Update's seventeen words
+ * Fast loads, tod.h (TOD_FASTLOAD_AT): LoadScreen_Update's twenty-five words
  * from 0x25E588 on a console. Under RPCS3 the code switch's second half is the
  * same words (src/games/switches/sw_tod.s, fast_loads_on), but for the five
  * branches out of them, which the link points at the same places; test/
@@ -82,18 +82,26 @@ static const struct patch_word tod_fastload_words[] = {
 	{ 0x0025E590u, 0x83A27D78u },   /* lwz r29, 0x7D78(r2): &g_loadScreenType, the pick's too */
 	{ 0x0025E594u, 0x807D0000u },   /* lwz r3, 0(r29) */
 	{ 0x0025E598u, 0x2C830001u },   /* cmpwi cr1, r3, 1 */
-	{ 0x0025E59Cu, 0x4186002Cu },   /* beq cr1, 0x25E5C8: the arrival is up, as the game */
+	{ 0x0025E59Cu, 0x4186004Cu },   /* beq cr1, 0x25E5E8: the arrival is up, as the game */
 	{ 0x0025E5A0u, 0x2F090000u },   /* cmpwi cr6, r9, 0 */
 	{ 0x0025E5A4u, 0x409A000Cu },   /* bne cr6, 0x25E5B0: the load is done, the cut */
-	{ 0x0025E5A8u, 0x409E0020u },   /* bne cr7, 0x25E5C8: a cinematic plays, as the game */
+	{ 0x0025E5A8u, 0x409E0040u },   /* bne cr7, 0x25E5E8: a cinematic plays, as the game */
 	{ 0x0025E5ACu, 0x48000068u },   /* b 0x25E614: none, the next long-load screen */
 	{ 0x0025E5B0u, 0xC0227D84u },   /* lfs f1, 0x7D84(r2): 1.0f */
 	{ 0x0025E5B4u, 0x48000785u },   /* bl 0x25ED38: the screen black at once */
 	{ 0x0025E5B8u, 0x4BE2693Du },   /* bl 0x84EF4: the cinematic stopped */
 	{ 0x0025E5BCu, 0x4BE2686Du },   /* bl 0x84E28: the player reset */
-	{ 0x0025E5C0u, 0x38000001u },   /* li r0, 1 */
-	{ 0x0025E5C4u, 0x901D0000u },   /* stw r0, 0(r29): the arrival's 1 */
-	{ 0x0025E5C8u, 0x48000034u },   /* b 0x25E5FC: the return */
+	{ 0x0025E5C0u, 0x3D20101Du },   /* lis r9, 0x101D: revision 1.29, the transition prop's handles */
+	{ 0x0025E5C4u, 0x3D400400u },   /* lis r10, 0x0400 */
+	{ 0x0025E5C8u, 0x394AFFFFu },   /* addi r10, r10, -1: 0x03FFFFFF */
+	{ 0x0025E5CCu, 0x3960FFFFu },   /* li r11, -1 */
+	{ 0x0025E5D0u, 0x914960E0u },   /* stw r10, 0x60E0(r9): g_transitionPropOwnerHandle, invalid */
+	{ 0x0025E5D4u, 0x916960E4u },   /* stw r11, 0x60E4(r9) */
+	{ 0x0025E5D8u, 0x914960E8u },   /* stw r10, 0x60E8(r9): g_transitionPropHandle, invalid */
+	{ 0x0025E5DCu, 0x916960ECu },   /* stw r11, 0x60EC(r9) */
+	{ 0x0025E5E0u, 0x38000001u },   /* li r0, 1 */
+	{ 0x0025E5E4u, 0x901D0000u },   /* stw r0, 0(r29): the arrival's 1 */
+	{ 0x0025E5E8u, 0x48000014u },   /* b 0x25E5FC: the return */
 	{ SW_TOD_SITE_OWN_DEPARTURE_ADDR, SW_TOD_SITE_OWN_DEPARTURE },   /* LevelTransition_update, a planet load */
 	{ SW_TOD_SITE_OWN_FMV_CUT_ADDR,   SW_TOD_SITE_OWN_FMV_CUT },     /* LevelTransition_update, an FMV open */
 	{ SW_TOD_SITE_OWN_FMV_IN_ADDR,    SW_TOD_SITE_OWN_FMV_IN }       /* LevelTransition_waitLoad, the data read */
@@ -459,7 +467,7 @@ static int tod_own_caves(void)
  * Fast loads, either way (tod.h). Under RPCS3 with the switches in, the flag
  * byte, which the switch and qwark's own pieces both read. On a console, after
  * plat_can_patch_code(): on, the caves, the flag at 1 and the patch (the
- * seventeen words and the three sites); off, the patch out and the flag at 0.
+ * twenty-five words and the three sites); off, the patch out and the flag at 0.
  * Then, both ways, g_levelTransitionMinTime: 0 while on, the game's 5.0 back
  * off. With neither (RPCS3 without the switches) it is UNSUPPORTED and writes
  * nothing, as before.

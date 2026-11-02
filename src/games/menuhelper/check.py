@@ -3666,7 +3666,7 @@ TOD_TOC = 0x008AB078            # LoadScreen_Update's TOC range (its descriptor'
 def check_tod(ok, elf):
     """
     2026-10-28: Tools of Destruction's Fast loads (src/games/tod.h,
-    TOD_FASTLOAD_AT). The console's seventeen words of LoadScreen_Update
+    TOD_FASTLOAD_AT). The console's twenty-five words of LoadScreen_Update
     (tod_panel.c) and the code switch (switches_bins.c, sw_tod.s), against
     NPEA00452.ELF: the words they replace are the game's as tod.h describes
     them, every TOC word and function they reach is what they take it for,
@@ -3684,11 +3684,12 @@ def check_tod(ok, elf):
                re.findall(r"^#define\s+(\w+)\s+(0x[0-9A-Fa-f]+|\d+)u?\b",
                           open(os.path.join(QWARK, "src", "games", "tod.h"), encoding="utf-8").read(), re.M))
     at = hdr.get("TOD_FASTLOAD_AT")
-    ok(len(words) == 17 and len(words) == hdr.get("TOD_FASTLOAD_NWORDS") and at == 0x0025E588 and
+    ok(len(words) == 25 and len(words) == hdr.get("TOD_FASTLOAD_NWORDS") and at == 0x0025E588 and
        all(a == at + 4 * i for i, (a, _) in enumerate(words)),
-       "tod_panel.c's seventeen words run from TOD_FASTLOAD_AT, 0x25E588")
-    if len(words) != 17 or at is None:
+       "tod_panel.c's twenty-five words run from TOD_FASTLOAD_AT, 0x25E588")
+    if len(words) != 25 or at is None:
         return
+    n4 = 4 * len(words)
 
     # The function they sit in, as tod.h says it is.
     ok(elf.word(0x00883C38) == 0x0025E560 and elf.word(0x00883C3C) == TOD_TOC,
@@ -3702,8 +3703,14 @@ def check_tod(ok, elf):
     ok(elf.word(0x0025E614) == 0x7FE3FB78 and branch_target(0x0025E618, elf.word(0x0025E618)) == 0x0025DC20 and
        elf.word(0x0025E620) == 0x907D0000,
        "0x25E614 picks the next long-load screen (LoadScreen_PickType) and stores it through r29")
-    ok(branch_target(0x0025E5F4, elf.word(0x0025E5F4)) == 0x00081B04 and at + 68 <= 0x0025E5F4,
-       "the long-load screen's play at 0x25E5F4 lies past the seventeen, untouched")
+    ok(branch_target(0x0025E5F4, elf.word(0x0025E5F4)) == 0x00081B04 and at + n4 <= 0x0025E5F4,
+       "the long-load screen's play at 0x25E5F4 lies past the twenty-five, untouched")
+    # Revision 1.29: the eight words past the first seventeen are the arrival's own start, which
+    # only a fall-through from the game's 0x25E5C8 reaches.
+    b_in, _, _ = refs_into(elf, 0x0025E5CC, at + n4)
+    ok(not b_in and elf.word(0x0025E5C8) >> 26 == 16 and branch_target(0x0025E5C8, elf.word(0x0025E5C8)) == 0x0025E5C0
+       and elf.word(0x0025E5C0) == 0x7D6C42E6,
+       "revision 1.29: nothing branches into 0x25E5CC..0x25E5EB, the arrival's start after its mftb loop")
     ok(elf.word(TOD_TOC + 0x7D74) == 0x102034FC and elf.word(TOD_TOC + 0x7D78) == 0x102034F8 and
        elf.word(TOD_TOC + 0x7D84) == 0x3F800000,
        "r2 + 0x7D74, 0x7D78 and 0x7D84: &g_loadScreenLoadDone, &g_loadScreenType and 1.0f")
@@ -3717,11 +3724,14 @@ def check_tod(ok, elf):
        "0x25ED38 is the fade set Level_Enter calls through 0x267780")
 
     # The sense of each branch.
-    want = {5: 0x0025E5C8, 7: 0x0025E5B0, 8: 0x0025E5C8, 9: 0x0025E614, 11: 0x0025ED38,
-            12: 0x00084EF4, 13: 0x00084E28, 16: 0x0025E5FC}
+    want = {5: 0x0025E5E8, 7: 0x0025E5B0, 8: 0x0025E5E8, 9: 0x0025E614, 11: 0x0025ED38,
+            12: 0x00084EF4, 13: 0x00084E28, 24: 0x0025E5FC}
     ok(all(branch_target(words[i][0], words[i][1]) == t for i, t in want.items()) and
        all((words[i][1] & 1) == (1 if i in (11, 12, 13) else 0) for i in want),
-       "every branch of the seventeen lands where tod.h says, the three calls linked")
+       "every branch of the twenty-five lands where tod.h says, the three calls linked")
+    ok(all(w >> 26 not in (16, 18, 19) for i, (_, w) in enumerate(words) if i not in want),
+       "and no other word of them branches")
+    check_tod_prop(ok, elf, hdr, [w for _, w in words[14:22]], "the cut's")
 
     # The code switch.
     bins = open(os.path.join(QWARK, "src", "games", "switches_bins.c"), encoding="utf-8").read()
@@ -3733,12 +3743,13 @@ def check_tod(ok, elf):
     flag = int(m.group(1), 16) if m else None
     m = re.search(r"\{ (0x[0-9A-Fa-f]+)u, sw_tod_fast_loads,", bins)
     cave_at = int(m.group(1), 16) if m else None
-    ok(len(cave) == 96 and site is not None and flag is not None and cave_at == 0x003EB578,
-       "switches_bins.c has ToD's cave, 96 bytes at 0x3EB578, its site and its flag")
+    clen = 4 * (7 + len(words))
+    ok(len(cave) == clen == 128 and site is not None and flag is not None and cave_at == 0x003EB578,
+       "switches_bins.c has ToD's cave, 128 bytes at 0x3EB578, its site and its flag")
     own_ok = check_tod_own(ok, elf, bins)
-    if len(cave) != 96 or site is None or flag is None:
+    if len(cave) != clen or site is None or flag is None:
         return
-    cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, 96, 4)]
+    cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, clen, 4)]
     ok(site[0] == at and branch_target(at, site[1]) == cave_at and (site[1] & 3) == 0,
        "the site is the patch's first word, a plain b into the cave")
     ok(cw[3] >> 26 == 16 and branch_target(cave_at + 12, cw[3]) == cave_at + 28 and
@@ -3746,18 +3757,19 @@ def check_tod(ok, elf):
        branch_target(cave_at + 24, cw[6]) == at + 4,
        "with the flag clear the trampoline is the game's bne cr7, taken or not")
     same = True
-    for i in range(17):
+    for i in range(len(words)):
         c, w = cw[7 + i], words[i][1]
         if c == w:
             continue
         tc, tw = branch_target(cave_at + 28 + 4 * i, c), branch_target(at + 4 * i, w)
-        if c >> 26 == 18 and w >> 26 == 18 and tc == tw and (c & 3) == (w & 3) and not at <= tw < at + 68:
+        if c >> 26 == 18 and w >> 26 == 18 and tc == tw and (c & 3) == (w & 3) and not at <= tw < at + n4:
             continue
         same = False
-    ok(same, "its second half is the seventeen words, its branches out pointed at the same places")
+    ok(same, "its second half is the twenty-five words, its branches out pointed at the same places")
+    check_tod_prop(ok, elf, hdr, cw[7 + 14:7 + 22], "the switch's")
 
     lo, hi = 0x003EB578, 0x003EB708
-    ok(cave_at + 96 <= hi and own_ok, "the trampoline and qwark's own pieces fit the dead function 0x3EB578..0x3EB708")
+    ok(cave_at + clen <= hi and own_ok, "the trampoline and qwark's own pieces fit the dead function 0x3EB578..0x3EB708")
     ok(elf.word(lo - 4) == 0x4E800020 and elf.word(hi - 4) == 0x4E800020,
        "which ends a function before it and ends with its own blr")
     branches, named, pairs = refs_into(elf, lo, hi)
@@ -3783,6 +3795,62 @@ def check_tod(ok, elf):
     ok(not b3 and not n3 and not p3, "and nothing in the executable points past the BSS")
 
 
+def run_stores(ws):
+    """The stores a run of lis/addi/li/stw words makes, {address: word}, or None for any other word."""
+    r, out = {}, {}
+    for w in ws:
+        op, rd, ra, si = w >> 26, (w >> 21) & 31, (w >> 16) & 31, w & 0xFFFF
+        si = si - 0x10000 if si & 0x8000 else si
+        base = (r.get(ra) if ra else 0)
+        if base is None:
+            return None
+        if op == 15:
+            r[rd] = (base + (si << 16)) & 0xFFFFFFFF
+        elif op == 14:
+            r[rd] = (base + si) & 0xFFFFFFFF
+        elif op == 36 and rd in r:
+            out[(base + si) & 0xFFFFFFFF] = r[rd]
+        else:
+            return None
+    return out
+
+
+def check_tod_prop(ok, elf, hdr, ws, who):
+    """
+    Revision 1.29: the cut's eight words make the transition prop's two handles
+    what the game's static constructor makes them (tod.h, TOD_PROP_*): the
+    handles Cinematic_updateTransitionProp (0x82518) reads every cinematic
+    frame, at the addresses its TOC words give, set to MobyHandle64_invalidate's
+    0x03FFFFFF_FFFFFFFF.
+    """
+    owner, handle = hdr.get("TOD_PROP_OWNER"), hdr.get("TOD_PROP_HANDLE")
+    hi, lo = hdr.get("TOD_PROP_INVALID_HI"), hdr.get("TOD_PROP_INVALID_LO")
+    stores = run_stores(ws)
+    ok(stores == {owner: hi, owner + 4: lo, handle: hi, handle + 4: lo} and
+       (hi << 32 | lo) == 0x03FFFFFFFFFFFFFF,
+       "revision 1.29: %s eight words store 0x03FFFFFF_FFFFFFFF at 0x%08X and 0x%08X, nothing else" %
+       (who, owner or 0, handle or 0))
+    if who != "the cut's":
+        return
+    toc = 0x008AB078
+    ok(elf.word(0x00545238) == 0x3880FFFF and elf.word(0x0054523C) == 0x78800180 and
+       elf.word(0x00545240) == 0xF8030000 and branch_target(0x00012EFC, elf.word(0x00012EFC)) == 0x00545238,
+       "MobyHandle64_invalidate (0x545238, through 0x12EF0) stores the u64 0x03FFFFFF_FFFFFFFF")
+    ok(elf.word(toc - 0x4D98) == handle and elf.word(toc - 0x4D94) == owner and
+       elf.word(0x00081F1C) == 0x8062B268 and branch_target(0x00081F20, elf.word(0x00081F20)) == 0x00012EF0 and
+       elf.word(0x00081F28) == 0x8062B26C and branch_target(0x00081F2C, elf.word(0x00081F2C)) == 0x00012EF0,
+       "Cinematic_initTransitionProp (0x81EDC), the static constructor's, invalidates the same two")
+    ok(elf.word(0x00082520) == 0x8102B268 and elf.word(0x000825A8) == 0x83E2B26C,
+       "Cinematic_updateTransitionProp (0x82518) reads the prop's handle, then its owner's, through those TOC words")
+    ok(elf.word(0x00082614) == 0x3BE00000 and elf.word(0x00082624) == 0x817F0244 and
+       elf.word(0x00082604) == 0x813F0044 and elf.word(0x00082608) == 0x8949000C,
+       "and with the owner's class record not there reads 0x244(r31) with r31 0: the user's crash at 0x82624")
+    ok(branch_target(0x00084C18, elf.word(0x00084C18)) == 0x00082518 and elf.word(0x00084C18) & 1,
+       "MoviePlayer_update calls it on every frame of a playing cinematic (0x84C18)")
+    ok(elf.word(0x000820A0) == 0x8182B268 and elf.word(0x000820A4) == 0x80C2B26C,
+       "Cinematic_setupMoby (0x81F60) is what sets them, while a transition is up")
+
+
 def check_tod_own(ok, elf, bins):
     """
     Revision 1.29: qwark's own pieces of Fast loads (sw_tod.s, own_*): the cave
@@ -3802,8 +3870,8 @@ def check_tod_own(ok, elf, bins):
     m = re.search(r"sw_tod_sites\[\] = \{(.*?)\};", bins, re.S)
     all_sites = [(int(a, 16), int(w, 16)) for a, w in
                  re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
-    ok(len(cave) == 252 and at == 0x003EB5D8 and len(sites) == 3 and all_sites[1:] == sites,
-       "switches_own.c: the cave, 252 bytes at 0x3EB5D8, and three sites, the switch table's own")
+    ok(len(cave) == 252 and at == 0x003EB5F8 and len(sites) == 3 and all_sites[1:] == sites,
+       "switches_own.c: the cave, 252 bytes at 0x3EB5F8, and three sites, the switch table's own")
     if len(cave) != 252 or at is None or len(sites) != 3:
         return False
     cw = [struct.unpack(">I", cave[k:k + 4])[0] for k in range(0, len(cave), 4)]

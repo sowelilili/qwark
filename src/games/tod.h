@@ -131,17 +131,47 @@
  * So a load lasts at least the departure and the arrival, and the rest of
  * whichever long-load screen is playing when the data comes in.
  *
- * The patch is seventeen words of LoadScreen_Update from 0x25E588, the
+ * The patch is twenty-five words of LoadScreen_Update from 0x25E588, the
  * `bne cr7` that returns while a cinematic plays, on: the arrival up (1),
  * as the game; the load done, the cut; otherwise as the game (a cinematic
  * playing returns, with none the next long-load screen is picked). The cut:
  * the screen black at once (0x25ED38(1.0), what Level_Enter does for the
  * planet), the cinematic stopped as a level's exit stops it (0x84EF4), the
- * player reset as Level_StartGameplay resets it (0x84E28), and 1 in
- * g_loadScreenType; LoadScreen_LoadDone's next look finds the load over, and
- * no arrival plays. The words after them, the arrival's own start, are no
- * longer reached; 0x25E5F4 (the long-load screen's play) and on are untouched.
- * The originals are the game's own (patch_def keeps them).
+ * player reset as Level_StartGameplay resets it (0x84E28), the transition
+ * prop's two handles made invalid (below), and 1 in g_loadScreenType;
+ * LoadScreen_LoadDone's next look finds the load over, and no arrival plays.
+ * The words they cover past the first seventeen are the arrival's own start,
+ * which the patched form never reaches; 0x25E5EC on, with 0x25E5F4 (the
+ * long-load screen's play), are untouched. The originals are the game's own
+ * (patch_def keeps them).
+ *
+ * Revision 1.29, the transition prop (the user's crash: Stratus City's opening
+ * cinematic with Fast loads on, a NULL read at 0x82624). Cinematic_setupMoby
+ * (0x81F60), for each moby a cinematic spawns, spawns one more beside a moby of
+ * class 0xBA while a level transition is up (g_levelTransitionActive), level
+ * flag 106 is clear and the level is "stratus city" (class 0xBC, half size) or
+ * "fastoon" (0xBB), and keeps the two handles in g_transitionPropHandle and
+ * g_transitionPropOwnerHandle (u64 each, the moby handle in the low word).
+ * Every frame of every cinematic after that, Cinematic_updateTransitionProp
+ * (0x82518) resolves both and puts the prop on a joint of the owner's: the
+ * record is the owner's class's (moby + 0x54, then + 0x44: 0 unless its byte
+ * at + 0xC is 4 or more and its joint word at + 0x930 is not -1), and the
+ * joint index at record + 0x244 is read without a test, the crash's
+ * lwz r11, 0x244(r31) with r31 0. Nothing clears the
+ * handles but the game's static constructor; the game relies on a handle
+ * going stale once its moby is gone. But a level's MobyPool_init (0x5578D8)
+ * starts the handles' serial at 1 again, and a pool filled in order hands the
+ * n-th moby the handle (n + 1) << 16 | n, so the handles of a cinematic early
+ * in one level name mobys of the next. The game's own load ends with the
+ * arrival, whose handles come late in the transition and name nothing in the
+ * planet; with the arrival cut, the departure's or a long-load screen's are
+ * the last, and the planet's opening cinematic (Stratus City's
+ * l03_s01_rcff_rt, Fastoon's l04_s01a_fint_rt) finds them naming two of its own
+ * mobys (in the dump, r30 and r29, slots side by side as the prop is spawned
+ * right after its owner), whose class has no such joint. So the cut makes both handles what the
+ * constructor makes them (MobyHandle64_invalidate, 0x03FFFFFF_FFFFFFFF), as
+ * after the arrival's cleanup they would be stale; no planet cinematic wants
+ * the prop, which is only spawned while a transition is up.
  *
  * Under RPCS3 the code switch does the same (src/games/switches/sw_tod.s,
  * SW_TOD_FLAG_FAST_LOADS): its trampoline's second half is these words.
@@ -179,8 +209,12 @@
  * when the data is in; the FMV is not needed for anything after it.
  */
 #define TOD_FASTLOAD_AT      0x0025E588u  /* LoadScreen_Update + 0x28 */
-#define TOD_FASTLOAD_NWORDS  17u
-#define TOD_FASTLOAD_NSITES  3u           /* qwark's own pieces' sites, after the seventeen */
+#define TOD_FASTLOAD_NWORDS  25u
+#define TOD_FASTLOAD_NSITES  3u           /* qwark's own pieces' sites, after the twenty-five */
+#define TOD_PROP_OWNER       0x101D60E0u  /* g_transitionPropOwnerHandle, u64 */
+#define TOD_PROP_HANDLE      0x101D60E8u  /* g_transitionPropHandle, u64 */
+#define TOD_PROP_INVALID_HI  0x03FFFFFFu  /* MobyHandle64_invalidate's 0x03FFFFFF_FFFFFFFF */
+#define TOD_PROP_INVALID_LO  0xFFFFFFFFu
 #define TOD_LOAD_SCREEN_DONE 0x102034FCu  /* g_loadScreenLoadDone, u8 */
 #define TOD_FL_FMV_IN        0x108A8564u  /* SW_TOD_DATA_FMV_IN: the FMV load's stamp, past the BSS */
 

@@ -485,21 +485,29 @@ static void test_tod_lua_rpcs3(void)
 /* ----------------------------------------- Fast loads, 2026-10-28 */
 
 /*
- * The game's own words at 0x25E588..0x25E5CC (EBOOT.ELF md5 df9d68ad...,
- * LoadScreen_Update + 0x28), and the seventeen a console writes over them,
- * assembled and read back by hand (tod.h, TOD_FASTLOAD_AT). The eighteenth is
- * the first word after the patch, which stays the game's.
+ * The game's own words at 0x25E588..0x25E5EC (EBOOT.ELF md5 df9d68ad...,
+ * LoadScreen_Update + 0x28), and the twenty-five a console writes over them,
+ * assembled and read back by hand (tod.h, TOD_FASTLOAD_AT). The twenty-sixth
+ * is the first word after the patch, which stays the game's. Revision 1.29:
+ * words 14 to 21 make the transition prop's handles invalid (TOD_PROP_*).
  */
-static const u32 g_fl_orig[18] = {
+#define FL_N 25u
+static const u32 g_fl_orig[FL_N + 1] = {
 	0x409E0074u, 0x83A27D78u, 0x807D0000u, 0x2C030001u, 0x41820064u, 0x81227D74u,
 	0x7FE3FB78u, 0x88A90000u, 0x2C850000u, 0x41860068u, 0x809F003Cu, 0x4BFFFCDDu,
-	0x38E00001u, 0x90FD0000u, 0x7D6C42E6u, 0x2F8B0000u, 0x41DEFFF8u, 0x817D0000u
+	0x38E00001u, 0x90FD0000u, 0x7D6C42E6u, 0x2F8B0000u, 0x41DEFFF8u, 0x83A27D78u,
+	0x3880FFFFu, 0x80C27D8Cu, 0x38A0FFFFu, 0xF9660000u, 0x38C00000u, 0x80FD0000u,
+	0x2F070001u, 0x7CE33B78u
 };
-static const u32 g_fl_words[17] = {
-	0x81227D74u, 0x89290000u, 0x83A27D78u, 0x807D0000u, 0x2C830001u, 0x4186002Cu,
-	0x2F090000u, 0x409A000Cu, 0x409E0020u, 0x48000068u, 0xC0227D84u, 0x48000785u,
-	0x4BE2693Du, 0x4BE2686Du, 0x38000001u, 0x901D0000u, 0x48000034u
+static const u32 g_fl_words[FL_N] = {
+	0x81227D74u, 0x89290000u, 0x83A27D78u, 0x807D0000u, 0x2C830001u, 0x4186004Cu,
+	0x2F090000u, 0x409A000Cu, 0x409E0040u, 0x48000068u, 0xC0227D84u, 0x48000785u,
+	0x4BE2693Du, 0x4BE2686Du, 0x3D20101Du, 0x3D400400u, 0x394AFFFFu, 0x3960FFFFu,
+	0x914960E0u, 0x916960E4u, 0x914960E8u, 0x916960ECu, 0x38000001u, 0x901D0000u,
+	0x48000014u
 };
+#define FL_PROP_FROM 14u      /* the eight words of the transition prop's handles */
+#define FL_PROP_N    8u
 
 #define FL_FLAG 0x108A8560u
 
@@ -516,7 +524,7 @@ static void fl_seed_game(void)
 {
 	u32 i;
 
-	for (i = 0; i < 18; i++) wr32(TOD_FASTLOAD_AT + 4u * i, g_fl_orig[i]);
+	for (i = 0; i <= FL_N; i++) wr32(TOD_FASTLOAD_AT + 4u * i, g_fl_orig[i]);
 	for (i = 0; i < 3; i++) wr32(g_fl_site_at[i], g_fl_site_orig[i]);
 }
 
@@ -573,6 +581,44 @@ static u32 fl_target(u32 at, u32 w)
 	return (w & 2u) ? d : at + d;
 }
 
+/*
+ * Revision 1.29: runs the cut's handle words (lis, addi, stw, as the console's
+ * and the switch's are) against the host's memory, as the PPU would: 1 if every
+ * word was one of those, 0 for any other word. Registers start at a junk value,
+ * so a word that reads one it never set shows.
+ */
+static int fl_run(const u32 *w, u32 n)
+{
+	u32 r[32], i;
+
+	for (i = 0; i < 32; i++) r[i] = 0xDEAD0000u + i;
+	for (i = 0; i < n; i++) {
+		u32 op = w[i] >> 26, rd = (w[i] >> 21) & 31u, ra = (w[i] >> 16) & 31u;
+		u32 si = (u32)(s32)(s16)(w[i] & 0xFFFFu);
+
+		if (op == 15)      r[rd] = (ra ? r[ra] : 0u) + (si << 16);   /* addis, lis */
+		else if (op == 14) r[rd] = (ra ? r[ra] : 0u) + si;           /* addi, li */
+		else if (op == 36) wr32((ra ? r[ra] : 0u) + si, r[rd]);      /* stw */
+		else return 0;
+	}
+	return 1;
+}
+
+/* The two handles as a cinematic early in a level leaves them: the names of slots 2 and 3. */
+static void fl_seed_prop(void)
+{
+	wr32(TOD_PROP_OWNER, 0x00000000u);
+	wr32(TOD_PROP_OWNER + 4u, 0x00030002u);
+	wr32(TOD_PROP_HANDLE, 0x00000000u);
+	wr32(TOD_PROP_HANDLE + 4u, 0x00040003u);
+}
+
+static int fl_prop_invalid(void)
+{
+	return rd32(TOD_PROP_OWNER) == TOD_PROP_INVALID_HI && rd32(TOD_PROP_OWNER + 4u) == TOD_PROP_INVALID_LO &&
+	       rd32(TOD_PROP_HANDLE) == TOD_PROP_INVALID_HI && rd32(TOD_PROP_HANDLE + 4u) == TOD_PROP_INVALID_LO;
+}
+
 /* A SWITCH_PATCH reply's rows and flag bytes, poked in as RPCS3 applies them at load. */
 static void fl_poke_patch(const u8 *reply, u32 len)
 {
@@ -609,8 +655,8 @@ static void test_tod_fastloads(void)
 			        (dsc->features[i].flags & FEATURE_FLAG_LIVE) == 0 &&
 			        qstreq(dsc->features[i].label, "Fast loads");
 	check(found, "id 17, Fast loads, a WRITES_CODE toggle and not LIVE, so it can come back at boot");
-	check(TOD_FASTLOAD_AT == 0x0025E588u && TOD_FASTLOAD_NWORDS == 17u && TOD_LOAD_SCREEN_DONE == 0x102034FCu,
-	      "the patch is seventeen words of LoadScreen_Update from 0x25E588");
+	check(TOD_FASTLOAD_AT == 0x0025E588u && TOD_FASTLOAD_NWORDS == FL_N && TOD_LOAD_SCREEN_DONE == 0x102034FCu,
+	      "the patch is twenty-five words of LoadScreen_Update from 0x25E588");
 
 	fl_seed_game();
 	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
@@ -618,19 +664,19 @@ static void test_tod_fastloads(void)
 	host_poke(FL_FLAG, &b, 1);
 	check(!fl_cave_in(), "the dead function holds no cave of qwark's before");
 	host_write_log_reset();
-	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17),
-	      "on: the seventeen words, as assembled");
-	check(rd32(TOD_FASTLOAD_AT + 68u) == g_fl_orig[17], "and not a word past them");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, FL_N),
+	      "on: the twenty-five words, as assembled");
+	check(rd32(TOD_FASTLOAD_AT + 4u * FL_N) == g_fl_orig[FL_N], "and not a word past them");
 	check(fl_cave_in() && fl_sites_are(1), "revision 1.29: qwark's own cave in, and its three sites branch to it");
 	check(fl_rd8(FL_FLAG) == 1, "the flag byte its pieces read, at 1");
 	check(rd32(TOD_TRANSITION_MIN) == 0, "and g_levelTransitionMinTime at 0: a story FMV load reads at once");
 	check(host_write_log_count() > 1, "in a few writes, the cave before the branches");
 	host_write_log_reset();
-	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, 17) && fl_sites_are(1),
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_words_are(g_fl_words, FL_N) && fl_sites_are(1),
 	      "on again is no change");
 	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_NOT_FOUND, "a console reads no flag: qwark's bit says");
 	check((features_toggle_state() >> TF_FAST_LOADS) & 1u, "and it is set");
-	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_words_are(g_fl_orig, 18) && fl_sites_are(0),
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_words_are(g_fl_orig, FL_N + 1) && fl_sites_are(0),
 	      "off: the game's own words back, at the three sites too");
 	check(fl_rd8(FL_FLAG) == 0 && rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME,
 	      "the flag at 0 and g_levelTransitionMinTime at the game's 5 s");
@@ -639,8 +685,8 @@ static void test_tod_fastloads(void)
 	check(features_set(TF_FAST_LOADS, 0) == ST_OK, "off again is not an error");
 
 	/* The words' sense, read off them: what each branch reaches. */
-	check(fl_target(0x25E59Cu, g_fl_words[5]) == 0x25E5C8u && fl_target(0x25E5A8u, g_fl_words[8]) == 0x25E5C8u &&
-	      fl_target(0x25E5C8u, g_fl_words[16]) == 0x25E5FCu,
+	check(fl_target(0x25E59Cu, g_fl_words[5]) == 0x25E5E8u && fl_target(0x25E5A8u, g_fl_words[8]) == 0x25E5E8u &&
+	      fl_target(0x25E5E8u, g_fl_words[24]) == 0x25E5FCu,
 	      "the arrival up and a cinematic playing return through the epilogue");
 	check(fl_target(0x25E5A4u, g_fl_words[7]) == 0x25E5B0u, "the load done goes to the cut");
 	check(fl_target(0x25E5ACu, g_fl_words[9]) == 0x25E614u, "nothing playing picks the next long-load screen, as the game");
@@ -648,36 +694,49 @@ static void test_tod_fastloads(void)
 	      fl_target(0x25E5B8u, g_fl_words[12]) == 0x084EF4u && (g_fl_words[12] & 1u) &&
 	      fl_target(0x25E5BCu, g_fl_words[13]) == 0x084E28u && (g_fl_words[13] & 1u),
 	      "the cut calls the fade, the cinematic stop and the player reset");
-	check(g_fl_words[14] == 0x38000001u && g_fl_words[15] == 0x901D0000u && g_fl_words[2] == 0x83A27D78u,
+	check(g_fl_words[22] == 0x38000001u && g_fl_words[23] == 0x901D0000u && g_fl_words[2] == 0x83A27D78u,
 	      "and stores the arrival's 1 through &g_loadScreenType");
+	wr32(0x101D60DCu, 0x11111111u);
+	wr32(0x101D60F0u, 0x22222222u);
+	fl_seed_prop();
+	check(fl_run(g_fl_words + FL_PROP_FROM, FL_PROP_N) && fl_prop_invalid(),
+	      "revision 1.29: between the reset and the 1, both of the transition prop's handles made invalid, "
+	      "0x03FFFFFF_FFFFFFFF as the game's MobyHandle64_invalidate makes them");
+	check(TOD_PROP_OWNER == 0x101D60E0u && TOD_PROP_HANDLE == 0x101D60E8u && rd32(0x101D60DCu) == 0x11111111u &&
+	      rd32(0x101D60F0u) == 0x22222222u,
+	      "at g_transitionPropOwnerHandle and g_transitionPropHandle, and not a word either side");
 	check(fl_target(0x25E588u, g_fl_orig[0]) == 0x25E5FCu,
 	      "the first word replaced is the game's bne cr7 to the same epilogue");
 
 	group("ToD: Fast loads' code switch is the console's words");
 	check(sw != NULL && sw->ncaves == 2 && sw->nsites == 4 && sw->nflags == 1,
 	      "two caves (the switch, qwark's own), four sites, one flag");
-	if (sw != NULL && sw->ncaves == 2 && sw->caves[0].len == 4u * 24u) {
-		u32 cave = sw->caves[0].addr;
+	if (sw != NULL && sw->ncaves == 2 && sw->caves[0].len == 4u * (7u + FL_N)) {
+		u32 cave = sw->caves[0].addr, pw[FL_PROP_N];
 
-		for (i = 0; i < 17; i++) {
+		for (i = 0; i < FL_N; i++) {
 			u32 cw = be32_get(sw->caves[0].bytes + 4u * (7u + i));
 			u32 tc = fl_target(cave + 4u * (7u + i), cw);
 			u32 ts = fl_target(TOD_FASTLOAD_AT + 4u * i, g_fl_words[i]);
 
 			if (cw == g_fl_words[i]) continue;
-			/* A branch out of the seventeen: the same place, and the same link bit. */
+			/* A branch out of the twenty-five: the same place, and the same link bit. */
 			if ((cw >> 26) == 18 && (g_fl_words[i] >> 26) == 18 && tc == ts &&
 			    (cw & 3u) == (g_fl_words[i] & 3u) &&
-			    (ts < TOD_FASTLOAD_AT || ts >= TOD_FASTLOAD_AT + 68u)) continue;
+			    (ts < TOD_FASTLOAD_AT || ts >= TOD_FASTLOAD_AT + 4u * FL_N)) continue;
 			same = 0;
 		}
-		check(same, "the trampoline's second half is the seventeen words, its branches out to the same places");
+		check(same, "the trampoline's second half is the twenty-five words, its branches out to the same places");
+		for (i = 0; i < FL_PROP_N; i++) pw[i] = be32_get(sw->caves[0].bytes + 4u * (7u + FL_PROP_FROM + i));
+		fl_seed_prop();
+		check(fl_run(pw, FL_PROP_N) && fl_prop_invalid(),
+		      "revision 1.29: under RPCS3 it makes the transition prop's handles invalid the same way");
 		check(be32_get(sw->caves[0].bytes + 16) == 0x419E0008u &&
 		      fl_target(cave + 20u, be32_get(sw->caves[0].bytes + 20)) == 0x25E5FCu &&
 		      fl_target(cave + 24u, be32_get(sw->caves[0].bytes + 24)) == 0x25E58Cu,
 		      "and with the flag clear it is the game's bne cr7, taken or not");
 	} else {
-		check(0, "the cave is the 24 words this test knows");
+		check(0, "the cave is the 32 words this test knows");
 	}
 	check(sw != NULL && sw->sites[0].addr == TOD_FASTLOAD_AT && sw->flags[0] == FL_FLAG &&
 	      SW_TOD_FLAG_FAST_LOADS == FL_FLAG, "the site is the console's first word, the flag past the BSS");
@@ -734,10 +793,10 @@ static void test_tod_fastloads(void)
 	fl_seed_game();
 	check(switches_state() == 0, "the look finds no switches");
 	host_write_log_reset();
-	check(features_set(TF_FAST_LOADS, 1) == ST_UNSUPPORTED && fl_words_are(g_fl_orig, 18) &&
+	check(features_set(TF_FAST_LOADS, 1) == ST_UNSUPPORTED && fl_words_are(g_fl_orig, FL_N + 1) &&
 	      host_write_log_count() == 0, "so Fast loads is UNSUPPORTED and writes nothing");
 	check(switches_patch(g_fl_patch, sizeof(g_fl_patch), &len) == ST_OK &&
-	      be16_get(g_fl_patch) == 24u + 63u + 4u, "SWITCH_PATCH: 24 and 63 cave words and the four sites");
+	      be16_get(g_fl_patch) == 32u + 63u + 4u, "SWITCH_PATCH: 32 and 63 cave words and the four sites");
 	check(quit(), "the game quits");
 	host_boot_as(TOD_TITLE, "tod");
 	fl_poke_patch(g_fl_patch, len);

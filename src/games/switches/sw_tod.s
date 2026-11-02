@@ -15,7 +15,7 @@
 # stamp (own_fmv_in) is the word after it.
 #
 # The caves are a dead function of the shipped game (sw_tod.ld), 400 bytes:
-# the switch takes the first 96 of them and qwark's own pieces the next 212.
+# the switch takes the first 128 of them and qwark's own pieces the next 252.
 #
 # build.sh assembles this, links it with sw_tod.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.
@@ -33,11 +33,12 @@
 	.set    TOD_MP_NEW,         0x101D4FB0   # g_moviePlayer + 0x60, u8: the state is new
 	.set    TOD_GAME_TIME,      0x1074DDBC   # g_gameClock + 0x14
 	.set    TOD_FMV_STARTED,    0x1037AA1C   # g_levelTransitionFmvStartTime, its low word
+	.set    TOD_PROP_BASE,      0x101D0000   # the transition prop's two handles, below (tod.h)
 
 # ------------------------------------------------------------------ fast loads
 #
 # tod.h says what the console's words do and why; the trampoline's second half,
-# fast_loads_on, is those seventeen words word for word, but for the five that
+# fast_loads_on, is those twenty-five words word for word, but for the five that
 # branch out of them, which the link points at the same places.
 #
 # 0x25E588 in LoadScreen_Update: bne cr7, 0x25E5FC, the return while the
@@ -69,12 +70,24 @@ fast_loads_on:
 	b       tod_ls_update_filler
 # The cut: the screen black at once, as Level_Enter makes it for the planet;
 # the cinematic stopped as a level's exit stops it, and the player reset as
-# Level_StartGameplay resets it; and the arrival's 1 in g_loadScreenType, which
-# LoadScreen_LoadDone waits for (with the player idle) before the load is over.
+# Level_StartGameplay resets it; the transition prop's two handles made
+# invalid, as the game's static constructor makes them (MobyHandle64_invalidate,
+# 0x03FFFFFF_FFFFFFFF), since without the arrival the last ones the load set
+# would name mobys of the planet (tod.h, revision 1.29); and the arrival's 1 in
+# g_loadScreenType, which LoadScreen_LoadDone waits for (with the player idle)
+# before the load is over.
 1:	lfs     f1, 0x7D84(r2)          # 1.0f
 	bl      tod_screen_fade_set
 	bl      tod_movie_stop_all
 	bl      tod_movie_reset
+	lis     r9, TOD_PROP_BASE@h
+	lis     r10, 0x0400
+	addi    r10, r10, -1            # 0x03FFFFFF, the invalid handle's high word
+	li      r11, -1                 # and its low word, the handle itself
+	stw     r10, 0x60E0(r9)         # g_transitionPropOwnerHandle
+	stw     r11, 0x60E4(r9)
+	stw     r10, 0x60E8(r9)         # g_transitionPropHandle
+	stw     r11, 0x60EC(r9)
 	li      r0, 1
 	stw     r0, 0(r29)
 2:	b       tod_ls_update_return
