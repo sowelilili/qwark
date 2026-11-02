@@ -5327,6 +5327,7 @@ TOD_BOLTS = 0x1020C28C
 TOD_LEVEL_OBJ = 0x10740BB4
 TOD_LOAD_REQUEST = 0x1006E764
 TOD_GAME_STATE = 0x10387F4C
+TOD_LEVEL_SAVE = 0x1020C2F8           # ToDLevelSave[19], 0x408 each (revision 1.29: the galactic map)
 TOD_LUA_STATE = 0x102043D0
 TOD_GAME_CLOCK = 0x1074DDA8
 TOD_NO_DAMAGE = 0x101F1F00
@@ -6077,7 +6078,35 @@ def smoke_tod_menu(c, sim):
     # The fourth console test: a CONFIG page longer than Game Options' six rows comes a window at a time.
     page = menu_page(c, box, size)
     planets = page[3].index("Planets") if page and "Planets" in page[3] else 3
-    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: into Planets")
+    # Revision 1.29: Planets opens the galactic map (gmap() in the gameplay VM), every level the map lists
+    # unlocked while it is up; Back puts the save's bytes back and asks for the Trainer again, on its root with
+    # the cursor on Planets, which then reads All planets and opens the page of planets.
+    ls = lambda level, off: TOD_LEVEL_SAVE + level * 0x408 + off
+    triples = lambda: [c.call(OP_MEM_READ, struct.pack(">II", ls(level, 0x400), 3))[1] for level in range(19)]
+    before = triples()
+    for level in range(19):
+        mem_write(c, ls(level, 0x400), bytes([1 if level <= 3 else 0, 1 if level <= 2 else 0, 0]))
+    saved = triples()
+    req = mem_read_u32(c, TOD_LUA_MB + 0x08)
+    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: the cross on Planets")
+    wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
+    status, chunk = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x600, 8))
+    unl = [mem_read_u8(c, ls(level, 0x400)) for level in range(19)]
+    check(mem_read_u32(c, TOD_GAME_STATE) == 6 and mem_read_u32(c, TOD_LUA_MB + 0x08) == req + 1 and
+          chunk[:6] == b"gmap()" and unl[1:18] == [1] * 17 and unl[0] == 1 and unl[18] == 0 and
+          mem_read_u8(c, ls(4, 0x401)) == 1 and mem_read_u8(c, ls(13, 0x401)) == 1,
+          "ToD menu: Planets opens the galactic map: gmap() to the gameplay VM, every level the map lists unlocked "
+          "(Fastoon II the save's)", (mem_read_u32(c, TOD_GAME_STATE), chunk, unl))
+    module_sleep(c, 0.2)   # qwark sees the map up (it looks a few times a second)
+    sim.send("fakemap back")
+    wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
+    now = triples()
+    page = menu_page(c, box, size)
+    check(now == saved and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 1 and page is not None and
+          page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == planets and page[3][planets] == "All planets",
+          "ToD menu: Back from the map: the save's bytes again, the Trainer asked for, its root with the cursor on "
+          "All planets", (now == saved, page[2:4] if page else None))
+    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: into All planets")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
     check(page is not None and page[2] == "Planets" and
@@ -6098,6 +6127,33 @@ def smoke_tod_menu(c, sim):
               "ToD menu: " + what, (page[3], page[4][MBOX_OFF_CURSOR]) if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back to the root")
     module_sleep(c, 0.1)
+    page = menu_page(c, box, size)
+    check(page is not None and page[3][planets] == "Planets", "ToD menu: All planets was once: Planets again",
+          page[3] if page else None)
+    # The simulator has no pause test to take the open: qwark gives up asking a few seconds on.
+    quiet = [time.time()]
+
+    def asking():
+        if mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0:
+            quiet[0] = time.time()
+        return time.time() - quiet[0] < 1.2
+    wait_while(c, asking, 8.0, 0.05)
+    check(not asking(), "ToD menu: an open nobody takes is given up a few seconds on")
+    # A pick: the game's own load (the map's exit), the bytes back, no Trainer asked for.
+    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: Planets again")
+    wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    module_sleep(c, 0.2)
+    sim.send("fakemap pick 7")
+    wait_while(c, lambda: triples() != saved, 2.0, 0.02)
+    now = triples()
+    module_sleep(c, 0.3)
+    check(now == saved and mem_read_u32(c, TOD_LOAD_REQUEST) == 7 and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 0,
+          "ToD menu: a pick (Ardolis) is the game's own load; the save's bytes again; no Trainer asked for",
+          (now == saved, hex(mem_read_u32(c, TOD_LOAD_REQUEST)), mem_read_u8(c, box + MBOX_OFF_REQUEST)))
+    mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    for level in range(19):
+        mem_write(c, ls(level, 0x400), before[level])
 
     # The pause: its VM asks for the glue, and qwark sends it as a request for the menu's VM.
     loads = mem_read_u32(c, TOD_MENU_STATE + TOD_LM_LOADS)

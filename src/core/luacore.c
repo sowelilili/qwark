@@ -40,6 +40,14 @@ static u8  g_have_result;
 static u32 g_glue_seq;
 /* Revision 1.29, the third console test: the look's (lua_core_menu_diag), the same way. */
 static u32 g_diag_seq;
+/*
+ * Revision 1.29, the game's own planet picker: the core's chunk for the
+ * gameplay VM (lua_core_gameplay_send) while it is out, and the last one
+ * answered, with how.
+ */
+static u32 g_own_seq;
+static u32 g_own_done;
+static u8  g_own_ok;
 static struct luamb_result g_res;
 static char g_out[LUAMB_OUT_CAP];
 static u32 g_out_len;
@@ -115,6 +123,9 @@ void lua_core_enter(void)
 	g_have_result = 0;
 	g_glue_seq = 0;
 	g_diag_seq = 0;
+	g_own_seq = 0;
+	g_own_done = 0;
+	g_own_ok = 0;
 	g_out_len = 0;
 	g_out[0] = 0;
 	memset(&g_res, 0, sizeof(g_res));
@@ -179,6 +190,16 @@ void lua_core_tick(void)
 			plat_log("menu: the glue's look failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
 		else
 			log_diag(rc > 0 ? (u32)rc : 0);
+		g_out_len = 0;
+		g_out[0] = 0;
+		return;
+	}
+	if (g_own_seq != 0 && res.seq == g_own_seq) {
+		/* Revision 1.29: the planet picker's chunk, the core's own request. */
+		g_own_seq = 0;
+		g_own_done = res.seq;
+		g_own_ok = res.status == LUAMB_ST_OK;
+		if (!g_own_ok) plat_log("menu: the planet picker's Lua failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
 		g_out_len = 0;
 		g_out[0] = 0;
 		return;
@@ -268,6 +289,55 @@ int lua_core_menu_diag(void)
 	}
 	g_diag_seq = g_lc.seq;
 	return ST_OK;
+}
+
+int lua_core_gameplay_ready(void)
+{
+	const struct lh_desc *d;
+	u32 state = 0;
+
+	if (!mem_is_ingame()) return ST_NOT_INGAME;
+	d = desc_now();
+	if (d == NULL) return ST_UNSUPPORTED;
+	if (d != g_desc) lua_core_enter();
+	if (plat_can_patch_code()) {
+		if (!g_installed || !g_attached) return ST_BUSY;
+	} else if (g_present <= 0) {
+		return g_present < 0 ? ST_BUSY : ST_UNSUPPORTED;
+	} else if (!g_attached) {
+		return ST_BUSY;
+	}
+	if (luamb_target_state(&g_lc, &g_io, LUAMB_TARGET_GAMEPLAY, &state) != 0) return ST_IO_ERROR;
+	return state != 0 ? ST_OK : ST_NOT_FOUND;
+}
+
+int lua_core_gameplay_send(const char *chunk, u32 len, u32 *seq)
+{
+	int rc = lua_core_gameplay_ready();
+
+	*seq = 0;
+	if (rc != ST_OK) return rc;
+	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
+	switch (luamb_send_to(&g_lc, &g_io, chunk, len, now_ms(), LUAMB_TARGET_GAMEPLAY)) {
+	case LUAMB_SEND_OK:        break;
+	case LUAMB_SEND_BUSY:      return ST_BUSY;
+	case LUAMB_SEND_NO_HELPER: return ST_UNSUPPORTED;
+	case LUAMB_SEND_NO_STATE:  return ST_NOT_FOUND;
+	case LUAMB_SEND_TOO_LONG:  return ST_BAD_ARG;
+	default:                   return ST_IO_ERROR;
+	}
+	g_own_seq = g_lc.seq;
+	*seq = g_lc.seq;
+	return ST_OK;
+}
+
+int lua_core_gameplay_result(u32 seq)
+{
+	if (seq == 0) return 2;
+	if (g_own_done == seq) return g_own_ok ? 1 : 2;
+	/* Out still: neither answered nor withdrawn, the game the same. */
+	if (g_own_seq == seq && g_lc.phase != LUAMB_C_IDLE && g_lc.seq == seq && desc_now() == g_desc) return 0;
+	return 2;
 }
 
 int lua_core_exec_start(const u8 *req, u32 reqlen, u32 *seq)

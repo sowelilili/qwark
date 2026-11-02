@@ -442,6 +442,35 @@ static const struct game_menu tod_menu = {
 };
 
 /*
+ * Revision 1.29 (pending): the Trainer's Planets row opens the galactic map,
+ * the game's own planet picker (tod.h, docs/tod-menu.md 16), with the
+ * gameplay package's gmap(), as Fastoon's ship does after its repair: Back
+ * goes back to play, a pick is the game's own load. While it is up every
+ * level the map lists is unlocked (levels 1 to 17; Metropolis is not on the
+ * map, and Fastoon II keeps the save's own byte, so the map shows whichever
+ * Fastoon the save is at, as the game does), and the three space combat
+ * levels count as visited, so Mukow, Rykan V and Kerchu City load
+ * themselves; the core puts every byte back once the map has gone.
+ */
+#define TOD_LS(level, off) (TOD_LEVEL_SAVE + (level) * TOD_LEVEL_SAVE_LEN + (off))
+
+static const struct menu_poke tod_galmap_pokes[] = {
+	{ TOD_LS(1, TOD_LS_UNLOCKED), TOD_LEVEL_SAVE_LEN, 17, 1 },
+	{ TOD_LS(1, TOD_LS_HIDDEN),   TOD_LEVEL_SAVE_LEN, 17, 0 },
+	{ TOD_LS(TOD_LEVEL_SC1, TOD_LS_VISITED), 0, 1, 1 },
+	{ TOD_LS(TOD_LEVEL_SC2, TOD_LS_VISITED), 0, 1, 1 },
+	{ TOD_LS(TOD_LEVEL_SC3, TOD_LS_VISITED), 0, 1, 1 }
+};
+
+static const struct menu_picker tod_galmap = {
+	"the galactic map",
+	"gmap()",
+	TOD_STATE_GALMAP,
+	TOD_GALMAP_PICK,
+	tod_galmap_pokes, (u8)(sizeof(tod_galmap_pokes) / sizeof(tod_galmap_pokes[0]))
+};
+
+/*
  * Revision 1.29: the menu's renderer is the game's own pause menu, through
  * the Lua helper's pause-menu half and its glue (src/games/luahelper/lh_menu.h).
  * The mailbox is the console menu's, 32 row slots, a MAIN page nine rows at
@@ -466,7 +495,8 @@ static const struct menu_native tod_menu_native = {
 	LM_NOTE_NOCH, LM_NOTE_IN_LIST, LM_NOTE_LATE,
 	LM_MAX_ROWS, LM_CFG_ROWS,
 	TOD_STATE_GAMEPLAY,   /* the fifth console test: a load from the pause waits for play (g_gameState 4) */
-	LM_GLUE_LOADED        /* and the glue in the pause closes it for one the client asked for */
+	LM_GLUE_LOADED,       /* and the glue in the pause closes it for one the client asked for */
+	&tod_galmap           /* revision 1.29: the Planets row opens the galactic map */
 };
 
 /* ---------------------------------------------------------------- vtable */

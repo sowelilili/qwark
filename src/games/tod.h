@@ -827,6 +827,29 @@ int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 #define TOD_STATE_PAUSE      5u           /* g_gameState: the pause menu (PauseMenu_update) */
 
 /*
+ * Revision 1.29 (pending): the galactic map, the Trainer's planet picker
+ * (docs/tod-menu.md 16). The game opens it in one way only, GalMap_request
+ * (0x35084, GameState_queueOverlay op 2, state 6, GalMapState_enter and
+ * GalMapState_exit), from the gameplay package's gmap() and from the end of a
+ * space combat level; the map's handler (gmapHndler) lists every level of the
+ * sectors it shows that GalMap_isLevelVisitable passes (its level's unlocked
+ * byte set, the byte after visited clear, not Metropolis, and Fastoon only
+ * while Fastoon II is not), and a pick is GalMap_LoadLevel: the level into
+ * g_galMap.selectedLevel (Mukow, Rykan V and Kerchu City go to the space
+ * combat level before them while its visited byte is clear), and on the way
+ * out LoadLevel(level, 0, 0) into g_planetLoadRequest, the game's own load.
+ * Back (exit_galactic_map) leaves selectedLevel -1 and goes back to play.
+ */
+#define TOD_STATE_GALMAP     6u           /* g_gameState: the galactic map (GalMapState_update 0x360BC) */
+#define TOD_GALMAP_PICK      0x101CBFC0u  /* g_galMap.selectedLevel, s32: -1 from GalMapState_enter, a pick's level (dec) */
+#define TOD_LS_UNLOCKED      0x400u       /* ToDLevelSave.unlocked, u8 (Level_unlock) */
+#define TOD_LS_VISITED       0x401u       /* ToDLevelSave.visited, u8 (the space combat levels' redirect, GalMap_selectLevel) */
+#define TOD_LS_HIDDEN        0x402u       /* ToDLevelSave.unk_402, u8: 0 for GalMap_isLevelVisitable */
+#define TOD_LEVEL_SC1        4u           /* LEVEL_SPACE_COMBAT_I */
+#define TOD_LEVEL_SC2        8u
+#define TOD_LEVEL_SC3        13u
+
+/*
  * Revision 1.29 (pending): a run's start, shared by the autosplitter's RESET
  * and Cache cutscenes on reset. A level load is under way while the tier
  * loader's job is state 3's list and g_levelLoadTier is not loaded (above);

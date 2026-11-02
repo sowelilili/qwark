@@ -97,6 +97,9 @@ static char g_note_label[32];
 #define DEFER_FEATURE 1
 #define DEFER_PLANET  2
 #define DEFER_RESTORE 3
+#if QWARK_HAS_TOD
+#define DEFER_PICKER  4         /* revision 1.29: the game's own planet picker (struct menu_picker) */
+#endif
 static struct {
 	u8   kind;
 	u8   arg;
@@ -110,6 +113,13 @@ static struct {
 	char name[SAVEFILE_NAME_LEN + 1];
 	char label[32];
 } g_defer;
+
+#if QWARK_HAS_TOD
+/* Revision 1.29: the game's own planet picker, the driver's (native_picker_*). */
+static int native_picker_act(u8 row);
+static int native_picker_others(void);
+static void native_picker_drop(void);
+#endif
 
 /*
  * The unlock table as the game last read it: one read a page build, again
@@ -1054,6 +1064,10 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		row(r, MROW_LINK, MROWF_ENABLED, page_name(arg), "");
 		/* Mailbox version 3: a renderer that opens the game's own planet picker opens it here. */
 		if (arg == MENU_PAGE_PLANETS && (g_caps & MBOX_CAP_PICKER) != 0) r->flags |= MROWF_PICKER;
+#if QWARK_HAS_TOD
+		/* Revision 1.29: back from the game's own planet picker, the row opens every planet, once. */
+		if (arg == MENU_PAGE_PLANETS && native_picker_others()) qstrcpy(r->label, sizeof(r->label), "All planets");
+#endif
 		break;
 	case MENU_ROW_UCAT:
 		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "");
@@ -1663,6 +1677,14 @@ static int act(u8 row, u16 id, int dir)
 	case MENU_ROW_SECTION: return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SECTION, arg), row, 0, 0);
 	case MENU_ROW_PAGE:
 		if (dir != 0) return ST_OK;
+#if QWARK_HAS_TOD
+		/* Revision 1.29: where the game's own planet picker can open, Planets opens it. */
+		if (arg == MENU_PAGE_PLANETS) {
+			int rc = native_picker_act(row);
+
+			if (rc >= 0) return rc;
+		}
+#endif
 #if QWARK_PREVIEW
 		/*
 		 * The Mods page reads the console's library and its USB drives again
@@ -1933,6 +1955,7 @@ void menu_forget(void)
 	g_state = MENU_OFF;
 	g_mh = NULL;
 #if QWARK_HAS_TOD
+	native_picker_drop();
 	g_native = NULL;
 	g_native_why = 0;
 #endif
@@ -1963,6 +1986,10 @@ void menu_enter(const struct game_api *game)
  */
 void menu_detach(void)
 {
+#if QWARK_HAS_TOD
+	/* Revision 1.29: the planet picker's bytes back while the game is still there. */
+	native_picker_drop();
+#endif
 	g_game = NULL;
 	g_ul.ok = 0;
 	g_ul.list = NULL;
@@ -2799,6 +2826,254 @@ static void request(u8 what)
 	g_req_until = plat_time_us() + REQUEST_US;
 }
 
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29 (pending): the game's own planet picker (struct menu_picker,
+ * Tools of Destruction's galactic map; docs/tod-menu.md 16). The cross on the
+ * root's Planets row is a CLOSES action (DEFER_PICKER): the game's menu
+ * closes as for a load, and once the game plays the picker starts here:
+ *
+ *   SEND    the pokes written, each byte's own value kept first (the picker's
+ *           table is copied, so they go back even if the game's module has
+ *           gone), and the picker's chunk sent to the gameplay VM; a busy
+ *           mailbox is tried again for a second
+ *   WAIT    for the game to say the picker is up (screen_addr its state); its
+ *           Lua failing or a few seconds without it is a failure
+ *   UP      until it has gone; then every poked byte that still holds what
+ *           was written is put back, and the pick read: a planet is the
+ *           game's own load, already under way; none (Back) opens the menu
+ *           again on its root, the cursor on Planets, which then reads All
+ *           planets and opens the page of planets, once
+ *   REOPEN  the open asked for until the menu is up, while the game plays
+ *
+ * A failure puts the bytes back and opens the menu again on the page of
+ * planets, saying so on the console; so does a Planets row pressed where the
+ * picker cannot open (no Lua helper, no level), without closing anything.
+ */
+#define GM_NONE    0
+#define GM_SEND    1
+#define GM_WAIT    2
+#define GM_UP      3
+#define GM_REOPEN  4
+#define GM_BYTES   48
+#define GM_SEND_US   1000000ull
+#define GM_WAIT_US   4000000ull
+#define GM_REOPEN_US 4000000ull
+#define GM_ASK_US    750000ull
+
+static struct {
+	u8   phase;
+	u8   row;               /* the root's Planets row, for the cursor */
+	u8   n;                 /* bytes poked, to put back */
+	u8   others;            /* the Planets row opens every planet while g_visit is others_visit */
+	u32  others_visit;
+	u32  seq;               /* the chunk's request */
+	u32  state;             /* the picker's, copied: screen_addr's value while it is up */
+	u32  pick_addr;
+	u64  until;
+	u64  ask;               /* REOPEN: the next open asked for no sooner */
+	char name[24];
+	u32  addr[GM_BYTES];
+	u8   saved[GM_BYTES];
+	u8   value[GM_BYTES];
+} g_gm;
+
+static const struct menu_picker *picker(void)
+{
+	return g_native != NULL ? g_native->picker : NULL;
+}
+
+static int native_picker_others(void)
+{
+	return g_gm.others && g_gm.others_visit == g_visit && g_depth == 1;
+}
+
+/* Every poked byte that still holds what was written, back to what it was. */
+static void native_picker_restore(void)
+{
+	u8 i, b;
+
+	for (i = 0; i < g_gm.n; i++) {
+		if (mem_read_u8(g_gm.addr[i], &b) == ST_OK && b == g_gm.value[i]) mem_write_u8(g_gm.addr[i], g_gm.saved[i]);
+	}
+	if (g_gm.n != 0) plat_log("menu: %s gone; the planets' unlocks are the save's again", g_gm.name);
+	g_gm.n = 0;
+}
+
+/* The session or the game's module going: the bytes back, nothing waiting. */
+static void native_picker_drop(void)
+{
+	native_picker_restore();
+	memset(&g_gm, 0, sizeof(g_gm));
+}
+
+/* The menu opened again (REOPEN): on the root with the cursor on Planets, or on the page of planets. */
+static void native_picker_reopen(int list)
+{
+	menu_model_home();
+	if (list) {
+		nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), g_gm.row, 0, 0);
+	} else {
+		g_nav[0].cursor = g_gm.row;
+		g_gm.others = 1;
+		g_gm.others_visit = g_visit;
+	}
+	g_gm.phase = GM_REOPEN;
+	g_gm.until = plat_time_us() + GM_REOPEN_US;
+	g_gm.ask = 0;
+}
+
+static void native_picker_fail(const char *why)
+{
+	native_picker_restore();
+	plat_log("menu: %s did not open (%s); the Planets page instead", g_gm.name, why);
+	tell(g_gm.name, " did not open", "; the planets instead");
+	native_picker_reopen(1);
+}
+
+/*
+ * The Planets row's cross: -1 for the page of planets as for every game, or
+ * the picker's CLOSES action.
+ */
+static int native_picker_act(u8 row)
+{
+	const struct menu_picker *p = picker();
+	int rc;
+
+	if (p == NULL) return -1;
+	if (native_picker_others()) {
+		g_gm.others = 0;
+		return -1;
+	}
+	rc = g_gm.phase != GM_NONE ? ST_BUSY : lua_core_gameplay_ready();
+	if (rc != ST_OK) {
+		plat_log("menu: %s cannot open here (%s); the Planets page instead", p->name, status_text((u8)rc));
+		tell(p->name, " cannot open here", "; the planets instead");
+		return -1;
+	}
+	g_gm.row = row;
+	return defer(DEFER_PICKER, row, p->name);
+}
+
+/* DEFER_PICKER, once the menu has closed and the game plays: the picker's table taken, the bytes poked. */
+static int native_picker_start(void)
+{
+	const struct menu_picker *p = picker();
+	u8 i, k, row = g_defer.arg;
+
+	if (p == NULL) return ST_UNSUPPORTED;
+	native_picker_restore();
+	memset(&g_gm, 0, sizeof(g_gm));
+	qstrcpy(g_gm.name, sizeof(g_gm.name), p->name);
+	g_gm.row = row;
+	g_gm.state = p->state;
+	g_gm.pick_addr = p->pick_addr;
+	for (i = 0; i < p->npokes; i++) {
+		for (k = 0; k < p->pokes[i].count && g_gm.n < GM_BYTES; k++, g_gm.n++) {
+			g_gm.addr[g_gm.n] = p->pokes[i].addr + (u32)k * p->pokes[i].stride;
+			g_gm.value[g_gm.n] = p->pokes[i].value;
+		}
+	}
+	/* All read before any is written; from here on n counts the bytes that may need putting back. */
+	k = g_gm.n;
+	g_gm.n = 0;
+	for (i = 0; i < k; i++) {
+		if (mem_read_u8(g_gm.addr[i], &g_gm.saved[i]) != ST_OK) return ST_IO_ERROR;
+	}
+	for (i = 0; i < k; i++) {
+		g_gm.n = (u8)(i + 1);
+		if (g_gm.saved[i] != g_gm.value[i] && mem_write_u8(g_gm.addr[i], g_gm.value[i]) != ST_OK) {
+			native_picker_restore();
+			return ST_IO_ERROR;
+		}
+	}
+	g_gm.phase = GM_SEND;
+	g_gm.until = plat_time_us() + GM_SEND_US;
+	return ST_OK;
+}
+
+static void native_picker_tick(void)
+{
+	const struct menu_picker *p;
+	u32 screen = 0, pick = 0xFFFFFFFFu;
+	u64 now = plat_time_us();
+	int rc;
+
+	switch (g_gm.phase) {
+	case GM_SEND:
+		p = picker();
+		if (p == NULL) {
+			native_picker_drop();
+			return;
+		}
+		rc = lua_core_gameplay_send(p->chunk, (u32)strlen(p->chunk), &g_gm.seq);
+		if (rc == ST_OK) {
+			g_gm.phase = GM_WAIT;
+			g_gm.until = now + GM_WAIT_US;
+		} else if (rc != ST_BUSY || now >= g_gm.until) {
+			native_picker_fail(rc == ST_BUSY ? "the game's Lua was busy" : status_text((u8)rc));
+		}
+		return;
+
+	case GM_WAIT:
+		if (mem_read_u32(g_native->screen_addr, &screen) != ST_OK) return;
+		if (screen == g_gm.state) {
+			g_gm.phase = GM_UP;
+			plat_log("menu: %s is up", g_gm.name);
+		} else if (lua_core_gameplay_result(g_gm.seq) == 2) {
+			native_picker_fail("its Lua did not run");
+		} else if (now >= g_gm.until) {
+			native_picker_fail("the game never showed it");
+		}
+		return;
+
+	case GM_UP:
+		if (mem_read_u32(g_native->screen_addr, &screen) != ST_OK || screen == g_gm.state) return;
+		native_picker_restore();
+		if (mem_read_u32(g_gm.pick_addr, &pick) == ST_OK && (s32)pick >= 0) {
+			const char * const *names = NULL;
+			u8 count = 0;
+
+			if (g_game != NULL && g_game->planet_names != NULL) names = g_game->planet_names(&count);
+			plat_log("menu: %s picked %s; the game loads it", g_gm.name,
+			         names != NULL && pick < count && names[pick] != NULL ? names[pick] : "a planet");
+			g_gm.phase = GM_NONE;
+			return;
+		}
+		if (screen != g_native->play_state) {
+			/* Gone some other way than back to play: nothing to open again. */
+			g_gm.phase = GM_NONE;
+			return;
+		}
+		plat_log("menu: %s closed without a pick; the Trainer again", g_gm.name);
+		native_picker_reopen(0);
+		return;
+
+	case GM_REOPEN:
+		if (g_hstate != MBOX_HSTATE_CLOSED) {
+			g_gm.phase = GM_NONE;
+			return;
+		}
+		if (now >= g_gm.until) {
+			plat_log("menu: the Trainer did not open again after %s", g_gm.name);
+			g_gm.phase = GM_NONE;
+			g_gm.others = 0;
+			return;
+		}
+		/* Asked again only while the game plays with no pause coming (one nobody took is withdrawn). */
+		if (g_req == 0 && now >= g_gm.ask && game_playing()) {
+			post(1);
+			request(MBOX_REQ_OPEN);
+			g_gm.ask = now + GM_ASK_US;
+		}
+		return;
+
+	default:
+		return;
+	}
+}
+#endif
+
 /* A CLOSES action, now. */
 static int run_deferred(void)
 {
@@ -2810,6 +3085,9 @@ static int run_deferred(void)
 	case DEFER_PLANET:  return session_planet_load(g_defer.arg, 0xFF);
 #endif
 	case DEFER_RESTORE: return savefile_restore(g_defer.cat, g_defer.name);
+#if QWARK_HAS_TOD
+	case DEFER_PICKER:  return native_picker_start();
+#endif
 	default:            return ST_OK;
 	}
 }
@@ -3052,7 +3330,10 @@ static void serve(void)
 	deferred_tick();
 
 #if QWARK_HAS_TOD
-	if (g_native != NULL) native_glue();
+	if (g_native != NULL) {
+		native_glue();
+		native_picker_tick();
+	}
 #endif
 
 	/* Revision 1.23: a menu.help change, or a swap still waiting, once it is safe. */

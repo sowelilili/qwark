@@ -217,6 +217,19 @@ void host_set_fake_pause(int on);
 int  host_fake_menu_frame(void);
 
 /*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 16): the simulated ToD's
+ * gameplay package's gmap(), which a gameplay request whose chunk calls it
+ * runs (fake_lua_serve), opens the map: g_gameState 6 and
+ * g_galMap.selectedLevel -1, and no gameplay frame runs while it is up.
+ * host_fake_map(-1) is its Back (play again, nothing picked), (n) a pick of
+ * level n (play again, the level picked and in g_planetLoadRequest, as the
+ * map's exit leaves them); host_fake_map_off(1) a game whose gmap() never
+ * opens it, (0) the game's own again.
+ */
+void host_fake_map(int level);
+void host_fake_map_off(int off);
+
+/*
  * Revision 1.28: its save system (docs/tod-savefile.md).
  * host_fake_tod_save_frame runs one frame of SaveSystem_update's load and
  * autosave paths (1 when it applied a load); host_set_fake_tod_save runs one

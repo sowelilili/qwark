@@ -151,6 +151,20 @@ static int press(u32 kind, int row)
 	return ok;
 }
 
+/*
+ * Revision 1.29: Planets' page of planets. Where the galactic map can open
+ * (a level's lua_State), the Planets row opens it instead (test_galmap); with
+ * none it falls back to the page, which these tests want.
+ */
+static void planets_list(void)
+{
+	u32 L = peek32(TOD_LUA_STATE);
+
+	poke32(TOD_LUA_STATE, 0);
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	poke32(TOD_LUA_STATE, L);
+}
+
 /* Whether the n bytes at p hold the string s. */
 static int has_bytes(const u8 *p, u32 n, const char *s)
 {
@@ -375,7 +389,7 @@ static void test_screens(void)
 	press(MBOX_EV_BACK, -1);
 
 	/* Planets: longer than Game Options' six rows, so a window; its last row asks for the next. */
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	planets_list();
 	title(t);
 	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS &&
 	      (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_DOWN) != 0 && (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_UP) == 0,
@@ -421,7 +435,7 @@ static void test_paging(void)
 	poke32(LMS(LM_KEY), peek32(LM_BOX + MBOX_OFF_PAGE_KEY));
 	check((peek8(LM_BOX + MBOX_OFF_CAPS) & MBOX_CAP_PAGED) != 0 && LM_CAPS == 0x2D,
 	      "the mailbox's header says a page at a time");
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	planets_list();
 	title(t);
 	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS && strcmp(row_label(0, b), "KERWAN") == 0 &&
 	      strcmp(row_label(1, b), "COBALIA") == 0 && strcmp(row_label(2, b), "KORTOG") == 0 &&
@@ -573,7 +587,7 @@ static void test_pause_loads(void)
 	lm_hstate(1);
 	tick(4);
 	lm_take();
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	planets_list();
 	r = 1;
 	planet = lm8(lm_row((u32)r) + MROW_OFF_ID + 1);
 	check(lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && lm8(lm_row((u32)r) + MROW_OFF_ID) == MENU_ROW_PLANET,
@@ -631,7 +645,7 @@ static void test_pause_loads(void)
 	lm_hstate(1);
 	tick(4);
 	lm_take();
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	planets_list();
 	press(MBOX_EV_ACTIVATE, 1);
 	lm_hstate(0);
 	tick(4);
@@ -647,6 +661,199 @@ static void test_pause_loads(void)
 	check(session_planet_load((u8)planet, 0) == ST_OK && peek32(TOD_LOAD_REQUEST) == planet,
 	      "in play the client's planet loads at once");
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
+}
+
+/* --------------------------------------------- the galactic map (1.29) */
+
+#define LS(level, off) (TOD_LEVEL_SAVE + (u32)(level) * TOD_LEVEL_SAVE_LEN + (off))
+
+static u8 g_ls_before[19][3];
+
+/* A save part way through the story: Metropolis to Fastoon unlocked, a hidden byte, Space Combat II visited. */
+static void save_part_way(void)
+{
+	u32 l;
+
+	for (l = 0; l < 19; l++) {
+		poke8(LS(l, TOD_LS_UNLOCKED), l <= 3 ? 1 : 0);
+		poke8(LS(l, TOD_LS_VISITED), l <= 2 ? 1 : 0);
+		poke8(LS(l, TOD_LS_HIDDEN), 0);
+	}
+	poke8(LS(5, TOD_LS_HIDDEN), 1);
+	poke8(LS(8, TOD_LS_VISITED), 1);
+	for (l = 0; l < 19; l++) {
+		g_ls_before[l][0] = peek8(LS(l, TOD_LS_UNLOCKED));
+		g_ls_before[l][1] = peek8(LS(l, TOD_LS_VISITED));
+		g_ls_before[l][2] = peek8(LS(l, TOD_LS_HIDDEN));
+	}
+}
+
+static int save_as_before(void)
+{
+	u32 l, k;
+
+	for (l = 0; l < 19; l++) {
+		for (k = 0; k < 3; k++) {
+			if (peek8(LS(l, TOD_LS_UNLOCKED + k)) != g_ls_before[l][k]) return 0;
+		}
+	}
+	return 1;
+}
+
+/* Every level the map lists unlocked and shown, the space combat levels visited; Metropolis and Fastoon II the save's. */
+static int save_for_map(void)
+{
+	u32 l;
+
+	for (l = 1; l <= 17; l++) {
+		if (peek8(LS(l, TOD_LS_UNLOCKED)) != 1 || peek8(LS(l, TOD_LS_HIDDEN)) != 0) return 0;
+	}
+	return peek8(LS(4, TOD_LS_VISITED)) == 1 && peek8(LS(8, TOD_LS_VISITED)) == 1 &&
+	       peek8(LS(13, TOD_LS_VISITED)) == 1 && peek8(LS(9, TOD_LS_VISITED)) == g_ls_before[9][1] &&
+	       peek8(LS(0, TOD_LS_UNLOCKED)) == g_ls_before[0][0] && peek8(LS(18, TOD_LS_UNLOCKED)) == g_ls_before[18][0];
+}
+
+/* The Trainer up in the pause on its root, the page taken. */
+static void trainer_up(void)
+{
+	pause_up();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+}
+
+/* Planets pressed, the glue closing the pause, the game playing: the map asked for. */
+static void to_map(int row)
+{
+	press(MBOX_EV_ACTIVATE, row);
+	lm_take_request();
+	lm_hstate(0);
+	poke32(TOD_PAUSE_STATE, 4);
+	tick(4);
+	poke32(TOD_PAUSE_STATE, 0);
+	poke32(LMS(LM_GLUE), LM_GLUE_NONE);
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(6);
+}
+
+static void test_galmap(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	u32 mb = d->mailbox, req, L, i;
+	char b[48], t[40];
+	int r;
+
+	group("ToD's console menu: Planets opens the galactic map (revision 1.29, docs/tod-menu.md 16)");
+	save_part_way();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	trainer_up();
+	r = find_row("Planets");
+	check(r >= 0 && strcmp(row_label((u32)r, b), "PLANETS") == 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_LINK,
+	      "the root's Planets row, a link as before");
+
+	req = peek32(mb + LUAMB_OFF_REQ);
+	press(MBOX_EV_ACTIVATE, r);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && peek32(mb + LUAMB_OFF_REQ) == req && save_as_before(),
+	      "the cross: qwark asks the pause to close, and writes nothing yet");
+	check(lm_take_request() == 2, "the glue takes the close (exit_pause_menu)");
+	lm_hstate(0);
+	poke32(TOD_PAUSE_STATE, 4);
+	tick(6);
+	poke32(TOD_PAUSE_STATE, 0);
+	tick(12);
+	check(peek32(mb + LUAMB_OFF_REQ) == req && save_as_before(), "the game still in its pause: nothing yet");
+	poke32(LMS(LM_GLUE), LM_GLUE_NONE);
+	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(6);
+	{
+		u8 tg = peek8(mb + LUAMB_OFF_TARGET);
+		char chunk[16];
+
+		host_peek(mb + LUAMB_OFF_CHUNK, (u8 *)chunk, 6);
+		chunk[6] = 0;
+		check(peek32(mb + LUAMB_OFF_REQ) != req && tg == LUAMB_TARGET_GAMEPLAY && peek32(mb + LUAMB_OFF_CHUNK_LEN) == 6 &&
+		      strcmp(chunk, "gmap()") == 0, "the game plays: gmap() to the gameplay VM, as Fastoon's ship calls it");
+	}
+	check(save_for_map(), "and every level the map lists unlocked and shown, the space combat levels visited (Metropolis, Fastoon II the save's)");
+	host_fake_lua_frame();
+	tick(6);
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP && save_for_map(), "the map up (g_gameState 6), the unlocks kept while it is");
+	poke8(LS(9, TOD_LS_UNLOCKED), 2);
+
+	/* Back: the save's bytes again, the Trainer again on its root, the cursor on Planets, which then opens the page. */
+	host_fake_map(-1);
+	tick(12);
+	check(peek8(LS(9, TOD_LS_UNLOCKED)) == 2, "a byte the game changed while the map was up stays the game's");
+	poke8(LS(9, TOD_LS_UNLOCKED), g_ls_before[9][0]);
+	check(save_as_before(), "Back: every other byte the save's own again");
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "and qwark asks the Trainer to open again, nothing loaded");
+	pause_up();
+	check(lm_take_request() == 1, "the pause test takes the open, the glue opens the Trainer");
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	title(t);
+	check(strcmp(t, "TRAINER") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && strcmp(row_label((u32)r, b), "ALL PLANETS") == 0,
+	      "the root, the cursor on the Planets row, which reads ALL PLANETS");
+	press(MBOX_EV_ACTIVATE, r);
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG &&
+	      strcmp(row_label(0, b), "KERWAN") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "ALL PLANETS: the page of every planet (Kerwan first), nothing closed");
+	press(MBOX_EV_BACK, -1);
+	check(strcmp(row_label((u32)r, b), "PLANETS") == 0, "back at the root the row is PLANETS again: All planets was once");
+
+	/* A pick: the game's own load (the map's exit, LoadLevel), the bytes back, the Trainer stays down. */
+	to_map(r);
+	host_fake_lua_frame();
+	tick(6);
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "Planets again: the map again");
+	host_fake_map(7);
+	tick(6);
+	check(save_as_before() && peek32(TOD_LOAD_REQUEST) == 7 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "a pick (Ardolis): the game's own load under way, the save's bytes back, no Trainer");
+	pause_gone();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "and nothing more: qwark loads nothing of its own");
+
+	/* A gmap() that never brings the map: given up, the bytes back, the Trainer on the page of planets. */
+	host_fake_map_off(1);
+	trainer_up();
+	to_map(find_row("Planets"));
+	host_fake_lua_frame();
+	tick(6);
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY && save_for_map(), "a map that does not come: the unlocks in, waiting");
+	for (i = 0; i < 520 && peek8(LM_BOX + MBOX_OFF_REQUEST) != MBOX_REQ_OPEN; i++) tick(1);
+	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN,
+	      "four seconds on: the bytes back, and the Trainer asked to open again");
+	pause_up();
+	lm_take_request();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
+	      "on the page of planets: the fallback");
+	press(MBOX_EV_BACK, -1);
+	host_fake_map_off(0);
+
+	/* No level's lua_State (no Lua for gmap()): the page at once, nothing closed or written. */
+	L = peek32(TOD_LUA_STATE);
+	poke32(TOD_LUA_STATE, 0);
+	req = peek32(mb + LUAMB_OFF_REQ);
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE &&
+	      peek32(mb + LUAMB_OFF_REQ) == req && save_as_before(),
+	      "where the map cannot open: the page of planets at once, nothing closed, nothing written");
+	poke32(TOD_LUA_STATE, L);
+	press(MBOX_EV_BACK, -1);
+	lm_hstate(0);
+	pause_gone();
 	tick(30);
 }
 
@@ -1193,6 +1400,7 @@ void test_tod_menu(void)
 	test_paging();
 	test_requests();
 	test_pause_loads();
+	test_galmap();
 	test_glue();
 	test_gate();
 	test_diag();

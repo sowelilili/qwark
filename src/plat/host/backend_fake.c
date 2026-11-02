@@ -397,6 +397,9 @@ static void seed_tod(void)
  * request.
  */
 #define FAKE_DIAG_OUT "g=301,301,1,0,-,0 s=uuutffn sl=nil reg=t,23,23,4 blankHandler: optHandler:+ " 	"controlHandler: moveHandler: helpHandler: TextScroller: invhandler: skillHandler: itemhandler: " 	"slideStepper: quickHandler: cineListUpdater: ScrollableList:+ skinHandler: gadgetHandler: " 	"weaponHandler: conceptHandler: ListUpdater:+ ScrollableList: ListUpdater:mh+ end"
+/* Revision 1.29: a gmap() that opens nothing (host_fake_map_off). */
+static volatile int g_fake_map_off;
+
 static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 {
 	/* `fakepause tight` (the second crash): a menu request finds the pool short of a load's room (glue NULL). */
@@ -428,6 +431,11 @@ static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 		if (strstr(chunk, "while true") != NULL) {
 			/* Inside the chunk for ever: busy stays up, no ack. */
 			return 0;
+		}
+		/* Revision 1.29: the gameplay package's gmap(), GalMap_request: the map up (GalMapState_enter). */
+		if (target == LUAMB_TARGET_GAMEPLAY && strstr(chunk, "gmap()") != NULL && !g_fake_map_off) {
+			poke32(TOD_GAME_STATE, TOD_STATE_GALMAP);
+			poke32(TOD_GALMAP_PICK, 0xFFFFFFFFu);
 		}
 		if (strstr(chunk, "time_set_scale(0.5") != NULL) poke32(TOD_GAME_CLOCK, 0x3F000000u);
 		else if (strstr(chunk, "time_set_scale(1") != NULL) poke32(TOD_GAME_CLOCK, 0x3F800000u);
@@ -485,6 +493,11 @@ int host_fake_lua_frame(void)
 	pthread_mutex_lock(&g_mem_lock);
 	d = fake_lua_in();
 	if (d == NULL) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	/* Revision 1.29: no gameplay frame while the galactic map is up (GameState_Dispatch runs the map's alone). */
+	if (peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP) {
 		pthread_mutex_unlock(&g_mem_lock);
 		return 0;
 	}
@@ -646,6 +659,27 @@ void host_set_fake_pause(int on)
 	fake_pause_words(on);
 	pthread_mutex_unlock(&g_mem_lock);
 	g_fake_pause_on = on ? 1 : 0;
+}
+
+/*
+ * Revision 1.29: the galactic map going, as GalMapState_exit leaves things:
+ * play again, and for a pick the level in selectedLevel and, through
+ * LoadLevel, in g_planetLoadRequest.
+ */
+void host_fake_map(int level)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	if (peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP) {
+		poke32(TOD_GALMAP_PICK, level < 0 ? 0xFFFFFFFFu : (u32)level);
+		if (level >= 0) poke32(TOD_LOAD_REQUEST, (u32)level);
+		poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+void host_fake_map_off(int off)
+{
+	g_fake_map_off = off ? 1 : 0;
 }
 
 /* The pause's words, as host_set_fake_pause wants them. Under g_mem_lock. */

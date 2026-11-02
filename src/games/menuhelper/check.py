@@ -3791,6 +3791,7 @@ def check_tod(ok, elf):
 
     check_tod_fade(ok, elf)
     check_tod_cutscenes(ok, elf)
+    check_tod_galmap(ok, elf)
     b3, n3, p3 = refs_into(elf, end, (end + 0xFFF) & ~0xFFF)
     ok(not b3 and not n3 and not p3, "and nothing in the executable points past the BSS")
 
@@ -3948,6 +3949,47 @@ def check_tod_fade(ok, elf):
     ok(not br and not named and not pairs, "nothing names the word's address")
     ok(elf.word(0x0027DF1C) is not None and elf.word(0x008B2E70) is not None,
        "ScreenFade_update (0x27DF1C) is there to move the progress")
+
+
+def check_tod_galmap(ok, elf):
+    """Revision 1.29: the galactic map the Trainer's Planets row opens (tod.h, TOD_STATE_GALMAP; tod_game.c)."""
+    print("\nNPEA00452 the galactic map (revision 1.29)")
+    ws = lambda lo, hi: [elf.word(a) for a in range(lo, hi, 4)]
+    # The gameplay package's gmap(): its tolua wrapper calls it, and it calls GalMap_request(1, 1) through its thunk.
+    ok(branch_target(0x002B1BA4, elf.word(0x002B1BA4)) == 0x00291CBC and elf.word(0x00884F08) == 0x00291CBC,
+       "tolua's gmap wrapper (0x2B1B64) calls Lua_gmap (0x291CBC), whose descriptor is 0x884F08")
+    ok(ws(0x00291CC4, 0x00291CD0) == [0x38800001, 0xF8610080, 0x38600001] and
+       branch_target(0x00291CD0, elf.word(0x00291CD0)) == 0x0026B7F0 and
+       branch_target(0x0026B7FC, elf.word(0x0026B7FC)) == 0x00035084,
+       "gmap() is GalMap_request(1, 1) (0x35084), through the thunk at 0x26B7F0")
+    # GalMap_request: loadOnPick and canExit, then state 6 queued, op 2, with the map's enter and exit.
+    ok(ws(0x000350C4, 0x000350FC) == [0x80E29B78, 0x7FA3EB78, 0x81629B84, 0x38800006, 0x81029B88, 0x39200002,
+                                      0x9B870041, 0x9B670040, 0x90810090, 0x91210094, 0x91610074, 0x91410078,
+                                      0x9101007C, 0x91410070] and
+       branch_target(0x000350FC, elf.word(0x000350FC)) == 0x000129C0,
+       "GalMap_request: g_galMap +0x41 and +0x40 from its arguments, state 6, op 2, GameState_queueOverlay")
+    ok(elf.word(0x008A4BF0) == 0x101CBF84 and elf.word(0x008A4BFC) == 0x008756B8 and elf.word(0x008A4C00) == 0x00875690 and
+       elf.word(0x008756B8) == 0x00036598 and elf.word(0x00875690) == 0x00035B0C,
+       "with r2 0x8AB078: g_galMap 0x101CBF84, GalMapState_enter 0x36598 and GalMapState_exit 0x35B0C")
+    # selectedLevel (+0x3C): -1 on the way in, the pick's level, read on the way out.
+    ok(ws(0x000365E4, 0x000365F8) == [0x38800000, 0x81629B78, 0x3920FFFF, 0x988B002C, 0x912B003C],
+       "GalMapState_enter puts -1 in g_galMap.selectedLevel (0x101CBFC0)")
+    ok(ws(0x0003525C, 0x00035264) == [0x80629B78, 0x93E3003C],
+       "GalMap_selectLevel (0x351D8) stores the pick there")
+    ok(ws(0x00035B54, 0x00035B70) == [0x81229B78, 0x83A9003C, 0x2F9DFFFF, 0x419E0010, 0x88890040, 0x2C040000, 0x4082005C] and
+       branch_target(0x00035BF8, elf.word(0x00035BF8)) == 0x00011410 and
+       branch_target(0x00035C08, elf.word(0x00035C08)) == 0x00011410,
+       "GalMapState_exit loads it (LoadLevel's thunk) unless it is -1 or loadOnPick is clear")
+    # The space combat redirect: Mukow while Space Combat I's visited byte is clear (Rykan V, Kerchu City alike).
+    ok(ws(0x00035278, 0x00035298) == [0x81229B90, 0x3BE00005, 0x88690401, 0x2C830000, 0x4086FF9C, 0x38A00001,
+                                      0x3BE00004, 0x98A90400] and
+       elf.word(0x008A4C08) == 0x1020D318 and elf.word(0x008A4C0C) == 0x1020E338 and elf.word(0x008A4C10) == 0x1020F760,
+       "GalMap_selectLevel: Mukow goes to Space Combat I while its visited byte (+0x401) is clear (and 9, 14 alike)")
+    # GalMap_isLevelVisitable: g_saveData + L * 0x408 + 0x488, the unlocked byte set and +0x402 clear, not level 0.
+    ok(elf.word(0x0003688C) == 0x81629BF0 and elf.word(0x008A4C68) == 0x1020BE70 and
+       ws(0x000368B8, 0x000368C0) == [0x39240488, 0x38600012] and elf.word(0x000368D0) == 0x887F0400 and
+       elf.word(0x000368F8) == 0x891F0402 and elf.word(0x000368FC) == 0x2F3E0000,
+       "GalMap_isLevelVisitable (0x36888): ToDLevelSave[L] (0x1020C2F8) +0x400 set, +0x402 clear, L not 0, Fastoon not with Fastoon II")
 
 
 def check_tod_cutscenes(ok, elf):

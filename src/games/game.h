@@ -634,6 +634,43 @@ struct menu_native {
 	 */
 	u32 play_state;
 	u32 glue_loaded;
+	/*
+	 * Revision 1.29, the game's own planet picker (menu.c, the root's
+	 * Planets row): NULL for none, and the Planets row opens the page of
+	 * planets as for every game.
+	 */
+	const struct menu_picker *picker;
+};
+
+/*
+ * Revision 1.29 (pending): the game's own planet picker, for a menu that is
+ * the game's own UI (Tools of Destruction's galactic map, docs/tod-menu.md
+ * 16). The cross on the root's Planets row closes the game's menu as a load
+ * does (a CLOSES action) and, once the game plays, has the core write the
+ * pokes (each byte's own value kept first) and send `chunk` to the gameplay
+ * VM, which opens the picker the way the game's own scripts do. While
+ * screen_addr holds `state` the picker is up; once it has gone the core puts
+ * back every poked byte that still holds what it wrote, and reads `pick_addr`
+ * (s32, a planet id, -1 for none): a pick is the game's own load, already
+ * under way; none (Back) opens the menu again on its root, the cursor on
+ * Planets, whose row then opens the page of every planet once. A picker
+ * that never comes up (a few seconds) is given up the same way, the page of
+ * planets opening instead.
+ */
+struct menu_poke {
+	u32 addr;               /* the first byte */
+	u16 stride;             /* bytes between two */
+	u8  count;
+	u8  value;              /* written while the picker is up */
+};
+
+struct menu_picker {
+	const char *name;       /* for the log and the console's messages ("the galactic map") */
+	const char *chunk;      /* the gameplay VM's Lua that opens it */
+	u32 state;              /* screen_addr's value while it is up */
+	u32 pick_addr;          /* s32: what it picked, -1 none, read once it has gone */
+	const struct menu_poke *pokes;
+	u8  npokes;
 };
 #endif
 

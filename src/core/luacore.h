@@ -70,6 +70,25 @@ int  lua_core_status(u8 *reply, u32 cap, u32 *len);
 int  lua_core_helper_ready(void);
 int  lua_core_menu_glue(void);
 int  lua_core_menu_diag(void);
+
+/*
+ * Revision 1.29 (pending), the game's own planet picker (menu.c, struct
+ * menu_picker; Tools of Destruction's galactic map): a chunk of the core's
+ * own for the gameplay VM, the way the glue goes to the pause menu's.
+ *
+ * lua_core_gameplay_ready: ST_OK when one could go now, the helper in and a
+ * level's lua_State up (ST_NOT_FOUND without one). Nothing is written, and
+ * on a console nothing is installed (the menu's install did that).
+ *
+ * lua_core_gameplay_send: the chunk sent (ST_OK, its sequence number in
+ * *seq), ST_BUSY while another request is out, else why not.
+ *
+ * lua_core_gameplay_result: 0 while request `seq` is out, 1 once it ran
+ * (status OK), 2 once it failed or was lost. A failure is logged.
+ */
+int  lua_core_gameplay_ready(void);
+int  lua_core_gameplay_send(const char *chunk, u32 len, u32 *seq);
+int  lua_core_gameplay_result(u32 seq);
 #endif
 
 #ifdef QWARK_EMULATOR
