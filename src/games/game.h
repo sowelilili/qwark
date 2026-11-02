@@ -104,35 +104,6 @@ struct game_unlock {
 };
 
 /*
- * Revision 1.28, LEVELFLAGS_NAMES: names for the bits of the region
- * levelflags_get returns, for a game whose flags are named one by one (ToD's
- * GLOBAL_FLAG_ enum). `bit` is the bit's place in that region, byte bit >> 3,
- * mask 1 << (bit & 7); `number` is the game's own number for the flag; `group`
- * indexes `groups`, whose `planet` is the PLANET_LIST id the group belongs to,
- * LEVELFLAG_NO_PLANET for none. Static data, in the game's memory.
- */
-#define LEVELFLAG_NO_PLANET 0xFFu
-
-struct levelflag_group {
-	u8 planet;
-	const char *name;
-};
-
-struct levelflag_name {
-	u16 bit;
-	u16 number;
-	u8 group;
-	const char *name;
-};
-
-struct levelflag_names {
-	const struct levelflag_group *groups;
-	u8 ngroups;
-	const struct levelflag_name *flags;
-	u16 nflags;
-};
-
-/*
  * Protocol 1.3. One of UNLOCK_LIST's four value slots, as this game uses it.
  * Every game returns exactly four, in slot order; a slot the game never touches
  * has a NULL or empty name and kind UNLOCK_KIND_FLAG. `max` bounds a number
@@ -557,15 +528,6 @@ struct game_api {
 	 */
 	const struct lh_desc *(*lua_desc)(void);
 
-	/*
-	 * Revision 1.28: the names of the level flags' bits, for
-	 * LEVELFLAGS_NAMES (struct levelflag_names above). NULL where the flags
-	 * have no names, which is every game but ToD; the op then answers
-	 * UNSUPPORTED and a client shows the bytes as before. The answer is the
-	 * game's memory, so it is asked under the core lock, through the ring.
-	 */
-	const struct levelflag_names *(*levelflag_names)(void);
-
 #if QWARK_HAS_TOD
 	/*
 	 * Revision 1.28: a savefile helper that is the game's own save
@@ -575,14 +537,6 @@ struct game_api {
 	 * is set. Not in a release module, which has no ToD.
 	 */
 	const struct sf_driver *savefile_driver;
-
-	/*
-	 * Revision 1.29 (pending): DEBUG_TEXT, the game's debug pages
-	 * (proto.h): writes the whole reply for `page` (0xFF the list) into out,
-	 * `cap` bytes, and its length into *len. Read only, on the tick thread,
-	 * under the core lock. NULL for a game with none, every game but ToD.
-	 */
-	int (*debug_text)(u8 page, u8 *out, u32 cap, u32 *len);
 
 	/*
 	 * Revision 1.29 (pending): a console menu that is the game's own UI

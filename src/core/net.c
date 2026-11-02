@@ -829,51 +829,6 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		cmd->status = want == byte ? ST_OK : (u16)g->levelflags_set(req[0], (u16)(bit >> 3), want);
 		break;
 	}
-
-	/*
-	 * Revision 1.28: u8 ngroups, LevelFlagGroup[ngroups] (u8 planet,
-	 * char[23] name), u16 n, LevelFlagName[n] (u16 bit, u16 number, u8 group,
-	 * u8 len, char name[len]).
-	 */
-	case OP_LEVELFLAGS_NAMES: {
-		const struct game_api *g = session_game();
-		const struct levelflag_names *t;
-		u32 off = 0, need;
-		u16 i;
-
-		if (g == NULL || g->levelflag_names == NULL || (t = g->levelflag_names()) == NULL) {
-			cmd->status = ST_UNSUPPORTED;
-			break;
-		}
-		need = 1u + (u32)t->ngroups * LEVELFLAG_GROUP_WIRE_SIZE + 2u;
-		for (i = 0; i < t->nflags; i++) {
-			u32 n = qstrlen(t->flags[i].name);
-			need += LEVELFLAG_NAME_WIRE_HEAD + (n > 255u ? 255u : n);
-		}
-		if (need > cmd->replycap) { cmd->status = ST_FULL; break; }
-
-		reply[off++] = t->ngroups;
-		for (i = 0; i < t->ngroups; i++) {
-			reply[off] = t->groups[i].planet;
-			qput_fixed(reply + off + 1, LEVELFLAG_GROUP_WIRE_SIZE - 1u, t->groups[i].name);
-			off += LEVELFLAG_GROUP_WIRE_SIZE;
-		}
-		be16_put(reply + off, t->nflags);
-		off += 2;
-		for (i = 0; i < t->nflags; i++) {
-			const struct levelflag_name *f = &t->flags[i];
-			u32 n = qstrlen(f->name);
-			if (n > 255u) n = 255u;
-			be16_put(reply + off, f->bit);
-			be16_put(reply + off + 2, f->number);
-			reply[off + 4] = f->group;
-			reply[off + 5] = (u8)n;
-			memcpy(reply + off + LEVELFLAG_NAME_WIRE_HEAD, f->name, n);
-			off += LEVELFLAG_NAME_WIRE_HEAD + n;
-		}
-		cmd->replylen = off;
-		break;
-	}
 #endif
 
 	/*
@@ -1031,24 +986,6 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		if (cmd->status == ST_OK) cmd->replylen = len;
 		break;
 	}
-
-	/*
-	 * Revision 1.29 (pending): the game's debug pages, text it makes from its
-	 * own memory, read only. Outside a game, or for a game with none, UNSUPPORTED.
-	 */
-	case OP_DEBUG_TEXT: {
-		const struct game_api *g = session_game();
-		u32 len = 0;
-
-		if (reqlen < 1) { cmd->status = ST_BAD_ARG; break; }
-		if (g == NULL || g->debug_text == NULL || session_state() != SESSION_INGAME) {
-			cmd->status = ST_UNSUPPORTED;
-			break;
-		}
-		cmd->status = (u16)g->debug_text(req[0], reply, cmd->replycap, &len);
-		if (cmd->status == ST_OK) cmd->replylen = len;
-		break;
-	}
 #endif
 
 	default:
@@ -1099,7 +1036,6 @@ static int op_needs_ring(u16 op)
 	case OP_LEVELFLAGS_SET:
 #if QWARK_HAS_TOD
 	case OP_LEVELFLAGS_BIT:
-	case OP_LEVELFLAGS_NAMES:
 #endif
 	case OP_COMBO_SUSPEND:
 	case OP_SAVEFILE_INFO:
@@ -1113,7 +1049,6 @@ static int op_needs_ring(u16 op)
 #if QWARK_HAS_TOD
 	case OP_LUA_EXEC:
 	case OP_LUA_STATUS:
-	case OP_DEBUG_TEXT:
 #endif
 		return 1;
 	default:

@@ -228,12 +228,12 @@ GAME_VTABLE_rac2	= rac2_game
 GAME_VTABLE_rac3	= rac3_game
 GAME_VTABLE_rac4	= rac4_game
 GAME_VTABLE_tod		= tod_game
-# Revision 1.29 (pending): the pages a module may take, 1 unless given here.
-# Tools of Destruction's test-build module outgrew one page with the cutscene
-# cache (it was 440 bytes under the line before it); the core's memory gate
-# reads the pages from the file (src/core/gamemod.c), and the PRX probe's D4
-# loaded a two-page RX-only module on CFW and HEN.
-GAME_PAGES_tod		= 2
+# Revision 1.29 (pending): the pages a module may take, 1 unless given here
+# (GAME_PAGES_<name>); the core's memory gate reads the pages from the file
+# (src/core/gamemod.c), and the PRX probe's D4 loaded a two-page RX-only module
+# on CFW and HEN. Tools of Destruction's took two with the cutscene cache, and
+# one again once the debug pages went and its level-flag names moved to the
+# client (56,224 of 61,440 bytes).
 GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
 					  src/plat/ps3/game_module.c
 GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c

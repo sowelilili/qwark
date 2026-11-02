@@ -210,14 +210,14 @@ static void test_install(void)
 	      peek8(LM_BOX + MBOX_OFF_CFG_ROWS) == LM_CFG_ROWS && peek8(LM_BOX + MBOX_OFF_CAPS) == LM_CAPS &&
 	      peek8(LM_BOX + MBOX_OFF_RENDERER) == GAME_TOD && (peek32(LM_BOX + 4) & 0xFFFF) == LM_BOX_SIZE,
 	      "the menu's mailbox, written by the core: 32 row slots, 9 at once in the list, 6 on Game Options, Left/Right, back and requests, game 5");
-	check(peek8(LM_STATE + LM_HELP) == 1, "menu.help 1: the Help byte says Trainer");
+	check(peek8(LM_STATE + LM_HELP) == 1, "menu.help 1: the help byte says TRAINER (in Inventory's row)");
 	check(peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) != 0 && (peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) & 1) == 0,
 	      "and the root is posted");
 
 	/* menu.help 0 and back: the byte alone, at once. */
 	config_set_u32("menu.help", 0);
 	tick(8);
-	check(peek8(LM_STATE + LM_HELP) == 0, "menu.help 0: the game's own Help");
+	check(peek8(LM_STATE + LM_HELP) == 0, "menu.help 0: the game's own Inventory row");
 	config_set_u32("menu.help", 1);
 	tick(8);
 	check(peek8(LM_STATE + LM_HELP) == 1, "menu.help 1 again");
@@ -767,7 +767,7 @@ static void test_gate(void)
 	poke32(LM_STATE + LM_WHY, 0);
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
 	tick(4);
-	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options"), "the glue in: said");
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in the pause list for Inventory"), "the glue in: said");
 	host_log_clear();
 	poke32(LM_STATE + LM_NOTE, 0);
 	tick(4);
@@ -803,20 +803,20 @@ static void test_diag(void)
 	host_log_clear();
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN_LIST);
 	tick(4);
-	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options, Game Options met when the "
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in the pause list for Inventory, Game Options met when the "
 	                    "Trainer shows a page there"), "the list in, Game Options not met yet: said");
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_LATE);
 	tick(4);
 	check(host_log_seen("menu: the Trainer met the game's Game Options screen on its slide; its page is in"),
 	      "the Cheats screen met on its slide: said");
 
-	/* No Options list: said, and the look sent, a request for the menu's VM. */
+	/* No pause list: said, and the look sent, a request for the menu's VM. */
 	seq = peek32(mb + LUAMB_OFF_REQ);
 	host_log_clear();
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_NONE);
 	tick(8);
-	check(host_log_seen("menu: the pause menu's glue found no Options list; Help stays the game's"),
-	      "no Options list: said");
+	check(host_log_seen("menu: the pause menu's glue found no pause list; Inventory stays the game's"),
+	      "no pause list: said");
 	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1 && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MENU &&
 	      peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->diag_len &&
 	      memcmp(host_mem_ptr(mb + LUAMB_OFF_CHUNK), d->diag, d->diag_len) == 0,
@@ -1030,7 +1030,7 @@ static void test_room_log(void)
 	poke32(LM_STATE + LM_SHORT, 1);
 	tick(4);
 	check(host_log_seen("menu: the pause menu's Lua pool is short even after a collection (300 blocks left for small "
-	                    "objects, 2 in its largest class); the Trainer stays out of it, Help is the game's"),
+	                    "objects, 2 in its largest class); the Trainer stays out of it, Inventory is the game's"),
 	      "a collection that left the pool short: said, with what was left");
 	host_log_clear();
 	poke32(LM_STATE + LM_SHORT, 2);
@@ -1046,7 +1046,7 @@ static void test_room_log(void)
 	tick(4);
 	poke32(LM_STATE + LM_NOTE, LM_NOTE_IN);
 	tick(4);
-	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: 1024 blocks or more "
+	check(host_log_seen("menu: the pause menu's glue is in: TRAINER in the pause list for Inventory (its Lua pool: 1024 blocks or more "
 	                    "left for small objects, 150 in its largest class)"), "the glue in: said with the pool's room");
 	poke32(LM_STATE + LM_NOTE, 0);
 
@@ -1077,7 +1077,7 @@ static void test_room_log(void)
 	check(peek32(mb + LUAMB_OFF_ACK) == seq + 1 && (s32)peek32(mb + LUAMB_OFF_STATUS) == LUAMB_ST_NO_ROOM &&
 	      peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED, "the helper answers NO_ROOM and runs nothing");
 	check(host_log_seen("menu: the pause menu's glue was not run: its Lua pool is short even after a collection; "
-	                    "Help stays the game's"), "the log says so");
+	                    "Inventory stays the game's"), "the log says so");
 	for (i = 0; i < 4; i++) host_fake_menu_frame();
 	tick(8);
 	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1, "and nothing is sent again in that pause");

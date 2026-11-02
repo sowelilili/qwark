@@ -2168,8 +2168,9 @@ static int native_install(void)
  * the game's own words say the pause's presentation is not up (lh_menu.c,
  * lm_ready): a wait of NATIVE_WAIT_LOG frames is said once, with its reasons.
  * The glue's note, each time it differs from the last one said: the Trainer
- * row is in, or it found no Options list or Cheats screen and leaves the
- * pause menu the game's.
+ * row is in, or it found no pause list or Cheats screen and leaves the
+ * pause menu the game's. Since docs/tod-menu.md 14 the TRAINER row takes the
+ * pause list's Inventory row, not Options' Help.
  *
  * Revision 1.29, the second crash (docs/tod-menu.md 10): the pause menu's Lua
  * pool short even after a full collection, which keeps the helper and the
@@ -2177,7 +2178,7 @@ static int native_install(void)
  * pause with what was left; and what was left beside the glue's "in".
  *
  * Revision 1.29, the third console test (docs/tod-menu.md 11): the glue
- * finds the Options list and the Cheats screen apart, so it says more: the
+ * finds the pause list and the Cheats screen apart, so it says more: the
  * list in with the Cheats screen not met yet, the Cheats screen met late,
  * and no Cheats screen when the Trainer went to its slide. After either
  * failure (no list, no Cheats screen) the helper's look (lh_diag.lua) is
@@ -2203,7 +2204,7 @@ static void native_notes(void)
 			g_native_short_said = 1;
 			g_native_short_loads = loads;
 			plat_log("menu: the pause menu's Lua pool is short even after a collection (%u blocks left for small "
-			         "objects, %u in its largest class); the Trainer stays out of it, Help is the game's",
+			         "objects, %u in its largest class); the Trainer stays out of it, Inventory is the game's",
 			         (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 		}
 	}
@@ -2214,7 +2215,7 @@ static void native_notes(void)
 		} else if (!g_native_waited) {
 			g_native_waited = 1;
 			mem_read_u32(n->why_addr, &why);
-			plat_log("menu: the pause menu is not ready for the Trainer after %u frames (why 0x%X); Help stays the game's",
+			plat_log("menu: the pause menu is not ready for the Trainer after %u frames (why 0x%X); Inventory stays the game's",
 			         (unsigned)waits, (unsigned)why);
 		}
 	}
@@ -2222,16 +2223,16 @@ static void native_notes(void)
 	if (note == g_native_note) return;
 	g_native_note = note;
 	if (note == n->note_in) {
-		plat_log("menu: the pause menu's glue is in: TRAINER in Options (its Lua pool: %u blocks or more left "
+		plat_log("menu: the pause menu's glue is in: TRAINER in the pause list for Inventory (its Lua pool: %u blocks or more left "
 		         "for small objects, %u in its largest class)", (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 	} else if (note == n->note_in_list) {
-		plat_log("menu: the pause menu's glue is in: TRAINER in Options, Game Options met when the Trainer "
+		plat_log("menu: the pause menu's glue is in: TRAINER in the pause list for Inventory, Game Options met when the Trainer "
 		         "shows a page there (its Lua pool: %u blocks or more left for small objects, %u in its largest class)",
 		         (unsigned)(room & 0xFFFFu), (unsigned)(room >> 16));
 	} else if (note == n->note_late) {
 		plat_log("menu: the Trainer met the game's Game Options screen on its slide; its page is in");
 	} else if (note == n->note_none) {
-		plat_log("menu: the pause menu's glue found no Options list; Help stays the game's");
+		plat_log("menu: the pause menu's glue found no pause list; Inventory stays the game's");
 		native_diag_want(1);
 	} else if (note == n->note_noch) {
 		plat_log("menu: the Trainer found no Game Options screen on its slide and went back to the pause's list");

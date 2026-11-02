@@ -4266,7 +4266,7 @@ def exercise_game(c, sim, spec, udp=None):
         check(status == ST_BAD_ARG, "%s: a bit past the region is BAD_ARG" % name, status)
 
     status, _ = c.call(OP_LEVELFLAGS_NAMES)
-    check(status == ST_UNSUPPORTED, "%s: LEVELFLAGS_NAMES is UNSUPPORTED, its flags have no names" % name, status)
+    check(status == ST_UNKNOWN_OP, "%s: LEVELFLAGS_NAMES, retired, is UNKNOWN_OP" % name, status)
 
     # -------------------------------------------------------- FEATURE_SET
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", spec["value_id"], 4242))
@@ -5393,35 +5393,10 @@ def wait_game(c, game, timeout=6.0):
     return False, info
 
 
-def parse_levelflag_names(body):
-    """LEVELFLAGS_NAMES: ([(planet, name)], [(bit, number, group, name)])."""
-    ngroups = body[0]
-    groups = [(body[1 + 24 * i], body[2 + 24 * i:25 + 24 * i].split(b"\0")[0].decode()) for i in range(ngroups)]
-    off = 1 + 24 * ngroups
-    n = struct.unpack(">H", body[off:off + 2])[0]
-    off += 2
-    flags = []
-    for _ in range(n):
-        bit, number, group, ln = struct.unpack(">HHBB", body[off:off + 6])
-        flags.append((bit, number, group, body[off + 6:off + 6 + ln].decode()))
-        off += 6 + ln
-    return groups, flags, off == len(body)
-
-
 def smoke_tod_level_flags(c):
-    """ToD's level flags: one bit array, named, set a bit at a time, reset a planet at a time."""
-    status, body = c.call(OP_LEVELFLAGS_NAMES)
-    flags = []
-    if check(status == ST_OK, "ToD: LEVELFLAGS_NAMES answers", status):
-        groups, flags, whole = parse_levelflag_names(body)
-        check(whole and len(groups) == 20 and groups[0] == (0, "Metropolis") and groups[19] == (0xFF, "Other"),
-              "ToD: 20 groups, the 19 planets then Other", groups[:2] + groups[-1:])
-        check(len(flags) == 292 and sorted(f[1] for f in flags) == list(range(292)),
-              "ToD: 292 flags, every number once", len(flags))
-        byname = {f[3]: f for f in flags}
-        f = byname.get("LVL_COBALIA_BRIDGE_EXTENDED")
-        check(f is not None and f[1] == 39 and f[2] == 1 and f[0] == 3 * 8 + 7,
-              "ToD: 39 is Cobalia's, byte 3's top bit", f)
+    """ToD's level flags: one bit array, set a bit at a time, reset a planet at a time (the names are the client's)."""
+    status, _ = c.call(OP_LEVELFLAGS_NAMES)
+    check(status == ST_UNKNOWN_OP, "ToD: LEVELFLAGS_NAMES is retired (revision 1.29): UNKNOWN_OP", status)
     TOD_LF = 0x10211398
     mem_write(c, TOD_LF, bytes(40))
     status, body = c.call(OP_LEVELFLAGS_GET, bytes([0]))
@@ -5684,36 +5659,10 @@ def smoke_rpcs3_tod_savefile(c, pine):
     check(info is not None and info["pending"] == 0 and info["error"] == 0, "rpcs3: and the RESTORE settles", info)
 
 
-# Revision 1.29 (pending): DEBUG_TEXT, ToD's level cache pages (src/games/tod_cache.c).
+# Revision 1.29: DEBUG_TEXT (0x00E8), ToD's level cache pages, is retired and never reused.
 OP_DEBUG_TEXT = 0x00E8
 TOD_PREFETCH = 0x1037A704
 TOD_FIOS_CACHE = 0x106ACBA4
-
-
-def debug_page_text(body):
-    n = struct.unpack(">H", body[:2])[0]
-    return body[4:4 + n].decode("ascii", "replace"), len(body) == 4 + n
-
-
-def smoke_tod_debug_text(c):
-    """DEBUG_TEXT: the page list, then page 0 with the warmer idle and page 1 with no cache yet."""
-    status, body = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
-    if check(status == ST_OK and len(body) == 1 + 2 * 24, "ToD: DEBUG_TEXT lists its pages", (status, len(body))):
-        titles = [(body[1 + 24 * i], body[2 + 24 * i:25 + 24 * i].split(b"\0")[0].decode()) for i in range(body[0])]
-        check(titles == [(0, "Now"), (1, "Cache")], "ToD: Now, and Cache flagged SLOW", titles)
-    mem_write(c, TOD_PREFETCH + 0x48, struct.pack(">I", 0))
-    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
-    status, body = c.call(OP_DEBUG_TEXT, bytes([0]))
-    text, whole = debug_page_text(body) if status == ST_OK else ("", False)
-    check(status == ST_OK and whole and "Warmer:" in text and "idle: every file read" in text and "Save thread:" in text,
-          "ToD: page 0 shows the warmer, idle, and the save thread", (status, text[:200]))
-    mem_write(c, TOD_FIOS_CACHE, struct.pack(">I", 0))
-    status, body = c.call(OP_DEBUG_TEXT, bytes([1]))
-    text, whole = debug_page_text(body) if status == ST_OK else ("", False)
-    check(status == ST_OK and whole and "not set up" in text, "ToD: page 1 says when the cache is not set up",
-          (status, text[:120]))
-    status, _ = c.call(OP_DEBUG_TEXT, bytes([2]))
-    check(status == ST_BAD_ARG, "ToD: a page past the list is BAD_ARG", status)
 
 
 # Revision 1.29 (pending): the cutscene cache (src/games/tod_cache.c), ids 19..21, readout 3.
@@ -5727,8 +5676,8 @@ def tod_cc_word(c):
 
 
 def smoke_tod_cutscene_cache(c, features):
-    """Cache cutscenes over the wire: Stratus City's sound, then Fastoon's, to the idle warmer, then ahead of its
-    own slot; the status readout."""
+    """Cache cutscenes over the wire: Cobalia's sound, then Stratus City's, then Fastoon's, to the idle warmer,
+    then ahead of its own slot; the status readout."""
     by_id = dict((f["id"], f) for f in features) if features else {}
     f19, f20, f21 = by_id.get(19), by_id.get(20), by_id.get(21)
     check(f19 is not None and f19["label"] == "Cache cutscenes" and f19["kind"] == 1 and f19["readout"] == 3 and
@@ -5737,11 +5686,11 @@ def smoke_tod_cutscene_cache(c, features):
     check(f20 is not None and f20["label"] == "Cache cutscenes on reset" and f20["flags"] & 0x12 == 0 and
           f21 is not None and f21["label"] == "Disable cutscene caching" and f21["flags"] & 0x12 == 0,
           "ToD: 20 Cache cutscenes on reset and 21 Disable cutscene caching, toggles, not LIVE", (f20, f21))
-    # game.toc's level table, fastoon and stratus city; gameplay; the warmer idle.
+    # game.toc's level table, cobalia, fastoon and stratus city; gameplay; the warmer idle.
     mem_write(c, TOD_ARCHIVE_TOC, struct.pack(">I", TOD_CC_TOC))
     mem_write(c, TOD_CC_TOC + 0x28, struct.pack(">I", TOD_CC_LEVELS))
-    mem_write(c, TOD_CC_LEVELS - 4, struct.pack(">I", 2))
-    for i, (name, size) in enumerate((("fastoon", 215391833), ("stratus city", 278255092))):
+    mem_write(c, TOD_CC_LEVELS - 4, struct.pack(">I", 3))
+    for i, (name, size) in enumerate((("cobalia", 318591664), ("fastoon", 215391833), ("stratus city", 278255092))):
         mem_write(c, TOD_CC_STR + 0x40 * i, name.encode() + b"\0")
         mem_write(c, TOD_CC_STR + 0x100 + 0x80 * i, b"/packed/levels/x/level_uncached.psarc\0")
         rec = struct.pack(">I", TOD_CC_STR + 0x40 * i) + bytes(0x14) + \
@@ -5759,17 +5708,23 @@ def smoke_tod_cutscene_cache(c, features):
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
-    fastoon, stratus = TOD_CC_LEVELS + 0x18, TOD_CC_LEVELS + 0x40 + 0x18
-    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
-          mem_read_u32(c, TOD_PREFETCH + 0x48) == stratus and mem_read_u32(c, TOD_PREFETCH + 0x30) == 9716 and
-          mem_read_u32(c, TOD_PREFETCH + 0x34) == 66944500 and mem_read_u32(c, TOD_PREFETCH + 0x24) == 1,
-          "ToD: Cache cutscenes: the idle warmer has Stratus City's sound, readout 3 says caching Stratus City",
+    cobalia, fastoon, stratus = TOD_CC_LEVELS + 0x18, TOD_CC_LEVELS + 0x40 + 0x18, TOD_CC_LEVELS + 0x80 + 0x18
+    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 3 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == cobalia and mem_read_u32(c, TOD_PREFETCH + 0x30) == 10928 and
+          mem_read_u32(c, TOD_PREFETCH + 0x34) == 69919408 and mem_read_u32(c, TOD_PREFETCH + 0x24) == 1,
+          "ToD: Cache cutscenes: the idle warmer has Cobalia's sound first, readout 3 says caching Cobalia",
           (status, hex(word or 0), hex(mem_read_u32(c, TOD_PREFETCH + 0x48))))
-    mem_write(c, TOD_PREFETCH + 0x30, struct.pack(">I", 9716 + 66934784 // 2))
+    mem_write(c, TOD_PREFETCH + 0x30, struct.pack(">I", 10928 + 69908480 // 2))
     module_sleep(c, 0.1)
     word = tod_cc_word(c)
     check(word is not None and 49 <= (word >> 16) & 0xFF <= 51, "ToD: half way, 50%", hex(word or 0))
     mem_write(c, TOD_PREFETCH + 0x48, bytes(4))                     # the warmer done with it
+    module_sleep(c, 0.2)
+    word = tod_cc_word(c)
+    check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
+          mem_read_u32(c, TOD_PREFETCH + 0x48) == stratus and mem_read_u32(c, TOD_PREFETCH + 0x30) == 9716 and
+          mem_read_u32(c, TOD_PREFETCH + 0x34) == 66944500, "ToD: then Stratus City's", hex(word or 0))
+    mem_write(c, TOD_PREFETCH + 0x48, bytes(4))
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
     check(word is not None and word >> 28 == 2 and (word >> 24) & 15 == 1 and
@@ -5786,7 +5741,7 @@ def smoke_tod_cutscene_cache(c, features):
     check(status == ST_OK and status2 == ST_BUSY and word is not None and word >> 28 == 4 and (word >> 24) & 15 == 4,
           "ToD: with Disable cutscene caching on, the trigger is BUSY and the readout says why", (status, status2))
     c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 0))
-    smoke_tod_cc_ahead(c, fastoon, stratus)
+    smoke_tod_cc_ahead(c, cobalia, fastoon, stratus)
     mem_write(c, TOD_ARCHIVE_TOC, bytes(4))
 
 
@@ -5797,7 +5752,7 @@ def tod_cc_step(c, desc, end):
     module_sleep(c, 0.15)
 
 
-def smoke_tod_cc_ahead(c, fastoon, stratus):
+def smoke_tod_cc_ahead(c, cobalia, fastoon, stratus):
     """Revision 1.29: Cache cutscenes ahead of the warmer's own slot 0, its read cut, and the slot given back."""
     game, mib = TOD_CC_STR + 0x800, 0x100000
     mem_write(c, game, struct.pack(">II", TOD_CC_STR + 0x900, 8 * mib))
@@ -5808,12 +5763,16 @@ def smoke_tod_cc_ahead(c, fastoon, stratus):
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
     module_sleep(c, 0.2)
     word = tod_cc_word(c)
-    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 2 and
-          mem_read_u32(c, TOD_PREFETCH + 0x10) == stratus and mem_read_u32(c, TOD_PREFETCH) == 66944500 and
+    check(status == ST_OK and word is not None and word >> 28 == 2 and (word >> 24) & 15 == 3 and
+          mem_read_u32(c, TOD_PREFETCH + 0x10) == cobalia and mem_read_u32(c, TOD_PREFETCH) == 69919408 and
           mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0 and mem_read_u32(c, TOD_PREFETCH + 0x34) == 2 * mib and
           mem_read_u32(c, TOD_PREFETCH + 0x48) == game,
-          "ToD: Cache cutscenes with the warmer on its own slot 0: Stratus City's sound in the slot, state 0, "
+          "ToD: Cache cutscenes with the warmer on its own slot 0: Cobalia's sound in the slot, state 0, "
           "the slot's read cut 1 MiB on", (status, hex(word or 0), hex(mem_read_u32(c, TOD_PREFETCH + 0x10))))
+    tod_cc_step(c, cobalia, 69919408)
+    check(mem_read_u32(c, TOD_PREFETCH + 0x10) == stratus and mem_read_u32(c, TOD_PREFETCH) == 66944500 and
+          mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0,
+          "ToD: Cobalia's read: Stratus City's next in the same slot", hex(mem_read_u32(c, TOD_PREFETCH + 0x10)))
     tod_cc_step(c, stratus, 66944500)
     check(mem_read_u32(c, TOD_PREFETCH + 0x10) == fastoon and mem_read_u32(c, TOD_PREFETCH) == 52633177 and
           mem_read_u32(c, TOD_PREFETCH + 0x4C) == 0,
@@ -5838,7 +5797,7 @@ def smoke_tod(c, sim):
     ok, _ = wait_state(c, SESSION_XMB)
     check(ok, "ToD: the last game quits")
     status, _ = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
-    check(status == ST_UNSUPPORTED, "DEBUG_TEXT outside a game is UNSUPPORTED", status)
+    check(status == ST_UNKNOWN_OP, "DEBUG_TEXT, retired (revision 1.29), is UNKNOWN_OP", status)
     sim.send("fakelua off")
     sim.send("boot %s tod" % TOD_TITLE)
     ok, info = wait_game(c, 5)
@@ -5882,7 +5841,8 @@ def smoke_tod(c, sim):
               "ToD: 43 rows, Owned, Level and Ammo", (len(rows), fields))
 
     smoke_tod_level_flags(c)
-    smoke_tod_debug_text(c)
+    status, _ = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
+    check(status == ST_UNKNOWN_OP, "ToD: DEBUG_TEXT, retired, is UNKNOWN_OP in a game too", status)
     smoke_tod_cutscene_cache(c, features)
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
@@ -6038,7 +5998,7 @@ TOD_LM_WHY, TOD_LM_WAITS = 0x24, 0x28        # the crash fix: why the helper kep
 TOD_LM_WHY_FIRST = 0x004
 TOD_LM_ROOM, TOD_LM_SHORT = 0x30, 0x34     # the second crash: the pause menu's Lua pool, and collections that left it short
 TOD_LM_WHY_MEMORY = 0x080
-TOD_LM_NOTE, TOD_LM_NOTE_NONE = 0x2C, 2     # the third console test: the glue's note, "no Options list"
+TOD_LM_NOTE, TOD_LM_NOTE_NONE = 0x2C, 2     # the third console test: the glue's note, "no pause list"
 TOD_LUA_MB = 0x008CA000
 TOD_LUA_CAVE = (0x00867360, 0x00870000)
 TOD_LUA_SITES = {0x004C461C: 0x4BDCC909, 0x0068F8F8: 0x4E800020, 0x000242B0: 0x4BFED721, 0x004C5ABC: 0x4BDA1825}
@@ -6076,7 +6036,7 @@ def smoke_tod_menu(c, sim):
           body[10] == 9 and body[11] == 0x0D and body[14] == 5 and body[15] == 6,
           "ToD menu: 32 row slots of 0x40, a MAIN page 9 at once (the pause's list), a CONFIG page 6 (Game Options), "
           "Left/Right, back, requests, game 5", body.hex() if status == ST_OK else status)
-    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 1, "ToD menu: the Help byte says Trainer")
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 1, "ToD menu: the help byte says TRAINER (in place of Inventory)")
 
     page = menu_page(c, box, size)
     check(page is not None and page[0] % 2 == 0 and page[2] == "Trainer" and
@@ -6135,7 +6095,7 @@ def smoke_tod_menu(c, sim):
     check(status == ST_OK and struct.unpack(">i", body[:4])[0] == 0 and body[12:21] == b"Lua 5.0.2",
           "ToD menu: LUA_EXEC flags 1 runs in the pause menu's VM", (status, body[:24]))
 
-    # The third console test: the glue's look found no Options list, so qwark sends the helper's look, once.
+    # The third console test: the glue's look found no pause list, so qwark sends the helper's look, once.
     req = mem_read_u32(c, TOD_LUA_MB + 0x08)
     mem_write(c, TOD_MENU_STATE + TOD_LM_NOTE, struct.pack(">I", TOD_LM_NOTE_NONE))
     wait_while(c, lambda: mem_read_u32(c, TOD_LUA_MB + 0x0C) != req + 1, 3.0, 0.05)
@@ -6237,7 +6197,7 @@ def smoke_tod_menu(c, sim):
     status, _ = c.call(OP_MENU_HELP, bytes([0]))
     check(status == ST_OK, "ToD menu: MENU_HELP 0", status)
     wait_while(c, lambda: mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 != 0, 1.0, 0.05)
-    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 0, "ToD menu: the Help byte says the game's Help")
+    check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 0, "ToD menu: the help byte says the game's Inventory")
     c.call(OP_MENU_HELP, bytes([1]))
     sim.send("fakelua off")
 
@@ -6330,6 +6290,11 @@ def smoke_tod_autosplit(c, sim):
         {"what": "and no START while the load lasts",
          "then": [(TOD_LOAD_TIER, b"\x01")],
          "absent": (AUTOSPLIT_START, 0)},
+        {"what": "Metropolis up before Level_Enter's fade, the fade left clear (0.0, 0), is not the start "
+                 "(revision 1.29: the console's START came half a second early)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, zero), (0x30000000 + TOD_FADE_TARGET, zero),
+                  (TOD_LUA_STATE, lua_state), (TOD_LOAD_JOB, bytes(4))],
+         "absent": (AUTOSPLIT_START, 0)},
         {"what": "Metropolis up with the screen still held black is not the start yet",
          "then": [(TOD_LUA_STATE, lua_state), (0x30000000 + TOD_FADE_TARGET, one), (TOD_LOAD_JOB, bytes(4))],
          "absent": (AUTOSPLIT_START, 0)},
@@ -6348,9 +6313,12 @@ def smoke_tod_autosplit(c, sim):
         {"what": "Metropolis loaded again out of Metropolis on the fresh file is a RESET",
          "then": load_begins,
          "expect": (AUTOSPLIT_RESET, 0)},
-        {"what": "and its fade in, past halfway, the START",
+        {"what": "its level up, the fade in from black under way, not yet",
          "poke": [(TOD_LOAD_TIER, b"\x01")],
-         "then": level_enters(lua_state) + [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.3))],
+         "then": level_enters(lua_state),
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "and past halfway, the START",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.3))],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a Metropolis save with the flag set is no start",
          "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_LOAD_TIER, b"\x00"), (TOD_FRONT_END, b"\x01"),

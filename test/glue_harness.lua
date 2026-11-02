@@ -1,7 +1,7 @@
 -- Tools of Destruction's console menu (revision 1.29, pending): the pause
 -- menu's Lua glue (src/games/luahelper/lh_glue.lua) and the helper's look
 -- (lh_diag.lua), run by a real Lua against a pause menu made of stand-ins
--- (test/test_glue.py, docs/tod-menu.md 11 and 12).
+-- (test/test_glue.py, docs/tod-menu.md 11, 12 and 14).
 --
 -- The stand-ins are what the glue meets in the game, as the decompiled
 -- pause menu (built/anark/pause/built.dat) has them, their methods written
@@ -15,7 +15,10 @@
 --                   defines it (here: the slide noted; the next frame's
 --                   update activates the slide's behaviours, a behaviour
 --                   that joins late joining then);
---   ListUpdater     the pause's list: menuData as SetupMenus builds it,
+--   ListUpdater     the pause's list, on its main menu: menuData as
+--                   SetupMenus builds it (Inventory the main list's fourth
+--                   row and the arena and space lists' fifth, Help
+--                   Options' fourth),
 --                   handleSelect, handleBack, onMenuBack, ActivateItem, and
 --                   its ScrollableList (resetList, setSelectedIndex, the
 --                   cursor's moves, nine rows); its parent the list's
@@ -171,8 +174,9 @@ local function qw(op, a, b, c)
 end
 
 -- A fresh pause, as the case wants it: c.lu the list registered from frame c.lu (nil: never); c.opt Game Options
--- registered at load (true), on its slide's first showing ("late") or never (nil); c.helpat menuData's menu and row
--- for Help; c.noscene only Presentation.scene; c.slide the scene's slide at the start (3, the list).
+-- registered at load (true), on its slide's first showing ("late") or never (nil); c.invat menuData's menus and rows
+-- for Inventory ({ {1, 4}, {4, 5}, {5, 5} }, as SetupMenus has them); c.noscene only Presentation.scene; c.slide the
+-- scene's slide at the start (3, the list).
 local function world(c)
   for _, k in ipairs({ "qwark_frame", "qwark_quit", "qwark_state", "scene", "Presentation", "Node", "SetLocalizedText",
                        "EffectEvent", "is_cheat_unlocked", "get_cheat_desc", "get_current_skillpoints",
@@ -200,9 +204,10 @@ local function world(c)
   end
 
   -- The pause's list (ListUpdater), after the game's chunk: SetupMenus' menuData, its handlers, its ScrollableList.
-  local lu, luf = mk({ name = "ListUpdater", OPTIONS_MENU_INDEX = 2, currentSlide = 7, currentMenuIndex = 2,
+  local lu, luf = mk({ name = "ListUpdater", OPTIONS_MENU_INDEX = 2, currentSlide = 3, currentMenuIndex = 1,
                        currentIndex = 1, MAIN_MENU_INDEX = 1 })
   luf.onHelp = function(self) scene:goToSlide(12) end
+  luf.onInventory = function(self) scene:goToSlide(3) end
   luf.onSave = function(self) W.saved = true end
   luf.handleSelect = function(self)
     local item = self.menuData[self.currentMenuIndex][self.currentIndex]
@@ -226,16 +231,25 @@ local function world(c)
     self.listBehavior:updateAllItems()
   end
   W.lcomp = mk({ name = "list" })
-  W.lslide = 7
+  W.lslide = 3
   luf.parent = W.lcomp
   local md = { {}, {}, {}, {}, {} }
   for i = 1, 8 do md[1][i] = { 32 + i, luf.onSave } end
   for i = 1, 5 do md[3][i] = { 47 + i, luf.onSave } end
-  local hm, hr = (c.helpat or { 2, 4 })[1], (c.helpat or { 2, 4 })[2]
   for i = 1, 6 do md[2][i] = { 41 + i, luf.onSave } end
-  md[hm][hr] = { 45, luf.onHelp }
+  for i = 1, 9 do md[4][i] = { 31 + i, luf.onSave } end
+  for i = 1, 9 do md[5][i] = { 31 + i, luf.onSave } end
+  md[2][4] = { 45, luf.onHelp }
+  local inv = c.invat or { { 1, 4 }, { 4, 5 }, { 5, 5 } }
+  W.inv = {}
+  for k, at in ipairs(inv) do
+    md[at[1]][at[2]] = { 36, luf.onInventory }
+    W.inv[k] = md[at[1]][at[2]]
+  end
+  W.invat = inv
+  W.helprow = md[2][4]
   luf.menuData = md
-  W.lu, W.luf, W.md, W.hm, W.hr = lu, luf, md, hm, hr
+  W.lu, W.luf, W.md, W.hm, W.hr = lu, luf, md, inv[1][1], inv[1][2]
   W.btn = {}
   for i = 1, 9 do W.btn[i] = text("") end
   local ls, lsf = mk({ name = "listBehavior", listUpdater = lu, selectedItemIndex = 1, hasFocus = true })
@@ -405,8 +419,16 @@ local function hasnote(n)
   return false
 end
 
-local function helprow()
+local function invrow()
   return W.md[W.hm][W.hr]
+end
+
+-- Every Inventory row the game's own item again, and Options' Help untouched.
+local function gamesrows()
+  for k, at in ipairs(W.invat) do
+    if W.md[at[1]][at[2]] ~= W.inv[k] then return false end
+  end
+  return W.md[2][4] == W.helprow and W.helprow[1] == 45
 end
 
 local function lastev()
@@ -416,7 +438,7 @@ end
 -- The game's own list and Game Options, as the game left them: every method and field the glue may put.
 local function gameslists()
   if W.luf.onMenuBack == nil or W.luf.currentMenuIndex == 6 or W.md[6] ~= nil then return false end
-  if W.luf.currentSlide ~= 7 or W.lslide ~= 7 then return false end
+  if W.luf.currentSlide ~= 3 or W.lslide ~= 3 then return false end
   for i = 1, 6 do
     if W.orows[i].opacity ~= nil and W.orows[i].opacity ~= 100 then return false end
   end
@@ -439,7 +461,7 @@ local function btns(n)
   return table.concat(t, ",")
 end
 
--- TRAINER from Options, as the player does it: the cursor on its row, the cross.
+-- TRAINER from the main list, as the player does it: the cursor on its row, the cross.
 local function trainer()
   W.luf.currentMenuIndex = W.hm
   W.ls:setSelectedIndex(W.hr, true)
@@ -453,19 +475,23 @@ local function cases(name)
   world({ lu = 0, opt = true })
   frames(1)
   check(W.note == 1, name .. ": list and Game Options at load: in, on the first look")
-  check(helprow()[1] == "TRAINER" and type(helprow()[2]) == "function", name .. ": Options' Help row says TRAINER")
+  check(invrow()[1] == "TRAINER" and type(invrow()[2]) == "function" and W.md[4][5][1] == "TRAINER" and
+        W.md[5][5][1] == "TRAINER", name .. ": the main list's Inventory row says TRAINER, and the arena and space lists'")
+  check(W.md[2][4] == W.helprow and W.helprow[2] == W.luf.onHelp, name .. ": Options' Help row stays the game's")
   W.help = 0
   frames(1)
-  check(helprow()[1] == 45 and helprow()[2] == W.luf.onHelp, name .. ": menu.help 0: the game's Help row again")
+  check(gamesrows() and invrow()[1] == 36 and invrow()[2] == W.luf.onInventory,
+        name .. ": menu.help 0 (In-game menus off): the game's Inventory rows again")
   W.help = 1
   frames(1)
-  check(gameslists() and cheatsuntouched(), name .. ": with the Trainer down nothing of the game's is touched but the Help row")
+  check(invrow()[1] == "TRAINER", name .. ": menu.help 1: TRAINER again")
+  check(gameslists() and cheatsuntouched(), name .. ": with the Trainer down nothing of the game's is touched but the Inventory rows")
 
   -- TRAINER: the root, a MAIN page, in the pause's own list.
   trainer()
   check(W.hstate == 1 and W.luf.currentMenuIndex == 6 and btns(6) == "GAME,CHEATS,MANIPS,PLANETS,UNLOCKS," and
         W.ls.selectedItemIndex == 1 and W.slide == 3, name .. ": TRAINER: the root in the pause's list, capitals, no screen change: " .. btns(6))
-  check(W.lslide == 9 and W.luf.currentSlide == 9, name .. ": the root's five rows: the list's five-row frame, slide 9 (Options' was 7)")
+  check(W.lslide == 9 and W.luf.currentSlide == 9, name .. ": the root's five rows: the list's five-row frame, slide 9 (the main list's was 3)")
   -- A link: the cross is the list's own handleSelect, the row's callback ours.
   W.ls:move(1)
   W.lu:handleSelect()
@@ -534,16 +560,17 @@ local function cases(name)
   page("Trainer", ROOT, 0, 1, 1)
   frames(3)
 
-  -- Triangle at the root: out, the list Options again with the cursor on TRAINER.
+  -- Triangle at the root: out, the main list again in its own frame with the cursor on TRAINER.
   W.lu:handleBack()
-  check(W.hstate == 0 and W.luf.currentMenuIndex == 2 and W.md[6] == nil and W.luf.currentIndex == W.hr and
-        W.gameback == nil and gameslists(), name .. ": Triangle at the root: Options again, the cursor on TRAINER, all the game's")
+  check(W.hstate == 0 and W.luf.currentMenuIndex == 1 and W.md[6] == nil and W.luf.currentIndex == W.hr and
+        W.ls.selectedItemIndex == 4 and btns(4) == "33,34,35,TRAINER" and W.gameback == nil and gameslists(),
+        name .. ": Triangle at the root: the main list again, its eight-row frame (slide 3), the cursor on TRAINER, all the game's")
   check(cheatsuntouched(), name .. ": the Cheats screen still the game's")
 
   -- The game's own screens after a Trainer visit.
   W.ls:setSelectedIndex(1, true)
   W.lu:handleSelect()
-  check(W.saved == true, name .. ": the Options list's own rows work")
+  check(W.saved == true, name .. ": the main list's own rows work")
   W.luf.currentMenuIndex = 2
   W.lu:handleBack()
   check(W.gameback == 1 and W.luf.currentMenuIndex == 1, name .. ": the list's own back is the game's")
@@ -615,8 +642,8 @@ local function cases(name)
         name .. ": its rows ours over the game's")
   -- qwark_quit there: every bit the game's again.
   qwark_quit()
-  check(qwark_frame == nil and gameslists() and helprow()[2] == W.luf.onHelp and cheatsuntouched(),
-        name .. ": qwark_quit on Game Options puts every method, field, title and the Help row back")
+  check(qwark_frame == nil and gameslists() and gamesrows() and cheatsuntouched(),
+        name .. ": qwark_quit on Game Options puts every method, field, title and the Inventory rows back")
 
   -- A Game Options that never comes: the Trainer waits on the slide, then goes back.
   world({ lu = 0 })
@@ -628,7 +655,8 @@ local function cases(name)
   frames(1)
   check(W.note == 3 and W.slide == 1 and W.hstate == 0 and gameslists(), name .. ": 90 frames: back to the list, said, all the game's")
   local out = assert(loadstr(DIAG))()
-  check(string.find(out, "ListUpdater:mh", 1, true) and string.find(out, "cheatHandler:c", 1, true) and
+  check(string.find(out, "ListUpdater:mi", 1, true) and string.find(out, "cheatHandler:c", 1, true) and
+        string.find(out, ",3x4,", 1, true) and string.find(out, "[1:8 T4]", 1, true) and string.find(out, "[4:9 T5]", 1, true) and
         not string.find(out, "optHandler", 1, true) and string.len(out) < 1024, name .. ": the look: the list, no Game Options: " .. out)
 
   -- A page longer than Game Options' window: the cursor at its edge asks for the next.
@@ -649,7 +677,7 @@ local function cases(name)
   -- qwark gone on Game Options: the menu leaves, all the game's, the list back.
   W.on = 0
   frames(1)
-  check(W.hstate == 0 and W.slide == 1 and gameslists() and helprow()[2] == W.luf.onHelp, name .. ": qwark gone: the menu leaves, all the game's")
+  check(W.hstate == 0 and W.slide == 1 and gameslists() and gamesrows(), name .. ": qwark gone: the menu leaves, all the game's")
 
   -- An error in the glue's frame: all the game's before it goes to the helper.
   world({ lu = 0, opt = true })
@@ -660,32 +688,32 @@ local function cases(name)
   W.rows = nil
   ok = pcall(qwark_frame)
   W.rows = CHEATS
-  check(not ok and gameslists() and W.luf.currentMenuIndex == 2 and helprow()[2] == W.luf.onHelp, name .. ": an error: everything the game's first")
+  check(not ok and gameslists() and W.luf.currentMenuIndex == 1 and gamesrows(), name .. ": an error: everything the game's first")
 
   -- The list registered late (its behaviour joined after the glue came).
   world({ lu = 40, opt = true })
   frames(30)
-  check(W.note == nil and helprow()[2] == W.luf.onHelp, name .. ": no list yet: nothing said, Help the game's")
+  check(W.note == nil and gamesrows(), name .. ": no list yet: nothing said, Inventory the game's")
   frames(20)
-  check(W.note == 1 and helprow()[1] == "TRAINER", name .. ": the list joins at frame 40: in by the next look")
+  check(W.note == 1 and invrow()[1] == "TRAINER", name .. ": the list joins at frame 40: in by the next look")
 
-  -- The Help row elsewhere than OPTIONS_MENU_INDEX's fourth: found by its callback.
-  world({ lu = 0, opt = true, helpat = { 3, 2 } })
+  -- The Inventory row elsewhere than the main list's fourth: found by its callback.
+  world({ lu = 0, opt = true, invat = { { 3, 2 } } })
   frames(1)
-  check(W.note == 1 and W.md[3][2][1] == "TRAINER" and W.md[2][4][1] == 45 and W.md[2][4][2] == W.luf.onSave,
-        name .. ": Help at menuData[3][2]: that row is TRAINER, the others untouched")
+  check(W.note == 1 and W.md[3][2][1] == "TRAINER" and W.md[1][4][1] == 36 and W.md[1][4][2] == W.luf.onSave and
+        W.md[2][4][1] == 45, name .. ": Inventory at menuData[3][2]: that row is TRAINER, the others untouched")
 
   -- No global scene, only Presentation.scene.
   world({ lu = 0, opt = true, noscene = true })
   frames(1)
   check(W.note == 1, name .. ": scene not a global: Presentation.scene found")
 
-  -- No list ever: said after 300 frames, Help stays, and the combo opens nothing.
+  -- No list ever: said after 300 frames, Inventory stays, and the combo opens nothing.
   world({ opt = true })
   frames(299)
   check(W.note == nil, name .. ": no list: nothing said before 300 frames")
   frames(1)
-  check(W.note == 2 and helprow()[2] == W.luf.onHelp, name .. ": 300 frames: no list said, Help the game's")
+  check(W.note == 2 and gamesrows(), name .. ": 300 frames: no list said, Inventory the game's")
   W.req = 1
   frames(2)
   check(W.hstate == 0 and W.slide == 3, name .. ": no list: the combo opens nothing")
@@ -696,7 +724,7 @@ local function cases(name)
   world({ lu = 0, opt = true })
   scene, Presentation = nil, nil
   frames(300)
-  check(W.note == 2 and helprow()[2] == W.luf.onHelp, name .. ": no scene: no list said, Help the game's")
+  check(W.note == 2 and gamesrows(), name .. ": no scene: no list said, Inventory the game's")
   out = assert(loadstr(DIAG))()
   check(string.find(out, " s=nnn", 1, true) and string.find(out, "reg=n", 1, true), name .. ": the look: no scene, no registry: " .. out)
 end

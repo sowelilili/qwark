@@ -1193,11 +1193,9 @@ const struct game_api rac4_game = {
 	&rac4_menu,           /* revision 1.22, round 2 */
 	GAME_FEATURE(R4_FAST_LOADS), /* revision 1.23: the fast-loads combo's toggle */
 	sf_desc_for_game,     /* revision 1.26: the savefile helper the core installs */
-	NULL,                 /* revision 1.27: no Lua */
-	NULL                  /* revision 1.28: no level flag names */
+	NULL                  /* revision 1.27: no Lua */
 #if QWARK_HAS_TOD
 	, NULL                /* revision 1.28: its helper is code, not a savefile_driver */
-	, NULL                /* revision 1.29: no debug pages */
 	, NULL                /* revision 1.29: its menu is a renderer of ui.pak's, not the game's own */
 #endif
 };

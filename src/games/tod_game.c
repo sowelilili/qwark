@@ -444,8 +444,9 @@ static const struct game_menu tod_menu = {
  * Revision 1.29: the menu's renderer is the game's own pause menu, through
  * the Lua helper's pause-menu half and its glue (src/games/luahelper/lh_menu.h).
  * The mailbox is the console menu's, 32 row slots, a MAIN page nine rows at
- * once (the pause's list) and a CONFIG page six (Game Options); Trainer
- * replaces the Options list's Help row; the pause menu's state, the state stack and the
+ * once (the pause's list) and a CONFIG page six (Game Options); TRAINER
+ * takes the pause list's Inventory row (menu.help, the help byte, still says
+ * whether); the pause menu's state, the state stack and the
  * game state say when no menu can be up.
  */
 static const struct menu_native tod_menu_native = {
@@ -520,8 +521,6 @@ const struct game_api tod_game = {
 	GAME_FEATURE(TF_FAST_LOADS),   /* the fast-loads combo's toggle */
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
-	tod_levelflag_names,  /* revision 1.28: LEVELFLAGS_NAMES */
 	&tod_sf_driver,       /* revision 1.28: the save system, driven by data */
-	tod_debug_text,       /* revision 1.29: DEBUG_TEXT, the level cache's pages (tod_cache.c) */
 	&tod_menu_native      /* revision 1.29: the console menu is the game's pause menu */
 };

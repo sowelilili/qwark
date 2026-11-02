@@ -201,14 +201,27 @@ static int movie_busy(u32 state)
 /*
  * The fade in that shows Ratchet is halfway (revision 1.29, the user's timing
  * of 2026-10-31): the screen fade's target reads 0.0, which ScreenFade_StartIn
- * puts there as Level_Enter starts its one second in from black (rate 1.0
- * from 1.0), and its progress has come down to 0.5 or less, half a second
- * later. The test is "at most", not "equal", so a tick that misses the
- * crossing still sees it, a little late, and a fade the game starts again
- * (Set(1.0), StartIn) is simply waited for again. A -0.0 is 0.0 too, and a
- * negative progress is below 0.5. Nothing that cannot be read is halfway.
+ * puts there as Level_Enter starts its one second in from black (Set(1.0),
+ * then StartIn(1.0, 0): rate 1.0, no delay), and its progress has come down
+ * to 0.5 or less, half a second of the game's clock later (ScreenFade_update
+ * moves it by min(the rest, dt * rate), linearly; only the overlay's alpha is
+ * eased, (1 - cos(pi p)) / 2, which is 0.5 at p 0.5 too). The test is "at
+ * most", not "equal", so a tick that misses the crossing still sees it, a
+ * little late, and a fade the game starts again (Set(1.0), StartIn) is simply
+ * waited for again. A -0.0 is 0.0 too, and a negative progress is below 0.5.
+ * Nothing that cannot be read is halfway.
+ *
+ * It must be the run's own fade in (revision 1.29, the console's START still
+ * half a second early): the level counts as up (its data in, a lua_State) a
+ * while before Level_Enter's fade calls, and the fade can read clear then,
+ * target 0.0 and progress 0 from the screens before it, which passed this test
+ * at once. So the START waits until the fade in is seen under way first
+ * (`start_armed`): its target 0.0 with the progress above 0.5 (its dark half,
+ * half a second long, which no tick misses), or the progress going down. A
+ * target of 1.0 (black, or fading out) starts the look again, and a fade that
+ * only ever reads clear, a stale one, is never the START.
  */
-static int fade_in_halfway(void)
+static int fade_in_halfway(struct tod_as_state *as)
 {
 	u8 look[TOD_FADE_LOOK_LEN];
 	u32 lo = 0, target, progress;
@@ -217,8 +230,17 @@ static int fade_in_halfway(void)
 	if (mem_read(lo + TOD_FADE_PROGRESS, look, sizeof(look)) != ST_OK) return 0;
 	progress = be32_get(look);
 	target = be32_get(look + (TOD_FADE_TARGET - TOD_FADE_PROGRESS));
-	if ((target & 0x7FFFFFFFu) != 0) return 0;
-	return (progress & 0x80000000u) != 0 || progress <= TOD_FADE_HALF;
+	if ((progress & 0x80000000u) != 0) progress = 0;   /* -0.0 and below: clear */
+	if ((target & 0x7FFFFFFFu) != 0) {
+		as->start_armed = 0;   /* black or fading out: the fade in is still to come */
+		as->start_prog = TOD_AS_NO_PROG;
+		return 0;
+	}
+	if (!as->start_armed &&
+	    (progress > TOD_FADE_HALF || (as->start_prog != TOD_AS_NO_PROG && progress < as->start_prog)))
+		as->start_armed = 1;
+	as->start_prog = progress;
+	return as->start_armed && progress <= TOD_FADE_HALF;
 }
 
 /*
@@ -338,6 +360,8 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	if (as->start_wait == TOD_SW_LOADING && !loading && as->cur_tier != 0 && lua != 0 && front == 0) {
 		as->start_wait = TOD_SW_LEVEL;
 		as->start_lua = lua;
+		as->start_armed = 0;
+		as->start_prog = TOD_AS_NO_PROG;
 	}
 	/* A death before the fade in (a new lua_State, no load) is not the run's level any more. */
 	if (as->start_wait == TOD_SW_LEVEL && lua != as->start_lua) as->start_wait = TOD_SW_NONE;
@@ -372,9 +396,11 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	 * The START (revision 1.29): the run's Metropolis is up and its fade in
 	 * from black, Level_Enter's ScreenFade_StartIn, which shows Ratchet, is
 	 * halfway (2026-10-31: the user's timing, half a second after the fade
-	 * in starts). Only a run's load gets here; a death's fade in never does.
+	 * in starts), and seen under way first, not a clear fade left over from
+	 * before Level_Enter. Only a run's load gets here; a death's fade in never
+	 * does.
 	 */
-	if (as->start_wait == TOD_SW_LEVEL && front == 0 && level == TOD_LEVEL_METROPOLIS && fade_in_halfway()) {
+	if (as->start_wait == TOD_SW_LEVEL && front == 0 && level == TOD_LEVEL_METROPOLIS && fade_in_halfway(as)) {
 		autosplit_emit(AUTOSPLIT_START, 0, 0);
 		as->start_wait = TOD_SW_NONE;
 	}

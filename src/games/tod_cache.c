@@ -1,28 +1,12 @@
 /*
- * Tools of Destruction: the level cache's debug pages (revision 1.29,
- * pending; DEBUG_TEXT, PROTOCOL.md 5.16; REPORT-tod-level-cache.md sections 2
- * and 9), which only read, and, at the end of the file, the cutscene cache's
- * three features (Cache cutscenes, its auto on reset, Disable cutscene
- * caching), which share the pages' level table and block table code and
- * write the warmer and the block table (tod.h).
+ * Tools of Destruction: the cutscene cache's three features (revision 1.29,
+ * pending; PROTOCOL.md 5.17; REPORT-tod-level-cache.md sections 2, 5.A, 10
+ * and 11): Cache cutscenes, its auto on reset and Disable cutscene caching,
+ * which write the level warmer (g_levelPrefetch) and the FIOS block table
+ * (tod.h has the layouts). Its state is tod_game.c's (struct tod_cc_state).
  *
- *   page 0, "Now"    what loads right now: the game state, the level warmer
- *                    (g_levelPrefetch) and its gates, what an opening
- *                    cutscene is waiting for, and the save thread. A dozen
- *                    small reads, so a client may ask for it a few times a
- *                    second.
- *   page 1, "Cache"  the FIOS block cache on /dev_hdd1, summed per file and
- *                    ordered by the newest block, last to be evicted first.
- *                    The block table is 70 KB, read in qscratch-sized
- *                    pieces, so it is SLOW: asked for on the user's word only.
- *
- * Each page is plain text the client shows as it is, so the client keeps no
- * address and no layout of the game's. A value that cannot be read says so in
- * the text; the page itself still answers OK.
- *
- * The pages keep no state of their own: everything lives on the tick
- * thread's stack for one call (about 2 KB) and in the core's scratch buffer.
- * The cutscene cache's state is tod_game.c's (struct tod_cc_state).
+ * The level cache's debug pages that shared this file (DEBUG_TEXT, 0x00E8)
+ * are retired: the op is never reused (PROTOCOL.md 5.16).
  */
 #include "core_import.h"   /* first: src/games/module.h */
 #include "tod.h"
@@ -31,84 +15,6 @@
 #include "../core/util.h"
 
 #include <string.h>
-
-/* ------------------------------------------------------------- the text */
-
-struct tbuf {
-	char *p;
-	u32 cap;
-	u32 n;
-};
-
-static void t_str(struct tbuf *t, const char *s)
-{
-	while (*s != 0 && t->n + 1 < t->cap) t->p[t->n++] = *s++;
-}
-
-static void t_u32(struct tbuf *t, u32 v)
-{
-	char d[12];
-
-	qfmt_u32(d, sizeof(d), v);
-	t_str(t, d);
-}
-
-static void t_s32(struct tbuf *t, s32 v)
-{
-	if (v < 0) {
-		t_str(t, "-");
-		t_u32(t, (u32)(-(v + 1)) + 1u);
-	} else t_u32(t, (u32)v);
-}
-
-static void t_hex(struct tbuf *t, u32 v)
-{
-	static const char hx[] = "0123456789ABCDEF";
-	char d[11];
-	int i;
-
-	d[0] = '0';
-	d[1] = 'x';
-	for (i = 0; i < 8; i++) d[2 + i] = hx[(v >> (28 - 4 * i)) & 15u];
-	d[10] = 0;
-	t_str(t, d);
-}
-
-/* `whole` and one or two decimals: v hundredths, or tenths when `digits` is 1. */
-static void t_fixed(struct tbuf *t, u32 v, u32 digits)
-{
-	u32 div = digits == 1 ? 10u : 100u;
-	u32 frac = v % div;
-
-	t_u32(t, v / div);
-	t_str(t, ".");
-	if (digits == 2 && frac < 10) t_str(t, "0");
-	t_u32(t, frac);
-}
-
-/* Bytes as MiB with one decimal. */
-static void t_mib(struct tbuf *t, u32 bytes)
-{
-	t_fixed(t, (u32)(((u64)bytes * 10u + 0x80000u) >> 20), 1);
-	t_str(t, " MiB");
-}
-
-static void t_nl(struct tbuf *t)
-{
-	t_str(t, "\n");
-}
-
-/* An f32 of seconds as hundredths, 0 for a negative or not-a-number. */
-static u32 secs_cs(u32 bits)
-{
-	f32 v = f32_from_bits(bits);
-
-	if (!(v > 0.0f)) return 0;
-	if (v > 100000.0f) return 10000000u;
-	return (u32)(v * 100.0f + 0.5f);
-}
-
-/* ------------------------------------------------------------- the reads */
 
 /* A NUL-ended string of the game's at `at`, at most cap - 1 bytes; "" when it cannot be read. */
 static void rd_str(u32 at, char *dst, u32 cap)
@@ -129,250 +35,6 @@ static void rd_str(u32 at, char *dst, u32 cap)
 	}
 	dst[n] = 0;
 }
-
-static u32 rd32(u32 at, int *ok)
-{
-	u32 v = 0;
-
-	if (mem_read_u32(at, &v) != ST_OK) *ok = 0;
-	return v;
-}
-
-static u8 rd8(u32 at, int *ok)
-{
-	u8 v = 0;
-
-	if (mem_read_u8(at, &v) != ST_OK) *ok = 0;
-	return v;
-}
-
-/* A TodFileDesc's path and size; 0 when there is none. */
-static int rd_file(u32 desc, char *path, u32 cap, u32 *size)
-{
-	u8 b[8];
-
-	path[0] = 0;
-	*size = 0;
-	if (desc == 0 || (desc & 3u) != 0) return 0;
-	if (mem_read(desc, b, sizeof(b)) != ST_OK) return 0;
-	*size = be32_get(b + 4);
-	rd_str(be32_get(b), path, cap);
-	return 1;
-}
-
-/* ---------------------------------------------------------- page 0, Now */
-
-static const char *game_state_name(s32 s)
-{
-	switch (s) {
-	case 3:  return "a level load";
-	case 4:  return "gameplay";
-	case 7:  return "an FMV";
-	case 9:  return "a cinematic";
-	case 11: return "the credits";
-	default: return NULL;
-	}
-}
-
-static const char *movie_state_name(u32 s)
-{
-	switch (s) {
-	case 0:  return "idle";
-	case 1:  return "black, waiting to start";
-	case 2:  return "playing";
-	case 3:  return "fading back in";
-	case 4:  return "done";
-	default: return "?";
-	}
-}
-
-static const char *save_state_name(u32 s)
-{
-	switch (s) {
-	case 0:  return "not up";
-	case 1:  return "idle";
-	case 2:  return "saving";
-	case 3:  return "loading";
-	case 4:  return "deleting";
-	case TOD_SS_HELD: return "held by qwark";
-	default: return "?";
-	}
-}
-
-static const char * const pf_slot_names[TOD_PF_NFILES] = {
-	"sound", "dialogue", "textures", "next level"
-};
-
-static void page_now(struct tbuf *t)
-{
-	u8 pf[TOD_PF_LEN];
-	u8 mp[TOD_MP_LOOK_LEN];
-	char path[96];
-	int ok = 1, pf_ok;
-	s32 gs;
-	u32 level, i, cur, state, size, fade_cs, sm_state, sm_op, queued;
-	const char *name;
-
-	gs = (s32)rd32(TOD_GAME_STATE, &ok);
-	level = rd32(TOD_CURRENT_LEVEL, &ok);
-	t_str(t, "Game state ");
-	t_s32(t, gs);
-	name = game_state_name(gs);
-	if (name != NULL) {
-		t_str(t, " (");
-		t_str(t, name);
-		t_str(t, ")");
-	}
-	t_str(t, ", level ");
-	t_u32(t, level);
-	if (level < tod_facts.nplanets) {
-		t_str(t, " (");
-		t_str(t, tod_facts.planet_names[level]);
-		t_str(t, ")");
-	}
-	t_nl(t);
-
-	/* The warmer. */
-	pf_ok = mem_read(TOD_PREFETCH, pf, sizeof(pf)) == ST_OK;
-	t_nl(t);
-	if (!pf_ok) {
-		t_str(t, "Warmer: cannot be read\n");
-	} else {
-		u8 gl = rd8(TOD_PF_GATE_LEVEL, &ok), gm = rd8(TOD_PF_GATE_MOVIE, &ok), pend = rd8(TOD_PF_PENDING, &ok);
-		u32 off = be32_get(pf + TOD_PF_OFFSET), end = be32_get(pf + TOD_PF_END);
-
-		cur = be32_get(pf + TOD_PF_CUR);
-		state = be32_get(pf + TOD_PF_STATE);
-		t_str(t, "Warmer: ");
-		t_str(t, pf[TOD_PF_ENABLED] ? "on" : "off");
-		t_str(t, " (level gate ");
-		t_u32(t, gl);
-		t_str(t, ", movie gate ");
-		t_u32(t, gm);
-		t_str(t, ", pending ");
-		t_u32(t, pend);
-		t_str(t, ")\n");
-		if (cur == 0) {
-			t_str(t, state >= TOD_PF_NFILES ? "  idle: every file read\n" : "  not started\n");
-		} else {
-			rd_file(cur, path, sizeof(path), &size);
-			t_str(t, "  file ");
-			t_u32(t, state);
-			t_str(t, " of 4: ");
-			t_str(t, path[0] != 0 ? path : "?");
-			t_nl(t);
-			t_str(t, "  at ");
-			t_mib(t, off);
-			t_str(t, " of ");
-			t_mib(t, end);
-			if (end > 0) {
-				t_str(t, " (");
-				t_u32(t, (u32)((u64)(off > end ? end : off) * 100u / end));
-				t_str(t, "%)");
-			}
-			if (be32_get(pf + TOD_PF_BUSY) != 0) t_str(t, ", a read in flight");
-			t_nl(t);
-		}
-		for (i = 0; i < TOD_PF_NFILES; i++) {
-			u32 desc = be32_get(pf + TOD_PF_FILE + i * 4u);
-
-			t_str(t, "  ");
-			t_u32(t, i + 1u);
-			t_str(t, " ");
-			t_str(t, pf_slot_names[i]);
-			t_str(t, ": ");
-			if (!rd_file(desc, path, sizeof(path), &size)) {
-				t_str(t, "none\n");
-				continue;
-			}
-			t_mib(t, be32_get(pf + TOD_PF_SIZE + i * 4u));
-			t_str(t, "  ");
-			t_str(t, path);
-			t_nl(t);
-		}
-	}
-
-	/* What a cutscene waits for. */
-	t_nl(t);
-	if (mem_read(TOD_MOVIE_PLAYER + TOD_MP_STATE, mp, sizeof(mp)) != ST_OK) {
-		t_str(t, "Cutscene: cannot be read\n");
-	} else {
-		u32 mstate = be32_get(mp), movie = be32_get(mp + (TOD_MP_MOVIE - TOD_MP_STATE));
-		u32 rec = 0, nameptr = 0;
-
-		t_str(t, "Cutscene: ");
-		path[0] = 0;
-		if (movie < TOD_NMOVIES && mem_read_u32(TOD_MOVIE_RECORDS + movie * 4u, &rec) == ST_OK &&
-		    rec > 4u && mem_read_u32(rec - 4u, &nameptr) == ST_OK)
-			rd_str(nameptr, path, 40);
-		if (mstate == 0) {
-			t_str(t, "none");
-		} else {
-			t_str(t, path[0] != 0 ? path : "?");
-		}
-		t_str(t, ", player ");
-		t_u32(t, mstate);
-		t_str(t, " (");
-		t_str(t, movie_state_name(mstate));
-		t_str(t, ")\n");
-		queued = rd32(TOD_MOVIE_QUEUE_N, &ok);
-		sm_state = rd32(TOD_SAVE_MANAGER + TOD_SM_STATE, &ok);
-		sm_op = rd32(TOD_SAVE_MANAGER + TOD_SM_LAST_OP, &ok);
-		if (mstate == 1) {
-			fade_cs = secs_cs(rd32(TOD_MOVIE_PLAYER + TOD_MP_FADE_TIMER, &ok));
-			t_str(t, "  waited ");
-			t_fixed(t, fade_cs, 2);
-			t_str(t, " s; the sounds' limit is ");
-			t_fixed(t, TOD_PREROLL_LIMIT_CS, 2);
-			t_str(t, " s");
-			if (fade_cs > TOD_PREROLL_LIMIT_CS) t_str(t, " (passed)");
-			t_str(t, ", ");
-			t_u32(t, rd32(TOD_CINEMATIC + TOD_CINE_SOUNDS, &ok));
-			t_str(t, " sounds pre-rolling\n");
-			if (sm_state == 2 && sm_op == TOD_SAVE_OP_AUTO)
-				t_str(t, "  held: the autosave is running\n");
-		}
-		if (queued != 0) {
-			t_str(t, "  queued after it: ");
-			t_u32(t, queued);
-			t_nl(t);
-		}
-		t_str(t, "Save thread: ");
-		t_str(t, save_state_name(sm_state));
-		if (sm_state == 2) {
-			t_str(t, sm_op == TOD_SAVE_OP_AUTO ? " (autosave)" : " (op ");
-			if (sm_op != TOD_SAVE_OP_AUTO) {
-				t_u32(t, sm_op);
-				t_str(t, ")");
-			}
-		}
-		t_nl(t);
-	}
-	if (!ok) t_str(t, "(some values could not be read)\n");
-}
-
-/* -------------------------------------------------------- page 1, Cache */
-
-#define CACHE_FILES   40u     /* files summed; any past that are counted, not named */
-#define CACHE_PIECE   (QSCRATCH_BYTES / TOD_FC_DESC_LEN)
-#define NS_PER_CS     10000000u
-
-/* How much older `old` is than `now`, hundredths of a second, at most a day. */
-static u32 age_cs(u64 now, u64 old)
-{
-	u64 d = now > old ? (now - old) / NS_PER_CS : 0;
-
-	return d > 8640000u ? 8640000u : (u32)d;
-}
-
-struct cache_file {
-	u32 handle;
-	u32 blocks;
-	u32 lo_mib;     /* the lowest and highest block's offset in its file, MiB */
-	u32 hi_mib;
-	u64 newest;
-	u64 oldest;
-};
 
 /*
  * game.toc's level table (TodLevelArchives[count], sorted by directory name):
@@ -396,214 +58,6 @@ static u32 level_entry(const char *dir, u8 rec[TOD_LA_STRIDE])
 	return 0;
 }
 
-/* The archive's size, when `path` is one of the game's level archives (game.toc's table). */
-static u32 level_archive_size(const char *path)
-{
-	static const char prefix[] = "/packed/levels/";
-	static const char * const kinds[3] = {
-		"level_cached.psarc", "level_uncached.psarc", "level_textures.psarc"
-	};
-	char dir[48];
-	u32 i, k, slash = 0, p = sizeof(prefix) - 1;
-	u8 rec[TOD_LA_STRIDE];
-
-	for (i = 0; i < p; i++) if (path[i] != prefix[i]) return 0;
-	while (path[p + slash] != 0 && path[p + slash] != '/') slash++;
-	if (path[p + slash] != '/' || slash == 0 || slash >= sizeof(dir)) return 0;
-	for (i = 0; i < slash; i++) dir[i] = path[p + i];
-	dir[slash] = 0;
-	for (k = 0; k < 3; k++) if (qstreq(path + p + slash + 1, kinds[k])) break;
-	if (k == 3) return 0;
-
-	if (level_entry(dir, rec) == 0) return 0;
-	return be32_get(rec + 4u + k * 0x14u + 4u);
-}
-
-static void page_cache(struct tbuf *t)
-{
-	struct cache_file files[CACHE_FILES];
-	char path[96];
-	u32 cache = 0, blocks = 0, n = 0, bsize = 0, paths = 0, strs = 0, npaths = 0;
-	u32 i, j, nfiles = 0, nfree = 0, nfill = 0, nused = 0, other_blocks = 0;
-	u64 newest = 0, oldest = 0;
-	u8 *buf = qscratch();
-
-	if (mem_read_u32(TOD_FIOS_CACHE, &cache) != ST_OK || cache == 0 || (cache & 3u)) {
-		t_str(t, "The cache is not set up (g_fiosSchedulerCache is 0).\n");
-		return;
-	}
-	if (mem_read_u32(cache + TOD_FC_NBLOCKS, &n) != ST_OK || mem_read_u32(cache + TOD_FC_BLOCKS, &blocks) != ST_OK ||
-	    mem_read_u32(cache + TOD_FC_BLOCK_SIZE, &bsize) != ST_OK) {
-		t_str(t, "The cache object cannot be read.\n");
-		return;
-	}
-	if (n == 0 || n > TOD_FC_MAX_BLOCKS || blocks == 0 || (blocks & 3u)) {
-		t_str(t, "The block table does not look right: ");
-		t_u32(t, n);
-		t_str(t, " blocks at ");
-		t_hex(t, blocks);
-		t_nl(t);
-		return;
-	}
-
-	for (i = 0; i < n; i += CACHE_PIECE) {
-		u32 piece = n - i < CACHE_PIECE ? n - i : CACHE_PIECE, k;
-
-		if (mem_read(blocks + i * TOD_FC_DESC_LEN, buf, piece * TOD_FC_DESC_LEN) != ST_OK) {
-			t_str(t, "The block table cannot be read at block ");
-			t_u32(t, i);
-			t_nl(t);
-			return;
-		}
-		for (k = 0; k < piece; k++) {
-			const u8 *d = buf + k * TOD_FC_DESC_LEN;
-			u64 use = be64_get(d + TOD_FC_LAST_USE);
-			u32 handle = be32_get(d + TOD_FC_PATH);
-			u32 mib = (u32)(be64_get(d + TOD_FC_OFFSET) >> 20);
-
-			if (use == TOD_FC_FREE || use == 0) { nfree++; continue; }
-			if (use == TOD_FC_FILLING) { nfill++; continue; }
-			nused++;
-			if (use > newest) newest = use;
-			if (oldest == 0 || use < oldest) oldest = use;
-			for (j = 0; j < nfiles; j++) if (files[j].handle == handle) break;
-			if (j == nfiles) {
-				if (nfiles == CACHE_FILES) { other_blocks++; continue; }
-				files[j].handle = handle;
-				files[j].blocks = 0;
-				files[j].lo_mib = mib;
-				files[j].hi_mib = mib;
-				files[j].newest = use;
-				files[j].oldest = use;
-				nfiles++;
-			}
-			files[j].blocks++;
-			if (mib < files[j].lo_mib) files[j].lo_mib = mib;
-			if (mib > files[j].hi_mib) files[j].hi_mib = mib;
-			if (use > files[j].newest) files[j].newest = use;
-			if (use < files[j].oldest) files[j].oldest = use;
-		}
-	}
-
-	/* Newest first: the order eviction takes them in, backwards. */
-	for (i = 1; i < nfiles; i++) {
-		struct cache_file f = files[i];
-
-		for (j = i; j > 0 && files[j - 1].newest < f.newest; j--) files[j] = files[j - 1];
-		files[j] = f;
-	}
-
-	t_u32(t, nused);
-	t_str(t, " of ");
-	t_u32(t, n);
-	t_str(t, " blocks in use (");
-	t_mib(t, bsize);
-	t_str(t, " each), ");
-	t_u32(t, nfree);
-	t_str(t, " free");
-	if (nfill != 0) {
-		t_str(t, ", ");
-		t_u32(t, nfill);
-		t_str(t, " filling");
-	}
-	t_nl(t);
-	if (nused != 0) {
-		t_str(t, "The oldest block, next to go once none is free, is ");
-		t_fixed(t, age_cs(newest, oldest), 2);
-		t_str(t, " s older than the newest.\n");
-	}
-	t_str(t, "\nNewest first. blocks / of the file, newest and oldest block's age (s), offsets (MiB), path:\n");
-
-	if (mem_read_u32(TOD_FIOS_PATHS, &paths) == ST_OK && paths != 0 && (paths & 3u) == 0) {
-		if (mem_read_u32(paths + TOD_FPATH_STRS, &strs) != ST_OK) strs = 0;
-		if (mem_read_u32(paths + TOD_FPATH_COUNT, &npaths) != ST_OK) npaths = 0;
-	}
-	for (i = 0; i < nfiles; i++) {
-		const struct cache_file *f = &files[i];
-		u32 str = 0, size = 0;
-
-		path[0] = 0;
-		if (strs != 0 && f->handle >= 1u && f->handle <= npaths &&
-		    mem_read_u32(strs + (f->handle - 1u) * 4u, &str) == ST_OK)
-			rd_str(str, path, sizeof(path));
-		t_str(t, "  ");
-		t_u32(t, f->blocks);
-		if (path[0] != 0 && bsize != 0) size = level_archive_size(path);
-		if (size != 0) {
-			t_str(t, " / ");
-			t_u32(t, (size + bsize - 1u) / bsize);
-		}
-		t_str(t, "  ");
-		t_fixed(t, age_cs(newest, f->newest), 2);
-		t_str(t, " .. ");
-		t_fixed(t, age_cs(newest, f->oldest), 2);
-		t_str(t, "  ");
-		t_u32(t, f->lo_mib);
-		t_str(t, "..");
-		t_u32(t, f->hi_mib);
-		t_str(t, "  ");
-		if (path[0] != 0) t_str(t, path);
-		else {
-			t_str(t, "(path ");
-			t_u32(t, f->handle);
-			t_str(t, ")");
-		}
-		t_nl(t);
-	}
-	if (other_blocks != 0) {
-		t_str(t, "  and ");
-		t_u32(t, other_blocks);
-		t_str(t, " blocks of other files\n");
-	}
-}
-
-/* --------------------------------------------------------------- the op */
-
-/* A title in its fixed field, the rest zeroed. */
-static void put_title(u8 *dst, const char *src)
-{
-	u32 i = 0;
-
-	while (i < DEBUG_TITLE_LEN && src[i] != 0) { dst[i] = (u8)src[i]; i++; }
-	while (i < DEBUG_TITLE_LEN) dst[i++] = 0;
-}
-
-static const char * const page_titles[TOD_DEBUG_NPAGES] = { "Now", "Cache" };
-static const u8 page_flags[TOD_DEBUG_NPAGES] = { 0, DEBUG_PAGE_SLOW };
-
-int tod_debug_text(u8 page, u8 *out, u32 cap, u32 *len)
-{
-	struct tbuf t;
-
-	*len = 0;
-	if (page == DEBUG_TEXT_LIST) {
-		u32 i, need = 1u + TOD_DEBUG_NPAGES * (1u + DEBUG_TITLE_LEN);
-
-		if (cap < need) return ST_FULL;
-		out[0] = (u8)TOD_DEBUG_NPAGES;
-		for (i = 0; i < TOD_DEBUG_NPAGES; i++) {
-			out[1 + i * (1u + DEBUG_TITLE_LEN)] = page_flags[i];
-			put_title(out + 2 + i * (1u + DEBUG_TITLE_LEN), page_titles[i]);
-		}
-		*len = need;
-		return ST_OK;
-	}
-	if (page >= TOD_DEBUG_NPAGES) return ST_BAD_ARG;
-	if (cap < DEBUG_TEXT_HEAD + 64u) return ST_FULL;
-
-	t.p = (char *)out + DEBUG_TEXT_HEAD;
-	t.cap = cap - DEBUG_TEXT_HEAD;
-	if (t.cap > 0xFFFFu) t.cap = 0xFFFFu;
-	t.n = 0;
-	if (page == TOD_DEBUG_NOW) page_now(&t);
-	else page_cache(&t);
-
-	be16_put(out, (u16)t.n);
-	be16_put(out + 2, 0);
-	*len = DEBUG_TEXT_HEAD + t.n;
-	return ST_OK;
-}
-
 /* ===================================== the cutscene cache, revision 1.29 */
 
 /*
@@ -619,16 +73,22 @@ int tod_debug_text(u8 page, u8 *out, u32 cap, u32 *len)
  * A request goes ahead of the game's own warm-up, which in a run is the
  * current planet's sound, dialogue and textures and the next planet's
  * level_cached: about 380 MiB that a runner never stays long enough on
- * Metropolis to see read. Stratus City's sound goes first, Fastoon's next,
- * and a level load hands what is left to the next level. Its state is
- * tod_game.c's (struct tod_cc_state, the lent area in a module), cleared as a
- * session enters, as the cache is at every boot.
+ * Metropolis to see read. The planets go in the order a run needs them:
+ * Cobalia's sound first (its opening cinematic, l02_s03_wake_rt, plays as a
+ * run arrives from Metropolis), then Stratus City's, then Fastoon's, about
+ * 182 MiB in all; a level load hands what is left to the next level. A load
+ * into a planet whose sound is not in yet is too late for that planet alone:
+ * it is dropped and the rest goes on, and the request ends saying so. Its
+ * state is tod_game.c's (struct tod_cc_state, the lent area in a module),
+ * cleared as a session enters, as the cache is at every boot.
  */
 
-static const char * const cc_dir[TOD_CC_NPLANETS]  = { "fastoon", "stratus city" };
-static const char * const cc_name[TOD_CC_NPLANETS] = { "Fastoon", "Stratus City" };
+static const char * const cc_dir[TOD_CC_NPLANETS]  = { "fastoon", "stratus city", "cobalia" };
+static const char * const cc_name[TOD_CC_NPLANETS] = { "Fastoon", "Stratus City", "Cobalia" };
 /* Each planet's LEVEL_: a load into it before its sound is in is too late. */
-static const s32 cc_level[TOD_CC_NPLANETS] = { 3, 2 };
+static const s32 cc_level[TOD_CC_NPLANETS] = { 3, 2, TOD_LEVEL_COBALIA };
+/* Each planet's FAILED reason when it was too late. */
+static const u8 cc_late_why[TOD_CC_NPLANETS] = { TOD_CC_WHY_LATE_FN, TOD_CC_WHY_LATE_SC, TOD_CC_WHY_LATE_CB };
 
 /*
  * streaming_sound.dat in each planet's level_uncached.psarc, from the psarc's
@@ -638,8 +98,8 @@ static const s32 cc_level[TOD_CC_NPLANETS] = { 3, 2 };
  * game.toc's size of the archive is checked against the end before a range
  * goes to the warmer.
  */
-static const u32 cc_sound_at[TOD_CC_NPLANETS]  = { 7769u, 9716u };
-static const u32 cc_sound_len[TOD_CC_NPLANETS] = { 52625408u, 66934784u };
+static const u32 cc_sound_at[TOD_CC_NPLANETS]  = { 7769u, 9716u, 10928u };
+static const u32 cc_sound_len[TOD_CC_NPLANETS] = { 52625408u, 66934784u, 69908480u };
 
 /* game.toc's directory for each LEVEL_, tod.c's order: what the FIOS cache's paths name. */
 static const char * const cc_level_dir[TOD_NPLANETS] = {
@@ -682,7 +142,7 @@ static void cc_end(struct tod_cc_state *cc, u8 state, u8 detail)
 	static const char * const why[] = {
 		"", "the title came first", "game.toc's level table cannot be read",
 		"the warmer stopped reading", "Disable cutscene caching is on", "the game cannot be read",
-		"the game is going", "the run reached Stratus City first", "the run reached Fastoon first"
+		"the game is going", "too late for Stratus City", "too late for Fastoon", "too late for Cobalia"
 	};
 
 	cc->secs = cc_secs(cc->ticks);
@@ -695,17 +155,19 @@ static void cc_end(struct tod_cc_state *cc, u8 state, u8 detail)
 	cc->sc_active = 0;
 	cc->seq++;
 	if (state == TOD_CC_DONE)
-		plat_log("tod: Cache cutscenes: Fastoon and Stratus City are cached (%u s, %u KiB read in %u ticks)",
+		plat_log("tod: Cache cutscenes: Cobalia, Stratus City and Fastoon are cached (%u s, %u KiB read in %u ticks)",
 		         cc->secs, cc->bytes >> 10, cc->rd_ticks);
 	else
-		plat_log("tod: Cache cutscenes: stopped, %s", why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
+		plat_log("tod: Cache cutscenes: ended, %s", why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
 }
 
-/* The planet to read next, other than `not`: Stratus City first, a planet earlier in a run. */
+/* The planet to read next, other than `not`: the one a run needs first, Cobalia, then Stratus City, then Fastoon. */
 static u8 cc_first_pending(const struct tod_cc_state *cc, u8 not)
 {
-	if ((cc->pending & 2u) && not != 1u) return 1;
-	if ((cc->pending & 1u) && not != 0u) return 0;
+	u8 p = TOD_CC_NPLANETS;
+
+	while (p-- > 0)
+		if ((cc->pending & (1u << p)) && not != p) return p;
 	return TOD_CC_NO_PLANET;
 }
 
@@ -851,8 +313,7 @@ static void sc_begin(struct tod_cc_state *cc)
 	cc->sc_active = 0;
 	cc->ev_active = 0;
 	memset(cc->sc_map, 0, sizeof(cc->sc_map));
-	cc->sc_count[0] = 0;
-	cc->sc_count[1] = 0;
+	memset(cc->sc_count, 0, sizeof(cc->sc_count));
 	if (cc_plan(cc) != 0) return;
 	if (mem_read_u32(TOD_FIOS_CACHE, &cache) != ST_OK || cache == 0 || (cache & 3u)) return;
 	if (mem_read_u32(cache + TOD_FC_NBLOCKS, &n) != ST_OK || mem_read_u32(cache + TOD_FC_BLOCKS, &blocks) != ST_OK ||
@@ -943,7 +404,7 @@ static void cc_request(struct tod_cc_state *cc, int is_auto, int in_play)
 {
 	cc->state = TOD_CC_WAITING;
 	cc->detail = in_play ? TOD_CC_WAIT_WARMER : TOD_CC_WAIT_PLAY;
-	cc->planet = 1;
+	cc->planet = TOD_CC_NPLANETS - 1u;
 	cc->pct = 0;
 	cc->ticks = 0;
 	cc->seen_play = (u8)(in_play != 0);
@@ -952,7 +413,8 @@ static void cc_request(struct tod_cc_state *cc, int is_auto, int in_play)
 	cc->stall = 0;
 	cc->wait = 0;
 	cc->desc = 0;
-	cc->pending = 3u;
+	cc->pending = TOD_CC_ALL;
+	cc->late = 0;
 	cc->planned = 0;
 	cc->in_hand = 0;
 	cc->borrow = 0;
@@ -1072,7 +534,7 @@ static void cc_unborrow(struct tod_cc_state *cc, const u8 *pf)
 	if (!cc->borrow) return;
 	cc->borrow = 0;
 	f = be32_get(pf + TOD_PF_FILE + cc->slot * 4u);
-	if (f == cc->pdesc[0] || f == cc->pdesc[1]) {
+	if (f != 0 && (f == cc->pdesc[0] || f == cc->pdesc[1] || f == cc->pdesc[2])) {
 		cc_put_slot(cc->slot, cc->slot_desc, cc->slot_size);
 		plat_log("tod: Cache cutscenes: slot %u given back unread", (u32)cc->slot);
 	}
@@ -1095,13 +557,30 @@ static int cc_borrowable(const u8 *pf)
 	       be32_get(pf + TOD_PF_CHUNK) != 0 && end > off && end - off > TOD_CC_MARGIN;
 }
 
+/*
+ * Every planet in or too late: done, or failed with the first late planet's
+ * reason (Cobalia's before Stratus City's before Fastoon's) when one was.
+ */
+static void cc_finish(struct tod_cc_state *cc)
+{
+	u8 p = TOD_CC_NPLANETS;
+
+	while (p-- > 0) {
+		if (cc->late & (1u << p)) {
+			cc_end(cc, TOD_CC_FAILED, cc_late_why[p]);
+			return;
+		}
+	}
+	cc_end(cc, TOD_CC_DONE, 0);
+}
+
 /* Waiting: a range to the warmer, ahead of its own slot or with it idle. */
 static void cc_wait(struct tod_cc_state *cc, const u8 *pf, int play)
 {
 	u8 p, why;
 
 	if (cc->pending == 0) {
-		cc_end(cc, TOD_CC_DONE, 0);
+		cc_finish(cc);
 		return;
 	}
 	if (!play) {
@@ -1228,7 +707,8 @@ static void cc_look(struct tod_cc_state *cc, const struct tod_as_state *as, int 
  * A level load has begun under a request: LevelPrefetch_setup will give the
  * warmer the new level's files, so what was in hand is let go (no write: the
  * setup fills every slot anew) and what is left goes ahead on the new level.
- * A load into a planet whose sound is not in yet is too late for it.
+ * A load into a planet whose sound is not in yet is too late for that one:
+ * it is dropped, the rest goes on, and the end says so.
  */
 static void cc_load(struct tod_cc_state *cc, s32 level)
 {
@@ -1243,9 +723,14 @@ static void cc_load(struct tod_cc_state *cc, s32 level)
 	cc->desc = 0;
 	for (p = 0; p < TOD_CC_NPLANETS; p++) {
 		if ((cc->pending & (1u << p)) && level == cc_level[p]) {
-			cc_end(cc, TOD_CC_FAILED, p == 1u ? TOD_CC_WHY_LATE_SC : TOD_CC_WHY_LATE_FN);
-			return;
+			cc->pending &= (u8)~(1u << p);
+			cc->late |= (u8)(1u << p);
+			plat_log("tod: Cache cutscenes: the run reached %s before its sound was in: too late for it", cc_name[p]);
 		}
+	}
+	if (cc->pending == 0) {
+		cc_finish(cc);
+		return;
 	}
 	cc->planned = 0;
 	sc_begin(cc);
@@ -1471,7 +956,7 @@ void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 {
 	static const char * const why[] = {
 		"Failed", "Title came first", "No level table", "Warmer stopped", "Caching disabled",
-		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon"
+		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon", "Too late: Cobalia"
 	};
 	u32 detail = (word >> 24) & 15u, pct = (word >> 16) & 0xFFu, secs = (word >> 8) & 0xFFu;
 
@@ -1482,7 +967,7 @@ void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 		qstrcpy(out, cap, detail == TOD_CC_WAIT_WARMER ? "Waiting for warmer" : "Waiting");
 		return;
 	case TOD_CC_CACHING:
-		qstrcpy(out, cap, detail == 2u ? "Stratus City " : "Fastoon ");
+		qstrcpy(out, cap, detail == 3u ? "Cobalia " : detail == 2u ? "Stratus City " : "Fastoon ");
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct);
 		qstrcat(out, cap, "%");
 		return;

@@ -3,15 +3,15 @@
 --
 -- qwark sends this once, as a request for the pause menu's VM (target MENU,
 -- like the glue itself), when the glue's note says a look failed: it found
--- no Options list in its first 30 looks (LM_NOTE_NONE), or the Trainer
+-- no pause list in its first 30 looks (LM_NOTE_NONE), or the Trainer
 -- waited on Game Options' slide and no Game Options behaviour turned up
 -- (LM_NOTE_NOCH; revision 1.29's fourth console test moved the Trainer's
 -- pages from the Cheats screen to Game Options, docs/tod-menu.md 12). Its answer is one line of text, the request's first
 -- result, which qwark logs ("menu: what the glue saw: ..."):
 --
 --   g=      the glue's state (lh_glue.lua's T, global qwark_state):
---           tries, age, ready (1/0), on (1/0), the Help row it found
---           (menu.row, or -), the frames left to wait for Game Options,
+--           tries, age, ready (1/0), on (1/0), the Inventory rows it found
+--           (how many x the first one's row, or -), the frames left to wait for Game Options,
 --           and its take-over (1 on, w waiting, 0 off)
 --   s=      the type of scene, Presentation, Presentation.scene, Node and
 --           Node.goToSlide, Node._useOnActivateDeactivate, self: one
@@ -21,12 +21,12 @@
 --   reg=    the registry (scene._table_ActDeactRegisters): its type, then
 --           how many keys, how many of them userdata, and how many active
 --   then each key, at most 24: its element name (cut to 14) and what it
---           holds: m menuData, h onHelp, o optArray (Game Options), c
+--           holds: m menuData, i onInventory, o optArray (Game Options), c
 --           changeCheatState (the Cheats screen), + active (the
 --           registry's value)
 --   lu=     the first key with menuData: OPTIONS_MENU_INDEX, its
 --           currentMenuIndex and currentSlide, then each menu
---           [index:rows h<row where onHelp is> t<row whose tag is 45>
+--           [index:rows i<row where onInventory is> t<row whose tag is 36, Inventory's>
 --           T<row that says TRAINER>]
 --   err=    anything that raised an error on the way
 --
@@ -68,7 +68,7 @@ end
 local function main()
   if type(T) == "table" then
     local hr = "-"
-    if T.lm then hr = tostring(T.lm) .. "." .. tostring(T.lr) end
+    if type(T.hr) == "table" and T.hr[1] then hr = table.getn(T.hr) .. "x" .. tostring(T.hr[1][2]) end
     local om = "0"
     if T.om == true then om = "1" elseif T.om then om = "w" end
     add("g=" .. tostring(T.tries) .. "," .. tostring(T.age) .. "," .. yes(T.ready) .. "," .. yes(T.on) .. "," .. hr .. "," .. tostring(T.ow) .. "," .. om)
@@ -96,7 +96,7 @@ local function main()
       f = f .. "m"
       lu = lu or k
     end
-    if get(k, "onHelp") then f = f .. "h" end
+    if get(k, "onInventory") then f = f .. "i" end
     if type(get(k, "optArray")) == "table" then f = f .. "o" end
     if get(k, "changeCheatState") then f = f .. "c" end
     if v then f = f .. "+" end
@@ -109,15 +109,15 @@ local function main()
   add("," .. c .. "," .. u .. "," .. a)
   for i = 1, math.min(c, 24) do add(keys[i]) end
   if not lu then return end
-  local md, h = get(lu, "menuData"), get(lu, "onHelp")
+  local md, h = get(lu, "menuData"), get(lu, "onInventory")
   add(" lu=" .. tostring(get(lu, "OPTIONS_MENU_INDEX")) .. "," .. tostring(get(lu, "currentMenuIndex")) .. "," .. tostring(get(lu, "currentSlide")))
   for m, rows in pairs(md) do
     if type(rows) == "table" then
       local s = " [" .. tostring(m) .. ":" .. table.getn(rows)
       for r, it in pairs(rows) do
         if type(it) == "table" then
-          if h and it[2] == h then s = s .. " h" .. tostring(r) end
-          if it[1] == 45 then s = s .. " t" .. tostring(r) end
+          if h and it[2] == h then s = s .. " i" .. tostring(r) end
+          if it[1] == 36 then s = s .. " t" .. tostring(r) end
           if it[1] == "TRAINER" then s = s .. " T" .. tostring(r) end
         end
       end

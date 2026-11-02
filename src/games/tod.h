@@ -556,7 +556,7 @@ struct tod_facts {
 #define TF_FAST_LOADS       17     /* the load screen's cut, a code patch (TOD_FASTLOAD_AT) */
 #define TF_REMOVE_CUTSCENES 18     /* revision 1.29: eight FMVs' files made missing (TOD_ARCHIVE_GAME) */
 /* Revision 1.29: the cutscene cache (tod_cache.c, TOD_CC_*); 22 and 23 are this round's, unused. */
-#define TF_CACHE_CUTSCENES  19     /* ACTION: Fastoon's and Stratus City's sound into the FIOS cache */
+#define TF_CACHE_CUTSCENES  19     /* ACTION: Cobalia's, Stratus City's and Fastoon's sound into the FIOS cache */
 #define TF_CACHE_ON_RESET   20     /* TOGGLE: the same, by itself, on a new run's Metropolis */
 #define TF_NO_CUTSCENE_CACHE 21    /* TOGGLE: each level load drops its planet's cached sound */
 
@@ -620,13 +620,16 @@ struct tod_as_state {
 	u8  movie_is_end;      /* whether movie_seen is TOD_END_CINEMATIC */
 	s32 movie_seen;        /* the player's movie index last named, -1 none */
 	u8  loading;           /* a level load was under way at the last tick */
-	u8  pad2[3];
+	u8  start_armed;       /* the run's level's own fade in seen under way (fade_in_halfway) */
+	u8  pad2[2];
 	u32 start_lua;         /* the lua_State whose fade in the START waits for */
+	u32 start_prog;        /* the fade's progress at the last look, TOD_AS_NO_PROG when none */
 };
 #define TOD_SW_NONE         0      /* no run waiting */
 #define TOD_SW_LOADING      1      /* the load is under way: no level up since the RESET */
 #define TOD_SW_LEVEL        2      /* Metropolis is up: START as its fade in starts */
 #define TOD_AS_NOWHERE      0xFFFFFFFFu
+#define TOD_AS_NO_PROG      0xFFFFFFFFu
 
 /* tod_autosplit.c */
 void tod_autosplit_forget(struct tod_as_state *as);
@@ -701,7 +704,8 @@ u32  tod_weapon_xp(u8 wpn, u8 level);
  * Lua_set_flag, Lua_clear_flag, SetProgressionFlag), so its byte is
  * (n >> 6) * 8 + 7 - ((n & 63) >> 3) and its bit there n & 7. The region is
  * the game's, not a planet's: LEVELFLAGS_GET answers the same 40 bytes for
- * every planet, and LEVELFLAGS_RESET clears the flags named for that planet.
+ * every planet, and LEVELFLAGS_RESET clears the flags of that planet's group
+ * (tod_flags.c; their names are the client's since revision 1.29).
  */
 #define TOD_LEVEL_FLAGS      0x10211398u  /* g_levelFlags, ulonglong[5] (dec) */
 #define TOD_NLEVEL_FLAGS     292u         /* GLOBAL_FLAG_COUNT */
@@ -712,12 +716,11 @@ u32  tod_weapon_xp(u8 wpn, u8 level);
 int  tod_levelflags_get(u8 planet, u8 *out, u16 cap, u16 *len);
 int  tod_levelflags_reset(u8 planet);
 int  tod_levelflags_set(u8 planet, u16 offset, u8 value);
-const struct levelflag_names *tod_levelflag_names(void);
 
 /*
- * Revision 1.29 (pending): the level cache's debug pages (tod_cache.c,
- * DEBUG_TEXT; REPORT-tod-level-cache.md sections 2 and 9). Read only: nothing
- * here is ever written. All read in the decompile (dec).
+ * Revision 1.29 (pending): what the cutscene cache (tod_cache.c, below;
+ * REPORT-tod-level-cache.md sections 2, 9 and 10) reads and writes. All read
+ * in the decompile (dec).
  *
  * The level warmer, g_levelPrefetch (LevelPrefetch, 0x58 bytes): four files
  * set up at every level load (the level's streaming sound and dialogue, its
@@ -739,9 +742,6 @@ const struct levelflag_names *tod_levelflag_names(void);
 #define TOD_PF_STATE         0x4Cu        /* u32, 0..4 */
 #define TOD_PF_ENABLED       0x54u        /* u8 */
 #define TOD_PF_NFILES        4u
-#define TOD_PF_PENDING       0x1037AA10u  /* g_levelPrefetchPending, u8: set by LevelLoad_onComplete */
-#define TOD_PF_GATE_LEVEL    0x1037E8E0u  /* g_levelPrefetchGateLevel, u8: Level_Enter, PrefetchGateMoby_update */
-#define TOD_PF_GATE_MOVIE    0x10062D18u  /* g_levelPrefetchGateMovie, u8: Level_Enter, MoviePlayer_update idle */
 
 /*
  * The libFIOS scheduler cache on /dev_hdd1: g_fiosSchedulerCache points at
@@ -758,7 +758,6 @@ const struct levelflag_names *tod_levelflag_names(void);
 #define TOD_FC_DESC_LEN      0x28u
 #define TOD_FC_LAST_USE      0x00u        /* u64 */
 #define TOD_FC_OFFSET        0x18u        /* u64, the block's offset in its file */
-#define TOD_FC_VALID         0x20u        /* u32: bit 31 persist, the rest the valid bytes */
 #define TOD_FC_PATH          0x24u        /* u32, the path handle */
 #define TOD_FC_FREE          2u
 #define TOD_FC_FILLING       3u
@@ -767,27 +766,9 @@ const struct levelflag_names *tod_levelflag_names(void);
 #define TOD_FPATH_STRS       0x5Cu        /* char *[] */
 #define TOD_FPATH_COUNT      0x64u        /* u32 */
 
-/*
- * What an opening cutscene waits for (MoviePlayer_update, state 1): the save
- * thread not running an autosave, the fade at black, and every sound the
- * cinematic started paused (Cinematic_prerollSounds, g_cinematic) ready, or
- * `fadeTimer` past g_moviePrerollTimeout, 2.0 s.
- */
-#define TOD_MP_FADE_TIMER    0xD4u        /* f32, seconds since the player's fade started */
-#define TOD_CINEMATIC        0x10632390u  /* g_cinematic, ToDCinematic */
-#define TOD_CINE_SOUNDS      0xA50u       /* u32, the sounds the pre-roll started */
-#define TOD_PREROLL_LIMIT_CS 200u         /* g_moviePrerollTimeout, 2.0 s, in hundredths */
-#define TOD_SM_LAST_OP       0xF8u        /* s32, SaveSystem_request's op: 4 an autosave */
-#define TOD_SAVE_OP_AUTO     4u
 #define TOD_TOC_LEVELS       0x28u        /* game.toc: TodLevelArchives[count], the count at [-1] */
 #define TOD_LA_STRIDE        0x40u        /* { char *name; TodArchiveRef cached, uncached, textures } */
 #define TOD_LA_MAX           64u
-
-/* The pages DEBUG_TEXT serves: page 0xFF lists them (proto.h). */
-#define TOD_DEBUG_NOW        0
-#define TOD_DEBUG_CACHE      1
-#define TOD_DEBUG_NPAGES     2
-int tod_debug_text(u8 page, u8 *out, u32 cap, u32 *len);
 
 extern const struct tod_facts tod_facts;
 
@@ -829,8 +810,9 @@ int  tod_fresh_run_load(s32 level);
  * fill; only the level warmer does, and it caches the current planet's sound
  * once its gameplay (and so its opening cutscene) has begun. All data writes.
  *
- * Cache cutscenes (19) has the warmer read Stratus City's sound, then
- * Fastoon's, ahead of the level's own files: while the warmer reads one of
+ * Cache cutscenes (19) has the warmer read Cobalia's sound, then Stratus
+ * City's, then Fastoon's (the order a run needs them), ahead of the level's
+ * own files: while the warmer reads one of
  * its own slots k (state k + 1), the planet's game.toc .uncached descriptor
  * goes into file[k] with fileSize[k] its sound's end, state back to k, and
  * the slot's own read cut short (fileEnd a little past where it is), so the
@@ -842,7 +824,9 @@ int  tod_fresh_run_load(s32 level);
  * and fileEnd, curFile, state 4, readReady last. A level load does not end a
  * request: what is left is picked up on the next level, and the FIOS block
  * table is read first (at the request and at each load) so cached blocks are
- * skipped. Cache cutscenes on reset (20) asks for the same on a new run's
+ * skipped; a load into a planet still to read drops that planet alone (too
+ * late for it), and the request ends failed with its reason once the rest is
+ * in. Cache cutscenes on reset (20) asks for the same on a new run's
  * load into Metropolis. Disable cutscene caching (21) frees, in the in-RAM
  * block table, every block of the planet's level_uncached.psarc (and
  * Metropolis's sound in global_uncached.psarc) during each level load, so the
@@ -881,7 +865,8 @@ int  tod_fresh_run_load(s32 level);
  * Cache cutscenes' status word, TOD_RO_CUTSCENE_CACHE (PROTOCOL.md 5.14):
  *   bits 28..31  state   TOD_CC_NONE .. TOD_CC_FAILED
  *   bits 24..27  detail  WAITING: TOD_CC_WAIT_*; CACHING: the planet, 1
- *                        Fastoon, 2 Stratus City; FAILED: TOD_CC_WHY_*
+ *                        Fastoon, 2 Stratus City, 3 Cobalia; FAILED:
+ *                        TOD_CC_WHY_* (a late one once the rest is in)
  *   bits 16..23  CACHING: the percentage of that planet's sound read; DONE:
  *                the read rate in tenths of a MiB/s (at most 255), 0 when
  *                everything was cached already
@@ -904,13 +889,15 @@ int  tod_fresh_run_load(s32 level);
 #define TOD_CC_WHY_QUIT      6u           /* the game is going */
 #define TOD_CC_WHY_LATE_SC   7u           /* a load into Stratus City before its sound was in */
 #define TOD_CC_WHY_LATE_FN   8u           /* a load into Fastoon before its sound was in */
-#define TOD_CC_NPLANETS      2u           /* 0 Fastoon, 1 Stratus City; Stratus City is read first */
+#define TOD_CC_WHY_LATE_CB   9u           /* a load into Cobalia before its sound was in */
+#define TOD_CC_NPLANETS      3u           /* 0 Fastoon, 1 Stratus City, 2 Cobalia; the last is read first */
+#define TOD_CC_ALL           7u           /* every planet's bit */
 #define TOD_CC_NO_PLANET     0xFFu
 
 struct tod_cc_state {
 	u8  state;             /* TOD_CC_* */
 	u8  detail;
-	u8  planet;            /* the one queued or read, 0 Fastoon, 1 Stratus City */
+	u8  planet;            /* the one queued or read, 0 Fastoon, 1 Stratus City, 2 Cobalia */
 	u8  pct;
 	u8  seq;
 	u8  seen_play;         /* the request has seen gameplay: the title after that ends it */
@@ -925,6 +912,7 @@ struct tod_cc_state {
 	u8  ev_metro;          /* and its planet is Metropolis */
 	u8  ev_nh;
 	u8  pending;           /* bit p: planet p's sound still to read */
+	u8  late;              /* bit p: a load into planet p came first: dropped, too late for it */
 	u8  planned;           /* pdesc/pfs/pfe looked up since the request or the last load */
 	u8  in_hand;           /* `planet`'s range has been seen in the warmer's hands */
 	u8  borrow;            /* slot `slot` holds ours: the game's own is in slot_desc/slot_size */

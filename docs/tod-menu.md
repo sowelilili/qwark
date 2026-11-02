@@ -1,6 +1,6 @@
 # Tools of Destruction's console menu: the game's own pause menu (revision 1.29, pending)
 
-The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`), drawn by the game's own pause menu as the four original games' menus are: a **TRAINER** row in place of the pause menu's Help row, and qwark's pages on the pause's own list and its GAME OPTIONS screen (since the fourth console test, section 12; until then the Cheats screen). This file has the reverse engineering, the design, and the test lists for a console and RPCS3.
+The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`), drawn by the game's own pause menu as the four original games' menus are: a **TRAINER** row in place of the pause list's Inventory row (Options' Help row until section 14), and qwark's pages on the pause's own list and its GAME OPTIONS screen (since the fourth console test, section 12; until then the Cheats screen). This file has the reverse engineering, the design, and the test lists for a console and RPCS3.
 
 Read from the executable, the pause menu's data (`built/anark/pause/built.dat` in `global_cached.psarc`, its 28 compiled Lua 5.0.2 chunks decompiled) and Ghidra (DL-ghidra:/NPEA00452.ELF). **Its first console test crashed as the pause opened (section 9), and so did the test of that fix, in the game's Lua allocator (section 10); the third test (build 34e848e) ran without a crash, but the glue never found what it looked for, so Help stayed Help and the combo opened the plain pause (section 11), whose fix ran in the fourth test (build e44961c): the row was in, but its links were dead, its pages wore the Cheats screen's title and counter, and the game's own Cheats screen broke; section 12 has why and the rework, which ran in the fifth test (build 87a143a): it works, but the list's frame kept the size of the menu it was entered from, loads from the Trainer said busy, and Manips wanted a spacer; section 13 has why and the fixes, which have not run yet** (section 13.6). Confidence marks as in the other ToD reports: **high** read end to end; **medium** read, the effect in game inferred; **low** a lead.
 
@@ -71,8 +71,8 @@ Supported, which none of the four originals' menus is: the menu needs no code of
 **Console** (a test build: `tod.sprx`, no ui.pak needed for ToD; `menu.enabled` and `menu.help` at their defaults):
 
 1. qwark.log a few seconds into a level: "lua: helper installed", then "menu: the game's own menu served for game 5, mailbox 0x008CD000". Play a minute (walking, a death, a cutscene, the pause): nothing differs.
-2. Start -> Options: the pause opens as it always did (the crash of section 9 is gone), and the fourth row reads **TRAINER**. qwark.log says "menu: the pause menu's glue is in: TRAINER in Options" within a second of the first pause (the crash of section 10 is gone too), either "(its Lua pool: N blocks ...)" right after "Options" (Game Options was already there) or ", Game Options met when the Trainer shows a page there (its Lua pool: ...)" (it was not, the usual case), and has no "glue failed", "glue was not run", "glue stopped", "Lua pool is short", "not ready for the Trainer", "found no Options list", "found no Game Options screen" or "what the glue saw" line; LUA_STATUS shows no "qwark-menu" error. Note N and M, and which of the two "in" lines it was, for the record. If there is a "what the glue saw" line, copy it all (it is section 11's look). Pause and unpause ten times, and stay a minute in the Trainer moving through pages: no such line appears. (If the row still says HELP, those lines and LUA_STATUS's err say why; the pause menu works as the game's either way.)
-3. TRAINER (section 12): the Options list itself becomes the Trainer's root, GAME, CHEATS, MANIPS, PLANETS, UNLOCKS, SAVE FILES ..., in the list's own style, the cursor on the first; no screen change, no CHEATS title, no skill-point text. Up/Down move; Triangle goes back to the Options list with the cursor on TRAINER.
+2. Start: the pause opens as it always did (the crash of section 9 is gone), and the main list's fourth row reads **TRAINER** where INVENTORY was (section 14; Options keeps HELP). qwark.log says "menu: the pause menu's glue is in: TRAINER in the pause list for Inventory" within a second of the first pause (the crash of section 10 is gone too), either "(its Lua pool: N blocks ...)" right after "Options" (Game Options was already there) or ", Game Options met when the Trainer shows a page there (its Lua pool: ...)" (it was not, the usual case), and has no "glue failed", "glue was not run", "glue stopped", "Lua pool is short", "not ready for the Trainer", "found no Options list", "found no Game Options screen" or "what the glue saw" line; LUA_STATUS shows no "qwark-menu" error. Note N and M, and which of the two "in" lines it was, for the record. If there is a "what the glue saw" line, copy it all (it is section 11's look). Pause and unpause ten times, and stay a minute in the Trainer moving through pages: no such line appears. (If the row still says HELP, those lines and LUA_STATUS's err say why; the pause menu works as the game's either way.)
+3. TRAINER (section 12): the pause's list itself becomes the Trainer's root, GAME, CHEATS, MANIPS, PLANETS, UNLOCKS, SAVE FILES ..., in the list's own style, the cursor on the first; no screen change, no CHEATS title, no skill-point text. Up/Down move; Triangle goes back to the main list (its own eight-row frame, section 14) with the cursor on TRAINER.
 4. TRAINER > CHEATS (the cross): the GAME OPTIONS screen with CHEATS in its header and the section's rows, label left and value right (qwark.log adds "menu: the Trainer met the game's Game Options screen on its slide; its page is in" the first time in a pause, the game's own options perhaps showing for a frame first). Infinite ammo: the cross (or Right) turns it ON (the client's checkbox follows); Left back OFF. Max bolts: the cross. The description box says qwark's answer. Triangle back to the root list, Triangle again to Options.
 5. Game > Save position, leave the pause, move, pause, Trainer > Game > Load position.
 6. Planets: six planets at a time; Down past the sixth slides to the next ones (and Up back). A planet: the pause closes and the planet loads (section 13: once the game plays, never "busy").
@@ -80,9 +80,9 @@ Supported, which none of the four originals' menus is: the menu needs no code of
 8. The combo in the pause (on its first list, then from inside Weapons): the Trainer opens.
 9. Start inside the Trainer: the pause closes as from any screen; the next combo opens it again (qwark saw the close).
 10. After using the Trainer (several pages, and Triangle out): Extras > Cheats shows the game's cheats, CHEATS, its counter and descriptions (the fourth test's broken screen is gone, and the Trainer's page never shows there); Options > Game options shows the game's six options with GAME OPTIONS, and they change as before; Options > Help (menu.help 0) is the game's. Also before ever opening the Trainer in a pause: the same.
-11. The client's In-game menus switch off (MENU_HELP 0): Options says HELP again at the next pause, and Help works; the combo still opens the Trainer.
+11. The client's In-game menus switch off (MENU_HELP 0): the main list says INVENTORY again at the next pause, and Inventory works; the combo still opens the Trainer.
 12. `menu.enabled = 0`: no TRAINER, the combo says the menu is off.
-13. A space combat level and an arena challenge: Options > TRAINER there too.
+13. A beaten space combat level and an arena challenge: TRAINER in the list's fifth row, where Inventory is there (section 14).
 
 **RPCS3** (with the client's new Lua helper patch written and the game restarted): the same list. Before it, live check 3 of docs/tod-poc.md (the heartbeat at 0x8CA028 counting in play), and the menu heartbeat at 0x8CA03C counting while paused.
 
@@ -292,3 +292,41 @@ Manips is a section of ToD's menu table (`tod_menu_manips`), and a section lists
 ### 13.7 Ghidra (DL-ghidra:/NPEA00452.ELF)
 
 Labels in `PauseMenu_update`: `PauseMenu_update_stateCases` 0x24160 (its jump table by `g_pauseMenuState`), `PauseMenu_update_closing` 0x24174 (state 4), `PauseMenu_update_closed` 0x243F8 (state 0, which calls `thunk_GameState_requestGameplay`).
+
+
+## 14. The Trainer takes Inventory's row, not Help's (revision 1.29, pending)
+
+**Why.** In ToD's pause, Help is a row of Options, a sub-page, so the Trainer was two presses away and Options lost a row the game uses. The user asked for the Trainer to take **INVENTORY**'s row instead: Inventory is a read-only screen, and of no use to a speedrunner.
+
+**Where Inventory is** (high, from built.dat's `ListUpdater`, `SetupMenus`; scratchpad `nm/pause_ps.txt`). `onInventory` is `scene:goToSlide(3)`, and three menus list it:
+
+| menu | index | rows | Inventory | slide (frame) | used |
+|---|---|---|---|---|---|
+| MAIN | 1 | 8 | row 4, `{36, self.onInventory}` | 3 | every planet |
+| ARENA | 4 | 9 | row 5 | 1 | a challenge (`is_in_challenge()`) |
+| SPACE | 5 | 9 | row 5 | 1 | a space combat level once beaten |
+
+`onInitialize` picks one of the three by level for `currentMenuIndex` (with `currentSlide` 3, 1, 1), and `onMenuBack` goes back to the same one. Options (index 2) keeps `{45, self.onHelp}` as its fourth row. `handleBack` on a level's own menu calls `onMenuQuit` (the pause closes); on any other menu `onMenuBack`, which is why the Trainer's menu, index 6, gets Triangle.
+
+**The swap** (`lh_glue.lua`): the look finds the list by every `menuData` row whose callback is the behaviour's own `onInventory`, in whichever menus hold them (all three), and keeps each as `{ menu's rows, row, the game's own item }` in `qwark_state.hr`. While `menu.help` is 1 each of those rows is the TRAINER row (`{"TRAINER", open}`), and while it is 0 the game's own item again, as Help's row was; Options' Help is never touched. Only one of the three menus shows in a level, so the TRAINER row is wherever Inventory is in that level's list. Internal names stay as they were (`menu.help`, the help byte at 0x8CE000, `helprow` in the glue, MENU_HELP on the wire): they say whether the Trainer row is in, which has not changed; renaming them would touch the wire and every game.
+
+**Frame and slide** (section 13). Nothing new was needed: the take-over already records the list's `currentIndex` and `currentSlide` as it enters (`lon`), and leaving with Triangle at the root (`leave(true)`) puts the list back on that slide (`lframe`), resets it and sets the cursor back. Entered from the main list, the Trainer's root goes to its own row count's slide (six or seven rows: slide 7 or 5) and Triangle brings back the main list on slide 3, its eight-row frame, with the cursor on TRAINER (row 4); in an arena or a space combat level the same with slide 1 and row 5. The combo opens the Trainer from whichever list is up, and Triangle at the root returns to it.
+
+**Safety, unchanged.** Nothing of the game's is touched while the Trainer is down but the Inventory rows; the pool guard, the push/pop gate, the take-over that records and restores every field, and no game function wrapped while the Trainer is down are as in sections 9, 10 and 12. An error, `qwark_quit` or qwark gone puts the Inventory rows back with everything else.
+
+**Sizes.** The glue is 7,933 bytes as sent (of 8,192; it was 7,994): the look's row test grew a little and `helprow` shrank. Nothing moved into C. The Lua helper's code (7,756 bytes) and LUA_PATCH are unchanged, and nothing here needs RPCS3.
+
+**The look** (`lh_diag.lua`): `g=` now says how many Inventory rows the glue found and the first one's row (`3x4`, or `-`), the registry's keys say `i` for a behaviour with `onInventory` (it said `h` for `onHelp`), and `lu=` marks each menu's `i<row>` (onInventory), `t<row>` (tag 36, Inventory's) and `T<row>` (TRAINER).
+
+**qwark's log lines** now say "TRAINER in the pause list for Inventory", "found no pause list; Inventory stays the game's", and "Inventory is the game's" where they said Options and Help.
+
+**Tests.** `test/test_glue.py` (`test/glue_harness.lua`, 60 checks, the source and the bytes sent): the stand-in list opens on its main menu (index 1, slide 3) with Inventory at the main list's fourth row and the arena and space lists' fifth and Help at Options' fourth; TRAINER in all three Inventory rows and Help untouched; `menu.help` 0 gives every Inventory row back; Triangle at the root returns to the main list on slide 3 with the cursor on row 4 (TRAINER); an Inventory row elsewhere is found by its callback; every way out (`qwark_quit`, qwark gone, an error) gives the Inventory rows back; the look's line. `test/test_tod_menu.c` and smoke: the new log lines and the help byte's meaning.
+
+### 14.1 What the next console test should show
+
+1. Start: the pause's main list, fourth row **TRAINER** where INVENTORY was; Options > fourth row **HELP** again, and Help works.
+2. TRAINER: the root in a frame of its own rows. Triangle at the root: the main list in its eight-row frame, the cursor on TRAINER. Triangle again: the pause closes, as from the main list always.
+3. The combo from the main list and from Options: the Trainer opens; Triangle at its root returns to the list it was opened from, in that list's frame.
+4. The client's In-game menus off (MENU_HELP 0): INVENTORY again at the next pause, and it opens the game's Inventory; on again: TRAINER.
+5. An arena challenge and a beaten space combat level: TRAINER in the fifth row, where Inventory is there; Triangle at the root: that nine-row list again.
+6. qwark.log: "menu: the pause menu's glue is in: TRAINER in the pause list for Inventory ...".

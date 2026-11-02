@@ -104,16 +104,17 @@
 /*
  * LM_NOTE: what the glue found in this pause menu (qw(LM_OP_NOTE, n)), the
  * last thing it said. Revision 1.29, the third console test (docs/tod-menu.md
- * 11): the Options list and the page's screen are looked for apart, the
+ * 11): the pause list and the page's screen are looked for apart, the
  * screen at the latest when the Trainer goes to its slide; NONE and NOCH are
  * failures, after which qwark sends lh_diag.lua's look (once). Since the
  * fourth test (docs/tod-menu.md 12) the page's screen is GAME OPTIONS, not
- * the Cheats screen; the numbers are the same.
+ * the Cheats screen; the numbers are the same. Since docs/tod-menu.md 14 the
+ * pause list is found by its Inventory rows (TRAINER takes them), not Help.
  */
-#define LM_NOTE_IN      1      /* the Options list and Game Options: TRAINER is in                         */
-#define LM_NOTE_NONE    2      /* no Options list in its first tries: Help stays the game's (it looks on)  */
+#define LM_NOTE_IN      1      /* the pause list and Game Options: TRAINER is in                           */
+#define LM_NOTE_NONE    2      /* no pause list in its first tries: Inventory stays the game's (looks on)  */
 #define LM_NOTE_NOCH    3      /* the Trainer waited on Game Options' slide and none came: back out         */
-#define LM_NOTE_IN_LIST 4      /* the Options list: TRAINER is in; Game Options not met yet                */
+#define LM_NOTE_IN_LIST 4      /* the pause list: TRAINER is in; Game Options not met yet                  */
 #define LM_NOTE_LATE    5      /* Game Options met only once the Trainer went to its slide                 */
 
 /*

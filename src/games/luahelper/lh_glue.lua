@@ -23,8 +23,11 @@
 --
 -- What it shows (the fourth console test, docs/tod-menu.md 12):
 --
---   * Options' Help row becomes TRAINER (the ListUpdater's menuData row whose
---     callback is its onHelp) while qwark says so (menu.help);
+--   * the pause list's Inventory row becomes TRAINER (each ListUpdater
+--     menuData row whose callback is its onInventory: the main list's, and
+--     the space combat and arena lists') while qwark says so (menu.help);
+--     Inventory is read-only and of no use to a speedrunner, and Options'
+--     Help stays the game's (it was Help's row until docs/tod-menu.md 14);
 --   * a MAIN page (qwark's root, Unlocks) is a menu of the pause's own list,
 --     the ListUpdater's: menuData[TR], {label, callback} as SetupMenus makes
 --     its menus, shown as setOptionsText shows Options (currentMenuIndex,
@@ -42,7 +45,7 @@
 -- its own count; Game Options' rows past a page's end are hidden.
 --
 -- Take-over is scoped. Nothing of the game's is touched while the Trainer is
--- not up, but the Help row; entering it (TRAINER, or the menu combo) puts
+-- not up, but the Inventory row; entering it (TRAINER, or the menu combo) puts
 -- the Trainer's fields and methods on the list, and showing a CONFIG page
 -- puts them on Game Options, each one recorded with the game's own value
 -- before it, and leaving (the root's Triangle, the combo, qwark gone, an
@@ -71,6 +74,7 @@ local SL = SetLocalizedText
 -- The mailbox's events (src/core/menubox.h MBOX_EV_*), the same way: 1 ACTIVATE, 2 LEFT, 3 RIGHT, 4 BACK.
 -- The numbers below, named where they are used (a request holds 8,192 bytes, so no local names them):
 -- LM_NOTE_* for qwark's log, 1 in (Game Options known), 2 no list, 3 no Game Options screen, 4 in (Game Options not met yet), 5 Game Options met late;
+-- the Inventory rows found, T.hr: { the menu's rows, the row, the game's own item } each (lh_diag.lua reads it);
 -- K_LINK 1 (menubox.h); REQ_OPEN 1, REQ_CLOSE 2;
 -- the pause's slides: 9 Game Options (onGameOptions), 1 its own back (optHandler's onBack), 21 the blank that brings the list back (the Cheats screen's back);
 -- 6 the Trainer's menu in the list's menuData (the game's are 1 to 5);
@@ -78,7 +82,7 @@ local SL = SetLocalizedText
 local SP = string.char(32)
 
 -- The menu's state for this pause (qwark_state: lh_diag.lua reads it).
-local T = { age = 0, tries = 0, gen = -1, vgen = -1, n = 1, pf = 0, help = -1 }
+local T = { age = 0, tries = 0, gen = -1, vgen = -1, n = 1, pf = 0, help = -1, hr = {} }
 qwark_state = T
 local G = {}
 -- Everything the glue put into a game's object, and the game's own value it took the place of: what leaving puts back.
@@ -350,7 +354,7 @@ local function place()
   end
 end
 
--- The menu up: the Trainer's menu in the pause's list (the list brought back first if a screen of the game's is up).
+-- The menu up: the Trainer's menu in the pause's list (the list brought back first if a screen of the game's is up); Triangle at its root goes back to the list it came from, its frame and the cursor on TRAINER (leave).
 local function open()
   if T.on or not LU then return end
   local on, help, gen, vgen, n, cur, pt, pf = Q(0)
@@ -395,18 +399,21 @@ end
 -- ------------------------------------------------------------- the look
 
 -- One look among the registry's behaviours (AnarkLibraryExtensions: every one that called _useOnActivateDeactivate) for what is still missing:
--- the list, by the menuData row whose callback is its own onHelp, in whichever menu holds it; Game Options (optHandler), by its optArray.
+-- the list, by the menuData rows whose callback is its own onInventory, in whichever menus hold them; Game Options (optHandler), by its optArray.
 local function look()
   local reg = get(S, "_table_ActDeactRegisters")
   if type(reg) ~= "table" then return end
   for n in pairs(reg) do
     if obj(n) then
-      local md, h = get(n, "menuData"), get(n, "onHelp")
+      local md, h = get(n, "menuData"), get(n, "onInventory")
       if not LU and type(md) == "table" and type(h) == "function" then
         for m, rows in pairs(md) do
           if type(rows) == "table" then
             for r, it in pairs(rows) do
-              if type(it) == "table" and it[2] == h then LU, LS, T.lm, T.lr, G.help = n, get(n, "listBehavior"), m, r, it end
+              if type(it) == "table" and it[2] == h then
+                LU, LS = n, get(n, "listBehavior")
+                table.insert(T.hr, { rows, r, it })
+              end
             end
           end
         end
@@ -445,14 +452,13 @@ local function setup()
   return true
 end
 
--- Options' Help row (where the look found it): TRAINER while qwark says so, the game's Help otherwise.
+-- The Inventory rows (where the look found them): TRAINER while qwark says so (menu.help), the game's own Inventory otherwise.
 local function helprow(h)
   if h == T.help or not LU then return end
-  local rows = get(LU, "menuData")
-  rows = type(rows) == "table" and rows[T.lm]
-  if type(rows) ~= "table" then return end
   T.help = h
-  if h == 1 then rows[T.lr] = G.trainer else rows[T.lr] = G.help end
+  for _, x in pairs(T.hr) do
+    if h == 1 then x[1][x[2]] = G.trainer else x[1][x[2]] = x[3] end
+  end
 end
 
 local function frame()
@@ -517,7 +523,7 @@ function qwark_frame()
   end
 end
 
--- The helper's way out when the pool stays short: the menu down, the Help row and everything put the game's again, qwark_frame gone.
+-- The helper's way out when the pool stays short: the menu down, the Inventory rows and everything put the game's again, qwark_frame gone.
 function qwark_quit()
   pcall(leave, false)
   pcall(helprow, 0)

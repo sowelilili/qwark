@@ -267,9 +267,9 @@
 #define OP_LEVELFLAGS_GET    0x0053
 #define OP_LEVELFLAGS_RESET  0x0054
 #define OP_LEVELFLAGS_SET    0x0055
-/* Revision 1.28: one bit of the region, and the bits' names (PROTOCOL.md 5.6). */
+/* Revision 1.28: one bit of the region (PROTOCOL.md 5.6). */
 #define OP_LEVELFLAGS_BIT    0x0056
-#define OP_LEVELFLAGS_NAMES  0x0057
+/* 0x0057, LEVELFLAGS_NAMES (revision 1.28), is retired (revision 1.29) and never reused. */
 
 #define OP_MOD_LIST          0x0060
 #define OP_MOD_LOAD          0x0061
@@ -486,24 +486,7 @@
 #define LUA_PHASE_CANCELLING  2
 #define LUA_PHASE_HUNG        3
 
-/*
- * Revision 1.29 (pending): a game's debug pages, read-only text a game makes
- * from its own memory (PROTOCOL.md 5.16). Tools of Destruction alone answers
- * it, in the builds that have it; every other game, and a session outside a
- * game, UNSUPPORTED; a release module UNKNOWN_OP.
- *
- *   DEBUG_TEXT  u8 page
- *     page 0xFF -> u8 npages, then npages x { u8 flags, char title[23] }
- *     page n    -> u16 len, u16 pad, char text[len] (ASCII, lines end in '\n')
- *
- * A page flagged SLOW reads a lot of the game's memory: a client asks for it
- * on the user's word, never on a timer. BAD_ARG for a page past npages.
- */
-#define OP_DEBUG_TEXT         0x00E8
-#define DEBUG_TEXT_LIST       0xFFu
-#define DEBUG_PAGE_SLOW       0x01u
-#define DEBUG_TITLE_LEN       23u
-#define DEBUG_TEXT_HEAD       4u
+/* 0x00E8, DEBUG_TEXT (revision 1.29, a game's debug pages), is retired and never reused. */
 
 /* A group's flags on the wire. */
 #define MANIP_FLAG_NGPLUS       0x01  /* 1 NG+ (challenge mode), 0 new-game */
@@ -807,9 +790,6 @@
  * a number box; `max` is the largest meaningful value of a number, 0 for none.
  */
 #define UNLOCK_FIELD_WIRE_SIZE  16
-/* Revision 1.28, LEVELFLAGS_NAMES: u8 planet, char[23] name; then u16 bit, u16 number, u8 group, u8 len. */
-#define LEVELFLAG_GROUP_WIRE_SIZE 24u
-#define LEVELFLAG_NAME_WIRE_HEAD  6u
 #define UNLOCK_FIELD_NAME_LEN   12
 
 #define UNLOCK_KIND_FLAG    0
