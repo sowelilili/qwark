@@ -6236,7 +6236,6 @@ TOD_LOAD_TIER = 0x1037A908 + 6          # g_levelLoadTier's loaded byte
 TOD_AS_ROWS = [
     (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
     (7, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
-    (5, AUTOSPLIT_SPLIT, 0, 0, "Credits"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
     (3, AUTOSPLIT_PAUSE, DF | NM, 19950000, "Quit to XMB"),
@@ -6252,7 +6251,7 @@ def smoke_tod_autosplit(c, sim):
         rows, consumed = parse_autosplit_describe(body)
         got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
         check(consumed == len(body) and got == TOD_AS_ROWS,
-              "ToD: its six rows, code 7 \"Tachyon defeated\" the final split, 2 and 8 retired, "
+              "ToD: its five rows, code 7 \"Tachyon defeated\" the final split, 2, 5 and 8 retired, "
               "the long load a HOLD", got)
 
     one, zero, half = struct.pack(">f", 1.0), struct.pack(">f", 0.0), struct.pack(">f", 0.5)
@@ -6357,10 +6356,10 @@ def smoke_tod_autosplit(c, sim):
         {"what": "the screen black before it is the final split, \"Tachyon defeated\" (revision 1.29)",
          "then": [(0x30000000 + TOD_FADE_PROGRESS, one)],
          "expect": (AUTOSPLIT_SPLIT, 7), "arg": 0},
-        {"what": "the credits are their own split",
+        {"what": "the credits are no split: code 5 was retired in revision 1.29",
          "poke": [(TOD_MOVIE_PLAYER + 0x58, struct.pack(">I", 4))],
          "then": [(TOD_GAME_STATE, struct.pack(">I", 11))],
-         "expect": (AUTOSPLIT_SPLIT, 5), "arg": 18},
+         "absent": (AUTOSPLIT_SPLIT, 5)},
     ])
     mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
     mem_write(c, TOD_MOVIE_PLAYER + 0x58, bytes(4))

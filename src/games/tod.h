@@ -618,7 +618,7 @@ struct tod_facts {
 /* 2, Tachyon's health reaching 0, was retired in revision 1.29: never reuse it. */
 #define TOD_AS_QUIT         3      /* PAUSE / RESUME around a quit to the XMB */
 #define TOD_AS_LOAD         4      /* LOAD_START / LOAD_END, the old autosplitter's long load (revision 1.29) */
-#define TOD_AS_CREDITS      5      /* SPLIT, the credits start */
+/* 5, the credits (g_gameState becoming 11), was retired in revision 1.29: never reuse it. */
 #define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
 #define TOD_AS_END_FADE     7      /* SPLIT, "Tachyon defeated": the screen black before the ending cinematic (revision 1.29) */
 /* 8, the ending FMV, was retired in revision 1.29: never reuse it. */
@@ -639,7 +639,6 @@ struct tod_as_state {
 	u8  primed;
 	u8  seen;              /* this process has shown its front end or a level */
 	u32 lua;               /* the last tick's */
-	s32 state;
 	u8  front;
 	u8  missions_primed;
 	u8  nmissions;

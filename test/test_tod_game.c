@@ -1361,23 +1361,24 @@ static void test_tod_autosplit_rows(void)
 	check(g != NULL && g->autosplit_describe != NULL, "ToD describes an autosplitter");
 	if (g == NULL || g->autosplit_describe == NULL) return;
 	d = g->autosplit_describe(&n);
-	check(n == 6, "six rows");
-	if (n != 6) return;
+	check(n == 5, "five rows");
+	if (n != 5) return;
 	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
 	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE) && qstreq(d[0].label, "Planet entered"),
 	      "code 1 is the planet split, on, with the route");
 	check(d[1].code == TOD_AS_END_FADE && d[1].kind == AUTOSPLIT_SPLIT && d[1].flags == AUTOSPLIT_FLAG_DEFAULT &&
 	      qstreq(d[1].label, "Tachyon defeated"),
 	      "code 7, the fade to black after Tachyon, is the final split, \"Tachyon defeated\", on (rev 1.29)");
-	for (i = 0; i < n; i++) check(d[i].code != 2 && d[i].code != 8, "codes 2 and 8 are retired");
-	check(d[2].code == TOD_AS_CREDITS && d[2].flags == 0 && d[3].code == TOD_AS_MISSION && d[3].flags == 0,
-	      "the credits and every mission are there, off");
-	check(d[4].code == TOD_AS_LOAD && d[4].kind == AUTOSPLIT_LOAD_START &&
-	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[4].param_us == 0 &&
-	      qstreq(d[4].label, "Long load"),
+	for (i = 0; i < n; i++)
+		check(d[i].code != 2 && d[i].code != 5 && d[i].code != 8, "codes 2, 5 and 8 are retired");
+	for (i = 0; i < n; i++) check(!qstreq(d[i].label, "Credits"), "no Credits row (rev 1.29)");
+	check(d[2].code == TOD_AS_MISSION && d[2].flags == 0, "every mission is there, off");
+	check(d[3].code == TOD_AS_LOAD && d[3].kind == AUTOSPLIT_LOAD_START &&
+	      d[3].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[3].param_us == 0 &&
+	      qstreq(d[3].label, "Long load"),
 	      "the long load holds game time (HOLD, rev 1.29), no NORMALISE");
-	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
-	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 19950000u,
+	check(d[4].code == TOD_AS_QUIT && d[4].kind == AUTOSPLIT_PAUSE &&
+	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[4].param_us == 19950000u,
 	      "the quit to the XMB costs the old script's 19.95 s");
 	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
 }
@@ -1594,7 +1595,7 @@ static void test_tod_autosplit_runs(void)
 	static const u32 before[] = { 635, 636, 637 };
 	u32 ids[4], seq, arg = 0, i;
 
-	group("ToD: run starts on the Metropolis flag, deaths, and the credits");
+	group("ToD: run starts on the Metropolis flag, deaths, and no credits split");
 
 	/* A new game: the title, a file with MOVIE_METROPOLIS_TACHYON clear, Metropolis. */
 	wr32(TOD_CURRENT_LEVEL, 3);
@@ -1692,11 +1693,11 @@ static void test_tod_autosplit_runs(void)
 	tick(8);
 	check(as_all(seq) == 0, "a death there learns the list again and splits nothing");
 
-	/* The credits, on Fastoon II. */
+	/* The credits, on Fastoon II: no split since revision 1.29 retired code 5. */
 	seq = autosplit_latest_seq();
 	wr32(TOD_GAME_STATE, TOD_STATE_CREDITS);
 	tick(3);
-	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_CREDITS, &arg) == 1 && arg == 18, "the credits split, on Fastoon II");
+	check(as_count(seq, AUTOSPLIT_SPLIT, 5, NULL) == 0 && as_all(seq) == 0, "the credits are no split (code 5 retired)");
 
 	put_missions(18, ids, 0);
 

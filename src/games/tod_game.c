@@ -32,15 +32,16 @@
  *   4  ammo flag  g_infiniteAmmo, which Infinite ammo's hold keys  every 4th
  *   5  lua state  the gameplay lua_State, 0 between levels         every tick
  *   6  front end  g_inFrontEnd, 1 on the title                     every 2nd
- *   7  game state g_gameState, 11 in the credits                   every 2nd
+ *   7  game state g_gameState, 4 in gameplay                       every 2nd
  *   8  load screen g_loadScreenType, the long load's                every tick
  *   9  load job   the tier loader's job, a level load's               every 2nd
  *  10  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
  *
  * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
- * pending): the level coming up is read every tick; the title and the
- * credits take the even and the odd ticks between them, and a level load
- * (revision 1.29), which lasts seconds, is the two words of blocks 9 and 10,
+ * pending): the level coming up is read every tick; the title and the game
+ * state (Cache cutscenes' test for gameplay since revision 1.29 retired the
+ * credits split) take the even and the odd ticks between them, and a level
+ * load (revision 1.29), which lasts seconds, is the two words of blocks 9 and 10,
  * read on the same tick so that they agree.
  *
  * The position is the hero's, two pointers deep: hot_decode reads the hero's

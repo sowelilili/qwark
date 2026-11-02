@@ -1,7 +1,7 @@
 /*
  * Tools of Destruction (NPEA00452 v01.00): the autosplit watcher (revision
  * 1.28, reworked in 1.29; PROTOCOL.md 8.5). The hot block (tod_game.c) hands
- * it the gameplay lua_State, the level, g_gameState, the front end's byte,
+ * it the gameplay lua_State, the level, the front end's byte,
  * the load screen's, the tier loader's job and g_levelLoadTier's loaded byte
  * every tick or two; it reads the level flags, the missions, the screen fade
  * and the movie player on the ticks that want them. The quit to the XMB is
@@ -58,8 +58,9 @@
  *                       queues that cinematic once Tachyon's death has played
  *                       out; MoviePlayer_update fades to black first and holds
  *                       its state 1 until ScreenFade's progress reads 1.0.
- *   the credits         g_gameState becoming 11: Lua_show_credits ->
- *                       GameState_RequestCredits, the only request for 11.
+ *
+ * The credits (g_gameState becoming 11, code 5) were a split until revision
+ * 1.29 retired the row; the watcher no longer looks at them.
  */
 #include "core_import.h"   /* first: src/games/module.h */
 #include "tod.h"
@@ -309,7 +310,6 @@ void tod_autosplit_tick(struct tod_as_state *as)
 {
 	u32 lua = as->cur_lua;
 	s32 level = as->cur_level;
-	s32 state = as->cur_state;
 	u8 front = as->cur_front;
 	int loading, load_began, gone, started = 0, long_load;
 
@@ -322,7 +322,6 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	if (!as->primed) {
 		as->primed = 1;
 		as->lua = lua;
-		as->state = state;
 		as->front = front;
 		as->loading = (u8)loading;
 		as->seen = (lua != 0 || front != 0);
@@ -406,10 +405,6 @@ void tod_autosplit_tick(struct tod_as_state *as)
 		as->start_wait = TOD_SW_NONE;
 	}
 
-	/* The credits, from a level (Lua_show_credits), never the title's. */
-	if (state == TOD_STATE_CREDITS && as->state != TOD_STATE_CREDITS && front == 0)
-		autosplit_emit(AUTOSPLIT_SPLIT, TOD_AS_CREDITS, level_ok(level) ? (u32)level : 0);
-
 	/* Missions and the ending, only while a level is up; a new lua_State forgets both. */
 	if (lua == 0 || front != 0 || !level_ok(level) || gone) {
 		as->missions_primed = 0;
@@ -421,7 +416,6 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	}
 
 	as->lua = lua;
-	as->state = state;
 	as->front = front;
 	as->loading = (u8)loading;
 }
@@ -437,13 +431,13 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * is the old autosplitter's long load, game time held for as long as it
  * lasts (HOLD, revision 1.29). Code 7, "Tachyon defeated", the screen black
  * after Tachyon's last hit, is the community's end of a run, on by default.
- * Codes 2 (Tachyon's health reaching 0) and 8 (the ending FMV) were retired
- * in revision 1.29 and are never reused.
+ * Codes 2 (Tachyon's health reaching 0), 5 (the credits, g_gameState
+ * becoming 11) and 8 (the ending FMV) were retired in revision 1.29 and are
+ * never reused.
  */
 static const struct autosplit_desc tod_autosplits[] = {
 	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
 	{ TOD_AS_END_FADE, AUTOSPLIT_SPLIT,      DF,      0, "Tachyon defeated" },
-	{ TOD_AS_CREDITS,  AUTOSPLIT_SPLIT,      0,       0, "Credits" },
 	{ TOD_AS_MISSION,  AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
 	{ TOD_AS_LOAD,     AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
 	{ TOD_AS_QUIT,     AUTOSPLIT_PAUSE,      DF | NM, TOD_QUIT_PAUSE_US, "Quit to XMB" }
