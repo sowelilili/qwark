@@ -600,8 +600,9 @@ static void test_facts(void)
 	ok = 1;
 	for (i = 0; i < f->nplanets; i++) ok &= f->planet_names[i] != NULL && f->planet_names[i][0] != 0;
 	check(ok, "facts: every planet has a name");
-	check(strcmp(f->planet_names[0], "Metropolis") == 0 && strcmp(f->planet_names[18], "Fastoon II") == 0,
-	      "facts: the enum's order, Metropolis = 0");
+	check(strcmp(f->planet_names[0], "Kerwan") == 0 && strcmp(f->planet_names[2], "Kortog") == 0 &&
+	      strcmp(f->planet_names[4], "Voron Asteroid Belt") == 0 && strcmp(f->planet_names[18], "Fastoon II") == 0,
+	      "facts: the planets as the ship names them, in the enum's order: Kerwan (Metropolis) = 0");
 
 	for (i = 0; i < 16; i++) seen |= 1u << f->pad_remap[i];
 	check(seen == 0xFFFF, "facts: the pad remap is a permutation");

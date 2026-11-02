@@ -465,6 +465,7 @@ MBOX_EV_ACTIVATE = 1
 MBOX_EV_LEFT = 2
 MBOX_EV_RIGHT = 3
 MBOX_EV_BACK = 4
+MBOX_EV_SCROLL_UP = 7
 MBOX_EV_SCROLL_DOWN = 8
 MBOX_EV_PICKER_OTHERS = 9
 
@@ -5349,7 +5350,7 @@ TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025E94),   # LevelTransition_updat
 TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
-TOD_FADE_STORY = 0x3DA00000                     # 5/64 s, a story FMV load's (2026-10-31)
+TOD_FADE_STORY = 0x3DE00000                     # 7/64 s, a story FMV load's (2026-11-02; 5/64 s from 2026-10-31)
 TOD_LF_SHIP_BYTE = 0x10211398 + 10              # LVL_FAST_SHIP_FIXED, level flag 106: byte 10 of g_levelFlags
 TOD_LF_SHIP_BIT = 1 << 2                        # and its bit
 TOD_ARCHIVE_TOC = 0x102042AC + 0x108            # g_archiveGame.toc
@@ -5830,8 +5831,8 @@ def smoke_tod(c, sim):
     if check(status == ST_OK, "ToD: PLANET_LIST answers", status):
         count = body[0]
         names = [body[1 + 24 * i:25 + 24 * i].split(b"\0")[0].decode() for i in range(count)]
-        check(count == 19 and names[0] == "Metropolis" and names[18] == "Fastoon II",
-              "ToD: the 19 LEVEL_ ids, Metropolis first", names)
+        check(count == 19 and names[0] == "Kerwan" and names[2] == "Kortog" and names[18] == "Fastoon II",
+              "ToD: the 19 LEVEL_ ids as the ship names their planets, Kerwan (Metropolis) first", names)
 
     status, body = c.call(OP_UNLOCK_LIST)
     if check(status == ST_OK, "ToD: UNLOCK_LIST answers", status):
@@ -5930,7 +5931,7 @@ def smoke_tod(c, sim):
     # 2026-10-31: a story FMV load (Metropolis or Cobalia, LVL_FAST_SHIP_FIXED clear) has no load
     # screen, so its fade-out is a few frames long; with the flag set it is a planet load as any.
     ship = mem_read_u8(c, TOD_LF_SHIP_BYTE)
-    for flag, want, what in ((0, TOD_FADE_STORY, "a fresh Metropolis, flag 106 clear: the fade-out 5/64 s"),
+    for flag, want, what in ((0, TOD_FADE_STORY, "a fresh Metropolis, flag 106 clear: the fade-out 7/64 s"),
                              (TOD_LF_SHIP_BIT, TOD_FADE_QUICK, "Metropolis with flag 106 set: one frame")):
         mem_write(c, TOD_LF_SHIP_BYTE, bytes([(ship & ~TOD_LF_SHIP_BIT) | flag]))
         status, _ = c.call(OP_PLANET_LOAD, bytes([0, 0]))
@@ -6033,9 +6034,9 @@ def smoke_tod_menu(c, sim):
           dict((hex(a), hex(w)) for a, w in h.items()))
     status, body = c.call(OP_MEM_READ, struct.pack(">II", box, 0x10))
     check(status == ST_OK and struct.unpack(">H", body[6:8])[0] == size and body[8] == 32 and body[9] == 0x40 and
-          body[10] == 9 and body[11] == 0x0D and body[14] == 5 and body[15] == 6,
+          body[10] == 9 and body[11] == 0x2D and body[14] == 5 and body[15] == 6,
           "ToD menu: 32 row slots of 0x40, a MAIN page 9 at once (the pause's list), a CONFIG page 6 (Game Options), "
-          "Left/Right, back, requests, game 5", body.hex() if status == ST_OK else status)
+          "Left/Right, back, requests, a page at a time (the polish), game 5", body.hex() if status == ST_OK else status)
     check(mem_read_u32(c, TOD_MENU_STATE + TOD_LM_HELP) >> 24 == 1, "ToD menu: the help byte says TRAINER (in place of Inventory)")
 
     page = menu_page(c, box, size)
@@ -6071,14 +6072,22 @@ def smoke_tod_menu(c, sim):
     check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: into Planets")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
-    check(page is not None and page[2] == "Planets" and len(page[3]) == 6 and page[4][MBOX_OFF_PFLAGS] & 0x04,
-          "ToD menu: Planets on Game Options: six planets, more below", (page[2:4], page[4][MBOX_OFF_PFLAGS]) if page else None)
-    first = page[3][0] if page else None
-    check(menu_event(c, MBOX_EV_SCROLL_DOWN, 5, box, size), "ToD menu: the window's edge asks for the next")
-    module_sleep(c, 0.1)
-    page = menu_page(c, box, size)
-    check(page is not None and page[3][0] != first and page[4][MBOX_OFF_PFLAGS] & 0x02,
-          "ToD menu: the next window, more above", page[3] if page else None)
+    check(page is not None and page[2] == "Planets" and
+          page[3] == ["Kerwan", "Cobalia", "Kortog", "Fastoon", "Voron Asteroid Belt", "Mukow"] and
+          page[4][MBOX_OFF_PFLAGS] & 0x06 == 0x04,
+          "ToD menu: Planets on Game Options, named as the ship names them (the polish): six planets, more below",
+          (page[2:4], page[4][MBOX_OFF_PFLAGS]) if page else None)
+    # The polish: a page at a time, wrapping past the ends.
+    for kind, row, want, cur, what in (
+            (MBOX_EV_SCROLL_DOWN, 5, "Nundac Asteroid Ring", 0, "Down off the window: the next whole one, the cursor on its top row"),
+            (MBOX_EV_SCROLL_UP, 0, "Kerwan", 5, "Up off it: the one before, the cursor on its bottom row"),
+            (MBOX_EV_SCROLL_UP, 0, "Fastoon II", 0, "Up off the first: it wraps to the last (one row), the cursor on it"),
+            (MBOX_EV_SCROLL_DOWN, 0, "Kerwan", 0, "Down off the last: it wraps to the first, the cursor on its top row")):
+        check(menu_event(c, kind, row, box, size), "ToD menu: the cursor leaving the window asks for the next")
+        module_sleep(c, 0.1)
+        page = menu_page(c, box, size)
+        check(page is not None and page[3][0] == want and page[4][MBOX_OFF_CURSOR] == cur,
+              "ToD menu: " + what, (page[3], page[4][MBOX_OFF_CURSOR]) if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back to the root")
     module_sleep(c, 0.1)
 
@@ -6301,8 +6310,11 @@ def smoke_tod_autosplit(c, sim):
         {"what": "Level_Enter's fade in from black starting is not the START yet (2026-10-31)",
          "then": [(0x30000000 + TOD_FADE_PROGRESS, one), (0x30000000 + TOD_FADE_TARGET, zero)],
          "absent": (AUTOSPLIT_START, 0)},
-        {"what": "half a second into it, the progress at 0.5, is START (revision 1.29, the user's timing)",
-         "then": [(0x30000000 + TOD_FADE_PROGRESS, half)],
+        {"what": "0.44 s into it, the progress at 0.56, is not the START yet (2026-11-02)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.56))],
+         "absent": (AUTOSPLIT_START, 0)},
+        {"what": "0.45 s into it, the progress at 0.55, is START (revision 1.29, the user's timing, 2026-11-02)",
+         "then": [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.55))],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a death on Metropolis on that fresh file is no RESET, no START and no split",
          "poke": [(0x30000000 + TOD_FADE_TARGET, one), (TOD_LUA_STATE, bytes(4)),
@@ -6317,7 +6329,7 @@ def smoke_tod_autosplit(c, sim):
          "poke": [(TOD_LOAD_TIER, b"\x01")],
          "then": level_enters(lua_state),
          "absent": (AUTOSPLIT_START, 0)},
-        {"what": "and past halfway, the START",
+        {"what": "and past 0.45 s, the START",
          "then": [(0x30000000 + TOD_FADE_PROGRESS, struct.pack(">f", 0.3))],
          "expect": (AUTOSPLIT_START, 0)},
         {"what": "a Metropolis save with the flag set is no start",

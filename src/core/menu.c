@@ -40,6 +40,13 @@ struct menu_nav {
 static struct menu_nav g_nav[MENU_NAV_DEPTH];
 static u8 g_depth;
 /*
+ * Revision 1.29, the polish (MBOX_CAP_PAGED): the way a window just turned,
+ * 1 down, -1 up (0 none), so the next view puts a cursor that landed on a row
+ * it cannot stand on (a spacer, a status row) on the nearest one it can, that
+ * way first.
+ */
+static s8 g_turn;
+/*
  * Bumped on every move between pages or windows, so a page's key changes with
  * every visit and an event made on an earlier visit is never taken for this one.
  */
@@ -1180,10 +1187,17 @@ static u8 screen_rows(u16 page, u8 depth)
 	return m;
 }
 
-/* The last window's start: 0 for a page that fits. */
+/* Revision 1.29, the polish: windows a whole screen apart (MBOX_CAP_PAGED, Tools of Destruction's pause menu). */
+static int paged(void)
+{
+	return (g_caps & MBOX_CAP_PAGED) != 0;
+}
+
+/* The last window's start: 0 for a page that fits; paged, the last whole screen's (that window short). */
 static u8 last_start(u8 n, u8 m)
 {
-	return n > m ? (u8)(n - m) : 0;
+	if (n <= m) return 0;
+	return paged() ? (u8)((n - 1) / m * m) : (u8)(n - m);
 }
 
 /*
@@ -1217,6 +1231,7 @@ static void nav_reset(void)
 /* Opens `page` from row `from` of the current view, with the cursor on its row `cursor`. */
 static int nav_push(u16 page, u8 from, u8 start, u8 cursor)
 {
+	g_turn = 0;
 	if (g_depth >= MENU_NAV_DEPTH) return ST_FULL;
 	g_nav[g_depth - 1].cursor = from;
 	g_nav[g_depth].page = page;
@@ -1231,6 +1246,7 @@ static int nav_push(u16 page, u8 from, u8 start, u8 cursor)
 /* Back a page, the cursor on the row the page was opened from. */
 static int nav_pop(void)
 {
+	g_turn = 0;
 	if (g_depth <= 1) return ST_BAD_ARG;
 	g_depth--;
 	g_visit++;
@@ -1254,6 +1270,32 @@ static int nav_move(u8 row, int down, int jump)
 	u8 start = cur->start;
 	int a = (int)start + (int)row, step = m > 2 ? m - 2 : 1;
 	u8 next;
+
+	/*
+	 * Revision 1.29, the polish (MBOX_CAP_PAGED): a whole window on. A
+	 * slide (the cursor leaving the window) puts the cursor on the next
+	 * window's first row going down, the window before's last going up, and
+	 * wraps past the page's ends as the game's lists do; a jump keeps the
+	 * cursor's row and stops at the ends. menu_model_view then moves a
+	 * cursor on a row it cannot stand on to the nearest one (g_turn).
+	 */
+	if (paged()) {
+		u8 last = last_start(n, m);
+
+		if (n <= m || (jump && (down ? start >= last : start == 0))) return ST_BAD_ARG;
+		start = (u8)(start / m * m);
+		if (down) next = start >= last ? 0 : (u8)(start + m);
+		else next = start == 0 ? last : (u8)(start - m);
+		if (jump) a = row;
+		else if (down) a = 0;
+		else a = (n - next < m ? n - next : m) - 1;
+		if (a >= n - next) a = n - next - 1;
+		cur->start = next;
+		cur->cursor = (u8)a;
+		g_turn = (s8)(down ? 1 : -1);
+		g_visit++;
+		return ST_OK;
+	}
 
 	if (n <= m || (down ? start >= last_start(n, m) : start == 0)) return ST_BAD_ARG;
 	if (a >= n) a = n - 1;
@@ -1282,6 +1324,7 @@ void menu_model_reset(u8 max_rows, u8 cfg_rows, u8 caps)
 	g_cfg_rows = cfg_rows;
 	g_caps = caps;
 	nav_reset();
+	g_turn = 0;
 #ifdef QWARK_TEST
 	memset(g_step, 0, sizeof(g_step));
 #endif
@@ -1361,6 +1404,14 @@ void menu_model_view(struct menu_view *v)
 	m = screen_rows(cur->page, g_depth);
 	lib_read(cur->page, cur->start, m);
 	n = page_items(cur->page, ids);
+	/* Revision 1.29, the polish: paged, a window starts a whole screen in (the cursor kept on its row of the page). */
+	if (paged() && m != 0 && cur->start % m != 0) {
+		u16 a = (u16)cur->start + cur->cursor;
+
+		cur->start = (u8)(cur->start / m * m);
+		cur->cursor = (u8)(a - cur->start < m ? a - cur->start : m - 1);
+		if (g_lib.on) lib_read(cur->page, cur->start, m);
+	}
 	/* A start past the last window (the page got shorter) comes back to it, its names read again. */
 	if (cur->start > last_start(n, m)) {
 		cur->start = last_start(n, m);
@@ -1382,6 +1433,28 @@ void menu_model_view(struct menu_view *v)
 	if (v->nrows == 0) push_row(v, cur->page, MENU_ROW_ID(MENU_ROW_TEXT, MENU_TEXT_EMPTY));
 
 	v->cursor = cur->cursor < v->nrows ? cur->cursor : (u8)(v->nrows - 1);
+	/*
+	 * Revision 1.29, the polish: a window just turned (paged) with the
+	 * cursor on a row it cannot stand on: the nearest one it can, the way
+	 * the window turned first, then the other way; kept for the next view.
+	 */
+	if (g_turn != 0 && (v->rows[v->cursor].flags & MROWF_ENABLED) == 0) {
+		int d, k;
+
+		for (d = g_turn, k = 0; k < 2; k++, d = -d) {
+			int j;
+
+			for (j = (int)v->cursor + d; j >= 0 && j < (int)v->nrows; j += d) {
+				if ((v->rows[j].flags & MROWF_ENABLED) != 0) break;
+			}
+			if (j >= 0 && j < (int)v->nrows) {
+				v->cursor = (u8)j;
+				cur->cursor = (u8)j;
+				break;
+			}
+		}
+	}
+	g_turn = 0;
 
 	/* The names in the scratch are this build's; `sig` stays, for a press on this view. */
 	g_lib.on = 0;
@@ -2113,7 +2186,8 @@ static int native_install(void)
 	if (mem_read(n->mailbox, head, MBOX_READ_HEAD) != ST_OK) return ST_IO_ERROR;
 	if (be32_get(head + MBOX_OFF_MAGIC) != MBOX_MAGIC || be16_get(head + MBOX_OFF_VERSION) != MBOX_VERSION ||
 	    be16_get(head + MBOX_OFF_SIZE) != n->mailbox_size || head[MBOX_OFF_ROW_CAP] != n->row_cap ||
-	    head[MBOX_OFF_MAX_ROWS] != native_rows(n->max_rows) || head[MBOX_OFF_CFG_ROWS] != native_rows(n->cfg_rows)) {
+	    head[MBOX_OFF_MAX_ROWS] != native_rows(n->max_rows) || head[MBOX_OFF_CFG_ROWS] != native_rows(n->cfg_rows) ||
+	    head[MBOX_OFF_CAPS] != n->caps) {
 		memset(z, 0, sizeof(z));
 		for (off = 0; off < n->state_size; off += sizeof(z)) {
 			u32 len = n->state_size - off < sizeof(z) ? n->state_size - off : (u32)sizeof(z);

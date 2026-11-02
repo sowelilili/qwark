@@ -34,8 +34,10 @@
 --                   screen in the fourth console test;
 --   qw              qwark's side (lh_menu.c): a page of rows, the requests,
 --                   the events, presses posted where a row takes them, the
---                   window's edge, the next row the cursor stands on, the
---                   notes, as plain Lua.
+--                   window's edge, the next row the cursor stands on (a page
+--                   at a time, as ToD's mailbox says: where the cursor would
+--                   leave a window of a longer page, SCROLL_* and no move;
+--                   docs/tod-menu.md 15), the notes, as plain Lua.
 --
 -- Each case loads the glue into a fresh state of the world and runs frames
 -- (qwark_frame) the way the helper does, and checks what the game and qwark
@@ -164,6 +166,14 @@ local function qw(op, a, b, c)
     local m = math.min(c, table.getn(W.rows))
     if m == 0 or a > m then return a end
     local j = a
+    if bit(W.pf, 2) or bit(W.pf, 4) then
+      while (b < 0 and j > 1) or (b > 0 and j < m) do
+        j = j + b
+        if bit(flagsof(j), 1) then return j end
+      end
+      post(b < 0 and 7 or 8, a)
+      return a
+    end
     for k = 1, m do
       j = j + b
       if j > m then j = 1 elseif j < 1 then j = m end
@@ -380,6 +390,9 @@ local function world(c)
   exit_pause_menu = tolua(0, function() W.exited = W.exited + 1 end)
   _G.qw = qw
 
+  -- The list as the game drew it before the glue came (the pause's first frames): its menu's rows, Inventory's among them.
+  ls:updateAllItems()
+
   assert(loadstr(GLUE))()
 end
 
@@ -473,15 +486,18 @@ end
 local function cases(name)
   -- Everything registered at load.
   world({ lu = 0, opt = true })
+  check(btns(4) == "33,34,35,36", name .. ": the list drawn by the game before the glue: Inventory (36) in the fourth row")
   frames(1)
   check(W.note == 1, name .. ": list and Game Options at load: in, on the first look")
+  check(btns(4) == "33,34,35,TRAINER",
+        name .. ": the polish: the fourth row reads TRAINER from the glue's first frame, the list redrawn, no scroll needed: " .. btns(4))
   check(invrow()[1] == "TRAINER" and type(invrow()[2]) == "function" and W.md[4][5][1] == "TRAINER" and
         W.md[5][5][1] == "TRAINER", name .. ": the main list's Inventory row says TRAINER, and the arena and space lists'")
   check(W.md[2][4] == W.helprow and W.helprow[2] == W.luf.onHelp, name .. ": Options' Help row stays the game's")
   W.help = 0
   frames(1)
-  check(gamesrows() and invrow()[1] == 36 and invrow()[2] == W.luf.onInventory,
-        name .. ": menu.help 0 (In-game menus off): the game's Inventory rows again")
+  check(gamesrows() and invrow()[1] == 36 and invrow()[2] == W.luf.onInventory and btns(4) == "33,34,35,36",
+        name .. ": menu.help 0 (In-game menus off): the game's Inventory rows again, and the row reads Inventory at once")
   W.help = 1
   frames(1)
   check(invrow()[1] == "TRAINER", name .. ": menu.help 1: TRAINER again")
@@ -666,10 +682,58 @@ local function cases(name)
   page("Planets", { { "A", "", 3, 1 }, { "B", "", 3, 1 }, { "C", "", 3, 1 }, { "D", "", 3, 1 }, { "E", "", 3, 1 },
                     { "F", "", 3, 1 } }, 1, 4)
   frames(3)
-  for i = 1, 4 do W.o:onDown() end
-  check(table.getn(W.events) == 0, name .. ": inside the window: no scroll")
+  for i = 1, 5 do W.o:onDown() end
+  check(table.getn(W.events) == 0 and W.of.currentSelection == 6,
+        name .. ": the polish, a page at a time: down to the window's last row, no scroll")
   W.o:onDown()
-  check(lastev()[1] == 8 and lastev()[2] == 6, name .. ": to the window's last row with more below: SCROLL_DOWN")
+  check(table.getn(W.events) == 1 and lastev()[1] == 8 and lastev()[2] == 6 and W.of.currentSelection == 6,
+        name .. ": Down on the window's last row, more below: SCROLL_DOWN, the cursor kept for the next window")
+  local P2 = { { "G", "", 3, 1 }, { "H", "", 3, 1 }, { "I", "", 3, 1 }, { "J", "", 3, 1 }, { "K", "", 3, 1 },
+               { "L", "", 3, 1 } }
+  page("Planets", P2, 1, 6, 0)
+  frames(1)
+  check(W.of.currentSelection == 1 and W.orows[1].optLabel.textString == "G" and W.orows[6].optLabel.textString == "L",
+        name .. ": qwark's next window: its top row selected")
+  W.o:onUp()
+  check(table.getn(W.events) == 2 and lastev()[1] == 7 and lastev()[2] == 1 and W.of.currentSelection == 1,
+        name .. ": Up on its top row, more above: SCROLL_UP, the cursor kept")
+  page("Planets", { { "A", "", 3, 1 }, { "B", "", 3, 1 }, { "C", "", 3, 1 }, { "D", "", 3, 1 }, { "E", "", 3, 1 },
+                    { "F", "", 3, 1 } }, 1, 4, 5)
+  frames(1)
+  check(W.of.currentSelection == 6 and W.orows[6].optLabel.textString == "F",
+        name .. ": qwark's window before: its bottom row selected")
+  for i = 1, 5 do W.o:onUp() end
+  check(table.getn(W.events) == 2 and W.of.currentSelection == 1, name .. ": up to the first window's top row, no scroll")
+  W.o:onUp()
+  check(table.getn(W.events) == 3 and lastev()[1] == 7 and lastev()[2] == 1 and W.of.currentSelection == 1,
+        name .. ": Up on the first window's top row: SCROLL_UP too (qwark wraps to the last window's last row, as the game's lists wrap)")
+  -- Rows the cursor cannot stand on (a status row, blanks) at a window's edges: passed over into the next window.
+  page("Planets", { { "A", "", 3, 1 }, { "B", "", 3, 1 }, { "S", "x", 0, 0 }, { "C", "", 3, 1 }, { "", "", 0, 0 },
+                    { "", "", 0, 0 } }, 1, 6, 1)
+  frames(1)
+  W.o:onDown()
+  check(W.of.currentSelection == 4 and table.getn(W.events) == 3, name .. ": Down from B over the status row to C")
+  W.o:onDown()
+  check(table.getn(W.events) == 4 and lastev()[1] == 8 and lastev()[2] == 4 and W.of.currentSelection == 4,
+        name .. ": Down from C, only rows it cannot stand on below: SCROLL_DOWN from C")
+  page("Planets", { { "", "", 0, 0 }, { "S", "x", 0, 0 }, { "D", "", 3, 1 }, { "E", "", 3, 1 } }, 1, 2, 2)
+  frames(1)
+  check(W.of.currentSelection == 3 and W.of.max == 4, name .. ": the last window, short, the cursor where qwark put it (D)")
+  W.o:onUp()
+  check(table.getn(W.events) == 5 and lastev()[1] == 7 and lastev()[2] == 3 and W.of.currentSelection == 3,
+        name .. ": Up from D, only rows it cannot stand on above: SCROLL_UP from D")
+  W.o:onDown()
+  check(W.of.currentSelection == 4 and table.getn(W.events) == 5, name .. ": Down to E inside the window")
+  W.o:onDown()
+  check(table.getn(W.events) == 6 and lastev()[1] == 8 and lastev()[2] == 4,
+        name .. ": Down on the last window's last row: SCROLL_DOWN (qwark wraps to the first window's first row)")
+  -- A page of one window wraps in it, as Game Options does, and asks qwark nothing.
+  page("Cheats", CHEATS, 1, 0)
+  frames(1)
+  W.o:onUp()
+  check(W.of.currentSelection == 4 and table.getn(W.events) == 6, name .. ": a page that fits: Up on its top row wraps to its last, no scroll")
+  W.o:onDown()
+  check(W.of.currentSelection == 1 and table.getn(W.events) == 6, name .. ": and Down on its last back to its top")
   out = assert(loadstr(DIAG))()
   check(string.find(out, "optHandler:o", 1, true) and string.find(out, ",1", 1, true) and string.find(out, "[6:", 1, true),
         name .. ": the look: Game Options taken over, the Trainer's menu: " .. out)

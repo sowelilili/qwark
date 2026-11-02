@@ -214,9 +214,10 @@
  * file deleted from the disc's copy, which qwark cannot see) nothing at all
  * comes between the old level's last frame and the black, and a fade-out of
  * one frame flashes. So qwark's own load of that kind fades for
- * TOD_LOAD_FADE_STORY, 5/64 s: five frames at 60 Hz (three at 30), long
- * enough to read as a fade rather than a cut, and still a sixth of the game's
- * 0.5 s. A load that is not a story FMV load keeps the one-frame fade.
+ * TOD_LOAD_FADE_STORY, 7/64 s: six or seven frames at 60 Hz (three or four
+ * at 30), long enough to read as a fade rather than a cut, and still under a
+ * quarter of the game's 0.5 s (5/64 s until 2026-11-02, the user's call: a
+ * frame or two longer). A load that is not a story FMV load keeps the one-frame fade.
  *
  * tod_story_load answers whether a load of `level` with the level flags at
  * `flags_at` (g_levelFlags for PLANET_LOAD, the save image's for a savefile
@@ -224,7 +225,7 @@
  * that path; a flag that cannot be read counts as clear, the longer fade being
  * the one that never flashes.
  */
-#define TOD_LOAD_FADE_STORY  0x3DA00000u  /* 5/64 s = 0.078125: five frames at 60 Hz */
+#define TOD_LOAD_FADE_STORY  0x3DE00000u  /* 7/64 s = 0.109375, exact: about 6.5 frames at 60 Hz */
 #define TOD_LF_FAST_SHIP_FIXED 106u       /* LVL_FAST_SHIP_FIXED */
 #define TOD_LEVEL_COBALIA    1            /* LEVEL_COBALIA, the other story FMV load */
 int  tod_story_load(u32 level, u32 flags_at);
@@ -399,7 +400,7 @@ int  tod_story_load(u32 level, u32 flags_at);
  */
 #define TOD_FADE_TARGET      0x5B634u     /* [TOD_LEVEL_OBJ] + this: f32, 0.0 fading in (or clear), 1.0 out (or black) */
 #define TOD_FADE_LOOK_LEN    0x0Cu        /* the progress, the rate and the target in one read */
-#define TOD_FADE_HALF        0x3F000000u  /* 0.5f: the run's START, half a second into Level_Enter's fade in (2026-10-31) */
+#define TOD_FADE_START_AT    0x3F0CCCCDu  /* 0.55f (0.550000012): the run's START, 0.45 s into Level_Enter's fade in (2026-11-02; 0.5 from 2026-10-31) */
 #define TOD_STATE_FMV        7            /* g_gameState: a named FMV (Movie_requestPlay) */
 #define TOD_STATE_CINEMATIC  9            /* g_gameState: a realtime cinematic playing */
 #define TOD_GS_DEPTH         0x10387DC8u  /* g_gameStateDepth, s32: the top of g_gameStateStack */

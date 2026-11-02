@@ -206,6 +206,15 @@ static int lm_edge(lm_u32 row)
  * up), wrapping, to the next the cursor may stand on, as the game's lists
  * move; `row` itself when no other is (Game Options' changeSelection moves
  * by the difference). Revision 1.29, the fourth console test.
+ *
+ * Revision 1.29, the polish (docs/tod-menu.md 15): with the page a page at a
+ * time (MBOX_CAP_PAGED in the header) and longer than the window, a move
+ * that finds no row the cursor may stand on before the window's end asks
+ * qwark for the next window that way (SCROLL_DOWN or SCROLL_UP: qwark puts
+ * the cursor on its first or last row it may stand on, and wraps past the
+ * page's ends), and the cursor stays where it is until that window comes.
+ * Tools of Destruction's mailbox always says so (LM_CAPS); without the bit
+ * the move wraps inside the window as before and asks nothing.
  */
 static lm_u32 lm_next(lm_u32 row, int d, lm_u32 m)
 {
@@ -213,6 +222,15 @@ static lm_u32 lm_next(lm_u32 row, int d, lm_u32 m)
 
 	if (m > lm_nrows()) m = lm_nrows();
 	if (m == 0 || row >= m) return row;
+	if ((lm8(LMB(MBOX_OFF_CAPS)) & MBOX_CAP_PAGED) != 0 &&
+	    (lm8(LMP(MBOX_OFF_PFLAGS)) & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) != 0) {
+		while (d < 0 ? j > 0 : j + 1 < m) {
+			j = d < 0 ? j - 1 : j + 1;
+			if ((lm_flags(j) & MROWF_ENABLED) != 0) return j;
+		}
+		lm_post(d < 0 ? MBOX_EV_SCROLL_UP : MBOX_EV_SCROLL_DOWN, row);
+		return row;
+	}
 	for (k = 0; k < m; k++) {
 		j = d < 0 ? (j == 0 ? m - 1 : j - 1) : (j + 1 >= m ? 0 : j + 1);
 		if (j == row || (lm_flags(j) & MROWF_ENABLED) != 0) return j;

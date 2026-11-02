@@ -972,18 +972,18 @@ void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 		qstrcat(out, cap, "%");
 		return;
 	case TOD_CC_DONE:
-		/* "Done 104s 12.3MB/s", or nothing read: every block was in already. */
+		/*
+		 * "Done (104s)", the seconds alone (2026-11-02, the user's call: the
+		 * client's line keeps the read rate), or nothing read: every block
+		 * was in already.
+		 */
 		if (pct == 0) {
 			qstrcpy(out, cap, "Already cached");
 			return;
 		}
-		qstrcpy(out, cap, "Done ");
+		qstrcpy(out, cap, "Done (");
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), secs);
-		qstrcat(out, cap, "s ");
-		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct / 10u);
-		qstrcat(out, cap, ".");
-		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct % 10u);
-		qstrcat(out, cap, "MB/s");
+		qstrcat(out, cap, "s)");
 		return;
 	case TOD_CC_FAILED:
 		qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);

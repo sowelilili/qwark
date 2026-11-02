@@ -330,3 +330,75 @@ Labels in `PauseMenu_update`: `PauseMenu_update_stateCases` 0x24160 (its jump ta
 4. The client's In-game menus off (MENU_HELP 0): INVENTORY again at the next pause, and it opens the game's Inventory; on again: TRAINER.
 5. An arena challenge and a beaten space combat level: TRAINER in the fifth row, where Inventory is there; Triangle at the root: that nine-row list again.
 6. qwark.log: "menu: the pause menu's glue is in: TRAINER in the pause list for Inventory ...".
+
+## 15. The polish: planet names, a page at a time, TRAINER from the first frame (revision 1.29, pending)
+
+Three things the user asked for after the Trainer took Inventory's row (section 14), and three small ones.
+
+### 15.1 Planet names as the ship shows them (high)
+
+The Planets page used the LEVEL_ enum's names (Stratus City, Metropolis ...). The ship's planet selector and galactic map show planets instead. Read from the game's files (US English, `global_cached.psarc`, copied to the session scratchpad) and Ghidra:
+
+- the galactic map's list (`built/anark/galacticmap/built.dat`, chunk `gmapHndler`, decompiled with the scratchpad's `nm/luapseudo.py`) builds its rows in `initPlanetData`: a header row per visible sector (`get_sector_name`), then each visible level of that sector, labelled `get_location_name(level)`; the panel beside it shows `get_location_name` again and, under it, `get_level_name` (for a space combat level, the sector's name instead). Metropolis is not in its level list (the ship never goes back to it);
+- `tolua_galacticmap_get_location_name00` (0x37BAC) -> `GalMap_getLocationName` (0x36E20) -> `Level_getLocationName` (0x2E99EC): the text id at `g_levelLocationNameIds` (0x1006E624, 19 words), looked up in the core text bank (`LocText_idToHash` 0x5E85A8, `LocText_findEntry` 0x5E8654); `get_level_name` is the same over `g_levelNameIds` (0x1006E670). Both map Fastoon (3) to Fastoon II (18) once Fastoon II is visitable, so the map has one Fastoon row;
+- the texts are in `built/game/core_text_tags.us.pkg` (IGHW: a section of hashes indexed by the id's low 24 bits, then a table sorted by hash of hash, -1, string offset).
+
+| id | level (LEVEL_) | location (the ship's list) | level name (under it) | qwark's name |
+|---|---|---|---|---|
+| 0 | Metropolis | Planet Kerwan | Metropolis | Kerwan |
+| 1 | Cobalia | Planet Cobalia | Gelatonium Plant | Cobalia |
+| 2 | Stratus City | Planet Kortog | Stratus City | Kortog |
+| 3 | Fastoon | Planet Fastoon | Lombax Ruins | Fastoon |
+| 4 | Space Combat I | Voron Asteroid Belt | (none; the sector) | Voron Asteroid Belt |
+| 5 | Imperial Fight Fest | Planet Mukow | Imperial Fight Festival | Mukow |
+| 6 | Apogee Space Station | Nundac Asteroid Ring | Apogee Space Station | Nundac Asteroid Ring |
+| 7 | Pirate Base | Planet Ardolis | Pirate Base | Ardolis |
+| 8 | Space Combat II | Rakar Star Cluster | (none; the sector) | Rakar Star Cluster |
+| 9 | Rykan V | Rykan V | Lava Refineries | Rykan V |
+| 10 | Sargasso | Planet Sargasso | Outpost L51 | Sargasso |
+| 11 | Iris | Kreeli Comet | IRIS Supercomputer | Kreeli Comet |
+| 12 | Zordoom Prison | Planet Viceron | Zordoom Prison | Viceron |
+| 13 | Space Combat III | Verdigris Black Hole | (none; the sector) | Verdigris Black Hole |
+| 14 | Kerchu City | Planet Jasindu | Kerchu City | Jasindu |
+| 15 | Slag's Fleet | Ublik Passage | Slag's Fleet | Ublik Passage |
+| 16 | Cragmite Ruins | Planet Reepor | Cragmite Ruins | Reepor |
+| 17 | Meridian City | Planet Igliak | Meridian City | Igliak |
+| 18 | Fastoon II | Planet Fastoon | Lombax Ruins | Fastoon II |
+
+Decisions: the word "Planet" is left off (the user names them so, and the places have none); the space combat levels keep the place the map lists them by; Fastoon and Fastoon II, one row on the map, are two rows here, the second "Fastoon II" as the enum and speedrunners call it. The sectors (Cerullean, Verdigris, Praxus) are not shown. The order stays LEVEL_ order, which is the order the game visits them. The list is `tod.c`'s `tod_planets`, which PLANET_LIST, the Trainer's Planets page (`game_menu.planets` NULL: every planet) and the client all read. RaCMAN Reloaded's level-flag groups (`data/levelflags/tod.json`) and its test stand-in take the same names; its autosplitter route (`tod-planets.txt`) already named each planet both ways (`kortog,stratus`), so it was left alone and a route whose splits use either name still splits. The cutscene cache's own texts (Stratus City in its status and reasons) are unchanged.
+
+### 15.2 A page at a time (high, from the code)
+
+**Why it under-scrolled.** The CONFIG window slid as every renderer's does (`menu.c` `nav_move`, `window_at`): the cursor arriving at a window's last row asked for SCROLL_DOWN, and qwark put that row second from the top, so a six-row window moved four rows and the cursor jumped up. Up on the first window's top row wrapped inside the window (`lm_next`) to its last row, which then asked for SCROLL_DOWN: the "broken" Up.
+
+**What it does now** (the game's own lists wrap: `ScrollableList.wrapIfNecessary` with `wrap` true, and Game Options' `changeSelection` from 1 to `max` and back):
+
+- the mailbox's header carries **MBOX_CAP_PAGED** (`menubox.h` 0x20; ToD's LM_CAPS 0x2D; `native_install` writes a header with other caps again). With it, `menu.c` puts a long page in whole screens (starts 0, 6, 12, 18 for Planets' 19 rows; the last window short), and on SCROLL_DOWN shows the next with the cursor on its first row, on SCROLL_UP the one before with the cursor on its last, the first window's SCROLL_UP the last window and the last window's SCROLL_DOWN the first. A cursor that lands on a row it cannot stand on (a spacer, a status row) goes to the nearest one it can, the way the window turned first (`g_turn`). L1 and R1 (PAGE_*), where posted, move a whole window with the cursor on its row and stop at the ends. Without the bit everything is as before (the four games' renderers);
+- the helper (`lh_menu.c` `lm_next`, `qw` operation 9) decides on the press: with the bit and a page longer than its window, it looks for a row the cursor may stand on between the cursor and the window's end that way; none, it posts SCROLL_DOWN or SCROLL_UP and the cursor stays until qwark's window comes; the glue then puts the cursor where qwark says (`oshow`), as for any new window. So spacers and status rows are skipped across a window's edge both ways. A page that fits wraps inside, as before;
+- the glue's Game Options `changeSelection` no longer asks about the window's edge as the cursor arrives (`scroll`); only `lm_next` does. The pause's list (MAIN pages) still asks on arrival (`lm_edge`), but no MAIN page is longer than its nine rows (the root has six or seven, Unlocks five).
+
+### 15.3 TRAINER from the first frame (high, from built.dat)
+
+The list's rows get their text only in `ScrollableList.updateAllItems` -> `ListUpdater.setListItemValue` -> `ActivateItem` (`menuData[currentMenuIndex][i][1]` through `SetText`), which the list calls at its reset, its activation and every cursor move. The glue put TRAINER into the Inventory row's `menuData` entry after the list had drawn it, so the row read INVENTORY until the next move. Now `helprow` calls the list's own `updateAllItems` once after it swaps the rows, both ways (TRAINER in, or Inventory back when In-game menus goes off), so the row reads right on the glue's first frame. This is the data-and-refresh way of the brief's three: no hook, no node written directly. The glue still goes in two pause updates in at the earliest (section 12.5: `lm_ready`, then qwark's request), during the pause's opening animation (the list's `buttonBG3` fading in), so the row's first frames may still be the game's; nothing earlier can run in the pause's VM. Every safety property is as it was: the redraw is the list's own method, under `call`'s pcall, inside the push, and it changes nothing the take-over records.
+
+### 15.4 The small ones
+
+- **Manips' cache status row** says "DONE (104S)", the seconds alone (`tod_cc_menu_status`); the client's line keeps the MiB/s.
+- **A story FMV load's fade-out** is 7/64 s (0.109375, 0x3DE00000, about 6.5 frames), not 5/64 s.
+- **The run's START** is 0.45 s into the fade in: progress 0.55f (0x3F0CCCCD) or less, seen under way first (above 0.55).
+
+### 15.5 Sizes
+
+The glue is 7,949 bytes as sent (of 8,192; it was 7,933). The Lua helper's code is 7,936 bytes (it was 7,756; `lm_next`'s paged branch), so LUA_PATCH is 1,990 rows of the 2,046 a reply holds. `tod.sprx` stays one page.
+
+### 15.6 Tests
+
+`test/test_tod_menu.c` (`test_paging`: Planets' names and windows through the real core and helper, Down from a window's last row, Up from its top, the first window's top wrapping to the last window's last row and back), `test/test_menu.c` (`test_model_paged`: whole windows, blanks at a window's edges passed over both ways, the wraps, L1 and R1), `test/glue_harness.lua` (75 checks: the list drawn by the game before the glue reads Inventory, TRAINER on the glue's first frame and Inventory again at once with In-game menus off; Down and Up across windows, the first window's top, rows the cursor cannot stand on at both edges, a page that fits wrapping inside), smoke (the header's caps, Planets' names, the four window turns), `test/test_tod.c` and smoke (PLANET_LIST's names).
+
+### 15.7 What the next console test should show
+
+1. Pause: the fourth row reads TRAINER as soon as the list's text is readable, without moving the cursor; In-game menus off, then a pause: INVENTORY.
+2. Trainer > Planets: KERWAN, COBALIA, KORTOG, FASTOON, VORON ASTEROID BELT, MUKOW. Down to MUKOW, Down: NUNDAC ASTEROID RING .. KREELI COMET, the cursor on NUNDAC. Up: the first page, the cursor on MUKOW. Up from KERWAN: FASTOON II alone, the cursor on it. Down from FASTOON II: KERWAN.
+3. A planet loads the level it names (KORTOG: Stratus City).
+4. Manips: Up and Down over the blank row as before; after a cache run, its row reads DONE (NS).
+5. A run from a new game: the timer starts a little sooner into the fade in (0.45 s); a load into Metropolis or Cobalia with Remove cutscenes fades out over about six frames.

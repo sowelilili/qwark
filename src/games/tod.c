@@ -10,26 +10,40 @@
 #include "tod.h"
 #include "../core/proto.h"
 
-/* The game's own LEVEL_ enum, in its order (the legacy list was off by one). */
+/*
+ * The planets in the game's own LEVEL_ order (the legacy list was off by
+ * one), named as the ship's planet selector names them (revision 1.29, the
+ * polish): the galactic map's list (gmapHndler in built/anark/galacticmap/
+ * built.dat) labels each level with get_location_name(level), the game's
+ * text for the planet or place (US English, core_text_tags.us.pkg; the text
+ * ids at 0x1006E624, GalMap_locationNameIds), "Planet Kortog" for Stratus
+ * City. The word "Planet" is left off, as the user names them; the space
+ * combat levels are the places the map names (Voron Asteroid Belt and on).
+ * The map lists Fastoon and Fastoon II as one row, "Planet Fastoon", showing
+ * whichever is visible (get_location_name gives both the same text); here
+ * both can be loaded, so the return visit is "Fastoon II", as the game's
+ * enum and speedrunners call it. The level names the map shows under each
+ * (Stratus City ...) are in docs/tod-menu.md 15.
+ */
 static const char * const tod_planets[] = {
-	"Metropolis",              /*  0 LEVEL_METROPOLIS */
+	"Kerwan",                  /*  0 LEVEL_METROPOLIS */
 	"Cobalia",                 /*  1 LEVEL_COBALIA */
-	"Stratus City",            /*  2 LEVEL_STRATUS_CITY */
+	"Kortog",                  /*  2 LEVEL_STRATUS_CITY */
 	"Fastoon",                 /*  3 LEVEL_FASTOON */
-	"Space Combat I",          /*  4 LEVEL_SPACE_COMBAT_I */
-	"Imperial Fight Fest",     /*  5 LEVEL_IMPERIAL_FIGHT_FEST */
-	"Apogee Space Station",    /*  6 LEVEL_APOGEE_SPACE_STATION */
-	"Pirate Base",             /*  7 LEVEL_PIRATE_BASE */
-	"Space Combat II",         /*  8 LEVEL_SPACE_COMBAT_II */
+	"Voron Asteroid Belt",     /*  4 LEVEL_SPACE_COMBAT_I */
+	"Mukow",                   /*  5 LEVEL_IMPERIAL_FIGHT_FEST */
+	"Nundac Asteroid Ring",    /*  6 LEVEL_APOGEE_SPACE_STATION */
+	"Ardolis",                 /*  7 LEVEL_PIRATE_BASE */
+	"Rakar Star Cluster",      /*  8 LEVEL_SPACE_COMBAT_II */
 	"Rykan V",                 /*  9 LEVEL_RYKAN_V */
 	"Sargasso",                /* 10 LEVEL_SARGASSO */
-	"Iris",                    /* 11 LEVEL_IRIS */
-	"Zordoom Prison",          /* 12 LEVEL_ZORDOOM_PRISON */
-	"Space Combat III",        /* 13 LEVEL_SPACE_COMBAT_III */
-	"Kerchu City",             /* 14 LEVEL_KERCHU_CITY */
-	"Slag's Fleet",            /* 15 LEVEL_SLAGS_FLEET */
-	"Cragmite Ruins",          /* 16 LEVEL_CRAGMITE_RUINS */
-	"Meridian City",           /* 17 LEVEL_MERIDIAN_CITY */
+	"Kreeli Comet",            /* 11 LEVEL_IRIS */
+	"Viceron",                 /* 12 LEVEL_ZORDOOM_PRISON */
+	"Verdigris Black Hole",    /* 13 LEVEL_SPACE_COMBAT_III */
+	"Jasindu",                 /* 14 LEVEL_KERCHU_CITY */
+	"Ublik Passage",           /* 15 LEVEL_SLAGS_FLEET */
+	"Reepor",                  /* 16 LEVEL_CRAGMITE_RUINS */
+	"Igliak",                  /* 17 LEVEL_MERIDIAN_CITY */
 	"Fastoon II",              /* 18 LEVEL_FASTOON_II */
 };
 

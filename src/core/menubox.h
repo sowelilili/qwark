@@ -168,6 +168,20 @@
 #define MBOX_CAP_BACK       0x04   /* it has a back control of its own, so no BACK rows */
 #define MBOX_CAP_REQUEST    0x08   /* it opens and closes the menu when asked */
 #define MBOX_CAP_PICKER     0x10   /* version 3: it opens the game's own planet picker (MROWF_PICKER) */
+/*
+ * Revision 1.29 (pending, docs/tod-menu.md 15): it scrolls a page at a time,
+ * as Tools of Destruction's pause menu wants. A long page's windows are
+ * whole screens, start 0, m, 2m and on, the last one short; SCROLL_DOWN shows
+ * the next window with the cursor on its first row the cursor may stand on,
+ * SCROLL_UP the one before with the cursor on its last, and past either end
+ * the page wraps (Up on the first window's top row: the last window's last
+ * row; Down on the last window's bottom row: the first window's first row),
+ * as the game's own lists wrap. The renderer asks for the next window when
+ * the cursor would leave the window, not when it comes to its edge. PAGE_PREV
+ * and PAGE_NEXT, where a renderer posts them, move a whole window too, the
+ * cursor on the same row, and stop at the ends.
+ */
+#define MBOX_CAP_PAGED      0x20
 
 /*
  * hstate. PICKER (version 3): the menu's screen has stopped under the game's

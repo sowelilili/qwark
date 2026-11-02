@@ -34,9 +34,10 @@
  * install, as a renderer's data image does elsewhere): 32 rows a page of
  * either type, Left and Right, its own back control (the game's Triangle), and
  * open and close on request. No PAGE_KEYS (L1 and R1 are the game's list's)
- * and no picker.
+ * and no picker. Revision 1.29, the polish (docs/tod-menu.md 15): a page at a
+ * time (MBOX_CAP_PAGED), as the user wants the game's lists to scroll.
  */
-#define LM_CAPS         0x0D         /* MBOX_CAP_STEPS | MBOX_CAP_BACK | MBOX_CAP_REQUEST */
+#define LM_CAPS         0x2D         /* MBOX_CAP_STEPS | MBOX_CAP_BACK | MBOX_CAP_REQUEST | MBOX_CAP_PAGED */
 
 /*
  * Revision 1.29, the fourth console test (docs/tod-menu.md 12): the rows a
@@ -46,7 +47,8 @@
  * A CONFIG page is shown on the game's GAME OPTIONS screen, six fixed rows
  * (optHandler's optionGroup, option1..option6, read on the console): six at
  * once. A longer page comes a window at a time (MBOX_PAGE_MORE_*), the glue
- * asking for the next at the window's edge (LM_OP_EDGE).
+ * asking for the next at the window's edge (LM_OP_EDGE; on Game Options,
+ * since the polish, LM_OP_NEXT as the cursor would leave the window).
  */
 #define LM_MAX_ROWS     9
 #define LM_CFG_ROWS     6
@@ -173,6 +175,7 @@
 #define LM_OP_NOTE      6      /* (n) LM_NOTE = n, for qwark's log                             */
 #define LM_OP_PRESS     7      /* (kind, i) the press posted where row i takes it -> 1, else 0 (1.29, the fourth test) */
 #define LM_OP_EDGE      8      /* (i) the cursor came to row i: SCROLL_* posted at a window's edge -> 1, else 0      */
-#define LM_OP_NEXT      9      /* (i, d, m) the next row from i the cursor may stand on, d rows on, of the first m, wrapping -> its index */
+#define LM_OP_NEXT      9      /* (i, d, m) the next row from i the cursor may stand on, d rows on, of the first m, wrapping -> its index;
+                                * paged (the polish): i itself and SCROLL_* posted where the cursor would leave the window */
 
 #endif /* QWARK_LH_MENU_H */

@@ -402,6 +402,69 @@ static void test_screens(void)
 	features_set(TF_INFINITE_AMMO, 0);
 }
 
+/*
+ * Revision 1.29, the polish (docs/tod-menu.md 15): Planets named as the
+ * ship's planet selector names them, and a page at a time (MBOX_CAP_PAGED):
+ * Down on a window's last row shows the next window with the cursor on its
+ * top row, Up on its top row the window before with the cursor on its bottom
+ * row, and past either end the page wraps, as the game's lists do. The
+ * helper asks (lm_next) as the cursor would leave the window; qwark turns
+ * the window (menu.c nav_move).
+ */
+static void test_paging(void)
+{
+	char b[48], t[40];
+	u32 gen, ev;
+
+	group("ToD's console menu: Planets as the ship names them, a page at a time (lh_menu.c, menu.c)");
+	lm_take();
+	poke32(LMS(LM_KEY), peek32(LM_BOX + MBOX_OFF_PAGE_KEY));
+	check((peek8(LM_BOX + MBOX_OFF_CAPS) & MBOX_CAP_PAGED) != 0 && LM_CAPS == 0x2D,
+	      "the mailbox's header says a page at a time");
+	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS && strcmp(row_label(0, b), "KERWAN") == 0 &&
+	      strcmp(row_label(1, b), "COBALIA") == 0 && strcmp(row_label(2, b), "KORTOG") == 0 &&
+	      strcmp(row_label(3, b), "FASTOON") == 0 && strcmp(row_label(4, b), "VORON ASTEROID BELT") == 0 &&
+	      strcmp(row_label(5, b), "MUKOW") == 0 && lm8(LMP(MBOX_OFF_PFLAGS)) == MBOX_PAGE_MORE_DOWN,
+	      "Planets' first window: KERWAN, COBALIA, KORTOG, FASTOON, VORON ASTEROID BELT, MUKOW, more below");
+	gen = lm32(LMS(LM_GEN));
+	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
+	check(lm_next(4, 1, LM_CFG_ROWS) == 5 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
+	      "Down inside the window, to its last row: the next row, nothing asked (it used to slide there)");
+	check(lm_next(5, 1, LM_CFG_ROWS) == 5 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev + 1 &&
+	      peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN, "Down on its last row: the cursor stays, SCROLL_DOWN");
+	tick(6);
+	lm_take();
+	check(lm32(LMS(LM_GEN)) == gen + 1 && strcmp(row_label(0, b), "NUNDAC ASTEROID RING") == 0 &&
+	      strcmp(row_label(5, b), "KREELI COMET") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
+	      lm8(LMP(MBOX_OFF_PFLAGS)) == (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN),
+	      "the next window, a whole page on (NUNDAC ASTEROID RING .. KREELI COMET), the cursor on its top row");
+	check(lm_next(0, -1, LM_CFG_ROWS) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP,
+	      "Up on its top row: the cursor stays, SCROLL_UP");
+	tick(6);
+	lm_take();
+	check(strcmp(row_label(0, b), "KERWAN") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 5,
+	      "the window before, the cursor on its bottom row (MUKOW)");
+	check(lm_next(0, -1, LM_CFG_ROWS) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP,
+	      "Up on the first window's top row: SCROLL_UP too");
+	tick(6);
+	lm_take();
+	check(lm_nrows() == 1 && strcmp(row_label(0, b), "FASTOON II") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
+	      lm8(LMP(MBOX_OFF_PFLAGS)) == MBOX_PAGE_MORE_UP,
+	      "it wraps: the last window (18 on, one row, FASTOON II), the cursor on its last row");
+	check(lm_next(0, 1, 1) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN,
+	      "Down on the last window's last row: SCROLL_DOWN");
+	tick(6);
+	lm_take();
+	check(strcmp(row_label(0, b), "KERWAN") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 && lm_nrows() == LM_CFG_ROWS,
+	      "it wraps: the first window, the cursor on its first row");
+	check(lm_next(5, -1, LM_CFG_ROWS) == 4 && lm_next(0, 1, LM_CFG_ROWS) == 1,
+	      "Up and Down inside a window move as before");
+	press(MBOX_EV_BACK, -1);
+	check(find_row("Game") == 0, "back at the root");
+}
+
 /* ---------------------------------------------- open, close, the combo */
 
 static void test_requests(void)
@@ -1127,6 +1190,7 @@ void test_tod_menu(void)
 	test_install();
 	test_bridge();
 	test_screens();
+	test_paging();
 	test_requests();
 	test_pause_loads();
 	test_glue();

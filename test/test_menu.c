@@ -1042,9 +1042,14 @@ static const u8 tv_spaced[] = {
 	MENU_ITEM_SPACER, R4_BOLTS, MENU_ITEM_SPACER, MENU_ITEM_SPACER, R4_GHOST, MENU_ITEM_SPACER,
 	MENU_ITEM_VALUE(7), MENU_ITEM_SPACER
 };
+/* Revision 1.29, the polish: a page at a time (MBOX_CAP_PAGED), its windows of three edged by blanks. */
+static const u8 tv_paged[] = {
+	R4_BOLTS, R4_DREAD_POINTS, R4_CHALLENGE, MENU_ITEM_SPACER, R4_GHOST, MENU_ITEM_SPACER, R4_DIE, R4_MAX_AMMO
+};
 static const struct menu_section tv_sections[] = {
 	{ "Values", tv_items, (u8)sizeof(tv_items) },
-	{ "Spacers", tv_spaced, (u8)sizeof(tv_spaced) }
+	{ "Spacers", tv_spaced, (u8)sizeof(tv_spaced) },
+	{ "Paged", tv_paged, (u8)sizeof(tv_paged) }
 };
 static struct game_menu tv_menu;
 
@@ -1052,8 +1057,59 @@ static void tv_menu_on(void)
 {
 	memset(&tv_menu, 0, sizeof(tv_menu));
 	tv_menu.sections = tv_sections;
-	tv_menu.nsections = 2;
+	tv_menu.nsections = 3;
 	menu_test_menu(&tv_menu);
+}
+
+/* A slide of the window from row `row` of view `v` (SCROLL_UP or SCROLL_DOWN), then the view again. */
+static int scroll_view(struct menu_view *v, u8 kind, u8 row)
+{
+	int rc = menu_model_event(kind, row, v->rows[row].id, v->key);
+
+	menu_model_view(v);
+	return rc;
+}
+
+/*
+ * Revision 1.29, the polish (docs/tod-menu.md 15): a renderer that scrolls a
+ * page at a time (MBOX_CAP_PAGED, Tools of Destruction's pause menu). The
+ * windows are whole screens; a slide down shows the next with the cursor on
+ * its first row, up the one before with the cursor on its last, past the
+ * ends the page wraps, and a cursor that lands on a row it cannot stand on
+ * goes to the nearest one it can, the way the window turned first.
+ */
+static void test_model_paged(void)
+{
+	struct menu_view v;
+
+	menu_model_reset(8, 3, CAPS_ALL | MBOX_CAP_PAGED);
+	menu_model_view(&v);
+	act(&v, MBOX_EV_ACTIVATE, "Paged");
+	check(v.nrows == 3 && v.cursor == 0 && strcmp(v.rows[0].label, "Bolts") == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
+	      "paged: the first window, three rows, more below");
+	check(scroll_view(&v, MBOX_EV_SCROLL_DOWN, 2) == ST_OK && v.nrows == 3 && v.rows[0].kind == MROW_INFO &&
+	      (v.rows[0].flags & MROWF_ENABLED) == 0 && v.cursor == 1 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN),
+	      "Down off the first window: the next whole window (rows 4 to 6), its top row a blank, so the cursor on Ghost Ratchet");
+	menu_model_view(&v);
+	check(v.cursor == 1, "and the cursor stays there on the next build");
+	check(scroll_view(&v, MBOX_EV_SCROLL_DOWN, 1) == ST_OK && v.nrows == 2 && v.cursor == 0 &&
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP,
+	      "Down again: the last window, short (two rows), the cursor on its top row");
+	check(scroll_view(&v, MBOX_EV_SCROLL_UP, 0) == ST_OK && v.nrows == 3 && v.cursor == 1 &&
+	      (v.rows[2].flags & MROWF_ENABLED) == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0,
+	      "Up: the window before, its bottom row a blank, so the cursor on Ghost Ratchet");
+	check(scroll_view(&v, MBOX_EV_SCROLL_UP, 1) == ST_OK && v.cursor == 2 && strcmp(v.rows[0].label, "Bolts") == 0,
+	      "Up: the first window, the cursor on its bottom row");
+	check(scroll_view(&v, MBOX_EV_SCROLL_UP, 0) == ST_OK && v.nrows == 2 && v.cursor == 1,
+	      "Up off the first window's top: it wraps to the last window's last row");
+	check(scroll_view(&v, MBOX_EV_SCROLL_DOWN, 1) == ST_OK && v.nrows == 3 && v.cursor == 0 &&
+	      strcmp(v.rows[0].label, "Bolts") == 0, "Down off the last window's last row: it wraps to the first window's first row");
+	check(scroll_view(&v, MBOX_EV_PAGE_PREV, 1) == ST_BAD_ARG && scroll_view(&v, MBOX_EV_PAGE_NEXT, 1) == ST_OK &&
+	      v.cursor == 1 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0,
+	      "L1 and R1, where posted: a whole window, the cursor on its row, no wrap");
+	menu_model_reset(8, 16, CAPS_ALL);
 }
 
 static void test_model_dl_values(void)
@@ -1116,6 +1172,7 @@ static void test_model_dl_values(void)
 	      strcmp(v.rows[2].label, "Ghost Ratchet") == 0,
 	      "revision 1.29: MENU_ITEM_SPACER a blank row the cursor passes, but not first, last or doubled, and no row "
 	      "for a MENU_ITEM_VALUE the table does not have: Bolts, a blank, Ghost Ratchet");
+	test_model_paged();
 	menu_test_menu(NULL);
 }
 

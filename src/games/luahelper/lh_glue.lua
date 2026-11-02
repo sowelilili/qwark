@@ -271,14 +271,11 @@ local function oshow(c)
   return true
 end
 
--- Up or Down there: to the next row the cursor stands on (lh_menu.c, lm_next), as the game's changeSelection moves it, and the window slides at its edge.
+-- Up or Down there: to the next row the cursor stands on (lh_menu.c, lm_next), as the game's changeSelection moves it; a page at a time: where the cursor would leave the window, lm_next asks qwark for the next one and the cursor stays until it comes (docs/tod-menu.md 15).
 local function osel(self, d)
   local i = tonumber(get(O, "currentSelection")) or 1
   local j = Q(9, i, d, tonumber(get(O, "max")) or 1)
-  if j ~= i then
-    pcall(G.osel, O, j - i)
-    scroll(j)
-  end
+  if j ~= i then pcall(G.osel, O, j - i) end
 end
 
 -- Game Options on the Trainer's take-over: its options (the game's onActivate builds its rows of them), its methods, its title, Node.goToSlide; each recorded.
@@ -452,13 +449,15 @@ local function setup()
   return true
 end
 
--- The Inventory rows (where the look found them): TRAINER while qwark says so (menu.help), the game's own Inventory otherwise.
+-- The Inventory rows (where the look found them): TRAINER while qwark says so (menu.help), the game's own Inventory otherwise;
+-- then the list's own redraw (its updateAllItems: each row's text from menuData), so the row reads right at once, not only after the cursor's next move (docs/tod-menu.md 15).
 local function helprow(h)
   if h == T.help or not LU then return end
   T.help = h
   for _, x in pairs(T.hr) do
     if h == 1 then x[1][x[2]] = G.trainer else x[1][x[2]] = x[3] end
   end
+  call(LS, "updateAllItems")
 end
 
 local function frame()

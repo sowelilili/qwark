@@ -832,9 +832,9 @@ static void test_tod_load_fade(void)
 	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 
 	/* 2026-10-31: a story FMV load fades for a few frames: no load screen hides the cut. */
-	check(TOD_LOAD_FADE_STORY == 0x3DA00000u && f32_from_bits(TOD_LOAD_FADE_STORY) * 64.0f == 5.0f &&
+	check(TOD_LOAD_FADE_STORY == 0x3DE00000u && f32_from_bits(TOD_LOAD_FADE_STORY) * 64.0f == 7.0f &&
 	      TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED) == 10u && (TOD_LF_FAST_SHIP_FIXED & 7u) == 2u,
-	      "5/64 s for a story load, and LVL_FAST_SHIP_FIXED is bit 42 of g_saveData+0x5530");
+	      "7/64 s for a story load, and LVL_FAST_SHIP_FIXED is bit 42 of g_saveData+0x5530");
 	fade_flag_106(0);
 	check(tod_story_load(0, TOD_LEVEL_FLAGS) && tod_story_load(1, TOD_LEVEL_FLAGS) &&
 	      !tod_story_load(2, TOD_LEVEL_FLAGS) && !tod_story_load(18, TOD_LEVEL_FLAGS),
@@ -1707,12 +1707,13 @@ static void test_tod_autosplit_start_fade(void)
 	wrf(FAKE_ROOT + TOD_FADE_TARGET, 0.0f);
 	tick(1);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "ScreenFade_StartIn's target 0.0, still black: no START yet");
-	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.51f);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.56f);
 	tick(2);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "0.51 of the way: not yet");
-	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.5f);
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "0.56 of the way: not yet");
+	check(TOD_FADE_START_AT == 0x3F0CCCCDu && f32_from_bits(TOD_FADE_START_AT) == 0.55f, "the START's progress is 0.55f");
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.55f);
 	tick(1);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "half a second in, the progress at 0.5: START, the same tick");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "0.45 s in, the progress at 0.55: START, the same tick (2026-11-02)");
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.25f);
 	tick(4);
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
@@ -1732,7 +1733,7 @@ static void test_tod_autosplit_start_fade(void)
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "a fade in started again from black: no START");
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.3f);
 	tick(1);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the tick that finds it past 0.5 (0.3): START");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "the tick that finds it past 0.55 (0.3): START");
 	seq = autosplit_latest_seq();
 	new_game_load();
 	load_data_in();
@@ -1741,7 +1742,7 @@ static void test_tod_autosplit_start_fade(void)
 	tick(1);
 	wr32(FAKE_ROOT + TOD_FADE_PROGRESS, 0x80000000u);
 	tick(1);
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "a progress of -0.0 is past the half too");
+	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "a progress of -0.0 is past 0.55 too");
 
 	/* A target of -0.0 is 0.0; a fade that cannot be read is no fade in. */
 	seq = autosplit_latest_seq();
@@ -1792,7 +1793,7 @@ static void test_tod_autosplit_start_fade(void)
 			tick(1);
 			if (as_count(seq, AUTOSPLIT_START, 0, NULL) == 1) at = i;
 		}
-		check(at == 30, "then START 30 of the fade's 60 frames in: the fade in's start + 0.5 s");
+		check(at == 27, "then START 27 of the fade's 60 frames in: the fade in's start + 0.45 s (2026-11-02)");
 	}
 
 	/* A load screen's own fade in, still clear at the level's up, does not arm it either; a fade out starts the look again. */
@@ -3032,8 +3033,8 @@ static void test_tod_cutscene_cache(void)
 	check(rd32(CC_PF + TOD_PF_CUR) == 0 && rd32(CC_PF + TOD_PF_BUSY) == 0 && rd32(CC_PF + TOD_PF_STATE) == TOD_PF_NFILES,
 	      "and the warmer idle again, as the game leaves it");
 	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
-	check(strncmp(text, "Done ", 5) == 0 && strstr(text, "s 7.") != NULL && strstr(text, "MB/s") != NULL &&
-	      strlen(text) <= 19, "the menu's row: Done Ns R.RMB/s");
+	check(strncmp(text, "Done (", 6) == 0 && text[strlen(text) - 2] == 's' && text[strlen(text) - 1] == ')' &&
+	      strstr(text, "MB/s") == NULL && strlen(text) <= 11, "the menu's row: Done (Ns), the seconds alone (2026-11-02)");
 
 	/* ---- the Japanese sound file, the archive too small, no table */
 	wr32(TOD_SOUND_PARAM, TOD_SOUND_PARAM_JP);
