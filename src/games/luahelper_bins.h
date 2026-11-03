@@ -33,7 +33,7 @@ struct lh_desc {
 	const struct lh_cave *caves;
 	u8 ncaves;
 
-	/* The VM hook first, then the error tap, then the menu's two (revision 1.29). */
+	/* The VM hook first, then the error tap, then the menu's two and the galactic map's (revision 1.29). */
 	const struct lh_hook *hooks;
 	u8 nhooks;
 
@@ -60,6 +60,16 @@ struct lh_desc {
 	 */
 	const u8 *diag;
 	u32 diag_len;
+	/*
+	 * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's VM,
+	 * whose lua_State* is at menu_off into the menu system the word at
+	 * map_ptr holds (0 with no map), and the map's glue (lh_gmap.lua), which
+	 * qwark sends it when it opened the map itself (NULL but where the glue
+	 * is; the length stays).
+	 */
+	u32 map_ptr;
+	const u8 *gmap;
+	u32 gmap_len;
 };
 
 /* NULL for an executable with no Lua helper. */

@@ -653,9 +653,11 @@ struct menu_native {
  * back every poked byte that still holds what it wrote, and reads `pick_addr`
  * (s32, a planet id, -1 for none): a pick is the game's own load, already
  * under way; none (Back) opens the menu again on its root, the cursor on
- * Planets, whose row then opens the page of every planet once. A picker
- * that never comes up (a few seconds) is given up the same way, the page of
- * planets opening instead.
+ * Planets. A picker that never comes up (a few seconds) is given up the
+ * same way, the page of planets opening instead. With `glue`, the core sends
+ * the Lua helper's map glue (struct lh_desc's gmap) to the picker's own VM
+ * once it is up, which makes it list every planet (docs/tod-menu.md 17);
+ * should that fail, Back opens the page of planets instead of the root.
  */
 struct menu_poke {
 	u32 addr;               /* the first byte */
@@ -671,6 +673,7 @@ struct menu_picker {
 	u32 pick_addr;          /* s32: what it picked, -1 none, read once it has gone */
 	const struct menu_poke *pokes;
 	u8  npokes;
+	u8  glue;               /* revision 1.29: 1, the helper's map glue goes into it (lua_core_map_send) */
 };
 #endif
 

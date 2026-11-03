@@ -35,7 +35,7 @@ struct luamb_hdr {
 	u32 err_seq;
 	u32 err_vm;
 	u32 err_len;
-	u32 menu_beat;    /* version 2: the pause menu's frames */
+	u32 menu_beat;    /* version 2: the pause menu's frames (and, revision 1.29, the galactic map's) */
 };
 
 void luamb_hdr_decode(const u8 *raw, struct luamb_hdr *h);   /* LUAMB_HDR_SIZE bytes */
@@ -110,6 +110,12 @@ struct luamb_client {
 	 */
 	u32 menu_ptr;
 	u32 menu_off;
+	/*
+	 * Revision 1.29, the galactic map: the map's lua_State the same way, the
+	 * word at map_ptr its menu system (0 with no map up), menu_off on. 0:
+	 * the game has no map VM.
+	 */
+	u32 map_ptr;
 	u8  target;       /* the request outstanding's, LUAMB_TARGET_* */
 	u8  phase;
 	u32 seq;          /* the request outstanding or withdrawn */
@@ -124,8 +130,12 @@ void luamb_client_init(struct luamb_client *c, u32 base, u32 state_ptr);
 /* Version 2: where the pause menu's lua_State is (struct luamb_client's menu_ptr, menu_off). */
 void luamb_client_menu(struct luamb_client *c, u32 menu_ptr, u32 menu_off);
 
+/* Revision 1.29, the galactic map: where the map's menu system is (struct luamb_client's map_ptr). */
+void luamb_client_map(struct luamb_client *c, u32 map_ptr);
+
 /*
- * The lua_State `target` has now: the gameplay VM's word, or the menu's chain.
+ * The lua_State `target` has now: the gameplay VM's word, or the menu's (or
+ * the map's) chain.
  * 0 for none, or a target the client knows no VM for; -1 on a failed read.
  */
 int  luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, u8 target, u32 *state);

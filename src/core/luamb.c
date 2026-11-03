@@ -111,6 +111,7 @@ void luamb_client_init(struct luamb_client *c, u32 base, u32 state_ptr)
 	c->state_ptr = state_ptr;
 	c->menu_ptr = 0;
 	c->menu_off = 0;
+	c->map_ptr = 0;
 	c->target = LUAMB_TARGET_GAMEPLAY;
 	c->phase = LUAMB_C_IDLE;
 	c->seq = 0;
@@ -135,10 +136,15 @@ void luamb_client_menu(struct luamb_client *c, u32 menu_ptr, u32 menu_off)
 	c->menu_off = menu_off;
 }
 
+void luamb_client_map(struct luamb_client *c, u32 map_ptr)
+{
+	c->map_ptr = map_ptr;
+}
+
 int luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, u8 target, u32 *state)
 {
 	u8 b[4];
-	u32 ms;
+	u32 ms, ptr;
 
 	*state = 0;
 	if (target == LUAMB_TARGET_GAMEPLAY) {
@@ -146,8 +152,10 @@ int luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, 
 		*state = be32_get(b);
 		return 0;
 	}
-	if (target != LUAMB_TARGET_MENU || c->menu_ptr == 0) return 0;
-	if (io->read(io->ctx, c->menu_ptr, b, 4) != 0) return -1;
+	/* Revision 1.29: the galactic map's VM, the same chain from its own menu system. */
+	ptr = target == LUAMB_TARGET_MENU ? c->menu_ptr : target == LUAMB_TARGET_MAP ? c->map_ptr : 0;
+	if (ptr == 0) return 0;
+	if (io->read(io->ctx, ptr, b, 4) != 0) return -1;
 	ms = be32_get(b);
 	if (ms == 0) return 0;
 	if (io->read(io->ctx, ms + c->menu_off, b, 4) != 0) return -1;
@@ -155,10 +163,10 @@ int luamb_target_state(const struct luamb_client *c, const struct luamb_io *io, 
 	return 0;
 }
 
-/* The heartbeat that counts the frames of the target's VM. */
+/* The heartbeat that counts the frames of the target's VM (the map's frames count with the pause's, revision 1.29). */
 static u32 beat(const struct luamb_hdr *h, u8 target)
 {
-	return target == LUAMB_TARGET_MENU ? h->menu_beat : h->heartbeat;
+	return target != LUAMB_TARGET_GAMEPLAY ? h->menu_beat : h->heartbeat;
 }
 
 static int withdraw(struct luamb_client *c, const struct luamb_io *io, u32 now_ms,

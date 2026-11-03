@@ -230,6 +230,15 @@ void host_fake_map(int level);
 void host_fake_map_off(int off);
 
 /*
+ * Revision 1.29, every planet (docs/tod-menu.md 17): one frame of the map,
+ * a request of target MAP (the map's glue) served; host_fake_map_glue(0)
+ * has the glue answer "in23" (in, 23 rows), (1) "wait" (its handler not up
+ * yet), (2) an error.
+ */
+int  host_fake_map_frame(void);
+void host_fake_map_glue(int how);
+
+/*
  * Revision 1.28: its save system (docs/tod-savefile.md).
  * host_fake_tod_save_frame runs one frame of SaveSystem_update's load and
  * autosave paths (1 when it applied a load); host_set_fake_tod_save runs one

@@ -41,7 +41,7 @@ ASFLAGS="-Wa,-mregnames -I$DIR"
 # game tag : header : title : LH_GAME number
 GAMES="tod"
 
-sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua $DIR/lh_diag.lua src/core/menubox.h"
+sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua $DIR/lh_diag.lua $DIR/lh_gmap.lua src/core/menubox.h"
 for g in $GAMES; do sources="$sources $DIR/lh_$g.h"; done
 
 if [ "$1" = "--if-stale" ]; then
@@ -163,6 +163,9 @@ for g in $GAMES; do
 	menu_orig=$(need "$hdr" LH_MENU_HOOK_ORIG)
 	pause_addr=$(need "$hdr" LH_PAUSE_HOOK_ADDR)
 	pause_orig=$(need "$hdr" LH_PAUSE_HOOK_ORIG)
+	map_addr=$(need "$hdr" LH_MAP_HOOK_ADDR)
+	map_orig=$(need "$hdr" LH_MAP_HOOK_ORIG)
+	map_ms=$(need "$hdr" LH_MAP_MS)
 	vm=$(need "$hdr" LH_VM)
 	vm_state=$(need "$hdr" LH_VM_STATE)
 	mb_size=$(need src/core/luamb.h LUAMB_SIZE)
@@ -196,6 +199,12 @@ for g in $GAMES; do
 	lua_strip "$DIR/lh_glue.lua" > "$OUT/$g-glue-full.lua"
 	lua_min "$OUT/$g-glue-full.lua" > "$glue"
 	lua_strip "$DIR/lh_diag.lua" > "$diag"
+	# Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's glue,
+	# which qwark sends the map's own VM (target MAP) when it opened the map,
+	# minified as the pause's is.
+	gmap=$OUT/$g-gmap.lua
+	lua_strip "$DIR/lh_gmap.lua" > "$OUT/$g-gmap-full.lua"
+	lua_min "$OUT/$g-gmap-full.lua" > "$gmap"
 
 	$CC $CFLAGS -DLH_GAME=$num -c -o "$OUT/$g.o" "$DIR/luahelper.c"
 	# Through the driver, as the savefile helper's stubs are: it stamps the
@@ -238,6 +247,8 @@ for g in $GAMES; do
 	err_word=$(branch_word "$err_addr" "$tap" 0)
 	menu_word=$(branch_word "$menu_addr" "$menu" 1)
 	pause_word=$(branch_word "$pause_addr" "$pause" 1)
+	# Revision 1.29: the galactic map's frame goes to the pause menu's entry too.
+	map_word=$(branch_word "$map_addr" "$menu" 1)
 
 	{
 		echo "/* $g, .text at $cave, $size bytes */"
@@ -256,7 +267,8 @@ for g in $GAMES; do
 		echo "	{ ${hook_addr}u, ${hook_word}u, ${hook_orig}u },   /* bl .lh_hook       -> $entry */"
 		echo "	{ ${err_addr}u, ${err_word}u, ${err_orig}u },   /* b  .lh_err_tap    -> $tap */"
 		echo "	{ ${menu_addr}u, ${menu_word}u, ${menu_orig}u },   /* bl .lh_menu_hook  -> $menu */"
-		echo "	{ ${pause_addr}u, ${pause_word}u, ${pause_orig}u }    /* bl .lh_pause_hook -> $pause */"
+		echo "	{ ${pause_addr}u, ${pause_word}u, ${pause_orig}u },   /* bl .lh_pause_hook -> $pause */"
+		echo "	{ ${map_addr}u, ${map_word}u, ${map_orig}u }    /* bl .lh_menu_hook  -> $menu (the galactic map) */"
 		echo "};"
 		echo
 	} >> "$OUT/hooks.c"
@@ -271,6 +283,11 @@ for g in $GAMES; do
 		echo "luahelper: $g diag is $diag_size bytes, more than a request's $chunk_cap" >&2
 		exit 1
 	}
+	gmap_size=$(wc -c < "$gmap" | tr -d ' ')
+	[ "$gmap_size" -le $((chunk_cap)) ] || {
+		echo "luahelper: $g map glue is $gmap_size bytes, more than a request's $chunk_cap" >&2
+		exit 1
+	}
 	{
 		echo "/* $g, the console menu's glue (lh_glue.lua), $glue_size bytes of Lua */"
 		echo "static const u8 lh_${g}_glue[] = {"
@@ -282,20 +299,28 @@ for g in $GAMES; do
 		emit_bytes "$diag"
 		echo "};"
 		echo
+		echo "/* $g, the galactic map's glue (lh_gmap.lua), $gmap_size bytes of Lua */"
+		echo "static const u8 lh_${g}_gmap[] = {"
+		emit_bytes "$gmap"
+		echo "};"
+		echo
 	} >> "$OUT/arrays.c"
 
-	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 4," >> "$OUT/descs.txt"
+	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 5," >> "$OUT/descs.txt"
 	echo "	  ${mailbox}u, LUAMB_SIZE, ${vm}u, ${vm_state}u," >> "$OUT/descs.txt"
 	echo "	  ${pause_ms}u, ${ms_state}u, LH_TABLE(lh_${g}_glue), ${glue_size}u," >> "$OUT/descs.txt"
-	echo "	  LH_TABLE(lh_${g}_diag), ${diag_size}u }," >> "$OUT/descs.txt"
+	echo "	  LH_TABLE(lh_${g}_diag), ${diag_size}u," >> "$OUT/descs.txt"
+	echo "	  ${map_ms}u, LH_TABLE(lh_${g}_gmap), ${gmap_size}u }," >> "$OUT/descs.txt"
 
 	echo "  $g .text $cave $size bytes (cave to $cave_end)" >> "$OUT/report.txt"
 	echo "  $g hook $hook_addr = $hook_word (bl $entry), was $hook_orig" >> "$OUT/report.txt"
 	echo "  $g err  $err_addr = $err_word (b $tap), was $err_orig" >> "$OUT/report.txt"
 	echo "  $g menu $menu_addr = $menu_word (bl $menu), was $menu_orig" >> "$OUT/report.txt"
 	echo "  $g pause $pause_addr = $pause_word (bl $pause), was $pause_orig" >> "$OUT/report.txt"
+	echo "  $g map  $map_addr = $map_word (bl $menu), was $map_orig" >> "$OUT/report.txt"
 	echo "  $g glue $glue_size bytes of Lua (a request holds $((chunk_cap)))" >> "$OUT/report.txt"
 	echo "  $g diag $diag_size bytes of Lua" >> "$OUT/report.txt"
+	echo "  $g gmap $gmap_size bytes of Lua" >> "$OUT/report.txt"
 	echo "  $g mailbox $mailbox, $mb_size bytes" >> "$OUT/report.txt"
 done
 
@@ -313,11 +338,11 @@ sed '$ s/},$/}/' "$OUT/descs.txt" > "$OUT/descs-final.txt"
  *
  * from the SDK's Cygwin shell.
  *
- * Each game has one cave, the compiled helper, and four hook words: the branch
+ * Each game has one cave, the compiled helper, and five hook words: the branch
  * that replaces the game's call to its gameplay VM's update, the branch that
- * replaces its empty reportError, and (revision 1.29, the console menu) the
+ * replaces its empty reportError, (revision 1.29, the console menu) the
  * calls that replace the pause menu's update and the test of the pause
- * button. All are computed from the addresses the helper linked at. The cave's bytes are where something puts them into
+ * button, and the galactic map's update. All are computed from the addresses the helper linked at. The cave's bytes are where something puts them into
  * the game: the emulator builds (QWARK_EMULATOR), which make an RPCS3 patch of
  * them, and the game module (QWARK_GAME_MODULE, tod.sprx), out of whose
  * read-only segment the core installs them on a console (revision 1.27). The
@@ -395,7 +420,7 @@ struct lh_desc {
 	const struct lh_cave *caves;
 	u8 ncaves;
 
-	/* The VM hook first, then the error tap, then the menu's two (revision 1.29). */
+	/* The VM hook first, then the error tap, then the menu's two and the galactic map's (revision 1.29). */
 	const struct lh_hook *hooks;
 	u8 nhooks;
 
@@ -422,6 +447,16 @@ struct lh_desc {
 	 */
 	const u8 *diag;
 	u32 diag_len;
+	/*
+	 * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's VM,
+	 * whose lua_State* is at menu_off into the menu system the word at
+	 * map_ptr holds (0 with no map), and the map's glue (lh_gmap.lua), which
+	 * qwark sends it when it opened the map itself (NULL but where the glue
+	 * is; the length stays).
+	 */
+	u32 map_ptr;
+	const u8 *gmap;
+	u32 gmap_len;
 };
 
 /* NULL for an executable with no Lua helper. */

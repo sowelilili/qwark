@@ -6079,8 +6079,8 @@ def smoke_tod_menu(c, sim):
     page = menu_page(c, box, size)
     planets = page[3].index("Planets") if page and "Planets" in page[3] else 3
     # Revision 1.29: Planets opens the galactic map (gmap() in the gameplay VM), every level the map lists
-    # unlocked while it is up; Back puts the save's bytes back and asks for the Trainer again, on its root with
-    # the cursor on Planets, which then reads All planets and opens the page of planets.
+    # unlocked while it is up, and (every planet, docs/tod-menu.md 17) the map's glue sent to the map's own VM;
+    # Back puts the save's bytes back and asks for the Trainer again, on its root with the cursor on Planets.
     ls = lambda level, off: TOD_LEVEL_SAVE + level * 0x408 + off
     triples = lambda: [c.call(OP_MEM_READ, struct.pack(">II", ls(level, 0x400), 3))[1] for level in range(19)]
     before = triples()
@@ -6091,22 +6091,49 @@ def smoke_tod_menu(c, sim):
     check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: the cross on Planets")
     wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
     status, chunk = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x600, 8))
+    rq = mem_read_u32(c, TOD_LUA_MB + 0x08)
     unl = [mem_read_u8(c, ls(level, 0x400)) for level in range(19)]
-    check(mem_read_u32(c, TOD_GAME_STATE) == 6 and mem_read_u32(c, TOD_LUA_MB + 0x08) == req + 1 and
-          chunk[:6] == b"gmap()" and unl[1:18] == [1] * 17 and unl[0] == 1 and unl[18] == 0 and
+    # gmap() went first; by now the map's glue may have followed it (req + 2, below).
+    check(mem_read_u32(c, TOD_GAME_STATE) == 6 and ((rq == req + 1 and chunk[:6] == b"gmap()") or rq == req + 2) and
+          unl[1:18] == [1] * 17 and unl[0] == 1 and unl[18] == 0 and
           mem_read_u8(c, ls(4, 0x401)) == 1 and mem_read_u8(c, ls(13, 0x401)) == 1,
           "ToD menu: Planets opens the galactic map: gmap() to the gameplay VM, every level the map lists unlocked "
           "(Fastoon II the save's)", (mem_read_u32(c, TOD_GAME_STATE), chunk, unl))
-    module_sleep(c, 0.2)   # qwark sees the map up (it looks a few times a second)
+    # Every planet: the map's glue, a request of target MAP (2), which the simulated map's frame answers "in23".
+    wait_while(c, lambda: mem_read_u32(c, TOD_LUA_MB + 0x0C) != req + 2, 3.0, 0.02)
+    glen = mem_read_u32(c, TOD_LUA_MB + 0x1C)
+    status, gchunk = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x600, glen))
+    status, gout = c.call(OP_MEM_READ, struct.pack(">II", TOD_LUA_MB + 0x200, 4))
+    check(mem_read_u32(c, TOD_LUA_MB + 0x0C) == req + 2 and mem_read_u8(c, TOD_LUA_MB + 0x26) == 2 and
+          b"levelArray" in gchunk and gout == b"in23",
+          "ToD menu: the map up: qwark sends the map's glue to the map's own VM (target MAP), which answers in, 23 rows",
+          (mem_read_u32(c, TOD_LUA_MB + 0x0C) - req, mem_read_u8(c, TOD_LUA_MB + 0x26), gout))
+    module_sleep(c, 0.2)   # qwark takes the answer (it looks a few times a second)
     sim.send("fakemap back")
     wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
     now = triples()
     page = menu_page(c, box, size)
     check(now == saved and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 1 and page is not None and
-          page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == planets and page[3][planets] == "All planets",
+          page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == planets and page[3][planets] == "Planets",
           "ToD menu: Back from the map: the save's bytes again, the Trainer asked for, its root with the cursor on "
-          "All planets", (now == saved, page[2:4] if page else None))
-    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: into All planets")
+          "Planets (one picker: no All planets row)", (now == saved, page[2:4] if page else None))
+    # The simulator has no pause test to take the open: qwark gives up asking a few seconds on.
+    quiet = [time.time()]
+
+    def asking():
+        if mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0:
+            quiet[0] = time.time()
+        return time.time() - quiet[0] < 1.2
+    wait_while(c, asking, 8.0, 0.05)
+    check(not asking(), "ToD menu: an open nobody takes is given up a few seconds on")
+    # The map's glue failing: the map the game's own, and Back opens the page of planets, the one fallback.
+    sim.send("fakemap fail")
+    check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: Planets again, the map's glue to fail")
+    wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
+    module_sleep(c, 0.4)
+    sim.send("fakemap back")
+    sim.send("fakemap in")
+    wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
     check(page is not None and page[2] == "Planets" and
@@ -6128,15 +6155,8 @@ def smoke_tod_menu(c, sim):
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back to the root")
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
-    check(page is not None and page[3][planets] == "Planets", "ToD menu: All planets was once: Planets again",
+    check(page is not None and page[3][planets] == "Planets", "ToD menu: the root: Planets, opening the map",
           page[3] if page else None)
-    # The simulator has no pause test to take the open: qwark gives up asking a few seconds on.
-    quiet = [time.time()]
-
-    def asking():
-        if mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0:
-            quiet[0] = time.time()
-        return time.time() - quiet[0] < 1.2
     wait_while(c, asking, 8.0, 0.05)
     check(not asking(), "ToD menu: an open nobody takes is given up a few seconds on")
     # A pick: the game's own load (the map's exit), the bytes back, no Trainer asked for.

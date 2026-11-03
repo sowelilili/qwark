@@ -96,7 +96,19 @@
 #define LH_PAUSE_HOOK_ORIG 0x4BDA1825
 #define LH_TR_BTN_PRESSED  0x002672E0
 
-/* The word after both: ld r2,40(r1), the caller's own r2 back. */
+/*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): GalMapState_update's
+ * call of AnarkMenuSystem_update through the same trampoline 0x119D0, r3 =
+ * the map's menu system (lwz r3,0(r31), r31 = &g_galMapSystem), reached only
+ * while the map is up (g_gameState 6), the same r2 rule. It goes to the same
+ * entry as the pause menu's frame (.lh_menu_hook), and lh_menu_tick tells the
+ * two apart by the menu system: the map's runs nothing but a request of
+ * target MAP, which qwark sends only to a map it opened itself.
+ */
+#define LH_MAP_HOOK_ADDR   0x0003633C
+#define LH_MAP_HOOK_ORIG   0x4BFDB695
+
+/* The word after all three: ld r2,40(r1), the caller's own r2 back. */
 #define LH_TOC_RELOAD      0xE8410028
 
 /* ------------------------------------------------------------------ TOCs */
@@ -171,6 +183,19 @@
 #define LH_MS_FIRST        0x000010AB   /* u8: the next update is the presentation's first   */
 #define LH_RT_PUSHED       0x000000BC   /* AnarkRuntime: how many presentations are pushed   */
 #define LH_BR_PRES         0x00000008   /* AnarkLuaBridge: the presentation pushed, else 0   */
+
+/*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): its own menu system
+ * (GalMap_loadMenu, an AnarkMenuSystem like the pause's, its Lua on the same
+ * Anark pool, which Memory_InitHeaps sets up afresh for it), up while
+ * g_gameState is 6, and the level a pick leaves for GalMapState_exit's
+ * LoadLevel (g_galMap.selectedLevel, -1 from GalMapState_enter).
+ */
+#define LH_MAP_MS          0x101CBF80   /* g_galMapSystem                                    */
+#define LH_GAME_STATE      0x10387F4C   /* g_gameState, u32                                  */
+#define LH_STATE_MAP       0x00000006   /* g_gameState: the galactic map                     */
+#define LH_MAP_PICK        0x101CBFC0   /* g_galMap.selectedLevel, s32                       */
+#define LH_LEVELS          0x00000013   /* levels 0 to 18                                    */
 
 /*
  * Revision 1.29, the second crash (docs/tod-menu.md 10): the Lua pool every

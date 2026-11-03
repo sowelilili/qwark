@@ -143,7 +143,7 @@ static int lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 		st = LUAMB_ST_NO_STATE;
 	} else if (len == 0 || len > LUAMB_CHUNK_CAP) {
 		st = LUAMB_ST_BAD_LEN;
-	} else if (target == LUAMB_TARGET_MENU && lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG) != 2) {
+	} else if (target != LUAMB_TARGET_GAMEPLAY && lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG) != 2) {
 		st = LUAMB_ST_NO_ROOM;
 	} else {
 		lh_u32 prev = LH_WORD(LH_CUR_ALLOC);
@@ -167,7 +167,7 @@ static int lh_serve(lh_u32 L, lh_u32 alloc, lh_u32 target)
 			}
 		}
 		lh_settop(L, top);
-		if (target == LUAMB_TARGET_MENU) lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG);
+		if (target != LUAMB_TARGET_GAMEPLAY) lh_room(L, alloc, LM_ROOM_LOAD_SMALL, LM_ROOM_LOAD_BIG);
 		lh_alloc_set_current(prev);
 	}
 
@@ -314,6 +314,10 @@ int lh_qw(lh_u32 L)
 		LH_WORD(LMS(LM_NOTE)) = (lh_u32)a;
 		return 0;
 	}
+	if (op == LM_OP_PICK) {
+		lm_pick((lh_u32)a);
+		return 0;
+	}
 	return 0;
 }
 
@@ -370,6 +374,18 @@ static void lh_menu_quit(lh_u32 L, lh_u32 ms, int top)
 	lh_menu_stop(L, ms, top, a);
 }
 
+/* The global qw in the VM of `L`: the pause menu's (lh_menu_load), and the galactic map's for its glue. */
+static void lh_set_qw(lh_u32 L)
+{
+	lh_u32 a;
+
+	LH_TEXT_ADDR(lh_qwname, a);
+	lh_pushstring(L, a);
+	LH_TEXT_ADDR(lh_qw_desc, a);
+	lh_pushcclosure(L, a, 0);
+	lh_settable(L, LH_GLOBALSINDEX);
+}
+
 /*
  * A new pause menu's VM: the global qw, and a word that asks qwark for the
  * glue (lh_glue.lua), which qwark sends as a request for the menu's VM
@@ -378,17 +394,11 @@ static void lh_menu_quit(lh_u32 L, lh_u32 ms, int top)
  */
 static void lh_menu_load(lh_u32 L)
 {
-	lh_u32 a;
-
 	LH_BYTE(LMS(LM_TRIED)) = 1;
 	LH_WORD(LMS(LM_NOTE)) = 0;
 	lm_hstate(0);
 
-	LH_TEXT_ADDR(lh_qwname, a);
-	lh_pushstring(L, a);
-	LH_TEXT_ADDR(lh_qw_desc, a);
-	lh_pushcclosure(L, a, 0);
-	lh_settable(L, LH_GLOBALSINDEX);
+	lh_set_qw(L);
 
 	LH_WORD(LMS(LM_LOADS)) = LH_WORD(LMS(LM_LOADS)) + 1;
 	lh_sync();
@@ -418,55 +428,71 @@ static void lh_menu_load(lh_u32 L)
 void lh_menu_tick(lh_u32 ms)
 {
 	lh_u32 L, prev, alloc, rt, why;
-	int top, room;
+	int top, room, map;
 
 	if (LH_WORD(MB + LUAMB_OFF_MAGIC) != LUAMB_MAGIC) return;
 	LH_WORD(MB + LUAMB_OFF_MENU_BEAT) = LH_WORD(MB + LUAMB_OFF_MENU_BEAT) + 1;
-	why = lm_ready(ms);
-	if (why != 0) {
-		lm_kept_out(why);
-		return;
-	}
-	L = LH_WORD(ms + LH_MS_STATE);
-	rt = LH_WORD(ms + LH_MS_RUNTIME);
+	/*
+	 * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's frame
+	 * comes here too (LH_MAP_HOOK_ADDR), and runs nothing but a request of
+	 * target MAP, which qwark sends only to a map it opened itself (the
+	 * map's glue, lh_gmap.lua), so the ship's own map is the game's alone: a
+	 * frame of it with no such request reads a few words and returns. One
+	 * that has it goes in as the pause's frame does (the game's words, the
+	 * pool, the push), with qw a global of the VM for the glue's pick
+	 * (LM_OP_PICK), and touches nothing of the pause's.
+	 */
+	map = ms != 0 && ms == LH_WORD(LH_MAP_MS);
+	why = lm_ready(ms, map);
+	if (map && (LH_WORD(MB + LUAMB_OFF_REQ) == LH_WORD(MB + LUAMB_OFF_ACK) ||
+	            LH_BYTE(MB + LUAMB_OFF_TARGET) != LUAMB_TARGET_MAP)) why = LM_WHY_SYSTEM;
+	if (why == 0) {
+		L = LH_WORD(ms + LH_MS_STATE);
+		rt = LH_WORD(ms + LH_MS_RUNTIME);
 
-	prev = LH_WORD(LH_CUR_ALLOC);
-	alloc = lh_anark_alloc();
-	lh_alloc_set_current(alloc);
-	top = lh_gettop(L);
+		prev = LH_WORD(LH_CUR_ALLOC);
+		alloc = lh_anark_alloc();
+		lh_alloc_set_current(alloc);
+		top = lh_gettop(L);
 
-	room = lh_room(L, alloc, LM_ROOM_SMALL, LM_ROOM_BIG);
-	if (room != 2) why = LM_WHY_MEMORY;
-	if (room == 2 || (room == 1 && LH_WORD(LMS(LM_GLUE)) == LM_GLUE_LOADED)) {
-		lh_pres_push(rt, LH_WORD(ms + LH_MS_PRES));
+		room = lh_room(L, alloc, LM_ROOM_SMALL, LM_ROOM_BIG);
+		if (room != 2) why = LM_WHY_MEMORY;
+		if (room == 2 || (room == 1 && !map && LH_WORD(LMS(LM_GLUE)) == LM_GLUE_LOADED)) {
+			lh_pres_push(rt, LH_WORD(ms + LH_MS_PRES));
 
-		if (!lm_pushed(ms)) {
-			why |= LM_WHY_PUSH;
-		} else if (room == 1) {
-			lh_menu_quit(L, ms, top);
-		} else {
-			/* Another pause, or another menu system: the glue has to go in again. */
-			if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
-				LH_WORD(LMS(LM_L)) = L;
-				LH_WORD(LMS(LM_MS)) = ms;
-				LH_BYTE(LMS(LM_TRIED)) = 0;
+			if (!lm_pushed(ms)) {
+				why |= LM_WHY_PUSH;
+			} else if (map) {
+				lh_set_qw(L);
+				lh_serve(L, alloc, LUAMB_TARGET_MAP);
+			} else if (room == 1) {
+				lh_menu_quit(L, ms, top);
+			} else {
+				/* Another pause, or another menu system: the glue has to go in again. */
+				if (LH_WORD(LMS(LM_L)) != L || LH_WORD(LMS(LM_MS)) != ms) {
+					LH_WORD(LMS(LM_L)) = L;
+					LH_WORD(LMS(LM_MS)) = ms;
+					LH_BYTE(LMS(LM_TRIED)) = 0;
+				}
+				if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
+				lh_settop(L, top);
+
+				/* qwark's requests for this VM, the glue first of all; or else the glue's frame. */
+				if (!lh_serve(L, alloc, LUAMB_TARGET_MENU) && lh_get_frame_fn(L)) {
+					if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
+					/* The glue broke (it put Help back first): said once, and qwark_frame gone until the next pause. */
+					if (lh_pcall(L, 0, 0, 0) != 0)
+						lh_menu_stop(L, ms, top, lh_type(L, -1) == LUAMB_T_STRING ? lh_tostring(L, -1) : 0);
+				}
 			}
-			if (LH_BYTE(LMS(LM_TRIED)) == 0 && !lh_get_frame_fn(L)) lh_menu_load(L);
-			lh_settop(L, top);
-
-			/* qwark's requests for this VM, the glue first of all; or else the glue's frame. */
-			if (!lh_serve(L, alloc, LUAMB_TARGET_MENU) && lh_get_frame_fn(L)) {
-				if (LH_WORD(LMS(LM_GLUE)) == LM_GLUE_WANTED) LH_WORD(LMS(LM_GLUE)) = LM_GLUE_LOADED;
-				/* The glue broke (it put Help back first): said once, and qwark_frame gone until the next pause. */
-				if (lh_pcall(L, 0, 0, 0) != 0)
-					lh_menu_stop(L, ms, top, lh_type(L, -1) == LUAMB_T_STRING ? lh_tostring(L, -1) : 0);
-			}
+			lh_pres_pop(rt);
 		}
-		lh_pres_pop(rt);
-	}
 
-	lh_settop(L, top);
-	lh_alloc_set_current(prev);
+		lh_settop(L, top);
+		lh_alloc_set_current(prev);
+	}
+	/* The pause's own words, for qwark's log: never the map's. */
+	if (map) return;
 	lm_kept_out(why);
 	if (why == 0) lm_menu_frame();
 }

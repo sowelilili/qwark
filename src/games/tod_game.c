@@ -446,11 +446,16 @@ static const struct game_menu tod_menu = {
  * the game's own planet picker (tod.h, docs/tod-menu.md 16), with the
  * gameplay package's gmap(), as Fastoon's ship does after its repair: Back
  * goes back to play, a pick is the game's own load. While it is up every
- * level the map lists is unlocked (levels 1 to 17; Metropolis is not on the
- * map, and Fastoon II keeps the save's own byte, so the map shows whichever
- * Fastoon the save is at, as the game does), and the three space combat
- * levels count as visited, so Mukow, Rykan V and Kerchu City load
- * themselves; the core puts every byte back once the map has gone.
+ * level the map lists is unlocked (levels 1 to 17; Fastoon II keeps the
+ * save's own byte), which shows every planet of the map's 3D galaxy
+ * (GalMap_setupView hides those the save has not unlocked), and the three
+ * space combat levels count as visited; the core puts every byte back once
+ * the map has gone. Revision 1.29, every planet (docs/tod-menu.md 17): once
+ * the map is up the Lua helper's map glue (lh_gmap.lua) goes into the map's
+ * own VM: Kerwan and both Fastoons are rows of their own and every pick is
+ * the level picked (lm_pick). Should the glue not go in, the map is the
+ * game's own with the save's planets unlocked as before, the pokes making
+ * every row it has a pick of its own level (no space combat level first).
  */
 #define TOD_LS(level, off) (TOD_LEVEL_SAVE + (level) * TOD_LEVEL_SAVE_LEN + (off))
 
@@ -467,7 +472,8 @@ static const struct menu_picker tod_galmap = {
 	"gmap()",
 	TOD_STATE_GALMAP,
 	TOD_GALMAP_PICK,
-	tod_galmap_pokes, (u8)(sizeof(tod_galmap_pokes) / sizeof(tod_galmap_pokes[0]))
+	tod_galmap_pokes, (u8)(sizeof(tod_galmap_pokes) / sizeof(tod_galmap_pokes[0])),
+	1                     /* the map's glue: every planet (docs/tod-menu.md 17) */
 };
 
 /*

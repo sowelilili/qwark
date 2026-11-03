@@ -195,10 +195,17 @@ static void test_install(void)
 	int i;
 
 	group("ToD's console menu: the install (the game's own pause menu)");
-	check(d != NULL && d->nhooks == 4 && d->hooks[2].addr == 0x000242B0u && d->hooks[2].orig == 0x4BFED721u &&
-	      d->hooks[3].addr == 0x004C5ABCu && d->hooks[3].orig == 0x4BDA1825u,
-	      "the Lua helper has four hooks: the VM's, the error tap, the pause menu's update and the pause test");
+	check(d != NULL && d->nhooks == 5 && d->hooks[2].addr == 0x000242B0u && d->hooks[2].orig == 0x4BFED721u &&
+	      d->hooks[3].addr == 0x004C5ABCu && d->hooks[3].orig == 0x4BDA1825u &&
+	      d->hooks[4].addr == 0x0003633Cu && d->hooks[4].orig == 0x4BFDB695u,
+	      "the Lua helper has five hooks: the VM's, the error tap, the pause menu's update, the pause test and the galactic map's update");
 	if (d == NULL) return;
+	/* Revision 1.29, every planet (docs/tod-menu.md 17): the map's update goes to the pause menu's entry. */
+	check(((d->hooks[4].value & 0x03FFFFFCu) + d->hooks[4].addr - ((d->hooks[4].value & 0x02000000u) ? 0x04000000u : 0u)) ==
+	      ((d->hooks[2].value & 0x03FFFFFCu) + d->hooks[2].addr - ((d->hooks[2].value & 0x02000000u) ? 0x04000000u : 0u)),
+	      "the galactic map's update goes to the same entry as the pause menu's");
+	check(d->map_ptr == 0x101CBF80u && d->gmap != NULL && d->gmap_len > 1000 && d->gmap_len <= LUAMB_CHUNK_CAP,
+	      "the map's menu system (g_galMapSystem) and its glue, which fits a request");
 	check(d->menu_ptr == 0x101CB220u && d->menu_off == 0x106Cu && d->glue != NULL &&
 	      d->glue_len > 1000 && d->glue_len <= LUAMB_CHUNK_CAP,
 	      "and the pause menu's VM, and its glue, which fits one request");
@@ -737,6 +744,26 @@ static void to_map(int row)
 	tick(6);
 }
 
+/*
+ * Revision 1.29, every planet (docs/tod-menu.md 17): the map's frames, as the
+ * helper's map hook runs them, until one serves a request of target MAP (the
+ * map's glue), the core ticking between; 1 when one was served (at most
+ * three seconds: the glue goes once the mailbox is free).
+ */
+static int map_frames(void)
+{
+	int i;
+
+	for (i = 0; i < 360; i++) {
+		if (host_fake_map_frame()) {
+			tick(8);
+			return 1;
+		}
+		tick(1);
+	}
+	return 0;
+}
+
 static void test_galmap(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
@@ -744,7 +771,7 @@ static void test_galmap(void)
 	char b[48], t[40];
 	int r;
 
-	group("ToD's console menu: Planets opens the galactic map (revision 1.29, docs/tod-menu.md 16)");
+	group("ToD's console menu: Planets opens the galactic map, every planet on it (revision 1.29, docs/tod-menu.md 16, 17)");
 	save_part_way();
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
 	trainer_up();
@@ -779,9 +806,19 @@ static void test_galmap(void)
 	host_fake_lua_frame();
 	tick(6);
 	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP && save_for_map(), "the map up (g_gameState 6), the unlocks kept while it is");
+	/* Revision 1.29, every planet (docs/tod-menu.md 17): the map's glue to the map's own VM. */
+	check(peek32(mb + LUAMB_OFF_REQ) != req && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MAP &&
+	      peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->gmap_len &&
+	      memcmp(host_mem_ptr(mb + LUAMB_OFF_CHUNK), d->gmap, d->gmap_len) == 0,
+	      "the map up: qwark sends the map's glue (lh_gmap.lua) to the map's VM, a request of target MAP");
+	host_log_clear();
+	check(map_frames() && host_log_seen("menu: the galactic map lists every planet (23 rows)"),
+	      "the map's frame runs it: every planet, said");
+	req = peek32(mb + LUAMB_OFF_REQ);
+	check(!map_frames() && peek32(mb + LUAMB_OFF_REQ) == req, "and once: nothing more is sent");
 	poke8(LS(9, TOD_LS_UNLOCKED), 2);
 
-	/* Back: the save's bytes again, the Trainer again on its root, the cursor on Planets, which then opens the page. */
+	/* Back: the save's bytes again, the Trainer again on its root, the cursor on Planets, which opens the map again. */
 	host_fake_map(-1);
 	tick(12);
 	check(peek8(LS(9, TOD_LS_UNLOCKED)) == 2, "a byte the game changed while the map was up stays the game's");
@@ -795,21 +832,38 @@ static void test_galmap(void)
 	tick(4);
 	lm_take();
 	title(t);
-	check(strcmp(t, "TRAINER") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && strcmp(row_label((u32)r, b), "ALL PLANETS") == 0,
-	      "the root, the cursor on the Planets row, which reads ALL PLANETS");
-	press(MBOX_EV_ACTIVATE, r);
-	title(t);
-	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG &&
-	      strcmp(row_label(0, b), "KERWAN") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
-	      "ALL PLANETS: the page of every planet (Kerwan first), nothing closed");
-	press(MBOX_EV_BACK, -1);
-	check(strcmp(row_label((u32)r, b), "PLANETS") == 0, "back at the root the row is PLANETS again: All planets was once");
+	check(strcmp(t, "TRAINER") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && strcmp(row_label((u32)r, b), "PLANETS") == 0,
+	      "the root, the cursor on the Planets row, which reads PLANETS: one picker, no second row");
 
-	/* A pick: the game's own load (the map's exit, LoadLevel), the bytes back, the Trainer stays down. */
+	/* A pick (Kerwan, which only the glue lists): the game's own load (the map's exit, LoadLevel), the bytes back, the Trainer stays down. */
 	to_map(r);
 	host_fake_lua_frame();
 	tick(6);
-	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "Planets again: the map again");
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "Planets again: the map again, at once");
+	host_log_clear();
+	check(map_frames() && host_log_seen("lists every planet"), "its glue in again");
+	host_fake_map(0);
+	tick(6);
+	check(save_as_before() && peek32(TOD_LOAD_REQUEST) == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "a pick of Kerwan: the game's own load under way, the save's bytes back, no Trainer");
+	pause_gone();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(30);
+
+	/* The glue saying "wait" (the map's handler not up yet): sent again until it is in. */
+	host_fake_map_glue(1);
+	trainer_up();
+	to_map(find_row("Planets"));
+	host_fake_lua_frame();
+	tick(6);
+	host_log_clear();
+	check(map_frames(), "the glue sent, and it says wait");
+	req = peek32(mb + LUAMB_OFF_REQ);
+	tick(24);
+	check(peek32(mb + LUAMB_OFF_REQ) != req && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MAP &&
+	      !host_log_seen("lists every planet"), "sent again a moment later");
+	host_fake_map_glue(0);
+	check(map_frames() && host_log_seen("lists every planet"), "then in");
 	host_fake_map(7);
 	tick(6);
 	check(save_as_before() && peek32(TOD_LOAD_REQUEST) == 7 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
@@ -819,6 +873,36 @@ static void test_galmap(void)
 	tick(30);
 	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
 	      "and nothing more: qwark loads nothing of its own");
+
+	/* The glue failing: said, the map the game's own still; Back then opens the page of planets, the one fallback. */
+	host_fake_map_glue(2);
+	trainer_up();
+	to_map(find_row("Planets"));
+	host_fake_lua_frame();
+	tick(6);
+	host_log_clear();
+	i = host_notify_count();
+	map_frames();
+	check(host_log_seen("menu: the galactic map could not list every planet (qwark:1: x); Back opens the Planets page") &&
+	      host_notify_count() == i + 1 && strstr(host_notify_last(), "lists the save's planets only") != NULL,
+	      "the glue failing: logged, and said on the console");
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP && save_for_map(), "the map stays up, the game's own, the unlocks in");
+	host_fake_map(-1);
+	tick(12);
+	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "Back: the bytes back, the Trainer asked to open");
+	pause_up();
+	lm_take_request();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	title(t);
+	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && strcmp(row_label(0, b), "KERWAN") == 0,
+	      "on the page of planets (Kerwan first): every planet a press away");
+	press(MBOX_EV_BACK, -1);
+	lm_hstate(0);
+	pause_gone();
+	tick(30);
+	host_fake_map_glue(0);
 
 	/* A gmap() that never brings the map: given up, the bytes back, the Trainer on the page of planets. */
 	host_fake_map_off(1);
@@ -955,48 +1039,84 @@ static void test_gate(void)
 	      LH_RT_PUSHED == 0xBCu, "the runtime's push and pop, the menu system's words, as AnarkMenuSystem_reset uses them");
 
 	gate_layout();
-	check(lm_ready(GATE_MS) == 0, "the pause up, its presentation started and nothing pushed: let in");
-	check(lm_ready(0) == LM_WHY_SYSTEM, "no menu system: kept out");
+	check(lm_ready(GATE_MS, 0) == 0, "the pause up, its presentation started and nothing pushed: let in");
+	check(lm_ready(0, 0) == LM_WHY_SYSTEM, "no menu system: kept out");
 	poke32(LH_PAUSE_STATE, 1);
-	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "g_pauseMenuState 1 (the loading thread at work): kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_SYSTEM, "g_pauseMenuState 1 (the loading thread at work): kept out");
 	poke32(LH_PAUSE_STATE, 4);
-	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "g_pauseMenuState 4 (closing): kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_SYSTEM, "g_pauseMenuState 4 (closing): kept out");
 	poke32(LH_PAUSE_STATE, 2);
-	check(lm_ready(GATE_MS) == 0, "g_pauseMenuState 2: let in");
+	check(lm_ready(GATE_MS, 0) == 0, "g_pauseMenuState 2: let in");
 	poke32(LH_PAUSE_MS, GATE_MS + 0x2000u);
-	check(lm_ready(GATE_MS) == LM_WHY_SYSTEM, "another menu system than g_pauseMenuSystem's: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_SYSTEM, "another menu system than g_pauseMenuSystem's: kept out");
 
 	gate_layout();
 	poke32(GATE_MS + LH_MS_STATE, 0);
-	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no lua_State: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PARTS, "no lua_State: kept out");
 	gate_layout();
 	poke32(GATE_MS + LH_MS_PRES, 0);
-	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no presentation: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PARTS, "no presentation: kept out");
 	gate_layout();
 	poke32(GATE_MS + LH_MS_BRIDGE, 0);
-	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no Lua bridge: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PARTS, "no Lua bridge: kept out");
 	gate_layout();
 	poke32(GATE_MS + LH_MS_RUNTIME, 0);
-	check(lm_ready(GATE_MS) == LM_WHY_PARTS, "no runtime: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PARTS, "no runtime: kept out");
 
 	gate_layout();
 	poke8(GATE_MS + LH_MS_FIRST, 1);
-	check(lm_ready(GATE_MS) == LM_WHY_FIRST, "the presentation's first update still to come: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_FIRST, "the presentation's first update still to come: kept out");
 	gate_layout();
 	poke8(GATE_MS + LH_MS_STOPPED, 1);
-	check(lm_ready(GATE_MS) == LM_WHY_STOPPED, "the menu system stopping: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_STOPPED, "the menu system stopping: kept out");
 	gate_layout();
 	poke32(GATE_MS + LH_MS_FRAMES, 1);
-	check(lm_ready(GATE_MS) == LM_WHY_YOUNG, "one update only: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_YOUNG, "one update only: kept out");
 	gate_layout();
 	poke32(GATE_RUNTIME + LH_RT_PUSHED, 1);
-	check(lm_ready(GATE_MS) == LM_WHY_PUSHED, "a presentation pushed already: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PUSHED, "a presentation pushed already: kept out");
 	gate_layout();
 	poke32(GATE_BRIDGE + LH_BR_PRES, GATE_PRES);
-	check(lm_ready(GATE_MS) == LM_WHY_PUSHED, "the bridge holding a presentation: kept out");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_PUSHED, "the bridge holding a presentation: kept out");
 	poke8(GATE_MS + LH_MS_FIRST, 1);
 	poke32(GATE_MS + LH_MS_FRAMES, 0);
-	check(lm_ready(GATE_MS) == (LM_WHY_FIRST | LM_WHY_YOUNG | LM_WHY_PUSHED), "every reason at once, each said");
+	check(lm_ready(GATE_MS, 0) == (LM_WHY_FIRST | LM_WHY_YOUNG | LM_WHY_PUSHED), "every reason at once, each said");
+
+	/*
+	 * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's menu
+	 * system the same words, its own first test (g_gameState 6), the pause's
+	 * words no matter.
+	 */
+	gate_layout();
+	poke32(LH_PAUSE_MS, 0);
+	poke32(LH_PAUSE_STATE, 0);
+	poke32(LH_GAME_STATE, LH_STATE_MAP);
+	check(lm_ready(GATE_MS, 1) == 0, "the map up (g_gameState 6), its presentation started: let in, the pause's words no matter");
+	check(lm_ready(GATE_MS, 0) == LM_WHY_SYSTEM, "the same menu system as the pause's: kept out");
+	poke32(LH_GAME_STATE, 4);
+	check(lm_ready(GATE_MS, 1) == LM_WHY_SYSTEM, "g_gameState 4 (play, the map gone): kept out");
+	poke32(LH_GAME_STATE, LH_STATE_MAP);
+	poke8(GATE_MS + LH_MS_FIRST, 1);
+	check(lm_ready(GATE_MS, 1) == LM_WHY_FIRST, "the map's first update still to come: kept out");
+	gate_layout();
+	poke32(GATE_RUNTIME + LH_RT_PUSHED, 1);
+	poke32(LH_GAME_STATE, LH_STATE_MAP);
+	check(lm_ready(GATE_MS, 1) == LM_WHY_PUSHED, "a presentation pushed already: kept out");
+	poke32(LH_GAME_STATE, 4);
+
+	/* The map's pick (qw LM_OP_PICK): a level into g_galMap.selectedLevel, nothing else. */
+	poke32(LH_MAP_PICK, 0xFFFFFFFFu);
+	lm_pick(0);
+	check(lm32(LH_MAP_PICK) == 0, "the map's pick of Kerwan (0): selectedLevel 0");
+	lm_pick(18);
+	check(lm32(LH_MAP_PICK) == 18, "of Fastoon II (18): 18");
+	lm_pick(19);
+	lm_pick(0xFFFFFFFFu);
+	check(lm32(LH_MAP_PICK) == 18, "19 and -1 are no level: left as it was");
+	check(LH_MAP_MS == 0x101CBF80u && LH_MAP_PICK == 0x101CBFC0u && LH_GAME_STATE == TOD_GAME_STATE &&
+	      LH_STATE_MAP == TOD_STATE_GALMAP && LH_MAP_PICK == TOD_GALMAP_PICK,
+	      "the helper's map words are tod.h's (g_galMapSystem, selectedLevel, g_gameState 6)");
+	poke32(LH_MAP_PICK, 0xFFFFFFFFu);
 
 	/* The push taking: the bridge holds the presentation (AnarkLuaBridge_onPresentationPush). */
 	gate_layout();

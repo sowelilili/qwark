@@ -24,10 +24,12 @@
  *                         whose Lua pool is short even after a collection,
  *                         `tight`, one too short for the glue's load;
  *                         `hold`, one whose glue never takes qwark's close
- *   fakemap back|pick <n>|off|on
+ *   fakemap back|pick <n>|off|on|in|wait|fail
  *                         the simulated ToD's galactic map (revision 1.29),
  *                         which gmap() opens: Back, or a pick of level n; off,
- *                         a gmap() that never opens it, on the game's own again
+ *                         a gmap() that never opens it, on the game's own again;
+ *                         in, wait, fail: how its glue answers (every
+ *                         planet, docs/tod-menu.md 17)
  *   luapatch on|off       ToD boots with the Lua helper's RPCS3 patch in
  *   fakesave on|off       the simulated ToD's save system runs a frame every
  *                         16 ms and takes qwark's loads (revision 1.28)
@@ -322,8 +324,12 @@ static void handle_line(char *line, int *keep_running)
 		} else if (what != NULL && (qstreq(what, "off") || qstreq(what, "on"))) {
 			host_fake_map_off(qstreq(what, "off"));
 			printf("ok fakemap %s\n", what);
+		} else if (what != NULL && (qstreq(what, "in") || qstreq(what, "wait") || qstreq(what, "fail"))) {
+			/* Revision 1.29, every planet: how the map's glue answers. */
+			host_fake_map_glue(qstreq(what, "in") ? 0 : qstreq(what, "wait") ? 1 : 2);
+			printf("ok fakemap %s\n", what);
 		} else {
-			printf("usage: fakemap back|pick <n>|off|on\n");
+			printf("usage: fakemap back|pick <n>|off|on|in|wait|fail\n");
 		}
 
 	} else if (qstreq(cmd, "fakelua") || qstreq(cmd, "luapatch")) {

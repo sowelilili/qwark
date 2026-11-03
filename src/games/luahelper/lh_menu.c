@@ -291,13 +291,19 @@ static void lm_menu_frame(void)
  * the presentation's first update is behind it, the system is not stopping
  * and has updated LM_READY_FRAMES times, and nothing is pushed (the runtime's
  * count and the bridge's presentation both 0), as after every update of it.
+ *
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): with `map`, `ms`
+ * is the galactic map's menu system (lh_menu_tick saw g_galMapSystem hold
+ * it), and the first test is the map's instead: g_gameState 6, the map up.
+ * The rest is the same, for the map's menu system is an AnarkMenuSystem too.
  */
-static lm_u32 lm_ready(lm_u32 ms)
+static lm_u32 lm_ready(lm_u32 ms, int map)
 {
 	lm_u32 why = 0, st, rt, br;
 
 	st = lm32(LH_PAUSE_STATE);
-	if (ms == 0 || lm32(LH_PAUSE_MS) != ms || (st != 2 && st != 3)) return LM_WHY_SYSTEM;
+	if (map ? lm32(LH_GAME_STATE) != LH_STATE_MAP : ms == 0 || lm32(LH_PAUSE_MS) != ms || (st != 2 && st != 3))
+		return LM_WHY_SYSTEM;
 	rt = lm32(ms + LH_MS_RUNTIME);
 	br = lm32(ms + LH_MS_BRIDGE);
 	if (lm32(ms + LH_MS_STATE) == 0 || rt == 0 || br == 0 || lm32(ms + LH_MS_PRES) == 0) return LM_WHY_PARTS;
@@ -306,6 +312,21 @@ static lm_u32 lm_ready(lm_u32 ms)
 	if (lm32(ms + LH_MS_FRAMES) < LM_READY_FRAMES) why |= LM_WHY_YOUNG;
 	if (lm32(rt + LH_RT_PUSHED) != 0 || lm32(br + LH_BR_PRES) != 0) why |= LM_WHY_PUSHED;
 	return why;
+}
+
+/*
+ * qw(LM_OP_PICK, level), from the map's glue (lh_gmap.lua): the level a pick
+ * on qwark's galactic map loads, into g_galMap.selectedLevel, where the
+ * game's own pick (GalMap_selectLevel) leaves it; the glue then closes the
+ * map (exit_galactic_map), and GalMapState_exit loads it as for any pick.
+ * Only a level (a negative one, made unsigned, is past them). Nothing but
+ * the map's glue asks for it, in the map's VM, which is there only while the
+ * map is up; written at any other time it would do nothing, for
+ * GalMapState_enter sets the word to -1 at every map's start.
+ */
+static void lm_pick(lm_u32 level)
+{
+	if (level < LH_LEVELS) lmw32(LH_MAP_PICK, level);
 }
 
 /* Whether the push took: the bridge holds the menu system's presentation. */

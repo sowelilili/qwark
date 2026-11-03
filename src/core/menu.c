@@ -117,7 +117,6 @@ static struct {
 #if QWARK_HAS_TOD
 /* Revision 1.29: the game's own planet picker, the driver's (native_picker_*). */
 static int native_picker_act(u8 row);
-static int native_picker_others(void);
 static void native_picker_drop(void);
 #endif
 
@@ -1064,10 +1063,6 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		row(r, MROW_LINK, MROWF_ENABLED, page_name(arg), "");
 		/* Mailbox version 3: a renderer that opens the game's own planet picker opens it here. */
 		if (arg == MENU_PAGE_PLANETS && (g_caps & MBOX_CAP_PICKER) != 0) r->flags |= MROWF_PICKER;
-#if QWARK_HAS_TOD
-		/* Revision 1.29: back from the game's own planet picker, the row opens every planet, once. */
-		if (arg == MENU_PAGE_PLANETS && native_picker_others()) qstrcpy(r->label, sizeof(r->label), "All planets");
-#endif
 		break;
 	case MENU_ROW_UCAT:
 		row(r, MROW_LINK, MROWF_ENABLED, unlocks() && arg < g_ul.ncats ? g_ul.cats[arg] : "", "");
@@ -2842,9 +2837,17 @@ static void request(u8 what)
  *   UP      until it has gone; then every poked byte that still holds what
  *           was written is put back, and the pick read: a planet is the
  *           game's own load, already under way; none (Back) opens the menu
- *           again on its root, the cursor on Planets, which then reads All
- *           planets and opens the page of planets, once
+ *           again on its root, the cursor on Planets
  *   REOPEN  the open asked for until the menu is up, while the game plays
+ *
+ * Revision 1.29, every planet on the map (docs/tod-menu.md 17): while it is
+ * UP, a picker with `glue` has the helper's map glue sent to the picker's
+ * own VM (lua_core_map_send), again while it answers "wait", for a few
+ * seconds: it lists the planets the game's picker leaves out and makes every
+ * pick the core's. Should it not go in, the picker is the game's own still,
+ * the console says so, and Back opens the page of planets instead of the
+ * root, so every planet is a press away; that is the one time the page is
+ * where Planets leads.
  *
  * A failure puts the bytes back and opens the menu again on the page of
  * planets, saying so on the console; so does a Planets row pressed where the
@@ -2860,14 +2863,22 @@ static void request(u8 what)
 #define GM_WAIT_US   4000000ull
 #define GM_REOPEN_US 4000000ull
 #define GM_ASK_US    750000ull
+#define GM_GLUE_US   4000000ull    /* the map's glue: how long it may say "wait" */
+#define GM_RESEND_US 100000ull     /* and how soon it is sent again after it did */
+/* g_gm.glue */
+#define GM_GLUE_NONE 0             /* none to send, or not sent yet */
+#define GM_GLUE_OUT  1             /* out, its answer awaited */
+#define GM_GLUE_IN   2
+#define GM_GLUE_FAIL 3
 
 static struct {
 	u8   phase;
 	u8   row;               /* the root's Planets row, for the cursor */
 	u8   n;                 /* bytes poked, to put back */
-	u8   others;            /* the Planets row opens every planet while g_visit is others_visit */
-	u32  others_visit;
-	u32  seq;               /* the chunk's request */
+	u8   want_glue;         /* the picker's glue is to go in once it is up (struct menu_picker's glue) */
+	u8   glue;              /* GM_GLUE_* */
+	u32  seq;               /* the chunk's request, then the glue's */
+	u64  glue_until;        /* the glue may say "wait" until then */
 	u32  state;             /* the picker's, copied: screen_addr's value while it is up */
 	u32  pick_addr;
 	u64  until;
@@ -2881,11 +2892,6 @@ static struct {
 static const struct menu_picker *picker(void)
 {
 	return g_native != NULL ? g_native->picker : NULL;
-}
-
-static int native_picker_others(void)
-{
-	return g_gm.others && g_gm.others_visit == g_visit && g_depth == 1;
 }
 
 /* Every poked byte that still holds what was written, back to what it was. */
@@ -2911,13 +2917,8 @@ static void native_picker_drop(void)
 static void native_picker_reopen(int list)
 {
 	menu_model_home();
-	if (list) {
-		nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), g_gm.row, 0, 0);
-	} else {
-		g_nav[0].cursor = g_gm.row;
-		g_gm.others = 1;
-		g_gm.others_visit = g_visit;
-	}
+	if (list) nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), g_gm.row, 0, 0);
+	else g_nav[0].cursor = g_gm.row;
 	g_gm.phase = GM_REOPEN;
 	g_gm.until = plat_time_us() + GM_REOPEN_US;
 	g_gm.ask = 0;
@@ -2941,10 +2942,6 @@ static int native_picker_act(u8 row)
 	int rc;
 
 	if (p == NULL) return -1;
-	if (native_picker_others()) {
-		g_gm.others = 0;
-		return -1;
-	}
 	rc = g_gm.phase != GM_NONE ? ST_BUSY : lua_core_gameplay_ready();
 	if (rc != ST_OK) {
 		plat_log("menu: %s cannot open here (%s); the Planets page instead", p->name, status_text((u8)rc));
@@ -2968,6 +2965,7 @@ static int native_picker_start(void)
 	g_gm.row = row;
 	g_gm.state = p->state;
 	g_gm.pick_addr = p->pick_addr;
+	g_gm.want_glue = p->glue;
 	for (i = 0; i < p->npokes; i++) {
 		for (k = 0; k < p->pokes[i].count && g_gm.n < GM_BYTES; k++, g_gm.n++) {
 			g_gm.addr[g_gm.n] = p->pokes[i].addr + (u32)k * p->pokes[i].stride;
@@ -2990,6 +2988,56 @@ static int native_picker_start(void)
 	g_gm.phase = GM_SEND;
 	g_gm.until = plat_time_us() + GM_SEND_US;
 	return ST_OK;
+}
+
+/*
+ * Revision 1.29, every planet on the map (docs/tod-menu.md 17): while the
+ * picker is up, its glue into its own VM (the helper's lh_gmap.lua): sent,
+ * its answer awaited, sent again while it says "wait" (the map's handler and
+ * list not up yet), for GM_GLUE_US. "in<rows>" is in; anything else, or
+ * the time up, is a failure: logged and said on the console once, and Back
+ * then opens the page of planets (GM_UP).
+ */
+static void native_picker_glue_fail(const char *why)
+{
+	g_gm.glue = GM_GLUE_FAIL;
+	plat_log("menu: %s could not list every planet (%s); Back opens the Planets page", g_gm.name, why);
+	tell(g_gm.name, " lists the save's planets only", "; Back for every planet");
+}
+
+static void native_picker_glue(u64 now)
+{
+	const char *out;
+	int rc;
+
+	if (!g_gm.want_glue || g_gm.glue == GM_GLUE_IN || g_gm.glue == GM_GLUE_FAIL) return;
+	if (g_gm.glue == GM_GLUE_OUT) {
+		rc = lua_core_gameplay_result(g_gm.seq);
+		if (rc == 0) return;
+		out = lua_core_own_out(g_gm.seq);
+		if (rc == 1 && out[0] == 'i' && out[1] == 'n') {
+			g_gm.glue = GM_GLUE_IN;
+			plat_log("menu: %s lists every planet (%s rows)", g_gm.name, out[2] != 0 ? out + 2 : "its");
+			return;
+		}
+		if (rc != 1 || strcmp(out, "wait") != 0) {
+			native_picker_glue_fail(out[0] != 0 ? out : "its glue did not run");
+			return;
+		}
+		g_gm.glue = GM_GLUE_NONE;
+		g_gm.ask = now + GM_RESEND_US;
+	}
+	if (now >= g_gm.glue_until) {
+		native_picker_glue_fail("its list never came up");
+		return;
+	}
+	if (now < g_gm.ask) return;
+	rc = lua_core_map_send(&g_gm.seq);
+	if (rc == ST_OK) {
+		g_gm.glue = GM_GLUE_OUT;
+	} else if (rc != ST_BUSY && rc != ST_NOT_FOUND) {
+		native_picker_glue_fail(status_text((u8)rc));
+	}
 }
 
 static void native_picker_tick(void)
@@ -3019,6 +3067,10 @@ static void native_picker_tick(void)
 		if (mem_read_u32(g_native->screen_addr, &screen) != ST_OK) return;
 		if (screen == g_gm.state) {
 			g_gm.phase = GM_UP;
+			g_gm.glue = GM_GLUE_NONE;
+			g_gm.seq = 0;
+			g_gm.ask = 0;
+			g_gm.glue_until = now + GM_GLUE_US;
 			plat_log("menu: %s is up", g_gm.name);
 		} else if (lua_core_gameplay_result(g_gm.seq) == 2) {
 			native_picker_fail("its Lua did not run");
@@ -3028,7 +3080,11 @@ static void native_picker_tick(void)
 		return;
 
 	case GM_UP:
-		if (mem_read_u32(g_native->screen_addr, &screen) != ST_OK || screen == g_gm.state) return;
+		if (mem_read_u32(g_native->screen_addr, &screen) != ST_OK) return;
+		if (screen == g_gm.state) {
+			native_picker_glue(now);
+			return;
+		}
 		native_picker_restore();
 		if (mem_read_u32(g_gm.pick_addr, &pick) == ST_OK && (s32)pick >= 0) {
 			const char * const *names = NULL;
@@ -3045,8 +3101,9 @@ static void native_picker_tick(void)
 			g_gm.phase = GM_NONE;
 			return;
 		}
-		plat_log("menu: %s closed without a pick; the Trainer again", g_gm.name);
-		native_picker_reopen(0);
+		plat_log("menu: %s closed without a pick; the Trainer again%s", g_gm.name,
+		         g_gm.glue == GM_GLUE_FAIL ? ", on the Planets page" : "");
+		native_picker_reopen(g_gm.glue == GM_GLUE_FAIL);
 		return;
 
 	case GM_REOPEN:
@@ -3057,7 +3114,6 @@ static void native_picker_tick(void)
 		if (now >= g_gm.until) {
 			plat_log("menu: the Trainer did not open again after %s", g_gm.name);
 			g_gm.phase = GM_NONE;
-			g_gm.others = 0;
 			return;
 		}
 		/* Asked again only while the game plays with no pause coming (one nobody took is withdrawn). */

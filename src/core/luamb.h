@@ -131,6 +131,13 @@
  */
 #define LUAMB_TARGET_GAMEPLAY 0
 #define LUAMB_TARGET_MENU     1
+/*
+ * Revision 1.29 (pending), the galactic map (docs/tod-menu.md 17): the map's
+ * own Anark VM, served from the map's frame on its own lua_State (the map's
+ * menu system's, at the same offset as the pause's), its frames counted by
+ * menu_beat too. The core sends it only to a map it opened itself.
+ */
+#define LUAMB_TARGET_MAP      2
 
 /* out_type: Lua 5.0's lua_type, plus NONE for an empty stack. */
 #define LUAMB_T_NONE     0xFF

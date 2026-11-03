@@ -29,7 +29,11 @@ What it checks, all against the file:
     after it, the pause menu's system and its lua_State where lh_tod.h says,
     the Anark allocator's getter what the helper takes it for, and the
     menu's two RW blocks (src/games/luahelper/lh_menu.h) past the Lua
-    mailbox, inside the page, unreferenced.
+    mailbox, inside the page, unreferenced;
+  - revision 1.29, the galactic map: its update's call of the same
+    trampoline, r3 its own menu system out of g_galMapSystem, the state that
+    says it is up, the pick's word, and its hook word going to the pause
+    menu's entry.
 Exit status 0 when all pass.
 """
 import argparse
@@ -296,7 +300,9 @@ def main():
             ("LH_MENU_HOOK", "LH_TR_MENU_UPDATE", h["LH_MENU_UPDATE"],
              lambda p: p == 0x807F0000),                                   # lwz r3,0(r31)
             ("LH_PAUSE_HOOK", "LH_TR_BTN_PRESSED", h["LH_FN_BTN_PRESSED"],
-             lambda p: p == 0x38800001)):                                  # li r4,1
+             lambda p: p == 0x38800001),                                   # li r4,1
+            ("LH_MAP_HOOK", "LH_TR_MENU_UPDATE", h["LH_MENU_UPDATE"],
+             lambda p: p == 0x807F0000)):                                  # lwz r3,0(r31)
         at, orig = h[name + "_ADDR"], h[name + "_ORIG"]
         w = elf.u32(at)
         r.check(w == orig, "0x%X holds 0x%08X" % (at, orig))
@@ -333,6 +339,29 @@ def main():
             (a, True) in calls,
             "the Anark allocator's getter is lwz r3,(r2) slot 0x%X (0x%X); blr, the one AnarkMenuSystem_update "
             "makes current" % (slot, elf.u32(slot) or 0))
+
+    print("the galactic map's frame (revision 1.29, docs/tod-menu.md 17)")
+    # GalMapState_update: r31 is &g_galMapSystem, loaded from the low range's TOC; the same frame arena around it.
+    gsite = h["LH_MAP_HOOK_ADDR"]
+    x = elf.u32(gsite - 0x1C)
+    slot = (toc_for(gsite) + s16(x & 0xFFFF)) & 0xFFFFFFFF
+    r.check(x >> 26 == 32 and (x >> 21) & 31 == 31 and (x >> 16) & 31 == 2 and elf.u32(slot) == h["LH_MAP_MS"],
+            "GalMapState_update loads r31 from the TOC slot holding g_galMapSystem 0x%X" % h["LH_MAP_MS"])
+    r.check(all(branch_target(elf.u32(gsite + d), gsite + d) == branch_target(elf.u32(msite + d), msite + d) is not None
+                for d in (-0xC, 8)),
+            "it calls the update between the same two calls as PauseMenu_update (the frame arena's begin and end)")
+    # GalMap_loadMenu: the map's VM is an AnarkMenuSystem's on the Anark pool, set up afresh (Memory_InitHeaps).
+    r.check(branch_target(elf.u32(0x3645C), 0x3645C) == (0x12C20, True) and trampoline_target(elf, 0x12C20)[0] == 0x6534A0,
+            "GalMap_loadMenu (0x36448) sets up the Anark pool first (Memory_InitHeaps 0x6534A0)")
+    # g_gameState: 6 is the map (GalMap_request's li r4,6 is held by the menu helper's check.py), read here.
+    gs = [a for a in range(0x8A4000, 0x8C0000, 4) if elf.u32(a) == h["LH_GAME_STATE"]]
+    r.check(bool(gs) and h["LH_STATE_MAP"] == 6, "g_gameState 0x%X has a TOC slot (0x%X); the map is its state %d"
+            % (h["LH_GAME_STATE"], gs[0] if gs else 0, h["LH_STATE_MAP"]))
+    # The pick: GalMap_selectLevel's stw r31,0x3C(r3), r3 g_galMap, which GalMapState_exit loads (the menu helper's check.py).
+    r.check(elf.u32(0x3525C) == 0x80629B78 and elf.u32(0x35260) == 0x93E3003C and
+            elf.u32((0x8AB078 - 0x6488) & 0xFFFFFFFF) + 0x3C == h["LH_MAP_PICK"],
+            "LH_MAP_PICK 0x%X is g_galMap.selectedLevel, where GalMap_selectLevel leaves a pick" % h["LH_MAP_PICK"])
+    r.check(h["LH_LEVELS"] == 19, "levels 0 to 18 (LEVEL_METROPOLIS .. LEVEL_FASTOON_II)")
 
     print("the pause's presentation, pushed around the glue (revision 1.29, the crash fix)")
     # AnarkMenuSystem_reset (0x653B40): the game's own call into the presentation from outside an update.
@@ -511,11 +540,16 @@ def main():
     et = branch_target(err_word, es)
     r.check(err_orig == h["LH_ERR_HOOK_ORIG"] and et is not None and not et[1] and cave <= et[0] < cave + len(text),
             "the error tap word 0x%08X is b (no link) into the helper" % err_word)
-    for name in ("LH_MENU_HOOK", "LH_PAUSE_HOOK"):
+    for name in ("LH_MENU_HOOK", "LH_PAUSE_HOOK", "LH_MAP_HOOK"):
         word, orig = hk.get(h[name + "_ADDR"], (0, 0))
         t = branch_target(word, h[name + "_ADDR"])
         r.check(orig == h[name + "_ORIG"] and t is not None and t[1] and cave <= t[0] < cave + len(text),
                 "%s's word 0x%08X is bl into the helper" % (name, word))
+    mt = branch_target(hk.get(h["LH_MENU_HOOK_ADDR"], (0, 0))[0], h["LH_MENU_HOOK_ADDR"])
+    gt = branch_target(hk.get(h["LH_MAP_HOOK_ADDR"], (0, 0))[0], h["LH_MAP_HOOK_ADDR"])
+    r.check(mt is not None and mt == gt, "the galactic map's word goes to the pause menu's entry")
+    rows = (len(text) + 3) // 4 + 2 + len(hooks)
+    r.check(rows <= 2046, "LUA_PATCH is %d rows, of the 2,046 a reply holds" % rows)
     allowed = set(fns.values()) | {v for k, v in h.items() if k.startswith("LH_TR_")}
     bad = []
     for at in range(0, len(text), 4):

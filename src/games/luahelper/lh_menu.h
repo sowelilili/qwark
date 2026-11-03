@@ -177,5 +177,6 @@
 #define LM_OP_EDGE      8      /* (i) the cursor came to row i: SCROLL_* posted at a window's edge -> 1, else 0      */
 #define LM_OP_NEXT      9      /* (i, d, m) the next row from i the cursor may stand on, d rows on, of the first m, wrapping -> its index;
                                 * paged (the polish): i itself and SCROLL_* posted where the cursor would leave the window */
+#define LM_OP_PICK      10     /* (level) the galactic map's pick, the map's glue's alone (docs/tod-menu.md 17), no answer */
 
 #endif /* QWARK_LH_MENU_H */

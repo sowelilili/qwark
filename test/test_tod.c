@@ -104,6 +104,7 @@ static void reset_game(u32 L)
 	wr32(0x0068F8F8u, 0x4E800020u);
 	wr32(0x000242B0u, 0x4BFED721u);       /* revision 1.29: the pause menu's update */
 	wr32(0x004C5ABCu, 0x4BDA1825u);       /* and the pause test */
+	wr32(0x0003633Cu, 0x4BFDB695u);       /* revision 1.29, every planet: the galactic map's update */
 	wr32(g_d->vm + g_d->vm_state, L);
 }
 
@@ -535,10 +536,11 @@ static void test_patch(void)
 	check(be32_get(reply + off + 8) == g_d->mailbox + 4 &&
 	      be32_get(reply + off + 12) == ((LUAMB_VERSION << 16) | LUAMB_SIZE), "patch: then version and size");
 	off += 2 * LH_PATCH_ROW;
-	check(g_d->nhooks == 4 && be32_get(reply + off) == g_d->hooks[3].addr &&
-	      be32_get(reply + off + LH_PATCH_ROW) == g_d->hooks[2].addr,
-	      "patch: the menu's two hooks first (revision 1.29), the pause test, then the menu's update");
-	off += 2 * LH_PATCH_ROW;
+	check(g_d->nhooks == 5 && be32_get(reply + off) == g_d->hooks[4].addr &&
+	      be32_get(reply + off + LH_PATCH_ROW) == g_d->hooks[3].addr &&
+	      be32_get(reply + off + 2 * LH_PATCH_ROW) == g_d->hooks[2].addr,
+	      "patch: the galactic map's update first (revision 1.29, every planet), then the menu's two: the pause test, the menu's update");
+	off += 3 * LH_PATCH_ROW;
 	check(be32_get(reply + off) == g_d->hooks[1].addr, "patch: the error tap before the VM hook");
 	check(be32_get(reply + off + LH_PATCH_ROW) == g_d->hooks[0].addr &&
 	      be32_get(reply + off + LH_PATCH_ROW + 4) == g_d->hooks[0].value, "patch: the VM hook last");

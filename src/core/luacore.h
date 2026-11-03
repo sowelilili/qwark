@@ -89,6 +89,17 @@ int  lua_core_menu_diag(void);
 int  lua_core_gameplay_ready(void);
 int  lua_core_gameplay_send(const char *chunk, u32 len, u32 *seq);
 int  lua_core_gameplay_result(u32 seq);
+
+/*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's glue
+ * (lh_desc.gmap) sent to the map's own VM, a request of target MAP, while a
+ * map qwark opened is up (ST_NOT_FOUND with no map VM), its answer through
+ * lua_core_gameplay_result; lua_core_own_out is the start of the answer's
+ * text once it has come (the glue's "wait", "in<rows>" or why not, or a
+ * failure's message), "" else.
+ */
+int  lua_core_map_send(u32 *seq);
+const char *lua_core_own_out(u32 seq);
 #endif
 
 #ifdef QWARK_EMULATOR

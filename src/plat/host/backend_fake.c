@@ -202,6 +202,9 @@ void host_boot_as(const char *title, const char *which)
 #define FAKE_TOD_BRIDGE     0x30060000u
 #define FAKE_TOD_RUNTIME    0x30060100u
 #define FAKE_TOD_PRES       0x30060200u
+/* Revision 1.29, the galactic map (docs/tod-menu.md 17): its menu system and VM, while it is up. */
+#define FAKE_TOD_MAP_MS     0x30080000u
+#define FAKE_TOD_MAP_STATE  0x30090000u
 
 static int g_lua_patch_at_boot;
 static u8 g_lua_patch[QWARK_MAX_PAYLOAD];
@@ -399,6 +402,8 @@ static void seed_tod(void)
 #define FAKE_DIAG_OUT "g=301,301,1,0,-,0 s=uuutffn sl=nil reg=t,23,23,4 blankHandler: optHandler:+ " 	"controlHandler: moveHandler: helpHandler: TextScroller: invhandler: skillHandler: itemhandler: " 	"slideStepper: quickHandler: cineListUpdater: ScrollableList:+ skinHandler: gadgetHandler: " 	"weaponHandler: conceptHandler: ListUpdater:+ ScrollableList: ListUpdater:mh+ end"
 /* Revision 1.29: a gmap() that opens nothing (host_fake_map_off). */
 static volatile int g_fake_map_off;
+/* Revision 1.29, every planet: how the map's glue answers (host_fake_map_glue): 0 in, 1 wait, 2 an error. */
+static volatile int g_fake_map_glue;
 
 static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 {
@@ -434,14 +439,28 @@ static int fake_lua_serve(u32 mb, u32 L, u8 target, int *glue)
 		}
 		/* Revision 1.29: the gameplay package's gmap(), GalMap_request: the map up (GalMapState_enter). */
 		if (target == LUAMB_TARGET_GAMEPLAY && strstr(chunk, "gmap()") != NULL && !g_fake_map_off) {
+			const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+
 			poke32(TOD_GAME_STATE, TOD_STATE_GALMAP);
 			poke32(TOD_GALMAP_PICK, 0xFFFFFFFFu);
+			/* Its menu system (GalMap_loadMenu), with a VM. */
+			poke32(d->map_ptr, FAKE_TOD_MAP_MS);
+			poke32(FAKE_TOD_MAP_MS + d->menu_off, FAKE_TOD_MAP_STATE);
 		}
 		if (strstr(chunk, "time_set_scale(0.5") != NULL) poke32(TOD_GAME_CLOCK, 0x3F000000u);
 		else if (strstr(chunk, "time_set_scale(1") != NULL) poke32(TOD_GAME_CLOCK, 0x3F800000u);
 		if (glue != NULL && strstr(chunk, "function qwark_frame()") != NULL) *glue = 1;
 		/* The glue raises errors of its own inside qwark_frame, which loading it never runs. */
-		if (strstr(chunk, "error(") != NULL && strstr(chunk, "function qwark_frame()") == NULL) {
+		if (target == LUAMB_TARGET_MAP && strstr(chunk, "levelArray") != NULL) {
+			/* Revision 1.29, every planet: the map's glue (lh_gmap.lua) answers as host_fake_map_glue says. */
+			if (g_fake_map_glue == 2) {
+				status = LUAMB_ST_ERRRUN;
+				out = "qwark:1: x";
+			} else {
+				out = g_fake_map_glue == 1 ? "wait" : "in23";
+			}
+			type = LUAMB_T_STRING;
+		} else if (strstr(chunk, "error(") != NULL && strstr(chunk, "function qwark_frame()") == NULL) {
 			status = LUAMB_ST_ERRRUN;
 			out = "qwark:1: x";
 			type = LUAMB_T_STRING;
@@ -517,6 +536,37 @@ int host_fake_lua_frame(void)
 	answered = fake_lua_serve(mb, L, LUAMB_TARGET_GAMEPLAY, NULL);
 	pthread_mutex_unlock(&g_mem_lock);
 	return answered;
+}
+
+/*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): one frame of the
+ * map, after luahelper.c's lh_menu_tick for the map's menu system: the menu
+ * heartbeat, and a request of target MAP served. Nothing else: the helper
+ * runs nothing in a map but such a request. Returns 1 when it answered one.
+ */
+int host_fake_map_frame(void)
+{
+	const struct lh_desc *d;
+	u32 ms = 0;
+	int answered;
+
+	pthread_mutex_lock(&g_mem_lock);
+	d = fake_lua_in();
+	if (d != NULL) ms = peek32(d->map_ptr);
+	if (d == NULL || peek32(TOD_GAME_STATE) != TOD_STATE_GALMAP || ms == 0 ||
+	    peek32(d->hooks[4].addr) != d->hooks[4].value) {
+		pthread_mutex_unlock(&g_mem_lock);
+		return 0;
+	}
+	poke32(d->mailbox + LUAMB_OFF_MENU_BEAT, peek32(d->mailbox + LUAMB_OFF_MENU_BEAT) + 1u);
+	answered = fake_lua_serve(d->mailbox, peek32(ms + d->menu_off), LUAMB_TARGET_MAP, NULL);
+	pthread_mutex_unlock(&g_mem_lock);
+	return answered;
+}
+
+void host_fake_map_glue(int how)
+{
+	g_fake_map_glue = how;
 }
 
 /*
@@ -670,9 +720,13 @@ void host_fake_map(int level)
 {
 	pthread_mutex_lock(&g_mem_lock);
 	if (peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP) {
+		const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+
 		poke32(TOD_GALMAP_PICK, level < 0 ? 0xFFFFFFFFu : (u32)level);
 		if (level >= 0) poke32(TOD_LOAD_REQUEST, (u32)level);
 		poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+		/* GalMapState_exit frees its menu system. */
+		poke32(d->map_ptr, 0);
 	}
 	pthread_mutex_unlock(&g_mem_lock);
 }
@@ -714,6 +768,8 @@ static void *fake_lua_loop(void *arg)
 		/* Revision 1.29: in the pause, the pause menu's frame runs and no gameplay frame does. */
 		if (g_fake_lua_on && !g_fake_pause_on) host_fake_lua_frame();
 		if (g_fake_lua_on && g_fake_pause_on) host_fake_menu_frame();
+		/* Revision 1.29: the galactic map's frame (no gameplay frame runs while it is up). */
+		if (g_fake_lua_on && !g_fake_pause_on) host_fake_map_frame();
 		if (g_fake_save_on) host_fake_tod_save_frame();
 		plat_sleep_us(16000);
 	}

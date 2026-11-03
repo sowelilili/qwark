@@ -7,6 +7,8 @@ ctypes), against the stand-in pause menu of test/glue_harness.lua. It runs
 both the source (src/games/luahelper/lh_glue.lua) and the bytes qwark sends
 (lh_tod_glue in src/games/luahelper_bins.c, after build.sh's lua_min), so
 the minified glue is held to the same cases, and the look (lh_tod_diag).
+Revision 1.29: the galactic map's glue (lh_gmap.lua, lh_tod_gmap) the same
+way, against the stand-in map of test/gmap_harness.lua.
 
 The DLL is QWARK_TEST_LUA when that is set, else the first of a few known
 places; with none it says SKIP and passes, as the game's Lua cannot be had
@@ -145,6 +147,17 @@ def main():
         chunk = (b"GLUE = " + lua_str(glue) + b"\nDIAG = " + lua_str(diag) + b"\nNAME = \"" +
                  name.encode() + b"\"\n" + harness)
         err = lua.run(chunk, b"=glue_harness")
+        lua.close()
+        if err is not None:
+            print("FAIL test_glue (%s): %s" % (name, err))
+            failed += 1
+    # Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's glue against the stand-in map.
+    gmap_harness = open(os.path.join(HERE, "gmap_harness.lua"), "rb").read()
+    gmap_src = open(os.path.join(ROOT, "src", "games", "luahelper", "lh_gmap.lua"), "rb").read().replace(b"\r", b"")
+    for name, gmap in (("map, source", gmap_src), ("map, as sent", bins_array("lh_tod_gmap"))):
+        lua = Lua(path)
+        chunk = b"GMAP = " + lua_str(gmap) + b"\nNAME = \"" + name.encode() + b"\"\n" + gmap_harness
+        err = lua.run(chunk, b"=gmap_harness")
         lua.close()
         if err is not None:
             print("FAIL test_glue (%s): %s" % (name, err))

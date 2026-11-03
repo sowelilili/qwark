@@ -48,6 +48,8 @@ static u32 g_diag_seq;
 static u32 g_own_seq;
 static u32 g_own_done;
 static u8  g_own_ok;
+/* Revision 1.29, the galactic map: the start of the last own chunk's answer (the map's glue says "wait" or "in<rows>"). */
+static char g_own_out[24];
 static struct luamb_result g_res;
 static char g_out[LUAMB_OUT_CAP];
 static u32 g_out_len;
@@ -75,6 +77,7 @@ static void client_init(const struct lh_desc *d)
 {
 	luamb_client_init(&g_lc, d->mailbox, d->vm + d->vm_state);
 	luamb_client_menu(&g_lc, d->menu_ptr, d->menu_off);
+	luamb_client_map(&g_lc, d->map_ptr);
 }
 
 /* The running game's helper, under the core lock; NULL for none. */
@@ -126,6 +129,7 @@ void lua_core_enter(void)
 	g_own_seq = 0;
 	g_own_done = 0;
 	g_own_ok = 0;
+	g_own_out[0] = 0;
 	g_out_len = 0;
 	g_out[0] = 0;
 	memset(&g_res, 0, sizeof(g_res));
@@ -199,6 +203,7 @@ void lua_core_tick(void)
 		g_own_seq = 0;
 		g_own_done = res.seq;
 		g_own_ok = res.status == LUAMB_ST_OK;
+		qstrcpy(g_own_out, sizeof(g_own_out), rc > 0 ? g_out : "");
 		if (!g_own_ok) plat_log("menu: the planet picker's Lua failed (%d): %s", (int)res.status, rc > 0 ? g_out : "");
 		g_out_len = 0;
 		g_out[0] = 0;
@@ -329,6 +334,42 @@ int lua_core_gameplay_send(const char *chunk, u32 len, u32 *seq)
 	g_own_seq = g_lc.seq;
 	*seq = g_lc.seq;
 	return ST_OK;
+}
+
+/*
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's glue for
+ * the map's VM (target MAP), the core's own request as the gameplay chunk
+ * is; its answer through lua_core_gameplay_result and lua_core_own_out.
+ */
+int lua_core_map_send(u32 *seq)
+{
+	const struct lh_desc *d;
+	u32 state = 0;
+	int rc = lua_core_gameplay_ready();
+
+	*seq = 0;
+	if (rc != ST_OK && rc != ST_NOT_FOUND) return rc;
+	d = g_desc;
+	if (d == NULL || d->gmap == NULL || d->gmap_len == 0 || d->map_ptr == 0) return ST_UNSUPPORTED;
+	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
+	if (luamb_target_state(&g_lc, &g_io, LUAMB_TARGET_MAP, &state) != 0) return ST_IO_ERROR;
+	if (state == 0) return ST_NOT_FOUND;
+	switch (luamb_send_to(&g_lc, &g_io, (const char *)d->gmap, d->gmap_len, now_ms(), LUAMB_TARGET_MAP)) {
+	case LUAMB_SEND_OK:        break;
+	case LUAMB_SEND_BUSY:      return ST_BUSY;
+	case LUAMB_SEND_NO_HELPER: return ST_UNSUPPORTED;
+	case LUAMB_SEND_NO_STATE:  return ST_NOT_FOUND;
+	case LUAMB_SEND_TOO_LONG:  return ST_BAD_ARG;
+	default:                   return ST_IO_ERROR;
+	}
+	g_own_seq = g_lc.seq;
+	*seq = g_lc.seq;
+	return ST_OK;
+}
+
+const char *lua_core_own_out(u32 seq)
+{
+	return seq != 0 && g_own_done == seq ? g_own_out : "";
 }
 
 int lua_core_gameplay_result(u32 seq)

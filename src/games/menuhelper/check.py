@@ -3990,6 +3990,22 @@ def check_tod_galmap(ok, elf):
        ws(0x000368B8, 0x000368C0) == [0x39240488, 0x38600012] and elf.word(0x000368D0) == 0x887F0400 and
        elf.word(0x000368F8) == 0x891F0402 and elf.word(0x000368FC) == 0x2F3E0000,
        "GalMap_isLevelVisitable (0x36888): ToDLevelSave[L] (0x1020C2F8) +0x400 set, +0x402 clear, L not 0, Fastoon not with Fastoon II")
+    # Every planet (docs/tod-menu.md 17): what the map's glue (lh_gmap.lua) relies on.
+    ok(elf.word(0x002EA314) == 0x8122F4A0 and
+       elf.word(0x008BA508) == 0x1006E708 and
+       [elf.word(0x1006E708 + 4 * l) for l in range(19)] == [0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 1],
+       "a level's sector (0x2EA310, the table at 0x1006E708): Metropolis is SECTOR_SOLANA (0), which the map's "
+       "sectorArray leaves out; Fastoon II is Cerullean's, as Fastoon is")
+    ok(elf.word(0x008BA50C) == 0x1006E754 and elf.word(0x1006E754) == 0x1F0,
+       "the sectors' names (0x2EA324, the table at 0x1006E754): Solana's is a text of its own (0x1F0)")
+    ok(ws(0x00035EFC, 0x00035F20) == [0x48000000 | ((0x13730 - 0x35EFC) & 0x03FFFFFC) | 1, 0xE8410028, 0x2F230000,
+                                      0x409A00BC, 0x38600001, 0x38800013, 0x38A00004, 0x38C00001,
+                                      0x48000000 | ((0x34F5C - 0x35F1C) & 0x03FFFFFC) | 1],
+       "GalMap_setupView (0x35D08): in Metropolis (level 0) the whole map (view mode 1), never a view of level 0")
+    ok(ws(0x00035E64, 0x00035E74) == [0x38060070, 0x7C0907B4, 0x7C654A14, 0x81430008] and
+       branch_target(0x00035F90, elf.word(0x00035F90)) == 0x000116B0,
+       "and the planets' mobys (map data +0x78 + L * 4) of levels GalMap_isLevelVisitable fails are hidden: "
+       "the unlocks qwark writes show them")
 
 
 def check_tod_cutscenes(ok, elf):
