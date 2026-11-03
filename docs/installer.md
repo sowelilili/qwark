@@ -18,7 +18,7 @@ The same as the PC client's **Install to boot_plugins.txt**:
 | | |
 |---|---|
 | `/dev_hdd0/plugins/qwark.sprx` | the module |
-| `/dev_hdd0/qwark/ui.pak` | the console menu's renderers and, since build 56, the savefile helpers, which must come from the same build |
+| `/dev_hdd0/qwark/ui.pak` | the console menu's renderers and, since build 56, the savefile helpers (and in a test build Tools of Destruction's Lua helper, revision 1.29), which must come from the same build |
 | `/dev_hdd0/qwark/rac1.sprx` .. `rac4.sprx`, `tod.sprx` | a test build's game modules, each named for its game (PROTOCOL.md 9.11), which a test build's package carries and a release's does not; they go in before the module, and one that is not a signed module stops the install before anything is written. Modules already on the console that the package does not carry are left alone |
 | `/dev_hdd0/boot_plugins.txt` | qwark's line goes first, so it loads before webMAN; every other line stays, in its order |
 | `/dev_hdd0/qwark/boot_plugins.txt.bak` | the list as it was, whenever the installer changes it |

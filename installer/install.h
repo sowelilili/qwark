@@ -79,7 +79,7 @@
 
 /* A plugin list is a few hundred bytes; anything past this is not one. */
 #define INST_LIST_MAX       65536u
-/* The module is about 100 KB and the pak 74 KB (build 56); this is only a bound on nonsense. */
+/* The module is about 100 KB and the pak 74 KB (build 56; a test build's 96 KB with ToD's Lua helper); this is only a bound on nonsense. */
 #define INST_FILE_MAX       (16u << 20)
 
 /* Where it stopped. */

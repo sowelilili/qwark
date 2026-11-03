@@ -8,10 +8,11 @@
  *   - on a console, as writes qwark makes itself into the running game, and
  *     the writes that take it out again.
  *
- * The core links this where QWARK_HAS_TOD (src/core/luacore.c). The bytes it
- * writes are a descriptor's (luahelper_bins.c): the emulator builds' own, or a
- * game module's, which the game hands the core through lua_desc (revision
- * 1.27); a descriptor without them answers ST_UNSUPPORTED here.
+ * The core links this where QWARK_HAS_TOD (src/core/luacore.c). Revision 1.29
+ * (pending): the bytes are the emulator builds' alone (luahelper_bins.c, under
+ * QWARK_EMULATOR), and so are the patch and the presence rule; a console's
+ * install takes the cave's bytes from a source, ui.pak's entry (luacore.c),
+ * and the numbers from the descriptor tod.sprx hands the core (lua_desc).
  */
 #ifndef QWARK_LUAHELPER_PATCH_H
 #define QWARK_LUAHELPER_PATCH_H
@@ -36,6 +37,7 @@
 #define LH_PATCH_BYTES_HEAD 4u
 #define LH_PATCH_IDENT_WORDS 2u
 
+#ifdef QWARK_EMULATOR
 /* Words in the patch, or 0 without the bytes. */
 u32 lh_patch_count(const struct lh_desc *d);
 
@@ -48,15 +50,30 @@ int lh_patch_build(const struct lh_desc *d, u8 *out, u32 cap, u32 *len);
  * patch writes them. 1 present, 0 not, -1 a read failed (unknown).
  */
 int lh_present(const struct lh_desc *d, const struct luamb_io *io);
+#endif /* QWARK_EMULATOR */
+
+/*
+ * Revision 1.29 (pending): where a console install takes each cave's bytes
+ * from, a piece at a time through `buf` (`cap` bytes): `read` fills buf with
+ * `len` bytes from `off` into cave `cave`, 0 or -1 for a failed read. ui.pak's
+ * entry, in luacore.c.
+ */
+struct lh_source {
+	int (*read)(void *ctx, u8 cave, u32 off, void *buf, u32 len);
+	void *ctx;
+	u8 *buf;
+	u32 cap;
+};
 
 /*
  * A console install, for a platform that patches code: the mailbox header
  * zeroed and given its identity, the cave, then the error tap and last the VM
  * hook. Refuses (ST_BAD_ARG) a game whose hook sites do not hold the words the
  * helper replaces, unless they already hold the helper's own. ST_IO_ERROR on
- * a failed access, ST_UNSUPPORTED without the bytes.
+ * a failed access or read. The cave's bytes come from `src`, or with none
+ * from the descriptor (the emulator builds'); ST_UNSUPPORTED with neither.
  */
-int lh_install(const struct lh_desc *d, const struct luamb_io *io);
+int lh_install(const struct lh_desc *d, const struct luamb_io *io, const struct lh_source *src);
 
 /* Puts the game's own words back, the VM hook first. The cave stays. */
 int lh_uninstall(const struct lh_desc *d, const struct luamb_io *io);

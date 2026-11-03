@@ -1123,9 +1123,11 @@ def test_vsh_memory(sim, c):
     sim_line(sim, "ok vshmem off")
 
 
-def pack_pak(path, build=None):
-    """ui.pak as `make` packs it (src/games/menuhelper/pak.py), or stamped with another build."""
-    args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else [])
+def pack_pak(path, build=None, tod=True):
+    """ui.pak as a test build's `make` packs it (src/games/menuhelper/pak.py, with ToD's Lua helper since
+    revision 1.29: the simulator has ToD), or stamped with another build, or (tod False) as a release's."""
+    args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else []) + \
+        (["--tod"] if tod else [])
     return subprocess.run(args, capture_output=True, text=True).returncode == 0
 
 
@@ -5818,6 +5820,51 @@ def smoke_tod_cc_ahead(c, cobalia, fastoon, stratus):
     mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
 
 
+def smoke_tod_no_pak(c, sim):
+    """Revision 1.29 (pending): ToD's Lua helper is in ui.pak. With a pak that has none (a release's), the
+    console's LUA_EXEC answers UNSUPPORTED with nothing written, flags bit7 asks for the pak, the log says why,
+    and once a client has sent the right one the helper goes in in the same session."""
+    good_path = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "ui.pak")
+    with open(good_path, "rb") as f:
+        good = f.read()
+    rel_path = os.path.join(ROOT, "qwark-host-root", "ui-release.pak")
+    release = None
+    if pack_pak(rel_path, tod=False):
+        with open(rel_path, "rb") as f:
+            release = f.read()
+        os.remove(rel_path)
+    check(release is not None and len(release) < len(good) and release[:12] == good[:12] and
+          release[24:32] == good[24:32] and release[20] == 8 and good[20] == 12,
+          "ToD, no pak: pak.py packs a release's pak, without the Lua helper's entries",
+          (len(release) if release else None, len(good)))
+    sim.send("quit")
+    wait_state(c, SESSION_XMB)
+    check(release is not None and send_pak(c, release) == ST_OK, "ToD, no pak: a client sends a release's ui.pak")
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, True)
+    check(ok, "ToD, no pak: not this module's (no Lua helper): flags bit7 set", hex(info["flags"]) if info else None)
+    check(sim_line(sim, "Lua helper 0x00000000, not this module's") is not None,
+          "ToD, no pak: and the log says its Lua helper is not this module's")
+    sim.send("fakelua off")
+    sim.send("boot %s tod" % TOD_TITLE)
+    ok, info = wait_game(c, 5)
+    check(ok, "ToD, no pak: ToD boots", info)
+    status, lst, _t, _x = lua_exec(c, "return _VERSION")
+    check(status == ST_UNSUPPORTED and mem_read_u32(c, TOD_VM_HOOK) == TOD_VM_HOOK_ORIG,
+          "ToD, no pak: LUA_EXEC answers UNSUPPORTED, and nothing is written", status)
+    status, st = lua_status(c)
+    check(status == ST_OK and st and st["installed"] == 0, "ToD, no pak: LUA_STATUS: not installed", (status, st))
+    check(sim_line(sim, "lua: no usable Lua helper for game 5 in ui.pak; nothing written") is not None,
+          "ToD, no pak: qwark.log says why")
+    status = send_pak(c, good)
+    ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, False)
+    check(status == ST_OK and ok, "ToD, no pak: the right one sent: flags bit7 clear", status)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and mem_read_u32(c, TOD_VM_HOOK) != TOD_VM_HOOK_HELPER:
+        module_sleep(c, 0.2)
+    check(mem_read_u32(c, TOD_VM_HOOK) == TOD_VM_HOOK_HELPER,
+          "ToD, no pak: and the helper goes in with the console menu, in the same session")
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
@@ -8800,6 +8847,7 @@ def main():
         exercise_console_menu(c, sim)
 
         # ------------------------- Tools of Destruction, revision 1.27
+        smoke_tod_no_pak(c, sim)
         smoke_tod(c, sim)
 
         # ----------------------- UYA's console menu, revision 1.22

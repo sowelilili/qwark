@@ -20,6 +20,14 @@
 # link both at the cave with every LH_FN_* bound by --defsym, cut .text out as
 # raw bytes, and read the two entry symbols back out of the ELF so both hook
 # words are computed from what was linked.
+#
+# Revision 1.29 (pending): the cave's bytes and the three Lua chunks sit behind
+# QWARK_EMULATOR in the generated file, for LUA_PATCH, the look for a
+# patched-in helper and the simulator; tod.sprx links only the numbers, and a
+# console reads the bytes out of ui.pak (src/games/menuhelper/pak.py --tod,
+# PROTOCOL.md 9.10). The last step asks pak.py for their identity in the pak
+# and writes it into luahelper_bins.h as LH_PAK_ID, as sfhelper/build.sh does
+# SF_PAK_ID.
 set -e
 
 cd "$(dirname "$0")/../../.."
@@ -41,7 +49,7 @@ ASFLAGS="-Wa,-mregnames -I$DIR"
 # game tag : header : title : LH_GAME number
 GAMES="tod"
 
-sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua $DIR/lh_diag.lua $DIR/lh_gmap.lua src/core/menubox.h"
+sources="$DIR/luahelper.c $DIR/luahelper.h $DIR/lh_entry.S $DIR/luahelper.ld.in $DIR/build.sh src/core/luamb.h          $DIR/lh_menu.c $DIR/lh_menu.h $DIR/lh_glue.lua $DIR/lh_diag.lua $DIR/lh_gmap.lua src/core/menubox.h src/games/menuhelper/pak.py"
 for g in $GAMES; do sources="$sources $DIR/lh_$g.h"; done
 
 if [ "$1" = "--if-stale" ]; then
@@ -126,6 +134,13 @@ game_title() {
 	esac
 }
 
+# The game's id, SessionInfo's and ui.pak's (GAME_TOD in src/core/proto.h).
+game_id() {
+	case "$1" in
+	tod) echo 5 ;;
+	esac
+}
+
 # `bl` (link 1) or `b` (link 0) from `from` to `to`, a signed 26-bit displacement.
 branch_word() {
 	delta=$(($2 - $1))
@@ -148,6 +163,7 @@ for g in $GAMES; do
 	hdr=$DIR/lh_$g.h
 	num=$(game_number "$g")
 	title=$(game_title "$g")
+	gid=$(game_id "$g")
 
 	cave=$(need "$hdr" LH_CAVE)
 	cave_end=$(need "$hdr" LH_CAVE_END)
@@ -256,13 +272,13 @@ for g in $GAMES; do
 		emit_bytes "$bin"
 		echo "};"
 		echo
-		echo "static const struct lh_cave lh_${g}_caves[] = {"
-		echo "	{ ${cave}u, lh_${g}_text, (u32)sizeof(lh_${g}_text) }"
-		echo "};"
-		echo
 	} >> "$OUT/arrays.c"
 
 	{
+		echo "static const struct lh_cave lh_${g}_caves[] = {"
+		echo "	{ ${cave}u, LH_BYTES(lh_${g}_text), ${size}u }"
+		echo "};"
+		echo
 		echo "static const struct lh_hook lh_${g}_hooks[] = {"
 		echo "	{ ${hook_addr}u, ${hook_word}u, ${hook_orig}u },   /* bl .lh_hook       -> $entry */"
 		echo "	{ ${err_addr}u, ${err_word}u, ${err_orig}u },   /* b  .lh_err_tap    -> $tap */"
@@ -306,11 +322,11 @@ for g in $GAMES; do
 		echo
 	} >> "$OUT/arrays.c"
 
-	echo "	{ \"$title\", LH_TABLE(lh_${g}_caves), 1, lh_${g}_hooks, 5," >> "$OUT/descs.txt"
-	echo "	  ${mailbox}u, LUAMB_SIZE, ${vm}u, ${vm_state}u," >> "$OUT/descs.txt"
-	echo "	  ${pause_ms}u, ${ms_state}u, LH_TABLE(lh_${g}_glue), ${glue_size}u," >> "$OUT/descs.txt"
-	echo "	  LH_TABLE(lh_${g}_diag), ${diag_size}u," >> "$OUT/descs.txt"
-	echo "	  ${map_ms}u, LH_TABLE(lh_${g}_gmap), ${gmap_size}u }," >> "$OUT/descs.txt"
+	echo "	{ \"$title\", $gid, lh_${g}_caves, 1, lh_${g}_hooks, 5," >> "$OUT/descs.txt"
+	echo "	  ${mailbox}u, ${mb_size}u, ${vm}u, ${vm_state}u," >> "$OUT/descs.txt"
+	echo "	  ${pause_ms}u, ${ms_state}u, LH_BYTES(lh_${g}_glue), ${glue_size}u," >> "$OUT/descs.txt"
+	echo "	  LH_BYTES(lh_${g}_diag), ${diag_size}u," >> "$OUT/descs.txt"
+	echo "	  ${map_ms}u, LH_BYTES(lh_${g}_gmap), ${gmap_size}u }," >> "$OUT/descs.txt"
 
 	echo "  $g .text $cave $size bytes (cave to $cave_end)" >> "$OUT/report.txt"
 	echo "  $g hook $hook_addr = $hook_word (bl $entry), was $hook_orig" >> "$OUT/report.txt"
@@ -342,24 +358,28 @@ sed '$ s/},$/}/' "$OUT/descs.txt" > "$OUT/descs-final.txt"
  * that replaces the game's call to its gameplay VM's update, the branch that
  * replaces its empty reportError, (revision 1.29, the console menu) the
  * calls that replace the pause menu's update and the test of the pause
- * button, and the galactic map's update. All are computed from the addresses the helper linked at. The cave's bytes are where something puts them into
- * the game: the emulator builds (QWARK_EMULATOR), which make an RPCS3 patch of
- * them, and the game module (QWARK_GAME_MODULE, tod.sprx), out of whose
- * read-only segment the core installs them on a console (revision 1.27). The
- * core itself carries none.
+ * button, and the galactic map's update. All are computed from the
+ * addresses the helper linked at.
+ *
+ * Revision 1.29 (pending): the cave's bytes and the three Lua chunks are here
+ * for the emulator builds alone (QWARK_EMULATOR), which make an RPCS3 patch of
+ * them (LUA_PATCH), look for it in the game, and send the chunks under RPCS3.
+ * A console reads all four out of ui.pak (src/games/menuhelper/pak.py --tod,
+ * PROTOCOL.md 9.10), so tod.sprx and the core link only the numbers below:
+ * the addresses, the lengths and the hook words.
  */
 #include "../core/buildmodes.h"
 #include "luahelper_bins.h"
 
-#if defined(QWARK_EMULATOR) || QWARK_GAME_MODULE
+#ifdef QWARK_EMULATOR
 
 EOF
 	cat "$OUT/arrays.c"
 	cat <<'EOF'
-#define LH_TABLE(x) (x)
+#define LH_BYTES(x) (x)
 #else
-#define LH_TABLE(x) 0
-#endif /* QWARK_EMULATOR || QWARK_GAME_MODULE */
+#define LH_BYTES(x) 0
+#endif /* QWARK_EMULATOR */
 
 EOF
 	cat "$OUT/hooks.c"
@@ -384,13 +404,25 @@ const struct lh_desc *lh_desc_for_title(const char *title_id)
 EOF
 } > "$GEN_C"
 
-cat > "$GEN_H" <<'EOF'
+# Revision 1.29 (pending): the helper's identity in ui.pak, which pak.py works
+# out of the file just written, the same way it packs it (PROTOCOL.md 9.10).
+lh_id=$(python -I src/games/menuhelper/pak.py --lh-id --lh-table "$GEN_C" | tr -d '\r')
+case "$lh_id" in
+	0x[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]) ;;
+	*) echo "luahelper: pak.py --lh-id answered '$lh_id'" >&2; exit 1 ;;
+esac
+
+cat > "$OUT/bins.h.in" <<'EOF'
 /*
  * The Lua helper, as bytes: what qwark puts into a Lua game so that it runs a
  * chunk of source from the mailbox on the game's own thread (src/core/luamb.h,
  * docs/tod-poc.md).
  *
  * GENERATED by src/games/luahelper/build.sh. Do not edit it by hand.
+ *
+ * Revision 1.29 (pending): the PS3 builds carry the numbers below but not the
+ * bytes, which a console reads out of /dev_hdd0/qwark/ui.pak (src/core/uipak.h,
+ * PROTOCOL.md 9.10); the emulator builds (QWARK_EMULATOR) carry both.
  */
 #ifndef QWARK_LUAHELPER_BINS_H
 #define QWARK_LUAHELPER_BINS_H
@@ -398,7 +430,16 @@ cat > "$GEN_H" <<'EOF'
 #include "../plat/plat.h"
 #include "../core/luamb.h"
 
-/* One run of bytes at one address in the game. */
+/*
+ * The Lua helper's identity in ui.pak: the CRC-32 of the CRC-32s of the
+ * pak's Lua helper entries (kinds 3 to 6), each big-endian, in the table's
+ * order, as src/games/menuhelper/pak.py --tod packs them out of
+ * luahelper_bins.c. A module with Tools of Destruction takes only a pak whose
+ * table of contents gives it.
+ */
+#define LH_PAK_ID @LH_PAK_ID@u
+
+/* One run of bytes at one address in the game: bytes NULL but in the emulator builds. */
 struct lh_cave {
 	u32 addr;
 	const u8 *bytes;
@@ -415,8 +456,9 @@ struct lh_hook {
 /* Everything qwark needs to install one game's helper and talk to it. */
 struct lh_desc {
 	const char *title;          /* the executable's title id */
+	u8 game_id;                 /* revision 1.29: the game's id, its ui.pak entries' */
 
-	/* NULL but in the emulator builds and the game module; the count stays. */
+	/* Every build: the addresses and lengths, the bytes only in the emulator builds. */
 	const struct lh_cave *caves;
 	u8 ncaves;
 
@@ -433,7 +475,8 @@ struct lh_desc {
 	 * Revision 1.29, the console menu: the pause menu's VM, whose lua_State*
 	 * is at menu_off into the menu system that the word at menu_ptr holds (0
 	 * with no pause), and the menu's Lua glue, which qwark sends it (NULL but
-	 * in the emulator builds and the game module; the length stays).
+	 * in the emulator builds, a console reading it out of ui.pak; the length
+	 * stays).
 	 */
 	u32 menu_ptr;
 	u32 menu_off;
@@ -464,6 +507,7 @@ const struct lh_desc *lh_desc_for_title(const char *title_id);
 
 #endif /* QWARK_LUAHELPER_BINS_H */
 EOF
+sed "s/@LH_PAK_ID@/$lh_id/" "$OUT/bins.h.in" > "$GEN_H"
 
-echo "luahelper: regenerated $GEN_C and $GEN_H"
+echo "luahelper: regenerated $GEN_C and $GEN_H (LH_PAK_ID $lh_id)"
 cat "$OUT/report.txt"

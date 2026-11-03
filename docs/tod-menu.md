@@ -588,3 +588,34 @@ LUA_PATCH 2,045 of 2,046 rows, unchanged (the helper's code is the same 8,152 by
 ### 18.8 Ghidra (DL-ghidra:/NPEA00452.ELF)
 
 Functions: thunk_LoadLevel 0x11410 (GalMapState_exit's call), thunk_Memory_InitHeaps 0x12C20, thunk_AnarkMemory_beginFrameArena 0x13920, thunk_AnarkMemory_persistentArena 0x14130 (`GalMap_loadMenu`'s first calls). Globals: k_loadLevelFadeDelay 0x8BA520 (`ScreenFade_Start`'s second argument in `LoadLevel_ProcessPending`).
+
+## 19. The Lua helper and its glue move into ui.pak (revision 1.29, pending)
+
+`tod.sprx` was 60,608 bytes of its one page's 61,440, and 21.9 KB of it only ever went into the game: the helper's code (8,152 bytes), the pause menu's glue (7,949), the look at the pause (2,690) and the galactic map's glue (3,132). They move into `ui.pak`, where the renderers went in build 55 and the savefile helpers in build 56 (PROTOCOL.md 9.10), and `tod.sprx` keeps only their numbers: the cave's address and length, the five hook words, the mailbox, the VMs, the chunks' lengths.
+
+### 19.1 The pak
+
+Four entries after the savefile helpers, game 5, "NPEA00452": kind 3, the helper's code, laid out as a savefile helper's entry (its seven numbers, one cave, five hook words each with the game's own); kinds 4, 5 and 6, the three chunks, each exactly the bytes the core sends (`lua_strip`/`lua_min` as before, so the minified glue `test_glue.py` runs is the pak's). Only a build with ToD packs them (`pak.py --tod`: the makefile's `PAK_TOD` in a test build, `test/run.sh`, `smoke.py`); `make release`'s pak is byte for byte what it was. Their identity, `LH_PAK_ID` (`luahelper_bins.h`, written by `luahelper/build.sh` with `pak.py --lh-id`), is the CRC-32 of the four entries' CRC-32s in the table's order, which the module reads from the table of contents alone; the header has no room for a third identity without changing the release's pak. A module with ToD takes a pak only when it holds: a release's pak (no Lua entries, identity 0) or another build's is not its own, refused whole with SessionInfo bit7, as one with other renderers is.
+
+### 19.2 What the console does
+
+- **The helper** goes in as before (the console menu's install a few seconds into play, or the first LUA_EXEC in a level), out of the pak: the entry summed whole a scratch at a time (8,272 bytes, more than the 8 KB scratch), its numbers, cave and hook words held to `tod.sprx`'s, then the cave written a scratch at a time (`lh_install` with a source, `luacore.c` `install_from_pak`), the hooks last as before.
+- **The chunks** are read out of the pak as they are sent, whole into the tick's scratch (each fits a request, so each fits the scratch), checked by their CRC and held to the module's length: the glue once per pause, the look when it is wanted, the map's glue once per map qwark opened. No new buffer; the tick stack holds only a few words.
+- **Without a usable pak**: the menu's install finds no helper and the session is in the menu's no-pak state (no Trainer, Inventory the game's, "Trainer menu: ui.pak missing or from another build" once), tried again once a client has sent the pak; LUA_EXEC answers UNSUPPORTED with nothing written; qwark.log says `lua: no usable Lua helper for game 5 in ui.pak; nothing written`. A pak that goes bad after the helper is in sends no glue (`lua: no usable Lua chunk 4 for game 5 in ui.pak; not sent`), so that pause's Inventory stays the game's.
+- **RPCS3** is unchanged: the emulator builds keep every byte (`luahelper_bins.c` under `QWARK_EMULATOR`) for LUA_PATCH, the presence look and the chunks they send, and never open the pak. LUA_PATCH is byte for byte what it was, 2,045 rows.
+
+### 19.3 Sizes
+
+`tod.sprx` 38,656 bytes of 61,440 (60,608 before, 21,952 less). The test build's `ui.pak` 96,163 bytes (73,992 before); the release's 73,992, unchanged.
+
+### 19.4 Tests
+
+- `test/test_uipak.c`: the four entries, read through `uipak_lh_open`/`uipak_lh_read`/`uipak_lh_chunk`, are `luahelper_bins.c`'s byte for byte and give `LH_PAK_ID`; the helper goes in out of the pak with the console menu; missing, without the Lua entries (a release's), with another build's code or map glue, or with an entry whose own CRC fails: no menu, nothing written, Inventory the game's, LUA_EXEC UNSUPPORTED, the log; the pak put back mid-session puts the menu and the helper in; a pak gone stale mid-session sends no glue, and the right one back sends the pak's.
+- `test/test_tod.c`: `lh_install` from a source through a 1,000-byte buffer, and a failed read writes no hook word.
+- `test/test_glue.py`: the pak's three chunks are `luahelper_bins.c`'s, and "as sent" runs the pak's.
+- `test/smoke.py` (`smoke_tod_no_pak`): a release's pak sent to the simulator sets bit7; ToD's LUA_EXEC is UNSUPPORTED with the VM hook untouched, LUA_STATUS not installed, the log line; the right pak sent puts the helper in with the menu in the same session.
+- `src/games/menuhelper/check.py`: the pak with `--tod` against `luahelper_bins.c` and `LH_PAK_ID`; the `ui.pak` beside the module is a test build's or a release's.
+
+### 19.5 What the next console test should show
+
+Nothing new on the TV: the Trainer, its pages, the map and LUA_EXEC as before, with the new `ui.pak` beside the new module (the client sends both). Then, once: put a release's (or an older test build's) `ui.pak` on the console and boot ToD: no TRAINER row, the console says "Trainer menu: ui.pak missing or from another build", RaCMAN offers to send the pak, and once sent the Trainer appears within a few seconds without a reboot.

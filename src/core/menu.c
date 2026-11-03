@@ -2193,6 +2193,13 @@ static int native_install(void)
 	u32 off;
 	int rc = lua_core_helper_ready();
 
+	/*
+	 * Revision 1.29 (pending): the helper's code is in ui.pak, so a console
+	 * with no usable pak has no menu here, as for every game's renderer: the
+	 * game's Inventory row stays its own, and the session tries again once the
+	 * pak has been looked at again (MENU_NOPAK).
+	 */
+	if (rc == LUA_CORE_NO_PAK) return INSTALL_NO_PAK;
 	if (rc == ST_UNSUPPORTED) {
 		if (!g_logged_refusal) {
 			plat_log(plat_can_patch_code() ? "menu: this game's Lua helper cannot go in; no menu"

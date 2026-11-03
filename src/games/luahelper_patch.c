@@ -6,6 +6,7 @@
 #include "../core/proto.h"
 #include "../core/util.h"
 
+#ifdef QWARK_EMULATOR
 static u32 cave_words(const struct lh_cave *c)
 {
 	return (c->len + 3u) / 4u;
@@ -17,9 +18,14 @@ u32 lh_patch_count(const struct lh_desc *d)
 	u8 i;
 
 	if (d == NULL || d->caves == NULL) return 0;
-	for (i = 0; i < d->ncaves; i++) n += cave_words(&d->caves[i]);
+	for (i = 0; i < d->ncaves; i++) {
+		if (d->caves[i].bytes == NULL) return 0;
+		n += cave_words(&d->caves[i]);
+	}
 	return n + LH_PATCH_IDENT_WORDS + d->nhooks;
 }
+
+#endif /* QWARK_EMULATOR */
 
 /* The hooks in the order they go in: the error tap first, the VM hook last. */
 static const struct lh_hook *hook_in_order(const struct lh_desc *d, u8 k)
@@ -27,6 +33,7 @@ static const struct lh_hook *hook_in_order(const struct lh_desc *d, u8 k)
 	return &d->hooks[d->nhooks - 1u - k];
 }
 
+#ifdef QWARK_EMULATOR
 int lh_patch_build(const struct lh_desc *d, u8 *out, u32 cap, u32 *len)
 {
 	u32 n = lh_patch_count(d);
@@ -100,7 +107,7 @@ int lh_present(const struct lh_desc *d, const struct luamb_io *io)
 	u8 i;
 	int r;
 
-	if (d == NULL || d->caves == NULL) return 0;
+	if (lh_patch_count(d) == 0) return 0;
 	for (i = 0; i < d->ncaves; i++) {
 		r = same(io, d->caves[i].addr, d->caves[i].bytes, d->caves[i].len);
 		if (r != 1) return r;
@@ -113,6 +120,7 @@ int lh_present(const struct lh_desc *d, const struct luamb_io *io)
 	luamb_ident_bytes(b);
 	return same(io, d->mailbox, b, 8);
 }
+#endif /* QWARK_EMULATOR */
 
 static int put32(const struct luamb_io *io, u32 addr, u32 v)
 {
@@ -122,13 +130,19 @@ static int put32(const struct luamb_io *io, u32 addr, u32 v)
 	return io->write(io->ctx, addr, b, 4) == 0 ? ST_OK : ST_IO_ERROR;
 }
 
-int lh_install(const struct lh_desc *d, const struct luamb_io *io)
+int lh_install(const struct lh_desc *d, const struct luamb_io *io, const struct lh_source *src)
 {
 	u8 b[LUAMB_HDR_SIZE];
 	u32 k;
 	u8 i;
 
 	if (d == NULL || d->caves == NULL) return ST_UNSUPPORTED;
+	if (src == NULL || src->read == NULL || src->buf == NULL || src->cap == 0) {
+		src = NULL;
+		for (i = 0; i < d->ncaves; i++) {
+			if (d->caves[i].bytes == NULL) return ST_UNSUPPORTED;
+		}
+	}
 
 	/* The executable must be the one the helper was built against. */
 	for (i = 0; i < d->nhooks; i++) {
@@ -148,8 +162,20 @@ int lh_install(const struct lh_desc *d, const struct luamb_io *io)
 	if (io->write(io->ctx, d->mailbox, b, LUAMB_HDR_SIZE) != 0) return ST_IO_ERROR;
 
 	for (i = 0; i < d->ncaves; i++) {
-		if (io->write(io->ctx, d->caves[i].addr, d->caves[i].bytes, d->caves[i].len) != 0)
-			return ST_IO_ERROR;
+		const struct lh_cave *c = &d->caves[i];
+
+		if (src == NULL) {
+			if (io->write(io->ctx, c->addr, c->bytes, c->len) != 0) return ST_IO_ERROR;
+			continue;
+		}
+		/* Revision 1.29: out of ui.pak, a piece at a time. */
+		for (k = 0; k < c->len; ) {
+			u32 n = c->len - k < src->cap ? c->len - k : src->cap;
+
+			if (src->read(src->ctx, i, k, src->buf, n) != 0) return ST_IO_ERROR;
+			if (io->write(io->ctx, c->addr + k, src->buf, n) != 0) return ST_IO_ERROR;
+			k += n;
+		}
 	}
 	for (i = 0; i < d->nhooks; i++) {
 		const struct lh_hook *h = hook_in_order(d, i);

@@ -94,6 +94,20 @@ static void wr32(u32 a, u32 v) { be32_put(at(a, 4), v); }
 static const struct lh_desc *g_d;
 static u32 MB;
 
+/* Revision 1.29: a stand-in for ui.pak's entry, the cave's bytes out of the table, failing at read g_src_fail_at. */
+static u32 g_src_reads;
+static int g_src_fail_at = -1;
+
+static int src_read(void *ctx, u8 cave, u32 off, void *buf, u32 len)
+{
+	const struct lh_desc *d = (const struct lh_desc *)ctx;
+
+	if ((int)g_src_reads++ == g_src_fail_at) return -1;
+	if (cave >= d->ncaves || off > d->caves[cave].len || len > d->caves[cave].len - off) return -1;
+	memcpy(buf, d->caves[cave].bytes + off, len);
+	return 0;
+}
+
 static void reset_game(u32 L)
 {
 	memset(g_code, 0, sizeof(g_code));
@@ -571,14 +585,41 @@ static void test_patch(void)
 	reset_game(0x30001000u);
 	wr32(g_d->hooks[1].addr, g_d->hooks[1].orig);
 	wr32(g_d->mailbox + LUAMB_OFF_REQ, 77);       /* whatever was there */
-	check(lh_install(g_d, &g_io) == ST_OK, "install: accepted on the right executable");
+	check(lh_install(g_d, &g_io, NULL) == ST_OK, "install: accepted on the right executable");
 	check(lh_present(g_d, &g_io) == 1, "install: present afterwards");
 	check(rd32(g_d->mailbox + LUAMB_OFF_REQ) == 0, "install: the header is zeroed, so nothing is outstanding");
-	check(lh_install(g_d, &g_io) == ST_OK, "install: a second install over the first is fine");
+	check(lh_install(g_d, &g_io, NULL) == ST_OK, "install: a second install over the first is fine");
+
+	/* Revision 1.29 (pending): a console's install takes the cave from a source (ui.pak's), a piece at a time. */
+	{
+		static u8 piece[1000];
+		struct lh_source src;
+
+		reset_game(0x30001000u);
+		wr32(g_d->hooks[1].addr, g_d->hooks[1].orig);
+		src.read = src_read;
+		src.ctx = (void *)g_d;
+		src.buf = piece;
+		src.cap = sizeof(piece);
+		g_src_reads = 0;
+		g_src_fail_at = -1;
+		check(lh_install(g_d, &g_io, &src) == ST_OK && lh_present(g_d, &g_io) == 1 &&
+		      g_src_reads == (g_d->caves[0].len + sizeof(piece) - 1) / sizeof(piece),
+		      "install from a source: every cave byte through a 1000-byte buffer, present afterwards");
+		reset_game(0x30001000u);
+		wr32(g_d->hooks[1].addr, g_d->hooks[1].orig);
+		g_src_reads = 0;
+		g_src_fail_at = 3;
+		check(lh_install(g_d, &g_io, &src) == ST_IO_ERROR && rd32(g_d->hooks[0].addr) == g_d->hooks[0].orig &&
+		      rd32(g_d->hooks[1].addr) == g_d->hooks[1].orig,
+		      "install from a source: a failed read is IO_ERROR with no hook word written");
+		g_src_fail_at = -1;
+		check(lh_install(g_d, &g_io, &src) == ST_OK, "install from a source: and goes in once it reads");
+	}
 	check(lh_uninstall(g_d, &g_io) == ST_OK && rd32(g_d->hooks[0].addr) == g_d->hooks[0].orig &&
 	      rd32(g_d->hooks[1].addr) == g_d->hooks[1].orig, "uninstall: the game's words are back");
 	wr32(g_d->hooks[0].addr, 0x60000000u);
-	check(lh_install(g_d, &g_io) == ST_BAD_ARG, "install: refused on another executable");
+	check(lh_install(g_d, &g_io, NULL) == ST_BAD_ARG, "install: refused on another executable");
 }
 
 static const struct tod_mark *mark(const char *name)

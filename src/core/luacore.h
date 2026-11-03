@@ -65,7 +65,16 @@ int  lua_core_status(u8 *reply, u32 cap, u32 *len);
  * helper's look at the pause (lh_diag.lua) sent the same way, which menu.c
  * asks for once when the glue's own look failed; its answer, a line of
  * text, goes into qwark.log ("menu: what the glue saw ...").
+ *
+ * Revision 1.29 (pending), the helper in ui.pak: on a console the helper's
+ * code and the three chunks come out of /dev_hdd0/qwark/ui.pak (uipak.h),
+ * not the module. With no usable pak lua_core_helper_ready answers
+ * LUA_CORE_NO_PAK, which is no frame status and never goes on the wire (menu.c
+ * takes it for its own no-pak state, MENU_NOPAK); LUA_EXEC answers
+ * UNSUPPORTED then, and every one of these writes nothing and logs why.
  */
+#define LUA_CORE_NO_PAK 0x100
+
 #if QWARK_HAS_TOD
 int  lua_core_helper_ready(void);
 int  lua_core_menu_glue(void);

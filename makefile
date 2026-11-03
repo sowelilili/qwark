@@ -129,8 +129,9 @@ PPU_SRCS += src/core/core_export.c
 #
 # Revision 1.27: the core's half of a game's own Lua (src/core/luacore.c, the
 # mailbox's state machine, the helper's install and its RPCS3 patch builder),
-# which only a build with Tools of Destruction has; the helper's bytes are in
-# tod.sprx, not here. A release has neither.
+# which only a build with Tools of Destruction has. Revision 1.29 (pending):
+# the helper's bytes and its Lua chunks are in ui.pak (PAK_TOD below), and
+# tod.sprx carries only their numbers. A release has none of it.
 #
 PPU_SRCS += src/core/luacore.c src/core/luamb.c src/games/luahelper_patch.c
 PPU_CFLAGS +=	-ffixed-r14
@@ -178,8 +179,18 @@ release:
 # to /dev_hdd0/qwark/ui.pak beside the module's data, and a module takes only
 # the pak built with it (src/core/uipak.h). Python, as for check.py.
 #
-ui.pak: src/games/menuhelper_bins.c src/games/menuhelper/pak.py src/core/proto.h
-	python -I src/games/menuhelper/pak.py --out ui.pak
+# Revision 1.29 (pending): a build with Tools of Destruction (QWARK_GAME_MODULES,
+# a test build) packs ToD's Lua helper too, its code and the three Lua chunks
+# the core sends, out of src/games/luahelper_bins.c (pak.py --tod), as entries
+# outside the header's identities; a release packs exactly what it did before.
+# Packed every time, so a release after a test build never ships the test
+# build's pak, nor a test build a release's.
+#
+ifneq ($(strip $(QWARK_GAME_MODULES)),0)
+PAK_TOD = --tod
+endif
+ui.pak: src/games/menuhelper_bins.c src/games/sfhelper_bins.c src/games/luahelper_bins.c 		src/games/menuhelper/pak.py src/core/proto.h
+	python -I src/games/menuhelper/pak.py --out ui.pak $(PAK_TOD)
 
 #
 # Revision 1.26: the game modules, rac1.sprx to rac4.sprx (src/games/
@@ -233,7 +244,9 @@ GAME_VTABLE_tod		= tod_game
 # (src/core/gamemod.c), and the PRX probe's D4 loaded a two-page RX-only module
 # on CFW and HEN. Tools of Destruction's took two with the cutscene cache, and
 # one again once the debug pages went and its level-flag names moved to the
-# client (56,224 of 61,440 bytes).
+# client (56,224 of 61,440 bytes); it was 60,608 bytes with the galactic map and
+# the fast-loaded planet loads, and 38,656 once its Lua helper and glue moved
+# into ui.pak (revision 1.29).
 GAME_COMMON_SRCS	= src/games/classic.c src/games/sfhelper_bins.c src/games/core_import.c \
 					  src/plat/ps3/game_module.c
 GAME_SRCS_rac1		= src/games/rac1.c src/games/rac1_panel.c
@@ -333,7 +346,10 @@ switches-if-stale:
 #
 # Revision 1.27: the Lua helper (src/games/luahelper/), the same again: PowerPC
 # code built at the game's addresses into the committed src/games/luahelper_bins.c,
-# whose bytes tod.sprx and the host builds carry.
+# whose bytes the host builds carry and (revision 1.29) a test build's ui.pak,
+# tod.sprx only their numbers. build.sh writes their identity in the pak,
+# LH_PAK_ID, into luahelper_bins.h with pak.py --lh-id, so an edit to pak.py
+# regenerates it too.
 #
 luahelper:
 	sh src/games/luahelper/build.sh
@@ -430,6 +446,6 @@ dist: ui.pak pkg
 	@if grep -q '^dev 1' dist/qwark.build; then echo "dist/ holds a TEST build (dev 1); a release needs make release"; \
 	else echo "dist/ holds a RELEASE build (dev 0)"; fi
 
-.PHONY: all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale luahelper luahelper-if-stale pkg dist
+.PHONY: ui.pak all release games games-none sfhelper sfhelper-if-stale switches switches-if-stale menuhelper menuhelper-if-stale luahelper luahelper-if-stale pkg dist
 
 include $(CELL_MK_DIR)/sdk.target.mk

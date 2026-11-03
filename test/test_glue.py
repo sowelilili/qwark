@@ -8,7 +8,11 @@ both the source (src/games/luahelper/lh_glue.lua) and the bytes qwark sends
 (lh_tod_glue in src/games/luahelper_bins.c, after build.sh's lua_min), so
 the minified glue is held to the same cases, and the look (lh_tod_diag).
 Revision 1.29: the galactic map's glue (lh_gmap.lua, lh_tod_gmap) the same
-way, against the stand-in map of test/gmap_harness.lua.
+way, against the stand-in map of test/gmap_harness.lua. Revision 1.29
+(pending): a console sends the three out of ui.pak, so "as sent" is the
+pak's (pak.py --tod, as a test build packs it), which must be the bytes
+luahelper_bins.c gives the emulator builds; that is checked first, with or
+without a Lua.
 
 The DLL is QWARK_TEST_LUA when that is set, else the first of a few known
 places; with none it says SKIP and passes, as the game's Lua cannot be had
@@ -47,6 +51,23 @@ def bins_array(name):
     if m is None:
         raise SystemExit("test_glue: no %s in luahelper_bins.c" % name)
     return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
+
+
+def pak_chunks():
+    """
+    Revision 1.29 (pending): the pause menu's glue, the look and the map's glue
+    as a console sends them, out of the pak a test build packs (pak.py --tod),
+    read back by pak.py's own reader: {kind: bytes}.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "qwark_pak", os.path.join(ROOT, "src", "games", "menuhelper", "pak.py"))
+    pak = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pak)
+    data = pak.pak_bytes(pak.parse_table(), pak.parse_sf_table(), pak.qwark_build(), pak.parse_lh_table())
+    lua = []
+    pak.parse_pak(data, lua)
+    return dict((r["kind"], r["bytes"]) for r in lua if r["kind"] != pak.KIND_LUAHELPER)
 
 
 LUA_CFUNC = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
@@ -132,6 +153,12 @@ def lua_str(b):
 
 
 def main():
+    sent = pak_chunks()
+    if [sent.get(4), sent.get(5), sent.get(6)] != [bins_array("lh_tod_glue"), bins_array("lh_tod_diag"),
+                                                     bins_array("lh_tod_gmap")]:
+        print("FAIL test_glue: ui.pak's three chunks are not luahelper_bins.c's")
+        return 1
+    print("test_glue: ui.pak's glue, look and map glue are luahelper_bins.c's, byte for byte")
     path = find_lua()
     if path is None or not os.path.isfile(path):
         print("SKIP test_glue: no Lua DLL (set QWARK_TEST_LUA to a Lua 5.1 or 5.4 DLL)")
@@ -139,7 +166,7 @@ def main():
     harness = open(os.path.join(HERE, "glue_harness.lua"), "rb").read()
     glue_src = open(os.path.join(ROOT, "src", "games", "luahelper", "lh_glue.lua"), "rb").read().replace(b"\r", b"")
     diag_src = open(os.path.join(ROOT, "src", "games", "luahelper", "lh_diag.lua"), "rb").read().replace(b"\r", b"")
-    runs = [("source", glue_src, diag_src), ("as sent", bins_array("lh_tod_glue"), bins_array("lh_tod_diag"))]
+    runs = [("source", glue_src, diag_src), ("as sent", sent[4], sent[5])]
     print("test_glue: %s" % path)
     failed = 0
     for name, glue, diag in runs:
@@ -154,7 +181,7 @@ def main():
     # Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's glue against the stand-in map.
     gmap_harness = open(os.path.join(HERE, "gmap_harness.lua"), "rb").read()
     gmap_src = open(os.path.join(ROOT, "src", "games", "luahelper", "lh_gmap.lua"), "rb").read().replace(b"\r", b"")
-    for name, gmap in (("map, source", gmap_src), ("map, as sent", bins_array("lh_tod_gmap"))):
+    for name, gmap in (("map, source", gmap_src), ("map, as sent", sent[6])):
         lua = Lua(path)
         chunk = b"GMAP = " + lua_str(gmap) + b"\nNAME = \"" + name.encode() + b"\"\n" + gmap_harness
         err = lua.run(chunk, b"=gmap_harness")

@@ -12,16 +12,20 @@
  * that replaces the game's call to its gameplay VM's update, the branch that
  * replaces its empty reportError, (revision 1.29, the console menu) the
  * calls that replace the pause menu's update and the test of the pause
- * button, and the galactic map's update. All are computed from the addresses the helper linked at. The cave's bytes are where something puts them into
- * the game: the emulator builds (QWARK_EMULATOR), which make an RPCS3 patch of
- * them, and the game module (QWARK_GAME_MODULE, tod.sprx), out of whose
- * read-only segment the core installs them on a console (revision 1.27). The
- * core itself carries none.
+ * button, and the galactic map's update. All are computed from the
+ * addresses the helper linked at.
+ *
+ * Revision 1.29 (pending): the cave's bytes and the three Lua chunks are here
+ * for the emulator builds alone (QWARK_EMULATOR), which make an RPCS3 patch of
+ * them (LUA_PATCH), look for it in the game, and send the chunks under RPCS3.
+ * A console reads all four out of ui.pak (src/games/menuhelper/pak.py --tod,
+ * PROTOCOL.md 9.10), so tod.sprx and the core link only the numbers below:
+ * the addresses, the lengths and the hook words.
  */
 #include "../core/buildmodes.h"
 #include "luahelper_bins.h"
 
-#if defined(QWARK_EMULATOR) || QWARK_GAME_MODULE
+#ifdef QWARK_EMULATOR
 
 /* tod, .text at 0x00867360, 8152 bytes */
 static const u8 lh_tod_text[] = {
@@ -705,10 +709,6 @@ static const u8 lh_tod_text[] = {
 	0x7B, 0xA4, 0x00, 0x20, 0x78, 0x63, 0x07, 0x20, 0x4B, 0xFF, 0xE2, 0x75,
 	0x38, 0x9D, 0x00, 0x01, 0x4B, 0xFF, 0xFD, 0x50, 0x38, 0x60, 0x00, 0x07,
 	0x4B, 0xFF, 0xFF, 0xE8, 
-};
-
-static const struct lh_cave lh_tod_caves[] = {
-	{ 0x00867360u, lh_tod_text, (u32)sizeof(lh_tod_text) }
 };
 
 /* tod, the console menu's glue (lh_glue.lua), 7949 bytes of Lua */
@@ -1872,10 +1872,14 @@ static const u8 lh_tod_gmap[] = {
 	0x74, 0x6F, 0x73, 0x74, 0x72, 0x69, 0x6E, 0x67, 0x28, 0x72, 0x29, 0x0A,
 };
 
-#define LH_TABLE(x) (x)
+#define LH_BYTES(x) (x)
 #else
-#define LH_TABLE(x) 0
-#endif /* QWARK_EMULATOR || QWARK_GAME_MODULE */
+#define LH_BYTES(x) 0
+#endif /* QWARK_EMULATOR */
+
+static const struct lh_cave lh_tod_caves[] = {
+	{ 0x00867360u, LH_BYTES(lh_tod_text), 8152u }
+};
 
 static const struct lh_hook lh_tod_hooks[] = {
 	{ 0x004C461Cu, 0x483A2D45u, 0x4BDCC909u },   /* bl .lh_hook       -> 0x0000000000867360 */
@@ -1886,11 +1890,11 @@ static const struct lh_hook lh_tod_hooks[] = {
 };
 
 static const struct lh_desc lh_descs[] = {
-	{ "NPEA00452", LH_TABLE(lh_tod_caves), 1, lh_tod_hooks, 5,
-	  0x008CA000u, LUAMB_SIZE, 0x102043CCu, 0x00000004u,
-	  0x101CB220u, 0x0000106Cu, LH_TABLE(lh_tod_glue), 7949u,
-	  LH_TABLE(lh_tod_diag), 2690u,
-	  0x101CBF80u, LH_TABLE(lh_tod_gmap), 3132u }
+	{ "NPEA00452", 5, lh_tod_caves, 1, lh_tod_hooks, 5,
+	  0x008CA000u, 0x2600u, 0x102043CCu, 0x00000004u,
+	  0x101CB220u, 0x0000106Cu, LH_BYTES(lh_tod_glue), 7949u,
+	  LH_BYTES(lh_tod_diag), 2690u,
+	  0x101CBF80u, LH_BYTES(lh_tod_gmap), 3132u }
 };
 
 const struct lh_desc *lh_desc_for_title(const char *title_id)

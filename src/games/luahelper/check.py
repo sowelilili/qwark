@@ -147,7 +147,7 @@ def helper_bytes():
     text = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
     hooks = [tuple(int(v, 16) for v in h) for h in
              re.findall(r"\{ 0x([0-9A-Fa-f]+)u, 0x([0-9A-Fa-f]+)u, 0x([0-9A-Fa-f]+)u \}", src)]
-    cave = int(re.search(r"\{ 0x([0-9A-Fa-f]+)u, lh_tod_text", src).group(1), 16)
+    cave = int(re.search(r"\{ 0x([0-9A-Fa-f]+)u, LH_BYTES\(lh_tod_text\)", src).group(1), 16)
     return cave, text, hooks
 
 

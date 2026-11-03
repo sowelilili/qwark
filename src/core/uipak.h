@@ -36,6 +36,7 @@
 #define QWARK_UIPAK_H
 
 #include "../plat/plat.h"
+#include "buildmodes.h"
 #include "../games/menuhelper_bins.h"
 #include "../games/sfhelper_bins.h"
 
@@ -124,5 +125,46 @@ void mh_pak_close(void);
  * open, and the bytes are good until the scratch is next used.
  */
 int  uipak_sf_entry(u8 game_id, const u8 **entry, u32 *len);
+
+#if QWARK_HAS_TOD
+/*
+ * Revision 1.29 (pending): Tools of Destruction's Lua helper, which a build
+ * with ToD reads out of the pak too (pak.py --tod): its code, kind 3, laid
+ * out as a savefile helper's entry (its words the mailbox, its size, the VM,
+ * the lua_State's offset, the pause menu's pointer and offset, the map's
+ * pointer), and the three Lua chunks the core sends, kinds 4 to 6, each the
+ * bytes as sent. They are outside the header's identities, so a release's pak
+ * is what it was; a module with ToD takes a pak only when the table of
+ * contents gives LH_PAK_ID (luahelper_bins.h), the CRC-32 of the Lua entries'
+ * CRC-32s, each big-endian, in the table's order, and a pak without them, or
+ * with another build's, is another build's pak (UIPAK_OTHER), refused whole
+ * like one with other renderers. A module without ToD never looks at them.
+ *
+ * uipak_lh_open: the game's helper entry, its CRC checked over the whole
+ * entry (through the scratch, a piece at a time: the entry is bigger than
+ * the scratch), the file kept open and the descriptor and records (the
+ * caves' and the hook words') read into the scratch at *rec; *len the
+ * entry's length. UIPAK_OK or the reason, as uipak_sf_entry. uipak_lh_read
+ * reads `len` bytes at `off` into the entry, ST_OK or ST_IO_ERROR, and
+ * uipak_lh_close closes the file. Tick thread, inside one install.
+ *
+ * uipak_lh_chunk: a Lua chunk (kind 4, 5 or 6) of the game whole in the
+ * scratch at *bytes, its CRC checked, at most UIPAK_MAX_LUA_CHUNK bytes;
+ * UIPAK_OK or the reason. Nothing is held open.
+ */
+#include "../games/luahelper_bins.h"
+
+#define UIPAK_KIND_LUAHELPER  3u
+#define UIPAK_KIND_LUA_GLUE   4u    /* the pause menu's glue, lh_glue.lua as sent */
+#define UIPAK_KIND_LUA_DIAG   5u    /* the look at the pause, lh_diag.lua */
+#define UIPAK_KIND_LUA_GMAP   6u    /* the galactic map's glue, lh_gmap.lua */
+/* A chunk goes whole into the scratch, and must fit a request (luamb.h). */
+#define UIPAK_MAX_LUA_CHUNK   QSCRATCH_BYTES
+
+int  uipak_lh_open(u8 game_id, const u8 **rec, u32 *len);
+int  uipak_lh_read(u32 off, void *buf, u32 len);
+void uipak_lh_close(void);
+int  uipak_lh_chunk(u8 game_id, u8 kind, const u8 **bytes, u32 *len);
+#endif
 
 #endif /* QWARK_UIPAK_H */

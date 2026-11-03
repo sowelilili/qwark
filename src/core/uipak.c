@@ -94,6 +94,30 @@ static int toc_ok(const u8 *toc, u32 body, u32 n)
 	return 1;
 }
 
+#if QWARK_HAS_TOD
+/* Revision 1.29: the Lua helper's identity the last table of contents gave, for the log. */
+static u32 g_lh_seen;
+
+/*
+ * Revision 1.29 (pending): whether the table of contents' Lua helper is not
+ * this module's: the CRC-32 of the CRC-32s of its Lua entries (kinds 3 to 6),
+ * as they stand big-endian in the table, in its order, against LH_PAK_ID. A
+ * pak with none gives 0, never an identity.
+ */
+static int lh_other(const u8 *toc, u32 n)
+{
+	u32 i, crc = qcrc32_start();
+
+	for (i = 0; i < n; i++) {
+		const u8 *t = toc + i * UIPAK_TOC_SIZE;
+
+		if (t[1] >= UIPAK_KIND_LUAHELPER && t[1] <= UIPAK_KIND_LUA_GMAP) crc = qcrc32_update(crc, t + 24, 4);
+	}
+	g_lh_seen = qcrc32_finish(crc);
+	return g_lh_seen != LH_PAK_ID;
+}
+#endif
+
 /*
  * The whole file: its header, then every byte after it against the header's
  * CRC and length, through the scratch. `h` gets the header for the log.
@@ -104,6 +128,9 @@ static int look_at(const char *path, u8 *h)
 	plat_file_t f;
 	u32 got, off = 0, body = 0, n = 0, crc;
 	int st;
+#if QWARK_HAS_TOD
+	int lh_bad = 0;
+#endif
 
 	memset(h, 0, UIPAK_HEADER_SIZE);
 	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return UIPAK_MISSING;
@@ -119,11 +146,18 @@ static int look_at(const char *path, u8 *h)
 		if (plat_file_read(f, buf, QSCRATCH_BYTES, &got) != 0) goto out;
 		if (got == 0) break;
 		if (off == 0 && (got < n * UIPAK_TOC_SIZE || !toc_ok(buf, body, n))) goto out;
+#if QWARK_HAS_TOD
+		if (off == 0) lh_bad = lh_other(buf, n);
+#endif
 		off += got;
 		if (off > body) goto out;
 		crc = qcrc32_update(crc, buf, got);
 	}
 	if (off == body && qcrc32_finish(crc) == be32_get(h + 12)) st = UIPAK_OK;
+#if QWARK_HAS_TOD
+	/* Revision 1.29: a whole pak whose Lua helper is not this module's is another build's. */
+	if (st == UIPAK_OK && lh_bad) st = UIPAK_OTHER;
+#endif
 out:
 	plat_file_close(f);
 	return st;
@@ -142,6 +176,15 @@ static void verdict(int st, const u8 *h)
 		plat_log("ui.pak: none at " UIPAK_PATH "; no Trainer menu or savefile helper in a game");
 		break;
 	case UIPAK_OTHER:
+#if QWARK_HAS_TOD
+		/* Revision 1.29: this build's header over another build's Lua helper, or none. */
+		if (h != NULL && be16_get(h + 4) == UIPAK_FORMAT && be32_get(h + 8) == QWARK_BUILD &&
+		    be32_get(h + 24) == MH_PAK_ID && be32_get(h + 28) == SF_PAK_ID) {
+			plat_log("ui.pak: Lua helper 0x%08X, not this module's (0x%08X); no Trainer menu, savefile helper "
+			         "or Lua helper", (int)g_lh_seen, (int)LH_PAK_ID);
+			break;
+		}
+#endif
 		plat_log("ui.pak: format %d, build %d, renderers 0x%08X, helpers 0x%08X, not this module's "
 		         "(%d, %d, 0x%08X, 0x%08X); no Trainer menu or savefile helper",
 		         (int)(h != NULL ? be16_get(h + 4) : 0), (int)(h != NULL ? be32_get(h + 8) : 0),
@@ -245,6 +288,11 @@ static int find_entry(plat_file_t *f, u8 *h, u8 game_id, u8 kind, u32 *at, u32 *
 	if (plat_file_read_at(*f, UIPAK_HEADER_SIZE, buf, n * UIPAK_TOC_SIZE, &got) != 0 ||
 	    got != n * UIPAK_TOC_SIZE || !toc_ok(buf, body, n))
 		goto bad;
+#if QWARK_HAS_TOD
+	/* Revision 1.29: a pak whose Lua helper is not this module's serves nothing. */
+	st = UIPAK_OTHER;
+	if (lh_other(buf, n)) goto bad;
+#endif
 
 	for (i = 0; i < n; i++) {
 		t = buf + i * UIPAK_TOC_SIZE;
@@ -414,3 +462,107 @@ done:
 	settle(st, h);
 	return st;
 }
+
+#if QWARK_HAS_TOD
+/* ------------------------------------- the Lua helper, revision 1.29 */
+
+static plat_file_t g_lh_file = PLAT_FILE_INVALID;
+static u32 g_lh_at;
+static u32 g_lh_len;
+
+void uipak_lh_close(void)
+{
+	if (g_lh_file == PLAT_FILE_INVALID) return;
+	plat_file_close(g_lh_file);
+	g_lh_file = PLAT_FILE_INVALID;
+}
+
+int uipak_lh_open(u8 game_id, const u8 **rec, u32 *len)
+{
+	u8 *buf = qscratch();
+	u8 h[UIPAK_HEADER_SIZE];
+	plat_file_t f;
+	u32 at, n, crc, sum, off, k, got, want;
+	int st;
+
+	uipak_lh_close();
+	*rec = NULL;
+	*len = 0;
+	st = find_entry(&f, h, game_id, UIPAK_KIND_LUAHELPER, &at, &n, &crc);
+	if (st != UIPAK_OK) goto done;
+
+	/*
+	 * Whole, or not at all, as a savefile helper's: every byte the install
+	 * will write is held to the entry's CRC first. The entry is bigger than
+	 * the scratch, so it is summed a piece at a time and read again as it
+	 * goes in. A pak of this build has the helper (its identity says so), so
+	 * none (n 0) is a pak gone wrong.
+	 */
+	st = UIPAK_DAMAGED;
+	if (n < UIPAK_DESC_SIZE) goto bad;
+	sum = qcrc32_start();
+	for (off = 0; off < n; off += k) {
+		k = n - off < QSCRATCH_BYTES ? n - off : QSCRATCH_BYTES;
+		if (plat_file_read_at(f, at + off, buf, k, &got) != 0 || got != k) goto bad;
+		sum = qcrc32_update(sum, buf, k);
+	}
+	if (qcrc32_finish(sum) != crc) goto bad;
+
+	/* The descriptor and the records, which the reader has room for or the entry is not one. */
+	if (plat_file_read_at(f, at, buf, UIPAK_DESC_SIZE, &got) != 0 || got != UIPAK_DESC_SIZE) goto bad;
+	if (buf[36] > UIPAK_MAX_CAVES || buf[37] > UIPAK_MAX_HOOKS) goto bad;
+	want = UIPAK_DESC_SIZE + (u32)buf[36] * UIPAK_CAVE_SIZE + (u32)buf[37] * UIPAK_HOOK_SIZE;
+	if (want > n || plat_file_read_at(f, at, buf, want, &got) != 0 || got != want) goto bad;
+
+	g_lh_file = f;
+	g_lh_at = at;
+	g_lh_len = n;
+	*rec = buf;
+	*len = n;
+	st = UIPAK_OK;
+	goto done;
+bad:
+	plat_file_close(f);
+done:
+	settle(st, h);
+	return st;
+}
+
+int uipak_lh_read(u32 off, void *buf, u32 len)
+{
+	u32 got;
+
+	if (g_lh_file == PLAT_FILE_INVALID || off > g_lh_len || len > g_lh_len - off) return ST_IO_ERROR;
+	if (len == 0) return ST_OK;
+	if (plat_file_read_at(g_lh_file, g_lh_at + off, buf, len, &got) != 0 || got != len) return ST_IO_ERROR;
+	return ST_OK;
+}
+
+int uipak_lh_chunk(u8 game_id, u8 kind, const u8 **bytes, u32 *len)
+{
+	u8 *buf = qscratch();
+	u8 h[UIPAK_HEADER_SIZE];
+	plat_file_t f;
+	u32 at, n, crc, got;
+	int st;
+
+	*bytes = NULL;
+	*len = 0;
+	if (kind < UIPAK_KIND_LUA_GLUE || kind > UIPAK_KIND_LUA_GMAP) return UIPAK_DAMAGED;
+	st = find_entry(&f, h, game_id, kind, &at, &n, &crc);
+	if (st != UIPAK_OK) goto done;
+
+	/* The chunk whole and by its CRC, or nothing; a pak of this build has every one. */
+	st = UIPAK_DAMAGED;
+	if (n > 0 && n <= UIPAK_MAX_LUA_CHUNK &&
+	    plat_file_read_at(f, at, buf, n, &got) == 0 && got == n && qcrc32(buf, n) == crc) {
+		*bytes = buf;
+		*len = n;
+		st = UIPAK_OK;
+	}
+	plat_file_close(f);
+done:
+	settle(st, h);
+	return st;
+}
+#endif /* QWARK_HAS_TOD */

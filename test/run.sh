@@ -76,11 +76,12 @@ mkdir -p "$ROOT/dev_hdd0/qwark/mods"
 cp -r test/fixtures/mods/. "$ROOT/dev_hdd0/qwark/mods/"
 
 # Build 55: the console menu's renderers as a console reads them, ui.pak in the
-# fake HDD, packed by the same pak.py `make` runs. test_uipak.c makes its own
+# fake HDD, packed by the same pak.py `make` runs (revision 1.29: with --tod,
+# as a test build packs it, for ToD's Lua helper). test_uipak.c makes its own
 # bad copies of it (another build, cut short, damaged) and puts this one back.
 PAK=""
 for PY in python python3 py; do
-	if "$PY" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" >/dev/null 2>&1; then
+	if "$PY" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" --tod >/dev/null 2>&1; then
 		PAK="$ROOT/dev_hdd0/qwark/ui.pak"
 		break
 	fi

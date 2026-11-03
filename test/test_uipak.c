@@ -21,6 +21,13 @@
  *                 (sfhelper_bins.c); refused with SAVEFILE_ERR_NO_PAK and
  *                 nothing written for a pak missing, another build's, with
  *                 other helpers or damaged, and installed once it is right.
+ *   ToD's Lua     (revision 1.29) the Lua helper's code and its three chunks
+ *                 out of the pak, the table's byte for byte; the helper in
+ *                 with the console menu; and for a pak missing, without the
+ *                 Lua entries, with another build's, or with an entry that
+ *                 fails its CRC: no menu, nothing written, Inventory the
+ *                 game's, LUA_EXEC UNSUPPORTED, the log; and a stale pak
+ *                 mid-session sends no glue.
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
@@ -30,6 +37,11 @@
 #include "../src/core/savefile.h"
 #include "../src/games/menuhelper_bins.h"
 #include "../src/games/sfhelper_bins.h"
+#include "../src/core/luacore.h"
+#include "../src/core/luamb.h"
+#include "../src/games/tod.h"
+#include "../src/games/luahelper_bins.h"
+#include "../src/games/luahelper/lh_menu.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/host/plat_host.h"
 #include "test_common.h"
@@ -40,9 +52,9 @@
 #define PAK_BACKUP "/dev_hdd0/qwark/ui.pak.test-backup"
 
 /* The pak run.sh packed, and room for a copy to spoil. */
-static u8  g_good[96 * 1024];
+static u8  g_good[128 * 1024];
 static u32 g_good_len;
-static u8  g_bad[96 * 1024];
+static u8  g_bad[128 * 1024];
 
 static void tick(int n)
 {
@@ -212,8 +224,9 @@ static void test_reader(void)
 	      g_good_len < sizeof(g_good), "run.sh packed ui.pak into the fake HDD");
 	check(be32_get(g_good) == UIPAK_MAGIC && be16_get(g_good + 4) == 2 && UIPAK_FORMAT == 2 &&
 	      be16_get(g_good + 6) == UIPAK_HEADER_SIZE && be32_get(g_good + 8) == QWARK_BUILD &&
-	      be32_get(g_good + 16) == g_good_len - UIPAK_HEADER_SIZE && g_good[20] == 8,
-	      "its header: QPAK, format 2, this build, the length of the rest, four renderers and four helpers");
+	      be32_get(g_good + 16) == g_good_len - UIPAK_HEADER_SIZE && g_good[20] == 12,
+	      "its header: QPAK, format 2, this build, the length of the rest, four renderers and four helpers, "
+	      "and (revision 1.29, a build with ToD) the Lua helper's four entries");
 	check(be32_get(g_good + 12) == qcrc32(g_good + UIPAK_HEADER_SIZE, g_good_len - UIPAK_HEADER_SIZE),
 	      "and the CRC of the rest");
 	check(be32_get(g_good + 24) == MH_PAK_ID && be32_get(g_good + 28) == SF_PAK_ID,
@@ -462,7 +475,7 @@ static void test_damaged(void)
 
 static void test_update(void)
 {
-	static u8 back[96 * 1024];
+	static u8 back[128 * 1024];
 	u32 len = 0;
 	u8 b[4];
 	int exists;
@@ -744,13 +757,313 @@ static void test_sf_failures(void)
 	}
 	check(quit(), "quit");
 
-	put_pak(g_good, g_good_len - 200);
+	/* Revision 1.29: Deadlocked's helper is the eighth entry, with the Lua helper's four after it. */
+	put_pak(g_good, be32_get(g_good + UIPAK_HEADER_SIZE + 7 * UIPAK_TOC_SIZE + 16) +
+	                be32_get(g_good + UIPAK_HEADER_SIZE + 7 * UIPAK_TOC_SIZE + 20) - 200);
 	sf_refused("cut into Deadlocked's helper", UIPAK_DAMAGED);
 
 	put_good();
 	check(uipak_status() == UIPAK_OK && !flag_bad(), "the right one back: good");
 	check(boot("NPEA00423"), "Deadlocked boots");
 	check(savefile_install() == ST_OK && sf_in_game(t), "and the helper goes in");
+	check(quit(), "quit");
+}
+
+/* ------------------------------- ToD's Lua helper, revision 1.29 (pending) */
+
+/*
+ * The pak's entries by their place in run.sh's pak (pak.py --tod): the four
+ * renderers, the four savefile helpers, then the Lua helper's four, its code
+ * (kind 3), the pause menu's glue (4), the look (5) and the map's glue (6).
+ */
+#define LH_FIRST 8u
+
+static u32 toc_word(const u8 *pak, u32 i, u32 at)
+{
+	return be32_get(pak + UIPAK_HEADER_SIZE + i * UIPAK_TOC_SIZE + at);
+}
+
+static int lh_boot(void)
+{
+	int i;
+
+	host_boot_as(TOD_TITLE, "tod");
+	for (i = 0; i < 4000; i++) {
+		tick(1);
+		if (session_state() == SESSION_INGAME && session_game() != NULL) {
+			poke32(TOD_STATE_PENDING_OP, 0);
+			poke32(TOD_LUA_STATE, 0x30030000u);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Twelve seconds of play, or until the menu has gone in or found no pak. */
+static int lh_settle(void)
+{
+	int i;
+
+	for (i = 0; i < 1500 && menu_state() != MENU_READY && menu_state() != MENU_NOPAK; i++) tick(1);
+	return menu_state();
+}
+
+/* Whether the helper's cave, its five hook words and the mailbox's identity are in the game, the table's. */
+static int lh_in_game(const struct lh_desc *t)
+{
+	u8 i;
+
+	if (memcmp(host_mem_ptr(t->caves[0].addr), t->caves[0].bytes, t->caves[0].len) != 0) return 0;
+	for (i = 0; i < t->nhooks; i++) {
+		if (peek32(t->hooks[i].addr) != t->hooks[i].value) return 0;
+	}
+	return peek32(t->mailbox) == LUAMB_MAGIC;
+}
+
+/* Nothing of it: no cave byte, the game's own five words, no identity, no menu mailbox, Inventory the game's. */
+static int lh_nothing(const struct lh_desc *t)
+{
+	u8 i;
+
+	if (peek32(t->caves[0].addr) != 0 || peek32(t->mailbox) != 0 || peek32(LM_BOX) != 0 ||
+	    host_mem_ptr(LM_STATE + LM_HELP)[0] != 0)
+		return 0;
+	for (i = 0; i < t->nhooks; i++) {
+		if (peek32(t->hooks[i].addr) != t->hooks[i].orig) return 0;
+	}
+	return 1;
+}
+
+/* LUA_EXEC's first half for a little chunk, its frame status. */
+static int lh_exec(void)
+{
+	u8 req[16];
+	u32 seq = 0;
+
+	be16_put(req, 8);
+	be16_put(req + 2, 0);
+	memcpy(req + 4, "_VERSION", 8);
+	return lua_core_exec_start(req, 12, &seq);
+}
+
+static void test_lh_reader(void)
+{
+	static u8 piece[3000];
+	const struct lh_desc *t = lh_desc_for_title(TOD_TITLE);
+	const u8 *e, *b;
+	u32 len, n, off, crc, i;
+	int same;
+
+	group("ui.pak: Tools of Destruction's Lua helper (revision 1.29)");
+
+	check(t != NULL && t->game_id == GAME_TOD && t->ncaves == 1 && t->caves[0].bytes != NULL && t->glue != NULL &&
+	      t->diag != NULL && t->gmap != NULL, "the host builds link the helper's bytes and its three chunks");
+	if (t == NULL || t->caves[0].bytes == NULL) return;
+
+	same = 1;
+	crc = qcrc32_start();
+	for (i = 0; i < 4; i++) {
+		const u8 *toc = g_good + UIPAK_HEADER_SIZE + (LH_FIRST + i) * UIPAK_TOC_SIZE;
+
+		same = same && toc[0] == GAME_TOD && toc[1] == UIPAK_KIND_LUAHELPER + i && memcmp(toc + 4, TOD_TITLE, 10) == 0;
+		crc = qcrc32_update(crc, toc + 24, 4);
+	}
+	check(same && qcrc32_finish(crc) == LH_PAK_ID,
+	      "the pak's last four entries are ToD's helper, glue, look and map glue, and the CRC of their CRCs is LH_PAK_ID");
+
+	same = uipak_lh_open(GAME_TOD, &e, &len) == UIPAK_OK && len == toc_word(g_good, LH_FIRST, 20) &&
+	       e[36] == 1 && e[37] == 5 && e[38] == 0 && be32_get(e) == t->mailbox &&
+	       be32_get(e + 4) == t->mailbox_size && be32_get(e + 8) == t->vm && be32_get(e + 12) == t->vm_state &&
+	       be32_get(e + 16) == t->menu_ptr && be32_get(e + 20) == t->menu_off && be32_get(e + 24) == t->map_ptr &&
+	       be32_get(e + UIPAK_DESC_SIZE) == t->caves[0].addr && be32_get(e + UIPAK_DESC_SIZE + 8) == t->caves[0].len;
+	for (i = 0; same && i < t->nhooks; i++) {
+		const u8 *w = e + UIPAK_DESC_SIZE + UIPAK_CAVE_SIZE + i * UIPAK_HOOK_SIZE;
+		same = be32_get(w) == t->hooks[i].addr && be32_get(w + 4) == t->hooks[i].value &&
+		       be32_get(w + 8) == t->hooks[i].orig;
+	}
+	check(same, "uipak_lh_open: the helper's entry whole by its CRC, its numbers, its cave and its five hook words the table's");
+	off = same ? be32_get(e + UIPAK_DESC_SIZE + 4) : 0;
+	for (i = 0; same && i < t->caves[0].len; i += n) {
+		n = t->caves[0].len - i < sizeof(piece) ? t->caves[0].len - i : (u32)sizeof(piece);
+		same = uipak_lh_read(off + i, piece, n) == ST_OK && memcmp(piece, t->caves[0].bytes + i, n) == 0;
+	}
+	check(same, "uipak_lh_read: the cave, read in pieces, is the table's byte for byte");
+	check(uipak_lh_read(len - 2, piece, 4) == ST_IO_ERROR, "nothing past the entry");
+	uipak_lh_close();
+	check(uipak_lh_read(0, piece, 4) == ST_IO_ERROR, "and nothing once it is closed");
+
+	check(uipak_lh_chunk(GAME_TOD, UIPAK_KIND_LUA_GLUE, &b, &n) == UIPAK_OK && n == t->glue_len &&
+	      memcmp(b, t->glue, n) == 0, "uipak_lh_chunk: the pause menu's glue, the bytes the emulator builds send");
+	check(uipak_lh_chunk(GAME_TOD, UIPAK_KIND_LUA_DIAG, &b, &n) == UIPAK_OK && n == t->diag_len &&
+	      memcmp(b, t->diag, n) == 0, "the look at the pause");
+	check(uipak_lh_chunk(GAME_TOD, UIPAK_KIND_LUA_GMAP, &b, &n) == UIPAK_OK && n == t->gmap_len &&
+	      memcmp(b, t->gmap, n) == 0, "and the galactic map's glue");
+	check(uipak_status() == UIPAK_OK && !flag_bad(), "the pak still good");
+	check(uipak_lh_chunk(GAME_RAC4, UIPAK_KIND_LUA_GLUE, &b, &n) == UIPAK_DAMAGED && b == NULL && n == 0,
+	      "no chunk for a game with no Lua helper: a pak gone wrong");
+	put_good();
+}
+
+static void test_lh_install(void)
+{
+	const struct lh_desc *t = lh_desc_for_title(TOD_TITLE);
+
+	group("ui.pak: ToD's Lua helper goes in out of the pak, with the console menu");
+	if (t == NULL || t->caves[0].bytes == NULL) return;
+	check(lh_boot(), "ToD boots");
+	check(lh_nothing(t), "nothing of the helper in the game yet");
+	check(lh_settle() == MENU_READY && lh_in_game(t),
+	      "the menu goes in, and the helper with it out of the pak: the cave the table's byte for byte, its five "
+	      "hook words, the mailbox's identity");
+	check(host_mem_ptr(LM_STATE + LM_HELP)[0] == 1, "TRAINER in Inventory's row");
+	check(quit(), "quit");
+}
+
+/* run.sh's pak without the Lua helper's entries, laid out as one a build without ToD packs: into g_bad. */
+static u32 pak_without_lua(void)
+{
+	u32 len = toc_word(g_good, LH_FIRST - 1, 16) + toc_word(g_good, LH_FIRST - 1, 20);
+
+	memcpy(g_bad, g_good, len);
+	g_bad[20] = (u8)LH_FIRST;
+	be32_put(g_bad + 16, len - UIPAK_HEADER_SIZE);
+	be32_put(g_bad + 12, qcrc32(g_bad + UIPAK_HEADER_SIZE, len - UIPAK_HEADER_SIZE));
+	return len;
+}
+
+/* The good pak with a byte of entry `i` changed at `at` into it, the entry's CRC refitted when `entry`, the file's always. */
+static u32 lh_spoiled(u32 i, u32 at, int entry)
+{
+	u32 e = toc_word(g_good, i, 16), n = toc_word(g_good, i, 20);
+
+	memcpy(g_bad, g_good, g_good_len);
+	g_bad[e + at] ^= 0x20;
+	if (entry) be32_put(g_bad + UIPAK_HEADER_SIZE + i * UIPAK_TOC_SIZE + 24, qcrc32(g_bad + e, n));
+	be32_put(g_bad + 12, qcrc32(g_bad + UIPAK_HEADER_SIZE, g_good_len - UIPAK_HEADER_SIZE));
+	return g_good_len;
+}
+
+/* A ToD session over a pak that cannot give the helper: nothing goes in, and it says why. */
+static void lh_refused(const char *what, int status, const char *log)
+{
+	const struct lh_desc *t = lh_desc_for_title(TOD_TITLE);
+	char line[240];
+	u32 n0;
+
+	n0 = host_notify_count();
+	check(lh_boot(), "ToD boots");
+	snprintf(line, sizeof(line), "%s: no menu, nothing of the helper written, Inventory the game's, flags bit7 set", what);
+	check(lh_settle() == MENU_NOPAK && lh_nothing(t) && uipak_status() == status && flag_bad(), line);
+	snprintf(line, sizeof(line), "%s: qwark.log says why (\"%s\")", what, log);
+	check(host_log_seen("lua: no usable Lua helper for game 5 in ui.pak; nothing written") &&
+	      (log == NULL || host_log_seen(log)), line);
+	check(host_notify_count() <= n0 + 1, "the console says so at most once");
+	snprintf(line, sizeof(line), "%s: LUA_EXEC answers UNSUPPORTED and writes nothing", what);
+	check(lh_exec() == ST_UNSUPPORTED && lh_nothing(t), line);
+	check(lua_core_menu_glue() == ST_UNSUPPORTED && lh_nothing(t), "and the glue is not sent either");
+	check(quit(), "quit");
+}
+
+static void test_lh_failures(void)
+{
+	const struct lh_desc *t = lh_desc_for_title(TOD_TITLE);
+	u32 mb, seq;
+
+	group("ui.pak: ToD's Lua helper when the pak cannot give it");
+	if (t == NULL || t->caves[0].bytes == NULL) return;
+	mb = t->mailbox;
+
+	host_log_clear();
+	check(plat_file_rename(UIPAK_PATH, PAK_BACKUP) == 0, "ui.pak taken away");
+	uipak_touch(UIPAK_PATH);
+	tick(4);
+	lh_refused("missing", UIPAK_MISSING, "ui.pak: none at");
+
+	/* A client writes it back: the menu and the helper go in, in the same session. */
+	check(lh_boot(), "ToD boots");
+	check(lh_settle() == MENU_NOPAK && lh_nothing(t), "still missing: no menu");
+	check(plat_file_rename(PAK_BACKUP, UIPAK_PATH) == 0, "ui.pak put back");
+	uipak_touch(UIPAK_PATH);
+	tick(4);
+	check(uipak_status() == UIPAK_OK && !flag_bad(), "the next tick finds it good: flags bit7 clear");
+	check(lh_settle() == MENU_READY && lh_in_game(t), "and the menu and the helper go in without a restart of the game");
+	{
+		u8 reply[64];
+		u32 rlen = 0, rseq = 0;
+		u8 req[16];
+		int done = 0, k;
+
+		be16_put(req, 8);
+		be16_put(req + 2, 0);
+		memcpy(req + 4, "_VERSION", 8);
+		check(lua_core_exec_start(req, 12, &rseq) == ST_OK, "LUA_EXEC is sent");
+		for (k = 0; k < 20 && !done; k++) {
+			host_fake_lua_frame();
+			tick(1);
+			lua_core_exec_result(rseq, reply, sizeof(reply), &rlen, &done);
+		}
+		check(done && be32_get(reply) == LUAMB_ST_OK, "and answered");
+	}
+
+	/*
+	 * The pak goes stale while the helper is in: a pause's glue comes out of
+	 * the pak, so none is sent, and the Trainer row never comes (the glue
+	 * makes it): Inventory stays the game's.
+	 */
+	put_pak(g_bad, lh_spoiled(LH_FIRST + 1, 300, 1));
+	check(uipak_status() == UIPAK_OTHER && flag_bad(), "another build's glue under this build's number: not this module's");
+	host_log_clear();
+	host_set_fake_pause(1);
+	seq = peek32(mb + LUAMB_OFF_REQ);
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(LM_STATE + LM_GLUE) == LM_GLUE_WANTED && peek32(mb + LUAMB_OFF_REQ) == seq,
+	      "a pause asks for the glue, and none is sent: the Trainer row stays out, Inventory the game's");
+	check(host_log_seen("lua: no usable Lua chunk 4 for game 5 in ui.pak; not sent") &&
+	      host_log_seen("menu: the pause menu's glue could not be sent"), "qwark.log says why");
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	put_good();
+	host_set_fake_pause(1);
+	seq = peek32(mb + LUAMB_OFF_REQ);
+	host_fake_menu_frame();
+	tick(8);
+	check(peek32(mb + LUAMB_OFF_REQ) == seq + 1 && peek32(mb + LUAMB_OFF_CHUNK_LEN) == t->glue_len &&
+	      memcmp(host_mem_ptr(mb + LUAMB_OFF_CHUNK), t->glue, t->glue_len) == 0,
+	      "the right pak back: the next pause's glue goes, the pak's bytes");
+	host_fake_menu_frame();
+	host_set_fake_pause(0);
+	host_fake_lua_frame();
+	tick(4);
+	check(quit(), "quit");
+
+	host_log_clear();
+	put_pak(g_bad, pak_without_lua());
+	check(uipak_status() == UIPAK_OTHER && flag_bad(),
+	      "a pak without the Lua helper, as a build without ToD packs it: not this module's, flags bit7 set");
+	lh_refused("no Lua helper in the pak", UIPAK_OTHER, "Lua helper 0x00000000, not this module's");
+
+	put_good();
+	host_log_clear();
+	put_pak(g_bad, lh_spoiled(LH_FIRST, 2000, 1));
+	lh_refused("another build's helper code", UIPAK_OTHER, "not this module's");
+
+	put_good();
+	host_log_clear();
+	put_pak(g_bad, lh_spoiled(LH_FIRST + 3, 100, 1));
+	lh_refused("another build's map glue", UIPAK_OTHER, "not this module's");
+
+	/* A byte of the helper's code with the file's CRC refitted but not the entry's, which pak.py never writes. */
+	put_good();
+	host_log_clear();
+	put_pak(g_bad, lh_spoiled(LH_FIRST, 2000, 0));
+	check(uipak_status() == UIPAK_OK, "the file's CRC refitted: the look finds the file good");
+	lh_refused("its entry's CRC fails", UIPAK_DAMAGED, NULL);
+
+	put_good();
+	check(uipak_status() == UIPAK_OK && !flag_bad(), "the right one back: good");
+	check(lh_boot(), "ToD boots");
+	check(lh_settle() == MENU_READY && lh_in_game(t), "and the helper goes in");
 	check(quit(), "quit");
 }
 
@@ -766,5 +1079,8 @@ void test_uipak(void)
 	test_rpcs3();
 	test_sf_install();
 	test_sf_failures();
+	test_lh_reader();
+	test_lh_install();
+	test_lh_failures();
 	put_good();
 }

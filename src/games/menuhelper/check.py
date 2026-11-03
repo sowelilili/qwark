@@ -132,7 +132,15 @@ the tick scratch the module reads a helper's entry into (QSCRATCH_BYTES in
 util.h); the header's CRC is that of the rest, and its two identities are the
 CRC-32s of the renderer entries and of the helper entries, which are MH_PAK_ID
 in menuhelper_bins.h and SF_PAK_ID in sfhelper_bins.h, the pak the module is
-built to accept.
+built to accept. Revision 1.29 (pending): a build with Tools of Destruction
+packs its Lua helper too (pak.py --tod), four entries after the savefile
+helpers: the helper's code (kind 3), each of its numbers, its cave byte for
+byte and its five hook words luahelper_bins.c's (read here by a parser of this
+script's own), and its three Lua chunks (kinds 4 to 6), each the bytes
+luahelper_bins.c carries, within the scratch a chunk is read into; the CRC of
+their CRCs is LH_PAK_ID in luahelper_bins.h, and the pak without them is byte
+for byte the one before them. The ui.pak beside the module is either pak, a
+test build's (with ToD) or a release's.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -144,6 +152,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 QWARK = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))   # the qwark checkout
 GEN_C = os.path.join(QWARK, "src", "games", "menuhelper_bins.c")
+LH_GEN_C = os.path.join(QWARK, "src", "games", "luahelper_bins.c")
 SF_GEN_C = os.path.join(QWARK, "src", "games", "sfhelper_bins.c")
 MENUBOX = os.path.join(QWARK, "src", "core", "menubox.h")
 SHIM_H = os.path.join(HERE, "mh_shim.h")
@@ -4213,7 +4222,7 @@ def load_pak_py():
     return mod
 
 
-def read_pak(b):
+def read_pak(b, lua_out=None):
     """
     ui.pak by a reader of this script's own (PROTOCOL.md 9.10, format 2):
     (build, renderers' id, helpers' id, [renderer], [helper]), each entry with
@@ -4224,13 +4233,21 @@ def read_pak(b):
         raise ValueError("not a whole format 2 pak")
     out = {1: [], 2: []}
     raw = {1: b"", 2: b""}
+    lua = []
     for i in range(n):
         game, kind, title, at, length, ecrc = struct.unpack(">BB2x12sIII4x", b[32 + 32 * i:64 + 32 * i])
         e = b[at:at + length]
-        if kind not in out or len(e) != length or zlib_crc(e) != ecrc:
+        if (kind not in out and kind not in (3, 4, 5, 6)) or len(e) != length or zlib_crc(e) != ecrc:
             raise ValueError("entry %d is not a whole renderer or helper" % i)
         if kind == 1 and out[2]:
             raise ValueError("entry %d: a renderer after a helper" % i)
+        if kind in (3, 4, 5, 6) or lua:
+            # Revision 1.29: ToD's Lua helper, after the savefile helpers.
+            if kind not in (3, 4, 5, 6) or not out[2]:
+                raise ValueError("entry %d: the Lua helper's entries go last, after the savefile helpers" % i)
+            lua.append({"game": game, "kind": kind, "title": title.rstrip(b"\0").decode("ascii"), "bytes": e,
+                        "crc": ecrc})
+            continue
         words = list(struct.unpack(">9I", e[:36]))
         ncaves, nhooks, nhelp = e[36], e[37], e[38]
         caves, hooks = [], []
@@ -4245,6 +4262,8 @@ def read_pak(b):
         raw[kind] += e
     if zlib_crc(raw[1]) != mh_id or zlib_crc(raw[2]) != sf_id:
         raise ValueError("the identities in the header are not the entries' CRCs")
+    if lua_out is not None:
+        lua_out.extend(lua)
     return build, mh_id, sf_id, out[1], out[2]
 
 
@@ -4270,6 +4289,84 @@ def sf_table():
             raise ValueError("%s: the descriptor's counts are not its tables'" % g)
         out.append((int(d.group(1)), nums, caves, hooks))
     return out
+
+
+def lh_table():
+    """
+    Revision 1.29: luahelper_bins.c's Lua helpers by this script's own reading, in
+    lh_descs' order: (game, title, [seven numbers], [(addr, bytes)],
+    [(addr, value, orig)], glue, diag, gmap).
+    """
+    text = open(LH_GEN_C, encoding="utf-8").read()
+
+    def array(name):
+        m = re.search(r"static const u8 %s\[\] = \{(.*?)\};" % name, text, re.S)
+        return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))) if m else None
+
+    out = []
+    for d in re.finditer(r'\{ "(\w+)", (\d+), lh_(\w+)_caves, (\d+), lh_\w+_hooks, (\d+),(.*?)\}', text, re.S):
+        g = d.group(3)
+        nums = re.findall(r"(0x[0-9A-Fa-f]+|\d+)u", d.group(6))
+        nums = [int(x, 0) for x in nums]
+        # mailbox, size, vm, vm_state, menu_ptr, menu_off, glue_len, diag_len, map_ptr, gmap_len
+        if len(nums) != 10:
+            raise ValueError("%s: lh_descs' numbers are not ten" % g)
+        cm = re.search(r"static const struct lh_cave lh_%s_caves\[\] = \{(.*?)\};" % g, text, re.S)
+        caves = [(int(a, 16), array(n)) for a, n, _l in
+                 re.findall(r"\{ (0x[0-9A-Fa-f]+)u, LH_BYTES\((\w+)\), (\d+)u \}", cm.group(1))]
+        hm = re.search(r"static const struct lh_hook lh_%s_hooks\[\] = \{(.*?)\};" % g, text, re.S)
+        hooks = [tuple(int(x, 16) for x in w) for w in
+                 re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", hm.group(1))]
+        if len(caves) != int(d.group(4)) or len(hooks) != int(d.group(5)):
+            raise ValueError("%s: the descriptor's counts are not its tables'" % g)
+        glue, diag, gmap = array("lh_%s_glue" % g), array("lh_%s_diag" % g), array("lh_%s_gmap" % g)
+        if [len(glue), len(diag), len(gmap)] != [nums[6], nums[7], nums[9]]:
+            raise ValueError("%s: the chunks' lengths are not the descriptor's" % g)
+        out.append((int(d.group(2)), d.group(1), nums[0:6] + [nums[8]], caves, hooks, glue, diag, gmap))
+    return out
+
+
+def check_pak_lua(ok, pak, table, helpers, build, scratch):
+    """Revision 1.29: ToD's Lua helper in the pak a build with ToD packs (pak.py --tod)."""
+    try:
+        lh = pak.parse_lh_table(pak.LH_GEN_C)
+        data = pak.pak_bytes(table, helpers, build, lh)
+        lua = []
+        read_pak(data, lua)
+        want = lh_table()
+    except (SystemExit, ValueError, OSError, AttributeError) as e:
+        ok(False, "ui.pak: pak.py packs the Lua helper into a pak this script can read back (%s)" % e)
+        return None
+    ok(len(want) == 1 and [(r["game"], r["kind"]) for r in lua] == [(5, 3), (5, 4), (5, 5), (5, 6)] and
+       all(r["title"] == "NPEA00452" for r in lua) and len(lua) + 8 <= 16,
+       "ui.pak --tod: ToD's Lua helper after the savefile helpers, its code, the pause menu's glue, the look and "
+       "the map's glue, game 5, NPEA00452")
+    if len(want) != 1 or len(lua) != 4:
+        return data
+    game, title, nums, caves, hooks, glue, diag, gmap = want[0]
+    e = lua[0]["bytes"]
+    words = list(struct.unpack(">9I", e[:36]))
+    ncaves, nhooks, nhelp = e[36], e[37], e[38]
+    got_caves = []
+    for k in range(ncaves):
+        addr, off, ln, zeros, code = struct.unpack(">IIIIB", e[40 + 20 * k:57 + 20 * k])
+        got_caves.append((addr, e[off:off + ln], zeros, code))
+    p = 40 + 20 * ncaves
+    got_hooks = [struct.unpack(">III", e[p + 12 * k:p + 12 * k + 12]) for k in range(nhooks)]
+    ok(words == nums + [0, 0] and nhelp == 0 and [(a, b) for a, b, _z, _c in got_caves] == caves and
+       all(z == 0 and c == 1 for _a, _b, z, c in got_caves) and got_hooks == hooks,
+       "ui.pak --tod: the Lua helper is luahelper_bins.c's: its seven numbers, its cave byte for byte (%d bytes), "
+       "its %d hook words with the game's own" % (sum(len(c[1]) for c in caves), len(hooks)))
+    ok([r["bytes"] for r in lua[1:]] == [glue, diag, gmap] and all(40 <= len(r["bytes"]) <= scratch for r in lua[1:]),
+       "ui.pak --tod: its three chunks are luahelper_bins.c's, the bytes as sent (%d, %d and %d bytes), each within "
+       "the scratch it is read into" % (len(glue), len(diag), len(gmap)))
+    m = re.search(r"^#define\s+LH_PAK_ID\s+(0x[0-9A-Fa-f]{8})u",
+                  open(os.path.join(QWARK, "src", "games", "luahelper_bins.h"), encoding="utf-8").read(), re.M)
+    want_lh = int(m.group(1), 16) if m else None
+    got_lh = zlib_crc(b"".join(struct.pack(">I", r["crc"]) for r in lua))
+    ok(want_lh == got_lh, "ui.pak --tod: the CRC of its entries' CRCs, 0x%08X, is LH_PAK_ID, the Lua helper the "
+                          "module accepts" % got_lh)
+    return data
 
 
 def zlib_crc(b):
@@ -4340,10 +4437,14 @@ def check_pak(ok, pak_path=None):
     ok(want_mh == mh_id and want_sf == sf_id,
        "ui.pak: its identities, renderers 0x%08X and helpers 0x%08X, are MH_PAK_ID and SF_PAK_ID, the pak the "
        "module accepts" % (mh_id, sf_id))
+    tod_data = check_pak_lua(ok, pak, table, helpers, build, scratch)
     path = pak_path or os.path.join(QWARK, "ui.pak")
     if os.path.exists(path):
         file_data = open(path, "rb").read()
-        ok(file_data == data, "ui.pak: %s is this build's pak, byte for byte (%d bytes)" % (path, len(data)))
+        ok(file_data == data or file_data == tod_data,
+           "ui.pak: %s is this build's pak, byte for byte (%d bytes, %s)" %
+           (path, len(file_data), "a test build's, with ToD's Lua helper" if file_data == tod_data else
+            "a release's" if file_data == data else "neither a release's nor a test build's"))
     elif pak_path:
         ok(False, "ui.pak: %s exists" % pak_path)
     else:
