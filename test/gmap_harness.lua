@@ -69,7 +69,8 @@ end
 local LOC = { [0] = "Planet Kerwan", "Planet Cobalia", "Planet Kortog", "Planet Fastoon", "Voron Asteroid Belt",
               "Planet Mukow", "Nundac Asteroid Ring", "Planet Ardolis", "Rakar Star Cluster", "Rykan V",
               "Planet Sargasso", "Kreeli Comet", "Planet Viceron", "Verdigris Black Hole", "Planet Jasindu",
-              "Ublik Passage", "Planet Reepor", "Planet Igliak", "Planet Fastoon" }
+              "Ublik Passage", "Planet Reepor", "Planet Igliak", "Planet Fastoon " }
+-- Fastoon II's name ends in a space, as the console showed ("Fastoon  II" before the glue trimmed it).
 local SECTOR = { [0] = 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 1 }
 local SECNAME = { [0] = "Solana Galaxy", "Cerullean Sector", "Verdigris Sector", "Praxus Sector" }
 
@@ -316,6 +317,8 @@ local function cases(name)
         name .. ": Solana Galaxy and Kerwan first, then Cerullean")
   check(rs[6] == "Planet Fastoon" and rs[7] == "Planet Fastoon II" and rs[8] == "Voron Asteroid Belt",
         name .. ": Fastoon, then Fastoon II, a row of its own, then Voron")
+  check(LOC[18] == "Planet Fastoon " and rs[7] == "Planet Fastoon II" and get_location_name(18) == "Planet Fastoon II" and
+        get_location_name(2) == "Planet Kortog", name .. ": the game's name with its trailing space trimmed: one space before II")
   check(rs[12] == "#Verdigris Sector" and rs[18] == "#Praxus Sector" and rs[23] == "Planet Igliak",
         name .. ": every sector and every planet, Igliak last")
   check(W.hf.currentlySelected == rowof(1) and W.lf.selectedItemIndex == rowof(1) and W.hf.newPlanet == rowof(1),

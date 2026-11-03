@@ -461,6 +461,8 @@ Functions: GalMap_request 0x35084, Lua_gmap 0x291CBC, thunk_GalMap_request 0x26B
 
 ## 17. Every planet on the galactic map (revision 1.29, pending)
 
+**Section 18 changes the pick's load**: a pick on qwark's map is fast-loaded with qwark's short fade-out, and Fastoon II's name has one space.
+
 **What the user asked** (after section 16): the map must offer **Kerwan** (Metropolis, LEVEL 0) and **Fastoon II** (LEVEL 18) beside **Fastoon** (LEVEL 3), as the four original games' pickers were made to show every planet; a map without them and a second picker (section 16's one-shot ALL PLANETS row) beside it defeat the purpose. It is done: the map qwark opens lists all nineteen levels, and the ALL PLANETS row is gone. Read from the executable (Ghidra) and the map's `gmapHndler` chunk (`built/anark/galacticmap/built.dat`, decompiled with the session scratchpad's `nm/luapseudo.py`, `gm/gmap_ps.txt`); nothing here has run on a console yet.
 
 ### 17.1 Why Kerwan is missing (high)
@@ -530,3 +532,59 @@ The Lua helper's code is 8,152 bytes (7,936 before): LUA_PATCH 2,045 rows of the
 ### 17.8 Ghidra (DL-ghidra:/NPEA00452.ELF)
 
 Functions: GalMap_setView 0x34F5C (`void (int mode, int level, int sector, char snap)`), GalMap_setLevelView 0x36754, GalMap_setHighlightLevel 0x357DC (`void (int level)`), GalMap_setHighlightLevelLua 0x36788, GalMap_getSectorName 0x366C8, GalMap_getLevelDescription 0x36D38, GalMap_getLevelImage 0x36E90, Level_getSector 0x2EA310 (`int (int level)`), thunk_Level_getSector 0x135E0, Sector_getName 0x2EA324, thunk_Sector_getName 0x142E0. Globals: g_levelSectors 0x1006E708 (int[19]), g_sectorNameIds 0x1006E754 (uint[4]). Structs: `/ToD/GalMap/GalMapData` (new, 0xC4: levelCameras[19] +0x18, sectorCameras[4] +0x64, globalCamera +0x74, planetMobys[19] +0x78), `/ToD/GalMap/GalMapState` (highlightLevel +0x20, highlightSound +0x24, `data` now a GalMapData pointer).
+
+## 18. Map picks load as qwark's loads; Fastoon II's name (revision 1.29, pending)
+
+**What the user asked** (after section 17): the map read "Planet Fastoon  II", two spaces; and a planet picked on the Trainer's map should load as a RaCMAN planet load does, with no fade-out and fast-loaded. The four original games force Fast loads on for a qwark PLANET_LOAD and put the toggle's setting back after it (`rac1_planet_load` and `rac1_fastload_force`/`_claim`/`_restore`, the same in RaC2 to UYA); ToD did not, for any load. Nothing here has run on a console yet.
+
+### 18.1 The name
+
+The game's location name for Fastoon II ends in a space, so the glue's `" II"` made two. `lh_gmap.lua`'s `get_location_name` now trims every name's trailing whitespace (`string.gsub(t, "%s+$", "")`, invisible on the others) before Fastoon II's `" II"`: "Planet Fastoon II". The glue is 3,132 bytes (3,088 before) of its own 8 KB request; the Lua helper's code and LUA_PATCH are unchanged.
+
+### 18.2 Fast loads forced for qwark's planet loads
+
+For every planet load qwark starts in ToD: PLANET_LOAD from the client, the Trainer's Planets page (both `tod_planet_load`, through `session_planet_load`), and a pick on the galactic map qwark opened (18.3). Not for a savefile RESTORE or Load set-aside, which keep their short fade only (as before).
+
+- **The force** (`tod_panel.c` `tod_fl_force`, as `rac1_fastload_force`): with the toggle off, Fast loads' whole on path for this one load (`tod_fast_loads(1)`): on a console the cave, the flag byte at 1, the twenty-five words of LoadScreen_Update and the three sites of qwark's own pieces, after `plat_can_patch_code()` as the toggle; under RPCS3 with the switches in, the flag byte alone; both ways `g_levelTransitionMinTime` 0. Under RPCS3 without the switches it is UNSUPPORTED and the load goes at the game's pace. With the toggle on, nothing is forced. Under RPCS3 a flag byte at 1 that this process did not force is taken for the user's setting (a qwark-rpcs3 restarted over a game it left so), as RaC1 does.
+- **The toggle and the force** are apart: `fl_on` is the toggle's setting (`tod_set_toggle`), `fl_forced` a load's force. The toggle's bit (`features_toggle_state`) never moves for a force, and under RPCS3 `tod_toggle_read` answers the toggle while a force is on, so the client's checkbox does not flick on for each load. Turning the toggle on or off during a forced load gives it the say at once (the force is forgotten).
+- **The put-back** (`tod_fl_tick`, every tick while forced, from the watcher's view of the hot block): the load seen under way (`tod_level_loading`: the tier loader on state 3's tiers, `g_levelLoadTier` not loaded), then over with a level's lua_State (`Level_Enter`): that is after `LevelTransition_waitLoad` has returned, so the load screen's cut and qwark's own pieces (the departure's end, the story FMV's cut) are all behind it. Then `tod_fast_loads(0)`: the game's words, the flag at 0, the game's 5 s. No load begun within `TOD_FADE_WAIT_TICKS` (six seconds, a request the game never took) puts it back too; a request that could not be written takes back its own force at once. A new session (the game booting) starts with nothing forced.
+- **The autosplitter** is untouched: it reads the same loader, level, load screen and fade words, and a forced load is a load with Fast loads on, which it has always handled (the long load's `g_loadScreenType` values and order are the toggle's; the run's START is `Level_Enter`'s fade in, which neither the force nor the short fade-out moves). The unit test runs a forced load past the watcher: one planet split, no reset, no long load.
+
+### 18.3 A pick on qwark's map
+
+The pick is the game's own path: `lm_pick` (or, with the glue out, `GalMap_selectLevel`) writes `g_galMap.selectedLevel`, `exit_galactic_map` asks for play, `GameState_ApplyPending` runs `GalMapState_exit`, whose `thunk_LoadLevel` writes `g_planetLoadRequest`, and the next gameplay frame's `LoadLevel_ProcessPending` starts the fade. qwark looks at the game a few times a second, so nothing waits for qwark's look at the pick:
+
+- **Armed as the map comes up** (struct menu_picker's new `up`, ToD's `tod_galmap_up`, which `menu.c` calls once as its picker goes UP): Fast loads forced (18.2), and `k_loadLevelFadeTime` armed: 7/64 s while level flag 106 is clear (a pick may then be Metropolis or Cobalia, a story FMV load), else 2^-10 s. Nothing reads either while the map is up (no gameplay frame runs, no load screen plays).
+- **Held while it is up** (`tod_map_tick`): no time-out counts, for the fade or the force; the map may stay up as long as the player likes.
+- **The pick** (each tick: `g_gameState`, then `selectedLevel`, so a state past 6 means the pick read after it is final): the level's own fade, `tod_story_load(level)` as PLANET_LOAD's (7/64 s for Metropolis or Cobalia with flag 106 clear, else the frame). `LoadLevel_ProcessPending` calls `ScreenFade_Start(k_loadLevelFadeTime, k_loadLevelFadeDelay)` every frame of the fade, and `ScreenFade_Start` sets the rate (1/time) each time (Ghidra), so the value holds from the next frame whenever it is written: should the fade begin before qwark's look, a story-armed fade runs a frame or two at the longer time and is then cut to one frame; a pick of a story level never gets the shorter one. From there the pick is a qwark load like any: the fade's put-back as today (the request taken, the level gone, six seconds, a session's arrival) and the force's (18.2).
+- **No pick** (Back, or the game's own list closing on the current planet): both put back at once, as the map leaves state 6.
+- **Only qwark's map**: the ship's map and a space combat level's end map never call `up`; their picks are the game's loads with the game's fade, as before. A map that never comes up (section 16) arms nothing.
+
+### 18.4 Opening the map over the pause: a technical limit (high)
+
+Confirmed, and not cheap to lift. The pause (state 5) and the map (state 6) each replace gameplay on the state stack (`GameState_queueOverlay` op 2: the old state's exit, the new one's enter). The stack does have a push (op 1, up to eight deep) and a pop (op 3), so the stack alone would allow a map over the pause; what does not is memory: `GalMap_loadMenu` (0x36448) starts with `Memory_InitHeaps` and builds its `AnarkMenuSystem` in the Anark persistent arena, the pause's menu system and its Lua VM's pool being in the same arena and pool. Pushing the map over a live pause would reset the heap under the pause's VM (the crash of section 10, but certain). It would need `GalMap_loadMenu`'s reset patched out while the pause is under it, both menu systems and both VMs fitting the arena and the pool at once, and the pause's VM surviving the map's exit (`GalMap_freeMenu`, the pop's resume): large changes to the game's memory model, for a picker that already opens with one press and comes back to the Trainer. What exists stays: the pause closes, the map opens, Back opens the Trainer again on Planets.
+
+### 18.5 Sizes
+
+LUA_PATCH 2,045 of 2,046 rows, unchanged (the helper's code is the same 8,152 bytes). `tod.sprx` 60,608 bytes of its one page's 61,440 (59,664 before): the force, its watch, the map's arming and its tick, about 940 bytes. The map's glue 3,132 bytes.
+
+### 18.6 Tests
+
+- `test/gmap_harness.lua` (`test_glue.py`, source and as sent): Fastoon II's name in the stand-in ends in a space, as the game's; the glue's row reads "Planet Fastoon II", and its `get_location_name` trims every name.
+- `test/test_tod_game.c` (`test_tod_load_fast`): on a console, PLANET_LOAD with Fast loads off forces the words, sites, flag and 0 s on, keeps them through the request and the load (the data in included), and puts the game's back once the new level is up, the toggle's bit clear throughout; the autosplitter's planet split, no reset, no long load; with the toggle on nothing is put back; a load never taken is put back after the wait; a refused load forces nothing; the toggle turned on mid-load is left on. Under RPCS3 with the switches: the flag byte for the load and back, no code written, the toggle reading off while forced, left on with the toggle on, and a flag left at 1 by another process left alone.
+- `test/test_tod_menu.c` (`test_galmap`): the map up arms the force and the one-frame fade (flag 106 set) or the story fade (clear); Back puts both back at once; a pick of Kerwan keeps the story fade, of Ardolis the frame; the request taken gives the game's fade back, the load's end Fast loads; with the toggle on, a pick leaves it on; the game's own list's map closed, and a map that never comes, leave nothing armed.
+- `test/smoke.py`: PLANET_LOAD forces Fast loads and a load past the watcher puts them back; the map up forced and armed, Back with nothing left, a pick of Ardolis fast-loaded with the one-frame fade, the request taken, the load's end.
+
+### 18.7 What the next console test should show
+
+1. Fast loads off. Trainer > PLANETS: the map lists "Planet Fastoon II" with one space.
+2. On the map, a planet with a load screen (Ardolis): Select, Select: the screen goes black at once (no half-second fade), the load screen is cut as with Fast loads on. qwark.log: "picked Ardolis; the game loads it". After the planet is up, Fast loads is still off in RaCMAN and the next load from the ship's map plays its full load screen and the game's half-second fade.
+3. The same with Fast loads on: as 2, and it stays on.
+4. On a new game (flag 106 clear), Kerwan from the map: a short fade (about 7 frames), then the intro FMV cut once the data is in (or nothing, with Remove cutscenes), Metropolis. Cobalia the same. A non-story planet on that save: a frame or two of fade at most, then black.
+5. Triangle out of the map: the Trainer again; then the ship's own map (or a space combat level's end map) and a pick there: the game's half-second fade and its full load screen (Fast loads off).
+6. RaCMAN's planet list (PLANET_LOAD) and the Trainer's Planets page with Fast loads off: fast-loaded, the toggle still off afterwards.
+7. A run: a new game's Metropolis through PLANET_LOAD with Fast loads off: the RESET as the load begins, the START at the fade in, as before; the long-load pair as with Fast loads on.
+
+### 18.8 Ghidra (DL-ghidra:/NPEA00452.ELF)
+
+Functions: thunk_LoadLevel 0x11410 (GalMapState_exit's call), thunk_Memory_InitHeaps 0x12C20, thunk_AnarkMemory_beginFrameArena 0x13920, thunk_AnarkMemory_persistentArena 0x14130 (`GalMap_loadMenu`'s first calls). Globals: k_loadLevelFadeDelay 0x8BA520 (`ScreenFade_Start`'s second argument in `LoadLevel_ProcessPending`).

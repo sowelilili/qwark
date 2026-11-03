@@ -3072,6 +3072,9 @@ static void native_picker_tick(void)
 			g_gm.ask = 0;
 			g_gm.glue_until = now + GM_GLUE_US;
 			plat_log("menu: %s is up", g_gm.name);
+			/* Revision 1.29 (pending): a pick on it is qwark's load (struct menu_picker's up). */
+			p = picker();
+			if (p != NULL && p->up != NULL) p->up();
 		} else if (lua_core_gameplay_result(g_gm.seq) == 2) {
 			native_picker_fail("its Lua did not run");
 		} else if (now >= g_gm.until) {

@@ -187,7 +187,7 @@ static void tod_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
 	tod_ammo_tick(T->ammo_flag, T->root);
-	tod_panel_tick();   /* revision 1.29: qwark's own loads' fade, Remove cutscenes */
+	tod_panel_tick(&T->as);   /* revision 1.29: qwark's own loads' fade and fast load, Remove cutscenes */
 	tod_autosplit_tick(&T->as);
 	tod_cc_tick(&T->cc, &T->as);   /* revision 1.29: the cutscene cache, after the watcher (the same hot block) */
 }
@@ -473,7 +473,8 @@ static const struct menu_picker tod_galmap = {
 	TOD_STATE_GALMAP,
 	TOD_GALMAP_PICK,
 	tod_galmap_pokes, (u8)(sizeof(tod_galmap_pokes) / sizeof(tod_galmap_pokes[0])),
-	1                     /* the map's glue: every planet (docs/tod-menu.md 17) */
+	1,                    /* the map's glue: every planet (docs/tod-menu.md 17) */
+	tod_galmap_up         /* a pick is qwark's load: Fast loads forced, the short fade (tod.h) */
 };
 
 /*

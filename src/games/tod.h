@@ -700,7 +700,8 @@ void tod_panel_init(void);   /* once a module: Fast loads' patch */
  * fade time back once qwark's load has begun, and the FMVs looked after.
  */
 void tod_panel_enter(void);
-void tod_panel_tick(void);
+/* Revision 1.29: the watcher's view (the hot block's job, tier and lua_State) for the forced fast load's end. */
+void tod_panel_tick(const struct tod_as_state *as);
 /*
  * qwark's own load is about to be asked for: its fade-out a frame long, or
  * TOD_LOAD_FADE_STORY for a story FMV load (`story`, tod_story_load's answer).
@@ -708,6 +709,22 @@ void tod_panel_tick(void);
 void tod_fade_arm(int story);
 /* and it was not: the game's fade time back. */
 void tod_fade_disarm(void);
+/*
+ * Revision 1.29 (pending): a load qwark starts (PLANET_LOAD, the Trainer's
+ * list, a pick on the galactic map it opened) is fast-loaded, as the four
+ * original games' PLANET_LOAD is (rac1_planet_load and the others): Fast
+ * loads forced on for that load, the toggle off or not, and put back once
+ * the new level is up (the watcher's level load seen, then over, a level's
+ * lua_State), or after TOD_FADE_WAIT_TICKS with no load begun. With the
+ * toggle on there is nothing to force or put back. tod_galmap_up: the core's
+ * menu_picker `up`, the map qwark opened is up: the force and the fade
+ * (TOD_LOAD_FADE_STORY while flag 106 is clear, a pick of Metropolis or
+ * Cobalia then being a story load; else the frame) armed before any pick, so
+ * neither depends on qwark's tick beating the map's exit; the pick's level
+ * (TOD_GALMAP_PICK, read once g_gameState was read) then sets the fade it
+ * wants, and the map gone without one puts both back at once.
+ */
+void tod_galmap_up(void);
 /* The eight FMVs' files missing (1) or back (0): how many were changed, or -1 for no table. */
 int  tod_cutscenes_apply(int remove);
 

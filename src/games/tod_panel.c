@@ -33,6 +33,14 @@ struct tod_panel_state {
 	u8  fade_seen;         /* its request was seen waiting */
 	u16 fade_ticks;
 
+	/* Revision 1.29: Fast loads forced for qwark's own load (tod_fl_force), and the map's pick. */
+	u8  fl_on;             /* the toggle's setting */
+	u8  fl_forced;         /* on for a load only, to go back after it */
+	u8  fl_loading;        /* that load seen under way */
+	u8  map_armed;         /* the galactic map qwark opened is up (tod_galmap_up) */
+	u16 fl_ticks;
+	s16 map_level;         /* its pick seen, -1 none yet */
+
 	/* Revision 1.29: Remove cutscenes, wanted, and the ticks to the next look. */
 	u8  cut_wanted;
 	u16 cut_wait;
@@ -492,6 +500,51 @@ static int tod_fast_loads(int on)
 	return mem_write_u32(TOD_TRANSITION_MIN, on ? 0u : TOD_TRANSITION_GAME);
 }
 
+/*
+ * Revision 1.29 (pending): Fast loads forced for a load qwark starts (tod.h,
+ * tod_galmap_up), as rac1_fastload_force: a flag at 1 under RPCS3 that this
+ * process did not force is the user's setting; the toggle on, nothing is
+ * forced. UNSUPPORTED (RPCS3 without the switches) loads at the game's pace.
+ */
+static int tod_fl_force(void)
+{
+	int on = 0, rc;
+
+	TP->fl_loading = 0;
+	TP->fl_ticks = 0;
+	if (!TP->fl_forced && classic_code_read(SW_TOD_FLAG_FAST_LOADS, &on) == ST_OK && on) TP->fl_on = 1;
+	if (TP->fl_on) return ST_OK;
+	rc = tod_fast_loads(1);
+	if (rc == ST_OK) TP->fl_forced = 1;
+	return rc;
+}
+
+/* The forced load over (or never begun): the toggle's setting back. */
+static void tod_fl_restore(void)
+{
+	TP->fl_forced = 0;
+	TP->fl_loading = 0;
+	if (!TP->fl_on) tod_fast_loads(0);
+}
+
+/*
+ * Once a tick while forced: the load seen under way (the watcher's level
+ * load, tod_autosplit.c), then over with the new level's lua_State, puts it
+ * back; that is after LevelTransition_waitLoad has returned, the load screen
+ * and qwark's own pieces done. No load begun in TOD_FADE_WAIT_TICKS (outside
+ * the map's wait) puts it back too.
+ */
+static void tod_fl_tick(const struct tod_as_state *as)
+{
+	if (!TP->fl_forced) return;
+	if (tod_level_loading(as->cur_job, as->cur_tier)) {
+		TP->fl_loading = 1;
+		return;
+	}
+	if (TP->fl_loading ? (as->cur_tier != 0 && as->cur_lua != 0) : ++TP->fl_ticks >= TOD_FADE_WAIT_TICKS)
+		tod_fl_restore();
+}
+
 /* ------------------------------------- qwark's own loads' fade, revision 1.29 */
 
 /* LevelTransition_begin's test (tod.h, TOD_LOAD_FADE_STORY). */
@@ -536,6 +589,52 @@ static void tod_fade_tick(void)
 	}
 	if (mem_read_u32(TOD_LUA_STATE, &lua) == ST_OK && lua == 0) { tod_fade_disarm(); return; }
 	if (++TP->fade_ticks >= TOD_FADE_WAIT_TICKS) tod_fade_disarm();
+}
+
+/* -------------------------- a pick on qwark's galactic map, revision 1.29 */
+
+/*
+ * The core's menu_picker `up` (menu.c): the map qwark opened is up, so a pick
+ * on it is qwark's load. Both are armed now, before any pick: the map's exit
+ * (GalMapState_exit, LoadLevel) and LoadLevel_ProcessPending's first fade
+ * frame may come before qwark's next look, and ProcessPending reads
+ * k_loadLevelFadeTime every frame (ScreenFade_Start, the rate 1/time), so a
+ * later write still holds from the next frame on. A story load may only be
+ * Metropolis or Cobalia with flag 106 clear: then the longer fade, which
+ * never flashes; else the frame.
+ */
+void tod_galmap_up(void)
+{
+	TP->map_armed = 1;
+	TP->map_level = -1;
+	tod_fl_force();
+	tod_fade_arm(tod_story_load(TOD_LEVEL_METROPOLIS, TOD_LEVEL_FLAGS));
+}
+
+/*
+ * Once a tick while armed. g_gameState first, then the pick: GalMap_selectLevel
+ * (or the glue's lm_pick) writes the pick before the map's exit, so a state
+ * past 6 read first means the pick read after is final. 1 while the map
+ * holds the load's watches (up: nothing times out), 0 once it has handed a
+ * pick to them; a pick arms its own fade; the map gone without one puts both
+ * back at once.
+ */
+static int tod_map_tick(void)
+{
+	u32 state = 0, pick = 0xFFFFFFFFu;
+
+	if (!TP->map_armed) return 0;
+	if (mem_read_u32(TOD_GAME_STATE, &state) != ST_OK || mem_read_u32(TOD_GALMAP_PICK, &pick) != ST_OK) return 1;
+	if (pick < TOD_NPLANETS && (s32)pick != TP->map_level) {
+		TP->map_level = (s16)pick;
+		tod_fade_arm(tod_story_load(pick, TOD_LEVEL_FLAGS));
+	}
+	if (state == TOD_STATE_GALMAP) return 1;
+	TP->map_armed = 0;
+	if (TP->map_level >= 0) return 0;
+	tod_fade_disarm();
+	if (TP->fl_forced) tod_fl_restore();
+	return 1;
 }
 
 /* ------------------------------------------ Remove cutscenes, revision 1.29 */
@@ -682,9 +781,13 @@ void tod_panel_enter(void)
 	tod_cutscenes_apply(0);
 }
 
-void tod_panel_tick(void)
+void tod_panel_tick(const struct tod_as_state *as)
 {
-	tod_fade_tick();
+	/* The map's wait holds the fade's and the force's own watches: no load begins under it. */
+	if (!tod_map_tick()) {
+		tod_fade_tick();
+		tod_fl_tick(as);
+	}
 	tod_cut_tick();
 }
 
@@ -727,10 +830,20 @@ void tod_panel_tick(void)
  */
 int tod_set_toggle(u8 id, int on)
 {
+	int rc;
+
 	switch (id) {
 	case TF_INFINITE_HEALTH: return mem_write_u32(TOD_NO_DAMAGE, on ? 1u : 0u);
 	case TF_GOD_RATCHET:     return mem_write_u8(TOD_PROXY_LOW, on ? (u8)TOD_PROXY_FAKE : 0u);
-	case TF_FAST_LOADS:      return tod_fast_loads(on);
+	case TF_FAST_LOADS:
+		rc = tod_fast_loads(on);
+		if (rc == ST_OK) {
+			/* Whatever a load forced, the toggle has the say now. */
+			TP->fl_on = on ? 1u : 0u;
+			TP->fl_forced = 0;
+			TP->fl_loading = 0;
+		}
+		return rc;
 	case TF_REMOVE_CUTSCENES:
 		TP->cut_wanted = on ? 1u : 0u;
 		TP->cut_wait = TOD_CUT_EVERY;
@@ -756,7 +869,11 @@ int tod_toggle_read(u8 id, int *on)
 		v = b;
 		break;
 	/* The switch's flag byte under RPCS3; NOT_FOUND without it, where qwark's bit says. */
-	case TF_FAST_LOADS:      return classic_code_read(SW_TOD_FLAG_FAST_LOADS, on);
+	case TF_FAST_LOADS:
+		rc = classic_code_read(SW_TOD_FLAG_FAST_LOADS, on);
+		/* Revision 1.29: a load's force is not the toggle (tod_fl_force). */
+		if (rc == ST_OK && TP->fl_forced) *on = TP->fl_on;
+		return rc;
 	default:
 		return ST_NOT_FOUND;
 	}
@@ -911,11 +1028,14 @@ int tod_die(void)
  * Revision 1.29: the fade a frame long, as for every load qwark asks for, but
  * a few frames for a story FMV load, which has no load screen (tod.h,
  * TOD_LOAD_FADE_STORY): the level flags are the game's own here.
+ * Revision 1.29 (pending): and Fast loads forced for it, as the four original
+ * games' planet load forces them (tod.h, tod_galmap_up); a request that fails
+ * takes back its own force and nobody else's.
  */
 int tod_planet_load(u8 planet, u8 flags)
 {
 	u32 state = 0, request = 0, root = 0;
-	int rc;
+	int rc, was = TP->fl_forced;
 
 	(void)flags;
 	if (planet >= TOD_NPLANETS) return ST_BAD_ARG;
@@ -924,9 +1044,14 @@ int tod_planet_load(u8 planet, u8 flags)
 	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_OBJ, &root);
 	if (rc != ST_OK) return rc;
 	if (state != TOD_STATE_GAMEPLAY || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
+	rc = tod_fl_force();
+	if (rc != ST_OK && rc != ST_UNSUPPORTED) return rc;
 	/* Revision 1.29: no fade-out first (tod.h, TOD_LOAD_FADE_TIME). */
 	tod_fade_arm(tod_story_load(planet, TOD_LEVEL_FLAGS));
 	rc = mem_write_u32(TOD_LOAD_REQUEST, planet);
-	if (rc != ST_OK) tod_fade_disarm();
+	if (rc != ST_OK) {
+		tod_fade_disarm();
+		if (!was && TP->fl_forced) tod_fl_restore();
+	}
 	return rc;
 }

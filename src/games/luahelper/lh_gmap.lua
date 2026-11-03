@@ -22,7 +22,8 @@
 --     game itself shows the whole map in Metropolis, GalMap_setupView), so
 --     its row and its header show the whole map (set_global_view);
 --   * every level is listed and can be picked, and Fastoon II is a row of its
---     own beside Fastoon, its name with " II" after it;
+--     own beside Fastoon, its name with " II" after it (every name's
+--     trailing spaces trimmed first: the game's Fastoon ends in one);
 --   * a pick is qw(10, level) (lh_menu.c lm_pick: the level into
 --     g_galMap.selectedLevel, where the game's own pick leaves it) and the
 --     game's own close, exit_galactic_map(): GalMapState_exit loads it, the
@@ -103,9 +104,12 @@ local function main()
   is_level_visible = function(l) return true end
   is_level_visitable = function(l) return true end
   is_sector_visible = function(s) return true end
+  -- The game's names may end in a space (Fastoon's does): trimmed, so Fastoon II reads with one.
   get_location_name = function(l)
     local t = ln(l)
-    if l == F2 and type(t) == "string" then t = t .. string.char(32) .. "II" end
+    if type(t) ~= "string" then return t end
+    t = string.gsub(t, "%s+$", "")
+    if l == F2 then t = t .. string.char(32) .. "II" end
     return t
   end
   load_level = function(l)

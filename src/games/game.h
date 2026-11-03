@@ -674,6 +674,13 @@ struct menu_picker {
 	const struct menu_poke *pokes;
 	u8  npokes;
 	u8  glue;               /* revision 1.29: 1, the helper's map glue goes into it (lua_core_map_send) */
+	/*
+	 * Revision 1.29 (pending), or NULL: called once as the picker comes up, so
+	 * the game treats a pick as a load qwark started (ToD: Fast loads forced,
+	 * the short fade-out, tod_galmap_up). From there the game's own tick
+	 * watches the pick and the load and puts everything back.
+	 */
+	void (*up)(void);
 };
 #endif
 

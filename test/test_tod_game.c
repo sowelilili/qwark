@@ -1323,6 +1323,159 @@ static void death(u32 lua)
 	tick(2);
 }
 
+/*
+ * Revision 1.29 (pending): a load qwark starts is fast-loaded, as the four
+ * original games' PLANET_LOAD is (tod.h, tod_galmap_up): Fast loads forced
+ * on for it and put back once the new level is up, unless the toggle is on.
+ */
+static int fl_patched(void)
+{
+	return fl_words_are(g_fl_words, FL_N) && fl_sites_are(1) && fl_rd8(FL_FLAG) == 1 && rd32(TOD_TRANSITION_MIN) == 0;
+}
+
+static int fl_unpatched(void)
+{
+	return fl_words_are(g_fl_orig, FL_N + 1) && fl_sites_are(0) && fl_rd8(FL_FLAG) == 0 &&
+	       rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME;
+}
+
+static int fl_bit(void)
+{
+	return (int)((features_toggle_state() >> TF_FAST_LOADS) & 1u);
+}
+
+/* The world fade_world makes, with a level up and the loader idle. */
+static void fl_world(u32 level)
+{
+	fade_world();
+	wr32(TOD_CURRENT_LEVEL, level);
+	wr32(TOD_LOAD_JOB, 0);
+	wr8(AS_TIER, 1);
+	wr8(TOD_FRONT_END, 0);
+	metropolis_beaten(1);
+	tick(4);
+}
+
+/* The game takes the request (ProcessPending), the load runs, the new level comes up. */
+static void fl_game_loads(u32 level, u32 lua)
+{
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_CURRENT_LEVEL, level);
+	tick(2);
+	load_begins();
+	tick(6);
+	load_data_in();
+	tick(4);
+}
+
+static void test_tod_load_fast(void)
+{
+	u32 seq, len = 0, i;
+	int on = -1;
+
+	group("ToD: qwark's planet loads are fast-loaded, the toggle on or off (revision 1.29)");
+	fl_seed_game();
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_unpatched() && !fl_bit(), "Fast loads off");
+	fl_world(2);
+	seq = autosplit_latest_seq();
+	check(session_planet_load(3, 0) == ST_OK && rd32(TOD_LOAD_REQUEST) == 3 && fl_patched(),
+	      "PLANET_LOAD: Fast loads forced on for it (the words, the sites, the flag, the 0 s minimum)");
+	check(!fl_bit(), "the toggle's bit stays clear: the force is not the toggle");
+	tick(6);
+	check(fl_patched(), "kept while the request waits");
+	fl_game_loads(3, 0x30040000u);
+	check(fl_patched(), "and through the load, the data in included (the cut comes then)");
+	level_enters(0x30040000u);
+	tick(4);
+	check(fl_unpatched() && !fl_bit(), "the new level up: the game's own words back, the toggle still off");
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 1 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0 &&
+	      as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 0,
+	      "the autosplitter as for any load: one planet split, no reset, no long load");
+
+	/* The toggle on: nothing forced, nothing put back. */
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_patched() && fl_bit(), "Fast loads on");
+	fl_world(3);
+	check(session_planet_load(5, 0) == ST_OK && fl_patched(), "PLANET_LOAD with it on");
+	fl_game_loads(5, 0x30050000u);
+	level_enters(0x30050000u);
+	tick(4);
+	check(fl_patched() && fl_bit(), "the load over: still on, as the toggle has it");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_unpatched(), "and off when the toggle goes off");
+
+	/* A load the game never takes: put back after the wait, as the fade is. */
+	fl_world(5);
+	check(session_planet_load(7, 0) == ST_OK && fl_patched(), "a load the game never takes, forced");
+	tick(TOD_FADE_WAIT_TICKS - 4);
+	check(fl_patched(), "kept for its wait");
+	tick(8);
+	check(fl_unpatched(), "then put back");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+
+	/* A refused load forces nothing. */
+	fl_world(5);
+	wr32(TOD_GAME_STATE, 3);
+	check(session_planet_load(7, 0) == ST_BUSY && fl_unpatched(), "a refused PLANET_LOAD forces nothing");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+
+	/* The toggle turned on during a forced load: the toggle has the say. */
+	fl_world(5);
+	check(session_planet_load(8, 0) == ST_OK && fl_patched(), "forced again");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_patched(), "the toggle on during the load");
+	fl_game_loads(8, 0x30060000u);
+	level_enters(0x30060000u);
+	tick(4);
+	check(fl_patched() && fl_bit(), "the load over: left on");
+	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_NOT_FOUND, "a console reads no flag: qwark's bit says");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_unpatched(), "off");
+	fl_world(8);
+
+	group("ToD: qwark's planet loads under RPCS3: the switch's flag for the load");
+	check(quit(), "the game quits");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+	check(boot_tod(), "ToD boots under RPCS3");
+	tick(6);
+	check(switches_patch(g_fl_patch, sizeof(g_fl_patch), &len) == ST_OK, "the switches' patch");
+	check(quit(), "the game quits");
+	host_boot_as(TOD_TITLE, "tod");
+	fl_poke_patch(g_fl_patch, len);
+	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
+	tick(6);
+	check(switches_state() == 1 && fl_rd8(FL_FLAG) == 0, "and comes back with it in, Fast loads off");
+	fl_world(2);
+	host_write_log_reset();
+	check(session_planet_load(3, 0) == ST_OK && fl_rd8(FL_FLAG) == 1 && rd32(TOD_TRANSITION_MIN) == 0 &&
+	      rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS, "PLANET_LOAD: the flag at 1 for the load, no code written");
+	check(tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 0 && !fl_bit(),
+	      "the toggle still reads off: the force is not the toggle");
+	fl_game_loads(3, 0x30070000u);
+	check(fl_rd8(FL_FLAG) == 1, "kept through the load");
+	level_enters(0x30070000u);
+	tick(4);
+	check(fl_rd8(FL_FLAG) == 0 && rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME, "the level up: the flag back at 0");
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_rd8(FL_FLAG) == 1, "Fast loads on");
+	fl_world(3);
+	check(session_planet_load(5, 0) == ST_OK, "PLANET_LOAD with it on");
+	fl_game_loads(5, 0x30080000u);
+	level_enters(0x30080000u);
+	tick(4);
+	check(fl_rd8(FL_FLAG) == 1 && tod_toggle_read(TF_FAST_LOADS, &on) == ST_OK && on == 1, "left on");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_rd8(FL_FLAG) == 0, "off");
+	wr8(FL_FLAG, 1);   /* a flag this process did not set: the user's setting, as on RaC1 */
+	fl_world(5);
+	check(session_planet_load(7, 0) == ST_OK, "PLANET_LOAD over a flag left at 1");
+	fl_game_loads(7, 0x30090000u);
+	level_enters(0x30090000u);
+	tick(4);
+	check(fl_rd8(FL_FLAG) == 1, "left at 1: it was not this load's");
+	wr8(FL_FLAG, 0);
+	check(quit(), "the game quits");
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+	check(boot_tod(), "and comes back on a console");
+}
+
 /* A death whose whole Level_Exit .. Level_Enter falls between two ticks: only a new lua_State. */
 static void quick_death(u32 lua)
 {
@@ -3524,6 +3677,7 @@ void test_tod_game(void)
 	test_tod_autosplit_quit();
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_load_fade();
+	test_tod_load_fast();
 	test_tod_cutscenes();
 	test_tod_cutscene_cache();
 	test_tod_on_boot();

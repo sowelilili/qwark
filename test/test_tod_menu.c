@@ -764,6 +764,49 @@ static int map_frames(void)
 	return 0;
 }
 
+/*
+ * Revision 1.29 (pending): a pick on qwark's map is qwark's load (tod.h,
+ * tod_galmap_up): Fast loads forced and the short fade armed as the map comes
+ * up, put back at once when it goes without a pick, and after the load
+ * otherwise. The flag byte its pieces read is the console's sign of the patch.
+ */
+#define GM_FL_FLAG 0x108A8560u   /* SW_TOD_FLAG_FAST_LOADS */
+
+static void gm_flag106(int set)
+{
+	const u32 at = TOD_LEVEL_FLAGS + TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED);
+	u8 bit = (u8)(1u << (TOD_LF_FAST_SHIP_FIXED & 7u));
+
+	poke8(at, set ? (u8)(peek8(at) | bit) : (u8)(peek8(at) & ~bit));
+}
+
+static int gm_forced(u32 fade)
+{
+	return peek8(GM_FL_FLAG) == 1 && peek32(TOD_TRANSITION_MIN) == 0 && peek32(TOD_LOAD_FADE_TIME) == fade;
+}
+
+static int gm_game(void)
+{
+	return peek8(GM_FL_FLAG) == 0 && peek32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME &&
+	       peek32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME;
+}
+
+/* The game's load of the pick, the request already taken: the level's tiers out, then in, the level up again. */
+static void gm_load(void)
+{
+	u32 lua = peek32(TOD_LUA_STATE);
+
+	poke32(TOD_LUA_STATE, 0);
+	poke8(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 0);
+	poke32(TOD_LOAD_JOB, TOD_LOAD_JOB_LEVEL);
+	tick(8);
+	poke8(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1);
+	poke32(TOD_LOAD_JOB, 0);
+	tick(4);
+	poke32(TOD_LUA_STATE, lua);
+	tick(8);
+}
+
 static void test_galmap(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
@@ -779,6 +822,13 @@ static void test_galmap(void)
 	check(r >= 0 && strcmp(row_label((u32)r, b), "PLANETS") == 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_LINK,
 	      "the root's Planets row, a link as before");
 
+	poke32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	poke32(TOD_LOAD_FADE_TIME, TOD_LOAD_FADE_GAME);
+	poke8(GM_FL_FLAG, 0);
+	poke8(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1);
+	poke32(TOD_LOAD_JOB, 0);
+	gm_flag106(1);
+	check(!((features_toggle_state() >> TF_FAST_LOADS) & 1u) && gm_game(), "Fast loads off, the game's fade");
 	req = peek32(mb + LUAMB_OFF_REQ);
 	press(MBOX_EV_ACTIVATE, r);
 	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && peek32(mb + LUAMB_OFF_REQ) == req && save_as_before(),
@@ -806,6 +856,8 @@ static void test_galmap(void)
 	host_fake_lua_frame();
 	tick(6);
 	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP && save_for_map(), "the map up (g_gameState 6), the unlocks kept while it is");
+	check(gm_forced(TOD_LOAD_FADE_QUICK) && !((features_toggle_state() >> TF_FAST_LOADS) & 1u),
+	      "and a pick on it qwark's load: Fast loads forced on (the toggle still off), the one-frame fade armed (flag 106 set)");
 	/* Revision 1.29, every planet (docs/tod-menu.md 17): the map's glue to the map's own VM. */
 	check(peek32(mb + LUAMB_OFF_REQ) != req && peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_MAP &&
 	      peek32(mb + LUAMB_OFF_CHUNK_LEN) == d->gmap_len &&
@@ -821,6 +873,7 @@ static void test_galmap(void)
 	/* Back: the save's bytes again, the Trainer again on its root, the cursor on Planets, which opens the map again. */
 	host_fake_map(-1);
 	tick(12);
+	check(gm_game(), "Back, no load: Fast loads and the fade-out the game's again at once");
 	check(peek8(LS(9, TOD_LS_UNLOCKED)) == 2, "a byte the game changed while the map was up stays the game's");
 	poke8(LS(9, TOD_LS_UNLOCKED), g_ls_before[9][0]);
 	check(save_as_before(), "Back: every other byte the save's own again");
@@ -836,21 +889,29 @@ static void test_galmap(void)
 	      "the root, the cursor on the Planets row, which reads PLANETS: one picker, no second row");
 
 	/* A pick (Kerwan, which only the glue lists): the game's own load (the map's exit, LoadLevel), the bytes back, the Trainer stays down. */
+	gm_flag106(0);
 	to_map(r);
 	host_fake_lua_frame();
 	tick(6);
 	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "Planets again: the map again, at once");
+	check(gm_forced(TOD_LOAD_FADE_STORY), "flag 106 clear: the story load's fade armed, a pick may be Kerwan or Cobalia");
 	host_log_clear();
 	check(map_frames() && host_log_seen("lists every planet"), "its glue in again");
 	host_fake_map(0);
 	tick(6);
 	check(save_as_before() && peek32(TOD_LOAD_REQUEST) == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
 	      "a pick of Kerwan: the game's own load under way, the save's bytes back, no Trainer");
+	check(gm_forced(TOD_LOAD_FADE_STORY), "a story load: its fade, Fast loads forced for it");
 	pause_gone();
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
 	tick(30);
+	check(peek32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME && peek8(GM_FL_FLAG) == 1,
+	      "the request taken: the game's fade time back, Fast loads kept for the load");
+	gm_load();
+	check(gm_game() && !((features_toggle_state() >> TF_FAST_LOADS) & 1u), "the level up: Fast loads off again, as the toggle is");
 
-	/* The glue saying "wait" (the map's handler not up yet): sent again until it is in. */
+	/* The glue saying "wait" (the map's handler not up yet): sent again until it is in. Fast loads on this time. */
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && peek8(GM_FL_FLAG) == 1, "Fast loads on");
 	host_fake_map_glue(1);
 	trainer_up();
 	to_map(find_row("Planets"));
@@ -864,13 +925,19 @@ static void test_galmap(void)
 	      !host_log_seen("lists every planet"), "sent again a moment later");
 	host_fake_map_glue(0);
 	check(map_frames() && host_log_seen("lists every planet"), "then in");
+	check(gm_forced(TOD_LOAD_FADE_STORY), "the map up: the story fade armed, Fast loads on as they were");
 	host_fake_map(7);
 	tick(6);
 	check(save_as_before() && peek32(TOD_LOAD_REQUEST) == 7 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
 	      "a pick (Ardolis): the game's own load under way, the save's bytes back, no Trainer");
+	check(gm_forced(TOD_LOAD_FADE_QUICK), "Ardolis is no story load: the one frame");
 	pause_gone();
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
 	tick(30);
+	gm_load();
+	check(peek8(GM_FL_FLAG) == 1 && peek32(TOD_TRANSITION_MIN) == 0 && ((features_toggle_state() >> TF_FAST_LOADS) & 1u) &&
+	      peek32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "the level up: Fast loads left on, the toggle's");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && gm_game(), "Fast loads off again");
 	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
 	      "and nothing more: qwark loads nothing of its own");
 
@@ -890,6 +957,7 @@ static void test_galmap(void)
 	host_fake_map(-1);
 	tick(12);
 	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "Back: the bytes back, the Trainer asked to open");
+	check(gm_game(), "the game's own list's map closed: the force and the fade back too");
 	pause_up();
 	lm_take_request();
 	lm_hstate(1);
@@ -910,7 +978,8 @@ static void test_galmap(void)
 	to_map(find_row("Planets"));
 	host_fake_lua_frame();
 	tick(6);
-	check(peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY && save_for_map(), "a map that does not come: the unlocks in, waiting");
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY && save_for_map() && gm_game(),
+	      "a map that does not come: the unlocks in, waiting, nothing forced or armed");
 	for (i = 0; i < 520 && peek8(LM_BOX + MBOX_OFF_REQUEST) != MBOX_REQ_OPEN; i++) tick(1);
 	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN,
 	      "four seconds on: the bytes back, and the Trainer asked to open again");

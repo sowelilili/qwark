@@ -5360,6 +5360,25 @@ TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
 TOD_FADE_STORY = 0x3DE00000                     # 7/64 s, a story FMV load's (2026-11-02; 5/64 s from 2026-10-31)
 TOD_LF_SHIP_BYTE = 0x10211398 + 10              # LVL_FAST_SHIP_FIXED, level flag 106: byte 10 of g_levelFlags
 TOD_LF_SHIP_BIT = 1 << 2                        # and its bit
+
+
+def tod_fake_load(c, what):
+    """Revision 1.29: the game's load of a request already taken, the level's tiers out and in, the level up
+    again; then whether qwark put back the fast loads it forced for it (the flag, the 5 s, the game's words)."""
+    lua = mem_read_u32(c, TOD_LUA_STATE)
+    mem_write(c, TOD_LUA_STATE, bytes(4))
+    mem_write(c, TOD_LOAD_TIER, b"\x00")
+    mem_write(c, TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL))
+    module_sleep(c, 0.15)
+    forced = mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1
+    mem_write(c, TOD_LOAD_TIER, b"\x01")
+    mem_write(c, TOD_LOAD_JOB, bytes(4))
+    mem_write(c, TOD_LUA_STATE, struct.pack(">I", lua))
+    module_sleep(c, 0.15)
+    check(forced and mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0 and mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000 and
+          mem_read_u32(c, TOD_FASTLOAD_AT) != TOD_FASTLOAD_FIRST,
+          "ToD: " + what + ": Fast loads forced through the load, and off again once the level is up",
+          (forced, mem_read_u8(c, TOD_FASTLOAD_FLAG), hex(mem_read_u32(c, TOD_FASTLOAD_AT))))
 TOD_ARCHIVE_TOC = 0x102042AC + 0x108            # g_archiveGame.toc
 SESSION_FLAG2_NO_MENU = 0x80
 TOD_MAILBOX = 0x008CA000
@@ -5933,6 +5952,9 @@ def smoke_tod(c, sim):
           "ToD: PLANET_LOAD writes the game's pending request", status)
     check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_QUICK,
           "ToD: revision 1.29: with the fade-out a frame long")
+    check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1 and mem_read_u32(c, TOD_FASTLOAD_AT) == TOD_FASTLOAD_FIRST and
+          mem_read_u32(c, TOD_TRANSITION_MIN) == 0,
+          "ToD: revision 1.29: and Fast loads forced on for it, the toggle off, as the four games' PLANET_LOAD")
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
     module_sleep(c, 0.2)
     check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME,
@@ -5950,6 +5972,7 @@ def smoke_tod(c, sim):
         module_sleep(c, 0.2)
     mem_write(c, TOD_LF_SHIP_BYTE, bytes([ship]))
     check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME, "ToD: and the game's fade back after both")
+    tod_fake_load(c, "PLANET_LOAD")
     status, _ = c.call(OP_DIE)
     check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
           status)
@@ -6109,8 +6132,14 @@ def smoke_tod_menu(c, sim):
           "ToD menu: the map up: qwark sends the map's glue to the map's own VM (target MAP), which answers in, 23 rows",
           (mem_read_u32(c, TOD_LUA_MB + 0x0C) - req, mem_read_u8(c, TOD_LUA_MB + 0x26), gout))
     module_sleep(c, 0.2)   # qwark takes the answer (it looks a few times a second)
+    check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1 and mem_read_u32(c, TOD_LOAD_FADE_TIME) in (TOD_FADE_QUICK, TOD_FADE_STORY),
+          "ToD menu: revision 1.29: the map up: Fast loads forced and the short fade armed for a pick",
+          (mem_read_u8(c, TOD_FASTLOAD_FLAG), hex(mem_read_u32(c, TOD_LOAD_FADE_TIME))))
     sim.send("fakemap back")
     wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
+    check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0 and mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME and
+          mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000,
+          "ToD menu: Back with no pick: Fast loads off and the game's fade again at once")
     now = triples()
     page = menu_page(c, box, size)
     check(now == saved and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 1 and page is not None and
@@ -6171,7 +6200,13 @@ def smoke_tod_menu(c, sim):
     check(now == saved and mem_read_u32(c, TOD_LOAD_REQUEST) == 7 and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 0,
           "ToD menu: a pick (Ardolis) is the game's own load; the save's bytes again; no Trainer asked for",
           (now == saved, hex(mem_read_u32(c, TOD_LOAD_REQUEST)), mem_read_u8(c, box + MBOX_OFF_REQUEST)))
+    check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1 and mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_QUICK,
+          "ToD menu: revision 1.29: the pick fast-loaded, its fade-out a frame (Ardolis is no story load)",
+          (mem_read_u8(c, TOD_FASTLOAD_FLAG), hex(mem_read_u32(c, TOD_LOAD_FADE_TIME))))
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
+    module_sleep(c, 0.15)
+    check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME, "ToD menu: the request taken: the game's fade back")
+    tod_fake_load(c, "a map pick")
     for level in range(19):
         mem_write(c, ls(level, 0x400), before[level])
 
