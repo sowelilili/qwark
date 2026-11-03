@@ -7122,6 +7122,8 @@ static void test_manips(void)
 #define R3_FL_UNLOAD      0x00278A00u   /* Transition_UnloadSounds */
 #define R3_FL_FADE        0x00123988u   /* the screen fade, frames in r3 */
 #define R3_FL_BEGIN       0x0011AD44u   /* the draw site's own call */
+#define R3_FL_USLEEP      141u          /* sys_timer_usleep: the switch's standing-still sleep */
+#define R3_FL_STILL_USEC  16667u        /* a frame at 60 Hz */
 
 static u32 r3_peek32(u32 addr)
 {
@@ -7208,7 +7210,8 @@ static u32 r3_branch_target(u32 at, u32 word)
 /*
  * Just enough of a PowerPC to run UYA's fast-load caves, the console's and the
  * switch's: lis, li, addi and ori; lhz, lwz, lbz and stw against the handful of
- * game words they touch; cmpwi and cmplwi into cr0, bc on cr0, b, bl and mtlr.
+ * game words they touch; cmpwi and cmplwi into cr0, bc on cr0, b, bl and mtlr;
+ * and sc, noted with its r11 and r3 (revision 1.29, the switch's sleep).
  * A branch out of the cave into one of the three game routines they call is
  * taken as a call: noted with its r3 and link register, and returned from at
  * once. Any other way out ends the run, and r3c_run answers where.
@@ -7227,6 +7230,10 @@ struct r3c_cpu {
 	/* The calls made on the way, in order. */
 	u32 call[4], call_r3[4], call_lr[4];
 	int ncalls;
+
+	/* Revision 1.29: the system calls (sc) made on the way, r11 and r3. */
+	u32 sys_r11[2], sys_r3[2];
+	int nsys;
 };
 
 #define R3C_RENDERER     0x30000000u   /* the renderer object, as the cave finds it */
@@ -7346,6 +7353,13 @@ static int r3c_step(struct r3c_cpu *c, u32 w)
 		if (w & 1u) c->lr = c->pc + 4u;
 		c->pc = r3_branch_target(c->pc, w);
 		return 1;
+	case 17:   /* sc */
+		if (w != 0x44000002u || c->nsys == 2) return 0;
+		c->sys_r11[c->nsys] = (u32)c->r[11];
+		c->sys_r3[c->nsys] = (u32)c->r[3];
+		c->nsys++;
+		c->r[3] = 0;           /* CELL_OK */
+		break;
 	case 31:   /* mtspr LR, rS: mtlr */
 		if (((w >> 1) & 0x3FFu) != 467u || ((w >> 11) & 0x3FFu) != (8u << 5)) return 0;
 		c->lr = (u32)c->r[rd];
@@ -7442,6 +7456,12 @@ static void r3c_paths(const char *what, int console)
 	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.ncalls == 0 && c.r[27] == 0 &&
 	          !c.fade_written && !c.held_written,
 	          "with none, below stage 2 the pass skips the transition: it stands still");
+	if (console)
+		R3C_CHECK(c.nsys == 0, "and goes straight on, the console's words as they were");
+	else
+		R3C_CHECK(c.nsys == 1 && c.sys_r11[0] == R3_FL_USLEEP && c.sys_r3[0] == R3_FL_STILL_USEC,
+		          "revision 1.29: after sleeping a frame's time, sys_timer_usleep(16667), where the "
+		          "game's own pass would wait for the vblank in its flip");
 
 	r3c_reset(&c, 5, 9, 0, 2, 1);
 	R3C_CHECK(r3c_run(&c, R3_FL_SITE) == R3_FL_RESUME && c.r[27] == 1 &&
@@ -7478,6 +7498,26 @@ static void r3c_paths(const char *what, int console)
 		if (r3c_run(&c, R3_FL_DRAW) != R3_FL_SKIP || c.ncalls != 0) break;
 	}
 	R3C_CHECK(id == 9, "every transition but multiplayer goes past its frame: nothing drawn, no flip");
+
+	/* Revision 1.29: only a standing-still pass sleeps, and only the switch's. */
+	{
+		static const u32 st[][5] = {
+			/* id, frame, owed, stage, hold */
+			{ 7, 3, 0, 1, 1 }, { 5, 0, 0, 0, 1 }, { 5, 3, 17, 0, 1 }, { 5, 9, 0, 2, 1 },
+			{ 0, 9, 0, 3, 0 }, { 8, 9, 0, 2, 1 }, { 8, 0, 18, 0, 1 }
+		};
+		u32 k;
+		int quiet = 1;
+
+		for (k = 0; k < sizeof(st) / sizeof(st[0]); k++) {
+			r3c_reset(&c, (u16)st[k][0], (u16)st[k][1], st[k][2], st[k][3], st[k][4]);
+			if (r3c_run(&c, R3_FL_SITE) == 0 || c.nsys != 0) quiet = 0;
+			r3c_reset(&c, (u16)st[k][0], (u16)st[k][1], st[k][2], st[k][3], st[k][4]);
+			if (r3c_run(&c, R3_FL_DRAW) == 0 || c.nsys != 0) quiet = 0;
+		}
+		R3C_CHECK(quiet, "no other pass sleeps: multiplayer, the first pass's fade, a scene owed, "
+		          "the end, and the draw site never");
+	}
 
 #undef R3C_CHECK
 }
@@ -13181,24 +13221,27 @@ static const struct patch_word g_swt_rac2_toggles[] = {
  * model (src/games/rac3.h, RAC3_FASTLOAD_SITE): two trampolines, one for the
  * transition's work in a pass of its loop and one that takes the pass past its
  * frame, at 0x980F80 and 0x981020, clear of 0x980F20 where the first was.
+ * Revision 1.29: the first sleeps a frame's time in a pass that stands still,
+ * four words more, and the second moved on to 0x981030.
  */
 static const struct swt_cave g_swt_rac3_caves[] = {
 	{ 0x00980F00u, 6, { 0x3CE000DAu, 0x88E7FF10u, 0x2C070000u, 0x40820008u, 0x7C85312Eu,
 	                    0x4B801B78u } },
-	{ 0x00980F80u, 38, { 0x3CA000DAu, 0x88C5FF11u, 0x2C060000u, 0x41820084u, 0x3CA000DAu,
-	                     0xA0C590DEu, 0x28060007u, 0x41820074u, 0xA06590D2u, 0x2C030000u,
-	                     0x4182004Cu, 0x3C6000F4u, 0x80634E90u, 0x2C030000u, 0x40820058u,
-	                     0x80659094u, 0x2C030002u, 0x41800048u, 0x3B600001u, 0x3C600135u,
-	                     0x3C003F80u, 0x9003EBE0u, 0x28060006u, 0x41810030u, 0x80659098u,
-	                     0x2C030000u, 0x41820024u, 0x4B8F7A15u, 0x4800001Cu, 0x3CA000CBu,
+	{ 0x00980F80u, 42, { 0x3CA000DAu, 0x88C5FF11u, 0x2C060000u, 0x41820094u, 0x3CA000DAu,
+	                     0xA0C590DEu, 0x28060007u, 0x41820084u, 0xA06590D2u, 0x2C030000u,
+	                     0x4182004Cu, 0x3C6000F4u, 0x80634E90u, 0x2C030000u, 0x40820068u,
+	                     0x80659094u, 0x2C030002u, 0x4180004Cu, 0x3B600001u, 0x3C600135u,
+	                     0x3C003F80u, 0x9003EBE0u, 0x28060006u, 0x41810040u, 0x80659098u,
+	                     0x2C030000u, 0x41820034u, 0x4B8F7A15u, 0x4800002Cu, 0x3CA000CBu,
 	                     0x80A509BCu, 0x38000000u, 0x90051720u, 0x38600006u, 0x4B7A2981u,
-	                     0x4B8FA52Cu, 0x63430000u, 0x4B8FA48Cu } },
-	{ 0x00981020u, 11, { 0x3C6000DAu, 0x8863FF11u, 0x2C030000u, 0x41820014u, 0x3C6000DAu,
-	                     0xA06390DEu, 0x28030007u, 0x4082000Cu, 0x4B799D05u, 0x4B8FA510u,
-	                     0x4B8FA528u } }
+	                     0x48000010u, 0x3960008Du, 0x3860411Bu, 0x44000002u, 0x4B8FA51Cu,
+	                     0x63430000u, 0x4B8FA47Cu } },
+	{ 0x00981030u, 11, { 0x3C6000DAu, 0x8863FF11u, 0x2C030000u, 0x41820014u, 0x3C6000DAu,
+	                     0xA06390DEu, 0x28030007u, 0x4082000Cu, 0x4B799CF5u, 0x4B8FA500u,
+	                     0x4B8FA518u } }
 };
 static const struct patch_word g_swt_rac3_sites[] = {
-	{ 0x00182A88u, 0x487FE478u }, { 0x0027B49Cu, 0x48705AE4u }, { 0x0027B550u, 0x48705AD0u }
+	{ 0x00182A88u, 0x487FE478u }, { 0x0027B49Cu, 0x48705AE4u }, { 0x0027B550u, 0x48705AE0u }
 };
 static const u32 g_swt_rac3_flags[] = { 0x00D9FF10u, 0x00D9FF11u };
 static const struct patch_word g_swt_rac3_toggles[] = {
@@ -14964,6 +15007,32 @@ static const struct patch_word g_swt_rac3_b53a_sites[] = {
 };
 
 /*
+ * Revision 1.29: the fast-load switches as builds 53 to 57 wrote them, before a
+ * standing-still pass slept (sw_rac3.s): the spinning trampoline at 0x980F80 and
+ * the draw site's at 0x981020. The patch the user's RPCS3 carried, stamp
+ * 0x0FCF688C.
+ */
+#define SWT_RAC3_B53_STAMP 0x0FCF688Cu
+static const struct swt_cave g_swt_rac3_b53_caves[] = {
+	{ 0x00980F00u, 6, { 0x3CE000DAu, 0x88E7FF10u, 0x2C070000u, 0x40820008u, 0x7C85312Eu,
+	                    0x4B801B78u } },
+	{ 0x00980F80u, 38, { 0x3CA000DAu, 0x88C5FF11u, 0x2C060000u, 0x41820084u, 0x3CA000DAu,
+	                     0xA0C590DEu, 0x28060007u, 0x41820074u, 0xA06590D2u, 0x2C030000u,
+	                     0x4182004Cu, 0x3C6000F4u, 0x80634E90u, 0x2C030000u, 0x40820058u,
+	                     0x80659094u, 0x2C030002u, 0x41800048u, 0x3B600001u, 0x3C600135u,
+	                     0x3C003F80u, 0x9003EBE0u, 0x28060006u, 0x41810030u, 0x80659098u,
+	                     0x2C030000u, 0x41820024u, 0x4B8F7A15u, 0x4800001Cu, 0x3CA000CBu,
+	                     0x80A509BCu, 0x38000000u, 0x90051720u, 0x38600006u, 0x4B7A2981u,
+	                     0x4B8FA52Cu, 0x63430000u, 0x4B8FA48Cu } },
+	{ 0x00981020u, 11, { 0x3C6000DAu, 0x8863FF11u, 0x2C030000u, 0x41820014u, 0x3C6000DAu,
+	                     0xA06390DEu, 0x28030007u, 0x4082000Cu, 0x4B799D05u, 0x4B8FA510u,
+	                     0x4B8FA528u } }
+};
+static const struct patch_word g_swt_rac3_b53_sites[] = {
+	{ 0x00182A88u, 0x487FE478u }, { 0x0027B49Cu, 0x48705AE4u }, { 0x0027B550u, 0x48705AD0u }
+};
+
+/*
  * RaC3's fast loads under RPCS3. Until they became a code patch they were two
  * data words and needed nothing installed; now they are a code switch, two
  * trampolines on one flag, and a patch from before has Freeze ammo's alone, or
@@ -14989,7 +15058,7 @@ static void test_switches_rac3_fastloads(void)
 	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[1].addr,
 	             "the pass site branches to the trampoline at 0x980F80");
 	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[2].addr,
-	             "the draw site to the one at 0x981020");
+	             "the draw site to the one at 0x981030 (revision 1.29; 0x981020 before)");
 	check(d->caves[1].addr >= 0x00980F7Cu &&
 	      d->caves[2].addr + d->caves[2].len <= 0x00981064u &&
 	      (d->caves[1].addr >= R3_FL_CAVE_END || d->caves[2].addr + d->caves[2].len <= R3_FL_CAVE),
@@ -15007,8 +15076,12 @@ static void test_switches_rac3_fastloads(void)
 		r3c_reset(&c, 5, 0, 0, 2, 1);
 		c.flag = 0;
 		check(r3c_run(&c, R3_FL_SITE) == R3_FL_UPDATE && c.r[3] == c.r[26] && c.ncalls == 0 &&
-		      !c.fade_written && !c.held_written && c.r[27] == 0,
+		      !c.fade_written && !c.held_written && c.r[27] == 0 && c.nsys == 0,
 		      "switch, flag down: the pass site runs the game's own instruction, first pass or not");
+		r3c_reset(&c, 5, 3, 0, 1, 1);
+		c.flag = 0;
+		check(r3c_run(&c, R3_FL_SITE) == R3_FL_UPDATE && c.nsys == 0,
+		      "and sleeps in no pass: with fast loads off the game's flip paces the loop");
 		r3c_reset(&c, 5, 3, 0, 2, 1);
 		c.flag = 0;
 		check(r3c_run(&c, R3_FL_DRAW) == R3_FL_DRAW_RET && c.ncalls == 1 && c.call[0] == R3_FL_BEGIN,
@@ -15027,7 +15100,8 @@ static void test_switches_rac3_fastloads(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00387"), "RaC3 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC3");
-	check_eq_u64(be16_get(g_sw_patch), 58, "fifty-eight rows: fifty-five trampoline words, three sites");
+	check_eq_u64(be16_get(g_sw_patch), 62, "sixty-two rows: fifty-nine trampoline words, three sites "
+	             "(revision 1.29: four more, the standing-still sleep)");
 
 	oldlen = swt_reply_of(g_swt_rac3_b53a_caves, SWT_N(g_swt_rac3_b53a_caves),
 	                      g_swt_rac3_b53a_sites, SWT_N(g_swt_rac3_b53a_sites),
@@ -15041,6 +15115,25 @@ static void test_switches_rac3_fastloads(void)
 	      "and is RaC3: its fingerprint site holds the same branch");
 	check_eq_u64(switches_state(), 0, "the look does not find this build's switches");
 	check(features_set(F3_FAST_LOADS, 1) == ST_UNSUPPORTED, "so Fast loads is refused until the new one is in");
+
+	/* Revision 1.29: the spinning switches of builds 53 to 57, the user's patch. */
+	oldlen = swt_reply_of(g_swt_rac3_b53_caves, SWT_N(g_swt_rac3_b53_caves),
+	                      g_swt_rac3_b53_sites, SWT_N(g_swt_rac3_b53_sites),
+	                      g_swt_rac3_flags, SWT_N(g_swt_rac3_flags), g_sw_patch2);
+	check_eq_u64(be32_get(g_sw_patch2 + 4), SWT_RAC3_B53_STAMP,
+	             "revision 1.29: builds 53 to 57's fast-load patch rebuilt carries the stamp it had");
+	check(be32_get(g_sw_patch + 4) != SWT_RAC3_B53_STAMP, "and this build's is another");
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched("NPEA00387", g_sw_patch2, oldlen, SF_NO_FLIP),
+	      "RaC3 boots with that patch applied at load, the one whose loads spun");
+	check(session_game() != NULL && session_game()->game_id == GAME_RAC3,
+	      "and is RaC3: the fingerprint site's branch is the same");
+	check_eq_u64(switches_state(), 0, "the look does not take it for this build's switches");
+	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
+	      SESSION_FLAG_NO_CODE_PATCHES,
+	      "bit2 set and bit4 clear: the client offers to write the new patch");
+	check(features_set(F3_FAST_LOADS, 1) == ST_UNSUPPORTED,
+	      "and Fast loads is refused until it is in, so the old trampoline is never switched on");
 
 	oldlen = swt_reply_of(g_swt_rac3_b50_caves, SWT_N(g_swt_rac3_b50_caves),
 	                      g_swt_rac3_b50_sites, SWT_N(g_swt_rac3_b50_sites),
@@ -15075,7 +15168,7 @@ static void test_switches_rac3_fastloads(void)
 	check_eq_u64(switches_state(), 1, "the look finds both switches");
 	check((swt_info_flags() & SESSION_FLAG_CODE_SWITCHES) != 0, "bit4 is set");
 	check_eq_u64(swt_peek32(R3_FL_SITE), 0x48705AE4u, "the pass site holds the branch to 0x980F80");
-	check_eq_u64(swt_peek32(R3_FL_DRAW), 0x48705AD0u, "and the draw site the one to 0x981020");
+	check_eq_u64(swt_peek32(R3_FL_DRAW), 0x48705AE0u, "and the draw site the one to 0x981030");
 	host_poke(R3_LOADPLANET, (const u8 *)"\x00\x00\x00\x00", 4);
 	host_poke(SF_R3_MODE, (const u8 *)"\x00\x00\x00\x00", 4);
 	pump(4);

@@ -7225,17 +7225,25 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
           (status, hex(stamp) if stamp is not None else None))
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    check(len(rows) == 58 and rows[:6] == RAC3_SW_OLD_ROWS[:6],
-          "rpcs3 rac3 switches: 58 rows, the ammo trampoline first and unchanged",
+    check(len(rows) == 62 and rows[:6] == RAC3_SW_OLD_ROWS[:6],
+          "rpcs3 rac3 switches: 62 rows, the ammo trampoline first and unchanged",
           len(rows))
-    check(all(0x00980F80 <= a < 0x00981018 for a, _ in rows[6:44]) and
-          all(0x00981020 <= a < 0x0098104C for a, _ in rows[44:55]),
-          "rpcs3 rac3 switches: the fast-load trampolines' 38 and 11 words at 0x980F80 and 0x981020",
-          [hex(a) for a, _ in rows[6:55]])
-    check(rows[55:] == [(0x00182A88, 0x487FE478), (0x0027B49C, 0x48705AE4),
-                        (0x0027B550, 0x48705AD0)],
+    check(all(0x00980F80 <= a < 0x00981028 for a, _ in rows[6:48]) and
+          all(0x00981030 <= a < 0x0098105C for a, _ in rows[48:59]),
+          "rpcs3 rac3 switches: the fast-load trampolines' 42 and 11 words at 0x980F80 and 0x981030",
+          [hex(a) for a, _ in rows[6:59]])
+    # Revision 1.29: a pass that stands still sleeps a frame's time, the game's own
+    # inline sys_timer_usleep, and goes on to 0x27B538; the loop no longer spins
+    # through the level's read (sw_rac3.s).
+    still = [v for a, v in rows[6:48] if 0x00981010 <= a < 0x00981020]
+    check(still == [0x3960008D, 0x3860411B, 0x44000002, 0x4B8FA51C],
+          "rpcs3 rac3 switches: a standing-still pass sleeps 1/60 s (li r11, 141; li r3, 16667; sc) "
+          "before going on at 0x27B538",
+          [hex(v) for v in still])
+    check(rows[59:] == [(0x00182A88, 0x487FE478), (0x0027B49C, 0x48705AE4),
+                        (0x0027B550, 0x48705AE0)],
           "rpcs3 rac3 switches: and the three sites, the fingerprint's branch as it was",
-          [(hex(a), hex(v)) for a, v in rows[55:]])
+          [(hex(a), hex(v)) for a, v in rows[59:]])
     check(sorted(a for a, _ in (single or [])) == [0x00D9FF10, RAC3_SW_FAST_FLAG],
           "rpcs3 rac3 switches: two flag bytes, 0xD9FF10 and 0xD9FF11",
           [hex(a) for a, _ in (single or [])])

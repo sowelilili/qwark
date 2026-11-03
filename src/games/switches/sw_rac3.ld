@@ -30,11 +30,16 @@ rac3_transition_unload_sounds = 0x00278A00;
  * that one's patch beside this one keeps a first trampoline its site
  * (0x27B428) can run, rather than branching into the middle of these.
  */
+/*
+ * Revision 1.29: the first trampoline grew by four words (a standing-still
+ * pass's sleep, sw_rac3.s) to 0x980F80..0x981028, so the draw site's moved on
+ * from 0x981020 to 0x981030 and ends at 0x98105C, short of 0x981064.
+ */
 SECTIONS
 {
 	.cave.freeze_ammo      0x00980F00 : { *(.cave.freeze_ammo) }
 	.cave.fast_loads       0x00980F80 : { *(.cave.fast_loads) }
-	.cave.fast_loads_draw  0x00981020 : { *(.cave.fast_loads_draw) }
+	.cave.fast_loads_draw  0x00981030 : { *(.cave.fast_loads_draw) }
 
 	.site.freeze_ammo      0x00182A88 : { *(.site.freeze_ammo) }
 	.site.fast_loads       0x0027B49C : { *(.site.fast_loads) }

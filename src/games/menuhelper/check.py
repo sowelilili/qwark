@@ -2564,6 +2564,140 @@ def check_rac3(ok, elf, roots):
     print("        (%d words shared with the prototypes by design)" % len(accepted))
 
 
+def check_rac3_fastload(ok, elf):
+    """
+    Revision 1.29: UYA's Fast loads, the console's cave (rac3.c,
+    rac3_fastload_words) and the code switch (switches_bins.c, sw_rac3.s),
+    against NPEA00387.ELF. Both sites hold the game's words where rac3.h says,
+    every way out of either cave lands on the same game addresses, and the
+    switch's standing-still pass sleeps a frame's time with the game's own
+    inline sys_timer_usleep before going on, where the console's goes straight
+    on: under RPCS3 a loop that spun through the level's read starved the thread
+    reading it (LoadAssetAsync, 50 us sleeps between 128 KB chunks), and the
+    load sat on black for many seconds.
+    """
+    print("\nNPEA00387 Fast loads (the transition loop's two sites)")
+
+    # The loop, 0x27B360, and the two sites in its pass.
+    ok(elf.word(0x0027B49C) == 0x63430000 and elf.word(0x0027B4A0) == 0x80A40000 and
+       elf.word(0x0027B48C) == 0x80848D00,
+       "0x27B49C is ori r3, r26, 0 before the update's call through *0xC48D00 (lwz r5, 0(r4) at 0x27B4A0)")
+    ok(elf.word(0x0027B550) == 0x4BE9F7F5 and branch_target(0x0027B550, elf.word(0x0027B550)) == 0x0011AD44,
+       "0x27B550 is bl 0x11AD44, the head of the pass's frame")
+    ok(elf.word(0x0027B538) == 0x3C6000EF and branch_target(0x0027B514, elf.word(0x0027B514)) == 0x0027B538,
+       "0x27B538 is the pass after the transition's two routines (the second routine's skip lands there)")
+    ok(branch_target(0x0027B568, elf.word(0x0027B568)) == 0x0011B4EC and
+       branch_target(0x0027B570, elf.word(0x0027B570)) == 0x001E0030,
+       "0x27B568 ends the frame and flips (0x11B4EC, where a pass waits); 0x27B570 is the pass after it")
+    ok(branch_target(0x0027B5B8, elf.word(0x0027B5B8)) == 0x001D27B8 and elf.word(0x0027B5A4) == 0x80844E90,
+       "and the pass steps the loader (0x1D27B8) at 0x27B5B8 unless a scene is owed (0xF44E90)")
+
+    # What a standing-still pass waits for: the loader's stage 0 starts a thread that reads the level.
+    calls = [a for a, w in elf.words(elf.text) if 0x001D27B8 <= a < 0x001D2A80 and
+             w >> 26 == 18 and w & 1 and branch_target(a, w) == 0x0099AC78]
+    ok(len(calls) == 1,
+       "the loader's stage 0 starts the level's read, 0x99AC78 (called at 0x%08X)" % (calls[0] if calls else 0))
+    ok(elf.word(0x00BFA260) == 0x0099AAA8 and elf.word(0x00BD8988) == 0x001D2358,
+       "on a thread of its own, LoadAssetAsync (0x99AAA8, descriptor 0xBFA260), whose callback "
+       "0x1D2358 (descriptor 0xBD8988) takes the loader to stage 1")
+    prio = [a for a in range(0x0099AC78, 0x0099AD40, 4) if elf.word(a) == 0x38C003E8]
+    ok(len(prio) == 1, "at priority 1000 (li r6, 1000 in 0x99AC78); the main thread's is 1001")
+    ok(elf.word(0x0099A6C0) == 0x3960008D and elf.word(0x0099A6C4) == 0x38600032 and
+       elf.word(0x0099A6C8) == 0x44000002,
+       "and it sleeps 50 us after each 128 KB chunk it reads (li r11, 141; li r3, 50; sc at 0x99A6C0)")
+
+    # The two caves.
+    rac3 = open(os.path.join(QWARK, "src", "games", "rac3.c"), encoding="utf-8").read()
+    m = re.search(r"rac3_fastload_words\[\] = \{(.*?)\};", rac3, re.S)
+    rows = re.findall(r"\{ RAC3_FASTLOAD_(CAVE|DRAW_SITE|SITE)\s*(?:\+ (0x[0-9A-Fa-f]+))?,\s*(0x[0-9A-Fa-f]+)u \}",
+                      m.group(1)) if m else []
+    hdr = dict((k, int(v, 0)) for k, v in
+               re.findall(r"^#define\s+(RAC3_\w+)\s+(0x[0-9A-Fa-f]+|\d+)u?\b",
+                          open(os.path.join(QWARK, "src", "games", "rac3.h"), encoding="utf-8").read(), re.M))
+    base = hdr.get("RAC3_FASTLOAD_CAVE")
+    con = {}
+    for kind, off, w in rows:
+        a = base + int(off or "0", 16) if kind == "CAVE" else hdr.get("RAC3_FASTLOAD_" + kind)
+        con[a] = int(w, 16)
+    ok(base == 0x009807F0 and len(con) == 50 and con.get(0x0027B49C) == 0x48705354 and
+       con.get(0x0027B550) == 0x4870533C,
+       "rac3.c's console patch: 48 cave words at 0x9807F0 and the two site words, as they were")
+
+    bins = open(os.path.join(QWARK, "src", "games", "switches_bins.c"), encoding="utf-8").read()
+    sw = {}
+    caves = {}
+    for name in ("fast_loads", "fast_loads_draw"):
+        m = re.search(r"/\* rac3 \.cave\.%s at 0x([0-9A-Fa-f]+), \d+ bytes \*/\s*static const u8 \w+\[\] = \{(.*?)\};" %
+                      name, bins, re.S)
+        if not m:
+            continue
+        at = int(m.group(1), 16)
+        b = bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(2)))
+        caves[name] = (at, len(b))
+        for k in range(0, len(b) - 3, 4):
+            sw[at + k] = struct.unpack(">I", b[k:k + 4])[0]
+    m = re.search(r"sw_rac3_sites\[\] = \{(.*?)\};", bins, re.S)
+    for a, w in re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1) if m else ""):
+        sw[int(a, 16)] = int(w, 16)
+    ok(caves.get("fast_loads") == (0x00980F80, 168) and caves.get("fast_loads_draw") == (0x00981030, 44),
+       "revision 1.29: the switch's trampolines are 42 words at 0x980F80 and 11 at 0x981030")
+    if len(caves) != 2 or base is None or 0x0027B49C not in sw or 0x0027B550 not in sw:
+        return
+
+    def outs(words, lo, hi):
+        """Every way out of [lo, hi) in `words`: branch targets, and the lis/addi pairs the
+        console's cave puts in the link register for a call to come back to."""
+        got = set(t for a, w in words.items() if lo <= a < hi
+                  for t in [branch_target(a, w)] if t is not None and not lo <= t < hi)
+        for a in range(lo, hi, 4):
+            w, n = words.get(a, 0), words.get(a + 4, 0)
+            if w >> 26 == 15 and n >> 26 == 14 and (n >> 16) & 31 == (w >> 21) & 31 == (n >> 21) & 31:
+                v = ((w & 0xFFFF) << 16) + ((n & 0xFFFF) - 0x10000 if n & 0x8000 else n & 0xFFFF)
+                got.add(v & 0xFFFFFFFF)
+        return got
+
+    game = {0x0027B4A0, 0x0027B538, 0x0027B554, 0x0027B570, 0x00278A00, 0x00123988, 0x0011AD44}
+    c_out = outs(con, base, base + 0xC0)
+    s_out = outs(sw, 0x00980F80, 0x0098105C)
+    ok(c_out == game and s_out == game,
+       "every way out of either lands on the game's 0x27B4A0, 0x27B538, 0x27B554, 0x27B570, "
+       "0x278A00, 0x123988 or 0x11AD44, and on nothing else")
+    ok(branch_target(0x0027B49C, sw[0x0027B49C]) == 0x00980F80 and
+       branch_target(0x0027B550, sw[0x0027B550]) == 0x00981030 and (sw[0x0027B49C] | sw[0x0027B550]) & 3 == 0,
+       "the switch's two site words are plain b to its trampolines")
+
+    def still(words, lo, hi):
+        """What a standing-still pass runs after the stage test: from the blt's target to the way out."""
+        for a in range(lo, hi, 4):
+            if words.get(a) == 0x2C030002 and words.get(a + 4, 0) >> 16 == 0x4180:
+                t, run = branch_target(a + 4, words[a + 4]), []
+                while t in words and len(run) < 8:
+                    run.append(words[t])
+                    if words[t] >> 26 == 18:
+                        return run, branch_target(t, words[t])
+                    t += 4
+        return None, None
+
+    run, to = still(con, base, base + 0xC0)
+    ok(run == [0x4B8FACB8] and to == 0x0027B538,
+       "the console's standing-still pass goes straight on to 0x27B538: its words are unchanged")
+    run, to = still(sw, 0x00980F80, 0x00981028)
+    ok(run == [0x3960008D, 0x3860411B, 0x44000002, 0x4B8FA51C] and to == 0x0027B538,
+       "revision 1.29: the switch's sleeps first - li r11, 141; li r3, 16667; sc, the game's own "
+       "sys_timer_usleep, a frame's time - then goes on to 0x27B538")
+    scs = [a for a, w in sw.items() if w == 0x44000002]
+    ok(len(scs) == 1 and not [a for a, w in con.items() if w == 0x44000002],
+       "and that is the only system call in either cave")
+
+    # Where they live, and their flag.
+    branches, named, pairs = refs_into(elf, 0x00980F00, 0x00981064)
+    ok(not [a for a, _ in branches if not 0x00980AC0 <= a < 0x00981064] and not named and not pairs,
+       "nothing outside the savefile helper's dead function reaches 0x980F00..0x981064")
+    branches, named, pairs = refs_into(elf, 0x00D9FF00, 0x00D9FF50)
+    ok(not branches and not named and not pairs,
+       "and nothing in the executable names the flag bytes' 0xD9FF00..0xD9FF50")
+
+
 # ------------------------------------------------------------- Going Commando
 
 RAC2_TOC = 0x0131D0F0
@@ -4288,6 +4422,7 @@ def main():
     check_rac4(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots, bonus)
     check_rac4_hud(ok, Elf(os.path.join(eboots, "NPEA00423.elf")), roots)
     check_rac3(ok, Elf(os.path.join(eboots, "NPEA00387.elf")), roots)
+    check_rac3_fastload(ok, Elf(os.path.join(eboots, "NPEA00387.elf")))
     check_rac2(ok, Elf(os.path.join(eboots, "NPEA00386.elf")), roots)
     check_rac1(ok, Elf(os.path.join(eboots, "NPEA00385.elf")), roots)
     tod_elf = os.path.join(eboots, "NPEA00452.elf")

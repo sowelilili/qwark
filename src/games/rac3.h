@@ -258,7 +258,10 @@
  *   - otherwise, while the loader is below stage 2, a pass skips the
  *     transition's two routines and goes on at RAC3_FASTLOAD_RESUME: no clip
  *     moves and none starts a sound, while the pads, the loader and the rest
- *     of the pass run as they do;
+ *     of the pass run as they do. Under RPCS3 (the code switch, sw_rac3.s) the
+ *     pass sleeps a frame's time first, revision 1.29: the level is read by a
+ *     thread of its own (LoadAssetAsync, 0x99AAA8, started at stage 0), and a
+ *     loop that spun through the read starved it there;
  *   - once the loader has read the level the transition is over: the fade word
  *     at black, as a clip's end leaves it; Transition_UnloadSounds, when the
  *     transition is one that loads banks of its own (0 to 6) and still holds

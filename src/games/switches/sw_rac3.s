@@ -38,6 +38,11 @@
 	.set    RAC3_RENDERER,         0x00CB09BC  # the renderer object
 	.set    RAC3_RENDERER_HELD,    0x1720      # in it: flips that will not show
 
+# A standing-still pass's sleep (below, fast loads): lv2's sys_timer_usleep, and
+# a frame at 60 Hz, the time the game's own pass waits for in its flip.
+	.set    SYS_TIMER_USLEEP,      141
+	.set    RAC3_STILL_USEC,       16667
+
 # ----------------------------------------------------------------- freeze ammo
 #
 # 0x182A88: stwx r4, r5, r6, the store of the decremented ammo count. Patched:
@@ -74,7 +79,9 @@ freeze_ammo_ret:
 #     clip's end plays the scene, which draws itself;
 #   - otherwise, below loader stage 2, the pass goes on without the
 #     transition's two routines (0x27B538): the transition stands still, starts
-#     no clip and no sound, while the pads and the loader run;
+#     no clip and no sound, while the pads and the loader run. It sleeps a
+#     frame's time first (sys_timer_usleep, 1/60 s), where the game's own pass
+#     would have waited for the vblank in its flip (below);
 #   - at stage 2 the transition is over: the fade at black, its sound banks
 #     unloaded as the game does when its closing clip starts (Transition_
 #     UnloadSounds, 0x278A00) if it is one with banks of its own (0 to 6) and
@@ -82,6 +89,24 @@ freeze_ammo_ret:
 #     black.
 # r3, r5, r6 and r0 are free at the site; r4, the update's descriptor, is only
 # needed on the way to the update, which every path that skips it leaves alone.
+#
+# Why the sleep (revision 1.29). With the frame gone a standing-still pass
+# blocks nowhere, and the level is read meanwhile by another thread: stage 0
+# starts LoadAssetAsync (0x99AC78, priority 1000; the main thread is 1001),
+# which reads engine.ps3 and vram.ps3 a 128 KB chunk at a time through FIOS
+# with a 50 us sys_timer_usleep after each (0x99A6C0), and its end (0x1D2358)
+# is what takes the loader to stage 1. Without a sleep here the main thread
+# spins through the whole read, and under RPCS3, which runs two PPU threads
+# at a time, that read crawled: 10 to 17 s on the user's machine where the
+# same trips read in 3 to 5 s with fast loads off, with the emulator's own
+# 10-second monitors running seconds late and the game's sleeps waking at a
+# fifth of their usual rate, and black throughout: the "black screen that
+# never loads". On a console lv2 should hand the CPU to the reader and FIOS
+# (priorities 1000 and 99) the moment they wake, so the console's words keep
+# their spin and have no sleep. The sleep is the same inline system
+# call the game makes (li r11, 141; li r3, n; sc, as at 0x99A6C0), and only
+# a standing-still pass makes it: the first pass waits in its fade, a pass
+# with a scene owed has no reader to wait for, and the last one ends the loop.
 	.section .cave.fast_loads, "ax"
 fast_loads:
 	lis     r5, SW_FLAG_FAST_LOADS@ha
@@ -101,7 +126,7 @@ fast_loads:
 	bne     cr0, 9f
 	lwz     r3, RAC3_LOADER_STAGE@l(r5)
 	cmpwi   cr0, r3, 2
-	blt     cr0, 3f
+	blt     cr0, 4f
 	li      r27, 1
 	lis     r3, RAC3_TRANSITION_FADE@ha
 	lis     r0, 0x3F80
@@ -119,6 +144,10 @@ fast_loads:
 	stw     r0, RAC3_RENDERER_HELD(r5)
 	li      r3, 6
 	bl      rac3_screen_fade
+	b       3f
+4:	li      r11, SYS_TIMER_USLEEP
+	li      r3, RAC3_STILL_USEC
+	sc
 3:	b       rac3_fastload_resume
 9:	ori     r3, r26, 0
 	b       fast_loads_ret
@@ -130,7 +159,8 @@ fast_loads_ret:
 # 0x27B550: bl 0x11AD44, the head of the pass's frame (0x11AD44 and 0x11B434
 # begin it, 0x27A014 draws the transition, 0x11B4EC ends it and flips). With the
 # flag up the pass goes past all of it to 0x27B570, RaC2's nop at 0xBEA8A0:
-# nothing is drawn, nothing flips, and no pass waits for a vblank.
+# nothing is drawn, nothing flips, and no pass waits for a vblank (a pass that
+# stands still sleeps in the trampoline above instead).
 	.section .cave.fast_loads_draw, "ax"
 fast_loads_draw:
 	lis     r3, SW_FLAG_FAST_LOADS@ha

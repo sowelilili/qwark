@@ -317,7 +317,11 @@ static const struct patch_def rac3_ammo_init = {
  * draw site's own call to the word after it. The fade takes six frames, and
  * turning fast loads off in the middle of one takes the cave out from under
  * nothing. (RPCS3 never takes its trampolines out, and keeps the ordinary call
- * its recompiler expects.)
+ * its recompiler expects.) Revision 1.29: the switch's standing-still pass also
+ * sleeps a frame's time (sys_timer_usleep), where the console's goes straight
+ * on: under RPCS3 the spinning loop starved the thread that reads the level,
+ * LoadAssetAsync, and a load sat on black for many seconds. These words are
+ * unchanged.
  *
  *   0x9807F0  lis    r5, 0xDA
  *             lhz    r6, -0x6F22(r5)  RAC3_TRANSITION_ID
