@@ -856,12 +856,24 @@ static const struct feature_desc rac2_features[] = {
 #undef LV
 #undef SG
 
+/*
+ * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
+ * and the debug mode among them, and the two resets on death in Player,
+ * practice aids that put bosses and platinum bolts back behind the player.
+ */
+#define RAC2_RUN_CHEATS (((u64)1 << R2_FAST_LOADS) | ((u64)1 << R2_GHOST) | \
+                         ((u64)1 << R2_INFINITE_AMMO) | ((u64)1 << R2_FREEZE_HEALTH) | \
+                         ((u64)1 << R2_DEBUG_MODE) | ((u64)1 << R2_DEATH_BOSSES) | \
+                         ((u64)1 << R2_DEATH_PBOLTS))
+
 static const struct game_describe rac2_describe_table = {
 	rac2_groups,   (u8)(sizeof(rac2_groups) / sizeof(rac2_groups[0])),
 	rac2_readouts, NR,
 	rac2_features, (u8)(sizeof(rac2_features) / sizeof(rac2_features[0])),
 	0,             /* no toggle ships auto-flagged */
-	NULL, 0        /* and none was relabelled */
+	NULL, 0,       /* and none was relabelled */
+	RAC2_RUN_CHEATS
 };
 
 #undef NR

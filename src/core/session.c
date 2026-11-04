@@ -1539,7 +1539,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	/*
 	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
 	 * (bit0 is the USB mods', bit4 a test build's), and the profile's
-	 * sequence. out[31] pad. A release (QWARK_PREVIEW 0) has neither the
+	 * sequence. out[31] is flags3, below. A release (QWARK_PREVIEW 0) has neither the
 	 * profiles nor the USB mods, so their bits and byte 30 are 0 there.
 	 */
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
@@ -1549,6 +1549,11 @@ static u32 encode_info(u8 *out, u32 cap)
 	               | (g_state == SESSION_INGAME && g_game != NULL && menu_none(g_game)
 	                  ? SESSION_FLAG2_NO_MENU : 0));
 	out[30] = config_profile_seq();
+	/*
+	 * Revision 1.30 (pending): flags3, a pad byte before it. The run-start
+	 * warnings are in every build, so bit0 is always set; bit1 is the switch.
+	 */
+	out[31] = (u8)(SESSION_FLAG3_RUN_WARN | (config_run_warnings() ? 0 : SESSION_FLAG3_RUN_WARN_OFF));
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	be32_put(out + 44, g_hot.pad_mask);

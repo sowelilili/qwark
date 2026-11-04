@@ -17,7 +17,7 @@
  * On, the signed-in user's profile is the active one, and every key falls on
  * one side (config_key_scope):
  *   - per user, read from and written to the active profile only: selected.*,
- *     manip.*, menu.help, the toggles' and the mods' auto flags
+ *     manip.*, menu.help, run.warnings, the toggles' and the mods' auto flags
  *     (<TITLEID>.auto.<slug>, <TITLEID>.mod.<dirname>.auto), profile.*, and
  *     the position files;
  *   - combos, per combo: the seven masks are the console's, and the active
@@ -148,6 +148,15 @@ int  config_menu_enabled(void);
  */
 int  config_menu_help(void);
 int  config_set_menu_help(u8 on);
+
+/*
+ * Revision 1.30 (pending), the run-start warnings (src/core/runwarn.h):
+ * `run.warnings`, 1 when the file has never mentioned it, 0 the console says
+ * nothing at a run start. RUN_WARN writes it; a per-user key, as menu.help
+ * is. Anything but 0 or 1 is ST_BAD_ARG.
+ */
+int  config_run_warnings(void);
+int  config_set_run_warnings(u8 on);
 
 u8   config_selected_slot(void);
 void config_set_selected_slot(u8 slot);

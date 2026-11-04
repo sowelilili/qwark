@@ -1058,12 +1058,23 @@ static const struct feature_former rac3_former[] = {
 	{ R3_FREEZE_AMMO, "Freeze ammo" }
 };
 
+/*
+ * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
+ * and the quick-select pause among them. The trophy reset's toggle is not
+ * one: it touches the console's trophies, not the run.
+ */
+#define RAC3_RUN_CHEATS (((u64)1 << R3_FAST_LOADS) | ((u64)1 << R3_GHOST) | \
+                         ((u64)1 << R3_FREEZE_AMMO) | ((u64)1 << R3_FREEZE_HEALTH) | \
+                         ((u64)1 << R3_QS_PAUSE))
+
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
 	rac3_readouts, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0])),
 	0,             /* no toggle ships auto-flagged */
-	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
+	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0])),
+	RAC3_RUN_CHEATS
 };
 
 /*
@@ -1076,7 +1087,8 @@ static const struct game_describe rac3_describe_no_trophies = {
 	rac3_readouts, (u8)(NR - 1),
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0]) - RAC3_TROPHY_ROWS),
 	0,
-	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0]))
+	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0])),
+	RAC3_RUN_CHEATS
 };
 
 #undef NR

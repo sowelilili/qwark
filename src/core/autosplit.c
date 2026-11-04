@@ -8,6 +8,7 @@
  * on_quit, which does not.
  */
 #include "autosplit.h"
+#include "runwarn.h"
 #include "session.h"
 #include "net.h"
 #include "../plat/plat.h"
@@ -145,6 +146,13 @@ void autosplit_emit(u8 kind, u8 code, u32 arg)
 	queue_dgram(&e);
 
 	plat_mutex_unlock(&g_mutex);
+
+	/*
+	 * Revision 1.30 (pending): a START is the run start every game's watcher
+	 * finds once per run, so the run-start warnings hang off it here, the one
+	 * place all five games go through (runwarn.h).
+	 */
+	if (kind == AUTOSPLIT_START) runwarn_run_start();
 }
 
 void autosplit_push(void)

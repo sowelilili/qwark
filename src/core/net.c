@@ -2052,6 +2052,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			return rc;
 		}
 
+	/*
+	 * Revision 1.30 (pending). `run.warnings`, a config write and nothing else,
+	 * as MENU_HELP's: the next run start reads it (runwarn.c). Every platform
+	 * has the warnings; under RPCS3 they reach qwark-rpcs3's log.
+	 */
+	case OP_RUN_WARN:
+		if (reqlen < 1 || req[0] > 1) return ST_BAD_ARG;
+		{
+			u16 rc;
+			core_lock();
+			rc = (u16)config_set_run_warnings(req[0]);
+			core_unlock();
+			return rc;
+		}
+
 #ifndef QWARK_EMULATOR
 	/*
 	 * Revision 1.18. The three RPCS3 patch ops exist only in the emulator

@@ -19,6 +19,14 @@ void features_set_game(const struct game_api *game, const char *title);
 void features_forget_state(void);
 
 u64  features_toggle_state(void);
+/*
+ * Revision 1.30 (pending), the run-start warnings: the TOGGLEs of the current
+ * game that its table counts as cheats (game_describe.cheats) and that are on
+ * now, as toggle_state has them (a LIVE one as the last read-back left it),
+ * and where code cannot be patched one still waiting for the code switches.
+ * Reads no memory.
+ */
+u64  features_cheats_on(void);
 u64  features_toggle_auto(void);
 /* Revision 1.24. Reads the auto flags again out of config: a settings profile changed. */
 void features_refresh_auto(void);

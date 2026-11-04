@@ -261,7 +261,20 @@ static void test_release(void)
 		check_eq(reply[29], 0, "flags2 is 0: no USB mods, no profiles, no DEV");
 		check_eq(reply[30], 0, "and byte 30, the profile sequence, is 0");
 		check_eq(reply[25], 2, "SessionInfo's slot is config.txt's");
+		check_eq(reply[31], SESSION_FLAG3_RUN_WARN,
+		         "flags3 bit0: the run-start warnings are in a release too (revision 1.30), on");
 	}
+
+	/* Revision 1.30 (pending): RUN_WARN, not a preview feature. */
+	req[0] = 2;
+	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
+	check_eq(st, ST_BAD_ARG, "RUN_WARN 2 is BAD_ARG");
+	req[0] = 0;
+	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
+	check(st == ST_OK && !config_run_warnings(), "RUN_WARN 0 answers OK and writes run.warnings = 0");
+	req[0] = 1;
+	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
+	check(st == ST_OK && config_run_warnings(), "RUN_WARN 1 puts it back");
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);
 	check_eq(st, ST_UNSUPPORTED, "MOD_USB_LIST is UNSUPPORTED");

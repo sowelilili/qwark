@@ -93,6 +93,16 @@ struct game_describe {
 	/* Build 53: the toggles that were relabelled, NULL and 0 for none. */
 	const struct feature_former *former;
 	u8 nformer;
+	/*
+	 * Revision 1.30 (pending), the run-start warnings (src/core/runwarn.h):
+	 * bit i set = TOGGLE feature id i counts as a cheat when it is on as a run
+	 * starts, one that would make the run invalid. Each game says it row by
+	 * row; nothing is guessed from a group or a label, so a run-legal toggle
+	 * in Cheats (Tools of Destruction's Remove cutscenes) stays out, and one
+	 * elsewhere (RaC2's resets on death) can be in. A bit whose id is no
+	 * TOGGLE of the table never counts. 0 for none.
+	 */
+	u64 cheats;
 };
 
 /* One row of UNLOCK_LIST. Values are read live through unlock_read. */

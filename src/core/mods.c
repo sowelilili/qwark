@@ -117,6 +117,32 @@ int mods_find_by_name(const char *name)
 	return -1;
 }
 
+/*
+ * Revision 1.30 (pending), the run-start warnings. A mod is in the game when
+ * qwark loaded it, or on a platform that refuses code patches when the look
+ * found it there (wire_flags, below, says the same to MOD_LIST).
+ */
+static int mod_in_game(const struct mod_entry *m)
+{
+	if (m->flags & MOD_FLAG_LOADED) return 1;
+#ifdef QWARK_EMULATOR
+	if (!plat_can_patch_code() && m->look == MOD_LOOK_PRESENT) return 1;
+#endif
+	return 0;
+}
+
+u32 mods_in_game_mask(u8 legality)
+{
+	u32 mask = 0;
+	u32 i;
+	for (i = 0; i < g_nmods && i < 32; i++) {
+		const struct mod_entry *m = &g_mods[i];
+		if (!m->used || !mod_in_game(m)) continue;
+		if ((m->flags & (MOD_FLAG_LEGAL | MOD_FLAG_ILLEGAL)) == legality) mask |= 1u << i;
+	}
+	return mask;
+}
+
 u32 mods_loaded_mask(void)
 {
 	u32 mask = 0;
@@ -183,6 +209,17 @@ static void parse_meta(struct mod_entry *m, char *line)
 	else if (qstreq(key, "version"))     qstrcpy(m->version, sizeof(m->version), value);
 	else if (qstreq(key, "author"))      qstrcpy(m->author, sizeof(m->author), value);
 	else if (qstreq(key, "depends"))     qstrcpy(m->depends, sizeof(m->depends), value);
+	/*
+	 * Revision 1.30 (pending): whether the mod's author calls it run-legal,
+	 * `true` or `false` in either case. Anything else, or no line at all,
+	 * leaves both bits clear: legality unknown. The last line wins, and the
+	 * key is read in any case, as the client's library reads every key.
+	 */
+	else if (qstreq_ci(key, "legal")) {
+		m->flags &= (u8)~(MOD_FLAG_LEGAL | MOD_FLAG_ILLEGAL);
+		if (qstreq_ci(value, "true"))       m->flags |= MOD_FLAG_LEGAL;
+		else if (qstreq_ci(value, "false")) m->flags |= MOD_FLAG_ILLEGAL;
+	}
 	/* "description" is not kept: mods_info reads it back out of patch.txt. */
 }
 

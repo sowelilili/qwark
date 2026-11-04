@@ -222,7 +222,8 @@ int config_key_scope(const char *key)
 		if (qstreq(key, g_combo_key[i])) return CONFIG_SCOPE_COMBO;
 	}
 	if (has_prefix(key, "selected.") || has_prefix(key, "manip.") ||
-	    has_prefix(key, "profile.") || qstreq(key, "menu.help") || title_auto_key(key))
+	    has_prefix(key, "profile.") || qstreq(key, "menu.help") ||
+	    qstreq(key, "run.warnings") || title_auto_key(key))
 		return CONFIG_SCOPE_USER;
 	return CONFIG_SCOPE_CONSOLE;
 }
@@ -780,6 +781,22 @@ int config_set_menu_help(u8 on)
 {
 	if (on > 1) return ST_BAD_ARG;
 	return config_set_u32("menu.help", on);
+}
+
+/*
+ * Revision 1.30 (pending). `run.warnings`: 1 for a file that has never
+ * mentioned it, so a run start with cheats or mods on says so out of the box.
+ * RUN_WARN writes it, a plain 0 or 1 like `menu.help`.
+ */
+int config_run_warnings(void)
+{
+	return config_get_u32("run.warnings", 1) != 0;
+}
+
+int config_set_run_warnings(u8 on)
+{
+	if (on > 1) return ST_BAD_ARG;
+	return config_set_u32("run.warnings", on);
 }
 
 /* -------------------------------------------------------------- selection */

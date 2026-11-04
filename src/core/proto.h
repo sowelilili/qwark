@@ -84,6 +84,11 @@
  * set by a test build (QWARK_DEV, the makefile's default), and a u32 build ID
  * after HELLO's SessionInfo (QWARK_BUILD_ID, the CRC of the sources), so a
  * client can tell one test build of a number from another. PROTOCOL.md 3.1.1.
+ * Revision 1.30 (pending): the run-start warnings (src/core/runwarn.h). RUN_WARN
+ * at 0x0096, config key run.warnings; SessionInfo byte 31, a pad byte until
+ * now, is `flags3`, bit0 RUN_WARN (the module has them) and bit1 RUN_WARN_OFF;
+ * MOD_LIST's flags bit6 LEGAL and bit7 ILLEGAL, a patch.txt's `#- legal:`.
+ * PROTOCOL.md 5.7, 5.10 and 5.10.2.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -349,6 +354,14 @@
 #define OP_PROFILE_INFO      0x0093
 #define OP_PROFILE_ENABLE    0x0094
 #define OP_COMBO_OVERRIDE    0x0095
+/*
+ * Revision 1.30 (pending). `run.warnings`, a config write like MENU_HELP's:
+ * u8 on, 1 the console warns as a run starts with cheats or mods that are not
+ * run-legal in the game (the default), 0 it says nothing. Anything but 0 or 1
+ * is BAD_ARG. Answered in any session state and on every platform. Reply
+ * none. SessionInfo flags3 reports it. PROTOCOL.md 5.10.2.
+ */
+#define OP_RUN_WARN          0x0096
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -710,6 +723,15 @@
  * earlier build, so a client goes on drawing both against those.
  */
 #define SESSION_FLAG2_NO_MENU         0x80
+/*
+ * Revision 1.30 (pending). SessionInfo byte 31, a pad byte until then, is
+ * `flags3`. bit0 RUN_WARN, the client's capability bit: the module has the
+ * run-start warnings and answers RUN_WARN (PROTOCOL.md 5.10.2); bit1
+ * RUN_WARN_OFF, config.txt's `run.warnings` is 0. An earlier build sent a pad
+ * byte, so a client shows no switch against it.
+ */
+#define SESSION_FLAG3_RUN_WARN        0x01
+#define SESSION_FLAG3_RUN_WARN_OFF    0x02
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */
@@ -827,6 +849,14 @@
 #define MOD_FLAG_PREVIOUS    0x08
 #define MOD_FLAG_PARSE_ERROR 0x10
 #define MOD_FLAG_CHECKING    0x20
+/*
+ * Revision 1.30 (pending): patch.txt's `#- legal:` line, `true` LEGAL and
+ * `false` ILLEGAL, either case; a mod with neither (no line, or any other
+ * value) is of unknown legality. The run-start warnings count the loaded
+ * ILLEGAL ones and the loaded unknown ones (src/core/runwarn.h).
+ */
+#define MOD_FLAG_LEGAL       0x40
+#define MOD_FLAG_ILLEGAL     0x80
 
 /* Patch kinds, PATCH_LIST */
 #define PATCH_KIND_CLIENT  0

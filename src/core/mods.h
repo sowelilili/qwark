@@ -4,7 +4,8 @@
  * patch.txt is parsed exactly the way racman's ModLoaderForm does it, so the
  * 35 shipped mods load unchanged:
  *
- *   #- key: value      metadata (name, version, author, description, depends)
+ *   #- key: value      metadata (name, version, author, description, depends,
+ *                      and since revision 1.30 legal: true or false)
  *   # ...              comment
  *   0xADDR: 0xVALUE    one 4-byte word, reverted on unload
  *   0xADDR: file.bin   a code cave, written in scratch-sized pieces and never
@@ -138,6 +139,13 @@ int  mods_set_auto(const char *dirname, int on);
 int  mods_info(const char *dirname, char *out, u32 cap, u32 *len);
 
 u32  mods_loaded_mask(void);
+/*
+ * Revision 1.30 (pending), the run-start warnings: bit i set = mod index i is
+ * in the game and its legality bits (MOD_FLAG_LEGAL, MOD_FLAG_ILLEGAL, or 0
+ * for unknown) are exactly `legality`. In the game is qwark's own load, or
+ * where code cannot be patched what the presence look found.
+ */
+u32  mods_in_game_mask(u8 legality);
 u32  mods_auto_mask(void);
 /* Revision 1.24. Every row's AUTO bit again out of config: a settings profile changed. */
 void mods_refresh_auto(void);

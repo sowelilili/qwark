@@ -63,4 +63,7 @@ void test_menu_mods(void);
 /* test_tod_game.c: Tools of Destruction and the core's Lua ops, revision 1.27. */
 void test_tod_game(void);
 
+/* test_runwarn.c: the run-start warnings, revision 1.30 (pending). */
+void test_runwarn(void);
+
 #endif /* QWARK_TEST_COMMON_H */

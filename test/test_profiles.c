@@ -207,7 +207,7 @@ static void test_flow(void)
 	check(!exists(QWARK_PROFILEDIR "/user-00000001"), "and makes no folder");
 	session_info_copy(info, sizeof(info));
 	check_eq_u64(info[29] & (u8)~(SESSION_FLAG2_USB_MODS | SESSION_FLAG2_DEV), SESSION_PROFILE_SUPPORTED, "SessionInfo byte 29, flags2, says the same");
-	check_eq_u64(info[31], 0, "byte 31 is still pad");
+	check_eq_u64(info[31], SESSION_FLAG3_RUN_WARN, "byte 31, flags3 since revision 1.30, has nothing of the profile's: the run-start warnings, on");
 
 	config_profile_folder_for(1, folder, sizeof(folder));
 	check(strcmp(folder, "user-00000001") == 0, "user 1's folder is user-00000001");

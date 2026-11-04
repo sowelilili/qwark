@@ -161,6 +161,10 @@ OP_MENU_HELP = 0x0092
 OP_PROFILE_INFO = 0x0093
 OP_PROFILE_ENABLE = 0x0094
 OP_COMBO_OVERRIDE = 0x0095
+# Revision 1.30 (pending): the run-start warnings' switch, and SessionInfo byte 31, flags3.
+OP_RUN_WARN = 0x0096
+SESSION_FLAG3_RUN_WARN = 0x01
+SESSION_FLAG3_RUN_WARN_OFF = 0x02
 PROFILE_SUPPORTED = 0x02
 PROFILE_ON = 0x04
 PROFILE_ACTIVE = 0x08
@@ -1015,6 +1019,8 @@ def parse_session_info(b):
     info["flags2"] = b[29]
     info["profile_flags"] = b[29] & 0x0E
     info["profile_seq"] = b[30]
+    # Byte 31, flags3 (revision 1.30): bit0 the run-start warnings, bit1 switched off.
+    info["flags3"] = b[31]
     info["pos"] = struct.unpack(">3f", b[32:44])
     info["pad_mask"] = struct.unpack(">I", b[44:48])[0]
     info["analog"] = struct.unpack(">4f", b[48:64])
@@ -8491,6 +8497,60 @@ def main():
         check(on == 0 and said and said[-1].endswith("notify: Fast loads off"),
               "pressed again, off, and \"Fast loads off\"", (on, said))
         c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, 0))
+
+        # Revision 1.30 (pending): the run-start warnings. RaC1's run start is
+        # its autosplitter's START, game state 6 -> 0 on Veldin. RaC1 counts
+        # Fast loads (0), Infinite ammo (1), Freeze health (2), Ghost Ratchet
+        # (3) and the goodies menu (6); whatever the steps before left on
+        # stays on (the reboot below wants its previous record), so the count
+        # is worked out from toggle_state.
+        def rac1_run_start():
+            mark = len(sim.lines)
+            mem_write(c, 0x969C70, struct.pack(">I", 0))
+            mem_write(c, 0xA10708, struct.pack(">I", 6))
+            module_sleep(c, 0.1)
+            mem_write(c, 0xA10708, struct.pack(">I", 0))
+            wait_while(c, lambda: not any("notify: Warning" in s for s in sim.lines[mark:]), 0.6, 0.05)
+            return [s for s in sim.lines[mark:] if "notify: " in s]
+
+        def cheats_line(state):
+            n = bin(state & 0x4F).count("1")
+            if n == 0:
+                return None
+            return "notify: Warning: %d cheat%s enabled" % (n, "" if n == 1 else "s")
+
+        st = fresh_state(c)
+        check(st and st["flags3"] == SESSION_FLAG3_RUN_WARN,
+              "run-start warnings: SessionInfo flags3 bit0, on out of the box", st and hex(st["flags3"]))
+        before = st["toggle_state"] if st else 0
+        status_a, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 3, 1))
+        status_b, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 2, 1))
+        st = fresh_state(c)
+        check(status_a == ST_OK and status_b == ST_OK and st and (st["toggle_state"] & 0x0C) == 0x0C,
+              "run-start warnings: Ghost Ratchet and Freeze health on", (status_a, status_b))
+        want = cheats_line(st["toggle_state"] if st else 0x0C)
+        said = rac1_run_start()
+        check(said and want and said[-1].endswith(want),
+              "run-start warnings: a RaC1 run start says how many cheats are on in the sim log (%s)" % want, said)
+        status, _ = c.call(OP_RUN_WARN, bytes([2]))
+        check(status == ST_BAD_ARG, "run-start warnings: RUN_WARN 2 is BAD_ARG", status)
+        status, _ = c.call(OP_RUN_WARN, bytes([0]))
+        st = fresh_state(c)
+        check(status == ST_OK and st and st["flags3"] == SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF,
+              "run-start warnings: RUN_WARN 0 answers OK and flags3 bit1 says so", (status, st and hex(st["flags3"])))
+        said = rac1_run_start()
+        check(not said, "run-start warnings: switched off, the next run start says nothing", said)
+        status, _ = c.call(OP_RUN_WARN, bytes([1]))
+        st = fresh_state(c)
+        check(status == ST_OK and st and st["flags3"] == SESSION_FLAG3_RUN_WARN,
+              "run-start warnings: RUN_WARN 1 switches them back on", (status, st and hex(st["flags3"])))
+        for fid in (2, 3):
+            c.call(OP_FEATURE_SET, struct.pack(">BI", fid, (before >> fid) & 1))
+        st = fresh_state(c)
+        want = cheats_line(st["toggle_state"] if st else before)
+        said = rac1_run_start()
+        check((want is None and not any("cheat" in x for x in said)) or (said and want and said[-1].endswith(want)),
+              "run-start warnings: the two put back, a run start counts only what was on before (%s)" % want, said)
 
         # Move somewhere recognisable, then press the combo.
         coords2 = struct.pack(">fff", 9.0, 8.0, 7.0) + b"\x00" * 18

@@ -203,6 +203,33 @@ void features_forget_state(void)
 }
 
 u64 features_toggle_state(void) { return g_toggle_state; }
+
+u64 features_cheats_on(void)
+{
+	const struct game_describe *d;
+	u64 on, mask = 0;
+	u8 i;
+
+	if (g_game == NULL || g_game->describe == NULL) return 0;
+	d = g_game->describe();
+	if (d == NULL || d->cheats == 0) return 0;
+
+	on = g_toggle_state;
+#ifdef QWARK_EMULATOR
+	/* A WRITES_CODE toggle still waiting for the code switches is on as far as anyone asked. */
+	on |= g_code_waiting;
+#endif
+
+	for (i = 0; i < d->nfeatures; i++) {
+		const struct feature_desc *f = &d->features[i];
+		u64 bit;
+
+		if (f->kind != FEATURE_TOGGLE || f->id >= QWARK_MAX_FEATURES) continue;
+		bit = (u64)1 << f->id;
+		if ((d->cheats & bit) != 0 && (on & bit) != 0) mask |= bit;
+	}
+	return mask;
+}
 u64 features_toggle_auto(void)  { return g_toggle_auto; }
 
 /* Revision 1.24: the auto flags of another settings profile. */

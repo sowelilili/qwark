@@ -826,6 +826,15 @@ static const struct feature_desc rac4_features[] = {
 #undef SH
 #undef ST
 
+/*
+ * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
+ * among them. The Fixes (crash patches, softlock fix) are not, nor are the
+ * HUD's brightness corrections in Cosmetics.
+ */
+#define RAC4_RUN_CHEATS (((u64)1 << R4_FAST_LOADS) | ((u64)1 << R4_GHOST) | \
+                         ((u64)1 << R4_REFILL_AMMO) | ((u64)1 << R4_FREEZE_HEALTH))
+
 static const struct game_describe rac4_describe_table = {
 	rac4_groups,   (u8)(sizeof(rac4_groups) / sizeof(rac4_groups[0])),
 	rac4_readouts, NR,
@@ -835,7 +844,8 @@ static const struct game_describe rac4_describe_table = {
 	 * Deadlocked autosplitter SPRX does today. Config still overrides either.
 	 */
 	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX),
-	NULL, 0        /* no toggle was relabelled */
+	NULL, 0,       /* no toggle was relabelled */
+	RAC4_RUN_CHEATS
 };
 
 #undef NR

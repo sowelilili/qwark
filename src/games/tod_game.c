@@ -327,6 +327,16 @@ static const struct feature_desc tod_features[] = {
 #undef LA
 #undef WC
 
+/*
+ * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * when it is on as a run starts (game.h). Fast loads, Infinite ammo,
+ * Infinite health and God Ratchet. Remove cutscenes is run-legal (the
+ * user's call, 2026-10-31), and the cutscene cache's two toggles are manips:
+ * all three stay out, though Cheats is their group on the wire.
+ */
+#define TOD_RUN_CHEATS (((u64)1 << TF_FAST_LOADS) | ((u64)1 << TF_INFINITE_AMMO) | \
+                        ((u64)1 << TF_INFINITE_HEALTH) | ((u64)1 << TF_GOD_RATCHET))
+
 static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),
 	tod_readouts, (u8)(sizeof(tod_readouts) / sizeof(tod_readouts[0])),
@@ -337,7 +347,8 @@ static const struct game_describe tod_describe_table = {
 	 * eight FMVs. A config.txt key for it, on or off, still wins.
 	 */
 	(u64)1 << TF_REMOVE_CUTSCENES,
-	NULL, 0       /* nothing relabelled */
+	NULL, 0,      /* nothing relabelled */
+	TOD_RUN_CHEATS
 };
 
 static const struct game_describe *tod_describe(void)

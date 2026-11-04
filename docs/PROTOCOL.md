@@ -144,6 +144,10 @@ Revision 1.29, UYA's Fast loads under RPCS3 (pending, 2026-11-03, after the user
 
 Revision 1.29, Tools of Destruction's Lua helper in ui.pak (pending, 2026-11-03): no opcode, no frame status and no structure moved, and **LUA_PATCH is byte for byte what it was** (2,045 words). The Lua helper's code (8,152 bytes) and the three Lua chunks the core sends (the pause menu's glue, 7,949 bytes, the look at the pause, 2,690, and the galactic map's glue, 3,132) leave `tod.sprx`, whose code segment goes from 60,608 to 38,656 of its 61,440 bytes, for `ui.pak`, as the renderers did in build 55 and the savefile helpers in build 56 (section 9.10): four entries of kinds 3 to 6 after the savefile helpers, which only a build with Tools of Destruction packs and reads (a test build and the PC builds; `make release`'s pak is byte for byte what it was, 73,992 bytes; a test build's is 96,163). Their identity, `LH_PAK_ID`, is the CRC-32 of the four entries' CRC-32s, read from the table of contents; a module with ToD takes a pak only when it holds, so a pak without them, or with another build's, is another build's pak (SessionInfo `flags` bit7 UI_PAK_BAD, which a client already answers by sending the pak it shipped). On a console the helper goes in out of the pak, checked whole first, and each chunk is read out of it as it is sent; under RPCS3 nothing changes (the emulator builds keep the bytes, for LUA_PATCH, the presence look and the chunks). Without a usable pak a console's LUA_EXEC answers `UNSUPPORTED` with nothing written and LUA_STATUS `installed` 0, the Trainer is not put in (Inventory stays the game's, the console menu's no-pak state of section 9.10, tried again when a client has sent the pak), a glue that cannot be read is not sent, and qwark.log says why (`lua: no usable Lua helper for game 5 in ui.pak; nothing written`, `lua: no usable Lua chunk N for game 5 in ui.pak; not sent`).
 
+### Revision 1.30 (pending)
+
+Revision 1.30, run-start warnings (pending, 2026-11-04): with the in-game trainer it is easy to leave a cheat on, so as a run starts the console now says, in one VSH notification, what is on that the run should not have (section 5.10.2): **"Warning: N cheats enabled"**, **"Warning: N mods enabled"** for mods whose author marks them not run-legal, and **"Warning: N mods of unknown legality enabled"**, once, for mods that say neither. **RUN_WARN** at 0x0096, `u8 on`, writes config.txt's new key `run.warnings` (1 when the file does not name it), a per-user key like `menu.help` (section 5.10.1); anything but 0 or 1 is `BAD_ARG`, and it answers in any session state and on every platform. **SessionInfo byte 31**, a pad byte until now, is `flags3`: bit0 RUN_WARN, the module has the warnings and answers RUN_WARN (the client's capability bit), bit1 RUN_WARN_OFF, `run.warnings` is 0. **MOD_LIST's flags** gain bit6 LEGAL and bit7 ILLEGAL, a `patch.txt`'s new `#- legal: true` or `#- legal: false` line (section 5.7); a mod with neither is of unknown legality, which is every mod written before this revision. A run start is the autosplitter's START (section 8), which every game's watcher emits once per run and never for a death or another load. Which TOGGLEs count as cheats is each game's own table (`struct game_describe`'s new `cheats` at its end, section 5.10.2 lists them); nothing on the wire says it. Not a preview feature: a release module has it too. No other opcode or structure moved.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -259,7 +263,13 @@ u8   flags2             revision 1.24, a pad byte before it.
                              menu is now its own pause menu). INGAME with the game's code in only
 u8   profile_seq        revision 1.24, a pad byte before it: goes up by one, wrapping, whenever the
                         active profile changes or is read again (section 5.10.1)
-u8   pad
+u8   flags3             revision 1.30 (pending), a pad byte before it.
+                        bit0 RUN_WARN: the module has the run-start warnings and answers RUN_WARN
+                             (section 5.10.2). Set by every build from revision 1.30, release and
+                             qwark-rpcs3 included; never by an earlier build, which sent a pad byte
+                        bit1 RUN_WARN_OFF: config.txt's `run.warnings` is 0, so a run start says
+                             nothing
+                        bits 2 to 7 are 0
 f32  pos[3]             player x, y, z
 u32  pad_mask           controller buttons, OG layout (section 10)
 f32  analog[4]          rx, ry, lx, ly, each -1..1
@@ -818,7 +828,7 @@ Mods live under `/dev_hdd0/qwark/mods/<TITLEID>/<dirname>/` on the console. The 
 Mod (120 bytes):
 u8   index
 u8   flags           bit0 loaded, bit1 auto, bit2 needs_lua, bit3 previous, bit4 parse_error,
-                     bit5 checking (revision 1.16)
+                     bit5 checking (revision 1.16), bit6 legal, bit7 illegal (revision 1.30)
 u8   pad[2]
 u32  hash            content of qwark.sum, 0 when absent
 char dirname[32]
@@ -839,6 +849,7 @@ A mod that is loaded at that moment is the one exception, and it is left exactly
 - bit3 **PREVIOUS**: the mod's bit is set in the previous-session record (SessionInfo `mod_previous`, section 4.1) and the mod has not been loaded again since; it goes when the mod loads and when the record is re-applied or dismissed. Before build 49 this bit was documented and never set, so a client that read it read 0.
 - bit4 **PARSE_ERROR**: `patch.txt` could not be read or does not fit qwark's tables. MOD_LOAD answers `IO_ERROR`.
 - bit5 **CHECKING** (revision 1.16): only on a platform that refuses code patches, and only while INGAME: qwark has not yet looked for this mod in the running game, so bit0 says nothing yet. It is never set on a console.
+- bit6 **LEGAL** and bit7 **ILLEGAL** (revision 1.30, pending): the mod's `patch.txt` has a line `#- legal: true` (LEGAL) or `#- legal: false` (ILLEGAL), the key and the value in any case, the value trimmed; its author says whether it is allowed in a speedrun. Neither bit is a mod of **unknown** legality: no such line, an empty one, or any other value (`yes`, `1`, `maybe`); where a file has the line twice, the last one counts. Never both. A loaded mod keeps what it was parsed with across a rescan, as it keeps the rest of its row. The run-start warnings count the mods in the game with bit7 and with neither (section 5.10.2); a client shows them as it likes. An earlier module sends both bits 0, which reads as unknown, and is right: it never read the line.
 
 ### 5.7.1 Mods under RPCS3 (revision 1.16)
 
@@ -1029,6 +1040,7 @@ The switch and the hold are independent, and either one on its own holds every c
 | 0x0093 | PROFILE_INFO | none | 64 bytes, section 5.10.1 (revision 1.24) |
 | 0x0094 | PROFILE_ENABLE | `u8 on, u8 setup` | none (revision 1.24) |
 | 0x0095 | COMBO_OVERRIDE | `u8 action, u8 set, u8 pad[2], u32 mask` | none (revision 1.24) |
+| 0x0096 | RUN_WARN | `u8 on` (1 the console warns at a run start, 0 it says nothing) | none (revision 1.30, section 5.10.2) |
 
 Config keys the module reads for itself: `log` (1 by default) writes a line per event to `/dev_hdd0/qwark/qwark.log`; `log = 0` silences it, which costs a file open, write and close per line on the console. `menu.enabled` (revision 1.22, 1 by default) is the console menu's own switch: `menu.enabled = 0` writes no renderer into any game, even when the menu combo is pressed, and takes out one already in at the first safe moment, the game's Help row its own again (section 9.2). No op writes it; a user edits the file, and CONFIG_RELOAD or a reboot picks it up. Revision 1.26, in a test build whose games are modules: `game.floor_kb` (128), `game.window_ms` (3000) and `game.keep` (0), the memory gate and what happens to a module at the XMB (section 9.11); no op writes them either.
 
@@ -1050,7 +1062,7 @@ A console can have several users, and each can keep settings of their own: a **p
 
 | Side | Keys and files |
 |---|---|
-| Per user: read from and written to the active profile only | `selected.slot`, `selected.<game>.planet`, `selected.<game>.planet_flags`, the old `selected.planet` and `selected.planet_flags`, `manip.<game>.auto_reset`, `manip.<game>.remember`, `manip.<game>.category`, `menu.help` (In-game menus), `<TITLEID>.auto.<slug>` (a toggle's auto-apply, and since revision 1.24 a COLOR kept for the boot, section 5.3.5), `<TITLEID>.mod.<dirname>.auto` (which mods load by themselves), `profile.*` (the profile's own), and the position slots |
+| Per user: read from and written to the active profile only | `selected.slot`, `selected.<game>.planet`, `selected.<game>.planet_flags`, the old `selected.planet` and `selected.planet_flags`, `manip.<game>.auto_reset`, `manip.<game>.remember`, `manip.<game>.category`, `menu.help` (In-game menus), `run.warnings` (the run-start warnings, revision 1.30), `<TITLEID>.auto.<slug>` (a toggle's auto-apply, and since revision 1.24 a COLOR kept for the boot, section 5.3.5), `<TITLEID>.mod.<dirname>.auto` (which mods load by themselves), `profile.*` (the profile's own), and the position slots |
 | Combos, one at a time | the seven masks `combo.save`, `combo.load`, `combo.die`, `combo.planet`, `combo.setaside`, `combo.menu`, `combo.fastloads` are the console's, in config.txt, for everyone. The active profile may hold a key of the same name, that combo's **override**, which wins for that combo alone |
 | The console's, always config.txt | `profiles.enabled`, `combo.enabled` (the combo switch), `menu.enabled`, `log`, `savefile_helper`, and any key not named above |
 | The console's files, shared by everyone | the mod library (`mods/`), the savefile library (`savefiles/`), `ui.pak` and `qwark.log` |
@@ -1092,6 +1104,38 @@ Since build 56's fix PROFILE_ENABLE is all or nothing. The switch is written fir
 **Files.** Since build 56 config.txt, a profile's config.txt and every position file are written to `<file>.new` and then put in the old file's place (cellFs will not rename onto a file, so the old one is deleted first). A read that finds no file but a `.new`, which is what a write cut off between the two leaves, reads the `.new`, and the next write puts a whole file back.
 
 Since build 57 a write of either config.txt reads the file it replaces first and writes its lines back in their order: a key the module holds with the module's value, the first time it comes (a second line for the same key goes), and every other line as it was, whether a comment, a blank, a key the module does not know, one longer than 63 characters or with a value longer than 31 (which the module does not hold, rather than hold cut short, so it reads as unset), or, while a profile is active, config.txt's per-user keys; the module's keys the file did not have follow. CR LF and a last line with no newline read like any other line, and the file goes back with LF. Only COMBO_OVERRIDE's Clear takes a line out, the override's. A file that is there but will not open (a console's cellFsOpen fails for a busy drive, too many open files or an FTP server holding it) is tried once more and is then `IO_ERROR`, not "no file": CONFIG_RELOAD answers it, the file is not written until a reload reads it, and the positions file the same, so that a read that failed never becomes a file with only the next write in it. A write is refused, the old file in place and no `.new` left, when the old file does not read, a write to the `.new` does not take all its bytes, or its close fails. Build 56's release module, and every build before this one, wrote the module's keys alone: a key it had not loaded, for whatever reason, was gone from the file at its next write.
+
+### 5.10.2 Run-start warnings (revision 1.30, pending)
+
+As a run starts the console shows one notification (on a console the VSH's, which is all a player looking at the game sees) with a line for each thing on that the run should not have, and none at all when there is nothing:
+
+```
+Warning: N cheats enabled                    (1 cheat)
+Warning: N mods enabled                      (1 mod)     mods marked #- legal: false
+Warning: N mods of unknown legality enabled  (1 mod ...) mods with no #- legal: line, said once
+```
+
+in that order, each line left out when its count is 0. qwark-rpcs3 has no VSH: its line goes to its log (`notify:`), as every notification there does.
+
+**The run start** is the autosplitter's START (section 8), the one moment all five games share: the core warns from the function every game's watcher emits its events through, never from a game. RaC1: game state 6 to 0 on Veldin. RaC2: the start state on Aranos. UYA: Veldin out of a load. Deadlocked: a load into the DreadZone station with the tutorial flag clear. Each of those emits RESET and START on the same tick, and the warning goes once, at the START. Tools of Destruction: the RESET goes out as a fresh run's load into Metropolis begins (`tod_fresh_run_load`, a file that has not beaten Metropolis), the START at the run's fade in, and the warning with the START, once the player can see the game. A death, a checkpoint, a reload of another planet and a quit emit no START, so they say nothing; a save loaded where the watcher sees a new run, which a runner does to restart, is a new run start and warns again.
+
+**Cheats.** The running game's TOGGLEs that its own table counts (`struct game_describe`'s `cheats`, one bit per feature id; nothing is guessed from a group or a label) and that are on at that tick: toggle_state as qwark has it, a LIVE toggle read back from game memory on that tick, and under RPCS3 a WRITES_CODE toggle still waiting for the code switches. The counted toggles:
+
+| Game | Counted (feature id) | On the Cheats page or beside it, not counted |
+|---|---|---|
+| RaC1 | Fast loads (0), Ghost Ratchet (3), Infinite ammo (1), Freeze health (2), Goodies menu (6) | Debug's Update Ratchet, Update mobys, Update particles (on is the game as it always is), Camera mode |
+| RaC2 | Fast loads (0), Ghost Ratchet (3), Infinite ammo (1), Freeze health (2), Enable debug mode (5), Reset bosses on death (13), Reset platinum bolts on death (14) | |
+| UYA | Fast loads (38), Ghost Ratchet (3), Infinite ammo (0), Freeze health (1), Quick-select pause (5) | Reset trophies on Veldin load |
+| Deadlocked | Fast loads (2), Ghost Ratchet (5), Refill ammo (3), Freeze health (4) | Crash patches, Fix reset softlocks, Correct HUD brightness, Correct gradient brightness |
+| ToD | Fast loads (17), Infinite ammo (8), Infinite health (9), God Ratchet (16) | Remove cutscenes (run-legal), Cache cutscenes on reset, Disable cutscene caching |
+
+Fast loads counts in every game: each lists it under Cheats, and no category of the five is known to allow it.
+
+**Mods.** The mods in the game (MOD_LIST's LOADED: qwark's own load, or under RPCS3 what the presence look found) with `#- legal: false`, and those of unknown legality (section 5.7). A mod with `#- legal: true` never counts.
+
+**Once.** The unknown-legality line is said at the first run start a mod of unknown legality is in the game for, counting every such mod in the game then; after that it is said again only at a run start with one the module has not warned about yet (a mod added, or loaded for the first time), again counting them all. The module remembers each mod by its title and folder name until it stops, which on a console is the console's power-off: a game's reboot, a rescan, an unload and load again, or a switch to another game and back do not bring the line back. The cheats and the illegal mods are said at every run start they are there for.
+
+**The switch.** RUN_WARN (0x0096), `u8 on`, writes `run.warnings`, no reply: 1 (the default) the console warns, 0 it says nothing. Anything else is `BAD_ARG`. It answers in any session state and on every platform, and a run start reads the key afresh. While it is 0 no mod is remembered as warned about, so switching the warnings back on warns about an unknown mod that came while they were off. SessionInfo `flags3` bit1 is set while it is 0, and bit0 says the module has all this; a client shows its switch only against bit0. `run.warnings` is a per-user key (section 5.10.1).
 
 ### 5.11 Autosplitting (0x00Ax)
 

@@ -19,6 +19,7 @@
 #include "../src/core/config.h"
 #include "../src/core/util.h"
 #include "../src/core/autosplit.h"
+#include "../src/core/runwarn.h"
 #include "../src/core/switches.h"
 #include "../src/games/game.h"
 #include "../src/games/titles.h"
@@ -157,7 +158,7 @@ static void test_tod_session(void)
 	host_set_pad(0);
 
 	wr32(TOD_LEVEL_OBJ, 0);
-	tick(2);
+	tick(4);   /* SessionInfo goes out every fourth tick: two passed only on some tick counts */
 	session_info_copy(info, sizeof(info));
 	check(bef32_get(info + 32) == 0.0f, "between levels there is no position");
 	check(session_position_save(0) == ST_BUSY, "and no position to save");
@@ -1747,6 +1748,8 @@ static void test_tod_autosplit_runs(void)
 {
 	static const u32 before[] = { 635, 636, 637 };
 	u32 ids[4], seq, arg = 0, i;
+	u32 rw_starts, rw_notes;
+	int rc_was;
 
 	group("ToD: run starts on the Metropolis flag, deaths, and no credits split");
 
@@ -1758,11 +1761,22 @@ static void test_tod_autosplit_runs(void)
 	metropolis_beaten(0);
 	wr32(TOD_CURRENT_LEVEL, 0);
 	tick(2);
+	/*
+	 * Revision 1.30 (pending), the run-start warnings: two cheats on, and
+	 * Remove cutscenes, run-legal, on as well; the START says the two.
+	 */
+	runwarn_forget();
+	rc_was = (features_toggle_state() & ((u64)1 << TF_REMOVE_CUTSCENES)) != 0;
+	check(features_set(TF_INFINITE_AMMO, 1) == ST_OK && features_set(TF_INFINITE_HEALTH, 1) == ST_OK &&
+	      features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK, "Infinite ammo, Infinite health and Remove cutscenes on");
+	rw_starts = runwarn_starts();
+	rw_notes = host_notify_count();
 	seq = autosplit_latest_seq();
 	wr32(TOD_LOAD_SCREEN, 4);   /* no level to fly from: a long load screen at once */
 	from_title();
 	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 1 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
 	      "a new game is a RESET as its load begins, and no START yet");
+	check(runwarn_starts() == rw_starts, "the RESET is no run start for the warnings");
 	check(as_first(seq, AUTOSPLIT_RESET, 0) >= 0 && as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 1,
 	      "RESET, and the long load's hold");
 	wr32(TOD_LOAD_SCREEN, 1);
@@ -1779,6 +1793,9 @@ static void test_tod_autosplit_runs(void)
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1 &&
 	      as_first(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD) < as_first(seq, AUTOSPLIT_START, 0),
 	      "half a second into it: START, after the hold");
+	check(runwarn_starts() == rw_starts + 1 && runwarn_last_cheats() == 2 &&
+	      host_notify_count() == rw_notes + 1 && strcmp(host_notify_last(), "Warning: 2 cheats enabled") == 0,
+	      "the START is the run start: \"Warning: 2 cheats enabled\", Remove cutscenes not counted");
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "Metropolis is no planet split");
 	tick(10);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "one START");
@@ -1791,6 +1808,10 @@ static void test_tod_autosplit_runs(void)
 	tick(4);
 	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0, "a death on Metropolis is no RESET");
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "and no START at its fade in");
+	check(runwarn_starts() == rw_starts + 1, "and no run-start warning");
+	features_set(TF_INFINITE_AMMO, 0);
+	features_set(TF_INFINITE_HEALTH, 0);
+	features_set(TF_REMOVE_CUTSCENES, (u32)rc_was);
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "and no split");
 	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 0 &&
 	      as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 0, "and no load edges");

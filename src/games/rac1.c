@@ -815,12 +815,24 @@ static const struct feature_former rac1_former[] = {
 	{ F_FREEZE_HEALTH, "Infinite health" }
 };
 
+/*
+ * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
+ * among them (the user's guide calls it one; no RaC1 category is known to
+ * allow it) and the goodies menu. The Debug group's three are left out: on is
+ * the game updating as it always does, so on says nothing about the run.
+ */
+#define RAC1_RUN_CHEATS (((u64)1 << F_FAST_LOADS) | ((u64)1 << F_GHOST) | \
+                         ((u64)1 << F_INFINITE_AMMO) | ((u64)1 << F_FREEZE_HEALTH) | \
+                         ((u64)1 << F_GOODIES))
+
 static const struct game_describe rac1_describe_table = {
 	rac1_groups,   (u8)(sizeof(rac1_groups) / sizeof(rac1_groups[0])),
 	rac1_readouts, NR,
 	rac1_features, (u8)(sizeof(rac1_features) / sizeof(rac1_features[0])),
 	0,             /* no toggle ships auto-flagged */
-	rac1_former,   (u8)(sizeof(rac1_former) / sizeof(rac1_former[0]))
+	rac1_former,   (u8)(sizeof(rac1_former) / sizeof(rac1_former[0])),
+	RAC1_RUN_CHEATS
 };
 
 #undef NR
