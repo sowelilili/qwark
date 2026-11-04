@@ -81,7 +81,7 @@ u32 runwarn_compose(char *out, u32 cap, u32 cheats, u32 illegal, u32 unknown)
 	out[0] = 0;
 	add_line(out, cap, &lines, cheats,  " cheat enabled", " cheats enabled");
 	add_line(out, cap, &lines, illegal, " mod enabled", " mods enabled");
-	add_line(out, cap, &lines, unknown, " mod of unknown legality enabled", " mods of unknown legality enabled");
+	add_line(out, cap, &lines, unknown, " unknown mod enabled", " unknown mods enabled");
 	return lines;
 }
 

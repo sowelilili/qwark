@@ -206,10 +206,10 @@ static void test_compose(void)
 	check(runwarn_compose(out, sizeof(out), 0, 1, 0) == 1 && strcmp(out, "Warning: 1 mod enabled") == 0,
 	      "an illegal mod alone: \"Warning: 1 mod enabled\"");
 	check(runwarn_compose(out, sizeof(out), 0, 0, 2) == 1 &&
-	      strcmp(out, "Warning: 2 mods of unknown legality enabled") == 0,
-	      "unknown ones alone: \"Warning: 2 mods of unknown legality enabled\"");
+	      strcmp(out, "Warning: 2 unknown mods enabled") == 0,
+	      "unknown ones alone: \"Warning: 2 unknown mods enabled\"");
 	check(runwarn_compose(out, sizeof(out), 2, 1, 1) == 3 &&
-	      strcmp(out, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 1 mod of unknown legality enabled") == 0,
+	      strcmp(out, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 1 unknown mod enabled") == 0,
 	      "all three: one notification, a line each, cheats first");
 	check(runwarn_compose(out, 20, 2, 1, 1) == 3 && strlen(out) == 19, "a short buffer is cut, never overrun");
 }
@@ -293,8 +293,8 @@ static void test_rac1(void)
 	n = host_notify_count();
 	run_start(GAME_RAC1);
 	check(runwarn_last_illegal() == 1 && runwarn_last_unknown() == 2 &&
-	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 2 mods of unknown legality enabled"),
-	      "one notification: 2 cheats, 1 illegal mod, 2 of unknown legality; the legal one is not counted");
+	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 2 unknown mods enabled"),
+	      "one notification: 2 cheats, 1 illegal mod, 2 unknown; the legal one is not counted");
 	n = host_notify_count();
 	run_start(GAME_RAC1);
 	check(notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled"),
@@ -313,7 +313,7 @@ static void test_rac1(void)
 	n = host_notify_count();
 	run_start(GAME_RAC1);
 	check(runwarn_last_unknown() == 3 &&
-	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 3 mods of unknown legality enabled"),
+	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 3 unknown mods enabled"),
 	      "the set grew: the unknown line again, counting all three");
 
 	/* The switch. */
@@ -331,7 +331,7 @@ static void test_rac1(void)
 	n = host_notify_count();
 	run_start(GAME_RAC1);
 	check(runwarn_last_unknown() == 4 &&
-	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 4 mods of unknown legality enabled"),
+	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 4 unknown mods enabled"),
 	      "on again: the mod loaded while off was never marked, so the unknown line comes back");
 
 	/* All off. */
@@ -387,7 +387,9 @@ static void test_game(const char *title, u8 game, const char *name, const u8 *id
 void test_runwarn(void)
 {
 	static const u8 r2[] = { R2_GHOST, R2_DEATH_BOSSES, R2_FREEZE_HEALTH };
-	static const u8 r3[] = { R3_GHOST, R3_QS_PAUSE };
+	static const u8 r3[] = { R3_GHOST, R3_FREEZE_AMMO };
+	/* After build 57 (the user's call): the quick-select pause is one of the game's options, no cheat. */
+	static const u8 r3_not[] = { R3_QS_PAUSE };
 	static const u8 r4[] = { R4_GHOST, R4_FAST_LOADS };
 	static const u8 r4_not[] = { R4_HUD_CORRECT };
 
@@ -395,7 +397,7 @@ void test_runwarn(void)
 	test_rac1();
 	/* Deadlocked's crash patches and softlock fix are on out of the box and count for nothing. */
 	test_game("NPEA00386", GAME_RAC2, "RaC2", r2, 3, NULL, 0, "Warning: 3 cheats enabled");
-	test_game("NPEA00387", GAME_RAC3, "UYA", r3, 2, NULL, 0, "Warning: 2 cheats enabled");
+	test_game("NPEA00387", GAME_RAC3, "UYA", r3, 2, r3_not, 1, "Warning: 2 cheats enabled");
 	test_game("NPEA00423", GAME_RAC4, "Deadlocked", r4, 2, r4_not, 1, "Warning: 2 cheats enabled");
 	check(quit(), "quit");
 }

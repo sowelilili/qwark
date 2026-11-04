@@ -1061,12 +1061,13 @@ static const struct feature_former rac3_former[] = {
 /*
  * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
- * and the quick-select pause among them. The trophy reset's toggle is not
- * one: it touches the console's trophies, not the run.
+ * among them, but the quick-select pause: one of the game's own options (the
+ * client's Values switch), not a cheat, the user's call after build 57. The
+ * trophy reset's toggle is not one either: it touches the console's
+ * trophies, not the run.
  */
 #define RAC3_RUN_CHEATS (((u64)1 << R3_FAST_LOADS) | ((u64)1 << R3_GHOST) | \
-                         ((u64)1 << R3_FREEZE_AMMO) | ((u64)1 << R3_FREEZE_HEALTH) | \
-                         ((u64)1 << R3_QS_PAUSE))
+                         ((u64)1 << R3_FREEZE_AMMO) | ((u64)1 << R3_FREEZE_HEALTH))
 
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),

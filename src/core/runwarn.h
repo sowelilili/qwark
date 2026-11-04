@@ -10,7 +10,7 @@
  *                                                are on
  *   Warning: N mods enabled                      mods in the game whose
  *                                                patch.txt says `#- legal: false`
- *   Warning: N mods of unknown legality enabled  mods in the game with no
+ *   Warning: N unknown mods enabled              mods in the game with no
  *                                                `#- legal:` line, or one that
  *                                                is neither true nor false
  *
