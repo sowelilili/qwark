@@ -44,9 +44,10 @@ RPCS3_SRC="$CORE src/plat/host/backend_pine.c src/plat/host/rpcs3_main.c"
 # platform, and qwark-host.exe stands in for it in the smoke run - and the PS3
 # makefile never defines it.
 #
-# QWARK_PREVIEW=1 (src/core/proto.h): both executables carry the features a
-# release module leaves out, the settings profiles and the USB mods, so the
-# simulator goes on offering them to a client under test. qwark-rpcs3.exe
+# QWARK_PREVIEW=1 (src/core/proto.h): both executables carry build 56's
+# preview features, the settings profiles and the USB mods, which every build
+# has since build 57 (the default; said here all the same), so the simulator
+# offers them to a client under test. qwark-rpcs3.exe
 # offers neither whatever this says (RPCS3 has one user and patches no code),
 # but it is built the same way so the code it runs is the code the tests run.
 CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_PREVIEW=1"

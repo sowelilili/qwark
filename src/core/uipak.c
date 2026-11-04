@@ -99,7 +99,7 @@ static int toc_ok(const u8 *toc, u32 body, u32 n)
 static u32 g_lh_seen;
 
 /*
- * Revision 1.29 (pending): whether the table of contents' Lua helper is not
+ * Revision 1.29: whether the table of contents' Lua helper is not
  * this module's: the CRC-32 of the CRC-32s of its Lua entries (kinds 3 to 6),
  * as they stand big-endian in the table, in its order, against LH_PAK_ID. A
  * pak with none gives 0, never an identity.

@@ -20,7 +20,7 @@ void features_forget_state(void);
 
 u64  features_toggle_state(void);
 /*
- * Revision 1.30 (pending), the run-start warnings: the TOGGLEs of the current
+ * Revision 1.30, the run-start warnings: the TOGGLEs of the current
  * game that its table counts as cheats (game_describe.cheats) and that are on
  * now, as toggle_state has them (a LIVE one as the last read-back left it),
  * and where code cannot be patched one still waiting for the code switches.

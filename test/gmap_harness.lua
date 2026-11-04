@@ -1,4 +1,4 @@
--- Tools of Destruction's Trainer (revision 1.29, pending): the galactic map's
+-- Tools of Destruction's Trainer (revision 1.29): the galactic map's
 -- glue (src/games/luahelper/lh_gmap.lua), run by a real Lua against a map
 -- made of stand-ins (test/test_glue.py, docs/tod-menu.md 17).
 --

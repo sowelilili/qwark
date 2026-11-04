@@ -8,8 +8,8 @@
  *   - on a console, as writes qwark makes itself into the running game, and
  *     the writes that take it out again.
  *
- * The core links this where QWARK_HAS_TOD (src/core/luacore.c). Revision 1.29
- * (pending): the bytes are the emulator builds' alone (luahelper_bins.c, under
+ * The core links this where QWARK_HAS_TOD (src/core/luacore.c). Revision 1.29:
+ * the bytes are the emulator builds' alone (luahelper_bins.c, under
  * QWARK_EMULATOR), and so are the patch and the presence rule; a console's
  * install takes the cave's bytes from a source, ui.pak's entry (luacore.c),
  * and the numbers from the descriptor tod.sprx hands the core (lua_desc).
@@ -53,7 +53,7 @@ int lh_present(const struct lh_desc *d, const struct luamb_io *io);
 #endif /* QWARK_EMULATOR */
 
 /*
- * Revision 1.29 (pending): where a console install takes each cave's bytes
+ * Revision 1.29: where a console install takes each cave's bytes
  * from, a piece at a time through `buf` (`cap` bytes): `read` fills buf with
  * `len` bytes from `off` into cave `cave`, 0 or -1 for a failed read. ui.pak's
  * entry, in luacore.c.

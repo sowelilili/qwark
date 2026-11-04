@@ -871,7 +871,7 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		be32_put(reply + 8, done);
 		be32_put(reply + 12, total);
 		reply[16] = error;
-		/* Revision 1.29 (pending): which of the game's checks `error` came from. */
+		/* Revision 1.29: which of the game's checks `error` came from. */
 		reply[17] = savefile_why_now();
 		reply[18] = 0;
 		reply[19] = 0;
@@ -1559,8 +1559,8 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	/*
 	 * Revision 1.24. The mods on the USB drives, read again when the last look
 	 * is over a second old: file reads on this thread, under the core lock, as
-	 * MOD_INFO's are, and only when a client asks. UNSUPPORTED in a release,
-	 * which leaves them out (modusb.h, QWARK_PREVIEW), as where code cannot be
+	 * MOD_INFO's are, and only when a client asks. UNSUPPORTED in a
+	 * QWARK_PREVIEW 0 module, which leaves them out (modusb.h, QWARK_PREVIEW), as where code cannot be
 	 * patched.
 	 */
 	case OP_MOD_USB_LIST: {
@@ -1983,7 +1983,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	}
 #else
 	/*
-	 * A release has no settings profiles (proto.h, QWARK_PREVIEW): their ops
+	 * A QWARK_PREVIEW 0 module has no settings profiles (proto.h): their ops
 	 * are known and reserved, so UNSUPPORTED rather than UNKNOWN_OP, as the
 	 * RPCS3 patch ops are on a console.
 	 */
@@ -2053,7 +2053,7 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		}
 
 	/*
-	 * Revision 1.30 (pending). `run.warnings`, a config write and nothing else,
+	 * Revision 1.30. `run.warnings`, a config write and nothing else,
 	 * as MENU_HELP's: the next run start reads it (runwarn.c). Every platform
 	 * has the warnings; under RPCS3 they reach qwark-rpcs3's log.
 	 */
@@ -2083,8 +2083,8 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 	/*
 	 * Revision 1.27. The Lua helper as an RPCS3 patch, in the emulator builds
-	 * alone, like the three above; and nowhere in a release, which has no Lua
-	 * game: there LUA_EXEC and LUA_STATUS are UNSUPPORTED here too.
+	 * alone, like the three above; and nowhere in a QWARK_GAME_MODULES 0 module,
+	 * which has no Lua game: there LUA_EXEC and LUA_STATUS are UNSUPPORTED here too.
 	 */
 #if QWARK_HAS_TOD && defined(QWARK_EMULATOR)
 	case OP_LUA_PATCH: {

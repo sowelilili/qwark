@@ -5,7 +5,7 @@
 #include "modusb.h"
 
 #if !QWARK_PREVIEW
-#error "modusb.c is a preview feature (proto.h, QWARK_PREVIEW): a release build leaves it out"
+#error "modusb.c is a preview feature (proto.h, QWARK_PREVIEW): a QWARK_PREVIEW 0 build leaves it out"
 #endif
 #include "mods.h"
 #include "mem.h"

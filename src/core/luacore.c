@@ -7,7 +7,7 @@
  *                  the cave, the error tap, the VM hook last), on the first
  *                  LUA_EXEC of a process that asks for one in a level, never
  *                  before: a user's click is what puts code into the game
- *                  (DESIGN 3.7). Revision 1.29 (pending): out of ui.pak, as
+ *                  (DESIGN 3.7). Revision 1.29: out of ui.pak, as
  *                  the savefile helpers are, and so are the Lua chunks the
  *                  core sends (the pause menu's glue, its look, the map's
  *                  glue); tod.sprx carries only the numbers
@@ -221,7 +221,7 @@ void lua_core_tick(void)
 }
 
 /*
- * Revision 1.29 (pending): whether the Lua helper's entry out of ui.pak is
+ * Revision 1.29: whether the Lua helper's entry out of ui.pak is
  * this game's as the module knows it: its counts, its seven numbers, each
  * cave's address and length, inside the entry after its records, and each
  * hook word with the game's own. The CRCs have said the bytes are the ones
@@ -272,7 +272,7 @@ static int pak_cave(void *ctx, u8 cave, u32 off, void *buf, u32 len)
 }
 
 /*
- * Revision 1.29 (pending): a console's install, out of ui.pak. The entry is
+ * Revision 1.29: a console's install, out of ui.pak. The entry is
  * checked whole and against the module's numbers before a byte goes into
  * the game, so a pak that is missing, another build's or damaged leaves the
  * game as it was: LUA_CORE_NO_PAK, and qwark.log says so (uipak.c has logged
@@ -301,7 +301,7 @@ static int install_from_pak(const struct lh_desc *d)
 }
 
 /*
- * Revision 1.29 (pending): one of the helper's Lua chunks (kind, UIPAK_KIND_LUA_*)
+ * Revision 1.29: one of the helper's Lua chunks (kind, UIPAK_KIND_LUA_*)
  * as it goes into the game. On a console it is ui.pak's, read whole into the
  * tick's scratch and checked, its length the module's (`want`); under RPCS3,
  * which never reads the pak, the emulator build's own bytes (`own`). Nothing
@@ -384,7 +384,7 @@ int lua_core_menu_glue(void)
 	rc = ensure_helper(d);
 	if (rc != ST_OK) return rc == LUA_CORE_NO_PAK ? ST_UNSUPPORTED : rc;
 	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
-	/* Revision 1.29 (pending): out of ui.pak on a console. */
+	/* Revision 1.29: out of ui.pak on a console. */
 	if (lua_chunk(d, UIPAK_KIND_LUA_GLUE, d->glue, d->glue_len, &src, &len) != ST_OK) return ST_UNSUPPORTED;
 	switch (luamb_send_to(&g_lc, &g_io, src, len, now_ms(), LUAMB_TARGET_MENU)) {
 	case LUAMB_SEND_OK:       break;
@@ -481,7 +481,7 @@ int lua_core_map_send(u32 *seq)
 	if (g_lc.phase != LUAMB_C_IDLE) return ST_BUSY;
 	if (luamb_target_state(&g_lc, &g_io, LUAMB_TARGET_MAP, &state) != 0) return ST_IO_ERROR;
 	if (state == 0) return ST_NOT_FOUND;
-	/* Revision 1.29 (pending): out of ui.pak on a console. */
+	/* Revision 1.29: out of ui.pak on a console. */
 	if (lua_chunk(d, UIPAK_KIND_LUA_GMAP, d->gmap, d->gmap_len, &src, &len) != ST_OK) return ST_UNSUPPORTED;
 	switch (luamb_send_to(&g_lc, &g_io, src, len, now_ms(), LUAMB_TARGET_MAP)) {
 	case LUAMB_SEND_OK:        break;
@@ -539,7 +539,7 @@ int lua_core_exec_start(const u8 *req, u32 reqlen, u32 *seq)
 	if (state == 0) return ST_NOT_FOUND;
 
 	rc = ensure_helper(d);
-	/* Revision 1.29 (pending): no usable ui.pak on a console, so the helper cannot go in. */
+	/* Revision 1.29: no usable ui.pak on a console, so the helper cannot go in. */
 	if (rc == LUA_CORE_NO_PAK) return ST_UNSUPPORTED;
 	if (rc != ST_OK) return rc;
 

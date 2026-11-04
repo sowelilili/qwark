@@ -1,9 +1,10 @@
 /*
  * Build 57: config.txt and a profile's config.txt on a console's HDD, which is
  * less kind than the PC's, and in the hands of a user who edits them on
- * Windows. Built into both suites: test/qwark-test.exe with the settings
- * profiles (QWARK_PREVIEW 1) and test/qwark-test-release.exe without them, as
- * client 1.4.2's build 56 release module is.
+ * Windows. Built into both suites: test/qwark-test.exe, a test build, and
+ * test/qwark-test-release.exe, a release, both with the settings profiles
+ * (QWARK_PREVIEW 1) since build 57; built with QWARK_PREVIEW 0, as client
+ * 1.4.2's build 56 release module was, it leaves the profiles' part out.
  *
  *   a short read    every read of the HDD hands back seven bytes at a time, as
  *                   cellFsRead may, through a whole day of the console's: the

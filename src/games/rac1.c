@@ -816,7 +816,7 @@ static const struct feature_former rac1_former[] = {
 };
 
 /*
- * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
  * among them (the user's guide calls it one; no RaC1 category is known to
  * allow it) and the goodies menu. The Debug group's three are left out: on is

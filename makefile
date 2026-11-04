@@ -43,8 +43,8 @@ PPU_SRCS += src/core/runwarn.c
 PPU_SRCS += src/core/uipak.c
 #
 # Revision 1.26: the title index and the game's arrival, in every build. The
-# games themselves go in below, linked into a release; a test build's are
-# modules of their own (`games`).
+# games themselves are modules of their own (`games`), or, in a
+# QWARK_GAME_MODULES=0 module, linked in below.
 #
 PPU_SRCS += src/core/gamemod.c src/games/titles.c
 PPU_PRX_TARGET = qwark.prx
@@ -97,42 +97,42 @@ export QWARK_DEV QWARK_BUILD_ID
 PPU_CFLAGS +=	-DQWARK_DEV=$(QWARK_DEV) -DQWARK_BUILD_ID=$(QWARK_BUILD_ID)
 
 #
-# The features still being tried out (src/core/proto.h, QWARK_PREVIEW; build
-# 56: the settings profiles and the USB mods). A test build has them and a
-# release leaves them out, compiled out altogether, so the module pays no code
-# for them: QWARK_PREVIEW follows QWARK_DEV unless it is given itself, which is
-# how one of them ships in a release some day while test builds stay marked.
-# It is worked out from QWARK_DEV wherever it is read and never exported, so
-# `make release`'s QWARK_DEV=0 reaches every make below it as preview 0 too.
+# Build 56's preview features (src/core/proto.h, QWARK_PREVIEW: the settings
+# profiles, the USB mods and the console menu's Mods page). Build 57 ships them
+# in its release, so every build has them: QWARK_PREVIEW is 1 unless it is
+# given itself, and no longer follows QWARK_DEV. QWARK_PREVIEW=0 still compiles
+# them out (no modusb.c), a module no release ships. It is never exported.
 #
-QWARK_PREVIEW		?= $(QWARK_DEV)
+QWARK_PREVIEW		?= 1
 PPU_CFLAGS +=	-DQWARK_PREVIEW=$(QWARK_PREVIEW)
 ifneq ($(strip $(QWARK_PREVIEW)),0)
 PPU_SRCS += src/core/modusb.c
 endif
 
 #
-# Revision 1.26, game modules (src/games/module.h, PROTOCOL.md 9.11). A test
-# build's games are not in qwark.sprx: each is an SPRX of its own named for its
-# game, rac1.sprx (RaC1) to rac4.sprx (Deadlocked) and tod.sprx, built
-# by `games` below, which the module loads while that game runs and the VSH has
-# the memory for it. The core then hands the games its functions through a
-# table (src/core/core_export.c) and its context through r14, which the core
-# and every module are built to leave alone. A release links the four games in
-# and calls them directly, exactly as before: `make release` pins this to 0.
-# It follows QWARK_DEV unless given itself, and, like QWARK_PREVIEW, is never
-# exported.
+# Revision 1.26, game modules (src/games/module.h, PROTOCOL.md 9.11). The games
+# are not in qwark.sprx: each is an SPRX of its own named for its game,
+# rac1.sprx (RaC1) to rac4.sprx (Deadlocked) and tod.sprx, built by `games`
+# below, which the module loads while that game runs and the VSH has the memory
+# for it. The core then hands the games its functions through a table
+# (src/core/core_export.c) and its context through r14, which the core and
+# every module are built to leave alone. Build 57: a release as well as a test
+# build (`make release` ships the modules and Tools of Destruction), so this is
+# 1 unless given itself and no longer follows QWARK_DEV. QWARK_GAME_MODULES=0
+# still links the four original games in and calls them directly, as builds 51
+# to 56 did, with no ToD: a module no release ships. Like QWARK_PREVIEW, it is
+# never exported.
 #
-QWARK_GAME_MODULES	?= $(QWARK_DEV)
+QWARK_GAME_MODULES	?= 1
 PPU_CFLAGS +=	-DQWARK_GAME_MODULES=$(QWARK_GAME_MODULES)
 ifneq ($(strip $(QWARK_GAME_MODULES)),0)
 PPU_SRCS += src/core/core_export.c
 #
 # Revision 1.27: the core's half of a game's own Lua (src/core/luacore.c, the
 # mailbox's state machine, the helper's install and its RPCS3 patch builder),
-# which only a build with Tools of Destruction has. Revision 1.29 (pending):
-# the helper's bytes and its Lua chunks are in ui.pak (PAK_TOD below), and
-# tod.sprx carries only their numbers. A release has none of it.
+# which only a build with Tools of Destruction has. Revision 1.29: the
+# helper's bytes and its Lua chunks are in ui.pak (PAK_TOD below), and tod.sprx
+# carries only their numbers.
 #
 PPU_SRCS += src/core/luacore.c src/core/luamb.c src/games/luahelper_patch.c
 PPU_CFLAGS +=	-ffixed-r14
@@ -163,16 +163,19 @@ all: sfhelper-if-stale switches-if-stale menuhelper-if-stale luahelper-if-stale
 	$(MAKE) $(GAME_MODULES_ALL)
 
 #
-# A release: the module with no DEV bit, and dist/ made from it. Commit dist/
-# afterwards, as after any `make dist`. Objects a failed build left behind
-# were compiled with the other DEV bit, so they go first. The preview
-# features are pinned off here, so a QWARK_PREVIEW=1 on the command line
-# cannot ship them in a release.
+# A release: the module with no DEV bit, its game modules and the full ui.pak
+# (Tools of Destruction's Lua helper included), and dist/ made from them.
+# Commit dist/ afterwards, as after any `make dist`. Objects a failed build
+# left behind, and game modules a test build left, were made with the other
+# DEV bit, so they go first and are built again. Build 57:
+# a release differs from a test build by QWARK_DEV alone; the preview features
+# and the game modules are pinned on here, so a QWARK_PREVIEW=0 or a
+# QWARK_GAME_MODULES=0 on the command line cannot leave them out of a release.
 #
 release:
-	@rm -rf objs
-	$(MAKE) all QWARK_DEV=0 QWARK_PREVIEW=0 QWARK_GAME_MODULES=0
-	$(MAKE) dist QWARK_DEV=0 QWARK_PREVIEW=0 QWARK_GAME_MODULES=0
+	@rm -rf objs $(GAME_MODULE_FILES)
+	$(MAKE) all QWARK_DEV=0 QWARK_PREVIEW=1 QWARK_GAME_MODULES=1
+	$(MAKE) dist QWARK_DEV=0 QWARK_PREVIEW=1 QWARK_GAME_MODULES=1
 
 #
 # Build 55: ui.pak, the console menu's renderers, packed out of the committed
@@ -180,12 +183,12 @@ release:
 # to /dev_hdd0/qwark/ui.pak beside the module's data, and a module takes only
 # the pak built with it (src/core/uipak.h). Python, as for check.py.
 #
-# Revision 1.29 (pending): a build with Tools of Destruction (QWARK_GAME_MODULES,
-# a test build) packs ToD's Lua helper too, its code and the three Lua chunks
-# the core sends, out of src/games/luahelper_bins.c (pak.py --tod), as entries
-# outside the header's identities; a release packs exactly what it did before.
-# Packed every time, so a release after a test build never ships the test
-# build's pak, nor a test build a release's.
+# Revision 1.29: a build with Tools of Destruction (QWARK_GAME_MODULES: since
+# build 57 a release as well as a test build) packs ToD's Lua helper too, its
+# code and the three Lua chunks the core sends, out of src/games/luahelper_bins.c
+# (pak.py --tod), as entries outside the header's identities; only a
+# QWARK_GAME_MODULES=0 module, which no release ships, packs the pak without
+# them. Packed every time, so one build never ships another's pak.
 #
 ifneq ($(strip $(QWARK_GAME_MODULES)),0)
 PAK_TOD = --tod
@@ -195,7 +198,7 @@ ui.pak: src/games/menuhelper_bins.c src/games/sfhelper_bins.c src/games/luahelpe
 
 #
 # Revision 1.26: the game modules, rac1.sprx to rac4.sprx (src/games/
-# module.h, PROTOCOL.md 9.11), a test build's games. Each is the game's own
+# module.h, PROTOCOL.md 9.11), the games of a test build and a release. Each is the game's own
 # sources, classic.c, the savefile helpers' numbers, the wrappers its calls
 # into the core land on (src/games/core_import.c, tools/coreapi.py) and its
 # start and stop (src/plat/ps3/game_module.c), built the SDK's way for a PRX:
@@ -214,8 +217,9 @@ ui.pak: src/games/menuhelper_bins.c src/games/sfhelper_bins.c src/games/luahelpe
 #                                stamp naming this build and its ID
 #   scetool                      signed exactly as qwark.sprx is
 #
-# `make` builds them after the module (a release has none: `games-none`
-# deletes any left over), and `make dist` copies whichever there are.
+# `make` and `make release` build them after the module (a QWARK_GAME_MODULES=0
+# module has none: `games-none` deletes any left over), and `make dist` copies
+# them, all five or none.
 #
 # Each module is named for its game, never for its number: GAME_MODULES lists
 # them, GAME_ID_<name> is the game id it is built for (src/core/proto.h) and
@@ -224,8 +228,9 @@ ui.pak: src/games/menuhelper_bins.c src/games/sfhelper_bins.c src/games/luahelpe
 # later game is a name of its own in both places (Tools of Destruction's is
 # tod.sprx), whatever its number.
 #
-# Revision 1.27: Tools of Destruction is game 5, tod.sprx, a test build's alone
-# (a release links rac1 to rac4 and has no room for a fifth). GAME_VTABLE_<name>
+# Revision 1.27: Tools of Destruction is game 5, tod.sprx (since build 57 in a
+# release too; a QWARK_GAME_MODULES=0 module links rac1 to rac4 and has no room
+# for a fifth). GAME_VTABLE_<name>
 # is the vtable the module's start hands back (src/plat/ps3/game_module.c).
 #
 GAME_MODULES		= rac1 rac2 rac3 rac4 tod
@@ -240,7 +245,7 @@ GAME_VTABLE_rac2	= rac2_game
 GAME_VTABLE_rac3	= rac3_game
 GAME_VTABLE_rac4	= rac4_game
 GAME_VTABLE_tod		= tod_game
-# Revision 1.29 (pending): the pages a module may take, 1 unless given here
+# Revision 1.29: the pages a module may take, 1 unless given here
 # (GAME_PAGES_<name>); the core's memory gate reads the pages from the file
 # (src/core/gamemod.c), and the PRX probe's D4 loaded a two-page RX-only module
 # on CFW and HEN. Tools of Destruction's took two with the cutscene cache, and
@@ -347,7 +352,7 @@ switches-if-stale:
 #
 # Revision 1.27: the Lua helper (src/games/luahelper/), the same again: PowerPC
 # code built at the game's addresses into the committed src/games/luahelper_bins.c,
-# whose bytes the host builds carry and (revision 1.29) a test build's ui.pak,
+# whose bytes the host builds carry and (revision 1.29) the module's ui.pak,
 # tod.sprx only their numbers. build.sh writes their identity in the pak,
 # LH_PAK_ID, into luahelper_bins.h with pak.py --lh-id, so an edit to pak.py
 # regenerates it too.
@@ -402,8 +407,9 @@ INSTALLER_SCETOOL	= -0 SELF -1 TRUE -s FALSE -2 0A -3 1010000001000003 -4 010000
 INSTALLER_TIMEOUT	= timeout 300
 
 #
-# Revision 1.26: a test build's package carries its game modules too, which the
-# installer puts beside ui.pak; a release has none (`games-none`).
+# Revision 1.26: the package carries the game modules too, which the installer
+# puts beside ui.pak: a test build's and, since build 57, a release's (only a
+# QWARK_GAME_MODULES=0 module has none, `games-none`).
 #
 INSTALLER_GAMES		= $(wildcard $(GAME_MODULE_FILES))
 
@@ -425,8 +431,9 @@ pkg: ui.pak
 #
 # dist/ is what the PC client's release workflow takes the console side from:
 # the signed module, its ui.pak (build 55), qwark.build (the module's build
-# number, DEV bit and ID, revision 1.24), the installer package built from
-# those two, and the RPCS3 helper, all committed so a release can be cut
+# number, DEV bit and ID, revision 1.24), the game modules (revision 1.26; a
+# release's too since build 57), the installer package built from those, and
+# the RPCS3 helper, all committed so a release can be cut
 # without an SDK or a cross build. Run it after `make` and `./build-host.sh`.
 # The module and the pak only ever go out together, and the package is made
 # from the very two it sits beside.
@@ -440,7 +447,7 @@ dist: ui.pak pkg
 	@cp $(INSTALLER_PKG) dist/qwark-installer.pkg
 	@cp qwark-rpcs3.exe dist/qwark-rpcs3.exe
 	@rm -f $(GAME_MODULE_FILES:%=dist/%)
-	@if grep -q '^dev 1' qwark.build && [ "$(strip $(QWARK_GAME_MODULES))" != "0" ]; then \
+	@if [ "$(strip $(QWARK_GAME_MODULES))" != "0" ]; then \
 		for m in $(GAME_MODULE_FILES); do test -f $$m || { echo "make dist: no $$m; run make first" >&2; exit 1; }; \
 		cp $$m dist/$$m; done; fi
 	@ls -l dist

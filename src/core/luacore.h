@@ -8,8 +8,8 @@
  * load and unload, and what an earlier session left outstanding in the game is
  * withdrawn as the game arrives, whatever the module did.
  *
- * Only where QWARK_HAS_TOD (src/core/buildmodes.h): a release module has no
- * Lua game and none of this; its net.c answers the three ops UNSUPPORTED.
+ * Only where QWARK_HAS_TOD (src/core/buildmodes.h): a QWARK_GAME_MODULES 0
+ * module has no Lua game and none of this; its net.c answers the three ops UNSUPPORTED.
  *
  * Everything here but lua_core_patch runs on the tick thread under the core
  * lock, the only place that touches game memory.
@@ -45,7 +45,7 @@ int  lua_core_exec_result(u32 seq, u8 *reply, u32 cap, u32 *len, int *done);
 int  lua_core_status(u8 *reply, u32 cap, u32 *len);
 
 /*
- * Revision 1.29 (pending), Tools of Destruction's console menu (menu.c's
+ * Revision 1.29, Tools of Destruction's console menu (menu.c's
  * native renderer, docs/tod-menu.md), whose pause-menu half is the Lua
  * helper's.
  *
@@ -66,7 +66,7 @@ int  lua_core_status(u8 *reply, u32 cap, u32 *len);
  * asks for once when the glue's own look failed; its answer, a line of
  * text, goes into qwark.log ("menu: what the glue saw ...").
  *
- * Revision 1.29 (pending), the helper in ui.pak: on a console the helper's
+ * Revision 1.29, the helper in ui.pak: on a console the helper's
  * code and the three chunks come out of /dev_hdd0/qwark/ui.pak (uipak.h),
  * not the module. With no usable pak lua_core_helper_ready answers
  * LUA_CORE_NO_PAK, which is no frame status and never goes on the wire (menu.c
@@ -81,7 +81,7 @@ int  lua_core_menu_glue(void);
 int  lua_core_menu_diag(void);
 
 /*
- * Revision 1.29 (pending), the game's own planet picker (menu.c, struct
+ * Revision 1.29, the game's own planet picker (menu.c, struct
  * menu_picker; Tools of Destruction's galactic map): a chunk of the core's
  * own for the gameplay VM, the way the glue goes to the pause menu's.
  *

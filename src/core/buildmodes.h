@@ -5,14 +5,16 @@
  * any header could declare a core function or define an inline one.
  *
  *   QWARK_GAME_MODULES  1 when the core reaches its games through core_api:
- *                       on a console, a test build whose games are SPRX files
- *                       of their own (src/core/gamemod.c); on a PC, the host
- *                       builds, whose games stay linked in but go through the
- *                       same table, and whose simulator can stand modules in
- *                       for them. 0 is a release module, whose games are
- *                       linked in and called directly, as before revision 1.26.
- *                       The makefile sets it to QWARK_DEV unless told
- *                       otherwise; `make release` pins it to 0.
+ *                       on a console, a module whose games are SPRX files of
+ *                       their own (src/core/gamemod.c), a test build and,
+ *                       since build 57, a release; on a PC, the host builds,
+ *                       whose games stay linked in but go through the same
+ *                       table, and whose simulator can stand modules in for
+ *                       them. 0 is a module whose games are linked in and
+ *                       called directly, as builds 51 to 56 shipped, which no
+ *                       release ships any more. 1 unless told otherwise, in
+ *                       the makefile too, whatever QWARK_DEV says; `make
+ *                       release` pins it to 1.
  *   QWARK_GAME_MODULE   1 while this object is going into a game module
  *                       (the makefile's `games`)
  *   QWARK_GAME_IMPORT   the games of this binary call the core through
@@ -26,11 +28,7 @@
 #endif
 
 #ifndef QWARK_GAME_MODULES
-#ifdef QWARK_HOST
 #define QWARK_GAME_MODULES      1
-#else
-#define QWARK_GAME_MODULES      QWARK_DEV
-#endif
 #endif
 
 #ifndef QWARK_GAME_MODULE
@@ -41,10 +39,11 @@
 
 /*
  * Revision 1.27: Tools of Destruction (game 5) and the core's Lua ops
- * (src/core/luacore.c) are in the builds whose games are modules and in the
- * PC builds, never in a release module, which links the four originals and
- * has no room for a fifth: there the title index has no ToD and the Lua ops
- * answer UNSUPPORTED.
+ * (src/core/luacore.c) are in the builds whose games are modules, a test
+ * build and (build 57) a release, and in the PC builds; never in a
+ * QWARK_GAME_MODULES=0 module, which links the four originals and has no room
+ * for a fifth: there the title index has no ToD and the Lua ops answer
+ * UNSUPPORTED.
  */
 #if QWARK_GAME_MODULES || QWARK_GAME_MODULE || defined(QWARK_HOST)
 #define QWARK_HAS_TOD           1

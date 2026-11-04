@@ -4,9 +4,10 @@
  *
  * It puts the module and the console menu's file where the PC client's
  * "Install to boot_plugins.txt" puts them, and edits the list the way that
- * install does (bootlist.h). Revision 1.26: a test build's package carries its
- * game modules too, rac1.sprx to rac4.sprx (qwark's PROTOCOL.md 9.11),
- * which go beside ui.pak; a release's carries none. It is written so that a failure at any point
+ * install does (bootlist.h). Revision 1.26: the package carries the game
+ * modules too, rac1.sprx to rac4.sprx and tod.sprx (qwark's PROTOCOL.md 9.11),
+ * which go beside ui.pak: a test build's and, since build 57, a release's
+ * (build 56's release carried none). It is written so that a failure at any point
  * leaves the console booting what it booted before:
  *
  *  1. It checks the package's own qwark.sprx and ui.pak, reads the list and
@@ -48,7 +49,8 @@
 #define INST_QWARK_DIR      "/dev_hdd0/qwark"
 #define INST_PAK            "/dev_hdd0/qwark/ui.pak"
 /*
- * Revision 1.26: the game modules a test build's package carries, any of the
+ * Revision 1.26: the game modules a package carries (a test build's, and a
+ * release's since build 57), any of the
  * five (revision 1.27 added Tools of Destruction's), each named for its game as qwark's title index names it
  * (src/games/titles.c): INST_GAME_NAME_n is the file, in the package's USRDIR
  * and in /dev_hdd0/qwark, of game id n.
@@ -79,7 +81,7 @@
 
 /* A plugin list is a few hundred bytes; anything past this is not one. */
 #define INST_LIST_MAX       65536u
-/* The module is about 100 KB and the pak 74 KB (build 56; a test build's 96 KB with ToD's Lua helper); this is only a bound on nonsense. */
+/* The module is about 100 KB and the pak 74 KB (build 56; 96 KB with ToD's Lua helper, build 57); this is only a bound on nonsense. */
 #define INST_FILE_MAX       (16u << 20)
 
 /* Where it stopped. */

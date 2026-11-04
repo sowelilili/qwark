@@ -1059,7 +1059,7 @@ static const struct feature_former rac3_former[] = {
 };
 
 /*
- * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
  * and the quick-select pause among them. The trophy reset's toggle is not
  * one: it touches the console's trophies, not the run.

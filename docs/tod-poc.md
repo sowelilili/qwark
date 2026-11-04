@@ -2,7 +2,7 @@
 
 Written 2026-10-27, for NPEA00452 v01.00 (EBOOT.ELF md5 `df9d68ada99b3f44ffe798ce03a1549c`). It builds on `rewrite/docs/REPORT-tod-lua.md` (helper A, sections 2.3 to 2.9, 4, 5 and 7) and on SPEC-game-modules 4.4 and 4.12.
 
-**Phase 2 landed on 2026-10-27 (revision 1.27).** ToD is game 5, `tod.sprx`, in a test build and the PC builds, never a release (`QWARK_HAS_TOD`, `src/core/buildmodes.h`); `src/games/tod_game.c` and `tod_panel.c` are the game, all of it plain data reads and writes; `src/core/luacore.c` is LUA_EXEC, LUA_STATUS and LUA_PATCH (PROTOCOL.md 5.15) over this mailbox. Where phase 2 differs from section 2 below:
+**Phase 2 landed on 2026-10-27 (revision 1.27).** ToD is game 5, `tod.sprx`, in a test build and the PC builds, never a release (`QWARK_HAS_TOD`, `src/core/buildmodes.h`; since build 57 a release has it too); `src/games/tod_game.c` and `tod_panel.c` are the game, all of it plain data reads and writes; `src/core/luacore.c` is LUA_EXEC, LUA_STATUS and LUA_PATCH (PROTOCOL.md 5.15) over this mailbox. Where phase 2 differs from section 2 below:
 
 - **LUA_EXEC's reply** has no `u16 st` of its own: the frame's status is the wire status, and the payload starts at `s32 lua_status` (a 12-byte head). The network thread asks the tick thread twice, through the ring: the send, then every 10 ms whether the answer the tick watches for (`lua_core_tick`) is in; the deadline is the mailbox's own 1.5 s.
 - **LUA_STATUS** has two pad bytes after `err_len` (an 88-byte head), so `err` starts aligned; `installed` 2 is RPCS3's "not looked yet".

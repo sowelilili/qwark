@@ -103,7 +103,7 @@ static int fresh_file(void)
 }
 
 /*
- * Revision 1.29 (pending): the two tests a run's start is made of, shared
+ * Revision 1.29: the two tests a run's start is made of, shared
  * with Cache cutscenes on reset (tod_cache.c). A planet load under way: the
  * loader on the level's tiers, the level's data out (tod.h). A run's load:
  * into Metropolis, on a fresh file; the flag is read only for Metropolis.

@@ -67,8 +67,8 @@
 #define MENU_PAGE_SAVE_CAT   0x09   /* MAIN, arg: the category's place in the library */
 #define MENU_PAGE_UNLOCK_ACTIONS 0x0A /* CONFIG: the Unlocks page's buttons, where the game names them a page (round 3) */
 /*
- * Build 56, a preview feature (QWARK_PREVIEW, proto.h; a release module has no
- * such page): CONFIG, the running game's mods, installed and USB-only, each an
+ * Build 56, a preview feature (QWARK_PREVIEW, proto.h; in a release since build
+ * 57, and a QWARK_PREVIEW 0 module has no such page): CONFIG, the running game's mods, installed and USB-only, each an
  * Off / On / On boot row (menu.c, the Mods page).
  */
 #define MENU_PAGE_MODS       0x0B
@@ -211,8 +211,8 @@ void menu_test_menu(const struct game_menu *gm);
 #if QWARK_PREVIEW
 /*
  * Build 56: the root's Mods row (a preview feature) on, as built, or off, so
- * a renderer's test of a root of six (what a release module shows) still
- * runs in the test build.
+ * a renderer's test of a root of six (what a QWARK_PREVIEW 0 module shows)
+ * still runs in the test build.
  */
 void menu_test_mods_row(int on);
 #endif

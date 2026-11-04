@@ -91,8 +91,9 @@ PS3_SYSTEM_VER = "04.7000"
 
 # The files the package installs, and nothing else.
 PKG_FILES = ["ICON0.PNG", "PARAM.SFO", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"]
-# Revision 1.26: a test build's game modules (qwark's PROTOCOL.md 9.11), which
-# a package carries when it is given them (--games) and a release's never has.
+# Revision 1.26: the game modules (qwark's PROTOCOL.md 9.11), which a package
+# carries when it is given them (--games): a test build's, and a release's
+# since build 57 (build 56's release had none).
 # Each is named for its game, as qwark's title index names it (src/games/titles.c).
 GAME_FILES = ["USRDIR/rac1.sprx", "USRDIR/rac2.sprx", "USRDIR/rac3.sprx", "USRDIR/rac4.sprx",
               "USRDIR/tod.sprx"]
@@ -454,7 +455,7 @@ def cmd_stage(args):
 
 
 def game_paths(args):
-    """--games: the game modules a test build's package carries, rac1.sprx to rac4.sprx and tod.sprx."""
+    """--games: the game modules a package carries, rac1.sprx to rac4.sprx and tod.sprx."""
     out = list(getattr(args, "games", None) or [])
     for g in out:
         if "USRDIR/" + os.path.basename(g) not in GAME_FILES:

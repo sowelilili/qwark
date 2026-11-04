@@ -169,7 +169,7 @@
 #define MBOX_CAP_REQUEST    0x08   /* it opens and closes the menu when asked */
 #define MBOX_CAP_PICKER     0x10   /* version 3: it opens the game's own planet picker (MROWF_PICKER) */
 /*
- * Revision 1.29 (pending, docs/tod-menu.md 15): it scrolls a page at a time,
+ * Revision 1.29 (docs/tod-menu.md 15): it scrolls a page at a time,
  * as Tools of Destruction's pause menu wants. A long page's windows are
  * whole screens, start 0, m, 2m and on, the last one short; SCROLL_DOWN shows
  * the next window with the cursor on its first row the cursor may stand on,

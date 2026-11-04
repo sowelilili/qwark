@@ -161,7 +161,7 @@ OP_MENU_HELP = 0x0092
 OP_PROFILE_INFO = 0x0093
 OP_PROFILE_ENABLE = 0x0094
 OP_COMBO_OVERRIDE = 0x0095
-# Revision 1.30 (pending): the run-start warnings' switch, and SessionInfo byte 31, flags3.
+# Revision 1.30: the run-start warnings' switch, and SessionInfo byte 31, flags3.
 OP_RUN_WARN = 0x0096
 SESSION_FLAG3_RUN_WARN = 0x01
 SESSION_FLAG3_RUN_WARN_OFF = 0x02
@@ -1131,7 +1131,8 @@ def test_vsh_memory(sim, c):
 
 def pack_pak(path, build=None, tod=True):
     """ui.pak as a test build's `make` packs it (src/games/menuhelper/pak.py, with ToD's Lua helper since
-    revision 1.29: the simulator has ToD), or stamped with another build, or (tod False) as a release's."""
+    revision 1.29: the simulator has ToD), or stamped with another build, or (tod False) without ToD's Lua helper,
+    as build 56's release packed it."""
     args = [sys.executable, "-I", PAK_PY, "--out", path] + (["--build", str(build)] if build else []) + \
         (["--tod"] if tod else [])
     return subprocess.run(args, capture_output=True, text=True).returncode == 0
@@ -2777,7 +2778,7 @@ def savefile_info(c):
         "supported": body[0], "installed": body[1], "running": body[2],
         "pending": body[3], "size": size, "done": done, "total": total,
         "error": body[16],
-        # Revision 1.29 (pending): which of the game's checks `error` came from.
+        # Revision 1.29: which of the game's checks `error` came from.
         "why": body[17],
     }
 
@@ -5550,7 +5551,7 @@ def smoke_tod_savefile(c, sim):
     check(status == ST_OK and info and info["error"] == 0 and mem_read_u32(c, TOD_BOLTS) == 1111,
           "ToD: Load set-aside loads the set-aside file", (status, info))
 
-    # Revision 1.29 (pending): a RESTORE is the set-aside too, as the other games' aside buffer is.
+    # Revision 1.29: a RESTORE is the set-aside too, as the other games' aside buffer is.
     tod_dir = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "savefiles", "NPEA00452")
     aside = os.path.join(tod_dir, "set-aside.sav")
 
@@ -5700,7 +5701,7 @@ TOD_PREFETCH = 0x1037A704
 TOD_FIOS_CACHE = 0x106ACBA4
 
 
-# Revision 1.29 (pending): the cutscene cache (src/games/tod_cache.c), ids 19..21, readout 3.
+# Revision 1.29: the cutscene cache (src/games/tod_cache.c), ids 19..21, readout 3.
 TOD_CC_TOC, TOD_CC_LEVELS, TOD_CC_STR = 0x30250000, 0x30250100, 0x30251000
 TOD_LEVEL_TIER_LOADED = 0x1037A908 + 6
 
@@ -5827,7 +5828,7 @@ def smoke_tod_cc_ahead(c, cobalia, fastoon, stratus):
 
 
 def smoke_tod_no_pak(c, sim):
-    """Revision 1.29 (pending): ToD's Lua helper is in ui.pak. With a pak that has none (a release's), the
+    """Revision 1.29: ToD's Lua helper is in ui.pak. With a pak that has none (build 56's release's), the
     console's LUA_EXEC answers UNSUPPORTED with nothing written, flags bit7 asks for the pak, the log says why,
     and once a client has sent the right one the helper goes in in the same session."""
     good_path = os.path.join(ROOT, "qwark-host-root", "dev_hdd0", "qwark", "ui.pak")
@@ -5841,11 +5842,11 @@ def smoke_tod_no_pak(c, sim):
         os.remove(rel_path)
     check(release is not None and len(release) < len(good) and release[:12] == good[:12] and
           release[24:32] == good[24:32] and release[20] == 8 and good[20] == 12,
-          "ToD, no pak: pak.py packs a release's pak, without the Lua helper's entries",
+          "ToD, no pak: pak.py packs a pak without the Lua helper's entries, as build 56's release's",
           (len(release) if release else None, len(good)))
     sim.send("quit")
     wait_state(c, SESSION_XMB)
-    check(release is not None and send_pak(c, release) == ST_OK, "ToD, no pak: a client sends a release's ui.pak")
+    check(release is not None and send_pak(c, release) == ST_OK, "ToD, no pak: a client sends a ui.pak without them")
     ok, info = wait_info_flag(c, SESSION_FLAG_UI_PAK_BAD, True)
     check(ok, "ToD, no pak: not this module's (no Lua helper): flags bit7 set", hex(info["flags"]) if info else None)
     check(sim_line(sim, "Lua helper 0x00000000, not this module's") is not None,
@@ -8498,7 +8499,7 @@ def main():
               "pressed again, off, and \"Fast loads off\"", (on, said))
         c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_TOGGLE_FAST_LOADS, 0))
 
-        # Revision 1.30 (pending): the run-start warnings. RaC1's run start is
+        # Revision 1.30: the run-start warnings. RaC1's run start is
         # its autosplitter's START, game state 6 -> 0 on Veldin. RaC1 counts
         # Fast loads (0), Infinite ammo (1), Freeze health (2), Ghost Ratchet
         # (3) and the goodies menu (6); whatever the steps before left on

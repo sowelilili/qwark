@@ -1,4 +1,4 @@
-"""Tools of Destruction's console menu (revision 1.29, pending): the pause
+"""Tools of Destruction's console menu (revision 1.29): the pause
 menu's Lua glue and the helper's look, run by a real Lua (docs/tod-menu.md 11).
 
 The glue is Lua 5.0 for the game's own VM, and nothing in qwark's tests runs
@@ -8,9 +8,8 @@ both the source (src/games/luahelper/lh_glue.lua) and the bytes qwark sends
 (lh_tod_glue in src/games/luahelper_bins.c, after build.sh's lua_min), so
 the minified glue is held to the same cases, and the look (lh_tod_diag).
 Revision 1.29: the galactic map's glue (lh_gmap.lua, lh_tod_gmap) the same
-way, against the stand-in map of test/gmap_harness.lua. Revision 1.29
-(pending): a console sends the three out of ui.pak, so "as sent" is the
-pak's (pak.py --tod, as a test build packs it), which must be the bytes
+way, against the stand-in map of test/gmap_harness.lua. Revision 1.29: a console sends the three out of ui.pak, so "as sent" is the
+pak's (pak.py --tod, as a test build and a release pack it), which must be the bytes
 luahelper_bins.c gives the emulator builds; that is checked first, with or
 without a Lua.
 
@@ -55,8 +54,8 @@ def bins_array(name):
 
 def pak_chunks():
     """
-    Revision 1.29 (pending): the pause menu's glue, the look and the map's glue
-    as a console sends them, out of the pak a test build packs (pak.py --tod),
+    Revision 1.29: the pause menu's glue, the look and the map's glue
+    as a console sends them, out of the pak a test build and a release pack (pak.py --tod),
     read back by pak.py's own reader: {kind: bytes}.
     """
     import importlib.util

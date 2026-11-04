@@ -501,7 +501,7 @@ static int tod_fast_loads(int on)
 }
 
 /*
- * Revision 1.29 (pending): Fast loads forced for a load qwark starts (tod.h,
+ * Revision 1.29: Fast loads forced for a load qwark starts (tod.h,
  * tod_galmap_up), as rac1_fastload_force: a flag at 1 under RPCS3 that this
  * process did not force is the user's setting; the toggle on, nothing is
  * forced. UNSUPPORTED (RPCS3 without the switches) loads at the game's pace.
@@ -543,6 +543,20 @@ static void tod_fl_tick(const struct tod_as_state *as)
 	}
 	if (TP->fl_loading ? (as->cur_tier != 0 && as->cur_lua != 0) : ++TP->fl_ticks >= TOD_FADE_WAIT_TICKS)
 		tod_fl_restore();
+}
+
+/*
+ * Revision 1.30: Load set-aside, as RaC1's to UYA's (rac1_load_setaside): the force once its
+ * RESTORE is under way, this load's from then on even when an earlier load's
+ * was still running, as rac1_fastload_claim makes it. A force that cannot be
+ * had (RPCS3 without the switches) leaves the load at the game's pace.
+ */
+int tod_load_aside_force(void)
+{
+	int rc = tod_fl_force();
+
+	if (rc != ST_OK) plat_log("tod: Load set-aside goes at the game's pace: Fast loads could not be forced (%d)", rc);
+	return rc;
 }
 
 /* ------------------------------------- qwark's own loads' fade, revision 1.29 */
@@ -1028,7 +1042,7 @@ int tod_die(void)
  * Revision 1.29: the fade a frame long, as for every load qwark asks for, but
  * a few frames for a story FMV load, which has no load screen (tod.h,
  * TOD_LOAD_FADE_STORY): the level flags are the game's own here.
- * Revision 1.29 (pending): and Fast loads forced for it, as the four original
+ * Revision 1.29: and Fast loads forced for it, as the four original
  * games' planet load forces them (tod.h, tod_galmap_up); a request that fails
  * takes back its own force and nobody else's.
  */

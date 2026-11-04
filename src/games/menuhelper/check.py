@@ -132,15 +132,16 @@ the tick scratch the module reads a helper's entry into (QSCRATCH_BYTES in
 util.h); the header's CRC is that of the rest, and its two identities are the
 CRC-32s of the renderer entries and of the helper entries, which are MH_PAK_ID
 in menuhelper_bins.h and SF_PAK_ID in sfhelper_bins.h, the pak the module is
-built to accept. Revision 1.29 (pending): a build with Tools of Destruction
+built to accept. Revision 1.29: a build with Tools of Destruction
 packs its Lua helper too (pak.py --tod), four entries after the savefile
 helpers: the helper's code (kind 3), each of its numbers, its cave byte for
 byte and its five hook words luahelper_bins.c's (read here by a parser of this
 script's own), and its three Lua chunks (kinds 4 to 6), each the bytes
 luahelper_bins.c carries, within the scratch a chunk is read into; the CRC of
 their CRCs is LH_PAK_ID in luahelper_bins.h, and the pak without them is byte
-for byte the one before them. The ui.pak beside the module is either pak, a
-test build's (with ToD) or a release's.
+for byte the one before them. The ui.pak beside the module must be the pak
+with them: since build 57 `make` and `make release` both pack it, and only a
+QWARK_GAME_MODULES=0 module, which no release ships, packs the one without.
 Exit status 0 when everything passes.
 """
 import argparse
@@ -4441,10 +4442,12 @@ def check_pak(ok, pak_path=None):
     path = pak_path or os.path.join(QWARK, "ui.pak")
     if os.path.exists(path):
         file_data = open(path, "rb").read()
-        ok(file_data == data or file_data == tod_data,
-           "ui.pak: %s is this build's pak, byte for byte (%d bytes, %s)" %
-           (path, len(file_data), "a test build's, with ToD's Lua helper" if file_data == tod_data else
-            "a release's" if file_data == data else "neither a release's nor a test build's"))
+        ok(file_data == tod_data,
+           "ui.pak: %s is this build's pak, byte for byte, with ToD's Lua helper, as `make` and `make release` "
+           "pack it (%d bytes%s)" %
+           (path, len(file_data), "" if file_data == tod_data else
+            "; it is the pak without ToD's entries, a QWARK_GAME_MODULES=0 module's" if file_data == data else
+            "; it is neither"))
     elif pak_path:
         ok(False, "ui.pak: %s exists" % pak_path)
     else:

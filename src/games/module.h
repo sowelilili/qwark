@@ -1,7 +1,7 @@
 /*
  * Game modules (SPEC-game-modules.md, design A1; PROTOCOL.md section 9.11).
  *
- * A test build's core carries no game: each game is its own SPRX, named for
+ * The core carries no game (a test build's, and since build 57 a release's): each game is its own SPRX, named for
  * the game (/dev_hdd0/qwark/rac1.sprx to rac4.sprx, the title index's
  * title_module_name), loaded when that game is running and there is
  * memory for it (src/core/gamemod.c), and unloaded once it quits. A module has
@@ -18,8 +18,9 @@
  *   QWARK_GAME_IMPORT   the games reach the core through core_api: a module,
  *                       and the host builds, whose games stay linked in
  *                       (QWARK_GAME_MODULES on a PC) so the seam is tested
- *   neither             a release module: the games linked in, calling the
- *                       core directly, exactly as before game modules
+ *   neither             a QWARK_GAME_MODULES 0 module (builds 51 to 56's
+ *                       release): the games linked in, calling the core
+ *                       directly, exactly as before game modules
  */
 #ifndef QWARK_GAME_MODULE_H
 #define QWARK_GAME_MODULE_H

@@ -1,4 +1,4 @@
--- Tools of Destruction's console menu (revision 1.29, pending): what the
+-- Tools of Destruction's console menu (revision 1.29): what the
 -- glue saw, for qwark.log. docs/tod-menu.md 11.
 --
 -- qwark sends this once, as a request for the pause menu's VM (target MENU,

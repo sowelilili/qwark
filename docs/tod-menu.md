@@ -1,4 +1,4 @@
-# Tools of Destruction's console menu: the game's own pause menu (revision 1.29, pending)
+# Tools of Destruction's console menu: the game's own pause menu (revision 1.29)
 
 The trainer's console menu in Tools of Destruction (NPEA00452 v01.00, `EBOOT.ELF` md5 `df9d68ada99b3f44ffe798ce03a1549c`, game 5, `tod.sprx`), drawn by the game's own pause menu as the four original games' menus are: a **TRAINER** row in place of the pause list's Inventory row (Options' Help row until section 14), and qwark's pages on the pause's own list and its GAME OPTIONS screen (since the fourth console test, section 12; until then the Cheats screen). This file has the reverse engineering, the design, and the test lists for a console and RPCS3.
 
@@ -94,7 +94,7 @@ The second crash (section 10) added: LuaPoolAllocator_alloc 0x6D37F8, LuaPoolAll
 
 The crash fix (section 9) added: AnarkPresentation_elementTable 0x79A374, AnarkPresentation_findElement 0x79A588, CLuaObject_getPresentation 0x75FB68, CLuaObject_getRuntime 0x75FB98, CLuaObject_getElementDef 0x75FBC0, CLuaObject_index 0x761C20 (the objects' `__index`: a property, else a child by name), CLuaObject_ctor 0x760B2C, AnarkLuaContext_getBridge 0x76E23C, AnarkLuaCache_pushElement 0x766A7C, AnarkLuaBridge_pushElement 0x74BD6C, AnarkLuaBridge_getRuntime 0x74BD58, AnarkLuaBridge_ctor 0x75283C, AnarkLuaBridge_onPresentationPush 0x74C108, AnarkLuaBridge_onPresentationPop 0x74E0B8, AnarkLuaBridge_onRuntimeEvent 0x7510EC, AnarkLuaBridge_runtimeListener 0x7511A0, AnarkRuntime_pushPresentation 0x79647C, AnarkRuntime_popPresentation 0x79558C, AnarkRuntime_unloadPresentation 0x796CA4, AnarkRuntime_updatePresentations 0x797650, AnarkRuntime_sendToPresentations 0x797448, AnarkRuntime_fireEvent 0x79750C, AnarkRuntime_addListener 0x795148, AnarkMenuSystem_reset 0x653B40, tolua_Node_open 0x779AB0. Structs: /ToD/Anark/AnarkLuaBridge, /ToD/Anark/CLuaObject, /ToD/Anark/AnarkRuntime (partial); /ToD/Anark/AnarkMenuSystem now has `luaBridge` +0x1058, `runtime` +0x1068 (it was named `presentation`, which it is not: it is the runtime that pushes presentations) and `presentation` +0x1090. Prototypes: AnarkRuntime_pushPresentation, AnarkRuntime_popPresentation, CLuaObject_getPresentation, CLuaObject_getNumChildren, AnarkMenuSystem_reset, AnarkLuaBridge_onPresentationPush and _onPresentationPop.
 
-## 9. The pause menu crash of the first console test (revision 1.29, pending)
+## 9. The pause menu crash of the first console test (revision 1.29)
 
 **What the user saw** (build 57's test module, 2026-10-31): "lua: helper installed", "menu: the game's own menu served for game 5", and the game crashed as the pause menu opened, by Start and by the combo alike. The dump: `pc=0x79A388 lwz r3,0x20C(r3)`, r3 = 0, DATA_HTAB_MISS, under `AnarkPresentation_findElement` 0x79A588 <- `CLuaObject_getNumChildren` 0x76B604 <- `tolua_Node_getNumChildren` 0x7774C4 <- the Lua VM <- `lua_pcall` 0x692990 <- the helper (0x867C10, `lh_menu_tick`; 0x8673B8, `.lh_menu_hook`), r2 the helper's TOC. So the glue's `walk` called `scene:getNumChildren()` on the very first frame it looked.
 
@@ -111,7 +111,7 @@ The crash fix (section 9) added: AnarkPresentation_elementTable 0x79A374, AnarkP
 - Slide 16 straight from Options (high). `onCheats` is `scene:goToSlide(16)` from the list's `handleSelect`, the same call the TRAINER row's callback makes from the same `handleSelect` (the row's `[2]` called with the ListUpdater as `self`); the Cheats screen's `onActivate` (through the registry's `onUpdate`) and its list's reset follow the same way. Back is `scene:goToSlide(21)`, whose `blankHandler` sends the `ListUpdater` back to its `currentSlide`, 7 from Options (`doScreenChange(7, ...)`), 3 from the main list after the combo, so Triangle at qwark's root lands on the list the Trainer was opened from. `Node.goToSlide` is AnarkLibraryExtensions' Lua function (it fires a "set slide" event on the time-independent parent), which the glue captures after that chunk ran.
 - Not changed: an open or close from the combo goes to slide 16 or 21 from `qwark_frame`, outside an update but with the presentation pushed, as `AnarkMenuSystem_reset` fires its event; the game's own handlers already call node methods right after `goToSlide` (`onMenuBack`, `doScreenChange`), so an event fired within a push does not end it.
 
-## 10. The second crash: the pause menu's Lua pool ran out (revision 1.29, pending)
+## 10. The second crash: the pause menu's Lua pool ran out (revision 1.29)
 
 **What the user saw** (build fce2524's module, 2026-11-01): "lua: helper installed", "menu: the game's own menu served for game 5", no "glue is in", and the game crashed as the pause opened. The dump (`rewrite/probe-logs/tod-menu-crash2.txt`): `pc=0x6D38C8 lwz r31,0x0(r11)`, r11 = 0x801B, DATA_HTAB_MISS, lr 0x68FB30, r30 = r21 = 0x1073DC40 (`g_anarkLuaAllocator`).
 
@@ -146,7 +146,7 @@ So the glue's first frame (`setup`, in the same frame as its load) made a closur
 
 **The simulator's fake Lua** models neither the pool nor the allocator: it never runs the helper's C, only stands in for it. Checking "a menu VM call without the menu allocator current" there would test the stand-in, not the helper, and the allocator was right in the crash. `lm_room` and its decisions are the helper's own C, compiled for the PC in `test/test_tod_menu.c`.
 
-## 11. The third console test: the glue found nothing (revision 1.29, pending)
+## 11. The third console test: the glue found nothing (revision 1.29)
 
 **What the user saw** (build 34e848e's module, 2026-11-01, `rewrite/probe-logs/qwark-menu3.log`): no crash, Pause > Options still said HELP and opened the game's Help, and the combo opened the plain pause. qwark.log had "menu: the pause menu's glue found no Options list or Cheats screen; Help stays the game's" and no "Lua pool is short" or "not ready" line: the pool guard and the gate let the glue in, it looked 30 times over five seconds, and never had both behaviours at once. The game's TTY prints "**** ALLOCATING MEMORY FOR ANARK MENU SYSTEM ****" at every pause, which is the game's own `PauseMenu_startLoading`, not qwark.
 
@@ -178,7 +178,7 @@ What it did not allow for is *when* a behaviour joins the registry: in its `onIn
 
 **Ghidra** (DL-ghidra:/NPEA00452.ELF): AnarkLuaBridge_onElementEvent 0x751670, AnarkLuaBridge_elementEventListener 0x75280C, AnarkLuaBridge_initNames 0x74C1DC, AnarkLuaBridge_getContextBinding 0x74BD60, AnarkLuaContext_loadChunk 0x76EEAC, AnarkLuaBinding_pushUserType 0x771D58, AnarkLuaBinding_toUserType 0x772BA4, AnarkPresentation_getContextData 0x79A60C, tolua_class_index_event 0x6ECF88, tolua_class_newindex_event 0x6ED394.
 
-## 12. The fourth console test: the Trainer on the pause's own list and Game Options (revision 1.29, pending)
+## 12. The fourth console test: the Trainer on the pause's own list and Game Options (revision 1.29)
 
 **What the user saw** (build e44961c's module, 2026-11-01, `rewrite/probe-logs/qwark-menu4.log`, `trainer-root-2.webp`, `trainer-cheats-screen-1.webp`): "menu: the pause menu's glue is in: TRAINER in Options, the Cheats screen met when the Trainer opens (its Lua pool: 5917 blocks or more left for small objects, 101 in its largest class)" at every pause and "the Trainer met the game's Cheats screen on its slide; its page is in" on TRAINER, so section 11's fix worked. But:
 
@@ -231,7 +231,7 @@ The glue is 7,859 bytes as sent (a request holds 8,192): the constants it names 
 
 tolua_menu_get_current_skillpoints00 0x2EAAC, tolua_menu_is_cheat_unlocked00 0x2FBF0, tolua_menu_get_cheat_desc00 0x2FD88, tolua_menu_get_starting_screen00 0x286D4, PauseMenu_getStartingScreen 0x24EB4. `/ToD/Anark/PauseMenuRequest` already had `startScreen` (+0x10) and `returnScreen` (+0x14).
 
-## 13. The fifth console test: sizes, loads from the pause, a spacer (revision 1.29, pending)
+## 13. The fifth console test: sizes, loads from the pause, a spacer (revision 1.29)
 
 **What the user saw** (build 87a143a's module, 2026-11-01, `rewrite/probe-logs/trainer-root-too-many-rows.png`, `trainer-root-too-few-rows.png`): the Trainer works, but
 
@@ -294,7 +294,7 @@ Manips is a section of ToD's menu table (`tod_menu_manips`), and a section lists
 Labels in `PauseMenu_update`: `PauseMenu_update_stateCases` 0x24160 (its jump table by `g_pauseMenuState`), `PauseMenu_update_closing` 0x24174 (state 4), `PauseMenu_update_closed` 0x243F8 (state 0, which calls `thunk_GameState_requestGameplay`).
 
 
-## 14. The Trainer takes Inventory's row, not Help's (revision 1.29, pending)
+## 14. The Trainer takes Inventory's row, not Help's (revision 1.29)
 
 **Why.** In ToD's pause, Help is a row of Options, a sub-page, so the Trainer was two presses away and Options lost a row the game uses. The user asked for the Trainer to take **INVENTORY**'s row instead: Inventory is a read-only screen, and of no use to a speedrunner.
 
@@ -331,7 +331,7 @@ Labels in `PauseMenu_update`: `PauseMenu_update_stateCases` 0x24160 (its jump ta
 5. An arena challenge and a beaten space combat level: TRAINER in the fifth row, where Inventory is there; Triangle at the root: that nine-row list again.
 6. qwark.log: "menu: the pause menu's glue is in: TRAINER in the pause list for Inventory ...".
 
-## 15. The polish: planet names, a page at a time, TRAINER from the first frame (revision 1.29, pending)
+## 15. The polish: planet names, a page at a time, TRAINER from the first frame (revision 1.29)
 
 Three things the user asked for after the Trainer took Inventory's row (section 14), and three small ones.
 
@@ -403,7 +403,7 @@ The glue is 7,949 bytes as sent (of 8,192; it was 7,933). The Lua helper's code 
 4. Manips: Up and Down over the blank row as before; after a cache run, its row reads DONE (NS).
 5. A run from a new game: the timer starts a little sooner into the fade in (0.45 s); a load into Metropolis or Cobalia with Remove cutscenes fades out over about six frames.
 
-## 16. Planets opens the galactic map (revision 1.29, pending)
+## 16. Planets opens the galactic map (revision 1.29)
 
 **Section 17 changes this:** the map qwark opens now lists every planet (Kerwan, both Fastoons), and the one-shot ALL PLANETS row below is gone.
 
@@ -459,7 +459,7 @@ The Trainer's root as before. PLANETS: the pause closes (its own close and fade)
 
 Functions: GalMap_request 0x35084, Lua_gmap 0x291CBC, thunk_GalMap_request 0x26B7F0, tolua_gameplay_gmap00 0x2B1B64, GalMapState_enter 0x36598, GalMapState_exit 0x35B0C, GalMapState_update 0x360BC, GalMap_loadMenu 0x36448, GalMap_freeMenu 0x35160, GalMap_close 0x35120, GalMap_selectLevel 0x351D8, GalMap_levelInit 0x35C14, GalMap_restoreView 0x35920, GalMap_setupView 0x35D08, GalMap_updateCamera 0x35320, GalMap_isSectorVisible 0x36BFC, GalMap_getLevelSector 0x366A0, exit_galactic_map's GalMap_exitFromLua 0x36674, SpaceCombat_updateEnd 0x38EDB4. Globals: g_galMap 0x101CBF84 (`/ToD/GalMap/GalMapState`), g_galMapSystem 0x101CBF80.
 
-## 17. Every planet on the galactic map (revision 1.29, pending)
+## 17. Every planet on the galactic map (revision 1.29)
 
 **Section 18 changes the pick's load**: a pick on qwark's map is fast-loaded with qwark's short fade-out, and Fastoon II's name has one space.
 
@@ -533,7 +533,7 @@ The Lua helper's code is 8,152 bytes (7,936 before): LUA_PATCH 2,045 rows of the
 
 Functions: GalMap_setView 0x34F5C (`void (int mode, int level, int sector, char snap)`), GalMap_setLevelView 0x36754, GalMap_setHighlightLevel 0x357DC (`void (int level)`), GalMap_setHighlightLevelLua 0x36788, GalMap_getSectorName 0x366C8, GalMap_getLevelDescription 0x36D38, GalMap_getLevelImage 0x36E90, Level_getSector 0x2EA310 (`int (int level)`), thunk_Level_getSector 0x135E0, Sector_getName 0x2EA324, thunk_Sector_getName 0x142E0. Globals: g_levelSectors 0x1006E708 (int[19]), g_sectorNameIds 0x1006E754 (uint[4]). Structs: `/ToD/GalMap/GalMapData` (new, 0xC4: levelCameras[19] +0x18, sectorCameras[4] +0x64, globalCamera +0x74, planetMobys[19] +0x78), `/ToD/GalMap/GalMapState` (highlightLevel +0x20, highlightSound +0x24, `data` now a GalMapData pointer).
 
-## 18. Map picks load as qwark's loads; Fastoon II's name (revision 1.29, pending)
+## 18. Map picks load as qwark's loads; Fastoon II's name (revision 1.29)
 
 **What the user asked** (after section 17): the map read "Planet Fastoon  II", two spaces; and a planet picked on the Trainer's map should load as a RaCMAN planet load does, with no fade-out and fast-loaded. The four original games force Fast loads on for a qwark PLANET_LOAD and put the toggle's setting back after it (`rac1_planet_load` and `rac1_fastload_force`/`_claim`/`_restore`, the same in RaC2 to UYA); ToD did not, for any load. Nothing here has run on a console yet.
 
@@ -543,7 +543,7 @@ The game's location name for Fastoon II ends in a space, so the glue's `" II"` m
 
 ### 18.2 Fast loads forced for qwark's planet loads
 
-For every planet load qwark starts in ToD: PLANET_LOAD from the client, the Trainer's Planets page (both `tod_planet_load`, through `session_planet_load`), and a pick on the galactic map qwark opened (18.3). Not for a savefile RESTORE or Load set-aside, which keep their short fade only (as before).
+For every planet load qwark starts in ToD: PLANET_LOAD from the client, the Trainer's Planets page (both `tod_planet_load`, through `session_planet_load`), and a pick on the galactic map qwark opened (18.3). Not for a savefile RESTORE, which keeps its short fade only, as no game forces fast loads for a RESTORE. Load set-aside (2026-11-04, revision 1.30) is forced too, as RaC1's, RaC2's and UYA's set-aside loads are (`rac1_load_setaside` and the others; Deadlocked's is not): `tod_load_aside` forces Fast loads (`tod_load_aside_force`) once `savefile_load_aside`'s RESTORE of `set-aside.sav` has been accepted, so a refused one writes nothing, and the watch below puts the toggle's setting back once the new level is up, or six seconds after a load the game never took.
 
 - **The force** (`tod_panel.c` `tod_fl_force`, as `rac1_fastload_force`): with the toggle off, Fast loads' whole on path for this one load (`tod_fast_loads(1)`): on a console the cave, the flag byte at 1, the twenty-five words of LoadScreen_Update and the three sites of qwark's own pieces, after `plat_can_patch_code()` as the toggle; under RPCS3 with the switches in, the flag byte alone; both ways `g_levelTransitionMinTime` 0. Under RPCS3 without the switches it is UNSUPPORTED and the load goes at the game's pace. With the toggle on, nothing is forced. Under RPCS3 a flag byte at 1 that this process did not force is taken for the user's setting (a qwark-rpcs3 restarted over a game it left so), as RaC1 does.
 - **The toggle and the force** are apart: `fl_on` is the toggle's setting (`tod_set_toggle`), `fl_forced` a load's force. The toggle's bit (`features_toggle_state`) never moves for a force, and under RPCS3 `tod_toggle_read` answers the toggle while a force is on, so the client's checkbox does not flick on for each load. Turning the toggle on or off during a forced load gives it the say at once (the force is forgotten).
@@ -589,7 +589,7 @@ LUA_PATCH 2,045 of 2,046 rows, unchanged (the helper's code is the same 8,152 by
 
 Functions: thunk_LoadLevel 0x11410 (GalMapState_exit's call), thunk_Memory_InitHeaps 0x12C20, thunk_AnarkMemory_beginFrameArena 0x13920, thunk_AnarkMemory_persistentArena 0x14130 (`GalMap_loadMenu`'s first calls). Globals: k_loadLevelFadeDelay 0x8BA520 (`ScreenFade_Start`'s second argument in `LoadLevel_ProcessPending`).
 
-## 19. The Lua helper and its glue move into ui.pak (revision 1.29, pending)
+## 19. The Lua helper and its glue move into ui.pak (revision 1.29)
 
 `tod.sprx` was 60,608 bytes of its one page's 61,440, and 21.9 KB of it only ever went into the game: the helper's code (8,152 bytes), the pause menu's glue (7,949), the look at the pause (2,690) and the galactic map's glue (3,132). They move into `ui.pak`, where the renderers went in build 55 and the savefile helpers in build 56 (PROTOCOL.md 9.10), and `tod.sprx` keeps only their numbers: the cave's address and length, the five hook words, the mailbox, the VMs, the chunks' lengths.
 

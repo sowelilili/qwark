@@ -1,4 +1,4 @@
--- Tools of Destruction's console menu (revision 1.29, pending): the Lua glue
+-- Tools of Destruction's console menu (revision 1.29): the Lua glue
 -- that shows qwark's menu with the pause menu's own Anark screens.
 -- docs/tod-menu.md has the design (section 12 for this layout).
 --

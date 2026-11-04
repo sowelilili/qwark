@@ -1,6 +1,6 @@
 /*
- * Tools of Destruction (NPEA00452 v01.00): the savefile manager, revision 1.28
- * (pending). docs/tod-savefile.md has the reverse engineering and the design.
+ * Tools of Destruction (NPEA00452 v01.00): the savefile manager, revision 1.28.
+ * docs/tod-savefile.md has the reverse engineering and the design.
  *
  * The four original games need a helper of qwark's in the game, because their
  * save data sits in a buffer only the game's own code can be asked to fill or
@@ -434,9 +434,19 @@ int tod_set_aside(void)
 	return savefile_set_aside();
 }
 
+/*
+ * Revision 1.30: Load set-aside is fast-loaded, as RaC1's to UYA's are
+ * (rac1_load_setaside): Fast loads forced for it once the RESTORE of the
+ * set-aside file has been accepted (tod_load_aside_force), so a refused one
+ * writes nothing, and put back once the new level is up. A RESTORE of a
+ * library file is not forced, in ToD as in every game.
+ */
 int tod_load_aside(void)
 {
-	return savefile_load_aside();
+	int rc = savefile_load_aside();
+
+	if (rc == ST_OK) tod_load_aside_force();
+	return rc;
 }
 
 /*

@@ -34,9 +34,9 @@ CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare 
         -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_PINE_NO_PLAT \
         -DQWARK_DEV=1 -DQWARK_PREVIEW=1 -DQWARK_BUILD_ID=0x51A7C0DE"
 # Revision 1.24: a test build with a fixed build ID, which test_qwark.c reads
-# back out of HELLO and SessionInfo flags2 bit4, and the features a release
-# leaves out (QWARK_PREVIEW, src/core/proto.h), which test_profiles.c and
-# test_usbmods.c cover.
+# back out of HELLO and SessionInfo flags2 bit4, and build 56's preview features
+# (QWARK_PREVIEW, src/core/proto.h; every build has them since build 57), which
+# test_profiles.c and test_usbmods.c cover.
 # -static folds winpthreads into the executable. Without it both programs import
 # libwinpthread-1.dll, which only exists on a PATH that has a mingw bin folder
 # on it; started by the PC client from anywhere else, qwark-rpcs3.exe died at
@@ -77,7 +77,7 @@ cp -r test/fixtures/mods/. "$ROOT/dev_hdd0/qwark/mods/"
 
 # Build 55: the console menu's renderers as a console reads them, ui.pak in the
 # fake HDD, packed by the same pak.py `make` runs (revision 1.29: with --tod,
-# as a test build packs it, for ToD's Lua helper). test_uipak.c makes its own
+# as a test build and a release pack it, for ToD's Lua helper). test_uipak.c makes its own
 # bad copies of it (another build, cut short, damaged) and puts this one back.
 PAK=""
 for PY in python python3 py; do
@@ -118,17 +118,22 @@ else
 fi
 "./$OUT"
 
-# The release configuration (src/core/proto.h, QWARK_PREVIEW): the core as
-# `make release` builds it, with no DEV bit, no preview features and no
-# modusb.c, against test/test_release.c alone, on a fresh fake HDD and a port
-# of its own. It checks that the settings profiles and the USB mods are gone.
+# The release configuration (src/core/proto.h, buildmodes.h): the core as
+# `make release` builds it, QWARK_DEV=0 and every other switch at its default
+# (build 57: the preview features, modusb.c, the games as modules and ToD),
+# against test/test_release.c alone, on a fresh fake HDD and a port of its own.
+# It checks that a release has everything a test build has but the DEV bit,
+# and that it takes the ui.pak `make release` packs (with --tod) and refuses
+# one without ToD's Lua helper, which goes beside it as ui-notod.pak.
 REL_OUT="test/qwark-test-release.exe"
-REL_SRC=$(for f in $SRC; do case "$f" in test/*|src/core/modusb.c|src/plat/host/backend_pine.c) ;; *) printf '%s ' "$f" ;; esac; done)
-REL_CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_DEV=0 -DQWARK_PREVIEW=0 -DQWARK_BUILD_ID=0x51A7C0DE"
+REL_SRC=$(for f in $SRC; do case "$f" in test/*|src/plat/host/backend_pine.c) ;; *) printf '%s ' "$f" ;; esac; done)
+REL_CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -DQWARK_HOST -DQWARK_EMULATOR -DQWARK_TEST -DQWARK_DEV=0 -DQWARK_BUILD_ID=0x51A7C0DE"
 echo "compiling $REL_OUT"
 "$CLANG" $REL_CFLAGS $REL_SRC test/test_game.c test/test_config_files.c test/test_release.c -o "$REL_OUT" $LDFLAGS
 rm -rf "$ROOT"
 mkdir -p "$ROOT/dev_hdd0/qwark"
+"$PYOK" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui.pak" --tod >/dev/null
+"$PYOK" -I src/games/menuhelper/pak.py --out "$ROOT/dev_hdd0/qwark/ui-notod.pak" >/dev/null
 if [ -n "${QWARK_TEST_PORT:-}" ]; then
 	for PY in python python3 py; do
 		QWARK_TEST_PORT=$("$PY" -c "$PICK" 2>/dev/null) && break

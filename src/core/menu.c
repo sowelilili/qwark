@@ -687,15 +687,15 @@ static u8 page_items(u16 page, u16 *ids)
 				 * (ToD's Manips: Remove cutscenes, then the cache's three), as
 				 * the Manips page makes its own: never the page's first row
 				 * nor after another, and none left at the end (below). A
-				 * release build has no ToD and no section that lists one.
+				 * build without ToD has no section that lists one.
 				 */
 				n = push_spacer(ids, n);
 #endif
 			} else if (it >= MENU_ITEM_VALUE(0)) {
 				/*
 				 * Round 5: a VALUE as a button or a switch (struct menu_value).
-				 * An item past the table's values is no row, and in a release
-				 * build nor is MENU_ITEM_SPACER, which comes here (build 56).
+				 * An item past the table's values is no row, and in a build
+				 * without ToD nor is MENU_ITEM_SPACER, which comes here (build 56).
 				 */
 				j = (u8)(it - MENU_ITEM_VALUE(0));
 				if (j < gm->nvalues && feature(gm->values[j].id) != NULL)
@@ -1875,7 +1875,7 @@ static struct {
 
 #if QWARK_HAS_TOD
 /*
- * Revision 1.29 (pending): a game whose menu is its own UI (struct
+ * Revision 1.29: a game whose menu is its own UI (struct
  * menu_native, Tools of Destruction's pause menu), which has no renderer in
  * ui.pak: the session's g_mh is this one, made from the game's description,
  * with no cave and no hook. Its helper is the game's Lua helper
@@ -2194,7 +2194,7 @@ static int native_install(void)
 	int rc = lua_core_helper_ready();
 
 	/*
-	 * Revision 1.29 (pending): the helper's code is in ui.pak, so a console
+	 * Revision 1.29: the helper's code is in ui.pak, so a console
 	 * with no usable pak has no menu here, as for every game's renderer: the
 	 * game's Inventory row stays its own, and the session tries again once the
 	 * pak has been looked at again (MENU_NOPAK).
@@ -2830,7 +2830,7 @@ static void request(u8 what)
 
 #if QWARK_HAS_TOD
 /*
- * Revision 1.29 (pending): the game's own planet picker (struct menu_picker,
+ * Revision 1.29: the game's own planet picker (struct menu_picker,
  * Tools of Destruction's galactic map; docs/tod-menu.md 16). The cross on the
  * root's Planets row is a CLOSES action (DEFER_PICKER): the game's menu
  * closes as for a load, and once the game plays the picker starts here:
@@ -3079,7 +3079,7 @@ static void native_picker_tick(void)
 			g_gm.ask = 0;
 			g_gm.glue_until = now + GM_GLUE_US;
 			plat_log("menu: %s is up", g_gm.name);
-			/* Revision 1.29 (pending): a pick on it is qwark's load (struct menu_picker's up). */
+			/* Revision 1.29: a pick on it is qwark's load (struct menu_picker's up). */
 			p = picker();
 			if (p != NULL && p->up != NULL) p->up();
 		} else if (lua_core_gameplay_result(g_gm.seq) == 2) {

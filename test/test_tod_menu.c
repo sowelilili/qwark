@@ -1,5 +1,5 @@
 /*
- * Tools of Destruction's console menu (revision 1.29, pending): the game's
+ * Tools of Destruction's console menu (revision 1.29): the game's
  * own pause menu, on qwark's fake console, against the real core
  * (docs/tod-menu.md).
  *
@@ -765,7 +765,7 @@ static int map_frames(void)
 }
 
 /*
- * Revision 1.29 (pending): a pick on qwark's map is qwark's load (tod.h,
+ * Revision 1.29: a pick on qwark's map is qwark's load (tod.h,
  * tod_galmap_up): Fast loads forced and the short fade armed as the map comes
  * up, put back at once when it goes without a pick, and after the load
  * otherwise. The flag byte its pieces read is the console's sign of the patch.

@@ -1,5 +1,5 @@
 /*
- * Tools of Destruction's console menu (revision 1.29, pending): the block of
+ * Tools of Destruction's console menu (revision 1.29): the block of
  * game memory the Lua helper's pause-menu half keeps beside the menu's mailbox
  * (docs/tod-menu.md).
  *

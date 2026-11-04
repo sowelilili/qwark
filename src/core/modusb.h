@@ -122,7 +122,8 @@ int  modusb_version_cmp(const char *a, const char *b, int *cmp);
 #else /* !QWARK_PREVIEW */
 
 /*
- * A release (QWARK_PREVIEW 0, proto.h) leaves the USB mods out: modusb.c is not
+ * A module built with QWARK_PREVIEW 0 (proto.h; build 56's release) leaves
+ * the USB mods out: modusb.c is not
  * built, and its callers get these, which do what 1.4.1 did. No scan, so
  * /dev_usb00N is never looked at; MOD_USB_LIST is UNSUPPORTED and flags2 bit0
  * stays clear; a load takes nothing first; MOD_SET_AUTO on for a mod the

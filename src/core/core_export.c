@@ -5,7 +5,7 @@
 /*
  * The table the core hands a game module at its start, and the host builds
  * their linked games (src/games/module.h). Only where the games go through
- * core_api: a release module's games call the core directly.
+ * core_api: a QWARK_GAME_MODULES 0 module's games call the core directly.
  */
 #include "../games/core_api.h"
 #include "../games/module.h"

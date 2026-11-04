@@ -66,7 +66,7 @@ static struct {
 	u32  user;      /* the user it is, 0 when none is active */
 	char folder[PROFILE_FOLDER_MAX];
 } g_prof;
-#endif /* QWARK_PREVIEW: a release has no profile, and every key is config.txt's (config.h) */
+#endif /* QWARK_PREVIEW: a module without the preview features has no profile, and every key is config.txt's (config.h) */
 
 static int pos_load_file(void);
 /* The positions' title (rac1 .. rac4), which the slot table further down is of. */
@@ -784,7 +784,7 @@ int config_set_menu_help(u8 on)
 }
 
 /*
- * Revision 1.30 (pending). `run.warnings`: 1 for a file that has never
+ * Revision 1.30. `run.warnings`: 1 for a file that has never
  * mentioned it, so a run start with cheats or mods on says so out of the box.
  * RUN_WARN writes it, a plain 0 or 1 like `menu.help`.
  */
@@ -970,7 +970,7 @@ int config_set_manip(const char *game, const char *field, u32 value)
 
 /* --------------------------------------------------------------- profiles */
 
-/* A release leaves all of this out (QWARK_PREVIEW, proto.h); config.h has its stand-ins. */
+/* A module built with QWARK_PREVIEW 0 (proto.h) leaves all of this out; config.h has its stand-ins. */
 #if QWARK_PREVIEW
 
 /* The XMB's user numbers are eight digits, 00000001 on; 0 and a negative answer are nobody. */

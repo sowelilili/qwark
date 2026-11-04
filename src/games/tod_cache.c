@@ -1,6 +1,6 @@
 /*
- * Tools of Destruction: the cutscene cache's three features (revision 1.29,
- * pending; PROTOCOL.md 5.17; REPORT-tod-level-cache.md sections 2, 5.A, 10
+ * Tools of Destruction: the cutscene cache's three features (revision 1.29;
+ * PROTOCOL.md 5.17; REPORT-tod-level-cache.md sections 2, 5.A, 10
  * and 11): Cache cutscenes, its auto on reset and Disable cutscene caching,
  * which write the level warmer (g_levelPrefetch) and the FIOS block table
  * (tod.h has the layouts). Its state is tod_game.c's (struct tod_cc_state).

@@ -29,7 +29,8 @@
  * as unset, so as their defaults, and its first write makes it (empty). The
  * only copy is the one PROFILE_ENABLE asks for as the switch goes on.
  *
- * A release (QWARK_PREVIEW 0, proto.h) leaves the profiles out: every key is
+ * A module built with QWARK_PREVIEW 0 (proto.h; build 56's release) leaves
+ * the profiles out: every key is
  * config.txt's and the slots are positions/'s, as in 1.4.1, whatever
  * `profiles.enabled` says (the key is kept, like any other), and nothing
  * under QWARK_PROFILEDIR is read or written.
@@ -150,7 +151,7 @@ int  config_menu_help(void);
 int  config_set_menu_help(u8 on);
 
 /*
- * Revision 1.30 (pending), the run-start warnings (src/core/runwarn.h):
+ * Revision 1.30, the run-start warnings (src/core/runwarn.h):
  * `run.warnings`, 1 when the file has never mentioned it, 0 the console says
  * nothing at a run start. RUN_WARN writes it; a per-user key, as menu.help
  * is. Anything but 0 or 1 is ST_BAD_ARG.
@@ -298,7 +299,7 @@ int  config_set_combo_override(u8 action, int set, u32 mask);
 #else /* !QWARK_PREVIEW */
 
 /*
- * A release: no profile is ever active, so SessionInfo's flags2 bits 1 to 3
+ * QWARK_PREVIEW 0: no profile is ever active, so SessionInfo's flags2 bits 1 to 3
  * and byte 30 are 0 and no COMBO_LIST row is overridden, as 1.4.1's pad
  * bytes were; net.c answers the three profile ops UNSUPPORTED.
  */

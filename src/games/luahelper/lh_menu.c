@@ -1,5 +1,5 @@
 /*
- * Tools of Destruction's console menu (revision 1.29, pending): the Lua
+ * Tools of Destruction's console menu (revision 1.29): the Lua
  * helper's bridge between qwark's menu mailbox (src/core/menubox.h) and the
  * Lua glue in the pause menu's VM (lh_glue.lua). lh_menu.h has the block it
  * keeps, docs/tod-menu.md the design.

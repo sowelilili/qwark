@@ -131,8 +131,8 @@ def gen(includes, fns):
     ren = [BANNER, "/*\n * The first include of every game source. Where the games reach the core\n"
                    " * through core_api (QWARK_GAME_IMPORT, src/games/module.h), each core\n"
                    " * function a game names is the wrapper of the same name in\n"
-                   " * core_import.c instead; elsewhere (a release module, whose games are\n"
-                   " * linked in and call the core directly) this file is empty.\n */\n",
+                   " * core_import.c instead; elsewhere (a QWARK_GAME_MODULES 0 module, whose\n"
+                   " * games are linked in and call the core directly) this file is empty.\n */\n",
            "#ifndef QWARK_CORE_IMPORT_H\n#define QWARK_CORE_IMPORT_H\n\n",
            "/* Nothing before the renames but the build's modes: no header has declared anything yet. */\n",
            "#include \"../core/buildmodes.h\"\n\n#if QWARK_GAME_IMPORT\n"]
@@ -165,7 +165,7 @@ def gen(includes, fns):
 
     exp = [BANNER, "/*\n * The table the core hands a game module at its start, and the host builds\n"
                    " * their linked games (src/games/module.h). Only where the games go through\n"
-                   " * core_api: a release module's games call the core directly.\n */\n",
+                   " * core_api: a QWARK_GAME_MODULES 0 module's games call the core directly.\n */\n",
            "#include \"../games/core_api.h\"\n#include \"../games/module.h\"\n\n#if QWARK_GAME_IMPORT\n\n",
            "const struct core_api core_api_table = {\n"]
     for f in fns:

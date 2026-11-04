@@ -857,7 +857,7 @@ static const struct feature_desc rac2_features[] = {
 #undef SG
 
 /*
- * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
  * and the debug mode among them, and the two resets on death in Player,
  * practice aids that put bosses and platinum bolts back behind the player.

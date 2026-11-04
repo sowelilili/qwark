@@ -1,8 +1,9 @@
 /*
  * The linked registry: title id to game vtable, in the builds whose games are
- * linked into the module (a release module, the host builds and the tests).
+ * linked into the module (a QWARK_GAME_MODULES 0 module, the host builds and
+ * the tests).
  * The title index (titles.c) says which games a title can be; here each entry
- * hands out its vtable. A test module's games are modules (src/games/module.h)
+ * hands out its vtable. A test or release module's games are modules (src/games/module.h)
  * and this file is not in it.
  */
 #include "game.h"

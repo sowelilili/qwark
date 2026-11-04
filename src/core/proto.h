@@ -84,7 +84,7 @@
  * set by a test build (QWARK_DEV, the makefile's default), and a u32 build ID
  * after HELLO's SessionInfo (QWARK_BUILD_ID, the CRC of the sources), so a
  * client can tell one test build of a number from another. PROTOCOL.md 3.1.1.
- * Revision 1.30 (pending): the run-start warnings (src/core/runwarn.h). RUN_WARN
+ * Revision 1.30: the run-start warnings (src/core/runwarn.h). RUN_WARN
  * at 0x0096, config key run.warnings; SessionInfo byte 31, a pad byte until
  * now, is `flags3`, bit0 RUN_WARN (the module has them) and bit1 RUN_WARN_OFF;
  * MOD_LIST's flags bit6 LEGAL and bit7 ILLEGAL, a patch.txt's `#- legal:`.
@@ -111,7 +111,8 @@
  * QWARK_DEV is 1 in a test build, which SessionInfo flags2 bit4 reports, and
  * QWARK_BUILD_ID is the CRC of the module's sources (tools/buildid.py), which
  * HELLO carries after SessionInfo; 0 is no ID. The makefile sets both, a test
- * build unless it is told QWARK_DEV=0 (`make release`); build-host.sh sets
+ * build unless it is told QWARK_DEV=0 (`make release`), which is all that
+ * tells a release from a test build since build 57; build-host.sh sets
  * them for qwark-host.exe, and qwark-rpcs3.exe, which the client starts beside
  * itself, keeps these: never DEV, no ID.
  */
@@ -123,20 +124,20 @@
 #endif
 
 /*
- * Revision 1.24: the features still being tried out, which a release leaves
- * out (PROTOCOL.md 3.1.2): the settings profiles (PROFILE_INFO, PROFILE_ENABLE,
- * COMBO_OVERRIDE, flags2 bits 1 to 3, byte 30) and the USB mods (MOD_USB_LIST,
- * flags2 bit0). QWARK_PREVIEW 1 builds them in; 0 compiles them out, and the
+ * Revision 1.24: build 56's preview features (PROTOCOL.md 3.1.2): the settings
+ * profiles (PROFILE_INFO, PROFILE_ENABLE, COMBO_OVERRIDE, flags2 bits 1 to 3,
+ * byte 30), the USB mods (MOD_USB_LIST, flags2 bit0) and the console menu's
+ * Mods page. QWARK_PREVIEW 1 builds them in; 0 compiles them out, and the
  * module answers their ops UNSUPPORTED, never sets their bits, never looks at
  * /dev_usb00N and never reads or writes /dev_hdd0/qwark/profiles: settings,
- * combos and mods are 1.4.1's. The makefile sets it to QWARK_DEV unless told
- * otherwise, so a test build has them and `make release` does not; the two are
- * separate switches so a feature can ship in a release while test builds go on
- * being marked. The host builds and the unit tests set 1 (build-host.sh,
- * test/run.sh); test/run.sh also builds test/test_release.c with 0.
+ * combos and mods are 1.4.1's. Build 56's release left them out; build 57
+ * ships them in its release, so this is 1 unless told otherwise, whatever
+ * QWARK_DEV says, and `make release` pins it to 1. A module built with 0 is
+ * one no release ships. A feature that is still being tried out later takes a
+ * switch of its own that follows QWARK_DEV.
  */
 #ifndef QWARK_PREVIEW
-#define QWARK_PREVIEW           QWARK_DEV
+#define QWARK_PREVIEW           1
 #endif
 
 /* Revision 1.26: QWARK_GAME_MODULES and the others, game modules (src/games/module.h). */
@@ -184,7 +185,8 @@
 #define GAME_RAC4 4
 /*
  * Revision 1.27: Tools of Destruction (NPEA00452), a game module of its own,
- * tod.sprx, in a test build and the PC builds; a release has no ToD at all.
+ * tod.sprx, in a test build, a release (since build 57) and the PC builds;
+ * only a QWARK_GAME_MODULES 0 module has no ToD at all.
  */
 #define GAME_TOD  5
 
@@ -355,7 +357,7 @@
 #define OP_PROFILE_ENABLE    0x0094
 #define OP_COMBO_OVERRIDE    0x0095
 /*
- * Revision 1.30 (pending). `run.warnings`, a config write like MENU_HELP's:
+ * Revision 1.30. `run.warnings`, a config write like MENU_HELP's:
  * u8 on, 1 the console warns as a run starts with cheats or mods that are not
  * run-legal in the game (the default), 0 it says nothing. Anything but 0 or 1
  * is BAD_ARG. Answered in any session state and on every platform. Reply
@@ -488,7 +490,7 @@
 #define OP_LUA_PATCH          0x00E2
 #define LUA_EXEC_HEAD         4u
 #define LUA_EXEC_REPLY_HEAD   12u
-/* Revision 1.29 (pending), LUA_EXEC's flags: bit0, the pause menu's VM (ToD's console menu's), not the gameplay VM. */
+/* Revision 1.29, LUA_EXEC's flags: bit0, the pause menu's VM (ToD's console menu's), not the gameplay VM. */
 #define LUA_EXEC_MENU         0x0001u
 #define LUA_STATUS_HEAD       88u
 #define LUA_INSTALLED_NO      0
@@ -592,7 +594,7 @@
 #define AUTOSPLIT_FLAG_FLAT      0x04
 #define AUTOSPLIT_FLAG_NORMALISE 0x08
 /*
- * Revision 1.29 (pending), on a LOAD_START row only, with neither timing flag
+ * Revision 1.29, on a LOAD_START row only, with neither timing flag
  * and param_us 0:
  *
  *   HOLD       game time stops at the LOAD_START and starts again at the
@@ -724,7 +726,7 @@
  */
 #define SESSION_FLAG2_NO_MENU         0x80
 /*
- * Revision 1.30 (pending). SessionInfo byte 31, a pad byte until then, is
+ * Revision 1.30. SessionInfo byte 31, a pad byte until then, is
  * `flags3`. bit0 RUN_WARN, the client's capability bit: the module has the
  * run-start warnings and answers RUN_WARN (PROTOCOL.md 5.10.2); bit1
  * RUN_WARN_OFF, config.txt's `run.warnings` is 0. An earlier build sent a pad
@@ -850,7 +852,7 @@
 #define MOD_FLAG_PARSE_ERROR 0x10
 #define MOD_FLAG_CHECKING    0x20
 /*
- * Revision 1.30 (pending): patch.txt's `#- legal:` line, `true` LEGAL and
+ * Revision 1.30: patch.txt's `#- legal:` line, `true` LEGAL and
  * `false` ILLEGAL, either case; a mod with neither (no line, or any other
  * value) is of unknown legality. The run-start warnings count the loaded
  * ILLEGAL ones and the loaded unknown ones (src/core/runwarn.h).

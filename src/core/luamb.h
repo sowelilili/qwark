@@ -53,7 +53,7 @@
 /* 'QLUA'. Written by the installer, not by the helper, which runs only on it. */
 #define LUAMB_MAGIC   0x514C5541
 /*
- * Version 2 (revision 1.29, pending): the request's target, gameplay VM or the
+ * Version 2 (revision 1.29): the request's target, gameplay VM or the
  * pause menu's (`target`), and the pause menu's heartbeat. A version 1 helper
  * would run a request meant for the menu in the gameplay VM, so the two never
  * meet: the identity words differ, and qwark looks for its own.
@@ -110,7 +110,7 @@
 #define LUAMB_ST_BAD_LEN    0x101  /* chunk_len 0 or over LUAMB_CHUNK_CAP      */
 #define LUAMB_ST_CANCELLED  0x102  /* qwark withdrew it before it ran          */
 /*
- * Revision 1.29 (pending), the second crash (docs/tod-menu.md 10): a request
+ * Revision 1.29, the second crash (docs/tod-menu.md 10): a request
  * for the pause menu's VM not run, its Lua pool too short for it even after
  * a full collection. Only target MENU answers it.
  */
@@ -132,7 +132,7 @@
 #define LUAMB_TARGET_GAMEPLAY 0
 #define LUAMB_TARGET_MENU     1
 /*
- * Revision 1.29 (pending), the galactic map (docs/tod-menu.md 17): the map's
+ * Revision 1.29, the galactic map (docs/tod-menu.md 17): the map's
  * own Anark VM, served from the map's frame on its own lua_State (the map's
  * menu system's, at the same offset as the pause's), its frames counted by
  * menu_beat too. The core sends it only to a map it opened itself.

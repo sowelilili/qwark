@@ -6,8 +6,8 @@
  * The first include of every game source. Where the games reach the core
  * through core_api (QWARK_GAME_IMPORT, src/games/module.h), each core
  * function a game names is the wrapper of the same name in
- * core_import.c instead; elsewhere (a release module, whose games are
- * linked in and call the core directly) this file is empty.
+ * core_import.c instead; elsewhere (a QWARK_GAME_MODULES 0 module, whose
+ * games are linked in and call the core directly) this file is empty.
  */
 #ifndef QWARK_CORE_IMPORT_H
 #define QWARK_CORE_IMPORT_H

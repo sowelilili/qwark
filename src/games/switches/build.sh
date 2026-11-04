@@ -314,7 +314,7 @@ for g in $GAMES; do
 			echo
 		} >> "$OUT/$g.own.c"
 		# Revision 1.29: Tools of Destruction's are only where ToD is, and
-		# only in its own module of the modules: a release links this file,
+		# only in its own module of the modules: a linked module links this file,
 		# and Deadlocked's module does too.
 		if [ "$g" = "tod" ]; then
 			echo "#if QWARK_HAS_TOD && (!defined(QWARK_MODULE_GAME) || QWARK_MODULE_GAME == 5)" >> "$OUT/own.c"

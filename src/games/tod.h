@@ -6,8 +6,9 @@
  * section 7, SPEC-game-modules 4.12).
  *
  * Game 5, built only where the games are modules or linked into a PC build:
- * `make` builds it as tod.sprx, the host builds link it, and `make release`
- * leaves it out altogether (titles.c has no ToD entry there).
+ * `make` and `make release` build it as tod.sprx, the host builds link it,
+ * and only a QWARK_GAME_MODULES 0 module leaves it out altogether (titles.c
+ * has no ToD entry there).
  *
  * Every fact carries how it is known (struct tod_mark):
  *   TOD_DEC    read in a decompile of the shipped executable
@@ -345,7 +346,7 @@ int  tod_story_load(u32 level, u32 flags_at);
 #define TOD_LEVEL_FASTOON_II 18           /* LEVEL_FASTOON_II, Tachyon's */
 
 /*
- * Revision 1.29 (pending). The old autosplitter's "long load": game time
+ * Revision 1.29. The old autosplitter's "long load": game time
  * stopped while the low byte of g_currentLevel (its 0x1029C55B) read 0 and
  * the low byte of g_loadScreenType (its 0x102034FB) read more than 1.
  * g_loadScreenType is the movie the loading screen plays: LoadScreen_Init
@@ -359,7 +360,7 @@ int  tod_story_load(u32 level, u32 flags_at);
 #define TOD_LONG_LOAD_MIN    2u           /* the legacy's "> 1" */
 
 /*
- * Revision 1.29 (pending): the run's start. MOVIE_METROPOLIS_TACHYON, the
+ * Revision 1.29: the run's start. MOVIE_METROPOLIS_TACHYON, the
  * level flag the game sets as the first planet is beaten: clear on a new
  * file, set on every save made after Metropolis.
  */
@@ -375,7 +376,7 @@ int  tod_story_load(u32 level, u32 flags_at);
 #define TOD_VTBL_TACHYON     0x10060CB0u  /* vtbl_TachyonBoss (dec) */
 
 /*
- * Revision 1.29 (pending): a level load, and nothing else. The game's top
+ * Revision 1.29: a level load, and nothing else. The game's top
  * level is a stack of tiers (ToDGameTier: the vtable at +0, `loaded` at +6,
  * `entered` at +7), and each of its states is a list of them
  * (g_gameStateStacks, ToDGameStateStack, 0x88 bytes each). State 3, a level,
@@ -402,7 +403,7 @@ int  tod_story_load(u32 level, u32 flags_at);
 #define TOD_TIER_LOADED      6u           /* ToDGameTier.loaded, u8: GameTier_load sets it, GameTier_unload clears it */
 
 /*
- * Revision 1.29 (pending): the run's two ends as the community times them.
+ * Revision 1.29: the run's two ends as the community times them.
  *
  * The realtime cinematics: g_moviePlayer (ToDMoviePlayer) plays one level
  * movie at a time, by its index in the level's movie list (MovieTable_build,
@@ -710,9 +711,10 @@ void tod_fade_arm(int story);
 /* and it was not: the game's fade time back. */
 void tod_fade_disarm(void);
 /*
- * Revision 1.29 (pending): a load qwark starts (PLANET_LOAD, the Trainer's
- * list, a pick on the galactic map it opened) is fast-loaded, as the four
- * original games' PLANET_LOAD is (rac1_planet_load and the others): Fast
+ * Revision 1.29: a load qwark starts (PLANET_LOAD, the Trainer's list, a pick
+ * on the galactic map it opened, and since revision 1.30 Load set-aside) is
+ * fast-loaded, as the four original games' PLANET_LOAD is (rac1_planet_load
+ * and the others) and RaC1's to UYA's Load set-aside (rac1_load_setaside): Fast
  * loads forced on for that load, the toggle off or not, and put back once
  * the new level is up (the watcher's level load seen, then over, a level's
  * lua_State), or after TOD_FADE_WAIT_TICKS with no load begun. With the
@@ -725,6 +727,14 @@ void tod_fade_disarm(void);
  * wants, and the map gone without one puts both back at once.
  */
 void tod_galmap_up(void);
+/*
+ * Load set-aside's force (tod_load_aside), once its RESTORE of the set-aside
+ * file has been accepted: the load is handed to the game a few ticks later,
+ * once the copy is in, and the watch puts the toggle's setting back as for
+ * PLANET_LOAD. A RESTORE of a library file forces nothing, as in every other
+ * game. Answers the force's status, which never stops the load.
+ */
+int  tod_load_aside_force(void);
 /* The eight FMVs' files missing (1) or back (0): how many were changed, or -1 for no table. */
 int  tod_cutscenes_apply(int remove);
 
@@ -769,7 +779,7 @@ int  tod_levelflags_reset(u8 planet);
 int  tod_levelflags_set(u8 planet, u16 offset, u8 value);
 
 /*
- * Revision 1.29 (pending): what the cutscene cache (tod_cache.c, below;
+ * Revision 1.29: what the cutscene cache (tod_cache.c, below;
  * REPORT-tod-level-cache.md sections 2, 9 and 10) reads and writes. All read
  * in the decompile (dec).
  *
@@ -833,7 +843,7 @@ u32 tod_pad_to_og(u32 tod_mask);
 int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 
 /*
- * Revision 1.29 (pending): the console menu, the game's own pause menu
+ * Revision 1.29: the console menu, the game's own pause menu
  * (docs/tod-menu.md; the helper's side is src/games/luahelper/lh_menu.h).
  * What says no menu can be up: the pause menu's state 0 (none) with nothing
  * queued on the state stack, and the game not in its pause (g_gameState 5).
@@ -844,7 +854,7 @@ int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 #define TOD_STATE_PAUSE      5u           /* g_gameState: the pause menu (PauseMenu_update) */
 
 /*
- * Revision 1.29 (pending): the galactic map, the Trainer's planet picker
+ * Revision 1.29: the galactic map, the Trainer's planet picker
  * (docs/tod-menu.md 16). The game opens it in one way only, GalMap_request
  * (0x35084, GameState_queueOverlay op 2, state 6, GalMapState_enter and
  * GalMapState_exit), from the gameplay package's gmap() and from the end of a
@@ -867,7 +877,7 @@ int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 #define TOD_LEVEL_SC3        13u
 
 /*
- * Revision 1.29 (pending): a run's start, shared by the autosplitter's RESET
+ * Revision 1.29: a run's start, shared by the autosplitter's RESET
  * and Cache cutscenes on reset. A level load is under way while the tier
  * loader's job is state 3's list and g_levelLoadTier is not loaded (above);
  * a load into Metropolis is a new run while the file has
@@ -877,7 +887,7 @@ int  tod_level_loading(u32 job, u8 tier);
 int  tod_fresh_run_load(s32 level);
 
 /*
- * Revision 1.29 (pending): the cutscene cache (tod_cache.c;
+ * Revision 1.29: the cutscene cache (tod_cache.c;
  * REPORT-tod-level-cache.md sections 2.3, 5.A and 10). A planet's opening
  * cutscene streams its audio from its streaming_sound.dat, inside its
  * level_uncached.psarc, through the FIOS block cache, which those reads never

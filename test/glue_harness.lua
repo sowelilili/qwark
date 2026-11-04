@@ -1,4 +1,4 @@
--- Tools of Destruction's console menu (revision 1.29, pending): the pause
+-- Tools of Destruction's console menu (revision 1.29): the pause
 -- menu's Lua glue (src/games/luahelper/lh_glue.lua) and the helper's look
 -- (lh_diag.lua), run by a real Lua against a pause menu made of stand-ins
 -- (test/test_glue.py, docs/tod-menu.md 11, 12 and 14).

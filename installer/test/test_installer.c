@@ -432,7 +432,7 @@ static void test_install_fresh(void)
 	check(strstr(msg, "enable HEN") != NULL, "on HEN it says to enable HEN after the restart");
 }
 
-/* Revision 1.26: a test build's package carries its game modules. */
+/* Revision 1.26: a package carries its game modules (a test build's, and a release's since build 57). */
 static unsigned char g_game[3000];
 
 static void test_install_games(void)
@@ -444,7 +444,7 @@ static void test_install_games(void)
 	for (i = 0; i < sizeof(g_game); i++) g_game[i] = (unsigned char)(i * 11 + 5);
 	memcpy(g_game, "SCE\0", 4);
 
-	group("a test build's package: its game modules go beside ui.pak");
+	group("a package with game modules: they go beside ui.pak");
 	fresh_console();
 	put_file(INST_APP_USRDIR "/rac1.sprx", g_game, sizeof(g_game));
 	put_file(INST_APP_USRDIR "/rac4.sprx", g_game, sizeof(g_game) - 7);
@@ -476,7 +476,7 @@ static void test_install_games(void)
 	check(strstr(msg, "rac3.sprx") != NULL && strstr(msg, "Nothing on your console was changed") != NULL,
 	      "the message names it and says nothing changed");
 
-	group("a release's package carries none: nothing of them is touched");
+	group("a package with none (build 56's release): nothing of them is touched");
 	used_console();
 	put_file(INST_GAME_2, g_game, 100);
 	inst_run(INST_APP_USRDIR, &r);

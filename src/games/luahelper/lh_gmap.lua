@@ -1,4 +1,4 @@
--- Tools of Destruction's Trainer (revision 1.29, pending): the Lua glue that
+-- Tools of Destruction's Trainer (revision 1.29): the Lua glue that
 -- makes the galactic map qwark opens offer every planet. docs/tod-menu.md 17
 -- has the design.
 --

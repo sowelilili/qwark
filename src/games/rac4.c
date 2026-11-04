@@ -827,7 +827,7 @@ static const struct feature_desc rac4_features[] = {
 #undef ST
 
 /*
- * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Every toggle of Cheats, Fast loads
  * among them. The Fixes (crash patches, softlock fix) are not, nor are the
  * HUD's brightness corrections in Cosmetics.

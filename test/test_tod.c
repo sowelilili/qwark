@@ -590,7 +590,7 @@ static void test_patch(void)
 	check(rd32(g_d->mailbox + LUAMB_OFF_REQ) == 0, "install: the header is zeroed, so nothing is outstanding");
 	check(lh_install(g_d, &g_io, NULL) == ST_OK, "install: a second install over the first is fine");
 
-	/* Revision 1.29 (pending): a console's install takes the cave from a source (ui.pak's), a piece at a time. */
+	/* Revision 1.29: a console's install takes the cave from a source (ui.pak's), a piece at a time. */
 	{
 		static u8 piece[1000];
 		struct lh_source src;

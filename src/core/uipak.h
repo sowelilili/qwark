@@ -128,13 +128,13 @@ int  uipak_sf_entry(u8 game_id, const u8 **entry, u32 *len);
 
 #if QWARK_HAS_TOD
 /*
- * Revision 1.29 (pending): Tools of Destruction's Lua helper, which a build
+ * Revision 1.29: Tools of Destruction's Lua helper, which a build
  * with ToD reads out of the pak too (pak.py --tod): its code, kind 3, laid
  * out as a savefile helper's entry (its words the mailbox, its size, the VM,
  * the lua_State's offset, the pause menu's pointer and offset, the map's
  * pointer), and the three Lua chunks the core sends, kinds 4 to 6, each the
- * bytes as sent. They are outside the header's identities, so a release's pak
- * is what it was; a module with ToD takes a pak only when the table of
+ * bytes as sent. They are outside the header's identities, so a pak without
+ * them (a build without ToD's) is what it was; a module with ToD takes a pak only when the table of
  * contents gives LH_PAK_ID (luahelper_bins.h), the CRC-32 of the Lua entries'
  * CRC-32s, each big-endian, in the table's order, and a pak without them, or
  * with another build's, is another build's pak (UIPAK_OTHER), refused whole

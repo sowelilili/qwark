@@ -769,7 +769,7 @@ static void test_sf_failures(void)
 	check(quit(), "quit");
 }
 
-/* ------------------------------- ToD's Lua helper, revision 1.29 (pending) */
+/* ------------------------------- ToD's Lua helper, revision 1.29 */
 
 /*
  * The pak's entries by their place in run.sh's pak (pak.py --tod): the four

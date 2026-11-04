@@ -118,7 +118,7 @@ int mods_find_by_name(const char *name)
 }
 
 /*
- * Revision 1.30 (pending), the run-start warnings. A mod is in the game when
+ * Revision 1.30, the run-start warnings. A mod is in the game when
  * qwark loaded it, or on a platform that refuses code patches when the look
  * found it there (wire_flags, below, says the same to MOD_LIST).
  */
@@ -210,7 +210,7 @@ static void parse_meta(struct mod_entry *m, char *line)
 	else if (qstreq(key, "author"))      qstrcpy(m->author, sizeof(m->author), value);
 	else if (qstreq(key, "depends"))     qstrcpy(m->depends, sizeof(m->depends), value);
 	/*
-	 * Revision 1.30 (pending): whether the mod's author calls it run-legal,
+	 * Revision 1.30: whether the mod's author calls it run-legal,
 	 * `true` or `false` in either case. Anything else, or no line at all,
 	 * leaves both bits clear: legality unknown. The last line wins, and the
 	 * key is read in any case, as the client's library reads every key.

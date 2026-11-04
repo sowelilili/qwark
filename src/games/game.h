@@ -94,7 +94,7 @@ struct game_describe {
 	const struct feature_former *former;
 	u8 nformer;
 	/*
-	 * Revision 1.30 (pending), the run-start warnings (src/core/runwarn.h):
+	 * Revision 1.30, the run-start warnings (src/core/runwarn.h):
 	 * bit i set = TOGGLE feature id i counts as a cheat when it is on as a run
 	 * starts, one that would make the run invalid. Each game says it row by
 	 * row; nothing is guessed from a group or a label, so a run-legal toggle
@@ -544,12 +544,12 @@ struct game_api {
 	 * system, driven by data writes (src/core/savefile.h, struct sf_driver),
 	 * beside a savefile_desc that names the aside buffer and no code. NULL for
 	 * every game whose helper is code of qwark's; Tools of Destruction's alone
-	 * is set. Not in a release module, which has no ToD.
+	 * is set. Not in a QWARK_GAME_MODULES 0 module, which has no ToD.
 	 */
 	const struct sf_driver *savefile_driver;
 
 	/*
-	 * Revision 1.29 (pending): a console menu that is the game's own UI
+	 * Revision 1.29: a console menu that is the game's own UI
 	 * (struct menu_native below), served by the core as it serves a renderer
 	 * of ui.pak's, which such a game has none of. NULL for every game but
 	 * Tools of Destruction.
@@ -560,7 +560,7 @@ struct game_api {
 
 #if QWARK_HAS_TOD
 /*
- * Revision 1.29 (pending): a console menu drawn by the game's own menu system,
+ * Revision 1.29: a console menu drawn by the game's own menu system,
  * through a helper of the game's, where the four original games have a
  * renderer of qwark's in ui.pak (src/core/menu.c, docs/tod-menu.md). Tools of
  * Destruction's is its pause menu: the Lua helper's pause-menu half and a Lua
@@ -653,7 +653,7 @@ struct menu_native {
 };
 
 /*
- * Revision 1.29 (pending): the game's own planet picker, for a menu that is
+ * Revision 1.29: the game's own planet picker, for a menu that is
  * the game's own UI (Tools of Destruction's galactic map, docs/tod-menu.md
  * 16). The cross on the root's Planets row closes the game's menu as a load
  * does (a CLOSES action) and, once the game plays, has the core write the
@@ -685,7 +685,7 @@ struct menu_picker {
 	u8  npokes;
 	u8  glue;               /* revision 1.29: 1, the helper's map glue goes into it (lua_core_map_send) */
 	/*
-	 * Revision 1.29 (pending), or NULL: called once as the picker comes up, so
+	 * Revision 1.29, or NULL: called once as the picker comes up, so
 	 * the game treats a pick as a load qwark started (ToD: Fast loads forced,
 	 * the short fade-out, tod_galmap_up). From there the game's own tick
 	 * watches the pick and the load and puts everything back.
@@ -716,7 +716,7 @@ struct game_title;
 
 /*
  * The linked registry (games.c), in the builds whose games are linked in: a
- * release module, the host builds and the tests. The first game of the title,
+ * QWARK_GAME_MODULES 0 module, the host builds and the tests. The first game of the title,
  * or NULL for a title qwark does not know; BCES01503 hosts three, so the
  * session fingerprints the title index's candidates (titles.h) instead.
  */

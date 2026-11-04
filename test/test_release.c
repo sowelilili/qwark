@@ -1,34 +1,43 @@
 /*
- * The release check: what a release module (QWARK_DEV 0, QWARK_PREVIEW 0,
- * src/core/proto.h) leaves out, on qwark's fake console. test/run.sh builds
- * this file on its own, with the core, into test/qwark-test-release.exe, with
- * -DQWARK_DEV=0 -DQWARK_PREVIEW=0 and without src/core/modusb.c, as the
- * makefile builds `make release`; it has its own main and its own count.
+ * The release check: what a release module (QWARK_DEV 0, src/core/proto.h)
+ * carries, on qwark's fake console. test/run.sh builds this file on its own,
+ * with the core, into test/qwark-test-release.exe, with -DQWARK_DEV=0 and
+ * every other switch at its default, as the makefile builds `make release`;
+ * it has its own main and its own count.
  *
- * Build 56 left two features out of the release: the settings profiles and
- * the USB mods. With both set up on the fake HDD and a fake USB drive - the
- * switch on, a profile for the signed-in user, a mod only the drive has and a
- * newer copy of an installed one - the module must:
- *   - set none of their bits in SessionInfo's flags2, and no DEV bit;
- *   - answer MOD_USB_LIST, PROFILE_INFO, PROFILE_ENABLE and COMBO_OVERRIDE
- *     UNSUPPORTED, and flag no COMBO_LIST row as overridden;
- *   - read config.txt alone and load the console's own copy of a mod, as
- *     1.4.1 did, and not know a mod only the drive has;
- *   - never use a path under /dev_usb or /dev_hdd0/qwark/profiles, at the XMB
- *     (where the profile look would run), through a boot (the USB look and the
- *     auto-load), over the wire, at a rescan and a load.
+ * Build 56's release left its preview features out. Build 57's ships
+ * everything its test builds had (makefile, `release`): a release differs from
+ * a test build by QWARK_DEV alone, the DEV bit and nothing else. With the
+ * settings profiles and the USB mods set up on the fake HDD and a fake USB
+ * drive - the switch on, a profile for the signed-in user, a mod only the
+ * drive has and a newer copy of an installed one - the module must:
+ *   - be built with the preview features, its games as modules and Tools of
+ *     Destruction (QWARK_PREVIEW, QWARK_GAME_MODULES, QWARK_HAS_TOD);
+ *   - set no DEV bit in SessionInfo's flags2, and still carry its build and
+ *     its build ID in HELLO;
+ *   - set the USB mods' and the profiles' bits, and answer MOD_USB_LIST,
+ *     PROFILE_INFO, COMBO_OVERRIDE and GAME_MODULE;
+ *   - make the signed-in user's profile active at the XMB, and take a newer
+ *     USB copy and a mod only the drive has;
+ *   - show the console menu's Mods page on its root;
+ *   - know Tools of Destruction (the title index, tod.sprx, the Lua ops);
+ *   - take only the ui.pak with ToD's Lua helper (pak.py --tod, what `make
+ *     release` packs) and refuse the one without as another build's.
  *
- * Build 57: then test_config_files.c's config.txt checks, as a release reads
- * and writes the file (short reads, an open that fails, a write cut short, a
- * hand edit from Windows).
+ * Then test_config_files.c's checks, as a release reads and writes config.txt
+ * and the profiles' files.
  */
 #include "../src/core/proto.h"
 #include "../src/core/session.h"
 #include "../src/core/config.h"
 #include "../src/core/mods.h"
+#include "../src/core/modusb.h"
 #include "../src/core/menu.h"
 #include "../src/core/net.h"
+#include "../src/core/uipak.h"
+#include "../src/core/luacore.h"
 #include "../src/core/util.h"
+#include "../src/games/titles.h"
 #include "../src/plat/plat.h"
 #include "../src/plat/plat_net.h"
 #include "../src/plat/host/plat_host.h"
@@ -37,8 +46,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if QWARK_PREVIEW || QWARK_DEV
-#error "test_release.c is the release configuration: build it with -DQWARK_DEV=0 -DQWARK_PREVIEW=0"
+#if QWARK_DEV || !QWARK_PREVIEW || !QWARK_GAME_MODULES || !QWARK_HAS_TOD
+#error "test_release.c is the release configuration: build it with -DQWARK_DEV=0 and the other switches at their defaults"
 #endif
 
 static int g_checks;
@@ -88,6 +97,9 @@ void group(const char *name)
 #define USB1     "/dev_usb001/mods/" T
 #define PROFILE  QWARK_PROFILEDIR "/user-00000001"
 #define WORD_AT  0x00A20000u
+#define USB_AT   0x00A20100u
+/* test/run.sh packs both beside each other: the --tod pak as ui.pak, and this one without ToD's entries. */
+#define PAK_NOTOD "/dev_hdd0/qwark/ui-notod.pak"
 
 static void tick(int n)
 {
@@ -116,9 +128,27 @@ static void put(const char *path, const char *text)
 	plat_file_close(f);
 }
 
-static int exists(const char *path)
+/* A whole file into `buf`, its length, or -1. */
+static long slurp(const char *path, u8 *buf, u32 cap)
 {
-	return plat_path_exists(path, NULL, NULL);
+	plat_file_t f;
+	u32 got = 0, n = 0;
+
+	if (plat_file_open(path, PLAT_OPEN_READ, &f) != 0) return -1;
+	while (n < cap && plat_file_read(f, buf + n, cap - n, &got) == 0 && got > 0) n += got;
+	plat_file_close(f);
+	return (long)n;
+}
+
+static int spill(const char *path, const u8 *buf, u32 len)
+{
+	plat_file_t f;
+	int ok;
+
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return 0;
+	ok = plat_file_write(f, buf, len) == 0;
+	plat_file_close(f);
+	return ok;
 }
 
 static u32 peek32(u32 a)
@@ -126,6 +156,16 @@ static u32 peek32(u32 a)
 	u8 b[4] = { 0, 0, 0, 0 };
 	host_peek(a, b, 4);
 	return be32_get(b);
+}
+
+/* Whether `len` bytes at `p` hold `s` anywhere. */
+static int holds(const u8 *p, u32 len, const char *s)
+{
+	u32 n = (u32)strlen(s), i;
+
+	for (i = 0; i + n <= len; i++)
+		if (memcmp(p + i, s, n) == 0) return 1;
+	return 0;
 }
 
 /* ------------------------------------------------------------- the wire */
@@ -204,7 +244,7 @@ static void set_up_both_features(void)
 {
 	/* The profiles: the switch on, and user 1's profile with a slot of its own. */
 	put(QWARK_CONFIG, "log = 1\nprofiles.enabled = 1\nselected.slot = 2\n" T ".mod.both.auto = 1\n");
-	put(PROFILE "/config.txt", "selected.slot = 5\n");
+	put(PROFILE "/config.txt", "selected.slot = 5\n" T ".mod.both.auto = 1\n");
 	put(PROFILE "/positions/rac1.txt", "");
 	host_set_has_users(1);
 	host_set_user(1);
@@ -219,29 +259,90 @@ static void set_up_both_features(void)
 	put(USB0 "/both/patch.txt", "#- name: Both\n#- version: 2.0\n0x00A20000: 0x20000000\n");
 }
 
+/* The ui.pak a release takes, and the one without ToD's Lua helper it refuses. */
+static void test_release_pak(void)
+{
+	static u8 good[UIPAK_MAX_BODY + 64], notod[UIPAK_MAX_BODY + 64];
+	long ng = slurp(UIPAK_PATH, good, sizeof(good));
+	long nn = slurp(PAK_NOTOD, notod, sizeof(notod));
+
+	group("--- release build: ui.pak with Tools of Destruction's Lua helper");
+	check(ng > 32 && nn > 32 && nn < ng && good[20] == notod[20] + 4,
+	      "run.sh packed both paks: the release's has four entries more, ToD's Lua helper and its three chunks");
+	tick(4);
+	check_eq(uipak_status(), UIPAK_OK, "the pak `make release` packs (pak.py --tod) is this module's");
+	check(!uipak_bad(), "and SessionInfo flags bit7 is clear");
+
+	if (nn > 0 && spill(UIPAK_PATH, notod, (u32)nn)) {
+		uipak_touch(UIPAK_PATH);
+		tick(4);
+		check_eq(uipak_status(), UIPAK_OTHER, "a pak without ToD's entries is another build's: a release refuses it");
+		check(uipak_bad(), "and says so in flags bit7");
+	}
+	if (ng > 0 && spill(UIPAK_PATH, good, (u32)ng)) {
+		uipak_touch(UIPAK_PATH);
+		tick(4);
+		check_eq(uipak_status(), UIPAK_OK, "the release's pak back: good again");
+	}
+}
+
+/* Tools of Destruction and the game modules, in a release since build 57. */
+static void test_release_tod(void)
+{
+	u8 reply[64];
+	u32 len = 0;
+	u16 st;
+	u8 g;
+	static const char * const names[6] = { NULL, "rac1.sprx", "rac2.sprx", "rac3.sprx", "rac4.sprx", "tod.sprx" };
+
+	group("--- release build: Tools of Destruction and the game modules");
+	{
+		const struct game_title *t[4];
+		check(title_for_game(GAME_TOD) != NULL && title_candidates("NPEA00452", t, 4) > 0,
+		      "the title index knows Tools of Destruction (NPEA00452)");
+	}
+	for (g = GAME_RAC1; g <= GAME_TOD; g++) {
+		const char *n = title_module_name(g);
+		char what[96];
+		snprintf(what, sizeof(what), "game %d's module is %s", (int)g, names[g]);
+		check(n != NULL && strcmp(n, names[g]) == 0, what);
+	}
+
+	core_lock();
+	st = (u16)lua_core_status(reply, sizeof(reply), &len);
+	core_unlock();
+	check_eq(st, ST_NOT_INGAME, "the Lua ops are in: LUA_STATUS at the XMB is NOT_INGAME, not UNSUPPORTED");
+
+	st = call(OP_GAME_MODULE, NULL, 0, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == GAME_MODULE_SIZE, "GAME_MODULE answers, the memory gate's figures");
+}
+
 static void test_release(void)
 {
-	static const char * const watched[2] = { "/dev_usb", QWARK_PROFILEDIR };
+	static const char * const watched[1] = { "/dev_usb" };
 	static u8 reply[QWARK_MAX_PAYLOAD];
 	plat_thread_t accept_thread = PLAT_THREAD_NONE;
 	u32 len = 0;
 	u16 st;
 	u8 req[8];
 
-	printf("--- release build: the settings profiles and the USB mods are left out\n");
+	printf("--- release build: everything the test builds have, but the DEV bit\n");
 
-	check(QWARK_PREVIEW == 0 && QWARK_DEV == 0, "this is the release configuration");
+	check(QWARK_DEV == 0 && QWARK_PREVIEW == 1 && QWARK_GAME_MODULES == 1 && QWARK_HAS_TOD == 1,
+	      "this is the release configuration: no DEV, the preview features, game modules and ToD");
 
 	set_up_both_features();
-	host_watch_paths(watched, 2);
 
 	core_lock();
 	config_load();
 	core_unlock();
 
-	/* Three seconds at the XMB: a test build would have made user 1's profile active. */
+	/* Three seconds at the XMB: the signed-in user's profile is made active. */
 	tick(360);
-	check_eq(config_selected_slot(), 2, "config.txt's slot, not the profile's: the switch is not obeyed");
+	check(config_profile_active(), "the signed-in user's profile is active");
+	check_eq(config_selected_slot(), 5, "and its slot is the profile's, not config.txt's");
+
+	test_release_pak();
 
 	check(net_init() == ST_OK, "net_init");
 	check(plat_thread_create(&accept_thread, net_accept_thread, NULL, 16384, "qwark_net") == 0,
@@ -249,125 +350,84 @@ static void test_release(void)
 	g_sock = connect_local();
 	check(g_sock >= 0, "a client connects");
 
+	test_release_tod();
+
 	/* The boot: the USB look and the auto-load. */
+	host_watch_paths(watched, 1);
 	host_boot(T);
 	check(tick_until(SESSION_INGAME, 4000), T " boots");
-	check_eq(peek32(WORD_AT), 0x10000000u, "the auto-load loads the console's copy, not the drive's newer one");
+	check_eq(peek32(WORD_AT), 0x20000000u, "the auto-load takes the drive's newer copy (2.0)");
+	check(host_watch_hits(0) > 0, "the boot looked at the USB drives");
+	host_watch_paths(NULL, 0);
 
 	req[0] = QWARK_PROTOCOL_VERSION;
 	st = call(OP_HELLO, req, 1, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE, "HELLO answers");
-	if (st == ST_OK) {
-		check_eq(reply[29], 0, "flags2 is 0: no USB mods, no profiles, no DEV");
-		check_eq(reply[30], 0, "and byte 30, the profile sequence, is 0");
-		check_eq(reply[25], 2, "SessionInfo's slot is config.txt's");
-		check_eq(reply[31], SESSION_FLAG3_RUN_WARN,
-		         "flags3 bit0: the run-start warnings are in a release too (revision 1.30), on");
+	check(st == ST_OK && len == SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE, "HELLO answers, with the build ID after SessionInfo");
+	if (st == ST_OK && len == SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE) {
+		check_eq(reply[1], QWARK_BUILD, "qwark_version is this build");
+		check_eq(QWARK_BUILD, 57, "build 57, the release after build 56");
+		check_eq(reply[29] & SESSION_FLAG2_DEV, 0, "flags2 bit4 DEV is clear: a release");
+		check_eq(be32_get(reply + SESSION_INFO_SIZE), QWARK_BUILD_ID, "the build ID is carried all the same");
+		check_eq(reply[29] & SESSION_FLAG2_USB_MODS, SESSION_FLAG2_USB_MODS, "flags2 bit0: the USB mods");
+		check_eq(reply[29] & (SESSION_PROFILE_SUPPORTED | SESSION_PROFILE_ON | SESSION_PROFILE_ACTIVE),
+		         SESSION_PROFILE_SUPPORTED | SESSION_PROFILE_ON | SESSION_PROFILE_ACTIVE,
+		         "flags2 bits 1 to 3: profiles supported, switched on, one active");
+		check_eq(reply[29] & (SESSION_FLAG2_GAME_MODULE_BAD | SESSION_FLAG2_GAME_WAITING | SESSION_FLAG2_NO_MENU), 0,
+		         "and no game-module or no-menu bit with RaC1's code in");
+		check(reply[30] != 0, "byte 30, the profile sequence, has moved");
+		check_eq(reply[25], 5, "SessionInfo's slot is the profile's");
+		check_eq(reply[31], SESSION_FLAG3_RUN_WARN, "flags3 bit0: the run-start warnings, on");
+		check_eq(reply[0] & SESSION_FLAG_UI_PAK_BAD, 0, "flags bit7 clear: the pak is good");
 	}
 
-	/* Revision 1.30 (pending): RUN_WARN, not a preview feature. */
-	req[0] = 2;
-	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
-	check_eq(st, ST_BAD_ARG, "RUN_WARN 2 is BAD_ARG");
-	req[0] = 0;
-	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
-	check(st == ST_OK && !config_run_warnings(), "RUN_WARN 0 answers OK and writes run.warnings = 0");
-	req[0] = 1;
-	st = call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len);
-	check(st == ST_OK && config_run_warnings(), "RUN_WARN 1 puts it back");
-
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);
-	check_eq(st, ST_UNSUPPORTED, "MOD_USB_LIST is UNSUPPORTED");
+	check(st == ST_OK && holds(reply, len, "usbonly") && holds(reply, len, "usbonly2"),
+	      "MOD_USB_LIST answers, with both mods only a drive has");
 	st = call(OP_PROFILE_INFO, NULL, 0, reply, sizeof(reply), &len);
-	check_eq(st, ST_UNSUPPORTED, "PROFILE_INFO is UNSUPPORTED");
-	req[0] = 1;
-	req[1] = PROFILE_SETUP_COPY;
-	st = call(OP_PROFILE_ENABLE, req, 2, reply, sizeof(reply), &len);
-	check_eq(st, ST_UNSUPPORTED, "PROFILE_ENABLE is UNSUPPORTED");
+	check(st == ST_OK && len == PROFILE_INFO_SIZE && (reply[0] & PROFILE_INFO_HAS_PROFILE) && reply[1] == 1 &&
+	      be32_get(reply + 4) == 1, "PROFILE_INFO answers: user 1, a profile made and active");
+
 	memset(req, 0, sizeof(req));
 	req[1] = 1;
 	be32_put(req + 4, 0x1005u);
 	st = call(OP_COMBO_OVERRIDE, req, 8, reply, sizeof(reply), &len);
-	check_eq(st, ST_UNSUPPORTED, "COMBO_OVERRIDE is UNSUPPORTED");
-
+	check_eq(st, ST_OK, "COMBO_OVERRIDE answers OK");
 	st = call(OP_COMBO_LIST, NULL, 0, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == 1u + COMBO_COUNT * 8u, "COMBO_LIST answers seven rows");
-	if (st == ST_OK) {
-		u32 i;
-		int clear = 1;
-		for (i = 0; i < reply[0] && 1 + (i + 1) * 8 <= len; i++) {
-			if (reply[1 + i * 8 + 1] != 0) clear = 0;
-		}
-		check(clear, "and no row is flagged OVERRIDDEN");
-	}
-
-	st = call(OP_CONFIG_RELOAD, NULL, 0, reply, sizeof(reply), &len);
-	check_eq(st, ST_OK, "CONFIG_RELOAD answers OK");
-	check_eq(config_selected_slot(), 2, "and reads config.txt alone");
-
-	{
-		u8 setauto[33];
-		memset(setauto, 0, sizeof(setauto));
-		memcpy(setauto, "usbonly", 7);
-		setauto[32] = 1;
-		st = call(OP_MOD_SET_AUTO, setauto, sizeof(setauto), reply, sizeof(reply), &len);
-	}
-	check_eq(st, ST_NOT_FOUND, "MOD_SET_AUTO on for a mod only a drive has is NOT_FOUND, as in 1.4.1");
+	check(st == ST_OK && len == 1u + COMBO_COUNT * 8u && (reply[2] & COMBO_LIST_OVERRIDDEN),
+	      "and COMBO_LIST flags the first action OVERRIDDEN");
+	memset(req, 0, sizeof(req));
+	st = call(OP_COMBO_OVERRIDE, req, 8, reply, sizeof(reply), &len);
+	check_eq(st, ST_OK, "the override cleared again");
 
 	/* A rescan and a load, as the tick thread runs them for MOD_RESCAN and MOD_LOAD. */
 	core_lock();
 	mods_rescan();
-	check_eq(mods_load("usbonly"), ST_NOT_FOUND, "MOD_LOAD of a mod only a drive has is NOT_FOUND");
-	mods_unload("both");
-	check_eq(mods_load("both"), ST_OK, "MOD_LOAD of an installed mod with a newer USB copy loads");
+	check_eq(mods_load("usbonly"), ST_OK, "MOD_LOAD of a mod only a drive has copies it in and loads it");
 	core_unlock();
-	check_eq(peek32(WORD_AT), 0x10000000u, "the console's own copy");
+	check_eq(peek32(USB_AT), 0x60000000u, "its word is in the game");
 
 	st = call(OP_MOD_LIST, NULL, 0, reply, sizeof(reply), &len);
-	check(st == ST_OK && mod_listed(reply, len, "both"), "MOD_LIST lists the installed mod");
-	check(st == ST_OK && !mod_listed(reply, len, "usbonly") && !mod_listed(reply, len, "usbonly2"),
-	      "and neither mod only a drive has");
+	check(st == ST_OK && mod_listed(reply, len, "both") && mod_listed(reply, len, "usbonly"),
+	      "MOD_LIST lists the installed mod and the one copied off the drive");
 
-	/* Build 56: the console menu's Mods page is a preview feature too. */
+	/* Build 56's preview feature, in a release since build 57: the console menu's Mods page. */
 	{
 		struct menu_view v;
-		u8 i, mods = 0;
+		u8 i, mods = 0xFF;
 
 		core_lock();
 		menu_model_reset(7, 24, MBOX_CAP_STEPS | MBOX_CAP_PAGE_KEYS | MBOX_CAP_BACK | MBOX_CAP_REQUEST);
 		menu_model_view(&v);
-		for (i = 0; i < v.nrows; i++) {
-			if (strcmp(v.rows[i].label, "Mods") == 0 || v.rows[i].id == MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS))
-				mods = 1;
-		}
-		check(!mods && v.nrows == 6 && strcmp(v.rows[4].label, "Unlocks") == 0 &&
-		      strcmp(v.rows[5].label, "Save files") == 0,
-		      "the console menu's root has no Mods row: Game .. Unlocks, Save files, six rows, as in 1.4.1");
-		check_eq(menu_model_event(MBOX_EV_ACTIVATE, 5, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS), v.key), ST_BAD_ARG,
-		         "an event for a Mods row is refused: no row of the root's is one");
-		check_eq(menu_model_depth(), 1, "and the menu stays on its root");
+		for (i = 0; i < v.nrows; i++)
+			if (strcmp(v.rows[i].label, "Mods") == 0) mods = i;
+		check(mods == 5 && v.nrows == 7 && v.rows[mods].id == MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MODS) &&
+		      strcmp(v.rows[6].label, "Save files") == 0,
+		      "the console menu's root has its Mods row, between Unlocks and Save files, seven rows");
 		core_unlock();
 	}
 
 	host_quit();
 	check(tick_until(SESSION_XMB, 2000), "back at the XMB");
-	host_set_user(2);
-	tick(360);
-	check_eq(config_selected_slot(), 2, "another user signing in changes nothing");
-
-	check_eq(host_watch_hits(0), 0, "no path under /dev_usb was used");
-	check_eq(host_watch_hits(1), 0, "no path under /dev_hdd0/qwark/profiles was used");
-	host_watch_paths(NULL, 0);
-
-	check(!exists(HDD "/usbonly") && !exists("/dev_hdd0/qwark/usbtmp"), "nothing was copied off the drive");
-	check(!exists(QWARK_PROFILEDIR "/user-00000002"), "no profile was made");
-	{
-		char text[256];
-		u32 n = 0;
-		check(qread_file(QWARK_CONFIG, text, sizeof(text) - 1, &n) == ST_OK &&
-		      (text[n] = 0, strstr(text, "profiles.enabled = 1") != NULL),
-		      "config.txt keeps profiles.enabled, for a test build to find again");
-	}
 
 	net_stop();
 	if (g_sock >= 0) plat_socket_close(g_sock);
@@ -375,6 +435,24 @@ static void test_release(void)
 	check(plat_thread_join(accept_thread) == 0, "the accept thread joins");
 	net_wait_clients(2000000u);
 	net_shutdown();
+
+	/* What the config files' tests that follow expect to start from: the profiles off, no profile, no users. */
+	{
+		int changed = 0;
+
+		core_lock();
+		config_profiles_enable(0, PROFILE_SETUP_NONE, 1, &changed);
+		core_unlock();
+	}
+	plat_file_unlink(PROFILE "/config.txt");
+	plat_file_unlink(PROFILE "/positions/rac1.txt");
+	host_set_has_users(0);
+	put(QWARK_CONFIG, "log = 1\n");
+	core_lock();
+	config_load();
+	core_unlock();
+	tick(360);
+	check(!config_profile_active(), "the profile let go again, for the config files' tests");
 }
 
 int main(void)
@@ -393,7 +471,7 @@ int main(void)
 	}
 
 	test_release();
-	/* Build 57: config.txt on a console's HDD and after a hand edit, as a release reads and writes it. */
+	/* config.txt and the profiles' files on a console's HDD and after a hand edit, as a release reads and writes them. */
 	test_config_files();
 
 	session_shutdown();

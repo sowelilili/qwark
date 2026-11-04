@@ -148,7 +148,7 @@ void autosplit_emit(u8 kind, u8 code, u32 arg)
 	plat_mutex_unlock(&g_mutex);
 
 	/*
-	 * Revision 1.30 (pending): a START is the run start every game's watcher
+	 * Revision 1.30: a START is the run start every game's watcher
 	 * finds once per run, so the run-start warnings hang off it here, the one
 	 * place all five games go through (runwarn.h).
 	 */

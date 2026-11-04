@@ -1,6 +1,6 @@
 /*
- * Tools of Destruction (NPEA00452 v01.00): the level flags, revision 1.28
- * (pending). tod.h has the layout; this file has the three LEVELFLAGS hooks
+ * Tools of Destruction (NPEA00452 v01.00): the level flags, revision 1.28.
+ * tod.h has the layout; this file has the three LEVELFLAGS hooks
  * and which planet each flag belongs to, for LEVELFLAGS_RESET.
  *
  * The game keeps one table of progression flags for the whole save, not a

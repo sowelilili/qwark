@@ -16,7 +16,7 @@
  * A chunk qwark sends does not go through reportError: its error comes back in
  * `out`, from lua_pcall's own message.
  *
- * Revision 1.29 (pending), the console menu (docs/tod-menu.md): two entries
+ * Revision 1.29, the console menu (docs/tod-menu.md): two entries
  * more. The pause menu's frame calls lh_menu_tick after the Anark menu's own
  * update, on the main thread, where the pause menu's VM is as safe to enter
  * as the gameplay VM is after its update. It gives each pause menu's

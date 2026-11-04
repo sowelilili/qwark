@@ -15,7 +15,7 @@
  * button, and the galactic map's update. All are computed from the
  * addresses the helper linked at.
  *
- * Revision 1.29 (pending): the cave's bytes and the three Lua chunks are here
+ * Revision 1.29: the cave's bytes and the three Lua chunks are here
  * for the emulator builds alone (QWARK_EMULATOR), which make an RPCS3 patch of
  * them (LUA_PATCH), look for it in the game, and send the chunks under RPCS3.
  * A console reads all four out of ui.pak (src/games/menuhelper/pak.py --tod,

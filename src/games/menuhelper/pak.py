@@ -24,12 +24,13 @@ sfhelper_bins.h as SF_PAK_ID: a module accepts only a pak that names its own
 build and carries exactly the renderers and the helpers it was built with.
 --build N stamps another build, for the tests of a pak from another build.
 
-Revision 1.29 (pending): Tools of Destruction's Lua helper, out of the
-committed src/games/luahelper_bins.c, which only the builds that have ToD
-(QWARK_HAS_TOD: a test build, the host builds) pack, with --tod (the
+Revision 1.29: Tools of Destruction's Lua helper, out of the committed
+src/games/luahelper_bins.c, which the builds that have ToD (QWARK_HAS_TOD: a
+test build, a release since build 57, the host builds) pack, with --tod (the
 makefile's PAK_TOD, test/run.sh, smoke.py): four entries after the savefile
-helpers, outside the header's identities, so a release's pak is byte for
-byte the four renderers' and the four helpers' as before. Kind 3 is the
+helpers, outside the header's identities, so a pak without them (a
+QWARK_GAME_MODULES=0 module's) is byte for byte the four renderers' and the
+four helpers' as before. Kind 3 is the
 helper's code, laid out as a savefile helper's entry; kinds 4, 5 and 6 are
 the Lua chunks the core sends, the pause menu's glue (lh_glue.lua), the look
 at the pause (lh_diag.lua) and the galactic map's glue (lh_gmap.lua), each

@@ -69,7 +69,7 @@
 #define LH_ERR_HOOK_ORIG 0x4E800020
 
 /*
- * Revision 1.29 (pending), the console menu (lh_menu.h, docs/tod-menu.md):
+ * Revision 1.29, the console menu (lh_menu.h, docs/tod-menu.md):
  * two more hooks, both cross-TOC calls whose caller reloads r2 from its own
  * stack afterwards (`ld r2,40(r1)` follows), so each entry stores the caller's
  * r2 there first, as the trampoline it replaces would.

@@ -140,7 +140,7 @@ int  mods_info(const char *dirname, char *out, u32 cap, u32 *len);
 
 u32  mods_loaded_mask(void);
 /*
- * Revision 1.30 (pending), the run-start warnings: bit i set = mod index i is
+ * Revision 1.30, the run-start warnings: bit i set = mod index i is
  * in the game and its legality bits (MOD_FLAG_LEGAL, MOD_FLAG_ILLEGAL, or 0
  * for unknown) are exactly `legality`. In the game is qwark's own load, or
  * where code cannot be patched what the presence look found.

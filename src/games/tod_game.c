@@ -3,9 +3,10 @@
  * hot block, the descriptors and the vtable. The handlers are next door in
  * tod_panel.c, the addresses in tod.h, the fact sheet in tod.c.
  *
- * Built where the games are modules (`make`: tod.sprx) or linked into a PC
- * build (qwark-host.exe, qwark-rpcs3.exe, the tests). A release links the four
- * originals alone and has no ToD at all: titles.c lists no ToD title there.
+ * Built where the games are modules (`make` and `make release`: tod.sprx) or
+ * linked into a PC build (qwark-host.exe, qwark-rpcs3.exe, the tests). A
+ * QWARK_GAME_MODULES 0 module links the four originals alone and has no ToD at
+ * all: titles.c lists no ToD title there.
  *
  * Everything a readout or an unlock shows is a plain read of a fixed address
  * or of the three-read hero chain, every tick, in C; the game's Lua is only
@@ -37,8 +38,8 @@
  *   9  load job   the tier loader's job, a level load's               every 2nd
  *  10  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
  *
- * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28,
- * pending): the level coming up is read every tick; the title and the game
+ * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28):
+ * the level coming up is read every tick; the title and the game
  * state (Cache cutscenes' test for gameplay since revision 1.29 retired the
  * credits split) take the even and the odd ticks between them, and a level
  * load (revision 1.29), which lasts seconds, is the two words of blocks 9 and 10,
@@ -328,7 +329,7 @@ static const struct feature_desc tod_features[] = {
 #undef WC
 
 /*
- * Revision 1.30 (pending), the run-start warnings: what counts as a cheat
+ * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Fast loads, Infinite ammo,
  * Infinite health and God Ratchet. Remove cutscenes is run-legal (the
  * user's call, 2026-10-31), and the cutscene cache's two toggles are manips:
@@ -453,7 +454,7 @@ static const struct game_menu tod_menu = {
 };
 
 /*
- * Revision 1.29 (pending): the Trainer's Planets row opens the galactic map,
+ * Revision 1.29: the Trainer's Planets row opens the galactic map,
  * the game's own planet picker (tod.h, docs/tod-menu.md 16), with the
  * gameplay package's gmap(), as Fastoon's ship does after its repair: Back
  * goes back to play, a pick is the game's own load. While it is up every

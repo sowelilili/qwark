@@ -33,7 +33,7 @@
 /*
  * Revision 1.24. How often the XMB's signed-in user is asked for: once a
  * second, at the XMB only. A user can change only there, and it is one VSH
- * call. A release has no profiles (proto.h, QWARK_PREVIEW) and never asks.
+ * call. A QWARK_PREVIEW 0 module has no profiles (proto.h) and never asks.
  */
 #define PROFILE_POLL_EVERY 120u
 #endif
@@ -675,7 +675,8 @@ static const char *game_key_for(u8 game_id)
  *
  * What runs here is what needs the game's code; enter_ingame did everything
  * that does not, in the order it always had, and a linked game runs this
- * straight after it, so a release module does what it did before game modules.
+ * straight after it, so a linked module (QWARK_GAME_MODULES 0) does what it did
+ * before game modules.
  */
 static void game_arrive(const struct game_api *g)
 {
@@ -1539,7 +1540,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	/*
 	 * Revision 1.24: flags2, whose bits 1 to 3 are the settings profile's
 	 * (bit0 is the USB mods', bit4 a test build's), and the profile's
-	 * sequence. out[31] is flags3, below. A release (QWARK_PREVIEW 0) has neither the
+	 * sequence. out[31] is flags3, below. A QWARK_PREVIEW 0 module has neither the
 	 * profiles nor the USB mods, so their bits and byte 30 are 0 there.
 	 */
 	out[29] = (u8)(config_profile_flags() | (modusb_enabled() ? SESSION_FLAG2_USB_MODS : 0)
@@ -1550,7 +1551,7 @@ static u32 encode_info(u8 *out, u32 cap)
 	                  ? SESSION_FLAG2_NO_MENU : 0));
 	out[30] = config_profile_seq();
 	/*
-	 * Revision 1.30 (pending): flags3, a pad byte before it. The run-start
+	 * Revision 1.30: flags3, a pad byte before it. The run-start
 	 * warnings are in every build, so bit0 is always set; bit1 is the switch.
 	 */
 	out[31] = (u8)(SESSION_FLAG3_RUN_WARN | (config_run_warnings() ? 0 : SESSION_FLAG3_RUN_WARN_OFF));

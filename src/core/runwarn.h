@@ -1,5 +1,5 @@
 /*
- * Revision 1.30 (pending): the run-start warnings.
+ * Revision 1.30: the run-start warnings.
  *
  * With the in-game trainer it is easy to leave a cheat on, so as a run starts
  * the console says what is on that the run should not have:

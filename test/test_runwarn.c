@@ -1,5 +1,5 @@
 /*
- * Revision 1.30 (pending): the run-start warnings (src/core/runwarn.h), on
+ * Revision 1.30: the run-start warnings (src/core/runwarn.h), on
  * qwark's fake console. The notification's text; a mod's `#- legal:` line
  * (true, false, missing, garbage) as MOD_LIST carries it; at each of the four
  * original games' run starts, the autosplitter's START from its own watcher,

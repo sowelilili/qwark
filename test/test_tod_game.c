@@ -1325,7 +1325,7 @@ static void death(u32 lua)
 }
 
 /*
- * Revision 1.29 (pending): a load qwark starts is fast-loaded, as the four
+ * Revision 1.29: a load qwark starts is fast-loaded, as the four
  * original games' PLANET_LOAD is (tod.h, tod_galmap_up): Fast loads forced
  * on for it and put back once the new level is up, unless the toggle is on.
  */
@@ -1762,7 +1762,7 @@ static void test_tod_autosplit_runs(void)
 	wr32(TOD_CURRENT_LEVEL, 0);
 	tick(2);
 	/*
-	 * Revision 1.30 (pending), the run-start warnings: two cheats on, and
+	 * Revision 1.30, the run-start warnings: two cheats on, and
 	 * Remove cutscenes, run-legal, on as well; the START says the two.
 	 */
 	runwarn_forget();
@@ -2572,7 +2572,7 @@ static void test_tod_savefile_boots(void)
 	u8 installed = 0, running = 0, pending = 0, error = 0;
 	u32 size = 0, i;
 
-	group("ToD: savefile loads after any boot, and why a refusal was (revision 1.29, pending)");
+	group("ToD: savefile loads after any boot, and why a refusal was (revision 1.29)");
 	check(boot_tod(), "ToD boots");
 	tick(4);
 
@@ -2708,7 +2708,7 @@ static void test_tod_savefile_boots(void)
 	check(quit(), "the game quits");
 }
 
-/* ------------------- a RESTORE is the set-aside too, revision 1.29 (pending) */
+/* ------------------- a RESTORE is the set-aside too, revision 1.29 */
 
 #define SF_ASIDE_PATH QWARK_SAVEDIR "/" TOD_TITLE "/" SAVEFILE_ASIDE_FILE
 #define SF_ASIDE_NEW  SF_ASIDE_PATH ".new"
@@ -2779,7 +2779,7 @@ static void test_tod_savefile_aside(void)
 	long n;
 	u32 crc_b;
 
-	group("ToD: a RESTORE is the set-aside too, as in the other games (revision 1.29, pending)");
+	group("ToD: a RESTORE is the set-aside too, as in the other games (revision 1.29)");
 	check(boot_tod(), "ToD boots");
 	tick(4);
 
@@ -2862,6 +2862,62 @@ static void test_tod_savefile_aside(void)
 	check(sf_restore_ok("b.sav", 6000) && sf_bolts(SF_ASIDE_PATH) == 6000, "a RESTORE with the disk well again is the set-aside");
 	/* a.sav back in, as the groups before this one leave the game for the autosplitter's. */
 	check(sf_restore_ok("a.sav", 1000) && sf_bolts(SF_ASIDE_PATH) == 1000, "and a.sav back in, the set-aside with it");
+	check(quit(), "the game quits");
+}
+
+/*
+ * Revision 1.30: Load set-aside is fast-loaded, as RaC1's, RaC2's and UYA's
+ * set-aside loads are (rac1_load_setaside), with PLANET_LOAD's force and
+ * watch; a RESTORE of a library file forces nothing, in ToD as in every game.
+ */
+static void test_tod_savefile_aside_fast(void)
+{
+	group("ToD: Load set-aside is fast-loaded, as RaC1's to UYA's are; a RESTORE is not (revision 1.30)");
+	check(boot_tod(), "ToD boots");
+	tick(4);
+	fl_seed_game();
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_unpatched() && !fl_bit(), "Fast loads off");
+
+	/* A RESTORE of a library file: the short fade, no force. */
+	wr32(TOD_BOLTS, 11);
+	check(sf_restore_ok("a.sav", 1000) && sf_bolts(SF_ASIDE_PATH) == 1000, "a RESTORE of a.sav loads, and is the set-aside");
+	check(fl_unpatched() && !fl_bit(), "and forces nothing: the game's own words, the flag 0, the 5 s");
+
+	/* Load set-aside: forced from its acceptance until the new level is up. */
+	fl_world(2);
+	wr32(TOD_BOLTS, 12);
+	check(sf_load_aside_ok(1000), "Load set-aside loads the set-aside");
+	check(fl_patched(), "with Fast loads forced for its load (the words, the sites, the flag, the 0 s minimum)");
+	check(!fl_bit(), "the toggle's bit stays clear: the force is not the toggle");
+	fl_game_loads(5, 0x300A0000u);
+	check(fl_patched(), "kept through the level's load");
+	level_enters(0x300A0000u);
+	tick(4);
+	check(fl_unpatched() && !fl_bit(), "the new level up: the game's own words back, the toggle still off");
+
+	/* A refused Load set-aside forces nothing. */
+	fl_world(5);
+	wr32(TOD_GAME_STATE, 3);
+	check(sf_trigger(TF_LOAD_ASIDE) == ST_BUSY && fl_unpatched(), "a refused Load set-aside forces nothing");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+
+	/* A load the game never takes: put back after the wait, as PLANET_LOAD's is. */
+	fl_world(5);
+	check(sf_load_aside_ok(1000) && fl_patched(), "forced again");
+	tick(TOD_FADE_WAIT_TICKS + 8);
+	check(fl_unpatched(), "no level load in six seconds: put back");
+
+	/* With the toggle on, nothing is forced or put back. */
+	check(features_set(TF_FAST_LOADS, 1) == ST_OK && fl_patched() && fl_bit(), "Fast loads on");
+	fl_world(5);
+	check(sf_load_aside_ok(1000), "Load set-aside with it on");
+	fl_game_loads(6, 0x300B0000u);
+	level_enters(0x300B0000u);
+	tick(4);
+	check(fl_patched() && fl_bit(), "the load over: still on, as the toggle has it");
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && fl_unpatched(), "and off again");
+	fl_world(5);
 	check(quit(), "the game quits");
 }
 
@@ -3686,6 +3742,7 @@ void test_tod_game(void)
 	test_tod_savefile();
 	test_tod_savefile_boots();
 	test_tod_savefile_aside();
+	test_tod_savefile_aside_fast();
 	quit();
 	check(boot_tod(), "ToD again, for the autosplitter");
 	test_tod_autosplit_rows();

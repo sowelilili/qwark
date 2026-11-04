@@ -172,7 +172,7 @@ struct sf_transfer {
 	char path[SAVEFILE_PATH_MAX];
 #if QWARK_HAS_TOD
 	/*
-	 * Revision 1.29 (pending): a RESTORE of a library file, for a game that keeps
+	 * Revision 1.29: a RESTORE of a library file, for a game that keeps
 	 * its set-aside in a file (struct sf_driver, aside_file), also writes what it
 	 * copies into <set-aside file>.new, which becomes the set-aside once the game
 	 * has taken the load (aside_end). SF_ASIDE_NONE, OPEN while the copy writes
@@ -194,9 +194,9 @@ static void aside_end(int commit);
 #endif
 
 /*
- * Revision 1.29 (pending): SAVEFILE_INFO's `why`, beside `error` and cleared
+ * Revision 1.29: SAVEFILE_INFO's `why`, beside `error` and cleared
  * with it (WHY_CLEAR). Only a game whose save system qwark drives sets it
- * (savefile_why), so a release, which has none, has no byte to keep.
+ * (savefile_why), so a build without ToD, which has none, has no byte to keep.
  */
 #if QWARK_HAS_TOD
 static u8 g_why;
@@ -263,8 +263,8 @@ static void drv_release(void)
 
 /*
  * Revision 1.28: the title's set-aside file, a STORE or RESTORE with
- * no category (struct sf_driver, aside_file). A constant 0 in a release, which
- * has no game that keeps one, so the branches for it fold away.
+ * no category (struct sf_driver, aside_file). A constant 0 in a build without
+ * ToD, which has no game that keeps one, so the branches for it fold away.
  */
 #define SF_ASIDE_FILES QWARK_HAS_TOD
 
@@ -302,7 +302,7 @@ static void xfer_stop(u8 error)
 
 #if QWARK_HAS_TOD
 	/*
-	 * Revision 1.29 (pending): a RESTORE whose load the game took has its file
+	 * Revision 1.29: a RESTORE whose load the game took has its file
 	 * as the set-aside now, as the other games' aside buffer has it; any other
 	 * end throws the copy away and leaves the set-aside as it was. Nothing here
 	 * changes how the RESTORE itself ended.
@@ -828,7 +828,7 @@ static int request(int load, int own);
 
 #if QWARK_HAS_TOD
 /*
- * Revision 1.29 (pending): a RESTORE is also a set-aside, as in the other games.
+ * Revision 1.29: a RESTORE is also a set-aside, as in the other games.
  *
  * Their set-aside is the aside buffer in the game's memory, and a RESTORE fills
  * that buffer before it loads it, so Load set-aside then loads the file that was
@@ -1856,7 +1856,7 @@ SF_FILE_FN int restore_file(const char *category, const char *name)
 
 	plat_log("savefile: restore %s", g_xfer.path);
 #if QWARK_HAS_TOD
-	/* Revision 1.29 (pending): a library file is the set-aside too; the set-aside itself is not copied onto itself. */
+	/* Revision 1.29: a library file is the set-aside too; the set-aside itself is not copied onto itself. */
 	if (category != NULL && aside_on_disk()) aside_begin();
 #endif
 	return ST_OK;

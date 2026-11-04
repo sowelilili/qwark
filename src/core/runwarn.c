@@ -1,5 +1,5 @@
 /*
- * The run-start warnings (revision 1.30, pending). See runwarn.h.
+ * The run-start warnings (revision 1.30). See runwarn.h.
  */
 #include "runwarn.h"
 #include "features.h"
