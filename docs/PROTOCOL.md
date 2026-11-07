@@ -154,6 +154,8 @@ Revision 1.30, run-start warnings (module build 57, 2026-11-04): with the in-gam
 
 Revision 1.30, run-start warnings after build 57's hardware test (2026-11-04): no opcode and no structure moved. UYA's Quick-select pause (feature 5) no longer counts as a cheat: it is one of the game's own options, the client's Values switch, so UYA counts four toggles (section 5.10.2); Fast loads still counts in every game, and RaC2's two on-death toggles still count. The third line of the notification reads **"Warning: N unknown mods enabled"** ("1 unknown mod"), for the same mods as before.
 
+Revision 1.31 (2026-11-07, module build 58): build 57 shipped with client 1.5.0 as a release, so what follows is build 58. No opcode or structure changes: it carries the mod pool fix of section 5.7 (a mod switched off is reverted whole, and the Mods page no longer finds an overlap with a mod it shares no byte with). A client that expects build 58 reads a console still on build 57 as out of date and replaces it.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.

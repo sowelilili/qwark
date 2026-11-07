@@ -1622,7 +1622,7 @@ static void test_telemetry(void)
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
-	check_eq_u64(packet[5], 57, "and this module is build 57");
+	check_eq_u64(packet[5], 58, "and this module is build 58");
 	check_eq_u64(packet[4 + 29] & SESSION_FLAG2_DEV, SESSION_FLAG2_DEV,
 	             "flags2 bit4 DEV: run.sh builds a test build (QWARK_DEV=1)");
 	check_eq_u64(packet[4 + 29] & 0xE0, 0, "and flags2 bits 5 to 7 stay clear");

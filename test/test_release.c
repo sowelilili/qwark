@@ -365,7 +365,7 @@ static void test_release(void)
 	check(st == ST_OK && len == SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE, "HELLO answers, with the build ID after SessionInfo");
 	if (st == ST_OK && len == SESSION_INFO_SIZE + HELLO_BUILD_ID_SIZE) {
 		check_eq(reply[1], QWARK_BUILD, "qwark_version is this build");
-		check_eq(QWARK_BUILD, 57, "build 57, the release after build 56");
+		check_eq(QWARK_BUILD, 58, "build 58, the release after build 57");
 		check_eq(reply[29] & SESSION_FLAG2_DEV, 0, "flags2 bit4 DEV is clear: a release");
 		check_eq(be32_get(reply + SESSION_INFO_SIZE), QWARK_BUILD_ID, "the build ID is carried all the same");
 		check_eq(reply[29] & SESSION_FLAG2_USB_MODS, SESSION_FLAG2_USB_MODS, "flags2 bit0: the USB mods");
