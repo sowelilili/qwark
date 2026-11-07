@@ -359,12 +359,25 @@ static int parse_mod(struct mod_entry *m, const char *dirname)
 
 /* ----------------------------------------------------------------- rescan */
 
+/* One bit an entry in mods_pack_pools' masks. */
+typedef char mods_pack_mask_fits[QWARK_MAX_MODS <= 32 ? 1 : -1];
+
 /*
  * Packs the word, originals and cave pools down onto the entries the table
  * still holds, so the space the ones a rescan dropped were using comes back.
- * The pools are bump allocated and a mod owns one slice of each; walking the
- * table in order walks the slices in the order they were taken, so a slice only
- * ever moves down and never onto one that has not moved yet.
+ * The pools are bump allocated and a mod owns one slice of each. The slices are
+ * moved in the order they lie in the pool, lowest first, so a slice only ever
+ * moves down and never onto one that has not moved yet.
+ *
+ * That is not the table's order. A rescan parses the folders in the order the
+ * listing gives them, after the slices of the loaded mods it kept, so a mod in
+ * a low slot loaded after one in a higher slot has its slice after that one's.
+ * Builds 42 to 57 walked the table in slot order here, which moved the low slot's
+ * slice down over the other's before that one had moved, and then pointed the
+ * other's def at what was now the first mod's words and originals: switching
+ * the other Off put the first mod's words back and left its own in the game,
+ * and the console menu's guarded load took the first mod's addresses for the
+ * other's (test_menu_mods.c, test_rescan_order).
  *
  * A kept entry's def is re-pointed at its moved slice. The entry itself does
  * not move, and must not: patch.c's applied table holds the address of a loaded
@@ -374,17 +387,26 @@ static int parse_mod(struct mod_entry *m, const char *dirname)
  */
 static void mods_pack_pools(void)
 {
+	u32 wdone = 0, cdone = 0;   /* bit i: entry i's slice of that pool is in place */
 	u16 wdst = 0;
 	u16 cdst = 0;
 	u32 i;
 
-	for (i = 0; i < g_nmods; i++) {
-		struct mod_entry *m = &g_mods[i];
-		u16 wsrc;
+	for (;;) {
+		struct mod_entry *m = NULL;
+		u16 wsrc = 0;
+		u32 at = 0;
 
-		if (!m->used || m->def.words == NULL) continue;
+		for (i = 0; i < g_nmods; i++) {
+			struct mod_entry *e = &g_mods[i];
+			u16 s;
 
-		wsrc = (u16)(m->def.words - (const struct patch_word *)g_words);
+			if (!e->used || e->def.words == NULL || (wdone & (1u << i))) continue;
+			s = (u16)(e->def.words - (const struct patch_word *)g_words);
+			if (m == NULL || s < wsrc) { m = e; wsrc = s; at = i; }
+		}
+		if (m == NULL) break;
+		wdone |= 1u << at;
 
 		if (m->def.count > 0 && wdst != wsrc) {
 			memmove(&g_words[wdst], &g_words[wsrc],
@@ -395,6 +417,20 @@ static void mods_pack_pools(void)
 		m->def.words     = &g_words[wdst];
 		m->def.originals = &g_originals[wdst];
 		wdst = (u16)(wdst + m->def.count);
+	}
+
+	for (;;) {
+		struct mod_entry *m = NULL;
+		u32 at = 0;
+
+		for (i = 0; i < g_nmods; i++) {
+			struct mod_entry *e = &g_mods[i];
+
+			if (!e->used || e->def.words == NULL || (cdone & (1u << i))) continue;
+			if (m == NULL || e->cave_first < m->cave_first) { m = e; at = i; }
+		}
+		if (m == NULL) break;
+		cdone |= 1u << at;
 
 		if (m->ncaves > 0 && cdst != m->cave_first) {
 			memmove(&g_caves[cdst], &g_caves[m->cave_first],

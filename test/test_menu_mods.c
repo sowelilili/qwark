@@ -122,6 +122,7 @@ static void rm_tree(const char *path)
 
 static const char *const g_dirs[] = {
 	"mm-a", "mm-b", "mm-c", "mm-ch", "mm-n", "mm-m", "mm-bad", "mm-f", "mm-h", "mm-usb", "mm-usb2",
+	"mm-lo", "mm-up", "mm-rta",
 };
 
 static void clean(void)
@@ -478,6 +479,124 @@ static void test_long(void)
 	}
 }
 
+/* Back out of the Mods page and into it again, which rescans the library as the page opens. */
+static void reopen(struct menu_view *v)
+{
+	menu_model_event(MBOX_EV_BACK, 0, 0, v->key);
+	menu_model_view(v);
+	act(v, MBOX_EV_ACTIVATE, "Mods");
+}
+
+/* Whether the applied patch named `name` starts at `addr`, as PATCH_LIST would say. */
+static int patch_first(const char *name, u32 addr)
+{
+	u32 i;
+	for (i = 0; i < patch_count(); i++) {
+		const struct patch_def *d = patch_at(i);
+		if (d != NULL && strcmp(d->name, name) == 0) return d->count > 0 && d->words[0].addr == addr;
+	}
+	return 0;
+}
+
+/*
+ * Build 57's hardware report (2026-11-07, Deadlocked): a mod switched Off from
+ * the Mods page stayed in the game, and a mod would not load because it "would
+ * write over" a mod that has no byte where it writes. Both were the rescan's
+ * packing of the word pool (mods_pack_pools), which walked the loaded mods in
+ * table order and assumed their slices of the pool lay in that order too. They
+ * do not once a mod with a higher slot is loaded first: the rescan that follows
+ * packs it to the front, every other mod is parsed again after it, and when the
+ * lower-slot mod is loaded and the page opened again, packing it to the front
+ * wrote over the first mod's words and originals before they were moved, and
+ * the first mod's def was then pointed at the second mod's words. Its Off
+ * reverted the other mod's words and left its own in, and the guard read the
+ * other mod's addresses as its own. Deadlocked's Stereo Music (auto-loaded,
+ * index 10) and IL Decimal Timer (index 4, loaded for IL RTA) were exactly
+ * that: PATCH_LIST on the console named Stereo Music for 16 of IL Decimal
+ * Timer's words at 0x003D8858.
+ */
+static void test_rescan_order(void)
+{
+	struct menu_view v;
+	int rc, lo, hi;
+
+	group("console menu: the Mods page, a mod loaded after one in a later slot (build 57's report)");
+
+	mod(HDD, "mm-lo", "#- name: Low\n0x00890000: 0x60000001\n0x00890100: 0x60000002\n0x00890200: 0x60000003\n");
+	mod(HDD, "mm-up", "#- name: Upper\n0x00891000: 0x60000011\n0x00891100: 0x60000012\n");
+	mod(HDD, "mm-rta", "#- name: Rta\n#- depends: Low\n0x00892000: 0x60000021\n");
+	poke32(0x00890000u, 0x11110000u);
+	poke32(0x00890100u, 0x11110100u);
+	poke32(0x00890200u, 0x11110200u);
+	poke32(0x00891000u, 0x22221000u);
+	poke32(0x00891100u, 0x22221100u);
+	poke32(0x00892000u, 0x33332000u);
+
+	menu_model_reset(7, 24, CAPS_ALL);
+	menu_model_view(&v);
+	act(&v, MBOX_EV_ACTIVATE, "Mods");
+	/* test_long left the table full, so the new folders get their slots at the second look. */
+	reopen(&v);
+	lo = mods_find("mm-lo");
+	hi = mods_find("mm-up");
+	check(lo >= 0 && hi > lo, "Low has the lower slot, Upper the higher");
+
+	/* Upper first (Stereo Music, auto-loaded at boot), and the page opened again. */
+	rc = act(&v, MBOX_EV_ACTIVATE, "Upper");
+	check(rc == ST_OK && loaded("mm-up") && peek32(0x00891000u) == 0x60000011u, "Upper On");
+	reopen(&v);
+	/* Then Low (IL Decimal Timer), and the page opened again. */
+	rc = act(&v, MBOX_EV_ACTIVATE, "Low");
+	check(rc == ST_OK && loaded("mm-lo") && peek32(0x00890000u) == 0x60000001u, "Low On");
+	reopen(&v);
+	check(loaded("mm-lo") && loaded("mm-up"), "both still loaded after the rescan");
+	check(patch_first("Upper", 0x00891000u) && patch_first("Low", 0x00890000u),
+	      "each applied patch still names its own words (PATCH_LIST)");
+	check(hdd("mm-up")->def.count == 2 && hdd("mm-up")->def.words[1].addr == 0x00891100u &&
+	      hdd("mm-up")->def.originals[0] == 0x22221000u && hdd("mm-up")->def.originals[1] == 0x22221100u,
+	      "Upper's words and originals are its own");
+	check(mem_owner(0x00890000u, 4) != NULL && strcmp(mem_owner(0x00890000u, 4), "Low") == 0,
+	      "Low's word is Low's to the guard, not Upper's");
+
+	/* Off from the page: every word of it back, and nothing of the other mod's touched. */
+	rc = act(&v, MBOX_EV_LEFT, "Upper");
+	check(rc == ST_OK && !loaded("mm-up") && strcmp(value_of(&v, "Upper"), "Off") == 0, "Upper Off");
+	check(peek32(0x00891000u) == 0x22221000u && peek32(0x00891100u) == 0x22221100u,
+	      "Upper's words are the game's again");
+	check(peek32(0x00890000u) == 0x60000001u && peek32(0x00890100u) == 0x60000002u &&
+	      peek32(0x00890200u) == 0x60000003u, "Low's words stay in");
+	check(mem_owner(0x00891000u, 4) == NULL && mem_owner(0x00891100u, 4) == NULL,
+	      "nothing is left owning Upper's addresses");
+	rc = act(&v, MBOX_EV_LEFT, "Low");
+	check(rc == ST_OK && !loaded("mm-lo") && peek32(0x00890000u) == 0x11110000u &&
+	      peek32(0x00890100u) == 0x11110100u && peek32(0x00890200u) == 0x11110200u,
+	      "Low Off: its words are the game's again");
+	check(mem_owner(0x00890000u, 4) == NULL && mem_owner(0x00890200u, 4) == NULL,
+	      "nothing is left owning Low's addresses");
+
+	/* The false overlap: Upper back on, the page opened again, and a mod that depends on Low. */
+	act(&v, MBOX_EV_ACTIVATE, "Upper");
+	act(&v, MBOX_EV_ACTIVATE, "Low");
+	reopen(&v);
+	act(&v, MBOX_EV_LEFT, "Low");
+	reopen(&v);
+	check(loaded("mm-up") && !loaded("mm-lo") && patch_first("Upper", 0x00891000u),
+	      "Upper on, Low off, Upper's patch still its own words");
+	rc = act(&v, MBOX_EV_ACTIVATE, "Rta");
+	check(rc == ST_OK && loaded("mm-rta") && loaded("mm-lo") && peek32(0x00892000u) == 0x60000021u &&
+	      peek32(0x00890000u) == 0x60000001u,
+	      "Rta, which depends on Low and shares no byte with Upper, loads (IL RTA and Stereo Music)");
+	check(strcmp(host_notify_last(), "Trainer: Rta would write over Upper") != 0, "and no \"would write over Upper\"");
+
+	act(&v, MBOX_EV_LEFT, "Rta");
+	act(&v, MBOX_EV_LEFT, "Low");
+	act(&v, MBOX_EV_LEFT, "Upper");
+	check(!loaded("mm-rta") && !loaded("mm-lo") && !loaded("mm-up") && peek32(0x00890000u) == 0x11110000u &&
+	      peek32(0x00891000u) == 0x22221000u && peek32(0x00892000u) == 0x33332000u,
+	      "all three Off, every word the game's");
+	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+}
+
 void test_menu_mods(void)
 {
 	host_freeze_time(1);
@@ -485,6 +604,7 @@ void test_menu_mods(void)
 	check(boot(T), "RaC1 boots");
 	test_page();
 	test_long();
+	test_rescan_order();
 	check(quit(), "quit RaC1");
 	clean();
 	mods_rescan();

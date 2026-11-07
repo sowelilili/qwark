@@ -127,6 +127,7 @@ OP_MOD_LIST = 0x0060
 OP_MOD_LOAD = 0x0061
 OP_MOD_UNLOAD = 0x0062
 OP_MOD_RESCAN = 0x0064
+OP_PATCH_LIST = 0x003A
 OP_MOD_INFO = 0x0065
 # Revision 1.16: one mod as the words and bytes an RPCS3 patch writes.
 OP_MOD_PATCH = 0x0066
@@ -2930,6 +2931,76 @@ def write_host_mod(folder, text, bins=None):
             f.write(body)
         crc = zlib.crc32(body, crc)
     return crc & 0xFFFFFFFF
+
+
+def patch_list(c):
+    """PATCH_LIST, as {name: (first_addr, nwords, kind)}."""
+    status, body = c.call(OP_PATCH_LIST)
+    out = {}
+    if status == ST_OK and body:
+        for i in range(body[0]):
+            r = body[1 + i * 40:1 + (i + 1) * 40]
+            first, nwords, kind = struct.unpack(">IHB", r[:7])
+            out[r[8:40].split(b"\0")[0].decode("latin-1")] = (first, nwords, kind)
+    return out
+
+
+def smoke_mod_pack(c):
+    """
+    Build 57's hardware report (2026-11-07): with a mod in a higher slot loaded
+    first and one in a lower slot loaded after it, the MOD_RESCAN after the
+    second load packed the word pool in slot order and pointed the first mod's
+    def at the second's words. MOD_UNLOAD of the first then put the second's
+    words back and left its own in the game, and PATCH_LIST named the first mod
+    for the second's addresses: on Deadlocked, Stereo Music for IL Decimal
+    Timer's words, which the console menu's guard then refused IL RTA over.
+    """
+    title = "NPEA00385"
+    words = {"pack-a": [(0x00A30000, 0x60000001), (0x00A30100, 0x60000002), (0x00A30200, 0x60000003)],
+             "pack-b": [(0x00A31000, 0x60000011), (0x00A31100, 0x60000012)]}
+    names = {"pack-a": "Pack A", "pack-b": "Pack B"}
+    game = {}
+    for d, ws in words.items():
+        folder = "/dev_hdd0/qwark/mods/%s/%s" % (title, d)
+        c.call(OP_DIR_CREATE, folder.encode())
+        text = ("#- name: %s\n" % names[d] + "".join("0x%08X: 0x%08X\n" % w for w in ws)).encode()
+        write_console_file(c, folder + "/patch.txt", text)
+        for a, _ in ws:
+            game[a] = 0x7C000000 | (a & 0xFFFF)
+            mem_write(c, a, struct.pack(">I", game[a]))
+    c.call(OP_MOD_RESCAN)
+    rows = dict((d, mod_row(c, d)) for d in words)
+    if not check(all(rows.values()), "mod pack: both mods are listed", rows):
+        return
+    lo, hi = sorted(words, key=lambda d: rows[d]["index"])
+
+    status_hi, _ = c.call(OP_MOD_LOAD, fixed32(hi))
+    c.call(OP_MOD_RESCAN)
+    status_lo, _ = c.call(OP_MOD_LOAD, fixed32(lo))
+    c.call(OP_MOD_RESCAN)
+    check(status_hi == ST_OK and status_lo == ST_OK, "mod pack: the higher slot's mod, a rescan, the lower's, a rescan",
+          (status_hi, status_lo))
+    pl = patch_list(c)
+    check(pl.get(names[hi], (0,))[0] == words[hi][0][0] and pl.get(names[hi], (0, 0))[1] == len(words[hi]) and
+          pl.get(names[lo], (0,))[0] == words[lo][0][0],
+          "mod pack: PATCH_LIST names each mod for its own first word", pl)
+
+    status, _ = c.call(OP_MOD_UNLOAD, fixed32(hi))
+    row = mod_row(c, hi)
+    check(status == ST_OK and row is not None and (row["flags"] & MOD_FLAG_LOADED) == 0,
+          "mod pack: MOD_UNLOAD of the first one answers OK, and it is not LOADED", (status, row))
+    check(all(mem_read_u32(c, a) == game[a] for a, _ in words[hi]),
+          "mod pack: every word of it is the game's again", [hex(mem_read_u32(c, a)) for a, _ in words[hi]])
+    check(all(mem_read_u32(c, a) == v for a, v in words[lo]),
+          "mod pack: the other mod's words stay in", [hex(mem_read_u32(c, a)) for a, _ in words[lo]])
+    check(names[hi] not in patch_list(c), "mod pack: and PATCH_LIST no longer has it")
+
+    status, _ = c.call(OP_MOD_UNLOAD, fixed32(lo))
+    check(status == ST_OK and all(mem_read_u32(c, a) == game[a] for a, _ in words[lo]),
+          "mod pack: the second one out, its words the game's again", status)
+    for d in words:
+        c.call(OP_DIR_DELETE, ("/dev_hdd0/qwark/mods/%s/%s" % (title, d)).encode())
+    c.call(OP_MOD_RESCAN)
 
 
 def smoke_usb_mods(c, host_root):
@@ -8759,6 +8830,9 @@ def main():
 
         status, _ = c.call(OP_MOD_UNLOAD, fixed32("hardcore"))
         check(status == ST_OK, "MOD_UNLOAD hands the game back its own words", status)
+
+        # ----------------------- a mod loaded after one in a later slot
+        smoke_mod_pack(c)
 
         # ------------------------------------------- mods on a USB drive, 1.24
         smoke_usb_mods(c, host_root)
