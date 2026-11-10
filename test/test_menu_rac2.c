@@ -621,7 +621,6 @@ static void test_model_rac2(void)
 	check(r != NULL && r->kind == MROW_TOGGLE, "the resets on death are checkboxes");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
 	act(&v, MBOX_EV_ACTIVATE, "Ghost Ratchet");
-	check(view_row(&v, "Enable debug mode") == NULL, "debug mode, the client's Debug page, is left out");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 

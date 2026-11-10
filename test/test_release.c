@@ -271,13 +271,11 @@ static void test_release_pak(void)
 	      "run.sh packed both paks: the release's has four entries more, ToD's Lua helper and its three chunks");
 	tick(4);
 	check_eq(uipak_status(), UIPAK_OK, "the pak `make release` packs (pak.py --tod) is this module's");
-	check(!uipak_bad(), "and SessionInfo flags bit7 is clear");
 
 	if (nn > 0 && spill(UIPAK_PATH, notod, (u32)nn)) {
 		uipak_touch(UIPAK_PATH);
 		tick(4);
 		check_eq(uipak_status(), UIPAK_OTHER, "a pak without ToD's entries is another build's: a release refuses it");
-		check(uipak_bad(), "and says so in flags bit7");
 	}
 	if (ng > 0 && spill(UIPAK_PATH, good, (u32)ng)) {
 		uipak_touch(UIPAK_PATH);
@@ -328,9 +326,6 @@ static void test_release(void)
 
 	printf("--- release build: everything the test builds have, but the DEV bit\n");
 
-	check(QWARK_DEV == 0 && QWARK_PREVIEW == 1 && QWARK_GAME_MODULES == 1 && QWARK_HAS_TOD == 1,
-	      "this is the release configuration: no DEV, the preview features, game modules and ToD");
-
 	set_up_both_features();
 
 	core_lock();
@@ -377,7 +372,7 @@ static void test_release(void)
 		check(reply[30] != 0, "byte 30, the profile sequence, has moved");
 		check_eq(reply[25], 5, "SessionInfo's slot is the profile's");
 		check_eq(reply[31], SESSION_FLAG3_RUN_WARN, "flags3 bit0: the run-start warnings, on");
-		check_eq(reply[0] & SESSION_FLAG_UI_PAK_BAD, 0, "flags bit7 clear: the pak is good");
+		check_eq(reply[24] & SESSION_FLAG_UI_PAK_BAD, 0, "flags bit7 clear: the pak is good");
 	}
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);

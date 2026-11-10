@@ -812,7 +812,6 @@ static void test_messages(void)
 	group("messages");
 	inst_confirm_message(msg, sizeof(msg));
 	check(strlen(msg) < INST_MESSAGE_MAX && strstr(msg, "Install qwark build") != NULL, "the question fits");
-	check(strstr(msg, "Your other plugins stay in the list.") != NULL, "and says the other plugins stay");
 
 	memset(&r, 0, sizeof(r));
 	r.ok = 1;

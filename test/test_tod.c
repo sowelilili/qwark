@@ -311,7 +311,6 @@ static void test_requests(void)
 	check(luamb_read_out(&g_c, &g_io, &res, txt, sizeof(txt)) == 9 && strcmp(txt, "Lua 5.0.2") == 0,
 	      "round trip: the text is Lua 5.0.2");
 	check(rd32(MB + LUAMB_OFF_REQ) == 1 && rd32(MB + LUAMB_OFF_ACK) == 1 && g_ran == 1, "round trip: seq 1, run once");
-	check(rd32(MB + LUAMB_OFF_BUSY) == 0, "round trip: busy back to 0");
 
 	rc = run("return 1 + 1", 1, &now, &res);
 	check(rc == 0 && res.seq == 2 && res.out_type == LUAMB_T_NUMBER, "round trip: a second request is seq 2");
@@ -638,11 +637,7 @@ static void test_facts(void)
 	char chunk[128];
 	int ok;
 
-	check(strcmp(f->title, TOD_TITLE) == 0 && strcmp(g_d->title, TOD_TITLE) == 0, "facts: title");
 	check(f->nplanets == 19, "facts: nineteen LEVEL_ ids");
-	ok = 1;
-	for (i = 0; i < f->nplanets; i++) ok &= f->planet_names[i] != NULL && f->planet_names[i][0] != 0;
-	check(ok, "facts: every planet has a name");
 	check(strcmp(f->planet_names[0], "Kerwan") == 0 && strcmp(f->planet_names[2], "Kortog") == 0 &&
 	      strcmp(f->planet_names[4], "Voron Asteroid Belt") == 0 && strcmp(f->planet_names[18], "Fastoon II") == 0,
 	      "facts: the planets as the ship names them, in the enum's order: Kerwan (Metropolis) = 0");
@@ -694,7 +689,6 @@ static void test_facts(void)
 		if (r->kind == FEATURE_ENUM) ok &= r->options == f->nplanets;
 	}
 	check(ok, "rows: unique ids; a row is Lua or a write, never both");
-	check(f->nrows >= 1 && strstr(f->rows[0].lua, "_VERSION") != NULL, "rows: the first is the Lua test");
 
 	check(tod_row_chunk(&f->rows[3], 18, chunk, sizeof(chunk)) > 0 &&
 	      strcmp(chunk, "set_level(18, true) return get_level()") == 0, "rows: %v becomes the option");

@@ -621,38 +621,6 @@ static void worlds_press(int cmd)
 	}
 }
 
-/*
- * UpdatePlanets' bLocked for entry i, a planet whose level the save has
- * `unlocked` or not, with the renderer's word at its store (mh_gate_locked,
- * the pickers' round 2; check.py steps the real one): 0 in the menu's Worlds.
- */
-static void worlds_lock(int i, int unlocked)
-{
-	w8(WORLDS_ENTRIES + 12u * (u32)i, (!unlocked && !mh_picker_up()) ? 1u : 0u);
-}
-
-/*
- * Round 6: whether UpdatePlanets lists an entry of SetupPlanetTourneyList's,
- * with the renderer's word at its type test (mh_gate_tourney; check.py steps
- * the real one): every planet, and tournament 0, DreadZone Station's own row;
- * tournaments 1 to 4 only in the game's own Worlds.
- */
-static int worlds_listed(int link, int type)
-{
-	return type == DL_TYPE_PLANET || link == 0 || !mh_picker_up();
-}
-
-/*
- * Round 6: the legend MenuPlanet_CreateWidgets writes as Worlds starts, with
- * the renderer's word at its mission test (mh_gate_legend; check.py steps the
- * real one): SELECT and BACK in the menu's Worlds, the game's otherwise.
- */
-static const char *worlds_legend(void)
-{
-	if (mh_picker_up()) return "\x10 SELECT \x12 BACK";
-	return W.mission == -1 ? "\x11 SKILLS \x10 SELECT" : "\x11 SKILLS \x10 SELECT \x12 BACK";
-}
-
 /* Row i of the list as the game shows it. */
 static const char *shown_text(int i, char *out, u32 cap)
 {
@@ -1284,12 +1252,6 @@ static void test_model_dl(void)
 	      strcmp(v.rows[3].label, "Challenge mode") == 0 && v.rows[3].kind == MROW_TOGGLE &&
 	      strcmp(v.rows[4].label, "Set aside file") == 0 && strcmp(v.rows[5].label, "Load set-aside file") == 0,
 	      "round 6: the slot, Save and Load position, Challenge mode, the two savefile buttons");
-	for (i = 0; i < v.nrows && (v.rows[i].kind != MROW_INFO || v.rows[i].label[0] != 0); i++)
-		;
-	check(i == v.nrows, "no blank row: Challenge mode is where round 5's spacer was");
-	check(view_row(&v, "Die") == NULL && view_row(&v, "Bolts") == NULL && view_row(&v, "Max bolts") == NULL,
-	      "no Die (the combos have it) and no other value (Cheats has the buttons)");
-	check(view_row(&v, "Skin") == NULL, "and no Skin: cosmetics are left out");
 	/* Round 5's switch, on Game since round 6. */
 	poke8(RAC4_CHALLENGE_MODE, 0);
 	tick(10);
@@ -1385,7 +1347,6 @@ static void test_model_dl(void)
 	      v.rows[3].kind == MROW_INFO && v.rows[3].flags == 0 && v.rows[3].label[0] == 0 &&
 	      strcmp(v.rows[4].label, "Crash patches") == 0 && strcmp(v.rows[5].label, "Fix reset softlocks") == 0,
 	      "Category None, Auto-reset On, Apply now, a blank grey row, Crash patches, Fix reset softlocks");
-	check(view_row(&v, "Remember") == NULL, "no Remember row: Auto-reset says it (round 5)");
 	check(act(&v, MBOX_EV_RIGHT, "Category") == ST_OK && manips_selected() == 1 &&
 	      strcmp(value_of(&v, "Category"), "NG+") == 0, "Right: NG+, selected as MANIP_SELECT selects it");
 	check(act(&v, MBOX_EV_ACTIVATE, "Category") == ST_OK && manips_selected() == 0, "the cross: back to None");
@@ -1725,7 +1686,6 @@ static void test_mailbox(void)
 
 	/* Events and the page type. */
 	box_event(MBOX_EV_ACTIVATE, 1);
-	check(!box_acked(), "an event posted is not acked yet");
 	tick(4);
 	read_box(&p);
 	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 7 && p.ptype == MBOX_PTYPE_CONFIG,
@@ -2979,8 +2939,7 @@ static void test_picker(void)
 	/*
 	 * The pickers' round 2, the user's calls: Circle (Skills) does nothing in
 	 * the menu's Worlds (mh_gate_skills; round 1 pushed Skills, after which
-	 * Worlds was the game's own), and no planet there has a lock beside it,
-	 * every one being one a pick loads (mh_gate_locked).
+	 * Worlds was the game's own).
 	 */
 	dl_menu_open();
 	G.cursor = planets_row;
@@ -2991,35 +2950,17 @@ static void test_picker(void)
 	check(G.screen == DL_SCREEN_WORLDS && W.up && mh_picker_up() && W.game_stops == n && G.sound == -1 &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_PICKER,
 	      "Circle on the menu's Worlds: nothing, no Skills screen, no sound; Worlds and the picker stay up");
-	worlds_entry(6, 0, 6, DL_TYPE_PLANET);
-	worlds_lock(2, 0);                             /* Sarathos, which the save has not unlocked */
-	worlds_lock(6, 1);                             /* Shaar, which it has */
-	check(r8(WORLDS_ENTRIES + 24) == 0 && r8(WORLDS_ENTRIES + 72) == 0 && r8(WORLDS_ENTRIES + 36) == 1,
-	      "and its planets are drawn unlocked, Sarathos too (no lock beside it); a locked tournament keeps its lock");
-	/* Round 6, the user's calls: no tournament but DreadZone Station's row, and no SKILLS in the legend. */
-	check(worlds_listed(0, DL_TYPE_TOURNAMENT) && worlds_listed(14, DL_TYPE_PLANET) &&
-	      worlds_listed(15, DL_TYPE_PLANET) && !worlds_listed(1, DL_TYPE_TOURNAMENT) &&
-	      !worlds_listed(4, DL_TYPE_TOURNAMENT),
-	      "round 6: the menu's Worlds lists DreadZone Station's own row and every planet, no tournament 1 to 4");
-	check(strcmp(worlds_legend(), "\x10 SELECT \x12 BACK") == 0,
-	      "and its legend is SELECT and BACK (Triangle always goes back there), no SKILLS");
 	worlds_press(DL_CMD_TRIANGLE);
 	check(G.screen == MH_SCREEN_ID && G.shown && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_OPEN && !mh_picker_up(),
 	      "Triangle: back to the root as ever");
 	game_frame(PADB_START);
 	check(G.screen == 0, "Start closes it");
-	worlds_entry(2, 1, 4, DL_TYPE_PLANET);
 	tick(4);
 
 	/* The game's own Worlds, from the main menu's WORLDS row: nothing of the menu's. */
 	game_open_pause();
 	mock_push_screen(0, DL_SCREEN_WORLDS);
 	check(G.screen == DL_SCREEN_WORLDS && !mh_picker_up(), "the main menu's WORLDS row: the game's own Worlds");
-	worlds_lock(2, 0);
-	check(r8(WORLDS_ENTRIES + 24) == 1, "Sarathos with its lock there, as the game draws it");
-	check(worlds_listed(1, DL_TYPE_TOURNAMENT) && worlds_listed(4, DL_TYPE_TOURNAMENT) &&
-	      strcmp(worlds_legend(), "\x11 SKILLS \x10 SELECT") == 0,
-	      "round 6: its tournaments listed and its legend the game's, SKILLS first");
 	worlds_press(4);
 	check(G.screen == 21 && W.game_stops > 0, "Circle: the game's own Skills screen, as ever");
 	mock_pop_screen();

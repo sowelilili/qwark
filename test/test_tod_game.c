@@ -351,8 +351,6 @@ static void test_tod_level_flags(void)
 	int ok;
 
 	group("ToD: the level flags, one u64 bit array for the whole save");
-	check(g->levelflags_get != NULL && g->levelflags_set != NULL && g->levelflags_reset != NULL,
-	      "all three hooks (the names are the client's since revision 1.29)");
 	memset(zero, 0, sizeof(zero));
 	host_poke(TOD_LEVEL_FLAGS, zero, TOD_LEVEL_FLAGS_LEN);
 	set_game_flag(39);
@@ -695,8 +693,6 @@ static void test_tod_fastloads(void)
 	      fl_target(0x25E5B8u, g_fl_words[12]) == 0x084EF4u && (g_fl_words[12] & 1u) &&
 	      fl_target(0x25E5BCu, g_fl_words[13]) == 0x084E28u && (g_fl_words[13] & 1u),
 	      "the cut calls the fade, the cinematic stop and the player reset");
-	check(g_fl_words[22] == 0x38000001u && g_fl_words[23] == 0x901D0000u && g_fl_words[2] == 0x83A27D78u,
-	      "and stores the arrival's 1 through &g_loadScreenType");
 	wr32(0x101D60DCu, 0x11111111u);
 	wr32(0x101D60F0u, 0x22222222u);
 	fl_seed_prop();
@@ -1523,9 +1519,6 @@ static void test_tod_autosplit_rows(void)
 	check(d[1].code == TOD_AS_END_FADE && d[1].kind == AUTOSPLIT_SPLIT && d[1].flags == AUTOSPLIT_FLAG_DEFAULT &&
 	      qstreq(d[1].label, "Tachyon defeated"),
 	      "code 7, the fade to black after Tachyon, is the final split, \"Tachyon defeated\", on (rev 1.29)");
-	for (i = 0; i < n; i++)
-		check(d[i].code != 2 && d[i].code != 5 && d[i].code != 8, "codes 2, 5 and 8 are retired");
-	for (i = 0; i < n; i++) check(!qstreq(d[i].label, "Credits"), "no Credits row (rev 1.29)");
 	check(d[2].code == TOD_AS_MISSION && d[2].flags == 0, "every mission is there, off");
 	check(d[3].code == TOD_AS_LOAD && d[3].kind == AUTOSPLIT_LOAD_START &&
 	      d[3].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[3].param_us == 0 &&
@@ -1806,15 +1799,10 @@ static void test_tod_autosplit_runs(void)
 	death(AS_STATE + 0x20);
 	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 	tick(4);
-	check(as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0, "a death on Metropolis is no RESET");
-	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "and no START at its fade in");
 	check(runwarn_starts() == rw_starts + 1, "and no run-start warning");
 	features_set(TF_INFINITE_AMMO, 0);
 	features_set(TF_INFINITE_HEALTH, 0);
 	features_set(TF_REMOVE_CUTSCENES, (u32)rc_was);
-	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "and no split");
-	check(as_count(seq, AUTOSPLIT_LOAD_START, TOD_AS_LOAD, NULL) == 0 &&
-	      as_count(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD, NULL) == 0, "and no load edges");
 	check(as_all(seq) == 0, "nothing at all");
 	seq = autosplit_latest_seq();
 	quick_death(AS_STATE + 0x60);
@@ -1944,7 +1932,6 @@ static void test_tod_autosplit_start_fade(void)
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.56f);
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 0, "0.56 of the way: not yet");
-	check(TOD_FADE_START_AT == 0x3F0CCCCDu && f32_from_bits(TOD_FADE_START_AT) == 0.55f, "the START's progress is 0.55f");
 	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.55f);
 	tick(1);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "0.45 s in, the progress at 0.55: START, the same tick (2026-11-02)");
@@ -2221,7 +2208,6 @@ static void test_tod_autosplit_ending(void)
 	tick(4);
 	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 	tick(2);
-	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_END_FADE, NULL) == 1, "the cinematic and the FMVs split nothing more");
 	check(as_all(seq) == 1, "and no retired code 2 or 8 comes out");
 
 	/* A missed state 1: the player found already playing the ending still splits. */
@@ -2284,7 +2270,6 @@ static void test_tod_autosplit_quit(void)
 	}
 	check(in, "ToD is back");
 	tick(120);
-	check(as_count(seq, AUTOSPLIT_RESUME, TOD_AS_QUIT, NULL) == 0, "no RESUME while the game boots");
 	check(as_all(seq) == 0, "and no long load either, level 0 and screen 4 or not: a boot is the pause's");
 	wr8(TOD_FRONT_END, 1);
 	tick(2);

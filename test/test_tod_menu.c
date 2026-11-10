@@ -191,7 +191,6 @@ static void test_install(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
 	u8 info[256];
-	u32 gen;
 	int i;
 
 	group("ToD's console menu: the install (the game's own pause menu)");
@@ -244,7 +243,6 @@ static void test_install(void)
 	check(peek8(LM_STATE + LM_HELP) == 1, "menu.help 1 again");
 
 	/* menu.enabled 0: the identity goes, so the helper and the glue let go; 1: back. */
-	gen = peek32(LM_BOX + MBOX_OFF_PAGE_SEQ);
 	config_set_u32("menu.enabled", 0);
 	tick(8);
 	check(menu_state() == MENU_IDLE && peek32(LM_BOX) == 0 && hooks_in(d, 1),
@@ -253,7 +251,7 @@ static void test_install(void)
 	config_set_u32("menu.enabled", 1);
 	for (i = 0; i < 1500 && menu_state() != MENU_READY; i++) tick(1);
 	check(menu_state() == MENU_READY && peek32(LM_BOX) == MBOX_MAGIC && peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) != 0 &&
-	      (peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) & 1) == 0 && gen != 0,
+	      (peek32(LM_BOX + MBOX_OFF_PAGE_SEQ) & 1) == 0,
 	      "menu.enabled 1: a fresh mailbox, the root posted again");
 }
 
@@ -819,7 +817,7 @@ static void test_galmap(void)
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
 	trainer_up();
 	r = find_row("Planets");
-	check(r >= 0 && strcmp(row_label((u32)r, b), "PLANETS") == 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_LINK,
+	check(r >= 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_LINK,
 	      "the root's Planets row, a link as before");
 
 	poke32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);

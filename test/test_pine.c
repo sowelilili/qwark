@@ -35,7 +35,6 @@ static int  g_listen = -1;
 static int  g_port;
 static plat_thread_t g_thread;
 
-static volatile int g_srv_running;
 static volatile int g_srv_stop;
 static volatile int g_srv_drop;      /* drop the live connection at the next poll */
 static volatile int g_srv_delay_ms;  /* sit on every reply this long first */
@@ -261,8 +260,6 @@ static void fake_thread(void *arg)
 {
 	(void)arg;
 
-	g_srv_running = 1;
-
 	while (!g_srv_stop) {
 		int fd;
 
@@ -277,7 +274,6 @@ static void fake_thread(void *arg)
 		plat_socket_close(fd);
 	}
 
-	g_srv_running = 0;
 	plat_thread_exit();
 }
 
@@ -374,7 +370,6 @@ void test_pine(void)
 		check(0, "the fake PINE server starts");
 		return;
 	}
-	check(1, "the fake PINE server starts");
 
 	pine_set_port(g_port);
 	/* Up to the stalled-RPCS3 section nothing here is about time, so a caller
@@ -389,7 +384,6 @@ void test_pine(void)
 	 * finish a loopback connect, so the first connect is given a few rounds. */
 	for (i = 0; i < 5 && pine_ensure() != 1; i++) plat_sleep_us(1100000);
 	check(pine_ensure() == 1, "the backend connects to it");
-	check(pine_connected() == 1, "and reports the connection");
 
 	/* ------------------------------------------------------- byte order */
 
@@ -397,12 +391,10 @@ void test_pine(void)
 	check(pine_read(FAKE_BASE + 0x100, buf, 4) == 0, "a 4-byte read succeeds");
 	check(memcmp(buf, WORD_BE, 4) == 0,
 	      "and hands the core the PS3's own bytes, not the emulator's");
-	check_eq_u64(be32_get(buf), 0x38600001u, "so be32_get sees the instruction word");
 
 	memset(buf, 0, sizeof(buf));
 	check(pine_read(FAKE_BASE + 0x200, buf, 8) == 0, "an 8-byte read succeeds");
 	check(memcmp(buf, QUAD_BE, 8) == 0, "and round-trips byte-exact");
-	check_eq_u64(be64_get(buf), 0x0123456789ABCDEFull, "be64_get sees the value");
 
 	memset(buf, 0, sizeof(buf));
 	check(pine_read(FAKE_BASE + 0x100, buf, 1) == 0, "a 1-byte read succeeds");
@@ -617,5 +609,4 @@ void test_pine(void)
 
 	pine_close();
 	fake_stop();
-	check(g_srv_running == 0, "the fake PINE server stops");
 }

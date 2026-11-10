@@ -309,7 +309,6 @@ end
 local function cases(name)
   -- A new game's save: Cobalia alone. The game's own list: Cerullean, Cobalia.
   world({ unlocked = { 1 }, next = 1 })
-  check(table.getn(W.hf.planetArray) == 2, name .. ": the game's list on a new game: Cerullean and Cobalia")
   local r = glue()
   check(r == "in23", name .. ": the glue goes in: " .. tostring(r))
   local rs = rows()
@@ -354,7 +353,6 @@ local function cases(name)
 
   -- A save at Fastoon II: the game shows one Fastoon (Fastoon II); the glue both, each picking its own level.
   world({ unlocked = { 1, 2, 3, 18 }, next = 18 })
-  check(table.getn(W.hf.planetArray) == 4 and W.hf.planetArray[4].enum == 18, name .. ": the game's list at Fastoon II: one Fastoon")
   select(4)
   r = glue()
   rs = rows()

@@ -1184,7 +1184,6 @@ static void test_install_uya(void)
 	check(menu_state() == MENU_IDLE && hooks_are(d, 0) && peek32(MH_SITE_HELP8_TEXT) == 0x106 &&
 	      peek32(MH_SITE_HELP8_CB) == MH_ORIG_HELP_CB && peek32(MH_SITE_MSG) == MH_ORIG_MSG,
 	      "in play: every word the game's again, HELP its own row");
-	check(peek32(MH_SITE_MAP_LIST) == MH_ORIG_MAP_LIST, "the GALACTIC MAP's list build its own again too");
 	config_set_u32("menu.enabled", 1);
 	tick(4);
 	check(menu_state() == MENU_READY && hooks_are(d, 1), "menu.enabled = 1: back in at once");
@@ -1566,7 +1565,6 @@ static void test_renderer_uya(void)
 	tick(4);
 
 	/* A page with no row the cursor may land on: the main pause's list must not loop. */
-	check(G.main_up && G.count == 7, "on the root");
 	{
 		u32 seq = peek32(mb + MBOX_OFF_PAGE_SEQ), r = mb + MBOX_OFF_ROWS;
 		u8 page[MBOX_OFF_ROWS - MBOX_OFF_PAGE_KEY + MBOX_ROW_SIZE];

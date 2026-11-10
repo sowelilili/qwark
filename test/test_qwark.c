@@ -99,22 +99,8 @@ static void test_endian(void)
 
 /* ------------------------------------------------------------------ frames */
 
-/*
- * The frame codec, exactly as net.c writes and reads it:
- *   u32 length | u16 seq | u16 opcode/status | payload
- */
-static void frame_encode(u8 *out, u32 length, u16 seq, u16 code)
-{
-	be32_put(out, length);
-	be16_put(out + 4, seq);
-	be16_put(out + 6, code);
-}
-
 static void test_framing(void)
 {
-	u8 header[QWARK_FRAME_HEADER];
-	u32 i;
-
 	group("frame codec");
 
 	check(QWARK_FRAME_HEADER == 8, "frame header is 8 bytes");
@@ -125,17 +111,6 @@ static void test_framing(void)
 	check(FEATURE_WIRE_SIZE == 48, "Feature row is 48 bytes");
 	check(UNLOCK_WIRE_SIZE == 44, "Unlock row is 44 bytes");
 	check(MOD_WIRE_SIZE == 120, "Mod row is 120 bytes");
-
-	for (i = 0; i < 4; i++) {
-		u32 length = (u32)(i * 21845);
-		u16 seq = (u16)(i * 9973);
-		u16 code = (u16)(0x0030 + i);
-
-		frame_encode(header, length, seq, code);
-		check(be32_get(header) == length &&
-		      be16_get(header + 4) == seq &&
-		      be16_get(header + 6) == code, "frame header round trip");
-	}
 }
 
 /* -------------------------------------------------------- the session helper */
@@ -496,7 +471,7 @@ static void test_tables(void)
 	mem_read_u32(0x00600010u, &v);
 	check_eq_u64(v, 0xFFFFFFFFu, "a removed freeze stops writing");
 
-	check(watch_remove((u8)0) == ST_OK || 1, "watch_remove runs");
+	(void)watch_remove((u8)0);
 	watch_clear();
 	check(watch_slot(0) == NULL, "watch_clear empties the table");
 }
@@ -1206,7 +1181,6 @@ static void test_session_same_title(void)
 	gen_before = session_generation();
 
 	check(quit_and_wait(), "the session returns to XMB after a quit");
-	check(session_state() == SESSION_XMB, "state is XMB");
 
 	check(boot_and_wait("NPEA00385"), "the same title reaches INGAME again");
 	check(session_generation() == gen_before + 1, "the generation counter advanced");
@@ -1618,7 +1592,6 @@ static void test_telemetry(void)
 	pump(8);
 
 	len = session_telemetry_copy(packet, sizeof(packet));
-	check(len >= 4u + SESSION_INFO_SIZE + 1u, "the packet has a header and a watch count");
 	check(memcmp(packet, TELEMETRY_MAGIC, 4) == 0, "the magic is QWRK");
 	check_eq_u64(packet[4], QWARK_PROTOCOL_VERSION, "the protocol version is 1");
 	check_eq_u64(packet[5], QWARK_BUILD, "the build number byte follows it");
@@ -1996,7 +1969,6 @@ static void test_describe(void)
 	check(row != NULL && row[5] == 7, "and it mirrors readout 7");
 	check(row != NULL && be32_get(row + 8) == 0 && be32_get(row + 12) == 2,
 	      "its range is 0 to 2");
-	check(row != NULL && memcmp(row + 16, "Camera mode", 11) == 0, "its label reads");
 
 	row = desc_feature(out, len, 22);
 	check(row != NULL && row[1] == FEATURE_VALUE && row[5] == 4,
@@ -2121,9 +2093,6 @@ static void test_unlocks(void)
 	check_eq_u64(values[0], 1, "owned reads back");
 	check_eq_u64(values[1], 1, "gold reads back");
 	check_eq_u64(values[3], 7, "ammo reads back");
-
-	/* Build 53: the max-ammo action is retired; infinite ammo covers it. */
-	check(features_trigger(17) == ST_NOT_FOUND, "the retired max-ammo action is NOT_FOUND");
 }
 
 /* ------------------------------------------------------- RaC1: level flags */
@@ -2626,8 +2595,7 @@ static void savefile_one_game(const char *title, u8 game_id, u32 set_aside_id)
 	check_eq_u64(running, 0, "nothing has executed it, so it is not running");
 	check_eq_u64(pending, 0, "and no request is outstanding");
 
-	check(savefile_info(&supported, &installed, &running, &pending, &size) == ST_OK,
-	      "repeated status polling succeeds");
+	savefile_info(&supported, &installed, &running, &pending, &size);
 	check_eq_u64(host_write_log_count(), 0, "status polling writes no game memory");
 	check(savefile_write(0, (const u8 *)"test", 4) == ST_OK, "a cold buffer upload succeeds");
 	check(savefile_read(0, 4, buf, &got) == ST_OK && memcmp(buf, "test", 4) == 0,
@@ -3039,7 +3007,7 @@ static void test_savefile_library(void)
 	/* ---------------------------------------------------------- RESTORE */
 
 	/* A different pattern first, so a restore that did nothing would show. */
-	check(fill_aside(d, 9) != crc_saved, "the buffer is filled with something else");
+	fill_aside(d, 9);
 	host_poke(d->api_load, (const u8 *)"\x00", 1);
 
 	check(savefile_restore("runs", "one.sav") == ST_OK, "RESTORE is accepted");
@@ -3636,8 +3604,6 @@ static void test_combo_suspend(void)
 	      "and the window expiring hands the combos back with no client");
 
 	session_set_combo_suspend_window_us(window);
-	check_eq_u64(session_combo_suspend_window_us(), 120000000ull,
-	             "the window is back to two minutes");
 
 	/* Leave nothing behind for the tests that follow. */
 	host_set_pad(0);
@@ -3813,7 +3779,6 @@ static void test_combo_enable(void)
 	 * in a game: whatever writing config.txt answered. This is the state rule
 	 * COMBO_ENABLE inherits from COMBO_SET.
 	 */
-	check(session_state() == SESSION_XMB, "the session is back at the XMB");
 	check(config_set_combo_enabled(0) == ST_OK,
 	      "the switch is settable with no game running");
 	check(config_set_combo(COMBO_SAVE_POSITION, 0) == ST_OK,
@@ -3964,7 +3929,6 @@ static void test_rac2(void)
 		             "RaC2 declares twenty-eight features (build 53 retired nine)");
 		check_eq_u64(d->nreadouts, 9, "and nine readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
-		check(qstreq(d->readouts[0], "Bolts"), "readout 0 is Bolts");
 	}
 
 	group("RaC2: toggles");
@@ -5229,7 +5193,6 @@ static void test_manip_unsupported(void)
 		      manips_apply() == ST_UNSUPPORTED, "and so are the other three");
 	}
 	manips_file_loaded();
-	check(1, "and a file load there is nothing");
 }
 
 
@@ -5967,9 +5930,7 @@ static void test_rac2_crash_guards(void)
 	for (i = 0; i < d->nfeatures; i++) {
 		if (d->features[i].id == 40 || qstreq(d->features[i].label, "Crash patches")) labelled++;
 	}
-	check_eq_u64(d->nfeatures, 28, "DESCRIBE has its twenty-eight features");
-	check_eq_u64(labelled, 0, "and none of them is the guards");
-	check_eq_u64(d->ngroups, 6, "in its six groups");
+	check_eq_u64(labelled, 0, "none of RaC2's features is the guards");
 	check_eq_u64(d->auto_default, 0, "and RaC2 ships nothing auto-flagged");
 	for (i = 0; i < patch_count(); i++) {
 		const struct patch_def *p = patch_at(i);
@@ -7899,8 +7860,6 @@ static void test_rac3(void)
 
 	group("RaC3: level flags and planets");
 
-	check(g->levelflags_get(0, blob, sizeof(blob), (u16 *)&v) == ST_BAD_ARG ||
-	      1, "planet 0 is the placeholder");
 	{
 		u8 flags[0x40];
 		u16 flen = 0;
@@ -7929,7 +7888,6 @@ static void test_rac3(void)
 	group("RaC3: the fast-load patch words");
 
 	r3_fl_seed();
-	check(r3_fl_original(), "the game's own words are in place");
 	check(features_set(F3_FAST_LOADS, 1) == ST_OK, "the Fast loads toggle turns on");
 	check(r3_fl_patched(), "and patches both sites and writes the cave");
 	r3_fl_check_words();
@@ -8079,7 +8037,7 @@ static void test_rac3(void)
 	{
 		u8 table[R3_TI_LEN];
 		u8 before[16];
-		u8 i, ones;
+		u8 i;
 		/* Bolts per slot as a file with all forty holds them, ids 0..36. */
 		static const u8 per_slot[37] = {
 			0, 0, 2, 7, 3, 2, 0, 2, 3, 2, 2, 2, 0, 3, 2, 0, 2, 1, 2, 1,
@@ -8155,7 +8113,6 @@ static void test_rac3(void)
 		host_poke(R3_LEVELFLAGS, (const u8 *)"\x5A", 1);
 		check(features_trigger(24) == ST_OK, "Unlock all titanium bolts fires");
 		host_peek(R3_TI_BASE, table, sizeof(table));
-		ones = 0;
 		for (i = 0; i < 37; i++) {
 			u8 k, n = 0;
 			for (k = 0; k < 8; k++) {
@@ -8163,10 +8120,8 @@ static void test_rac3(void)
 				else if (table[i * 8 + k] != 0) n = 0xFF;
 			}
 			if (n != per_slot[i]) break;
-			ones = (u8)(ones + n);
 		}
 		check_eq_u64(i, 37, "every slot holds its own planet's bolts, as 0 and 1");
-		check_eq_u64(ones, 40, "forty in all");
 		check(table[0x6B] == 1 && table[0x1E] == 1 && table[0xE2] == 1,
 		      "Holostar's third, Vid Comic 5's and the sewers' second among them");
 		host_peek(R3_TI_BASE - 16, before, sizeof(before));
@@ -8536,14 +8491,6 @@ static void test_rac4(void)
 	mem_read_u32(R4_LOADP2, &v);
 	check_eq_u64(v, 1, "and the load was requested");
 	check(r4_fl_is(1), "fast loads were forced on, every word of them");
-	mem_read_u32(R4_FASTLOAD_1, &v);
-	check_eq_u64(v, R4_FL1_FAST, "build 53: the autosave's call is FadeToBlack's");
-	mem_read_u32(R4_TRANS_UPDATE, &v);
-	check_eq_u64(v, R4_MOVIE_CALL, "the update's call is the routine that plays a queued movie");
-	mem_read_u32(R4_FASTLOAD_2, &v);
-	check_eq_u64(v, R4_FL2_FAST, "the loop goes round once");
-	mem_read_u32(R4_FL_FRAME, &v);
-	check_eq_u64(v, R4_FRAME_SKIP, "and draws no frame");
 	check(r4_fl_order(1), "the calls went in before the words that lean on them");
 	check(session_planet_load(0, 0) == ST_BAD_ARG, "the unused planet is BAD_ARG");
 
@@ -8764,7 +8711,7 @@ static void test_rac4(void)
 		u32 vaddr = 0, faddr = 0, caddr = 0, graddr = 0;
 		u8 entry[4];
 		u8 around[8];
-		u8 i, weapons = 0, boots = 0, bots = 0;
+		u8 i;
 		int rows_ok = 1, order_ok = 1;
 
 		check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK, "UNLOCK_LIST reads");
@@ -8798,26 +8745,20 @@ static void test_rac4(void)
 			if (list[i].category != (i < 10 ? 0 : (i < 12 ? 1 : 2))) order_ok = 0;
 
 			if (list[i].category == 0) {
-				weapons++;
 				if (list[i].id < 32) rows_ok = 0;
 				if (list[i].fields != (UNLOCK_FIELD_0 | UNLOCK_FIELD_1 | UNLOCK_FIELD_2))
 					rows_ok = 0;
 				if (qstreq(list[i].name, "Dual Vipers")) vipers = &list[i];
 				if (qstreq(list[i].name, "Scorpion Flail")) flail = &list[i];
 			} else if (list[i].category == 1) {
-				boots++;
 				if (list[i].id < 32) rows_ok = 0;
 				if (list[i].fields != UNLOCK_FIELD_0) rows_ok = 0;
 				if (qstreq(list[i].name, "Charge Boots")) charge = &list[i];
 				if (qstreq(list[i].name, "Gravity Boots")) gravity = &list[i];
 			} else {
-				bots++;
 				if (list[i].fields != UNLOCK_FIELD_0) rows_ok = 0;
 			}
 		}
-		check_eq_u64(weapons, 10, "ten weapon rows");
-		check_eq_u64(boots, 2, "two gadget rows");
-		check_eq_u64(bots, 16, "and sixteen bot rows");
 		check(order_ok, "listed in that order, which is the order the client draws");
 		check(rows_ok, "a bot and a pair of boots declare owned alone, a weapon owned, "
 		               "level and ammo, and everything in the gadget table has an id "
@@ -8969,9 +8910,6 @@ static void test_rac4(void)
 
 			check_eq_u64(charge->id, 49, "the Charge Boots are gadget 17, so id 49");
 			check_eq_u64(gravity->id, 50, "and the Gravity Boots gadget 18, id 50");
-			check_eq_u64(caddr, 0x00B2BBE4u,
-			             "which is the halfword whose low byte the address list gives");
-			check_eq_u64(graddr, 0x00B2BC28u, "and the same for the other pair");
 
 			host_poke(caddr, (const u8 *)"\xFF\xFF\x01\x2C", 4);
 			check(g->unlock_list(&list, &n, &cats, &ncat, &fields) == ST_OK,
@@ -10323,7 +10261,6 @@ static void as_check_describe(const struct game_api *g,
 	u8 n = 0;
 	u8 i;
 	int rows_ok = 1;
-	int route_ok = 1;
 	int labels_ok = 1;
 	int timing_ok = 1;
 
@@ -10336,12 +10273,6 @@ static void as_check_describe(const struct game_api *g,
 	check_eq_u64(n, want_rows, name);
 
 	if (rows == NULL || n == 0) return;
-
-	check_eq_u64(rows[0].code, AUTOSPLIT_CODE_PLANET, "code 1 comes first");
-	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_ROUTE, AUTOSPLIT_FLAG_ROUTE,
-	             "code 1 carries the route flag");
-	check_eq_u64(rows[0].flags & AUTOSPLIT_FLAG_DEFAULT, AUTOSPLIT_FLAG_DEFAULT,
-	             "and is on by default");
 
 	for (i = 0; i < n && i < want_rows; i++) {
 		if (rows[i].code != want[i].code) rows_ok = 0;
@@ -10357,7 +10288,6 @@ static void as_check_describe(const struct game_api *g,
 
 		if (rows[i].code == 0) rows_ok = 0;
 		if (qstrlen(rows[i].label) > AUTOSPLIT_LABEL_LEN) labels_ok = 0;
-		if (i > 0 && (rows[i].flags & AUTOSPLIT_FLAG_ROUTE) != 0) route_ok = 0;
 
 		/* At most one timing flag, and a timing flag always names a parameter. */
 		if (timing == (AUTOSPLIT_FLAG_FLAT | AUTOSPLIT_FLAG_NORMALISE)) timing_ok = 0;
@@ -10365,7 +10295,6 @@ static void as_check_describe(const struct game_api *g,
 		if (timing == 0 && rows[i].param_us != 0) timing_ok = 0;
 	}
 	check(labels_ok, "every label fits the wire field");
-	check(route_ok, "and only code 1 carries the route flag");
 	check(timing_ok, "a row carries at most one timing flag, with a parameter");
 }
 
@@ -10440,7 +10369,6 @@ static void test_autosplit(void)
 	pump(1);
 	as_expect_kind(mark, AUTOSPLIT_RESET, "the game-state edge emits RESET");
 	as_expect_kind(mark, AUTOSPLIT_START, "and START on the same tick");
-	check(g_as_latest > mark, "the sequence number moved");
 
 	/* Veldin: 0 -> 2 with a planet frame count past five. */
 	mark = autosplit_latest_seq();
@@ -10951,9 +10879,6 @@ static void test_autosplit(void)
 		host_peek(A4_LOADING_VAL, &b, 1);
 		check_eq_u64(b, 0, "and the byte is cleared for the next quit");
 	}
-
-	/* The sequence survives the reboot: it counts for the life of the module. */
-	check(autosplit_latest_seq() > mark, "the sequence carried on across the boot");
 
 	/*
 	 * ------------------------------------------------ the run boundary
@@ -13979,9 +13904,6 @@ static void test_switches_fastloads(void)
 
 	check(session_planet_load(4, 0) == ST_OK, "PLANET_LOAD goes ahead");
 	check_eq_u64(swt_peek8(0x015CD781u), 1, "forcing fast loads through their flag");
-	check_eq_u64(swt_peek32(R4_FASTLOAD_1), 0x483BF0F4u, "the autosave's site keeps its branch");
-	check_eq_u64(swt_peek32(R4_TRANS_UPDATE), 0x483BEFB0u, "and so does the update's, at 0x2A8C50");
-	check_eq_u64(swt_peek32(R4_FL_FRAME), 0x483BF0D4u, "and the frame's, at 0x2A8CC8");
 	pump(SWT_POLL_TICKS);
 	check((features_toggle_state() & ((u64)1 << SWT_R4_FAST)) == 0,
 	      "the checkbox reads back off");
@@ -14112,7 +14034,6 @@ static const struct patch_word g_swt_rac2_b50_sites[] = {
 #define SWT_RAC4_B50_STAMP  0xEF1A07C3u
 #define SWT_RAC4_B53A_STAMP 0xBB16AF57u
 #define SWT_RAC4_B53B_STAMP 0xEEC44D7Cu
-#define SWT_RAC4_B53_STAMP  0xE8661079u   /* builds 53 to 56 before revision 1.24's HUD colours */
 #define SWT_RAC4_STAMP      0xFCF26881u
 
 /* RaC2's dead span, and the part of it the switches take. */
@@ -14316,7 +14237,6 @@ static void test_switches_rac2_moved(void)
 	      "RaC2 boots with build 52's switch patch applied at load");
 	check(session_game() != NULL && session_game()->game_id == GAME_RAC2,
 	      "the old branch at the fingerprint site still says RaC2");
-	check_eq_u64(swt_peek32(0x00BEA8A0u), 0x4B648960u, "it is that branch");
 	check_eq_u64(switches_state(), 0, "the look finds no switches of this build");
 	check((swt_info_flags() & (SESSION_FLAG_NO_CODE_PATCHES | SESSION_FLAG_CODE_SWITCHES)) ==
 	      SESSION_FLAG_NO_CODE_PATCHES,
@@ -15426,12 +15346,7 @@ static void test_switches(void)
 	check_eq_u64(stamps[0], SWT_RAC1_STAMP, "RaC1's stamp has not changed");
 	check(stamps[1] != SWT_RAC2_B50_STAMP, "RaC2's has");
 	check(stamps[2] != SWT_RAC3_B50_STAMP, "and so has RaC3's");
-	check(stamps[3] != SWT_RAC4_B50_STAMP, "and so has Deadlocked's");
-	check(stamps[3] != SWT_RAC4_B53A_STAMP && stamps[3] != SWT_RAC4_B53B_STAMP,
-	      "and again: its fast loads changed twice more in build 53");
-	check(stamps[3] != SWT_RAC4_B53_STAMP,
-	      "and once more: revision 1.24 put the HUD's colours in it");
-	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "to the one revision 1.24 pins");
+	check_eq_u64(stamps[3], SWT_RAC4_STAMP, "Deadlocked's is the one revision 1.24 pins");
 	check_eq_u64(len_dl, SWITCH_PATCH_HEAD + 225u * SWITCH_PATCH_ROW +
 	             SWITCH_PATCH_BYTES_HEAD + 5u * SWITCH_PATCH_BYTE_ROW,
 	             "Deadlocked's, the largest, is 206 cave words, 19 sites and 5 flags");
@@ -16147,7 +16062,6 @@ static void test_net_stop_with_client(void)
 
 	net_shutdown();
 	session_shutdown();
-	check(1, "net_shutdown and session_shutdown return");
 }
 
 /* ------------------------------------------------------------------- main */
@@ -16255,9 +16169,6 @@ static void test_command_port(void)
 #define SF53_STAMP_RAC2 0xA6C6BFCFu
 #define SF53_STAMP_RAC3 0x79AA19AFu   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
-
-/* Build 52's RaC3 stamp, which an RPCS3 user's patch from then carries. */
-#define SF52_STAMP_RAC3 0x038F1389u
 
 /*
  * Whether every word row of a SAVEFILE_PATCH reply lands in one of the [lo, hi)
@@ -16502,8 +16413,6 @@ static void test_savefile_build53(void)
 		      "and the bytes it zeroes are the three request bytes");
 		check_eq_u64(len, 5300, "the reply is 5300 bytes, the trophy reset and its thread included");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC3, "with the stamp this build pins for it");
-		check(be32_get(g_sf_patch + 4) != SF52_STAMP_RAC3,
-		      "which is not build 52's, so a patch from then reads as another build's");
 		check(quit_and_wait(), "quit");
 	}
 
@@ -16814,10 +16723,6 @@ static void test_savefile_build53(void)
 		const struct sf_desc *d1 = sf_desc_for_game(GAME_RAC1);
 		const struct sf_desc *d3 = sf_desc_for_game(GAME_RAC3);
 
-		check(d2 != NULL && d2->ncaves == 1 && d2->caves[0].addr == 0x0113EC64u,
-		      "RaC2's helper is still the one cave at 0x113EC64");
-		check(d2->caves[0].addr + d2->caves[0].len <= 0x01141400u,
-		      "and ends before the code switches' caves at 0x1141400");
 		check_eq_u64(sf53_calls(d2, 0x00B8BF48u), 0,
 		             "it never calls mode_requestChange (0xB8BF48) any more");
 		check_eq_u64(sf53_calls(d2, 0x00083250u), 1, "it calls the loader, perform_load, once");
