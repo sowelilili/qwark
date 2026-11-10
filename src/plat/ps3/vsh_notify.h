@@ -35,6 +35,15 @@ static __attribute__((unused)) int32_t vshNotify_Game(const char *msg)
 
 	wchar_t message[len + 2];
 
+	/*
+	 * mbstowcs writes no terminator when the text has more wide characters than
+	 * it was given room for, which is every message of 200 bytes or more (NOTIFY
+	 * carries up to 255), nor when it meets a byte it cannot convert. The buffer
+	 * is one element longer than the most it writes, so zeroed first it is
+	 * terminated whatever the conversion does.
+	 */
+	memset(message, 0, sizeof(message));
+
 	mbstowcs((wchar_t *)message, (const char *)msg, len + 1);  //size_t stdc_FCAC2E8E(wchar_t *dest, const char *src, size_t max)
 
 	int teximg, dummy = 0;
