@@ -19,6 +19,9 @@
  *     names a module that is not there: the backup, the pak, the module, the
  *     list. Each move first renames the file it replaces to <name>.old, so a
  *     failure puts back everything moved so far.
+ *  4. Once qwark is in, the library of mods and premade savefiles the package
+ *     carries, if it carries one (below): only what the console does not have
+ *     yet, each one whole or not at all, and a failure only a warning.
  *
  * So a power cut leaves either the old list or the new one, or at worst, in the
  * moment between two renames, no list at all, which boots with no plugins; a
@@ -103,6 +106,71 @@
 #define INST_STEP_COPY_GAME     14
 #define INST_STEP_PLACE_GAME    15
 
+/*
+ * The library: the mods and premade savefiles RaCMAN Reloaded ships, which a
+ * package built with the client beside it carries (pkg.py --client) as one
+ * file, USRDIR/library.bin, so console-only users have them too. They go where
+ * the client's uploads put them, so qwark finds them exactly as if the client
+ * had sent them:
+ *
+ *   /dev_hdd0/qwark/mods/<TITLEID>/<dir>/      patch.txt, the .bin files it
+ *                                              names and qwark.sum, the
+ *                                              client's ModLibrary upload
+ *   /dev_hdd0/qwark/savefiles/<TITLEID>/(premade savefiles)[ <game>]/<name>.sav
+ *                                              and <name>.sav.sum, the client's
+ *                                              load of a premade savefile
+ *
+ * They are installed after qwark is, and only what is missing: a mod whose
+ * folder is already there and a savefile already there are left exactly as
+ * they are and counted as skipped, whoever put them there and whatever is in
+ * them. Each one goes in whole or not at all: every file is expanded once to
+ * check it against the CRC-32 the library gives it, and a file that does not
+ * match is never written; a mod is written into a folder of its own under
+ * INST_LIB_STAGE and moved into place in one rename; a savefile is written
+ * as <name>.sav.tmp, read back, and renamed. A failure is a warning, with qwark
+ * installed: that mod or savefile is not, the others go on.
+ *
+ * library.bin, every integer big-endian (pkg.py's make_library writes it):
+ *
+ *   0   "QLIB", u16 format 1, u16 entries
+ *   8   u32 the CRC-32 of the table, u32 the data's length
+ *   16  16 bytes of 0
+ *   32  the table, INST_LIB_ENTRY bytes an entry:
+ *         u8 kind (INST_LIB_MOD_FILE, INST_LIB_SAVE), u8 code (INST_LIB_STORED,
+ *         INST_LIB_QRLE), u16 the mod's number (a mod's files are together,
+ *         under one number; 0 for a savefile), u32 offset into the data,
+ *         u32 its length there, u32 the file's size, u32 the file's CRC-32,
+ *         12 bytes of 0, then its path under /dev_hdd0/qwark, NUL-padded to
+ *         INST_LIB_PATH_MAX
+ *   then the data. Entries may share their data: an alias title's savefiles
+ *   (the client's premade-savefiles/titles.txt) are its folder's bytes.
+ */
+#define INST_LIBRARY_NAME   "library.bin"
+#define INST_LIB_MAX        (4u << 20)      /* about 200 KB today */
+#define INST_LIB_HEAD       32u
+#define INST_LIB_ENTRY      160u
+#define INST_LIB_PATH_MAX   128u
+#define INST_LIB_MOD_FILE   1
+#define INST_LIB_SAVE       2
+#define INST_LIB_STORED     0
+#define INST_LIB_QRLE       1
+#define INST_MODS_DIR       "/dev_hdd0/qwark/mods"
+#define INST_SAVES_DIR      "/dev_hdd0/qwark/savefiles"
+#define INST_LIB_STAGE      "/dev_hdd0/qwark/staging"
+/* The longest name qwark takes for a mod folder (ModFolderName.MaxBytes) and for a savefile or category. */
+#define INST_MOD_NAME_MAX   31u
+#define INST_SAVE_NAME_MAX  32u
+
+/* Where the library's first failure was. */
+#define INST_LIB_NONE       0
+#define INST_LIB_READ       1   /* reading library.bin */
+#define INST_LIB_DAMAGED    2   /* library.bin is not a whole library; nothing of it was written */
+#define INST_LIB_CHECK      3   /* a file in it does not expand to its CRC; it was not written */
+#define INST_LIB_FOLDER     4   /* making a folder */
+#define INST_LIB_WRITE      5   /* writing a file, or reading it back */
+#define INST_LIB_PLACE      6   /* moving a mod or a savefile into place */
+#define INST_LIB_LOOK       7   /* the console could not say whether one was there */
+
 typedef struct inst_result {
 	int ok;             /* installed */
 	int step;           /* INST_STEP_*: where it failed */
@@ -117,11 +185,29 @@ typedef struct inst_result {
 	int backed_up;      /* the old list is in INST_LIST_BAK */
 	int usb_list;       /* a list on a USB drive, which the console reads instead */
 	int games;          /* revision 1.26: game modules installed */
-	int game;           /* the one a game step failed on, 1 to 4 */
+	int game;           /* the one a game step failed on, 1 to 5 */
+
+	/* The library (INST_LIBRARY_NAME above): only once qwark itself is in, so none of it is a reason for !ok. */
+	int library;        /* the package carries one */
+	int mods, saves;                    /* installed */
+	int mods_skipped, saves_skipped;    /* already on the console, so left exactly as they were */
+	int mods_failed, saves_failed;      /* not installed, and nothing of them left behind */
+	int lib_step;       /* INST_LIB_*: where the first failure was */
+	int lib_err;        /* its file system error, or 0 */
+	const char *lib_why;    /* or what was wrong */
 } inst_result;
 
 /* Installs from the package's USRDIR. Never fails half-way: see above. */
 void inst_run(const char *usrdir, inst_result *r);
+
+/*
+ * Called between the files the library writes, so the app can keep its screen
+ * and the system's callbacks going through a long install. NULL for none.
+ */
+void inst_set_progress(void (*fn)(void));
+
+/* Whether the package in usrdir carries a library, for the question before anything is written. */
+int inst_has_library(const char *usrdir);
 
 /* The package's USRDIR from the app's own path (argv[0]), or INST_APP_USRDIR. */
 void inst_usrdir(const char *argv0, char *out, size_t cap);
@@ -132,8 +218,8 @@ void inst_usrdir(const char *argv0, char *out, size_t cap);
  */
 #define INST_MESSAGE_MAX    512
 
-/* The question before anything is written. */
-void inst_confirm_message(char *out, size_t cap);
+/* The question before anything is written; library: the package carries one. */
+void inst_confirm_message(int library, char *out, size_t cap);
 
 /* What happened, and for a success the question whether to restart; hen adds the line HEN needs. */
 void inst_result_message(const inst_result *r, int hen, char *out, size_t cap);

@@ -187,10 +187,12 @@ static void run(const char *usrdir)
 	unsigned int error;
 	int wait;
 
-	inst_confirm_message(g_text, sizeof(g_text));
+	inst_confirm_message(inst_has_library(usrdir), g_text, sizeof(g_text));
 	if (ask(ASK_YESNO, g_text) != CELL_MSGDIALOG_BUTTON_YES) return;
 
+	inst_set_progress(frame);
 	inst_run(usrdir, &r);
+	inst_set_progress(NULL);
 	inst_result_message(&r, on_hen(), g_text, sizeof(g_text));
 	if (!r.ok) {
 		ask(TELL_ERROR, g_text);

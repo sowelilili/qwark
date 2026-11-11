@@ -12,6 +12,7 @@
 #define IFS_OP_MKDIR        8
 #define IFS_OP_RENAME       9   /* matched on the target */
 #define IFS_OP_UNLINK       10
+#define IFS_OP_RMDIR        11
 
 /* The folder that stands for the console: root/dev_hdd0 is /dev_hdd0. */
 void ifs_host_root(const char *root);

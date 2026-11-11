@@ -27,8 +27,20 @@ CFLAGS="-std=gnu99 -O1 -g -Wall -Wextra -Wshadow -Wpointer-arith -Wwrite-strings
 
 echo "compiling $OUT (build $BUILD)"
 "$CLANG" $CFLAGS -Wno-missing-prototypes \
-	installer/bootlist.c installer/install.c installer/test/ifs_host.c installer/test/test_installer.c \
+	installer/bootlist.c installer/install.c installer/qrle.c installer/test/ifs_host.c installer/test/test_installer.c \
 	-o "$OUT" -static
 
 rm -rf "$ROOT"
 "./$OUT" "$ROOT"
+
+# pkg.py's library of the client's mods and premade savefiles, held to qrle.c
+# and install.c through the executable's --expand and --install modes.
+PYOK=""
+for PY in python python3 py; do
+	if "$PY" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then PYOK="$PY"; break; fi
+done
+if [ -z "$PYOK" ]; then
+	echo "installer/test/run.sh: no python for installer/test/test_pkgdata.py" >&2
+	exit 2
+fi
+"$PYOK" -I installer/test/test_pkgdata.py "$OUT"

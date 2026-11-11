@@ -413,6 +413,19 @@ INSTALLER_TIMEOUT	= timeout 300
 #
 INSTALLER_GAMES		= $(wildcard $(GAME_MODULE_FILES))
 
+#
+# The package carries RaCMAN Reloaded's mods and premade savefiles too, for a
+# console with no PC: installer/pkg.py takes them from the client's checkout by
+# the client's own rules (what its publish.ps1 ships, as its uploads send them)
+# into USRDIR/library.bin, and the installer adds whichever the console does not
+# have yet (docs/installer.md). CLIENT_DIR is that checkout, beside this one by
+# default; `make pkg CLIENT_DIR=` builds a package without them.
+#
+CLIENT_DIR		?= ../racman-reloaded
+ifneq ($(strip $(CLIENT_DIR)),)
+INSTALLER_CLIENT	= --client "$(CLIENT_DIR)"
+endif
+
 pkg: ui.pak
 	@test -f qwark.sprx || { echo "make pkg: there is no qwark.sprx here to pack; run make first" >&2; exit 1; }
 	$(INSTALLER_TIMEOUT) $(MAKE) -C installer elf
@@ -420,12 +433,13 @@ pkg: ui.pak
 	@mkdir -p $(INSTALLER_BUILD)
 	$(INSTALLER_TIMEOUT) $(PPU_STRIP) -s -o $(INSTALLER_BUILD)/EBOOT.elf installer/installer.elf
 	$(INSTALLER_TIMEOUT) python -I installer/pkg.py stage --sprx qwark.sprx --pak ui.pak --out $(INSTALLER_BUILD) \
-		--games $(INSTALLER_GAMES)
+		--games $(INSTALLER_GAMES) $(INSTALLER_CLIENT)
 	$(INSTALLER_TIMEOUT) ./scetool $(INSTALLER_SCETOOL) -f $$(python -I installer/pkg.py content-id) \
 		-e $(INSTALLER_BUILD)/EBOOT.elf $(INSTALLER_BUILD)/pkg/USRDIR/EBOOT.BIN
 	$(INSTALLER_TIMEOUT) python -I installer/pkg.py build --root $(INSTALLER_BUILD)/pkg --out $(INSTALLER_PKG)
 	$(INSTALLER_TIMEOUT) python -I installer/pkg.py check --pkg $(INSTALLER_PKG) --sprx qwark.sprx --pak ui.pak \
-		--elf $(INSTALLER_BUILD)/EBOOT.elf --sdk-bin $(CELL_HOST_PATH)/bin --games $(INSTALLER_GAMES)
+		--elf $(INSTALLER_BUILD)/EBOOT.elf --sdk-bin "$(CELL_HOST_PATH)/bin" --games $(INSTALLER_GAMES) \
+		$(INSTALLER_CLIENT)
 	@rm -rf installer/objs installer/installer.elf installer/installer.self
 
 #

@@ -12,15 +12,21 @@ From the qwark checkout:
         the package's content id, which the makefile signs EBOOT.BIN with
 
     python -I installer/pkg.py stage --sprx qwark.sprx --pak ui.pak --out installer/build
+                                     [--games rac1.sprx ...] [--client ../racman-reloaded]
         installer/build/pkg/ holds PARAM.SFO, ICON0.PNG and USRDIR/ with the
-        module and the pak; EBOOT.BIN goes into USRDIR/ after this
+        module and the pak (and the game modules, and with --client the
+        library of the client's mods and premade savefiles, library.bin);
+        EBOOT.BIN goes into USRDIR/ after this
 
     python -I installer/pkg.py build --root installer/build/pkg --out qwark-installer.pkg
         the package of that folder
 
     python -I installer/pkg.py check --pkg qwark-installer.pkg --sprx qwark.sprx
                                      --pak ui.pak --elf installer/build/EBOOT.elf
-        reads the package back and holds every file in it against what went in;
+                                     [--games ...] [--client ../racman-reloaded]
+        reads the package back and holds every file in it against what went in
+        (library.bin expanded file by file, each held to its CRC and to the
+        client's own file);
         has the SDK's make_package_npdrm read, check and list it; decrypts
         EBOOT.BIN with scetool and holds its segments against the ELF that was
         signed; and has the SDK pack the same files itself, then packs them
@@ -98,9 +104,13 @@ PKG_FILES = ["ICON0.PNG", "PARAM.SFO", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", 
 GAME_FILES = ["USRDIR/rac1.sprx", "USRDIR/rac2.sprx", "USRDIR/rac3.sprx", "USRDIR/rac4.sprx",
               "USRDIR/tod.sprx"]
 
+# The client's mods and premade savefiles, which a package carries when it is
+# given the client's checkout (--client): see "the library" below.
+LIBRARY_FILE = "USRDIR/library.bin"
+
 # Items, in the SDK packager's order: PARAM.SFO and ICON0.PNG, the folder, EBOOT.BIN first in it.
 ITEM_ORDER = ["PARAM.SFO", "ICON0.PNG", "USRDIR", "USRDIR/EBOOT.BIN", "USRDIR/qwark.sprx", "USRDIR/ui.pak"] + \
-    GAME_FILES
+    GAME_FILES + [LIBRARY_FILE]
 
 # Item flags: 0x80000000 overwrite, then the kind.
 ITEM_SELF = 0x80000001      # an NPDRM SELF: EBOOT.BIN
@@ -384,7 +394,7 @@ def items_of(root):
             items.append((name, ITEM_DIR, None))
             continue
         if not os.path.isfile(path):
-            if name in GAME_FILES:
+            if name in GAME_FILES or name == LIBRARY_FILE:
                 continue
             die("%s has no %s" % (root, name))
         items.append((name, ITEM_SELF if name == "USRDIR/EBOOT.BIN" else ITEM_RAW, open(path, "rb").read()))
@@ -412,6 +422,389 @@ def cmd_build(args):
     with open(args.out, "wb") as f:
         f.write(blob)
     print("pkg.py: %s, %d bytes: %s" % (args.out, len(blob), ", ".join(n for n, _f, _b in items)))
+
+
+# ---------------------------------------------------------------- the library
+
+# The mods and premade savefiles RaCMAN Reloaded ships, for a console with no PC:
+# USRDIR/library.bin, which the installer expands into the places the client's own
+# uploads put them (install.h, "The library"). Taken at build time from the
+# client's checkout (--client, the makefile's CLIENT_DIR, ../racman-reloaded by
+# default) by the client's own rules, so the package carries what a release of
+# that checkout carries and the console gets what the client would have sent:
+#
+#   mods       the title folders publish.ps1's $ExpectedMods names, but libs/,
+#              the old client's Lua helpers, which the client never uploads and
+#              qwark never reads; in each, every mod folder with a patch.txt,
+#              less those publish.ps1 drops (an "automation:" line, Remove-LuaMods)
+#              and those the client never offers (#- visible: false). A mod is
+#              what ModLibrary.EnsureUploadedAsync sends: patch.txt, each .bin it
+#              names that is there, and qwark.sum, the CRC-32 of patch.txt and
+#              those .bin files in that order, as eight lowercase hex digits.
+#              The rest of the folder (sources, notes, src.zip) is the PC's.
+#   savefiles  premade-savefiles/<TITLEID>/*.sav into
+#              savefiles/<TITLEID>/(premade savefiles)/, and for each line of its
+#              titles.txt, "TITLEID[/game] folder", that folder's files into
+#              savefiles/<TITLEID>/(premade savefiles)[ <game>]/, as
+#              PremadeSaveFiles.ConsoleCategory names the category a load
+#              uploads into.
+#
+# A savefile is almost all runs of one byte, so each file is stored in qrle
+# (installer/qrle.h) when that is shorter, as it is for every savefile, and as
+# it is (stored) otherwise; files with the same bytes share them.
+
+LIB_MAGIC = b"QLIB"
+LIB_FORMAT = 1
+LIB_HEAD = 32
+LIB_ENTRY = 160
+LIB_PATH_MAX = 128
+LIB_MOD_FILE = 1
+LIB_SAVE = 2
+LIB_STORED = 0
+LIB_QRLE = 1
+LIB_MAX = 4 << 20               # install.h INST_LIB_MAX
+FILE_MAX = 16 << 20             # install.h INST_FILE_MAX
+MOD_NAME_MAX = 31               # ModFolderName.MaxBytes, qwark's mod folder bound
+SAVE_NAME_MAX = 32              # qwark's savefile_name_ok
+PREMADE_CATEGORY = "(premade savefiles)"   # PremadeSaveFiles.Category
+LUA_LIBS = "libs"
+
+
+class LibraryError(Exception):
+    pass
+
+
+# qrle (installer/qrle.h): tokens of a varint v, kind v & 1, count (v >> 1) + 1;
+# a literal's bytes follow it, a run's one byte. A run is worth a token from four.
+QRLE_MIN_RUN = 4
+_RUN_RE = re.compile(rb"(.)\1{%d,}" % (QRLE_MIN_RUN - 1), re.S)
+
+
+def _varint(v):
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def qrle_encode(data):
+    data = bytes(data)
+    out = bytearray()
+    lit = 0
+    for m in _RUN_RE.finditer(data):
+        start, end = m.span()
+        if start > lit:
+            out += _varint((start - lit - 1) << 1) + data[lit:start]
+        out += _varint(((end - start - 1) << 1) | 1) + data[start:start + 1]
+        lit = end
+    if lit < len(data):
+        out += _varint((len(data) - lit - 1) << 1) + data[lit:]
+    return bytes(out)
+
+
+def qrle_decode(stream, size):
+    """The expansion, held to every rule qrle.c holds it to; LibraryError for a bad stream."""
+    out = bytearray()
+    pos = 0
+    while pos < len(stream):
+        v = shift = 0
+        while True:
+            if pos >= len(stream) or shift > 28:
+                raise LibraryError("qrle: a varint runs off the end or past five bytes")
+            b = stream[pos]
+            pos += 1
+            if shift == 28 and b & 0x70:
+                raise LibraryError("qrle: a varint past 32 bits")
+            v |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        n = (v >> 1) + 1
+        if n > size - len(out):
+            raise LibraryError("qrle: a token past the file's size")
+        if v & 1:
+            if pos >= len(stream):
+                raise LibraryError("qrle: a run with no byte")
+            out += stream[pos:pos + 1] * n
+            pos += 1
+        else:
+            if n > len(stream) - pos:
+                raise LibraryError("qrle: a literal past the end of the stream")
+            out += stream[pos:pos + n]
+            pos += n
+    if len(out) != size:
+        raise LibraryError("qrle: %d bytes, not %d" % (len(out), size))
+    return bytes(out)
+
+
+def path_names(path, name_max):
+    """How many names a library path has, by install.c's path_names; 0 when the installer would refuse it."""
+    names = path.split("/")
+    for name in names:
+        if not name or name.startswith(".") or len(name.encode("utf-8")) > name_max:
+            return 0
+        if any(ord(c) < 0x20 or ord(c) > 0x7E or c in "\\:" for c in name):
+            return 0
+    return len(names)
+
+
+def expected_mods(client):
+    """publish.ps1's $ExpectedMods: the mod library's folders a release copies."""
+    script = os.path.join(client, "publish.ps1")
+    m = re.search(r"^\$ExpectedMods\s*=\s*@\(([^)]*)\)", open(script, encoding="utf-8-sig").read(), re.M)
+    if not m:
+        raise LibraryError("%s has no $ExpectedMods" % script)
+    return re.findall(r"'([^']+)'", m.group(1))
+
+
+def read_mod(folder):
+    """
+    A mod folder as the client reads it (ModLibrary.Read): None for no patch.txt,
+    else (visible, needs_lua, [bin names in first appearance order]).
+    """
+    patch = os.path.join(folder, "patch.txt")
+    if not os.path.isfile(patch):
+        return None
+    text = open(patch, "rb").read().decode("utf-8", "replace")
+    variables, bins, needs_lua = {}, [], False
+    for raw in text.split("\n"):
+        line = raw.rstrip("\r")
+        if len(line) > 2 and line.startswith("#-"):
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                variables[parts[0][2:].strip().lower()] = parts[1].strip()
+            continue
+        trimmed = line.strip()
+        if len(trimmed) < 2 or trimmed[0] == "#":
+            continue
+        fields = trimmed.split(":", 1)
+        if len(fields) < 2:
+            continue
+        key, value = fields[0].strip(), fields[1].strip()
+        if key.lower() == "automation":
+            needs_lua = True
+            continue
+        if not key.lower().startswith("0x"):
+            continue
+        if not value.lower().startswith("0x") and value and value.lower() not in [b.lower() for b in bins]:
+            bins.append(value)
+    visible = variables.get("visible", "").lower() != "false"
+    return visible, needs_lua, bins
+
+
+def client_mods(client):
+    """[(title, dir, [(name, bytes)])]: each mod the client would upload, its files in upload order, qwark.sum last."""
+    mods = []
+    for title in expected_mods(client):
+        if title == LUA_LIBS:
+            continue
+        title_dir = os.path.join(client, "mods", title)
+        if not os.path.isdir(title_dir):
+            raise LibraryError("the client's mods have no %s, which publish.ps1 ships" % title)
+        for name in sorted(os.listdir(title_dir)):
+            folder = os.path.join(title_dir, name)
+            mod = read_mod(folder) if os.path.isdir(folder) else None
+            if mod is None:
+                continue
+            visible, needs_lua, bins = mod
+            if needs_lua or not visible:
+                continue
+            if len(name.encode("utf-8")) > MOD_NAME_MAX:
+                raise LibraryError("mods/%s/%s: the folder name is longer than qwark takes" % (title, name))
+            files = [("patch.txt", open(os.path.join(folder, "patch.txt"), "rb").read())]
+            for b in bins:
+                path = os.path.join(folder, *b.replace("\\", "/").split("/"))
+                if os.path.isfile(path):
+                    files.append((b.replace("\\", "/"), open(path, "rb").read()))
+            crc = 0
+            for _n, blob in files:
+                crc = zlib.crc32(blob, crc)
+            files.append(("qwark.sum", ("%08x" % (crc & 0xFFFFFFFF)).encode("ascii")))
+            mods.append((title, name, files))
+    return mods
+
+
+def premade_titles(text):
+    """titles.txt as PremadeSaveFiles.ParseTitles reads it: {"TITLEID[/game]": folder}."""
+    titles = {}
+    for raw in text.split("\n"):
+        line = raw.strip().lstrip("﻿")
+        if not line or line[0] == "#":
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        folder = "".join(c for c in fields[1].strip() if c not in '<>:"/\\|?*' and ord(c) >= 0x20).strip(" .")
+        if folder:
+            titles[fields[0].replace("\\", "/").strip("/")] = folder
+    return titles
+
+
+def premade_files(root, folder):
+    """PremadeSaveFiles.Files: the .sav files of one folder, sorted without regard to case."""
+    path = os.path.join(root, folder)
+    if not os.path.isdir(path):
+        return []
+    names = [n for n in os.listdir(path)
+             if n.lower().endswith(".sav") and not n.startswith(".") and os.path.isfile(os.path.join(path, n))]
+    return sorted(names, key=str.lower)
+
+
+def client_saves(client):
+    """[(console path under /dev_hdd0/qwark, bytes)], sorted by path."""
+    root = os.path.join(client, "premade-savefiles")
+    if not os.path.isdir(root):
+        raise LibraryError("the client has no premade-savefiles folder at %s" % root)
+    titles_path = os.path.join(root, "titles.txt")
+    titles = premade_titles(open(titles_path, encoding="utf-8").read()) if os.path.isfile(titles_path) else {}
+    # (title id, category) -> the folder its files come from.
+    places = {}
+    for folder in os.listdir(root):
+        if os.path.isdir(os.path.join(root, folder)):
+            places[(folder, PREMADE_CATEGORY)] = folder
+    for key, folder in titles.items():
+        if "/" in key:
+            title, game = key.split("/", 1)
+            places[(title, "%s %s" % (PREMADE_CATEGORY, game.lower()))] = folder
+        else:
+            places[(key, PREMADE_CATEGORY)] = folder
+    saves = []
+    for (title, category), folder in places.items():
+        for name in premade_files(root, folder):
+            saves.append(("savefiles/%s/%s/%s" % (title, category, name),
+                          open(os.path.join(root, folder, name), "rb").read()))
+    return sorted(saves)
+
+
+def library_entries(client):
+    """Every file the library carries: [(kind, group, path, bytes)], each mod's files together."""
+    entries = []
+    for group, (title, name, files) in enumerate(client_mods(client)):
+        for fname, blob in files:
+            entries.append((LIB_MOD_FILE, group, "mods/%s/%s/%s" % (title, name, fname), blob))
+    for path, blob in client_saves(client):
+        entries.append((LIB_SAVE, 0, path, blob))
+    for kind, _g, path, blob in entries:
+        name_max = SAVE_NAME_MAX if kind == LIB_SAVE else MOD_NAME_MAX
+        names = path_names(path, name_max)
+        if (kind == LIB_SAVE and (names != 4 or not path.endswith(".sav"))) or (kind == LIB_MOD_FILE and names < 4):
+            raise LibraryError("%s is not a path the installer writes" % path)
+        if len(path.encode("ascii")) >= LIB_PATH_MAX:
+            raise LibraryError("%s is longer than a library path" % path)
+        if len(blob) > FILE_MAX:
+            raise LibraryError("%s is larger than the installer takes" % path)
+    return entries
+
+
+def make_library(entries):
+    table = b""
+    data = bytearray()
+    shared = {}
+    for kind, group, path, blob in entries:
+        packed = qrle_encode(blob)
+        code = LIB_QRLE if len(packed) < len(blob) else LIB_STORED
+        if code == LIB_STORED:
+            packed = blob
+        key = (code, packed)
+        if key not in shared:
+            shared[key] = len(data)
+            data += packed
+        table += struct.pack(">BBHIIII12s", kind, code, group, shared[key], len(packed), len(blob),
+                             zlib.crc32(blob) & 0xFFFFFFFF, b"") + path.encode("ascii").ljust(LIB_PATH_MAX, b"\0")
+    if len(entries) > 0xFFFF:
+        raise LibraryError("more files than a library holds")
+    head = LIB_MAGIC + struct.pack(">HHII", LIB_FORMAT, len(entries), zlib.crc32(table) & 0xFFFFFFFF, len(data))
+    blob = head.ljust(LIB_HEAD, b"\0") + table + bytes(data)
+    if len(blob) > LIB_MAX:
+        raise LibraryError("the library is %d bytes, more than the installer reads" % len(blob))
+    return blob
+
+
+def read_library(blob):
+    """
+    A library read back by install.c's rules, each file expanded and held to
+    its CRC: [(kind, group, path, bytes)]. LibraryError for anything the
+    installer would refuse.
+    """
+    if len(blob) > LIB_MAX:
+        raise LibraryError("larger than the installer reads")
+    if len(blob) < LIB_HEAD or blob[:4] != LIB_MAGIC:
+        raise LibraryError("not a library")
+    fmt, count, table_crc, data_len = struct.unpack_from(">HHII", blob, 4)
+    table = blob[LIB_HEAD:LIB_HEAD + LIB_ENTRY * count]
+    if fmt != LIB_FORMAT or len(table) != LIB_ENTRY * count or len(blob) - LIB_HEAD - len(table) != data_len:
+        raise LibraryError("the header does not describe the file")
+    if zlib.crc32(table) & 0xFFFFFFFF != table_crc:
+        raise LibraryError("the table's CRC does not hold")
+    data = blob[LIB_HEAD + len(table):]
+    out, last_group, root = [], -1, None
+    for i in range(count):
+        kind, code, group, off, length, size, crc, _pad = struct.unpack_from(">BBHIIII12s", table, i * LIB_ENTRY)
+        raw_path = table[i * LIB_ENTRY + 32:(i + 1) * LIB_ENTRY]
+        if b"\0" not in raw_path:
+            raise LibraryError("entry %d: an unterminated path" % i)
+        path = raw_path[:raw_path.index(b"\0")].decode("ascii", "replace")
+        if off > len(data) or length > len(data) - off or size > FILE_MAX:
+            raise LibraryError("%s: outside the data" % path)
+        if code == LIB_STORED:
+            if length != size:
+                raise LibraryError("%s: stored, but not its size" % path)
+            body = data[off:off + length]
+        elif code == LIB_QRLE:
+            body = qrle_decode(data[off:off + length], size)
+        else:
+            raise LibraryError("%s: code %d" % (path, code))
+        if zlib.crc32(body) & 0xFFFFFFFF != crc:
+            raise LibraryError("%s: its CRC does not hold" % path)
+        if kind == LIB_SAVE:
+            if path_names(path, SAVE_NAME_MAX) != 4 or not path.startswith("savefiles/") or \
+                    not path.endswith(".sav") or group != 0:
+                raise LibraryError("%s: not a savefile's path" % path)
+        elif kind == LIB_MOD_FILE:
+            if path_names(path, MOD_NAME_MAX) < 4 or not path.startswith("mods/"):
+                raise LibraryError("%s: not a mod's path" % path)
+            mod_root = "/".join(path.split("/")[:3])
+            if group != last_group:
+                if group != last_group + 1:
+                    raise LibraryError("%s: mod %d after mod %d" % (path, group, last_group))
+                last_group, root = group, mod_root
+            elif mod_root != root:
+                raise LibraryError("%s: outside its mod's folder %s" % (path, root))
+        else:
+            raise LibraryError("%s: kind %d" % (path, kind))
+        out.append((kind, group, path, body))
+    return out
+
+
+def library_summary(entries):
+    mods = len(set(g for k, g, _p, _b in entries if k == LIB_MOD_FILE))
+    saves = sum(1 for k, _g, _p, _b in entries if k == LIB_SAVE)
+    return "%d mods and %d premade savefiles" % (mods, saves)
+
+
+def check_library(problems, blob, client):
+    """The package's library.bin: one the installer takes, holding exactly what the client's checkout ships."""
+    try:
+        want = library_entries(client)
+        got = read_library(blob)
+    except LibraryError as e:
+        problems.append("USRDIR/library.bin: %s" % e)
+        return
+    if got != want:
+        have = dict((p, b) for _k, _g, p, b in got)
+        need = dict((p, b) for _k, _g, p, b in want)
+        missing = sorted(set(need) - set(have))
+        extra = sorted(set(have) - set(need))
+        changed = sorted(p for p in set(need) & set(have) if need[p] != have[p])
+        problems.append("USRDIR/library.bin is not %s's: missing %s, extra %s, different %s" % (
+            client, missing or "nothing", extra or "nothing", changed or "nothing"))
+    elif blob != make_library(want):
+        problems.append("USRDIR/library.bin holds the client's files but is not the library pkg.py makes of them")
 
 
 # ---------------------------------------------------------------- stage
@@ -450,8 +843,20 @@ def cmd_stage(args):
     for game in game_paths(args):
         check_sprx(open(game, "rb").read(), game)
         shutil.copyfile(game, os.path.join(root, "USRDIR", os.path.basename(game)))
-    print("pkg.py: staged %s for build %d (%s)%s" % (root, build, app_ver(build),
-          ", with %d game modules" % len(game_paths(args)) if game_paths(args) else ""))
+    library = ""
+    if args.client:
+        try:
+            entries = library_entries(args.client)
+            blob = make_library(entries)
+        except (LibraryError, OSError) as e:
+            die("the library of %s: %s" % (args.client, e))
+        with open(os.path.join(root, *LIBRARY_FILE.split("/")), "wb") as f:
+            f.write(blob)
+        raw = sum(len(b) for _k, _g, _p, b in entries)
+        library = ", and %s from %s (%d files, %d bytes in %d)" % (
+            library_summary(entries), args.client, len(entries), raw, len(blob))
+    print("pkg.py: staged %s for build %d (%s)%s%s" % (root, build, app_ver(build),
+          ", with %d game modules" % len(game_paths(args)) if game_paths(args) else "", library))
 
 
 def game_paths(args):
@@ -552,10 +957,12 @@ EXPECTED_COMPLAINTS = [
 def check_contents(problems, files, args, build):
     """files: name -> bytes, from whichever reader unpacked the package."""
     games = dict(("USRDIR/" + os.path.basename(g), g) for g in game_paths(args))
-    want = PKG_FILES + sorted(games)
+    want = PKG_FILES + sorted(games) + ([LIBRARY_FILE] if args.client else [])
     if sorted(files) != sorted(want):
         problems.append("the package holds %s, not %s" % (sorted(files), sorted(want)))
         return
+    if args.client:
+        check_library(problems, files[LIBRARY_FILE], args.client)
     for name, path in games.items():
         if files[name] != open(path, "rb").read():
             problems.append("%s is not %s" % (name, path))
@@ -703,9 +1110,13 @@ def cmd_check(args):
 
     if problems:
         die("%s:\n  %s" % (args.pkg, "\n  ".join(problems)))
-    print("pkg.py: %s checks out: %s, build %d, %d bytes; the SDK reads and lists it, "
+    library = ""
+    if args.client:
+        library = ", with %s, every file expanded and held to the client's" % library_summary(
+            read_library(files[LIBRARY_FILE]))
+    print("pkg.py: %s checks out: %s, build %d, %d bytes%s; the SDK reads and lists it, "
           "and the SDK's own %d-byte package of the same files is reproduced byte for byte" % (
-              args.pkg, CONTENT_ID, build, len(blob), sdk_size))
+              args.pkg, CONTENT_ID, build, len(blob), library, sdk_size))
 
 
 def main():
@@ -717,6 +1128,7 @@ def main():
     st.add_argument("--pak", required=True)
     st.add_argument("--out", required=True)
     st.add_argument("--games", nargs="*", default=[])
+    st.add_argument("--client", help="the client's checkout, whose mods and premade savefiles the package carries")
     bd = sub.add_parser("build")
     bd.add_argument("--root", required=True)
     bd.add_argument("--out", required=True)
@@ -727,6 +1139,7 @@ def main():
     ck.add_argument("--elf", required=True)
     ck.add_argument("--sdk-bin")
     ck.add_argument("--games", nargs="*", default=[])
+    ck.add_argument("--client", help="the client's checkout the package's library was made from")
     args = ap.parse_args()
 
     if args.cmd == "content-id":

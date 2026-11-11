@@ -13,7 +13,7 @@ ifeq ($(QWARK_BUILD),)
 $(error no QWARK_BUILD in ../src/core/proto.h)
 endif
 
-PPU_SRCS	= main.c install.c bootlist.c ifs_ps3.c
+PPU_SRCS	= main.c install.c qrle.c bootlist.c ifs_ps3.c
 PPU_TARGET	= installer.elf
 
 PPU_INCDIRS	+= -I$(CELL_TARGET_PATH)/ppu/include/sysutil

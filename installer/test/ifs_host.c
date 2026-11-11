@@ -16,9 +16,11 @@
 #ifdef _WIN32
 #include <direct.h>
 #define host_mkdir(p) _mkdir(p)
+#define host_rmdir(p) _rmdir(p)
 #else
 #include <unistd.h>
 #define host_mkdir(p) mkdir((p), 0777)
+#define host_rmdir(p) rmdir(p)
 #endif
 
 #define MAX_FDS 16
@@ -228,4 +230,13 @@ int ifs_unlink(const char *path)
 	if (faulted(IFS_OP_UNLINK, path)) return FAULT_ERR;
 	host_path(path, hp, sizeof(hp));
 	return remove(hp) == 0 ? 0 : (errno ? errno : -1);
+}
+
+int ifs_rmdir(const char *path)
+{
+	char hp[1300];
+
+	if (faulted(IFS_OP_RMDIR, path)) return FAULT_ERR;
+	host_path(path, hp, sizeof(hp));
+	return host_rmdir(hp) == 0 ? 0 : (errno ? errno : -1);
 }

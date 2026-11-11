@@ -36,5 +36,7 @@ int ifs_stat(const char *path, int *is_dir, uint64_t *size);
 int ifs_mkdir(const char *path);
 int ifs_rename(const char *from, const char *to);
 int ifs_unlink(const char *path);
+/* Removes an empty folder: the installer's own staging folder for a mod (install.c). */
+int ifs_rmdir(const char *path);
 
 #endif

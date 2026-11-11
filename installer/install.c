@@ -4,6 +4,7 @@
  */
 #include "install.h"
 #include "ifs.h"
+#include "qrle.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -315,6 +316,8 @@ static void drop_tmps(move *m, int n)
 
 static char g_src_game[INST_GAMES][512];
 
+static void install_library(const char *usrdir, inst_result *r);
+
 void inst_run(const char *usrdir, inst_result *r)
 {
 	char src_sprx[512], src_pak[512];
@@ -474,6 +477,427 @@ void inst_run(const char *usrdir, inst_result *r)
 	r->ok = 1;
 	r->games = ngames;
 	r->backed_up = m[M_BACKUP].done;
+
+	/* 4. The library, now that qwark is in: whatever happens to it, qwark stays installed. */
+	install_library(usrdir, r);
+}
+
+/* ------------------------------------------------------------------ the library */
+
+/*
+ * The mods and premade savefiles the package carries (install.h, INST_LIBRARY_NAME):
+ * after qwark is in, only what is missing, each one whole or not at all.
+ */
+static unsigned char g_lib[INST_LIB_MAX];
+static uint32_t g_lib_len, g_lib_count, g_lib_data;
+static void (*g_progress)(void);
+
+void inst_set_progress(void (*fn)(void))
+{
+	g_progress = fn;
+}
+
+static void progress(void)
+{
+	if (g_progress) g_progress();
+}
+
+static uint32_t be32_at(const unsigned char *p)
+{
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+typedef struct lib_entry {
+	int kind, code, group;
+	uint32_t offset, len, size, crc;
+	const char *path;       /* under /dev_hdd0/qwark; NUL-terminated inside the table once it is checked */
+} lib_entry;
+
+static void lib_get(uint32_t i, lib_entry *e)
+{
+	const unsigned char *t = g_lib + INST_LIB_HEAD + i * INST_LIB_ENTRY;
+
+	e->kind = t[0];
+	e->code = t[1];
+	e->group = ((int)t[2] << 8) | t[3];
+	e->offset = be32_at(t + 4);
+	e->len = be32_at(t + 8);
+	e->size = be32_at(t + 12);
+	e->crc = be32_at(t + 16);
+	e->path = (const char *)t + 32;
+}
+
+/*
+ * A path the library may write: printable ASCII, '/' between names, no empty
+ * name and none starting with a dot (so no ".." either), no '\' or ':', each
+ * name max bytes at most. Answers how many names it has, or 0.
+ */
+static int path_names(const char *p, uint32_t max)
+{
+	int names = 0;
+	uint32_t len = 0;
+
+	for (;; p++) {
+		if (*p == '/' || *p == '\0') {
+			if (len == 0) return 0;
+			names++;
+			len = 0;
+			if (*p == '\0') return names;
+			continue;
+		}
+		if (len == 0 && *p == '.') return 0;
+		if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7E || *p == '\\' || *p == ':') return 0;
+		if (++len > max) return 0;
+	}
+}
+
+/* The length of a path's first k names, without the '/' after them. */
+static uint32_t names_len(const char *p, int k)
+{
+	uint32_t i;
+
+	for (i = 0; p[i] != '\0'; i++) {
+		if (p[i] == '/' && --k == 0) return i;
+	}
+	return i;
+}
+
+static int ends_with(const char *s, const char *tail)
+{
+	size_t n = strlen(s), t = strlen(tail);
+	return n > t && strcmp(s + n - t, tail) == 0;
+}
+
+/*
+ * The header and the table: every entry's data inside the data, every path
+ * one the library may write, a mod's files together and in one folder.
+ * Nothing at all is written for a library that fails this.
+ */
+static int lib_check_table(void)
+{
+	uint32_t i, table, data_len, root = 0;
+	lib_entry e;
+	const char *mod_root = NULL;
+	int last_group = -1;
+
+	if (g_lib_len < INST_LIB_HEAD || memcmp(g_lib, "QLIB", 4) != 0 || g_lib[4] != 0 || g_lib[5] != 1)
+		return -1;
+	g_lib_count = ((uint32_t)g_lib[6] << 8) | g_lib[7];
+	table = g_lib_count * INST_LIB_ENTRY;
+	data_len = be32_at(g_lib + 12);
+	if (g_lib_len - INST_LIB_HEAD < table || g_lib_len - INST_LIB_HEAD - table != data_len) return -1;
+	if (crc32_add(0, g_lib + INST_LIB_HEAD, table) != be32_at(g_lib + 8)) return -1;
+	g_lib_data = INST_LIB_HEAD + table;
+
+	for (i = 0; i < g_lib_count; i++) {
+		int names;
+
+		lib_get(i, &e);
+		if (memchr(e.path, '\0', INST_LIB_PATH_MAX) == NULL) return -1;
+		if (e.offset > data_len || e.len > data_len - e.offset || e.size > INST_FILE_MAX) return -1;
+		if (e.code != INST_LIB_STORED && e.code != INST_LIB_QRLE) return -1;
+		if (e.code == INST_LIB_STORED && e.len != e.size) return -1;
+		if (e.kind == INST_LIB_SAVE) {
+			names = path_names(e.path, INST_SAVE_NAME_MAX);
+			if (names != 4 || strncmp(e.path, "savefiles/", 10) != 0 || !ends_with(e.path, ".sav") || e.group != 0)
+				return -1;
+		} else if (e.kind == INST_LIB_MOD_FILE) {
+			names = path_names(e.path, INST_MOD_NAME_MAX);
+			if (names < 4 || strncmp(e.path, "mods/", 5) != 0) return -1;
+			if (e.group != last_group) {
+				/* A new mod: its number follows the last one's, so no mod comes in two parts. */
+				if (e.group != last_group + 1) return -1;
+				last_group = e.group;
+				mod_root = e.path;
+				root = names_len(e.path, 3);
+			} else if (names_len(e.path, 3) != root || strncmp(e.path, mod_root, root) != 0) {
+				return -1;
+			}
+		} else {
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/* Where the expanded bytes go: summed always, and written too when write is set. */
+typedef struct sink_ctx {
+	unsigned int crc;
+	uint32_t total;
+	int write;
+	ifs_fd fd;
+} sink_ctx;
+
+static int to_sink(void *ctx, const unsigned char *p, uint32_t n)
+{
+	sink_ctx *s = (sink_ctx *)ctx;
+
+	s->crc = crc32_add(s->crc, p, n);
+	s->total += n;
+	return s->write ? ifs_write(s->fd, p, n) : 0;
+}
+
+/* Expands an entry into s: 0, -1 for a bad stream, or the sink's error. */
+static int lib_expand(const lib_entry *e, sink_ctx *s)
+{
+	const unsigned char *in = g_lib + g_lib_data + e->offset;
+	int serr = 0, rc;
+
+	if (e->code == INST_LIB_STORED) {
+		uint32_t done = 0;
+
+		while (done < e->len) {
+			uint32_t k = e->len - done > CHUNK ? CHUNK : e->len - done;
+			if ((rc = to_sink(s, in + done, k)) != 0) return rc;
+			done += k;
+		}
+		return 0;
+	}
+	rc = qrle_expand(in, e->len, e->size, g_chunk, CHUNK, to_sink, s, &serr);
+	if (rc == QRLE_SINK) return serr ? serr : -1;
+	return rc == QRLE_OK ? 0 : -1;
+}
+
+/* Whether an entry expands to exactly the bytes its CRC says: the check before anything is written. */
+static int lib_entry_ok(const lib_entry *e)
+{
+	sink_ctx s;
+
+	memset(&s, 0, sizeof(s));
+	return lib_expand(e, &s) == 0 && s.total == e->size && s.crc == e->crc;
+}
+
+/* An entry's bytes to path, read back and held against its CRC. */
+static int lib_write(const lib_entry *e, const char *path, const char **why)
+{
+	sink_ctx s;
+	uint32_t back_len;
+	unsigned int back_crc;
+	int err;
+
+	*why = NULL;
+	memset(&s, 0, sizeof(s));
+	s.write = 1;
+	if ((err = ifs_open_write(path, &s.fd)) != 0) return err;
+	err = lib_expand(e, &s);
+	if (err == 0) err = ifs_sync(s.fd);
+	if (ifs_close(s.fd) != 0 && err == 0) err = -1;
+	if (err != 0) return err;
+
+	if ((err = file_crc(path, &back_len, &back_crc)) != 0) return err;
+	if (back_len != e->size || back_crc != e->crc) {
+		*why = "the file did not read back the same";
+		return -1;
+	}
+	return 0;
+}
+
+/* Every failure is counted; the first is the one the message names. */
+static void lib_fail(inst_result *r, int is_mod, int step, int err, const char *why)
+{
+	if (is_mod) r->mods_failed++;
+	else r->saves_failed++;
+	if (r->lib_step == INST_LIB_NONE) {
+		r->lib_step = step;
+		r->lib_err = why ? 0 : err;
+		r->lib_why = why;
+	}
+}
+
+/*
+ * The folders a file path needs, below its first three ("", /dev_hdd0 and
+ * /dev_hdd0/qwark): each made if it is not there, and each a folder after.
+ */
+static int make_parents(char *path)
+{
+	char *s;
+	int slashes = 0;
+
+	for (s = path; *s; s++) {
+		if (*s != '/' || ++slashes <= 3) continue;
+		*s = '\0';
+		if (!is_dir(path)) ifs_mkdir(path);
+		if (!is_dir(path)) { *s = '/'; return -1; }
+		*s = '/';
+	}
+	return 0;
+}
+
+/*
+ * Takes a mod's staging folder apart: the files the library puts there, their
+ * folders deepest first, then the stage itself. A stage that is not there
+ * costs a few refused calls.
+ */
+static void unstage(const char *stage, uint32_t first, uint32_t end, uint32_t root)
+{
+	char path[512];
+	size_t stage_len = strlen(stage);
+	uint32_t i;
+	lib_entry e;
+
+	for (i = first; i < end; i++) {
+		char *slash;
+
+		lib_get(i, &e);
+		snprintf(path, sizeof(path), "%s/%s", stage, e.path + root + 1);
+		ifs_unlink(path);
+		while ((slash = strrchr(path, '/')) != NULL && (size_t)(slash - path) > stage_len) {
+			*slash = '\0';
+			ifs_rmdir(path);
+		}
+	}
+	ifs_rmdir(stage);
+}
+
+/* One mod, entries first to end - 1: all of them into a stage folder, then the folder into place. */
+static void lib_mod(uint32_t first, uint32_t end, inst_result *r)
+{
+	char folder[512], stage[512], path[512];
+	const char *why = NULL;
+	uint32_t i, root, title;
+	lib_entry e;
+	int there, err;
+
+	lib_get(first, &e);
+	root = names_len(e.path, 3);      /* "mods/<TITLEID>/<dir>" */
+	title = names_len(e.path, 2);     /* "mods/<TITLEID>" */
+	snprintf(folder, sizeof(folder), "%s/%.*s", INST_QWARK_DIR, (int)root, e.path);
+	snprintf(stage, sizeof(stage), "%s/%.*s", INST_LIB_STAGE, (int)(root - title - 1), e.path + title + 1);
+
+	/* Already there, whoever put it there and whatever is in it: left exactly as it is. */
+	if ((err = probe(folder, &there)) != 0) { lib_fail(r, 1, INST_LIB_LOOK, err, NULL); return; }
+	if (there) { r->mods_skipped++; return; }
+
+	for (i = first; i < end; i++) {
+		lib_get(i, &e);
+		if (!lib_entry_ok(&e)) { lib_fail(r, 1, INST_LIB_CHECK, 0, "it is damaged in this package"); return; }
+	}
+
+	/* /dev_hdd0/qwark/mods/<TITLEID>, the mod's place. */
+	if (make_parents(folder) != 0) { lib_fail(r, 1, INST_LIB_FOLDER, 0, "a folder could not be made"); return; }
+
+	/* An interrupted run's stage of this mod goes first. */
+	unstage(stage, first, end, root);
+	for (i = first; i < end; i++) {
+		lib_get(i, &e);
+		snprintf(path, sizeof(path), "%s/%s", stage, e.path + root + 1);
+		if (make_parents(path) != 0) {
+			unstage(stage, first, end, root);
+			lib_fail(r, 1, INST_LIB_FOLDER, 0, "a folder could not be made");
+			return;
+		}
+		if ((err = lib_write(&e, path, &why)) != 0) {
+			unstage(stage, first, end, root);
+			lib_fail(r, 1, INST_LIB_WRITE, err, why);
+			return;
+		}
+		progress();
+	}
+	if ((err = ifs_rename(stage, folder)) != 0) {
+		unstage(stage, first, end, root);
+		lib_fail(r, 1, INST_LIB_PLACE, err, NULL);
+		return;
+	}
+	r->mods++;
+}
+
+/* One savefile, and the .sum beside it the client writes (eight lowercase hex digits). */
+static void lib_save(const lib_entry *e, inst_result *r)
+{
+	char final[512], tmp[520], sum[520], text[16];
+	const char *why = NULL;
+	int there, err;
+
+	snprintf(final, sizeof(final), "%s/%s", INST_QWARK_DIR, e->path);
+	snprintf(tmp, sizeof(tmp), "%s.tmp", final);
+	snprintf(sum, sizeof(sum), "%s.sum", final);
+
+	/* Already there, whoever put it there and whatever is in it: left exactly as it is. */
+	if ((err = probe(final, &there)) != 0) { lib_fail(r, 0, INST_LIB_LOOK, err, NULL); return; }
+	if (there) { r->saves_skipped++; return; }
+	if (!lib_entry_ok(e)) { lib_fail(r, 0, INST_LIB_CHECK, 0, "it is damaged in this package"); return; }
+
+	/* /dev_hdd0/qwark/savefiles/<TITLEID>/<category>. */
+	if (make_parents(final) != 0) { lib_fail(r, 0, INST_LIB_FOLDER, 0, "a folder could not be made"); return; }
+
+	ifs_unlink(tmp);
+	if ((err = lib_write(e, tmp, &why)) != 0) {
+		ifs_unlink(tmp);
+		lib_fail(r, 0, INST_LIB_WRITE, err, why);
+		return;
+	}
+	/* A sum left behind by a file that is gone would give this one the wrong CRC. */
+	ifs_unlink(sum);
+	if ((err = ifs_rename(tmp, final)) != 0) {
+		ifs_unlink(tmp);
+		lib_fail(r, 0, INST_LIB_PLACE, err, NULL);
+		return;
+	}
+	/* Only bookkeeping: without it qwark sums the file the first time it lists it, and writes it then. */
+	snprintf(text, sizeof(text), "%08x", e->crc);
+	if (write_verified(sum, text, 8, &why) != 0) ifs_unlink(sum);
+	r->saves++;
+	progress();
+}
+
+int inst_has_library(const char *usrdir)
+{
+	char path[512];
+	int there = 0;
+
+	snprintf(path, sizeof(path), "%s/%s", usrdir, INST_LIBRARY_NAME);
+	return probe(path, &there) == 0 && there;
+}
+
+static void install_library(const char *usrdir, inst_result *r)
+{
+	char path[512];
+	uint32_t i, end;
+	lib_entry e, next;
+	int there, err = 0, rc;
+
+	snprintf(path, sizeof(path), "%s/%s", usrdir, INST_LIBRARY_NAME);
+	if ((err = probe(path, &there)) != 0) {
+		/* The console cannot say: a library is taken to be there, and could not be read. */
+		r->library = 1;
+		r->lib_step = INST_LIB_READ;
+		r->lib_err = err;
+		return;
+	}
+	if (!there) return;
+	r->library = 1;
+
+	rc = read_whole(path, (char *)g_lib, INST_LIB_MAX, &g_lib_len, &err);
+	if (rc == -2) {
+		r->lib_step = INST_LIB_DAMAGED;
+		r->lib_why = "it is too large to be one";
+		return;
+	}
+	if (rc != 0) {
+		r->lib_step = INST_LIB_READ;
+		r->lib_err = err;
+		return;
+	}
+	if (lib_check_table() != 0) {
+		r->lib_step = INST_LIB_DAMAGED;
+		r->lib_why = "it is damaged in this package";
+		return;
+	}
+
+	for (i = 0; i < g_lib_count; i = end) {
+		lib_get(i, &e);
+		if (e.kind == INST_LIB_SAVE) {
+			lib_save(&e, r);
+			end = i + 1;
+			continue;
+		}
+		for (end = i + 1; end < g_lib_count; end++) {
+			lib_get(end, &next);
+			if (next.kind != INST_LIB_MOD_FILE || next.group != e.group) break;
+		}
+		lib_mod(i, end, r);
+	}
+	ifs_rmdir(INST_LIB_STAGE);
 }
 
 /* ------------------------------------------------------------------ paths */
@@ -500,13 +924,74 @@ static void append(char *out, size_t cap, const char *text)
 	if (len < cap) snprintf(out + len, cap - len, "%s", text);
 }
 
-void inst_confirm_message(char *out, size_t cap)
+void inst_confirm_message(int library, char *out, size_t cap)
 {
 	snprintf(out, cap,
 	         "Install qwark build %d?\n\n"
 	         "This copies qwark.sprx to " INST_PLUGINS_DIR " and ui.pak to " INST_QWARK_DIR ". "
-	         "It puts qwark first in " INST_LIST ". Your other plugins stay in the list.",
-	         INST_QWARK_BUILD);
+	         "It puts qwark first in " INST_LIST ". Your other plugins stay in the list.%s",
+	         INST_QWARK_BUILD,
+	         library ? "\n\nIt also adds the mods and premade savefiles RaCMAN Reloaded comes with. "
+	                   "Any you already have are left as they are." : "");
+}
+
+static const char *lib_step_name(int step)
+{
+	switch (step) {
+	case INST_LIB_READ:    return "reading " INST_LIBRARY_NAME;
+	case INST_LIB_DAMAGED: return INST_LIBRARY_NAME;
+	case INST_LIB_CHECK:   return "checking a file";
+	case INST_LIB_FOLDER:  return "making a folder";
+	case INST_LIB_WRITE:   return "writing a file";
+	case INST_LIB_PLACE:   return "moving a file into place";
+	case INST_LIB_LOOK:    return "looking for a file";
+	default:               return "unknown";
+	}
+}
+
+/* "1 mod" or "2 mods". */
+static void counted(char *out, size_t cap, int n, const char *one)
+{
+	snprintf(out, cap, "%d %s%s", n, one, n == 1 ? "" : "s");
+}
+
+/*
+ * The library's lines: what it added, what it left alone, and what it could
+ * not add. qwark is installed by then, so a failure here is only a warning.
+ * terse leaves out what added and why one failed, for a message that would
+ * not fit a dialog otherwise.
+ */
+static void library_lines(const inst_result *r, int terse, char *out, size_t cap)
+{
+	char line[200], a[40], b[40];
+	int added = !terse && r->mods + r->saves > 0;
+
+	if (added) {
+		counted(a, sizeof(a), r->mods, "mod");
+		counted(b, sizeof(b), r->saves, "premade savefile");
+		snprintf(line, sizeof(line), "\n\nAdded %s and %s.", a, b);
+		append(out, cap, line);
+	}
+	if (r->mods_skipped + r->saves_skipped > 0) {
+		counted(a, sizeof(a), r->mods_skipped, "mod");
+		counted(b, sizeof(b), r->saves_skipped, "savefile");
+		snprintf(line, sizeof(line), "%sSkipped %s and %s that were already installed.", added ? " " : "\n\n", a, b);
+		append(out, cap, line);
+	}
+	if (r->lib_step == INST_LIB_NONE) return;
+	if (r->mods_failed + r->saves_failed > 0) {
+		counted(a, sizeof(a), r->mods_failed, "mod");
+		counted(b, sizeof(b), r->saves_failed, "savefile");
+		snprintf(line, sizeof(line), "\n\nNot added: %s and %s", a, b);
+	} else {
+		snprintf(line, sizeof(line), "\n\nThe mods and savefiles were not added");
+	}
+	append(out, cap, line);
+	if (terse) line[0] = '\0';
+	else if (r->lib_why != NULL) snprintf(line, sizeof(line), " (%s: %s)", lib_step_name(r->lib_step), r->lib_why);
+	else snprintf(line, sizeof(line), " (%s, error 0x%08x)", lib_step_name(r->lib_step), (unsigned int)r->lib_err);
+	append(out, cap, line);
+	append(out, cap, ".");
 }
 
 static const char *step_name(int step)
@@ -531,7 +1016,7 @@ static const char *step_name(int step)
 	}
 }
 
-void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
+static void result_message(const inst_result *r, int hen, int terse, char *out, size_t cap)
 {
 	char line[160];
 
@@ -560,14 +1045,14 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 	}
 
 	snprintf(out, cap, "qwark build %d is installed.\n\n", INST_QWARK_BUILD);
-	if (r->games > 0) {
+	if (r->games > 0 && !terse) {
 		snprintf(line, sizeof(line), "Its %d game modules are in " INST_QWARK_DIR ".\n\n", r->games);
 		append(out, cap, line);
 	}
 	append(out, cap, r->outcome == BOOTLIST_ALREADY_FIRST
 	                 ? "boot_plugins.txt already started with qwark."
 	                 : "qwark is now first in boot_plugins.txt.");
-	if (r->backed_up) append(out, cap, " The old list is in " INST_LIST_BAK ".");
+	if (r->backed_up && !terse) append(out, cap, " The old list is in " INST_LIST_BAK ".");
 
 	if (r->lines > BOOTLIST_HEN_LIMIT) {
 		snprintf(line, sizeof(line),
@@ -580,9 +1065,25 @@ void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
 		                 "boot_plugins.txt on the USB drive first, so qwark will not load. "
 		                 "Remove that file.");
 	}
+	library_lines(r, terse, out, cap);
 	if (hen) append(out, cap, "\n\nAfter the restart, enable HEN. qwark loads with it.");
 
 	append(out, cap, "\n\nqwark loads when your console starts. Restart now?");
+}
+
+/*
+ * A dialog takes INST_MESSAGE_MAX bytes. With every warning at once the whole
+ * message would not fit, so it is said again tersely: without the game
+ * modules' line, the backup's place, what the library added and why a part of
+ * it failed. The warnings and the question at the end always stay.
+ */
+void inst_result_message(const inst_result *r, int hen, char *out, size_t cap)
+{
+	size_t room = cap < INST_MESSAGE_MAX ? cap : INST_MESSAGE_MAX;
+
+	if (cap == 0) return;
+	result_message(r, hen, 0, out, cap);
+	if (strlen(out) + 1 >= room) result_message(r, hen, 1, out, cap);
 }
 
 void inst_restart_failed_message(unsigned int error, char *out, size_t cap)

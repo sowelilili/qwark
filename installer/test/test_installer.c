@@ -1,10 +1,20 @@
 /*
  * The installer's host tests: the boot_plugins.txt edit on its own, then the
- * whole install over a fake console HDD, with failures put at every step.
+ * whole install over a fake console HDD, with failures put at every step, then
+ * qrle and the library of mods and premade savefiles.
  * installer/test/run.sh builds and runs it; test/run.sh runs that.
+ *
+ * Two more modes, for installer/test/test_pkgdata.py, which holds pkg.py to
+ * this code:
+ *   installer-test.exe --expand <qrle file> <size> <out file>
+ *       qrle.c's expansion of a file pkg.py encoded; exit 3 for a bad stream
+ *   installer-test.exe --install <root>
+ *       one inst_run over <root>/dev_hdd0, with the package's USRDIR there as
+ *       the test made it; prints the result's counts
  */
 #include "../bootlist.h"
 #include "../install.h"
+#include "../qrle.h"
 #include "ifs_host.h"
 
 #include <stdio.h>
@@ -803,6 +813,599 @@ static void test_install_faults(void)
 	}
 }
 
+/* ------------------------------------------------------------------ qrle */
+
+static unsigned int t_crc32(const unsigned char *p, size_t len)
+{
+	unsigned int crc = 0xFFFFFFFFu;
+	size_t i;
+	int k;
+
+	for (i = 0; i < len; i++) {
+		crc ^= p[i];
+		for (k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+	}
+	return ~crc;
+}
+
+static size_t t_varint(unsigned char *out, uint32_t v)
+{
+	size_t n = 0;
+
+	do {
+		unsigned char b = (unsigned char)(v & 0x7Fu);
+		v >>= 7;
+		out[n++] = (unsigned char)(b | (v ? 0x80u : 0u));
+	} while (v);
+	return n;
+}
+
+/*
+ * A plain qrle encoder for the fixtures, runs of four or more as runs, as
+ * pkg.py's: the tests of pkg.py's own encoder against this decoder are in
+ * test_pkgdata.py.
+ */
+static size_t t_qrle(const unsigned char *in, size_t len, unsigned char *out)
+{
+	size_t i = 0, lit = 0, o = 0;
+
+	while (i < len) {
+		size_t j = i;
+		while (j < len && in[j] == in[i]) j++;
+		if (j - i >= 4) {
+			if (i > lit) {
+				o += t_varint(out + o, (uint32_t)((i - lit - 1) << 1));
+				memcpy(out + o, in + lit, i - lit);
+				o += i - lit;
+			}
+			o += t_varint(out + o, (uint32_t)(((j - i - 1) << 1) | 1u));
+			out[o++] = in[i];
+			lit = j;
+		}
+		i = j;
+	}
+	if (lit < len) {
+		o += t_varint(out + o, (uint32_t)((len - lit - 1) << 1));
+		memcpy(out + o, in + lit, len - lit);
+		o += len - lit;
+	}
+	return o;
+}
+
+/* A sink that keeps what it is handed, and can be told to refuse the nth piece. */
+static unsigned char g_got[1 << 20];
+static uint32_t g_got_len;
+static int g_pieces, g_refuse_piece;
+static uint32_t g_largest_piece;
+
+static int keep_sink(void *ctx, const unsigned char *p, uint32_t n)
+{
+	(void)ctx;
+	g_pieces++;
+	if (n > g_largest_piece) g_largest_piece = n;
+	if (g_refuse_piece && g_pieces == g_refuse_piece) return (int)0x8001002Bu;
+	if (g_got_len + n > sizeof(g_got)) return -9;
+	memcpy(g_got + g_got_len, p, n);
+	g_got_len += n;
+	return 0;
+}
+
+static int expand(const unsigned char *in, uint32_t in_len, uint32_t out_len, uint32_t cap, int *serr)
+{
+	static unsigned char buf[65536];
+
+	g_got_len = 0;
+	g_pieces = 0;
+	g_largest_piece = 0;
+	return qrle_expand(in, in_len, out_len, buf, cap, keep_sink, NULL, serr);
+}
+
+static unsigned char g_plain[300000];
+static unsigned char g_packed[400000];
+
+static void test_qrle(void)
+{
+	size_t n, i;
+	int serr;
+	unsigned char bad[16];
+
+	group("qrle: expansion");
+	/* A savefile's shape: a header, a long run of zeros, a stretch of 0xFF fill, a tail of mixed bytes. */
+	memset(g_plain, 0, sizeof(g_plain));
+	for (i = 0; i < 200; i++) g_plain[i] = (unsigned char)(i * 31 + 7);
+	memset(g_plain + 100000, 0xFF, 70000);
+	for (i = 250000; i < sizeof(g_plain); i++) g_plain[i] = (unsigned char)(i * 13 ^ (i >> 3));
+	n = t_qrle(g_plain, sizeof(g_plain), g_packed);
+	check(n < 60000, "the fixture's encoder makes the runs short");
+	check(expand(g_packed, (uint32_t)n, sizeof(g_plain), 65536, &serr) == QRLE_OK &&
+	      g_got_len == sizeof(g_plain) && memcmp(g_got, g_plain, sizeof(g_plain)) == 0, "expands to the same bytes");
+	check(expand(g_packed, (uint32_t)n, sizeof(g_plain), 7, &serr) == QRLE_OK && g_got_len == sizeof(g_plain) &&
+	      memcmp(g_got, g_plain, sizeof(g_plain)) == 0 && g_largest_piece == 7,
+	      "through a 7-byte buffer: the same bytes, in pieces no larger than it");
+	check(expand(NULL, 0, 0, 16, &serr) == QRLE_OK && g_got_len == 0 && g_pieces == 0, "nothing expands to nothing");
+
+	group("qrle: a bad stream is refused");
+	check(expand(g_packed, (uint32_t)n - 1, sizeof(g_plain), 65536, &serr) == QRLE_BAD, "a stream cut short by one byte");
+	check(expand(g_packed, (uint32_t)n, sizeof(g_plain) + 1, 65536, &serr) == QRLE_BAD, "one byte short of its size");
+	check(expand(g_packed, (uint32_t)n, sizeof(g_plain) - 1, 65536, &serr) == QRLE_BAD, "one byte past its size");
+	bad[0] = 0x07;                       /* a run of four with no byte after it */
+	check(expand(bad, 1, 4, 16, &serr) == QRLE_BAD, "a run with no byte");
+	bad[0] = 0x06; bad[1] = 'a'; bad[2] = 'b';   /* a literal of four with two bytes */
+	check(expand(bad, 3, 4, 16, &serr) == QRLE_BAD, "a literal past the end");
+	memset(bad, 0x80, 5);
+	bad[5] = 0x01;                       /* six bytes of varint */
+	check(expand(bad, 6, 100, 16, &serr) == QRLE_BAD, "a varint of six bytes");
+	bad[0] = 0xFF; bad[1] = 0xFF; bad[2] = 0xFF; bad[3] = 0xFF; bad[4] = 0x1F; bad[5] = 'x';
+	check(expand(bad, 6, 0xFFFFFFFFu, 16, &serr) == QRLE_BAD, "a varint past 32 bits");
+	bad[0] = 0xFF; bad[1] = 0xFF; bad[2] = 0xFF; bad[3] = 0xFF; bad[4] = 0x0F; bad[5] = 'x';
+	check(expand(bad, 6, 1000, 16, &serr) == QRLE_BAD && g_got_len == 0,
+	      "a run of 2^31 into 1000 bytes, refused before any of it is handed on");
+	bad[0] = 0x80;
+	check(expand(bad, 1, 4, 16, &serr) == QRLE_BAD, "a varint that never ends");
+
+	group("qrle: a sink that refuses");
+	g_refuse_piece = 3;
+	check(expand(g_packed, (uint32_t)n, sizeof(g_plain), 65536, &serr) == QRLE_SINK && serr == (int)0x8001002Bu &&
+	      g_pieces == 3, "stops at the refused piece, with the sink's error");
+	g_refuse_piece = 0;
+}
+
+/* ------------------------------------------------------------------ the library */
+
+/* One file of a fixture library. */
+typedef struct t_file {
+	int kind, group;
+	const char *path;
+	const unsigned char *data;
+	size_t len;
+	int code;       /* INST_LIB_STORED or INST_LIB_QRLE */
+} t_file;
+
+static unsigned char g_libfile[INST_LIB_MAX];
+static size_t g_libfile_len;
+
+static void put_be32(unsigned char *p, uint32_t v)
+{
+	p[0] = (unsigned char)(v >> 24);
+	p[1] = (unsigned char)(v >> 16);
+	p[2] = (unsigned char)(v >> 8);
+	p[3] = (unsigned char)v;
+}
+
+/* A library.bin of these files, as pkg.py's make_library lays one out; files with the same bytes share them. */
+static void make_library(const t_file *f, int n)
+{
+	unsigned char *table = g_libfile + INST_LIB_HEAD;
+	unsigned char *data = table + (size_t)n * INST_LIB_ENTRY;
+	size_t data_len = 0;
+	int i, k;
+
+	memset(g_libfile, 0, INST_LIB_HEAD + (size_t)n * INST_LIB_ENTRY);
+	for (i = 0; i < n; i++) {
+		unsigned char *t = table + (size_t)i * INST_LIB_ENTRY;
+		size_t off = data_len, len;
+
+		for (k = 0; k < i; k++) {
+			if (f[k].data == f[i].data && f[k].len == f[i].len && f[k].code == f[i].code) break;
+		}
+		if (f[i].code == INST_LIB_QRLE) len = t_qrle(f[i].data, f[i].len, data + data_len);
+		else { memcpy(data + data_len, f[i].data, f[i].len); len = f[i].len; }
+		if (k < i) {
+			off = (size_t)((table[(size_t)k * INST_LIB_ENTRY + 4] << 24) | (table[(size_t)k * INST_LIB_ENTRY + 5] << 16) |
+			               (table[(size_t)k * INST_LIB_ENTRY + 6] << 8) | table[(size_t)k * INST_LIB_ENTRY + 7]);
+		} else {
+			data_len += len;
+		}
+		t[0] = (unsigned char)f[i].kind;
+		t[1] = (unsigned char)f[i].code;
+		t[2] = (unsigned char)(f[i].group >> 8);
+		t[3] = (unsigned char)f[i].group;
+		put_be32(t + 4, (uint32_t)off);
+		put_be32(t + 8, (uint32_t)len);
+		put_be32(t + 12, (uint32_t)f[i].len);
+		put_be32(t + 16, t_crc32(f[i].data, f[i].len));
+		snprintf((char *)t + 32, INST_LIB_PATH_MAX, "%s", f[i].path);
+	}
+	memcpy(g_libfile, "QLIB", 4);
+	g_libfile[5] = 1;
+	g_libfile[6] = (unsigned char)(n >> 8);
+	g_libfile[7] = (unsigned char)n;
+	put_be32(g_libfile + 8, t_crc32(table, (size_t)n * INST_LIB_ENTRY));
+	put_be32(g_libfile + 12, (uint32_t)data_len);
+	g_libfile_len = INST_LIB_HEAD + (size_t)n * INST_LIB_ENTRY + data_len;
+}
+
+/* The table's CRC again, after a test has changed an entry on purpose. */
+static void reseal_library(int n)
+{
+	put_be32(g_libfile + 8, t_crc32(g_libfile + INST_LIB_HEAD, (size_t)n * INST_LIB_ENTRY));
+}
+
+static void put_library(void)
+{
+	put_file(INST_APP_USRDIR "/" INST_LIBRARY_NAME, g_libfile, g_libfile_len);
+}
+
+/* The fixture: two mods of RaC2 and Deadlocked, a savefile of each, one shared by an alias title. */
+#define LIB_SAVE_NPEA00386  INST_QWARK_DIR "/savefiles/NPEA00386/(premade savefiles)/NG+.sav"
+#define LIB_SAVE_ALIAS      INST_QWARK_DIR "/savefiles/BCES01503/(premade savefiles) rac2/NG+.sav"
+#define LIB_SAVE_NPEA00423  INST_QWARK_DIR "/savefiles/NPEA00423/(premade savefiles)/NG+ no LC.sav"
+#define LIB_MOD_A           INST_QWARK_DIR "/mods/NPEA00386/barlow"
+#define LIB_MOD_B           INST_QWARK_DIR "/mods/NPEA00423/il-igt"
+
+static unsigned char g_save_a[200000];
+static unsigned char g_save_b[90000];
+static unsigned char g_rack[534];
+static const char g_patch_a[] = "#- name: Barlow trainer\n0x00123456: 0x60000000\n0x00400000: rack.bin\n";
+static const char g_patch_b[] = "#- name: IL IGT\n0x00200000: bins/igt.bin\n";
+static const char g_sum_a[] = "1a2b3c4d";
+static const char g_sum_b[] = "5e6f7081";
+static unsigned char g_igt[92];
+
+#define LIB_FILES 8
+static t_file g_lib_files[LIB_FILES];
+
+static void make_library_fixture(void)
+{
+	size_t i;
+	t_file f[LIB_FILES] = {
+		{ INST_LIB_MOD_FILE, 0, "mods/NPEA00386/barlow/patch.txt", (const unsigned char *)g_patch_a, sizeof(g_patch_a) - 1, INST_LIB_STORED },
+		{ INST_LIB_MOD_FILE, 0, "mods/NPEA00386/barlow/rack.bin", g_rack, sizeof(g_rack), INST_LIB_STORED },
+		{ INST_LIB_MOD_FILE, 0, "mods/NPEA00386/barlow/qwark.sum", (const unsigned char *)g_sum_a, 8, INST_LIB_STORED },
+		{ INST_LIB_MOD_FILE, 1, "mods/NPEA00423/il-igt/patch.txt", (const unsigned char *)g_patch_b, sizeof(g_patch_b) - 1, INST_LIB_STORED },
+		{ INST_LIB_MOD_FILE, 1, "mods/NPEA00423/il-igt/bins/igt.bin", g_igt, sizeof(g_igt), INST_LIB_QRLE },
+		{ INST_LIB_MOD_FILE, 1, "mods/NPEA00423/il-igt/qwark.sum", (const unsigned char *)g_sum_b, 8, INST_LIB_STORED },
+		{ INST_LIB_SAVE, 0, "savefiles/BCES01503/(premade savefiles) rac2/NG+.sav", g_save_a, sizeof(g_save_a), INST_LIB_QRLE },
+		{ INST_LIB_SAVE, 0, "savefiles/NPEA00386/(premade savefiles)/NG+.sav", g_save_a, sizeof(g_save_a), INST_LIB_QRLE },
+	};
+
+	for (i = 0; i < sizeof(g_save_a); i++) g_save_a[i] = (unsigned char)(i < 4000 ? i * 7 : (i > 150000 ? 0xFF : 0));
+	for (i = 0; i < sizeof(g_save_b); i++) g_save_b[i] = (unsigned char)(i % 5000 < 30 ? i : 0);
+	for (i = 0; i < sizeof(g_rack); i++) g_rack[i] = (unsigned char)(i * 37 + 1);
+	for (i = 0; i < sizeof(g_igt); i++) g_igt[i] = (unsigned char)(i < 40 ? 0 : i);
+	memcpy(g_lib_files, f, sizeof(f));
+}
+
+/* The fixture, and the third savefile when with_b. */
+static int build_fixture(int with_b)
+{
+	static t_file all[LIB_FILES + 1];
+	t_file b = { INST_LIB_SAVE, 0, "savefiles/NPEA00423/(premade savefiles)/NG+ no LC.sav", g_save_b, sizeof(g_save_b), INST_LIB_QRLE };
+
+	memcpy(all, g_lib_files, sizeof(g_lib_files));
+	all[LIB_FILES] = b;
+	make_library(all, LIB_FILES + (with_b ? 1 : 0));
+	return LIB_FILES + (with_b ? 1 : 0);
+}
+
+static int sum_is(const char *save_path, const unsigned char *data, size_t len)
+{
+	char sum_path[600], want[16];
+
+	snprintf(sum_path, sizeof(sum_path), "%s.sum", save_path);
+	snprintf(want, sizeof(want), "%08x", t_crc32(data, len));
+	return file_is(sum_path, want);
+}
+
+static int mod_a_whole(void)
+{
+	return file_is(LIB_MOD_A "/patch.txt", g_patch_a) && file_is_bytes(LIB_MOD_A "/rack.bin", g_rack, sizeof(g_rack)) &&
+	       file_is(LIB_MOD_A "/qwark.sum", g_sum_a);
+}
+
+static int mod_b_whole(void)
+{
+	return file_is(LIB_MOD_B "/patch.txt", g_patch_b) && file_is_bytes(LIB_MOD_B "/bins/igt.bin", g_igt, sizeof(g_igt)) &&
+	       file_is(LIB_MOD_B "/qwark.sum", g_sum_b);
+}
+
+static int is_folder(const char *console_path)
+{
+	char p[1300];
+	struct stat st;
+
+	path_join(p, sizeof(p), console_path);
+	return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* Whether any file or folder under the console's root has a name holding part. */
+static int tree_has(const char *host_dir, const char *part)
+{
+	DIR *d = opendir(host_dir);
+	struct dirent *e;
+	char p[1300];
+	struct stat st;
+	int found = 0;
+
+	if (!d) return 0;
+	while (!found && (e = readdir(d)) != NULL) {
+		if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+		if (strstr(e->d_name, part) != NULL) { found = 1; break; }
+		snprintf(p, sizeof(p), "%s/%s", host_dir, e->d_name);
+		if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) found = tree_has(p, part);
+	}
+	closedir(d);
+	return found;
+}
+
+/* Whether a console folder holds anything at all. */
+static int folder_empty(const char *console_path)
+{
+	char p[1300];
+	DIR *d;
+	struct dirent *e;
+	int empty = 1;
+
+	path_join(p, sizeof(p), console_path);
+	if ((d = opendir(p)) == NULL) return 1;
+	while ((e = readdir(d)) != NULL) {
+		if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) { empty = 0; break; }
+	}
+	closedir(d);
+	return empty;
+}
+
+/*
+ * Nothing of a stage or a half-written savefile anywhere. The stage's own
+ * folder, empty, may stay when the call that removes it is the one that fails.
+ */
+static int no_library_leftovers(void)
+{
+	char q[1300];
+
+	path_join(q, sizeof(q), INST_QWARK_DIR);
+	return folder_empty(INST_LIB_STAGE) && !tree_has(q, ".tmp");
+}
+
+static void fresh_with_library(void)
+{
+	fresh_console();
+	build_fixture(1);
+	put_library();
+}
+
+static void test_library(void)
+{
+	inst_result r;
+	char msg[INST_MESSAGE_MAX];
+	static char before[65536];
+	int n;
+
+	make_library_fixture();
+
+	group("the library on a console with none of it");
+	fresh_with_library();
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.library, "installed, with a library");
+	check(r.mods == 2 && r.saves == 3 && r.mods_skipped == 0 && r.saves_skipped == 0 &&
+	      r.mods_failed == 0 && r.saves_failed == 0 && r.lib_step == INST_LIB_NONE, "two mods and three savefiles");
+	check(mod_a_whole(), "the RaC2 mod: patch.txt, its .bin and qwark.sum, byte for byte");
+	check(mod_b_whole(), "the Deadlocked mod, its .bin in a folder of its own and stored in qrle");
+	check(file_is_bytes(LIB_SAVE_NPEA00386, g_save_a, sizeof(g_save_a)) && sum_is(LIB_SAVE_NPEA00386, g_save_a, sizeof(g_save_a)),
+	      "a premade savefile, expanded, with the client's .sum beside it");
+	check(file_is_bytes(LIB_SAVE_ALIAS, g_save_a, sizeof(g_save_a)) && sum_is(LIB_SAVE_ALIAS, g_save_a, sizeof(g_save_a)),
+	      "the alias title's copy of the same bytes, in its per-game category");
+	check(file_is_bytes(LIB_SAVE_NPEA00423, g_save_b, sizeof(g_save_b)), "and Deadlocked's");
+	check(file_is_bytes(INST_SPRX, g_sprx, sizeof(g_sprx)) && file_is(INST_LIST, BOOT "\n"), "qwark itself is in");
+	check(no_library_leftovers() && no_leftovers(), "no stage folder and no .tmp left");
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "Added 2 mods and 3 premade savefiles.") != NULL, "the message counts them");
+	check(strstr(msg, "Skipped") == NULL, "and skips none");
+	check(message_fits(&r), "the message fits a dialog");
+
+	group("running it again: everything is there, so all of it is skipped and none of it touched");
+	put_text(LIB_MOD_A "/patch.txt", "my own edit\n");      /* a change the user made since */
+	snapshot(0);
+	snprintf(before, sizeof(before), "%s", g_snap[0]);
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.mods == 0 && r.saves == 0 && r.mods_skipped == 2 && r.saves_skipped == 3, "two mods and three savefiles skipped");
+	check(file_is(LIB_MOD_A "/patch.txt", "my own edit\n"), "the edited patch.txt stays the user's");
+	snapshot(1);
+	{
+		/* Only the module (qwark.sprx.old) may change on a second run; every library file must read the same. */
+		char *a = strstr(before, "/qwark/mods"), *b = strstr(g_snap[1], "/qwark/mods");
+		check(a && b && strcmp(a, b) == 0, "every mod and savefile file, byte for byte as it was");
+	}
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "Skipped 2 mods and 3 savefiles that were already installed.") != NULL, "the message says so");
+	check(strstr(msg, "Added") == NULL, "and added none");
+	check(message_fits(&r), "the message fits a dialog");
+
+	group("the user's own mod and savefile under a shipped name are left alone; what is missing goes in");
+	fresh_with_library();
+	make_dirs(LIB_MOD_A);
+	put_text(LIB_MOD_A "/patch.txt", "#- name: my barlow\n0x00123456: 0x38600001\n");
+	make_dirs(INST_QWARK_DIR "/savefiles/NPEA00423/(premade savefiles)");
+	put_text(LIB_SAVE_NPEA00423, "my own save");
+	put_text(LIB_SAVE_NPEA00423 ".sum", "0badc0de");
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.mods == 1 && r.mods_skipped == 1 && r.saves == 2 && r.saves_skipped == 1, "one of each skipped, the rest in");
+	check(file_is(LIB_MOD_A "/patch.txt", "#- name: my barlow\n0x00123456: 0x38600001\n") && !present(LIB_MOD_A "/rack.bin") &&
+	      !present(LIB_MOD_A "/qwark.sum"), "the user's mod folder, exactly as it was: nothing added to it");
+	check(file_is(LIB_SAVE_NPEA00423, "my own save") && file_is(LIB_SAVE_NPEA00423 ".sum", "0badc0de"),
+	      "the user's savefile and its sum, exactly as they were");
+	check(mod_b_whole() && file_is_bytes(LIB_SAVE_NPEA00386, g_save_a, sizeof(g_save_a)), "the missing ones are in");
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "Added 1 mod and 2 premade savefiles. Skipped 1 mod and 1 savefile that were already installed.") != NULL,
+	      "the message counts each");
+
+	group("a savefile whose bytes do not match its CRC is never written");
+	fresh_console();
+	n = build_fixture(1);
+	g_libfile[INST_LIB_HEAD + 8u * INST_LIB_ENTRY + 19] ^= 0x01;      /* the third savefile's CRC */
+	reseal_library(n);
+	put_library();
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok, "qwark is installed all the same");
+	check(r.saves == 2 && r.saves_failed == 1 && r.mods == 2 && r.lib_step == INST_LIB_CHECK, "that one savefile failed");
+	check(!present(LIB_SAVE_NPEA00423) && !present(LIB_SAVE_NPEA00423 ".sum") && no_library_leftovers(),
+	      "and nothing of it is on the console, not even a .tmp");
+	check(file_is_bytes(LIB_SAVE_NPEA00386, g_save_a, sizeof(g_save_a)), "the others are in");
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "Not added: 0 mods and 1 savefile (checking a file: it is damaged in this package).") != NULL,
+	      "the message says qwark is in and what was not");
+	check(strstr(msg, "Restart now?") != NULL && message_fits(&r), "and still offers the restart, within a dialog");
+
+	group("a mod with one damaged file goes in not at all");
+	fresh_console();
+	n = build_fixture(0);
+	{
+		/* il-igt's .bin is qrle: its last data byte, a literal's, changes. */
+		unsigned char *t = g_libfile + INST_LIB_HEAD + 4u * INST_LIB_ENTRY;
+		uint32_t off = ((uint32_t)t[4] << 24) | ((uint32_t)t[5] << 16) | ((uint32_t)t[6] << 8) | t[7];
+		uint32_t len = ((uint32_t)t[8] << 24) | ((uint32_t)t[9] << 16) | ((uint32_t)t[10] << 8) | t[11];
+		g_libfile[INST_LIB_HEAD + (size_t)n * INST_LIB_ENTRY + off + len - 1] ^= 0x40;
+	}
+	put_library();
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.mods == 1 && r.mods_failed == 1 && r.lib_step == INST_LIB_CHECK, "the mod failed its check");
+	check(!is_folder(LIB_MOD_B) && no_library_leftovers(), "and has no folder, not even a stage");
+	check(mod_a_whole(), "the other mod is in whole");
+
+	group("a library whose table does not hold is not touched at all");
+	fresh_console();
+	n = build_fixture(1);
+	g_libfile[INST_LIB_HEAD + 40] ^= 0x20;          /* the first path, under the table's CRC */
+	put_library();
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.library && r.lib_step == INST_LIB_DAMAGED && r.mods == 0 && r.saves == 0, "refused as damaged");
+	check(!is_folder(INST_MODS_DIR) && !is_folder(INST_SAVES_DIR), "no mod or savefile folder was made");
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "The mods and savefiles were not added (library.bin: it is damaged in this package).") != NULL,
+	      "the message says so");
+
+	group("a path out of qwark's folder is refused, whatever its CRCs say");
+	{
+		static const char *const evil[] = {
+			"mods/NPEA00386/../../plugins/x/patch.txt", "mods/NPEA00386/barlow/.hidden",
+			"mods/NPEA00386//patch.txt", "mods/NPEA00386/bar:low/patch.txt", "mods/patch.txt",
+			"savefiles/NPEA00386/(premade savefiles)/x.txt", "savefiles/NPEA00386/a/b/c.sav",
+			"/dev_hdd0/plugins/qwark.sprx",
+		};
+		size_t k;
+		int refused = 0;
+
+		for (k = 0; k < sizeof(evil) / sizeof(evil[0]); k++) {
+			fresh_console();
+			n = build_fixture(0);
+			/* An entry of the right kind for its path: a mod's first file, or the savefile. */
+			memset(g_libfile + INST_LIB_HEAD + (strncmp(evil[k], "savefiles", 9) == 0 ? 7u : 0u) * INST_LIB_ENTRY + 32,
+			       0, INST_LIB_PATH_MAX);
+			snprintf((char *)g_libfile + INST_LIB_HEAD + (strncmp(evil[k], "savefiles", 9) == 0 ? 7u : 0u) * INST_LIB_ENTRY + 32,
+			         INST_LIB_PATH_MAX, "%s", evil[k]);
+			reseal_library(n);
+			put_library();
+			inst_run(INST_APP_USRDIR, &r);
+			if (r.ok && r.lib_step == INST_LIB_DAMAGED && !is_folder(INST_MODS_DIR) && !is_folder(INST_SAVES_DIR) &&
+			    !present("/dev_hdd0/plugins/x/patch.txt"))
+				refused++;
+			else
+				printf("not refused: %s\n", evil[k]);
+		}
+		check(refused == (int)(sizeof(evil) / sizeof(evil[0])), "every one of them, with nothing written");
+	}
+
+	group("a savefile that reads back wrong is taken out again");
+	fresh_with_library();
+	ifs_host_corrupt("NG+ no LC.sav.tmp");
+	inst_run(INST_APP_USRDIR, &r);
+	ifs_host_reset();
+	check(r.ok && r.saves_failed == 1 && r.lib_step == INST_LIB_WRITE && r.lib_why && strstr(r.lib_why, "read back") != NULL,
+	      "caught by the read-back");
+	check(!present(LIB_SAVE_NPEA00423) && no_library_leftovers(), "and nothing of it stays");
+
+	group("a mod that cannot be moved into place leaves no stage behind");
+	fresh_with_library();
+	ifs_host_fault(IFS_OP_RENAME, "/mods/NPEA00423/il-igt");
+	inst_run(INST_APP_USRDIR, &r);
+	ifs_host_reset();
+	check(r.ok && r.mods == 1 && r.mods_failed == 1 && r.lib_step == INST_LIB_PLACE, "that mod failed at the move");
+	check(!is_folder(LIB_MOD_B) && no_library_leftovers(), "no folder for it and no stage");
+
+	group("an interrupted run's stage is cleared before the mod is staged again");
+	fresh_with_library();
+	make_dirs(INST_LIB_STAGE "/barlow");
+	put_text(INST_LIB_STAGE "/barlow/rack.bin", "half a bin");
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && r.mods == 2 && mod_a_whole() && no_library_leftovers(), "installed whole, the stage gone");
+
+	group("a package with no library");
+	used_console();
+	inst_run(INST_APP_USRDIR, &r);
+	check(r.ok && !r.library && r.lib_step == INST_LIB_NONE, "installed, nothing about a library");
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	check(strstr(msg, "mods") == NULL && strstr(msg, "savefile") == NULL, "and the message does not mention one");
+	inst_confirm_message(0, msg, sizeof(msg));
+	check(strstr(msg, "premade") == NULL, "nor does the question");
+	inst_confirm_message(1, msg, sizeof(msg));
+	check(strstr(msg, "premade savefiles") != NULL && strlen(msg) < INST_MESSAGE_MAX, "with one, the question says so and fits");
+}
+
+/*
+ * Every call of an install with a library, failed in turn: qwark is either not
+ * installed and the console as it was, or installed, with each mod and each
+ * savefile either all there and right or not there at all, and nothing half
+ * written anywhere.
+ */
+static void test_library_sweep(void)
+{
+	inst_result r;
+	char what[256];
+	static char before[65536];
+	int calls, n, unchanged = 0, partial = 0, whole = 0, bad = 0;
+
+	group("the library: a failure at every call");
+	fresh_with_library();
+	inst_run(INST_APP_USRDIR, &r);
+	calls = ifs_host_calls();
+	check(r.ok && r.mods == 2 && r.saves == 3, "a clean run installs everything");
+
+	for (n = 1; n <= calls; n++) {
+		int ok;
+
+		fresh_with_library();
+		snprintf(before, sizeof(before), "%s", snapshot(0));
+		ifs_host_fail_at(n);
+		inst_run(INST_APP_USRDIR, &r);
+		ifs_host_reset();
+		if (!r.ok) {
+			ok = !r.undo_failed && strcmp(snapshot(1), before) == 0;
+			unchanged += ok;
+		} else {
+			int a = mod_a_whole(), b = mod_b_whole();
+			int s1 = file_is_bytes(LIB_SAVE_NPEA00386, g_save_a, sizeof(g_save_a));
+			int s2 = file_is_bytes(LIB_SAVE_ALIAS, g_save_a, sizeof(g_save_a));
+			int s3 = file_is_bytes(LIB_SAVE_NPEA00423, g_save_b, sizeof(g_save_b));
+
+			/* Either every mod and savefile was tried, or the library itself could not be read and none was. */
+			int counted = r.mods + r.mods_failed == 2 && r.saves + r.saves_failed == 3;
+			int unread = r.lib_step == INST_LIB_READ && r.mods + r.saves + r.mods_failed + r.saves_failed == 0;
+
+			ok = (a || !is_folder(LIB_MOD_A)) && (b || !is_folder(LIB_MOD_B)) &&
+			     (s1 || !present(LIB_SAVE_NPEA00386)) && (s2 || !present(LIB_SAVE_ALIAS)) &&
+			     (s3 || !present(LIB_SAVE_NPEA00423)) && no_library_leftovers() &&
+			     r.mods == a + b && r.saves == s1 + s2 + s3 && (counted || unread);
+			if (r.mods + r.saves < 5) {
+				char msg[INST_MESSAGE_MAX];
+				inst_result_message(&r, 0, msg, sizeof(msg));
+				ok = ok && (strstr(msg, "Not added: ") != NULL || strstr(msg, "were not added") != NULL);
+				partial += ok;
+			} else {
+				whole += ok;
+			}
+		}
+		if (!ok) {
+			bad++;
+			snprintf(what, sizeof(what), "call %d failed: the console is as it was, or each mod and savefile whole or absent", n);
+			check(0, what);
+		}
+		check(message_fits(&r), "the message fits a dialog");
+	}
+	printf("   library: %d calls; %d left the console as it was, %d installed qwark with some of the library, "
+	       "%d all of it\n", calls, unchanged, partial, whole);
+	check(bad == 0 && partial > 20, "every failure in the library leaves only whole mods and savefiles");
+}
+
 static void test_messages(void)
 {
 	inst_result r;
@@ -810,7 +1413,7 @@ static void test_messages(void)
 	int step;
 
 	group("messages");
-	inst_confirm_message(msg, sizeof(msg));
+	inst_confirm_message(1, msg, sizeof(msg));
 	check(strlen(msg) < INST_MESSAGE_MAX && strstr(msg, "Install qwark build") != NULL, "the question fits");
 
 	memset(&r, 0, sizeof(r));
@@ -818,7 +1421,24 @@ static void test_messages(void)
 	r.lines = 99;
 	r.backed_up = 1;
 	r.usb_list = 1;
-	check(message_fits(&r), "the longest success fits");
+	r.games = 5;
+	r.library = 1;
+	r.mods = r.saves = r.mods_skipped = r.saves_skipped = r.mods_failed = r.saves_failed = 999;
+	r.lib_step = INST_LIB_PLACE;
+	r.lib_err = (int)0x8001002Bu;
+	check(message_fits(&r), "the longest success fits, the library's lines with it");
+	inst_result_message(&r, 1, msg, sizeof(msg));
+	check(strstr(msg, "Skipped 999 mods and 999 savefiles that were already installed.") != NULL &&
+	      strstr(msg, "Not added: 999 mods and 999 savefiles.") != NULL && strstr(msg, "USB drive") != NULL &&
+	      strstr(msg, "enable HEN") != NULL && strstr(msg, "Restart now?") != NULL,
+	      "said tersely, it keeps every warning and the question");
+	r.usb_list = 0;
+	r.lines = 1;
+	r.mods_failed = 1;
+	r.saves_failed = 0;
+	inst_result_message(&r, 1, msg, sizeof(msg));
+	check(strstr(msg, "Added 999 mods") != NULL && strstr(msg, "(moving a file into place, error 0x8001002b)") != NULL,
+	      "and a message that fits says it all");
 
 	for (step = INST_STEP_PACKAGE_SPRX; step <= INST_STEP_PLACE_LIST; step++) {
 		memset(&r, 0, sizeof(r));
@@ -846,9 +1466,55 @@ static void test_messages(void)
 	check(strcmp(msg, INST_APP_USRDIR) == 0, "a relative argv[0]");
 }
 
+static FILE *g_out_file;
+
+static int file_sink(void *ctx, const unsigned char *p, uint32_t n)
+{
+	(void)ctx;
+	return fwrite(p, 1, n, g_out_file) == n ? 0 : -1;
+}
+
+/* --expand: pkg.py's qrle through qrle.c. */
+static int expand_mode(const char *in_path, const char *size_text, const char *out_path)
+{
+	static unsigned char in[8 << 20];
+	static unsigned char buf[65536];
+	FILE *f = fopen(in_path, "rb");
+	size_t n;
+	int serr = 0, rc;
+
+	if (!f) return 2;
+	n = fread(in, 1, sizeof(in), f);
+	fclose(f);
+	g_out_file = fopen(out_path, "wb");
+	if (!g_out_file) return 2;
+	rc = qrle_expand(in, (uint32_t)n, (uint32_t)strtoul(size_text, NULL, 10), buf, sizeof(buf), file_sink, NULL, &serr);
+	fclose(g_out_file);
+	return rc == QRLE_OK ? 0 : 3;
+}
+
+/* --install: one run over a console test_pkgdata.py laid out. */
+static int install_mode(const char *root)
+{
+	inst_result r;
+	char msg[INST_MESSAGE_MAX];
+
+	ifs_host_root(root);
+	ifs_host_reset();
+	inst_run(INST_APP_USRDIR, &r);
+	inst_result_message(&r, 0, msg, sizeof(msg));
+	printf("ok %d library %d mods %d saves %d mods_skipped %d saves_skipped %d mods_failed %d saves_failed %d lib_step %d\n",
+	       r.ok, r.library, r.mods, r.saves, r.mods_skipped, r.saves_skipped, r.mods_failed, r.saves_failed, r.lib_step);
+	printf("%s\n", msg);
+	return r.ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
 	const char *root = argc > 1 ? argv[1] : "installer/test/root";
+
+	if (argc == 5 && strcmp(argv[1], "--expand") == 0) return expand_mode(argv[2], argv[3], argv[4]);
+	if (argc == 3 && strcmp(argv[1], "--install") == 0) return install_mode(argv[2]);
 
 	snprintf(g_root, sizeof(g_root), "%s", root);
 	ifs_host_root(g_root);
@@ -862,6 +1528,9 @@ int main(int argc, char **argv)
 	test_install_package();
 	test_install_recover();
 	test_install_faults();
+	test_qrle();
+	test_library();
+	test_library_sweep();
 	test_messages();
 
 	remove_tree(g_root);

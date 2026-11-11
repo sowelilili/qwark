@@ -80,3 +80,8 @@ int ifs_unlink(const char *path)
 {
 	return cellFsUnlink(path);
 }
+
+int ifs_rmdir(const char *path)
+{
+	return cellFsRmdir(path);
+}
