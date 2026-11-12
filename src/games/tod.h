@@ -436,6 +436,31 @@ int  tod_story_load(u32 level, u32 flags_at);
 #define TOD_FADE_TARGET      0x5B634u     /* [TOD_LEVEL_OBJ] + this: f32, 0.0 fading in (or clear), 1.0 out (or black) */
 #define TOD_FADE_LOOK_LEN    0x0Cu        /* the progress, the rate and the target in one read */
 #define TOD_FADE_START_AT    0x3F0CCCCDu  /* 0.55f (0.550000012): the run's START, 0.45 s into Level_Enter's fade in (2026-11-02; 0.5 from 2026-10-31) */
+/*
+ * 2026-11-12, Remove black screens (TF_REMOVE_BLACK). The fade is a HUD
+ * sprite ([TOD_LEVEL_OBJ] + 0x5B580, ToDScreenFadeHud: its ToDHudSprite at
+ * +0x6C, the progress at +0xAC). What is drawn is the sprite's alpha, not the
+ * progress: ScreenFade_Set and ScreenFade_update (0x27DF1C, only while the
+ * progress moves towards the target) write (1 - cos(pi * progress)) / 2
+ * there, and Sprite_Draw (0x683A44) draws no quad under 0.01. So 0 in the
+ * alpha alone takes the black off the screen and leaves the progress, which
+ * MoviePlayer_update, LoadLevel_ProcessPending, the level warmer and the
+ * autosplitter read, as the game has it; a fade still moving rewrites the
+ * alpha every frame, so only a still one (the progress at its target) is
+ * cleared. Before a realtime cinematic MoviePlayer_update holds its state 1
+ * with the screen black (MoviePlayer_startFade: type 5, the default, Start
+ * then Set(1.0); 1 and 3 a timed fade; 2, 4 and 6 to white) until the
+ * arrival autosave is done and the sounds have pre-rolled (at most 2 s),
+ * and the game is still in gameplay: the lead-in's black screen. Its first
+ * frame of state 2 (MoviePlayer_startFadeIn: StartIn, then Set(0) for type
+ * 5) puts its own alpha back. A lead-in is a state 1 hold that begins
+ * within TOD_LEADIN_TICKS of a lua_State coming up (a level's, or a
+ * death's); a cinematic later in the level keeps its black.
+ */
+#define TOD_FADE_ALPHA       0x5B620u     /* [TOD_LEVEL_OBJ] + this: f32, the fade sprite's drawn alpha (ToDHudSprite.alpha) */
+#define TOD_FADE_DRAW_LEN    0x18u        /* the alpha .. the target in one read: alpha, blend, rotation, progress, rate, target */
+#define TOD_MP_PREROLL       1            /* MoviePlayer_update's state 1: black, waiting for the autosave and the pre-roll */
+#define TOD_LEADIN_TICKS     1800u        /* 15 s of the tick: a hold that begins this soon after a level comes up is its lead-in */
 #define TOD_STATE_FMV        7            /* g_gameState: a named FMV (Movie_requestPlay) */
 #define TOD_STATE_CINEMATIC  9            /* g_gameState: a realtime cinematic playing */
 #define TOD_GS_DEPTH         0x10387DC8u  /* g_gameStateDepth, s32: the top of g_gameStateStack */
@@ -595,6 +620,7 @@ struct tod_facts {
 #define TF_CACHE_CUTSCENES  19     /* ACTION: Cobalia's, Stratus City's and Fastoon's sound into the FIOS cache */
 #define TF_CACHE_ON_RESET   20     /* TOGGLE: the same, by itself, on a new run's Metropolis */
 #define TF_NO_CUTSCENE_CACHE 21    /* TOGGLE: each level load drops its planet's cached sound */
+#define TF_REMOVE_BLACK     24     /* 2026-11-12: TOGGLE, the lead-in's black hold not drawn (TOD_FADE_ALPHA); 22 and 23 held */
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40

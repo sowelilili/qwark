@@ -188,7 +188,7 @@ static void tod_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
 	tod_ammo_tick(T->ammo_flag, T->root);
-	tod_panel_tick(&T->as);   /* revision 1.29: qwark's own loads' fade and fast load, Remove cutscenes */
+	tod_panel_tick(&T->as);   /* revision 1.29: qwark's own loads' fade and fast load, Remove cutscenes; Remove black screens */
 	tod_autosplit_tick(&T->as);
 	tod_cc_tick(&T->cc, &T->as);   /* revision 1.29: the cutscene cache, after the watcher (the same hot block) */
 }
@@ -295,6 +295,10 @@ static const char * const tod_readouts[] = {
  * Cache cutscenes on reset (20) and Disable cutscene caching (21) are qwark's
  * own state and not LIVE, so they can come back at boot. The client's ToD
  * layout puts all three on its Manips page.
+ *
+ * 2026-11-12: Remove black screens (24), a data write (tod.h,
+ * TOD_FADE_ALPHA), so not WRITES_CODE, and qwark's own state, not LIVE: off at
+ * every boot unless flagged on boot, as Infinite ammo and Infinite health.
  */
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
@@ -303,6 +307,7 @@ static const struct feature_desc tod_features[] = {
 	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
 	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
+	{ TF_REMOVE_BLACK,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Remove black screens" },
 	{ TF_CACHE_CUTSCENES, FEATURE_ACTION, G_CHEATS,   0, 0,  TOD_RO_CUTSCENE_CACHE, 0, 0, "Cache cutscenes" },
 	{ TF_CACHE_ON_RESET,  FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Cache cutscenes on reset" },
 	{ TF_NO_CUTSCENE_CACHE, FEATURE_TOGGLE, G_CHEATS, 0, 0,  NO, 0, 0, "Disable cutscene caching" },
@@ -331,12 +336,14 @@ static const struct feature_desc tod_features[] = {
 /*
  * Revision 1.30, the run-start warnings: what counts as a cheat
  * when it is on as a run starts (game.h). Fast loads, Infinite ammo,
- * Infinite health and God Ratchet. Remove cutscenes is run-legal (the
+ * Infinite health, God Ratchet and (2026-11-12) Remove black screens, a
+ * practice cheat. Remove cutscenes is run-legal (the
  * user's call, 2026-10-31), and the cutscene cache's two toggles are manips:
  * all three stay out, though Cheats is their group on the wire.
  */
 #define TOD_RUN_CHEATS (((u64)1 << TF_FAST_LOADS) | ((u64)1 << TF_INFINITE_AMMO) | \
-                        ((u64)1 << TF_INFINITE_HEALTH) | ((u64)1 << TF_GOD_RATCHET))
+                        ((u64)1 << TF_INFINITE_HEALTH) | ((u64)1 << TF_GOD_RATCHET) | \
+                        ((u64)1 << TF_REMOVE_BLACK))
 
 static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),
@@ -411,6 +418,7 @@ static const u8 tod_menu_game[] = {
 
 static const u8 tod_menu_cheats[] = {
 	TF_FAST_LOADS, TF_INFINITE_AMMO, TF_INFINITE_HEALTH, TF_GOD_RATCHET,
+	TF_REMOVE_BLACK,   /* 2026-11-12: seven rows, two Game Options windows, as Game's */
 	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
 };
 

@@ -49,6 +49,13 @@ struct tod_panel_state {
 	u32 cut_table;
 	u8  cut_n;
 	u32 cut_at[TOD_CUT_KEEP];
+
+	/* 2026-11-12: Remove black screens (tod_black_tick). */
+	u8  bs_on;
+	u8  bs_leadin;         /* the movie player's hold under way began as a lead-in */
+	u8  bs_state;          /* its state at the last look */
+	u16 bs_age;            /* ticks since the lua_State last changed, held at 0xFFFF */
+	u32 bs_lua;            /* that lua_State */
 };
 
 /*
@@ -789,6 +796,75 @@ static void tod_cut_tick(void)
 	if (tod_cutscenes_apply(1) > 0) plat_log("tod: Remove cutscenes: the FMVs' files are missing again");
 }
 
+/* ------------------------------------------- Remove black screens, 2026-11-12 */
+
+/*
+ * The fade's drawn alpha at 0 while it is still (tod.h, TOD_FADE_ALPHA), or
+ * with `restore`, 1.0 again where it is still at black; the progress and the
+ * target are never written.
+ */
+static void black_alpha(int restore)
+{
+	u8 f[TOD_FADE_DRAW_LEN];
+	u32 root = 0, alpha, progress;
+
+	if (mem_read_u32(TOD_LEVEL_OBJ, &root) != ST_OK || root == 0 || (root & 3u) != 0) return;
+	if (mem_read(root + TOD_FADE_ALPHA, f, sizeof(f)) != ST_OK) return;
+	alpha = be32_get(f);
+	progress = be32_get(f + (TOD_FADE_PROGRESS - TOD_FADE_ALPHA));
+	/* A fade under way: ScreenFade_update draws it again every frame. */
+	if (progress != be32_get(f + (TOD_FADE_TARGET - TOD_FADE_ALPHA))) return;
+	if (restore) {
+		if (progress == TOD_FADE_BLACK && alpha != TOD_FADE_BLACK) mem_write_u32(root + TOD_FADE_ALPHA, TOD_FADE_BLACK);
+	} else if ((alpha & 0x7FFFFFFFu) != 0) {
+		mem_write_u32(root + TOD_FADE_ALPHA, 0);
+	}
+}
+
+/*
+ * Each tick while the toggle is on, in a level: the movie player's state.
+ * A state 1 hold (black before a realtime cinematic) that begins within
+ * TOD_LEADIN_TICKS of the lua_State changing is a lead-in, and its black is
+ * kept off the screen until the hold ends. A read that fails changes nothing.
+ */
+static void tod_black_tick(const struct tod_as_state *as)
+{
+	u32 state = 0;
+
+	if (!TP->bs_on) return;
+	if (as->cur_lua != TP->bs_lua) {
+		TP->bs_lua = as->cur_lua;
+		TP->bs_age = 0;
+	} else if (TP->bs_age != 0xFFFFu) {
+		TP->bs_age++;
+	}
+	if (as->cur_lua == 0) {
+		TP->bs_leadin = 0;
+		TP->bs_state = 0;
+		return;
+	}
+	if (mem_read_u32(TOD_MOVIE_PLAYER + TOD_MP_STATE, &state) != ST_OK) return;
+	if (state != TOD_MP_PREROLL) TP->bs_leadin = 0;
+	else if (TP->bs_state != TOD_MP_PREROLL) TP->bs_leadin = TP->bs_age <= TOD_LEADIN_TICKS;
+	TP->bs_state = (u8)state;
+	if (TP->bs_leadin) black_alpha(0);
+}
+
+/*
+ * On: the level counts as just up, so a lead-in already holding is cleared at
+ * once. Off: a hold this cleared is black again.
+ */
+static int tod_remove_black(int on)
+{
+	if (!on && TP->bs_on && TP->bs_leadin) black_alpha(1);
+	TP->bs_on = on ? 1u : 0u;
+	TP->bs_leadin = 0;
+	TP->bs_state = 0;
+	TP->bs_age = 0;
+	TP->bs_lua = 0;
+	return ST_OK;
+}
+
 void tod_panel_enter(void)
 {
 	tod_fade_disarm();
@@ -803,6 +879,7 @@ void tod_panel_tick(const struct tod_as_state *as)
 		tod_fl_tick(as);
 	}
 	tod_cut_tick();
+	tod_black_tick(as);
 }
 
 /* --------------------------------------------------------------- the cheats */
@@ -841,6 +918,10 @@ void tod_panel_tick(const struct tod_as_state *as)
  * Remove cutscenes (id 18, revision 1.29): data writes alone (tod.h,
  * TOD_ARCHIVE_GAME), not LIVE either, so it can come back at boot; the tick
  * keeps it while it is wanted, since the table may come after the toggle.
+ *
+ * Remove black screens (id 24, 2026-11-12): a data write of the fade's drawn
+ * alpha during a lead-in's hold (tod.h, TOD_FADE_ALPHA, tod_black_tick), so
+ * RPCS3 as a console; qwark's own bit, not LIVE, like the two above.
  */
 int tod_set_toggle(u8 id, int on)
 {
@@ -863,6 +944,8 @@ int tod_set_toggle(u8 id, int on)
 		TP->cut_wait = TOD_CUT_EVERY;
 		tod_cutscenes_apply(on);
 		return ST_OK;
+	case TF_REMOVE_BLACK:
+		return tod_remove_black(on);
 	case TF_INFINITE_AMMO:
 		TP->hold_primed = 0;
 		return mem_write_u32(TOD_INFINITE_AMMO, on ? 1u : 0u);

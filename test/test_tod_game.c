@@ -1757,11 +1757,13 @@ static void test_tod_autosplit_runs(void)
 	/*
 	 * Revision 1.30, the run-start warnings: two cheats on, and
 	 * Remove cutscenes, run-legal, on as well; the START says the two.
+	 * 2026-11-12: and Remove black screens, a practice cheat, makes three.
 	 */
 	runwarn_forget();
 	rc_was = (features_toggle_state() & ((u64)1 << TF_REMOVE_CUTSCENES)) != 0;
 	check(features_set(TF_INFINITE_AMMO, 1) == ST_OK && features_set(TF_INFINITE_HEALTH, 1) == ST_OK &&
-	      features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK, "Infinite ammo, Infinite health and Remove cutscenes on");
+	      features_set(TF_REMOVE_CUTSCENES, 1) == ST_OK && features_set(TF_REMOVE_BLACK, 1) == ST_OK,
+	      "Infinite ammo, Infinite health, Remove cutscenes and Remove black screens on");
 	rw_starts = runwarn_starts();
 	rw_notes = host_notify_count();
 	seq = autosplit_latest_seq();
@@ -1786,9 +1788,9 @@ static void test_tod_autosplit_runs(void)
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1 &&
 	      as_first(seq, AUTOSPLIT_LOAD_END, TOD_AS_LOAD) < as_first(seq, AUTOSPLIT_START, 0),
 	      "half a second into it: START, after the hold");
-	check(runwarn_starts() == rw_starts + 1 && runwarn_last_cheats() == 2 &&
-	      host_notify_count() == rw_notes + 1 && strcmp(host_notify_last(), "Warning: 2 cheats enabled") == 0,
-	      "the START is the run start: \"Warning: 2 cheats enabled\", Remove cutscenes not counted");
+	check(runwarn_starts() == rw_starts + 1 && runwarn_last_cheats() == 3 &&
+	      host_notify_count() == rw_notes + 1 && strcmp(host_notify_last(), "Warning: 3 cheats enabled") == 0,
+	      "the START is the run start: \"Warning: 3 cheats enabled\", Remove black screens counted, Remove cutscenes not");
 	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, "Metropolis is no planet split");
 	tick(10);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "one START");
@@ -1802,6 +1804,7 @@ static void test_tod_autosplit_runs(void)
 	check(runwarn_starts() == rw_starts + 1, "and no run-start warning");
 	features_set(TF_INFINITE_AMMO, 0);
 	features_set(TF_INFINITE_HEALTH, 0);
+	features_set(TF_REMOVE_BLACK, 0);
 	features_set(TF_REMOVE_CUTSCENES, (u32)rc_was);
 	check(as_all(seq) == 0, "nothing at all");
 	seq = autosplit_latest_seq();
@@ -3717,6 +3720,118 @@ static void test_tod_cutscene_cache(void)
 	wr32(TOD_ARCHIVE_GAME + TOD_ARCHIVE_TOC, old_toc);
 }
 
+/* ------------------------------------------- Remove black screens, 2026-11-12 */
+
+#define BS_LUA     0x30031000u   /* a lua_State of the test's own */
+#define BS_ALPHA   (FAKE_ROOT + TOD_FADE_ALPHA)
+
+/* The fade as ScreenFade leaves it: its progress, its target and the alpha it drew. */
+static void bs_fade(f32 progress, f32 target, f32 alpha)
+{
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, progress);
+	wrf(FAKE_ROOT + TOD_FADE_TARGET, target);
+	wrf(BS_ALPHA, alpha);
+}
+
+static void bs_movie(u32 state)
+{
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, state);
+}
+
+static int bs_fade_is(f32 progress, f32 target)
+{
+	return rdf(FAKE_ROOT + TOD_FADE_PROGRESS) == progress && rdf(FAKE_ROOT + TOD_FADE_TARGET) == target;
+}
+
+static void test_tod_black_screens(void)
+{
+	group("ToD: Remove black screens (24), the lead-in's black hold not drawn");
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	wr32(TOD_LUA_STATE, 0);
+	bs_movie(0);
+	tick(2);
+	check(features_set(TF_REMOVE_BLACK, 1) == ST_OK, "on");
+
+	/* A level up: a still black that is not the movie player's (a load's or a death's fade) stays. */
+	wr32(TOD_LUA_STATE, BS_LUA);
+	bs_fade(1.0f, 1.0f, 1.0f);
+	tick(6);
+	check(rdf(BS_ALPHA) == 1.0f, "a still black with the movie player idle: left as it is");
+
+	/* The lead-in: MoviePlayer_startFade(5), Start then Set(1.0), and state 1 while the autosave runs. */
+	bs_movie(TOD_MP_PREROLL);
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "the lead-in's hold, black and still, soon after the level came up: drawn alpha 0");
+	check(bs_fade_is(1.0f, 1.0f),
+	      "its progress and target still 1.0, as MoviePlayer_update, the warmer and the autosplitter read them");
+	wrf(BS_ALPHA, 1.0f);
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "the game's Set(1.0) again in the hold: cleared again");
+	/* A timed fade (types 1 and 3): ScreenFade_update draws it every frame, so it is left until it is still. */
+	bs_fade(0.6f, 1.0f, 0.65f);
+	tick(2);
+	check(rdf(BS_ALPHA) == 0.65f, "a fade still moving in the hold: left, the game redraws it every frame");
+	bs_fade(1.0f, 1.0f, 1.0f);
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "and once it is still at black, cleared");
+
+	/* The cinematic plays (state 2): its own fade, and nothing of qwark's. */
+	bs_movie(2);
+	bs_fade(1.0f, 1.0f, 1.0f);
+	tick(4);
+	check(rdf(BS_ALPHA) == 1.0f, "the hold over (state 2): the fade is the game's again");
+
+	/* Later in the level: another cinematic's hold, long after the level came up, keeps its black. */
+	bs_movie(0);
+	tick((int)TOD_LEADIN_TICKS);
+	bs_movie(TOD_MP_PREROLL);
+	tick(4);
+	check(rdf(BS_ALPHA) == 1.0f, "a cinematic's hold 15 s after the level came up: not a lead-in, left black");
+	bs_movie(0);
+	tick(2);
+
+	/* A new lua_State (the next level, or a death's): its first cinematic's hold is a lead-in again. */
+	wr32(TOD_LUA_STATE, BS_LUA + 0x100);
+	tick(20);
+	bs_movie(TOD_MP_PREROLL);
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "a new lua_State, a hold soon after: cleared");
+
+	/* Off in the hold: black again; and no more after. */
+	check(features_set(TF_REMOVE_BLACK, 0) == ST_OK && rdf(BS_ALPHA) == 1.0f && bs_fade_is(1.0f, 1.0f),
+	      "off during the hold it cleared: black again at once, the progress untouched");
+	bs_movie(0);
+	wr32(TOD_LUA_STATE, BS_LUA + 0x200);
+	tick(4);
+	bs_movie(TOD_MP_PREROLL);
+	tick(4);
+	check(rdf(BS_ALPHA) == 1.0f, "off: a lead-in's hold stays black");
+
+	/* On in the middle of that hold: the level counts as just up, so it clears at once. */
+	check(features_set(TF_REMOVE_BLACK, 1) == ST_OK, "on again in the hold");
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "and the hold under way is cleared");
+
+	/* No level object: nothing written anywhere. */
+	bs_movie(0);
+	tick(2);
+	wr32(TOD_LEVEL_OBJ, 0);
+	wr32(TOD_LUA_STATE, BS_LUA + 0x300);
+	bs_fade(1.0f, 1.0f, 1.0f);
+	tick(2);
+	bs_movie(TOD_MP_PREROLL);
+	tick(4);
+	check(rdf(BS_ALPHA) == 1.0f, "no level object: nothing written");
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	tick(2);
+	check(rd32(BS_ALPHA) == 0, "the object back in the same hold: cleared");
+
+	features_set(TF_REMOVE_BLACK, 0);
+	bs_movie(0);
+	bs_fade(0.0f, 0.0f, 0.0f);
+	tick(2);
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -3744,5 +3859,6 @@ void test_tod_game(void)
 	test_tod_cutscenes();
 	test_tod_cutscene_cache();
 	test_tod_on_boot();
+	test_tod_black_screens();
 	quit();
 }

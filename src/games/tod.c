@@ -133,6 +133,8 @@ static const struct tod_mark tod_marks[] = {
 	{ "level tiers",     TOD_LOAD_JOB_LEVEL,  TOD_DEC,    "g_gameStateStacks[3], state 3: the core tier, 0x1037AA38, the level transition's 0x1037AB30, g_levelLoadTier, g_levelTierState; RequestLevelLoadState asks GameState_Request(3, 3), Hero_respawnWhenBlack (a death) GameState_Request(3, 1)" },
 	{ "level load tier", TOD_LEVEL_LOAD_TIER, TOD_DEC,    "g_levelLoadTier, ToDGameTier: load LevelTransition_waitLoad, enter LevelLoad_onComplete; +6 loaded (GameTier_load, GameTier_unload): 0 through a planet load until the data is in, never touched by a death" },
 	{ "fade target",     TOD_FADE_TARGET,     TOD_DEC,    "[g_bigObj5B8F0]+0x5B634, f32: ScreenFade_Set(p) p, ScreenFade_StartIn 0.0, ScreenFade_Start 1.0; Level_Enter does Set(1.0) then StartIn(1.0, 0)" },
+	/* 2026-11-12: Remove black screens. */
+	{ "fade alpha",      TOD_FADE_ALPHA,      TOD_DEC,    "[g_bigObj5B8F0]+0x5B620, f32, ToDScreenFadeHud.sprite.alpha: ScreenFade_Set and ScreenFade_update (only while the progress moves) write (1 - cos(pi p)) / 2; Sprite_Draw draws no quad under 0.01" },
 };
 #define TOD_MARKS tod_marks, (u8)(sizeof(tod_marks) / sizeof(tod_marks[0]))
 #else

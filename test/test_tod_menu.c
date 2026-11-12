@@ -294,6 +294,13 @@ static void test_bridge(void)
 	      "qwark answers with Cheats, a CONFIG page, a new key");
 	check(find_row("Fast loads") == 0 && find_row("Infinite ammo") >= 0 && find_row("Remove cutscenes") < 0 &&
 	      find_row("Max bolts") >= 0, "Cheats: Fast loads, the toggles, Max bolts; Remove cutscenes not here");
+	/* 2026-11-12: Remove black screens, a toggle after God Ratchet, in the page's first window. */
+	r = find_row("Remove black screens");
+	check(r >= 0 && r == find_row("God Ratchet") + 1 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_TOGGLE &&
+	      strcmp(row_value((u32)r, b), "OFF") == 0, "Cheats: Remove black screens, a toggle after God Ratchet, Off");
+	check(press(MBOX_EV_ACTIVATE, r) && (features_toggle_state() & (1ull << TF_REMOVE_BLACK)) != 0,
+	      "the cross turns Remove black screens on");
+	check(press(MBOX_EV_LEFT, r) && (features_toggle_state() & (1ull << TF_REMOVE_BLACK)) == 0, "and Left off");
 	r = find_row("Infinite ammo");
 	check(r >= 0 && lm8(lm_row((u32)r) + MROW_OFF_KIND) == MROW_TOGGLE && strcmp(row_value((u32)r, b), "OFF") == 0 &&
 	      (lm8(lm_row((u32)r) + MROW_OFF_FLAGS) & MROWF_STEPS) != 0, "Infinite ammo: a toggle, Off, Left and Right step it");
@@ -359,18 +366,14 @@ static void test_screens(void)
 	check(strcmp(t, "TRAINER") == 0 && strcmp(row_label(0, b), "GAME") == 0 && lm_nrows() <= LM_MAX_ROWS &&
 	      lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_MAIN, "the root: a MAIN page in capitals, nine rows at most (the pause's list)");
 
-	/* Cheats: an INFO row takes no cross, a toggle takes Left and Right, a button the cross but no step. */
+	/* Cheats: a toggle takes Left and Right, a button the cross but no step. */
 	press(MBOX_EV_ACTIVATE, find_row("Cheats"));
 	check(lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && lm_nrows() <= LM_CFG_ROWS,
 	      "Cheats: a CONFIG page, six rows at most (Game Options)");
 	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
 	r = find_row("Infinite ammo");
-	s = -1;
-	for (i = 0; i < (int)lm_nrows(); i++) if ((lm_flags((u32)i) & MROWF_ENABLED) == 0) s = i;
 	check(r >= 0 && lm_press(MBOX_EV_ACTIVATE, LM_ROWS) == 0 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
 	      "a press past the page posts nothing");
-	if (s >= 0) check(lm_press(MBOX_EV_ACTIVATE, (u32)s) == 0 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
-	                  "the cross on a row the cursor cannot stand on posts nothing");
 	check(lm_press(MBOX_EV_RIGHT, (u32)r) == 1 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_RIGHT,
 	      "Right on Infinite ammo, which steps: posted");
 	tick(6);
@@ -385,7 +388,18 @@ static void test_screens(void)
 	check(i >= 0 && (lm_flags((u32)i) & MROWF_STEPS) == 0 && lm_press(MBOX_EV_RIGHT, (u32)i) == 0 &&
 	      peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev, "Right on Max bolts, a button that does not step: nothing (the glue's cross then)");
 
-	/* The next row the cursor stands on, wrapping inside the window's rows. */
+	/*
+	 * Manips, a page that fits one window (Cheats has two since 2026-11-12):
+	 * an INFO row takes no cross, and the next row the cursor stands on wraps
+	 * inside the window's rows.
+	 */
+	press(MBOX_EV_BACK, -1);
+	press(MBOX_EV_ACTIVATE, find_row("Manips"));
+	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
+	s = -1;
+	for (i = 0; i < (int)lm_nrows(); i++) if ((lm_flags((u32)i) & MROWF_ENABLED) == 0) s = i;
+	check(s > 0 && lm_press(MBOX_EV_ACTIVATE, (u32)s) == 0 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
+	      "the cross on a row the cursor cannot stand on posts nothing");
 	n = lm_nrows();
 	check(lm_next(0, 1, n) == (lm_flags(1) & MROWF_ENABLED ? 1u : lm_next(1, 1, n)) && lm_next(0, -1, n) < n &&
 	      lm_next(n, 1, n) == n && lm_next(0, 1, 0) == 0, "lm_next: down, up wrapping, out of range left alone");

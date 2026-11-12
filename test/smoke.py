@@ -5405,6 +5405,8 @@ TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025EB4),   # LevelTransition_updat
                  (0x003C57DC, 0x399C0014, 0x48025E7C),   # LevelTransition_update, an FMV open
                  (0x003C58C8, 0x81222BBC, 0x48025E08)]   # LevelTransition_waitLoad, the data read
 TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
+TOD_MOVIE_STATE = 0x101D4F50 + 0x58             # g_moviePlayer's state (2026-11-12: Remove black screens)
+TOD_FAKE_ROOT = 0x30000000                      # the simulator's level object (backend_fake.c, seed_tod)
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
 TOD_FADE_STORY = 0x3DE00000                     # 7/64 s, a story FMV load's (2026-11-02; 5/64 s from 2026-10-31)
@@ -5977,6 +5979,28 @@ def smoke_tod(c, sim):
           "ToD: God Ratchet, the old trainer's 154 in the proxy handle's low byte", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 16, 0))
     check(mem_read_u32(c, TOD_PROXY_HANDLE) & 0xFF == 0, "ToD: and 0 there again")
+    # 2026-11-12: Remove black screens (24), a cheat: a lead-in's black hold not drawn, its progress left.
+    rb = [f for f in features if f["label"] == "Remove black screens"]
+    check(len(rb) == 1 and rb[0]["id"] == 24 and rb[0]["kind"] == FEATURE_TOGGLE and rb[0]["group"] == 0 and rb[0]["flags"] == 0,
+          "ToD: DESCRIBE lists Remove black screens, id 24, a Cheats toggle that writes no code and is not LIVE", rb)
+    info = fresh_state(c)
+    check(info and info["toggle_auto"] & (1 << 24) == 0, "ToD: Remove black screens is not on boot by default",
+          hex(info["toggle_auto"]) if info else None)
+    alpha, prog = TOD_FAKE_ROOT + 0x5B620, TOD_FAKE_ROOT + 0x5B62C
+    mem_write(c, TOD_MOVIE_STATE, bytes(4))
+    mem_write(c, TOD_LUA_STATE, struct.pack(">I", 0x30031000))
+    mem_write(c, alpha, struct.pack(">ffffff", 1.0, 0.0, 0.0, 1.0, 0.0, 1.0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 24, 1))
+    module_sleep(c, 0.1)
+    mem_write(c, TOD_MOVIE_STATE, struct.pack(">I", 1))
+    wait_while(c, lambda: mem_read_u32(c, alpha) != 0, 2.0)
+    check(status == ST_OK and mem_read_u32(c, alpha) == 0 and mem_read_u32(c, prog) == 0x3F800000 and
+          mem_read_u32(c, prog + 8) == 0x3F800000,
+          "ToD: Remove black screens on, a lead-in's hold: the fade's drawn alpha 0, its progress and target 1.0", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 24, 0))
+    check(status == ST_OK and mem_read_u32(c, alpha) == 0x3F800000, "ToD: and off in the hold, black again", status)
+    mem_write(c, TOD_MOVIE_STATE, bytes(4))
+    mem_write(c, alpha, bytes(24))
     mem_write(c, TOD_TRANSITION_MIN, struct.pack(">f", 5.0))
     mem_write(c, TOD_FASTLOAD_AT, struct.pack(">I", 0x409E0074))   # the game's bne cr7, 0x25E5FC
     for at, orig, _site in TOD_OWN_SITES:
@@ -6175,8 +6199,9 @@ def smoke_tod_menu(c, sim):
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
     check(page is not None and page[2] == "Cheats" and page[5] == MBOX_PTYPE_CONFIG and
-          page[3] == ["Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Max bolts", "Max raritanium"],
-          "ToD menu: Cheats, a CONFIG page: the four toggles, Max bolts and Max raritanium",
+          page[3][:6] == ["Fast loads", "Infinite ammo", "Infinite health", "God Ratchet", "Remove black screens",
+                          "Max bolts"],
+          "ToD menu: Cheats, a CONFIG page: the five toggles and Max bolts in its first window",
           page[2:4] if page else None)
     check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back is acked")
     module_sleep(c, 0.1)

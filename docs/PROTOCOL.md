@@ -156,6 +156,8 @@ Revision 1.30, run-start warnings after build 57's hardware test (2026-11-04): n
 
 Revision 1.31 (2026-11-07, module build 58): build 57 shipped with client 1.5.0 as a release, so what follows is build 58. No opcode or structure changes: it carries the mod pool fix of section 5.7 (a mod switched off is reverted whole, and the Mods page no longer finds an overlap with a mod it shares no byte with). A client that expects build 58 reads a console still on build 57 as out of date and replaces it.
 
+Revision 1.31, Tools of Destruction's Remove black screens (module build 58, 2026-11-12): no opcode and no structure moved, and the revision number stays; ToD's DESCRIBE has one more row. **Remove black screens**, new feature 24 (22 and 23 stay held for the cutscene cache), a TOGGLE in Cheats after God Ratchet, is a practice cheat: before a realtime cinematic the game's movie player cuts the screen to black and holds it there, in gameplay, until the arrival autosave is done and the cinematic's sounds have pre-rolled, and runners use that hold at a planet's start for setups they cannot see. While the toggle is on, a hold that begins within 15 seconds of a level's (or a death's) lua_State coming up is a lead-in, and qwark keeps the screen fade's drawn alpha at 0 for as long as it lasts, while the fade is still; the fade's progress and target, which the game's own waits and the autosplitter's START and "Tachyon defeated" read, are never written, so the cinematic still starts when it would. A cinematic later in a level keeps its black, as do loads, deaths and Level_Enter's fade in. Off in a hold puts the black back. Data writes alone, neither `WRITES_CODE` nor `LIVE`, off at every boot unless flagged on boot (`NPEA00452.auto.remove_black_screens`), and the same under RPCS3. It counts as a cheat at a run start (section 5.10.2), and the console menu's Cheats page lists it after God Ratchet, seven rows, so two Game Options windows, as the Game page has. A client before this revision shows it as any toggle.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -1139,7 +1141,7 @@ in that order, each line left out when its count is 0. qwark-rpcs3 has no VSH: i
 | RaC2 | Fast loads (0), Ghost Ratchet (3), Infinite ammo (1), Freeze health (2), Enable debug mode (5), Reset bosses on death (13), Reset platinum bolts on death (14) | |
 | UYA | Fast loads (38), Ghost Ratchet (3), Infinite ammo (0), Freeze health (1) | Quick-select pause (5), one of the game's own options; Reset trophies on Veldin load |
 | Deadlocked | Fast loads (2), Ghost Ratchet (5), Refill ammo (3), Freeze health (4) | Crash patches, Fix reset softlocks, Correct HUD brightness, Correct gradient brightness |
-| ToD | Fast loads (17), Infinite ammo (8), Infinite health (9), God Ratchet (16) | Remove cutscenes (run-legal), Cache cutscenes on reset, Disable cutscene caching |
+| ToD | Fast loads (17), Infinite ammo (8), Infinite health (9), God Ratchet (16), Remove black screens (24) | Remove cutscenes (run-legal), Cache cutscenes on reset, Disable cutscene caching |
 
 Fast loads counts in every game: each lists it under Cheats, and no category of the five is known to allow it.
 
