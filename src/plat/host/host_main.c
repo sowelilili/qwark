@@ -13,10 +13,11 @@
  *   peek <addr> <len>     print bytes from the fake process memory
  *   vshmem <free> <total> the fake VSH's memory, in KB, and a reading of it
  *                         now; `vshmem off` makes it unreadable again
- *   vshpad <mask> [rx ry lx ly] | off | err <code>
+ *   vshpad <mask> [rx ry lx ly] | off | err <code> | sysinfo <n>
  *                         the fake VSH's own view of pad 1 (revision 1.31, the
  *                         VSH pad probe): buttons in the OG layout and sticks
- *                         0..255, read while a client is connected
+ *                         0..255, read while a client is connected; `sysinfo`
+ *                         sets GetInfo2's system_info (bit0 INTERCEPTED)
  *   user <n>              the fake XMB's signed-in user number (1 at start, 0
  *                         nobody); the session sees it at the XMB within a
  *                         second, never in a game (revision 1.24)
@@ -279,7 +280,8 @@ static void handle_line(char *line, int *keep_running)
 		 * <mask> [rx ry lx ly]` holds the buttons (OG layout, so libpad's two
 		 * digital bytes are its high and low byte) and the sticks (0..255, 128
 		 * each by default), handed over once as libpad does; `vshpad off` no
-		 * pad at all, as at the start; `vshpad err <code>` an error.
+		 * pad at all, as at the start; `vshpad err <code>` an error; `vshpad
+		 * sysinfo <n>` GetInfo2's system_info, bit0 INTERCEPTED, on port 0.
 		 */
 		char *a = next_token(&cursor);
 		int ok = 0, i;
@@ -289,6 +291,12 @@ static void handle_line(char *line, int *keep_running)
 		if (a != NULL && qstreq(a, "off")) {
 			host_set_vsh_pad(PLAT_PAD_NONE, 0, 0, NULL);
 			printf("ok vshpad off\n");
+		} else if (a != NULL && qstreq(a, "sysinfo")) {
+			char *c = next_token(&cursor);
+			u32 info = c != NULL ? qparse_u32(c, &ok) : 0;
+			if (!ok) { printf("usage: vshpad sysinfo <n>\n"); fflush(stdout); return; }
+			host_set_vsh_pad_port(0, info);
+			printf("ok vshpad sysinfo\n");
 		} else if (a != NULL && qstreq(a, "err")) {
 			char *c = next_token(&cursor);
 			u32 code = c != NULL ? qparse_u32(c, &ok) : 0;
@@ -306,7 +314,7 @@ static void handle_line(char *line, int *keep_running)
 				stick[i] = (u8)n;
 			}
 			if (!ok || mask > 0xFFFFu) {
-				printf("usage: vshpad <mask> [rx ry lx ly] | off | err <code>\n");
+				printf("usage: vshpad <mask> [rx ry lx ly] | off | err <code> | sysinfo <n>\n");
 				fflush(stdout);
 				return;
 			}

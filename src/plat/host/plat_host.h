@@ -175,11 +175,14 @@ void host_set_vsh_memory(u32 free_bytes, u32 total_bytes);
  * hands over as fresh and every read after that as libpad's "same as before"
  * (len 0), until the next call; any other `rc` is what both calls answer,
  * PLAT_PAD_NONE again included. host_set_vsh_pad_port puts the pad on another
- * port and sets GetInfo2's system_info (bit0 INTERCEPTED). host_vsh_pad_reads
- * counts plat_vsh_pad_read's calls.
+ * port and sets GetInfo2's system_info (bit0 INTERCEPTED). host_vsh_pad_take
+ * is another reader in the VSH (webMAN's combo poll) asking first: it takes the
+ * change not yet handed over, if there is one (answering 1), so qwark's next
+ * read is len 0. host_vsh_pad_reads counts plat_vsh_pad_read's calls.
  */
 void host_set_vsh_pad(int rc, u8 digital1, u8 digital2, const u8 stick[4]);
 void host_set_vsh_pad_port(u32 port, u32 system_info);
+int  host_vsh_pad_take(void);
 u32  host_vsh_pad_reads(void);
 
 /*

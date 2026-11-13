@@ -1587,9 +1587,10 @@ static u32 encode_info(u8 *out, u32 cap)
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	/*
-	 * Revision 1.31: the VSH's view of pad 1 where it has something held, else
-	 * the game's own pad while a game runs, else nothing (vshpad.h). The
-	 * combos and the console menu go on reading g_hot's, the game's alone.
+	 * Revision 1.31: the VSH's view of pad 1 while the VSH has the pad and its
+	 * view something held, else the game's own pad while a game runs, else
+	 * nothing (vshpad.h). The combos and the console menu go on reading
+	 * g_hot's, the game's alone.
 	 */
 	vshpad_merge(pad_game_running(), g_hot.pad_mask, g_hot.analog, &pad_mask, analog);
 	be32_put(out + 44, pad_mask);
@@ -1841,19 +1842,20 @@ static void session_step(void)
 	 */
 	autosplit_push();
 
+	/*
+	 * Revision 1.31, the VSH pad probe: the VSH's own view of pad 1, read every
+	 * tick as the game's own pad is (read_hot), so a packet carries the pad as
+	 * of its tick wherever it comes from. Outside the core lock (a library call
+	 * into the VSH's sys_io), and only while a client is connected to see it.
+	 * The game's pad goes with it, which says when the game takes input
+	 * (vshpad.h). g_hot and g_game are this thread's to read without the lock.
+	 */
+	vshpad_poll(net_has_clients() || g_vshpad_always, pad_game_running(), g_hot.pad_mask, g_hot.analog,
+	            g_state, g_game != NULL ? g_game->game_id : (u8)GAME_NONE, plat_time_us());
+
 	g_tick++;
 
 	if ((g_tick % TELEMETRY_EVERY) == 0) {
-		/*
-		 * Revision 1.31, the VSH pad probe: one read of the VSH's own view of
-		 * pad 1 for the packet about to go out, outside the core lock (a
-		 * library call into the VSH's sys_io), and only while a client is
-		 * connected to see it: libpad hands each change to whichever reader
-		 * in the VSH asks first, webMAN's combo poll among them. g_hot and
-		 * g_game are this thread's to read without the lock.
-		 */
-		vshpad_poll(net_has_clients() || g_vshpad_always, pad_game_running(), g_hot.pad_mask,
-		            g_state, g_game != NULL ? g_game->game_id : (u8)GAME_NONE, plat_time_us());
 		publish();
 		net_send_telemetry(g_tele_pub, g_tele_pub_len);
 	}

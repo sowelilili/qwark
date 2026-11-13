@@ -976,6 +976,17 @@ void host_set_vsh_pad_port(u32 port, u32 system_info)
 	pthread_mutex_unlock(&g_mem_lock);
 }
 
+int host_vsh_pad_take(void)
+{
+	int took;
+
+	pthread_mutex_lock(&g_mem_lock);
+	took = g_vpad_rc == 0 && g_vpad_fresh;
+	g_vpad_fresh = 0;
+	pthread_mutex_unlock(&g_mem_lock);
+	return took;
+}
+
 u32 host_vsh_pad_reads(void)
 {
 	u32 n;

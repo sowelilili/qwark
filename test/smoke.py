@@ -1133,9 +1133,11 @@ def test_vsh_memory(sim, c):
 def test_vsh_pad(sim, c):
     """Revision 1.31, the VSH pad probe over the wire: SessionInfo's pad_mask and
     analog at the XMB come from the fake VSH's own view of pad 1 (`vshpad`), read
-    while a client is connected; in a game a blank VSH view gives the game's pad
-    and a held one wins; a VSH error gives the game's pad back. The rule itself
-    is test_vshpad.c's."""
+    every tick while a client is connected and held while libpad says nothing
+    changed; in a game the game has the pad, but for the overlay, which system_info
+    (`vshpad sysinfo`) says once it has shown it follows it, and the overlay's close
+    hands the pad straight back; a VSH error gives the game's pad back. The rule
+    itself is test_vshpad.c's."""
     info = fresh_state(c)
     check(info and info["state"] == SESSION_XMB and info["pad_mask"] == 0,
           "vsh pad: at the XMB with no VSH pad, pad_mask is 0", info and hex(info["pad_mask"]))
@@ -1150,6 +1152,9 @@ def test_vsh_pad(sim, c):
           "vsh pad: and analog is its sticks, rx ry lx ly", info and info["analog"])
     check(sim_line(sim, "vshpad: first read, port 0: 0x00000000") is not None,
           "vsh pad: the first read is logged with libpad's answer")
+    info = fresh_state(c, settle=2.5)
+    check(info and info["pad_mask"] == 0x0044,
+          "vsh pad: held still at the XMB, still lit after two and a half seconds", info and hex(info["pad_mask"]))
 
     sim.send("vshpad 0")
     sim_line(sim, "ok vshpad")
@@ -1159,19 +1164,56 @@ def test_vsh_pad(sim, c):
     sim_line(sim, "ok pad")
     info = fresh_state(c)
     check(info and info["pad_mask"] == 0x20,
-          "vsh pad: in the game a blank VSH view leaves the game's circle", info and hex(info["pad_mask"]))
+          "vsh pad: in the game the game's circle", info and hex(info["pad_mask"]))
+    sim.send("vshpad 0x0800")
+    sim_line(sim, "ok vshpad")
+    info = fresh_state(c, settle=0.5)
+    check(info and info["pad_mask"] == 0x20,
+          "vsh pad: the game has the pad: start on the VSH's view does not show over it", info and hex(info["pad_mask"]))
+    check(sim_line(sim, "vshpad: system_info bit0 is 0 while the game takes input") is not None,
+          "vsh pad: system_info's bit while the game takes input is learnt")
+
+    # The overlay opens: the game's pad empties and system_info's bit goes.
+    sim.send("pad 0")
+    sim_line(sim, "ok pad")
+    sim.send("vshpad sysinfo 1")
+    sim_line(sim, "ok vshpad sysinfo")
+    fresh_state(c)
+    check(sim_line(sim, "vshpad: source vsh: system_info says the VSH has it") is not None,
+          "vsh pad: the overlay opens: the log says system_info gave the VSH the pad")
+    sim.send("vshpad 0x0010")
+    sim_line(sim, "ok vshpad")
+    info = fresh_state(c)
+    check(info and info["pad_mask"] == 0x0010,
+          "vsh pad: the overlay open, the VSH's triangle shows", info and hex(info["pad_mask"]))
+
+    # It closes with triangle still on the VSH's last report, the game's cross held.
+    sim.send("vshpad sysinfo 0")
+    sim_line(sim, "ok vshpad sysinfo")
+    sim.send("pad 0x40")
+    sim_line(sim, "ok pad")
+    info = fresh_state(c, settle=0.1)
+    check(info and info["pad_mask"] == 0x40,
+          "vsh pad: the overlay closes: the game's cross at once, the VSH's triangle gone", info and hex(info["pad_mask"]))
+    check(sim_line(sim, "vshpad: source game: system_info says the game has it") is not None,
+          "vsh pad: and the log says what gave the game the pad back")
+
+    sim.send("vshpad sysinfo 1")
+    sim_line(sim, "ok vshpad sysinfo")
     sim.send("vshpad 0x0800")
     sim_line(sim, "ok vshpad")
     info = fresh_state(c)
     check(info and info["pad_mask"] == 0x0800,
-          "vsh pad: a button held on the VSH's view wins", info and hex(info["pad_mask"]))
+          "vsh pad: the overlay again: the VSH's start", info and hex(info["pad_mask"]))
     sim.send("vshpad err 0x80121107")
     sim_line(sim, "ok vshpad err")
     info = fresh_state(c)
-    check(info and info["pad_mask"] == 0x20,
+    check(info and info["pad_mask"] == 0x40,
           "vsh pad: a VSH read error gives the game's pad back", info and hex(info["pad_mask"]))
     check(sim_line(sim, "vshpad: port 0 read 0x80121107") is not None, "vsh pad: and the error is logged")
 
+    sim.send("vshpad sysinfo 0")
+    sim_line(sim, "ok vshpad sysinfo")
     sim.send("pad 0")
     sim_line(sim, "ok pad")
     sim.send("quit")
