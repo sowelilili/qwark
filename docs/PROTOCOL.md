@@ -160,6 +160,8 @@ Revision 1.31, Tools of Destruction's Remove black screens (module build 58, 202
 
 Revision 1.31, Tools of Destruction's positions keep the camera, and its Die respawns at once (module build 58, 2026-11-13): no opcode and no structure moved, and the revision number stays. **A ToD position slot** is now 64 bytes, the 48 of the hero's motion as before and then the follow camera's offset from what it looks at (16 bytes), so POS_LOAD puts the camera back facing where it faced, as Deadlocked's slots have (section 5.5). A slot saved before, or saved while no follow camera followed the hero, is 48 bytes and still loads, the hero alone and the camera as it is; ToD's POS_STORE takes both 64 and 48 bytes, a 48-byte blob being a slot without the camera that stores as it is and loads the hero alone, and refuses every other length. **ToD's DIE** (and its Die button, feature 4, and the DIE combo) no longer sets the hit points to 0, which played the death animation and its fade: it asks the game for the respawn a death's end asks for, at the last checkpoint at once, through the game's own data (section 5.5). From the game's pause menu it waits for the pause to close. A respawn is no load, so the autosplitter emits nothing for it, as for any death. Both are plain data writes, the same under RPCS3.
 
+Revision 1.31 (pending), the input display at the XMB, a probe for the hardware (module build 58, 2026-11-13): no opcode and no structure moved, and the revision number stays. **SessionInfo's `pad_mask` and `analog`** (section 3) now come from whichever of two views of pad 1 has something to show: the VSH's own, which a console reads through the XMB's libpad (sys_io's `cellPadGetData`, as webMAN MOD's XMB combos do), and the running game's, read out of its memory as before. The VSH's buttons go out when it has a button held, else the game's while a game is INGAME with its code in, else 0; its sticks the same way, apart from the buttons, when one is past a dead zone of 32 of 128. So at the XMB, in BOOTING and QUITTING, and in a title qwark has no game for (section 3.3), the two fields carry the controller where they were 0 or the last game's, and in a game with the PS button's overlay open they carry the buttons pressed in it. The module reads the VSH's pad once per telemetry frame and only while a client is connected, since libpad hands each change to the first reader in the VSH, webMAN's combo poll among them. The combos (section 5.9) and the console menu still read the game's own pad alone. qwark-rpcs3 and the simulator until its `vshpad` command have no VSH pad, so the fields are the game's as before. The module logs what each view sees in qwark.log, for the hardware probe (rewrite/docs/REPORT-vsh-pad-probe.md).
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -284,8 +286,11 @@ u8   flags3             revision 1.30, a pad byte before it.
                              nothing
                         bits 2 to 7 are 0
 f32  pos[3]             player x, y, z
-u32  pad_mask           controller buttons, OG layout (section 10)
-f32  analog[4]          rx, ry, lx, ly, each -1..1
+u32  pad_mask           controller buttons, OG layout (section 10). Revision 1.31: the VSH's own view of
+                        pad 1 when it has a button held, else the running game's pad (INGAME with the
+                        game's code in), else 0; see that revision's line at the top
+f32  analog[4]          rx, ry, lx, ly, each -1..1, (v - 128) / 128 of libpad's byte. Revision 1.31: the
+                        VSH's sticks when one is past the dead zone, else the game's, else 0
 u32  readout[16]        game-defined live values; DESCRIBE names them. readout[0] is the bolt count when the game has one. VALUE, ENUM and COLOR features name the readout that mirrors their current value
 u64  toggle_state       bit i set = TOGGLE feature id i is on. A LIVE toggle's bit is whatever game memory says, re-read at 10 Hz (section 5.3.1)
 u64  toggle_auto        bit i set = feature id i re-applies itself on game boot. Never set for a LIVE toggle
@@ -390,7 +395,7 @@ A title id no game table claims still reaches INGAME. `state` is 2, `game` is 0 
 
 - **MEM_READ, MEM_WRITE, WATCH_\*, FREEZE_\* and PATCH_\*** work, under the same rules as always. A watch reads live and its value travels in every telemetry packet; PATCH_APPLY is still refused where `flags` bit2 says the platform cannot patch code.
 - **Everything that needs a game table answers `UNSUPPORTED`**: DESCRIBE, FEATURE_SET, FEATURE_TRIGGER, FEATURE_SET_AUTO, FEATURE_OPTIONS, PLANET_LIST, PLANET_LOAD, POS_SAVE, POS_LOAD, UNLOCK_LIST, UNLOCK_SET, LEVELFLAGS_GET, LEVELFLAGS_RESET, LEVELFLAGS_SET, LEVELFLAGS_BIT, LEVELFLAGS_NAMES, DIE, MOBY_TABLE, AUTOSPLIT_DESCRIBE and every op of sections 5.12 and 5.13, SAVEFILE_PATCH included (there is no helper to describe). The ops that were never about the game answer as they always do: the listings, the config and combo ops, the file ops and AUTOSPLIT_EVENTS. PLANET_SELECT, and the planet selection in this block, are the last game's that was INGAME, as at the XMB (build 53, section 5.5).
-- **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the pad is not read.
+- **No readout, position or pad data is filled in.** `current_planet`, `pos`, `pad_mask`, `analog` and every `readout` are 0 and stay 0, because reading them means knowing where they are. `toggle_state`, `toggle_auto` and `freeze_active` behave as usual; nothing fires the stored combos, since the game's pad is not read. Revision 1.31: on a console, `pad_mask` and `analog` carry the VSH's own view of the pad while it has something held, as at the XMB.
 
 Everything else about the session is unchanged: the launch is quiet for its second (section 1.1), `generation` advances, QUITTING and the return to the XMB happen when the process goes away, and a same-title reboot keeps its watches and builds the previous-session record (section 4.1) out of what is actually there, which is freezes and client patches.
 
@@ -1018,7 +1023,7 @@ It sits at 0x0079 rather than at 0x0075, where a rename would naturally have gon
 
 ### 5.9 Combos (0x008x)
 
-A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title; since revision 1.24 a settings profile may override one combo at a time for its user (COMBO_OVERRIDE, section 5.10.1).
+A combo fires once when `pad_mask` equals its mask exactly, and re-arms when `pad_mask` returns to 0. Revision 1.31: that is the game's own pad, read out of its memory; the VSH's view that SessionInfo's `pad_mask` may carry (section 3) fires nothing. Mask 0 disables the combo. Persisted in config, one set of masks for the console rather than one per title; since revision 1.24 a settings profile may override one combo at a time for its user (COMBO_OVERRIDE, section 5.10.1).
 
 Actions: 0 SAVE_POSITION, 1 LOAD_POSITION, 2 DIE, 3 LOAD_PLANET, 4 LOAD_SETASIDE_FILE, 5 OPEN_MENU (revision 1.22), 6 TOGGLE_FAST_LOADS (revision 1.23). LOAD_SETASIDE_FILE makes the game load whatever is in the savefile helper's aside buffer (section 5.12), and does nothing in a game that has no helper, or where code cannot be patched and no RPCS3 patch put the helper in (section 5.12.1). OPEN_MENU opens the console menu, or closes it when it is up (section 9).
 
@@ -1684,7 +1689,7 @@ A boot of the game puts it back to 0, as the game clears its cache at every boot
 **Disable cutscene caching (21, TOGGLE).** While on, each level load (the tier loader on state 3 with `g_levelLoadTier` not loaded) walks the in-RAM block table (`g_fiosSchedulerCache` 0x106ACBA4: `blocks` +0xE0, `numBlocks` +0xDC, 0x28 bytes each), 32 blocks a tick, and writes `lastUse` (+0) 2, free, into every block of the destination planet's `level_uncached.psarc` that is neither free nor filling (3), and for Metropolis into blocks 0..56 of `global_uncached.psarc`, which hold its sound. The walk stops when the load does. Off, nothing is freed, and the warmer caches again as the game does.
 
 
-OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000.
+OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000. It is libpad's own: `CELL_PAD_BTN_OFFSET_DIGITAL2` in the low byte and `DIGITAL1` in the next, bit for bit, which is how the VSH's view (revision 1.31) is put into it; Tools of Destruction's pad is remapped into it (`tod_pad_to_og`).
 
 ## 7. Connection lifecycle from the client side
 

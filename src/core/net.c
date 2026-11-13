@@ -2533,6 +2533,16 @@ void net_stop(void)
 	plat_trace("qwark:   net_stop: sockets broken");
 }
 
+int net_has_clients(void)
+{
+	int i;
+
+	for (i = 0; i < QWARK_MAX_CLIENTS; i++) {
+		if (g_conns[i].used) return 1;
+	}
+	return 0;
+}
+
 int net_wait_clients(u32 timeout_us)
 {
 	u32 waited = 0;

@@ -558,6 +558,75 @@ int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
 	return 0;
 }
 
+/* ------------------------------------------------- the VSH's own pad (probe) */
+
+/*
+ * Revision 1.31, the VSH pad probe (src/core/vshpad.c). sys_io's libpad, the
+ * VSH's own copy, through the SDK's libio_stub, as webMAN MOD's XMB combos
+ * read it (include/feat/vpad.h's pad_read and include/poll/combos.h: GetInfo2,
+ * then GetData on a connected port, len > 0 taken as data). The VSH initialised
+ * libpad long before any plugin loads, so neither webMAN nor qwark calls
+ * cellPadInit (CELL_PAD_ERROR_ALREADY_INITIALIZED at best) or cellPadEnd (which
+ * would take the pad away from the VSH). Both calls copy out of libpad's
+ * buffers and do not block.
+ *
+ * libpad keeps one "last read" per port for the whole process, so a len > 0
+ * read hands the change to whoever asks first and the next asker in the VSH
+ * (webMAN's combo poll) sees len 0 for it: why the core reads only while a
+ * client is connected (vshpad.c) and why the probe's notes ask about webMAN.
+ */
+#include <cell/pad.h>
+
+int plat_vsh_pad_info(struct plat_pad_info *out)
+{
+	CellPadInfo2 info;
+	int rc, i;
+
+	memset(&info, 0, sizeof(info));
+	rc = (int)cellPadGetInfo2(&info);
+	if (rc != CELL_PAD_OK) return rc == PLAT_PAD_NONE ? -1 : rc;
+
+	out->max_connect = info.max_connect;
+	out->now_connect = info.now_connect;
+	out->system_info = info.system_info;
+	for (i = 0; i < PLAT_PAD_PORTS; i++) {
+		out->port_status[i] = info.port_status[i];
+		out->device_type[i] = info.device_type[i];
+	}
+	return 0;
+}
+
+int plat_vsh_pad_read(u32 port, struct plat_pad *out)
+{
+	CellPadData data;
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+	if (port >= PLAT_PAD_PORTS) return -1;
+
+	data.len = 0;
+	rc = (int)cellPadGetData(port, &data);
+	if (rc != CELL_PAD_OK) return rc == PLAT_PAD_NONE ? -1 : rc;
+
+	out->len = data.len;
+	if (data.len <= 0) return 0;
+	out->fresh = 1;
+	/* len counts the button[] words filled: 4 for the digital pair, 8 with the sticks. */
+	if (data.len > CELL_PAD_BTN_OFFSET_DIGITAL2) {
+		out->digital1 = (u8)data.button[CELL_PAD_BTN_OFFSET_DIGITAL1];
+		out->digital2 = (u8)data.button[CELL_PAD_BTN_OFFSET_DIGITAL2];
+	}
+	if (data.len <= CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y) {
+		out->stick[0] = out->stick[1] = out->stick[2] = out->stick[3] = 0x80;
+		return 0;
+	}
+	out->stick[0] = (u8)data.button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X];
+	out->stick[1] = (u8)data.button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y];
+	out->stick[2] = (u8)data.button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X];
+	out->stick[3] = (u8)data.button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y];
+	return 0;
+}
+
 #if QWARK_GAME_MODULES
 /* ------------------------------------------------- game modules (1.26) */
 

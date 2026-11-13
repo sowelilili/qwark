@@ -74,6 +74,13 @@ void net_shutdown(void);
 /* Called from the tick thread every fourth tick. */
 void net_send_telemetry(const u8 *packet, u32 len);
 
+/*
+ * Revision 1.31, the VSH pad probe (vshpad.c): 1 while any client holds a
+ * connection, so the tick reads the VSH's pad only while somebody can see it.
+ * A racy read of the slots' bytes, which is all the tick needs.
+ */
+int  net_has_clients(void);
+
 /* How many times the tick has handed it a packet, subscribers or not. For the tests. */
 u32  net_telemetry_sends(void);
 

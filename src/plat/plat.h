@@ -268,6 +268,43 @@ static __inline int plat_has_users(void) { return 1; }
  */
 int  plat_vsh_memory(u32 *free_bytes, u32 *total_bytes);
 
+/* ------------------------------------------------- the VSH's own pad (probe) */
+
+/*
+ * Revision 1.31, the VSH pad probe (src/core/vshpad.c). The controller as the
+ * VSH's own copy of libpad sees it: qwark is a VSH plugin, so on the PS3 these
+ * are sys_io's cellPadGetInfo2 and cellPadGetData, the calls webMAN MOD's XMB
+ * combos make, against the libpad the VSH has already initialised. Nothing here
+ * ever calls cellPadInit or cellPadEnd, which belong to the VSH.
+ *
+ * plat_vsh_pad_info fills `out` and answers 0, or libpad's (negative) error.
+ * plat_vsh_pad_read reads one port: `fresh` 1 when libpad handed over new data
+ * (len > 0), 0 for its "same as before" (len 0), when the bytes are not filled.
+ * Both answer PLAT_PAD_NONE where there is no such pad to read: the simulator
+ * until a test or its `vshpad` command gives it one, and qwark-rpcs3 always.
+ */
+#define PLAT_PAD_NONE   1
+#define PLAT_PAD_PORTS  7    /* CELL_PAD_MAX_PORT_NUM */
+
+struct plat_pad_info {
+	u32 max_connect;
+	u32 now_connect;
+	u32 system_info;                   /* bit0 CELL_PAD_INFO_INTERCEPTED */
+	u32 port_status[PLAT_PAD_PORTS];   /* bit0 CELL_PAD_STATUS_CONNECTED */
+	u32 device_type[PLAT_PAD_PORTS];
+};
+
+struct plat_pad {
+	s32 len;        /* libpad's CellPadData len */
+	u8  fresh;      /* len > 0: the bytes below are this read's */
+	u8  digital1;   /* CELL_PAD_BTN_OFFSET_DIGITAL1: select, L3, R3, start, up, right, down, left */
+	u8  digital2;   /* CELL_PAD_BTN_OFFSET_DIGITAL2: L2, R2, L1, R1, triangle, circle, cross, square */
+	u8  stick[4];   /* rx, ry, lx, ly as libpad gives them, 0..255, 0x80 the centre */
+};
+
+int  plat_vsh_pad_info(struct plat_pad_info *out);
+int  plat_vsh_pad_read(u32 port, struct plat_pad *out);
+
 /* ------------------------------------------------- game modules (1.26) */
 
 /*

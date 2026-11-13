@@ -14,6 +14,7 @@
 #include "uipak.h"
 #include "gamemod.h"
 #include "luacore.h"
+#include "vshpad.h"
 #include "../games/titles.h"
 #include "../plat/plat.h"
 
@@ -158,6 +159,14 @@ static int  g_hot_primed;
 static struct previous_record g_prev;
 
 static int  g_combo_armed = 1;
+
+/* Revision 1.31: the tests read the VSH's pad with no client connected (session_vshpad_always). */
+#ifdef QWARK_TEST
+static int  g_vshpad_always;
+void session_vshpad_always(int on) { g_vshpad_always = on; }
+#else
+#define g_vshpad_always 0
+#endif
 
 /*
  * Protocol 1.8. While the client captures a combo it holds the console's own
@@ -1481,10 +1490,22 @@ void session_profile_poll(void)
 
 /* -------------------------------------------------------------- telemetry */
 
+/*
+ * Revision 1.31, the VSH pad probe (vshpad.h): whether the game's own pad is
+ * one to show, a game INGAME with its code in. Anything else g_hot holds is
+ * the last game's, kept through the XMB for nothing that reads the pad.
+ */
+static int pad_game_running(void)
+{
+	return g_state == SESSION_INGAME && g_game != NULL;
+}
+
 static u32 encode_info(u8 *out, u32 cap)
 {
 	u8 flags = 0;
 	int i;
+	u32 pad_mask;
+	f32 analog[4];
 
 	if (cap < SESSION_INFO_SIZE) return 0;
 	memset(out, 0, SESSION_INFO_SIZE);
@@ -1565,8 +1586,14 @@ static u32 encode_info(u8 *out, u32 cap)
 	out[31] = (u8)(SESSION_FLAG3_RUN_WARN | (config_run_warnings() ? 0 : SESSION_FLAG3_RUN_WARN_OFF));
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
-	be32_put(out + 44, g_hot.pad_mask);
-	for (i = 0; i < 4; i++) bef32_put(out + 48 + i * 4, g_hot.analog[i]);
+	/*
+	 * Revision 1.31: the VSH's view of pad 1 where it has something held, else
+	 * the game's own pad while a game runs, else nothing (vshpad.h). The
+	 * combos and the console menu go on reading g_hot's, the game's alone.
+	 */
+	vshpad_merge(pad_game_running(), g_hot.pad_mask, g_hot.analog, &pad_mask, analog);
+	be32_put(out + 44, pad_mask);
+	for (i = 0; i < 4; i++) bef32_put(out + 48 + i * 4, analog[i]);
 	for (i = 0; i < QWARK_MAX_READOUTS; i++)
 		be32_put(out + 64 + i * 4, g_hot.readout[i]);
 
@@ -1817,6 +1844,16 @@ static void session_step(void)
 	g_tick++;
 
 	if ((g_tick % TELEMETRY_EVERY) == 0) {
+		/*
+		 * Revision 1.31, the VSH pad probe: one read of the VSH's own view of
+		 * pad 1 for the packet about to go out, outside the core lock (a
+		 * library call into the VSH's sys_io), and only while a client is
+		 * connected to see it: libpad hands each change to whichever reader
+		 * in the VSH asks first, webMAN's combo poll among them. g_hot and
+		 * g_game are this thread's to read without the lock.
+		 */
+		vshpad_poll(net_has_clients() || g_vshpad_always, pad_game_running(), g_hot.pad_mask,
+		            g_state, g_game != NULL ? g_game->game_id : (u8)GAME_NONE, plat_time_us());
 		publish();
 		net_send_telemetry(g_tele_pub, g_tele_pub_len);
 	}

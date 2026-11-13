@@ -13,6 +13,10 @@
  *   peek <addr> <len>     print bytes from the fake process memory
  *   vshmem <free> <total> the fake VSH's memory, in KB, and a reading of it
  *                         now; `vshmem off` makes it unreadable again
+ *   vshpad <mask> [rx ry lx ly] | off | err <code>
+ *                         the fake VSH's own view of pad 1 (revision 1.31, the
+ *                         VSH pad probe): buttons in the OG layout and sticks
+ *                         0..255, read while a client is connected
  *   user <n>              the fake XMB's signed-in user number (1 at start, 0
  *                         nobody); the session sees it at the XMB within a
  *                         second, never in a game (revision 1.24)
@@ -268,6 +272,47 @@ static void handle_line(char *line, int *keep_running)
 		session_vsh_memory_read(VSHMEM_AT_PERIODIC);
 		session_activity_unlock();
 		printf("ok vshmem %u %u\n", (unsigned)free_kb, (unsigned)total_kb);
+
+	} else if (qstreq(cmd, "vshpad")) {
+		/*
+		 * Revision 1.31, the VSH pad probe: the fake VSH's libpad. `vshpad
+		 * <mask> [rx ry lx ly]` holds the buttons (OG layout, so libpad's two
+		 * digital bytes are its high and low byte) and the sticks (0..255, 128
+		 * each by default), handed over once as libpad does; `vshpad off` no
+		 * pad at all, as at the start; `vshpad err <code>` an error.
+		 */
+		char *a = next_token(&cursor);
+		int ok = 0, i;
+		u32 mask;
+		u8 stick[4] = { 0x80, 0x80, 0x80, 0x80 };
+
+		if (a != NULL && qstreq(a, "off")) {
+			host_set_vsh_pad(PLAT_PAD_NONE, 0, 0, NULL);
+			printf("ok vshpad off\n");
+		} else if (a != NULL && qstreq(a, "err")) {
+			char *c = next_token(&cursor);
+			u32 code = c != NULL ? qparse_u32(c, &ok) : 0;
+			if (!ok || code == 0 || code == PLAT_PAD_NONE) { printf("usage: vshpad err <code>\n"); fflush(stdout); return; }
+			host_set_vsh_pad((int)code, 0, 0, NULL);
+			printf("ok vshpad err\n");
+		} else {
+			mask = a != NULL ? qparse_u32(a, &ok) : 0;
+			for (i = 0; ok && mask <= 0xFFFFu && i < 4; i++) {
+				char *v = next_token(&cursor);
+				u32 n;
+				if (v == NULL) break;
+				n = qparse_u32(v, &ok);
+				if (n > 255) ok = 0;
+				stick[i] = (u8)n;
+			}
+			if (!ok || mask > 0xFFFFu) {
+				printf("usage: vshpad <mask> [rx ry lx ly] | off | err <code>\n");
+				fflush(stdout);
+				return;
+			}
+			host_set_vsh_pad(0, (u8)(mask >> 8), (u8)mask, stick);
+			printf("ok vshpad\n");
+		}
 
 	} else if (qstreq(cmd, "user")) {
 		char *n_s = next_token(&cursor);

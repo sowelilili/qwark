@@ -34,7 +34,7 @@ PPU_SRCS += src/main.c
 PPU_SRCS += src/core/util.c src/core/mem.c src/core/config.c
 PPU_SRCS += src/core/features.c src/core/mods.c src/core/session.c src/core/net.c
 PPU_SRCS += src/core/autosplit.c src/core/savefile.c src/core/manips.c src/core/menu.c
-PPU_SRCS += src/core/runwarn.c
+PPU_SRCS += src/core/runwarn.c src/core/vshpad.c
 #
 # Build 55: not src/games/menuhelper_bins.c. The console menu's renderers go
 # into ui.pak beside the module (below), and qwark reads the running game's out

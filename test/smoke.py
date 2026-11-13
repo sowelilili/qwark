@@ -1130,6 +1130,56 @@ def test_vsh_memory(sim, c):
     sim_line(sim, "ok vshmem off")
 
 
+def test_vsh_pad(sim, c):
+    """Revision 1.31, the VSH pad probe over the wire: SessionInfo's pad_mask and
+    analog at the XMB come from the fake VSH's own view of pad 1 (`vshpad`), read
+    while a client is connected; in a game a blank VSH view gives the game's pad
+    and a held one wins; a VSH error gives the game's pad back. The rule itself
+    is test_vshpad.c's."""
+    info = fresh_state(c)
+    check(info and info["state"] == SESSION_XMB and info["pad_mask"] == 0,
+          "vsh pad: at the XMB with no VSH pad, pad_mask is 0", info and hex(info["pad_mask"]))
+
+    sim.send("vshpad 0x0044 255 128 0 64")
+    sim_line(sim, "ok vshpad")
+    info = fresh_state(c)
+    check(info and info["pad_mask"] == 0x0044,
+          "vsh pad: at the XMB pad_mask is the VSH's cross and L1", info and hex(info["pad_mask"]))
+    check(info and abs(info["analog"][0] - 127 / 128) < 1e-3 and abs(info["analog"][2] + 1.0) < 1e-3
+          and abs(info["analog"][3] + 0.5) < 1e-3,
+          "vsh pad: and analog is its sticks, rx ry lx ly", info and info["analog"])
+    check(sim_line(sim, "vshpad: first read, port 0: 0x00000000") is not None,
+          "vsh pad: the first read is logged with libpad's answer")
+
+    sim.send("vshpad 0")
+    sim_line(sim, "ok vshpad")
+    sim.send("boot NPEA00385")
+    check(wait_state(c, SESSION_INGAME)[0], "vsh pad: RaC1 comes up")
+    sim.send("pad 0x20")
+    sim_line(sim, "ok pad")
+    info = fresh_state(c)
+    check(info and info["pad_mask"] == 0x20,
+          "vsh pad: in the game a blank VSH view leaves the game's circle", info and hex(info["pad_mask"]))
+    sim.send("vshpad 0x0800")
+    sim_line(sim, "ok vshpad")
+    info = fresh_state(c)
+    check(info and info["pad_mask"] == 0x0800,
+          "vsh pad: a button held on the VSH's view wins", info and hex(info["pad_mask"]))
+    sim.send("vshpad err 0x80121107")
+    sim_line(sim, "ok vshpad err")
+    info = fresh_state(c)
+    check(info and info["pad_mask"] == 0x20,
+          "vsh pad: a VSH read error gives the game's pad back", info and hex(info["pad_mask"]))
+    check(sim_line(sim, "vshpad: port 0 read 0x80121107") is not None, "vsh pad: and the error is logged")
+
+    sim.send("pad 0")
+    sim_line(sim, "ok pad")
+    sim.send("quit")
+    check(wait_state(c, SESSION_XMB)[0], "vsh pad: the game goes")
+    sim.send("vshpad off")
+    sim_line(sim, "ok vshpad off")
+
+
 def pack_pak(path, build=None, tod=True):
     """ui.pak as a test build's `make` packs it (src/games/menuhelper/pak.py, with ToD's Lua helper since
     revision 1.29: the simulator has ToD), or stamped with another build, or (tod False) without ToD's Lua helper,
@@ -8102,6 +8152,9 @@ def main():
 
         # ------------------------------------------------------ VSH memory
         test_vsh_memory(sim, c)
+
+        # --------------------------------------------- VSH pad probe (1.31)
+        test_vsh_pad(sim, c)
 
         # ------------------------------------------------------------ ui.pak
         test_ui_pak(sim, c)

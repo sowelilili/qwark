@@ -168,6 +168,21 @@ void host_set_emulator(int on);
 void host_set_vsh_memory(u32 free_bytes, u32 total_bytes);
 
 /*
+ * Revision 1.31, the VSH pad probe. The fake VSH's libpad (backend_fake.c
+ * only): plat_vsh_pad_info and plat_vsh_pad_read answer PLAT_PAD_NONE until
+ * host_set_vsh_pad gives them a pad, as qwark-rpcs3 always does. `rc` 0 is a
+ * pad holding the two digital bytes and the four sticks, which the next read
+ * hands over as fresh and every read after that as libpad's "same as before"
+ * (len 0), until the next call; any other `rc` is what both calls answer,
+ * PLAT_PAD_NONE again included. host_set_vsh_pad_port puts the pad on another
+ * port and sets GetInfo2's system_info (bit0 INTERCEPTED). host_vsh_pad_reads
+ * counts plat_vsh_pad_read's calls.
+ */
+void host_set_vsh_pad(int rc, u8 digital1, u8 digital2, const u8 stick[4]);
+void host_set_vsh_pad_port(u32 port, u32 system_info);
+u32  host_vsh_pad_reads(void);
+
+/*
  * Revision 1.24. The fake XMB's signed-in user (plat_user_id; 0 nobody), and
  * whether the console has users at all (plat_has_users; 0 is RPCS3's answer).
  * backend_fake.c only.

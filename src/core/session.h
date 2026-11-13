@@ -112,6 +112,8 @@ u32  session_vsh_memory(u8 *out, u32 cap);
 u32  session_vsh_memory_lines(void);
 u32  session_vsh_memory_line_kb(void);
 void session_vsh_memory_forget(void);
+/* Revision 1.31: read the VSH's pad at every telemetry frame as if a client were connected. */
+void session_vshpad_always(int on);
 #endif
 
 /* ------------------------------------------------- the previous-session record */

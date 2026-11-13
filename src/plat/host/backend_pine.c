@@ -1046,6 +1046,23 @@ int plat_vsh_memory(u32 *free_bytes, u32 *total_bytes)
 	return -1;
 }
 
+/*
+ * Revision 1.31, the VSH pad probe: RPCS3 has no VSH whose pad qwark could
+ * read, so the input display stays the game's own pad, as before.
+ */
+int plat_vsh_pad_info(struct plat_pad_info *out)
+{
+	(void)out;
+	return PLAT_PAD_NONE;
+}
+
+int plat_vsh_pad_read(u32 port, struct plat_pad *out)
+{
+	(void)port;
+	(void)out;
+	return PLAT_PAD_NONE;
+}
+
 /* Revision 1.26: no game modules under RPCS3; its games are linked in. */
 int plat_prx_load(const char *path) { (void)path; return -1; }
 int plat_prx_start(int id, void *args, u32 size, int *modres) { (void)id; (void)args; (void)size; *modres = 1; return -1; }

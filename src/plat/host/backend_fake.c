@@ -944,6 +944,86 @@ int plat_can_patch_code(void)
 }
 
 /*
+ * Revision 1.31, the VSH pad probe: the fake VSH's libpad, with libpad's len
+ * rule (a change is handed over once, then len 0 until the next change).
+ */
+static int g_vpad_rc = PLAT_PAD_NONE;
+static struct plat_pad g_vpad;
+static u8 g_vpad_fresh;
+static u32 g_vpad_port;
+static u32 g_vpad_system_info;
+static u32 g_vpad_reads;
+
+void host_set_vsh_pad(int rc, u8 digital1, u8 digital2, const u8 stick[4])
+{
+	int i;
+
+	pthread_mutex_lock(&g_mem_lock);
+	g_vpad_rc = rc;
+	memset(&g_vpad, 0, sizeof(g_vpad));
+	g_vpad.digital1 = digital1;
+	g_vpad.digital2 = digital2;
+	for (i = 0; i < 4; i++) g_vpad.stick[i] = stick != NULL ? stick[i] : 0x80;
+	g_vpad_fresh = (rc == 0);
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+void host_set_vsh_pad_port(u32 port, u32 system_info)
+{
+	pthread_mutex_lock(&g_mem_lock);
+	g_vpad_port = port;
+	g_vpad_system_info = system_info;
+	pthread_mutex_unlock(&g_mem_lock);
+}
+
+u32 host_vsh_pad_reads(void)
+{
+	u32 n;
+
+	pthread_mutex_lock(&g_mem_lock);
+	n = g_vpad_reads;
+	pthread_mutex_unlock(&g_mem_lock);
+	return n;
+}
+
+int plat_vsh_pad_info(struct plat_pad_info *out)
+{
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+	pthread_mutex_lock(&g_mem_lock);
+	rc = g_vpad_rc;
+	if (rc == 0) {
+		out->max_connect = PLAT_PAD_PORTS;
+		out->now_connect = 1;
+		out->system_info = g_vpad_system_info;
+		if (g_vpad_port < PLAT_PAD_PORTS) out->port_status[g_vpad_port] = 1;
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+	return rc;
+}
+
+int plat_vsh_pad_read(u32 port, struct plat_pad *out)
+{
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+	pthread_mutex_lock(&g_mem_lock);
+	g_vpad_reads++;
+	rc = g_vpad_rc;
+	if (rc == 0 && port != g_vpad_port) {
+		rc = (int)0x80121107u;   /* CELL_PAD_ERROR_NO_DEVICE */
+	} else if (rc == 0 && g_vpad_fresh) {
+		*out = g_vpad;
+		out->len = 24;
+		out->fresh = 1;
+		g_vpad_fresh = 0;
+	}
+	pthread_mutex_unlock(&g_mem_lock);
+	return rc;
+}
+
+/*
  * Build 54. The fake VSH's memory, in bytes. A total of 0 is "cannot be read",
  * which is what the simulator answers until the `vshmem` command (or a test)
  * gives it a figure, as qwark-rpcs3 always does.

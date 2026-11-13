@@ -37,6 +37,9 @@ void test_tod_menu(void);
 /* test_vshmem.c: the VSH's free memory, build 54. */
 void test_vshmem(void);
 
+/* test_vshpad.c: the VSH pad probe, the input display at the XMB, revision 1.31. */
+void test_vshpad(void);
+
 /* test_menu_help.c: menu.help, the console menu's Help row as a switch, build 55. */
 void test_menu_help(void);
 

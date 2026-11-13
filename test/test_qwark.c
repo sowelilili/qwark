@@ -17720,6 +17720,7 @@ int main(void)
 	test_uipak();
 	test_pine();
 	test_vshmem();
+	test_vshpad();
 	test_config_files();
 	test_profiles();
 
