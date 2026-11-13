@@ -64,6 +64,88 @@
 #define TOD_HERO_HEALTH      0x1784u      /* f32 hit points; Hero_checkDeath kills at <= 0 */
 #define TOD_HERO_MAX_HEALTH  0x1788u      /* f32 */
 
+/*
+ * 2026-11-13: the follow camera, which a position slot now carries (dec).
+ * Each player has a camera client, g_camClients (0x101CC2E0, ToDCamClient,
+ * 0x21D0 each; the hero's is Hero_getCamClient's lookup, player 0's the
+ * first), with sixteen camera slots of 0x200 bytes from +0xC0 (ToDCamSlot);
+ * the gameplay camera is the first slot whose type (+0x64) is 3,
+ * CamClient_findFollowCam's test (ToDFollowCam). Its state is four vectors
+ * (FollowCam_update, 0x75020, every gameplay frame):
+ *
+ *   +0xC0 target       the point it looks at: FollowCam_computeTarget moves
+ *                      it towards the hero from where it was, with lag
+ *   +0xD0 offset       the camera's position less the target: what is seen.
+ *                      FollowCam_blendOffset turns it towards the desired
+ *                      offset, yaw and pitch about the hero's up, each frame
+ *   +0xE0 desired      the offset it wants: FollowCam_computeDesiredOffset
+ *                      takes last frame's, turns its yaw by the right stick
+ *                      and eases its pitch towards the design pitch (+0x138,
+ *                      degrees) plus the stick; the yaw is kept from frame
+ *                      to frame, the pitch springs back to the design pitch
+ *   +0xF0 desired pos  target + desired, after the collision probe
+ *
+ * then +0x40 = target + offset (the camera's position) and the rotation
+ * rows at +0x10..+0x3F rebuilt from the offset (FollowCam_buildMatrix). So
+ * the direction the camera faces is the offset vector, and it sticks when
+ * the offset and the desired offset are both written: next frame starts
+ * from the desired one (its yaw kept, its pitch easing back to the design
+ * pitch as the game's own always does), and the offset has nothing to
+ * blend towards. The target is moved by the hero's own jump, so it does not
+ * lag in from the old place and swing the camera. FollowCam_snapBehind
+ * (0x6FFA0, what the game's warp with a camera reset calls) writes the same
+ * fields, with the hero's facing for the offset.
+ */
+#define TOD_CAM_CLIENT       0x101CC2E0u  /* g_camClients[0], player 0's ToDCamClient */
+#define TOD_CAM_SLOTS        0xC0u        /* ToDCamClient.slots[16] */
+#define TOD_CAM_NSLOTS       16u
+#define TOD_CAM_SLOT_LEN     0x200u
+#define TOD_CAM_TYPE         0x64u        /* s32 ToDCamSlot.type */
+#define TOD_CAM_FOLLOW       3u           /* the follow camera */
+#define TOD_CAM_POS          0x40u        /* vec4: target + offset */
+#define TOD_CAM_STATE        0xC0u        /* vec4 target, offset, desired, desired pos: one read */
+#define TOD_CAM_STATE_LEN    0x40u
+#define TOD_CAM_OFFSET       0x10u        /* within the state: +0xD0 */
+#define TOD_CAM_DESIRED      0x20u        /* within the state: +0xE0 */
+#define TOD_CAM_DESIRED_POS  0x30u        /* within the state: +0xF0 */
+#define TOD_CAM_NEAR_SQ      1024.0f      /* the target within 32 units of the hero: this hero's camera */
+#define TOD_CAM_MIN_SQ       0.0625f      /* an offset at least 0.25 long ... */
+#define TOD_CAM_MAX_SQ       4096.0f      /* ... and at most 64, or it is no camera's */
+
+/*
+ * A position slot: the 48 bytes at TOD_HERO_POS, then since 2026-11-13 the
+ * follow camera's offset (16 bytes, vec4 +0xD0), 64 in all. A 48-byte slot,
+ * saved before, or saved while no follow camera followed the hero, loads the
+ * hero alone and leaves the camera as it is.
+ */
+#define TOD_POS_SLOT_LEN     64u
+#define TOD_POS_CAM_AT       TOD_POS_BLOB_LEN
+
+/*
+ * 2026-11-13, Die: the game's own respawn, without the death animation (dec).
+ * A death's state (0x175) runs HeroDeathStateA_Update until its animation is
+ * done, which calls Hero_beginRespawnFade (0x1F7478): unless a movie is
+ * busy, it counts the death for the difficulty (DDA_OnHeroDeath), starts a
+ * one second fade to black (ScreenFade_Start(1.0, 0)), stops the pads'
+ * rumble and sets g_heroRespawnFadeState to 1. Game_UpdateFrame calls
+ * Hero_respawnWhenBlack (0x1F7508) every gameplay frame: with the state 1
+ * and the fade's progress at 1.0 or more, GameState_requestLevelRespawn
+ * (0x3BB744: GameState_Request(3, 1), the level tier alone marked to go) and
+ * the state back to 0. GameState_Update then runs Level_Exit and Level_Enter,
+ * a new hero (Hero_Init, its hit points the level table's) at the
+ * checkpoint, a new lua_State and Level_Enter's fade in from black, while
+ * g_levelLoadTier stays loaded: no load. The pause menu's abort_challenge
+ * (PauseMenu_abortChallenge, 0x259E0) asks for the same respawn with the hero
+ * alive. So Die puts the fade where Hero_beginRespawnFade's ends,
+ * ScreenFade_Set(1.0)'s fields (progress, target and the drawn alpha 1.0,
+ * the rate 0), and the state at 1: the game's next frame respawns, on its
+ * own thread, as a death's last frame does. Only DDA_OnHeroDeath's count and
+ * the rumble stop are skipped. Plain data, the same under RPCS3.
+ */
+#define TOD_RESPAWN_FADE     0x101F1E70u  /* g_heroRespawnFadeState, s32: 1 while a death waits for black */
+#define TOD_REQUESTED_NONE   0xFFFFFFFFu  /* g_requestedGameState with no state change pending */
+#define TOD_DIE_WAIT_TICKS   240u         /* a Die from the pause: two seconds of play for the respawn to be taken */
+
 /* g_saveData and what is in it (ToDSaveData, dec). */
 #define TOD_SAVE_DATA        0x1020BE70u
 #define TOD_WEAPONS          0x1020BE70u  /* ToDWeaponSlot[32], indexed by WPN_ */

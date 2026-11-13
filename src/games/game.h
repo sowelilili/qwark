@@ -555,6 +555,13 @@ struct game_api {
 	 * Tools of Destruction.
 	 */
 	const struct menu_native *menu_native;
+
+	/*
+	 * Revision 1.31, 2026-11-13: a shorter length POS_STORE also takes, a
+	 * slot of an earlier shape load_blob still reads (Tools of Destruction's
+	 * 48 bytes, the hero without the camera). 0 for none: blob_len alone.
+	 */
+	u8 blob_len_old;
 #endif
 };
 

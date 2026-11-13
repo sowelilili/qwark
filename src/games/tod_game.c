@@ -549,7 +549,7 @@ const struct game_api tod_game = {
 	tod_load_blob,
 	tod_blob_xyz,
 	tod_blob_set_xyz,
-	TOD_POS_BLOB_LEN,
+	TOD_POS_SLOT_LEN,     /* 2026-11-13: the hero and the camera; a 48-byte slot still loads */
 
 	tod_planet_names,
 	tod_planet_load,
@@ -580,5 +580,6 @@ const struct game_api tod_game = {
 	tod_savefile_desc,    /* the aside buffer: the game's own save image */
 	tod_lua_desc,         /* revision 1.27 */
 	&tod_sf_driver,       /* revision 1.28: the save system, driven by data */
-	&tod_menu_native      /* revision 1.29: the console menu is the game's pause menu */
+	&tod_menu_native,     /* revision 1.29: the console menu is the game's pause menu */
+	TOD_POS_BLOB_LEN      /* 2026-11-13: blob_len_old, a slot without the camera, which POS_STORE takes too */
 };

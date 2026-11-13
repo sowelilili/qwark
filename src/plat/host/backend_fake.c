@@ -356,6 +356,7 @@ static void seed_tod(void)
 
 	poke32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	poke32(TOD_REQUESTED_STATE, TOD_REQUESTED_NONE);   /* 2026-11-13: no state change pending, as the game's data has it */
 	poke32(TOD_CURRENT_LEVEL, 1);
 	poke32(TOD_LEVEL_OBJ, FAKE_TOD_ROOT);
 	poke32(FAKE_TOD_ROOT + TOD_HERO_PTR, FAKE_TOD_HERO);
@@ -363,6 +364,31 @@ static void seed_tod(void)
 	poke32(FAKE_TOD_HERO + TOD_HERO_HEALTH, 0x41200000u);       /* 10.0f */
 	poke32(FAKE_TOD_HERO + TOD_HERO_MAX_HEALTH, 0x41200000u);
 	poke32(TOD_LUA_STATE, FAKE_TOD_STATE);
+	/*
+	 * 2026-11-13: player 0's follow camera (tod.h, TOD_CAM_*), its third slot
+	 * (the first two another type and none), looking at a point 1.5 above
+	 * the hero from 6 behind and 2 up: target, offset, desired offset and
+	 * desired position, and the camera's position.
+	 */
+	{
+		u32 c0 = TOD_CAM_CLIENT + TOD_CAM_SLOTS, cam = c0 + 2u * TOD_CAM_SLOT_LEN;
+		static const u32 st[16] = {
+			0, 0, 0x3FC00000u, 0,                       /* target 0, 0, 1.5 */
+			0, 0xC0C00000u, 0x40000000u, 0,             /* offset 0, -6, 2 */
+			0, 0xC0C00000u, 0x40000000u, 0,             /* desired, the same */
+			0, 0xC0C00000u, 0x40600000u, 0              /* desired pos 0, -6, 3.5 */
+		};
+		u32 k;
+
+		poke32(c0 + TOD_CAM_TYPE, 1);
+		poke32(c0 + TOD_CAM_SLOT_LEN + TOD_CAM_TYPE, 0);
+		poke32(cam + TOD_CAM_TYPE, TOD_CAM_FOLLOW);
+		for (k = 0; k < 16; k++) poke32(cam + TOD_CAM_STATE + k * 4, st[k]);
+		poke32(cam + TOD_CAM_POS, 0);
+		poke32(cam + TOD_CAM_POS + 4, 0xC0C00000u);
+		poke32(cam + TOD_CAM_POS + 8, 0x40600000u);
+		poke32(cam + TOD_CAM_POS + 12, 0);
+	}
 	/* A level up after its load: g_levelLoadTier loaded, the tier loader idle (revision 1.29). */
 	{
 		u8 one = 1;

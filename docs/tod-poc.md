@@ -233,8 +233,8 @@ Every row is a plain read or write; nothing here patches code, so all of it work
 |---|---|---|---|
 | hot block | | `0x10691918` (0x5C: analogs LX LY RX RY, pad mask +0x58, remapped to the OG layout), `0x10740BB4` (the level object), `0x1029C558` (level, then challenge mode), `0x1020C28C` (bolts, raritanium, every 4th tick), `0x10385BE8` (every 4th) | dis / dec |
 | position (telemetry) | | `[[0x10740BB4]+0xC684]+0x1260`, 3 floats; the hero's pointer re-read on a new level object and every 8th tick | dec (`HeroList_getCurrentHero`, `callstack_ratchetptr_1`) |
-| position slots | | 48 bytes at hero+0x1260 (pos, centre, last centre); a load also writes pos to hero+0x1250 (prevPos) and moby+0x30 (moby = [hero+0x14]); never the handle at +0x1290 | dec (`HeroMotion_update`) |
-| Die | 4 | f32 0 to hero+0x1784; `Hero_checkDeath` does the rest | dec |
+| position slots | | 48 bytes at hero+0x1260 (pos, centre, last centre), since 2026-11-13 then the follow camera's offset (16 bytes, `g_camClients` 0x101CC2E0's first type-3 slot +0xD0); a load also writes pos to hero+0x1250 (prevPos) and moby+0x30 (moby = [hero+0x14]), and the camera's offset, desired offset, target and positions; never the handle at +0x1290 | dec (`HeroMotion_update`, `FollowCam_update`) |
+| Die | 4 | since 2026-11-13 the fade at black and `g_heroRespawnFadeState` 0x101F1E70 = 1: `Hero_respawnWhenBlack` respawns at the checkpoint, no death animation (until then f32 0 to hero+0x1784) | dec |
 | Bolts, Raritanium | 5, 6 | u32 `0x1020C28C`, `0x1020C290`, 0..999,999,999 (`Hero_addBolts`'s cap) | dec |
 | Challenge mode | 7 | u32 `0x1029C55C` (`g_challengeMode`), 0 normal, N the Nth | dec (`ChallengeMode_getCount`) |
 | Infinite ammo | 8 | LIVE: u32 `0x10385BE8` (`g_infiniteAmmo`, only Lua writes it: firing never fails) and, while it is up, every 4th tick the weapons' ammo floats held where they were and every owned device (WPN 16..23) kept at its full count, weapon.csv's MaxAmmo (since 2026-10-27: the hold alone left a device at 0 there) | dec (`Weapon_hasAmmo`, `Weapon_useAmmo`), csv |

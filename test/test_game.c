@@ -127,5 +127,6 @@ const struct game_api testgame_game = {
 	NULL,                 /* savefile_desc: no helper */
 	NULL,                 /* lua_desc: no Lua (revision 1.27) */
 	NULL,                 /* savefile_driver: none (revision 1.28) */
-	NULL                  /* menu_native: none (revision 1.29) */
+	NULL,                 /* menu_native: none (revision 1.29) */
+	0                     /* blob_len_old: one shape (revision 1.31) */
 };

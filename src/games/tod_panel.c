@@ -56,6 +56,12 @@ struct tod_panel_state {
 	u8  bs_state;          /* its state at the last look */
 	u16 bs_age;            /* ticks since the lua_State last changed, held at 0xFFFF */
 	u32 bs_lua;            /* that lua_State */
+
+	/* 2026-11-13: a Die asked for from the pause, for the game's next play (tod_die). */
+	u8  die_pending;
+	u8  die_playing;       /* the pause seen closed: play has begun */
+	u16 die_ticks;         /* ticks of play since */
+	u32 die_hero;          /* the hero it was for */
 };
 
 /*
@@ -76,6 +82,8 @@ static struct tod_panel_area g_tod_panel;
 #define TPA (&g_tod_panel)
 #endif
 #define TP (&TPA->s)
+
+static void tod_die_tick(void);
 
 void tod_panel_reset(void)
 {
@@ -880,6 +888,7 @@ void tod_panel_tick(const struct tod_as_state *as)
 	}
 	tod_cut_tick();
 	tod_black_tick(as);
+	tod_die_tick();
 }
 
 /* --------------------------------------------------------------- the cheats */
@@ -1068,52 +1077,216 @@ void tod_ammo_tick(u32 flag, u32 root)
 
 /* ---------------------------------------------------- positions, die, planets */
 
+/* A float that is neither an infinity nor a NaN. */
+static int f32_ok(u32 bits)
+{
+	return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+/*
+ * 2026-11-13: the follow camera that follows the hero (tod.h, TOD_CAM_*):
+ * player 0's camera client's first slot of type 3, as
+ * CamClient_findFollowCam picks it, whose target is within 32 units of
+ * `hero_xyz` (so a camera following something else, or a client nobody
+ * uses, is never taken). Its address and its state (target, offset, desired
+ * offset, desired position) on success.
+ */
+static int tod_follow_cam(const u8 *hero_xyz, u32 *cam, u8 state[TOD_CAM_STATE_LEN])
+{
+	u32 i, type = 0, at = 0;
+	f32 d, sq = 0.0f;
+
+	for (i = 0; i < TOD_CAM_NSLOTS; i++) {
+		u32 slot = TOD_CAM_CLIENT + TOD_CAM_SLOTS + i * TOD_CAM_SLOT_LEN;
+
+		if (mem_read_u32(slot + TOD_CAM_TYPE, &type) != ST_OK) return ST_IO_ERROR;
+		if (type == TOD_CAM_FOLLOW) { at = slot; break; }
+	}
+	if (at == 0) return ST_NOT_FOUND;
+	if (mem_read(at + TOD_CAM_STATE, state, TOD_CAM_STATE_LEN) != ST_OK) return ST_IO_ERROR;
+	for (i = 0; i < 3; i++) {
+		if (!f32_ok(be32_get(state + i * 4)) || !f32_ok(be32_get(hero_xyz + i * 4))) return ST_NOT_FOUND;
+		d = bef32_get(state + i * 4) - bef32_get(hero_xyz + i * 4);
+		sq += d * d;
+	}
+	if (!(sq <= TOD_CAM_NEAR_SQ)) return ST_NOT_FOUND;
+	*cam = at;
+	return ST_OK;
+}
+
+/* An offset a follow camera can have: finite, and neither on top of its target nor far off. */
+static int tod_cam_offset_ok(const u8 *off)
+{
+	f32 sq = 0.0f, v;
+	u32 i;
+
+	for (i = 0; i < 4; i++) {
+		if (!f32_ok(be32_get(off + i * 4))) return 0;
+	}
+	for (i = 0; i < 3; i++) {
+		v = bef32_get(off + i * 4);
+		sq += v * v;
+	}
+	return sq >= TOD_CAM_MIN_SQ && sq <= TOD_CAM_MAX_SQ;
+}
+
+/*
+ * A slot: the hero's 48 bytes, then the follow camera's offset when one
+ * follows the hero (64 bytes); otherwise the 48 alone, which load as the
+ * hero alone.
+ */
 int tod_save_blob(u8 *blob, u8 *len)
 {
-	u32 hero;
+	u8 state[TOD_CAM_STATE_LEN];
+	u32 hero, cam = 0;
 	int rc = tod_hero(&hero);
 
 	if (rc != ST_OK) return rc;
 	rc = mem_read(hero + TOD_HERO_POS, blob, TOD_POS_BLOB_LEN);
 	if (rc != ST_OK) return rc;
 	*len = TOD_POS_BLOB_LEN;
+	if (tod_follow_cam(blob, &cam, state) == ST_OK && tod_cam_offset_ok(state + TOD_CAM_OFFSET)) {
+		memcpy(blob + TOD_POS_CAM_AT, state + TOD_CAM_OFFSET, 16);
+		*len = TOD_POS_SLOT_LEN;
+	}
 	return ST_OK;
+}
+
+/*
+ * The camera of a 64-byte slot (tod.h, TOD_CAM_*): the saved offset as both
+ * the offset and the desired one, so the next frame keeps it; the target
+ * moved by the hero's own jump (`from` the position before the load, `to`
+ * the slot's), and the positions it implies, target + offset, so nothing
+ * lags in from the old place. Each vector's w goes along as the game adds it.
+ */
+static int tod_load_cam(u32 cam, u8 state[TOD_CAM_STATE_LEN], const u8 *from, const u8 *to, const u8 *off)
+{
+	u8 pos[16];
+	u32 i;
+
+	for (i = 0; i < 3; i++)
+		bef32_put(state + i * 4, bef32_get(state + i * 4) + (bef32_get(to + i * 4) - bef32_get(from + i * 4)));
+	memcpy(state + TOD_CAM_OFFSET, off, 16);
+	memcpy(state + TOD_CAM_DESIRED, off, 16);
+	for (i = 0; i < 4; i++) {
+		f32 p = bef32_get(state + i * 4) + bef32_get(off + i * 4);
+
+		bef32_put(state + TOD_CAM_DESIRED_POS + i * 4, p);
+		bef32_put(pos + i * 4, p);
+	}
+	if (mem_write(cam + TOD_CAM_STATE, state, TOD_CAM_STATE_LEN) != ST_OK) return ST_IO_ERROR;
+	return mem_write(cam + TOD_CAM_POS, pos, sizeof(pos));
 }
 
 /*
  * The blob back, and its position also as the hero's previous one and the
  * moby's: the motion update copies pos to the moby every frame anyway, but
- * without prevPos the first frame derives a velocity from the jump.
+ * without prevPos the first frame derives a velocity from the jump. A
+ * 64-byte slot puts the camera back too (tod_load_cam), found with the hero
+ * where he was; a 48-byte slot, or one whose camera is not usable, leaves
+ * the camera alone.
  */
 int tod_load_blob(const u8 *blob, u8 len)
 {
-	u32 hero, moby = 0;
-	int rc;
+	u8 state[TOD_CAM_STATE_LEN], from[12];
+	u32 hero, moby = 0, cam = 0;
+	int rc, with_cam = 0;
 
-	if (len != TOD_POS_BLOB_LEN) return ST_BAD_ARG;
+	if (len != TOD_POS_BLOB_LEN && len != TOD_POS_SLOT_LEN) return ST_BAD_ARG;
 	rc = tod_hero(&hero);
 	if (rc != ST_OK) return rc;
+	if (len == TOD_POS_SLOT_LEN && tod_cam_offset_ok(blob + TOD_POS_CAM_AT) &&
+	    mem_read(hero + TOD_HERO_POS, from, sizeof(from)) == ST_OK &&
+	    tod_follow_cam(from, &cam, state) == ST_OK)
+		with_cam = 1;
 	rc = mem_write(hero + TOD_HERO_POS, blob, TOD_POS_BLOB_LEN);
 	if (rc != ST_OK) return rc;
 	rc = mem_write(hero + TOD_HERO_PREV_POS, blob, 16);
 	if (rc != ST_OK) return rc;
 	if (mem_read_u32(hero + TOD_HERO_MOBY, &moby) == ST_OK && moby != 0 && (moby & 3u) == 0)
 		mem_write(moby + TOD_MOBY_POS, blob, 16);
+	if (with_cam) return tod_load_cam(cam, state, from, blob, blob + TOD_POS_CAM_AT);
 	return ST_OK;
 }
 
 /*
- * Die: the hit points to 0. Hero_checkDeath, every frame, then puts the hero
- * into its death state, which zeroes the rest itself; the maximum is left as
- * it is.
+ * Die, since 2026-11-13 (tod.h, TOD_RESPAWN_FADE): the respawn the game makes
+ * once a death's fade is black, with no death animation and no fade. The
+ * fade as ScreenFade_Set(1.0) leaves it, then g_heroRespawnFadeState 1, in
+ * that order: the game's next frame calls GameState_requestLevelRespawn
+ * itself. Only in play, with no state change, planet load or movie under
+ * way (Hero_beginRespawnFade's own test is the movie). The hit points are
+ * not touched: the respawn's new hero has them full.
+ */
+static int tod_respawn(void)
+{
+	u8 fade[12];
+	u32 state = 0, root = 0, request = 0, requested = 0, movie = 0;
+	int rc;
+
+	rc = mem_read_u32(TOD_GAME_STATE, &state);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_OBJ, &root);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_LOAD_REQUEST, &request);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_REQUESTED_STATE, &requested);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_MOVIE_PLAYER + TOD_MP_STATE, &movie);
+	if (rc != ST_OK) return rc;
+	if (state != TOD_STATE_GAMEPLAY || root == 0 || (root & 3u) != 0 || request != 0xFFFFFFFFu ||
+	    requested != TOD_REQUESTED_NONE || (movie >= 1u && movie <= 4u))
+		return ST_BUSY;
+	be32_put(fade, TOD_FADE_BLACK);      /* progress */
+	be32_put(fade + 4, 0);               /* rate */
+	be32_put(fade + 8, TOD_FADE_BLACK);  /* target */
+	rc = mem_write(root + TOD_FADE_PROGRESS, fade, sizeof(fade));
+	if (rc == ST_OK) rc = mem_write_u32(root + TOD_FADE_ALPHA, TOD_FADE_BLACK);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_RESPAWN_FADE, 1);
+	return rc;
+}
+
+/*
+ * From the game's own pause menu (the Trainer's Game page), where no
+ * gameplay frame runs: kept for the pause's end, and made on the first tick
+ * of play (tod_die_tick).
  */
 int tod_die(void)
 {
-	u32 hero;
+	u32 hero, state = 0;
 	int rc = tod_hero(&hero);
 
 	if (rc != ST_OK) return rc;
-	return mem_write_u32(hero + TOD_HERO_HEALTH, 0);
+	rc = mem_read_u32(TOD_GAME_STATE, &state);
+	if (rc != ST_OK) return rc;
+	if (state == TOD_STATE_PAUSE) {
+		TP->die_pending = 1;
+		TP->die_playing = 0;
+		TP->die_ticks = 0;
+		TP->die_hero = hero;
+		return ST_OK;
+	}
+	TP->die_pending = 0;
+	return tod_respawn();
+}
+
+/*
+ * A Die kept from the pause: made once play is back (the same hero, g_gameState
+ * 4), retried while the respawn is BUSY for a moment after, and dropped
+ * when the hero goes or the game goes anywhere but the pause and play.
+ */
+static void tod_die_tick(void)
+{
+	u32 hero = 0, state = 0;
+
+	if (!TP->die_pending) return;
+	if (tod_hero(&hero) != ST_OK || hero != TP->die_hero || mem_read_u32(TOD_GAME_STATE, &state) != ST_OK) {
+		TP->die_pending = 0;
+		return;
+	}
+	if (state == TOD_STATE_PAUSE && !TP->die_playing) return;
+	if (state != TOD_STATE_GAMEPLAY) {
+		TP->die_pending = 0;
+		return;
+	}
+	TP->die_playing = 1;
+	if (tod_respawn() != ST_BUSY || ++TP->die_ticks >= TOD_DIE_WAIT_TICKS) TP->die_pending = 0;
 }
 
 /*

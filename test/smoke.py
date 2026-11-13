@@ -5407,6 +5407,8 @@ TOD_OWN_SITES = [(0x003C5744, 0x7F83E378, 0x48025EB4),   # LevelTransition_updat
 TOD_LOAD_FADE_TIME = 0x008BA51C                 # k_loadLevelFadeTime
 TOD_MOVIE_STATE = 0x101D4F50 + 0x58             # g_moviePlayer's state (2026-11-12: Remove black screens)
 TOD_FAKE_ROOT = 0x30000000                      # the simulator's level object (backend_fake.c, seed_tod)
+TOD_RESPAWN_FADE = 0x101F1E70                   # g_heroRespawnFadeState (2026-11-13: Die)
+TOD_CAM_CLIENT = 0x101CC2E0                     # g_camClients[0], the follow camera's client (2026-11-13)
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
 TOD_FADE_STORY = 0x3DE00000                     # 7/64 s, a story FMV load's (2026-11-02; 5/64 s from 2026-10-31)
@@ -6092,9 +6094,50 @@ def smoke_tod(c, sim):
     mem_write(c, TOD_LF_SHIP_BYTE, bytes([ship]))
     check(mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME, "ToD: and the game's fade back after both")
     tod_fake_load(c, "PLANET_LOAD")
+    # 2026-11-13: DIE is the game's own respawn (tod.h, TOD_RESPAWN_FADE): the fade black and the
+    # respawn state 1, which the game's next frame takes; the hit points are never zeroed.
+    fade = TOD_FAKE_ROOT + 0x5B620
+    was_fade = c.call(OP_MEM_READ, struct.pack(">II", fade, 24))[1]
     status, _ = c.call(OP_DIE)
-    check(status == ST_OK and mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0, "ToD: DIE zeroes the hero's hit points",
-          status)
+    check(status == ST_OK and mem_read_u32(c, TOD_RESPAWN_FADE) == 1 and
+          mem_read_u32(c, TOD_FAKE_ROOT + 0x5B62C) == 0x3F800000 and mem_read_u32(c, TOD_FAKE_ROOT + 0x5B634) == 0x3F800000 and
+          mem_read_u32(c, TOD_FAKE_HERO + 0x1784) == 0x41200000 and mem_read_u32(c, TOD_LOAD_REQUEST) == 0xFFFFFFFF,
+          "ToD: DIE asks for the game's respawn: the fade black, g_heroRespawnFadeState 1, the hit points and the planet "
+          "request untouched", status)
+    mem_write(c, TOD_RESPAWN_FADE, bytes(4))
+    mem_write(c, fade, was_fade)
+
+    # 2026-11-13: a position slot carries the follow camera's offset (tod.h, TOD_CAM_*): the simulator's camera,
+    # player 0's third slot, looks at 1.5 above the hero.
+    cam = TOD_CAM_CLIENT + 0xC0 + 2 * 0x200
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 4.0, 5.0, 6.0))
+    mem_write(c, cam + 0xC0, struct.pack(">4f", 4.0, 5.0, 7.5, 0.0))
+    mem_write(c, cam + 0xD0, struct.pack(">4f", -6.0, 0.0, 2.0, 0.0))
+    c.call(OP_POS_CLEAR, bytes([7]))
+    status, _ = c.call(OP_POS_SAVE, bytes([7]))
+    check(status == ST_OK, "ToD: POS_SAVE with the camera", status)
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 40.0, 50.0, 60.0))
+    mem_write(c, cam + 0xC0, struct.pack(">4f", 40.0, 50.0, 61.5, 0.0))
+    mem_write(c, cam + 0xD0, struct.pack(">4f", 0.0, 6.0, 2.0, 0.0))
+    mem_write(c, cam + 0xE0, struct.pack(">4f", 0.0, 6.0, 2.0, 0.0))
+    status, _ = c.call(OP_POS_LOAD, bytes([7]))
+    got = c.call(OP_MEM_READ, struct.pack(">II", cam + 0xC0, 0x40))[1]
+    check(status == ST_OK and c.call(OP_MEM_READ, struct.pack(">II", TOD_FAKE_HERO + 0x1260, 12))[1] ==
+          struct.pack(">3f", 4.0, 5.0, 6.0) and got[0:12] == struct.pack(">3f", 4.0, 5.0, 7.5) and
+          got[16:32] == struct.pack(">4f", -6.0, 0.0, 2.0, 0.0) and got[32:48] == struct.pack(">4f", -6.0, 0.0, 2.0, 0.0) and
+          got[48:60] == struct.pack(">3f", -2.0, 5.0, 9.5),
+          "ToD: POS_LOAD puts the hero back and the camera facing the way it was saved, its target moved with him",
+          (status, got.hex() if got else None))
+    status, _ = c.call(OP_POS_STORE, bytes([7, 48, 0, 0]) + struct.pack(">3f", 8.0, 9.0, 10.0) + bytes(36))
+    before = c.call(OP_MEM_READ, struct.pack(">II", cam + 0x40, 0xC0))[1]
+    status2, _ = c.call(OP_POS_LOAD, bytes([7]))
+    check(status == ST_OK and status2 == ST_OK and c.call(OP_MEM_READ, struct.pack(">II", TOD_FAKE_HERO + 0x1260, 12))[1] ==
+          struct.pack(">3f", 8.0, 9.0, 10.0) and c.call(OP_MEM_READ, struct.pack(">II", cam + 0x40, 0xC0))[1] == before,
+          "ToD: POS_STORE takes an older 48-byte slot, which loads the hero alone, the camera untouched", (status, status2))
+    status, _ = c.call(OP_POS_STORE, bytes([7, 40, 0, 0]) + bytes(40))
+    status2, _ = c.call(OP_POS_STORE, bytes([7, 63, 0, 0]) + bytes(63))
+    check(status == ST_BAD_ARG and status2 == ST_BAD_ARG, "ToD: and refuses any length but 48 and 64", (status, status2))
+    c.call(OP_POS_CLEAR, bytes([7]))
 
     # Lua: the helper goes in with the console menu a few seconds into play (revision 1.29), or with
     # the first LUA_EXEC in a level, whichever comes first.

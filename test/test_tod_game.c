@@ -212,8 +212,7 @@ static void test_tod_features(void)
 	tick(LIVE_TICKS_FOR_TEST);
 	check(!((features_toggle_state() >> TF_GOD_RATCHET) & 1u), "and 0 as off");
 	check(g->fast_loads == GAME_FEATURE(TF_FAST_LOADS), "the fast-loads combo flips Fast loads (test_tod_fastloads)");
-	check(features_trigger(TF_DIE) == ST_OK && rdf(FAKE_HERO + TOD_HERO_HEALTH) == 0.0f &&
-	      rdf(FAKE_HERO + TOD_HERO_MAX_HEALTH) == 10.0f, "Die: the hit points to 0, the maximum kept");
+	/* Die: test_tod_die, the game's own respawn since 2026-11-13. */
 
 	check(features_trigger(TF_UNLOCK_SP) == ST_OK && rd32(TOD_SKILL_POINTS) == 0x0FFFFFFFu &&
 	      rd32(TOD_SKILL_POINTS + 4) == 0xFFFFFFFFu, "all 60 skill points");
@@ -265,8 +264,8 @@ static void test_tod_features(void)
 	wrf(FAKE_HERO + TOD_HERO_POS + 4, 2.0f);
 	wrf(FAKE_HERO + TOD_HERO_POS + 8, 3.0f);
 	wr32(FAKE_HERO + 0x1290, 0xDEADBEEFu);
-	check(g->save_blob(blob, &n) == ST_OK && n == TOD_POS_BLOB_LEN && g->blob_len == TOD_POS_BLOB_LEN,
-	      "a slot is 48 bytes of the hero's motion");
+	check(g->save_blob(blob, &n) == ST_OK && n == TOD_POS_SLOT_LEN && g->blob_len == TOD_POS_SLOT_LEN,
+	      "a slot is 48 bytes of the hero's motion and 16 of the follow camera's (test_tod_positions_camera)");
 	wrf(FAKE_HERO + TOD_HERO_POS, 9.0f);
 	wr32(FAKE_HERO + 0x1290, 0x12345678u);
 	check(g->load_blob(blob, n) == ST_OK && rdf(FAKE_HERO + TOD_HERO_POS) == 1.0f &&
@@ -3832,6 +3831,283 @@ static void test_tod_black_screens(void)
 	tick(2);
 }
 
+/* ------------------------------- positions with the camera, Die (2026-11-13) */
+
+/* Player 0's follow camera, as backend_fake.c seeds it: the third slot (tod.h, TOD_CAM_*). */
+#define CAM        (TOD_CAM_CLIENT + TOD_CAM_SLOTS + 2u * TOD_CAM_SLOT_LEN)
+#define CAM_ST     (CAM + TOD_CAM_STATE)
+
+static void put3(u32 addr, f32 x, f32 y, f32 z)
+{
+	wrf(addr, x);
+	wrf(addr + 4, y);
+	wrf(addr + 8, z);
+}
+
+static int is3(u32 addr, f32 x, f32 y, f32 z)
+{
+	return rdf(addr) == x && rdf(addr + 4) == y && rdf(addr + 8) == z;
+}
+
+/* The camera's whole state and position, to tell whether a load touched it. */
+static void cam_snapshot(u8 out[0x50])
+{
+	host_peek(CAM_ST, out, 0x40);
+	host_peek(CAM + TOD_CAM_POS, out + 0x40, 0x10);
+}
+
+static void test_tod_positions_camera(void)
+{
+	u8 blob[QWARK_MAX_BLOB], before[0x50], after[0x50];
+	u8 len = 0, planet;
+	int i;
+
+	group("ToD: a position slot carries the follow camera's direction (2026-11-13)");
+	planet = session_current_planet();
+	/* The hero at (10, 20, 5), the camera looking at 1.5 above him from (3, -4, 2) off. */
+	put3(FAKE_HERO + TOD_HERO_POS, 10.0f, 20.0f, 5.0f);
+	put3(CAM_ST, 10.0f, 20.0f, 6.5f);
+	put3(CAM_ST + TOD_CAM_OFFSET, 3.0f, -4.0f, 2.0f);
+	put3(CAM_ST + TOD_CAM_DESIRED, 3.0f, -4.0f, 2.5f);
+	check(session_position_save(3) == ST_OK && pos_fetch(planet, 3, blob, &len) == ST_OK && len == TOD_POS_SLOT_LEN,
+	      "POS_SAVE keeps 64 bytes in the positions file");
+	check(bef32_get(blob) == 10.0f && bef32_get(blob + 48) == 3.0f && bef32_get(blob + 52) == -4.0f &&
+	      bef32_get(blob + 56) == 2.0f, "the hero's 48, then the camera's offset as it is on screen, not the desired one");
+
+	/* Somewhere else, the camera turned round. */
+	put3(FAKE_HERO + TOD_HERO_POS, 100.0f, 200.0f, 50.0f);
+	put3(CAM_ST, 100.0f, 200.0f, 51.5f);
+	put3(CAM_ST + TOD_CAM_OFFSET, -5.0f, 0.0f, 1.0f);
+	put3(CAM_ST + TOD_CAM_DESIRED, -5.0f, 0.0f, 1.0f);
+	put3(CAM_ST + TOD_CAM_DESIRED_POS, 95.0f, 200.0f, 52.5f);
+	put3(CAM + TOD_CAM_POS, 95.0f, 200.0f, 52.5f);
+	check(session_position_load(3) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 10.0f, 20.0f, 5.0f),
+	      "POS_LOAD puts the hero back");
+	check(is3(CAM_ST + TOD_CAM_OFFSET, 3.0f, -4.0f, 2.0f) && is3(CAM_ST + TOD_CAM_DESIRED, 3.0f, -4.0f, 2.0f),
+	      "and the saved offset as both the offset and the desired one, so the next frame keeps it");
+	check(is3(CAM_ST, 10.0f, 20.0f, 6.5f), "the target moved by the hero's own jump, still 1.5 above him");
+	check(is3(CAM_ST + TOD_CAM_DESIRED_POS, 13.0f, 16.0f, 8.5f) && is3(CAM + TOD_CAM_POS, 13.0f, 16.0f, 8.5f),
+	      "and the camera's two positions, target + offset");
+
+	/* A slot saved before the camera: 48 bytes, the hero alone. */
+	memset(blob, 0, sizeof(blob));
+	bef32_put(blob, 7.0f);
+	bef32_put(blob + 4, 8.0f);
+	bef32_put(blob + 8, 9.0f);
+	check(pos_store(planet, 4, blob, TOD_POS_BLOB_LEN) == ST_OK, "an old 48-byte slot in the file");
+	cam_snapshot(before);
+	check(session_position_load(4) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 7.0f, 8.0f, 9.0f),
+	      "it still loads the hero");
+	cam_snapshot(after);
+	check(memcmp(before, after, sizeof(before)) == 0, "and leaves the camera exactly as it was");
+	/* A 48-byte slot read into a buffer that still holds an earlier slot's camera past its end. */
+	memset(blob, 0, sizeof(blob));
+	bef32_put(blob, 7.5f);
+	bef32_put(blob + 48, -9.0f);
+	bef32_put(blob + 52, 1.0f);
+	bef32_put(blob + 56, 3.0f);
+	check(session_game()->load_blob(blob, TOD_POS_BLOB_LEN) == ST_OK && rdf(FAKE_HERO + TOD_HERO_POS) == 7.5f,
+	      "a 48-byte blob with a camera's bytes after it loads the hero");
+	cam_snapshot(after);
+	check(memcmp(before, after, sizeof(before)) == 0, "and never reads the bytes past its length as a camera");
+
+	/* A camera that is not following the hero: the slot is the hero's 48 bytes. */
+	put3(CAM_ST, 900.0f, 20.0f, 6.5f);
+	check(session_position_save(5) == ST_OK && pos_fetch(planet, 5, blob, &len) == ST_OK && len == TOD_POS_BLOB_LEN,
+	      "a follow camera 890 units off is not this hero's: a 48-byte slot");
+	check(session_position_load(3) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 10.0f, 20.0f, 5.0f) &&
+	      rdf(CAM_ST) == 900.0f && rdf(CAM_ST + TOD_CAM_OFFSET) == 3.0f,
+	      "and a 64-byte slot loaded then moves the hero and leaves that camera alone");
+	put3(CAM_ST, 10.0f, 20.0f, 6.5f);
+
+	/* No follow camera at all (the slot's type another): 48 bytes. */
+	wr32(CAM + TOD_CAM_TYPE, 6);
+	check(session_position_save(5) == ST_OK && pos_fetch(planet, 5, blob, &len) == ST_OK && len == TOD_POS_BLOB_LEN,
+	      "no slot of type 3: a 48-byte slot");
+	wr32(CAM + TOD_CAM_TYPE, TOD_CAM_FOLLOW);
+
+	/* An imported 64-byte blob whose offset is no camera's: the hero, and the camera kept. */
+	check(session_position_save(6) == ST_OK && pos_fetch(planet, 6, blob, &len) == ST_OK && len == TOD_POS_SLOT_LEN,
+	      "a 64-byte slot again");
+	be32_put(blob + 52, 0x7FC00000u);   /* NaN */
+	bef32_put(blob, 1.0f);
+	check(session_position_store(6, blob, TOD_POS_SLOT_LEN) == ST_OK, "POS_STORE takes 64 bytes");
+	cam_snapshot(before);
+	check(session_position_load(6) == ST_OK && rdf(FAKE_HERO + TOD_HERO_POS) == 1.0f, "a NaN offset still loads the hero");
+	cam_snapshot(after);
+	check(memcmp(before, after, sizeof(before)) == 0, "and leaves the camera alone");
+	for (i = 48; i < 64; i++) blob[i] = 0;
+	check(session_position_store(6, blob, TOD_POS_SLOT_LEN) == ST_OK && session_position_load(6) == ST_OK &&
+	      memcmp(before, (cam_snapshot(after), after), sizeof(before)) == 0,
+	      "a zero offset, on top of its target, is no camera's either");
+	/* POS_STORE of an older ToD slot, 48 bytes: stored as it is, and loaded as the hero alone. */
+	memset(blob, 0, sizeof(blob));
+	bef32_put(blob, 21.0f);
+	bef32_put(blob + 4, 22.0f);
+	bef32_put(blob + 8, 23.0f);
+	bef32_put(blob + 48, -9.0f);   /* bytes past the 48, never stored */
+	bef32_put(blob + 56, 3.0f);
+	check(session_position_store(6, blob, TOD_POS_BLOB_LEN) == ST_OK && pos_fetch(planet, 6, blob, &len) == ST_OK &&
+	      len == TOD_POS_BLOB_LEN && bef32_get(blob) == 21.0f,
+	      "POS_STORE takes a 48-byte slot, a slot without the camera, and keeps it at 48");
+	cam_snapshot(before);
+	check(session_position_load(6) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 21.0f, 22.0f, 23.0f),
+	      "and POS_LOAD puts the hero there");
+	cam_snapshot(after);
+	check(memcmp(before, after, sizeof(before)) == 0, "with the camera untouched");
+	check(session_position_store(6, blob, 30) == ST_BAD_ARG && session_position_store(6, blob, 47) == ST_BAD_ARG &&
+	      session_position_store(6, blob, 49) == ST_BAD_ARG && session_position_store(6, blob, 63) == ST_BAD_ARG &&
+	      session_position_store(6, blob, 40) == ST_BAD_ARG,
+	      "any other length is refused: 30, 40 (the four games'), 47, 49, 63");
+	check(pos_fetch(planet, 6, blob, &len) == ST_OK && len == TOD_POS_BLOB_LEN && bef32_get(blob) == 21.0f,
+	      "and leaves the slot as it was");
+	pos_clear(planet, 3);
+	pos_clear(planet, 4);
+	pos_clear(planet, 5);
+	pos_clear(planet, 6);
+}
+
+/* The play Die wants: in gameplay, nothing pending, no movie, the fade clear. */
+static void die_world(void)
+{
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	wr32(FAKE_ROOT + TOD_HERO_PTR, FAKE_HERO);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_REQUESTED_STATE, TOD_REQUESTED_NONE);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 0);
+	wr32(TOD_RESPAWN_FADE, 0);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS + 4, 0.5f);
+	wrf(FAKE_ROOT + TOD_FADE_TARGET, 0.0f);
+	wrf(FAKE_ROOT + TOD_FADE_ALPHA, 0.0f);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 10.0f);
+}
+
+/* What Die asks the game for: Hero_respawnWhenBlack's two conditions, and nothing of a death's. */
+static int respawn_asked(void)
+{
+	return rd32(TOD_RESPAWN_FADE) == 1 && rdf(FAKE_ROOT + TOD_FADE_PROGRESS) >= 1.0f &&
+	       rdf(FAKE_ROOT + TOD_FADE_TARGET) == 1.0f && rdf(FAKE_ROOT + TOD_FADE_PROGRESS + 4) == 0.0f &&
+	       rdf(FAKE_ROOT + TOD_FADE_ALPHA) == 1.0f;
+}
+
+/*
+ * The game's side, as its executable does it: Hero_respawnWhenBlack sees the
+ * state 1 and the fade black and calls GameState_Request(3, 1), the state
+ * back to 0; GameState_Update then runs Level_Exit (the lua_State 0) with
+ * the loader on state 3's tiers while g_levelLoadTier stays loaded, and
+ * Level_Enter (a new hero's hit points, the new lua_State, black and its
+ * fade in). Returns 0 when there was no respawn to make.
+ */
+static int game_respawns(u32 lua)
+{
+	if (rd32(TOD_RESPAWN_FADE) != 1 || rdf(FAKE_ROOT + TOD_FADE_PROGRESS) < 1.0f) return 0;
+	wr32(TOD_RESPAWN_FADE, 0);
+	wr32(TOD_LUA_STATE, 0);
+	wr32(TOD_LOAD_JOB, TOD_LOAD_JOB_LEVEL);
+	tick(4);
+	wrf(FAKE_HERO + TOD_HERO_HEALTH, 10.0f);
+	level_enters(lua);
+	tick(4);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.4f);
+	tick(2);
+	wrf(FAKE_ROOT + TOD_FADE_PROGRESS, 0.0f);
+	tick(2);
+	return 1;
+}
+
+static void test_tod_die(void)
+{
+	u32 seq, arg = 0;
+
+	group("ToD: Die is the game's own respawn, no death animation (2026-11-13)");
+	die_world();
+	check(session_die() == ST_OK && respawn_asked(), "Die: the fade at black and g_heroRespawnFadeState 1");
+	check(rdf(FAKE_HERO + TOD_HERO_HEALTH) == 10.0f && rdf(FAKE_HERO + TOD_HERO_MAX_HEALTH) == 10.0f,
+	      "and the hit points not zeroed: no death, no death animation");
+	check(rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu && rd32(TOD_REQUESTED_STATE) == TOD_REQUESTED_NONE,
+	      "no planet load and no state written from qwark's thread: the game asks for the respawn itself");
+	check(features_trigger(TF_DIE) == ST_OK && respawn_asked(), "the Die button is the same");
+
+	die_world();
+	wr32(TOD_LOAD_REQUEST, 4);
+	check(session_die() == ST_BUSY && rd32(TOD_RESPAWN_FADE) == 0, "not over a planet load already asked for");
+	die_world();
+	wr32(TOD_REQUESTED_STATE, 3);
+	check(session_die() == ST_BUSY && rd32(TOD_RESPAWN_FADE) == 0, "nor over a state change pending");
+	die_world();
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 2);
+	check(session_die() == ST_BUSY && rd32(TOD_RESPAWN_FADE) == 0 && rdf(FAKE_ROOT + TOD_FADE_PROGRESS) == 0.0f,
+	      "nor while a cinematic plays, as Hero_beginRespawnFade refuses");
+	die_world();
+	wr32(TOD_GAME_STATE, 3);
+	check(session_die() == ST_BUSY && rd32(TOD_RESPAWN_FADE) == 0, "nor outside gameplay and the pause");
+
+	/* From the pause menu: kept until play comes back. */
+	die_world();
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	check(session_die() == ST_OK && rd32(TOD_RESPAWN_FADE) == 0 && rdf(FAKE_ROOT + TOD_FADE_ALPHA) == 0.0f,
+	      "Die in the pause writes nothing while the pause is up");
+	tick(30);
+	check(rd32(TOD_RESPAWN_FADE) == 0, "however long it stays up");
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(2);
+	check(respawn_asked(), "and the respawn is asked for as play comes back");
+	die_world();
+	tick(4);
+	check(rd32(TOD_RESPAWN_FADE) == 0, "once");
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	session_die();
+	wr32(TOD_GAME_STATE, 3);   /* a quit or a load from the pause */
+	tick(2);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(4);
+	check(rd32(TOD_RESPAWN_FADE) == 0, "a Die from a pause that left for anything but play is dropped");
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	session_die();
+	wr32(FAKE_ROOT + TOD_HERO_PTR, FAKE_HERO + 0x4000);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	tick(4);
+	check(rd32(TOD_RESPAWN_FADE) == 0, "and so is one whose hero is gone");
+	wr32(FAKE_ROOT + TOD_HERO_PTR, FAKE_HERO);
+
+	group("ToD: the autosplitter takes Die's respawn for no load and no run (2026-11-13)");
+	/* A fresh file's Metropolis, where a load would be a run's RESET. */
+	die_world();
+	wr32(TOD_CURRENT_LEVEL, TOD_LEVEL_METROPOLIS);
+	wr32(TOD_LOAD_JOB, 0);
+	wr8(AS_TIER, 1);
+	wr8(TOD_FRONT_END, 0);
+	wr32(TOD_LOAD_SCREEN, 1);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	metropolis_beaten(0);
+	tick(8);
+	seq = autosplit_latest_seq();
+	check(session_die() == ST_OK, "Die on a fresh Metropolis");
+	tick(2);
+	check(game_respawns(AS_STATE + 0x200), "the game makes the respawn it asked for");
+	tick(8);
+	check(as_all(seq) == 0, "and the autosplitter emits nothing: no RESET, START, split or long load");
+	check(rd8(AS_TIER) == 1, "(g_levelLoadTier stayed loaded, which is what tells a respawn from a load)");
+
+	/* A played Cobalia, then on to another planet: the origin is kept through the respawn. */
+	metropolis_beaten(1);
+	wr32(TOD_CURRENT_LEVEL, 1);
+	planet_load(1, AS_STATE);
+	tick(4);
+	seq = autosplit_latest_seq();
+	die_world();
+	check(session_die() == ST_OK && game_respawns(AS_STATE + 0x240), "Die on Cobalia, the respawn made");
+	tick(4);
+	check(as_all(seq) == 0, "nothing emitted");
+	planet_load(9, AS_STATE + 0x280);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 9 && as_all(seq) == 1,
+	      "and the next trip splits once, from Cobalia, as after any death");
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(4);
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -3853,6 +4129,8 @@ void test_tod_game(void)
 	test_tod_autosplit_start_fade();
 	test_tod_autosplit_ending();
 	test_tod_autosplit_quit();
+	test_tod_positions_camera();   /* 2026-11-13 */
+	test_tod_die();
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_load_fade();
 	test_tod_load_fast();

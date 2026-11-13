@@ -1235,13 +1235,21 @@ int session_position_edit(u8 slot, const f32 xyz[3])
  * game had just saved it. The length must be this game's length to the byte, so
  * a blob of the wrong shape - another game's, or one from before a game's blob
  * changed - is refused rather than stored for load_blob to misread later.
+ * Revision 1.31: or the earlier length a game names in blob_len_old, a shape
+ * its load_blob still reads (ToD's 48-byte slot, the hero without the camera).
  */
 int session_position_store(u8 slot, const u8 *blob, u8 len)
 {
 	if (g_game == NULL || g_game->save_blob == NULL) return ST_UNSUPPORTED;
 	if (g_state != SESSION_INGAME) return ST_NOT_INGAME;
 	if (slot >= QWARK_POS_SLOTS) return ST_BAD_ARG;
-	if (len == 0 || len != g_game->blob_len) return ST_BAD_ARG;
+	if (len == 0) return ST_BAD_ARG;
+#if QWARK_HAS_TOD
+	/* Revision 1.31: or the game's earlier shape, which its load_blob still reads (ToD's 48 bytes). */
+	if (len != g_game->blob_len && len != g_game->blob_len_old) return ST_BAD_ARG;
+#else
+	if (len != g_game->blob_len) return ST_BAD_ARG;
+#endif
 
 	return pos_store(g_hot.current_planet, slot, blob, len);
 }
