@@ -20,6 +20,7 @@
 #include "../src/core/util.h"
 #include "../src/core/autosplit.h"
 #include "../src/core/runwarn.h"
+#include "../src/core/mods.h"
 #include "../src/core/switches.h"
 #include "../src/games/game.h"
 #include "../src/games/titles.h"
@@ -1878,6 +1879,25 @@ static void test_tod_autosplit_long_load(void)
 	tick(4);
 }
 
+/* Revision 1.33: a ToD mod whose patch.txt says it is not run-legal, made (1) or taken away (0). */
+static void rw_mod_put(int make)
+{
+	static const char folder[] = "/dev_hdd0/qwark/mods/" TOD_TITLE "/tod-rw-illegal";
+	static const char text[] = "#- name: ToD RW Illegal\n#- legal: false\n0x00880000: 0x60000000\n";
+	char path[160];
+	plat_file_t f;
+
+	snprintf(path, sizeof(path), "%s/patch.txt", folder);
+	if (!make) {
+		plat_file_unlink(path);
+		plat_dir_remove(folder);
+		return;
+	}
+	if (plat_file_open(path, PLAT_OPEN_WRITE, &f) != 0) return;
+	plat_file_write(f, text, (u32)strlen(text));
+	plat_file_close(f);
+}
+
 static void test_tod_autosplit_runs(void)
 {
 	static const u32 before[] = { 635, 636, 637 };
@@ -1953,7 +1973,18 @@ static void test_tod_autosplit_runs(void)
 	death(AS_STATE + 0x60);
 	check(as_all(seq) == 0, "two more, one between two ticks, one with the same lua_State back: nothing");
 
-	/* Metropolis loaded again on Metropolis, flag still clear (a new game or a save there): a new run. */
+	/*
+	 * Metropolis loaded again on Metropolis, flag still clear (a new game or a save there): a new run.
+	 * Revision 1.33: with run.warnings 2, cheats only, and a mod the run may not have in the game,
+	 * its START says the cheats line and no mod line.
+	 */
+	rw_mod_put(1);
+	check(mods_rescan() == ST_OK && mods_load("tod-rw-illegal") == ST_OK, "a mod marked not run-legal loaded in ToD");
+	check(features_set(TF_INFINITE_AMMO, 1) == ST_OK, "Infinite ammo on again");
+	check(config_set_run_warnings(RUN_WARN_CHEATS_ONLY) == ST_OK && config_run_warnings() == RUN_WARN_CHEATS_ONLY,
+	      "run.warnings = 2, cheats only");
+	rw_starts = runwarn_starts();
+	rw_notes = host_notify_count();
 	seq = autosplit_latest_seq();
 	load_begins();
 	tick(2);
@@ -1967,6 +1998,14 @@ static void test_tod_autosplit_runs(void)
 	fade_halfway();
 	tick(2);
 	check(as_count(seq, AUTOSPLIT_START, 0, NULL) == 1, "and START at its fade in");
+	check(runwarn_starts() == rw_starts + 1 && runwarn_last_cheats() == 1 && runwarn_last_illegal() == 1 &&
+	      host_notify_count() == rw_notes + 1 && strcmp(host_notify_last(), "Warning: 1 cheat enabled") == 0,
+	      "cheats only: the mod counted, and the START says \"Warning: 1 cheat enabled\" and no mod line");
+	config_set_run_warnings(RUN_WARN_ALL);
+	features_set(TF_INFINITE_AMMO, 0);
+	mods_unload("tod-rw-illegal");
+	rw_mod_put(0);
+	mods_rescan();
 
 	/* A Metropolis save made after the first planet: flag set, no start, no split. */
 	metropolis_beaten(1);

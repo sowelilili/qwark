@@ -92,6 +92,7 @@ void runwarn_run_start(void)
 	u32 illegal_mask, unknown_mask;
 	u32 cheats, illegal, unknown, fresh = 0;
 	u32 i;
+	u8 mode;
 
 	/* LIVE toggles as memory has them this tick, not as the last 10 Hz read left them. */
 	features_poll_live();
@@ -116,9 +117,22 @@ void runwarn_run_start(void)
 	g_last_unknown = unknown;
 #endif
 
-	if (!config_run_warnings()) {
+	mode = config_run_warnings();
+	if (mode == RUN_WARN_NONE) {
 		plat_log("runwarn: run start, %u cheats, %u illegal and %u unknown mods; warnings off",
 		         (unsigned)cheats, (unsigned)illegal, (unsigned)unknown);
+		return;
+	}
+
+	/*
+	 * Revision 1.33: cheats only says the cheats line and no mod line, and
+	 * marks no unknown mod as warned about, as off does: a mod it has not
+	 * named is named once the mod lines are back.
+	 */
+	if (mode == RUN_WARN_CHEATS_ONLY) {
+		plat_log("runwarn: run start, %u cheats, %u illegal and %u unknown mods; cheats only",
+		         (unsigned)cheats, (unsigned)illegal, (unsigned)unknown);
+		if (runwarn_compose(msg, sizeof(msg), cheats, 0, 0) > 0) plat_notify(msg);
 		return;
 	}
 

@@ -172,6 +172,12 @@ SESSION_FLAG3_TELEMETRY_RATE = 0x04
 SESSION_FLAG3_RATE_SHIFT = 3
 SESSION_FLAG3_RATE_MASK = 0x18
 RUN_WARN_BITS = SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF
+# Revision 1.33: cheats only, apply toggles on game boot, and flags3 bits 5 to 7.
+OP_BOOT_APPLY = 0x0098
+OP_BOOT_ASK = 0x0099
+SESSION_FLAG3_SETTINGS_133 = 0x20
+SESSION_FLAG3_RUN_WARN_CHEATS = 0x40
+SESSION_FLAG3_BOOT_ASK = 0x80
 PROFILE_SUPPORTED = 0x02
 PROFILE_ON = 0x04
 PROFILE_ACTIVE = 0x08
@@ -2037,24 +2043,95 @@ def test_telemetry_rate(c, udp, prefix=""):
     anything but the three is BAD_ARG.
     """
     st = fresh_state(c)
-    check(st and st["flags3"] & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK) == SESSION_FLAG3_TELEMETRY_RATE,
-          prefix + "telemetry rate: flags3 bit2, the switch, at 30 Hz (bits 3-4 = 0)", st and hex(st["flags3"]))
+    check(st and st["flags3"] & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK)
+          == SESSION_FLAG3_TELEMETRY_RATE | (1 << SESSION_FLAG3_RATE_SHIFT),
+          prefix + "telemetry rate: flags3 bit2, the switch, at 60 Hz with no key, the default since 1.33 (bits 3-4 = 1)",
+          st and hex(st["flags3"]))
+    drain_udp(udp)
+    ticks = telemetry_ticks(udp, 0.6)
+    steps = [(b - a) & 0xFFFFFFFF for a, b in zip(ticks, ticks[1:])]
+    usual = max(set(steps), key=steps.count) if steps else None
+    check(len(steps) >= 10 and usual == 2,
+          prefix + "telemetry rate: with no key a packet every 2 ticks, 60 Hz", (len(steps), usual, steps[:12]))
     for bad in (bytes([45]), bytes([0]), bytes([4]), b""):
         status, _ = c.call(OP_TELEMETRY_RATE, bad)
         check(status == ST_BAD_ARG, prefix + "telemetry rate: TELEMETRY_RATE %s is BAD_ARG" % (list(bad) or "with no byte"), status)
-    for hz, every, code in ((30, 4, 0), (60, 2, 1), (120, 1, 2), (30, 4, 0)):
+    for hz, every, code in ((30, 4, 0), (60, 2, 1), (120, 1, 2), (60, 2, 1)):
         status, body = c.call(OP_TELEMETRY_RATE, bytes([hz]))
         check(status == ST_OK and body == b"", prefix + "telemetry rate: TELEMETRY_RATE %d answers OK" % hz, status)
         st = fresh_state(c)
         check(st and (st["flags3"] & SESSION_FLAG3_RATE_MASK) >> SESSION_FLAG3_RATE_SHIFT == code,
               prefix + "telemetry rate: and flags3 bits 3-4 say %d Hz" % hz, st and hex(st["flags3"]))
         drain_udp(udp)
-        ticks = telemetry_ticks(udp, 0.6)
+        # 30 Hz is ten packets in two thirds of a second only if the host's tick keeps 120 Hz,
+        # which a loaded Windows timer does not, so the slow rate gets a longer look.
+        ticks = telemetry_ticks(udp, 1.2 if every == 4 else 0.6)
         steps = [(b - a) & 0xFFFFFFFF for a, b in zip(ticks, ticks[1:])]
         usual = max(set(steps), key=steps.count) if steps else None
         check(len(steps) >= 10 and usual == every,
               prefix + "telemetry rate: at %d Hz a packet every %d tick%s" % (hz, every, "" if every == 1 else "s"),
               (len(steps), usual, steps[:12]))
+
+
+def smoke_boot_apply(sim, c):
+    """
+    Revision 1.33: boot.apply over the wire, RaC1 rebooted with Ghost Ratchet
+    (feature 3) flagged on boot. BOOT_APPLY reads and writes the key; Never
+    boots with nothing applied and the flag kept; Ask, with this client
+    connected, holds it back behind flags3 bit7 until BOOT_ASK answers; Always
+    applies it as every build before did.
+    """
+    ghost = 1 << 3
+    status, body = c.call(OP_BOOT_APPLY)
+    check(status == ST_OK and body == bytes([0]), "boot apply: BOOT_APPLY with no byte reads 0, Always", (status, body))
+    for bad in (3, 255):
+        status, _ = c.call(OP_BOOT_APPLY, bytes([bad]))
+        check(status == ST_BAD_ARG, "boot apply: BOOT_APPLY %d is BAD_ARG" % bad, status)
+    st = fresh_state(c)
+    check(st and st["flags3"] & (SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_BOOT_ASK) == SESSION_FLAG3_SETTINGS_133,
+          "boot apply: flags3 bit5 says the module has it, bit7 clear", st and hex(st["flags3"]))
+    status, _ = c.call(OP_FEATURE_SET_AUTO, bytes([3, 1]))
+    check(status == ST_OK, "boot apply: Ghost Ratchet flagged on boot", status)
+
+    def reboot(mode):
+        status, _ = c.call(OP_BOOT_APPLY, bytes([mode]))
+        sim.send("quit")
+        wait_state(c, SESSION_XMB)
+        sim.send("boot NPEA00385")
+        ok, _ = wait_state(c, SESSION_INGAME)
+        return status == ST_OK and ok, fresh_state(c, 0.4)
+
+    ok, st = reboot(2)
+    check(ok and st and st["toggle_state"] & ghost == 0 and st["toggle_auto"] & ghost != 0
+          and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
+          "boot apply: Never, Ghost Ratchet off, its flag kept, nothing asked",
+          st and (hex(st["toggle_state"]), hex(st["toggle_auto"]), hex(st["flags3"])))
+    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
+    check(status == ST_NOT_FOUND, "boot apply: under Never BOOT_ASK finds no question", status)
+
+    ok, st = reboot(1)
+    check(ok and st and st["toggle_state"] & ghost == 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK != 0,
+          "boot apply: Ask with this client connected, Ghost Ratchet off and flags3 bit7 up",
+          st and (hex(st["toggle_state"]), hex(st["flags3"])))
+    status, _ = c.call(OP_BOOT_ASK, bytes([2]))
+    check(status == ST_BAD_ARG, "boot apply: BOOT_ASK 2 is BAD_ARG", status)
+    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
+    st = fresh_state(c)
+    check(status == ST_OK and st and st["toggle_state"] & ghost != 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
+          "boot apply: BOOT_ASK 1 puts Ghost Ratchet on and the question goes",
+          (status, st and hex(st["toggle_state"]), st and hex(st["flags3"])))
+    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
+    check(status == ST_NOT_FOUND, "boot apply: a second answer is NOT_FOUND", status)
+
+    ok, st = reboot(0)
+    check(ok and st and st["toggle_state"] & ghost != 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
+          "boot apply: Always, Ghost Ratchet on at the boot", st and hex(st["toggle_state"]))
+    status, body = c.call(OP_BOOT_APPLY)
+    check(status == ST_OK and body == bytes([0]), "boot apply: and BOOT_APPLY reads Always back", (status, body))
+
+    c.call(OP_FEATURE_SET_AUTO, bytes([3, 0]))
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 3, 0))
+    c.call(OP_PREVIOUS_DISMISS)
 
 
 def telemetry_within(udp, seconds):
@@ -8889,8 +8966,19 @@ def main():
         said = rac1_run_start()
         check(said and want and said[-1].endswith(want),
               "run-start warnings: a RaC1 run start says how many cheats are on in the sim log (%s)" % want, said)
+        status, _ = c.call(OP_RUN_WARN, bytes([3]))
+        check(status == ST_BAD_ARG, "run-start warnings: RUN_WARN 3 is BAD_ARG", status)
+        # Revision 1.33: 2, cheats only. With no mod in RaC1 the line is the same as
+        # with 1; that it is said at all is what tells 2 from off over the wire.
         status, _ = c.call(OP_RUN_WARN, bytes([2]))
-        check(status == ST_BAD_ARG, "run-start warnings: RUN_WARN 2 is BAD_ARG", status)
+        st = fresh_state(c)
+        check(status == ST_OK and st and st["flags3"] & (RUN_WARN_BITS | SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_RUN_WARN_CHEATS)
+              == SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_RUN_WARN_CHEATS,
+              "run-start warnings: RUN_WARN 2 answers OK, flags3 bit6 says cheats only and bit1 stays clear",
+              (status, st and hex(st["flags3"])))
+        said = rac1_run_start()
+        check(said and want and said[-1].endswith(want),
+              "run-start warnings: cheats only, a run start still says the cheats (%s)" % want, said)
         status, _ = c.call(OP_RUN_WARN, bytes([0]))
         st = fresh_state(c)
         check(status == ST_OK and st and st["flags3"] & RUN_WARN_BITS == SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF,
@@ -9299,6 +9387,9 @@ def main():
         ok, _ = wait_state(c, SESSION_INGAME)
         check(ok, "RaC1 comes up for its console menu")
         exercise_console_menu_rac1(c, sim)
+
+        # ------------------------- apply toggles on game boot, 1.33
+        smoke_boot_apply(sim, c)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

@@ -102,6 +102,18 @@ u32  session_telemetry_copy(u8 *out, u32 cap);
 u32  session_telemetry_hz(void);
 
 /*
+ * Revision 1.33. BOOT_ASK's answer to a boot's question under `boot.apply`
+ * Ask: 1 applies the running game's on-boot toggles and mods, 0 leaves them
+ * off. ST_NOT_INGAME outside a game, ST_NOT_FOUND with no question waiting.
+ * Tick thread.
+ */
+int  session_boot_ask(u8 apply);
+#ifdef QWARK_TEST
+/* Makes the boot's question see a client connected (1) or the real count (0). */
+void session_test_client(int on);
+#endif
+
+/*
  * Build 54. A reading of the VSH's free memory, taken at `at` (VSHMEM_AT_*,
  * proto.h), kept for VSH_MEMORY and logged; nothing where the platform cannot
  * read it. The session takes its own at a game's arrival, at the menu's install

@@ -94,6 +94,16 @@
  * console-wide; SessionInfo flags3 bit2 TELEMETRY_RATE (the module has it)
  * and bits 3-4 the rate in force (TELEMETRY_RATE_CODE_*). PROTOCOL.md 4 and
  * 5.10.3.
+ * Revision 1.33: run.warnings has a third value, 2, the cheats line alone
+ * (RUN_WARN_CHEATS_ONLY); RUN_WARN takes 0, 1 or 2. Apply toggles on game
+ * boot: config key boot.apply (BOOT_APPLY_ALWAYS, _ASK, _NEVER), BOOT_APPLY at
+ * 0x0098 and BOOT_ASK at 0x0099. SessionInfo flags3 bit5 SETTINGS_133 (the
+ * module has both), bit6 RUN_WARN_CHEATS (cheats only is in force) and bit7
+ * BOOT_ASK (a boot's on-boot toggles and mods wait for a client's answer).
+ * telemetry.hz reads as 60 when the file does not name it. PROTOCOL.md
+ * 5.10.2, 5.10.3 and 5.10.4. The same revision: an autosplit Event's u16 at
+ * +10 is its flags (AUTOSPLIT_EV_REVISIT) and EventDesc flags bit5 REVISIT
+ * (AUTOSPLIT_FLAG_REVISIT), Tools of Destruction's revisits. PROTOCOL.md 8.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -364,19 +374,46 @@
 /*
  * Revision 1.30. `run.warnings`, a config write like MENU_HELP's:
  * u8 on, 1 the console warns as a run starts with cheats or mods that are not
- * run-legal in the game (the default), 0 it says nothing. Anything but 0 or 1
- * is BAD_ARG. Answered in any session state and on every platform. Reply
- * none. SessionInfo flags3 reports it. PROTOCOL.md 5.10.2.
+ * run-legal in the game (the default), 0 it says nothing; since revision 1.33
+ * 2, it warns about the cheats alone (RUN_WARN_*). Anything else is BAD_ARG.
+ * Answered in any session state and on every platform. Reply none.
+ * SessionInfo flags3 reports it. PROTOCOL.md 5.10.2.
  */
 #define OP_RUN_WARN          0x0096
+#define RUN_WARN_NONE        0
+#define RUN_WARN_ALL         1
+#define RUN_WARN_CHEATS_ONLY 2
 /*
  * Revision 1.32. `telemetry.hz`, a config write like RUN_WARN's: u8 hz,
- * 30 (the default), 60 or 120, how often the tick thread sends the telemetry
- * packet (every 4, 2 or 1 ticks). Anything else is BAD_ARG. Console-wide, not
+ * 30, 60 (the default since revision 1.33) or 120, how often the tick
+ * thread sends the telemetry packet (every 4, 2 or 1 ticks). Anything else is BAD_ARG. Console-wide, not
  * per user. Answered in any session state and on every platform. Reply none.
  * SessionInfo flags3 bits 3-4 report it. PROTOCOL.md 5.10.3.
  */
 #define OP_TELEMETRY_RATE    0x0097
+/*
+ * Revision 1.33. `boot.apply`, a per-user config write like RUN_WARN's: u8
+ * mode, 0 a game boot applies the toggles and mods flagged on boot (the
+ * default, every earlier build's way), 1 it applies none of them and asks a
+ * connected client (flags3 bit7, answered by BOOT_ASK), and with no client
+ * connected applies none, 2 it applies none. Anything else is BAD_ARG. With no
+ * byte it is a read: the reply is u8 mode. The flags themselves are kept in
+ * every mode. Answered in any session state and on every platform.
+ * PROTOCOL.md 5.10.4.
+ */
+#define OP_BOOT_APPLY        0x0098
+#define BOOT_APPLY_ALWAYS    0
+#define BOOT_APPLY_ASK       1
+#define BOOT_APPLY_NEVER     2
+/*
+ * Revision 1.33. The answer to a boot's question (flags3 bit7 BOOT_ASK):
+ * u8 apply, 1 applies the running game's on-boot toggles and mods now, as a
+ * boot under Always would have, 0 leaves them off. Either way the question
+ * is answered and the bit goes. NOT_INGAME outside a game, NOT_FOUND when no
+ * question is waiting, BAD_ARG for anything but 0 or 1. Reply none. The tick
+ * thread's, through the ring.
+ */
+#define OP_BOOT_ASK          0x0099
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -778,6 +815,20 @@
 #define TELEMETRY_RATE_CODE_30        0
 #define TELEMETRY_RATE_CODE_60        1
 #define TELEMETRY_RATE_CODE_120       2
+/*
+ * Revision 1.33. bit5 SETTINGS_133, the client's capability bit for the
+ * revision's two settings: the module takes RUN_WARN 2, the cheats line
+ * alone, and answers BOOT_APPLY and BOOT_ASK. bit6 RUN_WARN_CHEATS,
+ * config.txt's `run.warnings` is 2. Bit1 keeps meaning exactly "off", so a
+ * client before this revision reads off as off and a cheats-only console as
+ * on. bit7 BOOT_ASK: `boot.apply` is Ask, this boot's on-boot toggles and mods
+ * were held back with a client connected, and no BOOT_ASK has answered yet;
+ * INGAME only. An earlier module sends 0 in all three, answers RUN_WARN 2
+ * BAD_ARG and BOOT_APPLY and BOOT_ASK UNKNOWN_OP.
+ */
+#define SESSION_FLAG3_SETTINGS_133    0x20
+#define SESSION_FLAG3_RUN_WARN_CHEATS 0x40
+#define SESSION_FLAG3_BOOT_ASK        0x80
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */

@@ -371,25 +371,53 @@ static void test_release(void)
 		         "and no game-module or no-menu bit with RaC1's code in");
 		check(reply[30] != 0, "byte 30, the profile sequence, has moved");
 		check_eq(reply[25], 5, "SessionInfo's slot is the profile's");
-		check_eq(reply[31], SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_TELEMETRY_RATE,
-		         "flags3 bit0: the run-start warnings, on; bit2: the telemetry rate, at 30 Hz");
+		check_eq(reply[31], SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_TELEMETRY_RATE
+		         | (TELEMETRY_RATE_CODE_60 << SESSION_FLAG3_RATE_SHIFT),
+		         "flags3 bit0: the run-start warnings, on; bit5: cheats only to be had; bit2: the telemetry rate, at 60 Hz");
 		check_eq(reply[24] & SESSION_FLAG_UI_PAK_BAD, 0, "flags bit7 clear: the pak is good");
 	}
 
 	/* Revision 1.32: a release has the telemetry rate too. */
-	req[0] = 60;
+	req[0] = 120;
 	st = call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == 0, "TELEMETRY_RATE 60 answers OK, with nothing");
+	check(st == ST_OK && len == 0, "TELEMETRY_RATE 120 answers OK, with nothing");
 	req[0] = 90;
 	check_eq(call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "TELEMETRY_RATE 90 is BAD_ARG");
 	tick(1);
 	req[0] = QWARK_PROTOCOL_VERSION;
 	st = call(OP_HELLO, req, 1, reply, sizeof(reply), &len);
 	check(st == ST_OK && len >= SESSION_INFO_SIZE
-	      && (reply[31] & SESSION_FLAG3_RATE_MASK) == (TELEMETRY_RATE_CODE_60 << SESSION_FLAG3_RATE_SHIFT),
-	      "and the next SessionInfo says 60 Hz");
-	req[0] = 30;
-	check_eq(call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len), ST_OK, "back to 30 Hz");
+	      && (reply[31] & SESSION_FLAG3_RATE_MASK) == (TELEMETRY_RATE_CODE_120 << SESSION_FLAG3_RATE_SHIFT),
+	      "and the next SessionInfo says 120 Hz");
+	req[0] = 60;
+	check_eq(call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len), ST_OK, "back to 60 Hz");
+
+	/* Revision 1.33: a release takes RUN_WARN 2, cheats only, and refuses 3. */
+	req[0] = RUN_WARN_CHEATS_ONLY;
+	check_eq(call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len), ST_OK, "RUN_WARN 2 answers OK");
+	req[0] = 3;
+	check_eq(call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "RUN_WARN 3 is BAD_ARG");
+	/* SessionInfo is the published packet's, which goes out every second tick at 60 Hz. */
+	tick(4);
+	req[0] = QWARK_PROTOCOL_VERSION;
+	st = call(OP_HELLO, req, 1, reply, sizeof(reply), &len);
+	check(st == ST_OK && len >= SESSION_INFO_SIZE
+	      && (reply[31] & (SESSION_FLAG3_RUN_WARN_OFF | SESSION_FLAG3_RUN_WARN_CHEATS)) == SESSION_FLAG3_RUN_WARN_CHEATS,
+	      "and the next SessionInfo says cheats only, bit6, and not off");
+	req[0] = RUN_WARN_ALL;
+	check_eq(call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len), ST_OK, "back to mods and cheats");
+
+	/* Revision 1.33: and BOOT_APPLY, written and read back. */
+	st = call(OP_BOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == 1 && reply[0] == BOOT_APPLY_ALWAYS, "BOOT_APPLY with no byte reads Always");
+	req[0] = BOOT_APPLY_NEVER;
+	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "BOOT_APPLY 2 answers OK");
+	req[0] = 3;
+	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "BOOT_APPLY 3 is BAD_ARG");
+	st = call(OP_BOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == 1 && reply[0] == BOOT_APPLY_NEVER, "and reads back Never");
+	req[0] = BOOT_APPLY_ALWAYS;
+	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "back to Always");
 	tick(1);
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);

@@ -5,7 +5,8 @@
  * original games' run starts, the autosplitter's START from its own watcher,
  * the cheats its table counts and nothing else; a death or another edge
  * saying nothing; the illegal mods at every run start and the unknown ones
- * once; and `run.warnings` (RUN_WARN) switching it all off. Tools of
+ * once; `run.warnings` (RUN_WARN) switching it all off, and (revision
+ * 1.33) its 2 leaving the cheats line alone, with flags3's bits. Tools of
  * Destruction's run start is test_tod_game.c's, which checks it there.
  */
 #include "../src/core/proto.h"
@@ -110,7 +111,7 @@ static void rm_mod(const char *dir)
 	plat_dir_remove(p);
 }
 
-static const char *const g_dirs[] = { "rw-legal", "rw-illegal", "rw-none", "rw-junk", "rw-empty", "rw-new", "rw-off" };
+static const char *const g_dirs[] = { "rw-legal", "rw-illegal", "rw-none", "rw-junk", "rw-empty", "rw-new", "rw-only", "rw-off" };
 #define NDIRS (sizeof(g_dirs) / sizeof(g_dirs[0]))
 
 static u8 flags_of(const char *dir)
@@ -259,6 +260,8 @@ static void test_rac1(void)
 	config_set_run_warnings(1);
 	check((info_flags3() & (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF)) == SESSION_FLAG3_RUN_WARN,
 	      "SessionInfo flags3: bit0 the warnings are here, bit1 clear, on by default");
+	check((info_flags3() & (SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_RUN_WARN_CHEATS)) == SESSION_FLAG3_SETTINGS_133,
+	      "flags3 bit5: the module takes cheats only; bit6 clear, it is not in force");
 
 	n = host_notify_count();
 	starts = runwarn_starts();
@@ -316,11 +319,35 @@ static void test_rac1(void)
 	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 3 unknown mods enabled"),
 	      "the set grew: the unknown line again, counting all three");
 
-	/* The switch. */
-	check(config_set_run_warnings(2) == ST_BAD_ARG, "run.warnings takes 0 or 1 alone");
+	/* The switch. Revision 1.33: 2, cheats only, as well as 0 and 1. */
+	check(config_set_run_warnings(3) == ST_BAD_ARG && config_set_run_warnings(255) == ST_BAD_ARG,
+	      "run.warnings takes 0, 1 or 2 alone: 3 and 255 are refused");
+	check(config_run_warnings() == RUN_WARN_ALL, "and a refusal leaves it as it was");
+	check(config_set_run_warnings(RUN_WARN_CHEATS_ONLY) == ST_OK && config_run_warnings() == RUN_WARN_CHEATS_ONLY,
+	      "run.warnings = 2, cheats only");
+	check((info_flags3() & (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF | SESSION_FLAG3_SETTINGS_133 |
+	                        SESSION_FLAG3_RUN_WARN_CHEATS)) ==
+	      (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_RUN_WARN_CHEATS),
+	      "flags3 bit6 says so, and bit1 stays clear: a client before 1.33 reads it as on, not off");
+	mod("rw-only", "#- name: RW Only\n0x00880070: 0x60000000\n");
+	check(mods_rescan() == ST_OK && mods_load("rw-only") == ST_OK, "another unknown mod loaded while cheats only");
+	n = host_notify_count();
+	starts = runwarn_starts();
+	check(run_start(GAME_RAC1) && runwarn_starts() == starts + 1, "a run start with cheats only");
+	check(runwarn_last_illegal() == 1 && runwarn_last_unknown() == 4 && notified_since(n, "Warning: 2 cheats enabled"),
+	      "the illegal mod and a new unknown one are in, and only \"Warning: 2 cheats enabled\" is said");
+	features_set(F_GHOST, 0);
+	features_set(F_FREEZE_HEALTH, 0);
+	n = host_notify_count();
+	run_start(GAME_RAC1);
+	check(runwarn_last_cheats() == 0 && runwarn_last_illegal() == 1 && host_notify_count() == n,
+	      "cheats only with no cheat on: the mods alone are nothing to say");
+	set_on(F_GHOST, "Ghost Ratchet on again");
+	set_on(F_FREEZE_HEALTH, "Freeze health on again");
+
 	check(config_set_run_warnings(0) == ST_OK && !config_run_warnings(), "run.warnings = 0");
-	check((info_flags3() & (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF)) ==
-	      (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF), "flags3 bit1 says so");
+	check((info_flags3() & (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF | SESSION_FLAG3_RUN_WARN_CHEATS)) ==
+	      (SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF), "flags3 bit1 says so, bit6 clear");
 	mod("rw-off", "#- name: RW Off\n0x00880060: 0x60000000\n");
 	check(mods_rescan() == ST_OK && mods_load("rw-off") == ST_OK, "another unknown mod loaded while off");
 	n = host_notify_count();
@@ -330,9 +357,15 @@ static void test_rac1(void)
 	check(config_set_run_warnings(1) == ST_OK && config_run_warnings(), "run.warnings = 1");
 	n = host_notify_count();
 	run_start(GAME_RAC1);
-	check(runwarn_last_unknown() == 4 &&
-	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 4 unknown mods enabled"),
-	      "on again: the mod loaded while off was never marked, so the unknown line comes back");
+	check(runwarn_last_unknown() == 5 &&
+	      notified_since(n, "Warning: 2 cheats enabled\nWarning: 1 mod enabled\nWarning: 5 unknown mods enabled"),
+	      "on again: the mods loaded while cheats only and off were never marked, so the unknown line comes back");
+
+	/* A number by hand that is none of the three reads as 1, as any number but 0 did before 1.33. */
+	check(config_set_u32("run.warnings", 7) == ST_OK && config_run_warnings() == RUN_WARN_ALL,
+	      "run.warnings = 7 by hand reads as 1, mods and cheats");
+	check((info_flags3() & (SESSION_FLAG3_RUN_WARN_OFF | SESSION_FLAG3_RUN_WARN_CHEATS)) == 0, "and flags3 says on");
+	config_set_run_warnings(RUN_WARN_ALL);
 
 	/* All off. */
 	for (i = 0; i < NDIRS; i++) mods_unload(g_dirs[i]);

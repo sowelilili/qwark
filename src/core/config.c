@@ -223,7 +223,7 @@ int config_key_scope(const char *key)
 	}
 	if (has_prefix(key, "selected.") || has_prefix(key, "manip.") ||
 	    has_prefix(key, "profile.") || qstreq(key, "menu.help") ||
-	    qstreq(key, "run.warnings") || title_auto_key(key))
+	    qstreq(key, "run.warnings") || qstreq(key, "boot.apply") || title_auto_key(key))
 		return CONFIG_SCOPE_USER;
 	return CONFIG_SCOPE_CONSOLE;
 }
@@ -786,26 +786,49 @@ int config_set_menu_help(u8 on)
 /*
  * Revision 1.30. `run.warnings`: 1 for a file that has never
  * mentioned it, so a run start with cheats or mods on says so out of the box.
- * RUN_WARN writes it, a plain 0 or 1 like `menu.help`.
+ * RUN_WARN writes it. Revision 1.33: 2 is the cheats line alone. 0 is off and
+ * 2 cheats only; any other number in the file reads as 1, as every number but
+ * 0 did before 2 meant anything, so a file written by hand keeps warning.
  */
-int config_run_warnings(void)
+u8 config_run_warnings(void)
 {
-	return config_get_u32("run.warnings", 1) != 0;
+	u32 v = config_get_u32("run.warnings", RUN_WARN_ALL);
+	return (u8)(v == RUN_WARN_NONE ? RUN_WARN_NONE : v == RUN_WARN_CHEATS_ONLY ? RUN_WARN_CHEATS_ONLY : RUN_WARN_ALL);
 }
 
-int config_set_run_warnings(u8 on)
+int config_set_run_warnings(u8 mode)
 {
-	if (on > 1) return ST_BAD_ARG;
-	return config_set_u32("run.warnings", on);
+	if (mode > RUN_WARN_CHEATS_ONLY) return ST_BAD_ARG;
+	return config_set_u32("run.warnings", mode);
 }
 
 /*
- * Revision 1.32. `telemetry.hz`: 30 for a file that has never mentioned it,
- * as every build before it sent, and for a hand-edited value that is none of
- * the three. Console-wide: it is how often this console talks to the PCs, so a
- * user signing in at the XMB does not change it (config_key_scope leaves it on
- * the console's side, as it does any key it does not name).
+ * Revision 1.33. `boot.apply`: 0, Always, for a file that has never mentioned
+ * it, as every build before it applied the on-boot flags; 1 Ask and 2 Never.
+ * Any other number in the file reads as Always.
  */
+u8 config_boot_apply(void)
+{
+	u32 v = config_get_u32("boot.apply", BOOT_APPLY_ALWAYS);
+	return (u8)(v == BOOT_APPLY_ASK || v == BOOT_APPLY_NEVER ? v : BOOT_APPLY_ALWAYS);
+}
+
+int config_set_boot_apply(u8 mode)
+{
+	if (mode > BOOT_APPLY_NEVER) return ST_BAD_ARG;
+	return config_set_u32("boot.apply", mode);
+}
+
+/*
+ * Revision 1.32. `telemetry.hz`: since revision 1.33 60 for a file that has
+ * never mentioned it, and for a hand-edited value that is none of the three
+ * (30 before it, as every build before 1.32 sent). Console-wide: it is how
+ * often this console talks to the PCs, so a user signing in at the XMB does
+ * not change it (config_key_scope leaves it on the console's side, as it does
+ * any key it does not name).
+ */
+#define TELEMETRY_HZ_DEFAULT 60
+
 static int telemetry_hz_ok(u32 hz)
 {
 	return hz == 30 || hz == 60 || hz == 120;
@@ -813,8 +836,8 @@ static int telemetry_hz_ok(u32 hz)
 
 u8 config_telemetry_hz(void)
 {
-	u32 hz = config_get_u32("telemetry.hz", 30);
-	return (u8)(telemetry_hz_ok(hz) ? hz : 30);
+	u32 hz = config_get_u32("telemetry.hz", TELEMETRY_HZ_DEFAULT);
+	return (u8)(telemetry_hz_ok(hz) ? hz : TELEMETRY_HZ_DEFAULT);
 }
 
 int config_set_telemetry_hz(u8 hz)

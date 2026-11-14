@@ -154,16 +154,28 @@ int  config_set_menu_help(u8 on);
 /*
  * Revision 1.30, the run-start warnings (src/core/runwarn.h):
  * `run.warnings`, 1 when the file has never mentioned it, 0 the console says
- * nothing at a run start. RUN_WARN writes it; a per-user key, as menu.help
- * is. Anything but 0 or 1 is ST_BAD_ARG.
+ * nothing at a run start, and since revision 1.33 2 the cheats line alone
+ * (RUN_WARN_NONE, RUN_WARN_ALL, RUN_WARN_CHEATS_ONLY; any other number in the
+ * file reads as RUN_WARN_ALL). RUN_WARN writes it; a per-user key, as
+ * menu.help is. Anything but 0, 1 or 2 is ST_BAD_ARG.
  */
-int  config_run_warnings(void);
-int  config_set_run_warnings(u8 on);
+u8   config_run_warnings(void);
+int  config_set_run_warnings(u8 mode);
+
+/*
+ * Revision 1.33, apply toggles on game boot: `boot.apply`, 0 Always (the
+ * default, and what any other number in the file reads as), 1 Ask, 2 Never
+ * (BOOT_APPLY_*). BOOT_APPLY writes it; a per-user key, as the auto flags it
+ * governs are. Anything but 0, 1 or 2 is ST_BAD_ARG.
+ */
+u8   config_boot_apply(void);
+int  config_set_boot_apply(u8 mode);
 
 /*
  * Revision 1.32, TELEMETRY_RATE: `telemetry.hz`, how often the telemetry
- * packet goes out, 30 (the default, and what any other value in the file
- * reads as), 60 or 120. Console-wide. Setting anything else is ST_BAD_ARG.
+ * packet goes out, 30, 60 (the default since revision 1.33, and what any
+ * other value in the file reads as) or 120. Console-wide. Setting anything
+ * else is ST_BAD_ARG.
  */
 u8   config_telemetry_hz(void);
 int  config_set_telemetry_hz(u8 hz);

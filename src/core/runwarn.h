@@ -32,7 +32,8 @@
  * said at every run start they are there for.
  *
  * config.txt's `run.warnings` (RUN_WARN, 1 by default) switches all three
- * off; while it is off nothing is marked as warned about.
+ * off with 0, and since revision 1.33 with 2 leaves the cheats line alone; while
+ * it is 0 or 2 no unknown mod is marked as warned about.
  *
  * Tick thread, under the core lock (autosplit_emit runs inside on_tick).
  */

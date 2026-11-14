@@ -672,6 +672,12 @@ static void ring_exec_locked(struct ring_cmd *cmd)
 		session_previous_dismiss();
 		break;
 
+	/* Revision 1.33: the answer to a boot's question under boot.apply Ask. */
+	case OP_BOOT_ASK:
+		if (reqlen < 1 || req[0] > 1) { cmd->status = ST_BAD_ARG; break; }
+		cmd->status = (u16)session_boot_ask(req[0]);
+		break;
+
 	case OP_MOD_LOAD:
 	case OP_MOD_UNLOAD:
 	case OP_MOD_RESCAN: {
@@ -1026,6 +1032,7 @@ static int op_needs_ring(u16 op)
 	case OP_DIE:
 	case OP_PREVIOUS_REAPPLY:
 	case OP_PREVIOUS_DISMISS:
+	case OP_BOOT_ASK:
 	case OP_MOD_LOAD:
 	case OP_MOD_UNLOAD:
 	case OP_MOD_RESCAN:
@@ -2055,10 +2062,11 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	/*
 	 * Revision 1.30. `run.warnings`, a config write and nothing else,
 	 * as MENU_HELP's: the next run start reads it (runwarn.c). Every platform
-	 * has the warnings; under RPCS3 they reach qwark-rpcs3's log.
+	 * has the warnings; under RPCS3 they reach qwark-rpcs3's log. Revision
+	 * 1.33: 2, the cheats line alone, as well as 0 and 1.
 	 */
 	case OP_RUN_WARN:
-		if (reqlen < 1 || req[0] > 1) return ST_BAD_ARG;
+		if (reqlen < 1 || req[0] > RUN_WARN_CHEATS_ONLY) return ST_BAD_ARG;
 		{
 			u16 rc;
 			core_lock();
@@ -2072,6 +2080,29 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	 * RUN_WARN's: the tick thread sees the config move on its next tick and
 	 * sends at the new rate from then on (session.c). Every platform.
 	 */
+	/*
+	 * Revision 1.33. `boot.apply`, a config write and nothing else, as
+	 * RUN_WARN's: the next game boot reads it (session.c). With no byte, a
+	 * read of it, so a client can show it. Every platform.
+	 */
+	case OP_BOOT_APPLY:
+		if (reqlen == 0) {
+			if (replycap < 1) return ST_FULL;
+			core_lock();
+			reply[0] = config_boot_apply();
+			core_unlock();
+			*replylen = 1;
+			return ST_OK;
+		}
+		if (req[0] > BOOT_APPLY_NEVER) return ST_BAD_ARG;
+		{
+			u16 rc;
+			core_lock();
+			rc = (u16)config_set_boot_apply(req[0]);
+			core_unlock();
+			return rc;
+		}
+
 	case OP_TELEMETRY_RATE:
 		if (reqlen < 1) return ST_BAD_ARG;
 		{

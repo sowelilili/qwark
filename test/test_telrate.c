@@ -1,15 +1,15 @@
 /*
  * Revision 1.32: the telemetry rate on qwark's fake console.
  *
- *   the key      `telemetry.hz`, 30 out of the box; 30, 60 and 120 taken,
- *                anything else refused and nothing written; a hand edit to
- *                another value, or the key gone, read as 30;
+ *   the key      `telemetry.hz`, 60 out of the box since revision 1.33; 30,
+ *                60 and 120 taken, anything else refused and nothing written;
+ *                a hand edit to another value, or the key gone, read as 60;
  *   the file     written into config.txt and read back by CONFIG_RELOAD;
  *                console-wide, so with a user's profile active it lands in
  *                config.txt, makes no profile, and stays as users change;
  *   the cadence  packets a second of the fake clock, at the XMB and in a
  *                game, 30, 60 or 120 after the key, from the tick after the
- *                write;
+ *                write, and 60 with no key;
  *   SessionInfo  flags3 bit2 and the rate in bits 3-4, beside the run-start
  *                warnings' bits.
  *
@@ -133,14 +133,14 @@ static void cadence(const char *where)
 {
 	char what[96];
 
-	snprintf(what, sizeof(what), "%s: 30 Hz out of the box, 30 packets a second", where);
-	check_eq_u64(per_second(), 30, what);
-
-	check(set_hz(60) == ST_OK, "telemetry.hz = 60");
-	snprintf(what, sizeof(what), "%s: 60 packets a second", where);
+	snprintf(what, sizeof(what), "%s: 60 Hz to begin with, 60 packets a second", where);
 	check_eq_u64(per_second(), 60, what);
+
+	check(set_hz(30) == ST_OK, "telemetry.hz = 30");
+	snprintf(what, sizeof(what), "%s: 30 packets a second", where);
+	check_eq_u64(per_second(), 30, what);
 	check_eq_u64(flags3() & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK),
-	             rate_bits(TELEMETRY_RATE_CODE_60), "flags3 says 60 Hz (bits 3-4 = 1)");
+	             rate_bits(TELEMETRY_RATE_CODE_30), "flags3 says 30 Hz (bits 3-4 = 0)");
 
 	check(set_hz(120) == ST_OK, "telemetry.hz = 120");
 	snprintf(what, sizeof(what), "%s: 120 packets a second, one every tick", where);
@@ -148,11 +148,11 @@ static void cadence(const char *where)
 	check_eq_u64(packet_flags3() & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK),
 	             rate_bits(TELEMETRY_RATE_CODE_120), "the packet's own flags3 says 120 Hz (bits 3-4 = 2)");
 
-	check(set_hz(30) == ST_OK, "telemetry.hz = 30");
-	snprintf(what, sizeof(what), "%s: back to 30 packets a second", where);
-	check_eq_u64(per_second(), 30, what);
+	check(set_hz(60) == ST_OK, "telemetry.hz = 60");
+	snprintf(what, sizeof(what), "%s: back to 60 packets a second", where);
+	check_eq_u64(per_second(), 60, what);
 	check_eq_u64(flags3() & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK),
-	             rate_bits(TELEMETRY_RATE_CODE_30), "flags3 says 30 Hz (bits 3-4 = 0)");
+	             rate_bits(TELEMETRY_RATE_CODE_60), "flags3 says 60 Hz (bits 3-4 = 1)");
 }
 
 void test_telrate(void)
@@ -165,18 +165,19 @@ void test_telrate(void)
 
 	group("telemetry rate: the key");
 	check(!file_has(QWARK_CONFIG, "telemetry.hz"), "the console's config.txt does not name telemetry.hz yet");
-	check_eq_u64(config_telemetry_hz(), 30, "so it reads as 30 Hz");
+	check_eq_u64(config_telemetry_hz(), 60, "so it reads as 60 Hz, the default since revision 1.33");
 	tick(1);
-	check_eq_u64(session_telemetry_hz(), 30, "and the tick sends at 30 Hz");
-	check_eq_u64(flags3(), SESSION_FLAG3_RUN_WARN | rate_bits(TELEMETRY_RATE_CODE_30),
-	             "flags3: the run-start warnings on, TELEMETRY_RATE, 30 Hz");
+	check_eq_u64(session_telemetry_hz(), 60, "and the tick sends at 60 Hz");
+	check_eq_u64(per_second(), 60, "60 packets a second with no key");
+	check_eq_u64(flags3(), SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_SETTINGS_133 | rate_bits(TELEMETRY_RATE_CODE_60),
+	             "flags3: the run-start warnings on, with cheats only to be had, TELEMETRY_RATE, 60 Hz");
 
 	check(config_set_telemetry_hz(0) == ST_BAD_ARG, "0 Hz is refused");
 	check(config_set_telemetry_hz(40) == ST_BAD_ARG, "so is 40");
 	check(config_set_telemetry_hz(240) == ST_BAD_ARG, "and 240");
 	check(config_set_telemetry_hz(4) == ST_BAD_ARG, "and a tick count, 4");
 	check(!file_has(QWARK_CONFIG, "telemetry.hz"), "and a refusal writes nothing");
-	check_eq_u64(config_telemetry_hz(), 30, "the rate is still 30");
+	check_eq_u64(config_telemetry_hz(), 60, "the rate is still 60");
 
 	group("telemetry rate: the cadence at the XMB");
 	check(session_state() == SESSION_XMB, "at the XMB");
@@ -191,22 +192,22 @@ void test_telrate(void)
 
 	group("telemetry rate: the file");
 	check(file_has(QWARK_CONFIG, "telemetry.hz = 120"), "config.txt says telemetry.hz = 120");
-	check(spill(QWARK_CONFIG, "telemetry.hz = 60\n") >= 0, "a hand edit to 60");
+	check(spill(QWARK_CONFIG, "telemetry.hz = 30\n") >= 0, "a hand edit to 30");
 	check(config_load() == ST_OK, "CONFIG_RELOAD");
 	tick(1);
-	check_eq_u64(per_second(), 60, "is picked up: 60 a second");
+	check_eq_u64(per_second(), 30, "is picked up: 30 a second");
 	check(spill(QWARK_CONFIG, "telemetry.hz = 45\n") >= 0, "a hand edit to 45, which is no rate");
 	check(config_load() == ST_OK, "CONFIG_RELOAD");
 	tick(1);
-	check_eq_u64(config_telemetry_hz(), 30, "reads as 30");
-	check_eq_u64(per_second(), 30, "and sends 30 a second");
+	check_eq_u64(config_telemetry_hz(), 60, "reads as 60, the default");
+	check_eq_u64(per_second(), 60, "and sends 60 a second");
 	check(spill(QWARK_CONFIG, "telemetry.hz = 120\n") >= 0, "120 by hand");
 	check(config_load() == ST_OK, "CONFIG_RELOAD");
 	tick(1);
 	check(spill(QWARK_CONFIG, "log = 1\n") >= 0, "then a file without the key");
 	check(config_load() == ST_OK, "CONFIG_RELOAD");
 	tick(1);
-	check_eq_u64(per_second(), 30, "is 30 a second again");
+	check_eq_u64(per_second(), 60, "is 60 a second, the default, again");
 
 #if QWARK_PREVIEW
 	group("telemetry rate: console-wide");
@@ -256,5 +257,5 @@ void test_telrate(void)
 	if (had_cfg) spill(QWARK_CONFIG, before_cfg); else plat_file_unlink(QWARK_CONFIG);
 	config_load();
 	tick(1);
-	check_eq_u64(session_telemetry_hz(), 30, "the config.txt found is back, and with it 30 Hz");
+	check_eq_u64(session_telemetry_hz(), 60, "the config.txt found is back, and with it 60 Hz");
 }
