@@ -5553,6 +5553,10 @@ TOD_MOVIE_STATE = 0x101D4F50 + 0x58             # g_moviePlayer's state (2026-11
 TOD_FAKE_ROOT = 0x30000000                      # the simulator's level object (backend_fake.c, seed_tod)
 TOD_RESPAWN_FADE = 0x101F1E70                   # g_heroRespawnFadeState (2026-11-13: Die)
 TOD_CAM_CLIENT = 0x101CC2E0                     # g_camClients[0], the follow camera's client (2026-11-13)
+TOD_REQUESTED_STATE = 0x100FA21C                # g_requestedGameState (2026-11-14: loads from the pause)
+TOD_LEVEL_NAMES = 0x1006E6BC                    # Level_getName's table
+TOD_LEVEL_NAME = 0x10387D20                     # g_levelName
+TOD_TIER_STACK = 0x1073B3B8                     # g_tierStack: +4 count, +8 the tiers
 TOD_FADE_GAME = 0x3F000000                      # 0.5f
 TOD_FADE_QUICK = 0x3A800000                     # 2^-10 s
 TOD_FADE_STORY = 0x3DE00000                     # 7/64 s, a story FMV load's (2026-11-02; 5/64 s from 2026-10-31)
@@ -6282,6 +6286,75 @@ def smoke_tod(c, sim):
     status2, _ = c.call(OP_POS_STORE, bytes([7, 63, 0, 0]) + bytes(63))
     check(status == ST_BAD_ARG and status2 == ST_BAD_ARG, "ToD: and refuses any length but 48 and 64", (status, status2))
     c.call(OP_POS_CLEAR, bytes([7]))
+
+    # 2026-11-14: with Lock-Strafe on the hero's camera is the lock-strafe camera (type 26), in whichever
+    # client follows him, and there is no type-3 slot; its +0xD0 is its unit look direction. The root cause
+    # of "loading a position never turns the camera": until now only client 0's type-3 slot was looked for.
+    strafe_client = TOD_CAM_CLIENT + 0x21D0
+    strafe = strafe_client + 0xC0 + 5 * 0x200
+    cam_type = c.call(OP_MEM_READ, struct.pack(">II", cam + 0x64, 4))[1]
+    cam_active = c.call(OP_MEM_READ, struct.pack(">II", TOD_CAM_CLIENT + 0x2114, 4))[1]
+    mem_write(c, cam + 0x64, b"\xFF\xFF\xFF\xFF")
+    mem_write(c, TOD_CAM_CLIENT + 0x2114, bytes(4))
+    mem_write(c, strafe + 0x64, struct.pack(">I", 26))
+    mem_write(c, strafe_client + 0x2114, struct.pack(">I", strafe))
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 4.0, 5.0, 6.0))
+    mem_write(c, strafe + 0xC0, struct.pack(">4f", 4.0, 5.0, 7.5, 0.0))
+    mem_write(c, strafe + 0xD0, struct.pack(">4f", 0.0, -1.0, 0.0, 0.0))
+    c.call(OP_POS_CLEAR, bytes([7]))
+    status, _ = c.call(OP_POS_SAVE, bytes([7]))
+    check(status == ST_OK, "ToD: POS_SAVE with Lock-Strafe on (the lock-strafe camera, client 1)", status)
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 40.0, 50.0, 60.0))
+    mem_write(c, strafe + 0xC0, struct.pack(">4f", 40.0, 50.0, 61.5, 0.0))
+    mem_write(c, strafe + 0xD0, struct.pack(">4f", 1.0, 0.0, 0.0, 0.0))
+    status, _ = c.call(OP_POS_LOAD, bytes([7]))
+    got = c.call(OP_MEM_READ, struct.pack(">II", strafe + 0xC0, 0x20))[1]
+    pos = c.call(OP_MEM_READ, struct.pack(">II", strafe + 0x40, 12))[1]
+    check(status == ST_OK and got[0:12] == struct.pack(">3f", 4.0, 5.0, 7.5) and
+          got[16:28] == struct.pack(">3f", 0.0, -1.0, 0.0) and pos == struct.pack(">3f", 4.0, 10.5, 7.5),
+          "ToD: POS_LOAD turns the lock-strafe camera back to the saved direction, 5.5 behind its moved target",
+          (status, got.hex() if got else None, pos.hex() if pos else None))
+    c.call(OP_POS_CLEAR, bytes([7]))
+    mem_write(c, strafe + 0x64, bytes(4))
+    mem_write(c, strafe_client + 0x2114, bytes(4))
+    mem_write(c, cam + 0x64, cam_type)
+    mem_write(c, TOD_CAM_CLIENT + 0x2114, cam_active)
+
+    # 2026-11-14: PLANET_LOAD in the pause (no Trainer glue in it) and in a cinematic loads at once, as LoadLevel
+    # does there and the pause menu's own Load: the name, g_currentLevel, the top three tiers marked and
+    # g_requestedGameState 3; no request only a gameplay frame would take. An FMV stays BUSY.
+    def tod_now(state, pause, planet, what):
+        mem_write(c, TOD_GAME_STATE, struct.pack(">I", state))
+        mem_write(c, TOD_PAUSE_STATE, struct.pack(">I", pause))
+        status, _ = c.call(OP_PLANET_LOAD, bytes([planet, 0]))
+        names = mem_read_u32(c, TOD_LEVEL_NAMES + planet * 4)
+        count = mem_read_u32(c, TOD_TIER_STACK + 4)
+        tiers = [mem_read_u32(c, TOD_TIER_STACK + 8 + i * 4) for i in range(count)]
+        dying = [mem_read_u8(c, t + 4) for t in tiers]
+        check(status == ST_OK and mem_read_u32(c, TOD_REQUESTED_STATE) == 3 and mem_read_u32(c, TOD_LOAD_REQUEST) == 0xFFFFFFFF
+              and mem_read_u32(c, TOD_LEVEL_NAME) == names and names != 0 and mem_read_u32(c, TOD_CURRENT_LEVEL) == planet
+              and dying == [0] * (count - 3) + [1, 1, 1],
+              "ToD: PLANET_LOAD " + what + " loads at once, as the game's own load there", (status, dying))
+        mem_write(c, TOD_REQUESTED_STATE, b"\xFF\xFF\xFF\xFF")
+        for t in tiers:
+            mem_write(c, t + 4, b"\x00")
+    level_was = mem_read_u32(c, TOD_CURRENT_LEVEL)
+    tod_now(5, 3, 9, "in the pause")
+    tod_now(9, 0, 5, "during a cinematic")
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 7))
+    status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
+    check(status == ST_BUSY and mem_read_u32(c, TOD_REQUESTED_STATE) == 0xFFFFFFFF and
+          mem_read_u32(c, TOD_LOAD_REQUEST) == 0xFFFFFFFF,
+          "ToD: an FMV is still BUSY (FmvState_exit is not the level unload's)", status)
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 5))
+    mem_write(c, TOD_PAUSE_STATE, struct.pack(">I", 1))
+    status, _ = c.call(OP_PLANET_LOAD, bytes([2, 0]))
+    check(status == ST_BUSY and mem_read_u32(c, TOD_REQUESTED_STATE) == 0xFFFFFFFF,
+          "ToD: so is a pause whose loading thread is still building it", status)
+    mem_write(c, TOD_PAUSE_STATE, bytes(4))
+    mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_CURRENT_LEVEL, struct.pack(">I", level_was))
+    tod_fake_load(c, "a PLANET_LOAD from the pause")
 
     # Lua: the helper goes in with the console menu a few seconds into play (revision 1.29), or with
     # the first LUA_EXEC in a level, whichever comes first.

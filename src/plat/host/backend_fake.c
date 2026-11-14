@@ -205,6 +205,10 @@ void host_boot_as(const char *title, const char *which)
 /* Revision 1.29, the galactic map (docs/tod-menu.md 17): its menu system and VM, while it is up. */
 #define FAKE_TOD_MAP_MS     0x30080000u
 #define FAKE_TOD_MAP_STATE  0x30090000u
+/* 2026-11-14: the levels' names (Level_getName's table) and the five tiers of a level's state. */
+#define FAKE_TOD_NAMES      0x300A0000u
+#define FAKE_TOD_TIERS      0x300B0000u
+#define FAKE_TOD_NTIERS     5u
 
 static int g_lua_patch_at_boot;
 static u8 g_lua_patch[QWARK_MAX_PAYLOAD];
@@ -283,6 +287,25 @@ static void seed_tod_save(void)
 static u8 g_tod_copy[TOD_SAVE_SIZE];
 
 /*
+ * 2026-11-14: LoadLevel(level, 1, 0) outside play (tod.h, TOD_LEVEL_NAMES):
+ * Level_setName, g_saveData.currentLevel, GameState_Request(3, 3). Under
+ * g_mem_lock.
+ */
+static void fake_tod_load_now(u32 level)
+{
+	u32 count = peek32(TOD_TIER_STACK + TOD_TS_COUNT), name = peek32(TOD_LEVEL_NAMES + level * 4u), i;
+	u8 one = 1;
+
+	poke32(TOD_LEVEL_NAME_LAST, name);
+	poke32(TOD_PREV_LEVEL_NAME, peek32(TOD_LEVEL_NAME));
+	poke32(TOD_LEVEL_NAME, name);
+	poke32(TOD_CURRENT_LEVEL, level);
+	for (i = 0; i < TOD_LEVEL_LOAD_TIERS && i < count; i++)
+		mem_access(peek32(TOD_TIER_STACK + TOD_TS_TIERS + (count - 1u - i) * 4u) + TOD_TIER_DYING, &one, 1, 1);
+	poke32(TOD_REQUESTED_STATE, TOD_LEVEL_LOAD_STATE);
+}
+
+/*
  * One frame of SaveSystem_update, as far as the save manager's own words go
  * (src/games/tod_save.c's model of it): no thread is ever real here, so a load
  * thread id that is not none is one sys_ppu_thread_get_priority answers ESRCH
@@ -313,6 +336,7 @@ int host_fake_tod_save_frame(void)
 				mem_access(TOD_SAVE_DATA, g_tod_copy, TOD_SAVE_SIZE, 1);
 				level = peek32(TOD_SAVE_DATA + TOD_SAVE_LEVEL_OFF);
 				if (peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY) poke32(TOD_LOAD_REQUEST, level);
+				else if (level < TOD_NPLANETS) fake_tod_load_now(level);   /* 2026-11-14: the pause's own Load */
 				poke32(lt + TOD_ST_STATE, 0);
 				loaded = 1;
 			}
@@ -388,6 +412,31 @@ static void seed_tod(void)
 		poke32(cam + TOD_CAM_POS + 4, 0xC0C00000u);
 		poke32(cam + TOD_CAM_POS + 8, 0x40600000u);
 		poke32(cam + TOD_CAM_POS + 12, 0);
+		/* 2026-11-14: and the camera client 0 is using (ToDCamClient.active). */
+		poke32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE, cam);
+	}
+	/*
+	 * 2026-11-14: Level_getName's table (a name per level), g_levelName the
+	 * level's, and g_tierStack with a level's five tiers, none marked to go.
+	 */
+	{
+		u32 k;
+		char name[16];
+
+		for (k = 0; k < TOD_NPLANETS; k++) {
+			memset(name, 0, sizeof(name));
+			snprintf(name, sizeof(name), "level%02u", (unsigned)k);
+			mem_access(FAKE_TOD_NAMES + k * 0x20u, name, sizeof(name), 1);
+			poke32(TOD_LEVEL_NAMES + k * 4u, FAKE_TOD_NAMES + k * 0x20u);
+		}
+		poke32(TOD_LEVEL_NAME, FAKE_TOD_NAMES + 1u * 0x20u);
+		poke32(TOD_TIER_STACK + TOD_TS_COUNT, FAKE_TOD_NTIERS);
+		for (k = 0; k < FAKE_TOD_NTIERS; k++) {
+			u8 zero = 0;
+
+			poke32(TOD_TIER_STACK + TOD_TS_TIERS + k * 4u, FAKE_TOD_TIERS + k * 0x40u);
+			mem_access(FAKE_TOD_TIERS + k * 0x40u + TOD_TIER_DYING, &zero, 1, 1);
+		}
 	}
 	/* A level up after its load: g_levelLoadTier loaded, the tier loader idle (revision 1.29). */
 	{

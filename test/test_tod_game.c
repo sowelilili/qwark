@@ -2350,6 +2350,45 @@ static long sf_file(const char *path, u8 *out, u32 cap)
 
 static u8 g_sf_buf[TOD_SAVE_SIZE + 16];
 
+static int sf_refused(const char *log, u8 err, u8 why);
+
+/*
+ * 2026-11-14: a load at once, as LoadLevel makes one outside play (tod.h,
+ * TOD_LEVEL_NAMES). How many of g_tierStack's tiers are marked to go (the
+ * simulator's five, bottom first: a level load marks the top three).
+ */
+static u32 tiers_dying(void)
+{
+	u32 count = rd32(TOD_TIER_STACK + TOD_TS_COUNT), i, n = 0;
+
+	for (i = 0; i < count && i < TOD_TIER_MAX; i++) {
+		u32 tier = rd32(TOD_TIER_STACK + TOD_TS_TIERS + i * 4u);
+
+		if (rd8(tier + TOD_TIER_DYING) == 0) continue;
+		if (i + TOD_LEVEL_LOAD_TIERS < count) return 99;   /* one below the level's three: never */
+		n++;
+	}
+	return n;
+}
+
+/* Level_setName's three words for `level`, and g_saveData.currentLevel. */
+static int level_names_at(u32 level)
+{
+	u32 name = rd32(TOD_LEVEL_NAMES + level * 4u);
+
+	return name != 0 && rd32(TOD_LEVEL_NAME) == name && rd32(TOD_LEVEL_NAME_LAST) == name &&
+	       rd32(TOD_CURRENT_LEVEL) == level;
+}
+
+/* The game's GameState_Update taking it: the request back to none, the marked tiers gone and back. */
+static void load_now_taken(void)
+{
+	u32 count = rd32(TOD_TIER_STACK + TOD_TS_COUNT), i;
+
+	wr32(TOD_REQUESTED_STATE, TOD_REQUESTED_NONE);
+	for (i = 0; i < count && i < TOD_TIER_MAX; i++) wr8(rd32(TOD_TIER_STACK + TOD_TS_TIERS + i * 4u) + TOD_TIER_DYING, 0);
+}
+
 static void test_tod_savefile(void)
 {
 	const struct game_api *g;
@@ -2445,6 +2484,49 @@ static void test_tod_savefile(void)
 	check(g->load_setaside() == ST_OK, "Load set-aside (the combo's seam) is accepted");
 	check(sf_settle(1, 300), "and settles");
 	check(rd32(TOD_BOLTS) == 1000, "the set-aside save is loaded");
+
+	/*
+	 * 2026-11-14: in the pause, the pause menu's own Load: the save in, and
+	 * onLoaded's LoadLevel(level, 1, 0) loading at once, not a request only a
+	 * gameplay frame would take. Until now error 6, "not in gameplay".
+	 */
+	wr32(TOD_BOLTS, 7);
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_CURRENT_LEVEL, 9);
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_UP);
+	check(savefile_restore("runs", "a.sav") == ST_OK, "a RESTORE in the pause is accepted");
+	check(sf_settle(1, 300), "and settles");
+	check(rd32(TOD_BOLTS) == 1000 && rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu &&
+	      rd32(TOD_REQUESTED_STATE) == TOD_LEVEL_LOAD_STATE && level_names_at(1) && tiers_dying() == 3,
+	      "the save in, its level loading at once as LoadLevel does in the pause: g_requestedGameState 3, "
+	      "the top three tiers marked, the name set, and no planet request");
+	load_now_taken();
+	wr32(TOD_BOLTS, 7);
+	wr32(TOD_GAME_STATE, TOD_STATE_CINEMATIC);
+	check(g->load_setaside() == ST_OK && sf_settle(1, 300) && rd32(TOD_BOLTS) == 1000 &&
+	      rd32(TOD_REQUESTED_STATE) == TOD_LEVEL_LOAD_STATE && rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "Load set-aside during a cinematic: the same, the cinematic's own exit run by the unload");
+	load_now_taken();
+	/* Kept: an FMV, the galactic map, a pause still being built, a state change already asked for. */
+	wr32(TOD_GAME_STATE, TOD_STATE_FMV);
+	check(sf_refused("tod: restore refused, not in gameplay (g_gameState 7", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_NOT_GAMEPLAY), "an FMV: still refused (its exit, FmvState_exit, is not the unload's)");
+	wr32(TOD_GAME_STATE, TOD_STATE_GALMAP);
+	check(sf_refused("tod: restore refused, not in gameplay (g_gameState 6", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_NOT_GAMEPLAY), "the galactic map: still refused");
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_LOADING);
+	check(sf_refused("pause 1)", SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY),
+	      "a pause whose loading thread is still building it: refused");
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_UP);
+	wr32(TOD_REQUESTED_STATE, 2);
+	check(sf_refused("a state change is already asked for (g_requestedGameState 2)", SAVEFILE_ERR_NOT_IDLE,
+	                 SAVEFILE_WHY_NOT_GAMEPLAY), "nor over a state change already asked for");
+	check(rd32(TOD_REQUESTED_STATE) == 2 && tiers_dying() == 0, "which is left as it was");
+	wr32(TOD_REQUESTED_STATE, TOD_REQUESTED_NONE);
+	wr32(TOD_PAUSE_STATE, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
 
 	/* Refusals. */
 	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
@@ -4108,6 +4190,211 @@ static void test_tod_die(void)
 	tick(4);
 }
 
+/*
+ * 2026-11-14: the root cause of "loading a position never restores the camera".
+ * With Game Options' Lock-Strafe on (g_saveData.lockStrafe 1), the camera
+ * manager's default camera and Hero_setStrafeMode's are type 26, the
+ * lock-strafe camera, not the follow camera: the client's active slot is a
+ * ToDStrafeCam and no slot has type 3 at all, and its +0xD0 is its unit look
+ * direction. Until now only client 0's type-3 slot was looked for, so every
+ * slot saved there was 48 bytes and no load ever turned the camera. Here the
+ * hero's client is client 1, as CamMgr_allocClient hands a player any free one.
+ */
+#define STRAFE_CLIENT  (TOD_CAM_CLIENT + 1u * TOD_CAM_CLIENT_LEN)
+#define STRAFE         (STRAFE_CLIENT + TOD_CAM_SLOTS + 5u * TOD_CAM_SLOT_LEN)
+#define STRAFE_ST      (STRAFE + TOD_CAM_STATE)
+
+static void test_tod_strafe_camera(void)
+{
+	u8 blob[QWARK_MAX_BLOB], up[16], up_after[16];
+	u8 len = 0, planet;
+	u32 cam_type = rd32(CAM + TOD_CAM_TYPE), active0 = rd32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE);
+
+	group("ToD: a position slot carries the lock-strafe camera's direction (2026-11-14, the root cause)");
+	planet = session_current_planet();
+	/* Lock-Strafe on: client 0 has no camera any more, client 1's active slot is the lock-strafe camera. */
+	wr32(TOD_LOCK_STRAFE, 1);
+	wr32(CAM + TOD_CAM_TYPE, 0xFFFFFFFFu);
+	wr32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE, 0);
+	wr32(STRAFE + TOD_CAM_TYPE, TOD_CAM_STRAFE);
+	wr32(STRAFE_CLIENT + TOD_CAM_ACTIVE, STRAFE);
+	/* The hero at (10, 20, 5), the camera looking along (0.6, 0.8, 0) at a point 1.5 above him. */
+	put3(FAKE_HERO + TOD_HERO_POS, 10.0f, 20.0f, 5.0f);
+	put3(STRAFE_ST, 10.0f, 20.0f, 6.5f);
+	put3(STRAFE_ST + TOD_CAM_OFFSET, 0.6f, 0.8f, 0.0f);
+	put3(STRAFE_ST + TOD_CAM_DESIRED, 0.0f, 0.0f, 1.0f);   /* its up vector */
+	check(session_position_save(3) == ST_OK && pos_fetch(planet, 3, blob, &len) == ST_OK && len == TOD_POS_SLOT_LEN,
+	      "POS_SAVE with Lock-Strafe on keeps 64 bytes: the camera is found (it was a 48-byte slot)");
+	check(bef32_get(blob + 48) == -0.6f * TOD_CAM_STRAFE_DIST && bef32_get(blob + 52) == -0.8f * TOD_CAM_STRAFE_DIST &&
+	      bef32_get(blob + 56) == 0.0f, "the offset where the lock-strafe camera puts itself: 5.5 behind, along its look");
+
+	/* Elsewhere, the camera turned to look the other way. */
+	put3(FAKE_HERO + TOD_HERO_POS, 100.0f, 200.0f, 50.0f);
+	put3(STRAFE_ST, 100.0f, 200.0f, 51.5f);
+	put3(STRAFE_ST + TOD_CAM_OFFSET, -1.0f, 0.0f, 0.0f);
+	put3(STRAFE + TOD_CAM_POS, 105.5f, 200.0f, 51.5f);
+	host_peek(STRAFE_ST + TOD_CAM_DESIRED, up, sizeof(up));
+	check(session_position_load(3) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 10.0f, 20.0f, 5.0f),
+	      "POS_LOAD puts the hero back");
+	check(rdf(STRAFE_ST + TOD_CAM_OFFSET) > 0.5999f && rdf(STRAFE_ST + TOD_CAM_OFFSET) < 0.6001f &&
+	      rdf(STRAFE_ST + TOD_CAM_OFFSET + 4) > 0.7999f && rdf(STRAFE_ST + TOD_CAM_OFFSET + 4) < 0.8001f &&
+	      rdf(STRAFE_ST + TOD_CAM_OFFSET + 8) == 0.0f,
+	      "and the lock-strafe camera looks where it looked when saved: its unit direction back");
+	check(is3(STRAFE_ST, 10.0f, 20.0f, 6.5f), "its target moved by the hero's jump");
+	check(rdf(STRAFE + TOD_CAM_POS) > 6.69f && rdf(STRAFE + TOD_CAM_POS) < 6.71f &&
+	      rdf(STRAFE + TOD_CAM_POS + 4) > 15.59f && rdf(STRAFE + TOD_CAM_POS + 4) < 15.61f,
+	      "and its position 5.5 behind the target, nothing swinging in from the old place");
+	host_peek(STRAFE_ST + TOD_CAM_DESIRED, up_after, sizeof(up_after));
+	check(memcmp(up, up_after, sizeof(up)) == 0, "its up vector (+0xE0) is the game's");
+
+	/* A slot saved with the follow camera loads into the lock-strafe camera: the same direction. */
+	memset(blob, 0, sizeof(blob));
+	bef32_put(blob, 10.0f);
+	bef32_put(blob + 4, 20.0f);
+	bef32_put(blob + 8, 5.0f);
+	bef32_put(blob + 48, 0.0f);
+	bef32_put(blob + 52, -3.0f);
+	bef32_put(blob + 56, 0.0f);
+	check(session_position_store(4, blob, TOD_POS_SLOT_LEN) == ST_OK && session_position_load(4) == ST_OK &&
+	      is3(STRAFE_ST + TOD_CAM_OFFSET, 0.0f, 1.0f, 0.0f),
+	      "a follow camera's slot (offset 0, -3, 0) turns the lock-strafe camera to look along +y");
+
+	/* The camera client 1 uses is another type (a cut's blend): its slots are looked through. */
+	wr32(STRAFE_CLIENT + TOD_CAM_ACTIVE, STRAFE_CLIENT + TOD_CAM_SLOTS);
+	wr32(STRAFE_CLIENT + TOD_CAM_SLOTS + TOD_CAM_TYPE, 1);
+	check(session_position_save(5) == ST_OK && pos_fetch(planet, 5, blob, &len) == ST_OK && len == TOD_POS_SLOT_LEN,
+	      "a blend camera in use for a few frames: the lock-strafe slot is still found");
+	/* A direction that is no unit vector is no lock-strafe camera's. */
+	put3(STRAFE_ST + TOD_CAM_OFFSET, 0.0f, 0.0f, 0.0f);
+	check(session_position_save(5) == ST_OK && pos_fetch(planet, 5, blob, &len) == ST_OK && len == TOD_POS_BLOB_LEN,
+	      "a zero direction: a 48-byte slot");
+
+	/* Back: Lock-Strafe off, client 0's follow camera, client 1 unused. */
+	wr32(TOD_LOCK_STRAFE, 0);
+	wr32(STRAFE + TOD_CAM_TYPE, 0);
+	wr32(STRAFE_CLIENT + TOD_CAM_ACTIVE, 0);
+	wr32(STRAFE_CLIENT + TOD_CAM_SLOTS + TOD_CAM_TYPE, 0);
+	wr32(CAM + TOD_CAM_TYPE, cam_type);
+	wr32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE, active0);
+	pos_clear(planet, 3);
+	pos_clear(planet, 4);
+	pos_clear(planet, 5);
+}
+
+/*
+ * 2026-11-14: PLANET_LOAD in the pause and in a realtime cinematic loads at
+ * once, as LoadLevel does there (the pause menu's own Load); the galactic map,
+ * an FMV and a pause still being built stay BUSY. The autosplitter sees the
+ * load as any planet load: one split, no RESET, no long load.
+ */
+static int nothing_asked(void)
+{
+	return rd32(TOD_REQUESTED_STATE) == TOD_REQUESTED_NONE && rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu && tiers_dying() == 0;
+}
+
+static void test_tod_pause_loads(void)
+{
+	u32 seq, arg = 0, old;
+
+	group("ToD: a planet load from the pause or a cinematic is the game's own load there (2026-11-14)");
+	die_world();
+	metropolis_beaten(1);
+	wr32(TOD_CURRENT_LEVEL, 1);
+	planet_load(1, AS_STATE);
+	tick(4);
+
+	/* The pause up, no Trainer glue in it (RPCS3 without the helper's patch, or the menu off). */
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_UP);
+	tick(4);
+	seq = autosplit_latest_seq();
+	old = rd32(TOD_LEVEL_NAME);
+	check(session_planet_load(9, 0) == ST_OK, "PLANET_LOAD in the pause is accepted (it was BUSY)");
+	check(rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu && rd32(TOD_REQUESTED_STATE) == TOD_LEVEL_LOAD_STATE &&
+	      tiers_dying() == 3 && level_names_at(9) && rd32(TOD_PREV_LEVEL_NAME) == old,
+	      "as LoadLevel in the pause: no request only play would take, the name set, the top three tiers "
+	      "marked and g_requestedGameState 3, which the game's next frame acts on");
+	check(rd32(TOD_LOAD_FADE_TIME) == TOD_LOAD_FADE_GAME, "no fade armed: none plays on this path");
+	check(fl_rd8(FL_FLAG) == 1 && rd32(TOD_TRANSITION_MIN) == 0, "Fast loads forced for it, as for every load qwark starts");
+	check(session_planet_load(3, 0) == ST_BUSY && rd32(TOD_CURRENT_LEVEL) == 9,
+	      "and never a second one over it");
+	tick(4);
+	check(as_all(seq) == 0, "the autosplitter emits nothing for the pause or the request");
+	/* The game takes it: the pause and the level go, the tiers load, the new level comes up in play. */
+	load_now_taken();
+	load_begins();
+	tick(10);
+	load_data_in();
+	tick(2);
+	wr32(TOD_PAUSE_STATE, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	level_enters(AS_STATE + 0x300);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 9 && as_all(seq) == 1,
+	      "the autosplitter: one planet split, to Rykan V, no RESET, START or long load");
+	check(fl_rd8(FL_FLAG) == 0 && rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME,
+	      "and Fast loads put back once the new level is up (the flag, and the game's 5 s transition)");
+
+	/* A realtime cinematic: the same; its own exit (Movie_stopAll) is what the unload runs. */
+	tick(4);
+	seq = autosplit_latest_seq();
+	wr32(TOD_GAME_STATE, TOD_STATE_CINEMATIC);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 2);
+	check(session_planet_load(5, 0) == ST_OK && rd32(TOD_REQUESTED_STATE) == TOD_LEVEL_LOAD_STATE &&
+	      tiers_dying() == 3 && level_names_at(5) && rd32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "PLANET_LOAD during a cinematic loads at once (it was BUSY)");
+	load_now_taken();
+	load_begins();
+	tick(10);
+	load_data_in();
+	tick(2);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, 0);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	level_enters(AS_STATE + 0x340);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 5 && as_all(seq) == 1,
+	      "one split, to Mukow");
+
+	/* A pause on its way out (its state 4): the level still loads at once. */
+	wr32(TOD_GAME_STATE, TOD_STATE_PAUSE);
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_CLOSING);
+	check(session_planet_load(2, 0) == ST_OK && rd32(TOD_REQUESTED_STATE) == TOD_LEVEL_LOAD_STATE && level_names_at(2),
+	      "a pause closing: at once too");
+	load_now_taken();
+
+	/* Kept, each with nothing written. */
+	wr32(TOD_CURRENT_LEVEL, 5);
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_LOADING);
+	check(session_planet_load(2, 0) == ST_BUSY && nothing_asked() && rd32(TOD_CURRENT_LEVEL) == 5,
+	      "kept: a pause whose loading thread is still building the menu PauseMenu_exit would free");
+	wr32(TOD_PAUSE_STATE, TOD_PAUSE_UP);
+	wr32(TOD_REQUESTED_STATE, 2);
+	check(session_planet_load(2, 0) == ST_BUSY && rd32(TOD_REQUESTED_STATE) == 2 && tiers_dying() == 0,
+	      "kept: never over a state change already asked for (a quit to the title from the pause)");
+	wr32(TOD_REQUESTED_STATE, TOD_REQUESTED_NONE);
+	wr32(TOD_LEVEL_OBJ, 0);
+	check(session_planet_load(2, 0) == ST_BUSY && nothing_asked(), "kept: no level up");
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	wr32(TOD_GAME_STATE, TOD_STATE_FMV);
+	check(session_planet_load(2, 0) == ST_BUSY && nothing_asked() && rd32(TOD_CURRENT_LEVEL) == 5,
+	      "kept: an FMV, whose own exit (FmvState_exit) the level's unload never runs");
+	wr32(TOD_GAME_STATE, TOD_STATE_GALMAP);
+	check(session_planet_load(2, 0) == ST_BUSY && nothing_asked(),
+	      "kept: the galactic map, whose own exit (GalMapState_exit) the unload never runs either");
+	wr32(TOD_GAME_STATE, 3);
+	check(session_planet_load(2, 0) == ST_BUSY && nothing_asked(), "kept: a load under way");
+
+	/* Play again: the request as before. */
+	wr32(TOD_PAUSE_STATE, 0);
+	die_world();
+	check(session_planet_load(2, 0) == ST_OK && rd32(TOD_LOAD_REQUEST) == 2 && rd32(TOD_REQUESTED_STATE) == TOD_REQUESTED_NONE &&
+	      tiers_dying() == 0, "in play it is still the game's request, faded and loaded by its next frames");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	tick(800);
+	die_world();
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -4130,7 +4417,9 @@ void test_tod_game(void)
 	test_tod_autosplit_ending();
 	test_tod_autosplit_quit();
 	test_tod_positions_camera();   /* 2026-11-13 */
+	test_tod_strafe_camera();      /* 2026-11-14 */
 	test_tod_die();
+	test_tod_pause_loads();        /* 2026-11-14 */
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_load_fade();
 	test_tod_load_fast();

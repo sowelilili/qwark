@@ -113,10 +113,39 @@
 #define TOD_CAM_MAX_SQ       4096.0f      /* ... and at most 64, or it is no camera's */
 
 /*
+ * 2026-11-14: the camera a hero plays with is not always the follow camera.
+ * The camera manager's default type (CamMgr_defaultCameraType 0x6B7D0, what
+ * Hero_vWarpPosition cuts back to) and Hero_setStrafeMode (0x1F7E8C, the
+ * hero's vtable +0x4C, which Hero_applyStrafeOption calls at every level's
+ * start and PauseMenu_exit whenever the option changed in the pause) both
+ * pick 3 unless g_saveData.lockStrafe (+0x114BC, Game Options' Lock-Strafe) is
+ * 1, and then 26, the lock-strafe camera (ToDStrafeCam, StrafeCam_update
+ * 0x7BA9C): a class of its own, no type-3 slot left. Its state shares the
+ * target at +0xC0 and the position at +0x40, but +0xD0 is a unit vector, the
+ * direction it looks in (StrafeCam_applyInput 0x7A5BC turns it by the right
+ * stick, StrafeCam_alignUp 0x79A3C keeps it level with the hero's up), and
+ * StrafeCam_place (0x78E08) puts the camera 5.5 units behind the target along
+ * it (the first rotation row and the forward row rebuilt from it). The slot
+ * the client is using is ToDCamClient.active (+0x2114, CamClient_update
+ * 0x6617AC), and there are four clients (CamMgr_allocClient 0x6B9C4 hands out
+ * the first free one, each player's in turn), so the camera is found as the
+ * client's own active slot, whichever client follows the hero.
+ */
+#define TOD_CAM_NCLIENTS     4u
+#define TOD_CAM_CLIENT_LEN   0x21D0u      /* sizeof(ToDCamClient) */
+#define TOD_CAM_ACTIVE       0x2114u      /* ToDCamClient.active: ToDCamSlot*, the camera in use */
+#define TOD_CAM_STRAFE       26u          /* the lock-strafe camera (ToDStrafeCam) */
+#define TOD_CAM_STRAFE_DIST  5.5f         /* StrafeCam_place: the camera this far behind its target */
+#define TOD_LOCK_STRAFE      0x1021D32Cu  /* g_saveData.lockStrafe, u32: 1 picks camera 26 (dec) */
+
+/*
  * A position slot: the 48 bytes at TOD_HERO_POS, then since 2026-11-13 the
- * follow camera's offset (16 bytes, vec4 +0xD0), 64 in all. A 48-byte slot,
- * saved before, or saved while no follow camera followed the hero, loads the
- * hero alone and leaves the camera as it is.
+ * camera's offset from its target (16 bytes: the follow camera's vec4 +0xD0
+ * as it is; since 2026-11-14 also the lock-strafe camera's, its look
+ * direction turned back and 5.5 long, where StrafeCam_place puts it), 64 in
+ * all. Either camera loads either slot. A 48-byte slot, saved before, or
+ * saved while no camera followed the hero, loads the hero alone and leaves
+ * the camera as it is.
  */
 #define TOD_POS_SLOT_LEN     64u
 #define TOD_POS_CAM_AT       TOD_POS_BLOB_LEN
@@ -960,6 +989,52 @@ int tod_row_chunk(const struct tod_row *row, u32 value, char *dst, u32 cap);
 #define TOD_PAUSE_UP         3u
 #define TOD_STATE_PENDING_OP 0x10387DBCu  /* g_gameStatePendingOp, 0 with nothing queued (dec) */
 #define TOD_STATE_PAUSE      5u           /* g_gameState: the pause menu (PauseMenu_update) */
+
+/*
+ * 2026-11-14: a load from the pause or a cinematic, as the game's own makes
+ * one (dec). LoadLevel (0x2EA574) writes g_planetLoadRequest only in play
+ * (g_gameState 4); anywhere else it loads at once: Level_setName(the level's
+ * name: g_levelNameLastSet and g_levelName the new one, g_prevLevelName the
+ * old), g_saveData.currentLevel, then RequestLevelLoadState
+ * (GameState_Request(3, 3): the top three tiers of g_tierStack marked to go,
+ * their byte +4, then g_requestedGameState 3), which is all
+ * LoadLevel_ProcessPending does once its fade is black. That is the pause
+ * menu's own Load (Options > Load: the system's load dialog over the pause,
+ * then SaveManager_onLoaded's LoadLevel(level, 1, 0) in g_gameState 5), and
+ * the level tier's unload takes down what is over the level: its vtable's
+ * +0x14 (LevelTier_closePauseAndMovies 0x3C0208) calls PauseMenu_exit, which
+ * frees the pause menu's system and puts its state at 0 (the pause state's own
+ * exit), and Movie_stopAll, which is the cinematic state's own exit
+ * (MoviePlayer_enterCinematicState queues state 9 with Movie_stopAll as its
+ * exit: the cinematic, its mobys, its sounds and the pad's hold put back).
+ * Not the galactic map (6, GalMapState_exit) nor an FMV (7, FmvState_exit:
+ * the FMV's file closed, the clock's hold and the sound categories put back):
+ * neither exit is run by the unload, so a load there stays refused. Nor
+ * while the pause is still being built (g_pauseMenuState 1: its loading thread
+ * fills the menu system PauseMenu_exit would free).
+ */
+#define TOD_PAUSE_LOADING    1u           /* g_pauseMenuState while PauseMenuLoadingThread builds the menu */
+#define TOD_PAUSE_CLOSING    4u           /* g_pauseMenuState: PauseMenu_close's, the system freed and the fade */
+#define TOD_LEVEL_NAMES      0x1006E6BCu  /* char *[19], Level_getName's table (dec) */
+#define TOD_LEVEL_NAME_LAST  0x10387D18u  /* g_levelNameLastSet (Level_setName) */
+#define TOD_PREV_LEVEL_NAME  0x10387D1Cu  /* g_prevLevelName */
+#define TOD_LEVEL_NAME       0x10387D20u  /* g_levelName */
+#define TOD_TIER_STACK       0x1073B3B8u  /* g_tierStack: +4 count, +8 the tiers, bottom first (dec) */
+#define TOD_TS_COUNT         4u
+#define TOD_TS_TIERS         8u
+#define TOD_TIER_DYING       4u           /* u8: the tier goes at the next state request */
+#define TOD_TIER_MAX         8u           /* GameState_queueOverlay's depth; a stack deeper is no stack */
+#define TOD_LEVEL_LOAD_STATE 3u           /* RequestLevelLoadState: GameState_Request(3, 3) */
+#define TOD_LEVEL_LOAD_TIERS 3u
+
+/*
+ * The load of a level that cannot wait for play, as LoadLevel's own branch
+ * for it (tod_panel.c): ST_OK once the request is in, ST_BUSY where the game
+ * would not make one (no level, a load or a state change already asked for).
+ */
+int tod_level_load_now(u32 level);
+/* Whether g_gameState `state` (and the pause's `pause`) is one a load may leave at once. */
+int tod_load_leaves_now(u32 state, u32 pause);
 
 /*
  * Revision 1.29: the galactic map, the Trainer's planet picker

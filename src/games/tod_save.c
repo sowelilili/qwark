@@ -373,7 +373,9 @@ const struct sf_desc *tod_savefile_desc(u8 game_id)
  * it brings its own save: it needs what the planet load needs (tod_planet_load:
  * g_gameState 4, a level up, no planet load queued) and the title screen gone.
  * SaveManager_onLoaded's LoadLevel(level, 1, 0) then only writes the planet
- * load request, which fades out and loads like any planet load.
+ * load request, which fades out and loads like any planet load. Since
+ * 2026-11-14 also the pause and a cinematic, where that LoadLevel loads the
+ * level at once: from the pause, the pause menu's own Load.
  *
  * Build 57 also asked g_frontEndExitRequested, for "the front end on its way
  * out". FrontEnd_requestLevel sets it, and nothing ever clears it (its three
@@ -388,7 +390,7 @@ const struct sf_desc *tod_savefile_desc(u8 game_id)
 u8 tod_savefile_ready(u8 what)
 {
 	u8 h[TOD_SM_HEAD_LEN];
-	u32 state = 0, request = 0, root = 0, slot;
+	u32 state = 0, request = 0, root = 0, slot, pause = 0, requested = 0;
 	u8 front = 0;
 	const char *what_s = what == GAME_SF_SET_ASIDE ? "set-aside" : what == GAME_SF_LOAD ? "load" : "restore";
 	int ok = ss_read(h);
@@ -415,9 +417,22 @@ u8 tod_savefile_ready(u8 what)
 		plat_log("tod: %s refused, the title screen is up (g_inFrontEnd %d, g_gameState %d)", what_s, (int)front, (int)state);
 		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_TITLE);
 	}
-	if (state != TOD_STATE_GAMEPLAY || root == 0) {
-		plat_log("tod: %s refused, not in gameplay (g_gameState %d, wants %d; level object 0x%08X)",
-		         what_s, (int)state, TOD_STATE_GAMEPLAY, root);
+	/*
+	 * 2026-11-14: or the pause, or a cinematic, where onLoaded's LoadLevel
+	 * loads at once (tod.h, TOD_LEVEL_NAMES): from the pause that is the pause
+	 * menu's own Load exactly, and the level's unload takes down the pause or
+	 * the cinematic as their own exits do. Not while the pause is being built,
+	 * nor over a state change already asked for.
+	 */
+	if (state == TOD_STATE_PAUSE && mem_read_u32(TOD_PAUSE_STATE, &pause) != ST_OK) pause = TOD_PAUSE_LOADING;
+	if ((state != TOD_STATE_GAMEPLAY && !tod_load_leaves_now(state, pause)) || root == 0) {
+		plat_log("tod: %s refused, not in gameplay (g_gameState %d, wants %d, the pause or a cinematic; "
+		         "level object 0x%08X, pause %d)", what_s, (int)state, TOD_STATE_GAMEPLAY, root, (int)pause);
+		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY);
+	}
+	if (state != TOD_STATE_GAMEPLAY &&
+	    (mem_read_u32(TOD_REQUESTED_STATE, &requested) != ST_OK || requested != TOD_REQUESTED_NONE)) {
+		plat_log("tod: %s refused, a state change is already asked for (g_requestedGameState %d)", what_s, (int)requested);
 		return refuse(SAVEFILE_ERR_NOT_IDLE, SAVEFILE_WHY_NOT_GAMEPLAY);
 	}
 	if (request != 0xFFFFFFFFu) {

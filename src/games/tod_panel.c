@@ -1083,38 +1083,89 @@ static int f32_ok(u32 bits)
 	return (bits & 0x7F800000u) != 0x7F800000u;
 }
 
-/*
- * 2026-11-13: the follow camera that follows the hero (tod.h, TOD_CAM_*):
- * player 0's camera client's first slot of type 3, as
- * CamClient_findFollowCam picks it, whose target is within 32 units of
- * `hero_xyz` (so a camera following something else, or a client nobody
- * uses, is never taken). Its address and its state (target, offset, desired
- * offset, desired position) on success.
- */
-static int tod_follow_cam(const u8 *hero_xyz, u32 *cam, u8 state[TOD_CAM_STATE_LEN])
+/* A square root for the camera's lengths (no libm in a module): Newton from above. */
+static f32 cam_sqrt(f32 sq)
 {
-	u32 i, type = 0, at = 0;
+	f32 r = sq > 1.0f ? sq : 1.0f;
+	int i;
+
+	if (!(sq > 0.0f)) return 0.0f;
+	for (i = 0; i < 24; i++) r = 0.5f * (r + sq / r);
+	return r;
+}
+
+/*
+ * One camera slot, if it is one a hero plays with (tod.h, TOD_CAM_*): the
+ * follow camera (3) or the lock-strafe camera (26), whose target is within
+ * 32 units of `hero_xyz` (so a camera following something else is never
+ * taken), and, for the lock-strafe camera, whose look direction is one (about
+ * unit long). Its type and its state (+0xC0, four vectors) on success.
+ */
+static int cam_take(u32 slot, const u8 *hero_xyz, u32 *type, u8 state[TOD_CAM_STATE_LEN])
+{
 	f32 d, sq = 0.0f;
+	u32 i;
 
-	for (i = 0; i < TOD_CAM_NSLOTS; i++) {
-		u32 slot = TOD_CAM_CLIENT + TOD_CAM_SLOTS + i * TOD_CAM_SLOT_LEN;
-
-		if (mem_read_u32(slot + TOD_CAM_TYPE, &type) != ST_OK) return ST_IO_ERROR;
-		if (type == TOD_CAM_FOLLOW) { at = slot; break; }
-	}
-	if (at == 0) return ST_NOT_FOUND;
-	if (mem_read(at + TOD_CAM_STATE, state, TOD_CAM_STATE_LEN) != ST_OK) return ST_IO_ERROR;
+	if (mem_read_u32(slot + TOD_CAM_TYPE, type) != ST_OK) return ST_IO_ERROR;
+	if (*type != TOD_CAM_FOLLOW && *type != TOD_CAM_STRAFE) return ST_NOT_FOUND;
+	if (mem_read(slot + TOD_CAM_STATE, state, TOD_CAM_STATE_LEN) != ST_OK) return ST_IO_ERROR;
 	for (i = 0; i < 3; i++) {
 		if (!f32_ok(be32_get(state + i * 4)) || !f32_ok(be32_get(hero_xyz + i * 4))) return ST_NOT_FOUND;
 		d = bef32_get(state + i * 4) - bef32_get(hero_xyz + i * 4);
 		sq += d * d;
 	}
 	if (!(sq <= TOD_CAM_NEAR_SQ)) return ST_NOT_FOUND;
-	*cam = at;
+	if (*type == TOD_CAM_STRAFE) {
+		sq = 0.0f;
+		for (i = 0; i < 3; i++) {
+			if (!f32_ok(be32_get(state + TOD_CAM_OFFSET + i * 4))) return ST_NOT_FOUND;
+			d = bef32_get(state + TOD_CAM_OFFSET + i * 4);
+			sq += d * d;
+		}
+		if (!(sq >= 0.5f && sq <= 2.0f)) return ST_NOT_FOUND;
+	}
 	return ST_OK;
 }
 
-/* An offset a follow camera can have: finite, and neither on top of its target nor far off. */
+/*
+ * 2026-11-14: the camera that follows the hero. First the slot each camera
+ * client is using (ToDCamClient.active), whichever of the four clients is the
+ * hero's; then, should none be (a camera cut's blend in its place for a few
+ * frames), every client's slots, as CamClient_findFollowCam looks, for either
+ * type. Until 2026-11-14 only client 0's first type-3 slot was looked at, so
+ * with Lock-Strafe on, where the hero's camera is the lock-strafe camera and
+ * there is no type-3 slot, no slot ever carried the camera.
+ */
+static int tod_find_cam(const u8 *hero_xyz, u32 *cam, u32 *type, u8 state[TOD_CAM_STATE_LEN])
+{
+	u32 c, i, client, active = 0;
+
+	for (c = 0; c < TOD_CAM_NCLIENTS; c++) {
+		client = TOD_CAM_CLIENT + c * TOD_CAM_CLIENT_LEN;
+		if (mem_read_u32(client + TOD_CAM_ACTIVE, &active) != ST_OK) return ST_IO_ERROR;
+		if (active < client + TOD_CAM_SLOTS || active >= client + TOD_CAM_SLOTS + TOD_CAM_NSLOTS * TOD_CAM_SLOT_LEN ||
+		    (active - client - TOD_CAM_SLOTS) % TOD_CAM_SLOT_LEN != 0)
+			continue;
+		if (cam_take(active, hero_xyz, type, state) == ST_OK) {
+			*cam = active;
+			return ST_OK;
+		}
+	}
+	for (c = 0; c < TOD_CAM_NCLIENTS; c++) {
+		client = TOD_CAM_CLIENT + c * TOD_CAM_CLIENT_LEN;
+		for (i = 0; i < TOD_CAM_NSLOTS; i++) {
+			u32 slot = client + TOD_CAM_SLOTS + i * TOD_CAM_SLOT_LEN;
+
+			if (cam_take(slot, hero_xyz, type, state) == ST_OK) {
+				*cam = slot;
+				return ST_OK;
+			}
+		}
+	}
+	return ST_NOT_FOUND;
+}
+
+/* An offset a camera can have: finite, and neither on top of its target nor far off. */
 static int tod_cam_offset_ok(const u8 *off)
 {
 	f32 sq = 0.0f, v;
@@ -1131,50 +1182,75 @@ static int tod_cam_offset_ok(const u8 *off)
 }
 
 /*
- * A slot: the hero's 48 bytes, then the follow camera's offset when one
- * follows the hero (64 bytes); otherwise the 48 alone, which load as the
- * hero alone.
+ * A slot: the hero's 48 bytes, then the camera's offset from its target when
+ * a camera follows the hero (64 bytes): the follow camera's +0xD0 as it is,
+ * the lock-strafe camera's look direction turned back and 5.5 long, where it
+ * puts itself (w 0); otherwise the 48 alone, which load as the hero alone.
  */
 int tod_save_blob(u8 *blob, u8 *len)
 {
-	u8 state[TOD_CAM_STATE_LEN];
-	u32 hero, cam = 0;
+	u8 state[TOD_CAM_STATE_LEN], off[16];
+	u32 hero, cam = 0, type = 0, i;
 	int rc = tod_hero(&hero);
 
 	if (rc != ST_OK) return rc;
 	rc = mem_read(hero + TOD_HERO_POS, blob, TOD_POS_BLOB_LEN);
 	if (rc != ST_OK) return rc;
 	*len = TOD_POS_BLOB_LEN;
-	if (tod_follow_cam(blob, &cam, state) == ST_OK && tod_cam_offset_ok(state + TOD_CAM_OFFSET)) {
-		memcpy(blob + TOD_POS_CAM_AT, state + TOD_CAM_OFFSET, 16);
+	if (tod_find_cam(blob, &cam, &type, state) != ST_OK) return ST_OK;
+	if (type == TOD_CAM_STRAFE) {
+		for (i = 0; i < 3; i++)
+			bef32_put(off + i * 4, -bef32_get(state + TOD_CAM_OFFSET + i * 4) * TOD_CAM_STRAFE_DIST);
+		be32_put(off + 12, 0);
+	} else {
+		memcpy(off, state + TOD_CAM_OFFSET, 16);
+	}
+	if (tod_cam_offset_ok(off)) {
+		memcpy(blob + TOD_POS_CAM_AT, off, 16);
 		*len = TOD_POS_SLOT_LEN;
 	}
 	return ST_OK;
 }
 
 /*
- * The camera of a 64-byte slot (tod.h, TOD_CAM_*): the saved offset as both
- * the offset and the desired one, so the next frame keeps it; the target
- * moved by the hero's own jump (`from` the position before the load, `to`
- * the slot's), and the positions it implies, target + offset, so nothing
- * lags in from the old place. Each vector's w goes along as the game adds it.
+ * The camera of a 64-byte slot (tod.h, TOD_CAM_*), into whichever camera the
+ * hero has now. Either way the target moves by the hero's own jump (`from`
+ * the position before the load, `to` the slot's) and the camera's position
+ * is the target plus the slot's offset, so nothing lags or swings in from the
+ * old place; each vector's w is the camera's own.
+ *
+ *   follow camera   the offset as both the offset and the desired one, so
+ *                   the next frame keeps it, and the desired position.
+ *   lock-strafe     the look direction, the offset turned back and made unit
+ *                   long; its up vector (+0xE0) is left to StrafeCam_alignUp.
  */
-static int tod_load_cam(u32 cam, u8 state[TOD_CAM_STATE_LEN], const u8 *from, const u8 *to, const u8 *off)
+static int tod_load_cam(u32 cam, u32 type, u8 state[TOD_CAM_STATE_LEN], const u8 *from, const u8 *to, const u8 *off)
 {
 	u8 pos[16];
+	f32 len = 0.0f;
 	u32 i;
 
-	for (i = 0; i < 3; i++)
-		bef32_put(state + i * 4, bef32_get(state + i * 4) + (bef32_get(to + i * 4) - bef32_get(from + i * 4)));
-	memcpy(state + TOD_CAM_OFFSET, off, 16);
-	memcpy(state + TOD_CAM_DESIRED, off, 16);
-	for (i = 0; i < 4; i++) {
-		f32 p = bef32_get(state + i * 4) + bef32_get(off + i * 4);
+	for (i = 0; i < 3; i++) {
+		f32 o = bef32_get(off + i * 4);
 
-		bef32_put(state + TOD_CAM_DESIRED_POS + i * 4, p);
-		bef32_put(pos + i * 4, p);
+		bef32_put(state + i * 4, bef32_get(state + i * 4) + (bef32_get(to + i * 4) - bef32_get(from + i * 4)));
+		len += o * o;
 	}
-	if (mem_write(cam + TOD_CAM_STATE, state, TOD_CAM_STATE_LEN) != ST_OK) return ST_IO_ERROR;
+	len = cam_sqrt(len);
+	for (i = 0; i < 4; i++) {
+		f32 o = i < 3 ? bef32_get(off + i * 4) : bef32_get(state + TOD_CAM_OFFSET + 12);
+
+		bef32_put(pos + i * 4, bef32_get(state + i * 4) + o);
+		if (type == TOD_CAM_STRAFE) {
+			if (i < 3) bef32_put(state + TOD_CAM_OFFSET + i * 4, -o / len);
+			continue;
+		}
+		bef32_put(state + TOD_CAM_OFFSET + i * 4, o);
+		bef32_put(state + TOD_CAM_DESIRED + i * 4, o);
+		memcpy(state + TOD_CAM_DESIRED_POS + i * 4, pos + i * 4, 4);
+	}
+	if (mem_write(cam + TOD_CAM_STATE, state, type == TOD_CAM_STRAFE ? TOD_CAM_DESIRED : TOD_CAM_STATE_LEN) != ST_OK)
+		return ST_IO_ERROR;
 	return mem_write(cam + TOD_CAM_POS, pos, sizeof(pos));
 }
 
@@ -1189,7 +1265,7 @@ static int tod_load_cam(u32 cam, u8 state[TOD_CAM_STATE_LEN], const u8 *from, co
 int tod_load_blob(const u8 *blob, u8 len)
 {
 	u8 state[TOD_CAM_STATE_LEN], from[12];
-	u32 hero, moby = 0, cam = 0;
+	u32 hero, moby = 0, cam = 0, type = 0;
 	int rc, with_cam = 0;
 
 	if (len != TOD_POS_BLOB_LEN && len != TOD_POS_SLOT_LEN) return ST_BAD_ARG;
@@ -1197,7 +1273,7 @@ int tod_load_blob(const u8 *blob, u8 len)
 	if (rc != ST_OK) return rc;
 	if (len == TOD_POS_SLOT_LEN && tod_cam_offset_ok(blob + TOD_POS_CAM_AT) &&
 	    mem_read(hero + TOD_HERO_POS, from, sizeof(from)) == ST_OK &&
-	    tod_follow_cam(from, &cam, state) == ST_OK)
+	    tod_find_cam(from, &cam, &type, state) == ST_OK)
 		with_cam = 1;
 	rc = mem_write(hero + TOD_HERO_POS, blob, TOD_POS_BLOB_LEN);
 	if (rc != ST_OK) return rc;
@@ -1205,7 +1281,7 @@ int tod_load_blob(const u8 *blob, u8 len)
 	if (rc != ST_OK) return rc;
 	if (mem_read_u32(hero + TOD_HERO_MOBY, &moby) == ST_OK && moby != 0 && (moby & 3u) == 0)
 		mem_write(moby + TOD_MOBY_POS, blob, 16);
-	if (with_cam) return tod_load_cam(cam, state, from, blob, blob + TOD_POS_CAM_AT);
+	if (with_cam) return tod_load_cam(cam, type, state, from, blob, blob + TOD_POS_CAM_AT);
 	return ST_OK;
 }
 
@@ -1301,21 +1377,37 @@ static void tod_die_tick(void)
  * Revision 1.29: and Fast loads forced for it, as the four original
  * games' planet load forces them (tod.h, tod_galmap_up); a request that fails
  * takes back its own force and nobody else's.
+ * 2026-11-14: in the pause and in a realtime cinematic, where no gameplay
+ * frame runs to take a request, the level loads at once, as LoadLevel itself
+ * does there and the pause menu's own Load does (tod_level_load_now): no
+ * fade, the level's unload taking the pause or the cinematic down. Until then
+ * both were BUSY ("only in gameplay"), a guard that kept a request from being
+ * written where nothing would take it, not one a crash needed. The galactic
+ * map, an FMV and a pause still being built stay BUSY (tod.h).
  */
 int tod_planet_load(u8 planet, u8 flags)
 {
-	u32 state = 0, request = 0, root = 0;
-	int rc, was = TP->fl_forced;
+	u32 state = 0, request = 0, root = 0, pause = 0;
+	int rc, was = TP->fl_forced, now;
 
 	(void)flags;
 	if (planet >= TOD_NPLANETS) return ST_BAD_ARG;
 	rc = mem_read_u32(TOD_GAME_STATE, &state);
 	if (rc == ST_OK) rc = mem_read_u32(TOD_LOAD_REQUEST, &request);
 	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_OBJ, &root);
+	if (rc == ST_OK && state == TOD_STATE_PAUSE) rc = mem_read_u32(TOD_PAUSE_STATE, &pause);
 	if (rc != ST_OK) return rc;
-	if (state != TOD_STATE_GAMEPLAY || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
+	/* 2026-11-14: from the pause or a cinematic, at once, as the game's own load there (tod.h). */
+	now = tod_load_leaves_now(state, pause);
+	if ((state != TOD_STATE_GAMEPLAY && !now) || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
 	rc = tod_fl_force();
 	if (rc != ST_OK && rc != ST_UNSUPPORTED) return rc;
+	if (now) {
+		rc = tod_level_load_now(planet);
+		if (rc != ST_OK && !was && TP->fl_forced) tod_fl_restore();
+		if (rc == ST_OK) plat_log("tod: level %d loads at once out of g_gameState %d, as the game's own load there", (int)planet, (int)state);
+		return rc;
+	}
 	/* Revision 1.29: no fade-out first (tod.h, TOD_LOAD_FADE_TIME). */
 	tod_fade_arm(tod_story_load(planet, TOD_LEVEL_FLAGS));
 	rc = mem_write_u32(TOD_LOAD_REQUEST, planet);
@@ -1323,5 +1415,57 @@ int tod_planet_load(u8 planet, u8 flags)
 		tod_fade_disarm();
 		if (!was && TP->fl_forced) tod_fl_restore();
 	}
+	return rc;
+}
+
+/*
+ * 2026-11-14 (tod.h, TOD_LEVEL_NAMES): the pause (g_gameState 5) once its
+ * loading thread is done, and a realtime cinematic (9). The level's unload
+ * runs both one's exits itself.
+ */
+int tod_load_leaves_now(u32 state, u32 pause)
+{
+	if (state == TOD_STATE_PAUSE) return pause != TOD_PAUSE_LOADING;
+	return state == (u32)TOD_STATE_CINEMATIC;
+}
+
+/*
+ * 2026-11-14: LoadLevel's branch for a game not in play, as data: the
+ * level's name set as Level_setName sets it, g_saveData.currentLevel, then
+ * GameState_Request(3, 3), the top three tiers marked and g_requestedGameState
+ * 3 last, which is the word the game's GameState_Update acts on (and the one
+ * that makes the load: tiers marked with no request are left as they are, so
+ * a failure on the way puts the marks back). Never over a planet load or a
+ * state change already asked for, and only with a level's tiers up. The
+ * autosplitter and Fast loads see it as any planet load: the same tier
+ * loader's job, g_currentLevel the destination as it begins.
+ */
+int tod_level_load_now(u32 level)
+{
+	u32 count = 0, requested = 0, request = 0, name = 0, old = 0, tiers[TOD_LEVEL_LOAD_TIERS], i;
+	int rc;
+
+	if (level >= TOD_NPLANETS) return ST_BAD_ARG;
+	rc = mem_read_u32(TOD_REQUESTED_STATE, &requested);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_LOAD_REQUEST, &request);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_TIER_STACK + TOD_TS_COUNT, &count);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_NAMES + level * 4u, &name);
+	if (rc == ST_OK) rc = mem_read_u32(TOD_LEVEL_NAME, &old);
+	if (rc != ST_OK) return rc;
+	if (requested != TOD_REQUESTED_NONE || request != 0xFFFFFFFFu) return ST_BUSY;
+	if (count < TOD_LEVEL_LOAD_TIERS || count > TOD_TIER_MAX || name == 0) return ST_BUSY;
+	for (i = 0; i < TOD_LEVEL_LOAD_TIERS; i++) {
+		rc = mem_read_u32(TOD_TIER_STACK + TOD_TS_TIERS + (count - 1u - i) * 4u, &tiers[i]);
+		if (rc != ST_OK) return rc;
+		if (tiers[i] == 0 || (tiers[i] & 3u) != 0) return ST_BUSY;
+	}
+	rc = mem_write_u32(TOD_LEVEL_NAME_LAST, name);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_LEVEL_NAME, name);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_PREV_LEVEL_NAME, old);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_CURRENT_LEVEL, level);
+	for (i = 0; rc == ST_OK && i < TOD_LEVEL_LOAD_TIERS; i++) rc = mem_write_u8(tiers[i] + TOD_TIER_DYING, 1);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_REQUESTED_STATE, TOD_LEVEL_LOAD_STATE);
+	if (rc != ST_OK)
+		for (i = 0; i < TOD_LEVEL_LOAD_TIERS; i++) mem_write_u8(tiers[i] + TOD_TIER_DYING, 0);
 	return rc;
 }
