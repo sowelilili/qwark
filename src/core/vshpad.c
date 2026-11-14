@@ -35,7 +35,7 @@ static struct {
 	u8  buttons_on, sticks_on;   /* what vshpad_merge takes, as of the last poll */
 	int read_rc;
 	u64 fresh_us;      /* when libpad last handed over new data, 0 never */
-	/* GetInfo2, once per telemetry frame */
+	/* GetInfo2, every 33 ms (a 30 Hz telemetry frame) */
 	u8  info_done, info_said;
 	int info_rc;
 	u32 now_connect, system_info, port_status;
@@ -334,7 +334,7 @@ void vshpad_poll(int wanted, int game_running, u32 game_mask, const f32 game_ana
 		else              owner_set(OWNER_VSH, "no game: the XMB has the pad", game_mask, now);
 	}
 
-	/* GetInfo2 once per telemetry frame, and at once when the game takes input while the VSH has the pad. */
+	/* GetInfo2 every 33 ms, and at once when the game takes input while the VSH has the pad. */
 	if (!g_vp.info_done || now - g_vp.info_us >= VSHPAD_INFO_EVERY_US ||
 	    (game_running && game_new && g_vp.owner == OWNER_VSH))
 		info_poll(now);

@@ -71,7 +71,10 @@ int  net_wait_clients(u32 timeout_us);
 /* Destroys what net_init created. Nothing may be in the network code after this. */
 void net_shutdown(void);
 
-/* Called from the tick thread every fourth tick. */
+/*
+ * Called from the tick thread every fourth tick, or (revision 1.32) every
+ * second or every tick after `telemetry.hz` (TELEMETRY_RATE).
+ */
 void net_send_telemetry(const u8 *packet, u32 len);
 
 /*

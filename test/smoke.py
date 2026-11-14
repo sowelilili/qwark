@@ -166,6 +166,12 @@ OP_COMBO_OVERRIDE = 0x0095
 OP_RUN_WARN = 0x0096
 SESSION_FLAG3_RUN_WARN = 0x01
 SESSION_FLAG3_RUN_WARN_OFF = 0x02
+# Revision 1.32: the telemetry rate, TELEMETRY_RATE and flags3 bits 2 to 4.
+OP_TELEMETRY_RATE = 0x0097
+SESSION_FLAG3_TELEMETRY_RATE = 0x04
+SESSION_FLAG3_RATE_SHIFT = 3
+SESSION_FLAG3_RATE_MASK = 0x18
+RUN_WARN_BITS = SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF
 PROFILE_SUPPORTED = 0x02
 PROFILE_ON = 0x04
 PROFILE_ACTIVE = 0x08
@@ -2003,6 +2009,52 @@ def drain_udp(udp):
                 break
     finally:
         udp.settimeout(2.0)
+
+
+def telemetry_ticks(udp, seconds):
+    """The SessionInfo tick of every QWRK packet that arrives within `seconds`."""
+    ticks = []
+    deadline = time.time() + seconds
+    try:
+        while time.time() < deadline:
+            udp.settimeout(max(0.01, deadline - time.time()))
+            try:
+                data, _addr = udp.recvfrom(4096)
+            except socket.timeout:
+                break
+            if data[:4] == b"QWRK" and len(data) >= 4 + 12:
+                ticks.append(struct.unpack(">I", data[4 + 8:4 + 12])[0])
+    finally:
+        udp.settimeout(2.0)
+    return ticks
+
+
+def test_telemetry_rate(c, udp, prefix=""):
+    """
+    Revision 1.32: TELEMETRY_RATE, telemetry.hz. The packets come every 4, 2 or
+    1 ticks at 30, 60 or 120 Hz, which the ticks the packets carry say whatever
+    pace the host's own tick keeps; SessionInfo flags3 bits 3-4 say which, and
+    anything but the three is BAD_ARG.
+    """
+    st = fresh_state(c)
+    check(st and st["flags3"] & (SESSION_FLAG3_TELEMETRY_RATE | SESSION_FLAG3_RATE_MASK) == SESSION_FLAG3_TELEMETRY_RATE,
+          prefix + "telemetry rate: flags3 bit2, the switch, at 30 Hz (bits 3-4 = 0)", st and hex(st["flags3"]))
+    for bad in (bytes([45]), bytes([0]), bytes([4]), b""):
+        status, _ = c.call(OP_TELEMETRY_RATE, bad)
+        check(status == ST_BAD_ARG, prefix + "telemetry rate: TELEMETRY_RATE %s is BAD_ARG" % (list(bad) or "with no byte"), status)
+    for hz, every, code in ((30, 4, 0), (60, 2, 1), (120, 1, 2), (30, 4, 0)):
+        status, body = c.call(OP_TELEMETRY_RATE, bytes([hz]))
+        check(status == ST_OK and body == b"", prefix + "telemetry rate: TELEMETRY_RATE %d answers OK" % hz, status)
+        st = fresh_state(c)
+        check(st and (st["flags3"] & SESSION_FLAG3_RATE_MASK) >> SESSION_FLAG3_RATE_SHIFT == code,
+              prefix + "telemetry rate: and flags3 bits 3-4 say %d Hz" % hz, st and hex(st["flags3"]))
+        drain_udp(udp)
+        ticks = telemetry_ticks(udp, 0.6)
+        steps = [(b - a) & 0xFFFFFFFF for a, b in zip(ticks, ticks[1:])]
+        usual = max(set(steps), key=steps.count) if steps else None
+        check(len(steps) >= 10 and usual == every,
+              prefix + "telemetry rate: at %d Hz a packet every %d tick%s" % (hz, every, "" if every == 1 else "s"),
+              (len(steps), usual, steps[:12]))
 
 
 def telemetry_within(udp, seconds):
@@ -7031,6 +7083,18 @@ def smoke_rpcs3(exe):
         check(info and (info["flags"] & SESSION_FLAG_NO_CODE_PATCHES) != 0,
               "rpcs3: the platform flags survive into the game session")
 
+        # Revision 1.32: the same core, so the same telemetry rate.
+        rudp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            rudp.bind((HOST, 0))
+            rudp.settimeout(2.0)
+            status, _ = c.call(OP_SUBSCRIBE, struct.pack(">H", rudp.getsockname()[1]))
+            check(status == ST_OK, "rpcs3: SUBSCRIBE accepted", status)
+            test_telemetry_rate(c, rudp, "rpcs3: ")
+            c.call(OP_UNSUBSCRIBE)
+        finally:
+            rudp.close()
+
         # --------------------------------------------------------- describe
         status, body = c.call(OP_DESCRIBE)
         code_rows = []
@@ -8713,7 +8777,7 @@ def main():
             return "notify: Warning: %d cheat%s enabled" % (n, "" if n == 1 else "s")
 
         st = fresh_state(c)
-        check(st and st["flags3"] == SESSION_FLAG3_RUN_WARN,
+        check(st and st["flags3"] & RUN_WARN_BITS == SESSION_FLAG3_RUN_WARN,
               "run-start warnings: SessionInfo flags3 bit0, on out of the box", st and hex(st["flags3"]))
         before = st["toggle_state"] if st else 0
         status_a, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 3, 1))
@@ -8729,13 +8793,13 @@ def main():
         check(status == ST_BAD_ARG, "run-start warnings: RUN_WARN 2 is BAD_ARG", status)
         status, _ = c.call(OP_RUN_WARN, bytes([0]))
         st = fresh_state(c)
-        check(status == ST_OK and st and st["flags3"] == SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF,
+        check(status == ST_OK and st and st["flags3"] & RUN_WARN_BITS == SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF,
               "run-start warnings: RUN_WARN 0 answers OK and flags3 bit1 says so", (status, st and hex(st["flags3"])))
         said = rac1_run_start()
         check(not said, "run-start warnings: switched off, the next run start says nothing", said)
         status, _ = c.call(OP_RUN_WARN, bytes([1]))
         st = fresh_state(c)
-        check(status == ST_OK and st and st["flags3"] == SESSION_FLAG3_RUN_WARN,
+        check(status == ST_OK and st and st["flags3"] & RUN_WARN_BITS == SESSION_FLAG3_RUN_WARN,
               "run-start warnings: RUN_WARN 1 switches them back on", (status, st and hex(st["flags3"])))
         for fid in (2, 3):
             c.call(OP_FEATURE_SET, struct.pack(">BI", fid, (before >> fid) & 1))
@@ -8840,6 +8904,9 @@ def main():
             break
         check(tflags is not None and (tflags & SESSION_FLAG_COMBOS_OFF) != 0,
               "and a telemetry packet carries the same bit", tflags)
+
+        # ------------------------------------------- telemetry rate (1.32)
+        test_telemetry_rate(c, udp)
 
         coords4 = struct.pack(">fff", 4.0, 5.0, 6.0) + b"\x00" * 18
         c.call(OP_MEM_WRITE, struct.pack(">I", RAC1_COORDS) + coords4)

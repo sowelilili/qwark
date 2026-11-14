@@ -21,7 +21,17 @@
 #include <string.h>
 
 #define TICK_PERIOD_US   8333u     /* 120 Hz */
-#define TELEMETRY_EVERY  4         /* 30 Hz */
+#define TICK_HZ          120u
+
+/*
+ * Revision 1.32. The telemetry packet goes out every g_tele_every ticks:
+ * 4 (30 Hz, the default and every earlier build's), 2 (60 Hz) or 1 (120 Hz),
+ * after config.txt's `telemetry.hz` (TELEMETRY_RATE). Cached against the
+ * config version, as the combo masks are, because the store is a linear scan
+ * and the tick asks every tick.
+ */
+static u32 g_tele_every = 4;
+static u32 g_tele_cfg_version = 0xFFFFFFFFu;
 
 /*
  * Protocol 1.3. How often the FEATURE_FLAG_LIVE toggles are re-read out of game
@@ -1584,6 +1594,14 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * warnings are in every build, so bit0 is always set; bit1 is the switch.
 	 */
 	out[31] = (u8)(SESSION_FLAG3_RUN_WARN | (config_run_warnings() ? 0 : SESSION_FLAG3_RUN_WARN_OFF));
+	/*
+	 * Revision 1.32: TELEMETRY_RATE is in every build too (bit2), and bits
+	 * 3-4 are the rate the packets go out at, as the tick has it.
+	 */
+	out[31] |= (u8)(SESSION_FLAG3_TELEMETRY_RATE
+	                | ((g_tele_every == 1 ? TELEMETRY_RATE_CODE_120
+	                    : g_tele_every == 2 ? TELEMETRY_RATE_CODE_60 : TELEMETRY_RATE_CODE_30)
+	                   << SESSION_FLAG3_RATE_SHIFT));
 
 	for (i = 0; i < 3; i++) bef32_put(out + 32 + i * 4, g_hot.pos[i]);
 	/*
@@ -1639,12 +1657,37 @@ static u32 encode_telemetry(u8 *out, u32 cap)
 	return off;
 }
 
+/*
+ * The SessionInfo HELLO answers is the packet's own, copied out of it rather
+ * than encoded a second time: encode_info asks the config store (a linear
+ * scan) for half a dozen keys, and since revision 1.32 this can run every tick.
+ */
 static void publish(void)
 {
 	core_lock();
-	encode_info(g_info_pub, sizeof(g_info_pub));
 	g_tele_pub_len = encode_telemetry(g_tele_pub, sizeof(g_tele_pub));
+	if (g_tele_pub_len >= 4 + SESSION_INFO_SIZE) memcpy(g_info_pub, g_tele_pub + 4, SESSION_INFO_SIZE);
+	else encode_info(g_info_pub, sizeof(g_info_pub));
 	core_unlock();
+}
+
+/*
+ * Revision 1.32. The tick's telemetry period out of `telemetry.hz`, read again
+ * only when the config has changed (TELEMETRY_RATE, CONFIG_RELOAD, a profile
+ * switch). Under the core lock, as every config read on the tick is.
+ */
+static void refresh_tele_every(void)
+{
+	u32 v = config_version();
+
+	if (v == g_tele_cfg_version) return;
+	g_tele_cfg_version = v;
+	g_tele_every = TICK_HZ / config_telemetry_hz();
+}
+
+u32 session_telemetry_hz(void)
+{
+	return TICK_HZ / g_tele_every;
 }
 
 u32 session_info_copy(u8 *out, u32 cap)
@@ -1703,6 +1746,7 @@ int session_init(void)
 	prev_clear();
 
 	/* Nothing is published yet; give clients a valid empty snapshot to read. */
+	refresh_tele_every();
 	publish();
 	return ST_OK;
 }
@@ -1766,6 +1810,8 @@ static void session_step(void)
 	 * reads plus the freeze and watch passes, which is microseconds.
 	 */
 	core_lock();
+	/* Revision 1.32: TELEMETRY_RATE's period, when the config has moved. */
+	refresh_tele_every();
 	if (g_state == SESSION_INGAME) {
 		read_hot();
 		/* Revision 1.26: the title's pause pair, before the game's own tick. */
@@ -1855,7 +1901,7 @@ static void session_step(void)
 
 	g_tick++;
 
-	if ((g_tick % TELEMETRY_EVERY) == 0) {
+	if ((g_tick % g_tele_every) == 0) {
 		publish();
 		net_send_telemetry(g_tele_pub, g_tele_pub_len);
 	}

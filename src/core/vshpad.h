@@ -60,7 +60,7 @@
  * pad stays empty. Never at the XMB, and never once system_info decides.
  */
 #define VSHPAD_QUIET_US        1000000ull
-/* GetInfo2, which picks the port and gives system_info: once per telemetry frame. */
+/* GetInfo2, which picks the port and gives system_info: every 33 ms, a 30 Hz telemetry frame whatever the rate (revision 1.32). */
 #define VSHPAD_INFO_EVERY_US   33333ull
 /* system_info's bit is learnt from the game's input only once it has held still this long. */
 #define VSHPAD_BIT_STEADY_US   250000ull

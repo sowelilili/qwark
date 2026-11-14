@@ -371,9 +371,26 @@ static void test_release(void)
 		         "and no game-module or no-menu bit with RaC1's code in");
 		check(reply[30] != 0, "byte 30, the profile sequence, has moved");
 		check_eq(reply[25], 5, "SessionInfo's slot is the profile's");
-		check_eq(reply[31], SESSION_FLAG3_RUN_WARN, "flags3 bit0: the run-start warnings, on");
+		check_eq(reply[31], SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_TELEMETRY_RATE,
+		         "flags3 bit0: the run-start warnings, on; bit2: the telemetry rate, at 30 Hz");
 		check_eq(reply[24] & SESSION_FLAG_UI_PAK_BAD, 0, "flags bit7 clear: the pak is good");
 	}
+
+	/* Revision 1.32: a release has the telemetry rate too. */
+	req[0] = 60;
+	st = call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == 0, "TELEMETRY_RATE 60 answers OK, with nothing");
+	req[0] = 90;
+	check_eq(call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "TELEMETRY_RATE 90 is BAD_ARG");
+	tick(1);
+	req[0] = QWARK_PROTOCOL_VERSION;
+	st = call(OP_HELLO, req, 1, reply, sizeof(reply), &len);
+	check(st == ST_OK && len >= SESSION_INFO_SIZE
+	      && (reply[31] & SESSION_FLAG3_RATE_MASK) == (TELEMETRY_RATE_CODE_60 << SESSION_FLAG3_RATE_SHIFT),
+	      "and the next SessionInfo says 60 Hz");
+	req[0] = 30;
+	check_eq(call(OP_TELEMETRY_RATE, req, 1, reply, sizeof(reply), &len), ST_OK, "back to 30 Hz");
+	tick(1);
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);
 	check(st == ST_OK && holds(reply, len, "usbonly") && holds(reply, len, "usbonly2"),

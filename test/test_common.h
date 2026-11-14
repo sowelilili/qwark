@@ -69,4 +69,7 @@ void test_tod_game(void);
 /* test_runwarn.c: the run-start warnings, revision 1.30. */
 void test_runwarn(void);
 
+/* test_telrate.c: the telemetry rate, TELEMETRY_RATE and telemetry.hz, revision 1.32. */
+void test_telrate(void);
+
 #endif /* QWARK_TEST_COMMON_H */

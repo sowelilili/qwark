@@ -2067,6 +2067,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			return rc;
 		}
 
+	/*
+	 * Revision 1.32. `telemetry.hz`, a config write and nothing else, as
+	 * RUN_WARN's: the tick thread sees the config move on its next tick and
+	 * sends at the new rate from then on (session.c). Every platform.
+	 */
+	case OP_TELEMETRY_RATE:
+		if (reqlen < 1) return ST_BAD_ARG;
+		{
+			u16 rc;
+			core_lock();
+			rc = (u16)config_set_telemetry_hz(req[0]);
+			core_unlock();
+			return rc;
+		}
+
 #ifndef QWARK_EMULATOR
 	/*
 	 * Revision 1.18. The three RPCS3 patch ops exist only in the emulator

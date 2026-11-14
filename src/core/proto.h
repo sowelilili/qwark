@@ -89,6 +89,11 @@
  * now, is `flags3`, bit0 RUN_WARN (the module has them) and bit1 RUN_WARN_OFF;
  * MOD_LIST's flags bit6 LEGAL and bit7 ILLEGAL, a patch.txt's `#- legal:`.
  * PROTOCOL.md 5.7, 5.10 and 5.10.2.
+ * Revision 1.32, build 58: the telemetry rate. TELEMETRY_RATE at 0x0097,
+ * config key telemetry.hz (30, 60 or 120; 30 when the file does not name it),
+ * console-wide; SessionInfo flags3 bit2 TELEMETRY_RATE (the module has it)
+ * and bits 3-4 the rate in force (TELEMETRY_RATE_CODE_*). PROTOCOL.md 4 and
+ * 5.10.3.
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -364,6 +369,14 @@
  * none. SessionInfo flags3 reports it. PROTOCOL.md 5.10.2.
  */
 #define OP_RUN_WARN          0x0096
+/*
+ * Revision 1.32. `telemetry.hz`, a config write like RUN_WARN's: u8 hz,
+ * 30 (the default), 60 or 120, how often the tick thread sends the telemetry
+ * packet (every 4, 2 or 1 ticks). Anything else is BAD_ARG. Console-wide, not
+ * per user. Answered in any session state and on every platform. Reply none.
+ * SessionInfo flags3 bits 3-4 report it. PROTOCOL.md 5.10.3.
+ */
+#define OP_TELEMETRY_RATE    0x0097
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -734,6 +747,18 @@
  */
 #define SESSION_FLAG3_RUN_WARN        0x01
 #define SESSION_FLAG3_RUN_WARN_OFF    0x02
+/*
+ * Revision 1.32. bit2 TELEMETRY_RATE, the client's capability bit: the module
+ * answers TELEMETRY_RATE. Bits 3-4, the rate in force: 0 30 Hz, 1 60 Hz,
+ * 2 120 Hz (3 is never sent). An earlier build sent 0 in all three, which a
+ * client reads as no switch and 30 Hz.
+ */
+#define SESSION_FLAG3_TELEMETRY_RATE  0x04
+#define SESSION_FLAG3_RATE_SHIFT      3
+#define SESSION_FLAG3_RATE_MASK       0x18
+#define TELEMETRY_RATE_CODE_30        0
+#define TELEMETRY_RATE_CODE_60        1
+#define TELEMETRY_RATE_CODE_120       2
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */

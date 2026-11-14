@@ -799,6 +799,30 @@ int config_set_run_warnings(u8 on)
 	return config_set_u32("run.warnings", on);
 }
 
+/*
+ * Revision 1.32. `telemetry.hz`: 30 for a file that has never mentioned it,
+ * as every build before it sent, and for a hand-edited value that is none of
+ * the three. Console-wide: it is how often this console talks to the PCs, so a
+ * user signing in at the XMB does not change it (config_key_scope leaves it on
+ * the console's side, as it does any key it does not name).
+ */
+static int telemetry_hz_ok(u32 hz)
+{
+	return hz == 30 || hz == 60 || hz == 120;
+}
+
+u8 config_telemetry_hz(void)
+{
+	u32 hz = config_get_u32("telemetry.hz", 30);
+	return (u8)(telemetry_hz_ok(hz) ? hz : 30);
+}
+
+int config_set_telemetry_hz(u8 hz)
+{
+	if (!telemetry_hz_ok(hz)) return ST_BAD_ARG;
+	return config_set_u32("telemetry.hz", hz);
+}
+
 /* -------------------------------------------------------------- selection */
 
 u8 config_selected_slot(void)

@@ -24,7 +24,8 @@
  *     profile's key of the same name, when it holds one, is that combo's
  *     override and wins for that combo alone (config_set_combo_override);
  *   - the console's, always config.txt's: combo.enabled, profiles.enabled,
- *     menu.enabled, log, savefile_helper and every key not named above.
+ *     menu.enabled, log, savefile_helper, telemetry.hz (revision 1.32) and
+ *     every key not named above.
  * A profile that has never been set up has no folder: its per-user keys read
  * as unset, so as their defaults, and its first write makes it (empty). The
  * only copy is the one PROFILE_ENABLE asks for as the switch goes on.
@@ -158,6 +159,14 @@ int  config_set_menu_help(u8 on);
  */
 int  config_run_warnings(void);
 int  config_set_run_warnings(u8 on);
+
+/*
+ * Revision 1.32, TELEMETRY_RATE: `telemetry.hz`, how often the telemetry
+ * packet goes out, 30 (the default, and what any other value in the file
+ * reads as), 60 or 120. Console-wide. Setting anything else is ST_BAD_ARG.
+ */
+u8   config_telemetry_hz(void);
+int  config_set_telemetry_hz(u8 hz);
 
 u8   config_selected_slot(void);
 void config_set_selected_slot(u8 slot);

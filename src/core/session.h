@@ -96,6 +96,12 @@ u32  session_info_copy(u8 *out, u32 cap);
 u32  session_telemetry_copy(u8 *out, u32 cap);
 
 /*
+ * Revision 1.32. The rate the tick sends telemetry at, in Hz: 30, 60 or 120
+ * after `telemetry.hz`, as of the tick's last look at the config.
+ */
+u32  session_telemetry_hz(void);
+
+/*
  * Build 54. A reading of the VSH's free memory, taken at `at` (VSHMEM_AT_*,
  * proto.h), kept for VSH_MEMORY and logged; nothing where the platform cannot
  * read it. The session takes its own at a game's arrival, at the menu's install
