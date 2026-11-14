@@ -172,12 +172,10 @@ SESSION_FLAG3_TELEMETRY_RATE = 0x04
 SESSION_FLAG3_RATE_SHIFT = 3
 SESSION_FLAG3_RATE_MASK = 0x18
 RUN_WARN_BITS = SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_RUN_WARN_OFF
-# Revision 1.33: cheats only, apply toggles on game boot, and flags3 bits 5 to 7.
-OP_BOOT_APPLY = 0x0098
-OP_BOOT_ASK = 0x0099
+# Revision 1.33: cheats only, apply toggles on game reboot, and flags3 bits 5 and 6.
+OP_REBOOT_APPLY = 0x0098
 SESSION_FLAG3_SETTINGS_133 = 0x20
 SESSION_FLAG3_RUN_WARN_CHEATS = 0x40
-SESSION_FLAG3_BOOT_ASK = 0x80
 PROFILE_SUPPORTED = 0x02
 PROFILE_ON = 0x04
 PROFILE_ACTIVE = 0x08
@@ -2073,64 +2071,70 @@ def test_telemetry_rate(c, udp, prefix=""):
               (len(steps), usual, steps[:12]))
 
 
-def smoke_boot_apply(sim, c):
+def smoke_reboot_apply(sim, c):
     """
-    Revision 1.33: boot.apply over the wire, RaC1 rebooted with Ghost Ratchet
-    (feature 3) flagged on boot. BOOT_APPLY reads and writes the key; Never
-    boots with nothing applied and the flag kept; Ask, with this client
-    connected, holds it back behind flags3 bit7 until BOOT_ASK answers; Always
-    applies it as every build before did.
+    Revision 1.33: reboot.apply over the wire, RaC1 rebooted with Ghost Ratchet
+    (feature 3) flagged on boot and Infinite ammo (feature 1) turned on by hand
+    before each reboot. REBOOT_APPLY reads and writes the key, Ask by default.
+    The on-boot toggle comes back at every boot whatever the mode. With this
+    client connected, Ask leaves Infinite ammo in the previous-session record
+    (PREVIOUS_PENDING) for PREVIOUS_REAPPLY, Always turns it back on itself
+    with nothing pending, and Never drops it with nothing pending. 0x0099, the
+    test build's BOOT_ASK, is no op.
     """
     ghost = 1 << 3
-    status, body = c.call(OP_BOOT_APPLY)
-    check(status == ST_OK and body == bytes([0]), "boot apply: BOOT_APPLY with no byte reads 0, Always", (status, body))
+    ammo = 1 << 1
+    status, body = c.call(OP_REBOOT_APPLY)
+    check(status == ST_OK and body == bytes([1]), "reboot apply: REBOOT_APPLY with no byte reads 1, Ask", (status, body))
     for bad in (3, 255):
-        status, _ = c.call(OP_BOOT_APPLY, bytes([bad]))
-        check(status == ST_BAD_ARG, "boot apply: BOOT_APPLY %d is BAD_ARG" % bad, status)
+        status, _ = c.call(OP_REBOOT_APPLY, bytes([bad]))
+        check(status == ST_BAD_ARG, "reboot apply: REBOOT_APPLY %d is BAD_ARG" % bad, status)
+    status, _ = c.call(0x0099, bytes([1]))
+    check(status == ST_UNKNOWN_OP, "reboot apply: 0x0099 is UNKNOWN_OP", status)
     st = fresh_state(c)
-    check(st and st["flags3"] & (SESSION_FLAG3_SETTINGS_133 | SESSION_FLAG3_BOOT_ASK) == SESSION_FLAG3_SETTINGS_133,
-          "boot apply: flags3 bit5 says the module has it, bit7 clear", st and hex(st["flags3"]))
+    check(st and st["flags3"] & (SESSION_FLAG3_SETTINGS_133 | 0x80) == SESSION_FLAG3_SETTINGS_133,
+          "reboot apply: flags3 bit5 says the module has it, bit7 is 0", st and hex(st["flags3"]))
     status, _ = c.call(OP_FEATURE_SET_AUTO, bytes([3, 1]))
-    check(status == ST_OK, "boot apply: Ghost Ratchet flagged on boot", status)
+    check(status == ST_OK, "reboot apply: Ghost Ratchet flagged on boot", status)
 
     def reboot(mode):
-        status, _ = c.call(OP_BOOT_APPLY, bytes([mode]))
+        status, _ = c.call(OP_REBOOT_APPLY, bytes([mode]))
+        on, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 1, 1))
         sim.send("quit")
         wait_state(c, SESSION_XMB)
         sim.send("boot NPEA00385")
         ok, _ = wait_state(c, SESSION_INGAME)
-        return status == ST_OK and ok, fresh_state(c, 0.4)
+        return status == ST_OK and on == ST_OK and ok, fresh_state(c, 0.4)
 
-    ok, st = reboot(2)
-    check(ok and st and st["toggle_state"] & ghost == 0 and st["toggle_auto"] & ghost != 0
-          and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
-          "boot apply: Never, Ghost Ratchet off, its flag kept, nothing asked",
-          st and (hex(st["toggle_state"]), hex(st["toggle_auto"]), hex(st["flags3"])))
-    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
-    check(status == ST_NOT_FOUND, "boot apply: under Never BOOT_ASK finds no question", status)
+    def shown(st):
+        return st and (hex(st["toggle_state"]), hex(st["flags"]))
 
     ok, st = reboot(1)
-    check(ok and st and st["toggle_state"] & ghost == 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK != 0,
-          "boot apply: Ask with this client connected, Ghost Ratchet off and flags3 bit7 up",
-          st and (hex(st["toggle_state"]), hex(st["flags3"])))
-    status, _ = c.call(OP_BOOT_ASK, bytes([2]))
-    check(status == ST_BAD_ARG, "boot apply: BOOT_ASK 2 is BAD_ARG", status)
-    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
+    check(ok and st and st["toggle_state"] & (ghost | ammo) == ghost
+          and st["flags"] & SESSION_FLAG_PREVIOUS_PENDING != 0,
+          "reboot apply: Ask, Ghost Ratchet on at the boot, Infinite ammo waiting in the record", shown(st))
+    status, _ = c.call(OP_PREVIOUS_REAPPLY, bytes([0x01]))
     st = fresh_state(c)
-    check(status == ST_OK and st and st["toggle_state"] & ghost != 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
-          "boot apply: BOOT_ASK 1 puts Ghost Ratchet on and the question goes",
-          (status, st and hex(st["toggle_state"]), st and hex(st["flags3"])))
-    status, _ = c.call(OP_BOOT_ASK, bytes([1]))
-    check(status == ST_NOT_FOUND, "boot apply: a second answer is NOT_FOUND", status)
+    check(status == ST_OK and st and st["toggle_state"] & ammo != 0
+          and st["flags"] & SESSION_FLAG_PREVIOUS_PENDING == 0,
+          "reboot apply: PREVIOUS_REAPPLY puts Infinite ammo back", (status, shown(st)))
 
     ok, st = reboot(0)
-    check(ok and st and st["toggle_state"] & ghost != 0 and st["flags3"] & SESSION_FLAG3_BOOT_ASK == 0,
-          "boot apply: Always, Ghost Ratchet on at the boot", st and hex(st["toggle_state"]))
-    status, body = c.call(OP_BOOT_APPLY)
-    check(status == ST_OK and body == bytes([0]), "boot apply: and BOOT_APPLY reads Always back", (status, body))
+    check(ok and st and st["toggle_state"] & (ghost | ammo) == ghost | ammo
+          and st["flags"] & SESSION_FLAG_PREVIOUS_PENDING == 0,
+          "reboot apply: Always, Ghost Ratchet and Infinite ammo on, nothing pending", shown(st))
 
+    ok, st = reboot(2)
+    check(ok and st and st["toggle_state"] & (ghost | ammo) == ghost
+          and st["flags"] & SESSION_FLAG_PREVIOUS_PENDING == 0,
+          "reboot apply: Never, Ghost Ratchet on, Infinite ammo off, nothing pending", shown(st))
+    status, body = c.call(OP_REBOOT_APPLY)
+    check(status == ST_OK and body == bytes([2]), "reboot apply: and REBOOT_APPLY reads Never back", (status, body))
+
+    c.call(OP_REBOOT_APPLY, bytes([1]))
     c.call(OP_FEATURE_SET_AUTO, bytes([3, 0]))
     c.call(OP_FEATURE_SET, struct.pack(">BI", 3, 0))
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 1, 0))
     c.call(OP_PREVIOUS_DISMISS)
 
 
@@ -9388,8 +9392,8 @@ def main():
         check(ok, "RaC1 comes up for its console menu")
         exercise_console_menu_rac1(c, sim)
 
-        # ------------------------- apply toggles on game boot, 1.33
-        smoke_boot_apply(sim, c)
+        # ----------------------- apply toggles on game reboot, 1.33
+        smoke_reboot_apply(sim, c)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

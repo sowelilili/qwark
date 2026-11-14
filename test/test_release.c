@@ -407,17 +407,20 @@ static void test_release(void)
 	req[0] = RUN_WARN_ALL;
 	check_eq(call(OP_RUN_WARN, req, 1, reply, sizeof(reply), &len), ST_OK, "back to mods and cheats");
 
-	/* Revision 1.33: and BOOT_APPLY, written and read back. */
-	st = call(OP_BOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == 1 && reply[0] == BOOT_APPLY_ALWAYS, "BOOT_APPLY with no byte reads Always");
-	req[0] = BOOT_APPLY_NEVER;
-	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "BOOT_APPLY 2 answers OK");
+	/* Revision 1.33: and REBOOT_APPLY, written and read back; 0x0099 is no op. */
+	st = call(OP_REBOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == 1 && reply[0] == REBOOT_APPLY_ASK, "REBOOT_APPLY with no byte reads Ask");
+	req[0] = REBOOT_APPLY_ALWAYS;
+	check_eq(call(OP_REBOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "REBOOT_APPLY 0 answers OK");
 	req[0] = 3;
-	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "BOOT_APPLY 3 is BAD_ARG");
-	st = call(OP_BOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == 1 && reply[0] == BOOT_APPLY_NEVER, "and reads back Never");
-	req[0] = BOOT_APPLY_ALWAYS;
-	check_eq(call(OP_BOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "back to Always");
+	check_eq(call(OP_REBOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG, "REBOOT_APPLY 3 is BAD_ARG");
+	st = call(OP_REBOOT_APPLY, NULL, 0, reply, sizeof(reply), &len);
+	check(st == ST_OK && len == 1 && reply[0] == REBOOT_APPLY_ALWAYS, "and reads back Always");
+	req[0] = REBOOT_APPLY_ASK;
+	check_eq(call(OP_REBOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "back to Ask");
+	req[0] = 1;
+	check_eq(call(0x0099, req, 1, reply, sizeof(reply), &len), ST_UNKNOWN_OP,
+	         "0x0099, the test build's BOOT_ASK, is UNKNOWN_OP");
 	tick(1);
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);

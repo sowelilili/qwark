@@ -72,7 +72,7 @@ void test_runwarn(void);
 /* test_telrate.c: the telemetry rate, TELEMETRY_RATE and telemetry.hz, revision 1.32. */
 void test_telrate(void);
 
-/* test_bootapply.c: apply toggles on game boot, BOOT_APPLY and boot.apply, revision 1.33. */
-void test_bootapply(void);
+/* test_rebootapply.c: apply toggles on game reboot, REBOOT_APPLY and reboot.apply, revision 1.33. */
+void test_rebootapply(void);
 
 #endif /* QWARK_TEST_COMMON_H */

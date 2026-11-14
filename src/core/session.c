@@ -147,14 +147,14 @@ static u32 g_ncandidates;
 /* Revision 1.26: the record of this session waits for the game to arrive (game_arrive). */
 static int g_same;
 
-/*
- * Revision 1.33. Set while this boot's on-boot toggles and mods were held back
- * under `boot.apply` Ask with a client connected and no BOOT_ASK has answered
- * (SessionInfo flags3 bit7). Cleared by the answer, a quit and the next boot.
- */
-static u8 g_boot_ask;
 #ifdef QWARK_TEST
-static int g_test_client;
+/*
+ * Revision 1.33: whether a same-game reboot finds a client connected, as the
+ * tests have it (session_test_client). 1 unless a test says otherwise, so the
+ * previous-session record waits for a client in every test that reboots, as
+ * it did before `reboot.apply`.
+ */
+static int g_test_client = 1;
 #endif
 
 /*
@@ -665,8 +665,6 @@ static void enter_quitting(void)
 	g_combo_suspend_until = 0;
 
 	g_state = SESSION_QUITTING;
-	/* Revision 1.33: the question was this game's. */
-	g_boot_ask = 0;
 	plat_log("qwark: session QUITTING (%s)", g_title);
 	vm_game_over();
 }
@@ -698,6 +696,46 @@ static const char *game_key_for(u8 game_id)
 	}
 }
 
+/* Revision 1.33: whether a client is there to offer the record to. */
+static int reboot_has_client(void)
+{
+#ifdef QWARK_TEST
+	return g_test_client;
+#else
+	return net_has_clients();
+#endif
+}
+
+/*
+ * Revision 1.33, Apply toggles on game reboot. What is left of the record once
+ * the on-boot toggles and mods have come back: `reboot.apply` Always puts all
+ * of it back now, what this platform can (a client's "Reapply all"); Never
+ * drops it; Ask leaves it pending for a client to offer, as every build before
+ * did, but drops it when no client is connected, so a client that connects
+ * later is never asked about a reboot it did not see. Under the core lock.
+ */
+static void reboot_apply(void)
+{
+	u8 mode = config_reboot_apply();
+	u8 all = PREV_TOGGLES | PREV_FREEZES;
+
+	if (!g_prev.pending) return;
+	if (plat_can_patch_code()) all |= PREV_MODS | PREV_PATCHES;
+
+	if (mode == REBOOT_APPLY_ALWAYS) {
+		plat_log("qwark: reboot.apply always: %s's previous session re-applied", g_title);
+		session_previous_reapply(all);
+	} else if (mode == REBOOT_APPLY_NEVER || !reboot_has_client()) {
+		plat_log("qwark: reboot.apply %s: %s's previous session dropped",
+		         mode == REBOOT_APPLY_NEVER ? "never" : "ask, no client connected", g_title);
+		session_previous_dismiss();
+	}
+}
+
+#ifdef QWARK_TEST
+void session_test_client(int on) { g_test_client = on; }
+#endif
+
 /*
  * Revision 1.26: the game's code is here (game modules, gamemod.c), at once
  * for a linked game, inside enter_ingame, and as a module loads for one that
@@ -710,64 +748,6 @@ static const char *game_key_for(u8 game_id)
  * straight after it, so a linked module (QWARK_GAME_MODULES 0) does what it did
  * before game modules.
  */
-/* Revision 1.33: whether a client is there to be asked. */
-static int boot_ask_has_client(void)
-{
-#ifdef QWARK_TEST
-	if (g_test_client) return 1;
-#endif
-	return net_has_clients();
-}
-
-static void boot_apply(void)
-{
-	u8 mode = config_boot_apply();
-	u64 toggles;
-	u32 mods;
-
-	g_boot_ask = 0;
-	if (mode == BOOT_APPLY_ALWAYS) {
-		features_apply_mask(features_auto_mask());
-		mods_apply_mask(mods_auto_mask());
-		return;
-	}
-
-	toggles = features_auto_mask();
-	mods = mods_auto_mask();
-	if (toggles == 0 && mods == 0) return;
-
-	if (mode == BOOT_APPLY_ASK && boot_ask_has_client()) {
-		g_boot_ask = 1;
-		plat_log("qwark: boot.apply ask: %s's on-boot toggles and mods wait for a client's answer", g_title);
-	} else {
-		plat_log("qwark: boot.apply %s: %s's on-boot toggles and mods not applied",
-		         mode == BOOT_APPLY_ASK ? "ask, no client connected" : "never", g_title);
-	}
-}
-
-/*
- * Revision 1.33. BOOT_ASK: the answer to this boot's question. Tick thread,
- * through the ring, under the core lock.
- */
-int session_boot_ask(u8 apply)
-{
-	if (g_state != SESSION_INGAME) return ST_NOT_INGAME;
-	if (!g_boot_ask) return ST_NOT_FOUND;
-	g_boot_ask = 0;
-	if (apply) {
-		features_apply_mask(features_auto_mask());
-		mods_apply_mask(mods_auto_mask());
-		plat_log("qwark: boot.apply ask: the client said apply");
-	} else {
-		plat_log("qwark: boot.apply ask: the client said leave them off");
-	}
-	return ST_OK;
-}
-
-#ifdef QWARK_TEST
-void session_test_client(int on) { g_test_client = on; }
-#endif
-
 static void game_arrive(const struct game_api *g)
 {
 	g_game = g;
@@ -805,19 +785,18 @@ static void game_arrive(const struct game_api *g)
 	 */
 	modusb_scan(1);
 
-	/*
-	 * Auto-flagged toggles and mods come back silently, unless (revision
-	 * 1.33) `boot.apply` says otherwise: Never applies none of them, and Ask
-	 * applies none and asks a connected client (BOOT_ASK), or with no client
-	 * connected is Never. The flags are kept whatever it says.
-	 */
-	boot_apply();
+	/* Auto-flagged toggles and mods come back silently, at every boot. */
+	features_apply_mask(features_auto_mask());
+	mods_apply_mask(mods_auto_mask());
 
 	g_prev.toggles &= ~features_toggle_auto();
 	g_prev.mods    &= ~mods_auto_mask();
 	/* No game, no toggles: the record offers what can still come back. */
 	if (g_game == NULL) g_prev.toggles = 0;
 	prev_update_pending();
+
+	/* Revision 1.33: and `reboot.apply` says what becomes of the rest. */
+	reboot_apply();
 
 	g_combo_armed = 1;
 
@@ -894,8 +873,6 @@ static void enter_ingame(void)
 	core_lock();
 	g_same = same;
 	g_game = NULL;
-	/* Revision 1.33: a new boot has its own question, if any. */
-	g_boot_ask = 0;
 
 	/* The planet selection is this game's from the first block that says INGAME. */
 	if (g_entry != NULL) g_select_game = game_id;
@@ -1671,17 +1648,16 @@ static u32 encode_info(u8 *out, u32 cap)
 	 * warnings are in every build, so bit0 is always set; bit1 is the switch.
 	 */
 	/*
-	 * Revision 1.33: cheats only and boot.apply are in every build too
-	 * (bit5), bit6 says cheats only is in force and bit7 that a boot's
-	 * question waits; bit1 still means off and nothing else, so a client
-	 * before 1.33 reads a cheats-only console as on.
+	 * Revision 1.33: cheats only and reboot.apply are in every build too
+	 * (bit5), and bit6 says cheats only is in force; bit1 still means off
+	 * and nothing else, so a client before 1.33 reads a cheats-only console
+	 * as on.
 	 */
 	{
 		u8 mode = config_run_warnings();
 		out[31] = (u8)(SESSION_FLAG3_RUN_WARN | SESSION_FLAG3_SETTINGS_133
 		               | (mode == RUN_WARN_NONE ? SESSION_FLAG3_RUN_WARN_OFF : 0)
-		               | (mode == RUN_WARN_CHEATS_ONLY ? SESSION_FLAG3_RUN_WARN_CHEATS : 0)
-		               | (g_state == SESSION_INGAME && g_boot_ask ? SESSION_FLAG3_BOOT_ASK : 0));
+		               | (mode == RUN_WARN_CHEATS_ONLY ? SESSION_FLAG3_RUN_WARN_CHEATS : 0));
 	}
 	/*
 	 * Revision 1.32: TELEMETRY_RATE is in every build too (bit2), and bits

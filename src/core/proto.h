@@ -96,11 +96,11 @@
  * 5.10.3.
  * Revision 1.33: run.warnings has a third value, 2, the cheats line alone
  * (RUN_WARN_CHEATS_ONLY); RUN_WARN takes 0, 1 or 2. Apply toggles on game
- * boot: config key boot.apply (BOOT_APPLY_ALWAYS, _ASK, _NEVER), BOOT_APPLY at
- * 0x0098 and BOOT_ASK at 0x0099. SessionInfo flags3 bit5 SETTINGS_133 (the
- * module has both), bit6 RUN_WARN_CHEATS (cheats only is in force) and bit7
- * BOOT_ASK (a boot's on-boot toggles and mods wait for a client's answer).
- * telemetry.hz reads as 60 when the file does not name it. PROTOCOL.md
+ * reboot: config key reboot.apply (REBOOT_APPLY_ALWAYS, _ASK, _NEVER), which
+ * decides what becomes of the previous-session record at a same-game reboot,
+ * and REBOOT_APPLY at 0x0098. SessionInfo flags3 bit5 SETTINGS_133 (the
+ * module has both) and bit6 RUN_WARN_CHEATS (cheats only is in force); bit7
+ * is 0. telemetry.hz reads as 60 when the file does not name it. PROTOCOL.md
  * 5.10.2, 5.10.3 and 5.10.4. The same revision: an autosplit Event's u16 at
  * +10 is its flags (AUTOSPLIT_EV_REVISIT) and EventDesc flags bit5 REVISIT
  * (AUTOSPLIT_FLAG_REVISIT), Tools of Destruction's revisits. PROTOCOL.md 8.
@@ -392,28 +392,22 @@
  */
 #define OP_TELEMETRY_RATE    0x0097
 /*
- * Revision 1.33. `boot.apply`, a per-user config write like RUN_WARN's: u8
- * mode, 0 a game boot applies the toggles and mods flagged on boot (the
- * default, every earlier build's way), 1 it applies none of them and asks a
- * connected client (flags3 bit7, answered by BOOT_ASK), and with no client
- * connected applies none, 2 it applies none. Anything else is BAD_ARG. With no
- * byte it is a read: the reply is u8 mode. The flags themselves are kept in
- * every mode. Answered in any session state and on every platform.
- * PROTOCOL.md 5.10.4.
+ * Revision 1.33. `reboot.apply`, a per-user config write like RUN_WARN's: u8
+ * mode, what a same-game reboot does with the previous-session record (the
+ * toggles, mods, freezes and client patches that were on, section 4.1):
+ * 0 Always re-applies all of it as the game arrives; 1 Ask (the default)
+ * keeps it for a client to offer (flags PREVIOUS_PENDING), as every earlier
+ * build did, but drops it when no client is connected at the reboot; 2 Never
+ * drops it. The toggles and mods flagged on boot are applied at every
+ * boot whatever it says. Anything else is BAD_ARG. With no byte it is a read:
+ * the reply is u8 mode. Answered in any session state and on every platform.
+ * PROTOCOL.md 5.10.4. 0x0099 is not assigned (BOOT_ASK in a test build of the
+ * revision): UNKNOWN_OP.
  */
-#define OP_BOOT_APPLY        0x0098
-#define BOOT_APPLY_ALWAYS    0
-#define BOOT_APPLY_ASK       1
-#define BOOT_APPLY_NEVER     2
-/*
- * Revision 1.33. The answer to a boot's question (flags3 bit7 BOOT_ASK):
- * u8 apply, 1 applies the running game's on-boot toggles and mods now, as a
- * boot under Always would have, 0 leaves them off. Either way the question
- * is answered and the bit goes. NOT_INGAME outside a game, NOT_FOUND when no
- * question is waiting, BAD_ARG for anything but 0 or 1. Reply none. The tick
- * thread's, through the ring.
- */
-#define OP_BOOT_ASK          0x0099
+#define OP_REBOOT_APPLY      0x0098
+#define REBOOT_APPLY_ALWAYS  0
+#define REBOOT_APPLY_ASK     1
+#define REBOOT_APPLY_NEVER   2
 
 #define OP_AUTOSPLIT_EVENTS   0x00A0
 #define OP_AUTOSPLIT_DESCRIBE 0x00A1
@@ -818,17 +812,15 @@
 /*
  * Revision 1.33. bit5 SETTINGS_133, the client's capability bit for the
  * revision's two settings: the module takes RUN_WARN 2, the cheats line
- * alone, and answers BOOT_APPLY and BOOT_ASK. bit6 RUN_WARN_CHEATS,
- * config.txt's `run.warnings` is 2. Bit1 keeps meaning exactly "off", so a
- * client before this revision reads off as off and a cheats-only console as
- * on. bit7 BOOT_ASK: `boot.apply` is Ask, this boot's on-boot toggles and mods
- * were held back with a client connected, and no BOOT_ASK has answered yet;
- * INGAME only. An earlier module sends 0 in all three, answers RUN_WARN 2
- * BAD_ARG and BOOT_APPLY and BOOT_ASK UNKNOWN_OP.
+ * alone, and answers REBOOT_APPLY. bit6 RUN_WARN_CHEATS, config.txt's
+ * `run.warnings` is 2. Bit1 keeps meaning exactly "off", so a client before
+ * this revision reads off as off and a cheats-only console as on. bit7 is
+ * reserved and 0: Ask's question is the previous-session prompt, flags bit0
+ * PREVIOUS_PENDING. An earlier module sends 0 in bits 5 and 6, answers
+ * RUN_WARN 2 BAD_ARG and REBOOT_APPLY UNKNOWN_OP.
  */
 #define SESSION_FLAG3_SETTINGS_133    0x20
 #define SESSION_FLAG3_RUN_WARN_CHEATS 0x40
-#define SESSION_FLAG3_BOOT_ASK        0x80
 #define HELLO_BUILD_ID_SIZE           4
 
 /* Feature kinds */

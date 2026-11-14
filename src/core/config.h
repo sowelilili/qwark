@@ -163,13 +163,14 @@ u8   config_run_warnings(void);
 int  config_set_run_warnings(u8 mode);
 
 /*
- * Revision 1.33, apply toggles on game boot: `boot.apply`, 0 Always (the
- * default, and what any other number in the file reads as), 1 Ask, 2 Never
- * (BOOT_APPLY_*). BOOT_APPLY writes it; a per-user key, as the auto flags it
- * governs are. Anything but 0, 1 or 2 is ST_BAD_ARG.
+ * Revision 1.33, apply toggles on game reboot: `reboot.apply`, 0 Always, 1 Ask
+ * (the default, and what any other number in the file reads as), 2 Never
+ * (REBOOT_APPLY_*): what a same-game reboot does with the previous-session
+ * record. REBOOT_APPLY writes it; a per-user key. Anything but 0, 1 or 2 is
+ * ST_BAD_ARG.
  */
-u8   config_boot_apply(void);
-int  config_set_boot_apply(u8 mode);
+u8   config_reboot_apply(void);
+int  config_set_reboot_apply(u8 mode);
 
 /*
  * Revision 1.32, TELEMETRY_RATE: `telemetry.hz`, how often the telemetry

@@ -223,7 +223,7 @@ int config_key_scope(const char *key)
 	}
 	if (has_prefix(key, "selected.") || has_prefix(key, "manip.") ||
 	    has_prefix(key, "profile.") || qstreq(key, "menu.help") ||
-	    qstreq(key, "run.warnings") || qstreq(key, "boot.apply") || title_auto_key(key))
+	    qstreq(key, "run.warnings") || qstreq(key, "reboot.apply") || title_auto_key(key))
 		return CONFIG_SCOPE_USER;
 	return CONFIG_SCOPE_CONSOLE;
 }
@@ -803,20 +803,23 @@ int config_set_run_warnings(u8 mode)
 }
 
 /*
- * Revision 1.33. `boot.apply`: 0, Always, for a file that has never mentioned
- * it, as every build before it applied the on-boot flags; 1 Ask and 2 Never.
- * Any other number in the file reads as Always.
+ * Revision 1.33. `reboot.apply`, Apply toggles on game reboot: 1, Ask, for a
+ * file that has never mentioned it, as every build before it left the
+ * previous-session record for a client to offer; 0 Always and 2 Never. Any
+ * other number in the file reads as Ask. A test build of the revision had a
+ * `boot.apply` that meant something else; it is not read, and a line of it
+ * left in a file is kept as any unknown key is.
  */
-u8 config_boot_apply(void)
+u8 config_reboot_apply(void)
 {
-	u32 v = config_get_u32("boot.apply", BOOT_APPLY_ALWAYS);
-	return (u8)(v == BOOT_APPLY_ASK || v == BOOT_APPLY_NEVER ? v : BOOT_APPLY_ALWAYS);
+	u32 v = config_get_u32("reboot.apply", REBOOT_APPLY_ASK);
+	return (u8)(v == REBOOT_APPLY_ALWAYS || v == REBOOT_APPLY_NEVER ? v : REBOOT_APPLY_ASK);
 }
 
-int config_set_boot_apply(u8 mode)
+int config_set_reboot_apply(u8 mode)
 {
-	if (mode > BOOT_APPLY_NEVER) return ST_BAD_ARG;
-	return config_set_u32("boot.apply", mode);
+	if (mode > REBOOT_APPLY_NEVER) return ST_BAD_ARG;
+	return config_set_u32("reboot.apply", mode);
 }
 
 /*

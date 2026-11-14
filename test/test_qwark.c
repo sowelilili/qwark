@@ -17734,7 +17734,7 @@ int main(void)
 	test_autosplit();
 	test_runwarn();
 	test_telrate();
-	test_bootapply();
+	test_rebootapply();
 	test_gamemod();
 	test_no_code_patches_planet_load();
 	test_no_code_patches();
