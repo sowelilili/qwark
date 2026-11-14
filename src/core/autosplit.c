@@ -27,6 +27,7 @@ struct autosplit_slot {
 	u32 time_ms;
 	u8  kind;
 	u8  code;
+	u16 flags;   /* revision 1.33 (pending): the u16 that was reserved */
 	u32 arg;
 };
 
@@ -74,7 +75,7 @@ static void encode_event(u8 *out, const struct autosplit_slot *e)
 	be32_put(out + 4, e->time_ms);
 	out[8]  = e->kind;
 	out[9]  = e->code;
-	be16_put(out + 10, 0);
+	be16_put(out + 10, e->flags);
 	be32_put(out + 12, e->arg);
 }
 
@@ -107,6 +108,11 @@ static void queue_dgram(const struct autosplit_slot *e)
 
 void autosplit_emit(u8 kind, u8 code, u32 arg)
 {
+	autosplit_emit_flags(kind, code, arg, 0);
+}
+
+void autosplit_emit_flags(u8 kind, u8 code, u32 arg, u16 flags)
+{
 	struct autosplit_slot e;
 
 	if (!g_ready) return;
@@ -122,7 +128,7 @@ void autosplit_emit(u8 kind, u8 code, u32 arg)
 	 * codeless. A pause, a resume and either end of a load all name the row they
 	 * belong to, so the client knows which timing rule to apply.
 	 */
-	if (kind == AUTOSPLIT_START || kind == AUTOSPLIT_RESET) { code = 0; arg = 0; }
+	if (kind == AUTOSPLIT_START || kind == AUTOSPLIT_RESET) { code = 0; arg = 0; flags = 0; }
 
 	plat_mutex_lock(&g_mutex);
 
@@ -137,6 +143,7 @@ void autosplit_emit(u8 kind, u8 code, u32 arg)
 	e.time_ms = (u32)(plat_time_us() / 1000u);
 	e.kind = kind;
 	e.code = code;
+	e.flags = flags;
 	e.arg  = arg;
 
 	g_ring[g_next] = e;

@@ -53,6 +53,12 @@
  *                       byte of g_currentLevel 0 and the low byte of
  *                       g_loadScreenType above 1 (tod.h). Game time stops
  *                       while it holds, as it did.
+ *   a revisit           revision 1.33 (pending): a load into Metropolis or
+ *                       Cobalia with LVL_FAST_SHIP_FIXED (level flag 106) set.
+ *                       LevelTransition_begin plays those two planets' arrival
+ *                       FMVs in place of the load screen while it is clear,
+ *                       and never once the ship's repair has set it; the event
+ *                       says so in its flags (AUTOSPLIT_EV_REVISIT).
  *   the end of a run    code 7, "Tachyon defeated" (revision 1.29): the screen
  *                       black before l4b_s04_dimx_rt. TachyonEnding_update
  *                       queues that cinematic once Tachyon's death has played
@@ -100,6 +106,40 @@ static int fresh_file(void)
 
 	if (mem_read_u8(TOD_LEVEL_FLAGS + TOD_LF_BYTE(TOD_LF_METROPOLIS_TACHYON), &b) != ST_OK) return 0;
 	return (b & (1u << (TOD_LF_METROPOLIS_TACHYON & 7u))) == 0;
+}
+
+/*
+ * Revision 1.33 (pending): a load into Metropolis or Cobalia that is a
+ * revisit, by the game's own test of whether the planet's arrival FMV plays.
+ * LevelTransition_begin (0x3C8360), as a planet load's transition begins,
+ * plays g_transitionFmvsMetropolis (l01_s01_ntro_fmv) or
+ * g_transitionFmvsCobalia (l02_s01_hypr_fmv, l02_s02_zoni_fmv) in place of
+ * the load screen when the destination's name is "metropolis" or "cobalia" and
+ * bit 42 of g_saveData.levelFlags[1] (LVL_FAST_SHIP_FIXED, level flag 106) is
+ * clear, and nothing else decides it. The flag is the story's, set on Fastoon
+ * as the ship is repaired (its name; the level script was not read), after
+ * both planets; a new file has it clear, and so does a challenge mode, which
+ * SaveData_prepareChallengeMode builds from a fresh file. So with the flag set
+ * the arrival FMV is over, and the load is a revisit; with it clear it is the
+ * story's arrival, which the game plays again on every such load. Read at
+ * the load's start, with g_currentLevel, as the run's flag is: a save loaded
+ * over a level has its own flags in place by then
+ * (SaveManager_onLoaded copies them before its LoadLevel), and nothing in the
+ * load moves the flag. Neither Fast loads nor Remove cutscenes touches it:
+ * the first cuts the FMV short and the second blanks its file's path, and
+ * both leave the game's choice to play it, and this, as they were. The seen
+ * movies list (g_saveData.seenMovieHashes, LevelFlags_markMovieSeen) is no
+ * help: LevelTransition_begin adds the FMVs to it before they play, which can
+ * be before the load is first seen here. A flag that cannot be read is no
+ * revisit, so the split goes out as it always has.
+ */
+static int planet_revisit(s32 level)
+{
+	u8 b = 0;
+
+	if (level != TOD_LEVEL_METROPOLIS && level != TOD_LEVEL_COBALIA) return 0;
+	if (mem_read_u8(TOD_LEVEL_FLAGS + TOD_LF_BYTE(TOD_LF_FAST_SHIP_FIXED), &b) != ST_OK) return 0;
+	return (b & (1u << (TOD_LF_FAST_SHIP_FIXED & 7u))) != 0;
 }
 
 /*
@@ -383,10 +423,13 @@ void tod_autosplit_tick(struct tod_as_state *as)
 	 * was on. A reload of the same planet, a death or a checkpoint (no load),
 	 * or a quit to the title (no level load) is not one, and neither is the
 	 * load out of the title: the title has no origin. A module that came in
-	 * with no level up learns the origin from the first level it sees.
+	 * with no level up learns the origin from the first level it sees. A
+	 * planet change into Metropolis or Cobalia past their arrival FMVs is
+	 * marked a revisit (revision 1.33, pending); the client decides.
 	 */
 	if (load_began && !started && level_ok(level) && as->origin != TOD_AS_NOWHERE && (u32)level != as->origin)
-		autosplit_emit(AUTOSPLIT_SPLIT, TOD_AS_PLANET, (u32)level);
+		autosplit_emit_flags(AUTOSPLIT_SPLIT, TOD_AS_PLANET, (u32)level,
+		                     planet_revisit(level) ? AUTOSPLIT_EV_REVISIT : 0);
 	if (load_began) as->origin = level_ok(level) ? (u32)level : TOD_AS_NOWHERE;
 	if (front != 0 && !loading) as->origin = TOD_AS_NOWHERE;
 	if (as->origin == TOD_AS_NOWHERE && lua != 0 && front == 0 && !loading && level_ok(level))
@@ -424,10 +467,12 @@ void tod_autosplit_tick(struct tod_as_state *as)
 #define RT AUTOSPLIT_FLAG_ROUTE
 #define NM AUTOSPLIT_FLAG_NORMALISE
 #define HD AUTOSPLIT_FLAG_HOLD
+#define RV AUTOSPLIT_FLAG_REVISIT
 
 /*
- * Code 3 is the title index's pause pair: the old script held game time for
- * the whole quit and reboot and then added 19.95 s, NORMALISE's sum. Code 4
+ * Code 1 marks a revisit to Metropolis or Cobalia (RV, revision 1.33,
+ * pending). Code 3 is the title index's pause pair: the old script held game
+ * time for the whole quit and reboot and then added 19.95 s, NORMALISE's sum. Code 4
  * is the old autosplitter's long load, game time held for as long as it
  * lasts (HOLD, revision 1.29). Code 7, "Tachyon defeated", the screen black
  * after Tachyon's last hit, is the community's end of a run, on by default.
@@ -436,7 +481,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * never reused.
  */
 static const struct autosplit_desc tod_autosplits[] = {
-	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT, 0, "Planet entered" },
+	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT | RV, 0, "Planet entered" },
 	{ TOD_AS_END_FADE, AUTOSPLIT_SPLIT,      DF,      0, "Tachyon defeated" },
 	{ TOD_AS_MISSION,  AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
 	{ TOD_AS_LOAD,     AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
@@ -447,6 +492,7 @@ static const struct autosplit_desc tod_autosplits[] = {
 #undef RT
 #undef NM
 #undef HD
+#undef RV
 
 const struct autosplit_desc *tod_autosplit_describe(u8 *count)
 {

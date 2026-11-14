@@ -14,6 +14,7 @@
 
 const struct core_api core_api_table = {
 	.x_autosplit_emit = autosplit_emit,
+	.x_autosplit_emit_flags = autosplit_emit_flags,
 	.x_features_apply = features_apply,
 	.x_features_set = features_set,
 	.x_features_toggle_auto = features_toggle_auto,

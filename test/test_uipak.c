@@ -949,11 +949,14 @@ static void lh_refused(const char *what, int status, const char *log)
 	const struct lh_desc *t = lh_desc_for_title(TOD_TITLE);
 	char line[240];
 	u32 n0;
+	int settled;
 
 	n0 = host_notify_count();
 	check(lh_boot(), "ToD boots");
 	snprintf(line, sizeof(line), "%s: no menu, nothing of the helper written, Inventory the game's, flags bit7 set", what);
-	check(lh_settle() == MENU_NOPAK && lh_nothing(t) && uipak_status() == status && flag_bad(), line);
+	settled = lh_settle();
+	tick(5);   /* SessionInfo's flags are published with telemetry, every fourth tick: a status found on the last tick shows on the next */
+	check(settled == MENU_NOPAK && lh_nothing(t) && uipak_status() == status && flag_bad(), line);
 	snprintf(line, sizeof(line), "%s: qwark.log says why (\"%s\")", what, log);
 	check(host_log_seen("lua: no usable Lua helper for game 5 in ui.pak; nothing written") &&
 	      (log == NULL || host_log_seen(log)), line);

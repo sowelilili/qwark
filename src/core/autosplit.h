@@ -32,6 +32,13 @@ void autosplit_shutdown(void);
  */
 void autosplit_emit(u8 kind, u8 code, u32 arg);
 
+/*
+ * Revision 1.33 (pending): the same, with the event's flags (proto.h,
+ * AUTOSPLIT_EV_*), the u16 that was reserved. autosplit_emit is this with 0.
+ * The flags are forced to 0 for START and RESET as the code and arg are.
+ */
+void autosplit_emit_flags(u8 kind, u8 code, u32 arg, u16 flags);
+
 /* Tick thread only. Sends whatever datagrams are still due, once per tick. */
 void autosplit_push(void);
 

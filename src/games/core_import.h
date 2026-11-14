@@ -17,6 +17,7 @@
 
 #if QWARK_GAME_IMPORT
 #define autosplit_emit qimp_autosplit_emit
+#define autosplit_emit_flags qimp_autosplit_emit_flags
 #define features_apply qimp_features_apply
 #define features_set qimp_features_set
 #define features_toggle_auto qimp_features_toggle_auto

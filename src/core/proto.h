@@ -615,6 +615,25 @@
  *              long as the pair is open. Nothing is subtracted afterwards.
  */
 #define AUTOSPLIT_FLAG_HOLD      0x10
+/*
+ * Revision 1.33 (pending), on the planet row (code 1) only:
+ *
+ *   REVISIT    this game marks a planet event that is a revisit with
+ *              AUTOSPLIT_EV_REVISIT in the event's flags, so a client may offer
+ *              not to split on one. A row without it never sets the bit.
+ */
+#define AUTOSPLIT_FLAG_REVISIT   0x20
+
+/*
+ * Event.flags, the u16 at +10 (revision 1.33, pending; "reserved" before
+ * it, always 0, and still 0 on every event but those below). A client that
+ * does not know a bit ignores it.
+ *
+ *   REVISIT    on a planet event (SPLIT, code 1) of a game whose planet row
+ *              has AUTOSPLIT_FLAG_REVISIT: the load is a revisit by the
+ *              game's own state (PROTOCOL.md 8.5 says which, per game).
+ */
+#define AUTOSPLIT_EV_REVISIT     0x0001
 
 #define AUTOSPLIT_EVENT_SIZE   16
 #define AUTOSPLIT_DESC_SIZE    32

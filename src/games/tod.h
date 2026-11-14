@@ -372,7 +372,7 @@
  * the one that never flashes.
  */
 #define TOD_LOAD_FADE_STORY  0x3DE00000u  /* 7/64 s = 0.109375, exact: about 6.5 frames at 60 Hz */
-#define TOD_LF_FAST_SHIP_FIXED 106u       /* LVL_FAST_SHIP_FIXED */
+#define TOD_LF_FAST_SHIP_FIXED 106u       /* LVL_FAST_SHIP_FIXED; set: the autosplitter's revisit (rev 1.33, pending) */
 #define TOD_LEVEL_COBALIA    1            /* LEVEL_COBALIA, the other story FMV load */
 int  tod_story_load(u32 level, u32 flags_at);
 

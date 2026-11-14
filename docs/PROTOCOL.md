@@ -168,6 +168,10 @@ Revision 1.31 (pending), the input display at the XMB, a probe for the hardware 
 
 Revision 1.32, the telemetry rate (module build 58, 2026-11-14): the telemetry packet (section 4), which carries `pad_mask` and the sticks for a client's input display, went out every fourth tick, 30 Hz, in every build until now. **TELEMETRY_RATE** at 0x0097, `u8 hz`, writes config.txt's new key **`telemetry.hz`**: 30 (the default, and what a file that does not name it, or names anything else, reads as), 60 or 120, a packet every 4, 2 or 1 ticks of the 120 Hz tick from the tick after the write; any other byte is `BAD_ARG` and writes nothing. It is a console-wide key (section 5.10.1), not a per-user one: it is how often this console talks to the PCs connected to it, the same for every subscriber, and a user signing in at the XMB does not change it. It answers in any session state and on every platform, qwark-rpcs3 included (section 5.10.3). **SessionInfo `flags3`** gains bit2 TELEMETRY_RATE, the module answers TELEMETRY_RATE (the client's capability bit), and bits 3-4, the rate in force: 0 30 Hz, 1 60 Hz, 2 120 Hz. Nothing else moved: a client before this revision never sends the op and the console keeps sending at 30 Hz unless another client has asked for more, which an older client takes as it takes any packet (it keeps the latest); a module before it sends 0 in all three bits, which a client reads as no switch and 30 Hz. The autosplit datagrams still go out every tick (section 8.4), GetInfo2 is still asked once per 33 ms (revision 1.31), and GET_STATE still answers the last packet published, now at most one telemetry period old.
 
+### Revision 1.33 (pending)
+
+Revision 1.33 (pending), Tools of Destruction's revisits (2026-11-14): an autosplit event's `u16 reserved` (section 8.1) is now `u16 flags`, still 0 on every event but the ones below, and an `EventDesc` gains flags bit5 REVISIT (section 8.2). A game whose planet row (code 1) sets REVISIT marks a planet event whose load is a revisit with the event's flags bit0, REVISIT, in AUTOSPLIT_EVENTS and in the `QE` datagram alike; START and RESET never carry flags. Only ToD sets it, on a load into Metropolis or Cobalia with `LVL_FAST_SHIP_FIXED` (level flag 106) set, the game's own test for whether their arrival FMVs play (section 8.5). The client's **Don't split on revisit** takes no split for a marked event. Nothing else moved: an older client skips the two bytes and sees an unknown descriptor bit, so it splits on a revisit as it always has, and an older module sends 0 and no bit5, so a newer client has nothing to offer. `QWARK_BUILD` stays.
+
 This file is the contract between qwark (the PS3 SPRX) and every client. Both sides are written against it; when it changes, `QWARK_PROTOCOL_VERSION` changes with it.
 
 All integers are big-endian. Floats are IEEE 754 single precision, big-endian. Fixed-width string fields are NUL-padded and need not be NUL-terminated when full. Variable strings are given with an explicit length unless stated.
@@ -1749,7 +1753,12 @@ u8  kind       1 START, 2 SPLIT, 3 RESET, 4 PAUSE, 5 RESUME,
 u8  code       per-game reason (see AUTOSPLIT_DESCRIBE); 0 for START and RESET
                only. A LOAD_END carries the same code as the LOAD_START it
                closes, and a RESUME the same code as its PAUSE
-u16 reserved   0
+u16 flags      0, but for the bits below (revision 1.33, pending; "reserved,
+               always 0" before, which is what an older module sends):
+               bit0 REVISIT  on a planet event (SPLIT, code 1) of a game
+                             whose planet row has EventDesc bit5: the load
+                             is a revisit by the game's own state
+                             (section 8.5). Never on START or RESET
 u32 arg        code-specific; for the planet-enter code it is the planet index in
                PLANET_LIST order
 ```
@@ -1776,6 +1785,9 @@ u32 param_us  the timing parameter, in microseconds; 0 when neither timing flag
               whole interval off; every other NORMALISE row names one
               bit4 = HOLD       (revision 1.29, section 8.3), on a LOAD_START
               row only, never with FLAT or NORMALISE, `param_us` 0
+              bit5 = REVISIT    (revision 1.33, pending), on the planet row
+              (code 1) only: this game marks a revisit with the
+              event's flags bit0. A client may offer not to split on one
 char label[24]  NUL-padded, what the client shows as a checkbox
 ```
 
@@ -1885,7 +1897,7 @@ Code 3 is the quit to the XMB, which some categories use as a strategy. PAUSE go
 
 | Code | Kind | Label | Default | Timing | `arg` |
 |---|---|---|---|---|---|
-| 1 | SPLIT | Planet entered | yes (route) | — | the destination, a LEVEL_ id |
+| 1 | SPLIT | Planet entered | yes (route, REVISIT) | — | the destination, a LEVEL_ id; flags bit0 on a revisit to Metropolis or Cobalia |
 | 7 | SPLIT | Tachyon defeated | yes | — | 0 (revision 1.29; "Final fade to black" in build 57) |
 | 6 | SPLIT | Mission completed | no | — | the level in the high 16 bits, the mission's id (its label's text id) in the low 16 |
 | 4 | LOAD_START | Long load | yes | HOLD | 0, on both halves |
@@ -1907,6 +1919,8 @@ The old SPRX judged the condition only between its boot gate and a quit, from a 
 - A death or a checkpoint is no load (above) and emits nothing, though it makes a new `lua_State`.
 - The load out of the title, a save's or a new game's, has no origin and never splits, and neither does the quit to the title, which loads no level.
 - The level word alone moves nothing: `Lua_set_save_level` writes it without a load.
+
+**Revisits (revision 1.33, pending).** A planet change into Metropolis (0) or Cobalia (1) carries the event's flags bit0, REVISIT, when `LVL_FAST_SHIP_FIXED` (level flag 106: `g_saveData`+0x5530, bit 42 of the big-endian word, byte 0x102113A2, bit 2) is set as the load begins, and no other planet ever does. That flag is the game's whole test for the two planets' arrival FMVs: `LevelTransition_begin` (0x3C8360), the transition tier's start on every planet load, plays `g_transitionFmvsMetropolis` (0x10073608: `l01_s01_ntro_fmv`) or `g_transitionFmvsCobalia` (0x100735FC: `l02_s01_hypr_fmv`, `l02_s02_zoni_fmv`) in place of the load screen when `g_cmdLevelTransition` is on, bit 42 is clear and the destination's name is "metropolis" or "cobalia", and every time it is so; once the ship is repaired on Fastoon (the flag's name; the level script was not read) neither plays again. A new file and a challenge mode (`SaveData_prepareChallengeMode` builds its file from a fresh one, flags and all) have it clear. So the bit is clear on the first arrivals, and on any load of those planets before the ship's repair, which plays the FMV again; it is set on every load of them after. The flag is read at the load's start with the destination, as the run's flag is, so a save loaded over a level is judged by its own flags. Neither Fast loads nor Remove cutscenes moves it: the first cuts the FMV short and the second blanks its file's path, and `LevelTransition_begin` still takes the FMV path. The game's seen-movies list (`g_saveData.seenMovieHashes`, +0x8600, `LevelFlags_markMovieSeen`) is not used: `LevelTransition_begin` adds the FMVs to it before they play, which can come before qwark's first look at the load. Only those two planets have such an arrival; every other planet's load is the flight, whatever the save says, and its own arrival cinematic is the level script's, after the load. A death, a reload and the load out of the title still emit nothing, so the bit never makes a split of something that was not one.
 
 A level is up while the gameplay Lua VM's `lua_State` (0x102043D0) is non-zero: `levelInit`, at the end of `Level_StartGameplay(…, 0)` under `Level_Enter`, makes it, and `Level_Exit` puts it back to 0, on every planet load and every death. The title is `g_inFrontEnd` (0x1037A459).
 

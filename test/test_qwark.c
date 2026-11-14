@@ -15955,6 +15955,43 @@ static void test_autosplit_udp(int client)
 		check_eq_u64(dgram[4 + 8], AUTOSPLIT_SPLIT, "the kind is SPLIT");
 		check_eq_u64(dgram[4 + 9], R1_AS_PLANET, "with the planet code");
 		check_eq_u64(be32_get(dgram + 4 + 12), 5, "and the destination as its arg");
+		check_eq_u64(be16_get(dgram + 4 + 10), 0, "and no flags: RaC1 marks no revisit");
+	}
+
+	/*
+	 * Revision 1.33 (pending): the event's flags, the u16 at +10 that was
+	 * reserved, travel in the datagram and in AUTOSPLIT_EVENTS alike, and a
+	 * START or a RESET never carries any.
+	 */
+	{
+		u8 ev[5 + AUTOSPLIT_RING_SLOTS * AUTOSPLIT_EVENT_SIZE];
+		u32 n, i, seq, start_flags = 0xFFFFu, split_flags = 0xFFFFu;
+
+		mark = autosplit_latest_seq();
+		autosplit_emit_flags(AUTOSPLIT_SPLIT, AUTOSPLIT_CODE_PLANET, 7, AUTOSPLIT_EV_REVISIT);
+		seq = autosplit_latest_seq();
+		autosplit_emit_flags(AUTOSPLIT_RESET, 9, 9, AUTOSPLIT_EV_REVISIT);
+		pump(1);
+		got = 0;
+		for (tries = 0; tries < 32 && !got; tries++) {
+			int r = (int)recv(udp, (char *)dgram, (int)sizeof(dgram), 0);
+
+			if (r <= 0) break;
+			if (r != AUTOSPLIT_DGRAM_SIZE || dgram[0] != 'Q' || dgram[1] != 'E') continue;
+			if (be32_get(dgram + 4) == seq) got = 1;
+		}
+		check(got, "the flagged split's datagram arrives");
+		if (got) check_eq_u64(be16_get(dgram + 4 + 10), AUTOSPLIT_EV_REVISIT, "carrying the revisit bit at +10");
+		check(autosplit_encode_events(mark, ev, sizeof(ev)) > 5, "AUTOSPLIT_EVENTS has both");
+		n = ev[4];
+		for (i = 0; i < n; i++) {
+			const u8 *e = ev + 5 + i * AUTOSPLIT_EVENT_SIZE;
+			if (e[8] == AUTOSPLIT_SPLIT) split_flags = be16_get(e + 10);
+			if (e[8] == AUTOSPLIT_RESET) start_flags = be16_get(e + 10);
+		}
+		check_eq_u64(split_flags, AUTOSPLIT_EV_REVISIT, "the TCP read carries the same bit");
+		check_eq_u64(start_flags, 0, "and a RESET's flags are forced to 0, as its code and arg");
+		pump(4);
 	}
 
 	plat_socket_close(udp);

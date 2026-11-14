@@ -2144,6 +2144,11 @@ def exercise_autosplit_steps(c, name, steps):
                     check(got["arg"] == step["arg"],
                           "%s: %s carries arg %d" % (name, step["what"], step["arg"]),
                           got["arg"])
+                # Revision 1.33 (pending): the event's flags, the u16 that was reserved.
+                if step.get("flags") is not None:
+                    check(got["reserved"] == step["flags"],
+                          "%s: %s carries flags %d" % (name, step["what"], step["flags"]),
+                          got["reserved"])
         else:
             wanted_gone = step["absent"]
             if isinstance(wanted_gone, tuple):
@@ -6717,6 +6722,9 @@ TOD_LOAD_SCREEN = 0x102034F8           # g_loadScreenType (revision 1.29)
 TOD_METRO_FLAG_BYTE = 0x10211398 + 2 * 8 + 7 - (57 >> 3)   # MOVIE_METROPOLIS_TACHYON, flag 185
 TOD_METRO_FLAG_BIT = 1 << (185 & 7)
 HD = 0x10                              # AUTOSPLIT_FLAG_HOLD, revision 1.29
+RV = 0x20                              # AUTOSPLIT_FLAG_REVISIT, revision 1.33 (pending)
+TOD_SHIP_FLAG_BYTE = 0x10211398 + 1 * 8 + 7 - (42 >> 3)    # LVL_FAST_SHIP_FIXED, flag 106
+TOD_SHIP_FLAG_BIT = 1 << (106 & 7)
 TOD_MOVIE_PLAYER = 0x101D4F50           # g_moviePlayer: state +0x58, movie +0x64 (revision 1.29)
 TOD_MOVIE_RECORDS = 0x101D50C4          # g_movieRecords, the name's char* just before each record
 TOD_FADE_PROGRESS = 0x5B62C             # [g_bigObj5B8F0] + this, f32, 1.0 black
@@ -6725,7 +6733,7 @@ TOD_LOAD_JOB = 0x1073B3A0               # the tier loader's job (revision 1.29)
 TOD_LOAD_JOB_LEVEL = 0x10073300         # g_gameStateStacks[3], the level's tiers
 TOD_LOAD_TIER = 0x1037A908 + 6          # g_levelLoadTier's loaded byte
 TOD_AS_ROWS = [
-    (1, AUTOSPLIT_SPLIT, DF | RT, 0, "Planet entered"),
+    (1, AUTOSPLIT_SPLIT, DF | RT | RV, 0, "Planet entered"),
     (7, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
@@ -6762,11 +6770,30 @@ def smoke_tod_autosplit(c, sim):
     mem_write(c, TOD_LOAD_JOB, bytes(4))
     mem_write(c, TOD_LUA_STATE, lua_state)
     module_sleep(c, 0.15)
+    mem_write(c, TOD_SHIP_FLAG_BYTE, b"\x00")
     exercise_autosplit_steps(c, "ToD", [
         {"what": "a load to another planet splits with its id",
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 9))],
          "then": load_begins,
-         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9},
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9, "flags": 0},
+        {"what": "Cobalia before the ship's repair (flag 106 clear) is no revisit (revision 1.33, pending)",
+         "poke": level_enters(lua_state) + [(TOD_CURRENT_LEVEL, struct.pack(">I", 1))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 1, "flags": 0},
+        {"what": "Rykan V with the ship repaired (flag 106 set) is no revisit: not Metropolis or Cobalia",
+         "poke": level_enters(lua_other) + [(TOD_SHIP_FLAG_BYTE, bytes([TOD_SHIP_FLAG_BIT])),
+                                            (TOD_CURRENT_LEVEL, struct.pack(">I", 9))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9, "flags": 0},
+        {"what": "Cobalia with flag 106 set is a revisit, the flags' bit0",
+         "poke": level_enters(lua_state) + [(TOD_CURRENT_LEVEL, struct.pack(">I", 1))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 1, "flags": 1},
+        {"what": "and back to Rykan V, the ship flag cleared again, is a plain split",
+         "poke": level_enters(lua_other) + [(TOD_SHIP_FLAG_BYTE, b"\x00"),
+                                            (TOD_CURRENT_LEVEL, struct.pack(">I", 9))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 9, "flags": 0},
         {"what": "a long load screen into Rykan V holds nothing (the old splitter's level 0 only)",
          "then": [(TOD_LOAD_SCREEN, struct.pack(">I", 4))],
          "absent": (AUTOSPLIT_LOAD_START, 4)},

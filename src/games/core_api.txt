@@ -28,6 +28,7 @@
 #include "../core/switches.h"
 
 void autosplit_emit(u8 kind, u8 code, u32 arg)
+void autosplit_emit_flags(u8 kind, u8 code, u32 arg, u16 flags)
 void features_apply(u64 mask, u8 kind)
 int features_set(u8 id, u32 value)
 u64 features_toggle_auto(void)

@@ -24,6 +24,7 @@
  */
 struct core_api {
 	void (*x_autosplit_emit)(u8 kind, u8 code, u32 arg);
+	void (*x_autosplit_emit_flags)(u8 kind, u8 code, u32 arg, u16 flags);
 	void (*x_features_apply)(u64 mask, u8 kind);
 	int (*x_features_set)(u8 id, u32 value);
 	u64 (*x_features_toggle_auto)(void);

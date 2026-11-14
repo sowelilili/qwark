@@ -18,6 +18,11 @@ void qimp_autosplit_emit(u8 kind, u8 code, u32 arg)
 	Q->api->x_autosplit_emit(kind, code, arg);
 }
 
+void qimp_autosplit_emit_flags(u8 kind, u8 code, u32 arg, u16 flags)
+{
+	Q->api->x_autosplit_emit_flags(kind, code, arg, flags);
+}
+
 void qimp_features_apply(u64 mask, u8 kind)
 {
 	Q->api->x_features_apply(mask, kind);

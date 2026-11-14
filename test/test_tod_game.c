@@ -1500,6 +1500,146 @@ static void from_title(void)
 	tick(4);
 }
 
+/* The flags of the last event of this kind and code after `seq`, 0xFFFFFFFF for none. */
+static u32 as_flags(u32 seq, u8 kind, u8 code)
+{
+	u32 n, i, flags = 0xFFFFFFFFu;
+
+	if (autosplit_encode_events(seq, g_ev, sizeof(g_ev)) < 5) return flags;
+	n = g_ev[4];
+	for (i = 0; i < n; i++) {
+		const u8 *e = g_ev + 5 + i * AUTOSPLIT_EVENT_SIZE;
+		if (e[8] == kind && e[9] == code) flags = be16_get(e + 10);
+	}
+	return flags;
+}
+
+/*
+ * The seen movies list LevelTransition_begin adds a story load's FMVs to
+ * before they play (LevelFlags_markMovieSeen: g_levelFlags + 0x30D8, a u32
+ * name hash each, the count at + 0x3178; the hash djb2 over the lower-cased
+ * name, Movie_hashNameNoCase). Not qwark's: the test writes it as the game
+ * would, so a watcher that took "seen" for "revisit" is caught.
+ */
+#define AS_SEEN_LIST  (TOD_LEVEL_FLAGS + 0x30D8u)
+#define AS_SEEN_COUNT (TOD_LEVEL_FLAGS + 0x3178u)
+
+static void seen_mark(const char *name)
+{
+	u32 h = 0x1505u, n = rd32(AS_SEEN_COUNT);
+
+	for (; *name != 0; name++) h = h * 33u + (u32)((*name >= 'A' && *name <= 'Z') ? *name + 32 : *name);
+	wr32(AS_SEEN_LIST + 4u * n, h);
+	wr32(AS_SEEN_COUNT, n + 1u);
+}
+
+/* A planet load qwark starts (PLANET_LOAD), as the game takes it. */
+static void qwark_load(u32 level, u32 lua)
+{
+	check(session_planet_load(level, 0) == ST_OK, "PLANET_LOAD is taken");
+	fl_game_loads(level, lua);
+	level_enters(lua);
+	tick(4);
+}
+
+/*
+ * Revision 1.33 (pending): a load into Metropolis or Cobalia is marked a
+ * revisit, AUTOSPLIT_EV_REVISIT in the planet event's flags, when
+ * LVL_FAST_SHIP_FIXED (106) is set, the game's own test for their arrival
+ * FMVs (LevelTransition_begin), and never otherwise: not on another planet,
+ * not from Metropolis being beaten (185), not from the FMVs in the seen list,
+ * and not from Fast loads or Remove cutscenes, which are run on and off here.
+ */
+static void test_tod_autosplit_revisit_one(int fast, int cut)
+{
+	char what[160];
+	u32 seq, arg = 0;
+	const char *mode = fast ? (cut ? "Fast loads on, Remove cutscenes on" : "Fast loads on, Remove cutscenes off")
+	                        : (cut ? "Fast loads off, Remove cutscenes on" : "Fast loads off, Remove cutscenes off");
+
+#define WHAT(s) (sprintf(what, "%s (%s)", (s), mode), what)
+	fl_seed_game();
+	cut_build();
+	wr32(TOD_TRANSITION_MIN, TOD_TRANSITION_GAME);
+	check(features_set(TF_FAST_LOADS, fast ? 1u : 0u) == ST_OK && (fast ? fl_patched() : fl_unpatched()),
+	      WHAT("Fast loads set"));
+	check(features_set(TF_REMOVE_CUTSCENES, cut ? 1u : 0u) == ST_OK && cut_all(cut), WHAT("Remove cutscenes set"));
+	wr32(AS_SEEN_COUNT, 0);
+	fl_world(8);
+	fade_flag_106(0);
+	planet_load(9, AS_STATE + 0x1C0);   /* Rykan V up by a load, so it is where the next load comes from */
+
+	/* Cobalia's first arrival, the game's own load; its FMVs seen before the load is. */
+	seq = autosplit_latest_seq();
+	seen_mark("l02_s01_hypr_fmv");
+	seen_mark("l02_s02_zoni_fmv");
+	planet_load(TOD_LEVEL_COBALIA, AS_STATE + 0x200);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 1 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == 0,
+	      WHAT("Cobalia, flag 106 clear: a planet split with no revisit bit, its FMVs seen or not"));
+
+	/* Metropolis with the ship not yet fixed: the game plays its intro FMV again, so no revisit. */
+	seq = autosplit_latest_seq();
+	seen_mark("l01_s01_ntro_fmv");
+	qwark_load(TOD_LEVEL_METROPOLIS, AS_STATE + 0x240);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 0 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == 0 && as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0,
+	      WHAT("Metropolis, beaten, flag 106 clear (PLANET_LOAD): a split, no revisit, no run"));
+
+	/* The ship fixed on Fastoon: flag 106 set. Another planet is never a revisit. */
+	fade_flag_106(1);
+	seq = autosplit_latest_seq();
+	planet_load(9, AS_STATE + 0x280);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 9 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == 0,
+	      WHAT("Rykan V with flag 106 set: no revisit bit (only Metropolis and Cobalia have one)"));
+
+	/* Cobalia again, through PLANET_LOAD: a revisit. */
+	seq = autosplit_latest_seq();
+	qwark_load(TOD_LEVEL_COBALIA, AS_STATE + 0x2C0);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 1 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == AUTOSPLIT_EV_REVISIT,
+	      WHAT("Cobalia with flag 106 set (PLANET_LOAD): the split carries the revisit bit"));
+
+	/* Reloaded, and a death there: still never a second split. */
+	seq = autosplit_latest_seq();
+	planet_load(TOD_LEVEL_COBALIA, AS_STATE + 0x300);
+	death(AS_STATE + 0x340);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, NULL) == 0, WHAT("Cobalia reloaded, then a death: no split"));
+
+	/* Metropolis again, the game's own load: a revisit, no run. */
+	seq = autosplit_latest_seq();
+	planet_load(TOD_LEVEL_METROPOLIS, AS_STATE + 0x380);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 0 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == AUTOSPLIT_EV_REVISIT &&
+	      as_count(seq, AUTOSPLIT_RESET, 0, NULL) == 0 && as_count(seq, AUTOSPLIT_START, 0, NULL) == 0,
+	      WHAT("Metropolis with flag 106 set: the split carries the revisit bit, no run"));
+
+	/* A Cobalia save from before Fastoon loaded over it: its flags in first, then the load. */
+	seq = autosplit_latest_seq();
+	fade_flag_106(0);
+	planet_load(TOD_LEVEL_COBALIA, AS_STATE + 0x3C0);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 1 &&
+	      as_flags(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET) == 0,
+	      WHAT("a save's flags with 106 clear, then Cobalia: the story's arrival again, no revisit"));
+
+	check((fast ? fl_patched() : fl_unpatched()) && cut_all(cut), WHAT("both switches as set throughout"));
+#undef WHAT
+	check(features_set(TF_FAST_LOADS, 0) == ST_OK && features_set(TF_REMOVE_CUTSCENES, 0) == ST_OK,
+	      "both switches off again");
+	wr32(AS_SEEN_COUNT, 0);
+	fade_flag_106(0);
+}
+
+static void test_tod_autosplit_revisit(void)
+{
+	group("ToD: a load into Metropolis or Cobalia past their arrival FMVs is a revisit (rev 1.33, pending)");
+	test_tod_autosplit_revisit_one(0, 0);
+	test_tod_autosplit_revisit_one(1, 0);
+	test_tod_autosplit_revisit_one(0, 1);
+	test_tod_autosplit_revisit_one(1, 1);
+}
+
 static void test_tod_autosplit_rows(void)
 {
 	const struct game_api *g = session_game();
@@ -1513,8 +1653,10 @@ static void test_tod_autosplit_rows(void)
 	check(n == 5, "five rows");
 	if (n != 5) return;
 	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
-	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE) && qstreq(d[0].label, "Planet entered"),
-	      "code 1 is the planet split, on, with the route");
+	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE | AUTOSPLIT_FLAG_REVISIT) &&
+	      qstreq(d[0].label, "Planet entered"),
+	      "code 1 is the planet split, on, with the route, marking revisits (rev 1.33, pending)");
+	for (i = 1; i < n; i++) check((d[i].flags & AUTOSPLIT_FLAG_REVISIT) == 0, "no other row marks revisits");
 	check(d[1].code == TOD_AS_END_FADE && d[1].kind == AUTOSPLIT_SPLIT && d[1].flags == AUTOSPLIT_FLAG_DEFAULT &&
 	      qstreq(d[1].label, "Tachyon defeated"),
 	      "code 7, the fade to black after Tachyon, is the final split, \"Tachyon defeated\", on (rev 1.29)");
@@ -4424,6 +4566,7 @@ void test_tod_game(void)
 	test_tod_load_fade();
 	test_tod_load_fast();
 	test_tod_cutscenes();
+	test_tod_autosplit_revisit();   /* rev 1.33 (pending): after the Fast loads and cutscene tests' helpers */
 	test_tod_cutscene_cache();
 	test_tod_on_boot();
 	test_tod_black_screens();
