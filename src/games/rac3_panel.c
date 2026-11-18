@@ -1768,15 +1768,23 @@ void rac3_trophy_tick(void)
  * rac3.c; Untune bosses belongs to no group and is dropped.
  */
 
-/* UYAUnlocks buttonUpgrade / buttonDowngrade. */
+/*
+ * UYAUnlocks buttonUpgrade / buttonDowngrade. Build 59: both pass over a
+ * weapon the player has not got, as RaC2's and Deadlocked's do (the unlock
+ * byte, the Owned column): until then they wrote every weapon's version
+ * byte, so a weapon bought later came at V8, and the Reset gave its XP back
+ * to 0, on a weapon the player had never held.
+ */
 static int rac3_all_versions(int max)
 {
 	u8 i;
 
 	for (i = 0; i < RAC3_UNLOCK_COUNT; i++) {
 		const struct rac3_item *it = &rac3_items[i];
+		u8 owned = 0;
 
 		if (it->levels <= 1) continue;
+		if (mem_read_u8(item_unlock_addr(it), &owned) != ST_OK || owned == 0) continue;
 
 		if (max) {
 			item_set_version(it, it->levels);

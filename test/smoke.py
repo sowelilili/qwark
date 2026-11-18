@@ -6238,6 +6238,62 @@ def smoke_tod_no_pak(c, sim):
           "ToD, no pak: and the helper goes in with the console menu, in the same session")
 
 
+TOD_WEAPONS = 0x1020BE70
+TOD_MOBY_POOL = 0x1066C300
+
+
+def smoke_tod_weapons_mobys(c, features):
+    """Build 59 and revision 1.34: ToD's weapon bulk actions and its moby table, over the wire."""
+    def mem_read(c, addr, n):
+        status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, n))
+        return body if status == ST_OK and len(body) == n else bytes(n)
+
+    ids = dict((f["label"], f["id"]) for f in features)
+    check(ids.get("Max all weapon levels") == 27 and ids.get("Reset all weapon levels") == 28 and
+          ids.get("Max all weapon ammo") == 29,
+          "ToD: DESCRIBE lists the three weapon bulk actions, ids 27 to 29", ids)
+    acts = [f for f in features if f["id"] in (27, 28, 29)]
+    check(len(acts) == 3 and all(f["kind"] == FEATURE_ACTION and f["group"] == 2 for f in acts),
+          "ToD: ACTIONs in Progress, as RaC2's, UYA's and Deadlocked's", acts)
+    # The Combuster owned at V1, the Fusion Grenade not; the simulator's defs give ten levels each.
+    slot = lambda w: TOD_WEAPONS + w * 0x14
+    mem_write(c, slot(1) + 0x10, b"\x01\x00")
+    mem_write(c, slot(1) + 4, struct.pack(">f", 0.0))
+    mem_write(c, slot(2) + 0x10, b"\x00\x00")
+    mem_write(c, 0x1029C55C, struct.pack(">I", 0))   # not challenge mode
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([27]))
+    check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 4 and mem_read_u8(c, slot(2) + 0x11) == 0,
+          "ToD: Max all weapon levels, the owned Combuster to V5 and the Fusion Grenade untouched", status)
+    status, body = c.call(OP_UNLOCK_LIST)
+    if check(status == ST_OK, "ToD: UNLOCK_LIST after it", status):
+        _cats, _fields, rows, _off = parse_unlocks(body)
+        comb = [r for r in rows if r["name"] == "Combuster"]
+        check(len(comb) == 1 and comb[0]["values"][1] == 5, "ToD: and the Unlocks table reads V5", comb)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([29]))
+    check(status == ST_OK and struct.unpack(">f", mem_read(c, slot(1) + 8, 4))[0] == 20.0 + 2 * 4 + 1,
+          "ToD: Max all weapon ammo, the V5 magazine of the simulator's csv", status)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([28]))
+    check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 0, "ToD: Reset all weapon levels, V1 again", status)
+    mem_write(c, slot(1) + 0x10, b"\x00\x00")
+
+    status, body = c.call(OP_MOBY_TABLE)
+    if check(status == ST_OK and len(body) == 16, "ToD: MOBY_TABLE answers, 16 bytes (revision 1.34)", (status, body.hex())):
+        tbl, end, stride, flags, live_off, dead = struct.unpack(">IIHHHH", body)
+        check(tbl == TOD_MOBY_POOL and end == TOD_MOBY_POOL + 0x10 and stride == 0x180 and flags == 3 and
+              live_off == 0x64 and dead == 0xFFFE,
+              "ToD: g_mobyPool, the last index, a free slot's serial at +0x64",
+              (hex(tbl), hex(end), stride, flags, hex(live_off), hex(dead)))
+        start = mem_read_u32(c, tbl)
+        last = struct.unpack(">i", mem_read(c, end, 4))[0]
+        live = []
+        for i in range(last + 1):
+            row = mem_read(c, start + i * stride, stride)
+            if struct.unpack(">H", row[live_off:live_off + 2])[0] != dead:
+                live.append((i, struct.unpack(">H", row[0x50:0x52])[0]))
+        check(live == [(0, 0x40), (2, 0x42), (3, 0x43)],
+              "ToD: a client's walk finds the simulator's three live mobys and their classes", live)
+
+
 def smoke_tod(c, sim):
     """Tools of Destruction on the simulator: the game, its tables, and LUA_EXEC end to end."""
     sim.send("quit")
@@ -6288,6 +6344,7 @@ def smoke_tod(c, sim):
         check(len(rows) == 43 and [f["name"] for f in fields] == ["Owned", "Level", "", "Ammo"],
               "ToD: 43 rows, Owned, Level and Ammo", (len(rows), fields))
 
+    smoke_tod_weapons_mobys(c, features)
     smoke_tod_level_flags(c)
     status, _ = c.call(OP_DEBUG_TEXT, bytes([0xFF]))
     check(status == ST_UNKNOWN_OP, "ToD: DEBUG_TEXT, retired, is UNKNOWN_OP in a game too", status)
@@ -8604,7 +8661,23 @@ def main():
             by_id = {f["id"]: f for f in features}
             check(consumed == len(body), "DESCRIBE parses exactly", (consumed, len(body)))
             check(game == 1, "DESCRIBE names RaC1")
-            check(len(features) == 21, "twenty-one features", len(features))
+            check(len(features) == 23, "twenty-three features", len(features))
+            # Build 59: the gold weapons' pair, RaC1's Max and Reset all weapon levels.
+            check(by_id.get(29, {}).get("label") == "Upgrade all weapons to gold" and
+                  by_id.get(30, {}).get("label") == "Reset all gold weapons" and
+                  all(by_id.get(i, {}).get("kind") == FEATURE_ACTION and groups[by_id[i]["group"]] == "Progress"
+                      for i in (29, 30)),
+                  "29 and 30 are the gold weapon actions, in Progress", (by_id.get(29), by_id.get(30)))
+            # Owned Blaster (item 15) and owned Wrench (8, no gold version): only the Blaster goes gold.
+            mem_write(c, 0x96C140 + 15, b"\x01")
+            mem_write(c, 0x96C140 + 8, b"\x01")
+            mem_write(c, 0x969CA8 + 15, b"\x00")
+            mem_write(c, 0x969CA8 + 8, b"\x00")
+            status, _ = c.call(OP_FEATURE_TRIGGER, bytes([29]))
+            check(status == ST_OK and mem_read_u8(c, 0x969CA8 + 15) == 1 and mem_read_u8(c, 0x969CA8 + 8) == 0,
+                  "Upgrade all weapons to gold: the owned Blaster is gold, the Wrench, which has none, is not", status)
+            status, _ = c.call(OP_FEATURE_TRIGGER, bytes([30]))
+            check(status == ST_OK and mem_read_u8(c, 0x969CA8 + 15) == 0, "and Reset all gold weapons takes it back", status)
             check(9 not in by_id, "the retired id 9 is not described", sorted(by_id))
             # Build 53: the five manip buttons are retired the same way.
             check(not any(i in by_id for i in (7, 8, 10, 11, 16)),
@@ -8835,10 +8908,13 @@ def main():
         # --------------------------------------------------------- moby table
         status, body = c.call(OP_MOBY_TABLE)
         if check(status == ST_OK, "MOBY_TABLE answers OK", status):
-            tbl, end, stride, _pad = struct.unpack(">IIHH", body)
+            tbl, end, stride, _pad = struct.unpack(">IIHH", body[:12])
             check(tbl == 0x0A390A0 and end == 0x0A390A8 and stride == 0x100,
                   "the RaC1 moby pointers and stride come back",
                   (hex(tbl), hex(end), hex(stride)))
+            # Revision 1.34: the pad is flags now, and a flat table's reply is byte for byte the old one.
+            check(body == struct.pack(">IIHH", 0x0A390A0, 0x0A390A8, 0x100, 0),
+                  "and the reply is the same 12 bytes as before revision 1.34, flags 0", body.hex())
 
         # -------------------------------------------------------- unknown op
         status, body = c.call(OP_UNKNOWN, b"\x01\x02\x03")

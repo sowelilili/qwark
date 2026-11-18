@@ -373,6 +373,67 @@ void host_fake_tod_saved(u32 slot)
 }
 
 /* Under g_mem_lock. */
+/*
+ * Build 59: g_weaponDefTable's defs and their configs (tod.h,
+ * TOD_WEAPON_DEFS), as the game loads them from weapon.csv: the fifteen
+ * weapons level, ten levels each, their XP the game's (tod_weapon_xp), a
+ * max ammo per level of 20 + 2 * level + the weapon's id and no mods; the
+ * eight devices have a def that cannot level and their csv MaxAmmo
+ * (tod_device_max_ammo). The level and ammo numbers stand in for the csv's,
+ * which the executable does not hold; that a device's def says it cannot
+ * level is the simulator's assumption. The gadgets and the wrench have none.
+ */
+#define FAKE_TOD_WDEFS  0x300C0000u   /* a def per WPN_, 0x80 apart */
+#define FAKE_TOD_WCFGS  0x300D0000u   /* a config per WPN_, 0x800 apart */
+
+static void seed_tod_weapons(void)
+{
+	u8 w;
+
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) {
+		u32 def = FAKE_TOD_WDEFS + (u32)w * 0x80u, cfg = FAKE_TOD_WCFGS + (u32)w * 0x800u, l;
+		int device = w >= TOD_WPN_DEVICES;
+
+		poke32(TOD_WEAPON_DEFS + (u32)w * 4u, def);
+		poke32(def + TOD_WD_FLAGS, device ? 1u : 0u);
+		poke32(def + TOD_WD_CONFIG, cfg);
+		poke32(cfg + TOD_WC_NLEVELS, device ? 0u : TOD_MAX_LEVEL);
+		poke32(cfg + TOD_WC_NMODS, 0);
+		for (l = 0; l < TOD_MAX_LEVEL; l++)
+			poke32(cfg + TOD_WC_MAX_AMMO + l * 4u,
+			       device ? tod_device_max_ammo(w) : f32_bits((f32)(20u + 2u * l + w)));
+	}
+}
+
+/*
+ * Revision 1.34: g_mobyPool (tod.h, TOD_MOBY_POOL) in a level: sixteen
+ * slots, as MobyPool_init leaves them (class 0xFFFF, handle index |
+ * 0xFFFE0000) but for four allocated, 0 to 3, slot 1 freed again, so the
+ * highest index in use is 3.
+ */
+#define FAKE_TOD_MOBYS  0x300E0000u
+#define FAKE_TOD_NMOBYS 16u
+
+static void seed_tod_mobys(void)
+{
+	u32 k;
+
+	poke32(TOD_MOBY_SLOTS, FAKE_TOD_MOBYS);
+	poke32(TOD_MOBY_POOL + 0x08u, FAKE_TOD_NMOBYS);
+	poke32(TOD_MOBY_POOL + 0x0Cu, 3);
+	poke32(TOD_MOBY_LAST, 3);
+	for (k = 0; k < FAKE_TOD_NMOBYS; k++) {
+		u32 at = FAKE_TOD_MOBYS + k * TOD_MOBY_STRIDE;
+		int live = k == 0 || k == 2 || k == 3;
+		u8 cls[2];
+
+		be16_put(cls, live ? (u16)(0x40u + k) : 0xFFFFu);
+		mem_access(at + 0x50u, cls, 2, 1);
+		poke32(at + TOD_MOBY_HANDLE, live ? ((k + 1u) << 16) | k : 0xFFFE0000u | k);
+		poke32(at + 0x30u, f32_bits((f32)(100u + k)));
+	}
+}
+
 static void seed_tod(void)
 {
 	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
@@ -445,6 +506,8 @@ static void seed_tod(void)
 		mem_access(TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, &one, 1, 1);
 		poke32(TOD_LOAD_JOB, 0);
 	}
+	seed_tod_weapons();
+	seed_tod_mobys();
 	seed_tod_save();
 
 	if (d == NULL) return;

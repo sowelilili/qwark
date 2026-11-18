@@ -367,6 +367,23 @@ struct game_menu {
 	u8 nvalues;
 };
 
+/*
+ * MOBY_TABLE's reply, as a game describes its moby table (game_api's
+ * moby_table). table_ptr_addr names the u32 pointer to the first slot;
+ * table_end_ptr_addr the u32 after the last (flags 0), or since revision 1.34
+ * with MOBY_FLAG_LAST_INDEX the s32 index of the last slot in use. With
+ * MOBY_FLAG_LIVE_TEST a slot whose big-endian u16 at live_offset is
+ * dead_value is free.
+ */
+struct game_moby_table {
+	u32 table_ptr_addr;
+	u32 table_end_ptr_addr;
+	u16 stride;
+	u16 flags;
+	u16 live_offset;
+	u16 dead_value;
+};
+
 /* Build 53: what struct game_api's savefile_ready is asked about. */
 #define GAME_SF_SET_ASIDE 0
 #define GAME_SF_LOAD      1
@@ -468,7 +485,15 @@ struct game_api {
 	/* `offset` indexes the concatenated region levelflags_get returns. */
 	int (*levelflags_set)(u8 planet, u16 offset, u8 value);
 
-	int (*moby_table)(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *stride);
+	/*
+	 * MOBY_TABLE (PROTOCOL.md 5.5). The game fills `out` in; the core zeroed
+	 * it first, so a flat table between a start and an end pointer (the four
+	 * original games) leaves flags, live_offset and dead_value at 0 and its
+	 * reply is what it always was. Revision 1.34: a pool whose end is the
+	 * last index in use and whose free slots sit among the live ones (Tools
+	 * of Destruction's g_mobyPool) says so with MOBY_FLAG_*.
+	 */
+	int (*moby_table)(struct game_moby_table *out);
 
 	void (*on_enter)(void);
 	void (*on_quit)(void);

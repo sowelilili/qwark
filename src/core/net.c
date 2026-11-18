@@ -1530,22 +1530,28 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 
 	case OP_MOBY_TABLE: {
 		const struct game_api *g;
-		u32 tbl = 0, end = 0;
-		u16 stride = 0;
+		struct game_moby_table t;
 		u16 rc;
 
-		if (replycap < 12) return ST_FULL;
+		if (replycap < 16) return ST_FULL;
+		memset(&t, 0, sizeof(t));
 		core_lock();   /* revision 1.26: the lock audit (PROTOCOL.md 9.11) */
 		g = session_game();
-		rc = (g == NULL || g->moby_table == NULL) ? ST_UNSUPPORTED : (u16)g->moby_table(&tbl, &end, &stride);
+		rc = (g == NULL || g->moby_table == NULL) ? ST_UNSUPPORTED : (u16)g->moby_table(&t);
 		core_unlock();
 		if (rc != ST_OK) return rc;
 
-		be32_put(reply, tbl);
-		be32_put(reply + 4, end);
-		be16_put(reply + 8, stride);
-		be16_put(reply + 10, 0);
+		be32_put(reply, t.table_ptr_addr);
+		be32_put(reply + 4, t.table_end_ptr_addr);
+		be16_put(reply + 8, t.stride);
+		/* Revision 1.34: the pad is flags, 0 for a flat table, which replies as it always did. */
+		be16_put(reply + 10, t.flags);
 		*replylen = 12;
+		if ((t.flags & MOBY_FLAG_LIVE_TEST) != 0) {
+			be16_put(reply + 12, t.live_offset);
+			be16_put(reply + 14, t.dead_value);
+			*replylen = 16;
+		}
 		return ST_OK;
 	}
 

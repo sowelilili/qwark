@@ -534,7 +534,8 @@ static void test_model_rac1(void)
 	static const char * const manips[] = { "Category", "Auto-reset", "Apply now" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Unlock all gold bolts", "Reset all gold bolts",
-	                                             "Unlock all skill points", "Reset skill points" };
+	                                             "Unlock all skill points", "Reset skill points",
+	                                             "Upgrade all weapons to gold", "Reset all gold weapons" };
 	struct menu_view v;
 	const struct menu_row *r;
 
@@ -605,9 +606,9 @@ static void test_model_rac1(void)
 	check(labels_are(&v, unlocks, 4) && v.ptype == MBOX_PTYPE_MAIN,
 	      "Unlocks: Weapons, Gadgets, Items, then Collectables");
 	act(&v, MBOX_EV_ACTIVATE, "Collectables");
-	check(labels_are(&v, collectables, 4) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[0].kind == MROW_ACTION &&
+	check(labels_are(&v, collectables, 6) && v.ptype == MBOX_PTYPE_CONFIG && v.rows[0].kind == MROW_ACTION &&
 	      strcmp(v.title, "Collectables") == 0,
-	      "Collectables: the gold bolt and skill point buttons, a CONFIG page of buttons");
+	      "Collectables: the gold bolt and skill point buttons, then the gold weapons' two (build 59), a CONFIG page of buttons");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Weapons");
@@ -631,6 +632,20 @@ static void test_model_rac1(void)
 	tick(2);
 	menu_model_view(&v);
 	check(peek8(0x96C14Au) == 0 && strcmp(value_of(&v, "Bomb Glove"), "Locked") == 0, "and Right wraps to Locked");
+	/*
+	 * Build 59: the Wrench has no gold version (rac1.h, RAC1_GOLD_WEAPONS), so it
+	 * is Locked or Unlocked, and Right never writes its byte of goldedItems.
+	 */
+	poke8(0x96C148u, 1);
+	poke8(0x969CB0u, 0);
+	tick(2);
+	menu_model_view(&v);
+	check(strcmp(value_of(&v, "Wrench"), "Unlocked") == 0, "the Wrench, owned: Unlocked");
+	act(&v, MBOX_EV_RIGHT, "Wrench");
+	tick(2);
+	menu_model_view(&v);
+	check(peek8(0x969CB0u) == 0 && peek8(0x96C148u) == 0 && strcmp(value_of(&v, "Wrench"), "Locked") == 0,
+	      "and Right goes to Locked, never to a Gold the game has no Wrench for");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 	act(&v, MBOX_EV_ACTIVATE, "Items");

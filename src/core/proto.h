@@ -288,6 +288,16 @@
 #define OP_POS_EDIT          0x004A
 #define OP_POS_STORE         0x004B
 
+/*
+ * Revision 1.34: MOBY_TABLE's last halfword, a pad until then and 0 in the
+ * four original games, is flags. LAST_INDEX: the end word is the index of
+ * the last slot the table can have live (s32, negative for none), not a
+ * pointer past its end. LIVE_TEST: two more halfwords follow, an offset in
+ * a slot and the big-endian u16 a free slot holds there (PROTOCOL.md 5.5).
+ */
+#define MOBY_FLAG_LAST_INDEX 0x0001
+#define MOBY_FLAG_LIVE_TEST  0x0002
+
 #define OP_UNLOCK_LIST       0x0050
 #define OP_UNLOCK_SET        0x0051
 #define OP_LEVELFLAGS_GET    0x0053

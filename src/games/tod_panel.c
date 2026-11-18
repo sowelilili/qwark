@@ -438,6 +438,146 @@ static int skill_points_all(int on)
 	return mem_write(TOD_SKILL_POINTS, b, 8);
 }
 
+/* --------------------------------------------- the weapon actions (build 59) */
+
+/*
+ * A weapon's config and its number of levels, through g_weaponDefTable as
+ * Weapon_getDef reads it (tod.h, TOD_WEAPON_DEFS): `levels` is 0 for one whose
+ * def says it cannot level. NOT_FOUND while the table has no def for it.
+ */
+static int weapon_config(u8 wpn, u32 *cfg, u32 *levels)
+{
+	u32 def = 0, flags = 0;
+	int rc;
+
+	*cfg = 0;
+	*levels = 0;
+	rc = mem_read_u32(TOD_WEAPON_DEFS + (u32)wpn * 4u, &def);
+	if (rc != ST_OK) return rc;
+	if (def == 0) return ST_NOT_FOUND;
+	rc = mem_read_u32(def + TOD_WD_FLAGS, &flags);
+	if (rc == ST_OK) rc = mem_read_u32(def + TOD_WD_CONFIG, cfg);
+	if (rc != ST_OK) return rc;
+	if (*cfg == 0) return ST_NOT_FOUND;
+	if ((flags & 3u) != 0) return ST_OK;
+	return mem_read_u32(*cfg + TOD_WC_NLEVELS, levels);
+}
+
+/*
+ * The top level index the game lets a weapon of `levels` levels reach:
+ * WeaponSlot_getMaxLevel's min(numLevels, 4), or with Omega min(numLevels, 9),
+ * which the vendor sells in challenge mode alone, and only past five levels.
+ */
+static u8 weapon_top(u32 levels, int challenge)
+{
+	u32 cap = challenge && levels > TOD_OMEGA_MIN_LEVELS ? TOD_LEVEL_TOP_OMEGA : TOD_LEVEL_TOP;
+
+	return (u8)(levels < cap ? levels : cap);
+}
+
+/*
+ * The three walk the weapons the player owns and pass over the rest, as
+ * RaC2's and Deadlocked's do: handing a weapon out is the Owned checkbox's
+ * job. A weapon whose def the game has not loaded, or that cannot level, is
+ * left as it is. BUSY when the player owns weapons and the game has no def
+ * for any of them (no level up, say).
+ */
+static int weapon_levels_all(int max)
+{
+	u8 slots[TOD_WPN_DEVICES * TOD_WEAPON_STRIDE];
+	u32 challenge = 0;
+	u8 w, owned = 0, known = 0;
+	int rc = mem_read(TOD_WEAPONS, slots, sizeof(slots));
+
+	if (rc == ST_OK && max) rc = mem_read_u32(TOD_CHALLENGE, &challenge);
+	if (rc != ST_OK) return rc;
+
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_DEVICES; w++) {
+		const u8 *slot = slots + (u32)w * TOD_WEAPON_STRIDE;
+		u32 cfg, levels;
+		u8 top;
+
+		if (slot[TOD_WS_OWNED] == 0) continue;
+		owned++;
+		if (weapon_config(w, &cfg, &levels) != ST_OK) continue;
+		known++;
+		if (levels == 0) continue;
+
+		if (max) {
+			top = weapon_top(levels, challenge != 0);
+			/* Never down: a weapon already past it (Omega bought) keeps its level. */
+			if (slot[TOD_WS_LEVEL] >= top) continue;
+			rc = set_level(w, (u32)top + 1u);
+		} else {
+			if (slot[TOD_WS_LEVEL] == 0 && be32_get(slot + TOD_WS_XP) == 0) continue;
+			rc = set_level(w, 1);
+		}
+		if (rc != ST_OK) return rc;
+	}
+	return owned != 0 && known == 0 ? ST_BUSY : ST_OK;
+}
+
+/*
+ * WeaponDef_getMaxAmmo for the slot as it is: the config's max ammo at the
+ * slot's level, plus each ammo mod the slot carries that adds, times one plus
+ * each that multiplies (WeaponDef_applyMods), as f32 bits.
+ */
+static int weapon_max_ammo(u32 cfg, u8 level, u32 mods, u32 *bits)
+{
+	u8 table[TOD_WC_NMODS_MAX * TOD_WC_MOD_LEN];
+	u32 base = 0, n = 0, i;
+	f32 add, mult = 1.0f;
+	int rc;
+
+	if (level > TOD_LEVEL_TOP_OMEGA) level = TOD_LEVEL_TOP_OMEGA;
+	rc = mem_read_u32(cfg + TOD_WC_MAX_AMMO + (u32)level * 4u, &base);
+	if (rc == ST_OK) rc = mem_read_u32(cfg + TOD_WC_NMODS, &n);
+	if (rc != ST_OK) return rc;
+	add = f32_from_bits(base);
+	if (n > TOD_WC_NMODS_MAX) n = TOD_WC_NMODS_MAX;
+
+	if (n != 0 && mods != 0) {
+		rc = mem_read(cfg + TOD_WC_MODS, table, n * TOD_WC_MOD_LEN);
+		if (rc != ST_OK) return rc;
+		for (i = 0; i < n; i++) {
+			const u8 *m = table + i * TOD_WC_MOD_LEN;
+
+			if ((mods & (1u << i)) == 0) continue;
+			if (f32_from_bits(be32_get(m)) != TOD_MOD_STAT_AMMO) continue;
+			if (f32_from_bits(be32_get(m + 4)) == 0.0f)
+				add = add + f32_from_bits(be32_get(m + 8));
+			else
+				mult = mult + f32_from_bits(be32_get(m + 8));
+		}
+	}
+	*bits = f32_bits(mult * add);
+	return ST_OK;
+}
+
+static int weapon_ammo_all(void)
+{
+	u8 slots[TOD_WPN_GADGETS * TOD_WEAPON_STRIDE];
+	u8 w, owned = 0, known = 0;
+	int rc = mem_read(TOD_WEAPONS, slots, sizeof(slots));
+
+	if (rc != ST_OK) return rc;
+
+	/* The weapons and the devices: the gadgets have no ammo. */
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) {
+		const u8 *slot = slots + (u32)w * TOD_WEAPON_STRIDE;
+		u32 cfg, levels, full;
+
+		if (slot[TOD_WS_OWNED] == 0) continue;
+		owned++;
+		if (weapon_config(w, &cfg, &levels) != ST_OK) continue;
+		if (weapon_max_ammo(cfg, slot[TOD_WS_LEVEL], be32_get(slot + TOD_WS_MODS), &full) != ST_OK) continue;
+		known++;
+		rc = mem_write_u32(slot_addr(w) + TOD_WS_AMMO, full);
+		if (rc != ST_OK) return rc;
+	}
+	return owned != 0 && known == 0 ? ST_BUSY : ST_OK;
+}
+
 int tod_trigger(u8 id)
 {
 	switch (id) {
@@ -446,6 +586,9 @@ int tod_trigger(u8 id)
 	case TF_RESET_SP:    return skill_points_all(0);
 	case TF_UNLOCK_GB:   return gold_bolts_all(1);
 	case TF_RESET_GB:    return gold_bolts_all(0);
+	case TF_MAX_LEVELS:  return weapon_levels_all(1);
+	case TF_RESET_LEVELS: return weapon_levels_all(0);
+	case TF_MAX_AMMO:    return weapon_ammo_all();
 	case TF_SET_ASIDE:   return tod_set_aside();
 	case TF_LOAD_ASIDE:  return tod_load_aside();
 	default:             return ST_NOT_FOUND;

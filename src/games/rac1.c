@@ -789,6 +789,13 @@ static const struct feature_desc rac1_features[] = {
 	{ F_RESET_STYLE,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
 	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
 
+	/*
+	 * Build 59: the weapon bulk actions (rac1_panel.c, rac1_gold_all), RaC1's
+	 * Max and Reset all weapon levels: its one upgrade is the gold weapon.
+	 */
+	{ F_GOLD_ALL,        FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Upgrade all weapons to gold" },
+	{ F_GOLD_RESET,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all gold weapons" },
+
 	/* Protocol 1.2: the pair a client's save-file manager drives. */
 	{ F_LOAD_SETASIDE,   FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 	{ F_SET_ASIDE_FILE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
@@ -1017,11 +1024,11 @@ static int rac1_die(void)
 	return classic_die_set_z(RAC1_COORDS);
 }
 
-static int rac1_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *stride)
+static int rac1_moby_table(struct game_moby_table *out)
 {
-	*table_ptr_addr     = RAC1_MOBY_TABLE;
-	*table_end_ptr_addr = RAC1_MOBY_TABLE_END;
-	*stride             = RAC1_MOBY_STRIDE;
+	out->table_ptr_addr     = RAC1_MOBY_TABLE;
+	out->table_end_ptr_addr = RAC1_MOBY_TABLE_END;
+	out->stride             = RAC1_MOBY_STRIDE;
 	return ST_OK;
 }
 
@@ -1144,12 +1151,14 @@ static const struct menu_section rac1_menu_sections[] = {
 };
 
 static const u8 rac1_menu_unlock_actions[] = {
-	F_UNLOCK_GOLDBOLTS, F_RESET_GOLDBOLTS, F_UNLOCK_STYLE, F_RESET_STYLE
+	F_UNLOCK_GOLDBOLTS, F_RESET_GOLDBOLTS, F_UNLOCK_STYLE, F_RESET_STYLE,
+	F_GOLD_ALL, F_GOLD_RESET   /* build 59 */
 };
 
 /*
  * An unlock row cycles through Locked, Unlocked and Gold, on the gold flag,
- * field 1; the five items without a gold version are Locked or Unlocked (the
+ * field 1; the rows without a gold version (build 59: every row but the gold
+ * weapon vendor's ten, rac1.h RAC1_GOLD_WEAPONS) are Locked or Unlocked (the
  * menu takes the casing of this set for that). In the game's title case, as
  * the design has them for RaC1.
  */

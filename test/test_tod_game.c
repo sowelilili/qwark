@@ -4616,10 +4616,233 @@ static void test_tod_pause_loads(void)
 	die_world();
 }
 
+/*
+ * Build 59: the weapon bulk actions. The game's caps come from its own
+ * weapon.csv, read through g_weaponDefTable: built here per weapon so each
+ * has a cap of its own, with one weapon whose def says it cannot level, one
+ * whose def the game has not loaded, and an ammo mod of each kind.
+ */
+#define TW_DEFS  0x31000000u
+#define TW_CFGS  0x31010000u
+
+static u32 tw_slot(u8 w)
+{
+	return TOD_WEAPONS + (u32)w * TOD_WEAPON_STRIDE;
+}
+
+static void tw_def(u8 w, u32 flags, u32 levels)
+{
+	u32 def = TW_DEFS + (u32)w * 0x80u, cfg = TW_CFGS + (u32)w * 0x800u, l;
+
+	wr32(TOD_WEAPON_DEFS + (u32)w * 4u, def);
+	wr32(def + TOD_WD_FLAGS, flags);
+	wr32(def + TOD_WD_CONFIG, cfg);
+	wr32(cfg + TOD_WC_NLEVELS, levels);
+	wr32(cfg + TOD_WC_NMODS, 0);
+	for (l = 0; l < TOD_MAX_LEVEL; l++) wrf(cfg + TOD_WC_MAX_AMMO + l * 4u, (f32)(10u * (l + 1u) + w));
+}
+
+static void tw_hold(u8 w, int owned, u8 level, f32 xp, f32 ammo)
+{
+	u8 b[2];
+
+	b[0] = owned ? 1 : 0;
+	b[1] = level;
+	host_poke(tw_slot(w) + TOD_WS_OWNED, b, 2);
+	wrf(tw_slot(w) + TOD_WS_XP, xp);
+	wrf(tw_slot(w) + TOD_WS_AMMO, ammo);
+	wr32(tw_slot(w) + TOD_WS_MODS, 0);
+}
+
+static u8 tw_level(u8 w)
+{
+	return *host_mem_ptr(tw_slot(w) + TOD_WS_LEVEL);
+}
+
+static void test_tod_weapon_actions(void)
+{
+	u8 before[TOD_NWEAPONS * TOD_WEAPON_STRIDE], after[TOD_NWEAPONS * TOD_WEAPON_STRIDE];
+	u8 around[2][0x40], w;
+	u32 k, changed;
+	int others;
+
+	group("ToD: Max all weapon levels, each weapon to the game's own top (build 59)");
+	/*
+	 * Combuster (1): ten levels, owned at V2. Shock Ravager (3): five levels,
+	 * owned at V1. Buzz Blades (5): three levels. Predator Launcher (6): its def
+	 * says it cannot level. Alpha Disruptor (7): ten levels, not owned. Pyro
+	 * Blaster (8): owned, no def loaded. Negotiator (11): Omega already, V8.
+	 * Every other weapon: ten levels, not owned.
+	 */
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) {
+		tw_def(w, 0, w < TOD_WPN_DEVICES ? 10 : 0);
+		tw_hold(w, 0, 0, 0.0f, 0.0f);
+	}
+	tw_def(3, 0, 5);
+	tw_def(5, 0, 3);
+	tw_def(6, 1, 10);
+	wr32(TOD_WEAPON_DEFS + 8u * 4u, 0);
+	tw_hold(1, 1, 1, 1000.0f, 3.0f);
+	tw_hold(3, 1, 0, 0.0f, 3.0f);
+	tw_hold(5, 1, 0, 0.0f, 3.0f);
+	tw_hold(6, 1, 0, 0.0f, 3.0f);
+	tw_hold(8, 1, 2, 2200.0f, 3.0f);
+	tw_hold(11, 1, 7, 90000.0f, 3.0f);
+	wr32(TOD_CHALLENGE, 0);
+	host_peek(TOD_WEAPONS - 0x40u, around[0], 0x40);
+	host_peek(TOD_WEAPONS + sizeof(before), around[1], 0x40);
+	host_peek(TOD_WEAPONS, before, sizeof(before));
+
+	check(features_trigger(TF_MAX_LEVELS) == ST_OK, "Max all weapon levels runs");
+	check(tw_level(1) == 4 && rdf(tw_slot(1) + TOD_WS_XP) == (f32)tod_weapon_xp(1, 4),
+	      "a first playthrough: the Combuster to V5, the top without Omega, with V5's XP");
+	check(tw_level(3) == 4, "the Shock Ravager's five levels: V5");
+	check(tw_level(5) == 3, "the Buzz Blades' three: V4, min(numLevels, 4) as WeaponSlot_getMaxLevel has it");
+	check(tw_level(6) == 0 && rdf(tw_slot(6) + TOD_WS_XP) == 0.0f, "the Predator Launcher, which cannot level, is left alone");
+	check(tw_level(7) == 0, "the Alpha Disruptor, not owned, is passed over");
+	check(tw_level(8) == 2, "the Pyro Blaster, whose def the game has not loaded, is left as it is");
+	check(tw_level(11) == 7, "the Negotiator, Omega already at V8, is never taken down");
+	host_peek(TOD_WEAPONS, after, sizeof(after));
+	changed = 0;
+	others = 1;
+	for (k = 0; k < sizeof(after); k++) {
+		u32 slotw = k / TOD_WEAPON_STRIDE, off = k % TOD_WEAPON_STRIDE;
+		if (after[k] == before[k]) continue;
+		changed++;
+		if ((slotw != 1 && slotw != 3 && slotw != 5) || !(off == TOD_WS_LEVEL || (off >= TOD_WS_XP && off < TOD_WS_XP + 4)))
+			others = 0;
+	}
+	check(others && changed > 0, "only the three weapons' level bytes and XP changed");
+	{
+		u8 now[2][0x40];
+		host_peek(TOD_WEAPONS - 0x40u, now[0], 0x40);
+		host_peek(TOD_WEAPONS + sizeof(before), now[1], 0x40);
+		check(memcmp(now, around, sizeof(now)) == 0, "and nothing either side of the weapon slots");
+	}
+
+	group("ToD: in challenge mode Omega is the game's, to V10");
+	wr32(TOD_CHALLENGE, 1);
+	check(features_trigger(TF_MAX_LEVELS) == ST_OK, "Max all weapon levels in challenge mode");
+	check(tw_level(1) == 9 && rdf(tw_slot(1) + TOD_WS_XP) == (f32)tod_weapon_xp(1, 9), "the Combuster to V10 with its XP");
+	check(tw_level(11) == 9, "the Negotiator from V8 to V10");
+	check(tw_level(3) == 4, "the Shock Ravager's five levels sell no Omega: V5 still (Vendor_canBuyOmegaUpgrade wants more than five)");
+	check(tw_level(5) == 3 && tw_level(6) == 0 && tw_level(7) == 0, "and the rest as before");
+
+	group("ToD: Reset all weapon levels");
+	check(features_trigger(TF_RESET_LEVELS) == ST_OK, "Reset all weapon levels runs");
+	check(tw_level(1) == 0 && rdf(tw_slot(1) + TOD_WS_XP) == 0.0f && tw_level(11) == 0 && tw_level(3) == 0 &&
+	      tw_level(5) == 0, "every owned weapon that levels back to V1, its XP 0");
+	check(tw_level(8) == 2 && rdf(tw_slot(8) + TOD_WS_XP) == 2200.0f, "but the Pyro Blaster, whose def is not there");
+	wr32(TOD_CHALLENGE, 0);
+
+	group("ToD: Max all weapon ammo, the game's WeaponDef_getMaxAmmo");
+	tw_def(8, 0, 10);
+	/* The Combuster at V3 with two ammo mods: +5 (mod 1) and x0.5 more (mod 3); mod 2 is no ammo mod, mod 0 not fitted. */
+	{
+		u32 cfg = TW_CFGS + 1u * 0x800u, m = cfg + TOD_WC_MODS;
+
+		wr32(cfg + TOD_WC_NMODS, 4);
+		wrf(m + 0 * TOD_WC_MOD_LEN, 9.0f); wrf(m + 0 * TOD_WC_MOD_LEN + 4, 0.0f); wrf(m + 0 * TOD_WC_MOD_LEN + 8, 100.0f);
+		wrf(m + 1 * TOD_WC_MOD_LEN, 9.0f); wrf(m + 1 * TOD_WC_MOD_LEN + 4, 0.0f); wrf(m + 1 * TOD_WC_MOD_LEN + 8, 5.0f);
+		wrf(m + 2 * TOD_WC_MOD_LEN, 3.0f); wrf(m + 2 * TOD_WC_MOD_LEN + 4, 0.0f); wrf(m + 2 * TOD_WC_MOD_LEN + 8, 40.0f);
+		wrf(m + 3 * TOD_WC_MOD_LEN, 9.0f); wrf(m + 3 * TOD_WC_MOD_LEN + 4, 1.0f); wrf(m + 3 * TOD_WC_MOD_LEN + 8, 0.5f);
+		tw_hold(1, 1, 2, 2200.0f, 1.0f);
+		wr32(tw_slot(1) + TOD_WS_MODS, 0xEu);
+	}
+	tw_hold(16, 1, 0, 0.0f, 0.0f);   /* Mr. Zurkon, a device */
+	tw_hold(17, 0, 0, 0.0f, 0.0f);   /* the Confuzzler, not owned */
+	host_peek(TOD_WEAPONS, before, sizeof(before));
+	check(features_trigger(TF_MAX_AMMO) == ST_OK, "Max all weapon ammo runs");
+	check(rdf(tw_slot(1) + TOD_WS_AMMO) == (31.0f + 5.0f) * 1.5f, "the Combuster: V3's 31 plus 5, times 1.5");
+	check(rdf(tw_slot(3) + TOD_WS_AMMO) == 13.0f && rdf(tw_slot(8) + TOD_WS_AMMO) == 38.0f,
+	      "the Shock Ravager at V1 and the Pyro Blaster at V3 (its def back): each its own level's magazine");
+	check(rdf(tw_slot(16) + TOD_WS_AMMO) == 26.0f, "Mr. Zurkon, a device, filled from its own def");
+	check(rdf(tw_slot(17) + TOD_WS_AMMO) == 0.0f && rdf(tw_slot(7) + TOD_WS_AMMO) == 0.0f,
+	      "the Confuzzler and the Alpha Disruptor, not owned, are passed over");
+	host_peek(TOD_WEAPONS, after, sizeof(after));
+	others = 1;
+	for (k = 0; k < sizeof(after); k++) {
+		u32 off = k % TOD_WEAPON_STRIDE;
+		if (after[k] != before[k] && !(off >= TOD_WS_AMMO && off < TOD_WS_AMMO + 4)) others = 0;
+		if (after[k] != before[k] && k / TOD_WEAPON_STRIDE >= TOD_WPN_GADGETS) others = 0;
+	}
+	check(others, "nothing but the ammo words of weapons and devices changed");
+
+	group("ToD: with no def table the weapon actions are BUSY and write nothing");
+	for (w = 0; w < TOD_NWEAPONS; w++) wr32(TOD_WEAPON_DEFS + (u32)w * 4u, 0);
+	host_peek(TOD_WEAPONS, before, sizeof(before));
+	check(features_trigger(TF_MAX_LEVELS) == ST_BUSY && features_trigger(TF_RESET_LEVELS) == ST_BUSY &&
+	      features_trigger(TF_MAX_AMMO) == ST_BUSY, "all three BUSY");
+	host_peek(TOD_WEAPONS, after, sizeof(after));
+	check(memcmp(before, after, sizeof(after)) == 0, "and the slots as they were");
+	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) tw_hold(w, 0, 0, 0.0f, 0.0f);
+}
+
+/*
+ * Revision 1.34: MOBY_TABLE for ToD. The walk a client makes (PROTOCOL.md
+ * 5.5) over a pool laid out as the game lays it: slots up to the last index
+ * in use, the free ones among them told by the handle's serial.
+ */
+static u32 moby_walk(const struct game_moby_table *t, u32 *live, u32 cap)
+{
+	u32 start = rd32(t->table_ptr_addr), end_word = rd32(t->table_end_ptr_addr), n = 0, i, rows;
+
+	if ((t->flags & MOBY_FLAG_LAST_INDEX) != 0) rows = (s32)end_word < 0 ? 0 : end_word + 1u;
+	else rows = (end_word - start) / t->stride;
+	for (i = 0; i < rows; i++) {
+		u8 b[2];
+		host_peek(start + i * t->stride + t->live_offset, b, 2);
+		if ((t->flags & MOBY_FLAG_LIVE_TEST) != 0 && be16_get(b) == t->dead_value) continue;
+		if (n < cap) live[n] = i;
+		n++;
+	}
+	return n;
+}
+
+static void test_tod_moby_table(void)
+{
+	const struct game_api *g = session_game();
+	struct game_moby_table t;
+	u32 live[16], n, k, slots = 0x31100000u;
+
+	group("ToD: the moby table (revision 1.34)");
+	memset(&t, 0, sizeof(t));
+	check(g != NULL && g->moby_table != NULL && g->moby_table(&t) == ST_OK, "ToD answers MOBY_TABLE");
+	check(t.table_ptr_addr == 0x1066C300u && t.table_end_ptr_addr == 0x1066C310u && t.stride == 0x180,
+	      "g_mobyPool's slots pointer and maxIndex, a slot 0x180 bytes");
+	check(t.flags == (MOBY_FLAG_LAST_INDEX | MOBY_FLAG_LIVE_TEST) && t.live_offset == 0x64 && t.dead_value == 0xFFFE,
+	      "the end is the last index, a free slot's serial 0xFFFE");
+
+	/* The simulator's level: four slots taken, slot 1 freed again. */
+	n = moby_walk(&t, live, 16);
+	check(n == 3 && live[0] == 0 && live[1] == 2 && live[2] == 3, "the seeded pool: slots 0, 2 and 3 live");
+
+	/* A pool of ten, MobyPool_init's: every slot free, maxIndex -1. */
+	wr32(TOD_MOBY_SLOTS, slots);
+	wr32(TOD_MOBY_LAST, 0xFFFFFFFFu);
+	for (k = 0; k < 10; k++) wr32(slots + k * 0x180u + 0x64u, 0xFFFE0000u | k);
+	check(moby_walk(&t, live, 16) == 0, "a level's fresh pool: nothing");
+	/* MobyPool_alloc takes 0..5 and raises maxIndex; processFrees frees 2 and 5 and lowers it to 4. */
+	for (k = 0; k < 6; k++) wr32(slots + k * 0x180u + 0x64u, ((k + 1u) << 16) | k);
+	wr32(slots + 2u * 0x180u + 0x64u, 0xFFFE0002u);
+	wr32(slots + 5u * 0x180u + 0x64u, 0xFFFE0005u);
+	wr32(TOD_MOBY_LAST, 4);
+	/* Slot 6 holds a live-looking handle past the end: a walk that ignores the end would list it. */
+	wr32(slots + 6u * 0x180u + 0x64u, 0x00070006u);
+	n = moby_walk(&t, live, 16);
+	check(n == 4 && live[0] == 0 && live[1] == 1 && live[2] == 3 && live[3] == 4,
+	      "0, 1, 3 and 4: the freed slot 2 is not listed, and the walk stops at index 4");
+	/* A serial whose low half is 0xFFFE is a live moby still: only the high half is the test. */
+	wr32(slots + 1u * 0x180u + 0x64u, 0x0001FFFEu);
+	check(moby_walk(&t, live, 16) == 4, "a live handle whose index half reads 0xFFFE is still live");
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
 	test_tod_features();
+	test_tod_weapon_actions();
+	test_tod_moby_table();
 	test_tod_level_flags();
 	test_tod_lua_console();
 	test_tod_lua_rpcs3();

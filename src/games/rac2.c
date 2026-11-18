@@ -1056,11 +1056,11 @@ static const char * const *rac2_planet_names(u8 *count)
 	return rac2_planets;
 }
 
-static int rac2_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *stride)
+static int rac2_moby_table(struct game_moby_table *out)
 {
-	*table_ptr_addr     = RAC2_MOBY_TABLE;
-	*table_end_ptr_addr = RAC2_MOBY_TABLE_END;
-	*stride             = RAC2_MOBY_STRIDE;
+	out->table_ptr_addr     = RAC2_MOBY_TABLE;
+	out->table_end_ptr_addr = RAC2_MOBY_TABLE_END;
+	out->stride             = RAC2_MOBY_STRIDE;
 	return ST_OK;
 }
 

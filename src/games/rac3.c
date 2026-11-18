@@ -1336,11 +1336,11 @@ static int rac3_die(void)
 	return classic_die_set_z(RAC3_COORDS);
 }
 
-static int rac3_moby_table(u32 *table_ptr_addr, u32 *table_end_ptr_addr, u16 *stride)
+static int rac3_moby_table(struct game_moby_table *out)
 {
-	*table_ptr_addr     = RAC3_MOBY_TABLE;
-	*table_end_ptr_addr = RAC3_MOBY_TABLE_END;
-	*stride             = RAC3_MOBY_STRIDE;
+	out->table_ptr_addr     = RAC3_MOBY_TABLE;
+	out->table_end_ptr_addr = RAC3_MOBY_TABLE_END;
+	out->stride             = RAC3_MOBY_STRIDE;
 	return ST_OK;
 }
 

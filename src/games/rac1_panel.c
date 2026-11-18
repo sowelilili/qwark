@@ -35,7 +35,7 @@
 struct rac1_item {
 	u32 unlock;
 	u32 ammo_base;   /* 0 when the entry has no ammo word */
-	u32 gold;        /* 0 when the entry has no gold byte */
+	u32 gold;        /* 0 when the entry has no gold version (rac1.h, RAC1_GOLD_WEAPONS) */
 	u16 max_ammo;
 };
 
@@ -62,39 +62,39 @@ static const struct game_unlock rac1_unlocks[] = {
 	{  2, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Blaster" },
 	{  3, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Glove Of Doom" },
 	{  4, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Mine Glove" },
-	{  5, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD,                     "Taunter" },
+	{  5, CAT_WEAPONS, UNLOCK_FIELD_OWNED,                                         "Taunter" },
 	{  6, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD,                     "Suck Cannon" },
 	{  7, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Devastator" },
-	{  8, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD,                     "Walloper" },
-	{  9, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Visibomb" },
+	{  8, CAT_WEAPONS, UNLOCK_FIELD_OWNED,                                         "Walloper" },
+	{  9, CAT_WEAPONS, UNLOCK_FIELD_OWNED |                    UNLOCK_FIELD_AMMO, "Visibomb" },
 	{ 10, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Decoy Glove" },
-	{ 11, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Drone Device" },
+	{ 11, CAT_WEAPONS, UNLOCK_FIELD_OWNED |                    UNLOCK_FIELD_AMMO, "Drone Device" },
 	{ 12, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "Tesla Claw" },
 	{ 13, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD,                     "Morph-O-Ray" },
-	{ 14, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD | UNLOCK_FIELD_AMMO, "RYNO" },
-	{ 15, CAT_WEAPONS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD,                     "Wrench" },
+	{ 14, CAT_WEAPONS, UNLOCK_FIELD_OWNED |                    UNLOCK_FIELD_AMMO, "RYNO" },
+	{ 15, CAT_WEAPONS, UNLOCK_FIELD_OWNED,                                         "Wrench" },
 
 	/* Gadgets */
-	{ 16, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Heli-Pack" },
-	{ 17, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Thruster-Pack" },
-	{ 18, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Hydro-Pack" },
-	{ 19, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "PDA" },
-	{ 20, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Swingshot" },
-	{ 21, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "O2 Mask" },
-	{ 22, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Pilots Helmet" },
-	{ 23, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Magneboots" },
-	{ 24, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Grindboots" },
-	{ 25, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Trespasser" },
-	{ 26, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Hydrodisplacer" },
-	{ 27, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Sonic Summoner" },
-	{ 28, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Metal Detector" },
-	{ 29, CAT_GADGETS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Hologuise" },
+	{ 16, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Heli-Pack" },
+	{ 17, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Thruster-Pack" },
+	{ 18, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Hydro-Pack" },
+	{ 19, CAT_GADGETS, UNLOCK_FIELD_OWNED, "PDA" },
+	{ 20, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Swingshot" },
+	{ 21, CAT_GADGETS, UNLOCK_FIELD_OWNED, "O2 Mask" },
+	{ 22, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Pilots Helmet" },
+	{ 23, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Magneboots" },
+	{ 24, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Grindboots" },
+	{ 25, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Trespasser" },
+	{ 26, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Hydrodisplacer" },
+	{ 27, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Sonic Summoner" },
+	{ 28, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Metal Detector" },
+	{ 29, CAT_GADGETS, UNLOCK_FIELD_OWNED, "Hologuise" },
 
 	/* Items */
-	{ 30, CAT_ITEMS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Map-O-Matic" },
-	{ 31, CAT_ITEMS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Bolt Grabber" },
-	{ 32, CAT_ITEMS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Persuader" },
-	{ 33, CAT_ITEMS, UNLOCK_FIELD_OWNED | UNLOCK_FIELD_GOLD, "Hoverboard" },
+	{ 30, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Map-O-Matic" },
+	{ 31, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Bolt Grabber" },
+	{ 32, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Persuader" },
+	{ 33, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Hoverboard" },
 	{ 34, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Zoomerator" },
 	{ 35, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Raritanium" },
 	{ 36, CAT_ITEMS, UNLOCK_FIELD_OWNED, "Codebot" },
@@ -109,37 +109,37 @@ static const struct rac1_item rac1_items[] = {
 	{ 0x96C14Fu, 0x96C0E0u, 0x969CB7u, 200 },   /* Blaster */
 	{ 0x96C154u, 0x96C0F4u, 0x969CBCu,  10 },   /* Glove Of Doom */
 	{ 0x96C151u, 0x96C0E8u, 0x969CB9u,  50 },   /* Mine Glove */
-	{ 0x96C14Eu, 0x96C0DCu, 0x969CB6u,   0 },   /* Taunter */
+	{ 0x96C14Eu, 0x96C0DCu, 0,           0 },   /* Taunter */
 	{ 0x96C149u, 0x96C0C8u, 0x969CB1u,   0 },   /* Suck Cannon */
 	{ 0x96C14Bu, 0x96C0D0u, 0x969CB3u,  20 },   /* Devastator */
-	{ 0x96C152u, 0x96C0ECu, 0x969CBAu,   0 },   /* Walloper */
-	{ 0x96C14Du, 0x96C0D8u, 0x969CB5u,  20 },   /* Visibomb */
+	{ 0x96C152u, 0x96C0ECu, 0,           0 },   /* Walloper */
+	{ 0x96C14Du, 0x96C0D8u, 0,          20 },   /* Visibomb */
 	{ 0x96C159u, 0x96C108u, 0x969CC1u,  20 },   /* Decoy Glove */
-	{ 0x96C158u, 0x96C104u, 0x969CC0u,  10 },   /* Drone Device */
+	{ 0x96C158u, 0x96C104u, 0,          10 },   /* Drone Device */
 	{ 0x96C153u, 0x96C0F0u, 0x969CBBu, 240 },   /* Tesla Claw */
 	{ 0x96C155u, 0x96C0F8u, 0x969CBDu,   0 },   /* Morph-O-Ray */
-	{ 0x96C157u, 0x96C100u, 0x969CBFu,  50 },   /* RYNO */
-	{ 0x96C148u, 0x96C0C4u, 0x969CB0u,   0 },   /* Wrench */
+	{ 0x96C157u, 0x96C100u, 0,          50 },   /* RYNO */
+	{ 0x96C148u, 0x96C0C4u, 0,           0 },   /* Wrench */
 
-	{ 0x96C142u, 0x96C0ACu, 0x969CAAu, 0 },     /* Heli-Pack */
-	{ 0x96C143u, 0x96C0B0u, 0x969CABu, 0 },     /* Thruster-Pack */
-	{ 0x96C144u, 0x96C0B4u, 0x969CACu, 0 },     /* Hydro-Pack */
-	{ 0x96C160u, 0x96C124u, 0x969CC8u, 0 },     /* PDA */
-	{ 0x96C14Cu, 0x96C0D4u, 0x969CB4u, 0 },     /* Swingshot */
-	{ 0x96C146u, 0x96C0BCu, 0x969CAEu, 0 },     /* O2 Mask */
-	{ 0x96C147u, 0x96C0C0u, 0x969CAFu, 0 },     /* Pilots Helmet */
-	{ 0x96C15Cu, 0x96C114u, 0x969CC4u, 0 },     /* Magneboots */
-	{ 0x96C15Du, 0x96C118u, 0x969CC5u, 0 },     /* Grindboots */
-	{ 0x96C15Au, 0x96C10Cu, 0x969CC2u, 0 },     /* Trespasser */
-	{ 0x96C156u, 0x96C0FCu, 0x969CBEu, 0 },     /* Hydrodisplacer */
-	{ 0x96C145u, 0x96C0B8u, 0x969CADu, 0 },     /* Sonic Summoner */
-	{ 0x96C15Bu, 0x96C110u, 0x969CC3u, 0 },     /* Metal Detector */
-	{ 0x96C15Fu, 0x96C120u, 0x969CC7u, 0 },     /* Hologuise */
+	{ 0x96C142u, 0x96C0ACu, 0,         0 },     /* Heli-Pack */
+	{ 0x96C143u, 0x96C0B0u, 0,         0 },     /* Thruster-Pack */
+	{ 0x96C144u, 0x96C0B4u, 0,         0 },     /* Hydro-Pack */
+	{ 0x96C160u, 0x96C124u, 0,         0 },     /* PDA */
+	{ 0x96C14Cu, 0x96C0D4u, 0,         0 },     /* Swingshot */
+	{ 0x96C146u, 0x96C0BCu, 0,         0 },     /* O2 Mask */
+	{ 0x96C147u, 0x96C0C0u, 0,         0 },     /* Pilots Helmet */
+	{ 0x96C15Cu, 0x96C114u, 0,         0 },     /* Magneboots */
+	{ 0x96C15Du, 0x96C118u, 0,         0 },     /* Grindboots */
+	{ 0x96C15Au, 0x96C10Cu, 0,         0 },     /* Trespasser */
+	{ 0x96C156u, 0x96C0FCu, 0,         0 },     /* Hydrodisplacer */
+	{ 0x96C145u, 0x96C0B8u, 0,         0 },     /* Sonic Summoner */
+	{ 0x96C15Bu, 0x96C110u, 0,         0 },     /* Metal Detector */
+	{ 0x96C15Fu, 0x96C120u, 0,         0 },     /* Hologuise */
 
-	{ 0x96C161u, 0x96C128u, 0x969CC9u, 0 },     /* Map-O-Matic */
-	{ 0x96C162u, 0x96C12Cu, 0x969CCAu, 0 },     /* Bolt Grabber */
-	{ 0x96C163u, 0x96C130u, 0x969CCBu, 0 },     /* Persuader */
-	{ 0x96C15Eu, 0x96C11Cu, 0x969CC6u, 0 },     /* Hoverboard */
+	{ 0x96C161u, 0x96C128u, 0,         0 },     /* Map-O-Matic */
+	{ 0x96C162u, 0x96C12Cu, 0,         0 },     /* Bolt Grabber */
+	{ 0x96C163u, 0x96C130u, 0,         0 },     /* Persuader */
+	{ 0x96C15Eu, 0x96C11Cu, 0,         0 },     /* Hoverboard */
 	{ 0x96BFF0u, 0, 0, 0 },                     /* Zoomerator */
 	{ 0x96BFF1u, 0, 0, 0 },                     /* Raritanium */
 	{ 0x96BFF2u, 0, 0, 0 },                     /* Codebot */
@@ -280,6 +280,38 @@ int rac1_unlock_set(u8 id, u8 field, u32 value)
 		/* RaC1 has no level or XP field. */
 		return ST_UNSUPPORTED;
 	}
+}
+
+/*
+ * Build 59: Upgrade all weapons to gold and Reset all gold weapons, RaC1's
+ * Max and Reset all weapon levels. Only the rows with a gold version
+ * (RAC1_GOLD_WEAPONS, the gold weapon vendor's ten), and only those the player
+ * owns, as RaC2's and Deadlocked's actions pass over a weapon not held: one
+ * read of the unlock array and one of the gold bytes serve the walk, and only
+ * a gold byte that changes is written. The gold byte is all the vendor writes
+ * (UpdateMoby_GoldWeapon); the magazine is the same either way.
+ */
+static int rac1_gold_all(int on)
+{
+	u8 owned[SNAP_A_LEN], gold[SNAP_B_LEN];
+	u8 id;
+	int rc = mem_read(SNAP_A_ADDR, owned, sizeof(owned));
+
+	if (rc == ST_OK) rc = mem_read(SNAP_B_ADDR, gold, sizeof(gold));
+	if (rc != ST_OK) return rc;
+
+	for (id = 0; id < RAC1_UNLOCK_COUNT; id++) {
+		const struct rac1_item *it = &rac1_items[id];
+		u8 want = on ? 1 : 0;
+
+		if ((rac1_unlocks[id].fields & UNLOCK_FIELD_GOLD) == 0 || it->gold == 0) continue;
+		if (owned[it->unlock - SNAP_A_ADDR] == 0) continue;
+		if (gold[it->gold - SNAP_B_ADDR] == want) continue;
+		rc = mem_write_u8(it->gold, want);
+		if (rc != ST_OK) return rc;
+	}
+
+	return ST_OK;
 }
 
 /* ------------------------------------------------------------ level flags */
@@ -678,6 +710,12 @@ int rac1_trigger(u8 id)
 
 	case F_UNLOCK_STYLE:
 		return mem_write_fill(RAC1_STYLE_POINTS, 1, 30);
+
+	case F_GOLD_ALL:
+		return rac1_gold_all(1);
+
+	case F_GOLD_RESET:
+		return rac1_gold_all(0);
 
 	case F_LOAD_SETASIDE:
 		return rac1_load_setaside();

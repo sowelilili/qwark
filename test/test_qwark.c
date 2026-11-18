@@ -1933,8 +1933,8 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 21,
-	             "and twenty-one features (build 53 retired six rows, and Freeze health is id 2)");
+	check_eq_u64(nfeatures, 23,
+	             "and twenty-three features (build 53 retired six rows, Freeze health is id 2, build 59 added the gold pair)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
@@ -2018,6 +2018,8 @@ static void test_describe(void)
 #define A_BOMB_UNLOCK 0x96C14Au
 #define A_BOMB_AMMO   0x96C0D4u      /* NewUnlocks passes 0x96C0CC and adds 8 */
 #define A_BOMB_GOLD   0x969CB2u
+#define A_GOLD_ITEMS  0x969CA8u      /* goldedItems, a byte per item id */
+#define A_UNLOCKS     0x96C140u      /* the unlock array, a byte per item id */
 #define A_HELI_UNLOCK 0x96C142u
 #define A_SWING_UNLOCK 0x96C14Cu
 
@@ -2093,6 +2095,92 @@ static void test_unlocks(void)
 	check_eq_u64(values[0], 1, "owned reads back");
 	check_eq_u64(values[1], 1, "gold reads back");
 	check_eq_u64(values[3], 7, "ammo reads back");
+
+	/*
+	 * Build 59: only the gold weapon vendor's ten have a gold version
+	 * (g_goldWeaponItems, NPEA00385 0x811CB0), so only their rows declare Gold.
+	 */
+	{
+		static const char * const golden[] = {
+			"Bomb Glove", "Pyrocitor", "Blaster", "Glove Of Doom", "Mine Glove",
+			"Suck Cannon", "Devastator", "Decoy Glove", "Tesla Claw", "Morph-O-Ray"
+		};
+		u8 i, k, ok = 1, ngold = 0;
+
+		for (i = 0; i < n; i++) {
+			int want = 0;
+			for (k = 0; k < 10; k++) want |= qstreq(list[i].name, golden[k]);
+			if (((list[i].fields & UNLOCK_FIELD_GOLD) != 0) != want) ok = 0;
+			if ((list[i].fields & UNLOCK_FIELD_GOLD) != 0) ngold++;
+		}
+		check(ok && ngold == 10, "Gold is declared by the vendor's ten weapons and nothing else");
+		check(g->unlock_set(5, 1, 1) == ST_UNSUPPORTED && g->unlock_set(15, 1, 1) == ST_UNSUPPORTED &&
+		      g->unlock_set(16, 1, 1) == ST_UNSUPPORTED,
+		      "gold on the Taunter, the Wrench or the Heli-Pack is UNSUPPORTED");
+	}
+
+	group("RaC1: Upgrade all weapons to gold, Reset all gold weapons (build 59)");
+
+	{
+		/*
+		 * The whole unlock and gold regions as a console holds them mid-game:
+		 * owned the Bomb Glove (gold), the Blaster, the Suck Cannon, the Taunter
+		 * and the Wrench (no gold version), the Heli-Pack; not the Pyrocitor or
+		 * the Tesla Claw. Every gold byte outside the ten is a marker the walk
+		 * must leave alone.
+		 */
+		u8 before[0x24], after[0x24], owned_before[0x24], owned_after[0x24];
+		u8 i;
+
+		for (i = 0; i < 0x24; i++) before[i] = 0;
+		before[0x969CB0u - A_GOLD_ITEMS] = 0x5A;   /* the Wrench's byte, which no vendor writes */
+		before[0x969CB6u - A_GOLD_ITEMS] = 0x00;   /* the Taunter's */
+		before[0x969CAAu - A_GOLD_ITEMS] = 0x00;   /* the Heli-Pack's */
+		before[0x969CB2u - A_GOLD_ITEMS] = 1;      /* the Bomb Glove, gold already */
+		host_poke(A_GOLD_ITEMS, before, sizeof(before));
+		for (i = 0; i < 0x24; i++) owned_before[i] = 0;
+		owned_before[0x96C14Au - A_UNLOCKS] = 1;   /* Bomb Glove */
+		owned_before[0x96C14Fu - A_UNLOCKS] = 1;   /* Blaster */
+		owned_before[0x96C149u - A_UNLOCKS] = 1;   /* Suck Cannon */
+		owned_before[0x96C14Eu - A_UNLOCKS] = 1;   /* Taunter */
+		owned_before[0x96C148u - A_UNLOCKS] = 1;   /* Wrench */
+		owned_before[0x96C142u - A_UNLOCKS] = 1;   /* Heli-Pack */
+		host_poke(A_UNLOCKS, owned_before, sizeof(owned_before));
+
+		check(features_trigger(29) == ST_OK, "Upgrade all weapons to gold runs");
+		host_peek(A_GOLD_ITEMS, after, sizeof(after));
+		check(after[0x969CB7u - A_GOLD_ITEMS] == 1 && after[0x969CB1u - A_GOLD_ITEMS] == 1 &&
+		      after[0x969CB2u - A_GOLD_ITEMS] == 1, "the owned Blaster and Suck Cannon are gold, and the Bomb Glove still");
+		check(after[0x969CB8u - A_GOLD_ITEMS] == 0 && after[0x969CBBu - A_GOLD_ITEMS] == 0,
+		      "the Pyrocitor and the Tesla Claw, not owned, are passed over");
+		check(after[0x969CB6u - A_GOLD_ITEMS] == 0 && after[0x969CAAu - A_GOLD_ITEMS] == 0 &&
+		      after[0x969CB0u - A_GOLD_ITEMS] == 0x5A,
+		      "the owned Taunter, Heli-Pack and Wrench, which have no gold version, are untouched");
+		{
+			int others = 1;
+			for (i = 0; i < 0x24; i++) {
+				u32 a = A_GOLD_ITEMS + i;
+				if (a == 0x969CB7u || a == 0x969CB1u) continue;
+				if (after[i] != before[i]) others = 0;
+			}
+			check(others, "and no other gold byte changed");
+		}
+		host_peek(A_UNLOCKS, owned_after, sizeof(owned_after));
+		check(memcmp(owned_before, owned_after, sizeof(owned_after)) == 0, "nor did any owned byte: nothing is handed out");
+
+		check(features_trigger(30) == ST_OK, "Reset all gold weapons runs");
+		host_peek(A_GOLD_ITEMS, after, sizeof(after));
+		check(after[0x969CB7u - A_GOLD_ITEMS] == 0 && after[0x969CB1u - A_GOLD_ITEMS] == 0 &&
+		      after[0x969CB2u - A_GOLD_ITEMS] == 0, "the three owned gold weapons are plain again");
+		check(after[0x969CB0u - A_GOLD_ITEMS] == 0x5A, "and the Wrench's byte is still not the walk's");
+
+		/* A gold weapon the player has lost keeps its byte: the Reset passes over it too. */
+		host_poke(0x969CB8u, (const u8 *)"\x01", 1);
+		check(features_trigger(30) == ST_OK, "Reset again");
+		host_peek(0x969CB8u, &b, 1);
+		check_eq_u64(b, 1, "the Pyrocitor, gold and not owned, is left as it is");
+		host_poke(0x969CB8u, (const u8 *)"\x00", 1);
+	}
 }
 
 /* ------------------------------------------------------- RaC1: level flags */
@@ -7919,6 +8007,36 @@ static void test_rac3(void)
 		check(g->unlock_read(unlock_row(list, n, COMIC3_ID), values) == ST_OK,
 		      "vid comic 3 reads");
 		check_eq_u64(values[0], 1, "from the far end of the unlock array");
+	}
+
+	group("RaC3: Max and Reset all weapon levels pass over a weapon not held (build 59)");
+
+	{
+		u8 item[0x98];
+
+		/* Agents of Doom held at v1 with some XP; the R3YNO not held, at v1. */
+		check(g->unlock_set(AOD_ID, 0, 1) == ST_OK && g->unlock_set(AOD_ID, 1, 1) == ST_OK &&
+		      g->unlock_set(RYNO_ID, 0, 0) == ST_OK && g->unlock_set(RYNO_ID, 1, 1) == ST_OK,
+		      "Agents of Doom owned at v1, the R3YNO not owned at v1");
+		host_poke(AOD_EXP, (const u8 *)"\x00\x00\x01\x00", 4);
+		host_peek(R3_ITEM_ARRAY, item, sizeof(item));
+
+		check(features_trigger(26) == ST_OK, "Max all weapon levels runs");
+		host_peek(AOD_ITEM, &b, 1);
+		check_eq_u64(b, 0x57u + 7u, "Agents of Doom goes to v8");
+		host_peek(RYNO_ITEM, &b, 1);
+		check_eq_u64(b, 0x97u, "and the R3YNO, which the player has not got, stays at v1: until build 59 it went to v5");
+
+		check(features_trigger(27) == ST_OK, "Reset all weapon levels runs");
+		host_peek(AOD_ITEM, &b, 1);
+		check_eq_u64(b, 0x57u, "Agents of Doom back to v1");
+		mem_read_u32(AOD_EXP, &v);
+		check_eq_u64(v, 0, "with its XP at 0");
+		{
+			u8 again[0x98];
+			host_peek(R3_ITEM_ARRAY, again, sizeof(again));
+			check(memcmp(item, again, sizeof(again)) == 0, "and the item array is byte for byte what it was before Max");
+		}
 	}
 
 	group("RaC3: level flags and planets");

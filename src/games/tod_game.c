@@ -335,6 +335,11 @@ static const struct feature_desc tod_features[] = {
 	{ TF_UNLOCK_GB,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
 	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" },
 
+	/* Build 59: the weapon bulk actions, labelled as RaC2's, UYA's and Deadlocked's. */
+	{ TF_MAX_LEVELS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon levels" },
+	{ TF_RESET_LEVELS,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all weapon levels" },
+	{ TF_MAX_AMMO,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon ammo" },
+
 	/* The savefile manager (tod_save.c): the game's own save system, data writes alone. */
 	{ TF_SET_ASIDE,     FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
 	{ TF_LOAD_ASIDE,    FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" }
@@ -403,6 +408,24 @@ static const char * const *tod_planet_names(u8 *count)
 	return tod_facts.planet_names;
 }
 
+/*
+ * Revision 1.34, MOBY_TABLE: g_mobyPool (tod.h, TOD_MOBY_POOL). Its slots are
+ * one array, but its end is the highest index in use, not a pointer, and a
+ * freed slot below it stays where it is with its handle's serial 0xFFFE, so
+ * the reply says both (MOBY_FLAG_*). Plain reads by the client, as for the
+ * four games: nothing here reads the game.
+ */
+static int tod_moby_table(struct game_moby_table *out)
+{
+	out->table_ptr_addr     = TOD_MOBY_SLOTS;
+	out->table_end_ptr_addr = TOD_MOBY_LAST;
+	out->stride             = TOD_MOBY_STRIDE;
+	out->flags              = MOBY_FLAG_LAST_INDEX | MOBY_FLAG_LIVE_TEST;
+	out->live_offset        = TOD_MOBY_HANDLE;
+	out->dead_value         = TOD_MOBY_FREE;
+	return ST_OK;
+}
+
 /* The Lua helper the core installs and talks to (src/core/luacore.c). */
 static const struct lh_desc *tod_lua_desc(void)
 {
@@ -420,7 +443,8 @@ static const struct lh_desc *tod_lua_desc(void)
  * (its DESCRIBE group stays Cheats). Unlocks: the weapons Locked,
  * V1 and V10 (the level field, as the game numbers it), the rest Locked or
  * Unlocked, and the four skill point and gold bolt buttons on a page of their
- * own, Collectables, as the other games have theirs. Every planet with a name
+ * own, Collectables, as the other games have theirs, and since build 59 the
+ * three weapon bulk actions after them, as RaC2's and Deadlocked's are. Every planet with a name
  * may be loaded, as PLANET_LOAD loads it.
  */
 static const u8 tod_menu_game[] = {
@@ -454,7 +478,8 @@ static const struct menu_section tod_menu_sections[] = {
 };
 
 static const u8 tod_menu_unlock_actions[] = {
-	TF_UNLOCK_SP, TF_RESET_SP, TF_UNLOCK_GB, TF_RESET_GB
+	TF_UNLOCK_SP, TF_RESET_SP, TF_UNLOCK_GB, TF_RESET_GB,
+	TF_MAX_LEVELS, TF_RESET_LEVELS, TF_MAX_AMMO   /* build 59 */
 };
 
 static const char * const tod_unlock_names[] = { "Locked", "Unlocked", "Max" };
@@ -469,7 +494,7 @@ static const struct game_menu tod_menu = {
 	NULL,                 /* every planet with a name */
 	NULL,                 /* every weapon goes to V10 */
 	tod_cc_menu_status,   /* revision 1.29: Cache cutscenes' status (a page that shows status rows) */
-	"Collectables",       /* the four buttons on a page of their own */
+	"Collectables",       /* the buttons on a page of their own */
 	NULL,                 /* no planet picker */
 	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0]))
 };
@@ -578,7 +603,7 @@ const struct game_api tod_game = {
 	tod_levelflags_reset,
 	tod_levelflags_set,
 
-	NULL,                 /* moby_table: not mapped yet */
+	tod_moby_table,       /* revision 1.34: g_mobyPool, to its last index, free slots told apart */
 
 	tod_on_enter,
 	tod_on_quit,          /* revision 1.29: closes the long load */

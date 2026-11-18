@@ -24,7 +24,19 @@
  * more) registers it with 9,999,999 as its limit: seven digits.
  */
 #define RAC1_MAX_BOLTS        9999999u
-#define RAC1_GOLD_ITEMS       0x969CA8u   /* one byte per unlock index */
+#define RAC1_GOLD_ITEMS       0x969CA8u   /* goldedItems: one byte per item id */
+/*
+ * Build 59: the weapons with a gold version, the ten the gold weapon vendor
+ * sells (g_goldWeaponItems, 0x811CB0, the item ids UpdateMoby_GoldWeapon
+ * 0x339C2C hands out: Tesla Claw, Bomb Glove, Devastator, Pyrocitor, Mine
+ * Glove, Blaster, Morph-O-Ray, Glove of Doom, Decoy Glove, Suck Cannon). They
+ * are also the only items whose cap at g_itemDefs + id * 0x4C + 0x3E is 1 and
+ * whose gold price (g_weaponStats + id * 0x18 + 0x14) is not 0, and
+ * Gold_countGoldedItems counts at most ten. Every other byte of
+ * RAC1_GOLD_ITEMS is one no vendor writes, and one that is set still costs
+ * four gold bolts (Gold_spendableGoldBolts). From the NPEA00385 executable.
+ */
+#define RAC1_GOLD_WEAPONS     10u
 /*
  * These two are the same value at two widths: rac1.cs calls 0x969CD0 read as a
  * word "ngPlusGoodies" and its low byte at 0x969CD3 "goodiesMenu", and the
@@ -285,6 +297,15 @@ extern const u8 rac1_fp_patched[4];
  * 28 retired: Freeze health's own row, while it sat beside Infinite health
  * earlier in build 53; it is id 2 now.
  */
+
+/*
+ * Build 59: the weapon bulk actions, RaC1's form of the other games' Max and
+ * Reset all weapon levels. RaC1's one upgrade is the gold weapon, and only
+ * the ten weapons the gold weapon vendor sells have one (RAC1_GOLD_WEAPONS).
+ * There is no Max all weapon ammo: 17 was that, and Infinite ammo covers it.
+ */
+#define F_GOLD_ALL          29
+#define F_GOLD_RESET        30
 
 /* -------------------------------------------------------- level flag regions */
 

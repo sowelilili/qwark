@@ -190,7 +190,33 @@
 #define TOD_WS_OWNED         0x10u        /* u8 */
 #define TOD_WS_LEVEL         0x11u        /* u8, 0..9 = V1..V10 */
 #define TOD_MAX_LEVEL        10u
-#define TOD_OBJECTS          0x1020C174u  /* s32[23] by OBJ_, a count; "has" = non-zero */
+/*
+ * Revision 1.34, the weapon bulk actions (tod_panel.c): each weapon's caps
+ * are the game's weapon.csv as loaded, read through g_weaponDefTable (dec):
+ * Weapon_getDef(w) is the table's w-th ToDWeaponDef, whose flags & 3 say it
+ * cannot level (Weapon_canLevel) and whose config (ToDWeaponConfig) holds
+ * numLevels (Weapon_getNumLevels), the max ammo per level and the mods.
+ * WeaponSlot_getMaxLevel's top level index is min(numLevels, 4), V5, and
+ * min(numLevels, 9) once the weapon is Omega (its level byte past 4), which
+ * only Vendor_buyOmegaUpgrade makes it, and only in challenge mode, for an
+ * owned weapon at V5 whose numLevels is above 5 (Vendor_canBuyOmegaUpgrade).
+ * WeaponDef_getMaxAmmo is maxAmmo[level] plus the ammo mods' additions,
+ * times 1 plus their factors (WeaponDef_applyMods, stat 9.0 the ammo).
+ */
+#define TOD_WEAPON_DEFS      0x10385AC4u  /* g_weaponDefTable, ToDWeaponDef *[32] (dec) */
+#define TOD_WD_FLAGS         0x18u        /* u32: & 3, no levels */
+#define TOD_WD_CONFIG        0x48u        /* ToDWeaponConfig * */
+#define TOD_WC_MAX_AMMO      0x280u       /* f32[10], by level index */
+#define TOD_WC_NLEVELS       0x460u       /* u32 numLevels */
+#define TOD_WC_MODS          0x464u       /* ToDWeaponMod[24]: f32 stat, f32 isMultiplier, f32 value */
+#define TOD_WC_MOD_LEN       0x18u
+#define TOD_WC_NMODS_MAX     24u
+#define TOD_WC_NMODS         0x6A4u       /* u32 */
+#define TOD_MOD_STAT_AMMO    9.0f         /* WeaponDef_getMaxAmmo's stat */
+#define TOD_LEVEL_TOP        4u           /* V5, the top without Omega */
+#define TOD_LEVEL_TOP_OMEGA  9u           /* V10 */
+#define TOD_OMEGA_MIN_LEVELS 5u           /* Omega is sold for a weapon of more levels than this */
+#define TOD_OBJECTS         0x1020C174u  /* s32[23] by OBJ_, a count; "has" = non-zero */
 #define TOD_NOBJ_OWNED       15u          /* OBJ_ 0..14 are owned flags; 15.. are counters */
 #define TOD_NOBJ_LISTED      12u          /* OBJ_ 0..11 on the Unlocks panel; 12..14 have no use there (tod_panel.c) */
 #define TOD_BOLTS            0x1020C28Cu  /* u32 */
@@ -507,6 +533,20 @@ int  tod_story_load(u32 level, u32 flags_at);
  * read Tachyon's health for its code 2 until revision 1.29 retired it.
  */
 #define TOD_MOBY_POOL        0x1066C300u  /* g_mobyPool, ToDMobyPool: the slots at +0, the highest index at +0x10 (dec) */
+/*
+ * Revision 1.34, MOBY_TABLE (tod_moby_table): the pool is one array of
+ * `capacity` slots (+8) that MobyPool_init lays out once a level, with a
+ * bitmap of the used ones (+4). MobyPool_alloc takes the first free bit and
+ * raises maxIndex (+0x10, -1 for none) to it; MobyPool_processFrees writes a
+ * freed slot's handle as its index | 0xFFFE0000 and lowers maxIndex past the
+ * free slots at the top. So the live slots are those up to maxIndex whose
+ * handle's serial (its high halfword, +0x64) is not 0xFFFE (dec).
+ */
+#define TOD_MOBY_SLOTS       (TOD_MOBY_POOL + 0x00u)  /* ToDMoby *, the first slot */
+#define TOD_MOBY_LAST        (TOD_MOBY_POOL + 0x10u)  /* s32 maxIndex */
+#define TOD_MOBY_STRIDE      0x180u       /* sizeof(ToDMoby) */
+#define TOD_MOBY_HANDLE      0x64u        /* u32 handle: serial << 16 | index */
+#define TOD_MOBY_FREE        0xFFFEu      /* a free slot's serial */
 #define TOD_VTBL_TACHYON     0x10060CB0u  /* vtbl_TachyonBoss (dec) */
 
 /*
@@ -759,6 +799,15 @@ struct tod_facts {
 #define TF_REMOVE_BLACK     24     /* 2026-11-12: TOGGLE, the lead-in's black hold not drawn (TOD_FADE_ALPHA); 22 and 23 held */
 #define TF_ARMOUR           25     /* build 59: ENUM, the armour worn (TOD_ARMOUR) */
 #define TF_SKIN             26     /* build 59: ENUM, the skin (TOD_SKIN) */
+/*
+ * Build 59: 25 and 26 are the armour and skin pickers' round's. The weapon
+ * bulk actions (tod_panel.c, TOD_WEAPON_DEFS), as RaC2's, UYA's and
+ * Deadlocked's: each owned weapon to the top level the game allows it (V5,
+ * V10 where challenge mode sells Omega), back to V1, or its magazine full.
+ */
+#define TF_MAX_LEVELS       27
+#define TF_RESET_LEVELS     28
+#define TF_MAX_AMMO         29
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40
