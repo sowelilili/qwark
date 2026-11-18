@@ -1427,7 +1427,7 @@ static void test_rac2_repacks(void)
 	      describe[0] == GAME_RAC2, "DESCRIBE answers with RaC2's table");
 	if (session_game() != NULL) {
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 28, "and every one of RaC2's twenty-eight features");
+		check_eq_u64(d->nfeatures, 30, "and every one of RaC2's thirty features");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -3828,6 +3828,11 @@ static void test_combo_enable(void)
 #define F2_MAX_LEVELS   38
 #define F2_MAX_AMMO     39
 #define F2_CB_FRONT     34   /* revision 1.24: front, back and tint, STOCK COLORs */
+#define F2_ARMOUR       40   /* build 59 */
+#define F2_SKIN         41
+#define R2_ARMOUR_ADDR    0x01329AB0u
+#define R2_ARMOUR_LOADED  0x0147A310u
+#define R2_CHEATS         0x014817F1u   /* the Cheats menu's twelve bytes */
 
 /*
  * The item system: every array is base plus item id times stride, and the stats
@@ -3925,9 +3930,9 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 28,
-		             "RaC2 declares twenty-eight features (build 53 retired nine)");
-		check_eq_u64(d->nreadouts, 9, "and nine readouts");
+		check_eq_u64(d->nfeatures, 30,
+		             "RaC2 declares thirty features (build 53 retired nine, build 59 added the armour and the skin)");
+		check_eq_u64(d->nreadouts, 11, "and eleven readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 	}
 
@@ -4244,6 +4249,54 @@ static void test_rac2(void)
 	check(g->load_blob(blob, len) == ST_OK, "load_blob writes");
 	mem_read_u32(R2_COORDS, &v);
 	check_eq_u64(v, 0x41200000u, "the position came back");
+
+	group("RaC2: the armour and skin pickers, build 59");
+
+	{
+		u8 w[4], c[12];
+
+		/* Duraplate worn and loaded; the halfword after the armour is another field. */
+		host_poke(R2_ARMOUR_ADDR, (const u8 *)"\x00\x02\xAB\xCD", 4);
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+		check(features_set(F2_ARMOUR, 4) == ST_OK, "Carbonox is picked");
+		host_peek(R2_ARMOUR_ADDR, w, 4);
+		check(w[0] == 0 && w[1] == 4 && w[2] == 0xAB && w[3] == 0xCD,
+		      "the armour is the big-endian halfword, and the halfword after it untouched");
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "and the loaded armour is -1, so the next planet load reads the model");
+		pump(9);
+		check_eq_u64(session_readout(9), 4, "the Armour readout reads it back");
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+		check(features_set(F2_ARMOUR, 5) == ST_BAD_ARG, "an armour past Carbonox is BAD_ARG");
+		host_peek(R2_ARMOUR_ADDR, w, 4);
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check(w[1] == 4 && v == 4, "and writes nothing");
+
+		/* Snow Dude on among the other cheats, 3 to 8 all on too. */
+		host_poke(R2_CHEATS, (const u8 *)"\x00\x00\x01\x01\x01\x01\x01\x01\x01\x00\x00\x00", 12);
+		check(features_set(F2_SKIN, 1) == ST_OK, "the tux is picked");
+		host_peek(R2_CHEATS, c, 12);
+		check(c[10] == 1 && c[2] == 0 && c[9] == 0 && c[11] == 0,
+		      "its cheat on (10), Snow Dude's (2), the funny side's (9) and Beach Boy's (11) off");
+		check(c[3] == 1 && c[4] == 1 && c[5] == 1 && c[6] == 1 && c[7] == 1 && c[8] == 1 &&
+		      c[0] == 0 && c[1] == 0, "and every other cheat as it was");
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1 again: a skin alone is a new model");
+		pump(9);
+		check_eq_u64(session_readout(10), 1, "the Skin readout reads the tux");
+
+		host_poke(R2_CHEATS + 9, (const u8 *)"\x01", 1);
+		pump(9);
+		check_eq_u64(session_readout(10), 2,
+		             "with the funny side's on beside it the readout is the funny side, the one the load wears");
+		check(features_set(F2_SKIN, 0) == ST_OK, "no skin is picked");
+		host_peek(R2_CHEATS, c, 12);
+		check(c[2] == 0 && c[9] == 0 && c[10] == 0 && c[11] == 0 && c[3] == 1,
+		      "all four skin cheats off, the rest kept");
+		pump(9);
+		check_eq_u64(session_readout(10), 0, "and the readout says none");
+		check(features_set(F2_SKIN, 5) == ST_BAD_ARG, "a skin past Snow Dude is BAD_ARG");
+	}
 
 	group("RaC2: die with both reset toggles");
 
@@ -5928,9 +5981,12 @@ static void test_rac2_crash_guards(void)
 	check(d != NULL, "RaC2 has its descriptor table");
 	if (d == NULL) return;
 	for (i = 0; i < d->nfeatures; i++) {
-		if (d->features[i].id == 40 || qstreq(d->features[i].label, "Crash patches")) labelled++;
+		/* Build 59: 40 is the armour picker now; the guards would be a code toggle past the two. */
+		if ((d->features[i].kind == FEATURE_TOGGLE && d->features[i].id > 1 &&
+		     (d->features[i].flags & FEATURE_FLAG_WRITES_CODE) != 0) ||
+		    qstreq(d->features[i].label, "Crash patches")) labelled++;
 	}
-	check_eq_u64(labelled, 0, "none of RaC2's features is the guards");
+	check_eq_u64(labelled, 0, "none of RaC2's features is the guards, and no toggle turns them off");
 	check_eq_u64(d->auto_default, 0, "and RaC2 ships nothing auto-flagged");
 	for (i = 0; i < patch_count(); i++) {
 		const struct patch_def *p = patch_at(i);
@@ -5942,7 +5998,6 @@ static void test_rac2_crash_guards(void)
 		}
 	}
 	check_eq_u64(listed, 0, "no patch the patch list shows holds a word of them");
-	check(features_set(40, 1) == ST_NOT_FOUND, "and there is no toggle to turn them off with");
 
 	group("build 53: RaC2's crash guards go in once, and only over the game's own words");
 
@@ -6377,9 +6432,9 @@ static void test_manip_trophies(void)
 		{
 			u32 roff = 2 + (u32)ngroups * 24;
 
-			check(out[roff] == 13 &&
+			check(out[roff] == 14 &&
 			      memcmp(out + roff + 1 + R3T_RO_TROPHIES * 24, "Trophy reset", 13) == 0,
-			      "DESCRIBE names a thirteenth readout, Trophy reset");
+			      "DESCRIBE names a thirteenth readout, Trophy reset (and a fourteenth, the skin)");
 		}
 		check(reset != NULL && reset[5] == R3T_RO_TROPHIES,
 		      "which the reset's row names as its status readout");
@@ -6557,8 +6612,13 @@ static void test_manip_trophies(void)
 	check(desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
 	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL,
 	      "without the reset or its toggle where code cannot be patched");
-	check_eq_u64(out[2 + (u32)out[1] * 24], 12,
-	             "and without the reset's status readout: twelve readouts, Trophy reset not among them");
+	{
+		u32 roff = 2 + (u32)out[1] * 24;
+
+		check(out[roff] == 14 && out[roff + 1 + R3T_RO_TROPHIES * 24] == 0 &&
+		      memcmp(out + roff + 1 + 13 * 24, "Skin", 5) == 0,
+		      "and without the reset's status readout: its name blank, the skin's after it kept");
+	}
 	seq = r3t_seq();
 	check(desc_feature(out, len, 32) != NULL && desc_feature(out, len, 1) != NULL,
 	      "while the other rows, Load set-aside file (32) and Freeze health (1) among them, are still there");
@@ -6577,13 +6637,13 @@ static void test_manip_trophies(void)
 	check(features_describe(out, sizeof(out), &len) == ST_OK &&
 	      desc_feature(out, len, F3_RESET_TROPHIES) == NULL &&
 	      desc_feature(out, len, F3_AUTO_TROPHIES) == NULL &&
-	      out[2 + (u32)out[1] * 24] == 12,
-	      "a console with the savefile helper switched off leaves them out too, status readout and all");
+	      out[2 + (u32)out[1] * 24] == 14 && out[2 + (u32)out[1] * 24 + 1 + R3T_RO_TROPHIES * 24] == 0,
+	      "a console with the savefile helper switched off leaves them out too, status readout's name and all");
 	savefile_set_enabled(1);
 	check(features_describe(out, sizeof(out), &len) == ST_OK &&
 	      desc_feature(out, len, F3_RESET_TROPHIES) != NULL &&
 	      desc_feature(out, len, F3_AUTO_TROPHIES) != NULL &&
-	      out[2 + (u32)out[1] * 24] == 13,
+	      out[2 + (u32)out[1] * 24] == 14 && out[2 + (u32)out[1] * 24 + 1 + R3T_RO_TROPHIES * 24] == 'T',
 	      "and with it on they are back");
 
 	/* ----------------------------------------------------- the button */
@@ -7526,6 +7586,9 @@ static void r3_fl_check_words(void)
 #define F3_DIE           6
 #define F3_BOLTS         7
 #define F3_ARMOUR        11
+#define F3_SKIN          40   /* build 59 */
+#define R3_SKIN_ADDR     0x00DA519Bu
+#define R3_ARMOUR_LOADED 0x00D99210u
 #define F3_SHIP_COLOUR   12
 #define F3_SET_ASIDE     31
 #define F3_LOAD_ASIDE    32
@@ -7594,8 +7657,8 @@ static void test_rac3(void)
 		int retired = 0;
 		int neighbours = 0;
 
-		check_eq_u64(d->nfeatures, 28, "RaC3 declares twenty-eight features");
-		check_eq_u64(d->nreadouts, 13, "and thirteen readouts, the trophy reset's status the last");
+		check_eq_u64(d->nfeatures, 29, "RaC3 declares twenty-nine features");
+		check_eq_u64(d->nreadouts, 14, "and fourteen readouts, the trophy reset's status then the skin's");
 		check_eq_u64(d->ngroups, 6, "and six groups, Trophies the sixth");
 
 		/*
@@ -8179,6 +8242,34 @@ static void test_rac3(void)
 		      "as a big-endian halfword");
 	}
 	check(features_set(F3_ARMOUR, 8) == ST_BAD_ARG, "an armour past the end is BAD_ARG");
+
+	group("RaC3: the skin picker, build 59");
+
+	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+	check(features_set(F3_SKIN, 3) == ST_OK, "Tuxedo Ratchet is picked");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 7, "the skin byte is the game's id for it, 7: the menu's third skin after id 5");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "and the loaded armour is -1, so the next planet load reads the model");
+	{
+		u8 halfword[2];
+		host_peek(R3_ARMOUR_ADDR, halfword, 2);
+		check(halfword[0] == 0 && halfword[1] == 4, "the armour itself is left as it was");
+	}
+	pump(9);
+	check_eq_u64(session_readout(13), 3, "the Skin readout reads it back as the option");
+	check(features_set(F3_SKIN, 9) == ST_OK, "Robo, the last, is picked");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 13, "as id 13");
+	check(features_set(F3_SKIN, 0) == ST_OK, "the current armour is picked");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 0, "as no skin");
+	check(features_set(F3_SKIN, 10) == ST_BAD_ARG, "a skin past Robo is BAD_ARG");
+	host_poke(R3_SKIN_ADDR, (const u8 *)"\x10", 1);
+	pump(9);
+	check_eq_u64(session_readout(13), 0, "an id the list has no row for (16) reads as none");
+	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
 
 	group("RaC3: savefile requests");
 
@@ -9927,7 +10018,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 28, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 30, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");

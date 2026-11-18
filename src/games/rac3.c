@@ -44,11 +44,12 @@ const u8 rac3_vendor_qe[2] = { 0x00, 0x17 };
  *  10  file time                                                     every 8th
  *  11  savefile the helper's own byte                                  every 8th
  *  12  chargeboot colour words                                       every 8th
+ *  13  the skin (build 59)                                           every 8th
  *
  * Blocks 3 to 8 belong to the autosplit watcher and are per-tick because a split
  * has to reach the PC in milliseconds; block 3 also carries the health readout
- * that used to have a slow block of its own. The slow blocks sit on phases 0..3,
- * so a tick costs nine reads plus at most one: 9.5 on average, ten at worst.
+ * that used to have a slow block of its own. The slow blocks sit on phases 0..4,
+ * so a tick costs nine reads plus at most one: 9.625 on average, ten at worst.
  * The load block 4 also carries the manips' file-load trigger, the trophy
  * auto-reset (revision 1.21) and the fast-load watcher. Build 53: the load
  * request word was a block of its own, 13, read after this one; it is the head
@@ -68,7 +69,8 @@ static const struct game_hot_block rac3_hot[] = {
 	{ RAC3_SHIP_COLOUR,     4,                   8, 0 },
 	{ RAC3_FILE_TIME,       4,                   8, 1 },
 	{ RAC3_SF_HELPER,       1,                   8, 2 },
-	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 }
+	{ RAC3_CB_PRIMARY_FRONT, 0x18,               8, 3 },
+	{ RAC3_SKIN,            1,                   8, 4 }
 };
 
 #define HOT_INPUTS   0
@@ -84,6 +86,7 @@ static const struct game_hot_block rac3_hot[] = {
 #define HOT_TIME     10
 #define HOT_SAVEFILE 11
 #define HOT_COLOURS  12
+#define HOT_SKIN     13
 
 #define OFF_ANALOGS   (RAC3_ANALOGS        - RAC3_HOT_INPUTS_ADDR)   /* 0x1DC */
 
@@ -257,6 +260,9 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	/* Front, back and tint; revision 1.24, flagged AUTO while the game's own. */
 	if (blocks[HOT_COLOURS] != NULL)
 		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC3_RO_CB_FRONT);
+
+	if (blocks[HOT_SKIN] != NULL)
+		out->readout[RAC3_RO_SKIN] = rac3_skin_index(blocks[HOT_SKIN][0]);
 
 	/*
 	 * Revision 1.21: the trophy reset's state, qwark's own and no memory read
@@ -949,8 +955,21 @@ static const char * const rac3_readouts[] = {
 	"Chargeboot back",
 	"Chargeboot tint",
 	/* Revision 1.21: Reset trophies' status readout; last, see RAC3_RO_TROPHIES. */
-	"Trophy reset"
+	"Trophy reset",
+	"Skin"                /* build 59 */
 };
+
+/*
+ * Build 59: the same where the trophy reset can never work, its readout's
+ * name left blank, since the skin's comes after it (RAC3_RO_SKIN). A client
+ * draws no readout that no feature names.
+ */
+static const char * const rac3_readouts_no_trophies[] = {
+	"Bolts", "Savefile helper", "Challenge mode", "Health XP", "Health", "Armour",
+	"QE offset", "File time", "Ship colour", "Chargeboot front", "Chargeboot back",
+	"Chargeboot tint", "", "Skin"
+};
+typedef char rac3_readouts_alike[sizeof(rac3_readouts_no_trophies) == sizeof(rac3_readouts) ? 1 : -1];
 
 #define NR (u8)(sizeof(rac3_readouts) / sizeof(rac3_readouts[0]))
 #define NO FEATURE_NO_READOUT
@@ -987,6 +1006,8 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_HEALTH_XP,     FEATURE_VALUE,  G_PLAYER,  32, SG, RAC3_RO_HEALTH_XP, 0, 0, "Health XP" },
 	{ R3_HEALTH,        FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_HEALTH,    0, 0, "Health" },
 	{ R3_ARMOUR,        FEATURE_ENUM,   G_PLAYER,   RAC3_ARMOUR_COUNT, 0, RAC3_RO_ARMOUR, 0, RAC3_ARMOUR_COUNT - 1, "Armour" },
+	/* Build 59: the pause menu's skins; the model shows from the next planet load (rac3.h). */
+	{ R3_SKIN,          FEATURE_ENUM,   G_PLAYER,   RAC3_SKIN_COUNT,   0, RAC3_RO_SKIN,   0, RAC3_SKIN_COUNT - 1,   "Skin" },
 	{ R3_SHIP_COLOUR,   FEATURE_ENUM,   G_PLAYER,   RAC3_SHIP_COUNT,   0, RAC3_RO_SHIP,   0, RAC3_SHIP_COUNT - 1, "Ship colour" },
 	{ R3_FILE_TIME,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_FILE_TIME, 0, 0, "File time" },
 	/*
@@ -1081,11 +1102,12 @@ static const struct game_describe rac3_describe_table = {
 /*
  * Build 53: the same, without the trophy rows at the end of the table, and
  * (revision 1.21) without the reset's status readout at the end of the
- * readouts, which would only ever read NONE there.
+ * readouts, which would only ever read NONE there. Build 59: the skin's
+ * readout follows it, so its name is blanked rather than cut off.
  */
 static const struct game_describe rac3_describe_no_trophies = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
-	rac3_readouts, (u8)(NR - 1),
+	rac3_readouts_no_trophies, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0]) - RAC3_TROPHY_ROWS),
 	0,
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0])),

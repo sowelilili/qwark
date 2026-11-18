@@ -880,9 +880,92 @@ static int rac2_set_respawn(void)
 
 /* ------------------------------------------------------------ the handlers */
 
+/* ------------------------------------------------- armour and skin, build 59 */
+
+/* The game's names: its armour vendor's, and its Cheats menu's for the skins. */
+static const char * const rac2_armour_options[RAC2_ARMOUR_COUNT] = {
+	"No armor",
+	"Tetrafiber Armor",
+	"Duraplate Armor",
+	"Electrosteel Armor",
+	"Carbonox Armor"
+};
+
+static const char * const rac2_skin_options[RAC2_SKIN_COUNT] = {
+	"No skin",
+	"Ratchet in a tux",
+	"Ratchet shows his funny side",
+	"Beach Boy",
+	"Snow Dude"
+};
+
+/* Each skin option's cheat byte, in the Cheats menu's order; 0 for none. */
+static const u32 rac2_skin_cheat[RAC2_SKIN_COUNT] = {
+	0, RAC2_CHEAT_TUX, RAC2_CHEAT_FUNNY, RAC2_CHEAT_BEACH_BOY, RAC2_CHEAT_SNOW_DUDE
+};
+
+int rac2_get_options(u8 id, const char * const **options, u8 *count)
+{
+	if (id == R2_ARMOUR) {
+		*options = rac2_armour_options;
+		*count = RAC2_ARMOUR_COUNT;
+		return ST_OK;
+	}
+	if (id == R2_SKIN) {
+		*options = rac2_skin_options;
+		*count = RAC2_SKIN_COUNT;
+		return ST_OK;
+	}
+	return ST_NOT_FOUND;
+}
+
+/*
+ * The skin the next load wears, out of the RAC2_SKIN_CHEATS_LEN bytes from
+ * RAC2_SKIN_CHEATS, as an option index: the first byte the game's own pick
+ * (rac2.h, 0xB451BC) finds on wins, as it would with several on.
+ */
+u32 rac2_skin_index(const u8 *cheats)
+{
+	if (cheats[RAC2_CHEAT_FUNNY - RAC2_SKIN_CHEATS] != 0)     return 2;
+	if (cheats[RAC2_CHEAT_SNOW_DUDE - RAC2_SKIN_CHEATS] != 0) return 4;
+	if (cheats[RAC2_CHEAT_BEACH_BOY - RAC2_SKIN_CHEATS] != 0) return 3;
+	if (cheats[RAC2_CHEAT_TUX - RAC2_SKIN_CHEATS] != 0)       return 1;
+	return 0;
+}
+
+/*
+ * Either picker: the armour word, or the chosen skin's cheat byte on and the
+ * other three off, then the loaded armour at -1, so that the next planet load
+ * reads the model again (rac2.h). The armour's protection is at once.
+ */
+static int rac2_set_armour(u32 armour)
+{
+	u8 halfword[2];
+	int rc;
+
+	be16_put(halfword, (u16)armour);
+	rc = mem_write(RAC2_ARMOUR, halfword, 2);
+	if (rc != ST_OK) return rc;
+	return mem_write_u32(RAC2_ARMOUR_LOADED, 0xFFFFFFFFu);
+}
+
+static int rac2_set_skin(u32 skin)
+{
+	u32 i;
+	int rc;
+
+	for (i = 1; i < RAC2_SKIN_COUNT; i++) {
+		rc = mem_write_u8(rac2_skin_cheat[i], i == skin ? 1u : 0u);
+		if (rc != ST_OK) return rc;
+	}
+	return mem_write_u32(RAC2_ARMOUR_LOADED, 0xFFFFFFFFu);
+}
+
 int rac2_set_value(u8 id, u32 value)
 {
 	switch (id) {
+	case R2_ARMOUR:     return rac2_set_armour(value);
+	case R2_SKIN:       return rac2_set_skin(value);
 	case R2_BOLTS:      return mem_write_u32(RAC2_BOLTS, value);
 	case R2_RARITANIUM: return mem_write_u32(RAC2_RARITANIUM, value);
 	case R2_CHALLENGE:  return mem_write_u8(RAC2_CHALLENGE_MODE, (u8)value);

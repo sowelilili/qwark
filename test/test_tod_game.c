@@ -38,6 +38,8 @@
 #define FAKE_ROOT  0x30000000u
 #define FAKE_HERO  0x30010000u
 #define FAKE_MOBY  0x30020000u
+/* Build 59: SKIN_JAILBIRD's owned word, ToDSaveData.skinOwned[7] (g_saveData+0x45C+7*4). */
+#define TOD_SKIN_OWNED_TEST 0x1020C2E8u
 
 /* A LIVE toggle is read back every twelfth tick (session.c, LIVE_POLL_EVERY). */
 #define LIVE_TICKS_FOR_TEST 13
@@ -225,6 +227,44 @@ static void test_tod_features(void)
 	check(features_trigger(TF_RESET_GB) == ST_OK && rd32(TOD_GOLD_BOLTS + 5 * TOD_LEVEL_SAVE_LEN) == 0, "and none");
 	check(features_trigger(14) == ST_NOT_FOUND && features_trigger(15) == ST_NOT_FOUND,
 	      "the RYNO plans' two buttons are retired");
+
+	group("ToD: the armour and skin pickers, Hero_setArmor's writes and Skin_select's (build 59)");
+	{
+		static const f32 mult[TOD_ARMOUR_COUNT] = { 1.0f, 0.75f, 0.6f, 0.45f, 0.35f };
+		u8 k;
+		u8 info[SESSION_INFO_SIZE];
+
+		/* g_armorConfigs as armor.csv fills it; the hero wears Blackstar, owned. */
+		for (k = 0; k < TOD_ARMOUR_COUNT; k++) wrf(TOD_ARMOUR_CONFIGS + k * TOD_ARMOUR_CONFIG_LEN, mult[k]);
+		for (k = 0; k < TOD_ARMOUR_COUNT; k++) wr32(TOD_ARMOUR_OWNED + k * 4u, k == 1);
+		wr32(TOD_ARMOUR, 1);
+		wrf(FAKE_HERO + TOD_HERO_DAMAGE_SCALE, 0.75f);
+		check(features_set(TF_ARMOUR, 3) == ST_OK, "Terraflux is picked");
+		check(rd32(TOD_ARMOUR) == 3 && rd32(TOD_ARMOUR_OWNED + 12) == 1 && rd32(TOD_ARMOUR_OWNED + 4) == 1 &&
+		      rd32(TOD_ARMOUR_OWNED + 8) == 0, "the save wears it and owns it, Blackstar still owned, Helios not");
+		check(rdf(FAKE_HERO + TOD_HERO_DAMAGE_SCALE) == 0.45f, "and the hero takes its damage scale, 0.45, from the game's table");
+		check(features_set(TF_ARMOUR, 0) == ST_OK && rd32(TOD_ARMOUR) == 0 &&
+		      rdf(FAKE_HERO + TOD_HERO_DAMAGE_SCALE) == 1.0f, "no armour: the whole damage again");
+		check(features_set(TF_ARMOUR, 5) == ST_BAD_ARG && rd32(TOD_ARMOUR) == 0 &&
+		      rd32(TOD_ARMOUR_OWNED + 20) == 0, "an armour past Trillium is BAD_ARG, and writes nothing past the owned words");
+
+		wr32(TOD_LEVEL_OBJ, 0);
+		check(features_set(TF_ARMOUR, 4) == ST_OK && rd32(TOD_ARMOUR) == 4,
+		      "between levels the save takes it (the next hero's Hero_Init gives itself the scale)");
+		check(rdf(FAKE_HERO + TOD_HERO_DAMAGE_SCALE) == 1.0f, "and no hero is written");
+		wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+
+		wr32(TOD_SKIN_OWNED_TEST, 0);
+		check(features_set(TF_SKIN, 7) == ST_OK && rd32(TOD_SKIN) == 7, "Convict Ratchet is picked: the skin word is SKIN_JAILBIRD");
+		check(rd32(TOD_SKIN_OWNED_TEST) == 0 && rd32(TOD_ARMOUR) == 4, "and neither its owned word nor the armour is touched");
+		check(features_set(TF_SKIN, 9) == ST_BAD_ARG && rd32(TOD_SKIN) == 7, "a skin past Mustachio Furioso is BAD_ARG");
+		tick(9);
+		session_info_copy(info, sizeof(info));
+		check(be32_get(info + 64 + 4 * TOD_RO_ARMOUR) == 4 && be32_get(info + 64 + 4 * TOD_RO_SKIN) == 7,
+		      "the Armour and Skin readouts read both back out of the save");
+		wr32(TOD_ARMOUR, 0);
+		wr32(TOD_SKIN, 0);
+	}
 
 	group("ToD: Infinite ammo holds the ammo without a code patch");
 	host_poke(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_OWNED, (const u8 *)"\1", 1);
@@ -3520,8 +3560,8 @@ static void test_tod_cutscene_cache(void)
 	}
 	check(ok_19 && TF_CACHE_CUTSCENES == 19, "19 Cache cutscenes, an ACTION naming its status readout, data writes");
 	check(ok_20 && ok_21, "20 Cache cutscenes on reset and 21 Disable cutscene caching, toggles, not LIVE");
-	check(dsc->nreadouts == 4 && qstreq(dsc->readouts[TOD_RO_CUTSCENE_CACHE], "Cutscene cache"),
-	      "readout 3, Cutscene cache, last");
+	check(dsc->nreadouts == 6 && qstreq(dsc->readouts[TOD_RO_CUTSCENE_CACHE], "Cutscene cache"),
+	      "readout 3, Cutscene cache, where it was (build 59 put the armour's and the skin's after it)");
 
 	/* ---- the button with the warmer idle: Cobalia, Stratus City, then Fastoon, the single-range form */
 	cc_toc();

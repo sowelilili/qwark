@@ -452,9 +452,71 @@ int tod_trigger(u8 id)
 	}
 }
 
+/* ------------------------------------------------ armour and skin, build 59 */
+
+/* The game's own names (core_text_tags.gb): its armour vendor's and SKIN SELECT's. */
+static const char * const tod_armour_options[TOD_ARMOUR_COUNT] = {
+	"No armour",
+	"Blackstar Armour",
+	"Helios Armour",
+	"Terraflux Armour",
+	"Trillium Armour"
+};
+
+static const char * const tod_skin_options[TOD_SKIN_COUNT] = {
+	"No skin",
+	"Dan Johnson",
+	"Snowman",
+	"Cragmite Skin",
+	"Rusty Pete",
+	"Cronk",
+	"Zephyr",
+	"Convict Ratchet",
+	"Mustachio Furioso"
+};
+
+int tod_get_options(u8 id, const char * const **options, u8 *count)
+{
+	if (id == TF_ARMOUR) {
+		*options = tod_armour_options;
+		*count = (u8)TOD_ARMOUR_COUNT;
+		return ST_OK;
+	}
+	if (id == TF_SKIN) {
+		*options = tod_skin_options;
+		*count = (u8)TOD_SKIN_COUNT;
+		return ST_OK;
+	}
+	return ST_NOT_FOUND;
+}
+
+/*
+ * Hero_setArmor's three writes (tod.h): the armour, its owned word, and the
+ * hero's damage scale out of the game's own table. Between levels there is no
+ * hero, and the next one's Hero_Init gives itself the scale from the save.
+ */
+static int tod_set_armour(u32 armour)
+{
+	u32 hero = 0, scale = 0;
+	int rc;
+
+	rc = mem_write_u32(TOD_ARMOUR, armour);
+	if (rc == ST_OK) rc = mem_write_u32(TOD_ARMOUR_OWNED + armour * 4u, 1);
+	if (rc != ST_OK) return rc;
+	if (tod_hero(&hero) != ST_OK) return ST_OK;
+	rc = mem_read_u32(TOD_ARMOUR_CONFIGS + armour * TOD_ARMOUR_CONFIG_LEN, &scale);
+	if (rc != ST_OK) return rc;
+	/* A table the game has not filled yet gives the hero nothing. */
+	if (scale == 0) return ST_OK;
+	return mem_write_u32(hero + TOD_HERO_DAMAGE_SCALE, scale);
+}
+
 int tod_set_value(u8 id, u32 value)
 {
 	switch (id) {
+	case TF_ARMOUR:     return tod_set_armour(value);
+	/* Skin_select's one write, without its owned check: the picker wears what it picks. */
+	case TF_SKIN:       return mem_write_u32(TOD_SKIN, value);
 	case TF_BOLTS:      return mem_write_u32(TOD_BOLTS, value);
 	case TF_RARITANIUM: return mem_write_u32(TOD_RARITANIUM, value);
 	case TF_CHALLENGE:  return mem_write_u32(TOD_CHALLENGE, value);

@@ -202,6 +202,25 @@
 #define TOD_RYNO_PLANS       0x10214564u  /* u32 bit mask; the game's "give all" ORs TOD_RYNO_ALL */
 #define TOD_RYNO_ALL         0x0007DEE4u
 #define TOD_CHEATS           0x10214568u  /* u8[14] */
+/*
+ * Build 59: the armour and the skin, ToDSaveData's armorOwned (+0x444),
+ * armor (+0x458), skinOwned (+0x45C) and skin (+0x480) (dec). Hero_setArmor
+ * (0x1F790C), all the vendor's armour change does (HeroArmorChange_update),
+ * writes the armour, marks it owned and gives the hero its damage scale out of
+ * g_armorConfigs (armor.csv's DamageMult: 1, 0.75, 0.6, 0.45, 0.35); Hero_Init
+ * does it again from the save for every new hero. Skin_select (0x26BDC), what
+ * the pause menu's SKIN SELECT calls before it closes the pause, writes the
+ * skin word alone, and only for an owned skin.
+ */
+#define TOD_ARMOUR_OWNED     0x1020C2B4u  /* s32[5] by ARMOR_ */
+#define TOD_ARMOUR           0x1020C2C8u  /* u32, ARMOR_NONE .. ARMOR_QUANTONIUM */
+#define TOD_SKIN             0x1020C2F0u  /* u32, SKIN_NONE .. SKIN_FURIOSO */
+#define TOD_ARMOUR_SAVE_LEN  0x2Cu        /* the armour .. the skin, one read */
+#define TOD_ARMOUR_CONFIGS   0x101E7D68u  /* g_armorConfigs, ToDArmorConfig[5], 0x28 each, the damage scale f32 at +0 */
+#define TOD_ARMOUR_CONFIG_LEN 0x28u
+#define TOD_HERO_DAMAGE_SCALE 0x1798u     /* f32 off the hero: what Hero_setArmor writes */
+#define TOD_ARMOUR_COUNT     5u
+#define TOD_SKIN_COUNT       9u
 #define TOD_SKILL_POINTS     0x10214580u  /* u64, bit i = SKILLPOINT i (SkillPoint_set) */
 #define TOD_NSKILL_POINTS    60u
 
@@ -709,6 +728,8 @@ struct tod_facts {
 #define TOD_RO_RARITANIUM  1
 #define TOD_RO_CHALLENGE   2
 #define TOD_RO_CUTSCENE_CACHE 3   /* revision 1.29: Cache cutscenes' status word (TOD_CC_*) */
+#define TOD_RO_ARMOUR      4      /* build 59 */
+#define TOD_RO_SKIN        5      /* build 59 */
 
 /*
  * Feature ids, stable: new ones go on the end. 0 to 3 are the proof of
@@ -736,6 +757,8 @@ struct tod_facts {
 #define TF_CACHE_ON_RESET   20     /* TOGGLE: the same, by itself, on a new run's Metropolis */
 #define TF_NO_CUTSCENE_CACHE 21    /* TOGGLE: each level load drops its planet's cached sound */
 #define TF_REMOVE_BLACK     24     /* 2026-11-12: TOGGLE, the lead-in's black hold not drawn (TOD_FADE_ALPHA); 22 and 23 held */
+#define TF_ARMOUR           25     /* build 59: ENUM, the armour worn (TOD_ARMOUR) */
+#define TF_SKIN             26     /* build 59: ENUM, the skin (TOD_SKIN) */
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
 #define TF_SET_ASIDE        40
@@ -820,6 +843,7 @@ const struct autosplit_desc *tod_autosplit_describe(u8 *count);
 int  tod_hero(u32 *hero);
 int  tod_trigger(u8 id);
 int  tod_set_value(u8 id, u32 value);
+int  tod_get_options(u8 id, const char * const **options, u8 *count);   /* build 59 */
 int  tod_set_toggle(u8 id, int on);
 int  tod_toggle_read(u8 id, int *on);
 int  tod_save_blob(u8 *blob, u8 *len);

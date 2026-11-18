@@ -298,6 +298,28 @@
 #define RAC2_GAME_MODE_SPACE        6u
 #define RAC2_GAME_MODE_LAST         9u
 
+/*
+ * Build 59: the armour and the skin (NPEA00386, decompiled). The armour worn
+ * is a big-endian s16, 0 none to 4 Carbonox; enemies' damage reads it every
+ * hit, so a new armour protects at once. Its model is a file, armor<n>.ps3,
+ * that the start of a planet load (0xB4CAA8) reads again only when the word at
+ * RAC2_ARMOUR_LOADED differs from the armour, and Level_Load then sets it
+ * (0xB4ABEC). A skin is one of four of the Cheats menu's bytes, which only
+ * pick the file that load reads (0xB451BC: Snow Dude's, then the funny side's,
+ * Beach Boy's and the tux, armor8, 6, 7 and 5, the first one on winning), so
+ * the menu's own toggle reloads at once from code (0xBC17B8) and qwark, with
+ * data alone, makes the next planet load do it: the loaded word at -1 is a
+ * mismatch the load always sees.
+ */
+#define RAC2_ARMOUR            0x1329AB0u  /* s16, 0..4 */
+#define RAC2_ARMOUR_LOADED     0x147A310u  /* s32, the armour whose file is in */
+#define RAC2_SKIN_CHEATS       0x14817F3u  /* cheat bytes 2 to 11 of 0x14817F1's twelve */
+#define RAC2_SKIN_CHEATS_LEN   10u
+#define RAC2_CHEAT_SNOW_DUDE   0x14817F3u  /* cheat 2, armor8 */
+#define RAC2_CHEAT_FUNNY       0x14817FAu  /* cheat 9, armor6 */
+#define RAC2_CHEAT_TUX         0x14817FBu  /* cheat 10, armor5 */
+#define RAC2_CHEAT_BEACH_BOY   0x14817FCu  /* cheat 11, armor7 */
+
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
 
@@ -390,9 +412,9 @@ extern const u8 rac2_fp_switch_old[4];
 /* inputs: 0x147A250 .. 0x147A61C, one read covering load screen, pad and analogs */
 #define RAC2_HOT_INPUTS_ADDR  0x147A250u
 #define RAC2_HOT_INPUTS_LEN   0x3CC
-/* state: 0x13298CC .. 0x1329AB0, QE offset through the bolt deficit */
+/* state: 0x13298CC .. 0x1329AB2, QE offset through the armour (build 59) */
 #define RAC2_HOT_STATE_ADDR   RAC2_SAVE_SLOT
-#define RAC2_HOT_STATE_LEN    0x1E4
+#define RAC2_HOT_STATE_LEN    0x1E6
 /* player: the coordinate Vec4 plus the rotation that follows it */
 #define RAC2_HOT_PLAYER_ADDR  RAC2_COORDS
 #define RAC2_HOT_PLAYER_LEN   0x20
@@ -415,6 +437,9 @@ extern const u8 rac2_fp_switch_old[4];
 #define RAC2_RO_CB_FRONT   6
 #define RAC2_RO_CB_BACK    7
 #define RAC2_RO_CB_TINT    8
+/* Build 59: the armour, and the skin as an option index (rac2_skin_index). */
+#define RAC2_RO_ARMOUR     9
+#define RAC2_RO_SKIN       10
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -476,10 +501,18 @@ extern const u8 rac2_fp_switch_old[4];
 #define R2_MAX_LEVELS        38
 #define R2_MAX_AMMO          39
 
+/* Build 59: the armour and skin pickers, ENUMs as UYA's armour is. */
+#define R2_ARMOUR            40
+#define R2_SKIN              41
+#define RAC2_ARMOUR_COUNT    5
+#define RAC2_SKIN_COUNT      5
+
 /* ------------------------------------------------------ rac2_panel.c exports */
 
 int rac2_trigger(u8 id);
 int rac2_set_value(u8 id, u32 value);
+int rac2_get_options(u8 id, const char * const **options, u8 *count);
+u32 rac2_skin_index(const u8 *cheats);
 int rac2_load_setaside(void);
 u8  rac2_savefile_ready(u8 what);
 int rac2_die(void);

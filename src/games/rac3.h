@@ -45,6 +45,20 @@
 #define RAC3_CC_FAKE_ITEM_A    0x00C1E660u  /* CC early: 0x41 */
 #define RAC3_CC_FAKE_ITEM_B    0x00C1E664u  /* CC early: 0x41414141 */
 
+/*
+ * Build 59: the skin (NPEA00387, decompiled). The pause menu's skin list
+ * (0x294978, its table at 0xC4AAC0, 16 bytes a row) writes the skin's id here
+ * (0x188CAC) and loads the model at once from code (0x1CD490, which takes
+ * armor<skin>.ps3 in place of the armour's file while a skin is on). With data
+ * alone the model comes with the next planet load: its start (game_loop,
+ * 0x1D70A0) reads the files again only when the loaded armour word differs
+ * from the armour, and Level_LoadEngineAndGameplay then sets it (0x1D2EF8), so
+ * qwark puts -1 there. A death's reload reads nothing again (param 0).
+ */
+#define RAC3_SKIN              0x00DA519Bu  /* one byte: 0 none, or 5..13 */
+#define RAC3_ARMOUR_LOADED     0x00D99210u  /* s32, the armour whose file is in */
+#define RAC3_SKIN_FIRST        5u           /* the menu's first skin's id */
+
 #define RAC3_CB_PRIMARY_FRONT  0x00C33AB0u
 #define RAC3_CB_PRIMARY_BACK   0x00C33AB4u
 #define RAC3_CB_TINT_FRONT     0x00C33AC0u
@@ -489,6 +503,11 @@ extern const u8 rac3_fp_switch[4];
  * work (rac3_describe).
  */
 #define RAC3_RO_TROPHIES   12
+/*
+ * Build 59: the skin, as an option index (rac3_skin_index). After the
+ * trophies' readout, so the no-trophy DESCRIBE keeps a name at 12 (rac3.c).
+ */
+#define RAC3_RO_SKIN       13
 
 /*
  * That word, as PROTOCOL.md section 5.14 lays it out: the state in bits
@@ -583,9 +602,14 @@ extern const u8 rac3_fp_switch[4];
  */
 #define R3_AUTO_TROPHIES     39
 
+/* Build 59: the skin picker, an ENUM beside the armour's. */
+#define R3_SKIN              40
+
 /* ENUM option counts, from RAC3Form.Designer.cs. */
 #define RAC3_ARMOUR_COUNT 8
 #define RAC3_SHIP_COUNT   32
+/* Build 59: none and the nine skins the game names, ids 5 to 13. */
+#define RAC3_SKIN_COUNT   10
 
 /*
  * The highest weapon version any RaC3 item has, and so the maximum the level
@@ -599,6 +623,7 @@ extern const u8 rac3_fp_switch[4];
 int rac3_trigger(u8 id);
 int rac3_set_value(u8 id, u32 value);
 int rac3_get_options(u8 id, const char * const **options, u8 *count);
+u32 rac3_skin_index(u8 skin);
 int rac3_load_setaside(void);
 u8  rac3_savefile_ready(u8 what);
 

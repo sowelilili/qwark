@@ -30,12 +30,13 @@
 /* ------------------------------------------------------------- hot blocks */
 
 /*
- * Seven reads every tick and two staggered slow ones:
+ * Seven reads every tick and three staggered slow ones:
  *
  *   0  inputs   load screen type +0x07, count +0x0B, pad +0x1E0,       every tick
  *               analogs +0x3BC
  *   1  state    QE offset +0x00, planet +0x170, bolts +0x1C4,          every tick
- *               raritanium +0x1C8, challenge +0x1D6, health XP +0x1D8
+ *               raritanium +0x1C8, challenge +0x1D6, health XP +0x1D8,
+ *               armour +0x1E4 (build 59)
  *   2  player   the coordinate Vec4 and the rotation behind it         every tick
  *   3  pstate   player state +0x00, hero type +0x20                    every tick
  *   4  lflags   Endako exit +0x31, Barlow race +0x47, A2 Clank +0xE9   every tick
@@ -43,10 +44,11 @@
  *   6  yeedil   the Yeedil scene byte                                  every tick
  *   7  savefile the helper's own byte                                   every 8th
  *   8  chargeboot colour words                                        every 8th
+ *   9  the skin cheats (build 59)                                     every 8th
  *
  * Blocks 3 to 6 are the autosplit watcher's, and are per-tick because a split has
- * to reach the PC in milliseconds. The two slow blocks sit on phases 0 and 4, so
- * a tick costs seven reads plus at most one: 7.25 on average, eight at worst.
+ * to reach the PC in milliseconds. The slow blocks sit on phases 0, 2 and 4, so
+ * a tick costs seven reads plus at most one: 7.5 on average, eight at worst.
  */
 static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_HOT_INPUTS_ADDR, RAC2_HOT_INPUTS_LEN, 1, 0 },
@@ -57,7 +59,8 @@ static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_CHUNK,           1,                   1, 0 },
 	{ RAC2_YEEDIL_SCENE,    1,                   1, 0 },
 	{ RAC2_SF_HELPER,       1,                   8, 0 },
-	{ RAC2_CB_PRIMARY_FRONT, 0x14,               8, 4 }
+	{ RAC2_CB_PRIMARY_FRONT, 0x14,               8, 4 },
+	{ RAC2_SKIN_CHEATS,     RAC2_SKIN_CHEATS_LEN, 8, 2 }   /* build 59: the skin cheats */
 };
 
 #define HOT_INPUTS   0
@@ -69,6 +72,7 @@ static const struct game_hot_block rac2_hot[] = {
 #define HOT_YEEDIL   6
 #define HOT_SAVEFILE 7
 #define HOT_COLOURS  8
+#define HOT_SKIN     9
 
 #define OFF_LOADTYPE  (RAC2_LOADSCREEN_TYPE  - RAC2_HOT_INPUTS_ADDR)   /* 0x007 */
 #define OFF_LOADCOUNT (RAC2_LOADSCREEN_COUNT - RAC2_HOT_INPUTS_ADDR)   /* 0x00B */
@@ -80,6 +84,7 @@ static const struct game_hot_block rac2_hot[] = {
 #define OFF_RARITANIUM (RAC2_RARITANIUM     - RAC2_HOT_STATE_ADDR)     /* 0x1C8 */
 #define OFF_CHALLENGE  (RAC2_CHALLENGE_MODE - RAC2_HOT_STATE_ADDR)     /* 0x1D6 */
 #define OFF_HEALTH_XP  (RAC2_HEALTH_XP      - RAC2_HOT_STATE_ADDR)     /* 0x1D8 */
+#define OFF_ARMOUR     (RAC2_ARMOUR         - RAC2_HOT_STATE_ADDR)     /* 0x1E4 */
 
 #define OFF_HERO_TYPE  (RAC2_HERO_TYPE - RAC2_HOT_PSTATE_ADDR)         /* 0x20 */
 
@@ -185,6 +190,7 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		 * the one that sign-extends it (protocol 1.7).
 		 */
 		out->readout[RAC2_RO_QE_OFFSET]  = be16_get(state);
+		out->readout[RAC2_RO_ARMOUR]     = be16_get(state + OFF_ARMOUR);
 	}
 
 	if (player != NULL) {
@@ -198,6 +204,9 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	/* Front, back and tint; revision 1.24, flagged AUTO while the game's own. */
 	if (blocks[HOT_COLOURS] != NULL)
 		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC2_RO_CB_FRONT);
+
+	if (blocks[HOT_SKIN] != NULL)
+		out->readout[RAC2_RO_SKIN] = rac2_skin_index(blocks[HOT_SKIN]);
 
 	/* --------------------------------------------- the autosplit watcher's view */
 
@@ -773,7 +782,9 @@ static const char * const rac2_readouts[] = {
 	"QE save offset",
 	"Chargeboot front",
 	"Chargeboot back",
-	"Chargeboot tint"
+	"Chargeboot tint",
+	"Armour",
+	"Skin"
 };
 
 #define NR (u8)(sizeof(rac2_readouts) / sizeof(rac2_readouts[0]))
@@ -808,6 +819,9 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_HEALTH_XP,       FEATURE_VALUE,  G_PLAYER,  32, SG, RAC2_RO_HEALTH_XP,  0, 0, "Health XP" },
 	{ R2_SET_RESPAWN,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Set respawn point" },
 	{ R2_STORE_SWINGSHOT, FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Store Swingshot" },
+	/* Build 59: the pickers, as UYA's armour; the model shows from the next planet load. */
+	{ R2_ARMOUR,          FEATURE_ENUM,   G_PLAYER,   RAC2_ARMOUR_COUNT, 0, RAC2_RO_ARMOUR, 0, RAC2_ARMOUR_COUNT - 1, "Armour" },
+	{ R2_SKIN,            FEATURE_ENUM,   G_PLAYER,   RAC2_SKIN_COUNT,   0, RAC2_RO_SKIN,   0, RAC2_SKIN_COUNT - 1,   "Skin" },
 	{ R2_DEATH_BOSSES,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset bosses on death" },
 	{ R2_DEATH_PBOLTS,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset platinum bolts on death" },
 
@@ -1308,7 +1322,7 @@ const struct game_api rac2_game = {
 	rac2_toggle_read,
 	rac2_trigger,
 	rac2_set_value,
-	NULL,                 /* no ENUM features */
+	rac2_get_options,     /* build 59: the armour and the skin */
 
 	rac2_save_blob,
 	rac2_load_blob,

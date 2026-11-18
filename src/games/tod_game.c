@@ -37,6 +37,7 @@
  *   8  load screen g_loadScreenType, the long load's                every tick
  *   9  load job   the tier loader's job, a level load's               every 2nd
  *  10  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
+ *  11  armour     the armour +0, the skin +0x28 (build 59)          every 8th
  *
  * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28):
  * the level coming up is read every tick; the title and the game
@@ -61,7 +62,8 @@ static const struct game_hot_block tod_hot[] = {
 	{ TOD_GAME_STATE,    4,                  2, 1 },
 	{ TOD_LOAD_SCREEN,   4,                  1, 0 },  /* revision 1.29 */
 	{ TOD_LOAD_JOB,      4,                  2, 0 },  /* revision 1.29 */
-	{ TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1, 2, 0 }
+	{ TOD_LEVEL_LOAD_TIER + TOD_TIER_LOADED, 1, 2, 0 },
+	{ TOD_ARMOUR,        TOD_ARMOUR_SAVE_LEN, 8, 3 }   /* build 59: the armour and the skin */
 };
 
 #define HOT_INPUTS 0
@@ -75,6 +77,7 @@ static const struct game_hot_block tod_hot[] = {
 #define HOT_SCREEN 8
 #define HOT_JOB    9
 #define HOT_TIER   10
+#define HOT_ARMOUR 11
 
 #define HERO_EVERY 8u
 
@@ -148,6 +151,11 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	}
 
 	if (blocks[HOT_AMMO] != NULL) T->ammo_flag = be32_get(blocks[HOT_AMMO]);
+
+	if (blocks[HOT_ARMOUR] != NULL) {
+		out->readout[TOD_RO_ARMOUR] = be32_get(blocks[HOT_ARMOUR]);
+		out->readout[TOD_RO_SKIN] = be32_get(blocks[HOT_ARMOUR] + (TOD_SKIN - TOD_ARMOUR));
+	}
 
 	/* Revision 1.29: Cache cutscenes' status, qwark's own state and no memory read. */
 	out->readout[TOD_RO_CUTSCENE_CACHE] = tod_cc_status(&T->cc);
@@ -254,7 +262,9 @@ static const char * const tod_readouts[] = {
 	"Bolts",
 	"Raritanium",
 	"Challenge mode",
-	"Cutscene cache"      /* revision 1.29: Cache cutscenes' status word (tod.h, TOD_CC_*) */
+	"Cutscene cache",     /* revision 1.29: Cache cutscenes' status word (tod.h, TOD_CC_*) */
+	"Armour",             /* build 59 */
+	"Skin"                /* build 59 */
 };
 
 #define NO FEATURE_NO_READOUT
@@ -316,6 +326,9 @@ static const struct feature_desc tod_features[] = {
 	{ TF_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_BOLTS,      0, TOD_MAX_BOLTS, "Bolts" },
 	{ TF_RARITANIUM,    FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_RARITANIUM, 0, TOD_MAX_BOLTS, "Raritanium" },
 	{ TF_CHALLENGE,     FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_CHALLENGE,  0, 99, "Challenge mode" },
+	/* Build 59: the pickers, as UYA's armour; data writes, the same under RPCS3. */
+	{ TF_ARMOUR,        FEATURE_ENUM,   G_PLAYER,   TOD_ARMOUR_COUNT, 0, TOD_RO_ARMOUR, 0, TOD_ARMOUR_COUNT - 1, "Armour" },
+	{ TF_SKIN,          FEATURE_ENUM,   G_PLAYER,   TOD_SKIN_COUNT,   0, TOD_RO_SKIN,   0, TOD_SKIN_COUNT - 1,   "Skin" },
 
 	{ TF_UNLOCK_SP,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
 	{ TF_RESET_SP,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
@@ -543,7 +556,7 @@ const struct game_api tod_game = {
 	tod_toggle_read,
 	tod_game_trigger,     /* tod_panel.c's, and Cache cutscenes */
 	tod_set_value,
-	NULL,                 /* get_options: no ENUM */
+	tod_get_options,      /* build 59: the armour and the skin */
 
 	tod_save_blob,
 	tod_load_blob,

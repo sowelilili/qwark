@@ -2332,7 +2332,8 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        "features": 28,
+        # Build 59: 40 Armour and 41 Skin.
+        "features": 30,
         "cheats": FOUR_CHEATS + ["Enable debug mode"],
         # The two crash guards' branches (src/games/rac2.c), written as the
         # session enters over the game's own words: (address, game, guard).
@@ -2350,7 +2351,13 @@ OTHER_GAMES = [
         # Build 53: the hit points and the game's own maximum, both words.
         "freeze_health": {"id": 2, "health": 0x014816AC, "max": 0x01329A98,
                           "full": 10, "more": 23, "hurt": 3},
-        "readouts": 9,
+        "readouts": 11,
+        # Build 59, the pickers (src/games/rac2_panel.c): (id, option, the
+        # bytes it writes, readout index); each also puts -1 in the loaded
+        # armour word, 0x147A310, so the next planet load reads the model.
+        "enum_writes": [(40, 3, [(0x1329AB0, b"\x00\x03"), (0x147A310, b"\xFF\xFF\xFF\xFF")], 9),
+                        (41, 4, [(0x14817F3, b"\x01"), (0x14817FA, b"\x00\x00\x00"),
+                                 (0x147A310, b"\xFF\xFF\xFF\xFF")], 10)],
         "planets": 27,
         "planet0": "Aranos",
         # Build 53: PLANET_LIST's menu order. RaC2's ids are its own order.
@@ -2447,7 +2454,8 @@ OTHER_GAMES = [
         "title": "NPEA00387",
         "name": "RaC3",
         "game": 3,
-        "features": 28,
+        # Build 59: 40 Skin.
+        "features": 29,
         # Build 53: Infinite ammo was "Freeze ammo".
         "cheats": FOUR_CHEATS + ["Quick-select pause"],
         # SF_API_SETASIDE from src/games/sfhelper/sf_rac3.h.
@@ -2461,8 +2469,10 @@ OTHER_GAMES = [
         "freeze_health": {"id": 1, "health": 0x00DA5040, "max": 0x00C1E4E4,
                           "full": 30, "more": 200, "hurt": 7},
         # Revision 1.21: the thirteenth is the trophy reset's status, which
-        # Reset trophies (21) names.
-        "readouts": 13,
+        # Reset trophies (21) names; build 59's fourteenth the skin.
+        "readouts": 14,
+        # Build 59: Tuxedo Ratchet, the third skin, is the game's id 7.
+        "enum_writes": [(40, 3, [(0xDA519B, b"\x07"), (0xD99210, b"\xFF\xFF\xFF\xFF")], 13)],
         "action_status": {21: 12},
         "planets": 37,
         "planet0": "(none)",
@@ -4564,6 +4574,23 @@ def exercise_game(c, sim, spec, udp=None):
               "%s: readout 0 mirrors it" % name,
               info["readout"][0] if info else None)
 
+    # -------------------------------- FEATURE_SET on an ENUM picker, build 59
+    for enum_id, option, writes, readout in spec.get("enum_writes", []):
+        for addr, _want in writes:
+            mem_write(c, addr, b"\x00" * len(_want))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", enum_id, option))
+        if check(status == ST_OK, "%s: FEATURE_SET picks option %d of ENUM %d" % (name, option, enum_id), status):
+            for addr, want in writes:
+                status, body = c.call(OP_MEM_READ, struct.pack(">II", addr, len(want)))
+                check(status == ST_OK and body == want,
+                      "%s: and 0x%X reads %s" % (name, addr, want.hex()), body)
+            info = fresh_state(c, settle=0.4)
+            check(info and info["readout"][readout] == option,
+                  "%s: readout %d reads the option back" % (name, readout),
+                  info["readout"][readout] if info else None)
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", enum_id, 99))
+        check(status == ST_BAD_ARG, "%s: an option past ENUM %d's end is BAD_ARG" % (name, enum_id), status)
+
     # ------------------------------------ FEATURE_SET on a signed VALUE, 1.7
     if spec.get("signed_qe"):
         qe_id, qe_addr, qe_readout = spec["signed_qe"]
@@ -5604,6 +5631,10 @@ TOD_TITLE = "NPEA00452"
 TOD_FP_ADDR = 0x002EA5F0
 TOD_FP = bytes([0x93, 0xEB, 0x06, 0xE8])
 TOD_BOLTS = 0x1020C28C
+TOD_ARMOUR = 0x1020C2C8              # build 59: g_saveData+0x458 (tod.h)
+TOD_ARMOUR_OWNED = 0x1020C2B4        # +0x444, s32[5]
+TOD_SKIN = 0x1020C2F0                # +0x480
+TOD_ARMOUR_CONFIGS = 0x101E7D68      # g_armorConfigs, 0x28 each, the damage scale at +0
 TOD_LEVEL_OBJ = 0x10740BB4
 TOD_LOAD_REQUEST = 0x1006E764
 TOD_GAME_STATE = 0x10387F4C
@@ -6173,7 +6204,8 @@ def smoke_tod(c, sim):
         labels = [f["label"] for f in features]
         check(game == 5 and groups == ["Cheats", "Player", "Progress", "Savefile"],
               "ToD: game 5, four groups", (game, groups))
-        check(readouts == ["Bolts", "Raritanium", "Challenge mode", "Cutscene cache"], "ToD: its readouts", readouts)
+        check(readouts == ["Bolts", "Raritanium", "Challenge mode", "Cutscene cache", "Armour", "Skin"],
+              "ToD: its readouts, build 59's Armour and Skin last", readouts)
         for want in ("Die", "Bolts",
                      "Raritanium", "Challenge mode", "Unlock all skill points", "Reset gold bolts"):
             check(want in labels, "ToD: DESCRIBE lists %s" % want, labels)
@@ -6207,6 +6239,28 @@ def smoke_tod(c, sim):
 
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 5, 4242))
     check(status == ST_OK and mem_read_u32(c, TOD_BOLTS) == 4242, "ToD: Bolts is a plain write", status)
+    # Build 59: the pickers, 25 Armour and 26 Skin (tod_panel.c): Hero_setArmor's
+    # three writes, the damage scale out of g_armorConfigs, and Skin_select's one.
+    ids = dict((f["label"], (f["id"], f["kind"], f["aux"])) for f in features)
+    check(ids.get("Armour") == (25, FEATURE_ENUM, 5) and ids.get("Skin") == (26, FEATURE_ENUM, 9),
+          "ToD: DESCRIBE lists Armour (25, five) and Skin (26, nine), ENUMs", (ids.get("Armour"), ids.get("Skin")))
+    mem_write(c, TOD_ARMOUR_CONFIGS + 2 * 0x28, struct.pack(">f", 0.6))
+    mem_write(c, TOD_ARMOUR_OWNED, b"\x00" * 20)
+    mem_write(c, TOD_FAKE_HERO + 0x1798, struct.pack(">f", 1.0))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 25, 2))
+    check(status == ST_OK and mem_read_u32(c, TOD_ARMOUR) == 2 and mem_read_u32(c, TOD_ARMOUR_OWNED + 8) == 1,
+          "ToD: Helios is worn and owned", status)
+    check(mem_read_u32(c, TOD_FAKE_HERO + 0x1798) == struct.unpack(">I", struct.pack(">f", 0.6))[0],
+          "ToD: and the hero takes the game's 0.6 damage scale", mem_read_u32(c, TOD_FAKE_HERO + 0x1798))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 26, 5))
+    check(status == ST_OK and mem_read_u32(c, TOD_SKIN) == 5, "ToD: Cronk's skin is the skin word", status)
+    info = fresh_state(c, settle=0.4)
+    check(info and info["readout"][4] == 2 and info["readout"][5] == 5,
+          "ToD: the Armour and Skin readouts read them back", info["readout"][4:6] if info else None)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 26, 9))
+    check(status == ST_BAD_ARG and mem_read_u32(c, TOD_SKIN) == 5, "ToD: a skin past the ninth is BAD_ARG", status)
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 25, 0))
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 26, 0))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 1))
     check(status == ST_OK and mem_read_u32(c, TOD_NO_DAMAGE) == 1, "ToD: Infinite health, a data word", status)
     c.call(OP_FEATURE_SET, struct.pack(">BI", 9, 0))
@@ -7751,7 +7805,8 @@ def smoke_rpcs3_rac3_switches(c, pine):
     check(status == ST_OK and 21 not in ids and 39 not in ids and RAC3_SW_FAST_ID in ids,
           "rpcs3 rac3 switches: DESCRIBE leaves out the trophy reset and its toggle",
           (status, sorted(ids)))
-    check(len(names) == 12 and "Trophy reset" not in names,
+    # Build 59: the skin's readout follows it, so its name is left blank.
+    check(len(names) == 14 and "Trophy reset" not in names and names[12] == "" and names[13] == "Skin",
           "rpcs3 rac3 switches: and the reset's status readout (revision 1.21)", names)
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([21]))
     check(status == ST_NOT_FOUND, "rpcs3 rac3 switches: and the reset's id is NOT_FOUND", status)
@@ -9413,7 +9468,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BCES01503", status):
             game, groups, readouts, features, _consumed = parse_describe(body)
             check(game == 3, "and names RaC3", game)
-            check(len(features) == 28, "with RaC3's twenty-eight features",
+            check(len(features) == 29, "with RaC3's twenty-nine features",
                   len(features))
 
         # ------------------------ BLMODYOOO, a repacked PAL Going Commando
@@ -9436,7 +9491,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BLMODYOOO", status):
             game, _groups, _readouts, features, _consumed = parse_describe(body)
             check(game == 2, "and names RaC2", game)
-            check(len(features) == 28, "with RaC2's twenty-eight features",
+            check(len(features) == 30, "with RaC2's thirty features",
                   len(features))
 
         # ------------------------- the planet selection per game, build 53

@@ -765,8 +765,41 @@ static const char * const rac3_ship_options[RAC3_SHIP_COUNT] = {
 	"Ozzy Kamikaze"
 };
 
+/*
+ * Build 59: the pause menu's skin list, as the game names it (all_text): its
+ * first row puts the armour back, and the nine after it are skins 5 to 13 in
+ * the menu's order. The table's last four ids, 14 to 17, have no name in any
+ * of the game's text and are left out.
+ */
+static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
+	"Current Armor",
+	"Old School Ratchet",
+	"Snowman",
+	"Tuxedo Ratchet",
+	"Buginoid",
+	"Brainius",
+	"Constructobot",
+	"Robo Rooster",
+	"Trooper",
+	"Robo"
+};
+
+/* The skin byte as an option index; an id the list has no row for reads as none. */
+u32 rac3_skin_index(u8 skin)
+{
+	if (skin >= RAC3_SKIN_FIRST && skin < RAC3_SKIN_FIRST + RAC3_SKIN_COUNT - 1)
+		return (u32)(skin - RAC3_SKIN_FIRST + 1);
+	return 0;
+}
+
 int rac3_get_options(u8 id, const char * const **options, u8 *count)
 {
+	if (id == R3_SKIN) {
+		*options = rac3_skin_options;
+		*count = RAC3_SKIN_COUNT;
+		return ST_OK;
+	}
+
 	if (id == R3_ARMOUR) {
 		*options = rac3_armour_options;
 		*count = RAC3_ARMOUR_COUNT;
@@ -1777,6 +1810,13 @@ int rac3_set_value(u8 id, u32 value)
 
 	case R3_SHIP_COLOUR:
 		return mem_write_u8(RAC3_SHIP_COLOUR, (u8)value);
+
+	case R3_SKIN: {
+		/* The skin's id, then the loaded armour at -1 for the next planet load (rac3.h). */
+		int rc = mem_write_u8(RAC3_SKIN, value == 0 ? 0u : (u8)(RAC3_SKIN_FIRST - 1 + value));
+		if (rc != ST_OK) return rc;
+		return mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
+	}
 
 	case R3_QE_OFFSET: {
 		/*
