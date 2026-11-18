@@ -16,7 +16,11 @@
  *   TOD_SCAN   a Python pass over the executable (REPORT-tod-lua section 1)
  *   TOD_LEGACY only from the old C# RaCMAN or the autosplitter
  *   TOD_INFER  inferred from the above; says what would settle it
- * Nothing in here has been read on a running game yet (docs/tod-poc.md 5).
+ * A mark says how a fact was first found, not whether it has been checked
+ * since: the module has run on consoles and under RPCS3 since build 57, and
+ * the hardware tests of docs/tod-menu.md and docs/tod-savefile.md read and
+ * corrected much of this table. A note that says something was not yet
+ * checked live dates from before those tests.
  */
 #ifndef QWARK_TOD_H
 #define QWARK_TOD_H

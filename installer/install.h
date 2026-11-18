@@ -146,7 +146,7 @@
  *   (the client's premade-savefiles/titles.txt) are its folder's bytes.
  */
 #define INST_LIBRARY_NAME   "library.bin"
-#define INST_LIB_MAX        (4u << 20)      /* about 200 KB today */
+#define INST_LIB_MAX        (4u << 20)      /* about 370 KB today */
 #define INST_LIB_HEAD       32u
 #define INST_LIB_ENTRY      160u
 #define INST_LIB_PATH_MAX   128u

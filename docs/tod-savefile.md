@@ -11,7 +11,7 @@ The same Save files panel and quick buttons as the four original games:
 - **Save to a slot** (SAVEFILE_STORE): the game's last save goes into the console library, `/dev_hdd0/qwark/savefiles/NPEA00452/<category>/<name>.sav`. "Last save" means what the other games mean by it: the image of the last GAME.SAV the game wrote (an autosave or a menu save) or read (a load), not the live state since then.
 - **Load a file** (SAVEFILE_RESTORE): any `.sav` of this game, from the library, the PC mirror or the premade savefiles, is loaded as the game loads a save from its own menu. The game fades out and loads the save's planet.
 - **Set aside / Load set-aside** (features 40 and 41, flagged SAVE_ASIDE and LOAD_ASIDE): the same pair as the other games, also on the Game page's quick block and the Load-set-aside combo. In ToD the set-aside is a file, `/dev_hdd0/qwark/savefiles/NPEA00452/set-aside.sav`, which no listing shows (it sits beside the categories rather than in one). It survives autosaves and reboots. See section 4.3 for the reason. As in the other games, loading a file also sets it aside: after a RESTORE the game takes, Load set-aside (and its combo) loads that same file again, until a Set aside replaces it with the game's save (revision 1.29; section 4.1).
-- **Premade savefiles**: the client's mechanism needs nothing new. A folder `premade-savefiles/NPEA00452/` with `.sav` files and a manifest entry ships them. None ships yet: we have no ToD saves to make premades from (section 5).
+- **Premade savefiles**: the client's mechanism needs nothing new. A folder `premade-savefiles/NPEA00452/` with `.sav` files ships them; no manifest is needed. Since build 59 one ships, `NG+.sav`, the user's NG+ save on Kerwan (Metropolis), and the installer package carries it too (`docs/installer.md`).
 
 A `.sav` is the GAME.SAV image byte for byte, 0x906F0 = 591,600 bytes. The GAME.SAV files RPCS3 keeps in its savedata folder are unencrypted and the same layout, so a user can copy one into the library as it is. A console's GAME.SAV is a protected file (secureFileId), and the copy on its HDD is encrypted.
 
@@ -152,7 +152,7 @@ Nothing ToD-specific is needed: the Save files panel keys on the two flagged ACT
 - **A hold left behind.** If qwark goes away in the middle of a copy, the game cannot save until the next session gives the hold back. The window is a few ticks on a console and longer under RPCS3. A quit to the XMB in that window is harmless: the game does not wait for the save system on its way out.
 - **A request racing the hold.** The game's request can read state 1 just before qwark's write. The hold's own look and the per-tick check catch every case but one in which the game's thread starts after both; that thread's work and qwark's copy would then meet in the file image. The window is a few instructions of the game's.
 - **The volumes.** `onLoaded` sets three audio volumes from the save, as any load does.
-- **No premades yet.** A premade needs a real save file; the user's RPCS3 saves are theirs. Any of them dropped into `premade-savefiles/NPEA00452/` works as it is.
+- **Premades.** A premade needs a real save file. Until build 59 none shipped; since then the user's NG+ save does (section 1). Any RPCS3 GAME.SAV dropped into `premade-savefiles/NPEA00452/` works as it is.
 
 ## 6. Live checks
 

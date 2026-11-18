@@ -313,7 +313,7 @@ u8   flags3             revision 1.30, a pad byte before it.
                              says the cheats line alone. Bit1 is clear then
                         bit7 reserved, 0
 f32  pos[3]             player x, y, z
-u32  pad_mask           controller buttons, OG layout (section 10). Revision 1.31: the VSH's own view of
+u32  pad_mask           controller buttons, OG layout (section 6). Revision 1.31: the VSH's own view of
                         pad 1 while the VSH has the pad (at the XMB, or a game's overlay) and a button
                         held, else the running game's pad (INGAME with the game's code in), else 0; see
                         that revision's line at the top
@@ -1745,8 +1745,13 @@ A boot of the game puts it back to 0, as the game clears its cache at every boot
 
 **Disable cutscene caching (21, TOGGLE).** While on, each level load (the tier loader on state 3 with `g_levelLoadTier` not loaded) walks the in-RAM block table (`g_fiosSchedulerCache` 0x106ACBA4: `blocks` +0xE0, `numBlocks` +0xDC, 0x28 bytes each), 32 blocks a tick, and writes `lastUse` (+0) 2, free, into every block of the destination planet's `level_uncached.psarc` that is neither free nor filling (3), and for Metropolis into blocks 0..56 of `global_uncached.psarc`, which hold its sound. The walk stops when the load does. Off, nothing is freed, and the warmer caches again as the game does.
 
+## 6. Pad mask layout
 
-OG layout, shared by all four games: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000. It is libpad's own: `CELL_PAD_BTN_OFFSET_DIGITAL2` in the low byte and `DIGITAL1` in the next, bit for bit, which is how the VSH's view (revision 1.31) is put into it; Tools of Destruction's pad is remapped into it (`tod_pad_to_og`).
+SessionInfo's `pad_mask` and `analog` (section 3) and the combos' masks (section 5.9) use one layout, whatever the game.
+
+OG layout, shared by every game: l2 0x1, r2 0x2, l1 0x4, r1 0x8, triangle 0x10, circle 0x20, cross 0x40, square 0x80, select 0x100, l3 0x200, r3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000, left 0x8000. It is libpad's own: `CELL_PAD_BTN_OFFSET_DIGITAL2` in the low byte and `DIGITAL1` in the next, bit for bit, which is how the VSH's view (revision 1.31) is put into it. The four original games keep their pad mask in this layout already; Tools of Destruction's pad is remapped into it (`tod_pad_to_og`), and a game whose own mask has another bit order is remapped the same way.
+
+The sticks, `analog[4]`, are in the order right x, right y, left x, left y, each `(v - 128) / 128` of libpad's byte `v`, so -1 to just under 1 with 0 at rest: x is negative to the left and y negative upward, as libpad's 0 is full left or full up and 255 full right or full down. A game that keeps its sticks in another order or as floats already (ToD's `g_padAnalogs`: left x, left y, right x, right y) is put into this order.
 
 ## 7. Connection lifecycle from the client side
 

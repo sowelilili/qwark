@@ -3,7 +3,8 @@
  * savefiles and mods in (installer/pkg.py writes it, install.c expands it).
  * A PS3 package is not compressed, and a savefile is mostly long runs of one
  * byte (zero padding in all of them, 0xFF fill in Deadlocked's), which this
- * takes from 8.7 MB to about 230 KB. The SDK has no zlib a PPU program can
+ * takes from 9.3 MB to about 370 KB (Tools of Destruction's 578 KB save, the
+ * densest, comes to 168 KB of it). The SDK has no zlib a PPU program can
  * link (only Edge's, which runs on the SPUs), and this needs none.
  *
  * The stream is a sequence of tokens. Each starts with a varint v, seven bits
