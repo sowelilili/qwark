@@ -476,6 +476,8 @@ MROWF_PICKER = 0x40
 MBOX_OFF_ROWS = 0x80
 MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
+MBOX_PAGE_ROOT = 0x01
+MBOX_REQ_OPEN = 1
 MBOX_EV_ACTIVATE = 1
 MBOX_EV_LEFT = 2
 MBOX_EV_RIGHT = 3
@@ -1467,6 +1469,25 @@ def combo_rows(c):
     return [struct.unpack(">BB2xI", body[1 + 8 * i:9 + 8 * i]) for i in range(n)]
 
 
+def combo_page_names(body):
+    """Revision 1.34: COMBO_LIST's trailer, (action, name) per page combo; None when malformed."""
+    off = 1 + 8 * body[0]
+    if off >= len(body):
+        return []
+    m = body[off]
+    off += 1
+    out = []
+    for _ in range(m):
+        if off + 2 > len(body):
+            return None
+        action, n = body[off], body[off + 1]
+        if off + 2 + n > len(body):
+            return None
+        out.append((action, body[off + 2:off + 2 + n].decode("ascii", "replace")))
+        off += 2 + n
+    return out if off == len(body) else None
+
+
 def wait_profile(c, pred, timeout=4.0):
     """Polls HELLO until pred(SessionInfo) holds, for `timeout` seconds of the module's time."""
     last = [None]
@@ -1516,18 +1537,26 @@ def test_profiles(sim, c):
     seq1 = info["profile_seq"] if info else None
 
     rows = combo_rows(c)
-    check(rows and len(rows) == 7 and all(r[1] == 0 for r in rows),
-          "profiles: COMBO_LIST has seven rows and no override", rows)
+    check(rows and len(rows) == 14 and all(r[1] == 0 for r in rows),
+          "profiles: COMBO_LIST has fourteen rows and no override", rows)
     status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 0, 1, 0x0109))
     check(status == ST_OK, "profiles: COMBO_OVERRIDE of the save combo", status)
     rows = combo_rows(c)
     check(rows and rows[0][1] == 1 and rows[0][2] == 0x0109 and rows[1][1] == 0,
           "profiles: its row is flagged and carries the override, the next is not", rows and rows[:2])
-    for payload, what in ((struct.pack(">BB2xI", 7, 1, 1), "action 7"),
+    for payload, what in ((struct.pack(">BB2xI", 14, 1, 1), "action 14, past the page combos"),
                           (struct.pack(">BB2xI", 0, 2, 1), "set 2"),
                           (bytes([0, 1]), "a short request")):
         status, _ = c.call(OP_COMBO_OVERRIDE, payload)
         check(status == ST_BAD_ARG, "profiles: COMBO_OVERRIDE with %s is BAD_ARG" % what, status)
+    # Revision 1.34: a page combo (Planets, action 9) overridden like any other, then cleared.
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 9, 1, 0x0181))
+    rows = combo_rows(c)
+    check(status == ST_OK and rows and rows[9] == (9, 1, 0x0181) and rows[10][1] == 0,
+          "profiles: the Planets page combo overridden for this user, flagged, its neighbour not", rows and rows[9:11])
+    status, _ = c.call(OP_COMBO_OVERRIDE, struct.pack(">BB2xI", 9, 0, 0))
+    rows = combo_rows(c)
+    check(status == ST_OK and rows and rows[9] == (9, 0, 0), "profiles: and cleared, unbound again", rows and rows[9])
     status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 0, 0x0105))
     rows = combo_rows(c)
     check(status == ST_OK and rows and rows[0][2] == 0x0109,
@@ -3821,6 +3850,33 @@ def exercise_console_menu(c, sim):
     check(status == ST_OK and combo() == 0, "Deadlocked menu: combo.menu 0 turns it off")
     c.call(OP_COMBO_SET, struct.pack(">B3xI", COMBO_OPEN_MENU, COMBO_MENU_DEFAULT))
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+
+    # Revision 1.34: a page combo (Cheats, action 8) bound over the wire opens
+    # the menu straight on its page; cleared, its line leaves config.txt.
+    page_mask = 0x0180
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 8, page_mask))
+    cfg_now = read_console_file(c, "/dev_hdd0/qwark/config.txt") or b""
+    check(status == ST_OK and b"combo.page.cheats = 0x00000180" in cfg_now,
+          "Deadlocked menu: COMBO_SET binds the Cheats page combo, combo.page.cheats in config.txt", status)
+    press(sim, c, "0x0", 0.15)
+    press(sim, c, "0x%x" % page_mask, 0)
+    wait_while(c, lambda: mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST) == 0, 0.25, 0.005)
+    req = mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST)
+    press(sim, c, "0x0", 0.1)
+    page = menu_page(c)
+    check(req == MBOX_REQ_OPEN and page is not None and page[2] == "Cheats" and page[5] == MBOX_PTYPE_CONFIG and
+          not (page[4][MBOX_OFF_PFLAGS] & MBOX_PAGE_ROOT),
+          "Deadlocked menu: its press asks the renderer to open, the Cheats page already in the mailbox",
+          (req, page[2] if page else None))
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    wait_while(c, lambda: (menu_page(c) or (0, 0, ""))[2] != "Trainer", 2.0, 0.1)
+    page = menu_page(c)
+    check(page is not None and page[2] == "Trainer",
+          "Deadlocked menu: an open nobody took puts the root back for the Help row", page[2] if page else None)
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 8, 0))
+    cfg_now = read_console_file(c, "/dev_hdd0/qwark/config.txt") or b""
+    check(status == ST_OK and b"combo.page.cheats" not in cfg_now,
+          "Deadlocked menu: cleared, the page combo's line leaves config.txt", status)
 
     # menu.enabled = 0, by hand in config.txt: the hooks come out with the game in play.
     mem_write(c, 0x009C37F4, struct.pack(">I", 0xFFFFFFFE))
@@ -8960,15 +9016,22 @@ def main():
         # Revision 1.22: the sixth action the console menu's, which has a mask
         # before anybody sets one. Revision 1.23: seven, the fast-loads combo
         # the seventh, with none.
-        check(status == ST_OK and body[0] == 7 and sorted(combos) == [0, 1, 2, 3, 4, 5, 6],
-              "COMBO_LIST reports seven actions", combos)
+        # Revision 1.34: fourteen, the page combos after them with no mask,
+        # and after the entries the pages' names.
+        check(status == ST_OK and body[0] == 14 and sorted(combos) == list(range(14)) and
+              all(combos[a] == 0 for a in range(7, 14)),
+              "COMBO_LIST reports fourteen actions, the seven page combos unbound", combos)
+        names = combo_page_names(body) if status == ST_OK else None
+        check(names == [(7, "Game"), (8, "Cheats"), (9, "Planets"), (10, "Manips"), (11, "Unlocks"),
+                        (12, "Mods"), (13, "Save files")],
+              "and after its entries the page combos' names, in the Trainer's order", names)
         check(combos.get(COMBO_OPEN_MENU) == COMBO_MENU_DEFAULT,
               "the open-menu combo is L1 + R1 + L2 + R2 + L3 + R3 out of the box",
               hex(combos.get(COMBO_OPEN_MENU, 0)))
         check(combos.get(COMBO_TOGGLE_FAST_LOADS) == 0, "the fast-loads combo has no mask out of the box",
               hex(combos.get(COMBO_TOGGLE_FAST_LOADS, 0)))
-        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 7, 0x1))
-        check(status == ST_BAD_ARG, "COMBO_SET of an eighth action is BAD_ARG", status)
+        status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 14, 0x1))
+        check(status == ST_BAD_ARG, "COMBO_SET of an action past the last is BAD_ARG", status)
 
         # Revision 1.23: the fast-loads combo flips RaC1's Fast loads (feature
         # 0) as the checkbox does, and the console says which way.

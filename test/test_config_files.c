@@ -563,6 +563,70 @@ static void test_carry_no_newline(void)
 }
 #endif /* QWARK_PREVIEW */
 
+/*
+ * Revision 1.34: the page combos' lines. Unbound out of the box, with no
+ * line; COMBO_SET writes one, a reload reads it back, and 0 takes it out with
+ * every other line kept. A user's override of one is theirs alone, 0 too
+ * (off for them), and Clear takes it out of their file.
+ */
+static void test_page_combo_lines(void)
+{
+	u32 lines;
+#if QWARK_PREVIEW
+	int changed = 0;
+#endif
+
+	group("config files: the page combos (revision 1.34)");
+	if (session_state() != SESSION_XMB) cf_quit();
+	cf_no_faults();
+	cf_spill(QWARK_CONFIG, g_console_cfg);
+	config_load();
+#if QWARK_PREVIEW
+	config_profiles_enable(0, PROFILE_SETUP_NONE, 1, &changed);
+#endif
+	lines = cf_count_lines(QWARK_CONFIG);
+	check(config_combo(COMBO_PAGE_PLANETS) == 0 && config_get("combo.page.planets") == NULL,
+	      "a config.txt that names no page combo: Planets' unbound");
+	check(config_set_combo(COMBO_PAGE_PLANETS, 0x0180) == ST_OK &&
+	      cf_has_line(QWARK_CONFIG, "combo.page.planets = 0x00000180") && cf_count_lines(QWARK_CONFIG) == lines + 1,
+	      "COMBO_SET binds it: one line more, combo.page.planets");
+	check(config_load() == ST_OK && config_combo(COMBO_PAGE_PLANETS) == 0x0180, "a reload reads it back");
+	check(config_set_combo(COMBO_PAGE_PLANETS, 0) == ST_OK && config_combo(COMBO_PAGE_PLANETS) == 0 &&
+	      !cf_has_line(QWARK_CONFIG, "combo.page.planets = 0x00000000") &&
+	      cf_count_lines(QWARK_CONFIG) == lines && cf_keys_in(QWARK_CONFIG, g_console_cfg, 1, NULL) &&
+	      cf_has_line(QWARK_CONFIG, "combo.fastloads = 0x00000083"),
+	      "cleared, its line goes, and every other line stays");
+	check(config_load() == ST_OK && config_combo(COMBO_PAGE_PLANETS) == 0, "and a reload finds it unbound");
+	check(config_set_combo(COMBO_TOGGLE_FAST_LOADS, 0) == ST_OK && cf_has_line(QWARK_CONFIG, "combo.fastloads = 0x00000000"),
+	      "the seven before them still write their 0, as they always have");
+	config_set_combo(COMBO_TOGGLE_FAST_LOADS, 0x83);
+
+#if QWARK_PREVIEW
+	host_set_has_users(1);
+	host_set_user(1);
+	cf_forget(CF_P1);
+	check(config_profiles_enable(1, PROFILE_SETUP_FRESH, 1, &changed) == ST_OK && config_profile_active(),
+	      "user 1's profile, fresh");
+	check(config_set_combo(COMBO_PAGE_MODS, 0x0180) == ST_OK &&
+	      config_set_combo_override(COMBO_PAGE_MODS, 1, 0x0280) == ST_OK &&
+	      config_combo(COMBO_PAGE_MODS) == 0x0280 && config_combo_overridden(COMBO_PAGE_MODS) &&
+	      cf_has_line(CF_P1 "/config.txt", "combo.page.mods = 0x00000280") &&
+	      cf_has_line(QWARK_CONFIG, "combo.page.mods = 0x00000180"),
+	      "Mods bound for everyone and overridden for user 1: theirs in their file, the console's in config.txt");
+	check(config_set_combo_override(COMBO_PAGE_MODS, 1, 0) == ST_OK && config_combo(COMBO_PAGE_MODS) == 0 &&
+	      cf_has_line(CF_P1 "/config.txt", "combo.page.mods = 0x00000000"),
+	      "an override of 0, off for user 1 alone, is kept as a line");
+	check(config_set_combo_override(COMBO_PAGE_MODS, 0, 0) == ST_OK && config_combo(COMBO_PAGE_MODS) == 0x0180 &&
+	      !cf_has_line(CF_P1 "/config.txt", "combo.page.mods = 0x00000000"),
+	      "Clear: the console's again, the line out of their file");
+	config_profiles_enable(0, PROFILE_SETUP_NONE, 1, &changed);
+	config_set_combo(COMBO_PAGE_MODS, 0);
+	check(config_combo(COMBO_PAGE_MODS) == 0 && cf_count_lines(QWARK_CONFIG) == lines &&
+	      !cf_has_line(QWARK_CONFIG, "combo.page.mods = 0x00000180"),
+	      "and cleared for everyone: its line gone from config.txt");
+#endif
+}
+
 void test_config_files(void)
 {
 	static char before[CF_FILE_MAX];
@@ -578,6 +642,9 @@ void test_config_files(void)
 #if QWARK_PREVIEW
 	test_profile_day();
 	test_carry_no_newline();
+#endif
+	test_page_combo_lines();
+#if QWARK_PREVIEW
 	cf_forget(CF_P1);
 	cf_forget(CF_P2);
 	host_set_user(1);

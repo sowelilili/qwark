@@ -1424,7 +1424,10 @@ static void run_combo(u8 action)
 	case COMBO_LOAD_SETASIDE: session_load_setaside(); break;
 	case COMBO_OPEN_MENU:     menu_combo(); break;
 	case COMBO_TOGGLE_FAST_LOADS: toggle_fast_loads(); break;
-	default: break;
+	default:
+		/* Revision 1.34: a page combo opens the Trainer on its page (menu.c). */
+		if (action >= COMBO_PAGE_FIRST && action < COMBO_COUNT) menu_page_combo((u8)(action - COMBO_PAGE_FIRST));
+		break;
 	}
 }
 

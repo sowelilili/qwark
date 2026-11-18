@@ -13,6 +13,7 @@
 #include "gamemod.h"
 #include "manips.h"
 #include "luacore.h"
+#include "menu.h"
 #include "../plat/plat.h"
 #include "../plat/plat_net.h"
 #include "../games/game.h"
@@ -1893,9 +1894,10 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 	 */
 	case OP_COMBO_LIST: {
 		u8 a;
-		u32 off = 1;
+		u32 off = 1, len;
+		const char *name;
 
-		if (1u + COMBO_COUNT * 8u > replycap) return ST_FULL;
+		if (COMBO_LIST_MAX > replycap) return ST_FULL;
 
 		core_lock();
 		reply[0] = COMBO_COUNT;
@@ -1908,6 +1910,20 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 			off += 8;
 		}
 		core_unlock();
+		/*
+		 * Revision 1.34: the page combos' names after the entries, which a
+		 * client before it never reads (it takes `n` entries and stops).
+		 */
+		reply[off++] = COMBO_PAGES;
+		for (a = 0; a < COMBO_PAGES; a++) {
+			name = menu_page_name(a);
+			len = (u32)strlen(name);
+			if (len > COMBO_PAGE_NAME_MAX) len = COMBO_PAGE_NAME_MAX;
+			reply[off] = (u8)(COMBO_PAGE_FIRST + a);
+			reply[off + 1] = (u8)len;
+			memcpy(reply + off + 2, name, len);
+			off += 2 + len;
+		}
 		*replylen = off;
 		return ST_OK;
 	}

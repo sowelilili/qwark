@@ -680,3 +680,27 @@ So a planet load from the pause is not a limit of the game's; only the map, an F
 6. During an FMV (with Remove cutscenes off): a planet load still says busy.
 7. The Trainer's own Planets page and save files from the pause: as before (the pause closes, then the load).
 8. A run with the autosplitter: a planet load from the pause splits once on the new planet; no reset, no long-load pause from the pause itself. Fast loads off: the load from the pause is fast-loaded and the toggle stays off after.
+
+## 21. The page combos (revision 1.34, build 59)
+
+A combo per page of the Trainer's root, the same list in every game (PROTOCOL.md 5.9, "The page combos"): Game, Cheats, Planets, Manips, Unlocks, Mods, Save files. In Tools of Destruction a page is the root row of that label: Game, Cheats and Manips are sections of `tod_menu` (tod_game.c), the others qwark's pages.
+
+### 21.1 How a page opens (high, from the code)
+
+The combo cannot push the pause onto a page of its own: the game opens its pause through its own pause test only, with its own first screen (section 12.5: `get_starting_screen` acts on PAUSEMENU_MOVIES alone, and each pause is a new Lua VM the glue goes into once the presentation is up). So a page combo does what the menu combo does and no more: it posts the page (the root under it, the cursor on the page's row) and makes the same open request, which the helper's pause test (`lm_pause_check`) takes as a press of Start. The glue's `open()` then shows whatever page qwark posted, a MAIN page in the pause's list and a CONFIG page on Game Options, as it already did for a page change (no change to the glue, the helper or LUA_PATCH). So the pause's own list shows for the few frames before the glue opens, as for the menu combo; then the page. With the Trainer up, a page combo changes the page at once (the glue follows any new page), and asks for nothing; with the game's own pause up and the Trainer down, the request is taken from the pause as the menu combo's is.
+
+**Planets** is the Planets row's own action (section 16): from play the galactic map opens straight away, with no pause at all (the row's CLOSES action runs at once, the game already playing), and Back from the map is the Trainer's root with the cursor on Planets. Where the map cannot open (no level's lua_State, no helper) it is the Planets page, said on the console as from the row.
+
+An open the pause test took but that never brought the Trainer up (the pause did not come, or the glue did not go in) is given four seconds; then qwark posts the root again, so the TRAINER row of the next pause opens on the root as ever.
+
+### 21.2 What the next console test should show
+
+Bind each from the client's Combos panel, the Trainer pages row's dropdown.
+
+1. In play, the Cheats combo: the pause opens (its list for a moment), then the Trainer on CHEATS in Game Options. Triangle: the Trainer's root, the cursor on CHEATS. Triangle again: the pause's list, as from the TRAINER row.
+2. The same for Game, Manips (Game Options), Unlocks (the pause's list) and Save files.
+3. With the Trainer up on any page, the Manips combo: MANIPS at once, no flicker of the pause.
+4. With the game's own pause up on Options (the Trainer down), the Cheats combo: the list comes back, then the Trainer on CHEATS.
+5. In play, the Planets combo: no pause, the galactic map at once. Triangle in the map: the pause opens on the Trainer's root, the cursor on PLANETS.
+6. During a load, a cutscene or with the map up: nothing opens, and the next Start shows the game's own pause; TRAINER there opens on the root.
+7. On RPCS3 with the helper's patch (optional): the same; the Mods combo says "Trainer: no Mods page in this game" once and opens nothing.

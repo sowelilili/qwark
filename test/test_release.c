@@ -436,8 +436,9 @@ static void test_release(void)
 	st = call(OP_COMBO_OVERRIDE, req, 8, reply, sizeof(reply), &len);
 	check_eq(st, ST_OK, "COMBO_OVERRIDE answers OK");
 	st = call(OP_COMBO_LIST, NULL, 0, reply, sizeof(reply), &len);
-	check(st == ST_OK && len == 1u + COMBO_COUNT * 8u && (reply[2] & COMBO_LIST_OVERRIDDEN),
-	      "and COMBO_LIST flags the first action OVERRIDDEN");
+	check(st == ST_OK && reply[0] == COMBO_COUNT && len > 1u + COMBO_COUNT * 8u &&
+	      reply[1u + COMBO_COUNT * 8u] == COMBO_PAGES && (reply[2] & COMBO_LIST_OVERRIDDEN),
+	      "and COMBO_LIST flags the first action OVERRIDDEN, the page combos' names after the entries (revision 1.34)");
 	memset(req, 0, sizeof(req));
 	st = call(OP_COMBO_OVERRIDE, req, 8, reply, sizeof(reply), &len);
 	check_eq(st, ST_OK, "the override cleared again");

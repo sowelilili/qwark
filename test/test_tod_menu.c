@@ -1022,6 +1022,132 @@ static void test_galmap(void)
 	tick(30);
 }
 
+/* ------------------------------------------- the page combos (rev. 1.34) */
+
+/* ToD's own pad bits for the page combos: L1 0x40 and Select 0x100, and a direction. */
+#define TOD_PAGE_PAD(dir) (0x40u | 0x100u | (dir))
+#define TOD_PAD_UP    0x1000u
+#define TOD_PAD_RIGHT 0x2000u
+#define TOD_PAD_DOWN  0x4000u
+#define TOD_PAD_LEFT  0x8000u
+
+static void tod_press(u32 raw)
+{
+	host_set_pad(0);
+	tick(4);
+	host_set_pad(raw);
+	tick(4);
+	host_set_pad(0);
+	tick(4);
+}
+
+/* The title of the page qwark last posted, as it wrote it (the helper's copy is in capitals). */
+static void posted_title(char *out)
+{
+	u32 k;
+
+	for (k = 0; k < MBOX_TITLE_LEN && peek8(LM_BOX + MBOX_OFF_TITLE + k) != 0; k++) out[k] = (char)peek8(LM_BOX + MBOX_OFF_TITLE + k);
+	out[k] = 0;
+}
+
+static void test_page_combos(void)
+{
+	const struct lh_desc *d = lh_desc_for_title(TOD_TITLE);
+	const u32 game = TOD_PAGE_PAD(TOD_PAD_UP), cheats = TOD_PAGE_PAD(TOD_PAD_RIGHT);
+	const u32 planets = TOD_PAGE_PAD(TOD_PAD_DOWN), manips = TOD_PAGE_PAD(TOD_PAD_LEFT);
+	u32 mb = d->mailbox, req;
+	char t[40];
+	int i, r;
+
+	group("ToD's console menu: the page combos, the pause first, then the page (revision 1.34)");
+	config_set_combo(COMBO_PAGE_GAME, tod_pad_to_og(game));
+	config_set_combo(COMBO_PAGE_CHEATS, tod_pad_to_og(cheats));
+	config_set_combo(COMBO_PAGE_PLANETS, tod_pad_to_og(planets));
+	config_set_combo(COMBO_PAGE_MANIPS, tod_pad_to_og(manips));
+	tick(2);
+
+	/* From play: an open, which the game's pause test takes as Start; the glue then opens the Trainer on the page. */
+	tod_press(cheats);
+	posted_title(t);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && strcmp(t, "Cheats") == 0 && menu_model_depth() == 2,
+	      "Cheats' combo in play: an open request, with Cheats already in the mailbox");
+	check(lm_pause_check(0) == 1, "the game's pause test takes it, as a press of Start");
+	pause_up();
+	check(lm_take_request() == 1, "the pause up, the glue takes the pending open");
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	title(t);
+	check(strcmp(t, "CHEATS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
+	      "the Trainer opens on Cheats, a CONFIG page (Game Options), not on its root");
+	press(MBOX_EV_BACK, -1);
+	title(t);
+	r = find_row("Cheats");
+	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r,
+	      "Back: the Trainer's root, the cursor on Cheats");
+
+	/* Up already: Manips, a section of ToD's own table, at once, nothing asked. */
+	tod_press(manips);
+	lm_take();
+	title(t);
+	check(strcmp(t, "MANIPS") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "with the Trainer up, Manips' combo shows Manips at once and asks for nothing");
+	press(MBOX_EV_BACK, -1);
+	lm_hstate(0);
+	pause_gone();
+	tick(30);
+
+	/* Taken by the pause test, but the Trainer never up: four seconds, then the root for the next open. */
+	tod_press(game);
+	posted_title(t);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && strcmp(t, "Game") == 0, "Game's combo: an open, on Game");
+	lm_pause_check(0);
+	for (i = 0; i < 360; i++) tick(1);
+	posted_title(t);
+	check(strcmp(t, "Game") == 0, "taken by the pause test: Game is kept a while for the glue to open on");
+	for (i = 0; i < 240; i++) tick(1);
+	posted_title(t);
+	check(strcmp(t, "Trainer") == 0 && menu_model_depth() == 1,
+	      "with no Trainer four seconds on, the root again, so the TRAINER row opens on it");
+	for (i = 0; i < LM_PENDING_FRAMES; i++) lm_gameplay_frame();
+	tick(4);
+
+	/* Planets: the galactic map straight from play, no pause; Back is the Trainer's root, as from its row. */
+	save_part_way();
+	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	req = peek32(mb + LUAMB_OFF_REQ);
+	tod_press(planets);
+	tick(6);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(mb + LUAMB_OFF_REQ) != req &&
+	      peek8(mb + LUAMB_OFF_TARGET) == LUAMB_TARGET_GAMEPLAY && save_for_map(),
+	      "Planets' combo in play: no pause, the unlocks poked and gmap() to the gameplay VM");
+	host_fake_lua_frame();
+	tick(6);
+	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "the galactic map up");
+	host_fake_map(-1);
+	tick(12);
+	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "Back: the save's bytes again, nothing loaded, the Trainer asked to open");
+	pause_up();
+	lm_take_request();
+	lm_hstate(1);
+	tick(4);
+	lm_take();
+	title(t);
+	r = find_row("Planets");
+	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r,
+	      "on the Trainer's root, the cursor on Planets");
+	lm_hstate(0);
+	pause_gone();
+	tick(30);
+
+	config_set_combo(COMBO_PAGE_GAME, 0);
+	config_set_combo(COMBO_PAGE_CHEATS, 0);
+	config_set_combo(COMBO_PAGE_PLANETS, 0);
+	config_set_combo(COMBO_PAGE_MANIPS, 0);
+	tick(2);
+}
+
 /* ------------------------------------------------------------ the glue */
 
 static void test_glue(void)
@@ -1587,6 +1713,20 @@ static void test_rpcs3(void)
 	for (i = 0; i < 1500 && menu_state() != MENU_READY; i++) tick(1);
 	check(menu_state() == MENU_READY && peek32(LM_BOX) == MBOX_MAGIC && hooks_in(d, 1),
 	      "the menu goes in: the mailbox written over PINE, the hooks the patch's");
+	/* Revision 1.34: the page combos work here as the menu does; Mods, which RPCS3 has not, opens nothing. */
+	config_set_combo(COMBO_PAGE_MODS, tod_pad_to_og(TOD_PAGE_PAD(TOD_PAD_UP)));
+	config_set_combo(COMBO_PAGE_UNLOCKS, tod_pad_to_og(TOD_PAGE_PAD(TOD_PAD_DOWN)));
+	tick(2);
+	n = host_notify_count();
+	tod_press(TOD_PAGE_PAD(TOD_PAD_UP));
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && host_notify_count() == n + 1 &&
+	      strcmp(host_notify_last(), "Trainer: no Mods page in this game") == 0,
+	      "Mods' combo under RPCS3: no Mods page, nothing asked, and the console says so");
+	tod_press(TOD_PAGE_PAD(TOD_PAD_DOWN));
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && menu_model_page() == MENU_PAGE_ID(MENU_PAGE_UNLOCKS, 0),
+	      "while Unlocks' asks to open on Unlocks, as on a console");
+	config_set_combo(COMBO_PAGE_MODS, 0);
+	config_set_combo(COMBO_PAGE_UNLOCKS, 0);
 	check(quit(), "the game quits");
 	host_set_lua_patch(0);
 	host_set_can_patch_code(1);
@@ -1602,6 +1742,7 @@ void test_tod_menu(void)
 	test_requests();
 	test_pause_loads();
 	test_galmap();
+	test_page_combos();
 	test_glue();
 	test_gate();
 	test_diag();

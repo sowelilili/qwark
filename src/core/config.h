@@ -123,7 +123,10 @@ u32  config_get_u32(const char *key, u32 fallback);
 u32  config_version(void);
 int  config_set_u32(const char *key, u32 value);
 
-/* Combos, indexed by COMBO_* action. Mask 0 disables. Revision 1.23: seven of them. */
+/*
+ * Combos, indexed by COMBO_* action. Mask 0 disables. Revision 1.23: seven of
+ * them; revision 1.34: fourteen, the page combos' 0 taking their line out.
+ */
 u32  config_combo(u8 action);
 int  config_set_combo(u8 action, u32 mask);
 

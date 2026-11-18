@@ -15842,7 +15842,7 @@ static void test_reply_sizes(void)
 	check_fits(1u + QWARK_MAX_PATCHES * 40u, "PATCH_LIST with all 64 patches");
 	check_fits(1u + (u32)QWARK_MAX_MODS * MOD_WIRE_SIZE, "MOD_LIST with all 32 mods");
 	check_fits(2u + QWARK_POS_SLOTS * 16u, "POS_LIST with all 8 slots");
-	check_fits(1u + COMBO_COUNT * 8u, "COMBO_LIST");
+	check_fits(COMBO_LIST_MAX, "COMBO_LIST with its page names");
 	check_fits(2u + (u32)QWARK_MAX_GROUPS * 24u + 1u + (u32)QWARK_MAX_READOUTS * 24u
 	           + 1u + (u32)QWARK_MAX_FEATURES * FEATURE_WIRE_SIZE,
 	           "DESCRIBE with 16 groups, 16 readouts and 64 features");
@@ -17811,6 +17811,7 @@ int main(void)
 	test_combo_suspend();
 	test_combo_enable();
 	test_combo_fastloads();
+	test_menu_pages();
 	test_rac2();
 	test_rac2_crash_guards();
 	test_manips();

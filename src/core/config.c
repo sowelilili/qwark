@@ -97,7 +97,15 @@ static const char * const g_combo_key[COMBO_COUNT] = {
 	"combo.planet",
 	"combo.setaside",
 	"combo.menu",       /* revision 1.22, COMBO_OPEN_MENU */
-	"combo.fastloads"   /* revision 1.23, COMBO_TOGGLE_FAST_LOADS */
+	"combo.fastloads",  /* revision 1.23, COMBO_TOGGLE_FAST_LOADS */
+	/* Revision 1.34, the page combos (COMBO_PAGE_*): a line only while bound (config_set_combo). */
+	"combo.page.game",
+	"combo.page.cheats",
+	"combo.page.planets",
+	"combo.page.manips",
+	"combo.page.unlocks",
+	"combo.page.mods",
+	"combo.page.saves"
 };
 
 /* Revision 1.12. The switch under those five, and in the same scope as them. */
@@ -732,6 +740,20 @@ int config_set_combo(u8 action, u32 mask)
 	char buf[16];
 
 	if (action >= COMBO_COUNT) return ST_BAD_ARG;
+
+	/*
+	 * Revision 1.34: a page combo cleared is no line at all, rather than a
+	 * line of 0, so the file holds only the pages someone bound. Its default
+	 * is 0 either way.
+	 */
+	if (mask == 0 && action >= COMBO_PAGE_FIRST) {
+		u32 off = kv_find(STORE_CONSOLE, g_combo_key[action]);
+
+		if (off == KV_NONE) return ST_OK;
+		if (g_over[STORE_CONSOLE]) return ST_FULL;
+		pool_splice(off, kv_next(off) - off, "", 0);
+		return store_save(STORE_CONSOLE, QWARK_CONFIG, g_combo_key[action]);
+	}
 
 	buf[0] = '0';
 	buf[1] = 'x';

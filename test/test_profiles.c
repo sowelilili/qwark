@@ -753,10 +753,10 @@ static void test_big_config(void)
 		int ok = 1;
 		for (a = 0; a < COMBO_COUNT; a++)
 			if (config_set_combo_override(a, 1, 0x1000u + a) != ST_OK || !config_combo_overridden(a)) ok = 0;
-		check(ok, "COMBO_OVERRIDE on all seven combos");
+		check(ok, "COMBO_OVERRIDE on all fourteen combos, the page combos too");
 		for (a = 0; a < COMBO_COUNT; a++)
 			if (config_set_combo_override(a, 0, 0) != ST_OK || config_combo_overridden(a)) ok = 0;
-		check(ok, "and off all seven again");
+		check(ok, "and off all fourteen again");
 	}
 
 	group("profiles: switching between two users who each have all of it");

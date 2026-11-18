@@ -173,13 +173,13 @@ void test_combo_fastloads(void)
 	u32 n0;
 
 	group("fast-loads combo: the action");
-	check(COMBO_TOGGLE_FAST_LOADS == 6 && COMBO_COUNT == 7, "action 6, of seven");
+	check(COMBO_TOGGLE_FAST_LOADS == 6 && COMBO_PAGE_FIRST == 7, "action 6, the last before revision 1.34's page combos");
 	check(config_get("combo.fastloads") == NULL && config_combo(COMBO_TOGGLE_FAST_LOADS) == 0,
 	      "no mask out of the box");
 	check(config_set_combo(COMBO_TOGGLE_FAST_LOADS, FL_MASK) == ST_OK &&
 	      config_combo(COMBO_TOGGLE_FAST_LOADS) == FL_MASK &&
 	      config_get("combo.fastloads") != NULL, "COMBO_SET stores it as combo.fastloads");
-	check(config_set_combo(COMBO_COUNT, FL_MASK) == ST_BAD_ARG, "an eighth action is BAD_ARG");
+	check(config_set_combo(COMBO_COUNT, FL_MASK) == ST_BAD_ARG, "an action past the last is BAD_ARG");
 	/* The client's own menu combo is out of the way; menu installs are not the point here. */
 	menu_set_install_delay_us(600000000ull);
 

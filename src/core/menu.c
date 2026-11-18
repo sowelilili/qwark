@@ -1812,6 +1812,11 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 #define RETRY_US         10000000ull
 /* A CLOSES action waits this long for the menu to close and the game to play. */
 #define DEFER_US         5000000ull
+/*
+ * Revision 1.34: a page combo's open waits this long for the menu to come up
+ * on its page (Tools of Destruction's pause opens first), then the root is back.
+ */
+#define PAGE_US          4000000ull
 
 
 /* Notified once a session, per reason. */
@@ -1856,6 +1861,13 @@ static u32  g_last_build;
 static u8   g_req;
 static u64  g_req_until;
 static u8   g_why;
+/*
+ * Revision 1.34, the page combos (menu_page_combo): until when a page combo's
+ * open may still bring the menu up on its page, 0 for none waiting; and the
+ * pages whose absence the console has been told of this session, a bit each.
+ */
+static u64  g_page_until;
+static u8   g_page_told;
 
 static int  g_enabled = 1;
 static u32  g_enabled_version = 0xFFFFFFFFu;
@@ -1958,6 +1970,7 @@ void menu_forget(void)
 	g_posted = 0;
 	g_hstate = MBOX_HSTATE_CLOSED;
 	g_req = 0;
+	g_page_until = 0;
 	g_help.in = -1;
 	g_help.retry = 0;
 	memset(&g_defer, 0, sizeof(g_defer));
@@ -2008,6 +2021,7 @@ void menu_enter_id(u8 game_id)
 {
 	menu_forget();
 	g_why = 0;
+	g_page_told = 0;
 	g_logged_refusal = 0;
 	g_help.logged = 0;
 	menu_model_reset(8, 0, 0);
@@ -3363,7 +3377,23 @@ static void serve(void)
 			g_req = 0;
 		} else if (plat_time_us() >= g_req_until) {
 			if (head[MBOX_OFF_REQUEST] == g_req) mem_write_u8(box(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+			/* Revision 1.34: a page combo's open nobody took: the root again at once. */
+			if (g_req == MBOX_REQ_OPEN && g_page_until != 0) g_page_until = 1;
 			g_req = 0;
+		}
+	}
+
+	/*
+	 * Revision 1.34: a page combo's open, until the menu is up on its page;
+	 * one that never came up leaves the root for the next open, as a close does.
+	 */
+	if (g_page_until != 0) {
+		if (g_hstate != MBOX_HSTATE_CLOSED) {
+			g_page_until = 0;
+		} else if (g_req == 0 && plat_time_us() >= g_page_until) {
+			g_page_until = 0;
+			menu_model_home();
+			dirty = 1;
 		}
 	}
 
@@ -3457,17 +3487,21 @@ void menu_tick(void)
 	}
 }
 
-void menu_combo(void)
+/*
+ * The menu combos' refusals and the install a press makes: 1 when the menu
+ * serves now, 0 when it does not, said once a session per reason.
+ */
+static int combo_ready(void)
 {
 	if (g_state == MENU_OFF) {
 		unavailable(WHY_NO_RENDERER, plat_can_patch_code()
 		            ? "Trainer menu: not available in this game yet"
 		            : "Trainer menu: not available under RPCS3");
-		return;
+		return 0;
 	}
 	if (!enabled()) {
 		unavailable(WHY_OFF, "Trainer menu: switched off (menu.enabled = 0 in config.txt)");
-		return;
+		return 0;
 	}
 	if (g_state == MENU_REMOVING) g_state = MENU_READY;
 
@@ -3490,10 +3524,14 @@ void menu_combo(void)
 			unavailable(WHY_NO_PAK, NO_PAK_TEXT);
 		else if (g_state == MENU_OFF)
 			unavailable(WHY_NO_RENDERER, "Trainer menu: not available in this game yet");
-		return;
+		return 0;
 	}
+	return (g_caps & MBOX_CAP_REQUEST) != 0;
+}
 
-	if ((g_caps & MBOX_CAP_REQUEST) == 0) return;
+void menu_combo(void)
+{
+	if (!combo_ready()) return;
 	/* Up, or under the game's planet picker it opened (which takes no request, so nothing happens). */
 	if (g_hstate != MBOX_HSTATE_CLOSED) {
 		request(MBOX_REQ_CLOSE);
@@ -3502,4 +3540,80 @@ void menu_combo(void)
 		post(0);
 		request(MBOX_REQ_OPEN);
 	}
+}
+
+/*
+ * Revision 1.34, build 59: the page combos. Each names a page by the label
+ * of the root's row that opens it, a section of the game's menu table (Game,
+ * Cheats; Tools of Destruction's Manips) or a page of qwark's, so the one
+ * list serves every game, whichever kind of row the game has for it.
+ */
+static const char * const g_page_names[COMBO_PAGES] = {
+	"Game", "Cheats", "Planets", "Manips", "Unlocks", "Mods", "Save files"
+};
+
+const char *menu_page_name(u8 page)
+{
+	return page < COMBO_PAGES ? g_page_names[page] : NULL;
+}
+
+/* The root's row of page combo `page`: its place, its id into *id; -1 when this game's root has none. */
+static int page_root_row(u8 page, u16 *id)
+{
+	const struct game_menu *gm = gmenu();
+	u16 ids[MENU_ITEMS_MAX];
+	const char *label;
+	u8 n = page_items(MENU_PAGE_ID(MENU_PAGE_ROOT, 0), ids), i, arg;
+
+	for (i = 0; i < n; i++) {
+		arg = (u8)ids[i];
+		if ((u8)(ids[i] >> 8) == MENU_ROW_SECTION) label = gm != NULL && arg < gm->nsections ? gm->sections[arg].title : NULL;
+		else if ((u8)(ids[i] >> 8) == MENU_ROW_PAGE) label = page_name(arg);
+		else label = NULL;
+		if (label != NULL && strcmp(label, g_page_names[page]) == 0) {
+			*id = ids[i];
+			return i;
+		}
+	}
+	return -1;
+}
+
+/*
+ * The press: OPEN_MENU's refusals first (combo_ready). Nothing while a load
+ * the menu closed for is waiting, under a planet picker the menu opened, or
+ * (Tools of Destruction) while the galactic map is opening or up. Then the
+ * root's row of the page is acted on as the cross would, from a fresh stack:
+ * a page pushed over the root, so Back is the root with the cursor on that
+ * row and Back again leaves, as in any visit; the menu up is shown it at
+ * once, the menu down is asked to open on it. Planets where the game's own
+ * picker opens from its row (Tools of Destruction's galactic map) is that
+ * row's CLOSES action, which the driver runs once the game plays. An open
+ * nobody took, or a menu that never came up (PAGE_US), puts the root back, so
+ * the game's own Trainer row opens on the root as ever.
+ */
+void menu_page_combo(u8 page)
+{
+	u16 id = 0;
+	int row;
+
+	if (page >= COMBO_PAGES || !combo_ready()) return;
+	if (g_hstate == MBOX_HSTATE_PICKER || g_defer.kind != DEFER_NONE) return;
+#if QWARK_HAS_TOD
+	if (g_gm.phase != GM_NONE && g_gm.phase != GM_REOPEN) return;
+#endif
+	row = page_root_row(page, &id);
+	if (row < 0) {
+		plat_log("menu: the %s combo: this game's Trainer has no such page", g_page_names[page]);
+		if ((g_page_told & (1u << page)) == 0) {
+			g_page_told |= (u8)(1u << page);
+			tell("no ", g_page_names[page], " page in this game");
+		}
+		return;
+	}
+	nav_reset();
+	if (act((u8)row, id, 0) != ST_OK || g_defer.kind != DEFER_NONE) return;
+	post(0);
+	if (g_hstate == MBOX_HSTATE_OPEN) return;
+	request(MBOX_REQ_OPEN);
+	g_page_until = plat_time_us() + PAGE_US;
 }

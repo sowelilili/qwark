@@ -104,6 +104,10 @@
  * 5.10.2, 5.10.3 and 5.10.4. The same revision: an autosplit Event's u16 at
  * +10 is its flags (AUTOSPLIT_EV_REVISIT) and EventDesc flags bit5 REVISIT
  * (AUTOSPLIT_FLAG_REVISIT), Tools of Destruction's revisits. PROTOCOL.md 8.
+ * Revision 1.34, build 59: combo actions 7 to 13, one per page of the
+ * Trainer's root (COMBO_PAGE_*), config keys combo.page.<page>, written only
+ * while bound; COMBO_LIST has fourteen entries and after them the pages'
+ * names (COMBO_LIST's trailer, PROTOCOL.md 5.9).
  */
 #ifndef QWARK_PROTO_H
 #define QWARK_PROTO_H
@@ -755,6 +759,14 @@
 #define PROFILE_INFO_SIZE             64
 /* COMBO_LIST's byte after each action. */
 #define COMBO_LIST_OVERRIDDEN         0x01
+/*
+ * Revision 1.34: after COMBO_LIST's entries, `u8 m` and m of { u8 action,
+ * u8 len, char name[len] }, the page combos in the Trainer's order with each
+ * page's name (no NUL, at most COMBO_PAGE_NAME_MAX characters). A reply's
+ * largest size is COMBO_LIST_MAX.
+ */
+#define COMBO_PAGE_NAME_MAX           15
+#define COMBO_LIST_MAX                (1u + COMBO_COUNT * 8u + 1u + COMBO_PAGES * (2u + COMBO_PAGE_NAME_MAX))
 
 /*
  * Revision 1.24, build 56: flags2 bit0 USB_MODS, this module reads mods off
@@ -974,7 +986,25 @@
  * off like the first five.
  */
 #define COMBO_TOGGLE_FAST_LOADS 6
-#define COMBO_COUNT         7
+/*
+ * Revision 1.34, build 59: one combo per page of the Trainer's root, one list
+ * for every game, each opening the Trainer straight on its page (menu.c,
+ * menu_page_combo), with OPEN_MENU's rules: the arming rule, the switch and
+ * the hold, its refusals, nothing while a load waits. A page the running game
+ * has not opens nothing. No mask out of the box, and an unbound one is no line
+ * in config.txt (config.c). COMBO_LIST names them after its entries
+ * (net.c, PROTOCOL.md 5.9). Never renumbered: a new page goes on the end.
+ */
+#define COMBO_PAGE_FIRST    7
+#define COMBO_PAGE_GAME     7
+#define COMBO_PAGE_CHEATS   8
+#define COMBO_PAGE_PLANETS  9
+#define COMBO_PAGE_MANIPS   10
+#define COMBO_PAGE_UNLOCKS  11
+#define COMBO_PAGE_MODS     12
+#define COMBO_PAGE_SAVES    13
+#define COMBO_PAGES         7
+#define COMBO_COUNT         (COMBO_PAGE_FIRST + COMBO_PAGES)
 #define COMBO_MENU_DEFAULT  0x060Fu
 
 /* Planet flags, PLANET_SELECT / PLANET_LOAD */

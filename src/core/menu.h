@@ -274,6 +274,20 @@ void menu_tick(void);
 void menu_combo(void);
 
 /*
+ * Revision 1.34, build 59: the page combos (proto.h COMBO_PAGE_*). `page` is
+ * the combo's place among them, 0 for COMBO_PAGE_GAME. Opens the menu
+ * straight on the root's row of that page's name (the game's section, or
+ * qwark's page), with OPEN_MENU's refusals; with the menu up it goes to that
+ * page at once. Back from it is the root, the cursor on that row. A page the
+ * game has not opens nothing (the console says so once a session). Tools of
+ * Destruction's Planets opens the galactic map, as its row does.
+ */
+void menu_page_combo(u8 page);
+
+/* Page combo `page`'s page, by the root row's label ("Game" .. "Save files"); NULL past the last. */
+const char *menu_page_name(u8 page);
+
+/*
  * Revision 1.28, SessionInfo flags2 bit7 NO_MENU: whether `game` has no
  * console menu at all, its table missing. (Revision 1.29: Tools of
  * Destruction has one, its own pause menu, struct menu_native.)
