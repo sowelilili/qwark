@@ -1817,8 +1817,8 @@ static void test_tod_autosplit_rows(void)
 	      qstreq(d[4].label, "Long load"),
 	      "the long load holds game time (HOLD, rev 1.29), no NORMALISE");
 	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
-	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 19950000u,
-	      "the quit to the XMB costs the old script's 19.95 s");
+	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 16900000u,
+	      "the quit to the XMB costs 16.9 s");
 	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
 }
 

@@ -7098,7 +7098,7 @@ TOD_AS_ROWS = [
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
     (9, AUTOSPLIT_SPLIT, 0, 0, "Fastoon: Clank section"),        # revision 1.34, a subsplit, off
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
-    (3, AUTOSPLIT_PAUSE, DF | NM, 19950000, "Quit to XMB"),
+    (3, AUTOSPLIT_PAUSE, DF | NM, 16900000, "Quit to XMB"),
 ]
 
 

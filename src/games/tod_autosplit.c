@@ -555,7 +555,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
 /*
  * Code 1 marks a revisit to Metropolis or Cobalia (RV, revision 1.33,
  * pending). Code 3 is the title index's pause pair: the old script held game
- * time for the whole quit and reboot and then added 19.95 s, NORMALISE's sum. Code 4
+ * time for the whole quit and reboot and then added a fixed cost (16.9 s since build 59; 19.95 s before), NORMALISE's sum. Code 4
  * is the old autosplitter's long load, game time held for as long as it
  * lasts (HOLD, revision 1.29). Code 7, "Tachyon defeated", the screen black
  * after Tachyon's last hit, is the community's end of a run, on by default.

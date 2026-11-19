@@ -839,7 +839,7 @@ struct tod_facts {
 #define TOD_AS_END_FADE     7      /* SPLIT, "Tachyon defeated": the screen black before the ending cinematic (revision 1.29) */
 /* 8, the ending FMV, was retired in revision 1.29: never reuse it. */
 #define TOD_AS_FASTOON_CLANK 9     /* SPLIT, "Fastoon: Clank section" (revision 1.34): arg the level, 3 */
-#define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
+#define TOD_QUIT_PAUSE_US   16900000u  /* a quit and reboot: 16.9 s of game time (the community's rule since 2026-11; the old script's was 19.95 s) */
 
 /*
  * Revision 1.34: a hero switch subsplit, the player put in control of
