@@ -2410,8 +2410,8 @@ OTHER_GAMES = [
         "title": "NPEA00386",
         "name": "RaC2",
         "game": 2,
-        # Build 59: 40 Armour and 41 Skin.
-        "features": 30,
+        # Build 59: 40 Armour, 41 Skin and 42 Ship colour.
+        "features": 31,
         "cheats": FOUR_CHEATS + ["Enable debug mode"],
         # The two crash guards' branches (src/games/rac2.c), written as the
         # session enters over the game's own words: (address, game, guard).
@@ -2429,13 +2429,19 @@ OTHER_GAMES = [
         # Build 53: the hit points and the game's own maximum, both words.
         "freeze_health": {"id": 2, "health": 0x014816AC, "max": 0x01329A98,
                           "full": 10, "more": 23, "hurt": 3},
-        "readouts": 11,
+        "readouts": 12,
         # Build 59, the pickers (src/games/rac2_panel.c): (id, option, the
-        # bytes it writes, readout index); each also puts -1 in the loaded
-        # armour word, 0x147A310, so the next planet load reads the model.
-        "enum_writes": [(40, 3, [(0x1329AB0, b"\x00\x03"), (0x147A310, b"\xFF\xFF\xFF\xFF")], 9),
+        # bytes it writes, readout index). The armour and the skin also put -1
+        # in the loaded armour word, 0x147A310, and then 1 in the savefile
+        # helper's reload byte, 0x131772B, which has the helper reload the
+        # model as the Cheats menu does (the simulator's HDD has the pak, so
+        # the helper goes in). The ship colour is five bits of the ship word,
+        # 0x148197C, from bit 16.
+        "enum_writes": [(40, 3, [(0x1329AB0, b"\x00\x03"), (0x147A310, b"\xFF\xFF\xFF\xFF"),
+                                 (0x131772B, b"\x01")], 9),
                         (41, 4, [(0x14817F3, b"\x01"), (0x14817FA, b"\x00\x00\x00"),
-                                 (0x147A310, b"\xFF\xFF\xFF\xFF")], 10)],
+                                 (0x147A310, b"\xFF\xFF\xFF\xFF"), (0x131772B, b"\x01")], 10),
+                        (42, 16, [(0x148197C, b"\x00\x10\x00\x00")], 11)],
         "planets": 27,
         "planet0": "Aranos",
         # Build 53: PLANET_LIST's menu order. RaC2's ids are its own order.
@@ -2549,8 +2555,9 @@ OTHER_GAMES = [
         # Revision 1.21: the thirteenth is the trophy reset's status, which
         # Reset trophies (21) names; build 59's fourteenth the skin.
         "readouts": 14,
-        # Build 59: Tuxedo Ratchet, the third skin, is the game's id 7.
-        "enum_writes": [(40, 3, [(0xDA519B, b"\x07"), (0xD99210, b"\xFF\xFF\xFF\xFF")], 13)],
+        # Build 59: Brainius, the second skin since the first hardware test
+        # left out the three the Armour picker has, is the game's id 9.
+        "enum_writes": [(40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF")], 13)],
         "action_status": {21: 12},
         "planets": 37,
         "planet0": "(none)",
@@ -7706,6 +7713,9 @@ def smoke_rpcs3(exe):
         # ------------------- RaC2 with an earlier build's code switches
         smoke_rpcs3_rac2_old_switches(c, pine)
 
+        # ------------------- RaC2's armour and skin reload, build 59
+        smoke_rpcs3_rac2_reload(c, pine)
+
         # --------------- UYA's fast loads, a code switch beside Freeze ammo's
         smoke_rpcs3_rac3_switches(c, pine)
 
@@ -7961,6 +7971,59 @@ def smoke_rpcs3_rac2_old_switches(c, pine):
     for addr, _ in words:
         pine.poke(addr, b"\0\0\0\0")
     pine.poke(RAC2_FP_ADDR, RAC2_FP)
+
+
+RAC2_ARMOUR_LOADED = 0x0147A310
+RAC2_SF_ARMOR = 0x0131772B
+
+
+def smoke_rpcs3_rac2_reload(c, pine):
+    """
+    Build 59: RaC2's armour and skin pickers under RPCS3. Their model reload is
+    the savefile helper's, so with no savefile patch the pick writes its data
+    and the -1 that has the next planet load read the model, and asks no
+    helper; with this build's patch applied at load the helper's reload byte
+    goes to 1 as well. No code is written either way. Starts and ends at XMB.
+    """
+    pine.poke(RAC2_SF_ARMOR, b"\x00")
+    pine.boot("NPEA00386", "Ratchet & Clank: Going Commando")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 2, "rpcs3 rac2 reload: RaC2 boots with no savefile patch", info)
+    pine.poke(RAC2_ARMOUR_LOADED, b"\x00\x00\x00\x02")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 4))
+    check(status == ST_OK and pine.peek(0x01329AB0, 2) == b"\x00\x04",
+          "rpcs3 rac2 reload: Carbonox is picked and worn", status)
+    check(pine.peek(RAC2_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
+          pine.peek(RAC2_SF_ARMOR, 1) == b"\x00",
+          "rpcs3 rac2 reload: the loaded armour is -1 and no helper is asked: the next planet load",
+          (pine.peek(RAC2_ARMOUR_LOADED, 4), pine.peek(RAC2_SF_ARMOR, 1)))
+
+    status, _stamp, words, single, _body = savefile_patch(c)
+    check(status == ST_OK and words, "rpcs3 rac2 reload: SAVEFILE_PATCH answers for RaC2", status)
+    pine.shutdown_game()
+    ok, _ = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac2 reload: the game is stopped for the patch")
+    for addr, value in words or []:
+        pine.poke(addr, value)
+    for addr, value in single or []:
+        pine.poke(addr, bytes([value]))
+    pine.boot("NPEA00386", "Ratchet & Clank: Going Commando")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 2, "rpcs3 rac2 reload: RaC2 comes back with the savefile patch", info)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 41, 1))
+    check(status == ST_OK and pine.peek(RAC2_SF_ARMOR, 1) == b"\x01",
+          "rpcs3 rac2 reload: the tux is picked and the patched-in helper is asked to reload",
+          (status, pine.peek(RAC2_SF_ARMOR, 1)))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 41, 0))
+    check(status == ST_OK, "rpcs3 rac2 reload: no skin again", status)
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac2 reload: RaC2 stops", info)
+    for addr, _ in words or []:
+        pine.poke(addr, b"\0\0\0\0")
+    pine.poke(RAC2_FP_ADDR, RAC2_FP)
+    pine.poke(RAC2_SF_ARMOR, b"\x00")
 
 
 # UYA's fast loads were two data words that worked under RPCS3 with nothing
@@ -9777,7 +9840,7 @@ def main():
         if check(status == ST_OK, "DESCRIBE answers under BLMODYOOO", status):
             game, _groups, _readouts, features, _consumed = parse_describe(body)
             check(game == 2, "and names RaC2", game)
-            check(len(features) == 30, "with RaC2's thirty features",
+            check(len(features) == 31, "with RaC2's thirty-one features",
                   len(features))
 
         # ------------------------- the planet selection per game, build 53

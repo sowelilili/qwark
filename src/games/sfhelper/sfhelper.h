@@ -46,6 +46,7 @@ typedef unsigned long long sf_u64;
  * that the 64-bit compiler would size at eight bytes.
  */
 #define SF_BYTE(addr) (*(volatile sf_u8 *)(sf_u32)(addr))
+#define SF_HALF(addr) (*(volatile sf_u16 *)(sf_u32)(addr))
 #define SF_WORD(addr) (*(volatile sf_u32 *)(sf_u32)(addr))
 
 /* How much of the save buffer one memcpy call moves. The mods all used 32 KB. */
@@ -128,6 +129,15 @@ int sf_request_mode(int mode, int push, int screen, int unk, void *flag);
  */
 void sf_movie_stop(sf_u32 player);
 void sf_scene_clear(sf_u32 queue);
+#endif
+
+#if SF_GAME == SF_RAC2
+/*
+ * Build 59: the game's Armor_LoadModel, which reads the armour's (or the
+ * skin's) model files, relocates them and makes them Ratchet's, as the game's
+ * Cheats menu calls it (sf_rac2.h, sf_armor_reload in sfhelper.c).
+ */
+void sf_armor_load_model(int armor);
 #endif
 
 #if SF_GAME == SF_RAC3

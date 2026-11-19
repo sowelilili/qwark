@@ -654,6 +654,41 @@ void sf_trophy_worker(sf_u64 arg)
 }
 #endif
 
+#if SF_GAME == SF_RAC2
+/*
+ * Build 59: the armour and skin pickers' reload, the call the game's own
+ * Cheats menu makes (sf_rac2.h): qwark puts -1 in the loaded-armour word and 1
+ * in SF_API_ARMOR, and this reloads Ratchet's model on the first call that
+ * finds the game somewhere the menu's call is made from. A planet load that
+ * comes first reads the model itself and leaves the loaded word equal to the
+ * armour, which ends the request without a reload. Anywhere it is not safe
+ * the byte stays 1 for the next call: the request is never dropped, since the
+ * -1 already makes the next planet load do it. The byte goes to 0 before the
+ * call, so a frame loop inside the game's file read could not start it twice.
+ */
+__attribute__((noinline))
+static void sf_armor_reload(void)
+{
+	int armor = (int)(short)SF_HALF(SF_ARMOR);
+	sf_u32 mode = SF_WORD(SF_GAME_MODE);
+
+	if ((int)SF_WORD(SF_ARMOR_LOADED) == armor) {
+		SF_BYTE(SF_API_ARMOR) = 0;
+		return;
+	}
+	if (mode != SF_MODE_NORMAL && mode != SF_MODE_PAUSE) return;
+	if (SF_WORD(SF_PENDING_GAME_MODE) != SF_MODE_NONE) return;
+	if (SF_WORD(SF_LOAD_REQUEST) != 0) return;
+	if ((int)SF_WORD(SF_CURRENT_PLANET) < 0) return;
+	if (SF_BYTE(SF_CONSOLE_FREEZE) != 0) return;
+	if ((int)SF_WORD(SF_PLAYER_HEALTH) <= 0) return;
+	if (SF_WORD(SF_MOBY_CLASSES) == 0 || SF_WORD(SF_ARMOR_BUF) == 0) return;
+
+	SF_BYTE(SF_API_ARMOR) = 0;
+	sf_armor_load_model(armor);
+}
+#endif
+
 /*
  * Its own section so the link map can put it at the front of the cave, which is
  * where the mods this comes from have their entry point.
@@ -1014,5 +1049,10 @@ void sf_entry(void)
 		sf_save_handler((int)SF_BYTE(SF_API_SAVEMODE));
 		SF_BYTE(SF_API_SAVEMODE) = 0;
 	}
+#endif
+
+#if SF_GAME == SF_RAC2
+	/* Build 59: the armour and skin pickers' reload, last, after any load. */
+	if (SF_BYTE(SF_API_ARMOR) == 1) sf_armor_reload();
 #endif
 }

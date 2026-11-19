@@ -1427,7 +1427,7 @@ static void test_rac2_repacks(void)
 	      describe[0] == GAME_RAC2, "DESCRIBE answers with RaC2's table");
 	if (session_game() != NULL) {
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 30, "and every one of RaC2's thirty features");
+		check_eq_u64(d->nfeatures, 31, "and every one of RaC2's thirty-one features");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -3952,9 +3952,13 @@ static void test_combo_enable(void)
 #define F2_CB_FRONT     34   /* revision 1.24: front, back and tint, STOCK COLORs */
 #define F2_ARMOUR       40   /* build 59 */
 #define F2_SKIN         41
+#define F2_SHIP_COLOUR  42
 #define R2_ARMOUR_ADDR    0x01329AB0u
 #define R2_ARMOUR_LOADED  0x0147A310u
 #define R2_CHEATS         0x014817F1u   /* the Cheats menu's twelve bytes */
+#define R2_SF_ARMOR       0x0131772Bu   /* build 59: the helper's reload request */
+#define R2_SF_HOOK        0x00B086B0u   /* the helper's hook site */
+#define R2_SHIP_WORD      0x0148197Cu   /* build 59: the ship's parts and paint */
 
 /*
  * The item system: every array is base plus item id times stride, and the stats
@@ -4052,9 +4056,9 @@ static void test_rac2(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 30,
-		             "RaC2 declares thirty features (build 53 retired nine, build 59 added the armour and the skin)");
-		check_eq_u64(d->nreadouts, 11, "and eleven readouts");
+		check_eq_u64(d->nfeatures, 31,
+		             "RaC2 declares thirty-one features (build 53 retired nine, build 59 added the armour, the skin and the ship colour)");
+		check_eq_u64(d->nreadouts, 12, "and twelve readouts");
 		check_eq_u64(d->ngroups, 6, "and six groups");
 	}
 
@@ -4446,6 +4450,148 @@ static void test_rac2(void)
 		pump(9);
 		check_eq_u64(session_readout(10), 0, "and the readout says none");
 		check(features_set(F2_SKIN, 5) == ST_BAD_ARG, "a skin past Snow Dude is BAD_ARG");
+	}
+
+	group("RaC2: the pickers reload the model as the Cheats menu does, build 59");
+
+	{
+		const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+		u32 hook = 0;
+
+		/* No helper at all (config's savefile_helper = 0): the next load alone. */
+		savefile_set_enabled(0);
+		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
+		check(features_set(F2_ARMOUR, 1) == ST_OK, "with the helper switched off a pick still answers OK");
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1, so the next planet load reads the model");
+		host_peek(R2_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 0, "and no reload is asked of a helper that is not there");
+		savefile_set_enabled(1);
+
+		/* The helper goes in and is asked to reload. */
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x01", 4);
+		check(features_set(F2_ARMOUR, 2) == ST_OK, "Duraplate is picked with the helper allowed");
+		mem_read_u32(R2_SF_HOOK, &hook);
+		check(d != NULL && hook == d->hooks[0].value, "the savefile helper is in, its hook written");
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1 first, the fallback should the reload never come");
+		host_peek(R2_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the reload byte is 1: the helper makes the menu's call on a safe frame");
+
+		/* The helper takes the byte back; a skin asks again. */
+		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+		check(features_set(F2_SKIN, 3) == ST_OK, "Beach Boy is picked");
+		host_peek(R2_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the skin asks for the reload too");
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "with the loaded armour at -1 again");
+
+		/* A refused pick asks nothing. */
+		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+		check(features_set(F2_SKIN, 9) == ST_BAD_ARG, "a skin past the end is refused");
+		host_peek(R2_SF_ARMOR, &b, 1);
+		mem_read_u32(R2_ARMOUR_LOADED, &v);
+		check(b == 0 && v == 2, "and neither asks for a reload nor marks the model stale");
+		check(features_set(F2_SKIN, 0) == ST_OK, "no skin again");
+		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+
+		/*
+		 * The helper's own half, as the bytes the console runs: one call of
+		 * Armor_LoadModel, reached only past the gates sf_rac2.h names, with the
+		 * request byte the module writes cleared before it.
+		 */
+		check(d != NULL && d->caves != NULL && d->ncaves == 1, "RaC2's helper is one cave");
+		if (d != NULL && d->caves != NULL && d->ncaves == 1) {
+			const struct sf_cave *cv = &d->caves[0];
+			static const u32 gates[] = {
+				0x01329AB0u,   /* the armour */
+				0x0147A310u,   /* the loaded armour */
+				0x0156B064u,   /* gameMode: ordinary play or the pause */
+				0x01329F90u,   /* pendingGameMode: nothing queued */
+				0x0156B050u,   /* the load request */
+				0x01329A3Cu,   /* the planet, -1 on the title screen */
+				0x0157CEDCu,   /* the console's freeze */
+				0x014816ACu,   /* Ratchet's hit points */
+				0x0158DCC0u,   /* moby class 0, Ratchet's */
+				0x0156B2BCu    /* the armour's buffer */
+			};
+			u32 calls = 0, call_at = 0, clear_at = 0, w, i, k;
+
+			for (i = 0; i + 4 <= cv->len; i += 4) {
+				w = be32_get(cv->bytes + i);
+				if ((w & 0xFC000003u) == 0x48000001u) {
+					u32 li = w & 0x03FFFFFCu;
+					u32 target = cv->addr + i + ((li & 0x02000000u) ? (li | 0xFC000000u) : li);
+					if (target == 0x00B45738u) { calls++; call_at = i; }
+				}
+			}
+			check_eq_u64(calls, 1, "the helper calls Armor_LoadModel (0xB45738) once");
+
+			for (k = 0; k < sizeof(gates) / sizeof(gates[0]); k++) {
+				int found = 0;
+				for (i = 0; i + 8 <= cv->len && !found; i += 4) {
+					u32 hi = be32_get(cv->bytes + i), j;
+					if ((hi & 0xFC1F0000u) != 0x3C000000u || (hi & 0xFFFFu) != (gates[k] >> 16)) continue;
+					for (j = i + 4; j < i + 32 && j + 4 <= cv->len; j += 4) {
+						u32 lo = be32_get(cv->bytes + j);
+						if ((lo >> 26) == 24 && (lo & 0xFFFFu) == (gates[k] & 0xFFFFu) &&
+						    ((lo >> 21) & 31) == ((hi >> 21) & 31)) { found = 1; break; }
+					}
+				}
+				if (!found) printf("    gate 0x%08X not in the helper\n", (unsigned)gates[k]);
+				check(found, "the helper reads one of the gates sf_rac2.h names");
+			}
+
+			/* The last lis/ori of the request byte before the call, and a store after it. */
+			for (i = 0; i + 8 <= call_at; i += 4) {
+				u32 hi = be32_get(cv->bytes + i), j;
+				if ((hi & 0xFC1F0000u) != 0x3C000000u || (hi & 0xFFFFu) != (R2_SF_ARMOR >> 16)) continue;
+				for (j = i + 4; j < call_at; j += 4) {
+					u32 x = be32_get(cv->bytes + j);
+					if ((x >> 26) == 24 && (x & 0xFFFFu) == (R2_SF_ARMOR & 0xFFFFu)) { clear_at = j; break; }
+				}
+			}
+			check(clear_at != 0 && clear_at < call_at &&
+			      (be32_get(cv->bytes + clear_at + 4) >> 26) == 38,
+			      "and stores to the byte the module writes, 0x131772B, before the call");
+		}
+	}
+
+	group("RaC2: the ship colour picker, build 59");
+
+	{
+		const char * const *opts = NULL;
+		u8 n = 0;
+
+		check(features_options(F2_SHIP_COLOUR, &opts, &n) == ST_OK && n == 17,
+		      "the ship shop's seventeen paint jobs");
+		check(opts != NULL && n == 17 && strcmp(opts[0], "Blargian Red") == 0 &&
+		      strcmp(opts[3], "Insomniac Special") == 0 && strcmp(opts[16], "Star Traveller") == 0,
+		      "in the shop's order, by their value in the ship word");
+
+		/* Wings and nose bought (bits 2, 0), the other upgrades, and paint 3. */
+		host_poke(R2_SHIP_WORD, (const u8 *)"\xA0\xE3\x1C\x05", 4);
+		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F2_SHIP_COLOUR, 16) == ST_OK, "Star Traveller is picked");
+		mem_read_u32(R2_SHIP_WORD, &v);
+		check_eq_u64(v, 0xA0F01C05u, "the paint's five bits are 16 and every other bit of the word is kept");
+		host_peek(R2_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 0, "the ship asks the helper for nothing: the shop's paint shows from the next load too");
+		pump(9);
+		check_eq_u64(session_readout(11), 16, "the Ship colour readout reads it back");
+		check(features_set(F2_SHIP_COLOUR, 0) == ST_OK, "Blargian Red, the paint the game starts with");
+		mem_read_u32(R2_SHIP_WORD, &v);
+		check_eq_u64(v, 0xA0E01C05u, "clears the five bits alone");
+		check(features_set(F2_SHIP_COLOUR, 17) == ST_BAD_ARG, "a paint past Star Traveller is BAD_ARG");
+		mem_read_u32(R2_SHIP_WORD, &v);
+		check_eq_u64(v, 0xA0E01C05u, "and writes nothing");
+		host_poke(R2_SHIP_WORD, (const u8 *)"\x00\x11\x00\x00", 4);
+		pump(9);
+		check_eq_u64(session_readout(11), 17, "a value the shop never sells reads as itself, for the client to call unknown");
+		host_poke(R2_SHIP_WORD, (const u8 *)"\x00\x00\x00\x00", 4);
 	}
 
 	group("RaC2: die with both reset toggles");
@@ -8473,11 +8619,16 @@ static void test_rac3(void)
 
 	group("RaC3: the skin picker, build 59");
 
+	/*
+	 * After the first hardware test the list is Current Armor and six skins,
+	 * ids 8 to 13: Old School Ratchet, Snowman and Tuxedo Ratchet (5 to 7) are
+	 * the Armour picker's rows 5 to 7, the same model files.
+	 */
 	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
 	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
-	check(features_set(F3_SKIN, 3) == ST_OK, "Tuxedo Ratchet is picked");
+	check(features_set(F3_SKIN, 1) == ST_OK, "Buginoid, the first skin left, is picked");
 	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 7, "the skin byte is the game's id for it, 7: the menu's third skin after id 5");
+	check_eq_u64(b, 8, "the skin byte is the game's id for it, 8, not the 5 the old list's first row wrote");
 	mem_read_u32(R3_ARMOUR_LOADED, &v);
 	check_eq_u64(v, 0xFFFFFFFFu, "and the loaded armour is -1, so the next planet load reads the model");
 	{
@@ -8485,18 +8636,60 @@ static void test_rac3(void)
 		host_peek(R3_ARMOUR_ADDR, halfword, 2);
 		check(halfword[0] == 0 && halfword[1] == 4, "the armour itself is left as it was");
 	}
+	check(features_set(F3_SKIN, 4) == ST_OK, "Robo Rooster is picked");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 11, "as id 11");
 	pump(9);
-	check_eq_u64(session_readout(13), 3, "the Skin readout reads it back as the option");
-	check(features_set(F3_SKIN, 9) == ST_OK, "Robo, the last, is picked");
+	check_eq_u64(session_readout(13), 4, "the Skin readout reads it back as its option");
+	check_eq_u64(session_readout(5), 4, "and the Armour readout is the armour worn");
+	check(features_set(F3_SKIN, 6) == ST_OK, "Robo, the last, is picked");
 	host_peek(R3_SKIN_ADDR, &b, 1);
 	check_eq_u64(b, 13, "as id 13");
+	check(features_set(F3_SKIN, 7) == ST_BAD_ARG, "a skin past Robo is BAD_ARG");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 13, "and writes nothing");
 	check(features_set(F3_SKIN, 0) == ST_OK, "the current armour is picked");
 	host_peek(R3_SKIN_ADDR, &b, 1);
 	check_eq_u64(b, 0, "as no skin");
-	check(features_set(F3_SKIN, 10) == ST_BAD_ARG, "a skin past Robo is BAD_ARG");
+	{
+		const char * const *opts = NULL;
+		u8 n = 0, i, hidden = 0;
+
+		check(features_options(F3_SKIN, &opts, &n) == ST_OK && n == 7,
+		      "the skin list has seven options");
+		for (i = 0; i < n && opts != NULL; i++) {
+			if (strcmp(opts[i], "Old School Ratchet") == 0 || strcmp(opts[i], "Snowman") == 0 ||
+			    strcmp(opts[i], "Tuxedo Ratchet") == 0)
+				hidden++;
+		}
+		check_eq_u64(hidden, 0, "none of them the three the Armour picker has");
+		check(opts != NULL && n == 7 && strcmp(opts[1], "Buginoid") == 0 &&
+		      strcmp(opts[6], "Robo") == 0, "Buginoid first after Current Armor, Robo last");
+	}
+
+	/* The game's own skin menu can still put on one of the three. */
+	host_poke(R3_SKIN_ADDR, (const u8 *)"\x06", 1);
+	pump(9);
+	check_eq_u64(session_readout(13), 0, "Snowman set by the game reads as Current Armor in the Skin row");
+	check_eq_u64(session_readout(5), 6, "and as the Armour row's Snowman Skin, what Ratchet wears");
+	check(features_set(F3_ARMOUR, 2) == ST_OK, "Adamantine Armor is picked over it");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 0, "and the Snowman gives way to it");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "with the loaded armour at -1 for the next planet load");
+	pump(9);
+	check_eq_u64(session_readout(5), 2, "the Armour readout is the armour again");
+	host_poke(R3_SKIN_ADDR, (const u8 *)"\x0B", 1);
+	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+	check(features_set(F3_ARMOUR, 3) == ST_OK, "an armour picked under a skin that is not one of the three");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 11, "leaves Robo Rooster on, as the game would");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 2, "and the loaded word alone");
 	host_poke(R3_SKIN_ADDR, (const u8 *)"\x10", 1);
 	pump(9);
 	check_eq_u64(session_readout(13), 0, "an id the list has no row for (16) reads as none");
+	check_eq_u64(session_readout(5), 3, "and leaves the Armour readout the armour");
 	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
 
 	group("RaC3: savefile requests");
@@ -10475,7 +10668,7 @@ static void test_trilogy(void)
 	      "and the fingerprint picked RaC2");
 	{
 		const struct game_describe *d = session_game()->describe();
-		check_eq_u64(d->nfeatures, 30, "with RaC2's descriptor table");
+		check_eq_u64(d->nfeatures, 31, "with RaC2's descriptor table");
 	}
 
 	check(quit_and_wait(), "quit");
@@ -12478,6 +12671,67 @@ static void test_savefile_rpcs3(void)
 	}
 
 	/* ------------------------------------------------- put it all back */
+
+	host_set_can_patch_code(1);
+	host_set_emulator(0);
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00385"), "RaC1 boots again with the gate open");
+}
+
+/*
+ * Build 59: RaC2's armour and skin pickers under RPCS3. The reload is the
+ * savefile helper's, so it is there only where this build's savefile patch put
+ * the helper in at load; without it, or with another build's, the pick falls
+ * back to the next planet load, and no code is ever written.
+ */
+static void test_rac2_reload_rpcs3(void)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC2);
+	u32 len = 0, v = 0;
+	u8 b = 9;
+
+	group("build 59: RaC2's model reload under RPCS3");
+
+	if (d == NULL) { check(0, "RaC2 has a helper"); return; }
+
+	check(quit_and_wait(), "quit whatever was running");
+	host_set_can_patch_code(0);
+	host_set_emulator(1);
+
+	check(boot_and_wait("NPEA00386"), "RaC2 boots with no savefile patch in it");
+	host_write_log_reset();
+	host_poke(R2_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+	check(features_set(F2_ARMOUR, 3) == ST_OK, "Electrosteel is picked");
+	mem_read_u32(R2_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1: the next planet load reads the model");
+	host_peek(R2_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 0, "with no helper there is no reload byte to raise");
+	check(!sf_wrote_code(d), "and no code is written");
+
+	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC2 savefile patch");
+
+	check(quit_and_wait(), "quit");
+	check(sf_boot_patched("NPEA00386", g_sf_patch, len, SF_NO_FLIP),
+	      "RaC2 boots with this build's savefile patch applied at load");
+	host_write_log_reset();
+	check(features_set(F2_SKIN, 2) == ST_OK, "the funny side is picked");
+	host_peek(R2_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 1, "the patched-in helper is asked to reload at once");
+	mem_read_u32(R2_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "after the loaded armour went to -1");
+	check(!sf_wrote_code(d), "and still no code is written: the patch put the helper in");
+	check(features_set(F2_SKIN, 0) == ST_OK, "no skin again");
+
+	check(quit_and_wait(), "quit");
+	check(sf_boot_patched("NPEA00386", g_sf_patch, len, 1u),
+	      "RaC2 boots with a helper of another build, one word different");
+	host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
+	check(features_set(F2_ARMOUR, 1) == ST_OK, "Tetrafiber is picked");
+	host_peek(R2_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 0, "a helper that may not know the byte is not asked");
+	mem_read_u32(R2_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "and the next planet load does it");
 
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
@@ -16751,7 +17005,7 @@ static void test_command_port(void)
  * left Deadlocked's alone.
  */
 #define SF53_STAMP_RAC1 0xD28627B7u
-#define SF53_STAMP_RAC2 0xA6C6BFCFu
+#define SF53_STAMP_RAC2 0x0061CD58u
 #define SF53_STAMP_RAC3 0x79AA19AFu   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
@@ -16920,7 +17174,7 @@ static void test_savefile_build53(void)
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
 		check(d->caves[0].addr + d->caves[0].len <= 0x01141400u,
 		      "and the helper stops short of the code switches at 0x1141400");
-		check_eq_u64(len, 2116, "the reply is 2116 bytes, the helper at 1036 with the pause written");
+		check_eq_u64(len, 2812, "the reply is 2812 bytes, the helper at 1384 with the pause written and the armour reload (build 59)");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC2, "with the stamp this build pins for it");
 
 		/*
@@ -18290,6 +18544,7 @@ int main(void)
 	test_no_code_patches_planet_load();
 	test_no_code_patches();
 	test_savefile_rpcs3();
+	test_rac2_reload_rpcs3();
 	test_mod_patch_layout();
 	test_mod_patch_pages();
 	test_mod_presence();

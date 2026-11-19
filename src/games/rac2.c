@@ -45,10 +45,11 @@
  *   7  savefile the helper's own byte                                   every 8th
  *   8  chargeboot colour words                                        every 8th
  *   9  the skin cheats (build 59)                                     every 8th
+ *  10  the ship word, its paint job (build 59)                         every 8th
  *
  * Blocks 3 to 6 are the autosplit watcher's, and are per-tick because a split has
- * to reach the PC in milliseconds. The slow blocks sit on phases 0, 2 and 4, so
- * a tick costs seven reads plus at most one: 7.5 on average, eight at worst.
+ * to reach the PC in milliseconds. The slow blocks sit on phases 0, 2, 4 and 6,
+ * so a tick costs seven reads plus at most one: 7.625 on average, eight at worst.
  */
 static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_HOT_INPUTS_ADDR, RAC2_HOT_INPUTS_LEN, 1, 0 },
@@ -60,7 +61,8 @@ static const struct game_hot_block rac2_hot[] = {
 	{ RAC2_YEEDIL_SCENE,    1,                   1, 0 },
 	{ RAC2_SF_HELPER,       1,                   8, 0 },
 	{ RAC2_CB_PRIMARY_FRONT, 0x14,               8, 4 },
-	{ RAC2_SKIN_CHEATS,     RAC2_SKIN_CHEATS_LEN, 8, 2 }   /* build 59: the skin cheats */
+	{ RAC2_SKIN_CHEATS,     RAC2_SKIN_CHEATS_LEN, 8, 2 },  /* build 59: the skin cheats */
+	{ RAC2_SHIP_UPGRADES,   4,                   8, 6 }    /* build 59: the ship's paint */
 };
 
 #define HOT_INPUTS   0
@@ -73,6 +75,7 @@ static const struct game_hot_block rac2_hot[] = {
 #define HOT_SAVEFILE 7
 #define HOT_COLOURS  8
 #define HOT_SKIN     9
+#define HOT_SHIP     10
 
 #define OFF_LOADTYPE  (RAC2_LOADSCREEN_TYPE  - RAC2_HOT_INPUTS_ADDR)   /* 0x007 */
 #define OFF_LOADCOUNT (RAC2_LOADSCREEN_COUNT - RAC2_HOT_INPUTS_ADDR)   /* 0x00B */
@@ -207,6 +210,10 @@ static void rac2_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 	if (blocks[HOT_SKIN] != NULL)
 		out->readout[RAC2_RO_SKIN] = rac2_skin_index(blocks[HOT_SKIN]);
+
+	if (blocks[HOT_SHIP] != NULL)
+		out->readout[RAC2_RO_SHIP] =
+			(be32_get(blocks[HOT_SHIP]) & RAC2_SHIP_PAINT_MASK) >> RAC2_SHIP_PAINT_SHIFT;
 
 	/* --------------------------------------------- the autosplit watcher's view */
 
@@ -784,7 +791,8 @@ static const char * const rac2_readouts[] = {
 	"Chargeboot back",
 	"Chargeboot tint",
 	"Armour",
-	"Skin"
+	"Skin",
+	"Ship colour"          /* build 59 */
 };
 
 #define NR (u8)(sizeof(rac2_readouts) / sizeof(rac2_readouts[0]))
@@ -819,9 +827,14 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_HEALTH_XP,       FEATURE_VALUE,  G_PLAYER,  32, SG, RAC2_RO_HEALTH_XP,  0, 0, "Health XP" },
 	{ R2_SET_RESPAWN,     FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Set respawn point" },
 	{ R2_STORE_SWINGSHOT, FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Store Swingshot" },
-	/* Build 59: the pickers, as UYA's armour; the model shows from the next planet load. */
+	/*
+	 * Build 59: the pickers, as UYA's armour and ship colour are. The armour and
+	 * the skin reload Ratchet's model as the Cheats menu does (rac2_panel.c); the
+	 * ship's paint shows from the next planet load, as the ship shop's does.
+	 */
 	{ R2_ARMOUR,          FEATURE_ENUM,   G_PLAYER,   RAC2_ARMOUR_COUNT, 0, RAC2_RO_ARMOUR, 0, RAC2_ARMOUR_COUNT - 1, "Armour" },
 	{ R2_SKIN,            FEATURE_ENUM,   G_PLAYER,   RAC2_SKIN_COUNT,   0, RAC2_RO_SKIN,   0, RAC2_SKIN_COUNT - 1,   "Skin" },
+	{ R2_SHIP_COLOUR,     FEATURE_ENUM,   G_PLAYER,   RAC2_SHIP_COUNT,   0, RAC2_RO_SHIP,   0, RAC2_SHIP_COUNT - 1,   "Ship colour" },
 	{ R2_DEATH_BOSSES,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset bosses on death" },
 	{ R2_DEATH_PBOLTS,    FEATURE_TOGGLE, G_PLAYER,   0, 0,  NO, 0, 0, "Reset platinum bolts on death" },
 

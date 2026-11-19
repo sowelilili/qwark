@@ -58,6 +58,17 @@
 #define RAC3_SKIN              0x00DA519Bu  /* one byte: 0 none, or 5..13 */
 #define RAC3_ARMOUR_LOADED     0x00D99210u  /* s32, the armour whose file is in */
 #define RAC3_SKIN_FIRST        5u           /* the menu's first skin's id */
+/*
+ * Build 59: skins 5 to 7 (Old School Ratchet, Snowman, Tuxedo Ratchet) load
+ * armor5..7.ps3, the files the Armour picker's rows 5 to 7 load, so the Skin
+ * picker leaves them out and the Armour readout shows them (rac3_panel.c).
+ * Not made immediate as RaC2's are: the savefile helper, whose per-frame hook
+ * would have to make the skin menu's Armor_LoadModel call, has 28 bytes free
+ * in its cave and 152 in the trophy reset's, and the call with its checks is
+ * some 290 bytes as the helper is compiled.
+ */
+#define RAC3_SKIN_ARMOUR_FIRST 5u
+#define RAC3_SKIN_ARMOUR_LAST  7u
 
 #define RAC3_CB_PRIMARY_FRONT  0x00C33AB0u
 #define RAC3_CB_PRIMARY_BACK   0x00C33AB4u
@@ -608,8 +619,11 @@ extern const u8 rac3_fp_switch[4];
 /* ENUM option counts, from RAC3Form.Designer.cs. */
 #define RAC3_ARMOUR_COUNT 8
 #define RAC3_SHIP_COUNT   32
-/* Build 59: none and the nine skins the game names, ids 5 to 13. */
-#define RAC3_SKIN_COUNT   10
+/*
+ * Build 59: none and six of the skins, ids 8 to 13; after the first hardware
+ * test 5 to 7 are the Armour picker's (rac3_panel.c).
+ */
+#define RAC3_SKIN_COUNT   7
 
 /*
  * The highest weapon version any RaC3 item has, and so the maximum the level
@@ -624,6 +638,7 @@ int rac3_trigger(u8 id);
 int rac3_set_value(u8 id, u32 value);
 int rac3_get_options(u8 id, const char * const **options, u8 *count);
 u32 rac3_skin_index(u8 skin);
+u32 rac3_armour_shown(u32 armour, u8 skin);
 int rac3_load_setaside(void);
 u8  rac3_savefile_ready(u8 what);
 

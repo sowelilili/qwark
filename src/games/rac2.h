@@ -311,23 +311,56 @@
  * Build 59: the armour and the skin (NPEA00386, decompiled). The armour worn
  * is a big-endian s16, 0 none to 4 Carbonox; enemies' damage reads it every
  * hit, so a new armour protects at once. Its model is a file, armor<n>.ps3,
- * that the start of a planet load (0xB4CAA8) reads again only when the word at
- * RAC2_ARMOUR_LOADED differs from the armour, and Level_Load then sets it
- * (0xB4ABEC). A skin is one of four of the Cheats menu's bytes, which only
- * pick the file that load reads (0xB451BC: Snow Dude's, then the funny side's,
- * Beach Boy's and the tux, armor8, 6, 7 and 5, the first one on winning), so
- * the menu's own toggle reloads at once from code (0xBC17B8) and qwark, with
- * data alone, makes the next planet load do it: the loaded word at -1 is a
- * mismatch the load always sees.
+ * that the start of a planet load (Game_MainLoop 0xB4CAA8, Armor_LoadFiles
+ * 0xB451BC) reads again only when the word at RAC2_ARMOUR_LOADED differs from
+ * the armour, and Level_Load then relocates it and sets the word (0xB4ABC0,
+ * 0xB4ABEC); a save's restore and a new game put -1 there
+ * (Models_InvalidateLoaded, 0x80CB4). A skin is one of four of the Cheats
+ * menu's bytes, which only pick the file that load reads (Snow Dude's, then
+ * the funny side's, Beach Boy's and the tux, armor8, 6, 7 and 5, the first one
+ * on winning).
+ *
+ * The game's own Cheats menu (CheatsMenu_Update, 0xBC17B8) toggles the byte
+ * and calls Armor_LoadModel (0xB45738) with the armour at once, from the
+ * pause; the armour vendor makes the same call (0xBFC2D4) to show an armour on
+ * Ratchet. Since build 59 qwark does what the menu does: the loaded word at
+ * -1, a mismatch every later load sees, and then RAC2_SF_ARMOR, the savefile
+ * helper's fifth request byte, which has the helper make the menu's call at
+ * the end of the first frame of play or of the pause that is safe for it
+ * (src/games/sfhelper/sf_rac2.h has the rules; rac2_panel.c,
+ * rac2_model_reload). With no helper the -1 alone makes the next planet load
+ * read the model, as before.
  */
 #define RAC2_ARMOUR            0x1329AB0u  /* s16, 0..4 */
 #define RAC2_ARMOUR_LOADED     0x147A310u  /* s32, the armour whose file is in */
+#define RAC2_SF_ARMOR          0x131772Bu  /* the helper's reload request, SF_API_ARMOR */
 #define RAC2_SKIN_CHEATS       0x14817F3u  /* cheat bytes 2 to 11 of 0x14817F1's twelve */
 #define RAC2_SKIN_CHEATS_LEN   10u
 #define RAC2_CHEAT_SNOW_DUDE   0x14817F3u  /* cheat 2, armor8 */
 #define RAC2_CHEAT_FUNNY       0x14817FAu  /* cheat 9, armor6 */
 #define RAC2_CHEAT_TUX         0x14817FBu  /* cheat 10, armor5 */
 #define RAC2_CHEAT_BEACH_BOY   0x14817FCu  /* cheat 11, armor7 */
+
+/*
+ * Build 59: the ship's paint job (NPEA00386, decompiled). The ship word holds
+ * the Star Explorer's parts and its paint: Slim Cognito's ship shop
+ * (Vendor_BuildShipList 0xBFA360, Vendor_BuyShipItem 0xBFE2D0) lists them out
+ * of tables at 0x1359D40.. (36 rows: name text, mask, value, skill points
+ * needed), and a purchase clears the row's mask and sets its value. Rows 19 to
+ * 35 are the paint jobs, mask 0x1F0000, values 0 to 16 from bit 16, each shown
+ * once the player has that many skill points; the names are the game's own
+ * (rc2 locale "english", text ids 0x30BF..0x30D6). The shop writes the word
+ * and nothing else: the paint, ship_tex<n>.ps3, is read at the start of a
+ * planet load when the word differs from the paint loaded,
+ * RAC2_SHIP_PAINT_LOADED (Game_MainLoop 0xB4CB1C, Ship_LoadPaint 0xB46760),
+ * so a new paint shows on the ship from the next planet load, the shop's
+ * included. qwark writes the five bits and keeps the rest of the word.
+ */
+#define RAC2_SHIP_UPGRADES     0x148197Cu  /* u32, the ship's parts and paint */
+#define RAC2_SHIP_PAINT_LOADED 0x147A220u  /* s32, the paint whose file is in */
+#define RAC2_SHIP_PAINT_SHIFT  16
+#define RAC2_SHIP_PAINT_MASK   0x001F0000u
+#define RAC2_SHIP_COUNT        17
 
 #define RAC2_POS_BLOB_LEN  30          /* what racman stores for a position slot */
 #define RAC2_LF_LEN        0x10        /* level flag bytes per planet */
@@ -449,6 +482,8 @@ extern const u8 rac2_fp_switch_old[4];
 /* Build 59: the armour, and the skin as an option index (rac2_skin_index). */
 #define RAC2_RO_ARMOUR     9
 #define RAC2_RO_SKIN       10
+/* Build 59: the ship's paint job, its five bits of the ship word. */
+#define RAC2_RO_SHIP       11
 
 /* ------------------------------------------------------------- feature ids */
 
@@ -515,6 +550,9 @@ extern const u8 rac2_fp_switch_old[4];
 #define R2_SKIN              41
 #define RAC2_ARMOUR_COUNT    5
 #define RAC2_SKIN_COUNT      5
+
+/* Build 59: the ship's paint picker, an ENUM as UYA's Ship colour (12) is. */
+#define R2_SHIP_COLOUR       42
 
 /* ------------------------------------------------------ rac2_panel.c exports */
 

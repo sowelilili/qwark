@@ -261,8 +261,13 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_COLOURS] != NULL)
 		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC3_RO_CB_FRONT);
 
-	if (blocks[HOT_SKIN] != NULL)
+	if (blocks[HOT_SKIN] != NULL) {
 		out->readout[RAC3_RO_SKIN] = rac3_skin_index(blocks[HOT_SKIN][0]);
+		/* Build 59: a skin that is also an armour shows in the Armour row. */
+		if (state != NULL)
+			out->readout[RAC3_RO_ARMOUR] =
+				rac3_armour_shown(out->readout[RAC3_RO_ARMOUR], blocks[HOT_SKIN][0]);
+	}
 
 	/*
 	 * Revision 1.21: the trophy reset's state, qwark's own and no memory read

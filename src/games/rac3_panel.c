@@ -766,16 +766,18 @@ static const char * const rac3_ship_options[RAC3_SHIP_COUNT] = {
 };
 
 /*
- * Build 59: the pause menu's skin list, as the game names it (all_text): its
- * first row puts the armour back, and the nine after it are skins 5 to 13 in
- * the menu's order. The table's last four ids, 14 to 17, have no name in any
- * of the game's text and are left out.
+ * Build 59: the pause menu's skin list (g_skinMenuTable, 0xC4AAC0), as the game
+ * names it: its first row puts the armour back, and the skins follow in the
+ * menu's order. After the first hardware test the three whose model the
+ * Armour picker already offers are left out: Old School Ratchet, Snowman and
+ * Tuxedo Ratchet, skins 5, 6 and 7, are armor5, armor6 and armor7.ps3, the
+ * very files the Armour picker's "OG Ratchet Skin", "Snowman Skin" and "Tux
+ * Skin" (armours 5, 6 and 7) load. The game's table also has Sumo, Ninja,
+ * Santa Ratchet and Piposaru, ids 14 to 17 (locale text 8144 to 8147), which
+ * this list has never offered.
  */
 static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
 	"Current Armor",
-	"Old School Ratchet",
-	"Snowman",
-	"Tuxedo Ratchet",
 	"Buginoid",
 	"Brainius",
 	"Constructobot",
@@ -784,12 +786,34 @@ static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
 	"Robo"
 };
 
-/* The skin byte as an option index; an id the list has no row for reads as none. */
+/* Each option's skin id, the byte Skin_Set writes; 0 for none. */
+static const u8 rac3_skin_ids[RAC3_SKIN_COUNT] = { 0, 8, 9, 10, 11, 12, 13 };
+
+/*
+ * The skin byte as an option index. One of the three left out reads as
+ * Current Armor here, and the Armour readout shows it as the armour it is
+ * (rac3_armour_shown); an id the list has no row for reads as none too.
+ */
 u32 rac3_skin_index(u8 skin)
 {
-	if (skin >= RAC3_SKIN_FIRST && skin < RAC3_SKIN_FIRST + RAC3_SKIN_COUNT - 1)
-		return (u32)(skin - RAC3_SKIN_FIRST + 1);
+	u32 i;
+
+	for (i = 1; i < RAC3_SKIN_COUNT; i++) {
+		if (rac3_skin_ids[i] == skin) return i;
+	}
 	return 0;
+}
+
+/*
+ * Build 59: what the Armour readout shows. While the game wears one of the
+ * three skins that are also armours (5, 6 or 7, set by its own skin menu or a
+ * save), that is what Ratchet looks like, and the readout says so with the
+ * Armour picker's own row for it; otherwise the armour worn.
+ */
+u32 rac3_armour_shown(u32 armour, u8 skin)
+{
+	if (skin >= RAC3_SKIN_ARMOUR_FIRST && skin <= RAC3_SKIN_ARMOUR_LAST) return skin;
+	return armour;
 }
 
 int rac3_get_options(u8 id, const char * const **options, u8 *count)
@@ -1818,8 +1842,26 @@ int rac3_set_value(u8 id, u32 value)
 	case R3_ARMOUR: {
 		/* rac3.cs SetArmor writes the index as a big-endian u16. */
 		u8 halfword[2];
+		u8 skin = 0;
+		int rc;
+
 		be16_put(halfword, (u16)value);
-		return mem_write(RAC3_CURRENT_ARMOR, halfword, 2);
+		rc = mem_write(RAC3_CURRENT_ARMOR, halfword, 2);
+		if (rc != ST_OK) return rc;
+
+		/*
+		 * Build 59: one of the three skins that are also armours, which the
+		 * readout shows in this row (rac3_armour_shown), gives way to the
+		 * armour picked, as picking another armour from this row should; the
+		 * loaded word at -1 has the next planet load read the model, since the
+		 * armour alone may not differ from the one already in.
+		 */
+		rc = mem_read_u8(RAC3_SKIN, &skin);
+		if (rc != ST_OK) return rc;
+		if (skin < RAC3_SKIN_ARMOUR_FIRST || skin > RAC3_SKIN_ARMOUR_LAST) return ST_OK;
+		rc = mem_write_u8(RAC3_SKIN, 0);
+		if (rc != ST_OK) return rc;
+		return mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
 	}
 
 	case R3_SHIP_COLOUR:
@@ -1827,7 +1869,10 @@ int rac3_set_value(u8 id, u32 value)
 
 	case R3_SKIN: {
 		/* The skin's id, then the loaded armour at -1 for the next planet load (rac3.h). */
-		int rc = mem_write_u8(RAC3_SKIN, value == 0 ? 0u : (u8)(RAC3_SKIN_FIRST - 1 + value));
+		int rc;
+
+		if (value >= RAC3_SKIN_COUNT) return ST_BAD_ARG;
+		rc = mem_write_u8(RAC3_SKIN, rac3_skin_ids[value]);
 		if (rc != ST_OK) return rc;
 		return mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
 	}

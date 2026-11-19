@@ -927,6 +927,30 @@ static const u32 rac2_skin_cheat[RAC2_SKIN_COUNT] = {
 	0, RAC2_CHEAT_TUX, RAC2_CHEAT_FUNNY, RAC2_CHEAT_BEACH_BOY, RAC2_CHEAT_SNOW_DUDE
 };
 
+/*
+ * Build 59: the ship shop's paint jobs, by their value in the ship word (rac2.h),
+ * which is also the shop's order; the names are the game's own.
+ */
+static const char * const rac2_ship_options[RAC2_SHIP_COUNT] = {
+	"Blargian Red",
+	"Orxon Green",
+	"Bogon Blue",
+	"Insomniac Special",
+	"Dark Nebula",
+	"Drek's Black Heart",
+	"Space Storm",
+	"Lunar Eclipse",
+	"Plaidtastic",
+	"Supernova",
+	"Solar Wind",
+	"Clowner",
+	"Silent Strike",
+	"Prepster",
+	"Lombax Orange",
+	"Neutron Star",
+	"Star Traveller"
+};
+
 int rac2_get_options(u8 id, const char * const **options, u8 *count)
 {
 	if (id == R2_ARMOUR) {
@@ -937,6 +961,11 @@ int rac2_get_options(u8 id, const char * const **options, u8 *count)
 	if (id == R2_SKIN) {
 		*options = rac2_skin_options;
 		*count = RAC2_SKIN_COUNT;
+		return ST_OK;
+	}
+	if (id == R2_SHIP_COLOUR) {
+		*options = rac2_ship_options;
+		*count = RAC2_SHIP_COUNT;
 		return ST_OK;
 	}
 	return ST_NOT_FOUND;
@@ -957,9 +986,27 @@ u32 rac2_skin_index(const u8 *cheats)
 }
 
 /*
+ * Either picker, after its data: the model reloaded as the game's Cheats menu
+ * reloads it (rac2.h). The loaded armour goes to -1 first, which the next
+ * planet load always takes for a stale model, and then the savefile helper is
+ * asked to make the menu's call on the game's own frame as soon as it is safe
+ * (src/games/sfhelper/sf_rac2.h). Where there is no helper to ask - config's
+ * savefile_helper = 0, no usable ui.pak, an RPCS3 game without this build's
+ * savefile patch - the -1 alone stands and the look changes at the next planet
+ * load, and the pick still answers OK: its data is written.
+ */
+static int rac2_model_reload(void)
+{
+	int rc = mem_write_u32(RAC2_ARMOUR_LOADED, 0xFFFFFFFFu);
+
+	if (rc != ST_OK) return rc;
+	if (savefile_install() != ST_OK) return ST_OK;
+	return mem_write_u8(RAC2_SF_ARMOR, 1);
+}
+
+/*
  * Either picker: the armour word, or the chosen skin's cheat byte on and the
- * other three off, then the loaded armour at -1, so that the next planet load
- * reads the model again (rac2.h). The armour's protection is at once.
+ * other three off, then the model reload. The armour's protection is at once.
  */
 static int rac2_set_armour(u32 armour)
 {
@@ -969,7 +1016,7 @@ static int rac2_set_armour(u32 armour)
 	be16_put(halfword, (u16)armour);
 	rc = mem_write(RAC2_ARMOUR, halfword, 2);
 	if (rc != ST_OK) return rc;
-	return mem_write_u32(RAC2_ARMOUR_LOADED, 0xFFFFFFFFu);
+	return rac2_model_reload();
 }
 
 static int rac2_set_skin(u32 skin)
@@ -981,7 +1028,21 @@ static int rac2_set_skin(u32 skin)
 		rc = mem_write_u8(rac2_skin_cheat[i], i == skin ? 1u : 0u);
 		if (rc != ST_OK) return rc;
 	}
-	return mem_write_u32(RAC2_ARMOUR_LOADED, 0xFFFFFFFFu);
+	return rac2_model_reload();
+}
+
+/*
+ * Build 59: the ship's paint job, the five bits of the ship word the ship shop
+ * sets (rac2.h); the rest of the word, the ship's parts, is kept.
+ */
+static int rac2_set_ship_colour(u32 colour)
+{
+	u32 word = 0;
+	int rc = mem_read_u32(RAC2_SHIP_UPGRADES, &word);
+
+	if (rc != ST_OK) return rc;
+	word = (word & ~RAC2_SHIP_PAINT_MASK) | (colour << RAC2_SHIP_PAINT_SHIFT);
+	return mem_write_u32(RAC2_SHIP_UPGRADES, word);
 }
 
 int rac2_set_value(u8 id, u32 value)
@@ -989,6 +1050,7 @@ int rac2_set_value(u8 id, u32 value)
 	switch (id) {
 	case R2_ARMOUR:     return rac2_set_armour(value);
 	case R2_SKIN:       return rac2_set_skin(value);
+	case R2_SHIP_COLOUR: return rac2_set_ship_colour(value);
 	case R2_BOLTS:      return mem_write_u32(RAC2_BOLTS, value);
 	case R2_RARITANIUM: return mem_write_u32(RAC2_RARITANIUM, value);
 	case R2_CHALLENGE:  return mem_write_u8(RAC2_CHALLENGE_MODE, (u8)value);

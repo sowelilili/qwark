@@ -274,11 +274,50 @@
  */
 #define SF_CONSOLE_FREEZE  0x0157CEDC
 
+/* ------------------------------------------------------ the armour reload */
+
+/*
+ * Build 59: the armour and skin pickers' reload (sf_armor_reload in
+ * sfhelper.c). The game's own Cheats menu turns a skin cheat on and calls
+ * Armor_LoadModel (0xB45738) with the armour at once (CheatsMenu_Update,
+ * 0xBC17B8, in the pause), and the armour vendor calls it to show the armour
+ * the cursor is on (0xBFC2D4, in the vendor). It reads armor<n>.ps3 and .vram
+ * into the armour's two buffers (SF_ARMOR_BUF and its vram twin), picking the
+ * skin's file over the armour's when a skin cheat is on, relocates the model
+ * (Armor_Relocate, 0xB45380), sets the loaded-armour word SF_ARMOR_LOADED to
+ * the armour and points moby class 0, Ratchet's, at the new model (the word
+ * SF_MOBY_CLASSES points at). The planet load does the same in two halves when
+ * the loaded word differs from the armour (0xB4CAA8, the files; Level_Load
+ * 0xB4ABC0, the relocation and the word), and so does the trip's space load
+ * (0xBE9B44).
+ *
+ * qwark puts -1 in the loaded word, which the next planet load always takes
+ * for a stale model, and then 1 in SF_API_ARMOR. The helper reloads at the end
+ * of a frame of ordinary play or of the pause, the two modes the game's own
+ * calls are made from with the world as it is, on a planet, with no planet
+ * load raised, no mode change queued, the console not holding the game in its
+ * freeze, Ratchet alive and his class and his armour buffer there; anywhere
+ * else it leaves the byte at 1 and looks again on the next frame. A planet
+ * load that comes first reads the files itself, and the helper finds the
+ * loaded word equal to the armour and lets the byte go without a reload.
+ * SF_API_ARMOR sits between the set-aside byte and the copy counter, in the
+ * same zero-filled gap, so it is 0 at every boot. From the NPEA00386
+ * executable; not yet run on hardware.
+ */
+#define SF_API_ARMOR       0x0131772B
+#define SF_ARMOR           0x01329AB0
+#define SF_ARMOR_LOADED    0x0147A310
+#define SF_ARMOR_BUF       0x0156B2BC
+#define SF_MOBY_CLASSES    0x0158DCC0
+#define SF_PLAYER_HEALTH   0x014816AC
+#define SF_MODE_NORMAL     0x00000000
+
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY         0x010D4FFC
 #define SF_FN_PERFORM_LOAD   0x00083250
 #define SF_FN_MOVIE_STOP     0x010A7990
 #define SF_FN_SCENE_CLEAR    0x00B28534
+#define SF_FN_ARMOR_LOAD_MODEL 0x00B45738
 
 #endif /* QWARK_SF_RAC2_H */

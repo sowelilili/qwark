@@ -26,7 +26,7 @@
  * entries, one after another, as src/games/menuhelper/pak.py packs them out of
  * sfhelper_bins.c. A module takes only a pak whose header carries it.
  */
-#define SF_PAK_ID 0x8E78C15Cu
+#define SF_PAK_ID 0xED8A1064u
 
 /*
  * One run of bytes at one address. A game has one, or two when it needs a stub;
