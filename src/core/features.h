@@ -55,6 +55,9 @@ int  features_options(u8 id, const char * const **options, u8 *count);
 /* Encodes the DESCRIBE reply. */
 int  features_describe(u8 *out, u32 cap, u32 *len);
 
+/* Revision 1.34: the ACTION_STATUS reply for ACTION `id` and its readout's word `word`. */
+int  features_action_status(u8 id, u32 word, u8 *out, u32 cap, u32 *len);
+
 /*
  * Turns on every toggle in `mask` that the current game has.
  *

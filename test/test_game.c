@@ -44,7 +44,8 @@ static const struct game_describe tg_table = {
 	tg_features, 1,
 	0,            /* auto_default */
 	NULL, 0,      /* former labels */
-	0             /* cheats (revision 1.30) */
+	0,            /* cheats (revision 1.30) */
+	0, 0, NULL    /* run_legal, planet_flags, menu_row (revision 1.34) */
 };
 
 static const struct game_describe *tg_describe(void) { return &tg_table; }

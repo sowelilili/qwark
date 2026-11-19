@@ -2114,6 +2114,21 @@ static u16 handle_inline(struct conn *c, int slot, u16 op,
 		}
 
 	/*
+	 * Revision 1.34. An ACTION's status line, worded by the game for the word
+	 * the client saw: it reads no memory, so it answers here under the core
+	 * lock, as DESCRIBE does (the lock audit, PROTOCOL.md 9.11).
+	 */
+	case OP_ACTION_STATUS: {
+		u16 rc;
+		if (reqlen < 5) return ST_BAD_ARG;
+		core_lock();
+		if (session_game() == NULL || session_state() != SESSION_INGAME) rc = ST_NOT_INGAME;
+		else rc = (u16)features_action_status(req[0], be32_get(req + 1), reply, replycap, replylen);
+		core_unlock();
+		return rc;
+	}
+
+	/*
 	 * Revision 1.32. `telemetry.hz`, a config write and nothing else, as
 	 * RUN_WARN's: the tick thread sees the config move on its next tick and
 	 * sends at the new rate from then on (session.c). Every platform.

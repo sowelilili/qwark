@@ -742,7 +742,8 @@ extern const u8 rac4_fp_switch[4];
  * Stable: new features go on the end, a retired one leaves its number behind.
  * Retired, never to be reused: 16 (reset all weapon levels), and since build 53
  * 12 (act tune bosses), which is the NG+ manip group's setup now (protocol
- * 1.21).
+ * 1.21), and since build 59 11 (unlock all planets), a legacy button the user
+ * retired.
  */
 #define R4_CRASH_PATCHES   0
 #define R4_SOFTLOCK_FIX    1
@@ -757,6 +758,7 @@ extern const u8 rac4_fp_switch[4];
 #define R4_CHALLENGE       9
 #define R4_SKIN            10
 
+/* 11 retired in build 59: unlock all planets, a legacy button (the user's call) */
 #define R4_UNLOCK_PLANETS  11
 /* 12 retired: act tune bosses */
 
@@ -845,5 +847,7 @@ int rac4_in_file(void);
 int rac4_fastload_force(void);
 int rac4_fastload_forced(void);
 int rac4_fastload_restore(void);
+/* Build 59: the force is a set-aside load's (1) or a planet load's (0). */
+void rac4_fastload_claim(int aside);
 
 #endif /* QWARK_RAC4_H */

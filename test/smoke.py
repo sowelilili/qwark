@@ -1688,9 +1688,25 @@ def parse_describe(b):
             "min": struct.unpack(">I", row[8:12])[0],
             "max": struct.unpack(">I", row[12:16])[0],
             "label": row[16:48].split(b"\0")[0].decode("ascii", "replace"),
+            # Revision 1.34: flags2, the pad byte until then; bit0 RUN_LEGAL.
+            "flags2": row[7],
         })
         off += FEATURE_WIRE_SIZE
+    # Revision 1.34: the extension after the features, its length first.
+    if off < len(b):
+        off += 1 + b[off]
     return game, groups, readouts, features, off
+
+
+def describe_ext(b):
+    """Revision 1.34: DESCRIBE's extension, (planet_flags, menu_here, menu_row), or None."""
+    _g, _gr, _r, _f, end = parse_describe(b)
+    off = 2 + b[1] * 24
+    off += 1 + b[off] * 24
+    off += 1 + b[off] * FEATURE_WIRE_SIZE
+    if off >= len(b) or b[off] < 18:
+        return None
+    return b[off + 1], bool(b[off + 2] & 1), b[off + 3:off + 19].split(b"\0")[0].decode("ascii", "replace")
 
 
 def parse_unlocks(b):
@@ -2119,7 +2135,8 @@ def smoke_reboot_apply(sim, c):
         status, _ = c.call(OP_REBOOT_APPLY, bytes([bad]))
         check(status == ST_BAD_ARG, "reboot apply: REBOOT_APPLY %d is BAD_ARG" % bad, status)
     status, _ = c.call(0x0099, bytes([1]))
-    check(status == ST_UNKNOWN_OP, "reboot apply: 0x0099 is UNKNOWN_OP", status)
+    check(status == ST_BAD_ARG, "reboot apply: 0x0099, the test build's BOOT_ASK, is ACTION_STATUS since "
+          "revision 1.34, and BOOT_ASK's one byte is BAD_ARG", status)
     st = fresh_state(c)
     check(st and st["flags3"] & (SESSION_FLAG3_SETTINGS_133 | 0x80) == SESSION_FLAG3_SETTINGS_133,
           "reboot apply: flags3 bit5 says the module has it, bit7 is 0", st and hex(st["flags3"]))
@@ -2422,7 +2439,7 @@ OTHER_GAMES = [
         "signed": [("QE save write-offset", 16), ("Health XP", 32)],
         # The QE feature id, the halfword it writes, and the readout mirroring it.
         "signed_qe": (23, 0x13298CC, 5),
-        # "Reset platinum bolts", an ACTION with no helper gate.
+        # "Reset all platinum bolts", an ACTION with no helper gate.
         "action_id": 24,
         "action_addr": 0x1562540,
         "action_expect": 0,
@@ -2625,7 +2642,7 @@ OTHER_GAMES = [
         "title": "NPEA00423",
         "name": "Deadlocked",
         "game": 4,
-        "features": 25,
+        "features": 24,   # build 59: Unlock all planets (11) is retired
         "cheats": FOUR_CHEATS_DL,
         # SF_API_SETASIDE and SF_API_LOAD from src/games/sfhelper/sf_rac4.h.
         "sf_setaside": 0x015CD71F,
@@ -2679,16 +2696,11 @@ OTHER_GAMES = [
         "blob_main": 32,
         "value_id": 7,
         "value_addr": 0x9C32E8,
-        # "Unlock all planets" writes the rank, Liberator, as one byte.
-        "action_id": 11,
-        "action_addr": 0x9C331F,
-        "action_expect": 4,
-        # 1.4.1: and only into a save file's game held still: out of the front
-        # end, in a single-player level, in the pause (not play, which would
-        # let the console menu go in here), no mode change queued.
-        "action_state": [(0xB3C7D4, b"\x00"), (0x9C3240, struct.pack(">I", 2)),
-                         (R4_GAME_MODE, struct.pack(">I", 3)),
-                         (R4_PENDING_GAME_MODE, struct.pack(">i", -2))],
+        # Build 59: Unlock all planets (11) is retired; Die (6) zeroes the
+        # hero's z, whose first byte is the one checked.
+        "action_id": 6,
+        "action_addr": 0x10D44D8,
+        "action_expect": 0,
         "planet": 4,
         # 1.4.1: a locked planet is unlocked only there too, so the save has this one.
         "planet_unlocked": [RAC4_LEVEL_SAVES + 3 * RAC4_LEVEL_SIZE + 0x300],
@@ -3804,11 +3816,10 @@ def exercise_console_menu(c, sim):
     module_sleep(c, 0.1)
     page = menu_page(c)
     body = page[4] if page else b""
-    want = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health", "Max bolts", "Max Dread points",
-            "Unlock all planets"]
+    want = ["Fast loads", "Ghost Ratchet", "Refill ammo", "Freeze health", "Max bolts", "Max Dread points"]
     check(page is not None and page[3] == want and body[MBOX_OFF_ROWS + 4 * MBOX_ROW_SIZE] == MROW_ACTION,
-          "Deadlocked menu: round 6's Cheats, the toggles, then Max bolts, Max Dread points and Unlock all planets "
-          "(buttons)", page[3] if page else None)
+          "Deadlocked menu: round 6's Cheats, the toggles, then Max bolts and Max Dread points (buttons); "
+          "build 59: no Unlock all planets", page[3] if page else None)
     mem_write(c, 0x009C32E8, struct.pack(">I", 12))
     module_sleep(c, 0.2)
     check(menu_event(c, MBOX_EV_ACTIVATE, 4) and mem_read_u32(c, 0x009C32E8) == 99999999,
@@ -6314,12 +6325,23 @@ def smoke_tod(c, sim):
     if check(status == ST_OK, "ToD: DESCRIBE answers", status):
         game, groups, readouts, features, _off = parse_describe(body)
         labels = [f["label"] for f in features]
-        check(game == 5 and groups == ["Cheats", "Player", "Progress", "Savefile"],
-              "ToD: game 5, four groups", (game, groups))
+        check(game == 5 and groups == ["Cheats", "Player", "Progress", "Savefile", "Manips", "Cutscene cache",
+                                       "Collectables"],
+              "ToD: game 5, its groups (build 59: Manips, Cutscene cache and Collectables)", (game, groups))
+        check(sorted(f["label"] for f in features if f["flags2"] & 1) ==
+              ["Cache cutscenes", "Cache cutscenes on reset", "Disable cutscene caching", "Remove cutscenes"],
+              "ToD: revision 1.34, the four run-legal rows flagged RUN_LEGAL over the wire",
+              [f["label"] for f in features if f["flags2"] & 1])
+        check(describe_ext(body) == (3, True, "Inventory"),
+              "ToD: the extension: both planet flags, the Trainer can come up, in place of Inventory",
+              describe_ext(body))
+        st, line = c.call(0x0099, bytes([19]) + struct.pack(">I", 0x30640C01))
+        check(st == ST_OK and line[0] == 2 and line[2:2 + line[1]] == b"Cutscenes cached (12 s, 10.0 MiB/s)",
+              "ToD: ACTION_STATUS words Cache cutscenes' line, green", (st, line))
         check(readouts == ["Bolts", "Raritanium", "Challenge mode", "Cutscene cache", "Armour", "Skin"],
               "ToD: its readouts, build 59's Armour and Skin last", readouts)
         for want in ("Die", "Bolts",
-                     "Raritanium", "Challenge mode", "Unlock all skill points", "Reset gold bolts"):
+                     "Raritanium", "Challenge mode", "Unlock all skill points", "Reset all gold bolts"):
             check(want in labels, "ToD: DESCRIBE lists %s" % want, labels)
         check("Unlock all RYNO plans" not in labels and "Reset RYNO plans" not in labels,
               "ToD: the RYNO plans' buttons are retired", labels)

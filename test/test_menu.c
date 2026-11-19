@@ -1177,16 +1177,17 @@ static void test_model_dl(void)
 	check(rc == ST_BAD_ARG && menu_model_depth() == 1, "back at the root has nowhere to go");
 
 	/*
-	 * Cheats: four checkboxes of three ways, then the buttons: Max bolts, Max
-	 * Dread points, Unlock all planets (round 6: Challenge mode is on Game).
+	 * Cheats: four checkboxes of three ways, then the buttons: Max bolts and Max
+	 * Dread points (round 6: Challenge mode is on Game; build 59 retired Unlock all
+	 * planets).
 	 */
 	check(act(&v, MBOX_EV_ACTIVATE, "Cheats") == ST_OK && strcmp(v.title, "Cheats") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 7, "Cheats is a CONFIG page of seven rows");
+	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 6, "Cheats is a CONFIG page of six rows");
 	check(strcmp(v.rows[0].label, "Fast loads") == 0 && strcmp(v.rows[1].label, "Ghost Ratchet") == 0 &&
 	      strcmp(v.rows[2].label, "Refill ammo") == 0 && strcmp(v.rows[3].label, "Freeze health") == 0 &&
 	      strcmp(v.rows[4].label, "Max bolts") == 0 && strcmp(v.rows[5].label, "Max Dread points") == 0 &&
-	      strcmp(v.rows[6].label, "Unlock all planets") == 0 && view_row(&v, "Challenge mode") == NULL,
-	      "round 6: the four cheats, then Max bolts, Max Dread points and Unlock all planets; no Challenge mode");
+	      view_row(&v, "Unlock all planets") == NULL && view_row(&v, "Challenge mode") == NULL,
+	      "round 6: the four cheats, then Max bolts and Max Dread points; no Challenge mode, and no Unlock all planets");
 	r = view_row(&v, "Ghost Ratchet");
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == (MROWF_ENABLED | MROWF_STEPS) &&
 	      strcmp(r->value, "Off") == 0, "Ghost Ratchet: Off, a three-way checkbox");
@@ -1207,21 +1208,8 @@ static void test_model_dl(void)
 	act(&v, MBOX_EV_LEFT, "Ghost Ratchet");
 	check(strcmp(value_of(&v, "Ghost Ratchet"), "Off") == 0, "Left twice more: On, then Off");
 
-	r = view_row(&v, "Unlock all planets");
-	check(r != NULL && r->kind == MROW_ACTION && r->flags == MROWF_ENABLED && r->value[0] == 0,
-	      "Unlock all planets is a button with nothing to say");
-	poke32(RAC4_DREAD_POINTS, 0);
-	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all planets") == ST_BUSY &&
-	      strcmp(value_of(&v, "Unlock all planets"), "busy") == 0 &&
-	      strcmp(v.hint, "Unlock all planets: busy") == 0 && peek32(RAC4_DREAD_POINTS) == 0,
-	      "1.4.1: with no save file's game held still (no level, a change queued) it is refused, nothing "
-	      "written, and the row and the hint say busy");
 	poke32(DL_PENDING_MODE, DL_MODE_NONE);
 	dl_in_file();
-	check(act(&v, MBOX_EV_ACTIVATE, "Unlock all planets") == ST_OK &&
-	      value_of(&v, "Unlock all planets")[0] == 0 && v.hint[0] == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
-	      "round 5: in a level the cross runs it, and the row stays blank (no DONE: the game's sound says it); "
-	      "1.4.1: the refusal's note goes as the row answers again");
 
 	/* Round 5: the values as buttons. */
 	r = view_row(&v, "Max bolts");
@@ -1688,7 +1676,7 @@ static void test_mailbox(void)
 	box_event(MBOX_EV_ACTIVATE, 1);
 	tick(4);
 	read_box(&p);
-	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 7 && p.ptype == MBOX_PTYPE_CONFIG,
+	check(box_acked() && strcmp(p.title, "Cheats") == 0 && p.n == 6 && p.ptype == MBOX_PTYPE_CONFIG,
 	      "within a poll it is acked, and the Cheats page is posted as a CONFIG page");
 	check(strcmp(p.rows[1].label, "Ghost Ratchet") == 0 && peek8(mb + MBOX_OFF_ROWS + 0x40 + MROW_OFF_LABEL) == 'G',
 	      "each row 0x40 bytes, the next row's label where round 3's description was");
@@ -2300,9 +2288,9 @@ static void test_renderer(void)
 		check(i == 25, "and does on, the Cheats page's moves and all (nothing composes over it)");
 	}
 	game_frame(0);
-	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 7 &&
+	check(G.thread == 2 && G.screen_tpl == 37 && G.list_tpl == DL_TPL_ROW && G.count == 6 &&
 	      G.layer == DL_LAYER && G.images == 3 && G.cursor_attached,
-	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, seven rows, its plates and cursor");
+	      "the thread's first frame builds GAME SETTINGS' panel (template 37), the list, six rows, its plates and cursor");
 	check(r32(MH_SHIM + SH_LIST) == DL_CTLLIST_VTABLE, "the list has CtlList's vtable at +0, as its constructor writes it");
 	for (i = DL_EL_ROWS_FIRST, n = 0; i <= DL_EL_ROWS_LAST; i++)
 		n += recall(G.vis_h, G.vis_v, r32(MH_SHIM + SH_PANEL) + (u32)i) == 2;
@@ -2311,11 +2299,10 @@ static void test_renderer(void)
 	      strcmp(text_of(r32(MH_SHIM + SH_PANEL) + DL_EL_LEGEND, text, sizeof(text)), "\x10 SELECT \x12 BACK") == 0,
 	      "titled CHEATS, with GAME SETTINGS' own button legend");
 	check(strcmp(cfg_label(1, text), "GHOST RATCHET") == 0 && strcmp(cfg_value(1, title), "OFF") == 0 &&
-	      strcmp(cfg_label(6, text), "UNLOCK ALL PLANETS") == 0 && strcmp(cfg_value(6, title), "") == 0 &&
 	      strcmp(cfg_label(4, text), "MAX BOLTS") == 0 && strcmp(cfg_label(5, title), "MAX DREAD POINTS") == 0 &&
 	      strcmp(cfg_value(5, title), "") == 0,
 	      "labels in GAME SETTINGS' capitals without its colon, values in its capitals, a button blank (round 4); "
-	      "round 6: MAX BOLTS, MAX DREAD POINTS, then UNLOCK ALL PLANETS, no CHALLENGE MODE");
+	      "round 6: MAX BOLTS, MAX DREAD POINTS, no CHALLENGE MODE; build 59: no UNLOCK ALL PLANETS");
 	check(focus() == 0 && cfg_color(0) == DL_RGBA_FOCUS && cfg_color(1) == DL_RGBA_OFF,
 	      "the cursor on the first row, which is lit; the others the game's grey");
 	check(recall(G.vis_h, G.vis_v, r32(item(1) + DL_ITEM_PANEL) + DL_ROW_BOX_A) == 2 &&
@@ -2350,13 +2337,13 @@ static void test_renderer(void)
 	game_frame(0);
 	check(strcmp(cfg_value(1, text), "OFF") == 0 && (features_toggle_state() & ((u64)1 << R4_GHOST)) == 0,
 	      "Left twice from AUTO: ON, then OFF");
-	for (i = 0; i < 5; i++) game_frame(PADB_DOWN);
+	for (i = 0; i < 4; i++) game_frame(PADB_DOWN);
 	poke32(RAC4_DREAD_POINTS, 0);
 	game_frame(PADB_CROSS);
 	check(G.sound == SND_FORWARD, "the cross on a button: a row's forward sound, as a list's row");
 	tick(2);
 	game_frame(0);
-	check(focus() == 6 && strcmp(cfg_value(6, text), "") == 0 && peek32(RAC4_DREAD_POINTS) == 1000000,
+	check(focus() == 5 && strcmp(cfg_value(5, text), "") == 0 && peek32(RAC4_DREAD_POINTS) == RAC4_MAX_DREAD,
 	      "the button runs, and its value stays blank (round 5: no DONE)");
 
 	/* One event in flight, and the waiting title. */
@@ -2426,7 +2413,7 @@ static void test_renderer(void)
 	tick(2);
 	game_frame(0);
 	game_frame(0);
-	check(G.thread == 2 && G.count == 7, "CHEATS again");
+	check(G.thread == 2 && G.count == 6, "CHEATS again");
 	{
 		u32 gs = G.gs;
 		shim_switch(0);
@@ -2436,7 +2423,7 @@ static void test_renderer(void)
 		check(G.thread == 1 && G.gs != gs && (G.gs == MH_SHIM + SH_GS || G.gs == MH_SHIM + SH_GS + DL_GS_SIZE),
 		      "its Deinit starts the next page's thread on the other GuiState");
 		game_frame(0);
-		check(G.thread == 2 && G.count == 7 && G.layer == DL_LAYER, "which builds the panel again");
+		check(G.thread == 2 && G.count == 6 && G.layer == DL_LAYER, "which builds the panel again");
 	}
 	tick(4);
 	press(COMBO_MENU_DEFAULT);
@@ -3088,9 +3075,99 @@ static void test_menu_tables(void)
 	}
 }
 
+/*
+ * Revision 1.34 (D10): in every game the Trainer follows the module's one
+ * declaration of what is run-legal (struct game_describe's run_legal). Every
+ * run-legal row is on the Manips page and on no page of the game's own
+ * sections; no other feature is on the Manips page; the root lists Manips
+ * where it did before the declaration moved (Tools of Destruction's after its
+ * own pages, the others after Planets), and the run-start warning's mask has
+ * none of them. The pinned rows per game are what each game showed in build
+ * 58, so this held before the refactor and holds after it.
+ */
+static void test_menu_run_legal(void)
+{
+	static const struct {
+		const char *title;
+		const char *name;
+		u8 manips_at;           /* the root row Manips is */
+		const char *manips[6];  /* its feature rows, in order */
+	} games[] = {
+		{ "NPEA00385", "RaC1", 3, { NULL } },
+		{ "NPEA00386", "RaC2", 3, { NULL } },
+		{ "NPEA00387", "UYA", 3, { "Reset trophies", "Trophy reset", "Reset trophies on Veldin load", NULL } },
+		{ "NPEA00423", "Deadlocked", 3, { "Crash patches", "Fix reset softlocks", NULL } },
+		{ "NPEA00452", "ToD", 2, { "Remove cutscenes", "", "Cache cutscenes", "Cutscene cache",
+		                           "Cache cutscenes on reset", "Disable cutscene caching" } }
+	};
+	char what[160];
+	struct menu_view v, page;
+	u32 k;
+	u8 i, j, s;
+
+	for (k = 0; k < sizeof(games) / sizeof(games[0]); k++) {
+		const struct game_describe *d;
+		u64 legal = 0;
+		int ok, on_manips, n;
+
+		snprintf(what, sizeof(what), "revision 1.34: %s's Manips page follows the run-legal rows", games[k].name);
+		group(what);
+		check(quit() && boot(games[k].title) && session_game() != NULL, "boots");
+		if (session_game() == NULL) continue;
+		d = session_game()->describe();
+		for (i = 0; i < d->nfeatures; i++) {
+			if ((d->run_legal & ((u64)1 << d->features[i].id)) != 0) legal |= (u64)1 << d->features[i].id;
+		}
+		check((d->cheats & d->run_legal) == 0, "no row is both a cheat and run-legal");
+
+		menu_model_reset(8, 16, CAPS_ALL);
+		menu_model_view(&v);
+		check(v.nrows > games[k].manips_at && strcmp(v.rows[games[k].manips_at].label, "Manips") == 0,
+		      "the root lists Manips where it did");
+
+		/* The game's own pages, the root's rows before Planets and Manips: no run-legal row on any. */
+		ok = 1;
+		for (s = 0; s < v.nrows && strcmp(v.rows[s].label, "Planets") != 0 && strcmp(v.rows[s].label, "Manips") != 0; s++) {
+			menu_model_view(&v);
+			if (act(&v, MBOX_EV_ACTIVATE, v.rows[s].label) != ST_OK) { ok = 0; break; }
+			page = v;
+			for (j = 0; j < page.nrows; j++) {
+				for (i = 0; i < d->nfeatures; i++) {
+					if ((legal & ((u64)1 << d->features[i].id)) != 0 &&
+					    strcmp(page.rows[j].label, d->features[i].label) == 0) ok = 0;
+				}
+			}
+			menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+			menu_model_view(&v);
+		}
+		check(ok, "no page of the game's own lists a run-legal row");
+
+		check(act(&v, MBOX_EV_ACTIVATE, "Manips") == ST_OK && strcmp(v.title, "Manips") == 0, "Manips opens");
+		/* Every run-legal row DESCRIBE has, and no other feature. */
+		on_manips = 1;
+		for (i = 0; i < d->nfeatures; i++) {
+			int is_legal = (legal & ((u64)1 << d->features[i].id)) != 0;
+			int shown = view_row(&v, d->features[i].label) != NULL;
+			if (is_legal != shown) on_manips = 0;
+		}
+		check(on_manips, "the page has every run-legal row, and none that is not");
+		/* After the category's rows (a game with categories), the feature rows in the order they were. */
+		for (j = 0; j < v.nrows && strcmp(v.rows[j].label, "Apply now") != 0; j++) { }
+		j = j < v.nrows ? (u8)(j + 1) : 0;
+		if (j < v.nrows && v.rows[j].label[0] == 0) j++;
+		for (n = 0, ok = 1; n < 6 && games[k].manips[n] != NULL; n++, j++) {
+			if (j >= v.nrows || strcmp(v.rows[j].label, games[k].manips[n]) != 0) ok = 0;
+		}
+		check(ok && j == v.nrows, "its rows as before: a blank and a status row where they were");
+		menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	}
+	check(quit(), "quit");
+}
+
 void test_menu(void)
 {
 	test_menu_tables();
+	test_menu_run_legal();
 	test_model_dl();
 	test_model_paging();
 	test_mailbox();

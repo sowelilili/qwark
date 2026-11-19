@@ -577,9 +577,9 @@ static void test_model_rac2(void)
 	                                       "Max bolts", "Max raritanium" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Max all weapon levels", "Max all weapon ammo",
-	                                             "Unlock all platinum bolts", "Reset platinum bolts",
-	                                             "Unlock all nanotech boosts", "Reset nanotech boosts",
-	                                             "Unlock all skill points", "Reset skill points" };
+	                                             "Unlock all platinum bolts", "Reset all platinum bolts",
+	                                             "Unlock all nanotech boosts", "Reset all nanotech boosts",
+	                                             "Unlock all skill points", "Reset all skill points" };
 	struct menu_view v;
 	const struct menu_row *r;
 

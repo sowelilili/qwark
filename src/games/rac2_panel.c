@@ -244,10 +244,10 @@ static u8 item_version_id(const struct rac2_item *it, u32 version)
  * guessed at: RaC2 keeps the same thing RaC3 does, a byte per item id holding
  * the item id of the version in use, and RAC2_ITEM_ARRAY is where it lives.
  *
- * Its own upgrade routine at 0xB25078 writes that byte and nothing else — it
+ * Its own upgrade routine at 0xB25078 writes that byte and nothing else â€” it
  * takes the next version's id from the weapon's stats record, stores it there,
  * tops the experience word up to the version's threshold and refills the
- * magazine — and its set-version routine at 0xB252CC walks the same chain to a
+ * magazine â€” and its set-version routine at 0xB252CC walks the same chain to a
  * given step. The owned byte is not part of it: a weapon needs its owned byte to
  * be in the inventory at all and this byte to say which version it is, which is
  * exactly the pair RaC3 has.
@@ -707,10 +707,27 @@ int rac2_planet_load(u8 planet, u8 flags)
 	}
 
 	/*
-	 * rac2.cs ResetGoldBolts is empty: RaC2 has no per-planet special bolt to
-	 * take back, so PLANET_FLAG_RESET_BOLTS does nothing here. The platinum bolt
-	 * array is whole-game and has its own two actions.
+	 * Build 59 (D3): bit1 takes back the destination's platinum bolts, RaC2's
+	 * special bolts, as RaC1's takes back its gold bolts. rac2.cs
+	 * ResetGoldBolts was empty and this load ignored the bit, on the belief
+	 * that the array was whole-game; the game keeps it per level, four bytes a
+	 * level (RAC2_PBOLT_PER): a platinum bolt moby is deleted at spawn when
+	 * platinumBoltArray[Level * 4 + its index] is set
+	 * (UpdateMoby_1134_PlatinumBolt, 0xCCB788), and the game's own count
+	 * (0xB80DFC) adds each level's four, skips level 26's and counts them as
+	 * Maktar's (2) second four instead. So a load of 2 clears both, and a load
+	 * of 26 clears nothing. A data write, the same under RPCS3.
 	 */
+	if (flags & PLANET_FLAG_RESET_BOLTS) {
+		if (planet == RAC2_PBOLT_EXTRA_OWNER) {
+			rc = mem_write_zeros(RAC2_PLATINUM_BOLTS + RAC2_PBOLT_EXTRA * RAC2_PBOLT_PER, RAC2_PBOLT_PER);
+			if (rc != ST_OK) return rc;
+		}
+		if (planet != RAC2_PBOLT_EXTRA && planet < RAC2_PBOLT_LEVELS) {
+			rc = mem_write_zeros(RAC2_PLATINUM_BOLTS + (u32)planet * RAC2_PBOLT_PER, RAC2_PBOLT_PER);
+			if (rc != ST_OK) return rc;
+		}
+	}
 	return ST_OK;
 }
 

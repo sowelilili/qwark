@@ -3593,7 +3593,7 @@ static void test_tod_cutscene_cache(void)
 	      rd32(CC_PF + TOD_PF_END) == CC_C_END && rd32(CC_PF + TOD_PF_CHUNK) == TOD_PF_CHUNK_MAX &&
 	      rd32(CC_PF + TOD_PF_STATE) == TOD_PF_NFILES && rd32(CC_PF + TOD_PF_READY) == 1,
 	      "the single-range form: Cobalia's .uncached descriptor, its sound's start to end, 256 KB, state 4, readReady");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Cobalia 0%"), "the menu's row: Cobalia 0%");
 	cc_run_slow(&cc, &as, 4 * 128);              /* 128 reads: 32 MiB */
 	check(cc_st(&cc) == TOD_CC_CACHING && cc_det(&cc) == 3 && cc_pct(&cc) >= 45 && cc_pct(&cc) <= 52,
@@ -3612,7 +3612,7 @@ static void test_tod_cutscene_cache(void)
 	      "each sound read once, exactly, in the order a run needs them");
 	check(rd32(CC_PF + TOD_PF_CUR) == 0 && rd32(CC_PF + TOD_PF_BUSY) == 0 && rd32(CC_PF + TOD_PF_STATE) == TOD_PF_NFILES,
 	      "and the warmer idle again, as the game leaves it");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(strncmp(text, "Done (", 6) == 0 && text[strlen(text) - 2] == 's' && text[strlen(text) - 1] == ')' &&
 	      strstr(text, "MB/s") == NULL && strlen(text) <= 11, "the menu's row: Done (Ns), the seconds alone (2026-11-02)");
 
@@ -3725,7 +3725,7 @@ static void test_tod_cutscene_cache(void)
 	cc_run_out(&cc, &as, 2000, 1);
 	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LATE_CB, "the rest in, it ends saying too late for Cobalia");
 	check(cc_bytes_s == CC_S_END && cc_bytes_f == CC_F_END && cc_bytes_c < CC_C_END, "Stratus City and Fastoon read whole");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Too late: Cobalia"), "the menu's row says so");
 	cc_level_up(&as, TOD_LEVEL_METROPOLIS, 2);
 	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
@@ -3741,7 +3741,7 @@ static void test_tod_cutscene_cache(void)
 	cc_run_out(&cc, &as, 2000, 1);
 	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LATE_SC,
 	      "Cobalia in, then the first late one by a run's order: Stratus City");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Too late: Stratus"), "the menu's row says so");
 	cc_level_up(&as, TOD_LEVEL_METROPOLIS, 2);
 	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
@@ -3787,7 +3787,7 @@ static void test_tod_cutscene_cache(void)
 	cc_run(&cc, &as, 12, 0);
 	check(cc_st(&cc) == TOD_CC_DONE && cc_pct(&cc) == 0 && rd32(CC_PF + TOD_PF_CUR) == 0,
 	      "done without a read: rate 0, nothing written");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Already cached"), "the menu's row: Already cached");
 	cc_block(150, TOD_FC_FREE, 30u << 20, 6);     /* Cobalia's block 30 free again */
 	check(tod_cc_trigger(&cc, &as) == ST_OK, "again, all but one Cobalia block in");
@@ -3821,7 +3821,7 @@ static void test_tod_cutscene_cache(void)
 	as.cur_lua = 0;
 	cc_run(&cc, &as, 2, 0);
 	check(cc_st(&cc) == TOD_CC_FAILED && cc_det(&cc) == TOD_CC_WHY_LEVEL, "the title mid-way: failed");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Title came first"), "the menu's row says so");
 	cc_play(&as, 3, CC_LUA);
 	cc_warmer_idle();
@@ -3861,7 +3861,7 @@ static void test_tod_cutscene_cache(void)
 	      cc_det(&cc) == TOD_CC_WHY_DISABLED, "Disable cutscene caching on: the run under way ends");
 	check(tod_cc_trigger(&cc, &as) == ST_BUSY && cc_det(&cc) == TOD_CC_WHY_DISABLED,
 	      "and the button is refused while it is on, saying why");
-	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), text, sizeof(text));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(&cc), MENU_STATUS_ROW, text, sizeof(text));
 	check(qstreq(text, "Caching disabled"), "the menu's row says so");
 	cc_level_up(&as, 1, 2);
 	cc_run(&cc, &as, 40, 1);
@@ -4837,6 +4837,96 @@ static void test_tod_moby_table(void)
 	check(moby_walk(&t, live, 16) == 4, "a live handle whose index half reads 0xFFFE is still live");
 }
 
+/*
+ * Build 59 (D3): ToD's PLANET_LOAD honours both planet flags, as RaC1's and
+ * UYA's: bit0 clears the destination's level flags (its group alone), bit1
+ * its gold bolts (its own mask alone), each only on a load that goes ahead,
+ * and DESCRIBE's extension says the load acts on both.
+ */
+static void test_tod_planet_flags(void)
+{
+	u8 all[TOD_LEVEL_FLAGS_LEN], got[TOD_LEVEL_FLAGS_LEN], out[4096];
+	const u32 mine = 72, other = 140;   /* a flag of Mukow's (5) group and one of Rykan V's (9), tod_flags.c */
+	u32 i, len = 0, off, cleared = 0;
+
+	group("build 59: ToD's planet load acts on both planet flags (D3)");
+	die_world();
+	memset(all, 0xFF, sizeof(all));
+	host_poke(TOD_LEVEL_FLAGS, all, sizeof(all));
+	wr32(TOD_GOLD_BOLTS + 5u * TOD_LEVEL_SAVE_LEN, 0xFu);
+	wr32(TOD_GOLD_BOLTS + 9u * TOD_LEVEL_SAVE_LEN, 0x3u);
+
+	check(session_planet_load(5, 0) == ST_OK, "a load of Mukow with no flag");
+	host_peek(TOD_LEVEL_FLAGS, got, sizeof(got));
+	check(memcmp(got, all, sizeof(all)) == 0 && rd32(TOD_GOLD_BOLTS + 5u * TOD_LEVEL_SAVE_LEN) == 0xFu,
+	      "clears nothing");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(800);
+	die_world();
+
+	check(session_planet_load(5, PLANET_FLAG_RESET_LEVELFLAGS) == ST_OK && rd32(TOD_LOAD_REQUEST) == 5,
+	      "a load of Mukow with bit0 goes out");
+	host_peek(TOD_LEVEL_FLAGS, got, sizeof(got));
+	for (i = 0; i < TOD_NLEVEL_FLAGS; i++) {
+		if ((got[TOD_LF_BYTE(i)] & (1u << (i & 7u))) == 0) cleared++;
+	}
+	check((got[TOD_LF_BYTE(mine)] & (1u << (mine & 7u))) == 0 &&
+	      (got[TOD_LF_BYTE(other)] & (1u << (other & 7u))) != 0 && cleared == 32,
+	      "Mukow's 32 level flags (72 to 103) are cleared, and no other: Rykan V's are not");
+	check(rd32(TOD_GOLD_BOLTS + 5u * TOD_LEVEL_SAVE_LEN) == 0xFu, "and no gold bolt without bit1");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(800);
+	die_world();
+
+	check(session_planet_load(5, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a load of Mukow with bit1 goes out");
+	check(rd32(TOD_GOLD_BOLTS + 5u * TOD_LEVEL_SAVE_LEN) == 0 && rd32(TOD_GOLD_BOLTS + 9u * TOD_LEVEL_SAVE_LEN) == 0x3u,
+	      "Mukow's gold bolts are taken back, Rykan V's kept");
+	wr32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
+	tick(800);
+	die_world();
+
+	/* A load that is refused touches neither. */
+	host_poke(TOD_LEVEL_FLAGS, all, sizeof(all));
+	wr32(TOD_GOLD_BOLTS + 9u * TOD_LEVEL_SAVE_LEN, 0x3u);
+	wr32(TOD_GAME_STATE, TOD_STATE_FMV);
+	check(session_planet_load(9, PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS) == ST_BUSY,
+	      "a load refused (an FMV)");
+	host_peek(TOD_LEVEL_FLAGS, got, sizeof(got));
+	check(memcmp(got, all, sizeof(all)) == 0 && rd32(TOD_GOLD_BOLTS + 9u * TOD_LEVEL_SAVE_LEN) == 0x3u,
+	      "clears nothing");
+	die_world();
+
+	/* What the client is told: both bits (DESCRIBE's extension), and the pause row. */
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	off = 2 + (u32)out[1] * 24;
+	off += 1 + (u32)out[off] * 24;
+	off += 1 + (u32)out[off] * FEATURE_WIRE_SIZE;
+	check(len == off + 1 + DESCRIBE_EXT_LEN && out[off] == DESCRIBE_EXT_LEN &&
+	      out[off + 1] == (PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS),
+	      "and DESCRIBE says ToD's load acts on both");
+	check(memcmp(out + off + 3, "Inventory\0", 10) == 0 && (out[off + 2] & DESCRIBE_MENU_HERE) != 0,
+	      "that the Trainer takes Inventory, and that it can come up here");
+
+	/* Revision 1.34, ACTION_STATUS: the client's line for Cache cutscenes' word, worded by the module. */
+	group("revision 1.34: ToD's Cache cutscenes line, for a client (ACTION_STATUS)");
+	check(features_action_status(TF_CACHE_CUTSCENES, (3u << 28) | (139u << 16) | (104u << 8) | 1u, out, sizeof(out), &len)
+	      == ST_OK && out[0] == MENU_TONE_GOOD && out[1] == 36 && len == 38 &&
+	      memcmp(out + 2, "Cutscenes cached (104 s, 13.9 MiB/s)", 36) == 0,
+	      "done: the seconds and the read rate, a tenth of a MiB/s, green");
+	check(features_action_status(TF_CACHE_CUTSCENES, (2u << 28) | (3u << 24) | (42u << 16), out, sizeof(out), &len)
+	      == ST_OK && out[0] == MENU_TONE_BUSY && len == 2u + out[1] &&
+	      memcmp(out + 2, "Caching cutscenes: Cobalia 42%", out[1]) == 0 && out[1] == 30,
+	      "caching: the planet and how far, grey");
+	check(features_action_status(TF_CACHE_CUTSCENES, (4u << 28) | (9u << 24), out, sizeof(out), &len) == ST_OK &&
+	      out[0] == MENU_TONE_BAD && memcmp(out + 2, "Cutscene cache: too late for Cobalia, the run got there first", out[1]) == 0,
+	      "too late for a planet, red");
+	check(features_action_status(TF_CACHE_CUTSCENES, 0, out, sizeof(out), &len) == ST_OK && out[0] == MENU_TONE_NONE &&
+	      out[1] == 0, "no run this boot: nothing to say");
+	check(features_action_status(TF_FAST_LOADS, 0, out, sizeof(out), &len) == ST_NOT_FOUND &&
+	      features_action_status(TF_DIE, 0, out, sizeof(out), &len) == ST_NOT_FOUND,
+	      "NOT_FOUND for a toggle and for an action with no status readout");
+}
+
 void test_tod_game(void)
 {
 	test_tod_session();
@@ -4864,6 +4954,7 @@ void test_tod_game(void)
 	test_tod_strafe_camera();      /* 2026-11-14 */
 	test_tod_die();
 	test_tod_pause_loads();        /* 2026-11-14 */
+	test_tod_planet_flags();       /* build 59 */
 	test_tod_fastloads();   /* last: it boots and ticks, and the autosplitter's run start reads tick phases */
 	test_tod_load_fade();
 	test_tod_load_fast();

@@ -534,7 +534,7 @@ static void test_model_rac1(void)
 	static const char * const manips[] = { "Category", "Auto-reset", "Apply now" };
 	static const char * const unlocks[] = { "Weapons", "Gadgets", "Items", "Collectables" };
 	static const char * const collectables[] = { "Unlock all gold bolts", "Reset all gold bolts",
-	                                             "Unlock all skill points", "Reset skill points",
+	                                             "Unlock all skill points", "Reset all skill points",
 	                                             "Upgrade all weapons to gold", "Reset all gold weapons" };
 	struct menu_view v;
 	const struct menu_row *r;

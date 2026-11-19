@@ -929,7 +929,8 @@ static const char * const rac3_groups[] = {
 	"Progress",
 	"Savefile",
 	"Cosmetics",
-	"Trophies"
+	"Trophies",
+	"Collectables"   /* build 59: the collectable actions, a group of their own (D10) */
 };
 
 #define G_CHEATS    0
@@ -939,6 +940,7 @@ static const char * const rac3_groups[] = {
 #define G_COSMETICS 4
 /* Build 53: the trophy reset and its auto toggle, MANIP_LIST's "Trophies". */
 #define G_TROPHIES  5
+#define G_COLLECTABLES 6
 
 /* Indexed by RAC3_RO_*; the order is part of the wire contract for this game. */
 static const char * const rac3_readouts[] = {
@@ -1022,10 +1024,10 @@ static const struct feature_desc rac3_features[] = {
 	 * dropship health are retired, ids and all (rac3.h). The first, the second
 	 * and the dropship are the manip groups below now.
 	 */
-	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all skill points" },
-	{ R3_RESET_SKILL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all skill points" },
-	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
-	{ R3_RESET_TITANIUM, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all titanium bolts" },
+	{ R3_UNLOCK_SKILL,   FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all skill points" },
+	{ R3_RESET_SKILL,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all skill points" },
+	{ R3_UNLOCK_TITANIUM,FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all titanium bolts" },
+	{ R3_RESET_TITANIUM, FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all titanium bolts" },
 	{ R3_UPGRADE_ALL,    FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Max all weapon levels" },
 	{ R3_DOWNGRADE_ALL,  FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Reset all weapon levels" },
 
@@ -1090,13 +1092,22 @@ static const struct feature_former rac3_former[] = {
 #define RAC3_RUN_CHEATS (((u64)1 << R3_FAST_LOADS) | ((u64)1 << R3_GHOST) | \
                          ((u64)1 << R3_FREEZE_AMMO) | ((u64)1 << R3_FREEZE_HEALTH))
 
+/*
+ * Revision 1.34: the run-legal rows, the trophy reset and its auto toggle,
+ * which MANIP_LIST's Trophies header draws on the Manips page (game.h).
+ */
+#define RAC3_RUN_LEGAL (((u64)1 << R3_RESET_TROPHIES) | ((u64)1 << R3_AUTO_TROPHIES))
+
 static const struct game_describe rac3_describe_table = {
 	rac3_groups,   (u8)(sizeof(rac3_groups) / sizeof(rac3_groups[0])),
 	rac3_readouts, NR,
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0])),
 	0,             /* no toggle ships auto-flagged */
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0])),
-	RAC3_RUN_CHEATS
+	RAC3_RUN_CHEATS,
+	RAC3_RUN_LEGAL,
+	PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,   /* its level flags and titanium bolts */
+	NULL           /* the Trainer takes Help */
 };
 
 /*
@@ -1111,7 +1122,10 @@ static const struct game_describe rac3_describe_no_trophies = {
 	rac3_features, (u8)(sizeof(rac3_features) / sizeof(rac3_features[0]) - RAC3_TROPHY_ROWS),
 	0,
 	rac3_former,   (u8)(sizeof(rac3_former) / sizeof(rac3_former[0])),
-	RAC3_RUN_CHEATS
+	RAC3_RUN_CHEATS,
+	RAC3_RUN_LEGAL,
+	PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,   /* its level flags and titanium bolts */
+	NULL           /* the Trainer takes Help */
 };
 
 #undef NR
@@ -1480,34 +1494,75 @@ static const u32 rac3_unlock_values[] = { 0, 1, RAC3_MAX_LEVELS };
  * characters: what a running reset is doing, how long the last one took, or
  * why it failed.
  */
-static void rac3_menu_status(u8 id, u32 word, char *out, u32 cap)
+/*
+ * Revision 1.34: and, as MENU_STATUS_LINE, the client's line under the button
+ * (ACTION_STATUS), which the client worded until then from its own copy of
+ * the word's layout; the words are the client's.
+ */
+static u8 rac3_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 {
 	static const char * const why[] = {
 		"Failed", "Files not deleted", "Not registered", "No answer", "Load ended first",
 		"Game refused", "Not taken", "Refused", "Game changed"
 	};
-	u32 detail = (word >> 24) & 15u, secs = (word >> 8) & 0xFFFu;
+	static const char * const why_line[] = {
+		"reason 0", "a trophy file could not be deleted", "the game could not re-register its trophies",
+		"your console did not answer, restart the game", "the Veldin load ended first",
+		"the game refused it", "the game did not respond", "refused", "the game changed under it"
+	};
+	u32 detail = (word >> 24) & 15u, arg = (word >> 20) & 15u, secs = (word >> 8) & 0xFFFu;
+	int line = form == MENU_STATUS_LINE;
 
-	if (id != R3_RESET_TROPHIES) {
-		out[0] = 0;
-		return;
-	}
+	out[0] = 0;
+	if (id != R3_RESET_TROPHIES) return MENU_TONE_NONE;
 	switch (word >> 28) {
 	case RAC3_TS_RUNNING:
-		qstrcpy(out, cap, detail == RAC3_TS_DELETING ? "Deleting" :
-		                  detail == RAC3_TS_REGISTERING ? "Registering" : "Starting");
-		return;
+		if (!line) {
+			qstrcpy(out, cap, detail == RAC3_TS_DELETING ? "Deleting" :
+			                  detail == RAC3_TS_REGISTERING ? "Registering" : "Starting");
+			return MENU_TONE_BUSY;
+		}
+		qstrcpy(out, cap, "Trophies: resetting...");
+		if (detail == RAC3_TS_DELETING) {
+			qstrcat(out, cap, " (deleting)");
+		} else if (detail == RAC3_TS_REGISTERING) {
+			qstrcat(out, cap, " (registering");
+			if (arg >= 2) {
+				qstrcat(out, cap, ", attempt ");
+				qfmt_u32(out + qstrlen(out), cap - qstrlen(out), arg);
+			}
+			qstrcat(out, cap, ")");
+		}
+		return MENU_TONE_BUSY;
 	case RAC3_TS_READY:
-		qstrcpy(out, cap, "Ready, ");
+		qstrcpy(out, cap, line ? "Trophies ready (" : "Ready, ");
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), secs);
-		qstrcat(out, cap, " s");
-		return;
+		qstrcat(out, cap, line ? " s)" : " s");
+		return MENU_TONE_GOOD;
 	case RAC3_TS_FAILED:
-		qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
-		return;
+		if (!line) {
+			qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
+			return MENU_TONE_BAD;
+		}
+		qstrcpy(out, cap, "Trophy reset failed: ");
+		if (detail == 7u && arg == ST_NOT_FOUND) {
+			qstrcat(out, cap, "trophy folder not found");
+		} else if (detail != 0 && detail < sizeof(why_line) / sizeof(why_line[0])) {
+			qstrcat(out, cap, why_line[detail]);
+			if (detail == 7u) {
+				qstrcat(out, cap, " (status ");
+				qfmt_u32(out + qstrlen(out), cap - qstrlen(out), arg);
+				qstrcat(out, cap, ")");
+			}
+		} else {
+			qstrcat(out, cap, "reason ");
+			qfmt_u32(out + qstrlen(out), cap - qstrlen(out), detail);
+		}
+		return MENU_TONE_BAD;
 	default:
-		qstrcpy(out, cap, "Not this boot");
-		return;
+		/* No reset this boot: the Trainer says so, a client's line says nothing. */
+		if (!line) qstrcpy(out, cap, "Not this boot");
+		return MENU_TONE_NONE;
 	}
 }
 

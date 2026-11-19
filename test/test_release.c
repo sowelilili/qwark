@@ -419,8 +419,8 @@ static void test_release(void)
 	req[0] = REBOOT_APPLY_ASK;
 	check_eq(call(OP_REBOOT_APPLY, req, 1, reply, sizeof(reply), &len), ST_OK, "back to Ask");
 	req[0] = 1;
-	check_eq(call(0x0099, req, 1, reply, sizeof(reply), &len), ST_UNKNOWN_OP,
-	         "0x0099, the test build's BOOT_ASK, is UNKNOWN_OP");
+	check_eq(call(OP_ACTION_STATUS, req, 1, reply, sizeof(reply), &len), ST_BAD_ARG,
+	         "0x0099, the test build's BOOT_ASK, is revision 1.34's ACTION_STATUS: BOOT_ASK's one byte is BAD_ARG");
 	tick(1);
 
 	st = call(OP_MOD_USB_LIST, NULL, 0, reply, sizeof(reply), &len);

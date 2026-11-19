@@ -638,6 +638,58 @@ static u8 mod_now(u8 flags)
 
 #endif
 
+/*
+ * Revision 1.34 (D10): the game's run-legal rows (struct game_describe's
+ * run_legal), which the Trainer's Manips page lists as a client's Manips page
+ * does: the module says it once, and no table of the game's lists them again.
+ */
+static int legal(const struct game_describe *d, const struct feature_desc *f)
+{
+	return f->id < QWARK_MAX_FEATURES && (d->run_legal & ((u64)1 << f->id)) != 0;
+}
+
+static int manips_legal_rows(void)
+{
+	const struct game_describe *d = desc();
+	u8 i;
+
+	if (d == NULL) return 0;
+	for (i = 0; i < d->nfeatures; i++) {
+		if (legal(d, &d->features[i])) return 1;
+	}
+	return 0;
+}
+
+/*
+ * The run-legal rows not on the page yet, in DESCRIBE order, each ACTION with
+ * a status readout followed by its status row, with a blank row before the
+ * first and wherever the DESCRIBE group changes (Tools of Destruction's Remove
+ * cutscenes, then the cutscene cache's three, as its own Manips section had
+ * them from revision 1.29's fifth console test).
+ */
+static u8 manips_legal_items(u16 *ids, u8 n)
+{
+	const struct game_describe *d = desc();
+	const struct game_menu *gm = gmenu();
+	u8 i, k, group = 0xFF;
+
+	if (d == NULL) return n;
+	for (i = 0; i < d->nfeatures; i++) {
+		const struct feature_desc *f = &d->features[i];
+		u16 id = MENU_ROW_ID(MENU_ROW_FEATURE, f->id);
+
+		if (!legal(d, f)) continue;
+		for (k = 0; k < n && ids[k] != id; k++) { }
+		if (k < n) continue;
+		if (group != f->group) n = push_spacer(ids, n);
+		group = f->group;
+		n = push_id(ids, n, id);
+		if (f->kind == FEATURE_ACTION && f->readout < QWARK_MAX_READOUTS && gm != NULL && gm->action_status != NULL)
+			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_STATUS, f->id));
+	}
+	return n;
+}
+
 /* Every row of a page, as row ids, in order; how many. */
 static u8 page_items(u16 page, u16 *ids)
 {
@@ -656,6 +708,14 @@ static u8 page_items(u16 page, u16 *ids)
 		if (gm != NULL) {
 			for (i = 0; i < gm->nsections; i++) n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_SECTION, i));
 		}
+		/*
+		 * Revision 1.34: a game whose Manips page is its run-legal rows alone,
+		 * with no category to pick (Tools of Destruction), has it right after
+		 * its own pages, where that game's table put its Manips section from
+		 * revision 1.29; a game with categories, after Planets as before.
+		 */
+		if (g_game != NULL && g_game->manips == NULL && manips_legal_rows())
+			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_MANIPS));
 		if (g_game != NULL && g_game->planet_names != NULL && g_game->planet_load != NULL)
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS));
 		if (g_game != NULL && g_game->manips != NULL)
@@ -730,7 +790,8 @@ static u8 page_items(u16 page, u16 *ids)
 	}
 
 	case MENU_PAGE_MANIPS:
-		if (g_game == NULL || g_game->manips == NULL) return 0;
+		if (g_game == NULL) return 0;
+		if (g_game->manips == NULL) return manips_legal_items(ids, n);
 		/* Round 5: one Auto-reset row, Off, On or On boot, where Remember had its own. */
 		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, MENU_MANIP_CATEGORY));
 		n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_MANIP, MENU_MANIP_AUTO));
@@ -755,7 +816,8 @@ static u8 page_items(u16 page, u16 *ids)
 					n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_STATUS, id));
 			}
 		}
-		return n;
+		/* Revision 1.34: and any run-legal row no header named. */
+		return manips_legal_items(ids, n);
 
 	case MENU_PAGE_UNLOCKS:
 		if (unlocks()) {
@@ -1136,7 +1198,7 @@ static void build_row(u16 page, u16 id, struct menu_row *r)
 		f = feature(arg);
 		if (f == NULL || gm == NULL || gm->action_status == NULL || f->readout >= QWARK_MAX_READOUTS) break;
 		row(r, MROW_INFO, 0, f->readout < d->nreadouts ? d->readouts[f->readout] : f->label, "");
-		gm->action_status(arg, session_readout(f->readout), r->value, sizeof(r->value));
+		gm->action_status(arg, session_readout(f->readout), MENU_STATUS_ROW, r->value, sizeof(r->value));
 		r->value[sizeof(r->value) - 1] = 0;
 		break;
 
@@ -3545,7 +3607,8 @@ void menu_combo(void)
 /*
  * Revision 1.34, build 59: the page combos. Each names a page by the label
  * of the root's row that opens it, a section of the game's menu table (Game,
- * Cheats; Tools of Destruction's Manips) or a page of qwark's, so the one
+ * Cheats) or a page of qwark's (Manips, since revision 1.34's run-legal rows
+ * Tools of Destruction's too), so the one
  * list serves every game, whichever kind of row the game has for it.
  */
 static const char * const g_page_names[COMBO_PAGES] = {

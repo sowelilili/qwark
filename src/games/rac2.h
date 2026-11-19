@@ -135,6 +135,15 @@
 #define RAC2_MAX_LEVELS        4
 
 #define RAC2_PLATINUM_BOLTS    0x1562540u  /* 0x70 bytes */
+/*
+ * Build 59: the platinum bolts are four bytes a level, 28 levels (countPlatinumBolts
+ * 0xB80DFC, UpdateMoby_1134_PlatinumBolt 0xCCB788, decompile); level 26's four
+ * are Maktar's (2) second four, as the game counts them.
+ */
+#define RAC2_PBOLT_PER          4u
+#define RAC2_PBOLT_LEVELS       28
+#define RAC2_PBOLT_EXTRA        26
+#define RAC2_PBOLT_EXTRA_OWNER  2
 #define RAC2_LEVEL_FLAGS       0x15625B0u  /* 0x10 per planet */
 #define RAC2_LOAD_PLANET       0x156B050u  /* request word, then the planet index */
 #define RAC2_JANKPOT_ACTIVE    0x15718F8u

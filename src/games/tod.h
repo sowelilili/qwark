@@ -1305,7 +1305,10 @@ void tod_cc_quit(struct tod_cc_state *cc);
 int  tod_cc_trigger(struct tod_cc_state *cc, const struct tod_as_state *as);
 int  tod_cc_set(struct tod_cc_state *cc, u8 id, int on);
 u32  tod_cc_status(const struct tod_cc_state *cc);
-/* The status word as the console menu's row under Cache cutscenes says it. */
-void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap);
+/*
+ * The status word as the console menu's row under Cache cutscenes says it, and
+ * (revision 1.34, MENU_STATUS_LINE) as a client's line; the answer is its tone.
+ */
+u8   tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap);
 
 #endif /* QWARK_TOD_H */

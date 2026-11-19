@@ -101,8 +101,36 @@ struct game_describe {
 	 * in Cheats (Tools of Destruction's Remove cutscenes) stays out, and one
 	 * elsewhere (RaC2's resets on death) can be in. A bit whose id is no
 	 * TOGGLE of the table never counts. 0 for none.
+	 *
+	 * Revision 1.34: a bit of `run_legal` is never counted, whatever this
+	 * says (features_cheats_on), and test_runwarn.c holds every table to
+	 * having none in both.
 	 */
 	u64 cheats;
+
+	/*
+	 * Revision 1.34, build 59: the rows that are run-legal, bit i for feature
+	 * id i, declared here and nowhere else. DESCRIBE flags each such row
+	 * RUN_LEGAL (the Feature's flags2 bit0), a client draws it on its Manips
+	 * page, the console menu lists it on the Trainer's Manips page (menu.c),
+	 * and the run-start warning never counts it. 0 for none.
+	 */
+	u64 run_legal;
+
+	/*
+	 * Revision 1.34: the PLANET_LOAD flag bits this game's load acts on,
+	 * PLANET_FLAG_RESET_LEVELFLAGS where it has per-planet level flags and
+	 * PLANET_FLAG_RESET_BOLTS where it has per-planet special bolts, sent in
+	 * DESCRIBE's extension so a client offers exactly those boxes.
+	 */
+	u8 planet_flags;
+
+	/*
+	 * Revision 1.34: the pause-menu row the Trainer takes, as the player
+	 * reads it there ("Help", Tools of Destruction's "Inventory"); NULL for
+	 * "Help". DESCRIBE's extension carries it.
+	 */
+	const char *menu_row;
 };
 
 /* One row of UNLOCK_LIST. Values are read live through unlock_read. */
@@ -274,6 +302,14 @@ struct game_manips {
 #define MENU_VALUE_SET      0
 #define MENU_VALUE_SWITCH   1
 
+/* Revision 1.34: struct game_menu's action_status, its two forms and the tones it answers. */
+#define MENU_STATUS_ROW     0
+#define MENU_STATUS_LINE    1
+#define MENU_TONE_NONE      0
+#define MENU_TONE_BUSY      1
+#define MENU_TONE_GOOD      2
+#define MENU_TONE_BAD       3
+
 struct menu_value {
 	u8 id;
 	u8 kind;
@@ -337,8 +373,13 @@ struct game_menu {
 	 * 5.14). The Manips page puts a row of it under each header ACTION that
 	 * names one, labelled with the readout's name; "" says nothing. NULL where
 	 * the game has no such action.
+	 *
+	 * Revision 1.34: `form` MENU_STATUS_ROW is that value; MENU_STATUS_LINE
+	 * is the line a client draws under the action's button (ACTION_STATUS,
+	 * PROTOCOL.md 5.3), so the client keeps no layout of the word. The
+	 * answer is the line's tone, MENU_TONE_*: NONE with "" for nothing to say.
 	 */
-	void (*action_status)(u8 id, u32 word, char *out, u32 cap);
+	u8 (*action_status)(u8 id, u32 word, u8 form, char *out, u32 cap);
 
 	/*
 	 * Round 3: where the Unlocks page's actions go. NULL lists them on the

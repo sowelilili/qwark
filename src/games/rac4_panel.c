@@ -593,6 +593,7 @@ int rac4_planet_load(u8 planet, u8 flags)
 	if (rc == ST_OK) rc = mem_write_u32(RAC4_TARGET_PLANET, rac4_level_for(planet));
 	if (rc == ST_OK) rc = mem_write_u32(RAC4_LOAD_PLANET2, 1);
 	if (rc != ST_OK && !was) rac4_fastload_restore();
+	if (rc == ST_OK) rac4_fastload_claim(0);
 	return rc;
 }
 
@@ -611,10 +612,43 @@ int rac4_die(void)
 /*
  * Both requests go through src/core/savefile.c, which installs the helper if
  * this process has not had it yet.
+ *
+ * Build 59: a set-aside load is fast too, as RaC1's to ToD's are (until then
+ * Deadlocked's alone only raised the load). The helper's load is a level load
+ * like a planet's: once the player's load goes through, the game's own
+ * restore (0x3C9398) sets g_newlevelnum and should_load (RAC4_LOAD_PLANET2),
+ * or calls actually_do_load, which sets them too, and the main loop takes the
+ * level through DoSpaceTransition, the transition the fast-load patch cuts,
+ * in game mode 6. So the end of the load is the planet load's, the mode
+ * leaving 6 (rac4_on_tick), and the toggle's setting goes back there. A load
+ * the game will not take is refused before anything is done for it; one the
+ * helper drops later (the game would not pause, the player backed out) is
+ * caught by rac4_on_tick; one the request itself refuses takes back its own
+ * force at once, leaving one an earlier load still has outstanding. Under
+ * RPCS3 the force is the code switch's flag byte, and without the switches
+ * the load goes at the game's pace. A library RESTORE never forces.
  */
 int rac4_load_setaside(void)
 {
-	return savefile_load_aside();
+	int was, rc = savefile_load_ready();
+
+	if (rc != ST_OK) return rc;
+
+	rc = savefile_install();
+	if (rc != ST_OK) return rc;
+
+	was = rac4_fastload_forced();
+	rc = rac4_fastload_force();
+	if (rc == ST_UNSUPPORTED && !plat_can_patch_code()) rc = ST_OK;
+	if (rc != ST_OK && rc != ST_NOT_INGAME) return rc;
+
+	rc = savefile_load_aside();
+	if (rc != ST_OK) {
+		if (!was) rac4_fastload_restore();
+		return rc;
+	}
+	rac4_fastload_claim(1);
+	return ST_OK;
 }
 
 /*
@@ -701,64 +735,11 @@ int rac4_get_options(u8 id, const char * const **options, u8 *count)
  */
 
 /*
- * RAC4Form.unlockPlanetsButton_Click: badges, rank, a million dread points, a
- * load of DreadZone, and every mission on every planet marked complete.
- *
- * The old handler wrote the status byte of each mission one call at a time, 288
- * writes in all. One read-modify-write of each planet's mission array does the
- * same in thirty, which matters when every one of them is a syscall.
- *
- * Build 54: then every planet the save has not unlocked is unlocked the way a
- * PLANET_LOAD unlocks one (rac4_planet_unlock): DreadZone's load used to unlock
- * those whose requirements the badges, rank and points now meet, but not
- * Interior, and each only as that load ran, so a trip there before it arrived
- * empty. And the load request goes out last, once everything it is to see is
- * written, rather than first.
- *
- * 1.4.1: all of it is save data, so it is written only into a save file's
- * game held still, as a planet's unlock is, and refused BUSY elsewhere with
- * nothing written; and DreadZone's load is co-op's DreadZone in co-op.
+ * Build 59: Unlock all planets (RAC4Form.unlockPlanetsButton_Click: badges, rank,
+ * a million Dread points, every mission complete, every planet unlocked and a load
+ * of DreadZone) is retired, the user's call: a legacy button. Its id, 11, stays
+ * spoken for (rac4.h); a planet load still unlocks the planet it goes to.
  */
-static int rac4_unlock_all_planets(void)
-{
-	static const u8 badges[6] = { 0x00, 0x02, 0x00, 0x04, 0x02, 0x02 };
-	u8 missions[RAC4_MISSIONS_DREAD * RAC4_MISSION_SIZE];
-	int planet;
-	int rc;
-
-	if (!rac4_campaign_steady()) return ST_BUSY;
-	rc = mem_write(RAC4_BADGES, badges, sizeof(badges));
-	if (rc != ST_OK) return rc;
-
-	mem_write_u8(RAC4_RANGE, 0x04);            /* Liberator */
-	mem_write_u32(RAC4_DREAD_POINTS, 1000000);
-
-	for (planet = 0; planet < RAC4_PLANET_SAVES; planet++) {
-		u32 base = RAC4_LEVEL_SAVES + (u32)planet * RAC4_LEVEL_SIZE;
-		u32 n = (planet == 0) ? RAC4_MISSIONS_DREAD : RAC4_MISSIONS_OTHER;
-		u32 span = n * RAC4_MISSION_SIZE;
-		u32 i;
-
-		if (mem_read(base, missions, span) != ST_OK) continue;
-
-		/*
-		 * The old code wrote a 2 here, whatever its comment said about 7. Two is
-		 * what a completed mission reads as on a real save, so two it is.
-		 */
-		for (i = 0; i < n; i++)
-			missions[i * RAC4_MISSION_SIZE + RAC4_MISSION_STATUS] = 2;
-
-		mem_write(base, missions, span);
-	}
-
-	for (planet = 2; planet <= RAC4_PLANET_SAVES; planet++) {
-		if (rac4_planet_real((u8)planet)) rac4_planet_unlock((u8)planet);
-	}
-
-	mem_write_u32(RAC4_TARGET_PLANET, rac4_level_for(RAC4_PLANET_DREADZONE));
-	mem_write_u32(RAC4_LOAD_PLANET2, 1);
-	return ST_OK;
-}
 
 /*
  * RAC4Form.skinsButton_Click wrote the skin byte, then a 1 at RAC4_SKIN_APPLY,
@@ -1080,13 +1061,13 @@ int rac4_trigger(u8 id)
 {
 	switch (id) {
 	case R4_DIE:            return rac4_die();
-	case R4_UNLOCK_PLANETS: return rac4_unlock_all_planets();
+	/* Build 59: Unlock all planets (R4_UNLOCK_PLANETS) is retired; its id answers NOT_FOUND. */
 
 	case R4_MAX_LEVELS:     return rac4_all_max_levels();
 	/* R4_RESET_LEVELS is retired; its id answers NOT_FOUND with every other. */
 	case R4_MAX_AMMO:       return rac4_all_max_ammo();
 	case R4_SET_ASIDE:      return savefile_set_aside();
-	case R4_LOAD_ASIDE:     return savefile_load_aside();
+	case R4_LOAD_ASIDE:     return rac4_load_setaside();   /* build 59: fast, as the combo's */
 	default:                return ST_NOT_FOUND;
 	}
 }

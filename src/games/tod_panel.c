@@ -1590,12 +1590,39 @@ static void tod_die_tick(void)
  * written where nothing would take it, not one a crash needed. The galactic
  * map, an FMV and a pause still being built stay BUSY (tod.h).
  */
+/*
+ * Build 59 (D3): the planet flags, on the destination, as the four games'
+ * loads act on them. bit0 clears the destination's level flags (its group of
+ * the one table, tod_levelflags_reset, as LEVELFLAGS_RESET does), bit1 its
+ * gold bolts (the level's mask in its level save, LevelSave_collectGoldBolt's,
+ * as Reset all gold bolts writes it for every level). Both before the request,
+ * once every check has passed and Fast loads are forced: unlike the four,
+ * where they follow it, the load itself reads the destination's flags first
+ * (tod_story_load picks the fade from them, and the story FMV it plays depends
+ * on them), so a flag cleared after the request could leave a one-frame fade
+ * in front of an FMV that now plays. Only a failed write of the request's own
+ * word, the game gone, leaves them cleared with no load.
+ */
+static int tod_planet_resets(u8 planet, u8 flags)
+{
+	int rc;
+
+	if (flags & PLANET_FLAG_RESET_LEVELFLAGS) {
+		rc = tod_levelflags_reset(planet);
+		if (rc != ST_OK) return rc;
+	}
+	if ((flags & PLANET_FLAG_RESET_BOLTS) && tod_gb_count[planet] != 0) {
+		rc = mem_write_u32(gb_addr(planet), 0u);
+		if (rc != ST_OK) return rc;
+	}
+	return ST_OK;
+}
+
 int tod_planet_load(u8 planet, u8 flags)
 {
 	u32 state = 0, request = 0, root = 0, pause = 0;
 	int rc, was = TP->fl_forced, now;
 
-	(void)flags;
 	if (planet >= TOD_NPLANETS) return ST_BAD_ARG;
 	rc = mem_read_u32(TOD_GAME_STATE, &state);
 	if (rc == ST_OK) rc = mem_read_u32(TOD_LOAD_REQUEST, &request);
@@ -1607,6 +1634,11 @@ int tod_planet_load(u8 planet, u8 flags)
 	if ((state != TOD_STATE_GAMEPLAY && !now) || root == 0 || request != 0xFFFFFFFFu) return ST_BUSY;
 	rc = tod_fl_force();
 	if (rc != ST_OK && rc != ST_UNSUPPORTED) return rc;
+	rc = tod_planet_resets(planet, flags);
+	if (rc != ST_OK) {
+		if (!was && TP->fl_forced) tod_fl_restore();
+		return rc;
+	}
 	if (now) {
 		rc = tod_level_load_now(planet);
 		if (rc != ST_OK && !was && TP->fl_forced) tod_fl_restore();

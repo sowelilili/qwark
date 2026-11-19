@@ -844,11 +844,11 @@ static const struct feature_desc rac2_features[] = {
 	{ R2_QE_OFFSET,       FEATURE_VALUE,  G_PROGRESS, 16, SG, RAC2_RO_QE_OFFSET, 0, 0, "QE save write-offset" },
 
 	{ R2_UNLOCK_PBOLTS,   FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all platinum bolts" },
-	{ R2_RESET_PBOLTS,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset platinum bolts" },
+	{ R2_RESET_PBOLTS,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all platinum bolts" },
 	{ R2_UNLOCK_NANOTECH, FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all nanotech boosts" },
-	{ R2_RESET_NANOTECH,  FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset nanotech boosts" },
+	{ R2_RESET_NANOTECH,  FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all nanotech boosts" },
 	{ R2_UNLOCK_SKILL,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all skill points" },
-	{ R2_RESET_SKILL,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset skill points" },
+	{ R2_RESET_SKILL,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all skill points" },
 
 	/*
 	 * Protocol 1.9: one pair, and it is the same pair the PC's save-file manager
@@ -886,8 +886,12 @@ static const struct game_describe rac2_describe_table = {
 	rac2_readouts, NR,
 	rac2_features, (u8)(sizeof(rac2_features) / sizeof(rac2_features[0])),
 	0,             /* no toggle ships auto-flagged */
-	NULL, 0,       /* and none was relabelled */
-	RAC2_RUN_CHEATS
+	NULL, 0,       /* and none was relabelled (build 59 relabelled ACTIONs alone, which keep no config key) */
+	RAC2_RUN_CHEATS,
+	0,             /* revision 1.34: no run-legal row */
+	/* build 59 (D3): its level flags and, per level, its platinum bolts (rac2_panel.c) */
+	PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,
+	NULL           /* the Trainer takes Help */
 };
 
 #undef NR

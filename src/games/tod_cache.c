@@ -951,26 +951,46 @@ u32 tod_cc_status(const struct tod_cc_state *cc)
 	return ((u32)cc->state << 28) | ((u32)(cc->detail & 15u) << 24) | ((u32)cc->pct << 16) | (secs << 8) | cc->seq;
 }
 
-/* The console menu's row under Cache cutscenes: a value of nineteen characters. */
-void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
+/*
+ * The console menu's row under Cache cutscenes: a value of nineteen characters.
+ * Revision 1.34: and, as MENU_STATUS_LINE, the client's line under the button
+ * (ACTION_STATUS), worded as the client worded it from its own copy of the
+ * word's layout until then.
+ */
+u8 tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 {
 	static const char * const why[] = {
 		"Failed", "Title came first", "No level table", "Warmer stopped", "Caching disabled",
 		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon", "Too late: Cobalia"
 	};
+	static const char * const why_line[] = {
+		"unknown reason", "the title screen came before it finished", "the game's level table could not be read",
+		"the game stopped reading", "Disable cutscene caching is on", "the game could not be read",
+		"the game closed"
+	};
+	static const char * const late[] = { "Stratus City", "Fastoon", "Cobalia" };
 	u32 detail = (word >> 24) & 15u, pct = (word >> 16) & 0xFFu, secs = (word >> 8) & 0xFFu;
+	const char *planet = detail == 3u ? "Cobalia " : detail == 2u ? "Stratus City " : "Fastoon ";
+	int line = form == MENU_STATUS_LINE;
 
 	out[0] = 0;
-	if (id != TF_CACHE_CUTSCENES) return;
+	if (id != TF_CACHE_CUTSCENES) return MENU_TONE_NONE;
 	switch (word >> 28) {
 	case TOD_CC_WAITING:
-		qstrcpy(out, cap, detail == TOD_CC_WAIT_WARMER ? "Waiting for warmer" : "Waiting");
-		return;
+		if (line)
+			qstrcpy(out, cap, detail == TOD_CC_WAIT_WARMER
+			        ? "Cutscene cache: waiting for the game's level caching to start..."
+			        : "Cutscene cache: waiting for gameplay...");
+		else
+			qstrcpy(out, cap, detail == TOD_CC_WAIT_WARMER ? "Waiting for warmer" : "Waiting");
+		return MENU_TONE_BUSY;
 	case TOD_CC_CACHING:
-		qstrcpy(out, cap, detail == 3u ? "Cobalia " : detail == 2u ? "Stratus City " : "Fastoon ");
+		if (line) qstrcpy(out, cap, "Caching cutscenes: ");
+		if (line && (detail == 0 || detail > 3u)) qstrcat(out, cap, "a planet ");
+		else qstrcat(out, cap, planet);
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct);
 		qstrcat(out, cap, "%");
-		return;
+		return MENU_TONE_BUSY;
 	case TOD_CC_DONE:
 		/*
 		 * "Done (104s)", the seconds alone (2026-11-02, the user's call: the
@@ -978,18 +998,36 @@ void tod_cc_menu_status(u8 id, u32 word, char *out, u32 cap)
 		 * was in already.
 		 */
 		if (pct == 0) {
-			qstrcpy(out, cap, "Already cached");
-			return;
+			qstrcpy(out, cap, line ? "Cutscenes already cached (all three planets)" : "Already cached");
+			return MENU_TONE_GOOD;
 		}
-		qstrcpy(out, cap, "Done (");
+		qstrcpy(out, cap, line ? "Cutscenes cached (" : "Done (");
 		qfmt_u32(out + qstrlen(out), cap - qstrlen(out), secs);
-		qstrcat(out, cap, "s)");
-		return;
+		if (line) {
+			/* The read rate in tenths of a MiB/s, as "13.9": no float printf here. */
+			qstrcat(out, cap, " s, ");
+			qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct / 10u);
+			qstrcat(out, cap, ".");
+			qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct % 10u);
+			qstrcat(out, cap, " MiB/s)");
+		} else {
+			qstrcat(out, cap, "s)");
+		}
+		return MENU_TONE_GOOD;
 	case TOD_CC_FAILED:
-		qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
-		return;
+		if (!line) {
+			qstrcpy(out, cap, why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
+		} else if (detail >= 7u && detail <= 9u) {
+			qstrcpy(out, cap, "Cutscene cache: too late for ");
+			qstrcat(out, cap, late[detail - 7u]);
+			qstrcat(out, cap, ", the run got there first");
+		} else {
+			qstrcpy(out, cap, "Cutscene caching stopped: ");
+			qstrcat(out, cap, why_line[detail < sizeof(why_line) / sizeof(why_line[0]) ? detail : 0]);
+		}
+		return MENU_TONE_BAD;
 	default:
-		qstrcpy(out, cap, "Not this boot");
-		return;
+		if (!line) qstrcpy(out, cap, "Not this boot");
+		return MENU_TONE_NONE;
 	}
 }

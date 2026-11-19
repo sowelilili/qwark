@@ -727,7 +727,8 @@ static const char * const rac1_groups[] = {
 	"Progress",
 	"Savefile",
 	"Jankpot",
-	"Debug"
+	"Debug",
+	"Collectables"   /* build 59: the collectable actions, a group of their own (D10) */
 };
 
 #define G_CHEATS   0
@@ -736,6 +737,7 @@ static const char * const rac1_groups[] = {
 #define G_SAVEFILE 3
 #define G_JANKPOT  4
 #define G_DEBUG    5
+#define G_COLLECTABLES 6
 
 /* Indexed by RAC1_RO_*; the order is part of the wire contract for this game. */
 static const char * const rac1_readouts[] = {
@@ -784,10 +786,15 @@ static const struct feature_desc rac1_features[] = {
 	 * the any% all-missions reset are retired, ids and all (rac1.h). They are
 	 * the manip groups below now.
 	 */
-	{ F_RESET_GOLDBOLTS, FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all gold bolts" },
-	{ F_UNLOCK_GOLDBOLTS,FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
-	{ F_RESET_STYLE,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
-	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
+	/*
+	 * Build 59: the collectable actions are DESCRIBE's Collectables, as in
+	 * every game that has them, each "Unlock all" before its "Reset all",
+	 * spelt alike in every game (D9).
+	 */
+	{ F_UNLOCK_GOLDBOLTS,FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all gold bolts" },
+	{ F_RESET_GOLDBOLTS, FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all gold bolts" },
+	{ F_UNLOCK_STYLE,    FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Unlock all skill points" },
+	{ F_RESET_STYLE,     FEATURE_ACTION, G_COLLECTABLES, 0, 0, NO, 0, 0, "Reset all skill points" },
 
 	/*
 	 * Build 59: the weapon bulk actions (rac1_panel.c, rac1_gold_all), RaC1's
@@ -839,7 +846,10 @@ static const struct game_describe rac1_describe_table = {
 	rac1_features, (u8)(sizeof(rac1_features) / sizeof(rac1_features[0])),
 	0,             /* no toggle ships auto-flagged */
 	rac1_former,   (u8)(sizeof(rac1_former) / sizeof(rac1_former[0])),
-	RAC1_RUN_CHEATS
+	RAC1_RUN_CHEATS,
+	0,             /* revision 1.34: no run-legal row */
+	PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,   /* its level flags and gold bolts */
+	NULL           /* the Trainer takes Help */
 };
 
 #undef NR

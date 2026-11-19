@@ -1909,6 +1909,19 @@ static const u8 *desc_feature(const u8 *out, u32 len, u8 id)
 	return NULL;
 }
 
+/* Build 59: whether the running game's DESCRIBE has a row labelled `label`. */
+static int desc_has_label(const char *label)
+{
+	const struct game_describe *d = session_game() != NULL ? session_game()->describe() : NULL;
+	u8 i;
+
+	if (d == NULL) return -1;
+	for (i = 0; i < d->nfeatures; i++) {
+		if (strcmp(d->features[i].label, label) == 0) return 1;
+	}
+	return 0;
+}
+
 static void test_describe(void)
 {
 	u8 out[4096];
@@ -1931,13 +1944,19 @@ static void test_describe(void)
 	nfeatures = out[off];
 	off += 1;
 
-	check_eq_u64(ngroups, 6, "RaC1 declares six groups");
+	check_eq_u64(ngroups, 7, "RaC1 declares seven groups (build 59: Collectables, the seventh)");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
 	check_eq_u64(nfeatures, 23,
 	             "and twenty-three features (build 53 retired six rows, Freeze health is id 2, build 59 added the gold pair)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
-	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE, "the length adds up");
+	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE + 1 + DESCRIBE_EXT_LEN,
+	             "the length adds up, revision 1.34's extension after the features");
+	/* Revision 1.34: the extension, RaC1's: both planet flags, the Trainer's row Help. */
+	check_eq_u64(out[off + (u32)nfeatures * FEATURE_WIRE_SIZE], DESCRIBE_EXT_LEN, "the extension says its length");
+	check_eq_u64(out[off + (u32)nfeatures * FEATURE_WIRE_SIZE + 1], PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,
+	             "RaC1's load acts on both planet flags, its level flags and gold bolts");
+	check(memcmp(out + off + (u32)nfeatures * FEATURE_WIRE_SIZE + 3, "Help\0", 5) == 0, "the Trainer takes Help");
 
 	check(memcmp(out + 2, "Cheats", 6) == 0, "the first group name is in place");
 	check(memcmp(out + 2 + 5 * 24, "Debug", 5) == 0, "the last group name is in place");
@@ -3282,6 +3301,10 @@ static const u32 g_r4_busy_modes[] = {
 	14  /* pre-lobby */
 };
 
+/* Build 59: Deadlocked's fast-load words, defined with its tests below. */
+static void r4_fl_seed(void);
+static int r4_fl_is(int fast);
+
 static void test_savefile_not_idle(void)
 {
 	const struct sf_desc *d = sf_desc_for_game(GAME_RAC4);
@@ -3438,6 +3461,7 @@ static void test_savefile_not_idle(void)
 
 	/* The same again, but it is the helper that says no. */
 	rac4_modes(0, R4_MODE_NONE);
+	r4_fl_seed();   /* the game's own fast-load words, for the check below */
 	check(savefile_restore("dl", "good.sav") == ST_OK, "one more RESTORE");
 	{
 		int ticks;
@@ -3448,6 +3472,8 @@ static void test_savefile_not_idle(void)
 		}
 	}
 	check_eq_u64(byte, 1, "which does raise the load once the file is in");
+	/* Build 59 (D2): a RESTORE's load is never forced fast, in Deadlocked as in every game. */
+	check(r4_fl_is(0), "and forces no fast loads: a library RESTORE never does");
 	host_poke(d->api_load, (const u8 *)"\xFE", 1);
 	check(pump_until_transfer_done(8), "the helper refuses it and the transfer stops");
 	savefile_transfer(&done, &total, &error);
@@ -6497,8 +6523,27 @@ static void test_manip_trophies(void)
 		const u8 *autor = desc_feature(out, len, F3_AUTO_TROPHIES);
 		u8 ngroups = out[1];
 
-		check(ngroups == 6 && memcmp(out + 2 + 5 * 24, "Trophies", 8) == 0,
-		      "DESCRIBE has a sixth group, Trophies");
+		check(ngroups == 7 && memcmp(out + 2 + 5 * 24, "Trophies", 8) == 0,
+		      "DESCRIBE has a sixth group, Trophies (build 59: Collectables the seventh)");
+		check(reset != NULL && (reset[7] & FEATURE_FLAG2_RUN_LEGAL) != 0 && autor != NULL &&
+		      (autor[7] & FEATURE_FLAG2_RUN_LEGAL) != 0,
+		      "revision 1.34: both are flagged RUN_LEGAL, the Manips page's, as the Trophies header draws them");
+		/* Revision 1.34, ACTION_STATUS: the client's line under Reset trophies, worded by the module. */
+		{
+			u8 st[128];
+			u32 sl = 0;
+			check(features_action_status(F3_RESET_TROPHIES, (1u << 28) | (3u << 24) | (2u << 20), st, sizeof(st), &sl) == ST_OK &&
+			      st[0] == MENU_TONE_BUSY && sl == 2u + st[1] &&
+			      memcmp(st + 2, "Trophies: resetting... (registering, attempt 2)", st[1]) == 0 && st[1] == 47,
+			      "ACTION_STATUS: a reset registering a second time, grey");
+			check(features_action_status(F3_RESET_TROPHIES, (3u << 28) | (7u << 24) | ((u32)ST_NOT_FOUND << 20), st, sizeof(st), &sl)
+			      == ST_OK && st[0] == MENU_TONE_BAD && st[1] == 44 &&
+			      memcmp(st + 2, "Trophy reset failed: trophy folder not found", 44) == 0,
+			      "a reset refused for want of the folder, red");
+			check(features_action_status(F3_RESET_TROPHIES, (2u << 28) | (13u << 8), st, sizeof(st), &sl) == ST_OK &&
+			      st[0] == MENU_TONE_GOOD && st[1] == 21 && memcmp(st + 2, "Trophies ready (13 s)", 21) == 0,
+			      "ready, green");
+		}
 		check(reset != NULL && reset[1] == FEATURE_ACTION && reset[2] == 5 &&
 		      memcmp(reset + 16, "Reset trophies", 15) == 0,
 		      "Reset trophies (21) is an ACTION under it, and its label no longer warns of a freeze");
@@ -7747,7 +7792,7 @@ static void test_rac3(void)
 
 		check_eq_u64(d->nfeatures, 29, "RaC3 declares twenty-nine features");
 		check_eq_u64(d->nreadouts, 14, "and fourteen readouts, the trophy reset's status then the skin's");
-		check_eq_u64(d->ngroups, 6, "and six groups, Trophies the sixth");
+		check_eq_u64(d->ngroups, 7, "and seven groups, Trophies the sixth, Collectables (build 59) the seventh");
 
 		/*
 		 * 4, 17, 28, 29 and 30 are retired: gone, but nothing is renumbered.
@@ -8452,6 +8497,7 @@ static void test_rac3(void)
 #define F4_FAST_LOADS    2
 #define F4_SKIN          10
 #define F4_SET_ASIDE     13
+#define F4_LOAD_ASIDE    14
 #define F4_MAX_LEVELS    15
 #define F4_RESET_LEVELS  16   /* retired in build 32, never reused */
 #define F4_MAX_AMMO      17
@@ -8602,6 +8648,86 @@ static int r4_fl_order(int in)
 	return r3 < save && r4 < save && update < first && update < last && once < update;
 }
 
+/*
+ * Build 59 (D2): Deadlocked's Load set-aside forces Fast loads for its load
+ * and puts the toggle's setting back once the level is up, as RaC1's to
+ * ToD's do; the end is the planet load's, the game mode leaving 6. A load the
+ * helper drops, or one the player backs out of (the helper's byte back at 0
+ * with no transition), puts the force back too. A RESTORE never forces.
+ */
+static void test_rac4_setaside_fastloads(void)
+{
+	const struct sf_desc *d = sf_desc_for_game(GAME_RAC4);
+	u64 fl = (u64)1 << F4_FAST_LOADS;
+	int i;
+
+	group("build 59: Deadlocked's Load set-aside forces Fast loads, as the other four games'");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00423");
+	r4_fl_seed();
+	r4_planets_unlocked();
+	check(pump_until(SESSION_INGAME, 4000) && d != NULL, "Deadlocked boots");
+	if (d == NULL) return;
+	pump(4);
+	savefile_make_idle(GAME_RAC4);
+	check(r4_fl_is(0) && (features_toggle_state() & fl) == 0, "Fast loads off, the game's own words");
+
+	check(features_trigger(F4_LOAD_ASIDE) == ST_OK, "Load set-aside file goes out");
+	check(r4_fl_is(1), "with every fast-load word the patch's");
+	check((features_toggle_state() & fl) == 0, "and the toggle still off: the force is not the checkbox");
+	host_poke(d->api_load, (const u8 *)"\x02", 1);   /* the helper handed the save over: the load menu is up */
+	pump(300);
+	check(r4_fl_is(1), "the force waits through the game's load menu, however long the player sits in it");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);   /* the player confirmed: the game's restore sets should_load */
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(4);
+	check(r4_fl_is(1), "the level loads in the transition, mode 6, fast");
+	pump(300);
+	check(r4_fl_is(1), "for as long as the transition lasts");
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+	check(r4_fl_is(0) && (features_toggle_state() & fl) == 0, "the level up, the toggle's setting is back: off");
+
+	group("build 59: a Deadlocked set-aside load that never comes puts the force back");
+
+	savefile_make_idle(GAME_RAC4);
+	check(features_trigger(F4_LOAD_ASIDE) == ST_OK && r4_fl_is(1), "another set-aside load forces them");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r4_fl_is(0), "the helper drops it, the game would not pause: put back at once");
+
+	savefile_make_idle(GAME_RAC4);
+	check(session_load_setaside() == ST_OK && r4_fl_is(1), "the combo's set-aside load forces them the same");
+	host_poke(d->api_load, (const u8 *)"\x00", 1);   /* the player backed out: the helper's cancel ends at 0 */
+	for (i = 0; i < 230 && r4_fl_is(1); i++) pump(1);
+	check(r4_fl_is(1), "backed out of the load menu: the force waits a moment for a load");
+	pump(30);
+	check(r4_fl_is(0) && (features_toggle_state() & fl) == 0, "none comes in two seconds: put back");
+
+	group("build 59: Deadlocked's set-aside load with Fast loads on, and over a planet load");
+
+	check(features_set(F4_FAST_LOADS, 1) == ST_OK && r4_fl_is(1), "Fast loads on");
+	savefile_make_idle(GAME_RAC4);
+	check(features_trigger(F4_LOAD_ASIDE) == ST_OK, "a set-aside load");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r4_fl_is(1) && (features_toggle_state() & fl) != 0, "dropped, it leaves the checkbox's own patch in");
+	check(features_set(F4_FAST_LOADS, 0) == ST_OK && r4_fl_is(0), "Fast loads off again");
+
+	savefile_make_idle(GAME_RAC4);
+	check(features_trigger(F4_LOAD_ASIDE) == ST_OK && r4_fl_is(1), "a set-aside load forces them");
+	check(session_planet_load(4, 0) == ST_OK, "a PLANET_LOAD goes out before the helper answers");
+	host_poke(d->api_load, (const u8 *)"\xFE", 1);
+	pump(3);
+	check(r4_fl_is(1), "the helper drops the set-aside load: the planet load's force stays, as RaC2's");
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x06", 1);
+	pump(4);
+	host_poke(R4_GAMESTATE + 3, (const u8 *)"\x00", 1);
+	pump(4);
+	check(r4_fl_is(0), "and the planet load's end puts it back");
+}
+
 static void test_rac4(void)
 {
 	const struct game_api *g;
@@ -8640,7 +8766,7 @@ static void test_rac4(void)
 
 	{
 		const struct game_describe *d = g->describe();
-		check_eq_u64(d->nfeatures, 25, "Deadlocked declares twenty-five features (build 56 added the HUD's colours and brightness)");
+		check_eq_u64(d->nfeatures, 24, "Deadlocked declares twenty-four features (build 56 added the HUD's colours and brightness, build 59 retired Unlock all planets)");
 		check_eq_u64(d->nreadouts, 15, "and fifteen readouts");
 		check_eq_u64(d->auto_default,
 		             ((u64)1 << F4_CRASH_PATCHES) | ((u64)1 << F4_SOFTLOCK_FIX),
@@ -8845,41 +8971,16 @@ static void test_rac4(void)
 		host_fail_writes(0, 0);
 		check(r4_fl_is(0), "and leaves fast loads as they were");
 
-		group("build 54: Deadlocked's Unlock all planets unlocks each, then loads DreadZone");
+		group("build 59: Deadlocked's Unlock all planets is retired");
 
 		for (i = 1; i <= 15; i++) {
 			host_poke(R4_STATUS(i), (const u8 *)"\x00", 1);
 			host_poke(R4_MISSION(i, 0), (const u8 *)"\x00", 1);
 		}
-		host_poke(R4_STATUS(1), (const u8 *)"\x03", 1);
-		host_poke(R4_STATUS(4), (const u8 *)"\x0F", 1);
-		host_poke(R4_FRONTEND, (const u8 *)"\x01", 1);
 		host_write_log_reset();
-		check(features_trigger(11) == ST_BUSY && host_write_log_count() == 0,
-		      "1.4.1: at the front end Unlock all planets is BUSY, nothing written: it is all save data");
-		host_poke(R4_FRONTEND, (const u8 *)"\x00", 1);
-		host_write_log_reset();
-		check(features_trigger(11) == ST_OK, "Unlock all planets runs");
-		for (i = 2, order_ok = 1; i <= 15; i++) {
-			int real = i != 3 && i != 9 && i != 12;
-			host_peek(R4_STATUS(i), &st, 1);
-			host_peek(R4_MISSION(i, 0), &m0, 1);
-			if (i == 4) order_ok &= st == 0x0F && m0 == 0x02;
-			else if (real) order_ok &= st == 0x03 && m0 == 0x03;
-			else order_ok &= st == 0x00;
-		}
-		check(order_ok, "every planet it had locked is unlocked, its first mission visible and unlocked; Sarathos, "
-		      "unlocked already, keeps its status (its missions unlocked, 2, as ever); the placeholders untouched");
-		host_peek(R4_STATUS(15), &st, 1);
-		check(st == 0x03, "Interior included, which DreadZone's load never unlocked");
-		check(write_covering(R4_LOADP2) > write_covering(R4_STATUS(15)) &&
-		      write_covering(R4_TARGET) > write_covering(R4_STATUS(15)),
-		      "and the load of DreadZone goes out last, once all of it is written");
-		mem_read_u32(R4_TARGET, &v);
-		check_eq_u64(v, 1, "DreadZone");
-		r4_poke32(R4_GAME_RULES, 1);
-		check(features_trigger(11) == ST_OK && r4_peek32(R4_TARGET) == 21,
-		      "1.4.1: in co-op, co-op's DreadZone, level 21");
+		check(features_trigger(11) == ST_NOT_FOUND && host_write_log_count() == 0,
+		      "its id, 11, answers NOT_FOUND, as any id DESCRIBE does not list, and writes nothing");
+		check(desc_has_label("Unlock all planets") == 0, "and no row of DESCRIBE has its label");
 		r4_campaign(0);
 		r4_planets_unlocked();
 #undef R4_STATUS
@@ -10120,6 +10221,143 @@ static void test_toggles_relabelled(void)
 	config_set_feature_auto("NPEA00387", "Freeze ammo", 0);
 	config_set_feature_auto("NPEA00423", "Refill ammo", 0);
 	config_set_feature_auto("NPEA00385", "Freeze health", 0);
+}
+
+/*
+ * Build 59 (D3): RaC2's PLANET_LOAD takes back the destination's platinum
+ * bolts on bit1, four bytes a level, Maktar's second four in level 26's slot,
+ * and DESCRIBE's extension reports both bits; Deadlocked's load acts on
+ * neither and says so.
+ */
+static void test_planet_flags_b59(void)
+{
+	static const u32 pbolts = 0x01562540u;
+	u8 all[0x70], got[0x70], out[4096];
+	u32 len = 0, off, i, n_writes_flagged;
+	int ok;
+
+	group("build 59: RaC2's planet load takes back the destination's platinum bolts (D3)");
+
+	check(quit_and_wait(), "quit");
+	check(boot_and_wait("NPEA00386"), "RaC2 boots");
+	memset(all, 0xFF, sizeof(all));
+	host_poke(pbolts, all, sizeof(all));
+	check(session_planet_load(5, 0) == ST_OK, "a load with no flag");
+	host_peek(pbolts, got, sizeof(got));
+	check(memcmp(got, all, sizeof(all)) == 0, "takes back nothing");
+	check(session_planet_load(5, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a load of planet 5 with bit1");
+	host_peek(pbolts, got, sizeof(got));
+	for (i = 0, ok = 1; i < sizeof(got); i++) ok &= got[i] == ((i >= 20 && i < 24) ? 0 : 0xFF);
+	check(ok, "takes back its four bytes and no other planet's");
+	host_poke(pbolts, all, sizeof(all));
+	check(session_planet_load(2, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a load of Maktar (2) with bit1");
+	host_peek(pbolts, got, sizeof(got));
+	for (i = 0, ok = 1; i < sizeof(got); i++) ok &= got[i] == (((i >= 8 && i < 12) || (i >= 0x68 && i < 0x6C)) ? 0 : 0xFF);
+	check(ok, "takes back its four and its second four, which the game keeps in level 26's slot");
+	host_poke(pbolts, all, sizeof(all));
+	check(session_planet_load(26, PLANET_FLAG_RESET_BOLTS) == ST_OK, "a load of level 26 with bit1");
+	host_peek(pbolts, got, sizeof(got));
+	check(memcmp(got, all, sizeof(all)) == 0, "takes back nothing: its slot is Maktar's");
+
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	off = 2 + (u32)out[1] * 24;
+	off += 1 + (u32)out[off] * 24;
+	off += 1 + (u32)out[off] * FEATURE_WIRE_SIZE;
+	check(len == off + 1 + DESCRIBE_EXT_LEN && out[off + 1] == (PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS),
+	      "RaC2's DESCRIBE says its load acts on both bits");
+
+	check(quit_and_wait(), "quit");
+	host_boot("NPEA00423");
+	r4_fl_seed();
+	r4_planets_unlocked();
+	check(pump_until(SESSION_INGAME, 4000), "Deadlocked boots");
+	check(features_describe(out, sizeof(out), &len) == ST_OK, "DESCRIBE encodes");
+	off = 2 + (u32)out[1] * 24;
+	off += 1 + (u32)out[off] * 24;
+	off += 1 + (u32)out[off] * FEATURE_WIRE_SIZE;
+	check(len == off + 1 + DESCRIBE_EXT_LEN && out[off + 1] == 0,
+	      "Deadlocked's says its load acts on neither, having no level flags or special bolts");
+	host_write_log_reset();
+	check(session_planet_load(4, PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS) == ST_OK, "and a load with both");
+	n_writes_flagged = host_write_log_count();
+	host_poke(0x00B3C5A3u, (const u8 *)"\x06", 1);
+	pump(4);
+	host_poke(0x00B3C5A3u, (const u8 *)"\x00", 1);
+	pump(4);
+	host_write_log_reset();
+	check(session_planet_load(4, 0) == ST_OK && host_write_log_count() == n_writes_flagged,
+	      "writes what one with neither writes");
+	host_poke(0x00B3C5A3u, (const u8 *)"\x06", 1);
+	pump(4);
+	host_poke(0x00B3C5A3u, (const u8 *)"\x00", 1);
+	pump(4);
+}
+
+/*
+ * Build 59 (D8, D9, D10): the relabelling round renamed ACTIONs alone, moved
+ * rows between groups and retired two ACTIONs. A toggle's "on boot" flag is
+ * kept under its label (config.txt's <TITLEID>.auto.<slug>), so every on-boot
+ * key a build 58 config.txt can hold must still bring its toggle back. The
+ * lists are build 58's toggles that take an auto flag (the LIVE ones take
+ * none), as its tables spelt them: a toggle renamed without a feature_former
+ * row, or retired, fails here. A key for a retired ACTION is left alone.
+ */
+static void test_onboot_keys_b59(void)
+{
+	static const struct {
+		const char *title;
+		const char *labels[9];
+	} games[] = {
+		{ "NPEA00385", { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health", NULL } },
+		{ "NPEA00386", { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health", "Reset bosses on death",
+		                 "Reset platinum bolts on death", NULL } },
+		{ "NPEA00387", { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health", NULL } },
+		{ "NPEA00423", { "Crash patches", "Fix reset softlocks", "Fast loads", "Ghost Ratchet", "Refill ammo",
+		                 "Freeze health", "Correct HUD brightness", "Correct gradient brightness", NULL } },
+		{ "NPEA00452", { "Fast loads", "Remove cutscenes", "Infinite ammo", "Infinite health", "Remove black screens",
+		                 "Cache cutscenes on reset", "Disable cutscene caching", NULL } }
+	};
+	char what[128];
+	u32 k, n;
+	u8 i;
+
+	group("build 59: every on-boot key a build 58 config.txt holds still brings its toggle back");
+
+	for (k = 0; k < sizeof(games) / sizeof(games[0]); k++) {
+		const struct game_describe *d;
+		int all = 1;
+
+		check(quit_and_wait(), "quit");
+		for (n = 0; games[k].labels[n] != NULL; n++) config_set_feature_auto(games[k].title, games[k].labels[n], 1);
+		if (k == 3) config_set_feature_auto(games[k].title, "Unlock all planets", 1);
+		host_boot(games[k].title);
+		if (k == 3) { r4_fl_seed(); r4_planets_unlocked(); }
+		snprintf(what, sizeof(what), "%s boots with them", games[k].title);
+		check(pump_until(SESSION_INGAME, 4000) && session_game() != NULL, what);
+		if (session_game() == NULL) continue;
+		pump(2);
+		d = session_game()->describe();
+		for (n = 0; games[k].labels[n] != NULL; n++) {
+			int found = 0;
+			for (i = 0; i < d->nfeatures; i++) {
+				if (strcmp(d->features[i].label, games[k].labels[n]) != 0) continue;
+				found = d->features[i].kind == FEATURE_TOGGLE &&
+				        (features_toggle_auto() & ((u64)1 << d->features[i].id)) != 0;
+			}
+			if (!found) all = 0;
+		}
+		snprintf(what, sizeof(what), "%s: each is still a toggle of that label, its auto flag up", games[k].title);
+		check(all, what);
+		if (k == 3)
+			check((features_toggle_auto() & ((u64)1 << 11)) == 0 && features_trigger(11) == ST_NOT_FOUND,
+			      "Deadlocked: a key for retired Unlock all planets raises nothing, and its id is no row");
+		for (n = 0; games[k].labels[n] != NULL; n++) {
+			/* Put each back as it ships: the Fixes and Remove cutscenes are on by default. */
+			int dflt = (k == 3 && n < 2) || (k == 4 && n == 1);
+			config_set_feature_auto(games[k].title, games[k].labels[n], dflt ? 1u : 0u);
+		}
+	}
+	check(quit_and_wait(), "quit");
 }
 
 static void test_trilogy(void)
@@ -17936,10 +18174,13 @@ int main(void)
 	test_rac1_fastload_force();
 	test_rac3();
 	test_rac4();
+	test_rac4_setaside_fastloads();
 	test_freeze_health();
 	test_toggles_retired();
 	test_cheats_alike();
 	test_toggles_relabelled();
+	test_onboot_keys_b59();
+	test_planet_flags_b59();
 	test_trilogy();
 	test_autosplit();
 	test_runwarn();

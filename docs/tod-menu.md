@@ -704,3 +704,24 @@ Bind each from the client's Combos panel, the Trainer pages row's dropdown.
 5. In play, the Planets combo: no pause, the galactic map at once. Triangle in the map: the pause opens on the Trainer's root, the cursor on PLANETS.
 6. During a load, a cutscene or with the map up: nothing opens, and the next Start shows the game's own pause; TRAINER there opens on the root.
 7. On RPCS3 with the helper's patch (optional): the same; the Mods combo says "Trainer: no Mods page in this game" once and opens nothing.
+
+## 22. Build 59: the Game page without Die, the Manips page from the run-legal rows
+
+### 22.1 What changed
+
+- **Game** has no Die row (D7, the user's call), as the four games' Game pages have had none since round 5. Die is the client's button, the DIE combo and the feature (4) itself. The page is six rows, the slot, Save and Load, Challenge mode, Set aside file and Load set-aside file: one Game Options window, no second page.
+- **Manips** is no longer a section of ToD's own table. The module declares its run-legal rows once (TOD_RUN_LEGAL in `tod_game.c`: Remove cutscenes, Cache cutscenes, Cache cutscenes on reset, Disable cutscene caching), DESCRIBE flags them RUN_LEGAL (PROTOCOL.md, revision 1.34), and the core's Manips page lists them (menu.c, manips_legal_items), with a blank row where their DESCRIBE group changes (Manips, then Cutscene cache) and Cache cutscenes' status row after it. The root still lists Manips after Cheats: a game whose Manips page is its run-legal rows alone, with no category, has it right after its own pages. The rows, their order, the blank row and the status row are what the section had.
+- The status row's text and the client's line under the button are both `tod_cc_menu_status`'s now (MENU_STATUS_ROW, MENU_STATUS_LINE): the client asks for its line with ACTION_STATUS and keeps no layout of the word.
+- PLANET_LOAD, the Planets page's rows and the map's picks: the planet flags act in ToD (D3), the destination's level flags on bit0 and its gold bolts on bit1, before the request goes out (the load reads the destination's flags to pick its fade).
+
+### 22.2 Sizes
+
+`tod.sprx`'s R-X segment is 48,064 bytes, 17,472 spare in its page (with build 59's armour and skin pickers, weapon bulk actions and moby table beside this round). No change to the Lua helper, its glue or LUA_PATCH.
+
+### 22.3 What the next console test should show
+
+1. Trainer > Game: six rows on one Game Options window, no Die; Down from Load set-aside file goes round to the slot, no second page.
+2. Trainer root: Game, Cheats, Manips, Planets, as before. Manips: Remove cutscenes, a blank row, Cache cutscenes, its status, Cache cutscenes on reset, Disable cutscene caching.
+3. Cache cutscenes from the Trainer: the status row reads as before (Waiting, Cobalia 42%, Done (13s)); RaCMAN's line under its button says the same thing in full (Caching cutscenes: Cobalia 42%, Cutscenes cached (13 s, 13.9 MiB/s)).
+4. RaCMAN's Positions panel in ToD: Reset level flags and Reset special bolts beside Load planet. Collect a gold bolt on a planet, load that planet from RaCMAN with Reset special bolts ticked: the bolt is back. Tick Reset level flags and load Kerwan: a flag set there (a door, a cutscene seen) is cleared, another planet's flags are as they were.
+5. A load into a story-video level (a new file's Cobalia) with Reset level flags ticked: no one-frame flash before the video.

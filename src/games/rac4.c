@@ -18,6 +18,7 @@
 #include "../core/autosplit.h"
 #include "../core/manips.h"
 #include "../core/features.h"
+#include "../core/savefile.h"
 
 #include <string.h>
 
@@ -128,6 +129,9 @@ struct rac4_state {
 	struct rac4_as_state g_as;
 	int g_fastload_on;
 	int g_fastload_forced;
+	int g_fastload_aside;   /* build 59: the force is a set-aside load's (rac2.c's) */
+	u32 g_sf_refusals;      /* build 59: savefile_load_refusals as rac4_on_tick last saw it */
+	u16 g_aside_idle;       /* build 59: ticks a set-aside force has waited with the helper's byte at 0 */
 	int g_softlock_on;
 	u8 g_prev_tutorial;
 	u8 g_prev_game_mode;
@@ -157,6 +161,9 @@ static struct rac4_state g_rac4_state;
 #define g_as (R4->g_as)
 #define g_fastload_on (R4->g_fastload_on)
 #define g_fastload_forced (R4->g_fastload_forced)
+#define g_fastload_aside (R4->g_fastload_aside)
+#define g_sf_refusals (R4->g_sf_refusals)
+#define g_aside_idle (R4->g_aside_idle)
 #define g_softlock_on (R4->g_softlock_on)
 #define g_prev_tutorial (R4->g_prev_tutorial)
 #define g_prev_game_mode (R4->g_prev_game_mode)
@@ -376,9 +383,52 @@ int rac4_fastload_forced(void)
 	return g_fastload_forced;
 }
 
+/* Build 59: the load is asked for, and the force is its (g_fastload_aside), as RaC2's. */
+void rac4_fastload_claim(int aside)
+{
+	g_fastload_aside = aside;
+	g_aside_idle = 0;
+}
+
+/*
+ * Build 59: a set-aside load's force, until its load is seen under way. The
+ * helper drops a load the game would not pause for (a refusal, rac4_on_tick),
+ * and the player can also back out of the game's load menu (its status 28):
+ * the helper then waits for the menu to close and puts its byte back to 0
+ * with no load (sfhelper.c), which is no refusal. A load the player confirms
+ * sets should_load at once (0x3C9398), and the game is in the transition
+ * (mode 6) a frame or two later. So the force waits for mode 6 while the
+ * helper's byte is 0 for RAC4_ASIDE_IDLE_TICKS, two seconds, and then goes:
+ * no load came. Mode 6 makes the force the load's, which the mode watch ends.
+ * One byte a tick, and only while such a force waits.
+ */
+#define RAC4_ASIDE_IDLE_TICKS 240
+
+static void rac4_aside_watch(void)
+{
+	const struct sf_desc *d;
+	u8 b = 1;
+
+	if (!g_fastload_forced || !g_fastload_aside) return;
+	if (g_game_mode == RAC4_GAME_MODE_SPACE) {
+		g_fastload_aside = 0;
+		return;
+	}
+	d = sf_desc_for_game(GAME_RAC4);
+	if (d == NULL || mem_read_u8(d->api_load, &b) != ST_OK || b != 0) {
+		g_aside_idle = 0;
+		return;
+	}
+	if (++g_aside_idle >= RAC4_ASIDE_IDLE_TICKS) {
+		plat_log("rac4: the set-aside load never came (backed out of the load menu?): fast loads put back");
+		rac4_fastload_restore();
+	}
+}
+
 int rac4_fastload_restore(void)
 {
 	g_fastload_forced = 0;
+	g_fastload_aside = 0;
 	if (g_fastload_on) return ST_OK;
 	return classic_code_toggle(&rac4_fastload, SW_RAC4_FLAG_FAST_LOADS, 0);
 }
@@ -548,6 +598,8 @@ static void rac4_on_enter(void)
 {
 	g_fastload_on   = 0;
 	g_fastload_forced = 0;
+	g_fastload_aside = 0;
+	g_sf_refusals   = savefile_load_refusals();
 	g_softlock_on   = 0;
 	g_prev_tutorial = 0xFF;
 	g_prev_game_mode = 0;
@@ -672,6 +724,18 @@ static void rac4_on_tick(const struct game_hot *hot)
 	(void)hot;
 
 	classic_health_tick(&rac4_freeze_health);
+
+	/*
+	 * Build 59: a set-aside load the helper dropped (the game would not pause,
+	 * or the player backed out of the load menu) puts the forced fast loads
+	 * back - its own force, not a planet load's (g_fastload_aside), as RaC2's.
+	 */
+	if (savefile_load_refusals() != g_sf_refusals) {
+		g_sf_refusals = savefile_load_refusals();
+		if (g_fastload_forced && g_fastload_aside) rac4_fastload_restore();
+	}
+	rac4_aside_watch();
+
 	rac4_autosplit_tick();
 	rac4_file_load_watch();
 
@@ -769,7 +833,7 @@ static const struct feature_desc rac4_features[] = {
 	{ R4_CHALLENGE,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC4_RO_CHALLENGE, 0, 255, "Challenge mode" },
 	{ R4_SKIN,          FEATURE_ENUM,   G_PLAYER,   RAC4_SKIN_COUNT, 0, RAC4_RO_SKIN, 0, RAC4_SKIN_COUNT - 1, "Skin" },
 
-	{ R4_UNLOCK_PLANETS, FEATURE_ACTION, G_PROGRESS, 0, 0, NO, 0, 0, "Unlock all planets" },
+	/* Build 59: Unlock all planets is retired, id 11 and all (rac4.h), the user's call. */
 	/* Build 53: Act tune bosses is retired, id 12 and all; it is the NG+ group. */
 
 	/*
@@ -845,7 +909,11 @@ static const struct game_describe rac4_describe_table = {
 	 */
 	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX),
 	NULL, 0,       /* no toggle was relabelled */
-	RAC4_RUN_CHEATS
+	RAC4_RUN_CHEATS,
+	/* revision 1.34: the Fixes, run-legal, which MANIP_LIST's Fixes header draws on the Manips page */
+	((u64)1 << R4_CRASH_PATCHES) | ((u64)1 << R4_SOFTLOCK_FIX),
+	0,             /* no level flag region and no special bolts: the load acts on neither bit */
+	NULL           /* the Trainer takes Help */
 };
 
 #undef NR
@@ -1088,7 +1156,8 @@ static const struct game_manips rac4_manips = {
  * block of the client's Game panel; Cheats the four cheats every game has and
  * the Game panel's other actions. Round 5 (the user's hardware notes): Die is
  * left to the combos, and the values go to Cheats, after its toggles: the
- * buttons, Max bolts, Max Dread points and Unlock all planets. Round 6 (the
+ * buttons, Max bolts and Max Dread points (and Unlock all planets until build
+ * 59, which retired it). Round 6 (the
  * user's call: "not really a cheat"): Challenge mode, a switch, is on Game
  * between its position rows and its save-file rows, where round 5 had a
  * spacer. Skin is a cosmetic, which
@@ -1103,8 +1172,7 @@ static const u8 rac4_menu_game[] = {
 
 static const u8 rac4_menu_cheats[] = {
 	R4_FAST_LOADS, R4_GHOST, R4_REFILL_AMMO, R4_FREEZE_HEALTH,
-	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2),
-	R4_UNLOCK_PLANETS
+	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)   /* build 59: Unlock all planets is retired */
 };
 
 /*

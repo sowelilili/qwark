@@ -415,10 +415,19 @@
  * drops it. The toggles and mods flagged on boot are applied at every
  * boot whatever it says. Anything else is BAD_ARG. With no byte it is a read:
  * the reply is u8 mode. Answered in any session state and on every platform.
- * PROTOCOL.md 5.10.4. 0x0099 is not assigned (BOOT_ASK in a test build of the
- * revision): UNKNOWN_OP.
+ * PROTOCOL.md 5.10.4. 0x0099 was BOOT_ASK in a test build of the revision,
+ * never released; revision 1.34 gives it to ACTION_STATUS.
  */
 #define OP_REBOOT_APPLY      0x0098
+/*
+ * Revision 1.34, build 59: u8 id, u32 word. The line a client draws under an
+ * ACTION that names a status readout (PROTOCOL.md 5.3), for the readout's word
+ * it saw: u8 tone (0 none, 1 under way, 2 done, 3 failed), u8 len, char
+ * text[len], worded by the game. NOT_FOUND for an id with no status readout,
+ * UNSUPPORTED for a game that words none, NOT_INGAME outside a game; a short
+ * request is BAD_ARG. It reads nothing of the game: the word is the client's.
+ */
+#define OP_ACTION_STATUS     0x0099
 #define REBOOT_APPLY_ALWAYS  0
 #define REBOOT_APPLY_ASK     1
 #define REBOOT_APPLY_NEVER   2
@@ -912,6 +921,30 @@
  */
 #define FEATURE_WIRE_SIZE 48
 #define FEATURE_NO_READOUT 0xFF
+
+/*
+ * Revision 1.34, build 59: the pad byte after `bits` is `flags2`. Bit0
+ * RUN_LEGAL: the row is run-legal (struct game_describe's run_legal), drawn on
+ * the Manips page and never counted at a run start.
+ */
+#define FEATURE_FLAG2_RUN_LEGAL  0x01
+
+/*
+ * Revision 1.34: DESCRIBE's extension after the features, `u8 ext_len` and
+ * then ext_len bytes: u8 planet_flags (the PLANET_FLAG_* bits the game's
+ * PLANET_LOAD acts on), u8 menu_flags (bit0 MENU_HERE: the Trainer can come up
+ * in this game on this platform), char menu_row[16] (the pause-menu row it
+ * takes, NUL-padded). A module before it sends nothing after the features.
+ */
+#define DESCRIBE_EXT_LEN         18
+#define DESCRIBE_MENU_HERE       0x01
+#define DESCRIBE_MENU_ROW_LEN    16
+
+/*
+ * Revision 1.34: ACTION_STATUS's text, at most this many characters
+ * (features_action_status).
+ */
+#define ACTION_STATUS_TEXT_MAX   95
 #define FEATURE_BITS_DEFAULT 32
 #define UNLOCK_WIRE_SIZE  44
 #define MOD_WIRE_SIZE     120

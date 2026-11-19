@@ -323,6 +323,17 @@ static void test_bridge(void)
 	/* Back, and the Manips page with Remove cutscenes. */
 	gen = lm32(LMS(LM_GEN));
 	check(press(MBOX_EV_BACK, -1) && lm32(LMS(LM_GEN)) == gen + 1 && find_row("Game") == 0, "back: the root again");
+	/*
+	 * Build 59 (D7, the user's call): Game has no Die row, as the four games'
+	 * have had none since round 5: the slot, Save and Load, Challenge mode and
+	 * the set-aside pair, six rows, one Game Options window and no second page.
+	 */
+	press(MBOX_EV_ACTIVATE, find_row("Game"));
+	title(t);
+	check(strcmp(t, "GAME") == 0 && find_row("Die") < 0 && lm_nrows() == 6 && find_row("Challenge mode") == 3 &&
+	      find_row("Load set-aside file") == 5,
+	      "build 59: Game is six rows, one window, with no Die (the client's button and the combo keep it)");
+	press(MBOX_EV_BACK, -1);
 	press(MBOX_EV_ACTIVATE, find_row("Manips"));
 	title(t);
 	check(strcmp(t, "MANIPS") == 0 && find_row("Remove cutscenes") == 0, "Manips: Remove cutscenes, as the client has it");

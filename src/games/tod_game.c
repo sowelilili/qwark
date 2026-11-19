@@ -249,13 +249,20 @@ static const char * const tod_groups[] = {
 	"Cheats",
 	"Player",
 	"Progress",
-	"Savefile"
+	"Savefile",
+	/* build 59 (D10): run-legal rows' groups, and the collectable actions' */
+	"Manips",
+	"Cutscene cache",
+	"Collectables"
 };
 
 #define G_CHEATS   0
 #define G_PLAYER   1
 #define G_PROGRESS 2
 #define G_SAVEFILE 3
+#define G_MANIPS   4
+#define G_CUTSCENE_CACHE 5
+#define G_COLLECTABLES 6
 
 /* Indexed by TOD_RO_*; the order is part of the wire contract for this game. */
 static const char * const tod_readouts[] = {
@@ -296,6 +303,17 @@ static const char * const tod_readouts[] = {
  * The RYNO plans' two buttons, 14 and 15, are retired: the RYNO itself is an
  * Unlocks row.
  *
+ * Build 59 (D8): the four games lead Cheats with Fast loads, Ghost Ratchet,
+ * Infinite ammo and Freeze health. ToD has no Ghost Ratchet, and its health
+ * cheat keeps the name Infinite health, in Freeze health's place after the ammo,
+ * because it does something else: Freeze health holds the hit points at the
+ * game's maximum (classic_health), so every hit still lands, with its knockback,
+ * its flinch and the health bar's dip, and is then refilled; ToD's word drops
+ * the hero's damage events before Hero_Update applies them (tod_panel.c), so a
+ * hit does nothing at all. A runner practising a route sees the difference.
+ * God Ratchet, the proxy handle, drops the damage too and also stops the enemies
+ * targeting the hero: a glitch runners use, the old trainer's name.
+ *
  * Revision 1.29: Remove cutscenes (18), the user's eight FMVs' files made
  * missing by data writes (tod.h, TOD_ARCHIVE_GAME), so not WRITES_CODE, and
  * not LIVE, so it can come back at boot like Fast loads beside it.
@@ -303,8 +321,10 @@ static const char * const tod_readouts[] = {
  * Revision 1.29: the cutscene cache (tod_cache.c), data writes alone. Cache
  * cutscenes (19) names its status readout, as UYA's Reset trophies does;
  * Cache cutscenes on reset (20) and Disable cutscene caching (21) are qwark's
- * own state and not LIVE, so they can come back at boot. The client's ToD
- * layout puts all three on its Manips page.
+ * own state and not LIVE, so they can come back at boot. Revision 1.34: they
+ * and Remove cutscenes are TOD_RUN_LEGAL, below, which puts all four on the
+ * client's and the Trainer's Manips page; their DESCRIBE groups are Manips and
+ * Cutscene cache, no longer Cheats.
  *
  * 2026-11-12: Remove black screens (24), a data write (tod.h,
  * TOD_FADE_ALPHA), so not WRITES_CODE, and qwark's own state, not LIVE: off at
@@ -313,14 +333,14 @@ static const char * const tod_readouts[] = {
 static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
 	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
-	{ TF_REMOVE_CUTSCENES, FEATURE_TOGGLE, G_CHEATS,  0, 0,  NO, 0, 0, "Remove cutscenes" },
+	{ TF_REMOVE_CUTSCENES, FEATURE_TOGGLE, G_MANIPS,  0, 0,  NO, 0, 0, "Remove cutscenes" },
 	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
 	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
 	{ TF_REMOVE_BLACK,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Remove black screens" },
-	{ TF_CACHE_CUTSCENES, FEATURE_ACTION, G_CHEATS,   0, 0,  TOD_RO_CUTSCENE_CACHE, 0, 0, "Cache cutscenes" },
-	{ TF_CACHE_ON_RESET,  FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Cache cutscenes on reset" },
-	{ TF_NO_CUTSCENE_CACHE, FEATURE_TOGGLE, G_CHEATS, 0, 0,  NO, 0, 0, "Disable cutscene caching" },
+	{ TF_CACHE_CUTSCENES, FEATURE_ACTION, G_CUTSCENE_CACHE, 0, 0,  TOD_RO_CUTSCENE_CACHE, 0, 0, "Cache cutscenes" },
+	{ TF_CACHE_ON_RESET,  FEATURE_TOGGLE, G_CUTSCENE_CACHE, 0, 0,  NO, 0, 0, "Cache cutscenes on reset" },
+	{ TF_NO_CUTSCENE_CACHE, FEATURE_TOGGLE, G_CUTSCENE_CACHE, 0, 0,  NO, 0, 0, "Disable cutscene caching" },
 
 	{ TF_DIE,           FEATURE_ACTION, G_PLAYER,   0, 0,  NO, 0, 0, "Die" },
 	{ TF_BOLTS,         FEATURE_VALUE,  G_PLAYER,   0, 0,  TOD_RO_BOLTS,      0, TOD_MAX_BOLTS, "Bolts" },
@@ -330,10 +350,10 @@ static const struct feature_desc tod_features[] = {
 	{ TF_ARMOUR,        FEATURE_ENUM,   G_PLAYER,   TOD_ARMOUR_COUNT, 0, TOD_RO_ARMOUR, 0, TOD_ARMOUR_COUNT - 1, "Armour" },
 	{ TF_SKIN,          FEATURE_ENUM,   G_PLAYER,   TOD_SKIN_COUNT,   0, TOD_RO_SKIN,   0, TOD_SKIN_COUNT - 1,   "Skin" },
 
-	{ TF_UNLOCK_SP,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all skill points" },
-	{ TF_RESET_SP,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset skill points" },
-	{ TF_UNLOCK_GB,     FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
-	{ TF_RESET_GB,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset gold bolts" },
+	{ TF_UNLOCK_SP,     FEATURE_ACTION, G_COLLECTABLES, 0, 0,  NO, 0, 0, "Unlock all skill points" },
+	{ TF_RESET_SP,      FEATURE_ACTION, G_COLLECTABLES, 0, 0,  NO, 0, 0, "Reset all skill points" },
+	{ TF_UNLOCK_GB,     FEATURE_ACTION, G_COLLECTABLES, 0, 0,  NO, 0, 0, "Unlock all gold bolts" },
+	{ TF_RESET_GB,      FEATURE_ACTION, G_COLLECTABLES, 0, 0,  NO, 0, 0, "Reset all gold bolts" },
 
 	/* Build 59: the weapon bulk actions, labelled as RaC2's, UYA's and Deadlocked's. */
 	{ TF_MAX_LEVELS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon levels" },
@@ -357,11 +377,23 @@ static const struct feature_desc tod_features[] = {
  * Infinite health, God Ratchet and (2026-11-12) Remove black screens, a
  * practice cheat. Remove cutscenes is run-legal (the
  * user's call, 2026-10-31), and the cutscene cache's two toggles are manips:
- * all three stay out, though Cheats is their group on the wire.
+ * all three stay out, as TOD_RUN_LEGAL says (and the core never counts a
+ * run-legal row whatever this says).
  */
 #define TOD_RUN_CHEATS (((u64)1 << TF_FAST_LOADS) | ((u64)1 << TF_INFINITE_AMMO) | \
                         ((u64)1 << TF_INFINITE_HEALTH) | ((u64)1 << TF_GOD_RATCHET) | \
                         ((u64)1 << TF_REMOVE_BLACK))
+
+/*
+ * Revision 1.34 (D10): the run-legal rows, declared here alone. DESCRIBE flags
+ * them RUN_LEGAL, so a client and the Trainer draw them on the Manips page
+ * (the user's call, 2026-10-31, for Remove cutscenes; the cutscene cache's
+ * three are manips), and the run-start warning never counts them. Their
+ * DESCRIBE groups, Manips and Cutscene cache, are where the Trainer's Manips
+ * page puts a blank row between them (menu.c).
+ */
+#define TOD_RUN_LEGAL (((u64)1 << TF_REMOVE_CUTSCENES) | ((u64)1 << TF_CACHE_CUTSCENES) | \
+                       ((u64)1 << TF_CACHE_ON_RESET) | ((u64)1 << TF_NO_CUTSCENE_CACHE))
 
 static const struct game_describe tod_describe_table = {
 	tod_groups,   (u8)(sizeof(tod_groups) / sizeof(tod_groups[0])),
@@ -373,8 +405,12 @@ static const struct game_describe tod_describe_table = {
 	 * eight FMVs. A config.txt key for it, on or off, still wins.
 	 */
 	(u64)1 << TF_REMOVE_CUTSCENES,
-	NULL, 0,      /* nothing relabelled */
-	TOD_RUN_CHEATS
+	NULL, 0,      /* nothing relabelled (build 59 relabelled ACTIONs alone, which keep no config key) */
+	TOD_RUN_CHEATS,
+	TOD_RUN_LEGAL,
+	/* build 59 (D3): its level flags and the destination's gold bolts (tod_planet_load) */
+	PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS,
+	"Inventory"    /* the pause list's row TRAINER takes (docs/tod-menu.md) */
 };
 
 static const struct game_describe *tod_describe(void)
@@ -437,19 +473,25 @@ static const struct lh_desc *tod_lua_desc(void)
 /*
  * The console menu's pages for ToD (src/core/menu.c), shown by the game's own
  * pause menu (revision 1.29, docs/tod-menu.md), after the four games' tables
- * and the client's ToD panels. Game: the position rows, Die, Challenge mode
- * as a switch, the set-aside pair. Cheats: the toggles, then Max bolts and Max
- * raritanium. Manips: Remove cutscenes, where the client's ToD layout puts it
- * (its DESCRIBE group stays Cheats). Unlocks: the weapons Locked,
+ * and the client's ToD panels. Game: the position rows, Challenge mode as a
+ * switch, the set-aside pair. Cheats: the toggles, then Max bolts and Max
+ * raritanium. Manips (revision 1.34) is the core's page of the run-legal rows
+ * (TOD_RUN_LEGAL, menu.c), after Cheats as this table's own section had it
+ * since revision 1.29: Remove cutscenes, a blank row, the cache's three. Unlocks: the weapons Locked,
  * V1 and V10 (the level field, as the game numbers it), the rest Locked or
  * Unlocked, and the four skill point and gold bolt buttons on a page of their
  * own, Collectables, as the other games have theirs, and since build 59 the
  * three weapon bulk actions after them, as RaC2's and Deadlocked's are. Every planet with a name
  * may be loaded, as PLANET_LOAD loads it.
  */
+/*
+ * Build 59 (D7, the user's call): no Die row, as the four games' Game pages
+ * have had none since round 5; Die is the client's button, the combo and the
+ * feature. Six rows, one Game Options window.
+ */
 static const u8 tod_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
-	TF_DIE, MENU_ITEM_VALUE(0),
+	MENU_ITEM_VALUE(0),
 	TF_SET_ASIDE, TF_LOAD_ASIDE
 };
 
@@ -457,12 +499,6 @@ static const u8 tod_menu_cheats[] = {
 	TF_FAST_LOADS, TF_INFINITE_AMMO, TF_INFINITE_HEALTH, TF_GOD_RATCHET,
 	TF_REMOVE_BLACK,   /* 2026-11-12: seven rows, two Game Options windows, as Game's */
 	MENU_ITEM_VALUE(1), MENU_ITEM_VALUE(2)
-};
-
-/* Revision 1.29, the fifth console test: a blank row between Remove cutscenes and the cache's rows. */
-static const u8 tod_menu_manips[] = {
-	TF_REMOVE_CUTSCENES, MENU_ITEM_SPACER,
-	TF_CACHE_CUTSCENES, TF_CACHE_ON_RESET, TF_NO_CUTSCENE_CACHE   /* revision 1.29 */
 };
 
 static const struct menu_value tod_menu_values[] = {
@@ -473,8 +509,7 @@ static const struct menu_value tod_menu_values[] = {
 
 static const struct menu_section tod_menu_sections[] = {
 	{ "Game",   tod_menu_game,   (u8)sizeof(tod_menu_game) },
-	{ "Cheats", tod_menu_cheats, (u8)sizeof(tod_menu_cheats) },
-	{ "Manips", tod_menu_manips, (u8)sizeof(tod_menu_manips) }
+	{ "Cheats", tod_menu_cheats, (u8)sizeof(tod_menu_cheats) }
 };
 
 static const u8 tod_menu_unlock_actions[] = {

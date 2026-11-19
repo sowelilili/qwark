@@ -417,8 +417,49 @@ static void test_game(const char *title, u8 game, const char *name, const u8 *id
 	check(host_notify_count() == n, "the same with them off: nothing");
 }
 
+/*
+ * Revision 1.34 (D10): what each game's run start counts, pinned to the ids
+ * PROTOCOL.md 5.10.2 lists (what build 58 counted), with every toggle of the
+ * game on, run-legal ones included: Fast loads in every game, UYA's
+ * Quick-select pause not, RaC2's two resets on death yes, no run-legal row
+ * ever. It held before run_legal existed and holds after, whatever a table's
+ * `cheats` says of a run-legal row (features_cheats_on leaves those out).
+ */
+static void test_counted(const char *title, const char *name, const u8 *ids, u32 nids, int has_legal)
+{
+	char what[160];
+	const struct game_describe *d;
+	u64 want = 0, on, legal_on;
+	u32 i;
+
+	snprintf(what, sizeof(what), "revision 1.34: what %s's run start counts, every toggle on", name);
+	group(what);
+	check(quit() && boot(title) && session_game() != NULL, "boots");
+	if (session_game() == NULL) return;
+	d = session_game()->describe();
+	for (i = 0; i < d->nfeatures; i++) {
+		if (d->features[i].kind == FEATURE_TOGGLE) features_set(d->features[i].id, 1);
+	}
+	for (i = 0; i < nids; i++) want |= (u64)1 << ids[i];
+	on = features_toggle_state();
+	legal_on = on & d->run_legal;
+	check((on & want) == want, "every counted toggle went on");
+	check(!has_legal || legal_on != 0, "and the run-legal toggles too");
+	check_eq_u64(features_cheats_on(), want, "the count is exactly those ids");
+	check((d->cheats & d->run_legal) == 0, "the table counts no run-legal row");
+	for (i = 0; i < d->nfeatures; i++) {
+		if (d->features[i].kind == FEATURE_TOGGLE) features_set(d->features[i].id, 0);
+	}
+}
+
 void test_runwarn(void)
 {
+	/* PROTOCOL.md 5.10.2's ids. */
+	static const u8 c1[] = { 0, 3, 1, 2, 6 };                /* the four, Goodies menu */
+	static const u8 c2[] = { 0, 3, 1, 2, 5, 13, 14 };        /* the four, debug mode, the two resets on death */
+	static const u8 c3[] = { 38, 3, 0, 1 };                  /* the four; not Quick-select pause (5) */
+	static const u8 c4[] = { 2, 5, 3, 4 };                   /* the four; not the Fixes */
+	static const u8 c5[] = { 17, 8, 9, 16, 24 };             /* Fast loads, ammo, health, God Ratchet, black screens */
 	static const u8 r2[] = { R2_GHOST, R2_DEATH_BOSSES, R2_FREEZE_HEALTH };
 	static const u8 r3[] = { R3_GHOST, R3_FREEZE_AMMO };
 	/* After build 57 (the user's call): the quick-select pause is one of the game's options, no cheat. */
@@ -432,5 +473,10 @@ void test_runwarn(void)
 	test_game("NPEA00386", GAME_RAC2, "RaC2", r2, 3, NULL, 0, "Warning: 3 cheats enabled");
 	test_game("NPEA00387", GAME_RAC3, "UYA", r3, 2, r3_not, 1, "Warning: 2 cheats enabled");
 	test_game("NPEA00423", GAME_RAC4, "Deadlocked", r4, 2, r4_not, 1, "Warning: 2 cheats enabled");
+	test_counted("NPEA00385", "RaC1", c1, sizeof(c1), 0);
+	test_counted("NPEA00386", "RaC2", c2, sizeof(c2), 0);
+	test_counted("NPEA00387", "UYA", c3, sizeof(c3), 1);
+	test_counted("NPEA00423", "Deadlocked", c4, sizeof(c4), 1);
+	test_counted("NPEA00452", "ToD", c5, sizeof(c5), 1);
 	check(quit(), "quit");
 }

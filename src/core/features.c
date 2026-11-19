@@ -214,10 +214,11 @@ u64 features_cheats_on(void)
 	d = g_game->describe();
 	if (d == NULL || d->cheats == 0) return 0;
 
-	on = g_toggle_state;
+	/* Revision 1.34: a run-legal row is never a cheat, whatever `cheats` says (game.h). */
+	on = g_toggle_state & ~d->run_legal;
 #ifdef QWARK_EMULATOR
 	/* A WRITES_CODE toggle still waiting for the code switches is on as far as anyone asked. */
-	on |= g_code_waiting;
+	on |= g_code_waiting & ~d->run_legal;
 #endif
 
 	for (i = 0; i < d->nfeatures; i++) {
@@ -421,7 +422,7 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		return ST_FULL;
 
 	need = 1 + 1 + (u32)d->ngroups * 24 + 1 + (u32)d->nreadouts * 24
-	     + 1 + (u32)d->nfeatures * FEATURE_WIRE_SIZE;
+	     + 1 + (u32)d->nfeatures * FEATURE_WIRE_SIZE + 1 + DESCRIBE_EXT_LEN;
 	if (need > cap) return ST_FULL;
 
 	out[off++] = g_game->game_id;
@@ -479,13 +480,70 @@ int features_describe(u8 *out, u32 cap, u32 *len)
 		out[off + 4] = flags;
 		out[off + 5] = readout;
 		out[off + 6] = bits;
-		out[off + 7] = 0;
+		/* Revision 1.34: flags2, a pad byte before it; bit0 RUN_LEGAL (game.h, run_legal). */
+		out[off + 7] = (f->id < QWARK_MAX_FEATURES && (d->run_legal & ((u64)1 << f->id)) != 0)
+		               ? FEATURE_FLAG2_RUN_LEGAL : 0;
 		be32_put(out + off + 8, f->min);
 		be32_put(out + off + 12, f->max);
 		qput_fixed(out + off + 16, 32, f->label);
 		off += FEATURE_WIRE_SIZE;
 	}
 
+	/*
+	 * Revision 1.34: the extension, its length first, so a client before it,
+	 * which reads no further than the features, reads the reply as it did,
+	 * and a later revision can add to it: the PLANET_LOAD flags the game's
+	 * load acts on, whether the Trainer can come up in this game here, and
+	 * the pause-menu row it takes. A console menu can come up wherever code
+	 * can be patched; where it cannot (RPCS3), only a game whose menu is its
+	 * own pause menu (menu_native, Tools of Destruction's) has one.
+	 */
+	out[off++] = DESCRIBE_EXT_LEN;
+	out[off++] = (u8)(d->planet_flags & (PLANET_FLAG_RESET_LEVELFLAGS | PLANET_FLAG_RESET_BOLTS));
+	{
+		u8 menu = 0;
+		if (g_game->menu != NULL) {
+			if (plat_can_patch_code()) menu = DESCRIBE_MENU_HERE;
+#if QWARK_HAS_TOD
+			if (g_game->menu_native != NULL) menu = DESCRIBE_MENU_HERE;
+#endif
+		}
+		out[off++] = menu;
+	}
+	qput_fixed(out + off, DESCRIBE_MENU_ROW_LEN, d->menu_row != NULL ? d->menu_row : "Help");
+	off += DESCRIBE_MENU_ROW_LEN;
+
 	*len = off;
+	return ST_OK;
+}
+
+/*
+ * Revision 1.34, ACTION_STATUS: the line a client draws under an ACTION that
+ * names a status readout, for the word it saw in that readout, worded by the
+ * game (struct game_menu's action_status). `out` gets u8 tone, u8 len and
+ * the text. NOT_FOUND for an id DESCRIBE does not list or that names no
+ * status readout, UNSUPPORTED for a game that words none.
+ */
+int features_action_status(u8 id, u32 word, u8 *out, u32 cap, u32 *len)
+{
+	const struct feature_desc *f = find_desc(id);
+	char text[ACTION_STATUS_TEXT_MAX + 1];
+	u8 tone;
+	u32 n;
+
+	*len = 0;
+	if (g_game == NULL) return ST_UNSUPPORTED;
+	if (f == NULL || f->kind != FEATURE_ACTION || f->readout >= QWARK_MAX_READOUTS) return ST_NOT_FOUND;
+	if (g_game->menu == NULL || g_game->menu->action_status == NULL) return ST_UNSUPPORTED;
+	if (cap < 2 + ACTION_STATUS_TEXT_MAX) return ST_FULL;
+
+	text[0] = 0;
+	tone = g_game->menu->action_status(id, word, MENU_STATUS_LINE, text, sizeof(text));
+	text[sizeof(text) - 1] = 0;
+	n = qstrlen(text);
+	out[0] = tone;
+	out[1] = (u8)n;
+	memcpy(out + 2, text, n);
+	*len = 2 + n;
 	return ST_OK;
 }
