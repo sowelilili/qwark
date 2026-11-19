@@ -2654,8 +2654,13 @@ OTHER_GAMES = [
         # puts -1 in the loaded armour word, 0xD99210, and then 1 in the
         # savefile helper's reload byte, 0xD9FF05, which has the helper reload
         # the model as the skin menu does (the simulator's HDD has the pak, so
-        # the helper goes in).
-        "enum_writes": [(40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+        # the helper goes in). The Armour picker (11) comes first and asks for
+        # the same reload: Adamantine (2) as a big-endian halfword at 0xC1E51C,
+        # the -1 and the byte, read back by the Armour readout (5); the skins
+        # are then picked over it, armour then skin.
+        "enum_writes": [(11, 2, [(0xC1E51C, b"\x00\x02"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                                 (0xD9FF05, b"\x01")], 5),
+                        (40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
                                  (0xD9FF05, b"\x01")], 13),
                         (40, 7, [(0xDA519B, b"\x0E"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
                                  (0xD9FF05, b"\x01")], 13)],
@@ -8420,11 +8425,12 @@ def smoke_rpcs3_rac3_switches(c, pine):
 RAC3_SKIN = 0x00DA519B
 RAC3_ARMOUR_LOADED = 0x00D99210
 RAC3_SF_ARMOR = 0x00D9FF05
+RAC3_ARMOUR = 0x00C1E51C
 
 
 def smoke_rpcs3_rac3_reload(c, pine):
     """
-    Build 59: UYA's Skin picker under RPCS3, as RaC2's pickers. Its model
+    Build 59: UYA's Skin and Armour pickers under RPCS3, as RaC2's pickers. Its model
     reload is the savefile helper's, so with no savefile patch, or with a
     patch whose helper is not this build's, the pick writes the skin and the -1
     that has the next planet load read the model, and asks no helper; with
@@ -8445,6 +8451,15 @@ def smoke_rpcs3_rac3_reload(c, pine):
           pine.peek(RAC3_SF_ARMOR, 1) == b"\x00",
           "rpcs3 rac3 reload: the loaded armour is -1 and no helper is asked: the next planet load",
           (pine.peek(RAC3_ARMOUR_LOADED, 4), pine.peek(RAC3_SF_ARMOR, 1)))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 0))
+    check(status == ST_OK, "rpcs3 rac3 reload: no skin again", status)
+    pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x02")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 11, 3))
+    check(status == ST_OK and pine.peek(RAC3_ARMOUR, 2) == b"\x00\x03" and
+          pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
+          pine.peek(RAC3_SF_ARMOR, 1) == b"\x00",
+          "rpcs3 rac3 reload: an Armour pick with no patch: the armour and the -1, no helper asked",
+          (status, pine.peek(RAC3_ARMOUR, 2), pine.peek(RAC3_ARMOUR_LOADED, 4), pine.peek(RAC3_SF_ARMOR, 1)))
 
     status, _stamp, words, single, _body = savefile_patch(c)
     check(status == ST_OK and words, "rpcs3 rac3 reload: SAVEFILE_PATCH answers for UYA", status)
@@ -8480,6 +8495,22 @@ def smoke_rpcs3_rac3_reload(c, pine):
         code.update(range(addr, addr + 4))
     hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
     check(not hits, "rpcs3 rac3 reload: and no code is written: the patch put the helper in", hits[:4])
+    # Skin then armour: the game's own Snowman (6) gives way to the armour
+    # before the request, so the reload reads the armour's files.
+    pine.poke(RAC3_SKIN, b"\x06")
+    pine.poke(RAC3_SF_ARMOR, b"\x00")
+    pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x03")
+    del pine.write_log[:]
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 11, 1))
+    check(status == ST_OK and pine.peek(RAC3_ARMOUR, 2) == b"\x00\x01" and
+          pine.peek(RAC3_SKIN, 1) == b"\x00" and
+          pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
+          pine.peek(RAC3_SF_ARMOR, 1) == b"\x01",
+          "rpcs3 rac3 reload: Magnaplate over the Snowman: skin off, -1, the patched-in helper asked",
+          (status, pine.peek(RAC3_ARMOUR, 2), pine.peek(RAC3_SKIN, 1),
+           pine.peek(RAC3_ARMOUR_LOADED, 4), pine.peek(RAC3_SF_ARMOR, 1)))
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
+    check(not hits, "rpcs3 rac3 reload: and no code written for the armour either", hits[:4])
 
     ok, info = boot_patched(True)
     check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA comes back with another build's helper", info)
@@ -8488,6 +8519,12 @@ def smoke_rpcs3_rac3_reload(c, pine):
     check(status == ST_OK and pine.peek(RAC3_SF_ARMOR, 1) == b"\x00" and
           pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF",
           "rpcs3 rac3 reload: a helper that may not know the byte is not asked; the next planet load does it",
+          (status, pine.peek(RAC3_SF_ARMOR, 1), pine.peek(RAC3_ARMOUR_LOADED, 4)))
+    pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x02")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 11, 4))
+    check(status == ST_OK and pine.peek(RAC3_SF_ARMOR, 1) == b"\x00" and
+          pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF",
+          "rpcs3 rac3 reload: nor for an Armour pick; the next planet load shows it",
           (status, pine.peek(RAC3_SF_ARMOR, 1), pine.peek(RAC3_ARMOUR_LOADED, 4)))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 0))
     check(status == ST_OK, "rpcs3 rac3 reload: no skin again", status)
@@ -8500,6 +8537,7 @@ def smoke_rpcs3_rac3_reload(c, pine):
     pine.poke(RAC3_FP_ADDR, RAC3_FP)
     pine.poke(RAC3_SF_ARMOR, b"\x00")
     pine.poke(RAC3_SKIN, b"\x00")
+    pine.poke(RAC3_ARMOUR, b"\x00\x00")
 
 
 def smoke_rpcs3_held(exe):

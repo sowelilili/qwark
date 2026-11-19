@@ -8493,6 +8493,8 @@ static void r3r_run(const struct sf_desc *d, u32 entry, struct r3r *s)
  * loaded word is the armour, and otherwise clears the byte and then calls
  * with the armour.
  */
+static u32 g_r3_reload_entry;   /* the routine r3_check_reload_bytes found, 0 if none */
+
 static void r3_check_reload_bytes(const struct sf_desc *d)
 {
 	u32 branches = 0, entry = 0, nentry = 0, c_at = 0xFFu, i;
@@ -8532,6 +8534,7 @@ static void r3_check_reload_bytes(const struct sf_desc *d)
 	}
 	check_eq_u64(nentry, 1, "the helper's entry calls one routine that makes that call when asked");
 	if (nentry != 1) return;
+	g_r3_reload_entry = entry;
 
 	/* Not asked: nothing. */
 	r3r_init(&s, 0, 3, 0xFFFFFFFFu, 0x00F80000u);
@@ -8567,6 +8570,17 @@ static void r3_check_reload_bytes(const struct sf_desc *d)
 	check(!s.bad && s.calls == 1 && s.r3_at_call == 2, "a loaded word of 0x10002 is not armour 2: the call is made");
 
 	/*
+	 * The Armour picker's change: a new armour (4) with the old one (1) still
+	 * in the loaded word, no skin involved. The routine needs no -1 to see it.
+	 */
+	r3r_init(&s, 1, 4, 1u, 0x00F80000u);
+	r3r_run(d, entry, &s);
+	check(!s.bad && s.calls == 1, "asked with the armour changed (1 loaded, 4 worn), it calls Armor_LoadModel");
+	check_eq_u64(s.r3_at_call, 4, "with the new armour, 4, in r3");
+	check_eq_u64(s.byte_at_call, 0, "the request byte already 0 at the call");
+	check(s.nstores == 1 && s.stores[0] == R3_SF_ARMOR, "and that byte the only thing it writes");
+
+	/*
 	 * Only the evidenced reads: across every run above, nothing outside the
 	 * request byte, the armour, the loaded word and class 0, and each of them.
 	 */
@@ -8593,6 +8607,23 @@ static void r3_check_reload_bytes(const struct sf_desc *d)
 		check_eq_u64(stray, 0, "the reload reads nothing but the four words sf_rac3.h names");
 		check(seen[0] && seen[1] && seen[2] && seen[3], "and reads each of them");
 	}
+}
+
+/*
+ * The reload routine run on the fake console's request byte, armour and
+ * loaded word as the pickers left them, with class 0 set up (a planet in).
+ */
+static int r3_run_on_host(struct r3r *s)
+{
+	u8 req = 0, hw[2] = { 0, 0 }, lw[4] = { 0, 0, 0, 0 };
+
+	if (g_r3_reload_entry == 0) return 0;
+	host_peek(R3_SF_ARMOR, &req, 1);
+	host_peek(R3R_ARMOUR, hw, 2);
+	host_peek(R3_ARMOUR_LOADED, lw, 4);
+	r3r_init(s, req, (u16)((hw[0] << 8) | hw[1]), be32_get(lw), 0x00F80000u);
+	r3r_run(sf_desc_for_game(GAME_RAC3), g_r3_reload_entry, s);
+	return !s->bad;
 }
 
 static void test_rac3(void)
@@ -9326,7 +9357,7 @@ static void test_rac3(void)
 	host_peek(R3_SKIN_ADDR, &b, 1);
 	check_eq_u64(b, 11, "leaves Robo Rooster on, as the game would");
 	mem_read_u32(R3_ARMOUR_LOADED, &v);
-	check_eq_u64(v, 2, "and the loaded word alone");
+	check_eq_u64(v, 0xFFFFFFFFu, "and marks the model stale, as every Armour pick now does");
 	host_poke(R3_SKIN_ADDR, (const u8 *)"\x12", 1);
 	pump(9);
 	check_eq_u64(session_readout(13), 0, "an id the list has no row for (18, past the game's table) reads as none");
@@ -9413,14 +9444,103 @@ static void test_rac3(void)
 		mem_read_u32(R3_ARMOUR_LOADED, &v);
 		check(b == 0 && v == 3, "and neither asks for a reload nor marks the model stale");
 
-		/* The other pickers ask the helper for nothing. */
+		/* The ship colour asks the helper for nothing. */
 		check(features_set(F3_SHIP_COLOUR, 4) == ST_OK, "a ship colour is picked");
-		check(features_set(F3_ARMOUR, 2) == ST_OK, "and an armour");
 		host_peek(R3_SF_ARMOR, &b, 1);
-		check_eq_u64(b, 0, "neither raises the Skin picker's reload byte");
-		check(features_set(F3_ARMOUR, 4) == ST_OK, "the armour back as it was");
+		check_eq_u64(b, 0, "and raises no reload byte");
 
 		r3_check_reload_bytes(d);
+	}
+
+	group("RaC3: the Armour picker reloads the model too, build 59");
+
+	{
+		u8 halfword[2];
+		struct r3r s;
+
+		/* No helper (config's savefile_helper = 0): the -1 alone, OK. */
+		savefile_set_enabled(0);
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+		check(features_set(F3_ARMOUR, 1) == ST_OK, "with the helper switched off an armour pick still answers OK");
+		host_peek(R3_ARMOUR_ADDR, halfword, 2);
+		check(halfword[0] == 0 && halfword[1] == 1, "its armour written");
+		mem_read_u32(R3_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour -1, so the next planet load reads the model");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 0, "and no reload asked of a helper that is not there");
+		savefile_set_enabled(1);
+
+		/* The helper allowed: the same request as the Skin picker's. */
+		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x01", 4);
+		check(features_set(F3_ARMOUR, 2) == ST_OK, "Adamantine Armor is picked with the helper allowed");
+		mem_read_u32(R3_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1 first");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the reload byte is 1, as for a skin");
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+		check(features_set(F3_ARMOUR, 8) == ST_BAD_ARG, "an armour past the end is refused");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		mem_read_u32(R3_ARMOUR_LOADED, &v);
+		check(b == 0 && v == 2, "and neither asks for a reload nor marks the model stale");
+
+		/*
+		 * Armour then skin: the skin is worn over the armour, and the reload's
+		 * call takes the armour as its argument, the skin's files by the byte.
+		 */
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F3_ARMOUR, 3) == ST_OK, "armour then skin: Aegis Mark V Armor");
+		check(features_set(F3_SKIN, 2) == ST_OK, "then Brainius");
+		host_peek(R3_ARMOUR_ADDR, halfword, 2);
+		check(halfword[0] == 0 && halfword[1] == 3, "the armour is still 3");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 9, "the skin byte Brainius's id, 9");
+		mem_read_u32(R3_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded word -1");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the reload byte raised");
+		check(r3_run_on_host(&s) && s.calls == 1 && s.r3_at_call == 3,
+		      "the helper's routine, run on that memory, calls Armor_LoadModel with the armour, 3");
+
+		/*
+		 * Skin then armour, with one of the three skins that are also armours
+		 * on: it comes off before the request, so the reload reads the armour.
+		 */
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x07", 1);   /* Tuxedo Ratchet, by the game's own menu */
+		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
+		check(features_set(F3_ARMOUR, 4) == ST_OK, "skin then armour: Infernox over the game's Tuxedo Ratchet");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 0, "the skin byte is 0, so the reload reads armor4, not the Tuxedo's armor7");
+		host_peek(R3_ARMOUR_ADDR, halfword, 2);
+		check(halfword[0] == 0 && halfword[1] == 4, "the armour 4");
+		mem_read_u32(R3_ARMOUR_LOADED, &v);
+		check_eq_u64(v, 0xFFFFFFFFu, "the loaded word -1");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the reload byte raised");
+		check(r3_run_on_host(&s) && s.calls == 1 && s.r3_at_call == 4,
+		      "the helper's routine, run on that memory, calls Armor_LoadModel with Infernox, 4");
+
+		/* Skin then armour, with a skin of the Skin list on: it stays on. */
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F3_SKIN, 5) == ST_OK, "skin then armour: Trooper");
+		check(features_set(F3_ARMOUR, 1) == ST_OK, "then Magnaplate Armor");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 12, "Trooper, 12, stays on, as before");
+		host_peek(R3_ARMOUR_ADDR, halfword, 2);
+		check(halfword[0] == 0 && halfword[1] == 1, "the armour 1 under it");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "the reload byte raised");
+		check(features_set(F3_SKIN, 0) == ST_OK, "Current Armor then takes the skin off");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 0, "the skin byte 0");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 1, "and the reload asked again, to show Magnaplate");
+
+		check(features_set(F3_ARMOUR, 4) == ST_OK, "the armour back as it was");
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 	}
 
 	group("RaC3: savefile requests");
@@ -13472,7 +13592,7 @@ static void test_rac2_reload_rpcs3(void)
 }
 
 /*
- * Build 59: UYA's Skin picker under RPCS3, as RaC2's pickers above: the reload
+ * Build 59: UYA's Skin and Armour pickers under RPCS3, as RaC2's pickers above: the reload
  * is the savefile helper's, so only this build's savefile patch, applied at
  * load, gets the reload byte; no patch, or a patch whose helper is another
  * build's (one that may not have the reload, as every build's before this
@@ -13484,7 +13604,7 @@ static void test_rac3_reload_rpcs3(void)
 	u32 len = 0, v = 0;
 	u8 b = 9;
 
-	group("build 59: UYA's skin reload under RPCS3");
+	group("build 59: UYA's skin and armour reload under RPCS3");
 
 	if (d == NULL) { check(0, "RaC3 has a helper"); return; }
 
@@ -13504,6 +13624,14 @@ static void test_rac3_reload_rpcs3(void)
 	host_peek(R3_SF_ARMOR, &b, 1);
 	check_eq_u64(b, 0, "with no helper there is no reload byte to raise");
 	check(!sf_wrote_code(d), "and no code is written");
+	check(features_set(F3_SKIN, 0) == ST_OK, "no skin again");
+	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+	check(features_set(F3_ARMOUR, 3) == ST_OK, "the Armour picker answers OK with no patch too");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "its loaded armour at -1: the next planet load shows the armour");
+	host_peek(R3_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 0, "and no reload byte raised for it either");
+	check(!sf_wrote_code(d), "still no code written");
 
 	check(savefile_patch(g_sf_patch, sizeof(g_sf_patch), &len) == ST_OK, "the RaC3 savefile patch");
 
@@ -13519,6 +13647,14 @@ static void test_rac3_reload_rpcs3(void)
 	check_eq_u64(v, 0xFFFFFFFFu, "after the loaded armour went to -1");
 	check(!sf_wrote_code(d), "and still no code is written: the patch put the helper in");
 	check(features_set(F3_SKIN, 0) == ST_OK, "no skin again");
+	host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+	check(features_set(F3_ARMOUR, 1) == ST_OK, "Magnaplate Armor is picked");
+	host_peek(R3_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 1, "the patched-in helper is asked to reload the armour at once, as for a skin");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "after the loaded armour went to -1");
+	check(!sf_wrote_code(d), "no code written");
 
 	check(quit_and_wait(), "quit");
 	check(sf_boot_patched("NPEA00387", g_sf_patch, len, 1u),
@@ -13532,6 +13668,13 @@ static void test_rac3_reload_rpcs3(void)
 	check_eq_u64(v, 0xFFFFFFFFu, "and the next planet load does it");
 	check(features_set(F3_SKIN, 0) == ST_OK, "no skin again");
 	host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
+	check(features_set(F3_ARMOUR, 4) == ST_OK, "Infernox Armor is picked");
+	host_peek(R3_SF_ARMOR, &b, 1);
+	check_eq_u64(b, 0, "another build's helper is not asked for the armour either");
+	mem_read_u32(R3_ARMOUR_LOADED, &v);
+	check_eq_u64(v, 0xFFFFFFFFu, "the next planet load shows it");
+	check(!sf_wrote_code(d), "no code written");
 
 	host_set_can_patch_code(1);
 	host_set_emulator(0);

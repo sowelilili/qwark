@@ -502,8 +502,8 @@
 /* -------------------------------------------------------- the skin reload */
 
 /*
- * Build 59: the Skin picker's reload (sf_armor_reload in sfhelper.c, which
- * lives in the trophy reset's cave). The game's skin menu (SkinMenu_Update,
+ * Build 59: the Skin and Armour pickers' reload (sf_armor_reload in
+ * sfhelper.c, which lives in the trophy reset's cave). The game's skin menu (SkinMenu_Update,
  * 0x294978, in the pause) writes the skin byte and calls Armor_LoadModel
  * (0x1CD490) with the armour, SF_ARMOR, at once. It reads armor<skin>.ps3 and
  * .vram (the armour's own files while no skin is on) into the armour's two

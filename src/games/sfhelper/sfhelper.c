@@ -684,7 +684,7 @@ static void sf_armor_reload(void)
 
 #if SF_GAME == SF_RAC3
 /*
- * Build 59: the Skin picker's reload, the call the game's own skin menu makes
+ * Build 59: the Skin and Armour pickers' reload, the call the game's own skin menu makes
  * (sf_rac3.h), as RaC2's sf_armor_reload above makes its Cheats menu's: the
  * loaded word equal to the armour ends the request with no call, moby class 0
  * at 0 (the one thing Armor_LoadModel writes through that can be 0 while the
@@ -1095,7 +1095,7 @@ void sf_entry(void)
 	/* Build 59: the armour and skin pickers' reload, last, after any load. */
 	if (SF_BYTE(SF_API_ARMOR) == 1) sf_armor_reload();
 #elif SF_GAME == SF_RAC3
-	/* Build 59: the Skin picker's reload, which tests its request byte itself. */
+	/* Build 59: the Skin and Armour pickers' reload, which tests its request byte itself. */
 	sf_armor_reload();
 #endif
 }

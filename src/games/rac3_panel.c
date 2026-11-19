@@ -1877,8 +1877,10 @@ int rac3_ammo_fill(void)
 /* ------------------------------------------------------------ the handlers */
 
 /*
- * Build 59: the Skin picker, after its byte: Ratchet's model reloaded as the
- * game's skin menu reloads it (rac3.h), as RaC2's pickers do. The loaded armour
+ * Build 59: the Skin and Armour pickers, after their data: Ratchet's model
+ * reloaded as the game's skin menu reloads it (rac3.h), as RaC2's pickers do;
+ * Armor_LoadModel takes the skin's files while the skin byte is set and the
+ * armour's otherwise, so it serves both. The loaded armour
  * goes to -1 first, which the next planet load always takes for a stale model,
  * and then the savefile helper is asked to make the menu's call at the start of
  * the next game frame (src/games/sfhelper/sf_rac3.h). Where there is no helper
@@ -1918,16 +1920,24 @@ int rac3_set_value(u8 id, u32 value)
 		/*
 		 * Build 59: one of the three skins that are also armours, which the
 		 * readout shows in this row (rac3_armour_shown), gives way to the
-		 * armour picked, as picking another armour from this row should; the
-		 * loaded word at -1 has the next planet load read the model, since the
-		 * armour alone may not differ from the one already in.
+		 * armour picked, as picking another armour from this row should, and
+		 * before the reload, so the reload reads the armour's files. Any
+		 * other skin stays on, as before: Armor_LoadModel wears a skin over
+		 * the armour, so the reload reads the skin's files again and the
+		 * armour shows once the Skin picker's Current Armor takes the skin
+		 * off. The armour's protection needs nothing: the hero's damage
+		 * (Hero_ApplyDamage, 0x1533D0) reads the armour word at every hit.
+		 * Then the model reload, as the
+		 * Skin picker's (rac3_model_reload): the look changes at once where
+		 * the helper can be asked, and at the next planet load where not.
 		 */
 		rc = mem_read_u8(RAC3_SKIN, &skin);
 		if (rc != ST_OK) return rc;
-		if (skin < RAC3_SKIN_ARMOUR_FIRST || skin > RAC3_SKIN_ARMOUR_LAST) return ST_OK;
-		rc = mem_write_u8(RAC3_SKIN, 0);
-		if (rc != ST_OK) return rc;
-		return mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
+		if (skin >= RAC3_SKIN_ARMOUR_FIRST && skin <= RAC3_SKIN_ARMOUR_LAST) {
+			rc = mem_write_u8(RAC3_SKIN, 0);
+			if (rc != ST_OK) return rc;
+		}
+		return rac3_model_reload();
 	}
 
 	case R3_SHIP_COLOUR:

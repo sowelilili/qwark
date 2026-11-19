@@ -55,15 +55,16 @@
  * from the armour, and Level_LoadEngineAndGameplay then sets it (0x1D2EF8), so
  * qwark puts -1 there. A death's reload reads nothing again (param 0).
  *
- * The Skin picker then asks the savefile helper to make the skin menu's call
- * itself, as RaC2's pickers do: 1 in RAC3_SF_ARMOR, the helper's fifth request
- * byte, on which it calls Armor_LoadModel on its next call, at the start of the
- * next game frame, unless a planet load has read the model first; it waits
- * only while moby class 0 is 0, before the first planet of a boot
- * (src/games/sfhelper/sf_rac3.h has what the call reads through and why only
- * that is waited for). With no helper (config's savefile_helper = 0, no usable
- * ui.pak, an RPCS3 game without this build's savefile patch) the -1 alone
- * stands and the skin shows at the next planet load (rac3_panel.c,
+ * The Skin picker, and the Armour picker after its armour word (the call's
+ * argument, RAC3_CURRENT_ARMOR), then ask the savefile helper to make the skin
+ * menu's call itself, as RaC2's pickers do: 1 in RAC3_SF_ARMOR, the helper's
+ * fifth request byte, on which it calls Armor_LoadModel on its next call, at
+ * the start of the next game frame, unless a planet load has read the model
+ * first; it waits only while moby class 0 is 0, before the first planet of a
+ * boot (src/games/sfhelper/sf_rac3.h has what the call reads through and why
+ * only that is waited for). With no helper (config's savefile_helper = 0, no
+ * usable ui.pak, an RPCS3 game without this build's savefile patch) the -1
+ * alone stands and the look changes at the next planet load (rac3_panel.c,
  * rac3_model_reload).
  */
 #define RAC3_SKIN              0x00DA519Bu  /* one byte: 0 none, or 5..17 */
