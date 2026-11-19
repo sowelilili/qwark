@@ -59,6 +59,9 @@
  *                       FMVs in place of the load screen while it is clear,
  *                       and never once the ship's repair has set it; the event
  *                       says so in its flags (AUTOSPLIT_EV_REVISIT).
+ *   a hero switch       revision 1.34: g_heroList's current slot (tod.h,
+ *                       TOD_HERO_LIST) becoming Clank's, 4, on Fastoon,
+ *                       once an arrival: code 9, "Fastoon: Clank section".
  *   the end of a run    code 7, "Tachyon defeated" (revision 1.29): the screen
  *                       black before l4b_s04_dimx_rt. TachyonEnding_update
  *                       queues that cinematic once Tachyon's death has played
@@ -338,6 +341,84 @@ static void ending_tick(struct tod_as_state *as)
 	}
 }
 
+/*
+ * Revision 1.34: the hero switch subsplits. One row each, off by default:
+ * the moment the game puts the player in control of the entry's hero on the
+ * entry's level, g_heroList's current slot becoming its slot (tod.h,
+ * TOD_HERO_LIST). Only Fastoon (LEVEL_FASTOON, 3; Fastoon II is 18) has one
+ * for now; another is a line here, a code and a row.
+ */
+struct tod_sub {
+	s32 level;
+	u32 slot;
+	u8  code;
+};
+
+static const struct tod_sub tod_subs[TOD_AS_NSUBS] = {
+	{ 3, TOD_HERO_SLOT_CLANK, TOD_AS_FASTOON_CLANK }   /* Fastoon: Clank section, at the Clank pad by the mine */
+};
+
+/*
+ * A load has begun into `level` from the watcher's origin. An arrival on an
+ * entry's level from anywhere else (another planet, the title, nowhere) arms
+ * it unless it has split already; a load into the same level (a reload)
+ * changes nothing, and a load into another planet ends the arrival, so the
+ * next one splits again. A death or a checkpoint is no load, so neither arms
+ * nor disarms: one arrival, one split, however often the player dies as
+ * either hero or switches back.
+ */
+static void subs_load(struct tod_as_state *as, s32 level)
+{
+	u32 i;
+
+	for (i = 0; i < TOD_AS_NSUBS; i++) {
+		u8 bit = (u8)(1u << i);
+
+		if (level == tod_subs[i].level) {
+			if (as->origin != (u32)level && !(as->sub_done & bit)) {
+				as->sub_armed |= bit;
+				as->sub_other &= (u8)~bit;
+			}
+		} else if (level_ok(level)) {
+			as->sub_armed &= (u8)~bit;
+			as->sub_other &= (u8)~bit;
+			as->sub_done &= (u8)~bit;
+		}
+	}
+}
+
+/*
+ * In gameplay on an armed entry's level: the current slot, one read. The
+ * switch is the slot becoming the entry's after another hero was seen in
+ * control since the arrival (a value seen in its "before" state first), so
+ * a slot that reads the entry's at the first look, or a -1 between a death's
+ * two halves, is never the split.
+ */
+static void subs_tick(struct tod_as_state *as, s32 level)
+{
+	u32 i, slot = 0;
+	int have = 0;
+
+	for (i = 0; i < TOD_AS_NSUBS; i++) {
+		u8 bit = (u8)(1u << i);
+
+		if (!(as->sub_armed & bit) || level != tod_subs[i].level) continue;
+		if (!have) {
+			if (mem_read_u32(TOD_HERO_LIST + TOD_HL_CURRENT, &slot) != ST_OK) return;
+			have = 1;
+		}
+		if (slot == tod_subs[i].slot) {
+			if (as->sub_other & bit) {
+				autosplit_emit(AUTOSPLIT_SPLIT, tod_subs[i].code, (u32)level);
+				as->sub_done |= bit;
+				as->sub_armed &= (u8)~bit;
+			}
+		} else if (slot != TOD_HERO_SLOT_NONE) {
+			as->sub_other |= bit;
+		}
+	}
+}
+
 static void ending_forget(struct tod_as_state *as)
 {
 	as->end_primed = 0;
@@ -394,6 +475,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
 			as->start_wait = TOD_SW_LOADING;
 			started = 1;
 		}
+		subs_load(as, level);   /* a new run's load into Metropolis is a load elsewhere too */
 	}
 	if (front != 0 && !loading) as->start_wait = TOD_SW_NONE;
 	/* The run's level up: its data in, and Level_Enter's lua_State. */
@@ -456,6 +538,7 @@ void tod_autosplit_tick(struct tod_as_state *as)
 		if ((as->ticks % MISSIONS_EVERY) == 0 || !as->missions_primed) missions_tick(as, level);
 		if (level == TOD_LEVEL_FASTOON_II) ending_tick(as);
 		else if (as->end_primed) ending_forget(as);
+		if (as->sub_armed != 0 && !loading) subs_tick(as, level);   /* revision 1.34 */
 	}
 
 	as->lua = lua;
@@ -478,12 +561,15 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * after Tachyon's last hit, is the community's end of a run, on by default.
  * Codes 2 (Tachyon's health reaching 0), 5 (the credits, g_gameState
  * becoming 11) and 8 (the ending FMV) were retired in revision 1.29 and are
- * never reused.
+ * never reused. Code 9, "Fastoon: Clank section" (revision 1.34), is a
+ * subsplit, off by default and not the route's: a client takes it whatever
+ * the planet route says.
  */
 static const struct autosplit_desc tod_autosplits[] = {
 	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT | RV, 0, "Planet entered" },
 	{ TOD_AS_END_FADE, AUTOSPLIT_SPLIT,      DF,      0, "Tachyon defeated" },
 	{ TOD_AS_MISSION,  AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
+	{ TOD_AS_FASTOON_CLANK, AUTOSPLIT_SPLIT, 0,       0, "Fastoon: Clank section" },   /* revision 1.34 */
 	{ TOD_AS_LOAD,     AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
 	{ TOD_AS_QUIT,     AUTOSPLIT_PAUSE,      DF | NM, TOD_QUIT_PAUSE_US, "Quit to XMB" }
 };

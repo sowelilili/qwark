@@ -1681,6 +1681,113 @@ static void test_tod_autosplit_revisit(void)
 	test_tod_autosplit_revisit_one(1, 1);
 }
 
+/*
+ * Revision 1.34: "Fastoon: Clank section", code 9, the player put in control
+ * of Clank on Fastoon (g_heroList's current slot becoming 4, tod.h), once an
+ * arrival: never on Fastoon II, never again after a death or a checkpoint as
+ * Clank (whose respawn passes through -1 and Ratchet's slot first), a reload
+ * of Fastoon, a switch back to Ratchet and to Clank again, or a quit to the
+ * title and a Fastoon save loaded; again after a trip elsewhere and back (a
+ * new run's load into Metropolis is one). A slot that reads Clank's at the
+ * first look is not the switch.
+ */
+#define AS_SLOT (TOD_HERO_LIST + TOD_HL_CURRENT)
+
+static void hero_slot(u32 slot)
+{
+	wr32(AS_SLOT, slot);
+	tick(4);
+}
+
+/* A death as the current hero, the hero list rebuilt on the respawn: -1, Ratchet's slot, then `slot` again. */
+static void death_as(u32 slot, u32 lua)
+{
+	wr32(AS_SLOT, TOD_HERO_SLOT_NONE);
+	death(lua);
+	hero_slot(0);
+	hero_slot(slot);
+}
+
+static void test_tod_autosplit_clank(void)
+{
+	u32 seq, arg = 0;
+
+	group("ToD: Fastoon: Clank section, code 9, once an arrival (rev 1.34)");
+	fl_world(2);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	hero_slot(0);
+
+	/* Stratus City to Fastoon, then the Clank pad. */
+	seq = autosplit_latest_seq();
+	planet_load(3, AS_STATE + 0x400);
+	hero_slot(0);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 3 &&
+	      as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "Fastoon arrived at as Ratchet: no subsplit yet");
+	seq = autosplit_latest_seq();
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, &arg) == 1 && arg == 3 && as_all(seq) == 1,
+	      "the switch to Clank: one subsplit, arg Fastoon, and nothing else");
+
+	/* Dying as Clank and coming back as Clank, a checkpoint, a switch back and forth, a reload. */
+	seq = autosplit_latest_seq();
+	death_as(TOD_HERO_SLOT_CLANK, AS_STATE + 0x440);
+	death_as(TOD_HERO_SLOT_CLANK, AS_STATE + 0x480);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	planet_load(3, AS_STATE + 0x4C0);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0,
+	      "deaths as Clank, a switch back to Ratchet and to Clank again, Fastoon reloaded: no second subsplit");
+
+	/* A quit to the title and a Fastoon save loaded: the same arrival's. */
+	seq = autosplit_latest_seq();
+	to_title();
+	from_title();
+	tick(6);
+	load_data_in();
+	level_enters(AS_STATE + 0x500);
+	tick(4);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0,
+	      "the title, then a Fastoon save, then Clank: no second subsplit");
+
+	/* Somewhere else and back: a new arrival splits again. Elsewhere, Clank's slot is nothing. */
+	seq = autosplit_latest_seq();
+	planet_load(9, AS_STATE + 0x540);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "Rykan V, the same slot: no subsplit");
+	planet_load(3, AS_STATE + 0x580);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 1, "back on Fastoon: the switch splits again");
+
+	/* Fastoon II is another level: nothing there. */
+	seq = autosplit_latest_seq();
+	planet_load(TOD_LEVEL_FASTOON_II, AS_STATE + 0x5C0);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "Fastoon II: no subsplit");
+
+	/* An arrival already on Clank's slot (nothing seen before it): never the switch. */
+	seq = autosplit_latest_seq();
+	planet_load(3, AS_STATE + 0x600);
+	tick(4);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "Clank's slot from the first look: no subsplit");
+	hero_slot(TOD_HERO_SLOT_NONE);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "nor after a -1, which is no hero");
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 1, "Ratchet, then Clank: the switch");
+	hero_slot(0);
+	planet_load(2, AS_STATE + 0x6C0);
+	wr32(AS_SLOT, 0);
+}
+
 static void test_tod_autosplit_rows(void)
 {
 	const struct game_api *g = session_game();
@@ -1691,8 +1798,8 @@ static void test_tod_autosplit_rows(void)
 	check(g != NULL && g->autosplit_describe != NULL, "ToD describes an autosplitter");
 	if (g == NULL || g->autosplit_describe == NULL) return;
 	d = g->autosplit_describe(&n);
-	check(n == 5, "five rows");
-	if (n != 5) return;
+	check(n == 6, "six rows");
+	if (n != 6) return;
 	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
 	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE | AUTOSPLIT_FLAG_REVISIT) &&
 	      qstreq(d[0].label, "Planet entered"),
@@ -1702,12 +1809,15 @@ static void test_tod_autosplit_rows(void)
 	      qstreq(d[1].label, "Tachyon defeated"),
 	      "code 7, the fade to black after Tachyon, is the final split, \"Tachyon defeated\", on (rev 1.29)");
 	check(d[2].code == TOD_AS_MISSION && d[2].flags == 0, "every mission is there, off");
-	check(d[3].code == TOD_AS_LOAD && d[3].kind == AUTOSPLIT_LOAD_START &&
-	      d[3].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[3].param_us == 0 &&
-	      qstreq(d[3].label, "Long load"),
+	check(d[3].code == 9 && TOD_AS_FASTOON_CLANK == 9 && d[3].kind == AUTOSPLIT_SPLIT && d[3].flags == 0 &&
+	      qstreq(d[3].label, "Fastoon: Clank section"),
+	      "code 9, the next free (2, 5 and 8 retired), Fastoon: Clank section, off and not the route's (rev 1.34)");
+	check(d[4].code == TOD_AS_LOAD && d[4].kind == AUTOSPLIT_LOAD_START &&
+	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[4].param_us == 0 &&
+	      qstreq(d[4].label, "Long load"),
 	      "the long load holds game time (HOLD, rev 1.29), no NORMALISE");
-	check(d[4].code == TOD_AS_QUIT && d[4].kind == AUTOSPLIT_PAUSE &&
-	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[4].param_us == 19950000u,
+	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
+	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 19950000u,
 	      "the quit to the XMB costs the old script's 19.95 s");
 	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
 }
@@ -3534,6 +3644,125 @@ static void cc_level_up(struct tod_as_state *as, s32 level, u32 frames)
 	while (frames-- > 0) cc_frame();
 }
 
+/*
+ * Revision 1.34: the sound file by the game's language (tod.h,
+ * TOD_SYSTEM_LANGUAGE). LevelPrefetch_setup reads streaming_sound.jp.dat on
+ * a console set to Japanese (g_systemLanguage 0) and streaming_sound.dat in
+ * every other language; g_systemParam122 (the word before it) only picks US
+ * or UK English, and revision 1.29 took its 2 for Japanese. The warmer's
+ * slot 0 holds the game's own choice, which wins once seen; a streaming_sound
+ * file of another name fails the request before anything is written.
+ * Called with the warmer idle on Fastoon, no block table.
+ */
+#define CC_SND_DESC  (CC_GAME + 0x100u)   /* a slot 0 descriptor { path, size } of the test's own */
+#define CC_SND_STR   (CC_STR + 0x800u)
+#define CC_C_LEN     69908480u
+#define CC_S_LEN     66934784u
+#define CC_F_LEN     52625408u
+#define CC_PARAM122  (TOD_SYSTEM_LANGUAGE - 4u)   /* g_systemParam122, 0x100EB570 */
+
+static void cc_slot0(const char *path)
+{
+	wrstr(CC_SND_STR, path);
+	wr32(CC_SND_DESC, CC_SND_STR);
+	wr32(CC_SND_DESC + 4u, CC_F_LEN);
+	wr32(CC_PF + TOD_PF_FILE, CC_SND_DESC);
+}
+
+static void test_tod_cc_language(struct tod_cc_state *cc, struct tod_as_state *as)
+{
+	char line[ACTION_STATUS_TEXT_MAX + 1], row[24];
+	u32 i, f0 = rd32(CC_PF + TOD_PF_FILE);
+
+	/* English, g_systemParam122 at 2 (UK English): the plain file, which revision 1.29 got wrong. */
+	wr32(TOD_SYSTEM_LANGUAGE, 1);
+	wr32(CC_PARAM122, 2);
+	check(tod_cc_trigger(cc, as) == ST_OK, "English with g_systemParam122 at 2");
+	cc_run(cc, as, 4, 0);
+	check(rd32(CC_PF + TOD_PF_CUR) == CC_COBALIA && rd32(CC_PF + TOD_PF_OFFSET) == CC_C_AT &&
+	      rd32(CC_PF + TOD_PF_END) == CC_C_END,
+	      "streaming_sound.dat: the parameter picks US or UK English, never the .jp twin (rev 1.34)");
+	cc_run_out(cc, as, 2000, 4);
+	check(cc_st(cc) == TOD_CC_DONE && cc_det(cc) == 0, "done, its detail not Japanese");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(cc), MENU_STATUS_LINE, line, sizeof(line));
+	check(strstr(line, "Cutscenes cached (") == line && strstr(line, "Japanese") == NULL, "its line names no language");
+	wr32(CC_PARAM122, 1);
+
+	/* Japanese: each planet's .jp twin, whole, and nothing of the plain files. */
+	wr32(TOD_SYSTEM_LANGUAGE, TOD_LANG_JAPANESE);
+	cc_reads_reset();
+	check(tod_cc_trigger(cc, as) == ST_OK, "a console set to Japanese");
+	cc_run(cc, as, 4, 0);
+	check(rd32(CC_PF + TOD_PF_CUR) == CC_COBALIA && rd32(CC_PF + TOD_PF_OFFSET) == CC_C_END &&
+	      rd32(CC_PF + TOD_PF_END) == CC_C_END + CC_C_LEN,
+	      "Japanese: Cobalia's streaming_sound.jp.dat, the twin after its streaming_sound.dat");
+	cc_run_out(cc, as, 4000, 4);
+	check(cc_st(cc) == TOD_CC_DONE && cc_det(cc) == TOD_CC_DONE_JP, "done, the detail says Japanese");
+	check(cc_bytes_c == CC_C_LEN && cc_bytes_s == CC_S_LEN && cc_bytes_f == CC_F_LEN,
+	      "each twin read once, its length exactly");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(cc), MENU_STATUS_LINE, line, sizeof(line));
+	check(strstr(line, "Japanese audio)") != NULL, "the line says the Japanese audio was cached");
+
+	/* Already cached in Japanese: the twins' blocks are in, the plain files' are not. */
+	cc_cache(190u);
+	for (i = 0; i < 190u; i++) cc_block(i, 3000u + i, 0, 2);
+	for (i = 0; i < 68u; i++) cc_block(i, 3000u + i, (66u + i) << 20, 6);          /* Cobalia's twin, 66..133 */
+	for (i = 0; i < 65u; i++) cc_block(68u + i, 3100u + i, (63u + i) << 20, 1);    /* Stratus City's, 63..127 */
+	for (i = 0; i < 51u; i++) cc_block(133u + i, 3200u + i, (50u + i) << 20, 3);   /* Fastoon's, 50..100 */
+	cc_reads_reset();
+	check(tod_cc_trigger(cc, as) == ST_OK, "Japanese, every twin's block in the cache");
+	cc_run_out(cc, as, 200, 4);
+	check(cc_st(cc) == TOD_CC_DONE && cc_pct(cc) == 0 && cc_det(cc) == TOD_CC_DONE_JP && cc_nseq == 0,
+	      "already cached: done, nothing read, the twins' blocks counted");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(cc), MENU_STATUS_LINE, line, sizeof(line));
+	check(qstreq(line, "Cutscenes already cached (all three planets, Japanese audio)"), "its line");
+	wr32(TOD_SYSTEM_LANGUAGE, 1);
+	check(tod_cc_trigger(cc, as) == ST_OK, "the same cache in English");
+	cc_run(cc, as, 16, 0);
+	check(cc_st(cc) == TOD_CC_CACHING && rd32(CC_PF + TOD_PF_OFFSET) == CC_C_AT,
+	      "the plain files are not in: Cobalia's streaming_sound.dat is read");
+	cc_run_out(cc, as, 4000, 4);
+	wr32(TOD_FIOS_CACHE, 0);
+
+	/* The game's own choice wins: slot 0 names the twin while the language reads English. */
+	cc_slot0("/built/levels/fastoon/streaming_sound.jp.dat");
+	check(tod_cc_trigger(cc, as) == ST_OK, "slot 0 streaming_sound.jp.dat, the language English");
+	cc_run(cc, as, 8, 0);
+	check(rd32(CC_PF + TOD_PF_CUR) == CC_COBALIA && rd32(CC_PF + TOD_PF_OFFSET) == CC_C_END &&
+	      rd32(CC_PF + TOD_PF_END) == CC_C_END + CC_C_LEN, "the twin: what the game reads, not what the language says");
+	cc_run_out(cc, as, 4000, 4);
+	check(cc_st(cc) == TOD_CC_DONE && cc_det(cc) == TOD_CC_DONE_JP, "done, Japanese");
+
+	/* And the other way: slot 0 the plain file on a Japanese console. */
+	cc_slot0("/built/levels/fastoon/streaming_sound.dat");
+	wr32(TOD_SYSTEM_LANGUAGE, TOD_LANG_JAPANESE);
+	check(tod_cc_trigger(cc, as) == ST_OK, "slot 0 streaming_sound.dat, the language Japanese");
+	cc_run(cc, as, 8, 0);
+	check(rd32(CC_PF + TOD_PF_OFFSET) == CC_C_AT && rd32(CC_PF + TOD_PF_END) == CC_C_END, "the plain file");
+	cc_run_out(cc, as, 4000, 4);
+	check(cc_st(cc) == TOD_CC_DONE && cc_det(cc) == 0, "done, not Japanese");
+
+	/* A streaming_sound file of another name (another build's layout): it fails, visibly, nothing written. */
+	cc_slot0("/built/levels/fastoon/streaming_sound.fr.dat");
+	check(tod_cc_trigger(cc, as) == ST_OK, "slot 0 a streaming_sound.fr.dat");
+	cc_run(cc, as, 8, 0);
+	check(cc_st(cc) == TOD_CC_FAILED && cc_det(cc) == TOD_CC_WHY_SOUND && rd32(CC_PF + TOD_PF_CUR) == 0 &&
+	      rd32(CC_PF + TOD_PF_READY) == 0, "fails before writing anything");
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(cc), MENU_STATUS_LINE, line, sizeof(line));
+	tod_cc_menu_status(TF_CACHE_CUTSCENES, tod_cc_status(cc), MENU_STATUS_ROW, row, sizeof(row));
+	check(strstr(line, "sound file is not one qwark knows") != NULL && qstreq(row, "Unknown sound file") &&
+	      strlen(row) <= 19, "and says so, on the line and on the menu's row");
+
+	/* A slot 0 that is no sound file (a texture archive): the language decides. */
+	cc_slot0("/built/levels/fastoon/texstream.dat");
+	check(tod_cc_trigger(cc, as) == ST_OK, "slot 0 another file, the language Japanese");
+	cc_run(cc, as, 8, 0);
+	check(rd32(CC_PF + TOD_PF_OFFSET) == CC_C_END, "the language's choice, the twin");
+	cc_run_out(cc, as, 4000, 4);
+	wr32(TOD_SYSTEM_LANGUAGE, 1);
+	wr32(CC_PF + TOD_PF_FILE, f0);
+}
+
 static void test_tod_cutscene_cache(void)
 {
 	struct tod_cc_state cc;
@@ -3566,7 +3795,7 @@ static void test_tod_cutscene_cache(void)
 	/* ---- the button with the warmer idle: Cobalia, Stratus City, then Fastoon, the single-range form */
 	cc_toc();
 	wr32(TOD_FIOS_CACHE, 0);                      /* no block table: everything is read */
-	wr32(TOD_SOUND_PARAM, 0);
+	wr32(TOD_SYSTEM_LANGUAGE, 1);                 /* English, as the simulator's console */
 	memset(&as, 0, sizeof(as));
 	tod_cc_forget(&cc);
 	cc_play(&as, 3, CC_LUA);
@@ -3616,15 +3845,9 @@ static void test_tod_cutscene_cache(void)
 	check(strncmp(text, "Done (", 6) == 0 && text[strlen(text) - 2] == 's' && text[strlen(text) - 1] == ')' &&
 	      strstr(text, "MB/s") == NULL && strlen(text) <= 11, "the menu's row: Done (Ns), the seconds alone (2026-11-02)");
 
-	/* ---- the Japanese sound file, the archive too small, no table */
-	wr32(TOD_SOUND_PARAM, TOD_SOUND_PARAM_JP);
-	check(tod_cc_trigger(&cc, &as) == ST_OK, "again");
-	cc_run(&cc, &as, 4, 0);
-	check(rd32(CC_PF + TOD_PF_OFFSET) == CC_C_END && rd32(CC_PF + TOD_PF_END) == CC_C_END + 69908480u,
-	      "the game's parameter 2: streaming_sound.jp.dat, the twin after it");
-	wr32(TOD_SOUND_PARAM, 0);
-	cc_run_out(&cc, &as, 2000, 4);
-	check(cc_st(&cc) == TOD_CC_DONE, "and done");
+	test_tod_cc_language(&cc, &as);
+
+	/* ---- the archive too small, no table */
 	wr32(CC_LEVELS + TOD_LA_UNCACHED + 4u, 1000u);
 	check(tod_cc_trigger(&cc, &as) == ST_OK, "a level table whose Cobalia archive is too small for the range");
 	cc_run(&cc, &as, 4, 0);
@@ -4960,6 +5183,7 @@ void test_tod_game(void)
 	test_tod_load_fast();
 	test_tod_cutscenes();
 	test_tod_autosplit_revisit();   /* rev 1.33 (pending): after the Fast loads and cutscene tests' helpers */
+	test_tod_autosplit_clank();     /* rev 1.34 */
 	test_tod_cutscene_cache();
 	test_tod_on_boot();
 	test_tod_black_screens();

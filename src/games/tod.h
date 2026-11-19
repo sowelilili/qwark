@@ -836,7 +836,27 @@ struct tod_facts {
 #define TOD_AS_MISSION      6      /* SPLIT, any mission completed: arg level << 16 | its label id */
 #define TOD_AS_END_FADE     7      /* SPLIT, "Tachyon defeated": the screen black before the ending cinematic (revision 1.29) */
 /* 8, the ending FMV, was retired in revision 1.29: never reuse it. */
+#define TOD_AS_FASTOON_CLANK 9     /* SPLIT, "Fastoon: Clank section" (revision 1.34): arg the level, 3 */
 #define TOD_QUIT_PAUSE_US   19950000u  /* the old ToD script's reboot: 19.95 s of game time */
+
+/*
+ * Revision 1.34: a hero switch subsplit, the player put in control of
+ * another hero on one level, once per arrival (tod_autosplit.c). Player 0's
+ * hero list, g_heroList (0x101F1E80, a ToDHeroList of 0x58 in g_heroMgr at
+ * 0x101F1E78: +0x08 the current hero's handle, +0x20 a 64-bit moby handle
+ * per slot, +0x54 the current slot, s32, -1 for none). Only
+ * HeroList_setCurrent (0x1F6910), through HeroMgr_setCurrentHero (0x1F6CC8),
+ * writes the slot, and HeroList_getCurrentHero reads it for the hero
+ * TOD_HERO_PTR holds. Ratchet is slot 0 and Clank slot 4: ClankPad_update
+ * (0x3E4860), the Clank pad's moby, asks for slot 4 when a hero that is not a
+ * HeroClank (class 0x44D) presses it and slot 0 when Clank does, and the
+ * hero's swap (Hero_swapToPartner, 0x25D28C) then sets that slot (dec).
+ */
+#define TOD_HERO_LIST       0x101F1E80u  /* g_heroList, player 0's ToDHeroList */
+#define TOD_HL_CURRENT      0x54u        /* s32, the current slot, -1 none */
+#define TOD_HERO_SLOT_CLANK 4u           /* Clank's slot, the pad's (Ratchet's is 0) */
+#define TOD_HERO_SLOT_NONE  0xFFFFFFFFu
+#define TOD_AS_NSUBS        1u           /* the subsplits' table (tod_autosplit.c), at most 8 */
 
 /*
  * What the watcher keeps, a part of tod_game.c's state (the lent area in a
@@ -872,6 +892,11 @@ struct tod_as_state {
 	u8  pad2[2];
 	u32 start_lua;         /* the lua_State whose fade in the START waits for */
 	u32 start_prog;        /* the fade's progress at the last look, TOD_AS_NO_PROG when none */
+	/* Revision 1.34: the hero switch subsplits, bit i the table's entry i. */
+	u8  sub_armed;         /* arrived on its level, not split yet */
+	u8  sub_other;         /* and another hero seen in control since */
+	u8  sub_done;          /* split this arrival: nothing more until a load into another planet */
+	u8  pad3;
 };
 #define TOD_SW_NONE         0      /* no run waiting */
 #define TOD_SW_LOADING      1      /* the load is under way: no level up since the RESET */
@@ -1188,8 +1213,29 @@ int  tod_fresh_run_load(s32 level);
 #define TOD_PF_CHUNK         0x2Cu        /* u32, the read the warmer issues next; 0 steps the state */
 #define TOD_PF_CHUNK_MAX     0x40000u     /* 256 KB, the warmer's read */
 #define TOD_LA_UNCACHED      0x18u        /* TodLevelArchives.uncached: { char *path; u32 size; ... } */
-#define TOD_SOUND_PARAM      0x100EB570u  /* g_systemParam122 (Sys_readSystemParams): 2 picks streaming_sound.jp.dat (dec) */
-#define TOD_SOUND_PARAM_JP   2u
+/*
+ * Revision 1.34: which streaming_sound the game reads, by its language.
+ * level_uncached.toc (TodLevelUncachedToc, 0x10 an entry): +0x00
+ * streaming_sound.dat, +0x10 .. +0xF0 a streaming_sound.<lang>.dat per
+ * language (us gb fr it de es nl pt jp kr cn dk fi no se), +0x100 .. +0x1F0
+ * the dialogue in the same order. LevelPrefetch_setup and
+ * Level_setupStreamsAndSound pick the entry of g_systemLanguage (the
+ * system's CELL_SYSUTIL_SYSTEMPARAM_ID_LANG, read once at boot by
+ * Sys_readSystemParams; 11 is kept as 10), us or gb by g_systemParam122 for
+ * English, Russian and every language past 15, and fall back to +0x00 when
+ * that entry has no size. Only the Japanese entry has one (the PSN copy's
+ * TOCs), so a console set to Japanese (0) reads streaming_sound.jp.dat, the
+ * twin after streaming_sound.dat with the same length, and every other
+ * language streaming_sound.dat. Revision 1.29 took g_systemParam122 at 2 for
+ * Japanese: it only chooses US or UK English (dec, and the archives' TOCs).
+ * The warmer's slot 0 holds the descriptor the game chose for the level it
+ * is on, so its path is the game's own answer, read once a level.
+ */
+#define TOD_SYSTEM_LANGUAGE  0x100EB574u  /* g_systemLanguage, s32 (dec) */
+#define TOD_LANG_JAPANESE    0u           /* CELL_SYSUTIL_LANG_JAPANESE */
+#define TOD_SOUND_NAME       "/streaming_sound.dat"
+#define TOD_SOUND_NAME_JP    "/streaming_sound.jp.dat"
+#define TOD_SOUND_STEM       "/streaming_sound."
 #define TOD_GLOBAL_UNCACHED  "/packed/game/global_uncached.psarc"
 #define TOD_METRO_SOUND_END  59748728u    /* Metropolis's streaming_sound.dat in global_uncached.psarc ends here: blocks 0..56 */
 #define TOD_CC_EVERY         4u           /* ticks between two looks at the warmer */
@@ -1211,6 +1257,8 @@ int  tod_fresh_run_load(s32 level);
  *   bits 24..27  detail  WAITING: TOD_CC_WAIT_*; CACHING: the planet, 1
  *                        Fastoon, 2 Stratus City, 3 Cobalia; FAILED:
  *                        TOD_CC_WHY_* (a late one once the rest is in)
+ *                        DONE: bit0 TOD_CC_DONE_JP, the Japanese sound
+ *                        files (revision 1.34)
  *   bits 16..23  CACHING: the percentage of that planet's sound read; DONE:
  *                the read rate in tenths of a MiB/s (at most 255), 0 when
  *                everything was cached already
@@ -1234,9 +1282,12 @@ int  tod_fresh_run_load(s32 level);
 #define TOD_CC_WHY_LATE_SC   7u           /* a load into Stratus City before its sound was in */
 #define TOD_CC_WHY_LATE_FN   8u           /* a load into Fastoon before its sound was in */
 #define TOD_CC_WHY_LATE_CB   9u           /* a load into Cobalia before its sound was in */
+#define TOD_CC_WHY_SOUND     10u          /* revision 1.34: the game reads a sound file qwark does not know */
+#define TOD_CC_DONE_JP       1u           /* DONE's detail: the Japanese sound files were the ones */
 #define TOD_CC_NPLANETS      3u           /* 0 Fastoon, 1 Stratus City, 2 Cobalia; the last is read first */
 #define TOD_CC_ALL           7u           /* every planet's bit */
 #define TOD_CC_NO_PLANET     0xFFu
+#define TOD_CC_JP_UNKNOWN    0xFFu
 
 struct tod_cc_state {
 	u8  state;             /* TOD_CC_* */
@@ -1264,6 +1315,10 @@ struct tod_cc_state {
 	u8  queued;            /* while `planet` is read: what comes next is in the slot */
 	u8  next;              /* that next planet, or TOD_CC_NO_PLANET for the game's own file */
 	u8  sc_active;         /* a walk of the block table for the request (shares the ev_ fields) */
+	u8  jp;                /* revision 1.34: the plan is the Japanese sound files */
+	u8  jp_game;           /* the game's own choice from the warmer's slot 0: 0, 1, or TOD_CC_JP_UNKNOWN */
+	u8  sound_looked;      /* slot 0 looked at on this level */
+	u8  pad_cc;
 	u32 ticks;             /* since the request */
 	u32 secs;              /* how long the last run ran */
 	u32 desc;              /* `planet`'s .uncached descriptor */

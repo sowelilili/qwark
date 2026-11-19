@@ -6076,6 +6076,7 @@ def smoke_rpcs3_tod_savefile(c, pine):
 OP_DEBUG_TEXT = 0x00E8
 TOD_PREFETCH = 0x1037A704
 TOD_FIOS_CACHE = 0x106ACBA4
+TOD_SYSTEM_LANGUAGE = 0x100EB574        # g_systemLanguage, 0 Japanese (revision 1.34)
 
 
 # Revision 1.29: the cutscene cache (src/games/tod_cache.c), ids 19..21, readout 3.
@@ -6154,6 +6155,22 @@ def smoke_tod_cutscene_cache(c, features):
     check(status == ST_OK and status2 == ST_BUSY and word is not None and word >> 28 == 4 and (word >> 24) & 15 == 4,
           "ToD: with Disable cutscene caching on, the trigger is BUSY and the readout says why", (status, status2))
     c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 0))
+    # Revision 1.34: a console set to Japanese (g_systemLanguage 0) reads each planet's streaming_sound.jp.dat.
+    mem_write(c, TOD_PREFETCH + 0x24, bytes(0x2C))
+    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
+    mem_write(c, TOD_SYSTEM_LANGUAGE, struct.pack(">I", 0))
+    module_sleep(c, 0.1)
+    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([19]))
+    module_sleep(c, 0.2)
+    check(status == ST_OK and mem_read_u32(c, TOD_PREFETCH + 0x48) == cobalia and
+          mem_read_u32(c, TOD_PREFETCH + 0x30) == 69919408 and mem_read_u32(c, TOD_PREFETCH + 0x34) == 139827888,
+          "ToD: Japanese: Cobalia's streaming_sound.jp.dat, the twin after its streaming_sound.dat (revision 1.34)",
+          (status, mem_read_u32(c, TOD_PREFETCH + 0x30), mem_read_u32(c, TOD_PREFETCH + 0x34)))
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 1))               # ends it
+    c.call(OP_FEATURE_SET, struct.pack(">BI", 21, 0))
+    mem_write(c, TOD_SYSTEM_LANGUAGE, struct.pack(">I", 1))
+    mem_write(c, TOD_PREFETCH + 0x24, bytes(0x2C))
+    mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
     smoke_tod_cc_ahead(c, cobalia, fastoon, stratus)
     mem_write(c, TOD_ARCHIVE_TOC, bytes(4))
 
@@ -6198,7 +6215,8 @@ def smoke_tod_cc_ahead(c, cobalia, fastoon, stratus):
           "ToD: Fastoon's read: the slot's own file back in it, state 0", hex(word or 0))
     tod_cc_step(c, game, 8 * mib)
     word = tod_cc_word(c)
-    check(word is not None and word >> 28 == 3 and word & 0xFF == 3 and mem_read_u32(c, TOD_PREFETCH + 0x30) == 2 * mib,
+    # The fourth run ended: revision 1.34's Japanese request came before this one.
+    check(word is not None and word >> 28 == 3 and word & 0xFF == 4 and mem_read_u32(c, TOD_PREFETCH + 0x30) == 2 * mib,
           "ToD: the slot's own file taken up again, put on to where it was cut; done", hex(word or 0))
     mem_write(c, TOD_PREFETCH + 0x24, bytes(0x2C))
     mem_write(c, TOD_PREFETCH + 0x4C, struct.pack(">I", 4))
@@ -6338,6 +6356,12 @@ def smoke_tod(c, sim):
         st, line = c.call(0x0099, bytes([19]) + struct.pack(">I", 0x30640C01))
         check(st == ST_OK and line[0] == 2 and line[2:2 + line[1]] == b"Cutscenes cached (12 s, 10.0 MiB/s)",
               "ToD: ACTION_STATUS words Cache cutscenes' line, green", (st, line))
+        st, line = c.call(0x0099, bytes([19]) + struct.pack(">I", 0x31640C01))
+        st2, line2 = c.call(0x0099, bytes([19]) + struct.pack(">I", 0x4A000C01))
+        check(st == ST_OK and line[2:2 + line[1]] == b"Cutscenes cached (12 s, 10.0 MiB/s, Japanese audio)" and
+              st2 == ST_OK and line2[0] == 3 and b"sound file is not one qwark knows" in line2[2:2 + line2[1]],
+              "ToD: revision 1.34, the line names the Japanese audio, and an unknown sound file fails red",
+              (st, line, st2, line2))
         check(readouts == ["Bolts", "Raritanium", "Challenge mode", "Cutscene cache", "Armour", "Skin"],
               "ToD: its readouts, build 59's Armour and Skin last", readouts)
         for want in ("Die", "Bolts",
@@ -7002,10 +7026,12 @@ TOD_FADE_TARGET = 0x5B634               # [g_bigObj5B8F0] + this, f32, ScreenFad
 TOD_LOAD_JOB = 0x1073B3A0               # the tier loader's job (revision 1.29)
 TOD_LOAD_JOB_LEVEL = 0x10073300         # g_gameStateStacks[3], the level's tiers
 TOD_LOAD_TIER = 0x1037A908 + 6          # g_levelLoadTier's loaded byte
+TOD_HERO_SLOT = 0x101F1E80 + 0x54       # g_heroList's current slot, 0 Ratchet, 4 Clank (revision 1.34)
 TOD_AS_ROWS = [
     (1, AUTOSPLIT_SPLIT, DF | RT | RV, 0, "Planet entered"),
     (7, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
+    (9, AUTOSPLIT_SPLIT, 0, 0, "Fastoon: Clank section"),        # revision 1.34, a subsplit, off
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
     (3, AUTOSPLIT_PAUSE, DF | NM, 19950000, "Quit to XMB"),
 ]
@@ -7020,8 +7046,8 @@ def smoke_tod_autosplit(c, sim):
         rows, consumed = parse_autosplit_describe(body)
         got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
         check(consumed == len(body) and got == TOD_AS_ROWS,
-              "ToD: its five rows, code 7 \"Tachyon defeated\" the final split, 2, 5 and 8 retired, "
-              "the long load a HOLD", got)
+              "ToD: its six rows, code 7 \"Tachyon defeated\" the final split, 2, 5 and 8 retired, "
+              "the long load a HOLD, code 9 \"Fastoon: Clank section\" off", got)
 
     one, zero, half = struct.pack(">f", 1.0), struct.pack(">f", 0.0), struct.pack(">f", 0.5)
     # A planet load begins: Level_Exit, the level's tiers out, the loader on state 3 (revision 1.29).
@@ -7133,6 +7159,35 @@ def smoke_tod_autosplit(c, sim):
          "then": [(TOD_FRONT_END, b"\x00"), (TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL))] +
                  level_enters(lua_state) + [(0x30000000 + TOD_FADE_PROGRESS, half)],
          "absent": [(AUTOSPLIT_START, 0), (AUTOSPLIT_RESET, 0)]},
+        # Revision 1.34: Fastoon: Clank section, g_heroList's current slot becoming Clank's (4) on Fastoon.
+        {"what": "Metropolis to Fastoon splits as a planet",
+         "poke": [(TOD_HERO_SLOT, bytes(4)), (TOD_CURRENT_LEVEL, struct.pack(">I", 3))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 3},
+        {"what": "Fastoon up with Ratchet in control is no subsplit",
+         "then": level_enters(lua_other) + [(TOD_HERO_SLOT, bytes(4))],
+         "absent": (AUTOSPLIT_SPLIT, 9)},
+        {"what": "the switch to Clank is the subsplit, code 9, arg Fastoon (revision 1.34)",
+         "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
+         "expect": (AUTOSPLIT_SPLIT, 9), "arg": 3},
+        {"what": "a death as Clank, the respawn's hero list at -1, then Ratchet's slot, is nothing",
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_HERO_SLOT, struct.pack(">i", -1)),
+                  (TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL))],
+         "then": level_enters(lua_state) + [(TOD_HERO_SLOT, bytes(4))],
+         "absent": (AUTOSPLIT_SPLIT, 9)},
+        {"what": "and back in control of Clank is no second subsplit",
+         "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
+         "absent": (AUTOSPLIT_SPLIT, 9)},
+        {"what": "Fastoon to Fastoon II splits as a planet",
+         "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18)), (TOD_HERO_SLOT, bytes(4))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 18},
+        {"what": "Fastoon II up with Ratchet",
+         "then": level_enters(lua_other) + [(TOD_HERO_SLOT, bytes(4))],
+         "absent": (AUTOSPLIT_SPLIT, 9)},
+        {"what": "and Clank's slot on Fastoon II is no subsplit",
+         "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
+         "absent": (AUTOSPLIT_SPLIT, 9)},
         {"what": "the ending cinematic fading out is not the end yet",
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18))] + load_begins + level_enters(lua_other) +
                  [(0x30400840, b"l4b_s04_dimx_rt\x00"), (0x304001FC, struct.pack(">I", 0x30400840)),
@@ -7150,6 +7205,7 @@ def smoke_tod_autosplit(c, sim):
          "absent": (AUTOSPLIT_SPLIT, 5)},
     ])
     mem_write(c, TOD_GAME_STATE, struct.pack(">I", 4))
+    mem_write(c, TOD_HERO_SLOT, bytes(4))
     mem_write(c, TOD_MOVIE_PLAYER + 0x58, bytes(4))
     mem_write(c, TOD_MOVIE_RECORDS + 6 * 4, bytes(4))
     mem_write(c, 0x30000000 + TOD_FADE_PROGRESS, bytes(4))

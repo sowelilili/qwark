@@ -93,10 +93,12 @@ static const u8 cc_late_why[TOD_CC_NPLANETS] = { TOD_CC_WHY_LATE_FN, TOD_CC_WHY_
 /*
  * streaming_sound.dat in each planet's level_uncached.psarc, from the psarc's
  * own TOC (checked against the PSN copy's files, 2026-11-01). The .jp twin
- * follows it with the same length. A planet's level_uncached.toc is only in
- * memory while that planet is loaded, so these are this version's numbers;
- * game.toc's size of the archive is checked against the end before a range
- * goes to the warmer.
+ * follows it with the same length (2026-11-19, the same TOCs: Cobalia's at
+ * 69,919,408, Stratus City's at 66,944,500, Fastoon's at 52,633,177), and a
+ * console set to Japanese reads it instead (tod.h, TOD_SYSTEM_LANGUAGE). A
+ * planet's level_uncached.toc is only in memory while that planet is loaded,
+ * so these are this version's numbers; game.toc's size of the archive is
+ * checked against the end before a range goes to the warmer.
  */
 static const u32 cc_sound_at[TOD_CC_NPLANETS]  = { 7769u, 9716u, 10928u };
 static const u32 cc_sound_len[TOD_CC_NPLANETS] = { 52625408u, 66934784u, 69908480u };
@@ -142,7 +144,8 @@ static void cc_end(struct tod_cc_state *cc, u8 state, u8 detail)
 	static const char * const why[] = {
 		"", "the title came first", "game.toc's level table cannot be read",
 		"the warmer stopped reading", "Disable cutscene caching is on", "the game cannot be read",
-		"the game is going", "too late for Stratus City", "too late for Fastoon", "too late for Cobalia"
+		"the game is going", "too late for Stratus City", "too late for Fastoon", "too late for Cobalia",
+		"the game reads a sound file qwark does not know"
 	};
 
 	cc->secs = cc_secs(cc->ticks);
@@ -155,8 +158,8 @@ static void cc_end(struct tod_cc_state *cc, u8 state, u8 detail)
 	cc->sc_active = 0;
 	cc->seq++;
 	if (state == TOD_CC_DONE)
-		plat_log("tod: Cache cutscenes: Cobalia, Stratus City and Fastoon are cached (%u s, %u KiB read in %u ticks)",
-		         cc->secs, cc->bytes >> 10, cc->rd_ticks);
+		plat_log("tod: Cache cutscenes: Cobalia, Stratus City and Fastoon are cached (%s, %u s, %u KiB read in %u ticks)",
+		         cc->jp ? "streaming_sound.jp.dat" : "streaming_sound.dat", cc->secs, cc->bytes >> 10, cc->rd_ticks);
 	else
 		plat_log("tod: Cache cutscenes: ended, %s", why[detail < sizeof(why) / sizeof(why[0]) ? detail : 0]);
 }
@@ -174,23 +177,29 @@ static u8 cc_first_pending(const struct tod_cc_state *cc, u8 not)
 /*
  * Each planet's .uncached descriptor in game.toc's level table (heap
  * addresses, so looked up at each request and each load) and its whole sound
- * range: LevelPrefetch_setup's own choice of the sound file, the .jp twin
- * when the parameter is 2. 0, or why not.
+ * range: the sound file the game reads, LevelPrefetch_setup's choice
+ * (revision 1.34, tod.h): the game's own from its warmer's slot 0 once
+ * seen, and until then its language's, the .jp twin for Japanese. 0, or why
+ * not.
  */
 static u8 cc_plan(struct tod_cc_state *cc)
 {
 	u8 rec[TOD_LA_STRIDE];
-	u32 at, param = 0, p;
-	int jp;
+	u32 at, lang = 0, p;
 
 	if (cc->planned) return 0;
-	jp = mem_read_u32(TOD_SOUND_PARAM, &param) == ST_OK && param == TOD_SOUND_PARAM_JP;
+	if (cc->jp_game != TOD_CC_JP_UNKNOWN) {
+		cc->jp = cc->jp_game;
+	} else {
+		if (mem_read_u32(TOD_SYSTEM_LANGUAGE, &lang) != ST_OK) return TOD_CC_WHY_READ;
+		cc->jp = (u8)(lang == TOD_LANG_JAPANESE);
+	}
 	for (p = 0; p < TOD_CC_NPLANETS; p++) {
 		u32 s = cc_sound_at[p], e = cc_sound_at[p] + cc_sound_len[p];
 
 		at = level_entry(cc_dir[p], rec);
 		if (at == 0) return TOD_CC_WHY_TABLE;
-		if (jp) {
+		if (cc->jp) {
 			s = e;
 			e += cc_sound_len[p];
 		}
@@ -201,6 +210,32 @@ static u8 cc_plan(struct tod_cc_state *cc)
 	}
 	cc->planned = 1;
 	return 0;
+}
+
+#define CC_SOUND_ODD 0xFEu   /* a streaming_sound.<x>.dat that is neither of the two */
+
+/*
+ * The game's own choice of the sound file for the level it is on (revision
+ * 1.34): the path of the descriptor in the warmer's slot 0, which
+ * LevelPrefetch_setup took from the level's TOC by the language. 1 the .jp
+ * twin, 0 streaming_sound.dat, CC_SOUND_ODD a streaming_sound file of
+ * another name, TOD_CC_JP_UNKNOWN anything else (no slot 0, a path that
+ * cannot be read, one of ours in a slot borrowed from it).
+ */
+static u8 cc_game_sound(const u8 *pf)
+{
+	char path[TOD_CC_PATH_LEN];
+	u32 desc = be32_get(pf + TOD_PF_FILE), str = 0, n, i, base = 0;
+
+	if (desc == 0 || (desc & 3u) != 0 || mem_read_u32(desc, &str) != ST_OK || str == 0) return TOD_CC_JP_UNKNOWN;
+	rd_str(str, path, sizeof(path));
+	n = qstrlen(path);
+	for (i = 0; i < n; i++) if (path[i] == '/') base = i;
+	if (n - base < sizeof(TOD_SOUND_STEM) - 1u || memcmp(path + base, TOD_SOUND_STEM, sizeof(TOD_SOUND_STEM) - 1u) != 0)
+		return TOD_CC_JP_UNKNOWN;
+	if (qstreq(path + base, TOD_SOUND_NAME)) return 0;
+	if (qstreq(path + base, TOD_SOUND_NAME_JP)) return 1;
+	return CC_SOUND_ODD;
 }
 
 /* What is left of planet p's range. */
@@ -416,6 +451,8 @@ static void cc_request(struct tod_cc_state *cc, int is_auto, int in_play)
 	cc->pending = TOD_CC_ALL;
 	cc->late = 0;
 	cc->planned = 0;
+	cc->jp_game = TOD_CC_JP_UNKNOWN;
+	cc->sound_looked = 0;
 	cc->in_hand = 0;
 	cc->borrow = 0;
 	cc->queued = 0;
@@ -571,7 +608,7 @@ static void cc_finish(struct tod_cc_state *cc)
 			return;
 		}
 	}
-	cc_end(cc, TOD_CC_DONE, 0);
+	cc_end(cc, TOD_CC_DONE, cc->jp ? TOD_CC_DONE_JP : 0u);
 }
 
 /* Waiting: a range to the warmer, ahead of its own slot or with it idle. */
@@ -589,6 +626,33 @@ static void cc_wait(struct tod_cc_state *cc, const u8 *pf, int play)
 	}
 	cc->detail = TOD_CC_WAIT_WARMER;
 	if (cc->sc_active) return;   /* a moment: the block table first */
+	/*
+	 * Once a level, before a range goes: the sound file the game itself
+	 * reads. One qwark does not know fails the request rather than caching
+	 * a file the cutscenes never read; the other of the two plans again,
+	 * with a new walk of the block table for its blocks.
+	 */
+	if (!cc->sound_looked) {
+		u8 v = cc_game_sound(pf);
+
+		cc->sound_looked = 1;
+		if (v == CC_SOUND_ODD) {
+			cc_end(cc, TOD_CC_FAILED, TOD_CC_WHY_SOUND);
+			return;
+		}
+		if (v != TOD_CC_JP_UNKNOWN) {
+			cc->jp_game = v;
+			if (cc->planned && v != cc->jp) {
+				plat_log("tod: Cache cutscenes: the game reads %s, not what its language says: planned again",
+				         v ? "streaming_sound.jp.dat" : "streaming_sound.dat");
+				cc->planned = 0;
+				memset(cc->need_lo, 0, sizeof(cc->need_lo));
+				memset(cc->need_hi, 0, sizeof(cc->need_hi));
+				sc_begin(cc);
+				return;
+			}
+		}
+	}
 	why = cc_plan(cc);
 	if (why != 0) {
 		cc_end(cc, TOD_CC_FAILED, why);
@@ -733,6 +797,7 @@ static void cc_load(struct tod_cc_state *cc, s32 level)
 		return;
 	}
 	cc->planned = 0;
+	cc->sound_looked = 0;
 	sc_begin(cc);
 	plat_log("tod: Cache cutscenes: a level load, the rest goes ahead on the next level");
 }
@@ -853,6 +918,7 @@ static void ev_step(struct tod_cc_state *cc, int loading)
 void tod_cc_forget(struct tod_cc_state *cc)
 {
 	memset(cc, 0, sizeof(*cc));
+	cc->jp_game = TOD_CC_JP_UNKNOWN;
 }
 
 void tod_cc_tick(struct tod_cc_state *cc, const struct tod_as_state *as)
@@ -961,7 +1027,8 @@ u8 tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 {
 	static const char * const why[] = {
 		"Failed", "Title came first", "No level table", "Warmer stopped", "Caching disabled",
-		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon", "Too late: Cobalia"
+		"Game not readable", "Game closed", "Too late: Stratus", "Too late: Fastoon", "Too late: Cobalia",
+		"Unknown sound file"
 	};
 	static const char * const why_line[] = {
 		"unknown reason", "the title screen came before it finished", "the game's level table could not be read",
@@ -998,7 +1065,8 @@ u8 tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 		 * was in already.
 		 */
 		if (pct == 0) {
-			qstrcpy(out, cap, line ? "Cutscenes already cached (all three planets)" : "Already cached");
+			qstrcpy(out, cap, line ? "Cutscenes already cached (all three planets" : "Already cached");
+			if (line) qstrcat(out, cap, (detail & TOD_CC_DONE_JP) ? ", Japanese audio)" : ")");
 			return MENU_TONE_GOOD;
 		}
 		qstrcpy(out, cap, line ? "Cutscenes cached (" : "Done (");
@@ -1009,7 +1077,8 @@ u8 tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 			qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct / 10u);
 			qstrcat(out, cap, ".");
 			qfmt_u32(out + qstrlen(out), cap - qstrlen(out), pct % 10u);
-			qstrcat(out, cap, " MiB/s)");
+			/* Revision 1.34: which files, when they were the Japanese ones. */
+			qstrcat(out, cap, (detail & TOD_CC_DONE_JP) ? " MiB/s, Japanese audio)" : " MiB/s)");
 		} else {
 			qstrcat(out, cap, "s)");
 		}
@@ -1021,6 +1090,8 @@ u8 tod_cc_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
 			qstrcpy(out, cap, "Cutscene cache: too late for ");
 			qstrcat(out, cap, late[detail - 7u]);
 			qstrcat(out, cap, ", the run got there first");
+		} else if (detail == TOD_CC_WHY_SOUND) {
+			qstrcpy(out, cap, "Cutscene caching stopped: the game's cutscene sound file is not one qwark knows");
 		} else {
 			qstrcpy(out, cap, "Cutscene caching stopped: ");
 			qstrcat(out, cap, why_line[detail < sizeof(why_line) / sizeof(why_line[0]) ? detail : 0]);

@@ -450,6 +450,13 @@ static void seed_tod(void)
 	poke32(FAKE_TOD_HERO + TOD_HERO_MAX_HEALTH, 0x41200000u);
 	poke32(TOD_LUA_STATE, FAKE_TOD_STATE);
 	/*
+	 * Revision 1.34: the system language as Sys_readSystemParams keeps it, 1
+	 * (English, the executable's own value too), and player 0's hero list on
+	 * Ratchet, slot 0.
+	 */
+	poke32(TOD_SYSTEM_LANGUAGE, 1);
+	poke32(TOD_HERO_LIST + TOD_HL_CURRENT, 0);
+	/*
 	 * 2026-11-13: player 0's follow camera (tod.h, TOD_CAM_*), its third slot
 	 * (the first two another type and none), looking at a point 1.5 above
 	 * the hero from 6 behind and 2 up: target, offset, desired offset and
