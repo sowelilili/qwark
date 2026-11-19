@@ -59,7 +59,10 @@
  * ever shipped for this game puts anything below 0x980AC0.
  *
  * The reset takes 0x9808C0..0x980AC0, 512 bytes: the part that runs on the
- * game's main thread, sf_trophy_reset. Right under it, 0x9807F0..0x9808B0, is
+ * game's main thread, sf_trophy_reset. Since build 59 the Skin picker's reload
+ * (sf_armor_reload, 76 bytes, "the skin reload" below) comes first in it, for
+ * want of room in the helper's own cave; the two take 436 bytes of the 512.
+ * Right under it, 0x9807F0..0x9808B0, is
  * the console's Fast loads cave (RAC3_FASTLOAD_CAVE in src/games/rac3.h).
  * build.sh fails a reset that would run past SF_CAVE_TROPHY_END, the helper's
  * own cave.
@@ -496,9 +499,56 @@
 #define SF_TROPHY_THREAD_NAME  0x00B16ACC
 #define SF_GAME_TOC            0x00C0A4E0
 
+/* -------------------------------------------------------- the skin reload */
+
+/*
+ * Build 59: the Skin picker's reload (sf_armor_reload in sfhelper.c, which
+ * lives in the trophy reset's cave). The game's skin menu (SkinMenu_Update,
+ * 0x294978, in the pause) writes the skin byte and calls Armor_LoadModel
+ * (0x1CD490) with the armour, SF_ARMOR, at once. It reads armor<skin>.ps3 and
+ * .vram (the armour's own files while no skin is on) into the armour's two
+ * buffers, relocates the model (Armor_Relocate, 0x1CD080), sets the
+ * loaded-armour word SF_ARMOR_LOADED to the armour and points moby class 0,
+ * Ratchet's, at the new model, through the class table's first word,
+ * SF_MOBY_CLASSES. The planet load does the same when the loaded word differs
+ * from the armour (Level_LoadEngineAndGameplay, 0x1D2EF8).
+ *
+ * What Armor_LoadModel reads through, and why only one of them is waited for:
+ *
+ *   0xCBA7E8  the game object, its +0xC8 the multiplayer byte. Set before
+ *             boot's first call through it (0x14E90); never 0 once a frame runs
+ *   0xEE970C  the model buffer, and 0xD9A868 the vram buffer, both written
+ *             by load_asset and the relocation. Allocated by the engine's one
+ *             init (0x1BA05C, through 0x1B99C8), which game_start runs before
+ *             its first frame reads the pads (0xC04F80 is 1 in the file), and
+ *             written again only by 0x1B99C8 with a new allocation
+ *   0xCB09BC  the renderer, its +0x328 and +0x32C read by the relocation.
+ *             Made at boot (0x966CE8); every frame's render reads through it,
+ *             and game_start's first frame does before it reads the pads
+ *   0xF1D500  moby class 0, written through at 0x1CD5F0 and by the
+ *             relocation (+9). In zero-filled data, and written only by a
+ *             planet's load: 0 on the title screen until the first planet
+ *   0xDA3A90  the hero moby, which Armor_LoadModel tests for 0 itself
+ *
+ * So qwark puts -1 in the loaded word, which the next planet load always takes
+ * for a stale model, and then 1 in SF_API_ARMOR; the helper clears the byte and
+ * makes the menu's call on its next call, at the start of the next game frame,
+ * and leaves the byte at 1 only while class 0 is 0. A planet load that comes
+ * first reads the files itself, and the helper finds the loaded word equal to
+ * the armour and lets the byte go without a reload. SF_API_ARMOR is one of the
+ * three bytes between Gigahelper's five request bytes and the copy counter,
+ * which nothing ever used, in the same zero-filled stretch, so it is 0 at every
+ * boot. From the NPEA00387 executable; not yet run on hardware.
+ */
+#define SF_API_ARMOR       0x00D9FF05
+#define SF_ARMOR           0x00C1E51C
+#define SF_ARMOR_LOADED    0x00D99210
+#define SF_MOBY_CLASSES    0x00F1D500
+
 /* ---------------------------------------------------------- game functions */
 
 #define SF_FN_MEMCPY       0x0099256C
+#define SF_FN_ARMOR_LOAD_MODEL 0x001CD490
 #define SF_FN_PERFORM_LOAD 0x001E1CF4
 #define SF_FN_REQUEST_MODE 0x00229598
 

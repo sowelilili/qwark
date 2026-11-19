@@ -682,6 +682,53 @@ static void sf_armor_reload(void)
 }
 #endif
 
+#if SF_GAME == SF_RAC3
+/*
+ * Build 59: the Skin picker's reload, the call the game's own skin menu makes
+ * (sf_rac3.h), as RaC2's sf_armor_reload above makes its Cheats menu's: the
+ * loaded word equal to the armour ends the request with no call, moby class 0
+ * at 0 (the one thing Armor_LoadModel writes through that can be 0 while the
+ * hook runs) leaves the byte at 1 for the next call, and otherwise the byte
+ * goes to 0 and the game's Armor_LoadModel is called with the armour, on the
+ * next call, at the start of the next game frame.
+ *
+ * Written by hand, and in the trophy reset's cave: the helper's own has 28
+ * bytes left, and the C above compiles to 160 here, a frame of its own and
+ * three copies of its epilogue, with the request test in the helper's entry on
+ * top. This is 19 words. It takes the request test itself, so the entry only
+ * calls it, and it ends in a plain branch to Armor_LoadModel, whose return
+ * goes straight back to the entry: the game's function saves the link
+ * register as any callee does, and nothing here touches r2 or the stack. It
+ * uses only r0, r3, r9 to r11 and cr7, which a call may change.
+ */
+void sf_armor_reload(void);
+
+__asm__(
+	"	.pushsection .text.trophy,\"ax\",@progbits\n"
+	"	.align 2\n"
+	".sf_armor_reload:\n"
+	"	lis 10," SF_STR(SF_API_ARMOR) "@ha\n"
+	"	lbz 0," SF_STR(SF_API_ARMOR) "@l(10)\n"
+	"	cmpwi 7,0,1\n"
+	"	bnelr 7\n"
+	"	li 11,0\n"
+	"	lis 9," SF_STR(SF_ARMOR) "@ha\n"
+	"	lha 3," SF_STR(SF_ARMOR) "@l(9)\n"
+	"	lis 9," SF_STR(SF_ARMOR_LOADED) "@ha\n"
+	"	lwz 0," SF_STR(SF_ARMOR_LOADED) "@l(9)\n"
+	"	cmpw 7,0,3\n"
+	"	beq 7,1f\n"
+	"	lis 9," SF_STR(SF_MOBY_CLASSES) "@ha\n"
+	"	lwz 0," SF_STR(SF_MOBY_CLASSES) "@l(9)\n"
+	"	cmpwi 7,0,0\n"
+	"	beqlr 7\n"
+	"	stb 11," SF_STR(SF_API_ARMOR) "@l(10)\n"
+	"	b .sf_armor_load_model\n"
+	"1:	stb 11," SF_STR(SF_API_ARMOR) "@l(10)\n"
+	"	blr\n"
+	"	.popsection\n");
+#endif
+
 /*
  * Its own section so the link map can put it at the front of the cave, which is
  * where the mods this comes from have their entry point.
@@ -1047,5 +1094,8 @@ void sf_entry(void)
 #if SF_GAME == SF_RAC2
 	/* Build 59: the armour and skin pickers' reload, last, after any load. */
 	if (SF_BYTE(SF_API_ARMOR) == 1) sf_armor_reload();
+#elif SF_GAME == SF_RAC3
+	/* Build 59: the Skin picker's reload, which tests its request byte itself. */
+	sf_armor_reload();
 #endif
 }

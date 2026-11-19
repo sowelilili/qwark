@@ -131,11 +131,12 @@ void sf_movie_stop(sf_u32 player);
 void sf_scene_clear(sf_u32 queue);
 #endif
 
-#if SF_GAME == SF_RAC2
+#if SF_GAME == SF_RAC2 || SF_GAME == SF_RAC3
 /*
  * Build 59: the game's Armor_LoadModel, which reads the armour's (or the
- * skin's) model files, relocates them and makes them Ratchet's, as the game's
- * Cheats menu calls it (sf_rac2.h, sf_armor_reload in sfhelper.c).
+ * skin's) model files, relocates them and makes them Ratchet's, as RaC2's
+ * Cheats menu and RaC3's skin menu call it (sf_rac2.h, sf_rac3.h,
+ * sf_armor_reload in sfhelper.c).
  */
 void sf_armor_load_model(int armor);
 #endif

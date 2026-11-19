@@ -2714,6 +2714,27 @@ def check_rac3_fastload(ok, elf):
     ok(not branches and not named and not pairs,
        "and nothing in the executable names the flag bytes' 0xD9FF00..0xD9FF50")
 
+    # Build 59: the savefile helper's three caves, 0x980304..0x980F00, the skin
+    # reload's among them (it is the head of the trophy reset's, sf_rac3.h). Every
+    # branch and lis/addi pair into them comes from the dead functions
+    # 0x980304..0x981224 themselves, and the only words that name them are those
+    # functions' own descriptors, 0xBF8148..0xBF8188, which nothing names.
+    # 0x981120..0x981224, the one past the switches that branches in, is named by
+    # its descriptor alone, 0xBF8190, which nothing names either.
+    dead_lo, dead_hi = 0x00980304, 0x00981224
+    branches, named, pairs = refs_into(elf, 0x00980304, 0x00980F00)
+    d_branches, d_named, d_pairs = refs_into(elf, 0x00BF8148, 0x00BF8198)
+    ok(not [a for a, _ in branches if not dead_lo <= a < dead_hi] and
+       not [a for a, _ in pairs if not dead_lo <= a < dead_hi] and
+       not [a for a, _ in named if a not in range(0x00BF8148, 0x00BF8190, 8)] and
+       not d_named and not d_pairs,
+       "nothing outside the dead functions 0x980304..0x981224 reaches the savefile helper's caves "
+       "0x980304..0x980F00, and only their descriptors (0xBF8148..0xBF8188), which nothing names, name them")
+    branches, named, pairs = refs_into(elf, 0x00981120, dead_hi)
+    ok(not [a for a, _ in branches if not 0x00981120 <= a < dead_hi] and not pairs and
+       [a for a, _ in named] == [0x00BF8190],
+       "and 0x981120..0x981224, which branches into them, is named by its descriptor (0xBF8190) alone")
+
 
 # ------------------------------------------------------------- Going Commando
 

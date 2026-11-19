@@ -774,7 +774,10 @@ static const char * const rac3_ship_options[RAC3_SHIP_COUNT] = {
  * very files the Armour picker's "OG Ratchet Skin", "Snowman Skin" and "Tux
  * Skin" (armours 5, 6 and 7) load. The game's table also has Sumo, Ninja,
  * Santa Ratchet and Piposaru, ids 14 to 17 (locale text 8144 to 8147), which
- * this list has never offered.
+ * its menu never offers (they are usually the Japanese release's); they come
+ * last, as extra options, named as the game names them. Their model files,
+ * armor14..17.ps3 and .vram, are in this release's data, and fit the armour's
+ * two buffers as every other skin's do.
  */
 static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
 	"Current Armor",
@@ -783,11 +786,15 @@ static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
 	"Constructobot",
 	"Robo Rooster",
 	"Trooper",
-	"Robo"
+	"Robo",
+	"Sumo",
+	"Ninja",
+	"Santa Ratchet",
+	"Piposaru"
 };
 
 /* Each option's skin id, the byte Skin_Set writes; 0 for none. */
-static const u8 rac3_skin_ids[RAC3_SKIN_COUNT] = { 0, 8, 9, 10, 11, 12, 13 };
+static const u8 rac3_skin_ids[RAC3_SKIN_COUNT] = { 0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 };
 
 /*
  * The skin byte as an option index. One of the three left out reads as
@@ -1869,6 +1876,26 @@ int rac3_ammo_fill(void)
 
 /* ------------------------------------------------------------ the handlers */
 
+/*
+ * Build 59: the Skin picker, after its byte: Ratchet's model reloaded as the
+ * game's skin menu reloads it (rac3.h), as RaC2's pickers do. The loaded armour
+ * goes to -1 first, which the next planet load always takes for a stale model,
+ * and then the savefile helper is asked to make the menu's call at the start of
+ * the next game frame (src/games/sfhelper/sf_rac3.h). Where there is no helper
+ * to ask - config's savefile_helper = 0, no usable ui.pak, an RPCS3 game
+ * without this build's savefile patch - the -1 alone stands and the look
+ * changes at the next planet load, and the pick still answers OK: its byte is
+ * written.
+ */
+static int rac3_model_reload(void)
+{
+	int rc = mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
+
+	if (rc != ST_OK) return rc;
+	if (savefile_install() != ST_OK) return ST_OK;
+	return mem_write_u8(RAC3_SF_ARMOR, 1);
+}
+
 int rac3_set_value(u8 id, u32 value)
 {
 	switch (id) {
@@ -1907,13 +1934,13 @@ int rac3_set_value(u8 id, u32 value)
 		return mem_write_u8(RAC3_SHIP_COLOUR, (u8)value);
 
 	case R3_SKIN: {
-		/* The skin's id, then the loaded armour at -1 for the next planet load (rac3.h). */
+		/* The skin's id, then the model reload (rac3_model_reload). */
 		int rc;
 
 		if (value >= RAC3_SKIN_COUNT) return ST_BAD_ARG;
 		rc = mem_write_u8(RAC3_SKIN, rac3_skin_ids[value]);
 		if (rc != ST_OK) return rc;
-		return mem_write_u32(RAC3_ARMOUR_LOADED, 0xFFFFFFFFu);
+		return rac3_model_reload();
 	}
 
 	case R3_QE_OFFSET: {

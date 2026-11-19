@@ -2649,8 +2649,16 @@ OTHER_GAMES = [
         # Reset trophies (21) names; build 59's fourteenth the skin.
         "readouts": 14,
         # Build 59: Brainius, the second skin since the first hardware test
-        # left out the three the Armour picker has, is the game's id 9.
-        "enum_writes": [(40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF")], 13)],
+        # left out the three the Armour picker has, is the game's id 9; Sumo,
+        # the first of the four the game's menu never offers, is 14. Either
+        # puts -1 in the loaded armour word, 0xD99210, and then 1 in the
+        # savefile helper's reload byte, 0xD9FF05, which has the helper reload
+        # the model as the skin menu does (the simulator's HDD has the pak, so
+        # the helper goes in).
+        "enum_writes": [(40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                                 (0xD9FF05, b"\x01")], 13),
+                        (40, 7, [(0xDA519B, b"\x0E"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                                 (0xD9FF05, b"\x01")], 13)],
         "action_status": {21: 12},
         "planets": 37,
         "planet0": "(none)",
@@ -7857,6 +7865,9 @@ def smoke_rpcs3(exe):
         # --------------- UYA's fast loads, a code switch beside Freeze ammo's
         smoke_rpcs3_rac3_switches(c, pine)
 
+        # ------------------------------ UYA's skin reload, build 59
+        smoke_rpcs3_rac3_reload(c, pine)
+
         # ------------------------------ Tools of Destruction, revision 1.27
         smoke_rpcs3_tod(c, pine)
 
@@ -8365,6 +8376,91 @@ def smoke_rpcs3_rac3_switches(c, pine):
     for addr, _ in words:
         pine.poke(addr, b"\0\0\0\0")
     pine.poke(RAC3_LOAD_PLANET, b"\0" * 8)
+
+
+RAC3_SKIN = 0x00DA519B
+RAC3_ARMOUR_LOADED = 0x00D99210
+RAC3_SF_ARMOR = 0x00D9FF05
+
+
+def smoke_rpcs3_rac3_reload(c, pine):
+    """
+    Build 59: UYA's Skin picker under RPCS3, as RaC2's pickers. Its model
+    reload is the savefile helper's, so with no savefile patch, or with a
+    patch whose helper is not this build's, the pick writes the skin and the -1
+    that has the next planet load read the model, and asks no helper; with
+    this build's patch applied at load the helper's reload byte, 0xD9FF05,
+    goes to 1 as well. No code is written either way. Starts and ends at XMB.
+    """
+    # The switches' smoke above leaves its sites at 0, the fingerprint's among them.
+    pine.poke(RAC3_FP_ADDR, RAC3_FP)
+    pine.poke(RAC3_SF_ARMOR, b"\x00")
+    pine.boot("NPEA00387", "Ratchet & Clank 3")
+    ok, info = wait_state(c, SESSION_INGAME)
+    check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA boots with no savefile patch", info)
+    pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x02")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 3))
+    check(status == ST_OK and pine.peek(RAC3_SKIN, 1) == b"\x0A",
+          "rpcs3 rac3 reload: Constructobot is picked, id 10", (status, pine.peek(RAC3_SKIN, 1)))
+    check(pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
+          pine.peek(RAC3_SF_ARMOR, 1) == b"\x00",
+          "rpcs3 rac3 reload: the loaded armour is -1 and no helper is asked: the next planet load",
+          (pine.peek(RAC3_ARMOUR_LOADED, 4), pine.peek(RAC3_SF_ARMOR, 1)))
+
+    status, _stamp, words, single, _body = savefile_patch(c)
+    check(status == ST_OK and words, "rpcs3 rac3 reload: SAVEFILE_PATCH answers for UYA", status)
+    words = words or []
+    check(any(0x009808C0 <= a < 0x00980AC0 for a, _ in words),
+          "rpcs3 rac3 reload: and carries the trophy reset's cave, where the reload is",
+          len(words))
+
+    def boot_patched(flip):
+        pine.shutdown_game()
+        ok, _ = wait_state(c, SESSION_XMB)
+        check(ok, "rpcs3 rac3 reload: the game is stopped for the patch")
+        for addr, value in words:
+            if flip and addr == 0x009808C0:
+                value = bytes(b ^ 0xFF for b in value)
+            pine.poke(addr, value)
+        for addr, value in single or []:
+            pine.poke(addr, bytes([value]))
+        pine.poke(RAC3_SF_ARMOR, b"\x00")
+        pine.boot("NPEA00387", "Ratchet & Clank 3")
+        return wait_state(c, SESSION_INGAME)
+
+    ok, info = boot_patched(False)
+    check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA comes back with this build's savefile patch", info)
+    del pine.write_log[:]
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 10))
+    check(status == ST_OK and pine.peek(RAC3_SKIN, 1) == b"\x11" and
+          pine.peek(RAC3_SF_ARMOR, 1) == b"\x01",
+          "rpcs3 rac3 reload: Piposaru (17) is picked and the patched-in helper is asked to reload",
+          (status, pine.peek(RAC3_SKIN, 1), pine.peek(RAC3_SF_ARMOR, 1)))
+    code = set()
+    for addr, _ in words:
+        code.update(range(addr, addr + 4))
+    hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
+    check(not hits, "rpcs3 rac3 reload: and no code is written: the patch put the helper in", hits[:4])
+
+    ok, info = boot_patched(True)
+    check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA comes back with another build's helper", info)
+    pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x02")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 1))
+    check(status == ST_OK and pine.peek(RAC3_SF_ARMOR, 1) == b"\x00" and
+          pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF",
+          "rpcs3 rac3 reload: a helper that may not know the byte is not asked; the next planet load does it",
+          (status, pine.peek(RAC3_SF_ARMOR, 1), pine.peek(RAC3_ARMOUR_LOADED, 4)))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 0))
+    check(status == ST_OK, "rpcs3 rac3 reload: no skin again", status)
+
+    pine.shutdown_game()
+    ok, info = wait_state(c, SESSION_XMB)
+    check(ok, "rpcs3 rac3 reload: UYA stops", info)
+    for addr, _ in words:
+        pine.poke(addr, b"\0\0\0\0")
+    pine.poke(RAC3_FP_ADDR, RAC3_FP)
+    pine.poke(RAC3_SF_ARMOR, b"\x00")
+    pine.poke(RAC3_SKIN, b"\x00")
 
 
 def smoke_rpcs3_held(exe):
