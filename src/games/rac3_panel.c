@@ -724,10 +724,7 @@ static const char * const rac3_armour_options[RAC3_ARMOUR_COUNT] = {
 	"Magnaplate Armor",
 	"Adamantine Armor",
 	"Aegis Mark V Armor",
-	"Infernox Armor",
-	"OG Ratchet Skin",
-	"Snowman Skin",
-	"Tux Skin"
+	"Infernox Armor"
 };
 
 static const char * const rac3_ship_options[RAC3_SHIP_COUNT] = {
@@ -767,20 +764,21 @@ static const char * const rac3_ship_options[RAC3_SHIP_COUNT] = {
 
 /*
  * Build 59: the pause menu's skin list (g_skinMenuTable, 0xC4AAC0), as the game
- * names it: its first row puts the armour back, and the skins follow in the
- * menu's order. After the first hardware test the three whose model the
- * Armour picker already offers are left out: Old School Ratchet, Snowman and
- * Tuxedo Ratchet, skins 5, 6 and 7, are armor5, armor6 and armor7.ps3, the
- * very files the Armour picker's "OG Ratchet Skin", "Snowman Skin" and "Tux
- * Skin" (armours 5, 6 and 7) load. The game's table also has Sumo, Ninja,
- * Santa Ratchet and Piposaru, ids 14 to 17 (locale text 8144 to 8147), which
- * its menu never offers (they are usually the Japanese release's); they come
- * last, as extra options, named as the game names them. Their model files,
- * armor14..17.ps3 and .vram, are in this release's data, and fit the armour's
- * two buffers as every other skin's do.
+ * names it: its first row (None) puts the armour back, and the skins follow
+ * in the menu's order, ids 5 to 13, Old School Ratchet, Snowman and Tuxedo
+ * Ratchet (armor5, armor6 and armor7.ps3) among them as the skins they are. The
+ * game's table also has Sumo, Ninja, Santa Ratchet and Piposaru, ids 14 to 17
+ * (locale text 8144 to 8147), which its menu never offers (they are usually
+ * the Japanese release's); they come last, as extra options, named as the
+ * game names them. Their model files, armor14..17.ps3 and .vram, are in this
+ * release's data, and fit the armour's two buffers as every other skin's do.
+ * Option n is skin id n + 4 (RAC3_SKIN_FIRST - 1 + n), option 0 none.
  */
 static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
-	"Current Armor",
+	"None",
+	"Old School Ratchet",
+	"Snowman",
+	"Tuxedo Ratchet",
 	"Buginoid",
 	"Brainius",
 	"Constructobot",
@@ -793,34 +791,12 @@ static const char * const rac3_skin_options[RAC3_SKIN_COUNT] = {
 	"Piposaru"
 };
 
-/* Each option's skin id, the byte Skin_Set writes; 0 for none. */
-static const u8 rac3_skin_ids[RAC3_SKIN_COUNT] = { 0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 };
-
-/*
- * The skin byte as an option index. One of the three left out reads as
- * Current Armor here, and the Armour readout shows it as the armour it is
- * (rac3_armour_shown); an id the list has no row for reads as none too.
- */
+/* The skin byte as an option index; an id the list has no row for reads as none. */
 u32 rac3_skin_index(u8 skin)
 {
-	u32 i;
-
-	for (i = 1; i < RAC3_SKIN_COUNT; i++) {
-		if (rac3_skin_ids[i] == skin) return i;
-	}
+	if (skin >= RAC3_SKIN_FIRST && skin < RAC3_SKIN_FIRST + RAC3_SKIN_COUNT - 1)
+		return (u32)(skin - RAC3_SKIN_FIRST + 1);
 	return 0;
-}
-
-/*
- * Build 59: what the Armour readout shows. While the game wears one of the
- * three skins that are also armours (5, 6 or 7, set by its own skin menu or a
- * save), that is what Ratchet looks like, and the readout says so with the
- * Armour picker's own row for it; otherwise the armour worn.
- */
-u32 rac3_armour_shown(u32 armour, u8 skin)
-{
-	if (skin >= RAC3_SKIN_ARMOUR_FIRST && skin <= RAC3_SKIN_ARMOUR_LAST) return skin;
-	return armour;
 }
 
 int rac3_get_options(u8 id, const char * const **options, u8 *count)
@@ -1910,7 +1886,6 @@ int rac3_set_value(u8 id, u32 value)
 	case R3_ARMOUR: {
 		/* rac3.cs SetArmor writes the index as a big-endian u16. */
 		u8 halfword[2];
-		u8 skin = 0;
 		int rc;
 
 		be16_put(halfword, (u16)value);
@@ -1918,25 +1893,15 @@ int rac3_set_value(u8 id, u32 value)
 		if (rc != ST_OK) return rc;
 
 		/*
-		 * Build 59: one of the three skins that are also armours, which the
-		 * readout shows in this row (rac3_armour_shown), gives way to the
-		 * armour picked, as picking another armour from this row should, and
-		 * before the reload, so the reload reads the armour's files. Any
-		 * other skin stays on, as before: Armor_LoadModel wears a skin over
-		 * the armour, so the reload reads the skin's files again and the
-		 * armour shows once the Skin picker's Current Armor takes the skin
-		 * off. The armour's protection needs nothing: the hero's damage
-		 * (Hero_ApplyDamage, 0x1533D0) reads the armour word at every hit.
-		 * Then the model reload, as the
-		 * Skin picker's (rac3_model_reload): the look changes at once where
-		 * the helper can be asked, and at the next planet load where not.
+		 * Build 59: the skin is left alone, whichever it is: Armor_LoadModel
+		 * wears a skin over the armour, so the reload reads the skin's files
+		 * again and the armour shows once the Skin picker's None takes the
+		 * skin off, as in the game. The armour's protection needs nothing:
+		 * the hero's damage (Hero_ApplyDamage, 0x1533D0) reads the armour
+		 * word at every hit. Then the model reload, as the Skin picker's
+		 * (rac3_model_reload): the look changes at once where the helper can
+		 * be asked, and at the next planet load where not.
 		 */
-		rc = mem_read_u8(RAC3_SKIN, &skin);
-		if (rc != ST_OK) return rc;
-		if (skin >= RAC3_SKIN_ARMOUR_FIRST && skin <= RAC3_SKIN_ARMOUR_LAST) {
-			rc = mem_write_u8(RAC3_SKIN, 0);
-			if (rc != ST_OK) return rc;
-		}
 		return rac3_model_reload();
 	}
 
@@ -1948,7 +1913,7 @@ int rac3_set_value(u8 id, u32 value)
 		int rc;
 
 		if (value >= RAC3_SKIN_COUNT) return ST_BAD_ARG;
-		rc = mem_write_u8(RAC3_SKIN, rac3_skin_ids[value]);
+		rc = mem_write_u8(RAC3_SKIN, value == 0 ? 0u : (u8)(RAC3_SKIN_FIRST - 1 + value));
 		if (rc != ST_OK) return rc;
 		return rac3_model_reload();
 	}

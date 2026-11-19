@@ -2648,22 +2648,28 @@ OTHER_GAMES = [
         # Revision 1.21: the thirteenth is the trophy reset's status, which
         # Reset trophies (21) names; build 59's fourteenth the skin.
         "readouts": 14,
-        # Build 59: Brainius, the second skin since the first hardware test
-        # left out the three the Armour picker has, is the game's id 9; Sumo,
-        # the first of the four the game's menu never offers, is 14. Either
-        # puts -1 in the loaded armour word, 0xD99210, and then 1 in the
-        # savefile helper's reload byte, 0xD9FF05, which has the helper reload
-        # the model as the skin menu does (the simulator's HDD has the pak, so
-        # the helper goes in). The Armour picker (11) comes first and asks for
-        # the same reload: Adamantine (2) as a big-endian halfword at 0xC1E51C,
+        # Build 59: the Skin list is none and every skin the game's table has,
+        # option n the game's id n + 4: Snowman (2) is id 6, one of the three
+        # the Armour list had until the skins went back to the Skin list,
+        # Brainius (5) is 9 and Sumo (10), the first of the four the game's
+        # menu never offers, is 14. Each puts -1 in the loaded armour word,
+        # 0xD99210, and then 1 in the savefile helper's reload byte, 0xD9FF05,
+        # which has the helper reload the model as the skin menu does (the
+        # simulator's HDD has the pak, so the helper goes in). The Armour
+        # picker (11), the game's five armours, comes first and asks for the
+        # same reload: Adamantine (2) as a big-endian halfword at 0xC1E51C,
         # the -1 and the byte, read back by the Armour readout (5); the skins
         # are then picked over it, armour then skin.
         "enum_writes": [(11, 2, [(0xC1E51C, b"\x00\x02"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
                                  (0xD9FF05, b"\x01")], 5),
-                        (40, 2, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                        (40, 2, [(0xDA519B, b"\x06"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
                                  (0xD9FF05, b"\x01")], 13),
-                        (40, 7, [(0xDA519B, b"\x0E"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
-                                 (0xD9FF05, b"\x01")], 13)],
+                        (40, 5, [(0xDA519B, b"\x09"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                                 (0xD9FF05, b"\x01")], 13),
+                        (40, 10, [(0xDA519B, b"\x0E"), (0xD99210, b"\xFF\xFF\xFF\xFF"),
+                                  (0xD9FF05, b"\x01")], 13)],
+        # Build 59: past the game's five armours; rows 5 to 7 were skins.
+        "enum_bad": [(11, 5)],
         "action_status": {21: 12},
         "planets": 37,
         "planet0": "(none)",
@@ -4859,6 +4865,9 @@ def exercise_game(c, sim, spec, udp=None):
                   info["readout"][readout] if info else None)
         status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", enum_id, 99))
         check(status == ST_BAD_ARG, "%s: an option past ENUM %d's end is BAD_ARG" % (name, enum_id), status)
+    for enum_id, option in spec.get("enum_bad", []):
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", enum_id, option))
+        check(status == ST_BAD_ARG, "%s: option %d of ENUM %d, past its end, is BAD_ARG" % (name, option, enum_id), status)
 
     # ------------------------------------ FEATURE_SET on a signed VALUE, 1.7
     if spec.get("signed_qe"):
@@ -8207,7 +8216,7 @@ def smoke_rpcs3_rac2_reload(c, pine):
     check(ok and info["game"] == 2, "rpcs3 rac2 reload: RaC2 comes back with the savefile patch", info)
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 41, 1))
     check(status == ST_OK and pine.peek(RAC2_SF_ARMOR, 1) == b"\x01",
-          "rpcs3 rac2 reload: the tux is picked and the patched-in helper is asked to reload",
+          "rpcs3 rac2 reload: Tuxedo Ratchet is picked and the patched-in helper is asked to reload",
           (status, pine.peek(RAC2_SF_ARMOR, 1)))
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 41, 0))
     check(status == ST_OK, "rpcs3 rac2 reload: no skin again", status)
@@ -8444,7 +8453,7 @@ def smoke_rpcs3_rac3_reload(c, pine):
     ok, info = wait_state(c, SESSION_INGAME)
     check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA boots with no savefile patch", info)
     pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x02")
-    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 3))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 6))
     check(status == ST_OK and pine.peek(RAC3_SKIN, 1) == b"\x0A",
           "rpcs3 rac3 reload: Constructobot is picked, id 10", (status, pine.peek(RAC3_SKIN, 1)))
     check(pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
@@ -8485,7 +8494,7 @@ def smoke_rpcs3_rac3_reload(c, pine):
     ok, info = boot_patched(False)
     check(ok and info["game"] == 3, "rpcs3 rac3 reload: UYA comes back with this build's savefile patch", info)
     del pine.write_log[:]
-    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 10))
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 13))
     check(status == ST_OK and pine.peek(RAC3_SKIN, 1) == b"\x11" and
           pine.peek(RAC3_SF_ARMOR, 1) == b"\x01",
           "rpcs3 rac3 reload: Piposaru (17) is picked and the patched-in helper is asked to reload",
@@ -8495,18 +8504,23 @@ def smoke_rpcs3_rac3_reload(c, pine):
         code.update(range(addr, addr + 4))
     hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]
     check(not hits, "rpcs3 rac3 reload: and no code is written: the patch put the helper in", hits[:4])
-    # Skin then armour: the game's own Snowman (6) gives way to the armour
-    # before the request, so the reload reads the armour's files.
-    pine.poke(RAC3_SKIN, b"\x06")
+    # Skin then armour: the Snowman (option 2, the game's skin 6) stays on
+    # under the armour, as every skin does, and the reload is asked for.
+    pine.poke(RAC3_SF_ARMOR, b"\x00")
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 40, 2))
+    check(status == ST_OK and pine.peek(RAC3_SKIN, 1) == b"\x06" and
+          pine.peek(RAC3_SF_ARMOR, 1) == b"\x01",
+          "rpcs3 rac3 reload: the Snowman is picked as skin 6 and the patched-in helper asked",
+          (status, pine.peek(RAC3_SKIN, 1), pine.peek(RAC3_SF_ARMOR, 1)))
     pine.poke(RAC3_SF_ARMOR, b"\x00")
     pine.poke(RAC3_ARMOUR_LOADED, b"\x00\x00\x00\x03")
     del pine.write_log[:]
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 11, 1))
     check(status == ST_OK and pine.peek(RAC3_ARMOUR, 2) == b"\x00\x01" and
-          pine.peek(RAC3_SKIN, 1) == b"\x00" and
+          pine.peek(RAC3_SKIN, 1) == b"\x06" and
           pine.peek(RAC3_ARMOUR_LOADED, 4) == b"\xFF\xFF\xFF\xFF" and
           pine.peek(RAC3_SF_ARMOR, 1) == b"\x01",
-          "rpcs3 rac3 reload: Magnaplate over the Snowman: skin off, -1, the patched-in helper asked",
+          "rpcs3 rac3 reload: Magnaplate under the Snowman: the skin stays, -1, the patched-in helper asked",
           (status, pine.peek(RAC3_ARMOUR, 2), pine.peek(RAC3_SKIN, 1),
            pine.peek(RAC3_ARMOUR_LOADED, 4), pine.peek(RAC3_SF_ARMOR, 1)))
     hits = [(hex(a), w) for a, w in pine.write_log if any((a + k) in code for k in range(w))]

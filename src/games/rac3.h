@@ -66,18 +66,18 @@
  * usable ui.pak, an RPCS3 game without this build's savefile patch) the -1
  * alone stands and the look changes at the next planet load (rac3_panel.c,
  * rac3_model_reload).
+ *
+ * Skins 5 to 7 (Old School Ratchet, Snowman, Tuxedo Ratchet) are skins like
+ * the rest: the skin menu puts them on through this byte, and they load
+ * armor5..7.ps3 as skin 8 loads armor8.ps3. The game has no way to wear them
+ * as an armour (its armours are 0 to 4, and the hero's damage clamps the
+ * armour word to that), so the Armour picker offers the armours 0 to 4 alone
+ * and the Skin picker every skin, 5 to 17.
  */
 #define RAC3_SKIN              0x00DA519Bu  /* one byte: 0 none, or 5..17 */
 #define RAC3_ARMOUR_LOADED     0x00D99210u  /* s32, the armour whose file is in */
 #define RAC3_SF_ARMOR          0x00D9FF05u  /* the helper's reload request, SF_API_ARMOR */
 #define RAC3_SKIN_FIRST        5u           /* the menu's first skin's id */
-/*
- * Build 59: skins 5 to 7 (Old School Ratchet, Snowman, Tuxedo Ratchet) load
- * armor5..7.ps3, the files the Armour picker's rows 5 to 7 load, so the Skin
- * picker leaves them out and the Armour readout shows them (rac3_panel.c).
- */
-#define RAC3_SKIN_ARMOUR_FIRST 5u
-#define RAC3_SKIN_ARMOUR_LAST  7u
 
 #define RAC3_CB_PRIMARY_FRONT  0x00C33AB0u
 #define RAC3_CB_PRIMARY_BACK   0x00C33AB4u
@@ -661,15 +661,18 @@ extern const u8 rac3_fp_switch[4];
 /* Build 59: the skin picker, an ENUM beside the armour's. */
 #define R3_SKIN              40
 
-/* ENUM option counts, from RAC3Form.Designer.cs. */
-#define RAC3_ARMOUR_COUNT 8
+/*
+ * ENUM option counts, from RAC3Form.Designer.cs. Build 59: the armour is the
+ * game's five, 0 to 4; RAC3Form's three rows after them were the skins 5 to 7,
+ * which are the Skin picker's now (above).
+ */
+#define RAC3_ARMOUR_COUNT 5
 #define RAC3_SHIP_COUNT   32
 /*
- * Build 59: none and six of the skins, ids 8 to 13; after the first hardware
- * test 5 to 7 are the Armour picker's (rac3_panel.c). Then the four the skin
- * menu has rows for and never offers, ids 14 to 17.
+ * Build 59: none, the skin menu's nine skins, ids 5 to 13, and the four it has
+ * rows for and never offers, ids 14 to 17: option n is id n + 4.
  */
-#define RAC3_SKIN_COUNT   11
+#define RAC3_SKIN_COUNT   14
 
 /*
  * The highest weapon version any RaC3 item has, and so the maximum the level
@@ -684,7 +687,6 @@ int rac3_trigger(u8 id);
 int rac3_set_value(u8 id, u32 value);
 int rac3_get_options(u8 id, const char * const **options, u8 *count);
 u32 rac3_skin_index(u8 skin);
-u32 rac3_armour_shown(u32 armour, u8 skin);
 int rac3_load_setaside(void);
 u8  rac3_savefile_ready(u8 what);
 

@@ -3439,12 +3439,12 @@ static int native_defer_tick(void)
 	if (g_hstate == MBOX_HSTATE_CLOSED) {
 		g_defer.closed = 1;
 	} else if (g_defer.closed) {
-		defer_cancel("the menu came up again");
+		defer_cancel("menu reopened");
 		return 1;
 	}
 	if (mem_read_u32(g_native->screen_addr, &screen) == ST_OK &&
 	    screen != g_native->screen_id && screen != g_native->play_state) {
-		defer_cancel("the game left its pause another way");
+		defer_cancel("already unpaused");
 		return 1;
 	}
 	if (native_paused()) {

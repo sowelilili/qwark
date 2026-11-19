@@ -366,8 +366,8 @@
  * 0xB4ABEC); a save's restore and a new game put -1 there
  * (Models_InvalidateLoaded, 0x80CB4). A skin is one of four of the Cheats
  * menu's bytes, which only pick the file that load reads (Snow Dude's, then
- * the funny side's, Beach Boy's and the tux, armor8, 6, 7 and 5, the first one
- * on winning).
+ * Clown Ratchet's, Beach Boy's and Tuxedo Ratchet's, armor8, 6, 7 and 5, the
+ * first one on winning).
  *
  * The game's own Cheats menu (CheatsMenu_Update, 0xBC17B8) toggles the byte
  * and calls Armor_LoadModel (0xB45738) with the armour at once, from the

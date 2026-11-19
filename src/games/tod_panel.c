@@ -604,9 +604,12 @@ int tod_trigger(u8 id)
 
 /* ------------------------------------------------ armour and skin, build 59 */
 
-/* The game's own names (core_text_tags.gb): its armour vendor's and SKIN SELECT's. */
+/*
+ * The game's own names (core_text_tags.gb): its armour vendor's and SKIN
+ * SELECT's; option 0 takes the armour or the skin off.
+ */
 static const char * const tod_armour_options[TOD_ARMOUR_COUNT] = {
-	"No armour",
+	"None",
 	"Blackstar Armour",
 	"Helios Armour",
 	"Terraflux Armour",
@@ -614,7 +617,7 @@ static const char * const tod_armour_options[TOD_ARMOUR_COUNT] = {
 };
 
 static const char * const tod_skin_options[TOD_SKIN_COUNT] = {
-	"No skin",
+	"None",
 	"Dan Johnson",
 	"Snowman",
 	"Cragmite Skin",

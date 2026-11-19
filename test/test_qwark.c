@@ -4648,21 +4648,21 @@ static void test_rac2(void)
 
 		/* Snow Dude on among the other cheats, 3 to 8 all on too. */
 		host_poke(R2_CHEATS, (const u8 *)"\x00\x00\x01\x01\x01\x01\x01\x01\x01\x00\x00\x00", 12);
-		check(features_set(F2_SKIN, 1) == ST_OK, "the tux is picked");
+		check(features_set(F2_SKIN, 1) == ST_OK, "Tuxedo Ratchet is picked");
 		host_peek(R2_CHEATS, c, 12);
 		check(c[10] == 1 && c[2] == 0 && c[9] == 0 && c[11] == 0,
-		      "its cheat on (10), Snow Dude's (2), the funny side's (9) and Beach Boy's (11) off");
+		      "its cheat on (10), Snow Dude's (2), Clown Ratchet's (9) and Beach Boy's (11) off");
 		check(c[3] == 1 && c[4] == 1 && c[5] == 1 && c[6] == 1 && c[7] == 1 && c[8] == 1 &&
 		      c[0] == 0 && c[1] == 0, "and every other cheat as it was");
 		mem_read_u32(R2_ARMOUR_LOADED, &v);
 		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1 again: a skin alone is a new model");
 		pump(9);
-		check_eq_u64(session_readout(10), 1, "the Skin readout reads the tux");
+		check_eq_u64(session_readout(10), 1, "the Skin readout reads Tuxedo Ratchet");
 
 		host_poke(R2_CHEATS + 9, (const u8 *)"\x01", 1);
 		pump(9);
 		check_eq_u64(session_readout(10), 2,
-		             "with the funny side's on beside it the readout is the funny side, the one the load wears");
+		             "with Clown Ratchet's on beside it the readout is Clown Ratchet, the one the load wears");
 		check(features_set(F2_SKIN, 0) == ST_OK, "no skin is picked");
 		host_peek(R2_CHEATS, c, 12);
 		check(c[2] == 0 && c[9] == 0 && c[10] == 0 && c[11] == 0 && c[3] == 1,
@@ -8680,7 +8680,7 @@ static void test_rac3(void)
 
 		check(features_options(F3_ARMOUR, &options, &count) == ST_OK,
 		      "the armour ENUM answers FEATURE_OPTIONS");
-		check_eq_u64(count, 8, "with eight armours");
+		check_eq_u64(count, 5, "with the game's five armours");
 		check(options != NULL && qstreq(options[4], "Infernox Armor"),
 		      "and Infernox is index 4");
 
@@ -9287,82 +9287,155 @@ static void test_rac3(void)
 		check(halfword[0] == 0 && halfword[1] == 4,
 		      "as a big-endian halfword");
 	}
-	check(features_set(F3_ARMOUR, 8) == ST_BAD_ARG, "an armour past the end is BAD_ARG");
+
+	group("RaC3: the Armour list is the game's five armours, build 59");
+
+	{
+		/*
+		 * Rows 5 to 7 were the skins 5 to 7 (armor5..7.ps3), which the game
+		 * wears only as skins: they are the Skin picker's now, and an Armour
+		 * pick of 5, 6 or 7 is refused and writes nothing.
+		 */
+		const char * const *opts = NULL;
+		u8 n = 0, halfword[2];
+		u32 i;
+		int ok;
+
+		check(features_options(F3_ARMOUR, &opts, &n) == ST_OK && n == 5,
+		      "the Armour list has five options, the game's armours 0 to 4");
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+		for (i = 5; i <= 7; i++) {
+			check(features_set(F3_ARMOUR, i) == ST_BAD_ARG, "an armour of 5 to 7, once a skin's row, is BAD_ARG");
+			host_peek(R3_ARMOUR_ADDR, halfword, 2);
+			host_peek(R3_SF_ARMOR, &b, 1);
+			mem_read_u32(R3_ARMOUR_LOADED, &v);
+			check(halfword[0] == 0 && halfword[1] == 4 && b == 0 && v == 4,
+			      "and writes nothing: the armour, the reload byte and the loaded word as they were");
+		}
+
+		/* An armour pick leaves every skin on, 5 to 7 as much as the rest. */
+		for (i = 1; i < 14; i++) {
+			u8 id = (u8)(i + 4);
+
+			host_poke(R3_SKIN_ADDR, &id, 1);
+			host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+			host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+			ok = features_set(F3_ARMOUR, i % 5) == ST_OK;
+			check(ok, "an armour is picked under a skin");
+			if (!ok) continue;
+			host_peek(R3_SKIN_ADDR, &b, 1);
+			if (b != id) printf("    skin %u became %u\n", (unsigned)id, (unsigned)b);
+			check(b == id, "and the skin, 5 to 17, stays on");
+			host_peek(R3_ARMOUR_ADDR, halfword, 2);
+			check(halfword[0] == 0 && halfword[1] == i % 5, "the armour written under it");
+			mem_read_u32(R3_ARMOUR_LOADED, &v);
+			host_peek(R3_SF_ARMOR, &b, 1);
+			check(v == 0xFFFFFFFFu && b == 1, "the loaded word -1 and the reload asked, as for any armour pick");
+		}
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F3_ARMOUR, 4) == ST_OK, "Infernox again");
+	}
 
 	group("RaC3: the skin picker, build 59");
 
-	/*
-	 * After the first hardware test the list is Current Armor and six skins,
-	 * ids 8 to 13: Old School Ratchet, Snowman and Tuxedo Ratchet (5 to 7) are
-	 * the Armour picker's rows 5 to 7, the same model files.
-	 */
-	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
-	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
-	check(features_set(F3_SKIN, 1) == ST_OK, "Buginoid, the first skin left, is picked");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 8, "the skin byte is the game's id for it, 8, not the 5 the old list's first row wrote");
-	mem_read_u32(R3_ARMOUR_LOADED, &v);
-	check_eq_u64(v, 0xFFFFFFFFu, "and the loaded armour is -1, so the next planet load reads the model");
 	{
-		u8 halfword[2];
-		host_peek(R3_ARMOUR_ADDR, halfword, 2);
-		check(halfword[0] == 0 && halfword[1] == 4, "the armour itself is left as it was");
-	}
-	check(features_set(F3_SKIN, 4) == ST_OK, "Robo Rooster is picked");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 11, "as id 11");
-	pump(9);
-	check_eq_u64(session_readout(13), 4, "the Skin readout reads it back as its option");
-	check_eq_u64(session_readout(5), 4, "and the Armour readout is the armour worn");
-	check(features_set(F3_SKIN, 6) == ST_OK, "Robo, the last, is picked");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 13, "as id 13");
-	check(features_set(F3_SKIN, 11) == ST_BAD_ARG, "a skin past Piposaru, the last of the four extras, is BAD_ARG");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 13, "and writes nothing");
-	check(features_set(F3_SKIN, 0) == ST_OK, "the current armour is picked");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 0, "as no skin");
-	{
+		/*
+		 * None, then every skin the game's table has, in its order: the
+		 * menu's nine, ids 5 to 13, and the four it never offers, 14 to 17.
+		 * Old School Ratchet, Snowman and Tuxedo Ratchet are skins 5 to 7.
+		 */
+		static const char * const restored[3] = { "Old School Ratchet", "Snowman", "Tuxedo Ratchet" };
 		const char * const *opts = NULL;
-		u8 n = 0, i, hidden = 0;
+		u8 n = 0, halfword[2];
+		u32 i, k;
+		int ok;
 
-		check(features_options(F3_SKIN, &opts, &n) == ST_OK && n == 11,
-		      "the skin list has eleven options: the seven before, then the game's four extras");
-		for (i = 0; i < n && opts != NULL; i++) {
-			if (strcmp(opts[i], "Old School Ratchet") == 0 || strcmp(opts[i], "Snowman") == 0 ||
-			    strcmp(opts[i], "Tuxedo Ratchet") == 0)
-				hidden++;
+		check(features_options(F3_SKIN, &opts, &n) == ST_OK && n == 14,
+		      "the skin list has fourteen options: none and the game's thirteen skins");
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+		for (i = 1; i < 14; i++) {
+			host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+			host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x04", 4);
+			ok = features_set(F3_SKIN, i) == ST_OK;
+			check(ok, "a skin is picked");
+			if (!ok) continue;
+			host_peek(R3_SKIN_ADDR, &b, 1);
+			if (b != i + 4) printf("    option %u wrote %u\n", (unsigned)i, (unsigned)b);
+			check(b == i + 4, "as the game's id for it, option n as n + 4, 5 to 17");
+			mem_read_u32(R3_ARMOUR_LOADED, &v);
+			check_eq_u64(v, 0xFFFFFFFFu, "with the loaded armour at -1, as every skin");
+			host_peek(R3_SF_ARMOR, &b, 1);
+			check_eq_u64(b, 1, "and the reload byte raised, as every skin");
+			host_peek(R3_ARMOUR_ADDR, halfword, 2);
+			check(halfword[0] == 0 && halfword[1] == 4, "the armour itself left as it was");
+			pump(9);
+			check_eq_u64(session_readout(13), i, "the Skin readout reads it back as its option");
+			check_eq_u64(session_readout(5), 4, "and the Armour readout is the armour worn");
 		}
-		check_eq_u64(hidden, 0, "none of them the three the Armour picker has");
-		check(opts != NULL && n == 11 && strcmp(opts[1], "Buginoid") == 0 &&
-		      strcmp(opts[6], "Robo") == 0, "Buginoid first after Current Armor, Robo where it was");
+
+		/* The three skins the Armour list had: each name picks its own id. */
+		for (k = 0; k < 3; k++) {
+			for (i = 0; i < n && opts != NULL && strcmp(opts[i], restored[k]) != 0; i++) { }
+			check(i < n, "a skin the Armour list had is in the Skin list");
+			if (i >= n) continue;
+			check(features_set(F3_SKIN, i) == ST_OK, "and is picked by its name's option");
+			host_peek(R3_SKIN_ADDR, &b, 1);
+			check_eq_u64(b, 5 + k, "writing the game's id for that name, 5, 6 or 7");
+		}
+
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x0D", 1);
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F3_SKIN, 14) == ST_BAD_ARG, "a skin past Piposaru, the last, is BAD_ARG");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 13, "and writes nothing");
+		host_peek(R3_SF_ARMOR, &b, 1);
+		check_eq_u64(b, 0, "nor asks for a reload");
+		check(features_set(F3_SKIN, 0) == ST_OK, "None is picked");
+		host_peek(R3_SKIN_ADDR, &b, 1);
+		check_eq_u64(b, 0, "as no skin");
 	}
 
-	/* The game's own skin menu can still put on one of the three. */
-	host_poke(R3_SKIN_ADDR, (const u8 *)"\x06", 1);
-	pump(9);
-	check_eq_u64(session_readout(13), 0, "Snowman set by the game reads as Current Armor in the Skin row");
-	check_eq_u64(session_readout(5), 6, "and as the Armour row's Snowman Skin, what Ratchet wears");
-	check(features_set(F3_ARMOUR, 2) == ST_OK, "Adamantine Armor is picked over it");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 0, "and the Snowman gives way to it");
-	mem_read_u32(R3_ARMOUR_LOADED, &v);
-	check_eq_u64(v, 0xFFFFFFFFu, "with the loaded armour at -1 for the next planet load");
-	pump(9);
-	check_eq_u64(session_readout(5), 2, "the Armour readout is the armour again");
-	host_poke(R3_SKIN_ADDR, (const u8 *)"\x0B", 1);
-	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
-	check(features_set(F3_ARMOUR, 3) == ST_OK, "an armour picked under a skin that is not one of the three");
-	host_peek(R3_SKIN_ADDR, &b, 1);
-	check_eq_u64(b, 11, "leaves Robo Rooster on, as the game would");
-	mem_read_u32(R3_ARMOUR_LOADED, &v);
-	check_eq_u64(v, 0xFFFFFFFFu, "and marks the model stale, as every Armour pick now does");
-	host_poke(R3_SKIN_ADDR, (const u8 *)"\x12", 1);
-	pump(9);
-	check_eq_u64(session_readout(13), 0, "an id the list has no row for (18, past the game's table) reads as none");
-	check_eq_u64(session_readout(5), 3, "and leaves the Armour readout the armour");
-	host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+	group("RaC3: the Armour and Skin readouts, build 59");
+
+	{
+		/* The game's own skin menu puts on the Snowman: the Skin row shows it. */
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x06", 1);
+		pump(9);
+		check_eq_u64(session_readout(13), 2, "Snowman set by the game reads as its Skin option, 2");
+		check_eq_u64(session_readout(5), 4, "and the Armour readout stays the armour worn, not the skin");
+
+		/*
+		 * An armour word of 5 to 7, which only an older qwark's Armour picker
+		 * wrote: the readout is the word as it is, past the five options,
+		 * which a client shows as no row; nothing else moves.
+		 */
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+		host_poke(R3_ARMOUR_ADDR, (const u8 *)"\x00\x05", 2);
+		pump(9);
+		check_eq_u64(session_readout(5), 5, "an armour word of 5 reads as itself");
+		check_eq_u64(session_readout(13), 0, "with the Skin readout none, the skin byte 0");
+		host_poke(R3_ARMOUR_ADDR, (const u8 *)"\x00\x07", 2);
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x09", 1);
+		pump(9);
+		check_eq_u64(session_readout(5), 7, "an armour word of 7 under Brainius reads as 7");
+		check_eq_u64(session_readout(13), 5, "and the Skin readout Brainius, 5");
+
+		/* Skin bytes the table has no row for read as none. */
+		host_poke(R3_ARMOUR_ADDR, (const u8 *)"\x00\x03", 2);
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x12", 1);
+		pump(9);
+		check_eq_u64(session_readout(13), 0, "an id past the game's table (18) reads as none");
+		check_eq_u64(session_readout(5), 3, "and leaves the Armour readout the armour");
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x04", 1);
+		pump(9);
+		check_eq_u64(session_readout(13), 0, "as does an id below the first skin (4)");
+
+		host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
+		check(features_set(F3_ARMOUR, 4) == ST_OK, "Infernox again");
+	}
 
 	group("RaC3: the four skins the game's menu never offers, build 59");
 
@@ -9372,33 +9445,15 @@ static void test_rac3(void)
 		const char * const *opts = NULL;
 		u8 n = 0, i;
 
-		check(features_options(F3_SKIN, &opts, &n) == ST_OK && n == 11, "eleven options");
-		for (i = 0; i < 4 && opts != NULL && n == 11; i++) {
-			if (strcmp(opts[7 + i], names[i]) != 0) printf("    option %u is '%s'\n", 7u + i, opts[7 + i]);
-			check(strcmp(opts[7 + i], names[i]) == 0, "options 7 to 10 are the game's own names, in its order");
+		check(features_options(F3_SKIN, &opts, &n) == ST_OK && n == 14, "fourteen options");
+		for (i = 0; i < 4 && opts != NULL && n == 14; i++) {
+			if (strcmp(opts[10 + i], names[i]) != 0) printf("    option %u is '%s'\n", 10u + i, opts[10 + i]);
+			check(strcmp(opts[10 + i], names[i]) == 0, "options 10 to 13 are the game's own names, in its order");
 		}
-
-		/* Each is written as its id, 14 to 17, and reads back as its option. */
 		for (i = 0; i < 4; i++) {
-			host_poke(R3_SKIN_ADDR, (const u8 *)"\x00", 1);
-			host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
-			check(features_set(F3_SKIN, 7u + i) == ST_OK, "an extra skin is picked");
+			check(features_set(F3_SKIN, 10u + i) == ST_OK, "an extra skin is picked");
 			host_peek(R3_SKIN_ADDR, &b, 1);
 			check_eq_u64(b, 14u + i, "as the game's id for it, 14 to 17");
-			mem_read_u32(R3_ARMOUR_LOADED, &v);
-			check_eq_u64(v, 0xFFFFFFFFu, "with the loaded armour at -1, as every skin");
-			pump(9);
-			check_eq_u64(session_readout(13), 7u + i, "and the Skin readout reads it back as its option");
-			check_eq_u64(session_readout(5), 3, "the Armour readout the armour worn");
-		}
-
-		/* What was there before is where it was: options 1 to 6 are 8 to 13. */
-		for (i = 1; i <= 6; i++) {
-			check(features_set(F3_SKIN, i) == ST_OK, "an earlier skin is picked");
-			host_peek(R3_SKIN_ADDR, &b, 1);
-			check_eq_u64(b, 7u + i, "still written as 8 to 13");
-			pump(9);
-			check_eq_u64(session_readout(13), i, "and read back as its option, as before");
 		}
 		check(features_set(F3_SKIN, 0) == ST_OK, "no skin again");
 	}
@@ -9422,7 +9477,7 @@ static void test_rac3(void)
 
 		/* The helper goes in and is asked to reload. */
 		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
-		check(features_set(F3_SKIN, 5) == ST_OK, "Trooper is picked with the helper allowed");
+		check(features_set(F3_SKIN, 8) == ST_OK, "Trooper is picked with the helper allowed");
 		mem_read_u32(d != NULL ? d->hooks[0].addr : 0u, &hook);
 		check(d != NULL && hook == d->hooks[0].value, "the savefile helper is in, its hook written");
 		mem_read_u32(R3_ARMOUR_LOADED, &v);
@@ -9430,16 +9485,16 @@ static void test_rac3(void)
 		host_peek(R3_SF_ARMOR, &b, 1);
 		check_eq_u64(b, 1, "and the reload byte, 0xD9FF05, is 1: the helper makes the menu's call next frame");
 
-		/* The helper takes the byte back; the current armour asks again. */
+		/* The helper takes the byte back; None asks again. */
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
-		check(features_set(F3_SKIN, 0) == ST_OK, "the current armour is picked");
+		check(features_set(F3_SKIN, 0) == ST_OK, "None is picked");
 		host_peek(R3_SF_ARMOR, &b, 1);
 		check_eq_u64(b, 1, "and taking a skin off asks for the reload too");
 
 		/* A refused pick asks nothing. */
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
-		check(features_set(F3_SKIN, 11) == ST_BAD_ARG, "a skin past the end is refused");
+		check(features_set(F3_SKIN, 14) == ST_BAD_ARG, "a skin past the end is refused");
 		host_peek(R3_SF_ARMOR, &b, 1);
 		mem_read_u32(R3_ARMOUR_LOADED, &v);
 		check(b == 0 && v == 3, "and neither asks for a reload nor marks the model stale");
@@ -9481,7 +9536,7 @@ static void test_rac3(void)
 		check_eq_u64(b, 1, "and the reload byte is 1, as for a skin");
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
-		check(features_set(F3_ARMOUR, 8) == ST_BAD_ARG, "an armour past the end is refused");
+		check(features_set(F3_ARMOUR, 5) == ST_BAD_ARG, "an armour past Infernox is refused");
 		host_peek(R3_SF_ARMOR, &b, 1);
 		mem_read_u32(R3_ARMOUR_LOADED, &v);
 		check(b == 0 && v == 2, "and neither asks for a reload nor marks the model stale");
@@ -9492,7 +9547,7 @@ static void test_rac3(void)
 		 */
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 		check(features_set(F3_ARMOUR, 3) == ST_OK, "armour then skin: Aegis Mark V Armor");
-		check(features_set(F3_SKIN, 2) == ST_OK, "then Brainius");
+		check(features_set(F3_SKIN, 5) == ST_OK, "then Brainius");
 		host_peek(R3_ARMOUR_ADDR, halfword, 2);
 		check(halfword[0] == 0 && halfword[1] == 3, "the armour is still 3");
 		host_peek(R3_SKIN_ADDR, &b, 1);
@@ -9505,27 +9560,33 @@ static void test_rac3(void)
 		      "the helper's routine, run on that memory, calls Armor_LoadModel with the armour, 3");
 
 		/*
-		 * Skin then armour, with one of the three skins that are also armours
-		 * on: it comes off before the request, so the reload reads the armour.
+		 * Skin then armour, with Tuxedo Ratchet on (skin 7, put on by the
+		 * Skin picker): it stays on, as every skin does, and the reload's
+		 * call takes the new armour while Armor_LoadModel reads the skin's
+		 * armor7 by the byte.
 		 */
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
-		host_poke(R3_SKIN_ADDR, (const u8 *)"\x07", 1);   /* Tuxedo Ratchet, by the game's own menu */
+		check(features_set(F3_SKIN, 3) == ST_OK, "skin then armour: Tuxedo Ratchet");
+		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 		host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x03", 4);
-		check(features_set(F3_ARMOUR, 4) == ST_OK, "skin then armour: Infernox over the game's Tuxedo Ratchet");
+		check(features_set(F3_ARMOUR, 4) == ST_OK, "then Infernox");
 		host_peek(R3_SKIN_ADDR, &b, 1);
-		check_eq_u64(b, 0, "the skin byte is 0, so the reload reads armor4, not the Tuxedo's armor7");
+		check_eq_u64(b, 7, "the skin byte stays Tuxedo Ratchet's 7, which the reload reads armor7 for");
 		host_peek(R3_ARMOUR_ADDR, halfword, 2);
-		check(halfword[0] == 0 && halfword[1] == 4, "the armour 4");
+		check(halfword[0] == 0 && halfword[1] == 4, "the armour 4 under it");
 		mem_read_u32(R3_ARMOUR_LOADED, &v);
 		check_eq_u64(v, 0xFFFFFFFFu, "the loaded word -1");
 		host_peek(R3_SF_ARMOR, &b, 1);
 		check_eq_u64(b, 1, "and the reload byte raised");
 		check(r3_run_on_host(&s) && s.calls == 1 && s.r3_at_call == 4,
 		      "the helper's routine, run on that memory, calls Armor_LoadModel with Infernox, 4");
+		pump(9);
+		check_eq_u64(session_readout(13), 3, "the Skin readout Tuxedo Ratchet, 3");
+		check_eq_u64(session_readout(5), 4, "the Armour readout Infernox, 4");
 
-		/* Skin then armour, with a skin of the Skin list on: it stays on. */
+		/* Skin then armour, with another skin on: it stays on too. */
 		host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
-		check(features_set(F3_SKIN, 5) == ST_OK, "skin then armour: Trooper");
+		check(features_set(F3_SKIN, 8) == ST_OK, "skin then armour: Trooper");
 		check(features_set(F3_ARMOUR, 1) == ST_OK, "then Magnaplate Armor");
 		host_peek(R3_SKIN_ADDR, &b, 1);
 		check_eq_u64(b, 12, "Trooper, 12, stays on, as before");
@@ -9533,7 +9594,7 @@ static void test_rac3(void)
 		check(halfword[0] == 0 && halfword[1] == 1, "the armour 1 under it");
 		host_peek(R3_SF_ARMOR, &b, 1);
 		check_eq_u64(b, 1, "the reload byte raised");
-		check(features_set(F3_SKIN, 0) == ST_OK, "Current Armor then takes the skin off");
+		check(features_set(F3_SKIN, 0) == ST_OK, "None then takes the skin off");
 		host_peek(R3_SKIN_ADDR, &b, 1);
 		check_eq_u64(b, 0, "the skin byte 0");
 		host_peek(R3_SF_ARMOR, &b, 1);
@@ -13566,7 +13627,7 @@ static void test_rac2_reload_rpcs3(void)
 	check(sf_boot_patched("NPEA00386", g_sf_patch, len, SF_NO_FLIP),
 	      "RaC2 boots with this build's savefile patch applied at load");
 	host_write_log_reset();
-	check(features_set(F2_SKIN, 2) == ST_OK, "the funny side is picked");
+	check(features_set(F2_SKIN, 2) == ST_OK, "Clown Ratchet is picked");
 	host_peek(R2_SF_ARMOR, &b, 1);
 	check_eq_u64(b, 1, "the patched-in helper is asked to reload at once");
 	mem_read_u32(R2_ARMOUR_LOADED, &v);
@@ -13616,7 +13677,7 @@ static void test_rac3_reload_rpcs3(void)
 	host_write_log_reset();
 	host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
-	check(features_set(F3_SKIN, 3) == ST_OK, "Constructobot is picked");
+	check(features_set(F3_SKIN, 6) == ST_OK, "Constructobot is picked");
 	host_peek(R3_SKIN_ADDR, &b, 1);
 	check_eq_u64(b, 10, "its id is written");
 	mem_read_u32(R3_ARMOUR_LOADED, &v);
@@ -13640,7 +13701,9 @@ static void test_rac3_reload_rpcs3(void)
 	      "UYA boots with this build's savefile patch applied at load");
 	host_write_log_reset();
 	host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
-	check(features_set(F3_SKIN, 8) == ST_OK, "Ninja is picked");
+	check(features_set(F3_SKIN, 2) == ST_OK, "Snowman is picked");
+	host_peek(R3_SKIN_ADDR, &b, 1);
+	check_eq_u64(b, 6, "as skin 6");
 	host_peek(R3_SF_ARMOR, &b, 1);
 	check_eq_u64(b, 1, "the patched-in helper is asked to reload at once");
 	mem_read_u32(R3_ARMOUR_LOADED, &v);
@@ -13661,7 +13724,7 @@ static void test_rac3_reload_rpcs3(void)
 	      "UYA boots with a helper of another build, one word different");
 	host_poke(R3_SF_ARMOR, (const u8 *)"\x00", 1);
 	host_poke(R3_ARMOUR_LOADED, (const u8 *)"\x00\x00\x00\x02", 4);
-	check(features_set(F3_SKIN, 1) == ST_OK, "Buginoid is picked");
+	check(features_set(F3_SKIN, 4) == ST_OK, "Buginoid is picked");
 	host_peek(R3_SF_ARMOR, &b, 1);
 	check_eq_u64(b, 0, "a helper that may not know the byte is not asked");
 	mem_read_u32(R3_ARMOUR_LOADED, &v);

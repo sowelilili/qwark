@@ -905,9 +905,12 @@ static int rac2_set_respawn(void)
 
 /* ------------------------------------------------- armour and skin, build 59 */
 
-/* The game's names: its armour vendor's, and its Cheats menu's for the skins. */
+/*
+ * The armour vendor's names, and the Cheats menu's skins by their looks; option
+ * 0 takes the armour or the skin off.
+ */
 static const char * const rac2_armour_options[RAC2_ARMOUR_COUNT] = {
-	"No armor",
+	"None",
 	"Tetrafiber Armor",
 	"Duraplate Armor",
 	"Electrosteel Armor",
@@ -915,9 +918,9 @@ static const char * const rac2_armour_options[RAC2_ARMOUR_COUNT] = {
 };
 
 static const char * const rac2_skin_options[RAC2_SKIN_COUNT] = {
-	"No skin",
-	"Ratchet in a tux",
-	"Ratchet shows his funny side",
+	"None",
+	"Tuxedo Ratchet",
+	"Clown Ratchet",
 	"Beach Boy",
 	"Snow Dude"
 };

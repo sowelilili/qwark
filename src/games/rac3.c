@@ -231,6 +231,13 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[RAC3_RO_BOLTS]     = be32_get(state + OFF_BOLTS);
 		out->readout[RAC3_RO_CHALLENGE] = state[OFF_CHALLENGE];
 		out->readout[RAC3_RO_HEALTH_XP] = be32_get(state + OFF_HEALTH_XP);
+		/*
+		 * The armour word as it is. Build 59: the Armour list is the game's
+		 * five, 0 to 4; a word of 5 to 7 (an older qwark's Armour picker
+		 * wrote them for the skins 5 to 7) is sent as itself, which a client
+		 * shows as no row of the list, and the look is whatever the game
+		 * loads for it.
+		 */
 		out->readout[RAC3_RO_ARMOUR]    = be16_get(state + OFF_ARMOUR);
 		/*
 		 * The QE offset is a signed 16-bit field. The readout carries the raw
@@ -261,13 +268,8 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 	if (blocks[HOT_COLOURS] != NULL)
 		classic_cb_readouts(blocks[HOT_COLOURS], out->readout + RAC3_RO_CB_FRONT);
 
-	if (blocks[HOT_SKIN] != NULL) {
+	if (blocks[HOT_SKIN] != NULL)
 		out->readout[RAC3_RO_SKIN] = rac3_skin_index(blocks[HOT_SKIN][0]);
-		/* Build 59: a skin that is also an armour shows in the Armour row. */
-		if (state != NULL)
-			out->readout[RAC3_RO_ARMOUR] =
-				rac3_armour_shown(out->readout[RAC3_RO_ARMOUR], blocks[HOT_SKIN][0]);
-	}
 
 	/*
 	 * Revision 1.21: the trophy reset's state, qwark's own and no memory read
@@ -1015,7 +1017,7 @@ static const struct feature_desc rac3_features[] = {
 	{ R3_HEALTH_XP,     FEATURE_VALUE,  G_PLAYER,  32, SG, RAC3_RO_HEALTH_XP, 0, 0, "Health XP" },
 	{ R3_HEALTH,        FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_HEALTH,    0, 0, "Health" },
 	{ R3_ARMOUR,        FEATURE_ENUM,   G_PLAYER,   RAC3_ARMOUR_COUNT, 0, RAC3_RO_ARMOUR, 0, RAC3_ARMOUR_COUNT - 1, "Armour" },
-	/* Build 59: the pause menu's skins; the model shows from the next planet load (rac3.h). */
+	/* Build 59: the pause menu's skins, 5 to 17, and the model reloaded as its own (rac3.h). */
 	{ R3_SKIN,          FEATURE_ENUM,   G_PLAYER,   RAC3_SKIN_COUNT,   0, RAC3_RO_SKIN,   0, RAC3_SKIN_COUNT - 1,   "Skin" },
 	{ R3_SHIP_COLOUR,   FEATURE_ENUM,   G_PLAYER,   RAC3_SHIP_COUNT,   0, RAC3_RO_SHIP,   0, RAC3_SHIP_COUNT - 1, "Ship colour" },
 	{ R3_FILE_TIME,     FEATURE_VALUE,  G_PLAYER,   0, 0,  RAC3_RO_FILE_TIME, 0, 0, "File time" },
