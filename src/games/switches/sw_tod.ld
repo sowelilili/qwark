@@ -41,16 +41,22 @@ tod_fmv_stop          = 0x003BE718;
 tod_fade_set_stub     = 0x00267780;
 tod_lt_unlock         = 0x003C56FC;
 
+/* Build 59, Infinite ammo's switch: WeaponSlot_addAmmo, which Weapon_useAmmo's site calls. */
+tod_weaponslot_add_ammo = 0x0049A6E0;
+
 SECTIONS
 {
 	.cave.fast_loads      0x003EB578 : { *(.cave.fast_loads) }
 	/* Revision 1.29: qwark's own pieces, straight after the switch. */
 	.cave.own_fast_loads  0x003EB5F8 : { *(.cave.own_fast_loads) }
+	/* Build 59: Infinite ammo's switch, the last five words. */
+	.cave.infinite_ammo   0x003EB6F4 : { *(.cave.infinite_ammo) }
 
 	.site.fast_loads      0x0025E588 : { *(.site.fast_loads) }
 	.site.own_departure   0x003C5744 : { *(.site.own_departure) }
 	.site.own_fmv_cut     0x003C57DC : { *(.site.own_fmv_cut) }
 	.site.own_fmv_in      0x003C58C8 : { *(.site.own_fmv_in) }
+	.site.infinite_ammo   0x0049EF08 : { *(.site.infinite_ammo) }
 
 	/DISCARD/ : {
 		*(.opd)

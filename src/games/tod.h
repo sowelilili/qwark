@@ -253,7 +253,28 @@
 
 /* Cheats the game left in (dec; nothing in the game writes them). */
 #define TOD_NO_DAMAGE        0x101F1F00u  /* g_debugHeroNoDamage, u32: the hero's damage is dropped */
-#define TOD_INFINITE_AMMO    0x10385BE8u  /* g_infiniteAmmo, u32: Weapon_hasAmmo always true */
+#define TOD_INFINITE_AMMO    0x10385BE8u  /* g_infiniteAmmo, u32: Weapon_hasAmmo always true; written by nothing of qwark's since build 59 */
+
+/*
+ * Infinite ammo (build 59, as every game's), from the NPEA00452 executable.
+ * Every weapon and device fires through Weapon_useAmmo(weapon, amount)
+ * (0x49EEE8, 23 callers, one per weapon and device class, VisiCopter_updateFire
+ * among them), which takes the shot's ammo off the slot as
+ * WeaponSlot_addAmmo(-amount) (0x49A6E0, floored at 0, capped at the slot's
+ * WeaponSlot_getMaxAmmo); TOD_AMMO_INSTR is that call, bl 0x49A6E0, and
+ * Infinite ammo nops it. On it first fills every owned weapon and device to
+ * its WeaponDef_getMaxAmmo, its level's and its mods' (weapon_ammo_all, Max all
+ * weapon ammo). Under RPCS3 the site is a bl into the switch's trampoline
+ * (sw_tod.s), its flag the byte after Fast loads'.
+ *
+ * Left alone: WeaponSlot_subAmmo (0x49A8F8), whose one caller (0x46D398)
+ * takes one and gives it back with WeaponSlot_addAmmo as its object goes on
+ * and off; the pickups (AmmoPickup_collect), the vendor (Vendor_buyAmmo) and
+ * the level's start (Level_enterNamed, WeaponSlot_setAmmo) give ammo. None is
+ * a shot.
+ */
+#define TOD_AMMO_INSTR       0x0049EF08u  /* Weapon_useAmmo + 0x20: bl WeaponSlot_addAmmo */
+#define TOD_AMMO_INSTR_WORD  0x4BFFB7D9u  /* the game's own word there */
 
 /*
  * The old RaCMAN's god ratchet: g_heroProxyMobyHandle, the remote-controlled
@@ -931,11 +952,9 @@ int  tod_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int  tod_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int  tod_unlock_set(u8 id, u8 field, u32 value);
-/* Infinite ammo's hold: once a tick, with the game's flag and the level object as read. */
-void tod_ammo_tick(u32 flag, u32 root);
-/* A new process: the hold starts over. */
+/* A new process: the panel's state starts over. */
 void tod_panel_reset(void);
-void tod_panel_init(void);   /* once a module: Fast loads' patch */
+void tod_panel_init(void);   /* once a module: Fast loads' and Infinite ammo's patches */
 /*
  * Revision 1.29. A session's arrival: the fade time and the eight FMVs as the
  * game has them, before the auto-flagged toggles come back. The tick: the
@@ -994,8 +1013,10 @@ void tod_save_recover(void);
 
 /* The gold bolt `index` (0..31) as its level and its bit: 1, or 0 for none. */
 int  tod_gold_bolt(u8 index, u8 *level, u8 *bit);
-/* A device's (WPN_ 16..23) full count as f32 bits, what Infinite ammo keeps it at; 0 for none. */
+#if !QWARK_GAME_MODULE
+/* A device's (WPN_ 16..23) csv MaxAmmo as f32 bits, 0 for none: the simulator's seed. */
 u32  tod_device_max_ammo(u8 wpn);
+#endif
 /* The XP weapon `wpn` (1..15) has at level index `level` (0..9), whole points; 0 for none. */
 u32  tod_weapon_xp(u8 wpn, u8 level);
 

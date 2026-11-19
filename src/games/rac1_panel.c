@@ -283,6 +283,45 @@ int rac1_unlock_set(u8 id, u8 field, u32 value)
 }
 
 /*
+ * Build 59, Infinite ammo's fill as it turns on (rac1.c): each weapon row with
+ * an ammo word that the player owns, to the game's own ceiling for that item,
+ * g_weaponStats[item].maxAmmo (rac1.h), read out of the game rather than out
+ * of rac1_items' max_ammo, which is the same number from the old client. An
+ * item whose ceiling is 0 is left as it is: the game takes nothing from it.
+ * A weapon the player has not got is passed over, as every game's Max all
+ * weapon ammo passes one over.
+ */
+int rac1_ammo_fill(void)
+{
+	u8 i;
+
+	for (i = 0; i < RAC1_UNLOCK_COUNT; i++) {
+		const struct rac1_item *it = &rac1_items[i];
+		u32 addr = rac1_ammo_addr(it);
+		u8 owned = 0;
+		u8 max[2];
+		u32 item;
+		int rc;
+
+		if (rac1_unlocks[i].category != CAT_WEAPONS) continue;
+		if ((rac1_unlocks[i].fields & UNLOCK_FIELD_AMMO) == 0 || addr < RAC1_AMMO_BASE) continue;
+
+		rc = mem_read_u8(it->unlock, &owned);
+		if (rc != ST_OK) return rc;
+		if (owned == 0) continue;
+
+		item = (addr - RAC1_AMMO_BASE) / 4u;
+		rc = mem_read(RAC1_WEAPON_STATS + item * RAC1_WS_STRIDE + RAC1_WS_MAX_AMMO, max, sizeof(max));
+		if (rc != ST_OK) return rc;
+		if (be16_get(max) == 0) continue;
+
+		rc = mem_write_u32(addr, be16_get(max));
+		if (rc != ST_OK) return rc;
+	}
+	return ST_OK;
+}
+
+/*
  * Build 59: Upgrade all weapons to gold and Reset all gold weapons, RaC1's
  * Max and Reset all weapon levels. Only the rows with a gold version
  * (RAC1_GOLD_WEAPONS, the gold weapon vendor's ten), and only those the player

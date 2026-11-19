@@ -31,10 +31,12 @@ static u32 g_at;
  * a tick that waits on the emulator for long holds everything else up, so the
  * look is spread over a few ticks the way the mods' look is. Caves that follow
  * one another with no gap between them are one read, so Deadlocked's nineteen,
- * 544 bytes back to back, are one, and its fifteen site words are fifteen:
- * four ticks. RaC1's five trampolines are three runs, and with its five sites
- * that is two ticks; RaC2's four and four (build 53's crash guards) are two
- * as well, and RaC3 takes one.
+ * 544 bytes back to back, are one, and its nineteen site words are nineteen:
+ * five ticks. RaC1's five trampolines are three runs, and with its five sites
+ * that is two ticks, and RaC3 takes two. Build 59: RaC2's Infinite ammo has a
+ * site in every planet's copy of the shot's code, so RaC2 has five caves and
+ * 114 sites, thirty ticks, a quarter of a second, once a session; a tick still
+ * waits on the emulator for no more than four reads.
  */
 #define SW_LOOK_READS 4u
 

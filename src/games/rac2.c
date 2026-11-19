@@ -137,6 +137,12 @@ struct rac2_state {
 	struct patch_def rac2_ammo;
 	struct classic_health rac2_freeze_health;
 	int init_done;
+	/*
+	 * Build 59: Infinite ammo's originals, 111 words, here rather than in the
+	 * core's patch pool, which is sized for the few words a toggle had until
+	 * then and is shared by every game a linked build carries.
+	 */
+	u32 rac2_ammo_orig[RAC2_AMMO_WORDS];
 };
 
 #if QWARK_GAME_MODULE
@@ -241,9 +247,18 @@ static const struct patch_word rac2_fastload_words[] = {
 	{ RAC2_FASTLOAD_INSTR, 0x60000000u }   /* nop the load-screen branch */
 };
 
-static const struct patch_word rac2_ammo_words[] = {
-	{ RAC2_AMMO_RESET_INSTR, 0x60000000u } /* nop the magazine clamp */
+/*
+ * Build 59: every copy of the shot's decrement, nopped (rac2.h): consume_ammo's
+ * 37 stores, then the Clank Zapper's 74, each the word after its addic.
+ */
+#define RAC2_AMMO_STORE_NOP(a)  { (a), 0x60000000u },
+#define RAC2_ZAPPER_STORE_NOP(a) { (a) + 4u, 0x60000000u },
+static const struct patch_word rac2_ammo_words[RAC2_AMMO_WORDS] = {
+	RAC2_AMMO_STORES(RAC2_AMMO_STORE_NOP)
+	RAC2_ZAPPER_DECS(RAC2_ZAPPER_STORE_NOP)
 };
+#undef RAC2_AMMO_STORE_NOP
+#undef RAC2_ZAPPER_STORE_NOP
 
 /*
  * Build 50. Under RPCS3 both are code switches instead
@@ -254,7 +269,7 @@ static const struct patch_def rac2_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, rac2_fastload_words, 1, NULL
 };
 static const struct patch_def rac2_ammo_init = {
-	"Infinite ammo", PATCH_KIND_FEATURE, rac2_ammo_words, 1, NULL
+	"Infinite ammo", PATCH_KIND_FEATURE, rac2_ammo_words, RAC2_AMMO_WORDS, NULL
 };
 
 /* ---------------------------------------------------------- crash guards */
@@ -486,7 +501,7 @@ static void rac2_init(void)
 	rac2_freeze_health = rac2_freeze_health_init;
 
 	rac2_fastload.originals = patch_pool_alloc(rac2_fastload.count);
-	rac2_ammo.originals     = patch_pool_alloc(rac2_ammo.count);
+	rac2_ammo.originals     = R2->rac2_ammo_orig;
 }
 
 /* ------------------------------------------------- the autosplit watcher */
@@ -712,8 +727,8 @@ static void rac2_on_tick(const struct game_hot *hot)
 	 * The first look of a process only learns where the counter stands. A 2
 	 * here is a load that ended before qwark was watching - the module loaded
 	 * into a game already sitting on Aranos - and treating it as a change wrote
-	 * the A1 block at attach: the buffer charge, infinite ammo off, and the
-	 * manip resets of any toggle flagged on boot. A load that is still under
+	 * the A1 block at attach: the buffer charge, infinite ammo off (until build
+	 * 59), and the manip resets of any toggle flagged on boot. A load that is still under
 	 * way reads 0 or 1 here and fires when it reaches 2, as it always did.
 	 */
 	if (!g_load_primed) {
@@ -738,8 +753,12 @@ static void rac2_on_tick(const struct game_hot *hot)
 	/* Everything below is A1-only, exactly as the old handler had it. */
 	if (hot->current_planet != 0) return;
 
-	/* A new file starts without infinite ammo, checkbox and all. */
-	features_set(R2_INFINITE_AMMO, 0);
+	/*
+	 * Build 59: the old handler also turned Infinite ammo off here, checkbox
+	 * and all, so that a new file did not start with the 0x7FFFFFFF it filled
+	 * the ammo with. It fills to each magazine now, as every game's does, and
+	 * stays on through every planet load as the other games' does.
+	 */
 
 	/*
 	 * Revision 1.21, the manips' file-load trigger: the end of a load screen
@@ -917,26 +936,23 @@ static const struct game_describe *rac2_describe(void)
 /* --------------------------------------------------------------- toggles */
 
 /*
- * freezeAmmoCheckbox did two things: filled 136 bytes of the ammo array with
- * 0x7FFFFFFF and nopped the decrement. Turning it off only restored the
- * instruction, so the ammo stays where it was put; that is kept. The 136 bytes
- * are ammo[12] through ammo[45] now that the array has a base and a stride, and
- * the window is the one the old checkbox wrote and no wider.
+ * Build 59, every game's Infinite ammo alike. Until then this was the old
+ * freezeAmmoCheckbox: ammo[12..45] filled with 0x7FFFFFFF and the magazine
+ * clamp nopped, so the count went down from a number no one would reach. Now
+ * on fills each owned weapon to its version's magazine, as Max all weapon ammo
+ * does (rac2_all_max_ammo), and then nops the shot's own decrement in every
+ * planet's copy (rac2.h; under RPCS3 the switch's flag), so the count never
+ * goes down; off puts every original word back and leaves the ammo full.
  */
 static int rac2_infinite_ammo(int on)
 {
-	u8 full[RAC2_AMMO_FILL_LEN];
-	u32 i;
 	int rc;
 
-	if (!on) return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, 0);
-
-	for (i = 0; i < sizeof(full); i += 4) be32_put(full + i, 0x7FFFFFFFu);
-
-	rc = mem_write(RAC2_AMMO_ARRAY + 4u * RAC2_AMMO_FILL_FIRST, full, sizeof(full));
-	if (rc != ST_OK) return rc;
-
-	return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, 1);
+	if (on) {
+		rc = rac2_all_max_ammo();
+		if (rc != ST_OK) return rc;
+	}
+	return classic_code_toggle(&rac2_ammo, SW_RAC2_FLAG_INFINITE_AMMO, on);
 }
 
 static int rac2_set_toggle(u8 id, int on)

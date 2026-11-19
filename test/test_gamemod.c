@@ -345,8 +345,18 @@ static void test_unload_and_audit(void)
 	group("game modules: unloaded at the XMB, and nothing of it kept");
 	begin();
 	check(boot("NPEA00385") && until_game(5 * TICKS_PER_S) >= 0, "RaC1's module in");
+	{
+		u8 w[4] = { 0x7D, 0x05, 0x39, 0x2E };   /* consume_ammo's store, Infinite ammo's site (rac1.h) */
+		host_poke(0x000AA2DCu, w, 4);
+	}
 	check(features_set(F_INFINITE_AMMO, 1) == ST_OK, "a code-patch toggle on");
 	check(feature_patches() > 0, "the patch table holds its def");
+	{
+		u8 w[4] = { 0, 0, 0, 0 };
+		host_peek(0x000AA2DCu, w, 4);
+		check(be32_get(w) == 0x60000000u && patch_count() >= 1 && patch_at(0) != NULL,
+		      "Infinite ammo's nop is in the game, its def in the module's state area");
+	}
 	check(manips_supported(), "the manips have the game's table");
 	check(quit(), "quit");
 	check_eq_u64(host_fake_modules_loaded(), 0, "the module is unloaded");
@@ -363,6 +373,17 @@ static void test_unload_and_audit(void)
 	check(session_previous()->pending && (session_previous()->toggles & ((u64)1 << F_INFINITE_AMMO)) != 0,
 	      "then the record offers the toggle");
 	session_previous_dismiss();
+	{
+		u8 w[4] = { 0x7D, 0x05, 0x39, 0x2E };   /* the new process's own word */
+		host_poke(0x000AA2DCu, w, 4);
+		check(features_set(F_INFINITE_AMMO, 1) == ST_OK, "Infinite ammo on in the new module");
+		host_peek(0x000AA2DCu, w, 4);
+		check(be32_get(w) == 0x60000000u && feature_patches() == 1,
+		      "it patches the new process: the old module's def was forgotten, not taken for applied");
+		check(features_set(F_INFINITE_AMMO, 0) == ST_OK, "and off");
+		host_peek(0x000AA2DCu, w, 4);
+		check(be32_get(w) == 0x7D05392Eu, "the new process's word back");
+	}
 	end();
 }
 

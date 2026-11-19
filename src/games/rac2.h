@@ -96,13 +96,6 @@
 #define RAC2_ITEM_ARRAY        0x1329A40u  /* u8 item[id]: the version in use */
 #define RAC2_ITEM_COUNT        56
 
-/*
- * freezeAmmoCheckbox filled 136 bytes from 0x148185C, which in the array above
- * is ammo[12] through ammo[45]: the Bomb Glove to the Shield Charger. Kept
- * exactly as it was rather than widened to the whole array.
- */
-#define RAC2_AMMO_FILL_FIRST   12
-#define RAC2_AMMO_FILL_LEN     136
 
 /*
  * The per-item stats table: 208-byte (0xD0) records indexed by item id, one per
@@ -156,13 +149,69 @@
 #define RAC2_RESPAWN_COORDS    0x15D26E0u  /* 32 bytes copied from the player */
 
 #define RAC2_CHARGE_BUFFER     0x145C180u  /* auto buffer charge, set to 30 */
-/*
- * stwx r3, r4, r5: the magazine clamp, not a decrement. When ammo[id] holds more
- * rounds than the magazine does, this store puts it back to the magazine size;
- * nopped, the 0x7FFFFFFF infinite ammo fills the array with stays there.
- */
-#define RAC2_AMMO_RESET_INSTR  0x0B30C7Cu
 #define RAC2_FASTLOAD_INSTR    0x00BEA8A0u /* also the fingerprint site */
+
+/*
+ * Infinite ammo (build 59), from the NPEA00386 executable. RaC2's planet code
+ * is in the executable once per planet, 37 copies at their own addresses, and
+ * the shot's ammo goes in each copy:
+ *
+ *   consume_ammo(item, amount): -1 is the weapon in hand; nothing taken from
+ *     an item whose magazine (stats +0x8A) is 0; refused, returning 0, when the
+ *     count is short; otherwise ammo[item] less the amount, stored by
+ *     stwx r4, r6, r5 at 0xA0 into the function, its second-to-last word.
+ *     Every weapon fires through it, the RYNO II and the charge weapons among
+ *     them. RAC2_AMMO_STORES lists the 37 stores.
+ *   the hero's weapon switch (0x98D148 and its twins): a Clank Zapper use
+ *     (item 9), taken there one at a time, on two paths in each copy:
+ *     addic r3, r5, -1 then
+ *     stw r3, 0x24(r4) into ammo[9]. RAC2_ZAPPER_DECS lists the 74 addic
+ *     words; the store a console nops is the word after each.
+ *
+ * Infinite ammo nops all 111 stores on a console (rac2.c, rac2_ammo_words)
+ * and puts each original back when it goes off; under RPCS3 the switch's
+ * sites are the 37 stores and the 74 addics (sw_rac2.s). Until build 58 it
+ * filled ammo[12..45] with 0x7FFFFFFF and nopped the magazine clamp,
+ * stwx r3, r4, r5 at 0xB30C7C (the weapon switch, where a count above the
+ * magazine is cut back), which nothing writes any more. On it fills every
+ * owned weapon to its version's magazine, as Max all weapon ammo does
+ * (rac2_all_max_ammo).
+ *
+ * Left alone: the clamp, the version upgrades (Weapon_upgradeToNextVersion,
+ * 0xB25078, and 0xB25130), a new item's first magazine (0xB2588C), the
+ * challenge-mode start's copy (0xBBB798), the vendor's (0xBFD108) and the
+ * pickups' adds (each copy's ammo add): none of them is a shot.
+ */
+#define RAC2_AMMO_STORES(X) \
+	X(0x000A1F74u) X(0x0010646Cu) X(0x00125CC4u) X(0x001708BCu) X(0x001C395Cu) X(0x001FC86Cu) \
+	X(0x00247024u) X(0x0028EC84u) X(0x002D8E5Cu) X(0x00323A4Cu) X(0x0036E644u) X(0x003BF904u) \
+	X(0x003F8994u) X(0x00441144u) X(0x004A3ECCu) X(0x004C1BECu) X(0x00522CACu) X(0x00542BB4u) \
+	X(0x0058EBFCu) X(0x005DA6C4u) X(0x00628654u) X(0x0067DF3Cu) X(0x006B9D14u) X(0x00706DB4u) \
+	X(0x00764334u) X(0x0079219Cu) X(0x007EFD94u) X(0x0081D2B4u) X(0x00867C54u) X(0x008B1354u) \
+	X(0x00918FECu) X(0x009396ECu) X(0x0098D12Cu) X(0x009DA1FCu) X(0x00A06FE4u) X(0x00A51BDCu) \
+	X(0x00A9C7D4u)
+
+#define RAC2_ZAPPER_DECS(X) \
+	X(0x000A2114u) X(0x000A29F8u) X(0x0010660Cu) X(0x00106EF0u) X(0x00125E64u) X(0x00126748u) \
+	X(0x00170A5Cu) X(0x00171340u) X(0x001C3AFCu) X(0x001C43E0u) X(0x001FCA0Cu) X(0x001FD2F0u) \
+	X(0x002471C4u) X(0x00247AA8u) X(0x0028EE24u) X(0x0028F708u) X(0x002D8FFCu) X(0x002D98E0u) \
+	X(0x00323BECu) X(0x003244D0u) X(0x0036E7E4u) X(0x0036F0C8u) X(0x003BFAA4u) X(0x003C0388u) \
+	X(0x003F8B34u) X(0x003F9418u) X(0x004412E4u) X(0x00441BC8u) X(0x004A406Cu) X(0x004A4950u) \
+	X(0x004C1D8Cu) X(0x004C2670u) X(0x00522E4Cu) X(0x00523730u) X(0x00542D54u) X(0x00543638u) \
+	X(0x0058ED9Cu) X(0x0058F680u) X(0x005DA864u) X(0x005DB148u) X(0x006287F4u) X(0x006290D8u) \
+	X(0x0067E0DCu) X(0x0067E9C0u) X(0x006B9EB4u) X(0x006BA798u) X(0x00706F54u) X(0x00707838u) \
+	X(0x007644D4u) X(0x00764DB8u) X(0x0079233Cu) X(0x00792C20u) X(0x007EFF34u) X(0x007F0818u) \
+	X(0x0081D454u) X(0x0081DD38u) X(0x00867DF4u) X(0x008686D8u) X(0x008B14F4u) X(0x008B1DD8u) \
+	X(0x0091918Cu) X(0x00919A70u) X(0x0093988Cu) X(0x0093A170u) X(0x0098D2CCu) X(0x0098DBB0u) \
+	X(0x009DA39Cu) X(0x009DAC80u) X(0x00A07184u) X(0x00A07A68u) X(0x00A51D7Cu) X(0x00A52660u) \
+	X(0x00A9C974u) X(0x00A9D258u)
+
+#define RAC2_AMMO_NSTORES      37
+#define RAC2_ZAPPER_NDECS      74
+#define RAC2_AMMO_WORDS        (RAC2_AMMO_NSTORES + RAC2_ZAPPER_NDECS)
+#define RAC2_AMMO_STORE_WORD   0x7C86292Eu /* stwx r4, r6, r5 */
+#define RAC2_ZAPPER_DEC_WORD   0x3065FFFFu /* addic r3, r5, -1 */
+#define RAC2_ZAPPER_STORE_WORD 0x90640024u /* stw r3, 0x24(r4) */
 
 /*
  * Build 53, the crash guards (rac2.c says what the crash is). Two sites and a
@@ -575,6 +624,8 @@ int rac2_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int rac2_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac2_unlock_set(u8 id, u8 field, u32 value);
+/* Max all weapon ammo, and since build 59 Infinite ammo's fill as it turns on. */
+int rac2_all_max_ammo(void);
 u32 rac2_unlock_levels(u8 id);
 
 /* ---------------------------------------------------------- rac2.c exports */

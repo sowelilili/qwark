@@ -397,6 +397,32 @@ static void test_page(void)
 		check(rc == ST_OK && loaded("mm-f"), "Fast loads off: it loads");
 		act(&v, MBOX_EV_LEFT, "Faster");
 
+		/*
+		 * Build 59: Infinite ammo (id 1), consume_ammo's store nopped at
+		 * 0xAA2DC, both ways round: a mod over it is refused while it is in,
+		 * and it will not go in over a mod's word.
+		 */
+		poke32(0x000AA2DCu, 0x7D05392Eu);
+		mod(HDD, "mm-ia", "#- name: Ammo\n0x000AA2DC: 0x7D05392F\n");
+		mods_rescan();
+		menu_model_view(&v);
+		check(features_set(1, 1) == ST_OK && peek32(0x000AA2DCu) == 0x60000000u,
+		      "Infinite ammo on: its nop in the game");
+		rc = act(&v, MBOX_EV_ACTIVATE, "Ammo");
+		check(rc == ST_BAD_ARG && !loaded("mm-ia") && peek32(0x000AA2DCu) == 0x60000000u &&
+		      notified("Trainer: Ammo would write over Infinite ammo"),
+		      "a mod with a word on Infinite ammo's nop: refused, named after the feature, the nop kept");
+		check(features_set(1, 0) == ST_OK && peek32(0x000AA2DCu) == 0x7D05392Eu, "Infinite ammo off: the game's word back");
+		rc = act(&v, MBOX_EV_ACTIVATE, "Ammo");
+		check(rc == ST_OK && loaded("mm-ia") && peek32(0x000AA2DCu) == 0x7D05392Fu, "then the mod loads");
+		check(features_set(1, 1) == ST_BUSY && peek32(0x000AA2DCu) == 0x7D05392Fu &&
+		      (features_toggle_state() & 2u) == 0,
+		      "and Infinite ammo will not go in over the mod's word: BUSY, the word the mod's, the toggle off");
+		act(&v, MBOX_EV_LEFT, "Ammo");
+		check(!loaded("mm-ia") && peek32(0x000AA2DCu) == 0x7D05392Eu, "the mod off: the game's word");
+		check(features_set(1, 1) == ST_OK && peek32(0x000AA2DCu) == 0x60000000u, "and Infinite ammo goes in again");
+		features_set(1, 0);
+
 		check(savefile_install() == ST_OK && sf != NULL && sf->ncaves > 0, "the savefile helper in the game");
 		check(mem_owner(sf->caves[0].addr + 4, 1) != NULL &&
 		      strcmp(mem_owner(sf->caves[0].addr + 4, 1), "the savefile helper") == 0 &&

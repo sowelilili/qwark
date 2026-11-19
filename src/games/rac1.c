@@ -614,7 +614,7 @@ static const struct patch_word rac1_fastload_words[] = {
 };
 
 static const struct patch_word rac1_ammo_words[] = {
-	{ 0x0AA2DCu, 0x60000000u }    /* nop the ammo decrement */
+	{ RAC1_AMMO_INSTR, 0x60000000u }    /* nop consume_ammo's store (rac1.h) */
 };
 
 /*
@@ -896,7 +896,22 @@ static int rac1_set_toggle(u8 id, int on)
 		}
 		return rc;
 
-	case F_INFINITE_AMMO:   return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
+	/*
+	 * Build 59, every game's Infinite ammo alike: on fills each owned weapon
+	 * to the game's own ceiling first (rac1_ammo_fill), and then the shot's
+	 * decrement is nopped (or its switch's flag set), so the count never goes
+	 * down; off puts the instruction back and leaves the ammo where it is.
+	 * A failed fill changes no code; a patch that fails after it leaves the
+	 * weapons full, at no more than the game's own ceiling. A platform with
+	 * neither the patch nor the switches never gets here (features_set
+	 * refuses a WRITES_CODE toggle first).
+	 */
+	case F_INFINITE_AMMO:
+		if (on) {
+			rc = rac1_ammo_fill();
+			if (rc != ST_OK) return rc;
+		}
+		return classic_code_toggle(&rac1_ammo, SW_RAC1_FLAG_INFINITE_AMMO, on);
 	case F_FREEZE_HEALTH:   return classic_health_toggle(&rac1_freeze_health, on);
 	case F_GHOST:           return classic_ghost(RAC1_GHOST_TIMER, on);
 	case F_GOODIES:         return mem_write_u8(RAC1_GOODIES_MENU, on ? 1 : 0);

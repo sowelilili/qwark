@@ -2,7 +2,8 @@
 #
 # sw_rac1.s says what a switch is and why it exists. RaC3 has two instruction
 # patches, Freeze ammo (the Infinite ammo checkbox) and, since fast loads became
-# a code patch, Fast loads, and so two switches; Fast loads' has two sites.
+# a code patch, Fast loads, and so two switches; Fast loads' has two sites,
+# and since build 59 so has Freeze ammo's.
 #
 # The flags are at 0xD9FF10 and 0xD9FF11, in the zero-filled data where the
 # savefile helper keeps its request bytes (0xD9FF00..02), its copy counter
@@ -14,9 +15,10 @@
 # build 53's pause made it grow from 372 bytes), so the switches start there.
 # The two functions after it, 0x981064 and 0x981120, are dead too - nothing
 # names their descriptors, 0xBF8188 and 0xBF8190 - and the code is live again
-# from 0x981224 (called from 0x9028FC); the switches stop at 0x981064 all the
-# same. (A console's own fast-load cave is elsewhere, at RAC3_FASTLOAD_CAVE in
-# src/games/rac3.h.)
+# from 0x981224 (called from 0x9028FC); the switches stopped at 0x981064 until
+# build 59, whose second ammo trampoline takes the head of the first of them,
+# so they stop at 0x981120. (A console's own fast-load cave is elsewhere, at
+# RAC3_FASTLOAD_CAVE in src/games/rac3.h.)
 #
 # build.sh assembles this, links it with sw_rac3.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.
@@ -60,6 +62,28 @@ freeze_ammo:
 	.section .site.freeze_ammo, "ax"
 	b       freeze_ammo
 freeze_ammo_ret:
+
+# Build 59: the shot's second decrement, on the same flag. 0x182B44 in
+# Hero_useCurrentWeaponAmmo (0x182AB0), stwx r5, r3, r4: the weapon in hand's
+# count less one, which some weapons take there rather than through
+# ammo_consume (the Plasma Whip's lash among them). Patched: nop. r6 and cr0
+# are dead at the site: the function's next compare writes cr0 before
+# anything reads it, and r6 is not read again until a load writes it. The
+# trampoline is the first of the two dead functions after the switches'
+# first cave, 0x981064 (nothing names its descriptor, 0xBF8188;
+# src/games/menuhelper/check.py looks).
+	.section .cave.freeze_ammo_hero, "ax"
+freeze_ammo_hero:
+	lis     r6, SW_FLAG_FREEZE_AMMO@ha
+	lbz     r6, SW_FLAG_FREEZE_AMMO@l(r6)
+	cmpwi   cr0, r6, 0
+	bne     cr0, 1f
+	stwx    r5, r3, r4
+1:	b       freeze_ammo_hero_ret
+
+	.section .site.freeze_ammo_hero, "ax"
+	b       freeze_ammo_hero
+freeze_ammo_hero_ret:
 
 # ------------------------------------------------------------------ fast loads
 #

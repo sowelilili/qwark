@@ -303,13 +303,15 @@ static void rac3_hot_decode(const u8 * const *blocks, struct game_hot *out)
 
 /* --------------------------------------------------------------- patches */
 
+/* Both of the shot's decrements (rac3.h); the second since build 59. */
 static const struct patch_word rac3_ammo_words[] = {
-	{ RAC3_AMMO_INSTR, 0x60000000u }   /* nop the ammo decrement */
+	{ RAC3_AMMO_INSTR,      0x60000000u },   /* nop ammo_consume's store */
+	{ RAC3_AMMO_HERO_INSTR, 0x60000000u }    /* nop Hero_useCurrentWeaponAmmo's */
 };
 
 /* Build 53: named as its checkbox is, "Infinite ammo" rather than "Freeze ammo". */
 static const struct patch_def rac3_ammo_init = {
-	"Infinite ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 1, NULL
+	"Infinite ammo", PATCH_KIND_FEATURE, rac3_ammo_words, 2, NULL
 };
 
 /*
@@ -1167,7 +1169,18 @@ static int rac3_set_toggle(u8 id, int on)
 	int rc;
 
 	switch (id) {
-	case R3_FREEZE_AMMO:   return classic_code_toggle(&rac3_ammo, SW_RAC3_FLAG_FREEZE_AMMO, on);
+	/*
+	 * Build 59, every game's Infinite ammo alike: on fills each owned weapon
+	 * to its version's magazine (rac3_ammo_fill), then both of the shot's
+	 * decrements are nopped (rac3.h), or the switch's flag set; off puts both
+	 * words back and leaves the ammo where it is.
+	 */
+	case R3_FREEZE_AMMO:
+		if (on) {
+			rc = rac3_ammo_fill();
+			if (rc != ST_OK) return rc;
+		}
+		return classic_code_toggle(&rac3_ammo, SW_RAC3_FLAG_FREEZE_AMMO, on);
 	case R3_FREEZE_HEALTH: return classic_health_toggle(&rac3_freeze_health, on);
 	case R3_GHOST:         return classic_ghost(RAC3_GHOST_TIMER, on);
 	case R3_QS_PAUSE:      return mem_write_u8(RAC3_QUICK_SELECT, on ? 1 : 0);

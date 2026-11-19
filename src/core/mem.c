@@ -459,6 +459,26 @@ int patch_apply(const struct patch_def *def)
 
 	if (!g_ingame || g_pid == 0) return ST_NOT_INGAME;
 
+#if QWARK_PREVIEW
+	/*
+	 * Build 59: a feature's patch goes over nothing that is already someone's
+	 * (mem_owner: a loaded mod's words or caves, a client's PATCH_APPLY, qwark's
+	 * own helpers), the rule the console menu's guarded mod load keeps the other
+	 * way round (mods.c). Otherwise it would take that word for the game's own,
+	 * and put it back as the original when it goes off. BUSY, nothing written.
+	 */
+	if (def->kind == PATCH_KIND_FEATURE) {
+		for (w = 0; w < def->count; w++) {
+			const char *who = mem_owner(def->words[w].addr, 4);
+			if (who != NULL) {
+				plat_log("patch: %s would write over %s at 0x%08X, refused", def->name, who,
+				         (unsigned)def->words[w].addr);
+				return ST_BUSY;
+			}
+		}
+	}
+#endif
+
 	for (i = 0; i < QWARK_MAX_PATCHES; i++) {
 		if (g_patches[i] == NULL) { slot = i; break; }
 	}

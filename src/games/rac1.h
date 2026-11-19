@@ -49,6 +49,30 @@
 #define RAC1_GHOST_TIMER      0x969EACu
 #define RAC1_STYLE_POINTS     0x96C08Cu   /* 30 bytes */
 #define RAC1_AMMO_BASE        0x96C0ACu   /* per-unlock ammo words, see the +8 below */
+
+/*
+ * Infinite ammo (build 59), from the NPEA00385 executable. RAC1_AMMO_BASE is
+ * the game's current_ammo_array, a u32 count per item id ((address -
+ * RAC1_AMMO_BASE) / 4: the Bomb Glove is 10, the RYNO 23). Every weapon's
+ * shot takes its ammo through consume_ammo(item, amount) (0xAA258, eleven
+ * callers, the RYNO's two among them), whose store of the count less the
+ * amount, stwx r8, r5, r7, is RAC1_AMMO_INSTR: Infinite ammo nops it, and has
+ * since build 50. The ammo-used tally beside it (g_ammoUsed, 0xA0F644) still
+ * counts. Each item's ceiling is g_weaponStats[item].maxAmmo, the u16 at +0xE
+ * of a 0x18-byte record from 0x737D30 (RaC1WeaponStats): consume_ammo takes
+ * nothing from an item whose ceiling is 0, and add_ammo (0xAA2E8, the pickups
+ * and the vendor) clamps to it, so it is the game's own full count, and
+ * turning the toggle on fills every owned weapon to it (rac1_ammo_fill). No
+ * code writes it: a gold weapon holds what the plain one does.
+ *
+ * Left alone: moby classes 0x415 and 0x452's update functions (0x19AEA0,
+ * 0x1C50B0) take ammo out of the count themselves (0x19D278, 0x1C8784) and
+ * hand it back as an ammo pickup moby; no shot goes through them.
+ */
+#define RAC1_AMMO_INSTR       0x0AA2DCu
+#define RAC1_WEAPON_STATS     0x737D30u
+#define RAC1_WS_STRIDE        0x18u
+#define RAC1_WS_MAX_AMMO      0x0Eu       /* u16 */
 #define RAC1_UNLOCK_ARRAY     0x96C140u   /* one byte per unlock index */
 #define RAC1_MOVIE_FLAGS      0x96BFF0u   /* also the five index-less items */
 #define RAC1_SHOOT_SP         0x96C9DCu   /* 32 bytes, eight words */
@@ -335,6 +359,8 @@ int rac1_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int rac1_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac1_unlock_set(u8 id, u8 field, u32 value);
+/* Build 59: every owned weapon's ammo to its g_weaponStats ceiling, Infinite ammo's fill. */
+int rac1_ammo_fill(void);
 
 /* ---------------------------------------------------------- rac1.c exports */
 

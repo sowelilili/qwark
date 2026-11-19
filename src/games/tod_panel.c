@@ -19,15 +19,10 @@
 /* -------------------------------------------------------------- the state */
 
 /*
- * Infinite ammo's hold (below): each weapon's ammo as last held, f32 bits, and
- * the level object they were read under. The devices are kept full instead.
+ * Build 59: Infinite ammo is a code patch, as the other games' is, and has no
+ * state here; until then a hold kept each weapon's ammo from this struct.
  */
 struct tod_panel_state {
-	u32 held[TOD_WPN_DEVICES];
-	u32 hold_root;
-	u8  hold_primed;
-	u8  hold_wait;
-
 	/* Revision 1.29: qwark's own load's short fade (tod_fade_arm). */
 	u8  fade_armed;
 	u8  fade_seen;         /* its request was seen waiting */
@@ -66,11 +61,13 @@ struct tod_panel_state {
 
 /*
  * 2026-10-28: and what outlives a process, which tod_panel_reset leaves alone:
- * Fast loads' patch, whose originals come out of the core's pool once (init).
+ * Fast loads' patch, whose originals come out of the core's pool once (init),
+ * and since build 59 Infinite ammo's.
  */
 struct tod_panel_area {
 	struct tod_panel_state s;
 	struct patch_def fastload;
+	struct patch_def ammo;
 	u8 init_done;
 };
 
@@ -140,12 +137,23 @@ static const struct patch_def tod_fastload_init = {
 	"Fast loads", PATCH_KIND_FEATURE, tod_fastload_words, (u16)TOD_FASTLOAD_DEF_WORDS, NULL
 };
 
+/* Build 59: Infinite ammo, Weapon_useAmmo's call of WeaponSlot_addAmmo nopped (tod.h). */
+static const struct patch_word tod_ammo_words[] = {
+	{ TOD_AMMO_INSTR, 0x60000000u }
+};
+
+static const struct patch_def tod_ammo_init = {
+	"Infinite ammo", PATCH_KIND_FEATURE, tod_ammo_words, 1, NULL
+};
+
 void tod_panel_init(void)
 {
 	if (TPA->init_done) return;
 	TPA->init_done = 1;
 	TPA->fastload = tod_fastload_init;
 	TPA->fastload.originals = patch_pool_alloc(TPA->fastload.count);
+	TPA->ammo = tod_ammo_init;
+	TPA->ammo.originals = patch_pool_alloc(TPA->ammo.count);
 }
 
 /* ----------------------------------------------------------------- tables */
@@ -1098,6 +1106,25 @@ void tod_panel_tick(const struct tod_as_state *as)
 /* --------------------------------------------------------------- the cheats */
 
 /*
+ * Build 59, Infinite ammo (tod_set_toggle says what it is). The fill is Max
+ * all weapon ammo's; one that finds owned weapons but no weapon table yet (on
+ * the title, where an "on boot" flag applies it) fills nothing and the patch
+ * still goes in, so the save's counts stay as they load. Under RPCS3 the
+ * patch is the switch's flag (classic_code_toggle); without the switches the
+ * core refuses the toggle before it gets here (WRITES_CODE).
+ */
+static int tod_infinite_ammo(int on)
+{
+	int rc;
+
+	if (on) {
+		rc = weapon_ammo_all();
+		if (rc != ST_OK && rc != ST_BUSY) return rc;
+	}
+	return classic_code_toggle(&TPA->ammo, SW_TOD_FLAG_INFINITE_AMMO, on);
+}
+
+/*
  * Infinite health (id 9, "God Ratchet" until 2026-10-27): the game's own
  * "hero takes no damage" word, g_debugHeroNoDamage, which Hero_Update checks
  * before it applies any damage event, on foot and in the ship; nothing in the
@@ -1113,10 +1140,16 @@ void tod_panel_tick(const struct tod_as_state *as)
  * old trainer's own test amounted to. Neither cheat stops a death plane or a
  * fall.
  *
- * Infinite ammo: g_infiniteAmmo, the word hero_set_infinite_ammo sets, makes
- * every weapon fire with none left; the game still counts the ammo down, so
- * while the word is up the tick holds every weapon's ammo where it was and
- * keeps the devices full (tod_ammo_tick). No code is patched either way.
+ * Infinite ammo (build 59, as every game's): on fills each owned weapon and
+ * device to what it holds at its level with its mods (weapon_ammo_all, Max all
+ * weapon ammo), then nops the shot's decrement in Weapon_useAmmo (tod.h,
+ * TOD_AMMO_INSTR) on a console, or sets its switch's flag under RPCS3
+ * (tod_infinite_ammo below); off puts the instruction back and leaves the
+ * ammo where it is. Every weapon and every device takes its ammo there, the
+ * Visi-Copter among them, so the devices stay full as the weapons do. Until
+ * build 59 it set g_infiniteAmmo, which lets the weapon in hand fire on an
+ * empty count while the game still counted down, and a tick held each
+ * weapon's count and kept the devices full; neither is written any more.
  *
  * 2026-10-28: Infinite ammo and Infinite health are no longer LIVE (tod_game.c),
  * so they come back on boot when flagged, and their state is qwark's bit;
@@ -1160,8 +1193,7 @@ int tod_set_toggle(u8 id, int on)
 	case TF_REMOVE_BLACK:
 		return tod_remove_black(on);
 	case TF_INFINITE_AMMO:
-		TP->hold_primed = 0;
-		return mem_write_u32(TOD_INFINITE_AMMO, on ? 1u : 0u);
+		return tod_infinite_ammo(on);
 	default:
 		return ST_NOT_FOUND;
 	}
@@ -1184,6 +1216,9 @@ int tod_toggle_read(u8 id, int *on)
 		/* Revision 1.29: a load's force is not the toggle (tod_fl_force). */
 		if (rc == ST_OK && TP->fl_forced) *on = TP->fl_on;
 		return rc;
+	/* Build 59: and Infinite ammo's, the same way. */
+	case TF_INFINITE_AMMO:
+		return classic_code_read(SW_TOD_FLAG_INFINITE_AMMO, on);
 	default:
 		return ST_NOT_FOUND;
 	}
@@ -1196,8 +1231,13 @@ int tod_toggle_read(u8 id, int *on)
  * The devices' MaxAmmo, WPN_ 16..23, from the game's weapon.csv (Zurkon,
  * ConfusionGas, Slinkonator, Groovitron, MiniLeech, MaxiLeech, Morph,
  * Copter), as f32 bits. The devices take no mods, so the slot's level is all
- * WeaponDef_getMaxAmmo would add, and they have one.
+ * WeaponDef_getMaxAmmo would add, and they have one. Until build 59 Infinite
+ * ammo's hold kept every owned device at this count; the game's own table
+ * (weapon_ammo_all) is what fills them now, and the simulator's seed of that
+ * table (backend_fake.c) is all this is for, so a game module carries none
+ * of it.
  */
+#if !QWARK_GAME_MODULE
 static const u32 tod_device_max[TOD_WPN_GADGETS - TOD_WPN_DEVICES] = {
 	0x40800000u,   /* 16 Mr. Zurkon     4 */
 	0x40000000u,   /* 17 Confuzzler     2 */
@@ -1214,70 +1254,7 @@ u32 tod_device_max_ammo(u8 wpn)
 	if (wpn < TOD_WPN_DEVICES || wpn >= TOD_WPN_GADGETS) return 0;
 	return tod_device_max[wpn - TOD_WPN_DEVICES];
 }
-
-/*
- * Every fourth tick while g_infiniteAmmo is up: the weapons' and devices'
- * slots in one read. Any owned weapon whose ammo went down since the last
- * look gets the last value back, while a rise (a pickup, a vendor, a level
- * up) becomes the value held. A new level object, or the toggle going on,
- * starts the hold over from what is there.
- *
- * 2026-10-27, the user's first hardware test: that did not make the
- * Visi-Copter infinite. g_infiniteAmmo is read by Weapon_hasAmmo alone, which
- * lets the weapon in hand fire on an empty count, and the hold only puts back
- * a count that went down: a device at 0 (given or ticked Owned with none, or
- * whose last one went before the toggle) was never raised. So every owned
- * device is kept full instead, the way the game's own challenge 14 keeps
- * the Visi-Copters coming (hero_give_weapon with 999, every half second).
- */
-#define HOLD_EVERY 4u
-
-void tod_ammo_tick(u32 flag, u32 root)
-{
-	u8 *s;
-	u8 w;
-
-	if (flag == 0 || root == 0) {
-		TP->hold_primed = 0;
-		return;
-	}
-	if (TP->hold_wait != 0) {
-		TP->hold_wait--;
-		return;
-	}
-	TP->hold_wait = HOLD_EVERY - 1u;
-
-	s = qscratch();
-	if (mem_read(TOD_WEAPONS, s, TOD_WPN_GADGETS * TOD_WEAPON_STRIDE) != ST_OK) return;
-
-	for (w = TOD_WPN_DEVICES; w < TOD_WPN_GADGETS; w++) {
-		const u8 *slot = s + (u32)w * TOD_WEAPON_STRIDE;
-		u32 full = tod_device_max_ammo(w);
-
-		if (slot[TOD_WS_OWNED] == 0) continue;
-		if (f32_from_bits(be32_get(slot + TOD_WS_AMMO)) < f32_from_bits(full))
-			mem_write_u32(slot_addr(w) + TOD_WS_AMMO, full);
-	}
-
-	if (!TP->hold_primed || TP->hold_root != root) {
-		for (w = 0; w < TOD_WPN_DEVICES; w++)
-			TP->held[w] = be32_get(s + (u32)w * TOD_WEAPON_STRIDE + TOD_WS_AMMO);
-		TP->hold_root = root;
-		TP->hold_primed = 1;
-		return;
-	}
-
-	for (w = TOD_WPN_FIRST; w < TOD_WPN_DEVICES; w++) {
-		const u8 *slot = s + (u32)w * TOD_WEAPON_STRIDE;
-		u32 now = be32_get(slot + TOD_WS_AMMO);
-
-		if (slot[TOD_WS_OWNED] == 0) continue;
-		if (f32_from_bits(now) < f32_from_bits(TP->held[w]))
-			mem_write_u32(slot_addr(w) + TOD_WS_AMMO, TP->held[w]);
-		else
-			TP->held[w] = now;
-	}
-}
+#endif
 
 /* ---------------------------------------------------- positions, die, planets */
 

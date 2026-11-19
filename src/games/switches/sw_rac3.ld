@@ -11,7 +11,7 @@ OUTPUT_FORMAT("elf64-powerpc-celloslv2")
  * so the switches start there.
  */
 SW_CAVE_START = 0x00980F00;
-SW_CAVE_END   = 0x00981064;
+SW_CAVE_END   = 0x00981120;   /* build 59: and the dead function at 0x981064 (sw_rac3.s) */
 
 /*
  * The game's own code the fast-load trampolines call or go back to: the pass of
@@ -40,8 +40,10 @@ SECTIONS
 	.cave.freeze_ammo      0x00980F00 : { *(.cave.freeze_ammo) }
 	.cave.fast_loads       0x00980F80 : { *(.cave.fast_loads) }
 	.cave.fast_loads_draw  0x00981030 : { *(.cave.fast_loads_draw) }
+	.cave.freeze_ammo_hero 0x00981064 : { *(.cave.freeze_ammo_hero) }
 
 	.site.freeze_ammo      0x00182A88 : { *(.site.freeze_ammo) }
+	.site.freeze_ammo_hero 0x00182B44 : { *(.site.freeze_ammo_hero) }
 	.site.fast_loads       0x0027B49C : { *(.site.fast_loads) }
 	.site.fast_loads_draw  0x0027B550 : { *(.site.fast_loads_draw) }
 

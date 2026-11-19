@@ -1723,12 +1723,13 @@ QWARK_RAC3 = [
     (0x009807F0, 0x009808B0, "the fast-load cave"),
     (0x009808C0, 0x00980AC0, "the trophy reset's cave (savefile helper)"),
     (0x00980AC0, 0x00980F00, "the savefile helper's cave"),
-    (0x00980F00, 0x00981064, "code switches (RPCS3)"),
+    (0x00980F00, 0x00981120, "code switches (RPCS3), build 59's second ammo trampoline at 0x981064"),
     (0x0097CBA4, 0x0097CBA8, "savefile helper hook"),
     (0x00985318, 0x0098531C, "the trophy register's list fill, nopped"),
     (0x0027B49C, 0x0027B4A0, "fast loads, the pass site"),
     (0x0027B550, 0x0027B554, "fast loads, the draw site"),
     (0x00182A88, 0x00182A8C, "infinite ammo, the fingerprint"),
+    (0x00182B44, 0x00182B48, "infinite ammo, Hero_useCurrentWeaponAmmo's store (build 59)"),
     (0x00D9FF00, 0x00D9FF50, "savefile helper bytes, trophy status, code switch flags"),
     (0x01100000, 0x01300000, "savefile aside buffer"),
 ]
@@ -2703,6 +2704,12 @@ def check_rac3_fastload(ok, elf):
     branches, named, pairs = refs_into(elf, 0x00980F00, 0x00981064)
     ok(not [a for a, _ in branches if not 0x00980AC0 <= a < 0x00981064] and not named and not pairs,
        "nothing outside the savefile helper's dead function reaches 0x980F00..0x981064")
+    # Build 59: Infinite ammo's second trampoline, the head of the dead function at 0x981064.
+    branches, named, pairs = refs_into(elf, 0x00981064, 0x00981120)
+    ok(not [a for a, _ in branches if not 0x00981064 <= a < 0x00981120] and not pairs and
+       not [a for a, _ in named if a != 0x00BF8188] and not refs_into(elf, 0x00BF8188, 0x00BF8190)[1],
+       "nor 0x981064..0x981120, the dead function after it: only its own descriptor (0xBF8188) names it, "
+       "and nothing names that")
     branches, named, pairs = refs_into(elf, 0x00D9FF00, 0x00D9FF50)
     ok(not branches and not named and not pairs,
        "and nothing in the executable names the flag bytes' 0xD9FF00..0xD9FF50")
@@ -2721,11 +2728,25 @@ QWARK_RAC2 = [
     (0x01317728, 0x01317730, "savefile helper request bytes"),
     (0x01C00000, 0x01E00000, "savefile aside buffer"),
     (0x00BEA8A0, 0x00BEA8A4, "fast loads, also the fingerprint"),
-    (0x00B30C7C, 0x00B30C80, "infinite ammo"),
     (0x00086960, 0x00086964, "the grid crash guard's site"),
     (0x00BDF30C, 0x00BDF310, "the ship crash guard's site"),
     (0x015B3070, 0x015B3071, "the debug mode byte"),
 ]
+
+
+def _rac2_ammo_sites():
+    """Build 59: rac2.h's Infinite ammo lists, consume_ammo's 37 stores and the Clank Zapper's 74 decrements."""
+    h = open(os.path.join(QWARK, "src", "games", "rac2.h"), encoding="utf-8").read()
+
+    def lst(name):
+        m = re.search(r"#define %s\(X\)(.*?)\n\n" % name, h, re.S)
+        return [int(x, 16) for x in re.findall(r"X\((0x[0-9A-Fa-f]+)u\)", m.group(1))] if m else []
+    return lst("RAC2_AMMO_STORES"), lst("RAC2_ZAPPER_DECS")
+
+
+RAC2_AMMO_STORES, RAC2_ZAPPER_DECS = _rac2_ammo_sites()
+QWARK_RAC2 += [(a, a + 4, "infinite ammo, a consume_ammo store") for a in RAC2_AMMO_STORES]
+QWARK_RAC2 += [(a, a + 8, "infinite ammo, a Clank Zapper decrement and its store") for a in RAC2_ZAPPER_DECS]
 
 # Overlaps that are by design: (mod folder) -> why.
 ACCEPTED_RAC2 = {
@@ -4015,7 +4036,8 @@ def check_tod_own(ok, elf, bins):
     m = re.search(r"sw_tod_sites\[\] = \{(.*?)\};", bins, re.S)
     all_sites = [(int(a, 16), int(w, 16)) for a, w in
                  re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \}", m.group(1))] if m else []
-    ok(len(cave) == 252 and at == 0x003EB5F8 and len(sites) == 3 and all_sites[1:] == sites,
+    # Build 59: Infinite ammo's site (0x49EF08) comes after the three, in address order.
+    ok(len(cave) == 252 and at == 0x003EB5F8 and len(sites) == 3 and all_sites[1:4] == sites,
        "switches_own.c: the cave, 252 bytes at 0x3EB5F8, and three sites, the switch table's own")
     if len(cave) != 252 or at is None or len(sites) != 3:
         return False
@@ -4463,6 +4485,171 @@ def shim_set_layout(shim_defs, rows):
     return shim_defs["ST_SET0"] + set_text, set_text + rows * shim_defs["MH_TEXT_LEN"]
 
 
+def switch_parts(bins, game):
+    """A game's switches out of switches_bins.c: {cave name: (address, bytes)}, [(site, word, name)]."""
+    caves = {}
+    for name, at, body in re.findall(r"/\* %s \.cave\.(\w+) at 0x([0-9A-Fa-f]+), \d+ bytes \*/\s*"
+                                     r"static const u8 \w+\[\] = \{(.*?)\};" % game, bins, re.S):
+        caves[name] = (int(at, 16), bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", body)))
+    m = re.search(r"sw_%s_sites\[\] = \{(.*?)\};" % game, bins, re.S)
+    sites = [(int(a, 16), int(w, 16), n) for a, w, n in
+             re.findall(r"\{ (0x[0-9A-Fa-f]+)u, (0x[0-9A-Fa-f]+)u \},?\s*/\* (\w+) ->", m.group(1) if m else "")]
+    return caves, sites
+
+
+def qwark_header_defs(path):
+    """Every `#define NAME 0x...u` of a qwark header, as numbers."""
+    h = open(path, encoding="utf-8").read()
+    return {n: int(v, 16) for n, v in re.findall(r"#define (\w+)\s+(0x[0-9A-Fa-f]+)u", h)}
+
+
+def find_copies(elf, lo, hi, off):
+    """Every word-aligned copy in the code segment of the words [lo, hi), as the address `off` into it."""
+    v, fs, ms, o, fl = elf.text
+    seg = elf.d[o:o + fs]
+    pat = seg[lo - v:hi - v]
+    out, i = [], 0
+    while True:
+        i = seg.find(pat, i)
+        if i < 0:
+            return out
+        if i % 4 == 0:
+            out.append(v + i + off)
+        i += 4
+
+
+def check_infinite_ammo(ok, eboots, roots):
+    """
+    Build 59: every game's Infinite ammo nops the shot's own decrement (rac1.h,
+    rac2.h, rac3.h, tod.h). Against each executable: the words qwark patches
+    hold the game's stores where the headers say, every copy of RaC2's planet
+    code is in the list, the code switches' sites under RPCS3 are those words
+    (or, for RaC2's Clank Zapper, the word before each), a bl site only where
+    the function saved its link register, and no known mod writes a word of
+    any of it.
+    """
+    print("\nInfinite ammo, the shot's decrement (build 59)")
+    bins = open(os.path.join(QWARK, "src", "games", "switches_bins.c"), encoding="utf-8").read()
+    games = os.path.join(QWARK, "src", "games")
+
+    def no_mod_over(title, words, what):
+        clashes = [(m, a) for a, b, label, m, kind in mod_entries(roots, title)
+                   for w in words if a < w + 4 and b > w]
+        ok(not clashes, "%s: no known mod writes a word of it (%d words)" % (what, len(words)))
+        for m, a in clashes[:8]:
+            print("        %s/0x%08X" % (m, a))
+
+    # RaC1: consume_ammo's one store.
+    elf = Elf(os.path.join(eboots, "NPEA00385.elf"))
+    d = qwark_header_defs(os.path.join(games, "rac1.h"))
+    at = d.get("RAC1_AMMO_INSTR")
+    ok(at == 0x000AA2DC and elf.word(at) == 0x7D05392E and elf.word(at + 8) == 0x4E800020,
+       "RaC1: 0xAA2DC, consume_ammo's stwx r8, r5, r7 into current_ammo_array, two words before its blr")
+    ok(len(find_copies(elf, 0x000AA298, 0x000AA2E8, 0x44)) == 1, "RaC1: and consume_ammo is in the executable once")
+    caves, sites = switch_parts(bins, "rac1")
+    ok([(a, w & 3) for a, w, n in sites if n == "infinite_ammo"] == [(0x000AA2DC, 0)],
+       "RaC1: the switch's site is the same word, a plain b (unchanged since build 50)")
+    # rac1_panel.c's max_ammo is the old client's; the game's g_weaponStats must say the same.
+    panel = open(os.path.join(games, "rac1_panel.c"), encoding="utf-8").read()
+    rows = re.findall(r"\{ 0x[0-9A-Fa-f]+u, (0x[0-9A-Fa-f]+)u, (?:0x[0-9A-Fa-f]+u|0),\s+(\d+) \},", panel)
+    bad = []
+    for base, mx in rows:
+        item = (int(base, 16) + 8 - 0x0096C0AC) // 4
+        w = elf.word(d["RAC1_WEAPON_STATS"] + item * d["RAC1_WS_STRIDE"] + d["RAC1_WS_MAX_AMMO"] - 2)
+        if w is None or (w & 0xFFFF) != int(mx):
+            bad.append((item, int(mx), w))
+    ok(len(rows) >= 15 and not bad,
+       "RaC1: g_weaponStats[item].maxAmmo (0x737D30 + item * 0x18 + 0xE), the fill's ceiling, is the old "
+       "client's max ammo for every one of %d weapon rows" % len(rows))
+    for x in bad[:6]:
+        print("        item %d: %d vs 0x%08X" % x)
+    no_mod_over("NPEA00385", [at or 0], "RaC1")
+
+    # RaC2: every planet's copy.
+    elf = Elf(os.path.join(eboots, "NPEA00386.elf"))
+    stores = find_copies(elf, 0x0098D100, 0x0098D134, 0x2C)
+    zap = find_copies(elf, 0x0098D2B8, 0x0098D2D8, 0x14)
+    ok(stores == RAC2_AMMO_STORES and len(stores) == 37 and
+       all(elf.word(a) == 0x7C86292E and elf.word(a + 4) == 0x4E800020 for a in stores),
+       "RaC2: rac2.h's 37 stores are every copy of consume_ammo's stwx r4, r6, r5, each before its blr")
+    leaf = lambda a: (elf.word(a - 0xA4) == 0x4E800020 and
+                      not [x for x in range(a - 0xA0, a, 4) if elf.word(x) >> 26 == 18 and elf.word(x) & 1 or
+                           elf.word(x) & 0xFC1FFEFE == 0x7C0802A6 or elf.word(x) >> 16 == 0xF821])
+    ok(all(leaf(a) for a in stores),
+       "RaC2: each copy is a leaf from its first word (0xA0 before the store) on: no call, no frame, no "
+       "mflr or mtlr, so its link register is its caller's, which the switch's trampoline returns to")
+    ok(zap == RAC2_ZAPPER_DECS and len(zap) == 74 and
+       all(elf.word(a) == 0x3065FFFF and elf.word(a + 4) == 0x90640024 and elf.word(a - 0x14) == 0x3C800148
+           for a in zap),
+       "RaC2: its 74 Clank Zapper words are every addic r3, r5, -1 before a stw r3, 0x24(r4) into ammo[9]")
+    def saves_lr(a1, a2):
+        """The copy's function saved its link register, and nothing returns between its sites and the reload."""
+        s, t = a1 - 0x184, a1
+        while t < a1 + 0x2000 and elf.word(t) != 0x7C0803A6:
+            t += 4
+        return (elf.word(s) >> 16 == 0xF821 and elf.word(s + 4) == 0x7C0802A6 and elf.word(s + 8) >> 16 == 0xF801
+                and a2 < t < a1 + 0x2000 and elf.word(t - 4) >> 16 == 0xE801 and
+                not [x for x in range(a1, t, 4) if elf.word(x) & 0xFFFFFFFE == 0x4E800020])
+    ok(all(saves_lr(zap[k], zap[k + 1]) for k in range(0, len(zap), 2)),
+       "RaC2: each zapper copy's function saves its link register (mflr r0, std r0) and loads it back "
+       "before it returns, with no return between, so a bl site there is safe")
+    caves, sites = switch_parts(bins, "rac2")
+    amm = caves.get("infinite_ammo", (0, b""))[0]
+    zc = caves.get("clank_zapper", (0, b""))[0]
+    s_st = sorted(a for a, w, n in sites if branch_target(a, w) == amm and w & 1 == 0)
+    s_zp = sorted(a for a, w, n in sites if branch_target(a, w) == zc and w & 1 == 1)
+    ok(s_st == stores and s_zp == zap and amm == 0x01141420 and zc == 0x011414A0,
+       "RaC2: the switch's sites are the 37 stores (b to 0x1141420) and the 74 decrements (bl to 0x11414A0)")
+    ok(not [a for a, w, n in sites if a == 0x00B30C7C], "RaC2: and the magazine clamp, builds 50 to 58's site, is not one")
+    no_mod_over("NPEA00386", stores + zap + [a + 4 for a in zap], "RaC2")
+
+    # UYA: ammo_consume's store and Hero_useCurrentWeaponAmmo's.
+    elf = Elf(os.path.join(eboots, "NPEA00387.elf"))
+    d = qwark_header_defs(os.path.join(games, "rac3.h"))
+    a1, a2 = d.get("RAC3_AMMO_INSTR"), d.get("RAC3_AMMO_HERO_INSTR")
+    ok(a1 == 0x00182A88 and elf.word(a1) == 0x7C85312E and a2 == 0x00182B44 and elf.word(a2) == 0x7CA3212E and
+       elf.word(a2 - 4) == 0x30A5FFFF and elf.word(0x00182AB4) == 0x7C0802A6,
+       "UYA: 0x182A88, ammo_consume's stwx r4, r5, r6, and 0x182B44, Hero_useCurrentWeaponAmmo's stwx r5, r3, r4 "
+       "of the count less one")
+    caves, sites = switch_parts(bins, "rac3")
+    hero = caves.get("freeze_ammo_hero", (0, b""))
+    ok(sorted((a, n) for a, w, n in sites if n.startswith("freeze_ammo")) ==
+       [(0x00182A88, "freeze_ammo"), (0x00182B44, "freeze_ammo_hero")] and hero[0] == 0x00981064 and
+       len(hero[1]) == 24,
+       "UYA: the switch's sites are those two words, the second's trampoline six words at 0x981064")
+    no_mod_over("NPEA00387", [a1 or 0, a2 or 0], "UYA")
+    over = lambda lo, hi: set(m for a, b, label, m, kind in mod_entries(roots, "NPEA00387") if a < hi and b > lo)
+    new, old = over(0x00981064, 0x0098107C), over(0x00980F00, 0x00981064)
+    ok(new <= old, "UYA: a mod over the new trampoline is one already over the switches' cave before it "
+       "(%s): no new clash" % (", ".join(sorted(new)) or "none"))
+
+    # Tools of Destruction: Weapon_useAmmo's call.
+    tod = os.path.join(eboots, "NPEA00452.elf")
+    if not os.path.exists(tod):
+        print("        (no NPEA00452.elf: Tools of Destruction's skipped)")
+        return
+    elf = Elf(tod)
+    d = qwark_header_defs(os.path.join(games, "tod.h"))
+    at = d.get("TOD_AMMO_INSTR")
+    ok(at == 0x0049EF08 and elf.word(at) == d.get("TOD_AMMO_INSTR_WORD") and
+       branch_target(at, elf.word(at)) == 0x0049A6E0 and elf.word(at - 4) == 0xFC200850,
+       "ToD: 0x49EF08 is Weapon_useAmmo's fneg f1 then bl WeaponSlot_addAmmo (0x49A6E0), the word tod.h names")
+    ok(elf.word(0x0049EEEC) == 0x7C8802A6 and elf.word(0x0049EEF0) == 0xF8810080 and
+       elf.word(0x0049EF10) == 0xE8610080 and elf.word(0x0049EF18) == 0x7C6803A6 and
+       elf.word(0x0049A6E4) == 0x7C8802A6,
+       "ToD: Weapon_useAmmo keeps its link register on the stack and loads it back, and WeaponSlot_addAmmo "
+       "writes r4 first, so the switch's bl site and its r4 are safe")
+    callers = [a for a, w in elf.words(elf.text) if w >> 26 == 18 and w & 1 and branch_target(a, w) == 0x0049EEE8]
+    ok(len(callers) == 23,
+       "ToD: Weapon_useAmmo has 23 callers, one fire routine per weapon and device class (%d)" % len(callers))
+    caves, sites = switch_parts(bins, "tod")
+    cave = caves.get("infinite_ammo", (0, b""))
+    ok([(a, w & 1) for a, w, n in sites if n == "infinite_ammo"] == [(0x0049EF08, 1)] and
+       cave[0] == 0x003EB6F4 and cave[0] + len(cave[1]) == 0x003EB708,
+       "ToD: the switch's site is that word, a bl, into five words that end the dead function at 0x3EB708")
+    no_mod_over("NPEA00452", [at or 0], "ToD")
+
+
 def find_up(rel):
     d = QWARK
     for _ in range(8):
@@ -4534,6 +4721,7 @@ def main():
         check_tod(ok, Elf(tod_elf))
     else:
         print("\nNPEA00452: no %s, Tools of Destruction's checks skipped" % tod_elf)
+    check_infinite_ammo(ok, eboots, roots)
     check_help_rows(ok)
     check_pak(ok, args.pak)
 

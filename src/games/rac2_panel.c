@@ -491,7 +491,7 @@ static int rac2_all_max_levels(void)
  * weapon id, so a V4 Lancer's rounds still live in ammo[30] and only the
  * capacity comes from the V4 record.
  */
-static int rac2_all_max_ammo(void)
+int rac2_all_max_ammo(void)
 {
 	u8 owned[RAC2_ITEM_COUNT];
 	u8 items[RAC2_ITEM_COUNT];

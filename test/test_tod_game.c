@@ -170,6 +170,18 @@ static void test_tod_session(void)
 	tick(2);
 }
 
+/* Build 59: Infinite ammo's patch on the table, or NULL. */
+static const struct patch_def *tod_ammo_patch(void)
+{
+	u32 i;
+
+	for (i = 0; i < patch_count(); i++) {
+		const struct patch_def *p = patch_at(i);
+		if (p != NULL && p->kind == PATCH_KIND_FEATURE && strcmp(p->name, "Infinite ammo") == 0) return p;
+	}
+	return NULL;
+}
+
 static void test_tod_features(void)
 {
 	const struct game_api *g = session_game();
@@ -266,39 +278,74 @@ static void test_tod_features(void)
 		wr32(TOD_SKIN, 0);
 	}
 
-	group("ToD: Infinite ammo holds the ammo without a code patch");
-	host_poke(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_OWNED, (const u8 *)"\1", 1);
-	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 50.0f);
-	check(features_set(TF_INFINITE_AMMO, 1) == ST_OK && rd32(TOD_INFINITE_AMMO) == 1, "the game's own flag goes up");
-	tick(12);
-	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 41.0f);
-	tick(8);
-	check(rdf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 50.0f, "a shot's ammo comes back");
-	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 60.0f);
-	tick(8);
-	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 59.0f);
-	tick(8);
-	check(rdf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 60.0f, "a pickup is held from then on");
-	host_poke(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_OWNED, (const u8 *)"\1", 1);
-	wrf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 0.0f);
-	wrf(TOD_WEAPONS + 21 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 0.0f);
-	tick(8);
-	check(rdf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "an owned Visi-Copter at 0 is filled, to 3");
-	check(rdf(TOD_WEAPONS + 21 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 0.0f, "a device not owned is left alone");
-	wrf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 2.0f);
-	tick(8);
-	check(rdf(TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "and one used comes back");
-	check(tod_device_max_ammo(16) == 0x40800000u && tod_device_max_ammo(21) == 0x3F800000u &&
-	      tod_device_max_ammo(15) == 0 && tod_device_max_ammo(24) == 0, "the devices' full counts, 16..23 alone");
-	check(features_set(TF_INFINITE_AMMO, 0) == ST_OK && rd32(TOD_INFINITE_AMMO) == 0, "off");
-	wrf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO, 3.0f);
-	tick(8);
-	check(rdf(TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE + TOD_WS_AMMO) == 3.0f, "and the ammo is the game's again");
-	wr32(TOD_INFINITE_AMMO, 1);
-	tick(LIVE_TICKS_FOR_TEST);
-	check(!((features_toggle_state() >> TF_INFINITE_AMMO) & 1u), "not LIVE: the word set behind qwark's back is not its bit");
-	wr32(TOD_INFINITE_AMMO, 0);
-	tick(LIVE_TICKS_FOR_TEST);
+	group("ToD: Infinite ammo fills each weapon and device and nops Weapon_useAmmo's call (build 59)");
+	{
+		const u32 w1 = TOD_WEAPONS + 1 * TOD_WEAPON_STRIDE, w2 = TOD_WEAPONS + 2 * TOD_WEAPON_STRIDE;
+		const u32 d21 = TOD_WEAPONS + 21 * TOD_WEAPON_STRIDE, d23 = TOD_WEAPONS + 23 * TOD_WEAPON_STRIDE;
+		const struct patch_def *p;
+		const char *who;
+
+		/*
+		 * The fake game's weapon table (backend_fake.c): weapon 1 at V3 holds
+		 * 20 + 2 * 2 + 1 = 25, the Visi-Copter (23) its csv's 3. Weapon 1 and
+		 * the Visi-Copter held, weapon 2 and the Mega Leech (21) not.
+		 */
+		wr32(TOD_AMMO_INSTR, TOD_AMMO_INSTR_WORD);
+		host_poke(w1 + TOD_WS_OWNED, (const u8 *)"\1\2", 2);   /* owned, level index 2 */
+		wr32(w1 + TOD_WS_MODS, 0);
+		wrf(w1 + TOD_WS_AMMO, 5.0f);
+		host_poke(w2 + TOD_WS_OWNED, (const u8 *)"\0", 1);
+		wrf(w2 + TOD_WS_AMMO, 4.0f);
+		host_poke(d23 + TOD_WS_OWNED, (const u8 *)"\1\0", 2);
+		wrf(d23 + TOD_WS_AMMO, 0.0f);
+		host_poke(d21 + TOD_WS_OWNED, (const u8 *)"\0", 1);
+		wrf(d21 + TOD_WS_AMMO, 0.0f);
+		wr32(TOD_INFINITE_AMMO, 0);
+
+		check(features_set(TF_INFINITE_AMMO, 1) == ST_OK, "Infinite ammo turns on");
+		p = tod_ammo_patch();
+		who = mem_owner(TOD_AMMO_INSTR, 4);
+		check(rd32(TOD_AMMO_INSTR) == 0x60000000u && p != NULL && p->count == 1 &&
+		      p->originals[0] == 0x4BFFB7D9u && who != NULL && strcmp(who, "Infinite ammo") == 0,
+		      "0x49EF08 nopped, bl WeaponSlot_addAmmo kept as the original, Infinite ammo's to the guard");
+		check(rdf(w1 + TOD_WS_AMMO) == 25.0f, "weapon 1 is filled to what it holds at V3, not to some huge number");
+		check(rdf(d23 + TOD_WS_AMMO) == 3.0f, "the Visi-Copter at 0 is filled, to 3");
+		check(rdf(w2 + TOD_WS_AMMO) == 4.0f && rdf(d21 + TOD_WS_AMMO) == 0.0f,
+		      "a weapon and a device not held are left alone");
+		check(rd32(TOD_INFINITE_AMMO) == 0, "and g_infiniteAmmo, the word until build 58, is not written");
+
+		/* The game's own counts from here on: no tick writes them any more. */
+		wrf(w1 + TOD_WS_AMMO, 24.0f);
+		wrf(d23 + TOD_WS_AMMO, 2.0f);
+		tick(24);
+		check(rdf(w1 + TOD_WS_AMMO) == 24.0f && rdf(d23 + TOD_WS_AMMO) == 2.0f,
+		      "a count the game itself changes is left as it is: the hold of builds 57 and 58 is gone");
+
+		check(features_set(TF_INFINITE_AMMO, 1) == ST_OK && tod_ammo_patch() == p && p->originals[0] == 0x4BFFB7D9u,
+		      "a second on takes no original again from the nop");
+		check(rdf(w1 + TOD_WS_AMMO) == 25.0f, "and fills again");
+		wr32(TOD_LEVEL_OBJ, 0);
+		tick(4);
+		wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+		tick(4);
+		check(rd32(TOD_AMMO_INSTR) == 0x60000000u && ((features_toggle_state() >> TF_INFINITE_AMMO) & 1u),
+		      "a new level object, as a planet load or a death makes, leaves the patch and the toggle in");
+
+		check(features_set(TF_INFINITE_AMMO, 0) == ST_OK, "off");
+		check(rd32(TOD_AMMO_INSTR) == 0x4BFFB7D9u && tod_ammo_patch() == NULL && mem_owner(TOD_AMMO_INSTR, 4) == NULL,
+		      "the call is the game's again, word for word, and nobody's to the guard");
+		check(rdf(w1 + TOD_WS_AMMO) == 25.0f, "and the ammo stays where it was");
+		check(tod_device_max_ammo(16) == 0x40800000u && tod_device_max_ammo(21) == 0x3F800000u &&
+		      tod_device_max_ammo(15) == 0 && tod_device_max_ammo(24) == 0,
+		      "the simulator's device counts, 16..23 alone");
+		wr32(TOD_INFINITE_AMMO, 1);
+		tick(LIVE_TICKS_FOR_TEST);
+		check(!((features_toggle_state() >> TF_INFINITE_AMMO) & 1u), "not LIVE: the old word set behind qwark's back is not its bit");
+		wr32(TOD_INFINITE_AMMO, 0);
+		tick(LIVE_TICKS_FOR_TEST);
+		host_poke(w1 + TOD_WS_OWNED, (const u8 *)"\0\0", 2);
+		host_poke(d23 + TOD_WS_OWNED, (const u8 *)"\0", 1);
+	}
 
 	group("ToD: positions");
 	wrf(FAKE_HERO + TOD_HERO_POS, 1.0f);
@@ -746,9 +793,9 @@ static void test_tod_fastloads(void)
 	      "the first word replaced is the game's bne cr7 to the same epilogue");
 
 	group("ToD: Fast loads' code switch is the console's words");
-	check(sw != NULL && sw->ncaves == 2 && sw->nsites == 4 && sw->nflags == 1,
-	      "two caves (the switch, qwark's own), four sites, one flag");
-	if (sw != NULL && sw->ncaves == 2 && sw->caves[0].len == 4u * (7u + FL_N)) {
+	check(sw != NULL && sw->ncaves == 3 && sw->nsites == 5 && sw->nflags == 2,
+	      "three caves (the switch, qwark's own, build 59's Infinite ammo), five sites, two flags");
+	if (sw != NULL && sw->ncaves == 3 && sw->caves[0].len == 4u * (7u + FL_N)) {
 		u32 cave = sw->caves[0].addr, pw[FL_PROP_N];
 
 		for (i = 0; i < FL_N; i++) {
@@ -777,7 +824,7 @@ static void test_tod_fastloads(void)
 	}
 	check(sw != NULL && sw->sites[0].addr == TOD_FASTLOAD_AT && sw->flags[0] == FL_FLAG &&
 	      SW_TOD_FLAG_FAST_LOADS == FL_FLAG, "the site is the console's first word, the flag past the BSS");
-	if (sw != NULL && sw->ncaves == 2 && sw->nsites == 4) {
+	if (sw != NULL && sw->ncaves == 3 && sw->nsites == 5) {
 		const struct sw_cave *own = &sw->caves[1];
 		int sites_ok = 1, back_ok = 1;
 
@@ -832,8 +879,13 @@ static void test_tod_fastloads(void)
 	host_write_log_reset();
 	check(features_set(TF_FAST_LOADS, 1) == ST_UNSUPPORTED && fl_words_are(g_fl_orig, FL_N + 1) &&
 	      host_write_log_count() == 0, "so Fast loads is UNSUPPORTED and writes nothing");
+	wr32(TOD_AMMO_INSTR, TOD_AMMO_INSTR_WORD);
+	check(features_set(TF_INFINITE_AMMO, 1) == ST_UNSUPPORTED && rd32(TOD_AMMO_INSTR) == TOD_AMMO_INSTR_WORD &&
+	      fl_rd8(SW_TOD_FLAG_INFINITE_AMMO) == 0,
+	      "build 59: and so is Infinite ammo, a code patch now: its word and its flag byte untouched");
 	check(switches_patch(g_fl_patch, sizeof(g_fl_patch), &len) == ST_OK &&
-	      be16_get(g_fl_patch) == 32u + 63u + 4u, "SWITCH_PATCH: 32 and 63 cave words and the four sites");
+	      be16_get(g_fl_patch) == 32u + 63u + 5u + 5u,
+	      "SWITCH_PATCH: 32, 63 and (build 59) 5 cave words and the five sites");
 	check(quit(), "the game quits");
 	host_boot_as(TOD_TITLE, "tod");
 	fl_poke_patch(g_fl_patch, len);
@@ -854,6 +906,18 @@ static void test_tod_fastloads(void)
 	check(features_set(TF_FAST_LOADS, 1) == ST_OK && features_set(TF_FAST_LOADS, 0) == ST_OK &&
 	      fl_rd8(FL_FLAG) == 0 && rd32(TOD_FASTLOAD_AT) == SW_TOD_SITE_FAST_LOADS &&
 	      rd32(TOD_TRANSITION_MIN) == TOD_TRANSITION_GAME, "off: the flag to 0 and the 5 s back, still no code");
+
+	/* Build 59: Infinite ammo through its own flag, the byte after Fast loads'. */
+	check(rd32(TOD_AMMO_INSTR) == SW_TOD_SITE_INFINITE_AMMO && SW_TOD_FLAG_INFINITE_AMMO == 0x108A8561u,
+	      "build 59: Weapon_useAmmo's call is the switch's bl, and Infinite ammo's flag is 0x108A8561");
+	host_write_log_reset();
+	check(features_set(TF_INFINITE_AMMO, 1) == ST_OK && fl_rd8(SW_TOD_FLAG_INFINITE_AMMO) == 1 &&
+	      fl_rd8(FL_FLAG) == 0 && rd32(TOD_AMMO_INSTR) == SW_TOD_SITE_INFINITE_AMMO,
+	      "Infinite ammo on: its flag byte to 1, Fast loads' left alone, and no code");
+	check(tod_toggle_read(TF_INFINITE_AMMO, &on) == ST_OK && on == 1, "its flag reads back as on");
+	check(features_set(TF_INFINITE_AMMO, 0) == ST_OK && fl_rd8(SW_TOD_FLAG_INFINITE_AMMO) == 0 &&
+	      rd32(TOD_AMMO_INSTR) == SW_TOD_SITE_INFINITE_AMMO, "and off: the flag to 0, still no code");
+	check(tod_toggle_read(TF_INFINITE_AMMO, &on) == ST_OK && on == 0, "and reads back as off");
 	check(quit(), "the game quits");
 	host_set_can_patch_code(1);
 	host_set_emulator(0);
@@ -1166,9 +1230,9 @@ static void test_tod_cutscenes(void)
 
 /*
  * Infinite ammo and Infinite health flagged "on boot": FEATURE_SET_AUTO takes
- * them (a LIVE toggle it refuses), a new boot of the game writes their words
- * as the session enters it, and the ammo hold runs on what the boot wrote.
- * God Ratchet, LIVE, still has no auto flag.
+ * them (a LIVE toggle it refuses), and a new boot of the game puts them in as
+ * the session enters it: Infinite health's word, and since build 59 Infinite
+ * ammo's patch. God Ratchet, LIVE, still has no auto flag.
  */
 static void test_tod_on_boot(void)
 {
@@ -1182,23 +1246,20 @@ static void test_tod_on_boot(void)
 	check(features_set_auto(TF_GOD_RATCHET, 1) == ST_UNSUPPORTED, "God Ratchet, LIVE, does not");
 	check(quit(), "the game quits");
 	host_boot_as(TOD_TITLE, "tod");
+	wr32(TOD_AMMO_INSTR, TOD_AMMO_INSTR_WORD);   /* a new process: the game's own call */
 	for (i = 0; i < 4000 && !(session_state() == SESSION_INGAME && session_game() != NULL); i++) tick(1);
 	tick(4);
-	check(rd32(TOD_INFINITE_AMMO) == 1 && rd32(TOD_NO_DAMAGE) == 1, "a new boot: both words written as the session enters it");
+	check(rd32(TOD_AMMO_INSTR) == 0x60000000u && rd32(TOD_NO_DAMAGE) == 1 && rd32(TOD_INFINITE_AMMO) == 0,
+	      "a new boot: Infinite ammo's patch and Infinite health's word in as the session enters it");
 	check(((features_toggle_state() >> TF_INFINITE_AMMO) & 1u) && ((features_toggle_state() >> TF_INFINITE_HEALTH) & 1u),
 	      "and both bits set");
 	check(fl_rd8(TOD_PROXY_LOW) == 0, "God Ratchet is left alone");
-	host_poke(slot + TOD_WS_OWNED, (const u8 *)"\1", 1);
-	wrf(slot + TOD_WS_AMMO, 20.0f);
-	tick(12);
-	wrf(slot + TOD_WS_AMMO, 15.0f);
-	tick(8);
-	check(rdf(slot + TOD_WS_AMMO) == 20.0f, "the ammo hold runs on the boot's write");
+	(void)slot;
 	check(features_set_auto(TF_INFINITE_AMMO, 0) == ST_OK && features_set_auto(TF_INFINITE_HEALTH, 0) == ST_OK,
 	      "the auto flags come off");
 	features_set(TF_INFINITE_AMMO, 0);
 	features_set(TF_INFINITE_HEALTH, 0);
-	check(rd32(TOD_INFINITE_AMMO) == 0 && rd32(TOD_NO_DAMAGE) == 0, "and the cheats with them");
+	check(rd32(TOD_AMMO_INSTR) == TOD_AMMO_INSTR_WORD && rd32(TOD_NO_DAMAGE) == 0, "and the cheats with them");
 	session_previous_dismiss();
 }
 

@@ -7,7 +7,9 @@
 #
 # Both of RaC2's patched forms are a nop, so each trampoline runs the original
 # only when its flag is clear and otherwise falls straight through to the branch
-# back (the two crash guards at the end have no flag, and say why):
+# back (the two crash guards at the end have no flag, and say why; since build
+# 59 Infinite ammo's two trampolines are shared by many sites and return on
+# their own, below):
 #
 #     lis   rX, FLAG@ha
 #     lbz   rX, FLAG@l(rX)
@@ -22,12 +24,13 @@
 # its request bytes in the same gap since build 50 (sf_rac2.h says why they
 # moved), from 0x1317728 up, so the switch flags take its first bytes.
 #
-# The caves are at 0x1141400..0x11414AC, in the last function (0x11413F8) of
+# The caves are at 0x1141400..0x11414B4, in the last function (0x11413F8) of
 # the span of library code nothing reaches that the savefile helper starts,
 # 0x113EC64..0x11414FC (src/games/sfhelper/sf_rac2.h says why it is dead). The
 # helper takes the head of the span, about 1 KB today, and may grow up to here:
 # its SF_CAVE_END is this cave's start. The crash guards follow the two
-# toggles' trampolines, from 0x1141440 to 0x114149C, and leave 96 bytes of the
+# toggles' trampolines, from 0x1141440 to 0x114149C, and build 59's Clank
+# Zapper trampoline them, 0x11414A0..0x11414B4, which leaves 72 bytes of the
 # span unused; build.sh fails a cave that would run past SW_CAVE_END.
 #
 # Build 53 moved them here from 0x233200 and 0x233220, the end of the function
@@ -71,22 +74,383 @@ fast_loads_ret:
 
 # --------------------------------------------------------------- infinite ammo
 #
-# 0xB30C7C: stwx r3, r4, r5. This is the magazine clamp rather than a decrement:
-# when the rounds in ammo[id] come to more than the magazine holds, the store
-# puts them back to the magazine size. Nopped, the 0x7FFFFFFF the toggle fills
-# the array with stays where it was put.
+# Build 59: the ammo is no longer filled with 0x7FFFFFFF and held there by
+# nopping the magazine clamp at 0xB30C7C, which the site of builds 50 to 58
+# was; the shot's own decrement is what a console nops now (src/games/rac2.c,
+# rac2_ammo_words), and these are its two forms. RaC2's level code is in the
+# executable once per planet, so the decrement is too:
+#
+#   - consume_ammo(item, amount), 37 copies, one per planet's code: every
+#     weapon's shot takes its ammo there. Its last two words are
+#     stwx r4, r6, r5 (the count less the amount) and blr, with r3 already 1.
+#     Each copy's site is the stwx, a plain b into one trampoline that ends
+#     the function itself, bnelr with the flag up and the game's stwx and blr
+#     with it down. r7 and cr0 are dead there: the function returns next.
+#
+#   - the Clank Zapper, ammo[9], taken one at a time where the hero's weapon
+#     switch (0x98D148 and its 36 twins) uses it, inline and twice in each
+#     copy: addic r3, r5, -1 then stw r3, 0x24(r4) (a console nops the store).
+#     The site is the addic, and it is a bl, so that every one of the 74 can
+#     share one trampoline that returns with blr: the function saved its link
+#     register at its prologue (mflr r0, std r0) and loads it back before it
+#     returns, and nothing between reads it. The trampoline computes the same
+#     r3 with no branch and no other register: the flag less 1 is -1 with the
+#     flag down and 0 with it up, so r3 is the count less 1 or the count
+#     itself, which the game's own store then writes back. Only qwark writes
+#     the flag, 0 or 1. The carry the addic set is read by nothing after it.
 	.section .cave.infinite_ammo, "ax"
 infinite_ammo:
-	lis     r6, SW_FLAG_INFINITE_AMMO@ha
-	lbz     r6, SW_FLAG_INFINITE_AMMO@l(r6)
-	cmpwi   cr0, r6, 0
-	bne     cr0, 1f
-	stwx    r3, r4, r5
-1:	b       infinite_ammo_ret
+	lis     r7, SW_FLAG_INFINITE_AMMO@ha
+	lbz     r7, SW_FLAG_INFINITE_AMMO@l(r7)
+	cmpwi   cr0, r7, 0
+	bnelr   cr0
+	stwx    r4, r6, r5
+	blr
 
-	.section .site.infinite_ammo, "ax"
+	.section .cave.clank_zapper, "ax"
+clank_zapper:
+	lis     r3, SW_FLAG_INFINITE_AMMO@ha
+	lbz     r3, SW_FLAG_INFINITE_AMMO@l(r3)
+	addi    r3, r3, -1
+	add     r3, r5, r3
+	blr
+
+# The sites, in address order: consume_ammo's 37 stores, then the Clank
+# Zapper's 74 decrements (sw_rac2.ld places each).
+
+	.section .site.ammo_00, "ax"
 	b       infinite_ammo
-infinite_ammo_ret:
+
+	.section .site.ammo_01, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_02, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_03, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_04, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_05, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_06, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_07, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_08, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_09, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_10, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_11, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_12, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_13, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_14, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_15, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_16, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_17, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_18, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_19, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_20, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_21, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_22, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_23, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_24, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_25, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_26, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_27, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_28, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_29, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_30, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_31, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_32, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_33, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_34, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_35, "ax"
+	b       infinite_ammo
+
+	.section .site.ammo_36, "ax"
+	b       infinite_ammo
+
+	.section .site.zapper_00, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_01, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_02, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_03, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_04, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_05, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_06, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_07, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_08, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_09, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_10, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_11, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_12, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_13, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_14, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_15, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_16, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_17, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_18, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_19, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_20, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_21, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_22, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_23, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_24, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_25, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_26, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_27, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_28, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_29, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_30, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_31, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_32, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_33, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_34, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_35, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_36, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_37, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_38, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_39, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_40, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_41, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_42, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_43, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_44, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_45, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_46, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_47, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_48, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_49, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_50, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_51, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_52, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_53, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_54, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_55, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_56, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_57, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_58, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_59, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_60, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_61, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_62, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_63, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_64, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_65, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_66, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_67, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_68, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_69, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_70, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_71, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_72, "ax"
+	bl      clank_zapper
+
+	.section .site.zapper_73, "ax"
+	bl      clank_zapper
+
 
 # ---------------------------------------------------------------- crash guards
 #

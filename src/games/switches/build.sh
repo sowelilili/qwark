@@ -233,9 +233,12 @@ for g in $GAMES; do
 
 			word=$(word_of "$bin")
 
-			# Every site is a plain relative `b`, no link and no absolute
-			# address: the trampoline branches back itself.
-			[ $((word & 0xFC000003)) -eq $((0x48000000)) ] || {
+			# Every site is a relative `b`, no absolute address: the
+			# trampoline branches back itself. Build 59: or a relative `bl`,
+			# for a trampoline many sites share that returns with blr (RaC2's
+			# and Tools of Destruction's Infinite ammo; sw_rac2.s says when
+			# that is safe).
+			[ $((word & 0xFC000002)) -eq $((0x48000000)) ] || {
 				echo "switches: $g $section is $word, not a relative branch" >&2
 				exit 1
 			}

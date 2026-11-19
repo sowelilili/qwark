@@ -2148,6 +2148,97 @@ def test_telemetry_rate(c, udp, prefix=""):
               (len(steps), usual, steps[:12]))
 
 
+# Build 59: every game's Infinite ammo nops the shot's own decrement and fills
+# each weapon to the game's ceiling as it goes on (src/games/rac1.h, rac2.h,
+# rac3.h, tod.h). Per game: (title, boot argument, feature id, [(site, the
+# game's word)], [(owned byte, ammo word, ceiling address, ceiling, width)]).
+IA_GAMES = [
+    ("NPEA00385", None, 1, [(0x000AA2DC, 0x7D05392E)],
+     [(0x0096C14A, 0x0096C0D4, 0x00737D30 + 10 * 0x18 + 0x0E, 40, 2)]),
+    ("NPEA00387", None, 0, [(0x00182A88, 0x7C85312E), (0x00182B44, 0x7CA3212E)],
+     [(0x00DA56EC + 0x57, 0x00DA5240 + 0x57 * 4, 0x00C114E0 + 0x57 * 0xF0 + 0x8A, 12, 2)]),
+]
+IA_NOP = 0x60000000
+
+
+def ia_rac2_sites(c):
+    """RaC2's 111 Infinite ammo words, out of its SWITCH_PATCH: each store b'd to 0x1141420, each
+    Clank Zapper decrement bl'd to 0x11414A0 and the store after it."""
+    status, _stamp, words, _single, _body = savefile_patch(c, OP_SWITCH_PATCH)
+    stores, decs = [], []
+    for a, v in words or []:
+        w = struct.unpack(">I", v)[0]
+        if w >> 26 != 18:
+            continue
+        d = w & 0x03FFFFFC
+        if d & 0x02000000:
+            d -= 0x04000000
+        t = (a + d) & 0xFFFFFFFF
+        if t == 0x01141420 and w & 1 == 0:
+            stores.append((a, 0x7C86292E))
+        elif t == 0x011414A0 and w & 1 == 1:
+            decs.append(a)
+    return status, stores + [(a + 4, 0x90640024) for a in decs], decs
+
+
+def smoke_infinite_ammo(c, sim):
+    """Infinite ammo over the wire in RaC1, RaC2, UYA and ToD (build 59): on fills the weapon held to the
+    game's ceiling and writes every nop, off puts every word back; the ammo stays."""
+    games = list(IA_GAMES)
+    games.insert(1, ("NPEA00386", None, 1, None,
+                     [(0x01481A80 + 30, 0x0148182C + 30 * 4, 0x01322A90 + 30 * 208 + 0x8A, 20, 2)]))
+    games.append((TOD_TITLE, "tod", 8, [(0x0049EF08, 0x4BFFB7D9)], None))
+    for title, arg, fid, sites, weapons in games:
+        sim.send("quit")
+        wait_state(c, SESSION_XMB)
+        sim.send("boot %s%s" % (title, " " + arg if arg else ""))
+        ok, _info = wait_game(c, {"NPEA00385": 1, "NPEA00386": 2, "NPEA00387": 3}.get(title, 5))
+        check(ok, "infinite ammo: %s comes up" % title)
+        if sites is None:
+            status, sites, decs = ia_rac2_sites(c)
+            check(status == ST_OK and len(sites) == 111 and len(decs) == 74,
+                  "infinite ammo: RaC2's SWITCH_PATCH names 37 stores and 74 Clank Zapper decrements", len(sites))
+            for a in decs:
+                mem_write(c, a, struct.pack(">I", 0x3065FFFF))
+        for a, w in sites:
+            mem_write(c, a, struct.pack(">I", w))
+        held = []
+        if weapons:
+            for owned, ammo, ceil, value, width in weapons:
+                mem_write(c, owned, b"\x01")
+                if title == "NPEA00386":
+                    mem_write(c, 0x01329A40 + 30, bytes([30]))     # the Lancer at V1
+                if title == "NPEA00387":
+                    mem_write(c, 0x00C1E43C + 0x57, bytes([0x57]))  # Agents of Doom at V1
+                mem_write(c, ceil, value.to_bytes(width, "big"))
+                mem_write(c, ammo, struct.pack(">I", 1))
+                held.append((ammo, value))
+        else:
+            # ToD: weapon 1 held at V1, which the simulator's weapon.csv fills to 20 + 2 * 0 + 1.
+            mem_write(c, TOD_WEAPONS + 0x14 + 0x10, b"\x01\x00")
+            mem_write(c, TOD_WEAPONS + 0x14 + 0x0C, bytes(4))
+            mem_write(c, TOD_WEAPONS + 0x14 + 0x08, struct.pack(">f", 2.0))
+            held.append((TOD_WEAPONS + 0x14 + 0x08, struct.unpack(">I", struct.pack(">f", 21.0))[0]))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fid, 1))
+        words = [mem_read_u32(c, a) for a, _w in sites]
+        check(status == ST_OK and all(w == IA_NOP for w in words),
+              "infinite ammo: %s on, every one of its %d words a nop" % (title, len(sites)),
+              (status, [hex(w) for w in words[:4]]))
+        check(all(mem_read_u32(c, a) == v for a, v in held),
+              "infinite ammo: %s's weapon held is at the game's ceiling, not some huge number" % title,
+              [(hex(a), mem_read_u32(c, a), v) for a, v in held])
+        state = fresh_state(c)
+        check(state and state["toggle_state"] & (1 << fid),
+              "infinite ammo: %s's toggle state says on" % title, state and hex(state["toggle_state"]))
+        status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", fid, 0))
+        words = [mem_read_u32(c, a) for a, _w in sites]
+        check(status == ST_OK and words == [w for _a, w in sites],
+              "infinite ammo: %s off, every word the game's own again" % title,
+              (status, [hex(w) for w in words[:4]]))
+        check(all(mem_read_u32(c, a) == v for a, v in held),
+              "infinite ammo: and %s's ammo stays where it was" % title)
+
+
 def smoke_reboot_apply(sim, c):
     """
     Revision 1.33: reboot.apply over the wire, RaC1 rebooted with Ghost Ratchet
@@ -5774,6 +5865,11 @@ TOD_FASTLOAD_SITE = 0x4818CFF0           # b 0x3EB578, the switch's site word
 TOD_FASTLOAD_CAVE = 0x003EB578
 TOD_FASTLOAD_CAVE_WORDS = 32             # the flag's test and the game's bne (7), then the twenty-five
 TOD_FASTLOAD_FLAG = 0x108A8560
+# Build 59: Infinite ammo's switch (src/games/switches/sw_tod.s).
+TOD_AMMO_FLAG = 0x108A8561
+TOD_AMMO_AT = 0x0049EF08
+TOD_AMMO_SITE = 0x4BF4C7ED
+TOD_AMMO_CAVE = 0x003EB6F4
 # Revision 1.29: the cut makes the transition prop's two handles invalid (tod.h,
 # TOD_PROP_*): words 14 to 21, lis r9, 0x101D .. stw r11, 0x60EC(r9).
 TOD_FASTLOAD_PROP = [0x3D20101D, 0x3D400400, 0x394AFFFF, 0x3960FFFF,
@@ -6421,8 +6517,8 @@ def smoke_tod(c, sim):
         ids = dict((f["label"], f["id"]) for f in features)
         check(ids.get("Infinite health") == 9 and ids.get("God Ratchet") == 16 and ids.get("Fast loads") == 17,
               "ToD: Infinite health keeps id 9, God Ratchet is 16, Fast loads 17", ids)
-        check([f["label"] for f in features if f["flags"] & 0x02] == ["Fast loads"],
-              "ToD: Fast loads alone writes code (a code switch under RPCS3)",
+        check([f["label"] for f in features if f["flags"] & 0x02] == ["Fast loads", "Infinite ammo"],
+              "ToD: Fast loads and (build 59) Infinite ammo write code (code switches under RPCS3)",
               [f["label"] for f in features if f["flags"] & 0x02])
 
     status, body = c.call(OP_PLANET_LIST)
@@ -7310,18 +7406,24 @@ def smoke_rpcs3_tod_fastloads(c, pine):
     status, stamp, words, single, _body = savefile_patch(c, OP_SWITCH_PATCH)
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
     ncave = TOD_FASTLOAD_CAVE_WORDS + TOD_OWN_CAVE_LEN // 4
-    check(status == ST_OK and len(rows) == ncave + 4 and
+    # Build 59: Infinite ammo's five words after them, its bl site last, its flag the byte after Fast loads'.
+    check(status == ST_OK and len(rows) == ncave + 5 + 5 and
           all(TOD_FASTLOAD_CAVE <= a < TOD_OWN_CAVE + TOD_OWN_CAVE_LEN for a, _ in rows[:ncave]) and
-          rows[ncave] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and
-          rows[ncave + 1:] == [(at, site) for at, _o, site in TOD_OWN_SITES] and
-          single == [(TOD_FASTLOAD_FLAG, 0)],
-          "rpcs3: ToD's SWITCH_PATCH: 32 trampoline words and qwark's own 63, the four sites, the flag at 0",
-          (status, len(rows), [(hex(a), hex(v)) for a, v in rows[-4:]], single))
+          [a for a, _ in rows[ncave:ncave + 5]] == [TOD_AMMO_CAVE + 4 * i for i in range(5)] and
+          rows[ncave + 5] == (TOD_FASTLOAD_AT, TOD_FASTLOAD_SITE) and
+          rows[ncave + 6:ncave + 9] == [(at, site) for at, _o, site in TOD_OWN_SITES] and
+          rows[ncave + 9] == (TOD_AMMO_AT, TOD_AMMO_SITE) and
+          single == [(TOD_FASTLOAD_FLAG, 0), (TOD_AMMO_FLAG, 0)],
+          "rpcs3: ToD's SWITCH_PATCH: 32 trampoline words, qwark's own 63, Infinite ammo's 5, the five sites, "
+          "the two flags at 0",
+          (status, len(rows), [(hex(a), hex(v)) for a, v in rows[-5:]], single))
     row_at = dict(rows)
     check([row_at.get(TOD_FASTLOAD_CAVE + 4 * (7 + 14 + i)) for i in range(8)] == TOD_FASTLOAD_PROP,
           "rpcs3: revision 1.29: its trampoline makes the transition prop's handles invalid as the console's cut does")
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 1))
     check(status == ST_UNSUPPORTED, "rpcs3: and until it is in, Fast loads is refused", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 8, 1))
+    check(status == ST_UNSUPPORTED, "rpcs3: and so is Infinite ammo, a code patch since build 59", status)
 
     pine.shutdown_game()
     wait_state(c, SESSION_XMB)
@@ -7343,6 +7445,12 @@ def smoke_rpcs3_tod_fastloads(c, pine):
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 17, 0))
     check(status == ST_OK and pine.peek(TOD_FASTLOAD_FLAG, 1) == b"\x00" and
           pine.peek(TOD_TRANSITION_MIN, 4) == struct.pack(">f", 5.0), "rpcs3: and off, the 5 s back", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 8, 1))
+    check(status == ST_OK and pine.peek(TOD_AMMO_FLAG, 1) == b"\x01" and
+          pine.peek(TOD_AMMO_AT, 4) == struct.pack(">I", TOD_AMMO_SITE),
+          "rpcs3: Infinite ammo on is its flag byte, 0x108A8561, the bl left as RPCS3 loaded it", status)
+    status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", 8, 0))
+    check(status == ST_OK and pine.peek(TOD_AMMO_FLAG, 1) == b"\x00", "rpcs3: and off", status)
     for addr, _value in words or []:
         pine.poke(addr, bytes(4))
 
@@ -7928,14 +8036,16 @@ def smoke_rpcs3_rac2_old_switches(c, pine):
           "rpcs3 rac2 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
           (status, hex(stamp) if stamp is not None else None))
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    # Twenty-nine trampoline words, the crash guards' with them, and four sites.
-    check(len(rows) == 33 and all(0x01141400 <= a < 0x011414FC for a, _ in rows[:29]),
-          "rpcs3 rac2 switches: its twenty-nine trampoline words are at 0x1141400 on",
-          [hex(a) for a, _ in rows[:29]])
-    check(rows[29:] == [(0x00086960, 0x490BAAE0), (0x00B30C7C, 0x486107A4),
-                        (0x00BDF30C, 0x48562164), (0x00BEA8A0, 0x48556B60)],
-          "rpcs3 rac2 switches: and the sites branch there",
-          [(hex(a), hex(v)) for a, v in rows[29:]])
+    # Build 59: thirty-four trampoline words, the crash guards' and the Clank
+    # Zapper's with them, and 114 sites, Infinite ammo's 111 among them.
+    check(len(rows) == 148 and all(0x01141400 <= a < 0x011414FC for a, _ in rows[:34]),
+          "rpcs3 rac2 switches: its thirty-four trampoline words are at 0x1141400 on",
+          [hex(a) for a, _ in rows[:34]])
+    ammo = [a for a, v in rows[34:] if v >> 26 == 18 and (a + ((v & 0x03FFFFFC) - (0x04000000 if v & 0x02000000 else 0))) & 0xFFFFFFFF in (0x01141420, 0x011414A0)]
+    check(rows[34] == (0x00086960, 0x490BAAE0) and rows[-2:] == [(0x00BDF30C, 0x48562164), (0x00BEA8A0, 0x48556B60)] and
+          len(ammo) == 111 and 0x00B30C7C not in [a for a, _ in rows],
+          "rpcs3 rac2 switches: and the sites branch there, Infinite ammo's 111 between the guards' (build 59)",
+          [(hex(a), hex(v)) for a, v in rows[34:36] + rows[-2:]])
     status, _ = c.call(OP_FEATURE_SET, struct.pack(">BI", RAC2_SW_AMMO_ID, 1))
     check(status == ST_UNSUPPORTED,
           "rpcs3 rac2 switches: Infinite ammo is refused until then", status)
@@ -8089,9 +8199,12 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: SWITCH_PATCH's stamp is not the old patch's: another build",
           (status, hex(stamp) if stamp is not None else None))
     rows = [(a, struct.unpack(">I", v)[0]) for a, v in (words or [])]
-    check(len(rows) == 62 and rows[:6] == RAC3_SW_OLD_ROWS[:6],
-          "rpcs3 rac3 switches: 62 rows, the ammo trampoline first and unchanged",
+    check(len(rows) == 69 and rows[:6] == RAC3_SW_OLD_ROWS[:6],
+          "rpcs3 rac3 switches: 69 rows, the ammo trampoline first and unchanged",
           len(rows))
+    check(all(0x00981064 <= a < 0x0098107C for a, _ in rows[59:65]) and rows[64] == (0x00981078, 0x4B801AD0),
+          "rpcs3 rac3 switches: build 59's second ammo trampoline, six words at 0x981064, back to 0x182B48",
+          [(hex(a), hex(v)) for a, v in rows[59:65]])
     check(all(0x00980F80 <= a < 0x00981028 for a, _ in rows[6:48]) and
           all(0x00981030 <= a < 0x0098105C for a, _ in rows[48:59]),
           "rpcs3 rac3 switches: the fast-load trampolines' 42 and 11 words at 0x980F80 and 0x981030",
@@ -8104,10 +8217,10 @@ def smoke_rpcs3_rac3_switches(c, pine):
           "rpcs3 rac3 switches: a standing-still pass sleeps 1/60 s (li r11, 141; li r3, 16667; sc) "
           "before going on at 0x27B538",
           [hex(v) for v in still])
-    check(rows[59:] == [(0x00182A88, 0x487FE478), (0x0027B49C, 0x48705AE4),
+    check(rows[65:] == [(0x00182A88, 0x487FE478), (0x00182B44, 0x487FE520), (0x0027B49C, 0x48705AE4),
                         (0x0027B550, 0x48705AE0)],
-          "rpcs3 rac3 switches: and the three sites, the fingerprint's branch as it was",
-          [(hex(a), hex(v)) for a, v in rows[59:]])
+          "rpcs3 rac3 switches: and the four sites, the fingerprint's branch as it was",
+          [(hex(a), hex(v)) for a, v in rows[65:]])
     check(sorted(a for a, _ in (single or [])) == [0x00D9FF10, RAC3_SW_FAST_FLAG],
           "rpcs3 rac3 switches: two flag bytes, 0xD9FF10 and 0xD9FF11",
           [hex(a) for a, _ in (single or [])])
@@ -9798,6 +9911,9 @@ def main():
 
         # ----------------------- apply toggles on game reboot, 1.33
         smoke_reboot_apply(sim, c)
+
+        # ----------------------- Infinite ammo in every game, build 59
+        smoke_infinite_ammo(c, sim)
 
         # ------------------------------ BCES01503, the disc trilogy
         sim.send("quit")

@@ -4037,6 +4037,234 @@ static const struct game_unlock *unlock_row(const struct game_unlock *list,
 	return NULL;
 }
 
+/* ------------------------------------------------ Infinite ammo, build 59 */
+
+/*
+ * Every game's Infinite ammo alike since build 59 (rac1.h, rac2.h, rac3.h,
+ * tod.h): on, each owned weapon goes to the game's own ceiling for it and the
+ * shot's decrement is nopped; off, every original word comes back and the
+ * ammo stays. The simulator cannot run a shot, so the words are checked one
+ * by one: the nop, the original the patch kept, and the guard's owner.
+ */
+static const struct patch_def *ia_patch(void)
+{
+	u32 i;
+
+	for (i = 0; i < patch_count(); i++) {
+		const struct patch_def *p = patch_at(i);
+		if (p != NULL && p->kind == PATCH_KIND_FEATURE && qstreq(p->name, "Infinite ammo")) return p;
+	}
+	return NULL;
+}
+
+/* All `n` words nopped, in this order, each with its original kept, each Infinite ammo's to the guard. */
+static int ia_applied(const u32 *addrs, const u32 *orig, u32 n)
+{
+	const struct patch_def *p = ia_patch();
+	u32 k, v;
+
+	if (p == NULL || p->count != n) return 0;
+	for (k = 0; k < n; k++) {
+		const char *who = mem_owner(addrs[k], 4);
+
+		if (p->words[k].addr != addrs[k] || p->words[k].value != 0x60000000u) return 0;
+		if (p->originals[k] != orig[k]) return 0;
+		if (mem_read_u32(addrs[k], &v) != ST_OK || v != 0x60000000u) return 0;
+		if (who == NULL || !qstreq(who, "Infinite ammo")) return 0;
+	}
+	return 1;
+}
+
+/* None of it applied: every word the game's own again, and nobody's to the guard. */
+static int ia_restored(const u32 *addrs, const u32 *orig, u32 n)
+{
+	u32 k, v;
+
+	if (ia_patch() != NULL) return 0;
+	for (k = 0; k < n; k++) {
+		if (mem_read_u32(addrs[k], &v) != ST_OK || v != orig[k]) return 0;
+		if (mem_owner(addrs[k], 4) != NULL) return 0;
+	}
+	return 1;
+}
+
+static void ia_seed(const u32 *addrs, const u32 *orig, u32 n)
+{
+	u32 k;
+	for (k = 0; k < n; k++) poke32(addrs[k], orig[k]);
+}
+
+static u32 ia_peek32(u32 addr)
+{
+	u8 b[4] = { 0, 0, 0, 0 };
+	host_peek(addr, b, 4);
+	return be32_get(b);
+}
+
+static u16 ia_peek16(u32 addr)
+{
+	u8 b[2] = { 0, 0 };
+	host_peek(addr, b, 2);
+	return be16_get(b);
+}
+
+static void ia_poke16(u32 addr, u16 v)
+{
+	u8 b[2];
+	be16_put(b, v);
+	host_poke(addr, b, 2);
+}
+
+/* RaC1 (rac1.h): consume_ammo's one store, and g_weaponStats' ceilings. */
+#define IA1_SITE        0x000AA2DCu
+#define IA1_SITE_WORD   0x7D05392Eu      /* stwx r8, r5, r7 */
+#define IA1_STATS(item) (0x00737D30u + (u32)(item) * 0x18u + 0x0Eu)
+#define IA1_AMMO(item)  (0x0096C0ACu + (u32)(item) * 4u)
+#define IA1_F_AMMO      1
+#define IA1_F_DIE       4
+
+static void test_rac1_infinite_ammo(void)
+{
+	static const u32 site[1] = { IA1_SITE }, orig[1] = { IA1_SITE_WORD };
+	u32 v = 0;
+
+	group("RaC1: Infinite ammo fills each weapon to g_weaponStats and nops consume_ammo's store (build 59)");
+
+	check(quit_and_wait(), "quit whatever was running");
+	check(boot_and_wait("NPEA00385"), "RaC1 reaches INGAME");
+	ia_seed(site, orig, 1);
+	/* The Bomb Glove (item 10) held, ceiling 40; the Pyrocitor (16) not held; the RYNO (23) held, ceiling 0. */
+	ia_poke16(IA1_STATS(10), 40);
+	ia_poke16(IA1_STATS(16), 240);
+	ia_poke16(IA1_STATS(23), 0);
+	host_poke(0x0096C14Au, (const u8 *)"\x01", 1);
+	host_poke(0x0096C150u, (const u8 *)"\x00", 1);
+	host_poke(0x0096C157u, (const u8 *)"\x01", 1);
+	poke32(IA1_AMMO(10), 3);
+	poke32(IA1_AMMO(16), 5);
+	poke32(IA1_AMMO(23), 7);
+
+	check(features_set(IA1_F_AMMO, 1) == ST_OK, "Infinite ammo turns on");
+	check(ia_applied(site, orig, 1), "0xAA2DC nopped, consume_ammo's stwx kept as the original, Infinite ammo's to the guard");
+	mem_read_u32(IA1_AMMO(10), &v);
+	check_eq_u64(v, 40, "the Bomb Glove is filled to its g_weaponStats ceiling, not to 0x7FFFFFFF");
+	mem_read_u32(IA1_AMMO(16), &v);
+	check_eq_u64(v, 5, "the Pyrocitor, not held, is left alone");
+	mem_read_u32(IA1_AMMO(23), &v);
+	check_eq_u64(v, 7, "and a held weapon whose ceiling reads 0 keeps its count: the game takes nothing from it");
+	check(ia_peek16(IA1_STATS(10)) == 40, "the ceiling itself is only read");
+
+	check(features_set(IA1_F_AMMO, 1) == ST_OK && ia_applied(site, orig, 1),
+	      "a second on changes nothing: the original is not taken again from the nop");
+	poke32(0x00969C70u, 3);                  /* the game on another planet (RAC1_CURRENT_PLANET) */
+	pump(30);
+	check(features_trigger(IA1_F_DIE) == ST_OK, "a death");
+	pump(30);
+	poke32(0x00969C70u, 0);
+	pump(4);
+	check(ia_applied(site, orig, 1) && (features_toggle_state() & ((u64)1 << IA1_F_AMMO)) != 0,
+	      "the patch and the toggle both survive a planet change and a death");
+
+	check(features_set(IA1_F_AMMO, 0) == ST_OK, "Infinite ammo turns off");
+	check(ia_restored(site, orig, 1), "the store is the game's again, word for word, and nobody's to the guard");
+	mem_read_u32(IA1_AMMO(10), &v);
+	check_eq_u64(v, 40, "and the ammo stays where it was");
+
+	check(features_set(IA1_F_AMMO, 1) == ST_OK, "on again");
+	check(quit_and_wait(), "the game quits with it on");
+	check(boot_and_wait("NPEA00385"), "and boots again");
+	ia_seed(site, orig, 1);                 /* a new process: the game's own word */
+	check(ia_patch() == NULL, "the new process has no Infinite ammo patch on the table");
+	session_previous_dismiss();
+	check_eq_u64(features_set(IA1_F_AMMO, 1), ST_OK, "turning it on in the new process");
+	check(ia_applied(site, orig, 1), "patches it, its original taken afresh");
+	features_set(IA1_F_AMMO, 0);
+	check(ia_restored(site, orig, 1), "off");
+}
+
+/* RaC2 (rac2.h): every planet's consume_ammo store and Clank Zapper decrement. */
+static u32 g_ia2_addr[111], g_ia2_orig[111], g_ia2_dec[74];
+
+/* Out of the switch table, so that it and the console patch are held to the same sites. */
+static u32 ia2_sites(void)
+{
+	const struct sw_desc *d = sw_desc_for_game(GAME_RAC2);
+	u32 n = 0, nz = 0, i, pass;
+
+	if (d == NULL || d->ncaves < 5) return 0;
+	for (pass = 0; pass < 2; pass++) {
+		for (i = 0; i < d->nsites; i++) {
+			u32 a = d->sites[i].addr, w = d->sites[i].value;
+			u32 to = a + ((w & 0x02000000u) ? ((w & 0x03FFFFFCu) | 0xFC000000u) : (w & 0x03FFFFFCu));
+
+			if (pass == 0 && (w & 3u) == 0 && to == 0x01141420u && n < 111) {
+				g_ia2_addr[n] = a;
+				g_ia2_orig[n++] = 0x7C86292Eu;          /* stwx r4, r6, r5 */
+			}
+			if (pass == 1 && (w & 3u) == 1 && to == 0x011414A0u && n < 111 && nz < 74) {
+				g_ia2_dec[nz++] = a;
+				g_ia2_addr[n] = a + 4u;
+				g_ia2_orig[n++] = 0x90640024u;          /* stw r3, 0x24(r4) */
+			}
+		}
+	}
+	return n == 111 && nz == 74 ? n : 0;
+}
+
+static void test_rac2_infinite_ammo(void)
+{
+	u32 v = 0, i, decs_ok;
+
+	group("RaC2: Infinite ammo fills each weapon to its magazine and nops every planet's decrement (build 59)");
+
+	check(ia2_sites() == 111, "37 consume_ammo stores and 74 Clank Zapper decrements, from the switch table");
+	ia_seed(g_ia2_addr, g_ia2_orig, 111);
+	for (i = 0; i < 74; i++) poke32(g_ia2_dec[i], 0x3065FFFFu);
+	poke32(0x00B30C7Cu, 0x7C64292Eu);          /* builds 50 to 58's site, the magazine clamp */
+
+	/* The Lancer held at V2 (magazine 100), the Clank Zapper at V1 (30), the Bouncer not held. */
+	host_poke(R2_OWNED(LANCER_ITEM), (const u8 *)"\x01", 1);
+	host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x3C", 1);
+	host_poke(R2_CAPACITY(LANCER_ITEM), (const u8 *)"\x00\x0A", 2);
+	host_poke(R2_CAPACITY(LANCER_V2), (const u8 *)"\x00\x64", 2);
+	host_poke(R2_OWNED(ZAPPER_ITEM), (const u8 *)"\x01", 1);
+	host_poke(R2_ITEM(ZAPPER_ITEM), (const u8 *)"\x09", 1);
+	host_poke(R2_CAPACITY(ZAPPER_ITEM), (const u8 *)"\x00\x1E", 2);
+	host_poke(R2_OWNED(BOUNCER_ITEM), (const u8 *)"\x00", 1);
+	poke32(R2_AMMO(LANCER_ITEM), 2);
+	poke32(R2_AMMO(ZAPPER_ITEM), 0);
+	poke32(R2_AMMO(BOUNCER_ITEM), 7);
+	host_poke(R2_OWNED(12), (const u8 *)"\x00", 1);
+	poke32(R2_AMMO(12), 5);                    /* the Bomb Glove, not held: the old fill's first word */
+
+	check(features_set(F2_INFINITE_AMMO, 1) == ST_OK, "Infinite ammo turns on");
+	check(ia_applied(g_ia2_addr, g_ia2_orig, 111),
+	      "all 111 stores nopped, each original kept word for word, each Infinite ammo's to the guard");
+	decs_ok = 1;
+	for (i = 0; i < 74; i++) if (ia_peek32(g_ia2_dec[i]) != 0x3065FFFFu) decs_ok = 0;
+	check(decs_ok, "the Clank Zapper's addic words before them are the game's: a console patches the store alone");
+	check_eq_u64(ia_peek32(0x00B30C7Cu), 0x7C64292Eu, "and the magazine clamp is no longer touched");
+	mem_read_u32(R2_AMMO(LANCER_ITEM), &v);
+	check_eq_u64(v, 100, "the Lancer is filled to its V2 magazine, not to 0x7FFFFFFF");
+	mem_read_u32(R2_AMMO(ZAPPER_ITEM), &v);
+	check_eq_u64(v, 30, "the Clank Zapper to its own");
+	mem_read_u32(R2_AMMO(BOUNCER_ITEM), &v);
+	check_eq_u64(v, 7, "the Bouncer, not held, is left alone");
+	mem_read_u32(R2_AMMO(12), &v);
+	check_eq_u64(v, 5, "and so is the old fill's window: no 0x7FFFFFFF anywhere");
+
+	check(features_set(F2_INFINITE_AMMO, 1) == ST_OK && ia_applied(g_ia2_addr, g_ia2_orig, 111),
+	      "a second on changes nothing: no original is taken again from a nop");
+	check(features_trigger(F2_DIE) == ST_OK, "a death");
+	pump(30);
+	check(ia_applied(g_ia2_addr, g_ia2_orig, 111), "the patch survives it");
+
+	check(features_set(F2_INFINITE_AMMO, 0) == ST_OK, "Infinite ammo turns off");
+	check(ia_restored(g_ia2_addr, g_ia2_orig, 111), "every one of the 111 is the game's word again, and nobody's to the guard");
+	mem_read_u32(R2_AMMO(LANCER_ITEM), &v);
+	check_eq_u64(v, 100, "and the ammo stays where it was");
+}
+
 static void test_rac2(void)
 {
 	const struct game_api *g;
@@ -4072,15 +4300,7 @@ static void test_rac2(void)
 	mem_read_u32(R2_FP_ADDR, &v);
 	check_eq_u64(v, 0x4BFFEA69u, "and the original instruction came back");
 
-	host_poke(R2_AMMO_INSTR, (const u8 *)"\x7C\x64\x29\x2E", 4);
-	check(features_set(F2_INFINITE_AMMO, 1) == ST_OK, "infinite ammo turns on");
-	mem_read_u32(R2_AMMO_INSTR, &v);
-	check_eq_u64(v, 0x60000000u, "the decrement was nopped");
-	mem_read_u32(0x0148185Cu, &v);
-	check_eq_u64(v, 0x7FFFFFFFu, "and the ammo array was filled");
-	check(features_set(F2_INFINITE_AMMO, 0) == ST_OK, "infinite ammo turns off");
-	mem_read_u32(R2_AMMO_INSTR, &v);
-	check_eq_u64(v, 0x7C64292Eu, "and the instruction was restored");
+	test_rac2_infinite_ammo();
 
 	group("RaC2: unlocks with levels and ammo");
 
@@ -4638,6 +4858,7 @@ static void test_rac2(void)
 	host_poke(R2_PLANET_ADDR, (const u8 *)"\x00\x00\x00\x00", 4);
 	host_poke(R2_CHARGE_BUF, (const u8 *)"\x00\x00\x00\x00", 4);
 	host_poke(R2_PAD_MANIP, (const u8 *)"\x00\x00\x00\x00", 4);
+	ia_seed(g_ia2_addr, g_ia2_orig, 111);
 	check(features_set(F2_INFINITE_AMMO, 1) == ST_OK, "infinite ammo on");
 
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x01", 1);
@@ -4647,8 +4868,16 @@ static void test_rac2(void)
 
 	host_poke(R2_LOADCOUNT, (const u8 *)"\x02", 1);
 	pump(3);
-	check((features_toggle_state() & ((u64)1 << F2_INFINITE_AMMO)) == 0,
-	      "the final load screen turned infinite ammo back off");
+	/*
+	 * Build 59: until then the final load screen into Aranos turned Infinite
+	 * ammo off, for the old 0x7FFFFFFF fill; it stays on through every load
+	 * now, as every game's does.
+	 */
+	check((features_toggle_state() & ((u64)1 << F2_INFINITE_AMMO)) != 0 &&
+	      ia_applied(g_ia2_addr, g_ia2_orig, 111),
+	      "the final load screen into Aranos leaves Infinite ammo on, its 111 words still in (build 59)");
+	features_set(F2_INFINITE_AMMO, 0);
+	check(ia_restored(g_ia2_addr, g_ia2_orig, 111), "and off it all comes out");
 	mem_read_u32(R2_CHARGE_BUF, &v);
 	check_eq_u64(v, 0, "and no longer sets the buffer charge by itself");
 	mem_read_u32(R2_PAD_MANIP, &v);
@@ -6253,8 +6482,12 @@ static void test_rac2_crash_guards(void)
 	check_eq_u64(r2c_target(R2C_SHIP_CAVE + 40u, r2c_ship[10]), 0x00BDF570u,
 	             "and the last branch is the loop's step to the next part");
 
-	/* The same words as the RPCS3 switches' rows, at the same addresses. */
-	if (s != NULL && s->ncaves == 4 && s->nsites == 4) {
+	/*
+	 * The same words as the RPCS3 switches' rows, at the same addresses. Build
+	 * 59: Infinite ammo's 111 sites come between the grid's and the ship's,
+	 * and the Clank Zapper's trampoline after the guards.
+	 */
+	if (s != NULL && s->ncaves == 5 && s->nsites == 114) {
 		if (s->caves[2].addr != R2C_GRID_CAVE || s->caves[2].len != 24u) same = 0;
 		if (s->caves[3].addr != R2C_SHIP_CAVE || s->caves[3].len != 44u) same = 0;
 		for (i = 0; same && i < 6; i++)
@@ -6262,7 +6495,7 @@ static void test_rac2_crash_guards(void)
 		for (i = 0; same && i < 11; i++)
 			if (be32_get(s->caves[3].bytes + 4u * i) != r2c_ship[i]) same = 0;
 		if (s->sites[0].addr != R2C_GRID_SITE || s->sites[0].value != R2C_GRID_B) same = 0;
-		if (s->sites[2].addr != R2C_SHIP_SITE || s->sites[2].value != R2C_SHIP_B) same = 0;
+		if (s->sites[112].addr != R2C_SHIP_SITE || s->sites[112].value != R2C_SHIP_B) same = 0;
 	} else {
 		same = 0;
 	}
@@ -7949,6 +8182,74 @@ static void r3_fl_check_words(void)
 /* The Bomb Glove's id, retired because UYA cannot reach the item in game. */
 #define BOMB_GLOVE_ID 0
 
+/* UYA (rac3.h): ammo_consume's store and Hero_useCurrentWeaponAmmo's. */
+#define IA3_DEFS(v)     (0x00C114E0u + (u32)(v) * 0xF0u + 0x8Au)
+#define IA3_ANNI_UNLOCK (0x00DA56ECu + 0x3Fu)
+#define IA3_ANNI_AMMO   (0x00DA5240u + 0x3Fu * 4u)
+#define IA3_LAVA_UNLOCK (0x00DA56ECu + 0x11u)
+#define IA3_LAVA_ITEM   (0x00C1E43Cu + 0x11u)
+#define IA3_LAVA_AMMO   (0x00DA5240u + 0x11u * 4u)
+#define IA3_SUCK_UNLOCK (0x00DA56ECu + 0x87u)
+#define IA3_SUCK_AMMO   (0x00DA5240u + 0x87u * 4u)
+
+static void test_rac3_infinite_ammo(void)
+{
+	static const u32 sites[2] = { 0x00182A88u, 0x00182B44u };
+	static const u32 orig[2]  = { 0x7C85312Eu, 0x7CA3212Eu };
+	u32 v = 0;
+
+	group("UYA: Infinite ammo fills each weapon to its version's magazine and nops both decrements (build 59)");
+
+	ia_seed(sites, orig, 2);
+	/*
+	 * Agents of Doom held at V2 (0x58, magazine 12); the Annihilator not held;
+	 * the Lava Gun, a GC weapon, on its table's 0xAB (magazine 90).
+	 */
+	host_poke(AOD_UNLOCK, (const u8 *)"\x01", 1);
+	host_poke(AOD_ITEM, (const u8 *)"\x58", 1);
+	ia_poke16(IA3_DEFS(0x57), 8);
+	ia_poke16(IA3_DEFS(0x58), 12);
+	poke32(AOD_AMMO, 1);
+	host_poke(IA3_ANNI_UNLOCK, (const u8 *)"\x00", 1);
+	poke32(IA3_ANNI_AMMO, 4);
+	host_poke(IA3_LAVA_UNLOCK, (const u8 *)"\x01", 1);
+	host_poke(IA3_LAVA_ITEM, (const u8 *)"\xAB", 1);
+	ia_poke16(IA3_DEFS(0xAB), 90);
+	poke32(IA3_LAVA_AMMO, 0);
+	host_poke(IA3_SUCK_UNLOCK, (const u8 *)"\x01", 1);
+	poke32(IA3_SUCK_AMMO, 3);
+
+	check(features_set(F3_FREEZE_AMMO, 1) == ST_OK, "Infinite ammo turns on");
+	check(ia_applied(sites, orig, 2),
+	      "0x182A88 and 0x182B44 nopped, both originals kept, both Infinite ammo's to the guard");
+	mem_read_u32(AOD_AMMO, &v);
+	check_eq_u64(v, 12, "Agents of Doom is filled to its V2 magazine, not its V1 one");
+	mem_read_u32(IA3_LAVA_AMMO, &v);
+	check_eq_u64(v, 90, "the Lava Gun to the magazine its GC table entry names");
+	mem_read_u32(IA3_ANNI_AMMO, &v);
+	check_eq_u64(v, 4, "the Annihilator, not held, is left alone");
+	mem_read_u32(IA3_SUCK_AMMO, &v);
+	check_eq_u64(v, 3, "and so is the Suck Cannon, whose ammo word is not a count the game keeps");
+
+	poke32(R3_PLANET_ADDR, 5);
+	pump(30);
+	poke32(R3_PLANET_ADDR, 1);
+	pump(4);
+	check(ia_applied(sites, orig, 2), "the patch survives a planet change");
+
+	check(features_set(F3_FREEZE_AMMO, 0) == ST_OK, "Infinite ammo turns off");
+	check(ia_restored(sites, orig, 2), "both words are the game's again, word for word");
+	mem_read_u32(AOD_AMMO, &v);
+	check_eq_u64(v, 12, "and the ammo stays where it was");
+
+	/* What the later tests expect to find. */
+	host_poke(AOD_UNLOCK, (const u8 *)"\x00", 1);
+	host_poke(AOD_ITEM, (const u8 *)"\x57", 1);
+	host_poke(IA3_LAVA_UNLOCK, (const u8 *)"\x00", 1);
+	host_poke(IA3_LAVA_ITEM, (const u8 *)"\x11", 1);
+	host_poke(IA3_SUCK_UNLOCK, (const u8 *)"\x00", 1);
+}
+
 static void test_rac3(void)
 {
 	const struct game_api *g;
@@ -8024,12 +8325,7 @@ static void test_rac3(void)
 
 	group("RaC3: toggles");
 
-	check(features_set(F3_FREEZE_AMMO, 1) == ST_OK, "freeze ammo turns on");
-	mem_read_u32(R3_FP_ADDR, &v);
-	check_eq_u64(v, 0x60000000u, "the decrement was nopped");
-	check(features_set(F3_FREEZE_AMMO, 0) == ST_OK, "freeze ammo turns off");
-	mem_read_u32(R3_FP_ADDR, &v);
-	check_eq_u64(v, 0x7C85312Eu, "and the original instruction came back");
+	test_rac3_infinite_ammo();
 
 	/*
 	 * Build 53: freeze health holds the hit points at the game's maximum rather
@@ -13925,17 +14221,62 @@ static const struct patch_word g_swt_rac1_toggles[] = {
 static const struct swt_cave g_swt_rac2_caves[] = {
 	{ 0x01141400u, 6, { 0x3C600131u, 0x88637720u, 0x2C030000u, 0x40820008u, 0x4BAA7EF9u,
 	                    0x4BAA9490u } },
-	{ 0x01141420u, 6, { 0x3CC00131u, 0x88C67721u, 0x2C060000u, 0x40820008u, 0x7C64292Eu,
-	                    0x4B9EF84Cu } },
+	/* Build 59: lis r7; lbz r7, flag; cmpwi r7, 0; bnelr; stwx r4, r6, r5; blr */
+	{ 0x01141420u, 6, { 0x3CE00131u, 0x88E77721u, 0x2C070000u, 0x4C820020u, 0x7C86292Eu,
+	                    0x4E800020u } },
 	{ 0x01141440u, 6, { 0x7FC00734u, 0x7F80F000u, 0x409E000Cu, 0x7F24C814u, 0x4AF45514u,
 	                    0x4AF4577Cu } },
 	{ 0x01141470u, 11, { 0x807C0000u, 0x3C800159u, 0x80A427B0u, 0x7F832840u, 0x419C0018u,
 	                     0x80A427B8u, 0x7F832840u, 0x409C000Cu, 0xA07F0034u, 0x4BA9DE7Cu,
-	                     0x4BA9E0D8u } }
+	                     0x4BA9E0D8u } },
+	/* Build 59: lis r3; lbz r3, flag; addi r3, r3, -1; add r3, r5, r3; blr */
+	{ 0x011414A0u, 5, { 0x3C600131u, 0x88637721u, 0x3863FFFFu, 0x7C651A14u, 0x4E800020u } }
 };
+/*
+ * Build 59: the crash guards', the fast-load site, and Infinite ammo's 111 in
+ * address order: consume_ammo's 37 stores, each a b to 0x1141420, and the
+ * Clank Zapper's 74 decrements, each a bl to 0x11414A0 (src/games/rac2.h),
+ * the words worked out from the addresses alone.
+ */
 static const struct patch_word g_swt_rac2_sites[] = {
-	{ 0x00086960u, 0x490BAAE0u }, { 0x00B30C7Cu, 0x486107A4u }, { 0x00BDF30Cu, 0x48562164u },
-	{ 0x00BEA8A0u, 0x48556B60u }
+	{ 0x00086960u, 0x490BAAE0u }, { 0x000A1F74u, 0x4909F4ACu }, { 0x000A2114u, 0x4909F38Du },
+	{ 0x000A29F8u, 0x4909EAA9u }, { 0x0010646Cu, 0x4903AFB4u }, { 0x0010660Cu, 0x4903AE95u },
+	{ 0x00106EF0u, 0x4903A5B1u }, { 0x00125CC4u, 0x4901B75Cu }, { 0x00125E64u, 0x4901B63Du },
+	{ 0x00126748u, 0x4901AD59u }, { 0x001708BCu, 0x48FD0B64u }, { 0x00170A5Cu, 0x48FD0A45u },
+	{ 0x00171340u, 0x48FD0161u }, { 0x001C395Cu, 0x48F7DAC4u }, { 0x001C3AFCu, 0x48F7D9A5u },
+	{ 0x001C43E0u, 0x48F7D0C1u }, { 0x001FC86Cu, 0x48F44BB4u }, { 0x001FCA0Cu, 0x48F44A95u },
+	{ 0x001FD2F0u, 0x48F441B1u }, { 0x00247024u, 0x48EFA3FCu }, { 0x002471C4u, 0x48EFA2DDu },
+	{ 0x00247AA8u, 0x48EF99F9u }, { 0x0028EC84u, 0x48EB279Cu }, { 0x0028EE24u, 0x48EB267Du },
+	{ 0x0028F708u, 0x48EB1D99u }, { 0x002D8E5Cu, 0x48E685C4u }, { 0x002D8FFCu, 0x48E684A5u },
+	{ 0x002D98E0u, 0x48E67BC1u }, { 0x00323A4Cu, 0x48E1D9D4u }, { 0x00323BECu, 0x48E1D8B5u },
+	{ 0x003244D0u, 0x48E1CFD1u }, { 0x0036E644u, 0x48DD2DDCu }, { 0x0036E7E4u, 0x48DD2CBDu },
+	{ 0x0036F0C8u, 0x48DD23D9u }, { 0x003BF904u, 0x48D81B1Cu }, { 0x003BFAA4u, 0x48D819FDu },
+	{ 0x003C0388u, 0x48D81119u }, { 0x003F8994u, 0x48D48A8Cu }, { 0x003F8B34u, 0x48D4896Du },
+	{ 0x003F9418u, 0x48D48089u }, { 0x00441144u, 0x48D002DCu }, { 0x004412E4u, 0x48D001BDu },
+	{ 0x00441BC8u, 0x48CFF8D9u }, { 0x004A3ECCu, 0x48C9D554u }, { 0x004A406Cu, 0x48C9D435u },
+	{ 0x004A4950u, 0x48C9CB51u }, { 0x004C1BECu, 0x48C7F834u }, { 0x004C1D8Cu, 0x48C7F715u },
+	{ 0x004C2670u, 0x48C7EE31u }, { 0x00522CACu, 0x48C1E774u }, { 0x00522E4Cu, 0x48C1E655u },
+	{ 0x00523730u, 0x48C1DD71u }, { 0x00542BB4u, 0x48BFE86Cu }, { 0x00542D54u, 0x48BFE74Du },
+	{ 0x00543638u, 0x48BFDE69u }, { 0x0058EBFCu, 0x48BB2824u }, { 0x0058ED9Cu, 0x48BB2705u },
+	{ 0x0058F680u, 0x48BB1E21u }, { 0x005DA6C4u, 0x48B66D5Cu }, { 0x005DA864u, 0x48B66C3Du },
+	{ 0x005DB148u, 0x48B66359u }, { 0x00628654u, 0x48B18DCCu }, { 0x006287F4u, 0x48B18CADu },
+	{ 0x006290D8u, 0x48B183C9u }, { 0x0067DF3Cu, 0x48AC34E4u }, { 0x0067E0DCu, 0x48AC33C5u },
+	{ 0x0067E9C0u, 0x48AC2AE1u }, { 0x006B9D14u, 0x48A8770Cu }, { 0x006B9EB4u, 0x48A875EDu },
+	{ 0x006BA798u, 0x48A86D09u }, { 0x00706DB4u, 0x48A3A66Cu }, { 0x00706F54u, 0x48A3A54Du },
+	{ 0x00707838u, 0x48A39C69u }, { 0x00764334u, 0x489DD0ECu }, { 0x007644D4u, 0x489DCFCDu },
+	{ 0x00764DB8u, 0x489DC6E9u }, { 0x0079219Cu, 0x489AF284u }, { 0x0079233Cu, 0x489AF165u },
+	{ 0x00792C20u, 0x489AE881u }, { 0x007EFD94u, 0x4895168Cu }, { 0x007EFF34u, 0x4895156Du },
+	{ 0x007F0818u, 0x48950C89u }, { 0x0081D2B4u, 0x4892416Cu }, { 0x0081D454u, 0x4892404Du },
+	{ 0x0081DD38u, 0x48923769u }, { 0x00867C54u, 0x488D97CCu }, { 0x00867DF4u, 0x488D96ADu },
+	{ 0x008686D8u, 0x488D8DC9u }, { 0x008B1354u, 0x488900CCu }, { 0x008B14F4u, 0x4888FFADu },
+	{ 0x008B1DD8u, 0x4888F6C9u }, { 0x00918FECu, 0x48828434u }, { 0x0091918Cu, 0x48828315u },
+	{ 0x00919A70u, 0x48827A31u }, { 0x009396ECu, 0x48807D34u }, { 0x0093988Cu, 0x48807C15u },
+	{ 0x0093A170u, 0x48807331u }, { 0x0098D12Cu, 0x487B42F4u }, { 0x0098D2CCu, 0x487B41D5u },
+	{ 0x0098DBB0u, 0x487B38F1u }, { 0x009DA1FCu, 0x48767224u }, { 0x009DA39Cu, 0x48767105u },
+	{ 0x009DAC80u, 0x48766821u }, { 0x00A06FE4u, 0x4873A43Cu }, { 0x00A07184u, 0x4873A31Du },
+	{ 0x00A07A68u, 0x48739A39u }, { 0x00A51BDCu, 0x486EF844u }, { 0x00A51D7Cu, 0x486EF725u },
+	{ 0x00A52660u, 0x486EEE41u }, { 0x00A9C7D4u, 0x486A4C4Cu }, { 0x00A9C974u, 0x486A4B2Du },
+	{ 0x00A9D258u, 0x486A4249u }, { 0x00BDF30Cu, 0x48562164u }, { 0x00BEA8A0u, 0x48556B60u }
 };
 static const u32 g_swt_rac2_flags[] = { 0x01317720u, 0x01317721u };
 static const struct patch_word g_swt_rac2_toggles[] = {
@@ -13965,10 +14306,14 @@ static const struct swt_cave g_swt_rac3_caves[] = {
 	                     0x63430000u, 0x4B8FA47Cu } },
 	{ 0x00981030u, 11, { 0x3C6000DAu, 0x8863FF11u, 0x2C030000u, 0x41820014u, 0x3C6000DAu,
 	                     0xA06390DEu, 0x28030007u, 0x4082000Cu, 0x4B799CF5u, 0x4B8FA500u,
-	                     0x4B8FA518u } }
+	                     0x4B8FA518u } },
+	/* Build 59: Infinite ammo's second site's: lis r6; lbz r6, flag; cmpwi r6, 0; bne +8; stwx r5, r3, r4; b 0x182B48 */
+	{ 0x00981064u, 6, { 0x3CC000DAu, 0x88C6FF10u, 0x2C060000u, 0x40820008u, 0x7CA3212Eu,
+	                    0x4B801AD0u } }
 };
 static const struct patch_word g_swt_rac3_sites[] = {
-	{ 0x00182A88u, 0x487FE478u }, { 0x0027B49Cu, 0x48705AE4u }, { 0x0027B550u, 0x48705AE0u }
+	{ 0x00182A88u, 0x487FE478u }, { 0x00182B44u, 0x487FE520u }, { 0x0027B49Cu, 0x48705AE4u },
+	{ 0x0027B550u, 0x48705AE0u }
 };
 static const u32 g_swt_rac3_flags[] = { 0x00D9FF10u, 0x00D9FF11u };
 static const struct patch_word g_swt_rac3_toggles[] = {
@@ -14097,16 +14442,22 @@ static const struct swt_cave g_swt_tod_caves[] = {
 	                     0x396B0001u, 0x4BFFFFECu, 0x91690000u, 0xC022F4BCu, 0x4BE7C0C5u,
 	                     0xE8410028u, 0x4BFDA038u, 0x399C0014u, 0x4BFDA114u, 0x3D20108Bu,
 	                     0x89498560u, 0x2F8A0000u, 0x419E0010u, 0x3D401038u, 0x814AAA1Cu,
-	                     0x91498564u, 0x81222BBCu, 0x4BFDA1DCu } }
+	                     0x91498564u, 0x81222BBCu, 0x4BFDA1DCu } },
+	/*
+	 * Build 59: Infinite ammo's, the dead function's last five words: lis r4;
+	 * lbz r4, flag; cmpwi r4, 0; bnelr; b 0x49A6E0 (WeaponSlot_addAmmo).
+	 */
+	{ 0x003EB6F4u, 5, { 0x3C80108Bu, 0x88848561u, 0x2C040000u, 0x4C820020u, 0x480AEFDCu } }
 };
 static const struct patch_word g_swt_tod_sites[] = {
 	{ 0x0025E588u, 0x4818CFF0u },   /* LoadScreen_Update -> 0x3EB578 */
 	{ 0x003C5744u, 0x48025EB4u },   /* own_departure -> 0x3EB5F8 */
 	{ 0x003C57DCu, 0x48025E7Cu },   /* own_fmv_cut -> 0x3EB658 */
-	{ 0x003C58C8u, 0x48025E08u }    /* own_fmv_in -> 0x3EB6D0 */
+	{ 0x003C58C8u, 0x48025E08u },   /* own_fmv_in -> 0x3EB6D0 */
+	{ 0x0049EF08u, 0x4BF4C7EDu }    /* build 59: Weapon_useAmmo, bl -> 0x3EB6F4 */
 };
-static const u32 g_swt_tod_flags[] = { 0x108A8560u };
-static const struct patch_word g_swt_tod_toggles[] = { { 17, 0x108A8560u } };
+static const u32 g_swt_tod_flags[] = { 0x108A8560u, 0x108A8561u };
+static const struct patch_word g_swt_tod_toggles[] = { { 17, 0x108A8560u }, { 8, 0x108A8561u } };
 
 #define SWT_N(a) ((u8)(sizeof(a) / sizeof((a)[0])))
 
@@ -14142,6 +14493,8 @@ static const struct swt_game g_swt_games[] = {
 
 /* LIVE_POLL_EVERY in session.c, and one tick to be sure. */
 #define SWT_POLL_TICKS 13
+/* Build 59: RaC2's look, five caves and 114 sites at four reads a tick (switches.c), with room. */
+#define SWT_LOOK_TICKS 40
 
 static u8 g_sw_patch[QWARK_MAX_PAYLOAD];
 static u8 g_sw_patch2[QWARK_MAX_PAYLOAD];
@@ -14294,7 +14647,7 @@ static int swt_boot_patched(const char *title, const u8 *reply, u32 len, u32 fli
 	host_boot(title);
 	sf_poke_patch(reply, len, flip, 1);
 	ok = pump_until(SESSION_INGAME, 4000);
-	pump(6);
+	pump(SWT_LOOK_TICKS);
 	return ok;
 }
 
@@ -14449,15 +14802,22 @@ static void test_switches_presence(void)
 	 * neither the game's instruction, qwark's nop nor this build's branch is not
 	 * RaC3 at all as far as BOOTING can tell. That is the one thing a later build
 	 * that moves that trampoline has to keep in mind: the old branch must stay
-	 * accepted. The sites come in address order, so that one is the third last
-	 * row, and the fast-load sites, 0x27B49C and 0x27B550, the last two.
+	 * accepted. The sites come in address order, so that one is the fourth last
+	 * row (build 59: the third last is Infinite ammo's second site, 0x182B44),
+	 * and the fast-load sites, 0x27B49C and 0x27B550, the last two.
 	 */
 	check(quit_and_wait(), "quit");
 	host_boot("NPEA00387");
-	sf_poke_patch(g_sw_patch, len, n - 3u, 1);
+	sf_poke_patch(g_sw_patch, len, n - 4u, 1);
 	pump(400);
 	check(session_state() == SESSION_BOOTING,
 	      "RaC3 with its Freeze ammo site word one bit off never passes the fingerprint");
+
+	/* Build 59: Infinite ammo's second site is no fingerprint: there the look says no. */
+	check(quit_and_wait(), "quit");
+	check(swt_boot_patched("NPEA00387", g_sw_patch, len, n - 3u),
+	      "RaC3 with Infinite ammo's second site word one bit off boots as RaC3 (build 59)");
+	check_eq_u64(switches_state(), 0, "and is not the switches");
 
 	/* The fast-load sites are not the fingerprint: there the look says no. */
 	check(quit_and_wait(), "quit");
@@ -14652,7 +15012,7 @@ static void test_switches_fastloads(void)
 	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
 	sf_poke_patch(g_sw_sfpatch, sflen, SF_NO_FLIP, 1);
 	check(pump_until(SESSION_INGAME, 4000), "RaC2 boots with both patches in");
-	pump(6);
+	pump(SWT_LOOK_TICKS);
 	check_eq_u64(switches_state(), 1, "the switches are found");
 	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1,
 	      "and so is the helper, at its new request bytes");
@@ -14939,25 +15299,43 @@ static void test_switches_rac2_moved(void)
 	check(d->caves[0].addr - (f->caves[0].addr + f->caves[0].len) >= 0x2000u,
 	      "with room to grow: more than 8 KB between them");
 
-	check(d->ncaves == 4 && d->nsites == 4 && d->nflags == 2,
-	      "four trampolines and four sites, the crash guards' two with no flag byte");
-	if (d->ncaves != 4 || d->nsites != 4 || d->nflags != 2) return;
+	/*
+	 * Build 59: Infinite ammo's 111 sites (rac2.h) between the grid's and the
+	 * ship's, and the Clank Zapper's trampoline after the guards; the site of
+	 * builds 50 to 58, the magazine clamp at 0xB30C7C, is gone.
+	 */
+	check(d->ncaves == 5 && d->nsites == 114 && d->nflags == 2,
+	      "five trampolines and 114 sites, the crash guards' two with no flag byte");
+	if (d->ncaves != 5 || d->nsites != 114 || d->nflags != 2) return;
 
-	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[1].addr,
-	             "the ammo site, 0xB30C7C, branches to the ammo trampoline");
-	check_eq_u64(swt_branch_target(d->sites[3].addr, d->sites[3].value), d->caves[0].addr,
+	{
+		u32 stores = 0, decs = 0, back = 0;
+
+		for (i = 1; i + 2 < d->nsites; i++) {
+			u32 w = d->sites[i].value, to = d->sites[i].addr + ((w & 0x02000000u) ? (w & 0x03FFFFFCu) | 0xFC000000u
+			                                                                   : (w & 0x03FFFFFCu));
+
+			if ((w & 0xFC000003u) == 0x48000000u && to == d->caves[1].addr) stores++;
+			if ((w & 0xFC000003u) == 0x48000001u && to == d->caves[4].addr) decs++;
+			if (d->sites[i].addr == 0x00B30C7Cu) back++;
+		}
+		check(stores == 37 && decs == 74 && back == 0,
+		      "37 sites b to the ammo trampoline, 74 bl to the Clank Zapper's, and none at the old clamp");
+	}
+	check_eq_u64(swt_branch_target(d->sites[113].addr, d->sites[113].value), d->caves[0].addr,
 	             "the fast-load site, 0xBEA8A0, to the fast-load one");
 	check_eq_u64(swt_branch_target(d->caves[0].addr + 20u, be32_get(d->caves[0].bytes + 20)),
 	             0x00BEA8A4u, "which branches back to the instruction after its site");
-	check_eq_u64(swt_branch_target(d->caves[1].addr + 20u, be32_get(d->caves[1].bytes + 20)),
-	             0x00B30C80u, "and so does the ammo one");
+	check(be32_get(d->caves[1].bytes + 12) == 0x4C820020u && be32_get(d->caves[1].bytes + 20) == 0x4E800020u &&
+	      be32_get(d->caves[4].bytes + 16) == 0x4E800020u,
+	      "the two ammo trampolines return themselves (bnelr and blr), as their many sites share them");
 	check(d->flags[0] == 0x01317720u && d->flags[1] == 0x01317721u,
 	      "the flag bytes did not move");
 
 	/* The crash guards, after the two toggles' trampolines. */
 	check_eq_u64(swt_branch_target(d->sites[0].addr, d->sites[0].value), d->caves[2].addr,
 	             "the grid site, 0x86960, branches to the grid guard at 0x1141440");
-	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[3].addr,
+	check_eq_u64(swt_branch_target(d->sites[112].addr, d->sites[112].value), d->caves[3].addr,
 	             "the ship-part site, 0xBDF30C, to the part filter at 0x1141470");
 	check_eq_u64(swt_branch_target(d->caves[2].addr + 16u, be32_get(d->caves[2].bytes + 16)),
 	             0x00086964u, "the guard goes back to the instruction after its site");
@@ -14968,16 +15346,17 @@ static void test_switches_rac2_moved(void)
 	check_eq_u64(swt_branch_target(d->caves[3].addr + 40u, be32_get(d->caves[3].bytes + 40)),
 	             0x00BDF570u, "or on to the ship update's next part");
 	check(d->caves[2].addr >= d->caves[1].addr + d->caves[1].len &&
-	      d->caves[3].addr >= d->caves[2].addr + d->caves[2].len,
-	      "none of the four overlaps the one before it");
+	      d->caves[3].addr >= d->caves[2].addr + d->caves[2].len &&
+	      d->caves[4].addr >= d->caves[3].addr + d->caves[3].len,
+	      "none of the five overlaps the one before it");
 
 	/* ---------------------------------------------- SWITCH_PATCH rows */
 
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00386"), "RaC2 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC2");
-	check_eq_u64(be16_get(g_sw_patch), 33,
-	             "thirty-three rows: twenty-nine trampoline words with the guards', four sites");
+	check_eq_u64(be16_get(g_sw_patch), 148,
+	             "148 rows (build 59): 34 trampoline words with the guards' and the Clank Zapper's, 114 sites");
 
 	rows_ok = 1;
 	off = SWITCH_PATCH_HEAD;
@@ -14985,15 +15364,15 @@ static void test_switches_rac2_moved(void)
 		u32 a = be32_get(g_sw_patch + off);
 		u32 v = be32_get(g_sw_patch + off + 4);
 
-		if (i < 29 && (a < SWT_R2_CAVE_LO || a + 4u > SWT_R2_SPAN_HI)) rows_ok = 0;
-		if (i == 29 && (a != 0x00086960u || v != 0x490BAAE0u)) rows_ok = 0;
-		if (i == 30 && (a != 0x00B30C7Cu || v != 0x486107A4u)) rows_ok = 0;
-		if (i == 31 && (a != 0x00BDF30Cu || v != 0x48562164u)) rows_ok = 0;
-		if (i == 32 && (a != 0x00BEA8A0u || v != 0x48556B60u)) rows_ok = 0;
+		if (i < 34 && (a < SWT_R2_CAVE_LO || a + 4u > SWT_R2_SPAN_HI)) rows_ok = 0;
+		if (i == 34 && (a != 0x00086960u || v != 0x490BAAE0u)) rows_ok = 0;
+		if (i == 35 && (a != 0x000A1F74u || v != 0x4909F4ACu)) rows_ok = 0;
+		if (i == 146 && (a != 0x00BDF30Cu || v != 0x48562164u)) rows_ok = 0;
+		if (i == 147 && (a != 0x00BEA8A0u || v != 0x48556B60u)) rows_ok = 0;
 		off += SWITCH_PATCH_ROW;
 	}
-	check(rows_ok, "every trampoline row lands in the cave, then b 0x1141440, b 0x1141420, "
-	      "b 0x1141470 and b 0x1141400");
+	check(rows_ok, "every trampoline row lands in the cave, then b 0x1141440, the ammo sites from "
+	      "b 0x1141420 at 0xA1F74, b 0x1141470 and b 0x1141400");
 
 	oldlen = swt_reply_of(g_swt_rac2_b50_caves, SWT_N(g_swt_rac2_b50_caves),
 	                      g_swt_rac2_b50_sites, SWT_N(g_swt_rac2_b50_sites),
@@ -15056,7 +15435,7 @@ static void test_switches_rac2_moved(void)
 	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
 	poke32(0x00BEA8A0u, 0x4B648960u);
 	check(pump_until(SESSION_INGAME, 4000), "this build's caves under the old fast-load branch");
-	pump(6);
+	pump(SWT_LOOK_TICKS);
 	check(session_game() != NULL && session_game()->game_id == GAME_RAC2, "is RaC2");
 	check_eq_u64(switches_state(), 0, "and not this build's switches either");
 
@@ -15075,7 +15454,7 @@ static void test_switches_rac2_moved(void)
 	sf_poke_patch(g_sw_patch, len, SF_NO_FLIP, 1);
 	sf_poke_patch(g_sw_sfpatch, sflen, SF_NO_FLIP, 1);
 	check(pump_until(SESSION_INGAME, 4000), "RaC2 boots with both in the same dead span");
-	pump(6);
+	pump(SWT_LOOK_TICKS);
 	check_eq_u64(switches_state(), 1, "the switches are found");
 	check(savefile_info(&sup, &ins, &run, &pend, &size) == ST_OK && ins == 1, "and so is the helper");
 	check_eq_u64(swt_peek32(0x00086960u), 0x490BAAE0u, "the grid guard's branch is at 0x86960");
@@ -15091,7 +15470,7 @@ static void test_switches_rac2_moved(void)
 	 */
 	{
 		static const struct patch_word toggle_sites[] = {
-			{ 0x00B30C7Cu, 0x486107A4u }, { 0x00BEA8A0u, 0x48556B60u }
+			{ 0x000A1F74u, 0x4909F4ACu }, { 0x00BEA8A0u, 0x48556B60u }
 		};
 
 		toglen = swt_reply_of(g_swt_rac2_caves, 2, toggle_sites, SWT_N(toggle_sites),
@@ -15767,19 +16146,24 @@ static void test_switches_rac3_fastloads(void)
 
 	group("RaC3: the fast-load switch, beside Infinite ammo's");
 
-	check(d != NULL && d->ncaves == 3 && d->nsites == 3 && d->nflags == 2,
-	      "RaC3 has three trampolines, three sites and two flag bytes");
-	if (d == NULL || d->ncaves != 3 || d->nsites != 3) return;
+	check(d != NULL && d->ncaves == 4 && d->nsites == 4 && d->nflags == 2,
+	      "RaC3 has four trampolines, four sites and two flag bytes (build 59: Infinite ammo's second)");
+	if (d == NULL || d->ncaves != 4 || d->nsites != 4) return;
 	check(d->caves[0].addr == 0x00980F00u && d->caves[0].len == 24u,
 	      "the ammo trampoline did not move or change size");
 	check_eq_u64(d->sites[0].value, SW_RAC3_SITE_FREEZE_AMMO,
 	             "so its site word, the fingerprint's third form, is the one it was");
 	check_eq_u64(d->sites[0].value, 0x487FE478u, "b 0x980F00");
-	check_eq_u64(d->sites[1].addr, R3_FL_SITE, "the pass site is the update's argument at 0x27B49C");
-	check_eq_u64(d->sites[2].addr, R3_FL_DRAW, "the draw site the frame's head at 0x27B550");
-	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[1].addr,
+	check_eq_u64(d->sites[1].addr, 0x00182B44u, "build 59: Infinite ammo's second site, Hero_useCurrentWeaponAmmo's store");
+	check_eq_u64(swt_branch_target(d->sites[1].addr, d->sites[1].value), d->caves[3].addr,
+	             "which branches to its trampoline at 0x981064, past the fast-load ones");
+	check_eq_u64(swt_branch_target(d->caves[3].addr + 20u, be32_get(d->caves[3].bytes + 20)), 0x00182B48u,
+	             "and that comes back to the instruction after the site");
+	check_eq_u64(d->sites[2].addr, R3_FL_SITE, "the pass site is the update's argument at 0x27B49C");
+	check_eq_u64(d->sites[3].addr, R3_FL_DRAW, "the draw site the frame's head at 0x27B550");
+	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[1].addr,
 	             "the pass site branches to the trampoline at 0x980F80");
-	check_eq_u64(swt_branch_target(d->sites[2].addr, d->sites[2].value), d->caves[2].addr,
+	check_eq_u64(swt_branch_target(d->sites[3].addr, d->sites[3].value), d->caves[2].addr,
 	             "the draw site to the one at 0x981030 (revision 1.29; 0x981020 before)");
 	check(d->caves[1].addr >= 0x00980F7Cu &&
 	      d->caves[2].addr + d->caves[2].len <= 0x00981064u &&
@@ -15822,8 +16206,8 @@ static void test_switches_rac3_fastloads(void)
 	check(quit_and_wait(), "quit whatever was running");
 	check(boot_and_wait("NPEA00387"), "RaC3 boots");
 	check(switches_patch(g_sw_patch, sizeof(g_sw_patch), &len) == ST_OK, "SWITCH_PATCH for RaC3");
-	check_eq_u64(be16_get(g_sw_patch), 62, "sixty-two rows: fifty-nine trampoline words, three sites "
-	             "(revision 1.29: four more, the standing-still sleep)");
+	check_eq_u64(be16_get(g_sw_patch), 69, "sixty-nine rows: sixty-five trampoline words, four sites "
+	             "(revision 1.29: four more, the standing-still sleep; build 59: Infinite ammo's second site and its six)");
 
 	oldlen = swt_reply_of(g_swt_rac3_b53a_caves, SWT_N(g_swt_rac3_b53a_caves),
 	                      g_swt_rac3_b53a_sites, SWT_N(g_swt_rac3_b53a_sites),
@@ -16067,10 +16451,10 @@ static void test_switches_console(void)
 	check_eq_u64(switches_state(), 0, "a console does not look");
 	check((swt_info_flags() & SESSION_FLAG_CODE_SWITCHES) == 0, "bit4 stays clear");
 	check(features_set(SWT_R2_AMMO, 1) == ST_OK, "Infinite ammo on");
-	check_eq_u64(swt_peek32(0x00B30C7Cu), 0x60000000u, "patches the word");
+	check_eq_u64(swt_peek32(0x000A1F74u), 0x60000000u, "patches the word (build 59: the first consume_ammo store)");
 	check_eq_u64(swt_peek8(0x01317721u), 0, "and writes no flag");
 	check(features_set(SWT_R2_AMMO, 0) == ST_OK, "off");
-	check_eq_u64(swt_peek32(0x00B30C7Cu), 0x486107A4u, "puts back what was there");
+	check_eq_u64(swt_peek32(0x000A1F74u), 0x4909F4ACu, "puts back what was there");
 }
 
 static void test_switches(void)
@@ -18526,6 +18910,7 @@ int main(void)
 	test_rac2_crash_guards();
 	test_manips();
 	test_rac1_fastload_force();
+	test_rac1_infinite_ammo();
 	test_rac3();
 	test_rac4();
 	test_rac4_setaside_fastloads();

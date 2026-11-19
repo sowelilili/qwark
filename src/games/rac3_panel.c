@@ -1828,6 +1828,45 @@ static int rac3_all_versions(int max)
 	return ST_OK;
 }
 
+/*
+ * Build 59, Infinite ammo's fill as it turns on (rac3.c): each weapon row with
+ * an Ammo field that the player owns, to the magazine of the version it is on,
+ * g_itemDefs[version].maxAmmo (rac3.h), the number the game's own upgrade
+ * refills to. The version is the item array's byte, whatever it is, the five
+ * GC weapons' own table offsets included: the game indexes g_itemDefs with
+ * that byte itself. A magazine of 0 leaves the count alone, as the game takes
+ * nothing from such an item; a weapon the player has not got is passed over.
+ * UYA has no Max all weapon ammo of its own (28, Give 1337 ammo, is retired).
+ */
+int rac3_ammo_fill(void)
+{
+	u8 i;
+
+	for (i = 0; i < RAC3_UNLOCK_COUNT; i++) {
+		const struct rac3_item *it = &rac3_items[i];
+		u8 owned = 0, version = 0;
+		u8 max[2];
+		int rc;
+
+		if ((rac3_unlocks[i].fields & AMMO) == 0 || item_ammo_addr(it) == 0) continue;
+
+		rc = mem_read_u8(item_unlock_addr(it), &owned);
+		if (rc != ST_OK) return rc;
+		if (owned == 0) continue;
+
+		rc = mem_read_u8(RAC3_ITEM_ARRAY + it->id, &version);
+		if (rc != ST_OK) return rc;
+		rc = mem_read(RAC3_ITEM_DEFS + (u32)version * RAC3_ITEM_DEF_STRIDE + RAC3_ITEM_DEF_MAX_AMMO,
+		              max, sizeof(max));
+		if (rc != ST_OK) return rc;
+		if (be16_get(max) == 0) continue;
+
+		rc = mem_write_u32(item_ammo_addr(it), be16_get(max));
+		if (rc != ST_OK) return rc;
+	}
+	return ST_OK;
+}
+
 /* ------------------------------------------------------------ the handlers */
 
 int rac3_set_value(u8 id, u32 value)

@@ -30,16 +30,18 @@
  *   1  level obj  the per-level object, 0 between levels          every tick
  *   2  level      the current LEVEL_ +0, challenge mode +4         every tick
  *   3  money      bolts +0, raritanium +4                          every 4th
- *   4  ammo flag  g_infiniteAmmo, which Infinite ammo's hold keys  every 4th
- *   5  lua state  the gameplay lua_State, 0 between levels         every tick
- *   6  front end  g_inFrontEnd, 1 on the title                     every 2nd
- *   7  game state g_gameState, 4 in gameplay                       every 2nd
- *   8  load screen g_loadScreenType, the long load's                every tick
- *   9  load job   the tier loader's job, a level load's               every 2nd
- *  10  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
- *  11  armour     the armour +0, the skin +0x28 (build 59)          every 8th
+ *   4  lua state  the gameplay lua_State, 0 between levels         every tick
+ *   5  front end  g_inFrontEnd, 1 on the title                     every 2nd
+ *   6  game state g_gameState, 4 in gameplay                       every 2nd
+ *   7  load screen g_loadScreenType, the long load's                every tick
+ *   8  load job   the tier loader's job, a level load's               every 2nd
+ *   9  load tier  g_levelLoadTier's loaded byte, with it              every 2nd
+ *  10  armour     the armour +0, the skin +0x28 (build 59)          every 8th
  *
- * Blocks 5 to 10 are the autosplit watcher's (tod_autosplit.c, revision 1.28):
+ * Build 59: g_infiniteAmmo, which Infinite ammo's hold keyed on, was block 4
+ * until Infinite ammo became a code patch; nothing reads it any more.
+ *
+ * Blocks 4 to 9 are the autosplit watcher's (tod_autosplit.c, revision 1.28):
  * the level coming up is read every tick; the title and the game
  * state (Cache cutscenes' test for gameplay since revision 1.29 retired the
  * credits split) take the even and the odd ticks between them, and a level
@@ -56,7 +58,6 @@ static const struct game_hot_block tod_hot[] = {
 	{ TOD_LEVEL_OBJ,     4,                  1, 0 },
 	{ TOD_CURRENT_LEVEL, 8,                  1, 0 },
 	{ TOD_BOLTS,         8,                  4, 1 },
-	{ TOD_INFINITE_AMMO, 4,                  4, 2 },
 	{ TOD_LUA_STATE,     4,                  1, 0 },
 	{ TOD_FRONT_END,     1,                  2, 0 },
 	{ TOD_GAME_STATE,    4,                  2, 1 },
@@ -70,14 +71,13 @@ static const struct game_hot_block tod_hot[] = {
 #define HOT_ROOT   1
 #define HOT_LEVEL  2
 #define HOT_MONEY  3
-#define HOT_AMMO   4
-#define HOT_LUA    5
-#define HOT_FRONT  6
-#define HOT_GSTATE 7
-#define HOT_SCREEN 8
-#define HOT_JOB    9
-#define HOT_TIER   10
-#define HOT_ARMOUR 11
+#define HOT_LUA    4
+#define HOT_FRONT  5
+#define HOT_GSTATE 6
+#define HOT_SCREEN 7
+#define HOT_JOB    8
+#define HOT_TIER   9
+#define HOT_ARMOUR 10
 
 #define HERO_EVERY 8u
 
@@ -88,7 +88,6 @@ static const struct game_hot_block tod_hot[] = {
 struct tod_state {
 	u32 root;          /* the level object, as the last tick read it */
 	u32 hero;          /* the hero it had, 0 for none */
-	u32 ammo_flag;     /* g_infiniteAmmo, as last read */
 	u32 ticks;
 	struct tod_as_state as;   /* the autosplit watcher's, revision 1.28 */
 	struct tod_cc_state cc;   /* the cutscene cache's, revision 1.29 (tod_cache.c) */
@@ -150,8 +149,6 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 		out->readout[TOD_RO_RARITANIUM] = be32_get(blocks[HOT_MONEY] + 4);
 	}
 
-	if (blocks[HOT_AMMO] != NULL) T->ammo_flag = be32_get(blocks[HOT_AMMO]);
-
 	if (blocks[HOT_ARMOUR] != NULL) {
 		out->readout[TOD_RO_ARMOUR] = be32_get(blocks[HOT_ARMOUR]);
 		out->readout[TOD_RO_SKIN] = be32_get(blocks[HOT_ARMOUR] + (TOD_SKIN - TOD_ARMOUR));
@@ -195,7 +192,6 @@ static void tod_hot_decode(const u8 * const *blocks, struct game_hot *out)
 static void tod_on_tick(const struct game_hot *hot)
 {
 	(void)hot;
-	tod_ammo_tick(T->ammo_flag, T->root);
 	tod_panel_tick(&T->as);   /* revision 1.29: qwark's own loads' fade and fast load, Remove cutscenes; Remove black screens */
 	tod_autosplit_tick(&T->as);
 	tod_cc_tick(&T->cc, &T->as);   /* revision 1.29: the cutscene cache, after the watcher (the same hot block) */
@@ -282,19 +278,21 @@ static const char * const tod_readouts[] = {
 
 /*
  * The ids are tod.h's; 0 to 3 are reserved for the proof of concept's rows.
- * The cheats but one are a word of the game's own each and write no code:
+ * The cheats but two are a word of the game's own each and write no code:
  * they work under RPCS3 as they do on a console. Fast loads (17) is
  * WRITES_CODE since 2026-10-28 (the load screen's cut, tod.h), a patch on a
- * console and its code switch's flag byte under RPCS3.
+ * console and its code switch's flag byte under RPCS3, and so is Infinite ammo
+ * (8) since build 59, as every game's is (tod.h, TOD_AMMO_INSTR).
  *
  * 2026-10-28: only God Ratchet (16) is LIVE, read back out of the proxy
  * handle's byte, which the game itself overwrites, as RaC1's goodies are.
  * Infinite ammo (8) and Infinite health (9) are not, as the other games' ammo
  * and health cheats are not, so like Fast loads they can apply themselves at
- * boot ("on boot", config's <title>.auto.<label>): each is a word only qwark
- * writes (Lua's hero_set_infinite_ammo writes g_infiniteAmmo too, and no
- * script of the game calls it), zero at every boot, so qwark's own bit says
- * what it holds. The ammo hold follows the game's word, whoever wrote it.
+ * boot ("on boot", config's <title>.auto.<label>): each is something only
+ * qwark writes, gone at every boot, so qwark's own bit says what it holds.
+ * Build 59: Infinite ammo is a code patch now, not g_infiniteAmmo (which
+ * Lua's hero_set_infinite_ammo writes too, and no script of the game calls),
+ * and has no hold.
  *
  * 2026-10-27, the user's first hardware test: id 9, the game's no-damage word,
  * is "Infinite health" (it was "God Ratchet"), and God Ratchet is the old
@@ -334,7 +332,7 @@ static const struct feature_desc tod_features[] = {
 	/* id, kind, group, aux, flags, readout, min, max, label */
 	{ TF_FAST_LOADS,      FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Fast loads" },
 	{ TF_REMOVE_CUTSCENES, FEATURE_TOGGLE, G_MANIPS,  0, 0,  NO, 0, 0, "Remove cutscenes" },
-	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite ammo" },
+	{ TF_INFINITE_AMMO,   FEATURE_TOGGLE, G_CHEATS,   0, WC, NO, 0, 0, "Infinite ammo" },
 	{ TF_INFINITE_HEALTH, FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Infinite health" },
 	{ TF_GOD_RATCHET,     FEATURE_TOGGLE, G_CHEATS,   0, LV, NO, 0, 0, "God Ratchet" },
 	{ TF_REMOVE_BLACK,    FEATURE_TOGGLE, G_CHEATS,   0, 0,  NO, 0, 0, "Remove black screens" },
@@ -642,7 +640,7 @@ const struct game_api tod_game = {
 
 	tod_on_enter,
 	tod_on_quit,          /* revision 1.29: closes the long load */
-	tod_on_tick,          /* Infinite ammo's hold */
+	tod_on_tick,          /* the panel's watches, the autosplitter and the cutscene cache */
 
 	tod_autosplit_describe, /* revision 1.28, tod_autosplit.c */
 

@@ -205,6 +205,42 @@
 #define RAC3_AMMO_INSTR        0x00182A88u  /* the ammo decrement; the fingerprint */
 
 /*
+ * Infinite ammo (build 59), from the NPEA00387 executable. The ammo array is
+ * the game's g_ammoArray, a u32 count per item id (RAC3_AMMO_ARRAY + id * 4,
+ * which is what the raw ammo offsets of rac3_panel.c come to). A shot takes its
+ * ammo in one of two places:
+ *
+ *   ammo_consume(item, amount) (0x182A00, about thirty callers: the weapons'
+ *     fire, Hero_ChangeState's four among them): nothing taken from an item
+ *     whose magazine is 0, refused when the count is short, and otherwise the
+ *     count less the amount, stwx r4, r5, r6 at RAC3_AMMO_INSTR. Nopped since
+ *     build 50 (Freeze ammo, then Infinite ammo).
+ *   Hero_useCurrentWeaponAmmo (0x182AB0; Hero_ChangeState and three more
+ *     callers): the weapon in hand's count less one, inline, stwx r5, r3, r4
+ *     at RAC3_AMMO_HERO_INSTR. Nopped since build 59. The same function
+ *     spawns the Plasma Whip's lash, so that weapon at least takes its ammo
+ *     there; which others do is not established.
+ *
+ * The magazine a weapon holds is g_itemDefs[version].maxAmmo, the u16 at +0x8A
+ * of a 0xF0-byte record from RAC3_ITEM_DEFS, the version being the item array's
+ * byte (RAC3_ITEM_ARRAY + id): ammo_consume and ammo_add (0x187F50, the pickups)
+ * read it there, Weapon_upgradeToNextVersion (0x146F38) refills to it and
+ * ammo_refillIfOwned (0x6522C) sets it. Turning Infinite ammo on fills every
+ * owned weapon to it (rac3_ammo_fill).
+ *
+ * Left alone: Weapon_downgradeToPreviousVersion (0x14720C) and the weapon
+ * switch (0x1AF284) cut a count back to its magazine, Inventory_giveItem
+ * (0x1479DC) and Weapon_buyV6Upgrade give one, the vendor (0x292478) sells
+ * one, and a handful of mission scripts (0x63FB88, 0x6AC114 and their kin) put
+ * the Shield Charger's count back from a byte they kept (0xDA51B3) less one;
+ * none of them is a shot.
+ */
+#define RAC3_AMMO_HERO_INSTR   0x00182B44u
+#define RAC3_ITEM_DEFS         0x00C114E0u
+#define RAC3_ITEM_DEF_STRIDE   0xF0u
+#define RAC3_ITEM_DEF_MAX_AMMO 0x8Au        /* u16 */
+
+/*
  * Fast loads, a code patch since build 53, and in the same build made over on
  * RaC2's model: the screen stays black from the start of the load until the new
  * level's first frame, and the load takes as long as the disk does. From the
@@ -668,6 +704,8 @@ int rac3_unlock_list(const struct game_unlock **list, u8 *count,
                      const struct unlock_field_desc **fields);
 int rac3_unlock_read(const struct game_unlock *entry, u32 values[4]);
 int rac3_unlock_set(u8 id, u8 field, u32 value);
+/* Build 59: every owned weapon's ammo to its version's magazine, Infinite ammo's fill. */
+int rac3_ammo_fill(void);
 /* The console menu's MAX for a weapon that stops short of RAC3_MAX_LEVELS, else 0. */
 u32 rac3_unlock_levels(u8 id);
 

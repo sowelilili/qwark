@@ -79,8 +79,8 @@ static const u8 sw_rac2_fast_loads[] = {
 
 /* rac2 .cave.infinite_ammo at 0x01141420, 24 bytes */
 static const u8 sw_rac2_infinite_ammo[] = {
-	0x3C, 0xC0, 0x01, 0x31, 0x88, 0xC6, 0x77, 0x21, 0x2C, 0x06, 0x00, 0x00,
-	0x40, 0x82, 0x00, 0x08, 0x7C, 0x64, 0x29, 0x2E, 0x4B, 0x9E, 0xF8, 0x4C,
+	0x3C, 0xE0, 0x01, 0x31, 0x88, 0xE7, 0x77, 0x21, 0x2C, 0x07, 0x00, 0x00,
+	0x4C, 0x82, 0x00, 0x20, 0x7C, 0x86, 0x29, 0x2E, 0x4E, 0x80, 0x00, 0x20,
 };
 
 /* rac2 .cave.grid_guard at 0x01141440, 24 bytes */
@@ -97,16 +97,133 @@ static const u8 sw_rac2_ship_parts[] = {
 	0x4B, 0xA9, 0xDE, 0x7C, 0x4B, 0xA9, 0xE0, 0xD8,
 };
 
+/* rac2 .cave.clank_zapper at 0x011414A0, 20 bytes */
+static const u8 sw_rac2_clank_zapper[] = {
+	0x3C, 0x60, 0x01, 0x31, 0x88, 0x63, 0x77, 0x21, 0x38, 0x63, 0xFF, 0xFF,
+	0x7C, 0x65, 0x1A, 0x14, 0x4E, 0x80, 0x00, 0x20,
+};
+
 static const struct sw_cave sw_rac2_caves[] = {
 	{ 0x01141400u, sw_rac2_fast_loads, (u32)sizeof(sw_rac2_fast_loads) },
 	{ 0x01141420u, sw_rac2_infinite_ammo, (u32)sizeof(sw_rac2_infinite_ammo) },
 	{ 0x01141440u, sw_rac2_grid_guard, (u32)sizeof(sw_rac2_grid_guard) },
-	{ 0x01141470u, sw_rac2_ship_parts, (u32)sizeof(sw_rac2_ship_parts) }
+	{ 0x01141470u, sw_rac2_ship_parts, (u32)sizeof(sw_rac2_ship_parts) },
+	{ 0x011414A0u, sw_rac2_clank_zapper, (u32)sizeof(sw_rac2_clank_zapper) }
 };
 
 static const struct patch_word sw_rac2_sites[] = {
 	{ 0x00086960u, 0x490BAAE0u },   /* grid_guard -> 0x01141440 */
-	{ 0x00B30C7Cu, 0x486107A4u },   /* infinite_ammo -> 0x01141420 */
+	{ 0x000A1F74u, 0x4909F4ACu },   /* ammo_00 -> 0x01141420 */
+	{ 0x000A2114u, 0x4909F38Du },   /* zapper_00 -> 0x011414A0 */
+	{ 0x000A29F8u, 0x4909EAA9u },   /* zapper_01 -> 0x011414A0 */
+	{ 0x0010646Cu, 0x4903AFB4u },   /* ammo_01 -> 0x01141420 */
+	{ 0x0010660Cu, 0x4903AE95u },   /* zapper_02 -> 0x011414A0 */
+	{ 0x00106EF0u, 0x4903A5B1u },   /* zapper_03 -> 0x011414A0 */
+	{ 0x00125CC4u, 0x4901B75Cu },   /* ammo_02 -> 0x01141420 */
+	{ 0x00125E64u, 0x4901B63Du },   /* zapper_04 -> 0x011414A0 */
+	{ 0x00126748u, 0x4901AD59u },   /* zapper_05 -> 0x011414A0 */
+	{ 0x001708BCu, 0x48FD0B64u },   /* ammo_03 -> 0x01141420 */
+	{ 0x00170A5Cu, 0x48FD0A45u },   /* zapper_06 -> 0x011414A0 */
+	{ 0x00171340u, 0x48FD0161u },   /* zapper_07 -> 0x011414A0 */
+	{ 0x001C395Cu, 0x48F7DAC4u },   /* ammo_04 -> 0x01141420 */
+	{ 0x001C3AFCu, 0x48F7D9A5u },   /* zapper_08 -> 0x011414A0 */
+	{ 0x001C43E0u, 0x48F7D0C1u },   /* zapper_09 -> 0x011414A0 */
+	{ 0x001FC86Cu, 0x48F44BB4u },   /* ammo_05 -> 0x01141420 */
+	{ 0x001FCA0Cu, 0x48F44A95u },   /* zapper_10 -> 0x011414A0 */
+	{ 0x001FD2F0u, 0x48F441B1u },   /* zapper_11 -> 0x011414A0 */
+	{ 0x00247024u, 0x48EFA3FCu },   /* ammo_06 -> 0x01141420 */
+	{ 0x002471C4u, 0x48EFA2DDu },   /* zapper_12 -> 0x011414A0 */
+	{ 0x00247AA8u, 0x48EF99F9u },   /* zapper_13 -> 0x011414A0 */
+	{ 0x0028EC84u, 0x48EB279Cu },   /* ammo_07 -> 0x01141420 */
+	{ 0x0028EE24u, 0x48EB267Du },   /* zapper_14 -> 0x011414A0 */
+	{ 0x0028F708u, 0x48EB1D99u },   /* zapper_15 -> 0x011414A0 */
+	{ 0x002D8E5Cu, 0x48E685C4u },   /* ammo_08 -> 0x01141420 */
+	{ 0x002D8FFCu, 0x48E684A5u },   /* zapper_16 -> 0x011414A0 */
+	{ 0x002D98E0u, 0x48E67BC1u },   /* zapper_17 -> 0x011414A0 */
+	{ 0x00323A4Cu, 0x48E1D9D4u },   /* ammo_09 -> 0x01141420 */
+	{ 0x00323BECu, 0x48E1D8B5u },   /* zapper_18 -> 0x011414A0 */
+	{ 0x003244D0u, 0x48E1CFD1u },   /* zapper_19 -> 0x011414A0 */
+	{ 0x0036E644u, 0x48DD2DDCu },   /* ammo_10 -> 0x01141420 */
+	{ 0x0036E7E4u, 0x48DD2CBDu },   /* zapper_20 -> 0x011414A0 */
+	{ 0x0036F0C8u, 0x48DD23D9u },   /* zapper_21 -> 0x011414A0 */
+	{ 0x003BF904u, 0x48D81B1Cu },   /* ammo_11 -> 0x01141420 */
+	{ 0x003BFAA4u, 0x48D819FDu },   /* zapper_22 -> 0x011414A0 */
+	{ 0x003C0388u, 0x48D81119u },   /* zapper_23 -> 0x011414A0 */
+	{ 0x003F8994u, 0x48D48A8Cu },   /* ammo_12 -> 0x01141420 */
+	{ 0x003F8B34u, 0x48D4896Du },   /* zapper_24 -> 0x011414A0 */
+	{ 0x003F9418u, 0x48D48089u },   /* zapper_25 -> 0x011414A0 */
+	{ 0x00441144u, 0x48D002DCu },   /* ammo_13 -> 0x01141420 */
+	{ 0x004412E4u, 0x48D001BDu },   /* zapper_26 -> 0x011414A0 */
+	{ 0x00441BC8u, 0x48CFF8D9u },   /* zapper_27 -> 0x011414A0 */
+	{ 0x004A3ECCu, 0x48C9D554u },   /* ammo_14 -> 0x01141420 */
+	{ 0x004A406Cu, 0x48C9D435u },   /* zapper_28 -> 0x011414A0 */
+	{ 0x004A4950u, 0x48C9CB51u },   /* zapper_29 -> 0x011414A0 */
+	{ 0x004C1BECu, 0x48C7F834u },   /* ammo_15 -> 0x01141420 */
+	{ 0x004C1D8Cu, 0x48C7F715u },   /* zapper_30 -> 0x011414A0 */
+	{ 0x004C2670u, 0x48C7EE31u },   /* zapper_31 -> 0x011414A0 */
+	{ 0x00522CACu, 0x48C1E774u },   /* ammo_16 -> 0x01141420 */
+	{ 0x00522E4Cu, 0x48C1E655u },   /* zapper_32 -> 0x011414A0 */
+	{ 0x00523730u, 0x48C1DD71u },   /* zapper_33 -> 0x011414A0 */
+	{ 0x00542BB4u, 0x48BFE86Cu },   /* ammo_17 -> 0x01141420 */
+	{ 0x00542D54u, 0x48BFE74Du },   /* zapper_34 -> 0x011414A0 */
+	{ 0x00543638u, 0x48BFDE69u },   /* zapper_35 -> 0x011414A0 */
+	{ 0x0058EBFCu, 0x48BB2824u },   /* ammo_18 -> 0x01141420 */
+	{ 0x0058ED9Cu, 0x48BB2705u },   /* zapper_36 -> 0x011414A0 */
+	{ 0x0058F680u, 0x48BB1E21u },   /* zapper_37 -> 0x011414A0 */
+	{ 0x005DA6C4u, 0x48B66D5Cu },   /* ammo_19 -> 0x01141420 */
+	{ 0x005DA864u, 0x48B66C3Du },   /* zapper_38 -> 0x011414A0 */
+	{ 0x005DB148u, 0x48B66359u },   /* zapper_39 -> 0x011414A0 */
+	{ 0x00628654u, 0x48B18DCCu },   /* ammo_20 -> 0x01141420 */
+	{ 0x006287F4u, 0x48B18CADu },   /* zapper_40 -> 0x011414A0 */
+	{ 0x006290D8u, 0x48B183C9u },   /* zapper_41 -> 0x011414A0 */
+	{ 0x0067DF3Cu, 0x48AC34E4u },   /* ammo_21 -> 0x01141420 */
+	{ 0x0067E0DCu, 0x48AC33C5u },   /* zapper_42 -> 0x011414A0 */
+	{ 0x0067E9C0u, 0x48AC2AE1u },   /* zapper_43 -> 0x011414A0 */
+	{ 0x006B9D14u, 0x48A8770Cu },   /* ammo_22 -> 0x01141420 */
+	{ 0x006B9EB4u, 0x48A875EDu },   /* zapper_44 -> 0x011414A0 */
+	{ 0x006BA798u, 0x48A86D09u },   /* zapper_45 -> 0x011414A0 */
+	{ 0x00706DB4u, 0x48A3A66Cu },   /* ammo_23 -> 0x01141420 */
+	{ 0x00706F54u, 0x48A3A54Du },   /* zapper_46 -> 0x011414A0 */
+	{ 0x00707838u, 0x48A39C69u },   /* zapper_47 -> 0x011414A0 */
+	{ 0x00764334u, 0x489DD0ECu },   /* ammo_24 -> 0x01141420 */
+	{ 0x007644D4u, 0x489DCFCDu },   /* zapper_48 -> 0x011414A0 */
+	{ 0x00764DB8u, 0x489DC6E9u },   /* zapper_49 -> 0x011414A0 */
+	{ 0x0079219Cu, 0x489AF284u },   /* ammo_25 -> 0x01141420 */
+	{ 0x0079233Cu, 0x489AF165u },   /* zapper_50 -> 0x011414A0 */
+	{ 0x00792C20u, 0x489AE881u },   /* zapper_51 -> 0x011414A0 */
+	{ 0x007EFD94u, 0x4895168Cu },   /* ammo_26 -> 0x01141420 */
+	{ 0x007EFF34u, 0x4895156Du },   /* zapper_52 -> 0x011414A0 */
+	{ 0x007F0818u, 0x48950C89u },   /* zapper_53 -> 0x011414A0 */
+	{ 0x0081D2B4u, 0x4892416Cu },   /* ammo_27 -> 0x01141420 */
+	{ 0x0081D454u, 0x4892404Du },   /* zapper_54 -> 0x011414A0 */
+	{ 0x0081DD38u, 0x48923769u },   /* zapper_55 -> 0x011414A0 */
+	{ 0x00867C54u, 0x488D97CCu },   /* ammo_28 -> 0x01141420 */
+	{ 0x00867DF4u, 0x488D96ADu },   /* zapper_56 -> 0x011414A0 */
+	{ 0x008686D8u, 0x488D8DC9u },   /* zapper_57 -> 0x011414A0 */
+	{ 0x008B1354u, 0x488900CCu },   /* ammo_29 -> 0x01141420 */
+	{ 0x008B14F4u, 0x4888FFADu },   /* zapper_58 -> 0x011414A0 */
+	{ 0x008B1DD8u, 0x4888F6C9u },   /* zapper_59 -> 0x011414A0 */
+	{ 0x00918FECu, 0x48828434u },   /* ammo_30 -> 0x01141420 */
+	{ 0x0091918Cu, 0x48828315u },   /* zapper_60 -> 0x011414A0 */
+	{ 0x00919A70u, 0x48827A31u },   /* zapper_61 -> 0x011414A0 */
+	{ 0x009396ECu, 0x48807D34u },   /* ammo_31 -> 0x01141420 */
+	{ 0x0093988Cu, 0x48807C15u },   /* zapper_62 -> 0x011414A0 */
+	{ 0x0093A170u, 0x48807331u },   /* zapper_63 -> 0x011414A0 */
+	{ 0x0098D12Cu, 0x487B42F4u },   /* ammo_32 -> 0x01141420 */
+	{ 0x0098D2CCu, 0x487B41D5u },   /* zapper_64 -> 0x011414A0 */
+	{ 0x0098DBB0u, 0x487B38F1u },   /* zapper_65 -> 0x011414A0 */
+	{ 0x009DA1FCu, 0x48767224u },   /* ammo_33 -> 0x01141420 */
+	{ 0x009DA39Cu, 0x48767105u },   /* zapper_66 -> 0x011414A0 */
+	{ 0x009DAC80u, 0x48766821u },   /* zapper_67 -> 0x011414A0 */
+	{ 0x00A06FE4u, 0x4873A43Cu },   /* ammo_34 -> 0x01141420 */
+	{ 0x00A07184u, 0x4873A31Du },   /* zapper_68 -> 0x011414A0 */
+	{ 0x00A07A68u, 0x48739A39u },   /* zapper_69 -> 0x011414A0 */
+	{ 0x00A51BDCu, 0x486EF844u },   /* ammo_35 -> 0x01141420 */
+	{ 0x00A51D7Cu, 0x486EF725u },   /* zapper_70 -> 0x011414A0 */
+	{ 0x00A52660u, 0x486EEE41u },   /* zapper_71 -> 0x011414A0 */
+	{ 0x00A9C7D4u, 0x486A4C4Cu },   /* ammo_36 -> 0x01141420 */
+	{ 0x00A9C974u, 0x486A4B2Du },   /* zapper_72 -> 0x011414A0 */
+	{ 0x00A9D258u, 0x486A4249u },   /* zapper_73 -> 0x011414A0 */
 	{ 0x00BDF30Cu, 0x48562164u },   /* ship_parts -> 0x01141470 */
 	{ 0x00BEA8A0u, 0x48556B60u }    /* fast_loads -> 0x01141400 */
 };
@@ -148,14 +265,22 @@ static const u8 sw_rac3_fast_loads_draw[] = {
 	0x4B, 0x8F, 0xA5, 0x00, 0x4B, 0x8F, 0xA5, 0x18,
 };
 
+/* rac3 .cave.freeze_ammo_hero at 0x00981064, 24 bytes */
+static const u8 sw_rac3_freeze_ammo_hero[] = {
+	0x3C, 0xC0, 0x00, 0xDA, 0x88, 0xC6, 0xFF, 0x10, 0x2C, 0x06, 0x00, 0x00,
+	0x40, 0x82, 0x00, 0x08, 0x7C, 0xA3, 0x21, 0x2E, 0x4B, 0x80, 0x1A, 0xD0,
+};
+
 static const struct sw_cave sw_rac3_caves[] = {
 	{ 0x00980F00u, sw_rac3_freeze_ammo, (u32)sizeof(sw_rac3_freeze_ammo) },
 	{ 0x00980F80u, sw_rac3_fast_loads, (u32)sizeof(sw_rac3_fast_loads) },
-	{ 0x00981030u, sw_rac3_fast_loads_draw, (u32)sizeof(sw_rac3_fast_loads_draw) }
+	{ 0x00981030u, sw_rac3_fast_loads_draw, (u32)sizeof(sw_rac3_fast_loads_draw) },
+	{ 0x00981064u, sw_rac3_freeze_ammo_hero, (u32)sizeof(sw_rac3_freeze_ammo_hero) }
 };
 
 static const struct patch_word sw_rac3_sites[] = {
 	{ 0x00182A88u, 0x487FE478u },   /* freeze_ammo -> 0x00980F00 */
+	{ 0x00182B44u, 0x487FE520u },   /* freeze_ammo_hero -> 0x00981064 */
 	{ 0x0027B49Cu, 0x48705AE4u },   /* fast_loads -> 0x00980F80 */
 	{ 0x0027B550u, 0x48705AE0u }    /* fast_loads_draw -> 0x00981030 */
 };
@@ -414,28 +539,37 @@ static const u8 sw_tod_own_fast_loads[] = {
 	0x91, 0x49, 0x85, 0x64, 0x81, 0x22, 0x2B, 0xBC, 0x4B, 0xFD, 0xA1, 0xDC,
 };
 
+/* tod .cave.infinite_ammo at 0x003EB6F4, 20 bytes */
+static const u8 sw_tod_infinite_ammo[] = {
+	0x3C, 0x80, 0x10, 0x8B, 0x88, 0x84, 0x85, 0x61, 0x2C, 0x04, 0x00, 0x00,
+	0x4C, 0x82, 0x00, 0x20, 0x48, 0x0A, 0xEF, 0xDC,
+};
+
 static const struct sw_cave sw_tod_caves[] = {
 	{ 0x003EB578u, sw_tod_fast_loads, (u32)sizeof(sw_tod_fast_loads) },
-	{ 0x003EB5F8u, sw_tod_own_fast_loads, (u32)sizeof(sw_tod_own_fast_loads) }
+	{ 0x003EB5F8u, sw_tod_own_fast_loads, (u32)sizeof(sw_tod_own_fast_loads) },
+	{ 0x003EB6F4u, sw_tod_infinite_ammo, (u32)sizeof(sw_tod_infinite_ammo) }
 };
 
 static const struct patch_word sw_tod_sites[] = {
 	{ 0x0025E588u, 0x4818CFF0u },   /* fast_loads -> 0x003EB578 */
 	{ 0x003C5744u, 0x48025EB4u },   /* own_departure -> 0x003EB5F8 */
 	{ 0x003C57DCu, 0x48025E7Cu },   /* own_fmv_cut -> 0x003EB658 */
-	{ 0x003C58C8u, 0x48025E08u }    /* own_fmv_in -> 0x003EB6D0 */
+	{ 0x003C58C8u, 0x48025E08u },   /* own_fmv_in -> 0x003EB6D0 */
+	{ 0x0049EF08u, 0x4BF4C7EDu }    /* infinite_ammo -> 0x003EB6F4 */
 };
 
 static const u32 sw_tod_flags[] = {
-	0x108A8560u    /* fast_loads */
+	0x108A8560u,   /* fast_loads */
+	0x108A8561u    /* infinite_ammo */
 };
 
 static const struct sw_desc sw_descs[] = {
 	{ GAME_RAC1, sw_rac1_caves, 5, sw_rac1_sites, 5, sw_rac1_flags, 3 },
-	{ GAME_RAC2, sw_rac2_caves, 4, sw_rac2_sites, 4, sw_rac2_flags, 2 },
-	{ GAME_RAC3, sw_rac3_caves, 3, sw_rac3_sites, 3, sw_rac3_flags, 2 },
+	{ GAME_RAC2, sw_rac2_caves, 5, sw_rac2_sites, 114, sw_rac2_flags, 2 },
+	{ GAME_RAC3, sw_rac3_caves, 4, sw_rac3_sites, 4, sw_rac3_flags, 2 },
 	{ GAME_RAC4, sw_rac4_caves, 20, sw_rac4_sites, 19, sw_rac4_flags, 5 },
-	{ GAME_TOD, sw_tod_caves, 2, sw_tod_sites, 4, sw_tod_flags, 1 }
+	{ GAME_TOD, sw_tod_caves, 3, sw_tod_sites, 5, sw_tod_flags, 2 }
 };
 
 const struct sw_desc *sw_desc_for_game(u8 game_id)

@@ -4,24 +4,29 @@
 # sw_rac1.s says what a switch is and why it exists: an RPCS3 patch replaces
 # each instruction qwark patches on a console with a branch to a trampoline
 # here, and the trampoline runs the patched form or the original depending on a
-# flag byte, so under RPCS3 the checkbox is a byte write. ToD has one such
-# toggle, Fast loads (id 17): one switch in LoadScreen_Update and, since
+# flag byte, so under RPCS3 the checkbox is a byte write. ToD has two such
+# toggles: Fast loads (id 17), one switch in LoadScreen_Update and, since
 # revision 1.29, three pieces of qwark's own (own_*, sw_rac4.s says what those
-# are) that read the same flag themselves, which a console writes as well.
+# are) that read the same flag themselves, which a console writes as well; and
+# since build 59 Infinite ammo (id 8), one switch in Weapon_useAmmo.
 #
-# The flag is a byte of the RW segment's last page past its BSS (the segment
+# The flags are bytes of the RW segment's last page past its BSS (the segment
 # ends at 0x108A8550, its 4 KB page at 0x108A9000): zero at every boot, and
 # nothing in the executable refers to anything past 0x108A8550. The FMV load's
-# stamp (own_fmv_in) is the word after it.
+# stamp (own_fmv_in) is the word after Fast loads' flag, and Infinite ammo's
+# flag is the byte between.
 #
 # The caves are a dead function of the shipped game (sw_tod.ld), 400 bytes:
-# the switch takes the first 128 of them and qwark's own pieces the next 252.
+# the Fast loads switch takes the first 128 of them, qwark's own pieces the
+# next 252, and Infinite ammo's switch the last 20.
 #
 # build.sh assembles this, links it with sw_tod.ld and cuts each .cave.* and
 # .site.* section out as bytes, so every branch below is computed by the link.
 
 	.set    SW_FLAG_FAST_LOADS, 0x108A8560
 	.globl  SW_FLAG_FAST_LOADS
+	.set    SW_FLAG_INFINITE_AMMO, 0x108A8561   # build 59, the byte after Fast loads'
+	.globl  SW_FLAG_INFINITE_AMMO
 	.set    SW_DATA_FMV_IN,     0x108A8564
 	.globl  SW_DATA_FMV_IN
 
@@ -218,3 +223,29 @@ own_fmv_cut_ret:
 	.section .site.own_fmv_in, "ax"
 	b       own_fmv_in
 own_fmv_in_ret:
+
+# --------------------------------------------------------------- infinite ammo
+#
+# Build 59. 0x49EF08 in Weapon_useAmmo(slot's owner, amount): bl
+# WeaponSlot_addAmmo, the shot's ammo taken off as a negative add (fneg f1
+# before it). Every weapon and every device fires through it, the Visi-Copter
+# among them. Patched: nop, the count stays where it was. The site is a bl
+# like the original, to the trampoline rather than to WeaponSlot_addAmmo, so
+# the link register already holds the way back: the trampoline returns
+# straight there with the flag up, and with it down goes on to
+# WeaponSlot_addAmmo as a tail call, which returns there itself. Weapon_useAmmo
+# saved its own link register at its prologue and loads it back from the
+# stack. r4 is dead at the site (it held that link register, already stored),
+# WeaponSlot_addAmmo writes r4 before it reads it, and cr0 is read by nothing
+# after the call. The cave is the 20 bytes left at the end of the dead
+# function, exactly the five words.
+	.section .cave.infinite_ammo, "ax"
+infinite_ammo:
+	lis     r4, SW_FLAG_INFINITE_AMMO@ha
+	lbz     r4, SW_FLAG_INFINITE_AMMO@l(r4)
+	cmpwi   cr0, r4, 0
+	bnelr   cr0
+	b       tod_weaponslot_add_ammo
+
+	.section .site.infinite_ammo, "ax"
+	bl      infinite_ammo
