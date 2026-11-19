@@ -6817,6 +6817,45 @@ def smoke_tod(c, sim):
     mem_write(c, cam + 0x64, cam_type)
     mem_write(c, TOD_CAM_CLIENT + 0x2114, cam_active)
 
+    # Revision 1.34: [root]+0xC684 is the HUD's copy of the hero, 0 from a level's start until the HUD's
+    # first update (an opening cinematic, the movie player's pre-roll that waits for the arrival autosave).
+    # The hero is then g_heroList's current one through g_mobyPool, as the game's Hero_getCurrent finds him,
+    # and POS_SAVE and POS_LOAD work; they are BUSY only with no hero. Until now both were BUSY there.
+    pool_moby = mem_read_u32(c, TOD_MOBY_POOL) + 2 * 0x180      # the simulator's live slot 2
+    handle = mem_read_u32(c, pool_moby + 0x64)
+    hero_ptr = TOD_FAKE_ROOT + 0xC684
+    saved = {a: c.call(OP_MEM_READ, struct.pack(">II", a, 4))[1]
+             for a in (hero_ptr, TOD_MOVIE_STATE, TOD_HERO_SLOT, TOD_HERO_SLOT - 0x54 + 0x24, pool_moby + 0x40,
+                       pool_moby + 0x30, TOD_FAKE_HERO + 0x14)}
+    mem_write(c, TOD_HERO_SLOT - 0x54 + 0x24, struct.pack(">I", handle))
+    mem_write(c, pool_moby + 0x40, struct.pack(">I", TOD_FAKE_HERO))
+    mem_write(c, TOD_FAKE_HERO + 0x14, struct.pack(">I", pool_moby))
+    mem_write(c, TOD_HERO_SLOT, bytes(4))
+    mem_write(c, hero_ptr, bytes(4))
+    mem_write(c, TOD_MOVIE_STATE, struct.pack(">I", 1))
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 4.0, 5.0, 6.0))
+    c.call(OP_POS_CLEAR, bytes([7]))
+    status, _ = c.call(OP_POS_SAVE, bytes([7]))
+    mem_write(c, TOD_FAKE_HERO + 0x1260, struct.pack(">3f", 40.0, 50.0, 60.0))
+    status2, _ = c.call(OP_POS_LOAD, bytes([7]))
+    check(status == ST_OK and status2 == ST_OK and
+          c.call(OP_MEM_READ, struct.pack(">II", TOD_FAKE_HERO + 0x1260, 12))[1] == struct.pack(">3f", 4.0, 5.0, 6.0),
+          "ToD: POS_SAVE and POS_LOAD with the HUD's copy of the hero 0 (the pre-roll that waits for the arrival "
+          "autosave): the hero is g_heroList's", (status, status2))
+    mem_write(c, TOD_HERO_SLOT, struct.pack(">I", 0xFFFFFFFF))
+    c.call(OP_POS_CLEAR, bytes([6]))
+    status, _ = c.call(OP_POS_SAVE, bytes([6]))
+    status2, _ = c.call(OP_POS_LOAD, bytes([7]))
+    _, lst = c.call(OP_POS_LIST)
+    check(status == ST_BUSY and status2 == ST_BUSY and lst is not None and len(lst) >= 2 + 8 * 16 and
+          lst[2 + 6 * 16] == 0 and c.call(OP_MEM_READ, struct.pack(">II", TOD_FAKE_HERO + 0x1260, 12))[1] ==
+          struct.pack(">3f", 4.0, 5.0, 6.0),
+          "ToD: and with no hero (g_heroList's slot -1) both are BUSY, the slot left empty and the hero unmoved",
+          (status, status2))
+    for a, v in saved.items():
+        mem_write(c, a, v)
+    c.call(OP_POS_CLEAR, bytes([7]))
+
     # 2026-11-14: PLANET_LOAD in the pause (no Trainer glue in it) and in a cinematic loads at once, as LoadLevel
     # does there and the pause menu's own Load: the name, g_currentLevel, the top three tiers marked and
     # g_requestedGameState 3; no request only a gameplay frame would take. An FMV stays BUSY.

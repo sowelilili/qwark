@@ -4787,6 +4787,135 @@ static void test_tod_strafe_camera(void)
 }
 
 /*
+ * Revision 1.34: a position is saved wherever the hero is, the HUD's copy of
+ * his pointer ([root] + TOD_HERO_PTR) 0 or not. A fresh level object has it 0
+ * until the HUD's first update (tod.h), through an opening cinematic, the
+ * movie player's pre-roll that waits for the arrival autosave, a pause
+ * opened there, or a load still running: the hero is then the game's own
+ * current one, g_heroList's slot through g_mobyPool. Until now every POS_SAVE
+ * and POS_LOAD there was BUSY. Nothing stops them but no hero.
+ */
+static void test_tod_positions_no_hud_hero(void)
+{
+	static const struct { u32 state, movie, saving, pause, job; const char *what; } when[] = {
+		{ TOD_STATE_GAMEPLAY, TOD_MP_PREROLL, 2, 0, 0,                  "the arrival autosave, the movie player's pre-roll waiting on it" },
+		{ TOD_STATE_PAUSE,    0,              1, 3, 0,                  "the pause" },
+		{ TOD_STATE_CINEMATIC, 2,             1, 0, 0,                  "a realtime cinematic" },
+		{ 3,                  0,              1, 0, TOD_LOAD_JOB_LEVEL, "a level load, the tier loader on the level's tiers" }
+	};
+	u8 blob[QWARK_MAX_BLOB], before[0x50], after[0x50];
+	u8 len = 0, planet;
+	u32 mobys = rd32(TOD_MOBY_SLOTS), moby = mobys + 2u * TOD_MOBY_STRIDE, handle = rd32(moby + TOD_MOBY_HANDLE);
+	u32 state0 = rd32(TOD_GAME_STATE), movie0 = rd32(TOD_MOVIE_PLAYER + TOD_MP_STATE);
+	u32 sm0 = rd32(TOD_SAVE_MANAGER + TOD_SM_STATE), pause0 = rd32(TOD_PAUSE_STATE), job0 = rd32(TOD_LOAD_JOB);
+	u32 obj0 = rd32(moby + TOD_MOBY_OBJECT), back0 = rd32(FAKE_HERO + TOD_HERO_MOBY);
+	u8 moby_pos0[16];
+	u32 type0 = rd32(CAM + TOD_CAM_TYPE), active0 = rd32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE);
+	char what[192];
+	unsigned i;
+
+	group("ToD: a position saves wherever the hero is, the HUD's copy of him or not (revision 1.34)");
+	planet = session_current_planet();
+	host_peek(moby + TOD_MOBY_POS, moby_pos0, sizeof(moby_pos0));
+	check(handle == 0x00030002u, "the simulator's moby pool has slot 2 live");
+	/* Ratchet, slot 0 of g_heroList, the moby in g_mobyPool's slot 2, and his object's moby that slot. */
+	wr32(TOD_HERO_LIST + TOD_HL_CURRENT, 0);
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES, 0);
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES + 4, handle);
+	wr32(moby + TOD_MOBY_OBJECT, FAKE_HERO);
+	wr32(FAKE_HERO + TOD_HERO_MOBY, moby);
+	put3(CAM_ST, 10.0f, 20.0f, 6.5f);
+	put3(CAM_ST + TOD_CAM_OFFSET, 3.0f, -4.0f, 2.0f);
+
+	for (i = 0; i < sizeof(when) / sizeof(when[0]); i++) {
+		/* A fresh level object: BigObj5B8F0_Init cleared it, the HUD has not run. */
+		wr32(FAKE_ROOT + TOD_HERO_PTR, 0);
+		wr32(TOD_GAME_STATE, when[i].state);
+		wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, when[i].movie);
+		wr32(TOD_SAVE_MANAGER + TOD_SM_STATE, when[i].saving);
+		wr32(TOD_PAUSE_STATE, when[i].pause);
+		wr32(TOD_LOAD_JOB, when[i].job);
+		put3(FAKE_HERO + TOD_HERO_POS, 10.0f + (f32)i, 20.0f, 5.0f);
+		put3(CAM_ST, 10.0f + (f32)i, 20.0f, 6.5f);
+		pos_clear(planet, 3);
+		snprintf(what, sizeof(what), "POS_SAVE in %s, the HUD's copy 0: the hero's 64 bytes", when[i].what);
+		check(session_position_save(3) == ST_OK && pos_fetch(planet, 3, blob, &len) == ST_OK && len == TOD_POS_SLOT_LEN &&
+		      bef32_get(blob) == 10.0f + (f32)i && bef32_get(blob + 48) == 3.0f, what);
+		put3(FAKE_HERO + TOD_HERO_POS, 500.0f, 500.0f, 500.0f);
+		put3(CAM_ST, 500.0f, 500.0f, 501.5f);
+		snprintf(what, sizeof(what), "and POS_LOAD in %s puts him and his moby back", when[i].what);
+		check(session_position_load(3) == ST_OK && is3(FAKE_HERO + TOD_HERO_POS, 10.0f + (f32)i, 20.0f, 5.0f) &&
+		      is3(moby + TOD_MOBY_POS, 10.0f + (f32)i, 20.0f, 5.0f), what);
+	}
+
+	/* No camera following him yet (an opening cinematic's own): the 48-byte slot, never a refusal. */
+	wr32(CAM + TOD_CAM_TYPE, 6);
+	wr32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE, 0);
+	pos_clear(planet, 3);
+	check(session_position_save(3) == ST_OK && pos_fetch(planet, 3, blob, &len) == ST_OK && len == TOD_POS_BLOB_LEN &&
+	      bef32_get(blob) == 13.0f, "no camera of the hero's: POS_SAVE keeps the hero's 48 bytes");
+	wr32(CAM + TOD_CAM_TYPE, type0);
+	wr32(TOD_CAM_CLIENT + TOD_CAM_ACTIVE, active0);
+
+	/* No hero: each of these is BUSY, stores nothing and moves nothing. */
+	pos_clear(planet, 3);
+	pos_clear(planet, 4);
+	put3(FAKE_HERO + TOD_HERO_POS, 1.0f, 2.0f, 3.0f);
+	memset(blob, 0, sizeof(blob));
+	bef32_put(blob, 77.0f);
+	check(pos_store(planet, 4, blob, TOD_POS_BLOB_LEN) == ST_OK, "a slot to try loading");
+	cam_snapshot(before);
+	wr32(TOD_HERO_LIST + TOD_HL_CURRENT, TOD_HERO_SLOT_NONE);
+	check(session_position_save(3) == ST_BUSY && pos_fetch(planet, 3, blob, &len) == ST_NOT_FOUND,
+	      "no current hero (g_heroList's slot -1): POS_SAVE is BUSY and stores nothing");
+	check(session_position_load(4) == ST_BUSY && is3(FAKE_HERO + TOD_HERO_POS, 1.0f, 2.0f, 3.0f),
+	      "and POS_LOAD is BUSY and writes nothing");
+	wr32(TOD_HERO_LIST + TOD_HL_CURRENT, 0);
+	wr32(moby + TOD_MOBY_HANDLE, 0xFFFE0002u);
+	check(session_position_save(3) == ST_BUSY && session_position_load(4) == ST_BUSY &&
+	      is3(FAKE_HERO + TOD_HERO_POS, 1.0f, 2.0f, 3.0f),
+	      "his moby freed (its slot's handle 0xFFFE0002): BUSY both ways");
+	wr32(moby + TOD_MOBY_HANDLE, handle);
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES + 4, 0x00070002u);
+	check(session_position_save(3) == ST_BUSY, "a handle of another serial (a moby of an earlier level): BUSY");
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES + 4, 0x0011000Fu);
+	check(session_position_save(3) == ST_BUSY, "a handle past the pool's highest index in use: BUSY");
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES + 4, handle);
+	wr32(FAKE_HERO + TOD_HERO_MOBY, FAKE_MOBY);
+	check(session_position_save(3) == ST_BUSY, "an object whose own moby is another (no hero's): BUSY");
+	wr32(FAKE_HERO + TOD_HERO_MOBY, moby);
+	wr32(TOD_LEVEL_OBJ, 0);
+	check(session_position_save(3) == ST_BUSY && session_position_load(4) == ST_BUSY &&
+	      is3(FAKE_HERO + TOD_HERO_POS, 1.0f, 2.0f, 3.0f),
+	      "no level object (between levels), whatever the hero list says: BUSY both ways");
+	wr32(TOD_LEVEL_OBJ, FAKE_ROOT);
+	cam_snapshot(after);
+	check(memcmp(before, after, sizeof(before)) == 0 && pos_fetch(planet, 3, blob, &len) == ST_NOT_FOUND,
+	      "and none of them touched the camera or filled the slot");
+
+	/* The HUD's copy when it has one: the hero it names, as before. */
+	wr32(FAKE_ROOT + TOD_HERO_PTR, FAKE_HERO);
+	wr32(TOD_HERO_LIST + TOD_HL_CURRENT, TOD_HERO_SLOT_NONE);
+	check(session_position_save(3) == ST_OK && pos_fetch(planet, 3, blob, &len) == ST_OK && bef32_get(blob) == 1.0f,
+	      "with the HUD's copy set, it is the hero, as it always was");
+
+	/* Back as the simulator seeds it. */
+	wr32(TOD_HERO_LIST + TOD_HL_CURRENT, 0);
+	wr32(TOD_HERO_LIST + TOD_HL_HANDLES + 4, 0);
+	wr32(moby + TOD_MOBY_OBJECT, obj0);
+	wr32(FAKE_HERO + TOD_HERO_MOBY, back0);
+	host_poke(moby + TOD_MOBY_POS, moby_pos0, sizeof(moby_pos0));
+	wr32(TOD_GAME_STATE, state0);
+	wr32(TOD_MOVIE_PLAYER + TOD_MP_STATE, movie0);
+	wr32(TOD_SAVE_MANAGER + TOD_SM_STATE, sm0);
+	wr32(TOD_PAUSE_STATE, pause0);
+	wr32(TOD_LOAD_JOB, job0);
+	put3(CAM_ST, 10.0f, 20.0f, 6.5f);
+	pos_clear(planet, 3);
+	pos_clear(planet, 4);
+}
+
+/*
  * 2026-11-14: PLANET_LOAD in the pause and in a realtime cinematic loads at
  * once, as LoadLevel does there (the pause menu's own Load); the galactic map,
  * an FMV and a pause still being built stay BUSY. The autosplitter sees the
@@ -5243,6 +5372,7 @@ void test_tod_game(void)
 	test_tod_autosplit_quit();
 	test_tod_positions_camera();   /* 2026-11-13 */
 	test_tod_strafe_camera();      /* 2026-11-14 */
+	test_tod_positions_no_hud_hero();   /* revision 1.34 */
 	test_tod_die();
 	test_tod_pause_loads();        /* 2026-11-14 */
 	test_tod_planet_flags();       /* build 59 */

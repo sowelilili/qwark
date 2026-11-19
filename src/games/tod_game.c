@@ -102,18 +102,55 @@ static struct tod_state g_tod_state;
 #endif
 
 /*
- * The hero's pointer, for the handlers: the one the hot block last read when
- * there is one, otherwise the chain read now. Tick thread.
+ * Revision 1.34: the hero as the game's own Hero_getCurrent finds him (tod.h,
+ * TOD_HL_*): g_heroList's current slot, its moby handle checked against
+ * g_mobyPool as HeroList_getHero checks it, the moby's object, and that
+ * object's own moby the same slot. 0 for none.
+ */
+static int tod_listed_hero(u32 *hero)
+{
+	u32 slot = 0, handle = 0, last = 0, mobys = 0, moby, live = 0, h = 0, back = 0;
+
+	*hero = 0;
+	if (mem_read_u32(TOD_HERO_LIST + TOD_HL_CURRENT, &slot) != ST_OK) return ST_IO_ERROR;
+	if (slot >= TOD_HL_NSLOTS) return ST_OK;
+	if (mem_read_u32(TOD_HERO_LIST + TOD_HL_HANDLES + slot * 8u + 4u, &handle) != ST_OK ||
+	    mem_read_u32(TOD_MOBY_LAST, &last) != ST_OK || mem_read_u32(TOD_MOBY_SLOTS, &mobys) != ST_OK)
+		return ST_IO_ERROR;
+	if ((s32)last < 0 || (handle & 0xFFFFu) > last || mobys == 0 || (mobys & 3u) != 0) return ST_OK;
+	moby = mobys + (handle & 0xFFFFu) * TOD_MOBY_STRIDE;
+	if (mem_read_u32(moby + TOD_MOBY_HANDLE, &live) != ST_OK) return ST_IO_ERROR;
+	if (live != handle) return ST_OK;
+	if (mem_read_u32(moby + TOD_MOBY_OBJECT, &h) != ST_OK) return ST_IO_ERROR;
+	if (h == 0 || (h & 3u) != 0) return ST_OK;
+	if (mem_read_u32(h + TOD_HERO_MOBY, &back) != ST_OK) return ST_IO_ERROR;
+	if (back == moby) *hero = h;
+	return ST_OK;
+}
+
+/*
+ * The hero's pointer, for the handlers, read now. Tick thread. BUSY only with
+ * no hero: no level object (between levels, where g_mobyPool's handles start
+ * again and the hero list's may name the next level's mobys), or neither the
+ * HUD's copy nor the game's hero list naming one. Revision 1.34: the HUD's
+ * copy is 0 from a level's start until the HUD's first update (tod.h), an
+ * opening cinematic or the arrival autosave's pre-roll long, so with it 0 the
+ * game's own list says; until then every position save there was BUSY.
  */
 int tod_hero(u32 *hero)
 {
 	u32 root = 0, h = 0;
+	int rc;
 
 	*hero = 0;
 	if (mem_read_u32(TOD_LEVEL_OBJ, &root) != ST_OK) return ST_IO_ERROR;
 	if (root == 0 || (root & 3u) != 0) return ST_BUSY;
 	if (mem_read_u32(root + TOD_HERO_PTR, &h) != ST_OK) return ST_IO_ERROR;
-	if (h == 0 || (h & 3u) != 0) return ST_BUSY;
+	if (h == 0 || (h & 3u) != 0) {
+		rc = tod_listed_hero(&h);
+		if (rc != ST_OK) return rc;
+		if (h == 0) return ST_BUSY;
+	}
 	*hero = h;
 	return ST_OK;
 }

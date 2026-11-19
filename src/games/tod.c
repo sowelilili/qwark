@@ -92,7 +92,7 @@ static const struct tod_mark tod_marks[] = {
 	{ "game state",      TOD_GAME_STATE,      TOD_DIS,    "4 in gameplay (dozens of checks); GameState_Dispatch switches over -2..11, the others unnamed" },
 	{ "requested state", TOD_REQUESTED_STATE, TOD_DIS,    "3 = level load (REPORT 7)" },
 	{ "quit byte",       TOD_QUIT_BYTE,       TOD_DIS,    "SystemQuitCallback sets 1 before GameState_PopAll and sys_process_exit" },
-	{ "position root",   TOD_LEVEL_OBJ,       TOD_DEC,    "[[root]+0xC684] is the hero, written every frame from HeroList_getCurrentHero (callstack_ratchetptr_1); hero+0x14 the moby, pos +0x30; hero+0x1250 prevPos, +0x1260 pos, +0x1270/0x1280 the centre; root 0 between levels" },
+	{ "position root",   TOD_LEVEL_OBJ,       TOD_DEC,    "[[root]+0xC684] is the HUD's copy of the hero from HeroList_getCurrentHero (callstack_ratchetptr_1), 0 from a level's start until the HUD's first update, then g_heroList is asked (revision 1.34); hero+0x14 the moby, pos +0x30; hero+0x1250 prevPos, +0x1260 pos, +0x1270/0x1280 the centre; root 0 between levels" },
 	{ "hero health",     TOD_HERO_HEALTH,     TOD_DEC,    "f32 off the hero, max at +0x1788; Hero_checkDeath (0x209E04) enters the death state at <= 0" },
 	{ "save data",       TOD_SAVE_DATA,       TOD_DEC,    "g_saveData; the hero's inventory pointer (+0x1A68) points here: hero_get_bolts reads +0x41C through it, hero_set_bolts writes g_saveData+0x41C" },
 	{ "bolts",           TOD_BOLTS,           TOD_DEC,    "Lua_hero_set_bolts, Lua_hero_get_bolts; Hero_addBolts caps at 999,999,999" },

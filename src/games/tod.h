@@ -57,6 +57,22 @@
 /*
  * The hero: [[TOD_LEVEL_OBJ] + TOD_HERO_PTR], rewritten every frame from
  * g_heroList (HeroList_getCurrentHero), 0 between levels (dec).
+ *
+ * Revision 1.34: that word is the HUD's copy, not the hero. It is the
+ * level object's +0x70 HUD (callstack_ratchetptr_3, a vtable entry of the
+ * level object) at +0xC5F0, field +0x24, which callstack_ratchetptr_1 sets
+ * from HeroList_getCurrentHero, on the HUD's first update and after that
+ * only while g_moviePlayer's state (+0x58) is 0 or 4 (MoviePlayer_isBusy
+ * 0x81C38 is 0). BigObj5B8F0_Init clears the whole level object, so from a
+ * level's start (a load, a save loaded, a respawn) until that first update,
+ * through an opening cinematic or the movie player's pre-roll that waits for
+ * the arrival autosave, it is 0 with the hero spawned. tod_hero then asks
+ * the game itself, as Hero_getCurrent (0x1F7764) does: g_heroList's current
+ * slot, its handle's low word (g_mobyHandle64Mask 0x1002D5F0 is
+ * 0x00000000FFFFFFFF, g_mobyHandle64Shift 0x1002D610 is 0), the index (its
+ * low half) no higher than g_mobyPool's maxIndex and that slot's handle
+ * the same, then the object at the moby's +0x40 (HeroList_getHero
+ * 0x1F69B8), whose own moby (+0x14) must be that slot (dec).
  */
 #define TOD_LEVEL_OBJ        0x10740BB4u  /* the per-level object, 0x5B8F0 bytes (BigObj5B8F0_Init) */
 #define TOD_HERO_PTR         0x0000C684u
@@ -879,7 +895,10 @@ struct tod_facts {
 #define TOD_HL_CURRENT      0x54u        /* s32, the current slot, -1 none */
 #define TOD_HERO_SLOT_CLANK 4u           /* Clank's slot, the pad's (Ratchet's is 0) */
 #define TOD_HERO_SLOT_NONE  0xFFFFFFFFu
-#define TOD_AS_NSUBS        1u           /* the subsplits' table (tod_autosplit.c), at most 8 */
+#define TOD_HL_HANDLES      0x20u        /* u64 moby handle per slot; the low word is the moby's +0x64 (revision 1.34) */
+#define TOD_HL_NSLOTS       6u           /* slots 0..5 (HeroList_getCurrentOrAny 0x1F6A44 looks at six) */
+#define TOD_MOBY_OBJECT     0x40u        /* ToDMoby: the object, the hero for a hero's moby (HeroList_getHero) */
+#define TOD_AS_NSUBS       1u           /* the subsplits' table (tod_autosplit.c), at most 8 */
 
 /*
  * What the watcher keeps, a part of tod_game.c's state (the lent area in a
