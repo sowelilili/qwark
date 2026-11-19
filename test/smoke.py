@@ -1888,6 +1888,24 @@ def press(sim, client, mask, seconds):
         module_sleep(client, seconds)
 
 
+def sim_do(sim, line):
+    """Sends a stdin command and waits for the simulator's "ok" for it. Its
+    stdin is read on a thread of its own, so a fixed sleep after the send was
+    not always enough on a loaded machine for the command to have been run."""
+    mark = len(sim.lines)
+    sim.send(line)
+    want = "ok " + line
+    wall = time.monotonic() + WALL_GUARD
+    while (not any(l.strip() == want for l in sim.lines[mark:])
+           and time.monotonic() < wall):
+        time.sleep(0.005)
+
+
+def sim_logged_since(sim, mark, needle):
+    """Whether the simulator has logged a line containing `needle` since sim.lines[mark]."""
+    return any(needle in line for line in sim.lines[mark:])
+
+
 def combo_request(sim, client, addr):
     """The menu combo, as a player presses it, and what it left in the mailbox's
     request byte at `addr`: 0 when it asked nothing.
@@ -2060,17 +2078,31 @@ def drain_udp(udp):
         udp.settimeout(2.0)
 
 
-def telemetry_ticks(udp, seconds):
-    """The SessionInfo tick of every QWRK packet that arrives within `seconds`."""
+TELEMETRY_SAMPLE = 25
+
+
+def telemetry_ticks(udp, client=None, count=TELEMETRY_SAMPLE, seconds=30.0):
+    """The SessionInfo ticks of the next `count` QWRK packets, or of as many as
+    arrive within `seconds` of wall time. A window of fixed length held ten
+    packets only while the host's tick kept near 120 Hz, which a loaded machine
+    does not (a run beside a build saw it at a quarter of that), so the sample
+    is a number of packets. `client`, when given, is sent a HEARTBEAT each
+    second, so a long wait never makes the subscriber one that has gone quiet
+    (five seconds of wall time, after which nothing is sent to it)."""
     ticks = []
     deadline = time.time() + seconds
+    beat = time.time() + 1.0
     try:
-        while time.time() < deadline:
-            udp.settimeout(max(0.01, deadline - time.time()))
+        while len(ticks) < count and time.time() < deadline:
+            if client is not None and time.time() >= beat:
+                client.call(OP_HEARTBEAT)
+                beat = time.time() + 1.0
+            until = deadline if client is None else min(deadline, beat)
+            udp.settimeout(max(0.01, until - time.time()))
             try:
                 data, _addr = udp.recvfrom(4096)
             except socket.timeout:
-                break
+                continue
             if data[:4] == b"QWRK" and len(data) >= 4 + 12:
                 ticks.append(struct.unpack(">I", data[4 + 8:4 + 12])[0])
     finally:
@@ -2091,7 +2123,7 @@ def test_telemetry_rate(c, udp, prefix=""):
           prefix + "telemetry rate: flags3 bit2, the switch, at 60 Hz with no key, the default since 1.33 (bits 3-4 = 1)",
           st and hex(st["flags3"]))
     drain_udp(udp)
-    ticks = telemetry_ticks(udp, 0.6)
+    ticks = telemetry_ticks(udp, c)
     steps = [(b - a) & 0xFFFFFFFF for a, b in zip(ticks, ticks[1:])]
     usual = max(set(steps), key=steps.count) if steps else None
     check(len(steps) >= 10 and usual == 2,
@@ -2106,9 +2138,9 @@ def test_telemetry_rate(c, udp, prefix=""):
         check(st and (st["flags3"] & SESSION_FLAG3_RATE_MASK) >> SESSION_FLAG3_RATE_SHIFT == code,
               prefix + "telemetry rate: and flags3 bits 3-4 say %d Hz" % hz, st and hex(st["flags3"]))
         drain_udp(udp)
-        # 30 Hz is ten packets in two thirds of a second only if the host's tick keeps 120 Hz,
-        # which a loaded Windows timer does not, so the slow rate gets a longer look.
-        ticks = telemetry_ticks(udp, 1.2 if every == 4 else 0.6)
+        # A number of packets, not a window of time: the host's tick keeps 120 Hz only on
+        # a quiet machine, and the ticks the packets carry say the rate whatever its pace.
+        ticks = telemetry_ticks(udp, c)
         steps = [(b - a) & 0xFFFFFFFF for a, b in zip(ticks, ticks[1:])]
         usual = max(set(steps), key=steps.count) if steps else None
         check(len(steps) >= 10 and usual == every,
@@ -3871,16 +3903,30 @@ def exercise_console_menu(c, sim):
           "Deadlocked menu: COMBO_SET binds the Cheats page combo, combo.page.cheats in config.txt", status)
     press(sim, c, "0x0", 0.15)
     press(sim, c, "0x%x" % page_mask, 0)
-    wait_while(c, lambda: mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST) == 0, 0.25, 0.005)
-    req = mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST)
+    # The page is read as soon as the request shows, with the combo still held: the open is
+    # withdrawn half a second of wall time on (REQUEST_US), which puts the root back at once,
+    # and a loaded run's release outlasted that before the page was looked at.
+    seen = [0, None]
+
+    def nothing_yet():
+        seen[0] = mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST)
+        if seen[0] != 0:
+            seen[1] = menu_page(c)
+        return seen[0] == 0
+    wait_while(c, nothing_yet, 0.25, 0.005)
+    req, page = seen
     press(sim, c, "0x0", 0.1)
-    page = menu_page(c)
     check(req == MBOX_REQ_OPEN and page is not None and page[2] == "Cheats" and page[5] == MBOX_PTYPE_CONFIG and
           not (page[4][MBOX_OFF_PFLAGS] & MBOX_PAGE_ROOT),
           "Deadlocked menu: its press asks the renderer to open, the Cheats page already in the mailbox",
           (req, page[2] if page else None))
     mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
-    wait_while(c, lambda: (menu_page(c) or (0, 0, ""))[2] != "Trainer", 2.0, 0.1)
+    # The request taken off by hand, the menu never up: the root comes back
+    # PAGE_US (src/core/menu.c, 4 s of wall time) after the press. Two seconds
+    # passed only when the module had withdrawn the request itself first (half
+    # a second, a slow run), which puts the root back at once; six seconds of
+    # ticks are at least that much wall time, however the machine is loaded.
+    wait_while(c, lambda: (menu_page(c) or (0, 0, ""))[2] != "Trainer", 6.0, 0.1)
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer",
           "Deadlocked menu: an open nobody took puts the root back for the Help row", page[2] if page else None)
@@ -5888,8 +5934,7 @@ def smoke_tod_savefile(c, sim):
           "ToD: and qwark.log says which check")
 
     mem_write(c, TOD_BOLTS, struct.pack(">I", 1111))
-    sim.send("fakesave slot 3")
-    time.sleep(0.1)
+    sim_do(sim, "fakesave slot 3")
     status, _ = c.call(OP_SAVEFILE_CATEGORY, bytes([SAVEFILE_CATEGORY_CREATE]) + fixed32("smoke"))
     status, _ = c.call(OP_SAVEFILE_STORE, fixed32("smoke") + fixed32("tod.sav"))
     check(status == ST_OK, "ToD: SAVEFILE_STORE is accepted", status)
@@ -5956,8 +6001,7 @@ def smoke_tod_savefile(c, sim):
         return status, tod_wait_transfer(c)
 
     mem_write(c, TOD_BOLTS, struct.pack(">I", 5555))
-    sim.send("fakesave slot 3")
-    time.sleep(0.1)
+    sim_do(sim, "fakesave slot 3")
     status, _ = c.call(OP_SAVEFILE_STORE, fixed32("smoke") + fixed32("tod2.sav"))
     info = tod_wait_transfer(c)
     check(status == ST_OK and info and info["error"] == 0, "ToD: a second file, 5555 bolts, is stored", (status, info))
@@ -5974,8 +6018,7 @@ def smoke_tod_savefile(c, sim):
           "ToD: and a Load set-aside copies nothing onto itself")
 
     mem_write(c, TOD_BOLTS, struct.pack(">I", 7777))
-    sim.send("fakesave slot 3")
-    time.sleep(0.1)
+    sim_do(sim, "fakesave slot 3")
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([TOD_SET_ASIDE]))
     info = tod_wait_transfer(c)
     check(status == ST_OK and info and info["error"] == 0 and aside_bolts() == 7777,
@@ -5997,8 +6040,7 @@ def smoke_tod_savefile(c, sim):
         os.rmdir(aside + ".new")
 
     # No slot, and an autosave the game asked for that can never run: a load still goes.
-    sim.send("fakesave slot -1")
-    time.sleep(0.1)
+    sim_do(sim, "fakesave slot -1")
     mem_write(c, TOD_SM_AUTOSAVE, struct.pack(">I", 1))
     mem_write(c, TOD_BOLTS, struct.pack(">I", 4444))
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
@@ -6814,33 +6856,54 @@ def smoke_tod_menu(c, sim):
     check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 1 and mem_read_u32(c, TOD_LOAD_FADE_TIME) in (TOD_FADE_QUICK, TOD_FADE_STORY),
           "ToD menu: revision 1.29: the map up: Fast loads forced and the short fade armed for a pick",
           (mem_read_u8(c, TOD_FASTLOAD_FLAG), hex(mem_read_u32(c, TOD_LOAD_FADE_TIME))))
+    mark = len(sim.lines)
     sim.send("fakemap back")
-    wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
+    # The open is withdrawn half a second of wall time after it is asked (REQUEST_US), so the byte is
+    # kept as the wait saw it rather than read again after the reads below, which a loaded run outlasted.
+    asked = [0]
+
+    def not_asked():
+        asked[0] = mem_read_u8(c, box + MBOX_OFF_REQUEST)
+        return asked[0] != 1
+    wait_while(c, not_asked, 2.0, 0.02)
     check(mem_read_u8(c, TOD_FASTLOAD_FLAG) == 0 and mem_read_u32(c, TOD_LOAD_FADE_TIME) == TOD_FADE_GAME and
           mem_read_u32(c, TOD_TRANSITION_MIN) == 0x40A00000,
           "ToD menu: Back with no pick: Fast loads off and the game's fade again at once")
     now = triples()
     page = menu_page(c, box, size)
-    check(now == saved and mem_read_u8(c, box + MBOX_OFF_REQUEST) == 1 and page is not None and
+    check(now == saved and asked[0] == 1 and page is not None and
           page[2] == "Trainer" and page[4][MBOX_OFF_CURSOR] == planets and page[3][planets] == "Planets",
           "ToD menu: Back from the map: the save's bytes again, the Trainer asked for, its root with the cursor on "
-          "Planets (one picker: no All planets row)", (now == saved, page[2:4] if page else None))
-    # The simulator has no pause test to take the open: qwark gives up asking a few seconds on.
-    quiet = [time.time()]
+          "Planets (one picker: no All planets row)", (now == saved, asked[0], page[2:4] if page else None))
 
-    def asking():
-        if mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0:
-            quiet[0] = time.time()
-        return time.time() - quiet[0] < 1.2
-    wait_while(c, asking, 8.0, 0.05)
-    check(not asking(), "ToD menu: an open nobody takes is given up a few seconds on")
+    # The simulator has no pause test to take the open: qwark gives up asking a few seconds on (GM_REOPEN_US,
+    # 4 s of wall time, src/core/menu.c), says so in its log, and the open it asked last is withdrawn half a
+    # second after. That is waited for, not a quiet spell timed here: the open is asked again every 0.75 s
+    # until then, and a look that fell between two asks (or a loaded machine's late tick) took a reopen still
+    # running for one given up, so the next press of Planets was BUSY and opened the page of planets, not the
+    # map; the pick on it then loaded nothing and its three checks failed. Eight seconds of ticks are at
+    # least that much wall time.
+    def given_up(mark):
+        def going():
+            return (not sim_logged_since(sim, mark, "the Trainer did not open again") or
+                    mem_read_u8(c, box + MBOX_OFF_REQUEST) != 0)
+        wait_while(c, going, 8.0, 0.05)
+        if going():
+            return False
+        # And nothing asked again after it: a second of ticks is longer than the 0.75 s between asks.
+        return not wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) == 0, 1.0, 0.05)
+    check(given_up(mark), "ToD menu: an open nobody takes is given up a few seconds on")
     # The map's glue failing: the map the game's own, and Back opens the page of planets, the one fallback.
-    sim.send("fakemap fail")
+    sim_do(sim, "fakemap fail")
+    mark = len(sim.lines)
     check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: Planets again, the map's glue to fail")
     wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
-    module_sleep(c, 0.4)
-    sim.send("fakemap back")
-    sim.send("fakemap in")
+    # Back only once qwark has taken the glue's failure (its answer comes from the simulated map's frame,
+    # a thread of its own): a fixed wait could let Back come first and open the root, not the planets.
+    wait_while(c, lambda: not sim_logged_since(sim, mark, "could not list every planet"), 3.0, 0.02)
+    mark = len(sim.lines)
+    sim_do(sim, "fakemap back")
+    sim_do(sim, "fakemap in")
     wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
@@ -6865,14 +6928,16 @@ def smoke_tod_menu(c, sim):
     page = menu_page(c, box, size)
     check(page is not None and page[3][planets] == "Planets", "ToD menu: the root: Planets, opening the map",
           page[3] if page else None)
-    wait_while(c, asking, 8.0, 0.05)
-    check(not asking(), "ToD menu: an open nobody takes is given up a few seconds on")
+    check(given_up(mark), "ToD menu: an open nobody takes is given up a few seconds on")
     # A pick: the game's own load (the map's exit), the bytes back, no Trainer asked for.
+    mark = len(sim.lines)
     check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: Planets again")
     wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
+    # The pick only once qwark has seen the map up (Fast loads forced and the short fade armed with it).
+    wait_while(c, lambda: not sim_logged_since(sim, mark, "the galactic map is up"), 3.0, 0.02)
     mem_write(c, TOD_LOAD_REQUEST, b"\xFF\xFF\xFF\xFF")
     module_sleep(c, 0.2)
-    sim.send("fakemap pick 7")
+    sim_do(sim, "fakemap pick 7")
     wait_while(c, lambda: triples() != saved, 2.0, 0.02)
     now = triples()
     module_sleep(c, 0.3)
