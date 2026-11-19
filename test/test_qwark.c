@@ -4697,7 +4697,7 @@ static void test_rac2(void)
 		mem_read_u32(R2_ARMOUR_LOADED, &v);
 		check_eq_u64(v, 0xFFFFFFFFu, "the loaded armour is -1 first, the fallback should the reload never come");
 		host_peek(R2_SF_ARMOR, &b, 1);
-		check_eq_u64(b, 1, "and the reload byte is 1: the helper makes the menu's call on a safe frame");
+		check_eq_u64(b, 1, "and the reload byte is 1: the helper makes the menu's call on the next frame");
 
 		/* The helper takes the byte back; a skin asks again. */
 		host_poke(R2_SF_ARMOR, (const u8 *)"\x00", 1);
@@ -4720,21 +4720,16 @@ static void test_rac2(void)
 
 		/*
 		 * The helper's own half, as the bytes the console runs: one call of
-		 * Armor_LoadModel, reached only past the gates sf_rac2.h names, with the
-		 * request byte the module writes cleared before it.
+		 * Armor_LoadModel, after the reads sf_rac2.h names (the armour, the
+		 * loaded armour, and the class and buffer the call writes through), with
+		 * the request byte the module writes cleared before it.
 		 */
 		check(d != NULL && d->caves != NULL && d->ncaves == 1, "RaC2's helper is one cave");
 		if (d != NULL && d->caves != NULL && d->ncaves == 1) {
 			const struct sf_cave *cv = &d->caves[0];
-			static const u32 gates[] = {
+			static const u32 reads[] = {
 				0x01329AB0u,   /* the armour */
 				0x0147A310u,   /* the loaded armour */
-				0x0156B064u,   /* gameMode: ordinary play or the pause */
-				0x01329F90u,   /* pendingGameMode: nothing queued */
-				0x0156B050u,   /* the load request */
-				0x01329A3Cu,   /* the planet, -1 on the title screen */
-				0x0157CEDCu,   /* the console's freeze */
-				0x014816ACu,   /* Ratchet's hit points */
 				0x0158DCC0u,   /* moby class 0, Ratchet's */
 				0x0156B2BCu    /* the armour's buffer */
 			};
@@ -4750,22 +4745,25 @@ static void test_rac2(void)
 			}
 			check_eq_u64(calls, 1, "the helper calls Armor_LoadModel (0xB45738) once");
 
-			for (k = 0; k < sizeof(gates) / sizeof(gates[0]); k++) {
+			for (k = 0; k < sizeof(reads) / sizeof(reads[0]); k++) {
 				int found = 0;
 				for (i = 0; i + 8 <= cv->len && !found; i += 4) {
 					u32 hi = be32_get(cv->bytes + i), j;
-					if ((hi & 0xFC1F0000u) != 0x3C000000u || (hi & 0xFFFFu) != (gates[k] >> 16)) continue;
+					if ((hi & 0xFC1F0000u) != 0x3C000000u || (hi & 0xFFFFu) != (reads[k] >> 16)) continue;
 					for (j = i + 4; j < i + 32 && j + 4 <= cv->len; j += 4) {
 						u32 lo = be32_get(cv->bytes + j);
-						if ((lo >> 26) == 24 && (lo & 0xFFFFu) == (gates[k] & 0xFFFFu) &&
+						if ((lo >> 26) == 24 && (lo & 0xFFFFu) == (reads[k] & 0xFFFFu) &&
 						    ((lo >> 21) & 31) == ((hi >> 21) & 31)) { found = 1; break; }
 					}
 				}
-				if (!found) printf("    gate 0x%08X not in the helper\n", (unsigned)gates[k]);
-				check(found, "the helper reads one of the gates sf_rac2.h names");
+				if (!found) printf("    0x%08X not read by the helper\n", (unsigned)reads[k]);
+				check(found, "the helper reads one of the words sf_rac2.h names");
 			}
 
-			/* The last lis/ori of the request byte before the call, and a store after it. */
+			/*
+			 * The last lis/ori of the request byte before the call, and a stb
+			 * through the ori's register between it and the call.
+			 */
 			for (i = 0; i + 8 <= call_at; i += 4) {
 				u32 hi = be32_get(cv->bytes + i), j;
 				if ((hi & 0xFC1F0000u) != 0x3C000000u || (hi & 0xFFFFu) != (R2_SF_ARMOR >> 16)) continue;
@@ -4774,9 +4772,16 @@ static void test_rac2(void)
 					if ((x >> 26) == 24 && (x & 0xFFFFu) == (R2_SF_ARMOR & 0xFFFFu)) { clear_at = j; break; }
 				}
 			}
-			check(clear_at != 0 && clear_at < call_at &&
-			      (be32_get(cv->bytes + clear_at + 4) >> 26) == 38,
-			      "and stores to the byte the module writes, 0x131772B, before the call");
+			{
+				u32 reg = (be32_get(cv->bytes + clear_at) >> 16) & 31, stored = 0;
+
+				for (i = clear_at + 4; clear_at != 0 && i < call_at; i += 4) {
+					w = be32_get(cv->bytes + i);
+					if ((w >> 26) == 38 && ((w >> 16) & 31) == reg && (w & 0xFFFFu) == 0) stored = 1;
+				}
+				check(clear_at != 0 && clear_at < call_at && stored,
+				      "and stores to the byte the module writes, 0x131772B, before the call");
+			}
 		}
 	}
 
@@ -17389,7 +17394,7 @@ static void test_command_port(void)
  * left Deadlocked's alone.
  */
 #define SF53_STAMP_RAC1 0xD28627B7u
-#define SF53_STAMP_RAC2 0x0061CD58u
+#define SF53_STAMP_RAC2 0x4C77C646u
 #define SF53_STAMP_RAC3 0x79AA19AFu   /* with the trophy reset and its thread */
 #define SF53_STAMP_RAC4 0x23199E63u
 
@@ -17558,7 +17563,7 @@ static void test_savefile_build53(void)
 		check(sf53_byte_addr(g_sf_patch, 0) == 0x01317728u, "and the bytes it zeroes are where they were");
 		check(d->caves[0].addr + d->caves[0].len <= 0x01141400u,
 		      "and the helper stops short of the code switches at 0x1141400");
-		check_eq_u64(len, 2812, "the reply is 2812 bytes, the helper at 1384 with the pause written and the armour reload (build 59)");
+		check_eq_u64(len, 2524, "the reply is 2524 bytes, the helper at 1240 with the pause written and the armour reload (build 59)");
 		check_eq_u64(be32_get(g_sf_patch + 4), SF53_STAMP_RAC2, "with the stamp this build pins for it");
 
 		/*

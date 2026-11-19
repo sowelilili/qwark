@@ -293,24 +293,20 @@
  *
  * qwark puts -1 in the loaded word, which the next planet load always takes
  * for a stale model, and then 1 in SF_API_ARMOR. The helper reloads at the end
- * of a frame of ordinary play or of the pause, the two modes the game's own
- * calls are made from with the world as it is, on a planet, with no planet
- * load raised, no mode change queued, the console not holding the game in its
- * freeze, Ratchet alive and his class and his armour buffer there; anywhere
- * else it leaves the byte at 1 and looks again on the next frame. A planet
- * load that comes first reads the files itself, and the helper finds the
- * loaded word equal to the armour and lets the byte go without a reload.
- * SF_API_ARMOR sits between the set-aside byte and the copy counter, in the
- * same zero-filled gap, so it is 0 at every boot. From the NPEA00386
- * executable; not yet run on hardware.
+ * of the next game frame. Armor_LoadModel writes through Ratchet's class and
+ * the armour buffer, so while either is 0 the helper leaves the byte at 1 and
+ * looks again on the next frame; nothing else defers it. A planet load that
+ * comes first reads the files itself, and the helper finds the loaded word
+ * equal to the armour and lets the byte go without a reload. SF_API_ARMOR
+ * sits between the set-aside byte and the copy counter, in the same
+ * zero-filled gap, so it is 0 at every boot. From the NPEA00386 executable;
+ * not yet run on hardware.
  */
 #define SF_API_ARMOR       0x0131772B
 #define SF_ARMOR           0x01329AB0
 #define SF_ARMOR_LOADED    0x0147A310
 #define SF_ARMOR_BUF       0x0156B2BC
 #define SF_MOBY_CLASSES    0x0158DCC0
-#define SF_PLAYER_HEALTH   0x014816AC
-#define SF_MODE_NORMAL     0x00000000
 
 /* ---------------------------------------------------------- game functions */
 

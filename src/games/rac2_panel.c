@@ -989,7 +989,7 @@ u32 rac2_skin_index(const u8 *cheats)
  * Either picker, after its data: the model reloaded as the game's Cheats menu
  * reloads it (rac2.h). The loaded armour goes to -1 first, which the next
  * planet load always takes for a stale model, and then the savefile helper is
- * asked to make the menu's call on the game's own frame as soon as it is safe
+ * asked to make the menu's call at the end of the next game frame
  * (src/games/sfhelper/sf_rac2.h). Where there is no helper to ask - config's
  * savefile_helper = 0, no usable ui.pak, an RPCS3 game without this build's
  * savefile patch - the -1 alone stands and the look changes at the next planet

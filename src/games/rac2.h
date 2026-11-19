@@ -375,10 +375,10 @@
  * Ratchet. Since build 59 qwark does what the menu does: the loaded word at
  * -1, a mismatch every later load sees, and then RAC2_SF_ARMOR, the savefile
  * helper's fifth request byte, which has the helper make the menu's call at
- * the end of the first frame of play or of the pause that is safe for it
- * (src/games/sfhelper/sf_rac2.h has the rules; rac2_panel.c,
- * rac2_model_reload). With no helper the -1 alone makes the next planet load
- * read the model, as before.
+ * the end of the next game frame; nothing defers it but a missing model
+ * buffer (src/games/sfhelper/sf_rac2.h; rac2_panel.c, rac2_model_reload).
+ * With no helper the -1 alone makes the next planet load read the model, as
+ * before.
  */
 #define RAC2_ARMOUR            0x1329AB0u  /* s16, 0..4 */
 #define RAC2_ARMOUR_LOADED     0x147A310u  /* s32, the armour whose file is in */
