@@ -974,7 +974,7 @@ static void test_model_uya(void)
 	/* Planets: with no picker in the renderer (CAPS_ALL), the row is a link like the others. */
 	r = view_row(&v, "Planets");
 	check(r != NULL && r->kind == MROW_LINK && (r->flags & MROWF_PICKER) == 0,
-	      "Planets, for a renderer without the game's picker: a link to qwark's own list");
+	      "Planets, for a renderer without the game's picker: a plain link, no flag");
 	menu_model_reset(9, 24, CAPS_ALL | MBOX_CAP_PICKER);
 	menu_model_view(&v);
 	r = view_row(&v, "Planets");
@@ -982,40 +982,34 @@ static void test_model_uya(void)
 	      (view_row(&v, "Cheats")->flags & MROWF_PICKER) == 0,
 	      "for one with it, the Planets row, and only it, says the cross opens the game's picker");
 
-	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4), 24 a window: the fallback. */
-	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_CONFIG && strcmp(v.rows[0].label, "Veldin") == 0 &&
-	      strcmp(v.rows[5].label, "Obani Gemini") == 0 && v.nrows == 24 && strcmp(v.title, "Planets") == 0 &&
-	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
-	      "Planets: a CONFIG page, Veldin, Florana, Starship Phoenix, Marcadia, Daxx, Obani Gemini ..., the first "
-	      "24 of 34 and no More row, the page going on below");
-	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION, "each a button that closes the menu first");
-	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 23, v.rows[23].id, v.key) == ST_OK, "the slide from the 24th");
-	menu_model_view(&v);
-	check(view_row(&v, "Vid Comic 1 SE") != NULL && view_row(&v, "(unused)") == NULL && view_row(&v, "(none)") == NULL &&
-	      v.nrows == 24 && (v.pflags & MBOX_PAGE_MORE_DOWN) == 0,
-	      "the last window ends with the vid comics; the gaps and the placeholder are left out");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
-	menu_model_view(&v);
+	/*
+	 * Revision 1.34: the cross on Planets reaching qwark (the map refused
+	 * there and then) opens no page of planets: qwark's fallback list is gone.
+	 */
+	check(act(&v, MBOX_EV_ACTIVATE, "Planets") == ST_BUSY && menu_model_depth() == 1,
+	      "the cross on Planets with the map refused: nothing opens, the row says busy");
 
 	/*
 	 * The pickers' round 2: the GALACTIC MAP asks for the planets it cannot
 	 * show (MBOX_EV_PICKER_OTHERS on the Planets row): rac3.c's picker_others,
-	 * the base vid comics, on a CONFIG page of their own; back to the root.
+	 * every vid comic (revision 1.34: 6 and 1 SE too, which only qwark's
+	 * Planets page listed until it went), on a CONFIG page of their own; back
+	 * to the root.
 	 */
 	r = view_row(&v, "Planets");
 	check(r != NULL && menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_OK,
 	      "the picker's event on the Planets row is taken");
 	menu_model_view(&v);
 	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && v.ptype == MBOX_PTYPE_CONFIG &&
-	      strcmp(v.title, "Vid-Comics") == 0 && v.nrows == 5 && strcmp(v.rows[0].label, "Vid Comic 1") == 0 &&
+	      strcmp(v.title, "Vid-Comics") == 0 && v.nrows == 7 && strcmp(v.rows[0].label, "Vid Comic 1") == 0 &&
 	      strcmp(v.rows[1].label, "Vid Comic 2") == 0 && strcmp(v.rows[3].label, "Vid Comic 4") == 0 &&
 	      strcmp(v.rows[4].label, "Vid Comic 5") == 0 && v.rows[0].id == MENU_ROW_ID(MENU_ROW_PLANET, 31) &&
 	      v.rows[3].id == MENU_ROW_ID(MENU_ROW_PLANET, 32) && v.rows[4].id == MENU_ROW_ID(MENU_ROW_PLANET, 35) &&
+	      v.rows[5].id == MENU_ROW_ID(MENU_ROW_PLANET, 30) && v.rows[6].id == MENU_ROW_ID(MENU_ROW_PLANET, 36) &&
 	      (v.rows[2].flags & MROWF_CLOSES) != 0 && v.rows[2].kind == MROW_ACTION &&
-	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0 && view_row(&v, "Vid Comic 6") == NULL,
-	      "Vid-Comics: Vid Comic 1 to 5 (planets 31, 33, 34, 32, 35), each a button that closes the menu first; no 6, "
-	      "no 1 SE");
+	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0,
+	      "Vid-Comics: Vid Comic 1 to 6 and 1 SE (planets 31, 33, 34, 32, 35, 30, 36), each a button that closes "
+	      "the menu first");
 	check(act(&v, MBOX_EV_ACTIVATE, "Vid Comic 2") == ST_OK && value_of(&v, "Vid Comic 2")[0] == 0,
 	      "round 5: the cross on one waits for the close, its row blank (no \"after closing\")");
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
@@ -1531,10 +1525,9 @@ static void test_renderer_uya(void)
 	tick(4);
 
 	/*
-	 * Round 4: PLANETS, a CONFIG page of 24 of the 34, the window sliding under
-	 * the cursor at its last row. The row opens the GALACTIC MAP now (the
-	 * picker's own test, below); qwark's list is its fallback, here in a pause
-	 * whose Start does not leave it, where the map is refused.
+	 * Revision 1.34: PLANETS where the GALACTIC MAP is refused (a pause whose
+	 * Start does not leave it) opens nothing: qwark's list, the map's fallback,
+	 * is gone. The main pause stays, the row says busy.
 	 */
 	w32(U_CURSOR, 2);
 	poke8(U_NO_EXIT, 1);
@@ -1543,25 +1536,61 @@ static void test_renderer_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.built && G.rows == 24 && strcmp(cfg_label(0, a), "VELDIN") == 0 && strcmp(cfg_value(0, b), "") == 0 &&
-	      strcmp(read_str(G.title, b, 80), "PLANETS") == 0,
-	      "PLANETS: AUDIO / VISUAL's look, the first 24 of the 34 planets, each blank, no More row, the title its own");
+	check(G.main_up && G.count == 7 && menu_model_depth() == 1 && strcmp(row_text(2, a), "PLANETS: BUSY") == 0,
+	      "PLANETS with the map refused: the root still, no page of planets, the row says busy");
+	tick(300);
+	pframe(0);
+
+	/*
+	 * Round 4: a CONFIG page of 34, 24 a window, the window sliding under the
+	 * cursor at its last row: a save category of 34 (revision 1.34: qwark's
+	 * Planets page, which this used, is gone).
+	 */
+	for (i = 1; i <= 34; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "s%02d.sav", i);
+		lib_save("NPEA00387", "long", name, NULL, 16);
+	}
+	w32(U_CURSOR, 6);
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && strcmp(read_str(G.title, b, 80), "SAVE FILES") == 0 && strcmp(cfg_label(0, a), "LONG") == 0,
+	      "SAVE FILES: the library's categories, the one of 34 first");
+	pframe(0x40);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.built && G.rows == 24 && strcmp(cfg_label(0, a), "S01") == 0 && strcmp(cfg_value(0, b), "") == 0 &&
+	      strcmp(read_str(G.title, b, 80), "LONG") == 0,
+	      "its page: AUDIO / VISUAL's look, the first 24 of the 34 saves, each blank, no More row, the title its own");
 	for (i = 0; i < 23; i++) pframe(PADB_DOWN);
-	check(G.top + G.off == 23 && strcmp(cfg_label(23, a), "LAUNCH SITE") == 0, "Down to the 24th, Launch Site");
+	check(G.top + G.off == 23 && strcmp(cfg_label(23, a), "S24") == 0, "Down to the 24th, S24");
 	pframe(0);
 	check(peek8(mb + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK),
 	      "on the window's last row, the page going on below: the core asks for the next window");
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.built && G.rows == 24 && G.top + G.off == 13 && strcmp(cfg_label(13, a), "LAUNCH SITE") == 0 &&
-	      strcmp(cfg_label(23, b), "VID COMIC 1 SE") == 0,
-	      "the screen started again on the last window, the vid comics at its end, the cursor still on Launch Site");
+	check(G.built && G.rows == 24 && G.top + G.off == 13 && strcmp(cfg_label(13, a), "S24") == 0 &&
+	      strcmp(cfg_label(23, b), "S34") == 0,
+	      "the screen started again on the last window, S34 at its end, the cursor still on S24");
 	pframe(PADB_TRIANGLE);
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 2, "Triangle: the root, the cursor on PLANETS");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(G.main_up && G.count == 7 && r32(U_CURSOR) == 6, "Triangle twice: the root, the cursor on SAVE FILES");
+	for (i = 1; i <= 34; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "s%02d.sav", i);
+		lib_drop("NPEA00387", "long", name);
+	}
+	lib_drop("NPEA00387", "long", NULL);
 	tick(4);
 
 	/* A page with no row the cursor may land on: the main pause's list must not loop. */
@@ -1940,14 +1969,16 @@ static void test_picker_uya(void)
 	pframe(0);
 	pframe(0);
 	check(menu_model_depth() == 2 && menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) &&
-	      G.built && G.rows == 5 && M.inits == 1 && strcmp(read_str(G.title, b, 80), "VID-COMICS") == 0,
-	      "qwark's page of the vid comics, a CONFIG page titled VID-COMICS, five rows");
+	      G.built && G.rows == 7 && M.inits == 1 && strcmp(read_str(G.title, b, 80), "VID-COMICS") == 0,
+	      "qwark's page of the vid comics, a CONFIG page titled VID-COMICS, seven rows");
 	ok = 1;
-	for (i = 0; i < 5; i++) {
-		static const char *const comics[5] = { "VID COMIC 1", "VID COMIC 2", "VID COMIC 3", "VID COMIC 4", "VID COMIC 5" };
+	for (i = 0; i < 7; i++) {
+		static const char *const comics[7] = { "VID COMIC 1", "VID COMIC 2", "VID COMIC 3", "VID COMIC 4", "VID COMIC 5",
+		                                       "VID COMIC 6", "VID COMIC 1 SE" };
 		ok = ok && strcmp(cfg_label((int)i, a), comics[i]) == 0;
 	}
-	check(ok, "the base vid comics 1 to 5, in their order, PLANET_LIST's names in UYA's capitals (no 6, no 1 SE)");
+	check(ok, "every vid comic, 1 to 6 and 1 SE, in their order, PLANET_LIST's names in UYA's capitals (revision 1.34: "
+	      "6 and 1 SE were on qwark's Planets page alone)");
 	pframe(PADB_TRIANGLE);
 	tick(2);
 	pframe(0);
@@ -1963,7 +1994,7 @@ static void test_picker_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && G.rows == 5,
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && G.rows == 7,
 	      "Square: the vid comics' page again");
 	pframe(PADB_DOWN);
 	pframe(PADB_DOWN);
@@ -1976,8 +2007,7 @@ static void test_picker_uya(void)
 	}
 	check(peek32(RAC3_LOAD_PLANET) == 1 && peek32(RAC3_DEST_PLANET) == 32 && !G.paused &&
 	      peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED,
-	      "the cross on it: the menu closes, and qwark's planet load of Vid Comic 4 (planet 32) once the game plays, "
-	      "as the Planets page's rows load");
+	      "the cross on it: the menu closes, and qwark's planet load of Vid Comic 4 (planet 32) once the game plays");
 	poke32(RAC3_LOAD_PLANET, 0);
 	poke32(RAC3_DEST_PLANET, 0);
 	tick(8);
@@ -2127,7 +2157,53 @@ static void test_picker_uya(void)
 	check(!G.paused && M.exit_kind == 1 && M.exit_dest == 5, "Triangle there: the game's own reload of Daxx, as ever");
 	tick(8);
 
-	/* A pause whose Start does not leave it: no map, qwark's own list. */
+	/*
+	 * Revision 1.34, the Planets page combo: the pause on the root, then the
+	 * GALACTIC MAP on qwark's request (MBOX_REQ_PICKER); Triangle there leaves
+	 * the pause as Start does. Square still goes to qwark's vid comics, whose
+	 * Back then closes the pause too, the combo's page being that one.
+	 */
+	config_set_combo(COMBO_PAGE_PLANETS, PAD_SELECT | PAD_R3 | PAD_DOWN);
+	tick(2);
+	press(PAD_SELECT | PAD_R3 | PAD_DOWN);
+	play_frame(0);
+	tick(4);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_PICKER && G.main_up && r32(U_CURSOR) == 2,
+	      "Planets' combo: the main pause up on the root, on PLANETS, the picker asked for");
+	pframe(0);
+	pframe(0);
+	check(M.up && mh_picker_by_request() && peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "the root's next frame opens the map for the request, marked as qwark's, the request taken");
+	pframe(PADB_TRIANGLE);
+	pframe(0);
+	tick(4);
+	check(!G.paused && !M.up && !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      peek32(RAC3_LOAD_PLANET) == 0, "Triangle on that map: out of the pause, no root on the way, nothing loaded");
+	tick(8);
+	press(PAD_SELECT | PAD_R3 | PAD_DOWN);
+	play_frame(0);
+	tick(4);
+	pframe(0);
+	pframe(0);
+	check(M.up && mh_picker_by_request(), "the combo's map again");
+	pframe(PADB_SQUARE);
+	pframe(0);
+	tick(2);
+	pframe(0);
+	pframe(0);
+	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS) && G.rows == 7 && !mh_picker_up(),
+	      "Square on it: qwark's vid comics, as from the row's map (no close on the way back)");
+	pframe(PADB_TRIANGLE);
+	tick(2);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "Back there: the close, the vid comics being the combo's page");
+	for (i = 0; i < 6 && G.paused; i++) pframe(0);
+	tick(4);
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && menu_model_depth() == 1,
+	      "the pause closes, qwark's root for the next open");
+	config_set_combo(COMBO_PAGE_PLANETS, 0);
+	tick(8);
+
+	/* A pause whose Start does not leave it: no map, and (revision 1.34) no list of qwark's either. */
 	poke8(U_NO_EXIT, 1);
 	open_picker();
 	check(G.pending == 0 && peek32(mb + MBOX_OFF_EV_SEQ) != peek32(mb + MBOX_OFF_EV_ACK) &&
@@ -2135,8 +2211,8 @@ static void test_picker_uya(void)
 	tick(2);
 	pframe(0);
 	pframe(0);
-	check(menu_model_depth() == 2 && G.built && G.rows == 24 && !G.main_up,
-	      "qwark's own Planets list, the fallback: a CONFIG page, 24 of the 34 a window");
+	check(menu_model_depth() == 1 && G.main_up && !mh_picker_up(),
+	      "the event opens nothing: no Planets list of qwark's, the root still up");
 	poke8(U_NO_EXIT, 0);
 	G.closing = 1;
 	pframe(0);

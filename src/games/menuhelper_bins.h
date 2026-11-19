@@ -27,7 +27,7 @@
  * SF_PAK_ID beside it). A module takes only the pak that carries it (and names
  * its build), so the menu that goes into a game is always the module's own.
  */
-#define MH_PAK_ID 0xD06745A8u
+#define MH_PAK_ID 0x7D2B367Au
 
 /*
  * One run of bytes at one address - the mailbox, the state, the read-only

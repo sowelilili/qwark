@@ -40,6 +40,31 @@ struct menu_nav {
 static struct menu_nav g_nav[MENU_NAV_DEPTH];
 static u8 g_depth;
 /*
+ * Revision 1.34, the page combos (menu_page_combo): the depth of the page a
+ * page combo opened, where Back closes the menu instead of going to the root
+ * (0: none; nav_reset forgets it). A sub-page of it goes back to it as ever.
+ * g_back_close is such a Back, for the driver to ask the renderer to close.
+ */
+static u8 g_combo_base;
+static u8 g_back_close;
+/*
+ * Revision 1.34, the Planets page combo in a game whose renderer opens the
+ * game's own picker (MBOX_CAP_PICKER): WANT, the root posted with the cursor
+ * on Planets and the picker to be asked for once the menu is up; UP, the
+ * picker the combo asked for has opened, so the page of the planets it cannot
+ * show (UYA's Vid-Comics) is the combo's page too. menu_model_home forgets it.
+ */
+#define CPICK_NONE 0
+#define CPICK_WANT 1
+#define CPICK_UP   2
+static u8 g_cpick;
+/*
+ * The tick the root was posted for it: the picker is asked for no sooner than
+ * the tick after, so the renderer has the root before the request, never a
+ * page half written (its core opens the picker from whatever page is on show).
+ */
+static u32 g_cpick_at;
+/*
  * Revision 1.29, the polish (MBOX_CAP_PAGED): the way a window just turned,
  * 1 down, -1 up (0 none), so the next view puts a cursor that landed on a row
  * it cannot stand on (a spacer, a status row) on the nearest one it can, that
@@ -112,11 +137,14 @@ static struct {
 	char cat[SAVEFILE_NAME_LEN + 1];
 	char name[SAVEFILE_NAME_LEN + 1];
 	char label[32];
+#if QWARK_HAS_TOD
+	u8   combo;             /* revision 1.34: DEFER_PICKER for the Planets page combo, whose map's Back is play */
+#endif
 } g_defer;
 
 #if QWARK_HAS_TOD
 /* Revision 1.29: the game's own planet picker, the driver's (native_picker_*). */
-static int native_picker_act(u8 row);
+static int native_picker_act(u8 row, u16 id);
 static void native_picker_drop(void);
 #endif
 
@@ -476,9 +504,9 @@ static u8 page_arg(u16 page)  { return (u8)page; }
  * the renderer has one. Round 4: so is any list that can be longer than a
  * MAIN look holds, since no game's MAIN look scrolls (UYA's main pause holds
  * nine, RaC1's panes and RaC2's bars seven) and every CONFIG look does: the
- * planets (until the native picker) and the save library's categories and
- * saves, as lists of buttons. Only the root and Unlocks are MAIN, and each
- * fits its game's MAIN look.
+ * planets the game's picker cannot show (UYA's vid comics) and the save
+ * library's categories and saves, as lists of buttons. Only the root and
+ * Unlocks are MAIN, and each fits its game's MAIN look.
  */
 static u8 page_type(u16 page)
 {
@@ -563,6 +591,69 @@ static void lib_read(u16 page, u8 first, u8 m)
 		g_lib.n = savefile_menu_list(NULL, first, m, lib_slot(1), NULL);
 	else if (save_category(page_arg(page), lib_slot(0)))
 		g_lib.n = savefile_menu_list(lib_slot(0), first, m, lib_slot(1), &g_lib.sig);
+}
+
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order,
+ * savefile_menu_sort). Where a save made on `level` goes: its place in the
+ * game's planet picker order (planet_order, or the ids' own) after the game's
+ * save list moves, as the client's SaveFilePlanetOrder.For makes it; a level
+ * the order has not, after every one it has, by its number; 0xFF, below them
+ * all, for a level that is no planet (none, or a placeholder name, as the
+ * client's planets files have a null line there).
+ */
+static u8 save_rank(s32 level)
+{
+	const struct game_menu *gm = gmenu();
+	const struct menu_save_order *so = gm != NULL ? gm->save_order : NULL;
+	const char * const *names;
+	u8 order[64], count = 0, n = 0, i, k, a, l, p;
+
+	if (g_game == NULL || g_game->planet_names == NULL || so == NULL) return 0xFF;
+	names = g_game->planet_names(&count);
+	if (level < 0 || level >= (s32)count || names[level] == NULL || names[level][0] == '(' || names[level][0] == 0)
+		return 0xFF;
+	for (i = 0; i < count && n < sizeof(order); i++) {
+		p = g_game->planet_order != NULL ? g_game->planet_order[i] : i;
+		for (k = 0; k < n && order[k] != p; k++) { }
+		if (k == n) order[n++] = p;
+	}
+	for (i = 0; i < so->nmoves; i++) {
+		p = so->moves[2 * i];
+		for (a = 0; a < n && order[a] != so->moves[2 * i + 1]; a++) { }
+		for (l = 0; l < n && order[l] != p; l++) { }
+		if (p == so->moves[2 * i + 1] || a == n || l == n) continue;
+		for (k = l; k + 1 < n; k++) order[k] = order[k + 1];
+		if (a > l) a--;
+		for (k = (u8)(n - 1); k > a + 1; k--) order[k] = order[k - 1];
+		order[a + 1] = p;
+	}
+	for (i = 0; i < n && order[i] != (u8)level; i++) { }
+	return i < n ? i : (u8)(n + level < 0xFF ? n + level : 0xFE);
+}
+
+#ifdef QWARK_TEST
+u8 menu_test_save_rank(s32 level)
+{
+	g_game = session_game();
+	return save_rank(level);
+}
+#endif
+
+/*
+ * Revision 1.34: a step of the order of save category page `page`, at most
+ * SAVE_SORT_BUDGET saves read (savefile_menu_sort); 1 when it finished it.
+ * Nothing for another page or a game that says no order.
+ */
+#define SAVE_SORT_BUDGET 16
+static int save_sort_step(u16 page)
+{
+	const struct game_menu *gm = gmenu();
+	const struct menu_save_order *so = gm != NULL ? gm->save_order : NULL;
+	char cat[LIB_NAME];
+
+	if (page_kind(page) != MENU_PAGE_SAVE_CAT || so == NULL || !save_category(page_arg(page), cat)) return 0;
+	return savefile_menu_sort(cat, so->at, so->len, so->level, save_rank, SAVE_SORT_BUDGET);
 }
 
 /* The name of the page's row `i` as the build read it, "" outside its window. */
@@ -775,13 +866,19 @@ static u8 page_items(u16 page, u16 *ids)
 		return n;
 
 	case MENU_PAGE_PLANETS: {
+		/*
+		 * The pickers' round 2: the planets the game's picker cannot show,
+		 * where it names them (UYA's vid comics). Revision 1.34: that is the
+		 * only page of planets; qwark's page of every planet, the pickers'
+		 * fallback, is gone, the game's own picker being the way to a planet
+		 * in every game.
+		 */
 		const char * const *names;
-		/* The pickers' round 2: the planets the game's picker cannot show, where it names them. */
 		const struct menu_section *o = arg == MENU_PLANETS_OTHERS && gm != NULL ? gm->picker_others : NULL;
-		if (g_game == NULL || g_game->planet_names == NULL) return 0;
+		if (o == NULL || g_game == NULL || g_game->planet_names == NULL) return 0;
 		names = g_game->planet_names(&count);
-		for (i = 0; i < (o != NULL ? o->nitems : count); i++) {
-			u8 p = o != NULL ? o->items[i] : g_game->planet_order != NULL ? g_game->planet_order[i] : i;
+		for (i = 0; i < o->nitems; i++) {
+			u8 p = o->items[i];
 			if (p >= count || names[p] == NULL || names[p][0] == '(' || names[p][0] == 0) continue;
 			if (gm != NULL && gm->planet_ok != NULL && !gm->planet_ok(p)) continue;
 			n = push_id(ids, n, MENU_ROW_ID(MENU_ROW_PLANET, p));
@@ -1297,6 +1394,7 @@ static void nav_reset(void)
 	g_depth = 1;
 	g_visit++;
 	g_note_id = 0;
+	g_combo_base = 0;
 }
 
 /* Opens `page` from row `from` of the current view, with the cursor on its row `cursor`. */
@@ -1323,6 +1421,22 @@ static int nav_pop(void)
 	g_visit++;
 	g_note_id = 0;
 	return ST_OK;
+}
+
+/*
+ * Back, the renderer's or a BACK row's. Revision 1.34: on the page a page
+ * combo opened, the menu closes instead (the driver asks the renderer, as the
+ * menu combo does), straight back to play as the menu combo's root leaves;
+ * the stack stays as it is until the close, which homes it. Anywhere else,
+ * and on that page where the renderer takes no close request, a page back.
+ */
+static int nav_back(void)
+{
+	if (g_combo_base != 0 && g_depth == g_combo_base && (g_caps & MBOX_CAP_REQUEST) != 0) {
+		g_back_close = 1;
+		return ST_OK;
+	}
+	return nav_pop();
 }
 
 /*
@@ -1396,6 +1510,8 @@ void menu_model_reset(u8 max_rows, u8 cfg_rows, u8 caps)
 	g_caps = caps;
 	nav_reset();
 	g_turn = 0;
+	g_cpick = CPICK_NONE;
+	g_back_close = 0;
 #ifdef QWARK_TEST
 	memset(g_step, 0, sizeof(g_step));
 #endif
@@ -1410,6 +1526,8 @@ void menu_model_reset(u8 max_rows, u8 cfg_rows, u8 caps)
 void menu_model_home(void)
 {
 	nav_reset();
+	g_cpick = CPICK_NONE;
+	g_back_close = 0;
 }
 
 u16 menu_model_page(void)
@@ -1585,6 +1703,7 @@ static int defer(u8 kind, u8 arg, const char *label)
 #if QWARK_HAS_TOD
 	g_defer.flags = 0xFF;
 	g_defer.closed = 0;
+	g_defer.combo = 0;
 #endif
 	set_text(g_defer.label, sizeof(g_defer.label), label);
 	return ST_OK;
@@ -1734,14 +1853,22 @@ static int act(u8 row, u16 id, int dir)
 	case MENU_ROW_SECTION: return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SECTION, arg), row, 0, 0);
 	case MENU_ROW_PAGE:
 		if (dir != 0) return ST_OK;
-#if QWARK_HAS_TOD
-		/* Revision 1.29: where the game's own planet picker can open, Planets opens it. */
+		/*
+		 * Planets is the game's own picker: the renderer's (MROWF_PICKER, a
+		 * cross it opens itself) or, revision 1.29, the core's (Tools of
+		 * Destruction's galactic map). Revision 1.34: qwark has no page of
+		 * every planet any more, so a press that comes here is a picker that
+		 * cannot open now (a renderer's refusal, the map's), answered on the
+		 * row; it opens nothing else.
+		 */
 		if (arg == MENU_PAGE_PLANETS) {
-			int rc = native_picker_act(row);
+#if QWARK_HAS_TOD
+			int rc = native_picker_act(row, id);
 
 			if (rc >= 0) return rc;
-		}
 #endif
+			return answer(id, ST_BUSY, page_name(arg));
+		}
 #if QWARK_PREVIEW
 		/*
 		 * The Mods page reads the console's library and its USB drives again
@@ -1755,7 +1882,20 @@ static int act(u8 row, u16 id, int dir)
 #endif
 		return nav_push(MENU_PAGE_ID(arg, 0), row, 0, 0);
 	case MENU_ROW_UCAT:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_UNLOCK_CAT, arg), row, 0, 0);
-	case MENU_ROW_SCAT:    return dir != 0 ? ST_OK : nav_push(MENU_PAGE_ID(MENU_PAGE_SAVE_CAT, arg), row, 0, 0);
+	case MENU_ROW_SCAT: {
+		int rc;
+
+		if (dir != 0) return ST_OK;
+		/*
+		 * Revision 1.34: a visit of a category reads its saves' planets anew
+		 * (one written over keeps its name), the first few at once, so a short
+		 * category opens in its order; the driver does the rest a step a tick.
+		 */
+		savefile_menu_sort_forget();
+		rc = nav_push(MENU_PAGE_ID(MENU_PAGE_SAVE_CAT, arg), row, 0, 0);
+		if (rc == ST_OK) save_sort_step(MENU_PAGE_ID(MENU_PAGE_SAVE_CAT, arg));
+		return rc;
+	}
 
 	case MENU_ROW_FEATURE:
 		f = feature(arg);
@@ -1813,7 +1953,7 @@ static int act(u8 row, u16 id, int dir)
 
 	case MENU_ROW_NAV:
 		if (dir != 0) return ST_OK;
-		if (arg == MENU_NAV_BACK) return nav_pop();
+		if (arg == MENU_NAV_BACK) return nav_back();
 		return ST_BAD_ARG;
 
 	default:
@@ -1827,7 +1967,7 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 
 	switch (kind) {
 	case MBOX_EV_BACK:
-		return nav_pop();
+		return nav_back();
 	case MBOX_EV_PAGE_PREV:
 		return nav_move(row, 0, 1);
 	case MBOX_EV_PAGE_NEXT:
@@ -1846,16 +1986,23 @@ int menu_model_event(u8 kind, u8 row, u16 id, u32 key)
 	case MBOX_EV_ACTIVATE: return act(row, id, 0);
 	case MBOX_EV_LEFT:     return act(row, id, -1);
 	case MBOX_EV_RIGHT:    return act(row, id, 1);
-	case MBOX_EV_PICKER_OTHERS:
+	case MBOX_EV_PICKER_OTHERS: {
 		/*
 		 * The pickers' round 2: on the Planets row, the game's picker asked for
 		 * the planets it cannot show (UYA's map, the vid comics): the game's
-		 * page of them, or the whole Planets page where it names none.
+		 * page of them. Revision 1.34: a game that names none has no such
+		 * page (qwark's page of every planet is gone), so nothing opens; and
+		 * from a picker the Planets page combo opened, that page is the
+		 * combo's own, Back from it closing the menu.
 		 */
-		if (id != MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS)) return ST_BAD_ARG;
-		return nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS,
-		                             gmenu() != NULL && gmenu()->picker_others != NULL ? MENU_PLANETS_OTHERS : 0),
-		                row, 0, 0);
+		int rc;
+
+		if (id != MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS) || gmenu() == NULL || gmenu()->picker_others == NULL)
+			return ST_BAD_ARG;
+		rc = nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS, MENU_PLANETS_OTHERS), row, 0, 0);
+		if (rc == ST_OK && g_cpick == CPICK_UP) g_combo_base = g_depth;
+		return rc;
+	}
 	default:               return ST_BAD_ARG;
 	}
 }
@@ -2029,6 +2176,7 @@ void menu_forget(void)
 	g_native_why = 0;
 #endif
 	mh_pak_close();
+	savefile_menu_sort_forget();
 	g_posted = 0;
 	g_hstate = MBOX_HSTATE_CLOSED;
 	g_req = 0;
@@ -2897,11 +3045,17 @@ static void help_sync(void)
 	g_help.in = want;
 }
 
-static void request(u8 what)
+/* A request for the renderer, withdrawn when nobody has taken it `us` on. */
+static void request_for(u8 what, u64 us)
 {
 	if (mem_write_u8(box(MBOX_OFF_REQUEST), what) != ST_OK) return;
 	g_req = what;
-	g_req_until = plat_time_us() + REQUEST_US;
+	g_req_until = plat_time_us() + us;
+}
+
+static void request(u8 what)
+{
+	request_for(what, REQUEST_US);
 }
 
 #if QWARK_HAS_TOD
@@ -2920,7 +3074,8 @@ static void request(u8 what)
  *   UP      until it has gone; then every poked byte that still holds what
  *           was written is put back, and the pick read: a planet is the
  *           game's own load, already under way; none (Back) opens the menu
- *           again on its root, the cursor on Planets
+ *           again on its root, the cursor on Planets, but for a map the
+ *           Planets page combo opened (revision 1.34), whose Back is play
  *   REOPEN  the open asked for until the menu is up, while the game plays
  *
  * Revision 1.29, every planet on the map (docs/tod-menu.md 17): while it is
@@ -2928,13 +3083,13 @@ static void request(u8 what)
  * own VM (lua_core_map_send), again while it answers "wait", for a few
  * seconds: it lists the planets the game's picker leaves out and makes every
  * pick the core's. Should it not go in, the picker is the game's own still,
- * the console says so, and Back opens the page of planets instead of the
- * root, so every planet is a press away; that is the one time the page is
- * where Planets leads.
+ * listing the save's planets, and the console says so.
  *
- * A failure puts the bytes back and opens the menu again on the page of
- * planets, saying so on the console; so does a Planets row pressed where the
- * picker cannot open (no Lua helper, no level), without closing anything.
+ * A failure puts the bytes back and opens the menu again on its root, the
+ * cursor on Planets (not for the page combo's map: play), saying so on the
+ * console; a Planets row pressed where the picker cannot open (no Lua helper,
+ * no level) answers the row with the reason and opens nothing. Revision 1.34:
+ * qwark's page of every planet, where both used to lead, is gone.
  */
 #define GM_NONE    0
 #define GM_SEND    1
@@ -2960,6 +3115,7 @@ static struct {
 	u8   n;                 /* bytes poked, to put back */
 	u8   want_glue;         /* the picker's glue is to go in once it is up (struct menu_picker's glue) */
 	u8   glue;              /* GM_GLUE_* */
+	u8   combo;             /* revision 1.34: opened by the Planets page combo: Back is play, no reopen */
 	u32  seq;               /* the chunk's request, then the glue's */
 	u64  glue_until;        /* the glue may say "wait" until then */
 	u32  state;             /* the picker's, copied: screen_addr's value while it is up */
@@ -2996,12 +3152,19 @@ static void native_picker_drop(void)
 	memset(&g_gm, 0, sizeof(g_gm));
 }
 
-/* The menu opened again (REOPEN): on the root with the cursor on Planets, or on the page of planets. */
-static void native_picker_reopen(int list)
+/*
+ * The map gone without a pick, or never up: the menu opened again (REOPEN) on
+ * the root with the cursor on Planets. Revision 1.34: not for the Planets
+ * page combo's map, whose way back is play, as it was before the map.
+ */
+static void native_picker_reopen(void)
 {
+	if (g_gm.combo) {
+		g_gm.phase = GM_NONE;
+		return;
+	}
 	menu_model_home();
-	if (list) nav_push(MENU_PAGE_ID(MENU_PAGE_PLANETS, 0), g_gm.row, 0, 0);
-	else g_nav[0].cursor = g_gm.row;
+	g_nav[0].cursor = g_gm.row;
 	g_gm.phase = GM_REOPEN;
 	g_gm.until = plat_time_us() + GM_REOPEN_US;
 	g_gm.ask = 0;
@@ -3010,16 +3173,17 @@ static void native_picker_reopen(int list)
 static void native_picker_fail(const char *why)
 {
 	native_picker_restore();
-	plat_log("menu: %s did not open (%s); the Planets page instead", g_gm.name, why);
-	tell(g_gm.name, " did not open", "; the planets instead");
-	native_picker_reopen(1);
+	plat_log("menu: %s did not open (%s)", g_gm.name, why);
+	tell(g_gm.name, " did not open", "");
+	native_picker_reopen();
 }
 
 /*
- * The Planets row's cross: -1 for the page of planets as for every game, or
- * the picker's CLOSES action.
+ * The Planets row's cross: -1 for a game with no picker of the core's, or the
+ * picker's CLOSES action, or (revision 1.34: no Planets page to fall back on)
+ * the reason it cannot open here, answered on the row and said on the console.
  */
-static int native_picker_act(u8 row)
+static int native_picker_act(u8 row, u16 id)
 {
 	const struct menu_picker *p = picker();
 	int rc;
@@ -3027,9 +3191,9 @@ static int native_picker_act(u8 row)
 	if (p == NULL) return -1;
 	rc = g_gm.phase != GM_NONE ? ST_BUSY : lua_core_gameplay_ready();
 	if (rc != ST_OK) {
-		plat_log("menu: %s cannot open here (%s); the Planets page instead", p->name, status_text((u8)rc));
-		tell(p->name, " cannot open here", "; the planets instead");
-		return -1;
+		plat_log("menu: %s cannot open here (%s)", p->name, status_text((u8)rc));
+		tell(p->name, " cannot open here", "");
+		return answer(id, rc, p->name);
 	}
 	g_gm.row = row;
 	return defer(DEFER_PICKER, row, p->name);
@@ -3046,6 +3210,7 @@ static int native_picker_start(void)
 	memset(&g_gm, 0, sizeof(g_gm));
 	qstrcpy(g_gm.name, sizeof(g_gm.name), p->name);
 	g_gm.row = row;
+	g_gm.combo = g_defer.combo;
 	g_gm.state = p->state;
 	g_gm.pick_addr = p->pick_addr;
 	g_gm.want_glue = p->glue;
@@ -3078,14 +3243,15 @@ static int native_picker_start(void)
  * picker is up, its glue into its own VM (the helper's lh_gmap.lua): sent,
  * its answer awaited, sent again while it says "wait" (the map's handler and
  * list not up yet), for GM_GLUE_US. "in<rows>" is in; anything else, or
- * the time up, is a failure: logged and said on the console once, and Back
- * then opens the page of planets (GM_UP).
+ * the time up, is a failure: logged and said on the console once, the map
+ * the game's own with the save's planets (revision 1.34: Back no longer
+ * leads to a page of every planet, which is gone).
  */
 static void native_picker_glue_fail(const char *why)
 {
 	g_gm.glue = GM_GLUE_FAIL;
-	plat_log("menu: %s could not list every planet (%s); Back opens the Planets page", g_gm.name, why);
-	tell(g_gm.name, " lists the save's planets only", "; Back for every planet");
+	plat_log("menu: %s could not list every planet (%s)", g_gm.name, why);
+	tell(g_gm.name, " lists the save's planets only", "");
 }
 
 static void native_picker_glue(u64 now)
@@ -3187,9 +3353,9 @@ static void native_picker_tick(void)
 			g_gm.phase = GM_NONE;
 			return;
 		}
-		plat_log("menu: %s closed without a pick; the Trainer again%s", g_gm.name,
-		         g_gm.glue == GM_GLUE_FAIL ? ", on the Planets page" : "");
-		native_picker_reopen(g_gm.glue == GM_GLUE_FAIL);
+		plat_log("menu: %s closed without a pick; %s", g_gm.name,
+		         g_gm.combo ? "back to play (the Planets combo opened it)" : "the Trainer again");
+		native_picker_reopen();
 		return;
 
 	case GM_REOPEN:
@@ -3361,10 +3527,11 @@ static void deferred_tick(void)
 
 /*
  * Mailbox version 3: what the player picked in the game's own planet picker,
- * which the menu's Planets row opened. The renderer has closed the game's menu
- * on the pick; the planet loads once the game plays again, as a planet row of
- * the menu's own Planets page loads it (session_planet_load, the selected
- * flags), whatever the request cap.
+ * which the menu's Planets row (or the Planets page combo) opened. The
+ * renderer has closed the game's menu on the pick; the planet loads once the
+ * game plays again, as a planet row of the menu's own (UYA's Vid-Comics)
+ * loads it (session_planet_load, the selected flags), whatever the request
+ * cap.
  */
 static void take_pick(s32 planet)
 {
@@ -3436,11 +3603,21 @@ static void serve(void)
 
 	if (g_req != 0) {
 		if (head[MBOX_OFF_REQUEST] == MBOX_REQ_NONE) {
+			/* Revision 1.34: the Planets combo's picker request taken: the picker is opening. */
+			if (g_req == MBOX_REQ_PICKER && g_cpick == CPICK_WANT) g_cpick = CPICK_UP;
 			g_req = 0;
 		} else if (plat_time_us() >= g_req_until) {
 			if (head[MBOX_OFF_REQUEST] == g_req) mem_write_u8(box(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
 			/* Revision 1.34: a page combo's open nobody took: the root again at once. */
 			if (g_req == MBOX_REQ_OPEN && g_page_until != 0) g_page_until = 1;
+			/*
+			 * Revision 1.34: the picker never opened for the Planets combo:
+			 * the root stays, the cursor on Planets, for the player's cross.
+			 */
+			if (g_req == MBOX_REQ_PICKER && g_cpick == CPICK_WANT) {
+				plat_log("menu: the planet picker did not open for the Planets combo; the Trainer's root instead");
+				g_cpick = CPICK_NONE;
+			}
 			g_req = 0;
 		}
 	}
@@ -3459,8 +3636,29 @@ static void serve(void)
 		}
 	}
 
+	/*
+	 * Revision 1.34, the Planets page combo where the renderer opens the
+	 * game's picker: once the menu is up on the root it posted, the picker
+	 * asked for (MBOX_REQ_PICKER), which the renderer takes as the cross on
+	 * the Planets row would be taken, at its first frame that can.
+	 */
+	if (g_cpick == CPICK_WANT && g_req == 0 && g_hstate == MBOX_HSTATE_OPEN && tick != g_cpick_at)
+		request_for(MBOX_REQ_PICKER, PAGE_US);
+
 	ev = be32_get(head + MBOX_OFF_EV_SEQ);
 	if (ev != g_last_ack) {
+		/*
+		 * Revision 1.34: the player pressing something before the picker
+		 * opened: the request withdrawn, so it never opens the picker over a
+		 * page the press brought.
+		 */
+		if (g_cpick == CPICK_WANT) {
+			if (g_req == MBOX_REQ_PICKER) {
+				if (head[MBOX_OFF_REQUEST] == MBOX_REQ_PICKER) mem_write_u8(box(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+				g_req = 0;
+			}
+			g_cpick = CPICK_NONE;
+		}
 		menu_model_event(head[MBOX_OFF_EV_KIND], head[MBOX_OFF_EV_ROW],
 		                 be16_get(head + MBOX_OFF_EV_ID), be32_get(head + MBOX_OFF_EV_KEY));
 		g_last_ack = ev;
@@ -3468,9 +3666,25 @@ static void serve(void)
 		dirty = 1;
 	}
 
+	/* Revision 1.34: Back on the page a page combo opened: the menu closes, straight back to play. */
+	if (g_back_close) {
+		g_back_close = 0;
+		request(MBOX_REQ_CLOSE);
+	}
+
 	/* Revision 1.26: a game module arrived, with the game's own pages. */
 	if (g_game_changed) {
 		g_game_changed = 0;
+		dirty = 1;
+	}
+
+	/*
+	 * Revision 1.34: a save category's order by planet, a few saves a tick
+	 * until it is done, then the page built again as a new visit, so a press
+	 * made on the folder's order is never taken for a row of the new one.
+	 */
+	if ((dirty || !savefile_menu_sorted(g_lib.sig)) && save_sort_step(g_nav[g_depth - 1].page)) {
+		g_visit++;
 		dirty = 1;
 	}
 
@@ -3643,24 +3857,34 @@ static int page_root_row(u8 page, u16 *id)
 
 /*
  * The press: OPEN_MENU's refusals first (combo_ready). Nothing while a load
- * the menu closed for is waiting, under a planet picker the menu opened, or
- * (Tools of Destruction) while the galactic map is opening or up. Then the
- * root's row of the page is acted on as the cross would, from a fresh stack:
- * a page pushed over the root, so Back is the root with the cursor on that
- * row and Back again leaves, as in any visit; the menu up is shown it at
- * once, the menu down is asked to open on it. Planets where the game's own
- * picker opens from its row (Tools of Destruction's galactic map) is that
- * row's CLOSES action, which the driver runs once the game plays. An open
- * nobody took, or a menu that never came up (PAGE_US), puts the root back, so
- * the game's own Trainer row opens on the root as ever.
+ * the menu closed for is waiting, under a planet picker the menu opened,
+ * while the Planets combo's picker is still being asked for, or (Tools of
+ * Destruction) while the galactic map is opening or up. Then the root's row
+ * of the page is acted on as the cross would, from a fresh stack: a page
+ * pushed over the root, the menu up shown it at once, the menu down asked to
+ * open on it. Revision 1.34: Back from that page closes the menu, straight
+ * back to play, as the menu combo's root does (nav_back; a sub-page still
+ * goes back to it); the root is only where the game's own Trainer row and
+ * the menu combo open.
+ *
+ * Planets is the game's own picker in every game (revision 1.34: qwark's page
+ * of every planet is gone). Where the renderer opens it (MBOX_CAP_PICKER) the
+ * root is posted with the cursor on Planets and, once the menu is up, the
+ * picker asked for (MBOX_REQ_PICKER, serve), so it opens as the row's cross
+ * opens it; Back from that picker is play too (the renderer's). Where the core
+ * opens it (Tools of Destruction's galactic map) it is the row's CLOSES
+ * action, which the driver runs once the game plays, its Back play as well
+ * (g_defer.combo). An open nobody took, or a menu that never came up
+ * (PAGE_US), puts the root back, so the game's own Trainer row opens on the
+ * root as ever.
  */
 void menu_page_combo(u8 page)
 {
 	u16 id = 0;
-	int row;
+	int row, rc;
 
 	if (page >= COMBO_PAGES || !combo_ready()) return;
-	if (g_hstate == MBOX_HSTATE_PICKER || g_defer.kind != DEFER_NONE) return;
+	if (g_hstate == MBOX_HSTATE_PICKER || g_defer.kind != DEFER_NONE || g_cpick == CPICK_WANT) return;
 #if QWARK_HAS_TOD
 	if (g_gm.phase != GM_NONE && g_gm.phase != GM_REOPEN) return;
 #endif
@@ -3674,9 +3898,26 @@ void menu_page_combo(u8 page)
 		return;
 	}
 	nav_reset();
-	if (act((u8)row, id, 0) != ST_OK || g_defer.kind != DEFER_NONE) return;
-	post(0);
-	if (g_hstate == MBOX_HSTATE_OPEN) return;
+	g_cpick = CPICK_NONE;
+	if (id == MENU_ROW_ID(MENU_ROW_PAGE, MENU_PAGE_PLANETS) && (g_caps & MBOX_CAP_PICKER) != 0) {
+		/* The renderer's picker: the root on Planets, the picker asked for once the menu is up (serve). */
+		g_nav[0].cursor = (u8)row;
+		g_cpick = CPICK_WANT;
+		post(0);
+		g_cpick_at = now_tick();
+		/* Up already: the picker asked for from the next tick on (serve). */
+		if (g_hstate == MBOX_HSTATE_OPEN) return;
+	} else {
+		rc = act((u8)row, id, 0);
+#if QWARK_HAS_TOD
+		/* The core's picker (the galactic map): the row's CLOSES action, its Back play. */
+		if (rc == ST_OK && g_defer.kind == DEFER_PICKER) g_defer.combo = 1;
+#endif
+		if (rc != ST_OK || g_defer.kind != DEFER_NONE) return;
+		g_combo_base = g_depth;
+		post(0);
+		if (g_hstate == MBOX_HSTATE_OPEN) return;
+	}
 	request(MBOX_REQ_OPEN);
 	g_page_until = plat_time_us() + PAGE_US;
 }

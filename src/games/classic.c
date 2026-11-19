@@ -241,3 +241,27 @@ void classic_cb_readouts(const u8 *words, u32 *ro)
 		ro[i] = classic_cb_to_rgb(w) | (w == classic_cb_stock[i] ? FEATURE_COLOR_AUTO : 0);
 	}
 }
+
+/* Revision 1.34: one of `n` words is `w`. */
+static int classic_one_of(u32 w, const u32 *set, u8 n)
+{
+	u8 i;
+
+	for (i = 0; i < n; i++) {
+		if (set[i] == w) return 1;
+	}
+	return 0;
+}
+
+s32 classic_save_level(const u8 *head, u32 size, const u32 *globals, u8 nglobals, const u32 *planets, u8 nplanets)
+{
+	u32 global = be32_get(head);
+	s32 level;
+
+	if (size < CLASSIC_SAVE_HEAD) return -1;
+	if (!classic_one_of(global, globals, nglobals) || !classic_one_of(be32_get(head + 4), planets, nplanets)) return -1;
+	/* The global block's own length, its checksum word, then field 0's tag and size. */
+	if (be32_get(head + 8) != global - 8 || be32_get(head + 0x10) != 0 || be32_get(head + 0x14) != 4) return -1;
+	level = (s32)be32_get(head + 0x18);
+	return level >= 0 ? level : -1;
+}

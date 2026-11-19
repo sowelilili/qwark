@@ -158,4 +158,19 @@ u32  classic_cb_to_rgb(u32 word);
 int  classic_cb_set(u32 front, u8 which, u32 value, int twin);
 void classic_cb_readouts(const u8 *words, u32 *ro);
 
+/*
+ * Revision 1.34: the level a save of one of the four says it was made on, for
+ * the Trainer's Save files page (struct menu_save_order). The four write a
+ * save the same way (each game's SaveData_serialize): the sizes of the global
+ * block and of one planet's block, then the global block, its length and a
+ * checksum word, then tagged fields { u32 id, u32 size, bytes } in the order
+ * of the game's field table, field 0 the current level, 4 bytes: its tag at
+ * 0x10, the level, big-endian, at 0x18. CLASSIC_SAVE_HEAD bytes from 0 are
+ * read; the block sizes must be a pair the game's own restore takes (one of
+ * `globals`, one of `planets`), or the file is not a save of that game and
+ * has no level (-1). The client's SaveFilePlanet.Parse, word for word.
+ */
+#define CLASSIC_SAVE_HEAD 0x1C
+s32  classic_save_level(const u8 *head, u32 size, const u32 *globals, u8 nglobals, const u32 *planets, u8 nplanets);
+
 #endif /* QWARK_CLASSIC_H */

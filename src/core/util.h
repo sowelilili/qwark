@@ -26,6 +26,17 @@ int  qstreq_ci(const char *a, const char *b);
 char qlower(char c);
 
 /*
+ * Revision 1.34: natural order, as RaCMAN Reloaded's SaveFileOrder.CompareNatural
+ * has it (the Trainer's Save files page, savefile.c): a run of digits against a
+ * run of digits compares as a number (leading zeros dropped, then the longer
+ * number the larger, then digit by digit), anything else character by character
+ * with ASCII letters folded to lower case; after that the shorter rest first,
+ * and two names equal so far (case, leading zeros) in plain byte order, so the
+ * order is total. <0, 0 or >0. ASCII only, as every name of the library is.
+ */
+int  qstrnatcmp(const char *a, const char *b);
+
+/*
  * Parses a decimal or 0x-prefixed hexadecimal number. Leading whitespace is
  * skipped, trailing text ends the number. ok is set to 0 when no digit was
  * found. Never reads past a NUL.

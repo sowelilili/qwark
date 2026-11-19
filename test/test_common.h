@@ -49,6 +49,15 @@ void test_combo_fastloads(void);
 /* test_menu_pages.c: the page combos, combo actions 7 to 13, revision 1.34. */
 void test_menu_pages(void);
 
+/*
+ * test_menu_saves.c: the Save files page by planet, revision 1.34; and a save
+ * of the console's library for `title` (`bytes` NULL: `len` bytes of 0x5A)
+ * and its removal (`name` NULL: the category's folder), for every menu test.
+ */
+void test_menu_saves(void);
+void lib_save(const char *title, const char *cat, const char *name, const u8 *bytes, u32 len);
+void lib_drop(const char *title, const char *cat, const char *name);
+
 /* test_uipak.c: ui.pak, the console menu's renderers on the HDD, build 55. */
 void test_uipak(void);
 

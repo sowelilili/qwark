@@ -152,17 +152,33 @@ static int press(u32 kind, int row)
 }
 
 /*
- * Revision 1.29: Planets' page of planets. Where the galactic map can open
- * (a level's lua_State), the Planets row opens it instead (test_galmap); with
- * none it falls back to the page, which these tests want.
+ * A CONFIG page longer than Game Options' six rows, of a known length: a save
+ * category of nineteen, P01 .. P19 (revision 1.34: qwark's Planets page, the
+ * galactic map's fallback, which these tests used, is gone). From the root.
  */
-static void planets_list(void)
+static void long_list(void)
 {
-	u32 L = peek32(TOD_LUA_STATE);
+	char name[16];
+	int i;
 
-	poke32(TOD_LUA_STATE, 0);
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
-	poke32(TOD_LUA_STATE, L);
+	for (i = 1; i <= 19; i++) {
+		snprintf(name, sizeof(name), "p%02d.sav", i);
+		lib_save(TOD_TITLE, "long", name, NULL, 16);
+	}
+	press(MBOX_EV_ACTIVATE, find_row("Save files"));
+	press(MBOX_EV_ACTIVATE, find_row("long"));
+}
+
+static void long_gone(void)
+{
+	char name[16];
+	int i;
+
+	for (i = 1; i <= 19; i++) {
+		snprintf(name, sizeof(name), "p%02d.sav", i);
+		lib_drop(TOD_TITLE, "long", name);
+	}
+	lib_drop(TOD_TITLE, "long", NULL);
 }
 
 /* Whether the n bytes at p hold the string s. */
@@ -418,12 +434,12 @@ static void test_screens(void)
 		check(lm_next((u32)s - 1, 1, n) != (u32)s, "lm_next steps over the row the cursor cannot stand on");
 	press(MBOX_EV_BACK, -1);
 
-	/* Planets: longer than Game Options' six rows, so a window; its last row asks for the next. */
-	planets_list();
+	/* A save category of nineteen: longer than Game Options' six rows, so a window; its last row asks for the next. */
+	long_list();
 	title(t);
-	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS &&
+	check(strcmp(t, "LONG") == 0 && lm_nrows() == LM_CFG_ROWS &&
 	      (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_DOWN) != 0 && (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_UP) == 0,
-	      "Planets: six rows, more below");
+	      "a long page: six rows, more below");
 	gen = lm32(LMS(LM_GEN));
 	strcpy(t, row_label(0, b));
 	check(lm_edge(2) == 0 && lm_edge(0) == 0, "lm_edge inside the window, and at its top with nothing above: nothing");
@@ -432,10 +448,11 @@ static void test_screens(void)
 	tick(6);
 	lm_take();
 	check(lm32(LMS(LM_GEN)) == gen + 1 && (lm8(LMP(MBOX_OFF_PFLAGS)) & MBOX_PAGE_MORE_UP) != 0 &&
-	      strcmp(row_label(0, b), t) != 0, "qwark slides the window: more above now, other planets");
+	      strcmp(row_label(0, b), t) != 0, "qwark slides the window: more above now, other saves");
 	check(lm_edge(0) == 1 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP, "at its top: SCROLL_UP");
 	tick(6);
 	lm_take();
+	press(MBOX_EV_BACK, -1);
 	press(MBOX_EV_BACK, -1);
 	check(find_row("Game") == 0, "back at the root");
 
@@ -447,8 +464,10 @@ static void test_screens(void)
 }
 
 /*
- * Revision 1.29, the polish (docs/tod-menu.md 15): Planets named as the
- * ship's planet selector names them, and a page at a time (MBOX_CAP_PAGED):
+ * Revision 1.29, the polish (docs/tod-menu.md 15): a page at a time
+ * (MBOX_CAP_PAGED), on a save category of nineteen (revision 1.34: Planets,
+ * named as the ship's planet selector names them, until qwark's Planets page
+ * went):
  * Down on a window's last row shows the next window with the cursor on its
  * top row, Up on its top row the window before with the cursor on its bottom
  * row, and past either end the page wraps, as the game's lists do. The
@@ -460,18 +479,16 @@ static void test_paging(void)
 	char b[48], t[40];
 	u32 gen, ev;
 
-	group("ToD's console menu: Planets as the ship names them, a page at a time (lh_menu.c, menu.c)");
+	group("ToD's console menu: a page at a time (lh_menu.c, menu.c)");
 	lm_take();
 	poke32(LMS(LM_KEY), peek32(LM_BOX + MBOX_OFF_PAGE_KEY));
 	check((peek8(LM_BOX + MBOX_OFF_CAPS) & MBOX_CAP_PAGED) != 0 && LM_CAPS == 0x2D,
 	      "the mailbox's header says a page at a time");
-	planets_list();
+	long_list();
 	title(t);
-	check(strcmp(t, "PLANETS") == 0 && lm_nrows() == LM_CFG_ROWS && strcmp(row_label(0, b), "KERWAN") == 0 &&
-	      strcmp(row_label(1, b), "COBALIA") == 0 && strcmp(row_label(2, b), "KORTOG") == 0 &&
-	      strcmp(row_label(3, b), "FASTOON") == 0 && strcmp(row_label(4, b), "VORON ASTEROID BELT") == 0 &&
-	      strcmp(row_label(5, b), "MUKOW") == 0 && lm8(LMP(MBOX_OFF_PFLAGS)) == MBOX_PAGE_MORE_DOWN,
-	      "Planets' first window: KERWAN, COBALIA, KORTOG, FASTOON, VORON ASTEROID BELT, MUKOW, more below");
+	check(strcmp(t, "LONG") == 0 && lm_nrows() == LM_CFG_ROWS && strcmp(row_label(0, b), "P01") == 0 &&
+	      strcmp(row_label(5, b), "P06") == 0 && lm8(LMP(MBOX_OFF_PFLAGS)) == MBOX_PAGE_MORE_DOWN,
+	      "the first window: P01 .. P06, more below");
 	gen = lm32(LMS(LM_GEN));
 	ev = peek32(LM_BOX + MBOX_OFF_EV_SEQ);
 	check(lm_next(4, 1, LM_CFG_ROWS) == 5 && peek32(LM_BOX + MBOX_OFF_EV_SEQ) == ev,
@@ -480,33 +497,35 @@ static void test_paging(void)
 	      peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN, "Down on its last row: the cursor stays, SCROLL_DOWN");
 	tick(6);
 	lm_take();
-	check(lm32(LMS(LM_GEN)) == gen + 1 && strcmp(row_label(0, b), "NUNDAC ASTEROID RING") == 0 &&
-	      strcmp(row_label(5, b), "KREELI COMET") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
+	check(lm32(LMS(LM_GEN)) == gen + 1 && strcmp(row_label(0, b), "P07") == 0 &&
+	      strcmp(row_label(5, b), "P12") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
 	      lm8(LMP(MBOX_OFF_PFLAGS)) == (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN),
-	      "the next window, a whole page on (NUNDAC ASTEROID RING .. KREELI COMET), the cursor on its top row");
+	      "the next window, a whole page on (P07 .. P12), the cursor on its top row");
 	check(lm_next(0, -1, LM_CFG_ROWS) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP,
 	      "Up on its top row: the cursor stays, SCROLL_UP");
 	tick(6);
 	lm_take();
-	check(strcmp(row_label(0, b), "KERWAN") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 5,
-	      "the window before, the cursor on its bottom row (MUKOW)");
+	check(strcmp(row_label(0, b), "P01") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 5,
+	      "the window before, the cursor on its bottom row (P06)");
 	check(lm_next(0, -1, LM_CFG_ROWS) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_UP,
 	      "Up on the first window's top row: SCROLL_UP too");
 	tick(6);
 	lm_take();
-	check(lm_nrows() == 1 && strcmp(row_label(0, b), "FASTOON II") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
+	check(lm_nrows() == 1 && strcmp(row_label(0, b), "P19") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 &&
 	      lm8(LMP(MBOX_OFF_PFLAGS)) == MBOX_PAGE_MORE_UP,
-	      "it wraps: the last window (18 on, one row, FASTOON II), the cursor on its last row");
+	      "it wraps: the last window (18 on, one row, P19), the cursor on its last row");
 	check(lm_next(0, 1, 1) == 0 && peek8(LM_BOX + MBOX_OFF_EV_KIND) == MBOX_EV_SCROLL_DOWN,
 	      "Down on the last window's last row: SCROLL_DOWN");
 	tick(6);
 	lm_take();
-	check(strcmp(row_label(0, b), "KERWAN") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 && lm_nrows() == LM_CFG_ROWS,
+	check(strcmp(row_label(0, b), "P01") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == 0 && lm_nrows() == LM_CFG_ROWS,
 	      "it wraps: the first window, the cursor on its first row");
 	check(lm_next(5, -1, LM_CFG_ROWS) == 4 && lm_next(0, 1, LM_CFG_ROWS) == 1,
 	      "Up and Down inside a window move as before");
 	press(MBOX_EV_BACK, -1);
+	press(MBOX_EV_BACK, -1);
 	check(find_row("Game") == 0, "back at the root");
+	long_gone();
 }
 
 /* ---------------------------------------------- open, close, the combo */
@@ -607,22 +626,22 @@ static void pause_gone(void)
 
 static void test_pause_loads(void)
 {
-	int r, i;
+	int i;
 	u32 planet;
 
 	group("ToD's console menu: a load from the pause (the fifth console test)");
 
-	/* The Trainer on Planets in the pause, a planet picked. */
+	/*
+	 * The client's planet with the Trainer up in the pause (revision 1.34: a
+	 * row of qwark's Planets page did this until the page went).
+	 */
 	pause_up();
 	lm_hstate(1);
 	tick(4);
 	lm_take();
-	planets_list();
-	r = 1;
-	planet = lm8(lm_row((u32)r) + MROW_OFF_ID + 1);
-	check(lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && lm8(lm_row((u32)r) + MROW_OFF_ID) == MENU_ROW_PLANET,
-	      "the Trainer's Planets in the pause");
-	press(MBOX_EV_ACTIVATE, r);
+	planet = 1;
+	check(session_planet_load((u8)planet, 0) == ST_OK && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu, "Cobalia, the Trainer up");
+	tick(4);
 	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
 	      "a planet: qwark asks the menu (and with it the pause) to close, and loads nothing yet");
 
@@ -675,8 +694,8 @@ static void test_pause_loads(void)
 	lm_hstate(1);
 	tick(4);
 	lm_take();
-	planets_list();
-	press(MBOX_EV_ACTIVATE, 1);
+	session_planet_load((u8)planet, 0);
+	tick(4);
 	lm_hstate(0);
 	tick(4);
 	lm_hstate(1);
@@ -964,7 +983,7 @@ static void test_galmap(void)
 	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
 	      "and nothing more: qwark loads nothing of its own");
 
-	/* The glue failing: said, the map the game's own still; Back then opens the page of planets, the one fallback. */
+	/* The glue failing: said, the map the game's own still; Back the Trainer's root (revision 1.34: no page of planets). */
 	host_fake_map_glue(2);
 	trainer_up();
 	to_map(find_row("Planets"));
@@ -973,8 +992,8 @@ static void test_galmap(void)
 	host_log_clear();
 	i = host_notify_count();
 	map_frames();
-	check(host_log_seen("menu: the galactic map could not list every planet (qwark:1: x); Back opens the Planets page") &&
-	      host_notify_count() == i + 1 && strstr(host_notify_last(), "lists the save's planets only") != NULL,
+	check(host_log_seen("menu: the galactic map could not list every planet (qwark:1: x)") &&
+	      host_notify_count() == i + 1 && strcmp(host_notify_last(), "Trainer: the galactic map lists the save's planets only") == 0,
 	      "the glue failing: logged, and said on the console");
 	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP && save_for_map(), "the map stays up, the game's own, the unlocks in");
 	host_fake_map(-1);
@@ -987,15 +1006,15 @@ static void test_galmap(void)
 	tick(4);
 	lm_take();
 	title(t);
-	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG && strcmp(row_label(0, b), "KERWAN") == 0,
-	      "on the page of planets (Kerwan first): every planet a press away");
-	press(MBOX_EV_BACK, -1);
+	r = find_row("Planets");
+	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && menu_model_depth() == 1,
+	      "on the Trainer's root, the cursor on Planets: no page of planets to fall back on");
 	lm_hstate(0);
 	pause_gone();
 	tick(30);
 	host_fake_map_glue(0);
 
-	/* A gmap() that never brings the map: given up, the bytes back, the Trainer on the page of planets. */
+	/* A gmap() that never brings the map: given up, the bytes back, the Trainer on its root, on Planets. */
 	host_fake_map_off(1);
 	trainer_up();
 	to_map(find_row("Planets"));
@@ -1012,22 +1031,25 @@ static void test_galmap(void)
 	tick(4);
 	lm_take();
 	title(t);
-	check(strcmp(t, "PLANETS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
-	      "on the page of planets: the fallback");
-	press(MBOX_EV_BACK, -1);
+	r = find_row("Planets");
+	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && menu_model_depth() == 1,
+	      "on the Trainer's root, the cursor on Planets (revision 1.34: the page of planets was the fallback)");
 	host_fake_map_off(0);
 
-	/* No level's lua_State (no Lua for gmap()): the page at once, nothing closed or written. */
+	/* No level's lua_State (no Lua for gmap()): nothing opens, closed or written; the row and the console say why. */
 	L = peek32(TOD_LUA_STATE);
 	poke32(TOD_LUA_STATE, 0);
 	req = peek32(mb + LUAMB_OFF_REQ);
-	press(MBOX_EV_ACTIVATE, find_row("Planets"));
+	i = host_notify_count();
+	r = find_row("Planets");
+	press(MBOX_EV_ACTIVATE, r);
 	title(t);
-	check(strcmp(t, "PLANETS") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE &&
-	      peek32(mb + LUAMB_OFF_REQ) == req && save_as_before(),
-	      "where the map cannot open: the page of planets at once, nothing closed, nothing written");
+	check(strcmp(t, "TRAINER") == 0 && menu_model_depth() == 1 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE &&
+	      peek32(mb + LUAMB_OFF_REQ) == req && save_as_before() && host_notify_count() == i + 1 &&
+	      strcmp(host_notify_last(), "Trainer: the galactic map cannot open here") == 0,
+	      "where the map cannot open: no page of planets, nothing closed or written, the console says so");
+	check(strcmp(row_value((u32)r, b), "NOT FOUND") == 0, "and the row says why: no level's lua_State, \"not found\"");
 	poke32(TOD_LUA_STATE, L);
-	press(MBOX_EV_BACK, -1);
 	lm_hstate(0);
 	pause_gone();
 	tick(30);
@@ -1091,22 +1113,61 @@ static void test_page_combos(void)
 	title(t);
 	check(strcmp(t, "CHEATS") == 0 && lm8(LMP(MBOX_OFF_PTYPE)) == MBOX_PTYPE_CONFIG,
 	      "the Trainer opens on Cheats, a CONFIG page (Game Options), not on its root");
-	press(MBOX_EV_BACK, -1);
-	title(t);
-	r = find_row("Cheats");
-	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r,
-	      "Back: the Trainer's root, the cursor on Cheats");
 
 	/* Up already: Manips, a section of ToD's own table, at once, nothing asked. */
 	tod_press(manips);
 	lm_take();
 	title(t);
-	check(strcmp(t, "MANIPS") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	check(strcmp(t, "MANIPS") == 0 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && menu_model_depth() == 2,
 	      "with the Trainer up, Manips' combo shows Manips at once and asks for nothing");
+
+	/*
+	 * Revision 1.34: Back from the page a combo opened closes the pause, back
+	 * to play, as the game's own unpause: qwark asks the glue to close, which
+	 * the glue does as its Quit does (exit_pause_menu), the stack untouched
+	 * until then; no root on the way.
+	 */
 	press(MBOX_EV_BACK, -1);
+	title(t);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && strcmp(t, "MANIPS") == 0 && menu_model_depth() == 2,
+	      "Back from the combo's page: a close asked for, not the Trainer's root");
+	check(lm_take_request() == 2, "the glue takes it and leaves the pause");
+	lm_hstate(0);
+	pause_gone();
+	tick(8);
+	check(menu_model_depth() == 1 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "the pause gone: qwark's root for the next open, nothing more asked");
+	tick(30);
+
+	/* The same page from the Trainer's root (its row): Back is the root, as ever. */
+	trainer_up();
+	r = find_row("Cheats");
+	press(MBOX_EV_ACTIVATE, r);
+	press(MBOX_EV_BACK, -1);
+	title(t);
+	check(strcmp(t, "TRAINER") == 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "Cheats from the root's row: Back is the root, the cursor on Cheats, no close");
+
+	/* A sub-page of the combo's page goes back to it, and only the combo's page closes. */
+	config_set_combo(COMBO_PAGE_UNLOCKS, tod_pad_to_og(TOD_PAGE_PAD(TOD_PAD_UP | TOD_PAD_RIGHT)));
+	tick(2);
+	tod_press(TOD_PAGE_PAD(TOD_PAD_UP | TOD_PAD_RIGHT));
+	lm_take();
+	title(t);
+	check(strcmp(t, "UNLOCKS") == 0 && menu_model_depth() == 2, "Unlocks' combo with the Trainer up: Unlocks at once");
+	press(MBOX_EV_ACTIVATE, 0);
+	check(menu_model_depth() == 3, "its first category, a sub-page");
+	press(MBOX_EV_BACK, -1);
+	title(t);
+	check(strcmp(t, "UNLOCKS") == 0 && menu_model_depth() == 2 && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "Back from the sub-page: Unlocks, the combo's page, no close");
+	press(MBOX_EV_BACK, -1);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE, "Back again, on the combo's page: the close");
+	lm_take_request();
 	lm_hstate(0);
 	pause_gone();
 	tick(30);
+	config_set_combo(COMBO_PAGE_UNLOCKS, 0);
 
 	/* Taken by the pause test, but the Trainer never up: four seconds, then the root for the next open. */
 	tod_press(game);
@@ -1123,7 +1184,7 @@ static void test_page_combos(void)
 	for (i = 0; i < LM_PENDING_FRAMES; i++) lm_gameplay_frame();
 	tick(4);
 
-	/* Planets: the galactic map straight from play, no pause; Back is the Trainer's root, as from its row. */
+	/* Planets: the galactic map straight from play, no pause; Back is play again (revision 1.34), not the Trainer. */
 	save_part_way();
 	poke32(TOD_LOAD_REQUEST, 0xFFFFFFFFu);
 	req = peek32(mb + LUAMB_OFF_REQ);
@@ -1137,19 +1198,11 @@ static void test_page_combos(void)
 	check(peek32(TOD_GAME_STATE) == TOD_STATE_GALMAP, "the galactic map up");
 	host_fake_map(-1);
 	tick(12);
-	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
-	      "Back: the save's bytes again, nothing loaded, the Trainer asked to open");
-	pause_up();
-	lm_take_request();
-	lm_hstate(1);
-	tick(4);
-	lm_take();
-	title(t);
-	r = find_row("Planets");
-	check(strcmp(t, "TRAINER") == 0 && r >= 0 && lm8(LMP(MBOX_OFF_CURSOR)) == (u8)r,
-	      "on the Trainer's root, the cursor on Planets");
-	lm_hstate(0);
-	pause_gone();
+	check(save_as_before() && peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_LOAD_REQUEST) == 0xFFFFFFFFu,
+	      "Back from the map the combo opened: the save's bytes again, nothing loaded, no Trainer asked for");
+	for (i = 0; i < 600; i++) tick(1);
+	check(peek8(LM_BOX + MBOX_OFF_REQUEST) == MBOX_REQ_NONE && peek32(TOD_GAME_STATE) == TOD_STATE_GAMEPLAY,
+	      "and none later: the game plays on");
 	tick(30);
 
 	config_set_combo(COMBO_PAGE_GAME, 0);

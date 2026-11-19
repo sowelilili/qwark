@@ -726,9 +726,14 @@ int mh_frame(int p)
  * tutorial's early states pass through the same gates as anywhere.
  *
  * The one refusal left is a page that is not MAIN: the push is written for
- * the list screen (mh_stop's MAIN branch), and the core would fall back to
- * qwark's own Planets page. Nothing reaches it today, since only the root's
- * Planets row carries the PICKER flag and the root is a MAIN page.
+ * the list screen (mh_stop's MAIN branch), and qwark would answer the row
+ * "busy". Nothing reaches it today, since only the root's Planets row carries
+ * the PICKER flag and the root is a MAIN page.
+ *
+ * Revision 1.34: also for qwark's request (the Planets page combo). Worlds'
+ * Triangle is the game's own pop back to screen 36, which the shim does not
+ * see; the core closes the menu at screen 36's first frame after a picker
+ * qwark asked for (mh_core_start, ST_CLOSE_NOW), the list's Start close.
  */
 MH_API u32 shim_picker(int p)
 {

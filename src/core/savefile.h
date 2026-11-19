@@ -407,6 +407,29 @@ int savefile_name_ok(const char *name);
  */
 u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig);
 
+/*
+ * Revision 1.34 (build 59): the Trainer's Save files page lists a category by
+ * planet, the client's "By planet" order (struct menu_save_order, game.h).
+ * The order is worked out a few saves a step, so no tick reads a whole folder
+ * of files: savefile_menu_sort reads at most `budget` saves' bytes (`so`'s
+ * range of each, one open and one read) and gives each a key, `rank` of the
+ * level they say (0xFF for none: not a save of the game, no planet), and the
+ * step that has every save's key sorts the category (by key, then natural
+ * order of the name without its ".sav", qstrnatcmp, then byte order), answering
+ * 1; 0 otherwise. A listing whose CRC (savefile_menu_list's sig) changed starts
+ * over. Once sorted, savefile_menu_list puts a save's name at its sorted place
+ * for as long as the listing is the one sorted; until then, and for any other
+ * listing, in the folder's order as before. savefile_menu_sorted says whether
+ * listing `sig` is the sorted one; savefile_menu_sort_forget drops the order,
+ * so the next visit of a category reads its saves again (a save written over
+ * under the same name). Tick thread; the sort itself uses the tick's scratch
+ * and nothing else (no step while a transfer holds it).
+ */
+int  savefile_menu_sort(const char *category, u32 at, u8 len, s32 (*level)(const u8 *bytes, u32 size),
+                        u8 (*rank)(s32 level), u8 budget);
+int  savefile_menu_sorted(u32 sig);
+void savefile_menu_sort_forget(void);
+
 /* --------------------------------- a game's own save system, revision 1.28 */
 
 /*

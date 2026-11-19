@@ -140,8 +140,21 @@
  *     and calls shim_picker. The shim opens the picker over the menu's screen
  *     the game's way and answers 1, or answers 0 (a state the game would not
  *     open it in, a page it cannot open it from), when the core posts ACTIVATE
- *     as for any link and qwark opens its own Planets page instead. On 1 the
- *     core plays MH_SND_FORWARD, as for a link.
+ *     as for any link and qwark answers the row "busy" (revision 1.34: qwark
+ *     has no Planets page of its own any more). On 1 the core plays
+ *     MH_SND_FORWARD, as for a link.
+ *   - (Revision 1.34, the Planets page combo.) qwark's request byte 3,
+ *     MBOX_REQ_PICKER, with the menu up: the core opens the picker from the
+ *     page's PICKER row at its next frame that can (the root on show, no
+ *     switch under way, shim_picker answering 1), marks it ST_PICKER 2, and
+ *     clears the request; until then it leaves it for qwark to withdraw. Back
+ *     from such a picker goes straight to play, not to the root: a shim that
+ *     sees the picker's own back (mh_picker_by_request()) closes the game's
+ *     menu there as Start does, and one whose back comes to the menu's
+ *     screen anyway (MH_PICKER_UNSEEN_BACK) has the core close it at the
+ *     first frame after (mh_core_start, ST_CLOSE_NOW). A shim whose picker goes back to the
+ *     menu on purpose (UYA's Square, for qwark's page of the others) calls
+ *     mh_core_picker_return() first, so that return is no close.
  *   - The menu's screen stopping while the picker is up (mh_core_stop, from
  *     the picker's push or swap) is not a close: hstate reads
  *     MBOX_HSTATE_PICKER, the page and the cursor are kept, and qwark leaves
@@ -225,8 +238,9 @@
 #define ST_SWITCHING        0x35   /* u8 the screen is being started again; the other set holds its page */
 #define ST_SEEN_ROW         0x36   /* u8 the cursor's row the window's edge was last checked at, MH_NONE (round 4) */
 #define ST_HOLD             0x37   /* u8 frames the other set stays on show by a screen that is going */
-#define ST_PICKER           0x38   /* u8 mailbox version 3: 1 while the game's planet picker the menu opened is up */
-/* 0x39..0x7B: round 3's description line, unused since round 4 (the sets keep their offset). */
+#define ST_PICKER           0x38   /* u8 mailbox version 3: 1 while the game's planet picker the menu opened is up; 2 opened for qwark's request (revision 1.34) */
+#define ST_CLOSE_NOW        0x39   /* u8 revision 1.34: back from a picker qwark asked for: the menu closes at its first frame */
+/* 0x3A..0x7B: round 3's description line, unused since round 4 (the sets keep their offset). */
 #define ST_SET0             0x7C   /* the two text sets, MH_SET_SIZE each */
 
 #define MH_NONE             0xFF
@@ -291,13 +305,27 @@
 #endif
 
 /* shim_picker's answers (version 3; MH_PICK_OTHERS since the pickers' round 2). */
-#define MH_PICK_REFUSED     0      /* qwark's Planets page instead: the core posts ACTIVATE */
+#define MH_PICK_REFUSED     0      /* not now: the core posts ACTIVATE, which qwark answers "busy" (revision 1.34) */
 #define MH_PICK_OPENED      1      /* the game's picker is opening over the menu */
 #define MH_PICK_OTHERS      2      /* not opened: qwark's page of the planets the picker cannot show */
 
 /* The pickers' round 2: 1 in a game header whose shim answers MH_PICK_OTHERS (UYA). */
 #ifndef MH_PICKER_OTHERS
 #define MH_PICKER_OTHERS    0
+#endif
+
+/*
+ * Revision 1.34: 1 in a game header whose picker's back comes to the menu's
+ * screen by the game's own code, unseen by the shim (Deadlocked's Worlds), so
+ * the core closes the menu at the first frame after a picker qwark asked for
+ * (ST_CLOSE_NOW). The others see their picker's back and close there.
+ */
+#ifndef MH_PICKER_UNSEEN_BACK
+#define MH_PICKER_UNSEEN_BACK 0
+#endif
+#if !MH_PICKER
+#undef MH_PICKER_UNSEEN_BACK
+#define MH_PICKER_UNSEEN_BACK 0
 #endif
 
 /* shim_close's `how`. */
@@ -391,6 +419,14 @@ MH_API void mh_core_picker_gone(int p);
 #define mh_picker_up()      (r8(MH_STATE + ST_PICKER) != 0)
 
 /*
+ * Revision 1.34: whether that picker opened for qwark's request (the Planets
+ * page combo), so its back leaves for play; and the picker going back to the
+ * menu's screen on purpose (UYA's Square), which is then no close.
+ */
+#define mh_picker_by_request()  (r8(MH_STATE + ST_PICKER) == 2)
+#define mh_core_picker_return() w8(MH_STATE + ST_PICKER, 1)
+
+/*
  * Back from the picker for a shim whose picker never stopped the menu's
  * screen (a page inside the menu's own screen, so no mh_core_stop and no
  * mh_core_start around it): the picker down, the menu open as it was. A shim
@@ -458,8 +494,8 @@ MH_API void shim_sound(u32 snd);
 #if MH_PICKER
 /*
  * Version 3: open the game's own planet picker over the menu's screen, from
- * the cross on the Planets row (above). MH_PICK_OPENED (1) when it did;
- * MH_PICK_REFUSED (0) to fall back to qwark's Planets page; MH_PICK_OTHERS
+ * the cross on the Planets row or qwark's request (above). MH_PICK_OPENED (1)
+ * when it did; MH_PICK_REFUSED (0) when it cannot now; MH_PICK_OTHERS
  * (2, only with MH_PICKER_OTHERS) for qwark's page of the planets the picker
  * cannot show.
  */

@@ -567,7 +567,9 @@ MH_API int mh_exit(u32 item, int arg)
  * reads PICKER and the page and cursor wait), and enters the picker. Its
  * parent is this screen, so the picker's Triangle comes back here. Only from
  * the bars (a MAIN page), with the UI manager up and nothing else asked of the
- * manager; otherwise 0, and qwark's own Planets page opens instead.
+ * manager; otherwise 0, and qwark answers the row "busy" (revision 1.34: it
+ * has no Planets page any more). Also for qwark's request (the Planets page
+ * combo), whose Triangle closes the pause instead (mh_pick_update).
  */
 MH_API u32 shim_picker(int p)
 {
@@ -624,6 +626,8 @@ MH_API int mh_pick_update(u32 item)
 
 	if (r32(MH_STATE + ST_MAGIC) != MH_MAGIC || mh_core_close_request()) return -1;
 	e = edges();
+	/* Revision 1.34: Triangle in a picker qwark asked for (the Planets page combo) leaves the pause, as Start. */
+	if ((e & PADB_TRIANGLE) != 0 && mh_picker_by_request()) return -1;
 	c = r32(item + R2_LI_CURSOR);
 	if ((e & (PADB_START | PADB_SELECT | PADB_TRIANGLE)) == 0 && (e & r32(R2_CONFIRM_MASK)) != 0 &&
 	    (r32(R2_LIST_BLOCKED) & 1) == 0 && r32(r32(MGR(R2_MGR_CURRENT)) + R2_SCR_FOCUS) == item &&

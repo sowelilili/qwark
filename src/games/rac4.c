@@ -1203,11 +1203,28 @@ static const char * const rac4_unlock_names[] = { "LOCKED", "V1", "V10", "V99" }
 static const u32 rac4_unlock_values[] = { 0, 1, 10, RAC4_MAX_LEVEL };
 
 /*
- * Build 54: the menu's own Planets page (the fallback where Worlds cannot
- * open) lists every planet, as PLANET_LIST does. Round 2 listed only those the
- * save had unlocked, since loading another crashed the game; a planet load now
- * unlocks it first (rac4_planet_unlock), so none is left out.
+ * Build 54: Worlds, the Trainer's planet picker, lists every planet, as
+ * PLANET_LIST does. Round 2 listed only those the save had unlocked, since
+ * loading another crashed the game; a planet load now unlocks it first
+ * (rac4_planet_unlock), so none is left out. (Revision 1.34: the menu's own
+ * Planets page, the fallback where Worlds could not open, is gone.)
  */
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order). A
+ * save's level is field 0 of its head (classic_save_level), with the block
+ * sizes Deadlocked's SaveData_restore takes, 0x41F0 or the older 0x1CF8 and
+ * 0x031C or 0x0CD0. The levels in rac4_planet_order (Orxon before Valix), and
+ * no move.
+ */
+static s32 rac4_save_level(const u8 *head, u32 size)
+{
+	static const u32 g[] = { 0x41F0, 0x1CF8 }, p[] = { 0x031C, 0x0CD0 };
+
+	return classic_save_level(head, size, g, 2, p, 2);
+}
+
+static const struct menu_save_order rac4_save_order = { 0, CLASSIC_SAVE_HEAD, 0, NULL, rac4_save_level };
+
 static const struct game_menu rac4_menu = {
 	rac4_menu_sections, (u8)(sizeof(rac4_menu_sections) / sizeof(rac4_menu_sections[0])),
 	rac4_menu_unlock_actions, (u8)sizeof(rac4_menu_unlock_actions),
@@ -1218,7 +1235,8 @@ static const struct game_menu rac4_menu = {
 	NULL, NULL,           /* every weapon goes to V99; no action with a status */
 	"Collectables",       /* round 6: the two weapon buttons on a page of their own, as the other games' */
 	NULL,                 /* Worlds shows every planet (the pickers' round 2) */
-	rac4_menu_values, (u8)(sizeof(rac4_menu_values) / sizeof(rac4_menu_values[0]))
+	rac4_menu_values, (u8)(sizeof(rac4_menu_values) / sizeof(rac4_menu_values[0])),
+	&rac4_save_order      /* revision 1.34: the Save files page by planet */
 };
 
 /* ---------------------------------------------------------------- vtable */

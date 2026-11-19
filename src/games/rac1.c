@@ -1191,6 +1191,21 @@ static const u8 rac1_menu_unlock_actions[] = {
 static const char * const rac1_unlock_names[] = { "Locked", "Unlocked", "Gold" };
 static const u32 rac1_unlock_values[] = { 0, 0, 1 };
 
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order). A
+ * save's level is field 0 of its head (classic_save_level), with the block
+ * sizes RaC1's SaveData_restore takes, 0x153C and 0x82A4; the levels in their
+ * ids' order, which is the game's, and no move.
+ */
+static s32 rac1_save_level(const u8 *head, u32 size)
+{
+	static const u32 g[] = { 0x153C }, p[] = { 0x82A4 };
+
+	return classic_save_level(head, size, g, 1, p, 1);
+}
+
+static const struct menu_save_order rac1_save_order = { 0, CLASSIC_SAVE_HEAD, 0, NULL, rac1_save_level };
+
 static const struct game_menu rac1_menu = {
 	rac1_menu_sections, (u8)(sizeof(rac1_menu_sections) / sizeof(rac1_menu_sections[0])),
 	rac1_menu_unlock_actions, (u8)sizeof(rac1_menu_unlock_actions),
@@ -1201,7 +1216,8 @@ static const struct game_menu rac1_menu = {
 	NULL, NULL,           /* every item goes as far as the set; no action with a status */
 	"Collectables",       /* the gold bolt and skill point buttons, on a page of their own */
 	NULL,                 /* the Galactic Map shows every planet (the pickers' round 2) */
-	rac1_menu_values, (u8)(sizeof(rac1_menu_values) / sizeof(rac1_menu_values[0]))
+	rac1_menu_values, (u8)(sizeof(rac1_menu_values) / sizeof(rac1_menu_values[0])),
+	&rac1_save_order      /* revision 1.34: the Save files page by planet */
 };
 
 /* ---------------------------------------------------------------- vtable */

@@ -396,6 +396,9 @@ static void closed(void)
 	w8(ST(ST_WAITING), 0);
 	w8(ST(ST_LAST_CURSOR), 0);
 	w8(ST(ST_HOLD), 0);
+#if MH_PICKER_UNSEEN_BACK
+	w8(ST(ST_CLOSE_NOW), 0);
+#endif
 }
 
 #if MH_PICKER
@@ -430,6 +433,25 @@ static int picker(int p)
 	return 0;
 }
 #endif
+
+/*
+ * Revision 1.34: qwark's request for the picker (MBOX_REQ_PICKER, the Planets
+ * page combo), at a frame of the menu's screen: the picker opened as the
+ * root's PICKER row's cross would open it, marked as qwark's (ST_PICKER 2:
+ * its back leaves for play). Answers 1 when it opened; 0 while the shim
+ * cannot open it now, and the request waits for a later frame. mh_core_frame
+ * asks only past its take of the page and with no switch under way; qwark
+ * makes the request a tick after it posted the root, never with another page
+ * on its way, and withdraws it at the player's first press (menu.c), so the
+ * page on show is the root.
+ */
+static int picker_request(int p)
+{
+	w8(ST(ST_PICKER), 2);
+	if (shim_picker(p) == MH_PICK_OPENED) return 1;
+	w8(ST(ST_PICKER), 0);
+	return 0;
+}
 
 MH_API void mh_core_picker_gone(int p)
 {
@@ -529,7 +551,15 @@ MH_API int mh_core_start(int p)
 		w8(ST(ST_SWITCHING), 0);
 #if MH_PICKER
 	} else if (r8(ST(ST_PICKER)) != 0) {
-		/* Back from the game's planet picker: the menu never closed, so no opening. */
+		/*
+		 * Back from the game's planet picker: the menu never closed, so no
+		 * opening. Revision 1.34: back from one qwark asked for (the Planets
+		 * page combo) is back to play, so where the shim cannot see the
+		 * picker's back itself the menu closes at its first frame.
+		 */
+#if MH_PICKER_UNSEEN_BACK
+		w8(ST(ST_CLOSE_NOW), r8(ST(ST_PICKER)) == 2);
+#endif
 		w8(ST(ST_PICKER), 0);
 #endif
 	} else {
@@ -541,6 +571,9 @@ MH_API int mh_core_start(int p)
 		w32(BOX(MBOX_OFF_FRAMES), 0);
 		w32(ST(ST_BUSY_SINCE), 0);
 		w8(ST(ST_HOLD), 0);
+#if MH_PICKER_UNSEEN_BACK
+		w8(ST(ST_CLOSE_NOW), 0);
+#endif
 		mh_sync();
 	}
 	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_OPEN);
@@ -579,8 +612,22 @@ MH_API int mh_core_frame(int p)
 	w8(BOX(MBOX_OFF_HSTATE), MBOX_HSTATE_OPEN);
 	if (r8(ST(ST_HOLD)) != 0) w8(ST(ST_HOLD), r8(ST(ST_HOLD)) - 1);
 
+#if MH_PICKER_UNSEEN_BACK
+	/* Revision 1.34: back from a picker qwark asked for: out, as a close request would have it. */
+	if (r8(ST(ST_CLOSE_NOW)) != 0) {
+		w8(ST(ST_CLOSE_NOW), 0);
+		close_all(p);
+		return MH_GONE;
+	}
+#endif
+
+	/*
+	 * A close request closes; an open one, the menu up already, is nothing.
+	 * Revision 1.34: qwark's request for the picker waits in the mailbox for
+	 * the page below.
+	 */
 	req = r8(BOX(MBOX_OFF_REQUEST));
-	if (req != MBOX_REQ_NONE) {
+	if (req != MBOX_REQ_NONE && req != MBOX_REQ_PICKER) {
 		w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
 		if (req == MBOX_REQ_CLOSE) {
 			close_all(p);
@@ -621,14 +668,33 @@ MH_API int mh_core_frame(int p)
 		}
 	}
 
+#if MH_PICKER
+	/*
+	 * Revision 1.34: qwark's request for the picker, once the page it was
+	 * posted with is on show, taken when the picker opens and left in the
+	 * mailbox until then (qwark withdraws one nobody took).
+	 */
+	if (r8(BOX(MBOX_OFF_REQUEST)) == MBOX_REQ_PICKER && picker_request(p)) {
+		w8(BOX(MBOX_OFF_REQUEST), MBOX_REQ_NONE);
+		return MH_GONE;
+	}
+#endif
+
 	slide(p);
 	return 0;
 }
 
+/*
+ * Revision 1.34: built only for a game that holds a screen going (MH_HOLD_*,
+ * Deadlocked's) and the host tests: RaC1's code areas had no room left for
+ * an unused function once the Planets page combo's picker went in.
+ */
+#if defined(MH_HOST) || MH_HOLD_MAIN != 0 || MH_HOLD_CFG != 0
 MH_API void mh_core_hold(u32 frames)
 {
 	w8(ST(ST_HOLD), frames > 0xFF ? 0xFF : frames);
 }
+#endif
 
 MH_API u32 mh_core_open_request(void)
 {

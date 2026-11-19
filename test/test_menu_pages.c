@@ -7,9 +7,15 @@
  * byte left untaken.
  *
  *   every page    each combo asks the renderer to open with its page already
- *                 in the mailbox (not the root, not ROOT-flagged); Back is the
- *                 root with the cursor on that page's row;
+ *                 in the mailbox (not the root, not ROOT-flagged); Back from
+ *                 it asks the renderer to close (revision 1.34: straight back
+ *                 to play), and the close puts the root back;
+ *   Planets       the game's own picker: the root posted on Planets, the
+ *                 picker asked for (MBOX_REQ_PICKER) once the menu is up;
+ *                 no page of planets, which is gone;
  *   up already    a press goes to the page at once and asks for nothing;
+ *   from the root the same page from the root's row: Back is the root, as
+ *                 ever; a sub-page of the combo's page goes back to it;
  *   no taker      an open nobody took puts the root back for the Help row;
  *   no page       a game whose root has no such row: nothing asked, the
  *                 console told once a session;
@@ -218,6 +224,24 @@ static void pages_in(const char *title, const char *name, u8 game_id)
 
 		press(g_masks[k]);
 		read_box(&p);
+		if (k == COMBO_PAGE_PLANETS - COMBO_PAGE_FIRST) {
+			/* Revision 1.34: the game's own picker, as the root's Planets row opens it; no page of planets. */
+			snprintf(what, sizeof(what), "%s: the Planets combo asks the renderer to open on the root, the cursor on Planets", name);
+			check(request() == MBOX_REQ_OPEN && strcmp(p.title, "Trainer") == 0 && (p.pflags & MBOX_PAGE_ROOT) != 0 &&
+			      p.cursor == (u8)at && menu_model_depth() == 1, what);
+			request_clear();
+			hstate(MBOX_HSTATE_OPEN);
+			snprintf(what, sizeof(what), "%s: the menu up, the picker asked for (MBOX_REQ_PICKER), no page of planets", name);
+			check(request() == MBOX_REQ_PICKER && menu_model_depth() == 1, what);
+			request_clear();
+			hstate(MBOX_HSTATE_PICKER);
+			hstate(MBOX_HSTATE_CLOSED);
+			read_box(&p);
+			snprintf(what, sizeof(what), "%s: the picker gone (its Back is play, the renderer's): the root, nothing asked", name);
+			check(request() == MBOX_REQ_NONE && strcmp(p.title, "Trainer") == 0 && p.cursor == 0 && menu_model_depth() == 1,
+			      what);
+			continue;
+		}
 		snprintf(what, sizeof(what), "%s: the %s combo asks the renderer to open, the %s page already in the mailbox",
 		         name, g_want[k], g_want[k]);
 		check(request() == MBOX_REQ_OPEN && strcmp(p.title, g_want[k]) == 0 && (p.pflags & MBOX_PAGE_ROOT) == 0 &&
@@ -226,26 +250,62 @@ static void pages_in(const char *title, const char *name, u8 game_id)
 		hstate(MBOX_HSTATE_OPEN);
 		box_event(MBOX_EV_BACK, 0);
 		read_box(&p);
-		snprintf(what, sizeof(what), "%s: up on %s, Back is the root, the cursor on its row", name, g_want[k]);
-		check(strcmp(p.title, "Trainer") == 0 && p.cursor == (u8)at && menu_model_depth() == 1, what);
+		snprintf(what, sizeof(what), "%s: up on %s, Back asks the renderer to close, not the root", name, g_want[k]);
+		check(request() == MBOX_REQ_CLOSE && strcmp(p.title, g_want[k]) == 0 && menu_model_depth() == 2, what);
+		request_clear();
 		hstate(MBOX_HSTATE_CLOSED);
+		read_box(&p);
+		snprintf(what, sizeof(what), "%s: closed, the root back for the next open, MAIN and ROOT-flagged", name);
+		check(strcmp(p.title, "Trainer") == 0 && p.ptype == MBOX_PTYPE_MAIN && (p.pflags & MBOX_PAGE_ROOT) != 0 &&
+		      menu_model_depth() == 1 && request() == MBOX_REQ_NONE, what);
 	}
 
-	/* Up already: straight to the page, nothing asked; another combo moves on from there. */
+	/* Up already: straight to the page, nothing asked; Planets asks for the picker at once. */
 	hstate(MBOX_HSTATE_OPEN);
 	press(g_masks[COMBO_PAGE_PLANETS - COMBO_PAGE_FIRST]);
 	read_box(&p);
-	snprintf(what, sizeof(what), "%s: with the menu up, Planets' combo shows Planets at once and asks for nothing", name);
-	check(strcmp(p.title, "Planets") == 0 && request() == MBOX_REQ_NONE, what);
+	snprintf(what, sizeof(what), "%s: with the menu up, Planets' combo shows the root and asks for the picker at once", name);
+	check(strcmp(p.title, "Trainer") == 0 && request() == MBOX_REQ_PICKER, what);
+	tick(70);
+	snprintf(what, sizeof(what), "%s: a picker request the renderer cannot take is withdrawn four seconds on", name);
+	check(request() == MBOX_REQ_PICKER, what);
+	tick(420);
+	check(request() == MBOX_REQ_NONE && menu_model_depth() == 1, what);
 	press(g_masks[COMBO_PAGE_CHEATS - COMBO_PAGE_FIRST]);
 	read_box(&p);
-	at = box_row(&root, "Cheats");
-	snprintf(what, sizeof(what), "%s: then Cheats' combo: Cheats, one page over the root", name);
+	snprintf(what, sizeof(what), "%s: then Cheats' combo: Cheats, one page over the root, nothing asked", name);
 	check(strcmp(p.title, "Cheats") == 0 && menu_model_depth() == 2 && request() == MBOX_REQ_NONE, what);
 	box_event(MBOX_EV_BACK, 0);
+	snprintf(what, sizeof(what), "%s: and Back from it the close, the menu having been up before the combo", name);
+	check(request() == MBOX_REQ_CLOSE, what);
+	request_clear();
+	hstate(MBOX_HSTATE_CLOSED);
+
+	/* The same page from the root's own row: Back is the root, the cursor on that row, as before the page combos. */
+	hstate(MBOX_HSTATE_OPEN);
 	read_box(&p);
-	snprintf(what, sizeof(what), "%s: and Back the root, the cursor on Cheats, not on Planets", name);
-	check(strcmp(p.title, "Trainer") == 0 && p.cursor == (u8)at, what);
+	at = box_row(&p, "Cheats");
+	box_event(MBOX_EV_ACTIVATE, at);
+	box_event(MBOX_EV_BACK, 0);
+	read_box(&p);
+	snprintf(what, sizeof(what), "%s: Cheats from the root's row: Back is the root on Cheats, no close", name);
+	check(strcmp(p.title, "Trainer") == 0 && p.cursor == (u8)at && request() == MBOX_REQ_NONE && menu_model_depth() == 1,
+	      what);
+
+	/* A sub-page of the combo's page goes back to it; only the combo's page closes. */
+	press(g_masks[COMBO_PAGE_UNLOCKS - COMBO_PAGE_FIRST]);
+	read_box(&p);
+	box_event(MBOX_EV_ACTIVATE, 0);
+	snprintf(what, sizeof(what), "%s: Unlocks' combo, then its first category, a sub-page", name);
+	check(menu_model_depth() == 3, what);
+	box_event(MBOX_EV_BACK, 0);
+	read_box(&p);
+	snprintf(what, sizeof(what), "%s: Back from the sub-page: Unlocks, the combo's page, no close", name);
+	check(strcmp(p.title, "Unlocks") == 0 && menu_model_depth() == 2 && request() == MBOX_REQ_NONE, what);
+	box_event(MBOX_EV_BACK, 0);
+	snprintf(what, sizeof(what), "%s: Back again, on the combo's page: the close", name);
+	check(request() == MBOX_REQ_CLOSE, what);
+	request_clear();
 	hstate(MBOX_HSTATE_CLOSED);
 
 	/* An open nobody took (a load, a cutscene): withdrawn, and the root back for the Help row. */

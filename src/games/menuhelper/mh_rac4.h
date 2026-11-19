@@ -78,6 +78,13 @@
 #define MH_CFG_ROWS         0x00000010
 #define MH_MBOX_SIZE        0x00000480   /* MBOX_OFF_ROWS + MH_ROWS * MH_ROW_BYTES */
 #define MH_CAPS             0x0000001F   /* steps, page keys, back button, requests, the planet picker */
+/*
+ * Revision 1.34: Worlds' Triangle is the game's own pop back to screen 36,
+ * which the shim does not see, so after a Worlds qwark's request opened (the
+ * Planets page combo) the core closes the menu at screen 36's first frame
+ * (mh_shim.h).
+ */
+#define MH_PICKER_UNSEEN_BACK 0x00000001
 
 /*
  * The game's own casing (read from the PS3 build's english.ps3): its lists of

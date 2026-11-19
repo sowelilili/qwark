@@ -1591,12 +1591,35 @@ static u8 rac3_menu_status(u8 id, u32 word, u8 form, char *out, u32 cap)
  * vid comics 1 to 5 in their own order, as rac3_planet_order lists them (the
  * game's own name table names planet 31 "Pirate Booty!", 33 "Arriba Amoeba!",
  * 34 "Shadow of the Robot", 32 "Deja Q All Over Again" and 35 "The Shaming of
- * the Q": issues 1 to 5). Vid Comic 6 and 1 SE stay on the Planets page.
+ * the Q": issues 1 to 5). Revision 1.34: Vid Comic 6 (30) and Vid Comic 1 SE
+ * (36) follow them, as rac3_planet_order has them; they were on qwark's page
+ * of every planet alone, which is gone, so this page lists every vid comic.
  */
-static const u8 rac3_menu_comics[] = { 31, 33, 34, 32, 35 };
+static const u8 rac3_menu_comics[] = { 31, 33, 34, 32, 35, 30, 36 };
 
 static const struct menu_section rac3_menu_picker_others = {
 	"Vid-Comics", rac3_menu_comics, (u8)sizeof(rac3_menu_comics)
+};
+
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order). A
+ * save's level is field 0 of its head (classic_save_level), with the block
+ * sizes UYA's SaveData_restore takes, 0x37B0 or the older 0x1CF8 and 0x84C0
+ * or 0x0CD0. The levels in rac3_planet_order, each ranger level moved right
+ * after its planet for the save list: Tyhrranosis Rangers (29) after
+ * Tyhrranosis (9), Metropolis Rangers (26) after Metropolis (16).
+ */
+static s32 rac3_save_level(const u8 *head, u32 size)
+{
+	static const u32 g[] = { 0x37B0, 0x1CF8 }, p[] = { 0x84C0, 0x0CD0 };
+
+	return classic_save_level(head, size, g, 2, p, 2);
+}
+
+static const u8 rac3_save_moves[] = { 29, 9, 26, 16 };
+
+static const struct menu_save_order rac3_save_order = {
+	0, CLASSIC_SAVE_HEAD, (u8)(sizeof(rac3_save_moves) / 2), rac3_save_moves, rac3_save_level
 };
 
 static const struct game_menu rac3_menu = {
@@ -1610,7 +1633,8 @@ static const struct game_menu rac3_menu = {
 	rac3_menu_status,
 	"Collectables",       /* the six buttons on a page of their own (round 3) */
 	&rac3_menu_picker_others,  /* the vid comics, which the GALACTIC MAP cannot show */
-	rac3_menu_values, (u8)(sizeof(rac3_menu_values) / sizeof(rac3_menu_values[0]))
+	rac3_menu_values, (u8)(sizeof(rac3_menu_values) / sizeof(rac3_menu_values[0])),
+	&rac3_save_order      /* revision 1.34: the Save files page by planet */
 };
 
 /* ---------------------------------------------------------------- vtable */

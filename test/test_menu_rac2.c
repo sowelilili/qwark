@@ -624,15 +624,7 @@ static void test_model_rac2(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list in the ids' order, which is the game's, on a CONFIG page (round 4). */
-	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 27 && strcmp(v.rows[0].label, "Aranos") == 0 &&
-	      strcmp(v.rows[5].label, "Feltzin") == 0 && strcmp(v.rows[26].label, "Jamming Array") == 0 &&
-	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0,
-	      "Planets: a CONFIG page of all 27, Aranos .. the Jamming Array, no More row");
-	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION, "each a button that closes the menu first");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
-	menu_model_view(&v);
+	/* (Revision 1.34: Planets is the planet select alone, the picker's tests below; qwark's page of planets is gone.) */
 
 	/* Manips: no header in RaC2, so the category and its options. */
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
@@ -1339,6 +1331,32 @@ static void test_picker_rac2(void)
 	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED, "Triangle there leaves the pause");
 	tick(4);
 
+	/*
+	 * Revision 1.34, the Planets page combo: the root posted on Planets, the
+	 * pause opened, then the picker on qwark's request (MBOX_REQ_PICKER) at the
+	 * root's next frame; its Triangle leaves the pause as Start does, not for
+	 * the root.
+	 */
+	config_set_combo(COMBO_PAGE_PLANETS, PAD_SELECT | PAD_R3 | PAD_DOWN);
+	tick(2);
+	combo_press(PAD_SELECT | PAD_R3 | PAD_DOWN);
+	play_frame(0);
+	pframes(12);
+	tick(4);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_PICKER && current() == SCREEN(MS_COMBO),
+	      "Planets' combo: the pause on the root, the picker asked for once it is up");
+	pframes(3);
+	check(current() == PICK_SCREEN && mh_picker_by_request() && peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "the root's next frame opens the picker for the request, marked as qwark's, the request taken");
+	pframe(PADB_TRIANGLE);
+	for (i = 0; i < 12 && G.paused; i++) pframe(0);
+	check(!G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && !mh_picker_up() &&
+	      peek32(RAC2_LOAD_PLANET) == 0,
+	      "Triangle in that picker: out of the pause, no root on the way, nothing loaded");
+	tick(4);
+	config_set_combo(COMBO_PAGE_PLANETS, 0);
+	tick(2);
+
 	/* Back from a picker the Help bar opened, then Triangle at the root: the game's root, on Trainer. */
 	open_from_help();
 	open_picker();
@@ -1362,7 +1380,7 @@ static void test_picker_rac2(void)
 	menu_model_reset(7, 16, MBOX_CAP_STEPS | MBOX_CAP_PAGE_KEYS | MBOX_CAP_BACK | MBOX_CAP_REQUEST);
 	menu_model_view(&v);
 	check(view_row(&v, "Planets") != NULL && (view_row(&v, "Planets")->flags & MROWF_PICKER) == 0,
-	      "a renderer without MBOX_CAP_PICKER: Planets is qwark's own page, no flag");
+	      "a renderer without MBOX_CAP_PICKER: the Planets row carries no flag");
 
 	check(quit(), "quit RaC2");
 }

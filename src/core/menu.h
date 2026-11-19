@@ -218,6 +218,11 @@ void menu_test_mods_row(int on);
 #endif
 /* 1.4.1: how many views have been built since the program started. */
 u32  menu_test_builds(void);
+/*
+ * Revision 1.34: where the Save files page puts a save made on `level` in the
+ * running game (menu.c save_rank): its place in the order, 0xFF none.
+ */
+u8   menu_test_save_rank(s32 level);
 #endif
 
 /* -------------------------------------------------------------- the driver */
@@ -278,9 +283,11 @@ void menu_combo(void);
  * the combo's place among them, 0 for COMBO_PAGE_GAME. Opens the menu
  * straight on the root's row of that page's name (the game's section, or
  * qwark's page), with OPEN_MENU's refusals; with the menu up it goes to that
- * page at once. Back from it is the root, the cursor on that row. A page the
- * game has not opens nothing (the console says so once a session). Tools of
- * Destruction's Planets opens the galactic map, as its row does.
+ * page at once. Back from it closes the menu, back to play (a sub-page of it
+ * goes back to it first). A page the game has not opens nothing (the console
+ * says so once a session). Planets opens the game's own planet picker, as
+ * the root's Planets row does (Tools of Destruction's galactic map), and Back
+ * from that picker is play too.
  */
 void menu_page_combo(u8 page);
 

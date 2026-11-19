@@ -478,6 +478,8 @@ MBOX_ROW_SIZE = 0x40
 MBOX_PTYPE_CONFIG = 1
 MBOX_PAGE_ROOT = 0x01
 MBOX_REQ_OPEN = 1
+MBOX_REQ_CLOSE = 2
+MBOX_REQ_PICKER = 3              # revision 1.34: the game's planet picker, with the menu up
 MBOX_EV_ACTIVATE = 1
 MBOX_EV_LEFT = 2
 MBOX_EV_RIGHT = 3
@@ -4028,6 +4030,48 @@ def exercise_console_menu(c, sim):
     page = menu_page(c)
     check(page is not None and page[2] == "Trainer",
           "Deadlocked menu: an open nobody took puts the root back for the Help row", page[2] if page else None)
+
+    # The page combos after their first console test (revision 1.34): Back from the page a combo opened asks
+    # the renderer to close, straight back to play; Planets (action 9) posts the root on Planets and, once the
+    # menu is up, asks for the game's own picker (request 3), never a page of planets.
+    def asked(want, seconds):
+        wait_while(c, lambda: mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST) != want, seconds, 0.005)
+        return mem_read_u8(c, MENU_BOX + MBOX_OFF_REQUEST) == want
+    press(sim, c, "0x0", 0.15)
+    press(sim, c, "0x%x" % page_mask, 0)
+    opened = asked(MBOX_REQ_OPEN, 0.25)
+    press(sim, c, "0x0", 0.1)
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")
+    module_sleep(c, 0.1)
+    page = menu_page(c)
+    check(opened and page is not None and page[2] == "Cheats" and menu_event(c, MBOX_EV_BACK, 0),
+          "Deadlocked menu: the Cheats combo's page up, Back pressed on it", page[2] if page else None)
+    check(asked(MBOX_REQ_CLOSE, 0.3) and (menu_page(c) or (0, 0, ""))[2] == "Cheats",
+          "Deadlocked menu: Back from the combo's page asks the renderer to close, not for the root")
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
+    wait_while(c, lambda: (menu_page(c) or (0, 0, ""))[2] != "Trainer", 2.0, 0.05)
+    check((menu_page(c) or (0, 0, ""))[2] == "Trainer", "Deadlocked menu: closed, the root back for the next open")
+    c.call(OP_COMBO_SET, struct.pack(">B3xI", 8, 0))
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 9, page_mask))
+    press(sim, c, "0x0", 0.15)
+    press(sim, c, "0x%x" % page_mask, 0)
+    opened = asked(MBOX_REQ_OPEN, 0.25)
+    press(sim, c, "0x0", 0.1)
+    page = menu_page(c)
+    planets_at = page[3].index("Planets") if page and "Planets" in page[3] else -1
+    check(status == ST_OK and opened and page is not None and page[2] == "Trainer" and
+          page[4][MBOX_OFF_CURSOR] == planets_at,
+          "Deadlocked menu: the Planets combo asks to open on the root, the cursor on Planets", page[2:4] if page else None)
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x01")
+    check(asked(MBOX_REQ_PICKER, 1.0) and (menu_page(c) or (0, 0, ""))[2] == "Trainer",
+          "Deadlocked menu: the menu up, the game's own picker asked for (request 3), no page of planets")
+    mem_write(c, MENU_BOX + MBOX_OFF_REQUEST, b"\x00")
+    mem_write(c, MENU_BOX + MBOX_OFF_HSTATE, b"\x00")
+    module_sleep(c, 0.2)
+    status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 9, 0))
     status, _ = c.call(OP_COMBO_SET, struct.pack(">B3xI", 8, 0))
     cfg_now = read_console_file(c, "/dev_hdd0/qwark/config.txt") or b""
     check(status == ST_OK and b"combo.page.cheats" not in cfg_now,
@@ -4201,7 +4245,7 @@ def exercise_console_menu_uya(c, sim):
     mem_write(c, 0x00EE9310, struct.pack(">II", 0, 0))
 
     # The pickers' round 2: the map's Square, VID-COMICS, posts MBOX_EV_PICKER_OTHERS on the Planets row, and qwark
-    # opens its page of the vid comics the map cannot show; X there loads one as the Planets page's rows do.
+    # opens its page of the vid comics the map cannot show, every one of them; X there loads one, as a pick does.
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x01")
     module_sleep(c, 0.2)
     page = menu_page(c, box, size, rs)
@@ -4210,8 +4254,10 @@ def exercise_console_menu_uya(c, sim):
     module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
     check(page is not None and page[2] == "Vid-Comics" and page[5] == MBOX_PTYPE_CONFIG and
-          page[3] == ["Vid Comic 1", "Vid Comic 2", "Vid Comic 3", "Vid Comic 4", "Vid Comic 5"],
-          "UYA menu: qwark's Vid-Comics page, a CONFIG page of the base vid comics 1 to 5", page[2:4] if page else None)
+          page[3] == ["Vid Comic 1", "Vid Comic 2", "Vid Comic 3", "Vid Comic 4", "Vid Comic 5", "Vid Comic 6",
+                      "Vid Comic 1 SE"],
+          "UYA menu: qwark's Vid-Comics page, a CONFIG page of every vid comic (revision 1.34: 6 and 1 SE too)",
+          page[2:4] if page else None)
     menu_event(c, MBOX_EV_ACTIVATE, 3, box, size, rs)
     mem_write(c, box + MBOX_OFF_HSTATE, b"\x00")
     wait_while(c, lambda: mem_read_u32(c, 0x00EE9310) != 1, 3.0, 0.05)
@@ -4291,14 +4337,13 @@ def exercise_console_menu_rac2(c, sim):
           page[:4] if page else None)
     menu_event(c, MBOX_EV_BACK, 0, box, size, rs)
     module_sleep(c, 0.1)
+    # Revision 1.34: the cross on Planets reaching qwark (the select refused) opens no page of planets; it is gone.
     menu_event(c, MBOX_EV_ACTIVATE, 2, box, size, rs)
     module_sleep(c, 0.1)
     page = menu_page(c, box, size, rs)
-    check(page is not None and page[3][:2] == ["Aranos", "Oozla"] and page[3][-1] == "Jamming Array" and
-          len(page[3]) == 27 and page[5] == MBOX_PTYPE_CONFIG,
-          "RaC2 menu: Planets, a CONFIG page of all 27 (round 4: no More row)", page[3] if page else None)
-    menu_event(c, MBOX_EV_BACK, 0, box, size, rs)
-    module_sleep(c, 0.1)
+    check(page is not None and page[2] == "Trainer" and page[3][2] == "Planets",
+          "RaC2 menu: Planets pressed with the select refused: still the root, no page of planets",
+          page[2:4] if page else None)
 
     # The planet picker (mailbox version 3). The root's Planets row opens the
     # renderer's picker (MBOX_CAP_PICKER, MROWF_PICKER); a pick is the header's
@@ -6983,8 +7028,9 @@ def smoke_tod_menu(c, sim):
     # 4 s of wall time, src/core/menu.c), says so in its log, and the open it asked last is withdrawn half a
     # second after. That is waited for, not a quiet spell timed here: the open is asked again every 0.75 s
     # until then, and a look that fell between two asks (or a loaded machine's late tick) took a reopen still
-    # running for one given up, so the next press of Planets was BUSY and opened the page of planets, not the
-    # map; the pick on it then loaded nothing and its three checks failed. Eight seconds of ticks are at
+    # running for one given up, so the next press of Planets was BUSY (it opened the page of planets until
+    # revision 1.34 took that page away), not the map; the pick on it then loaded nothing and its three checks
+    # failed. Eight seconds of ticks are at
     # least that much wall time.
     def given_up(mark):
         def going():
@@ -6996,13 +7042,14 @@ def smoke_tod_menu(c, sim):
         # And nothing asked again after it: a second of ticks is longer than the 0.75 s between asks.
         return not wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) == 0, 1.0, 0.05)
     check(given_up(mark), "ToD menu: an open nobody takes is given up a few seconds on")
-    # The map's glue failing: the map the game's own, and Back opens the page of planets, the one fallback.
+    # The map's glue failing: the map the game's own, and Back the Trainer's root on Planets (revision 1.34: the
+    # page of planets it opened until then is gone).
     sim_do(sim, "fakemap fail")
     mark = len(sim.lines)
     check(menu_event(c, MBOX_EV_ACTIVATE, planets, box, size), "ToD menu: Planets again, the map's glue to fail")
     wait_while(c, lambda: mem_read_u32(c, TOD_GAME_STATE) != 6, 3.0, 0.02)
     # Back only once qwark has taken the glue's failure (its answer comes from the simulated map's frame,
-    # a thread of its own): a fixed wait could let Back come first and open the root, not the planets.
+    # a thread of its own): a fixed wait could let Back come first, before the failure was said.
     wait_while(c, lambda: not sim_logged_since(sim, mark, "could not list every planet"), 3.0, 0.02)
     mark = len(sim.lines)
     sim_do(sim, "fakemap back")
@@ -7010,27 +7057,10 @@ def smoke_tod_menu(c, sim):
     wait_while(c, lambda: mem_read_u8(c, box + MBOX_OFF_REQUEST) != 1, 2.0, 0.02)
     module_sleep(c, 0.1)
     page = menu_page(c, box, size)
-    check(page is not None and page[2] == "Planets" and
-          page[3] == ["Kerwan", "Cobalia", "Kortog", "Fastoon", "Voron Asteroid Belt", "Mukow"] and
-          page[4][MBOX_OFF_PFLAGS] & 0x06 == 0x04,
-          "ToD menu: Planets on Game Options, named as the ship names them (the polish): six planets, more below",
-          (page[2:4], page[4][MBOX_OFF_PFLAGS]) if page else None)
-    # The polish: a page at a time, wrapping past the ends.
-    for kind, row, want, cur, what in (
-            (MBOX_EV_SCROLL_DOWN, 5, "Nundac Asteroid Ring", 0, "Down off the window: the next whole one, the cursor on its top row"),
-            (MBOX_EV_SCROLL_UP, 0, "Kerwan", 5, "Up off it: the one before, the cursor on its bottom row"),
-            (MBOX_EV_SCROLL_UP, 0, "Fastoon II", 0, "Up off the first: it wraps to the last (one row), the cursor on it"),
-            (MBOX_EV_SCROLL_DOWN, 0, "Kerwan", 0, "Down off the last: it wraps to the first, the cursor on its top row")):
-        check(menu_event(c, kind, row, box, size), "ToD menu: the cursor leaving the window asks for the next")
-        module_sleep(c, 0.1)
-        page = menu_page(c, box, size)
-        check(page is not None and page[3][0] == want and page[4][MBOX_OFF_CURSOR] == cur,
-              "ToD menu: " + what, (page[3], page[4][MBOX_OFF_CURSOR]) if page else None)
-    check(menu_event(c, MBOX_EV_BACK, 0, box, size), "ToD menu: back to the root")
-    module_sleep(c, 0.1)
-    page = menu_page(c, box, size)
-    check(page is not None and page[3][planets] == "Planets", "ToD menu: the root: Planets, opening the map",
-          page[3] if page else None)
+    check(page is not None and page[2] == "Trainer" and page[3][planets] == "Planets" and
+          page[4][MBOX_OFF_CURSOR] == planets and sim_logged_since(sim, mark, "the Trainer again"),
+          "ToD menu: Back from the map whose glue failed: the Trainer asked for on its root, the cursor on Planets, "
+          "no page of planets", page[2:4] if page else None)
     check(given_up(mark), "ToD menu: an open nobody takes is given up a few seconds on")
     # A pick: the game's own load (the map's exit), the bytes back, no Trainer asked for.
     mark = len(sim.lines)

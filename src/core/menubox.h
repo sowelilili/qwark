@@ -156,7 +156,8 @@
  * Version 3: the root's Planets row, for a renderer with MBOX_CAP_PICKER. The
  * cross opens the game's own planet picker instead of posting ACTIVATE; a
  * renderer that cannot open it there and then posts ACTIVATE as for any link,
- * and qwark opens its own Planets page.
+ * and qwark answers the row "busy" (revision 1.34: qwark has no Planets page
+ * of its own any more; the game's picker is the only one).
  */
 #define MROWF_PICKER        0x40
 
@@ -197,6 +198,16 @@
 #define MBOX_REQ_NONE       0
 #define MBOX_REQ_OPEN       1
 #define MBOX_REQ_CLOSE      2
+/*
+ * Revision 1.34 (build 59), the Planets page combo: open the game's own planet
+ * picker from the root's MROWF_PICKER row, as its cross would, with the menu
+ * up. qwark posts it only while hstate reads open, with the root posted. The
+ * renderer clears it once the picker is opening and leaves it while it cannot
+ * open yet (the root not on show, the screen moving); qwark withdraws one
+ * nobody took. A picker opened so is left by Back straight to play, not to the
+ * root (mh_shim.h).
+ */
+#define MBOX_REQ_PICKER     3
 
 /* Event kinds. */
 #define MBOX_EV_ACTIVATE    1      /* the cross, or whatever selects */
@@ -212,7 +223,8 @@
  * opened from the root's Planets row (ev_row, ev_id: that row), cannot show
  * every planet, and the player asked it for the others (UYA's GALACTIC MAP
  * has no vid comics): qwark opens its page of them, struct game_menu's
- * picker_others, or its whole Planets page where the game names none.
+ * picker_others (revision 1.34: nothing where the game names none; qwark's
+ * whole Planets page is gone).
  */
 #define MBOX_EV_PICKER_OTHERS 9
 

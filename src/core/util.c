@@ -67,6 +67,40 @@ int qstreq_ci(const char *a, const char *b)
 	return qlower(*a) == qlower(*b);
 }
 
+static int qisdigit(char c)
+{
+	return c >= '0' && c <= '9';
+}
+
+int qstrnatcmp(const char *a, const char *b)
+{
+	u32 i = 0, j = 0, la = qstrlen(a), lb = qstrlen(b), si, sj, k;
+	int c;
+
+	while (i < la && j < lb) {
+		if (qisdigit(a[i]) && qisdigit(b[j])) {
+			si = i;
+			sj = j;
+			while (i < la && qisdigit(a[i])) i++;
+			while (j < lb && qisdigit(b[j])) j++;
+			while (si < i && a[si] == '0') si++;
+			while (sj < j && b[sj] == '0') sj++;
+			if (i - si != j - sj) return (int)(i - si) - (int)(j - sj);
+			for (k = 0; k < i - si; k++) {
+				if (a[si + k] != b[sj + k]) return (int)(u8)a[si + k] - (int)(u8)b[sj + k];
+			}
+			continue;
+		}
+		c = (int)(u8)qlower(a[i]) - (int)(u8)qlower(b[j]);
+		if (c != 0) return c;
+		i++;
+		j++;
+	}
+	if (la - i != lb - j) return (int)(la - i) - (int)(lb - j);
+	for (i = 0; a[i] != 0 && a[i] == b[i]; i++) { }
+	return (int)(u8)a[i] - (int)(u8)b[i];
+}
+
 static int qdigit(char c, u32 base, u32 *out)
 {
 	u32 v;

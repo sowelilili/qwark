@@ -518,6 +518,22 @@ static const u8 tod_menu_unlock_actions[] = {
 static const char * const tod_unlock_names[] = { "Locked", "Unlocked", "Max" };
 static const u32 tod_unlock_values[] = { 0, 1, TOD_MAX_LEVEL };
 
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order). A
+ * save is the game's GAME.SAV image, TOD_SAVE_SIZE bytes, which ends with the
+ * current level, a big-endian LEVEL_ at 0x906E8 (docs/tod-savefile.md); a file
+ * of any other size is no save of the game. The levels in their ids' order,
+ * the game's (Fastoon II, 18, last), and no move.
+ */
+static s32 tod_save_level(const u8 *bytes, u32 size)
+{
+	s32 level = (s32)be32_get(bytes);
+
+	return size == TOD_SAVE_SIZE && level >= 0 ? level : -1;
+}
+
+static const struct menu_save_order tod_save_order = { TOD_SAVE_LEVEL_OFF, 4, 0, NULL, tod_save_level };
+
 static const struct game_menu tod_menu = {
 	tod_menu_sections, (u8)(sizeof(tod_menu_sections) / sizeof(tod_menu_sections[0])),
 	tod_menu_unlock_actions, (u8)sizeof(tod_menu_unlock_actions),
@@ -529,7 +545,8 @@ static const struct game_menu tod_menu = {
 	tod_cc_menu_status,   /* revision 1.29: Cache cutscenes' status (a page that shows status rows) */
 	"Collectables",       /* the buttons on a page of their own */
 	NULL,                 /* no planet picker */
-	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0]))
+	tod_menu_values, (u8)(sizeof(tod_menu_values) / sizeof(tod_menu_values[0])),
+	&tod_save_order       /* revision 1.34: the Save files page by planet */
 };
 
 /*

@@ -92,6 +92,7 @@ static struct {
 	char map_rows[20][40];
 	int map_nrows;
 	int list_h;                 /* the CONFIG list pane's height */
+	int pose[14];               /* each pane's pose the shim last set (anim_set), -1 none since cleared */
 } G;
 
 static void put_str(u32 a, const char *s)
@@ -125,7 +126,14 @@ static u32 ui_string(u32 id)
 }
 
 static void mock_play_sound(int id, int a, u32 moby) { (void)a; (void)moby; G.sound = id; G.sounds++; }
-static void mock_anim_set(u32 moby, int pose, int frame) { (void)moby; (void)pose; (void)frame; G.anims++; }
+static void mock_anim_set(u32 moby, int pose, int frame)
+{
+	u32 k = (moby - PANE0) / 0x100;
+
+	(void)frame;
+	G.anims++;
+	if (k < 14) G.pose[k] = pose;
+}
 static unsigned long long mock_blend(int a, int b, int c, int d, int e, int f, int g, int h)
 {
 	(void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h;
@@ -582,16 +590,7 @@ static void test_model_rac1(void)
 	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
 	menu_model_view(&v);
 
-	/* Planets: the plain list, in the game's order, on a CONFIG page (round 4: the panes do not scroll). */
-	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 19 && strcmp(v.rows[0].label, "Veldin") == 0 &&
-	      strcmp(v.rows[5].label, "Rilgar") == 0 && strcmp(v.rows[18].label, "Veldin2") == 0 &&
-	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == 0 && strcmp(v.title, "Planets") == 0,
-	      "Planets: a CONFIG page of all nineteen, Veldin .. Veldin2, no More row");
-	check((v.rows[0].flags & MROWF_CLOSES) != 0 && v.rows[0].kind == MROW_ACTION && v.rows[0].value[0] == 0,
-	      "each a button, blank, that closes the menu first");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
-	menu_model_view(&v);
+	/* (Revision 1.34: Planets is the Galactic Map alone, test_picker_rac1; qwark's page of planets is gone.) */
 
 	act(&v, MBOX_EV_ACTIVATE, "Manips");
 	check(labels_are(&v, manips, 3) && v.ptype == MBOX_PTYPE_CONFIG,
@@ -842,6 +841,7 @@ static void step(u32 edges)
 }
 
 static void test_picker_rac1(u32 mb);
+static void test_page_combos_rac1(u32 mb);
 
 static void test_renderer_rac1(void)
 {
@@ -1543,4 +1543,112 @@ static void test_picker_rac1(u32 mb)
 	tick(4);
 	check(r32(0x00729970) == 0 && r32(R1_MAP_PAGE + 0x00) == 0 && r32(R1_MAP_LIST + 0x00) == 0,
 	      "the game's own map, its page, its list and the map list's pointer, never written");
+
+	test_page_combos_rac1(mb);
+}
+
+/* Revision 1.34's page combos, on the renderer itself: Select + R3 and a direction, no other combo's. */
+#define R1_COMBO_CHEATS  (PAD_SELECT | PAD_R3 | PAD_RIGHT)
+#define R1_COMBO_PLANETS (PAD_SELECT | PAD_R3 | PAD_DOWN)
+#define R1_COMBO_UNLOCKS (PAD_SELECT | PAD_R3 | PAD_UP | PAD_RIGHT)
+
+/* The panes from `lo` to `hi` - 1 flown in on the main page's poses since `G.pose` was cleared. */
+static int panes_in(u32 lo, u32 hi)
+{
+	u32 k;
+
+	for (k = lo; k < hi; k++) {
+		if (G.pose[k] != (int)(R1_MAIN_POSE0 + k) || r32(PANE0 + 0x100 * k + R1_MOBY_SPEED) != 0xBF800000u) return 0;
+	}
+	return 1;
+}
+
+/*
+ * Revision 1.34: the page combos through the renderer. Cheats' opens the pause
+ * straight on a CONFIG page; another combo with the menu up then brings a
+ * MAIN page, whose panes must fly in on the main page's poses (build 59's
+ * first console test: the open's flag, left set by an open on a CONFIG page,
+ * kept the root's rows on Cheats' poses, large boxes in Goodies' layout); Back
+ * from the combo's page closes the pause. Planets' opens the Galactic Map on
+ * qwark's request, and its Triangle closes the pause too, not the root.
+ */
+static void test_page_combos_rac1(u32 mb)
+{
+	int k;
+
+	group("console menu: RaC1's page combos through the renderer (revision 1.34)");
+	config_set_combo(COMBO_PAGE_CHEATS, R1_COMBO_CHEATS);
+	config_set_combo(COMBO_PAGE_PLANETS, R1_COMBO_PLANETS);
+	config_set_combo(COMBO_PAGE_UNLOCKS, R1_COMBO_UNLOCKS);
+	tick(2);
+
+	press(R1_COMBO_CHEATS);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_OPEN, "Cheats' combo in play: an open request");
+	frame(0);
+	frame(0);
+	frame(0);
+	check(r32(R1_STATE) == 3 && G.trans == 12 && (G.trans_to == PAGE_CONF(0) || G.trans_to == PAGE_CONF(1)) &&
+	      r8(MH_SHIM + SH_OPENING) == 0,
+	      "the pause opens on the MAIN page and goes straight on to a CONFIG page, the open's flag spent");
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_CONF && strcmp(G.pane_text[0], "Cheats") == 0, "the Trainer on Cheats");
+	tick(4);
+
+	for (k = 0; k < 14; k++) G.pose[k] = -1;
+	for (k = 0; k < 14; k++) w32(PANE0 + 0x100 * (u32)k + R1_MOBY_SPEED, 0);
+	press(R1_COMBO_UNLOCKS);
+	frame(0);
+	check(G.trans == 12 && G.trans_to == PAGE_LIST, "Unlocks' combo with the menu up: the game's transition to the MAIN page");
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_LIST && r8(MH_SHIM + SH_NROWS) == 4 && r8(MH_SHIM + SH_PHASE) == PH_IN && panes_in(0, 4),
+	      "Unlocks' four rows fly in on the main page's poses: no pane left on Cheats' poses (the wrong boxes)");
+	frames(8);
+	{
+		char a[160];
+		check(strcmp(main_texts(a, sizeof(a)), "Weapons|Gadgets|Items|Collectables") == 0, "and show Unlocks' rows");
+	}
+
+	/* Back from the combo's page: the pause closes, straight back to play. */
+	frame(PADB_TRIANGLE);
+	tick(2);
+	frame(0);
+	frame(0);
+	check(G.closing != 0 && peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE, "Triangle on the combo's page: the pause closes");
+	frames(12);
+	frame(0);
+	tick(4);
+	check(r32(R1_STATE) == 0 && r32(MH_SHIM + SH_UP) == 0 && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED &&
+	      menu_model_depth() == 1, "in play, the menu down, qwark's root for the next open");
+
+	/* Planets: the root on Planets, then the Galactic Map on qwark's request; its Triangle is play. */
+	press(R1_COMBO_PLANETS);
+	frame(0);
+	frame(0);
+	frame(0);
+	frames(8);
+	tick(4);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_PICKER && r32(PAGE_LIST + 0x40) == ROW(2),
+	      "Planets' combo: the pause on the root, the focus on Planets, the picker asked for");
+	frame(0);
+	check(mh_picker_up() && mh_picker_by_request() && r8(MH_SHIM + SH_PICK) == PK_OPENING &&
+	      peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "the next still frame of the root: the picker opens for the request, marked as qwark's, the request taken");
+	frames(6);
+	frames(12);
+	frame(0);
+	check(r1_at() == AT_MAP, "the Galactic Map's page");
+	frame(PADB_TRIANGLE);
+	check(G.closing != 0 && !mh_picker_up() && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && G.trans == 0,
+	      "Triangle on the map the combo opened: the pause closes, no way back to the root");
+	frames(12);
+	frame(0);
+	check(r32(R1_STATE) == 0 && r8(MH_SHIM + SH_PICK) == PK_NONE, "in play again");
+	tick(4);
+
+	config_set_combo(COMBO_PAGE_CHEATS, 0);
+	config_set_combo(COMBO_PAGE_PLANETS, 0);
+	config_set_combo(COMBO_PAGE_UNLOCKS, 0);
+	tick(2);
 }

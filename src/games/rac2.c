@@ -1317,6 +1317,28 @@ static const u8 rac2_menu_unlock_actions[] = {
 static const char * const rac2_unlock_names[] = { "Locked", "Unlocked", "Max" };
 static const u32 rac2_unlock_values[] = { 0, 1, RAC2_MAX_LEVELS };
 
+/*
+ * Revision 1.34: the Save files page by planet (struct menu_save_order). A
+ * save's level is field 0 of its head (classic_save_level), with the block
+ * sizes RaC2's SaveData_restore takes, 0x1D08 or the older 0x1CF8 and 0x84D0
+ * or 0x0CD0. The levels in their ids' order, the game's, but for the save
+ * list's own moves: Wupash (25) after Oozla (1), the Jamming Array (26) after
+ * Maktar (2), Dobbo Orbit (22) after Dobbo (9), Damosel Orbit (23) after
+ * Damosel (18); Slim Cognito (24) names no planet and stays where it is.
+ */
+static s32 rac2_save_level(const u8 *head, u32 size)
+{
+	static const u32 g[] = { 0x1D08, 0x1CF8 }, p[] = { 0x84D0, 0x0CD0 };
+
+	return classic_save_level(head, size, g, 2, p, 2);
+}
+
+static const u8 rac2_save_moves[] = { 25, 1, 26, 2, 22, 9, 23, 18 };
+
+static const struct menu_save_order rac2_save_order = {
+	0, CLASSIC_SAVE_HEAD, (u8)(sizeof(rac2_save_moves) / 2), rac2_save_moves, rac2_save_level
+};
+
 static const struct game_menu rac2_menu = {
 	rac2_menu_sections, (u8)(sizeof(rac2_menu_sections) / sizeof(rac2_menu_sections[0])),
 	rac2_menu_unlock_actions, (u8)sizeof(rac2_menu_unlock_actions),
@@ -1328,7 +1350,8 @@ static const struct game_menu rac2_menu = {
 	NULL,                 /* no action with a status */
 	"Collectables",       /* the eight buttons on a page of their own (round 3, as UYA's) */
 	NULL,                 /* the planet select shows every planet (the pickers' round 2) */
-	rac2_menu_values, (u8)(sizeof(rac2_menu_values) / sizeof(rac2_menu_values[0]))
+	rac2_menu_values, (u8)(sizeof(rac2_menu_values) / sizeof(rac2_menu_values[0])),
+	&rac2_save_order      /* revision 1.34: the Save files page by planet */
 };
 
 /* ---------------------------------------------------------------- vtable */

@@ -864,7 +864,8 @@ static __attribute__((noinline)) void go(u32 next, u32 self)
  * before the map's init asks for them); the core counts that stop no close.
  * Not with a Start close pending this frame, which the main pause's update
  * takes after the row's callback, nor in a pause whose Start does not leave it
- * (U_NO_EXIT): the core posts the cross then, and qwark shows its own list;
+ * (U_NO_EXIT): the core posts the cross then, and qwark answers it "busy"
+ * (revision 1.34: it has no Planets page any more);
  * and once after the map's Square, which asks for qwark's page of the vid
  * comics instead (MH_PICK_OTHERS: the core posts MBOX_EV_PICKER_OTHERS).
  */
@@ -933,7 +934,9 @@ MH_API void mh_map_init(u32 gs)
  *   the cross         the pick to qwark and the close (mh_core_pick), the
  *                     map's travel sound, and out of the pause plainly:
  *                     qwark loads it once the game plays;
- *   Triangle          back to the menu's screen, the page it left;
+ *   Triangle          back to the menu's screen, the page it left; in a map
+ *                     qwark's request opened (revision 1.34, the Planets
+ *                     page combo), out of the pause as Start;
  *   Square            the same, and then the cross on Planets, which the
  *                     picker answers this once (SH_MAP_LIST) with
  *                     MH_PICK_OTHERS: qwark's page of the vid comics.
@@ -950,8 +953,14 @@ MH_API void mh_map_update(u32 gs)
 		if (c >= r32(U_MAP_COUNT)) return;
 		mh_core_pick(0, (s32)r32(U_MAP_ENTRIES + c * U_MAP_ENTRY_SIZE));
 		snd = SND_MAP_GO;
+	} else if ((e & PADB_TRIANGLE) != 0 && mh_picker_by_request()) {
+		/* Revision 1.34: Triangle in a map qwark asked for (the Planets page combo): out of the pause, as Start. */
 	} else if ((e & (PADB_TRIANGLE | PADB_SQUARE)) != 0) {
-		if ((e & PADB_TRIANGLE) == 0) w8(SH(SH_MAP_LIST), 1);
+		if ((e & PADB_TRIANGLE) == 0) {
+			w8(SH(SH_MAP_LIST), 1);
+			/* Square goes back to the menu on purpose, for the vid comics: no close, whoever opened the map. */
+			mh_core_picker_return();
+		}
 		w8(SH(SH_MAP_BACK), 1);
 		snd = SND_CHANGE;
 		next = gs_ready(r8(SH(SH_CUR)));

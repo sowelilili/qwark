@@ -689,7 +689,9 @@ A combo per page of the Trainer's root, the same list in every game (PROTOCOL.md
 
 The combo cannot push the pause onto a page of its own: the game opens its pause through its own pause test only, with its own first screen (section 12.5: `get_starting_screen` acts on PAUSEMENU_MOVIES alone, and each pause is a new Lua VM the glue goes into once the presentation is up). So a page combo does what the menu combo does and no more: it posts the page (the root under it, the cursor on the page's row) and makes the same open request, which the helper's pause test (`lm_pause_check`) takes as a press of Start. The glue's `open()` then shows whatever page qwark posted, a MAIN page in the pause's list and a CONFIG page on Game Options, as it already did for a page change (no change to the glue, the helper or LUA_PATCH). So the pause's own list shows for the few frames before the glue opens, as for the menu combo; then the page. With the Trainer up, a page combo changes the page at once (the glue follows any new page), and asks for nothing; with the game's own pause up and the Trainer down, the request is taken from the pause as the menu combo's is.
 
-**Planets** is the Planets row's own action (section 16): from play the galactic map opens straight away, with no pause at all (the row's CLOSES action runs at once, the game already playing), and Back from the map is the Trainer's root with the cursor on Planets. Where the map cannot open (no level's lua_State, no helper) it is the Planets page, said on the console as from the row.
+**Planets** is the Planets row's own action (section 16): from play the galactic map opens straight away, with no pause at all (the row's CLOSES action runs at once, the game already playing). Back from the map is play again (section 23; it was the Trainer's root on Planets until the first console test of the combos). Where the map cannot open (no level's lua_State, no helper) nothing opens and the console says why (section 23; it was the Planets page, which is gone).
+
+**Back** from the page a combo opened closes the pause, back to play (section 23): qwark asks the glue to close, which leaves the pause by the game's own `exit_pause_menu`, as the menu combo's close does. A sub-page of that page goes back to it first; the same page opened from the root's row goes back to the root.
 
 An open the pause test took but that never brought the Trainer up (the pause did not come, or the glue did not go in) is given four seconds; then qwark posts the root again, so the TRAINER row of the next pause opens on the root as ever.
 
@@ -697,11 +699,11 @@ An open the pause test took but that never brought the Trainer up (the pause did
 
 Bind each from the client's Combos panel, the Trainer pages row's dropdown.
 
-1. In play, the Cheats combo: the pause opens (its list for a moment), then the Trainer on CHEATS in Game Options. Triangle: the Trainer's root, the cursor on CHEATS. Triangle again: the pause's list, as from the TRAINER row.
+1. In play, the Cheats combo: the pause opens (its list for a moment), then the Trainer on CHEATS in Game Options. Triangle: the pause closes, back to play (section 23), with no Trainer root or pause list on the way.
 2. The same for Game, Manips (Game Options), Unlocks (the pause's list) and Save files.
 3. With the Trainer up on any page, the Manips combo: MANIPS at once, no flicker of the pause.
 4. With the game's own pause up on Options (the Trainer down), the Cheats combo: the list comes back, then the Trainer on CHEATS.
-5. In play, the Planets combo: no pause, the galactic map at once. Triangle in the map: the pause opens on the Trainer's root, the cursor on PLANETS.
+5. In play, the Planets combo: no pause, the galactic map at once. Triangle in the map: back to play, no pause (section 23).
 6. During a load, a cutscene or with the map up: nothing opens, and the next Start shows the game's own pause; TRAINER there opens on the root.
 7. On RPCS3 with the helper's patch (optional): the same; the Mods combo says "Trainer: no Mods page in this game" once and opens nothing.
 
@@ -725,3 +727,34 @@ Bind each from the client's Combos panel, the Trainer pages row's dropdown.
 3. Cache cutscenes from the Trainer: the status row reads as before (Waiting, Cobalia 42%, Done (13s)); RaCMAN's line under its button says the same thing in full (Caching cutscenes: Cobalia 42%, Cutscenes cached (13 s, 13.9 MiB/s)).
 4. RaCMAN's Positions panel in ToD: Reset level flags and Reset special bolts beside Load planet. Collect a gold bolt on a planet, load that planet from RaCMAN with Reset special bolts ticked: the bolt is back. Tick Reset level flags and load Kerwan: a flag set there (a door, a cutscene seen) is cleared, another planet's flags are as they were.
 5. A load into a story-video level (a new file's Cobalia) with Reset level flags ticked: no one-frame flash before the video.
+
+## 23. The page combos after their first console test (revision 1.34, build 59)
+
+### Revision 1.34 (pending, module build 59)
+
+The first console test of the page combos (section 21) found, in the four original games, the Planets combo opening qwark's page of planets instead of the game's own picker, Back from a combo's page landing on the Trainer's root, and in RaC1 that root drawn on Cheats' large boxes. The user's calls: qwark's page of every planet goes, in every game, so the game's own picker is the only one; and Back from the page a combo opened goes straight back to play, as Back from the root the menu combo opened does, in all five games.
+
+### 23.1 What changed in ToD (high, from the code and the host tests)
+
+- **Back from the combo's page.** qwark answers the glue's BACK (event 4) on the page a page combo opened with the close request (2), and keeps its stack until the close. The glue takes it as it takes the menu combo's: `leave(false)` and the game's own `exit_pause_menu()`, the game's unpause. No change to the glue, the Lua helper or LUA_PATCH. A sub-page of the combo's page (an unlock category under Unlocks, a save category under Save files) goes back to it first; the same page opened from the root's row goes back to the root, as before.
+- **The galactic map the Planets combo opened** goes back to play on Back: the bytes back, nothing loaded, no Trainer asked for (`g_defer.combo`, `g_gm.combo`). From the root's row the map's Back opens the Trainer again on its root, on Planets, as before.
+- **No page of planets.** qwark's Planets page, which sections 16 and 17 kept as the map's fallback, is gone. Where the map cannot open (no level's lua_State, no Lua helper, a map still opening) the Planets row opens nothing: the row shows the reason for two seconds ("not found" with no level's lua_State) and the console says "Trainer: the galactic map cannot open here". A map that never comes up (four seconds after `gmap()`) puts the bytes back, says "Trainer: the galactic map did not open" and opens the Trainer again on its root, on Planets (not for the combo's map). A map glue that does not go in leaves the game's own map with the save's planets and says "Trainer: the galactic map lists the save's planets only"; its Back is the root (or play, for the combo's map), no longer the page of planets.
+- **Save files** lists each category by planet (PROTOCOL.md 9.1, "A save category by planet"): a ToD save's LEVEL_ is read from the four bytes at 0x906E8 of a whole GAME.SAV (0x906F0 bytes; a file of any other size has none), the levels in their ids' order, Fastoon II last, the saves with no level after them, natural order within a level.
+
+### 23.2 Sizes
+
+`tod.sprx`'s R-X segment is 49,728 bytes, 15,808 spare in its page (with the Save files order). No change to the Lua helper, its glue or LUA_PATCH.
+
+### 23.3 Tests
+
+`test/test_tod_menu.c`: the Cheats combo from play, then Manips with the Trainer up, and Back on Manips asking the glue to close (no root), the glue's close taken and qwark's root after; Cheats from the root's row, Back the root on Cheats with no close; the Unlocks combo, a category under it, Back to Unlocks with no close and Back again the close; the Planets combo's map, Back with the bytes back, nothing loaded and no Trainer asked for, then or ten seconds on; the map that cannot open (no lua_State): no page, nothing closed or written, the row's "NOT FOUND" and the console's line; a map that never comes and a failing glue each opening the Trainer on its root, on Planets; the paging and window tests on a save category of nineteen where they used the page of planets, and the loads from the pause through the client's PLANET_LOAD. `test/test_menu_saves.c`: ToD's saves in the client's order, and its level check (a whole save only).
+
+### 23.4 What the next console test should show
+
+1. In play, the Cheats combo: the Trainer on CHEATS. Triangle: back to play at once, as from the game's own unpause, no Trainer root and no pause list on the way.
+2. With the Trainer up on Cheats, the Manips combo: MANIPS at once. Triangle: back to play.
+3. TRAINER from the pause, then Cheats from the root: Triangle is the root on CHEATS, as before; Triangle again the pause's list.
+4. The Unlocks combo, then a category: Triangle is Unlocks; Triangle again is play.
+5. In play, the Planets combo: the galactic map at once. Triangle in the map: play, no pause. The same from the Trainer's Planets row: Triangle opens the Trainer on its root, on PLANETS.
+6. In a level with no lua_State yet (straight after a load), the Planets row: nothing opens, the row says NOT FOUND for two seconds, the console says the map cannot open here.
+7. Save files > a category with saves on several planets: the saves in the order of the game's planets, Fastoon II's last, those that are no ToD save (another game's, a short file) at the end.

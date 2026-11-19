@@ -2037,13 +2037,46 @@ int savefile_list(const char *category, u8 *out, u32 cap, u32 *len)
 	return ST_OK;
 }
 
-u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig)
+/*
+ * Revision 1.34: the Trainer's order of one category, by planet
+ * (savefile_menu_sort): each save's key and, once every key is in and the
+ * category sorted, each save's place in the sorted listing, by its place in
+ * the folder's. For the listing whose CRC is `sig` and no other.
+ */
+#define MO_MAX  0xFF
+#define MO_SLOT 32           /* a name without its ".sav", terminated: the sort's slot in the tick's scratch */
+
+static struct {
+	u32 sig;                 /* the listing the keys are for */
+	u8  on;                  /* keys being read for it */
+	u8  done;                /* sorted: pos is good for it */
+	u8  n;                   /* its saves */
+	u8  read;                /* keys read so far, in the folder's order */
+	u8  key[MO_MAX];         /* each save's planet's rank, 0xFF none */
+	u8  pos[MO_MAX];
+} g_mo;
+
+typedef char mo_scratch_fits[MO_MAX * MO_SLOT <= QSCRATCH_BYTES && SAVEFILE_NAME_LEN < MO_SLOT + 4 ? 1 : -1];
+
+/* An entry of a listing: a category of the library (`category` NULL), or a save of one. */
+static int menu_entry(const char *category, const struct plat_dirent *e)
+{
+	if (!savefile_name_ok(e->name)) return 0;
+	return category == NULL ? e->is_dir : !e->is_dir && has_sav_ext(e->name);
+}
+
+/*
+ * One walk of a listing (savefile_menu_list), each name put at its place in
+ * `pos` (by its place in the folder) where `pos` is given, in the folder's
+ * order where not.
+ */
+static u8 menu_walk(const char *category, u8 first, u8 max, char *names, u32 *sig, const u8 *pos, u8 npos)
 {
 	char path[SAVEFILE_PATH_MAX];
 	plat_dir_t dir;
 	struct plat_dirent ent;
 	u32 crc = qcrc32_start();
-	u8 n = 0;
+	u8 n = 0, k;
 
 	/* The category's name is part of what its listing is. */
 	if (category != NULL) crc = qcrc32_update(crc, (const u8 *)category, qstrlen(category) + 1);
@@ -2053,18 +2086,158 @@ u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *
 	if (plat_dir_open(path, &dir) != 0) return 0;
 
 	while (n < 0xFF && plat_dir_next(&dir, &ent) == 1) {
-		if (!savefile_name_ok(ent.name)) continue;
-		if (category == NULL ? !ent.is_dir : (ent.is_dir || !has_sav_ext(ent.name))) continue;
+		if (!menu_entry(category, &ent)) continue;
 		crc = qcrc32_update(crc, (const u8 *)ent.name, qstrlen(ent.name) + 1);
+		k = pos != NULL && n < npos ? pos[n] : n;
 		/* savefile_name_ok held the name to SAVEFILE_NAME_LEN. */
-		if (n >= first && (u32)(n - first) < max)
-			qstrcpy(names + (u32)(n - first) * (SAVEFILE_NAME_LEN + 1), SAVEFILE_NAME_LEN + 1, ent.name);
+		if (names != NULL && k >= first && (u32)(k - first) < max)
+			qstrcpy(names + (u32)(k - first) * (SAVEFILE_NAME_LEN + 1), SAVEFILE_NAME_LEN + 1, ent.name);
 		n++;
 	}
 
 	plat_dir_close(&dir);
 	if (sig != NULL) *sig = qcrc32_finish(crc);
 	return n;
+}
+
+u8 savefile_menu_list(const char *category, u8 first, u8 max, char *names, u32 *sig)
+{
+	u32 s;
+	u8 n;
+
+	if (category == NULL || !g_mo.done) return menu_walk(category, first, max, names, sig, NULL, 0);
+	/* Revision 1.34: the sorted order, while the listing is the one sorted; the folder's otherwise. */
+	n = menu_walk(category, first, max, names, &s, g_mo.pos, g_mo.n);
+	if (s == g_mo.sig && n == g_mo.n) {
+		if (sig != NULL) *sig = s;
+		return n;
+	}
+	/* Not the listing sorted: nothing the walk put by the old order may stay. */
+	if (names != NULL) memset(names, 0, (u32)max * (SAVEFILE_NAME_LEN + 1));
+	return menu_walk(category, first, max, names, sig, NULL, 0);
+}
+
+int savefile_menu_sorted(u32 sig)
+{
+	return g_mo.done && g_mo.sig == sig;
+}
+
+void savefile_menu_sort_forget(void)
+{
+	g_mo.on = 0;
+	g_mo.done = 0;
+}
+
+/* The order of saves `a` and `b` (places in the folder), their display names in `names`. */
+static int mo_before(const char *names, u8 a, u8 b)
+{
+	int c;
+
+	if (g_mo.key[a] != g_mo.key[b]) return g_mo.key[a] < g_mo.key[b];
+	c = qstrnatcmp(names + (u32)a * MO_SLOT, names + (u32)b * MO_SLOT);
+	return c < 0;
+}
+
+/*
+ * Every key in: the names without their ".sav" into the tick's scratch, the
+ * saves sorted (an insertion sort, 255 at most, once a listing), each one's
+ * place kept. A listing that changed under the walk starts over.
+ */
+static int mo_sort(const char *category)
+{
+	char path[SAVEFILE_PATH_MAX];
+	char *names = (char *)qscratch();
+	plat_dir_t dir;
+	struct plat_dirent ent;
+	u8 order[MO_MAX];
+	u32 len;
+	u8 n = 0, i, j, t;
+
+	save_path(path, sizeof(path), category, NULL);
+	if (plat_dir_open(path, &dir) != 0) {
+		g_mo.on = 0;
+		return 0;
+	}
+	while (n < g_mo.n && plat_dir_next(&dir, &ent) == 1) {
+		if (!menu_entry(category, &ent)) continue;
+		len = qstrlen(ent.name) - qstrlen(SAVEFILE_EXT);
+		memcpy(names + (u32)n * MO_SLOT, ent.name, len);
+		names[(u32)n * MO_SLOT + len] = 0;
+		n++;
+	}
+	plat_dir_close(&dir);
+	if (n != g_mo.n) {
+		g_mo.on = 0;
+		return 0;
+	}
+
+	for (i = 0; i < n; i++) {
+		t = i;
+		for (j = i; j > 0 && mo_before(names, t, order[j - 1]); j--) order[j] = order[j - 1];
+		order[j] = t;
+	}
+	for (i = 0; i < n; i++) g_mo.pos[order[i]] = i;
+	g_mo.on = 0;
+	g_mo.done = 1;
+	return 1;
+}
+
+int savefile_menu_sort(const char *category, u32 at, u8 len, s32 (*level)(const u8 *bytes, u32 size),
+                       u8 (*rank)(s32 level), u8 budget)
+{
+	char path[SAVEFILE_PATH_MAX];
+	plat_dir_t dir;
+	struct plat_dirent ent;
+	plat_file_t f;
+	u8 bytes[32];
+	u32 sig, got;
+	s32 lv;
+	u8 n, i, end, key;
+
+	if (category == NULL || level == NULL || rank == NULL || len == 0 || len > sizeof(bytes)) return 0;
+	/* A transfer holds the tick's scratch between ticks. */
+	if (g_xfer.state != SF_IDLE) return 0;
+	n = menu_walk(category, 0, 0, NULL, &sig, NULL, 0);
+	if (g_mo.done && sig == g_mo.sig && n == g_mo.n) return 0;
+	if (!g_mo.on || sig != g_mo.sig || n != g_mo.n) {
+		g_mo.on = 1;
+		g_mo.done = 0;
+		g_mo.sig = sig;
+		g_mo.n = n;
+		g_mo.read = 0;
+	}
+
+	end = (u8)(n - g_mo.read > budget ? g_mo.read + budget : n);
+	if (g_mo.read < end) {
+		save_path(path, sizeof(path), category, NULL);
+		if (plat_dir_open(path, &dir) != 0) {
+			g_mo.on = 0;
+			return 0;
+		}
+		i = 0;
+		while (i < end && plat_dir_next(&dir, &ent) == 1) {
+			if (!menu_entry(category, &ent)) continue;
+			if (i >= g_mo.read) {
+				/* Only the save's few bytes, never the whole file: one open, one read. */
+				key = 0xFF;
+				save_path(path, sizeof(path), category, ent.name);
+				if (plat_file_open(path, PLAT_OPEN_READ, &f) == 0) {
+					got = 0;
+					if ((u64)at + len <= ent.size && plat_file_read_at(f, at, bytes, len, &got) == 0 && got == len) {
+						lv = level(bytes, ent.size > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)ent.size);
+						if (lv >= 0) key = rank(lv);
+					}
+					plat_file_close(f);
+				}
+				g_mo.key[i] = key;
+			}
+			i++;
+		}
+		plat_dir_close(&dir);
+		g_mo.read = end;
+	}
+	if (g_mo.read < n) return 0;
+	return mo_sort(category);
 }
 
 int savefile_category(u8 op, const char *name)

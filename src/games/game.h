@@ -323,6 +323,34 @@ struct menu_section {
 	u8 nitems;
 };
 
+/*
+ * Revision 1.34 (build 59): how the Trainer's Save files page lists a category
+ * by planet, the client's "By planet" order (RaCMAN Reloaded's SaveFilePlanet
+ * and SaveFilePlanetOrder): each save under the level it says it was made on,
+ * the levels in the planet picker's order (the game's planet_order, or the
+ * ids' own) with the save list's own moves, the saves on one level and those
+ * whose level is no planet (not a save of the game, a placeholder name) in
+ * natural order, the latter last. The game says where a save keeps its level
+ * and what it moves; menu.c and savefile.c do the rest, the same in every game.
+ */
+struct menu_save_order {
+	u32 at;                 /* the bytes of a save its level is read from: from here */
+	u8  len;                /* this many, at most 32 */
+	u8  nmoves;
+	/*
+	 * {level, after} pairs, made in turn: the level taken out of the order and
+	 * put back right after `after` (RaC2's orbits after their planets). A pair
+	 * whose level or `after` the order has not is left out.
+	 */
+	const u8 *moves;
+	/*
+	 * The level those bytes say, of a file `size` bytes long: the game's own
+	 * level id, PLANET_LIST's; -1 when they are not a save of this game. Tick
+	 * thread; reads nothing of the game.
+	 */
+	s32 (*level)(const u8 *bytes, u32 size);
+};
+
 struct game_menu {
 	/* The pages the root links to first, in order (Game, Cheats). */
 	const struct menu_section *sections;
@@ -351,9 +379,10 @@ struct game_menu {
 	const char *unlock_prefix;
 
 	/*
-	 * 1 when the planet may be loaded from the menu, NULL for every named
-	 * one. Deadlocked crashes loading a planet the save has not unlocked.
-	 * Tick thread: it may read the game.
+	 * 1 when the planet may be loaded from the menu's page of the planets
+	 * the picker cannot show (picker_others, below; revision 1.34: the only
+	 * page of planets), NULL for every named one. Tick thread: it may read
+	 * the game.
 	 */
 	int (*planet_ok)(u8 planet);
 
@@ -398,14 +427,22 @@ struct game_menu {
 	 * MBOX_EV_PICKER_OTHERS: UYA's GALACTIC MAP has no vid comics, and its
 	 * Square asks for them): a CONFIG page of that title with these planets
 	 * (PLANET_LIST ids, as `items`), in order, each a button that loads it as
-	 * the Planets page's do. NULL where the picker shows every planet, or a
-	 * game has none; the event then opens the whole Planets page.
+	 * a pick of the picker's does. NULL where the picker shows every planet;
+	 * the event then opens nothing (revision 1.34: qwark's page of every
+	 * planet is gone, so this page is the only list of planets in the menu,
+	 * and must name every planet the game's picker cannot show).
 	 */
 	const struct menu_section *picker_others;
 
 	/* Round 5: the rows MENU_ITEM_VALUE(i) names, NULL and 0 for none. */
 	const struct menu_value *values;
 	u8 nvalues;
+
+	/*
+	 * Revision 1.34: the Save files page's order by planet (struct
+	 * menu_save_order); NULL lists a category in the folder's order, as before.
+	 */
+	const struct menu_save_order *save_order;
 };
 
 /*
@@ -736,11 +773,13 @@ struct menu_native {
  * back every poked byte that still holds what it wrote, and reads `pick_addr`
  * (s32, a planet id, -1 for none): a pick is the game's own load, already
  * under way; none (Back) opens the menu again on its root, the cursor on
- * Planets. A picker that never comes up (a few seconds) is given up the
- * same way, the page of planets opening instead. With `glue`, the core sends
- * the Lua helper's map glue (struct lh_desc's gmap) to the picker's own VM
- * once it is up, which makes it list every planet (docs/tod-menu.md 17);
- * should that fail, Back opens the page of planets instead of the root.
+ * Planets (revision 1.34: play, for a picker the Planets page combo opened).
+ * A picker that never comes up (a few seconds) is given up the same way.
+ * With `glue`, the core sends the Lua helper's map glue (struct lh_desc's
+ * gmap) to the picker's own VM once it is up, which makes it list every
+ * planet (docs/tod-menu.md 17); should that fail, the picker is the game's
+ * own, listing the save's planets. (Revision 1.34: qwark's page of every
+ * planet, where a failure used to lead, is gone.)
  */
 struct menu_poke {
 	u32 addr;               /* the first byte */

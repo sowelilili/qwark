@@ -18906,6 +18906,7 @@ int main(void)
 	test_combo_enable();
 	test_combo_fastloads();
 	test_menu_pages();
+	test_menu_saves();
 	test_rac2();
 	test_rac2_crash_guards();
 	test_manips();

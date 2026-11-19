@@ -950,6 +950,9 @@ static int dl_weapon_now(u8 gadget)
 
 #define MENU_SAVES "/dev_hdd0/qwark/savefiles/NPEA00423"
 
+/* The library's folder for the title the saves go to: Deadlocked's unless a test says otherwise. */
+static const char *g_saves = MENU_SAVES;
+
 static void save_put(const char *cat, const char *name, u32 size)
 {
 	char path[160];
@@ -958,8 +961,9 @@ static void save_put(const char *cat, const char *name, u32 size)
 	u32 done = 0;
 
 	plat_dir_create("/dev_hdd0/qwark/savefiles");
-	plat_dir_create(MENU_SAVES);
-	qstrcpy(path, sizeof(path), MENU_SAVES "/");
+	plat_dir_create(g_saves);
+	qstrcpy(path, sizeof(path), g_saves);
+	qstrcat(path, sizeof(path), "/");
 	qstrcat(path, sizeof(path), cat);
 	plat_dir_create(path);
 	qstrcat(path, sizeof(path), "/");
@@ -978,7 +982,8 @@ static void save_drop(const char *cat, const char *name)
 {
 	char path[160];
 
-	qstrcpy(path, sizeof(path), MENU_SAVES "/");
+	qstrcpy(path, sizeof(path), g_saves);
+	qstrcat(path, sizeof(path), "/");
 	qstrcat(path, sizeof(path), cat);
 	if (name != NULL) {
 		qstrcat(path, sizeof(path), "/");
@@ -1289,31 +1294,19 @@ static void test_model_dl(void)
 	menu_model_view(&v);
 
 	/*
-	 * Planets: every planet, locked or not, each a button that loads it once
-	 * the menu is closed (build 54: a load unlocks a locked planet first, so
-	 * round 2's filter is gone).
+	 * Revision 1.34: no page of every planet any more. The cross on the Planets
+	 * row reaches qwark only when the game's picker could not open there and
+	 * then: it opens nothing, the row says busy; and the picker's ask for the
+	 * planets it cannot show opens nothing in a game that names none.
 	 */
 	for (i = 1; i <= 15; i++) dl_planet(i, 0);
-	dl_planet(1, 1);
-	dl_planet(3, 1);
-	check(act(&v, MBOX_EV_ACTIVATE, "Planets") == ST_OK && strcmp(v.title, "Planets") == 0 &&
-	      v.ptype == MBOX_PTYPE_CONFIG && v.nrows == 12,
-	      "Planets is a CONFIG page (round 4) of every planet, twelve, the save's locks or not");
-	check(strcmp(v.rows[0].label, "DreadZone") == 0 && strcmp(v.rows[1].label, "Catacrom") == 0 &&
-	      strcmp(v.rows[2].label, "Sarathos") == 0 && strcmp(v.rows[6].label, "Valix") == 0 &&
-	      strcmp(v.rows[11].label, "Interior") == 0,
-	      "DreadZone, Catacrom, Sarathos .. Valix .. Interior in the game's order, the placeholders left out");
-	check(v.rows[1].kind == MROW_ACTION && (v.rows[1].flags & MROWF_CLOSES) != 0, "each closes the menu first");
-	check(act(&v, MBOX_EV_ACTIVATE, "Catacrom") == ST_OK && value_of(&v, "Catacrom")[0] == 0 &&
-	      peek32(RAC4_TARGET_PLANET) != 2, "the cross on Catacrom: nothing loads yet, the row blank (round 5)");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
-	menu_model_view(&v);
-	/* The pickers' round 2: Deadlocked names no planets its picker cannot show, so the event opens the whole page. */
+	check(act(&v, MBOX_EV_ACTIVATE, "Planets") == ST_BUSY && menu_model_depth() == 1 && strcmp(v.title, "Trainer") == 0 &&
+	      strcmp(value_of(&v, "Planets"), "busy") == 0,
+	      "the cross on Planets, the picker not opened: no page of planets, the root still, the row says busy");
 	r = view_row(&v, "Planets");
-	check(r != NULL && menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_OK &&
-	      menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0),
-	      "the picker's MBOX_EV_PICKER_OTHERS, in a game with no picker_others: the whole Planets page");
-	menu_model_event(MBOX_EV_BACK, 0, 0, v.key);
+	check(r != NULL && menu_model_event(MBOX_EV_PICKER_OTHERS, (u8)(r - v.rows), r->id, v.key) == ST_BAD_ARG &&
+	      menu_model_depth() == 1,
+	      "the picker's MBOX_EV_PICKER_OTHERS, in a game with no picker_others: nothing opens");
 	menu_model_view(&v);
 
 	/* Mailbox version 3: with a renderer that opens the game's own picker, the root's Planets row says so. */
@@ -1462,26 +1455,40 @@ static void test_model_dl(void)
 	check(r != NULL && r->kind == MROW_TOGGLE && r->flags == MROWF_ENABLED,
 	      "with no Left and Right the switch takes the cross alone");
 	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
-	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(v.nrows == 8 && strcmp(v.rows[6].label, "Valix") == 0 && v.rows[7].kind == MROW_BACK &&
+	/* A page longer than the window: a save category of twelve (revision 1.34: Planets until qwark's page went). */
+	for (i = 1; i <= 12; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "s%02d.sav", (int)i);
+		save_put("long", name, 16);
+	}
+	act(&v, MBOX_EV_ACTIVATE, "Save files");
+	act(&v, MBOX_EV_ACTIVATE, "long");
+	check(v.nrows == 8 && strcmp(v.rows[6].label, "s07") == 0 && v.rows[7].kind == MROW_BACK &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
 	      "eight rows on screens of eight with a Back row: seven, then Back, the page going on below (round 4)");
 	check(menu_model_event(MBOX_EV_SCROLL_DOWN, 6, v.rows[6].id, v.key) == ST_OK,
-	      "the slide from the seventh, Valix");
+	      "the slide from the seventh, s07");
 	menu_model_view(&v);
-	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "Valix") == 0 && v.rows[7].kind == MROW_BACK &&
-	      strcmp(v.rows[6].label, "Interior") == 0 &&
+	check(v.nrows == 8 && strcmp(v.rows[v.cursor].label, "s07") == 0 && v.rows[7].kind == MROW_BACK &&
+	      strcmp(v.rows[6].label, "s12") == 0 &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_UP,
-	      "the last window, the cursor still on Valix, Interior, the Back row last again");
-	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 1, "Back goes back");
+	      "the last window, the cursor still on s07, s12, the Back row last again");
+	check(act(&v, MBOX_EV_ACTIVATE, "Back") == ST_OK && menu_model_depth() == 2, "Back goes back");
+	for (i = 1; i <= 12; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "s%02d.sav", (int)i);
+		save_drop("long", name);
+	}
+	save_drop("long", NULL);
 
 	check(quit(), "quit Deadlocked");
 }
 
 /*
  * Round 4: a page longer than its window has no More or Previous row; the
- * window slides under the cursor. Every row of RaC2's planets, twenty-seven of
- * them, through windows of eight: down the page by the slides at each window's
+ * window slides under the cursor. Every row of a save category of
+ * twenty-seven (RaC2's planets until revision 1.34 took qwark's Planets page
+ * away), through windows of eight: down the page by the slides at each window's
  * last row and back up by those at its first, the cursor on the same planet
  * each time, never on an edge the page goes on past; L1 and R1 a window; the
  * title the page's own.
@@ -1493,18 +1500,24 @@ static void test_model_paging(void)
 	u16 ids[64], cur;
 	int guard, rows_ok = 1, kinds_ok = 1, same_ok = 1, cursor_ok = 1, title_ok = 1, slides = 0;
 
-	group("console menu: the model, a page longer than its window (round 4: RaC2's planets, sliding)");
+	group("console menu: the model, a page longer than its window (round 4: a long save category, sliding)");
 
 	check(boot("NPEA00386"), "RaC2 boots");
-	session_game()->planet_names(&count);
-	check(count > 8 && count <= 64, "RaC2 has more planets than a window of eight has rows");
+	g_saves = "/dev_hdd0/qwark/savefiles/NPEA00386";
+	count = 27;
+	for (i = 1; i <= count; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "p%02d.sav", (int)i);
+		save_put("long", name, 16);
+	}
 
 	menu_model_reset(8, 0, MBOX_CAP_STEPS | MBOX_CAP_BACK);
 	menu_model_view(&v);
-	act(&v, MBOX_EV_ACTIVATE, "Planets");
-	check(menu_model_page() == MENU_PAGE_ID(MENU_PAGE_PLANETS, 0) && v.nrows == 8 && v.cursor == 0 &&
+	act(&v, MBOX_EV_ACTIVATE, "Save files");
+	act(&v, MBOX_EV_ACTIVATE, "long");
+	check((menu_model_page() >> 8) == MENU_PAGE_SAVE_CAT && v.nrows == 8 && v.cursor == 0 &&
 	      (v.pflags & (MBOX_PAGE_MORE_UP | MBOX_PAGE_MORE_DOWN)) == MBOX_PAGE_MORE_DOWN,
-	      "its Planets page opens on a window of eight, the page going on below");
+	      "the category of 27 opens on a window of eight, the page going on below");
 	check(menu_model_event(MBOX_EV_SCROLL_UP, 0, v.rows[0].id, v.key) == ST_BAD_ARG &&
 	      menu_model_event(MBOX_EV_PAGE_PREV, 0, v.rows[0].id, v.key) == ST_BAD_ARG,
 	      "nothing above the first window: SCROLL_UP and L1 refused");
@@ -1515,7 +1528,7 @@ static void test_model_paging(void)
 	for (guard = 0; guard < 40; guard++) {
 		start = (u8)(v.key >> 8);
 		if (v.nrows > 8) rows_ok = 0;
-		if (strchr(v.title, '/') != NULL || strcmp(v.title, "Planets") != 0) title_ok = 0;
+		if (strchr(v.title, '/') != NULL || strcmp(v.title, "long") != 0) title_ok = 0;
 		for (i = 0; i < v.nrows; i++) {
 			if (v.rows[i].kind == MROW_MORE || v.rows[i].kind == MROW_PREV) kinds_ok = 0;
 			if (start + i < seen && ids[start + i] != v.rows[i].id) same_ok = 0;
@@ -1529,9 +1542,9 @@ static void test_model_paging(void)
 		if (v.rows[v.cursor].id != cur) cursor_ok = 0;
 		if (v.cursor == v.nrows - 1 && (v.pflags & MBOX_PAGE_MORE_DOWN) != 0) cursor_ok = 0;
 	}
-	check(rows_ok && kinds_ok && title_ok, "every window eight rows at most, no More or Previous row, titled Planets");
-	check(slides >= 3 && cursor_ok, "each slide keeps the cursor on the planet it was on, off the window's edge");
-	check(seen == count && same_ok, "the windows show every planet, each at its own place");
+	check(rows_ok && kinds_ok && title_ok, "every window eight rows at most, no More or Previous row, titled the category's");
+	check(slides >= 3 && cursor_ok, "each slide keeps the cursor on the save it was on, off the window's edge");
+	check(seen == count && same_ok, "the windows show every save, each at its own place");
 	for (k = 1; k < seen; k++) {
 		for (i = 0; i < k; i++) {
 			if (ids[i] == ids[k]) break;
@@ -1553,18 +1566,25 @@ static void test_model_paging(void)
 		if (v.rows[v.cursor].id != cur || (v.cursor == 0 && (v.pflags & MBOX_PAGE_MORE_UP) != 0)) cursor_ok = 0;
 	}
 	check((v.key >> 8 & 0xFF) == 0 && cursor_ok && v.rows[v.cursor].id == ids[v.cursor],
-	      "and the slides at each window's first row walk back to the first, the cursor on its planet");
+	      "and the slides at each window's first row walk back to the first, the cursor on its save");
 
 	/* L1 and R1: the cursor a window on, the window after it. */
 	menu_model_event(MBOX_EV_PAGE_NEXT, 0, v.rows[0].id, v.key);
 	menu_model_view(&v);
 	at = (u8)((v.key >> 8 & 0xFF) + v.cursor);
 	check(at == 6 && v.cursor == 1 && v.rows[v.cursor].id == ids[6],
-	      "R1 on the first planet: the seventh, second in its window");
+	      "R1 on the first save: the seventh, second in its window");
 	menu_model_event(MBOX_EV_PAGE_PREV, v.cursor, v.rows[v.cursor].id, v.key);
 	menu_model_view(&v);
 	check((v.key >> 8 & 0xFF) == 0 && v.rows[v.cursor].id == ids[0], "L1: back to the first");
 
+	for (i = 1; i <= count; i++) {
+		char name[16];
+		snprintf(name, sizeof(name), "p%02d.sav", (int)i);
+		save_drop("long", name);
+	}
+	save_drop("long", NULL);
+	g_saves = MENU_SAVES;
 	check(quit(), "quit RaC2");
 }
 
@@ -1846,19 +1866,11 @@ static void test_mailbox(void)
 	tick(4);
 	box_event(MBOX_EV_BACK, 0);
 	tick(2);
-	for (i = 1; i <= 15; i++) dl_planet((u8)i, i == 1 || i == 2);
-	box_activate("Planets");
-	poke32(RAC4_TARGET_PLANET, 0);
-	box_activate("Catacrom");
-	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_CLOSE && peek32(RAC4_TARGET_PLANET) == 0,
-	      "Catacrom: the menu is asked to close, the planet not loaded yet");
-	poke8(mb + MBOX_OFF_REQUEST, 0);
-	poke8(mb + MBOX_OFF_HSTATE, MBOX_HSTATE_CLOSED);
-	tick(8);
-	check(peek32(RAC4_TARGET_PLANET) == 2 && peek32(RAC4_LOAD_PLANET2) == 1,
-	      "closed and in play: Catacrom loads, as PLANET_LOAD loads it");
-	poke32(RAC4_LOAD_PLANET2, 0);
-	tick(40);
+	/*
+	 * (Revision 1.34: a row of qwark's Planets page loading once the menu has
+	 * closed went with the page; a pick of the game's picker loads the same
+	 * way, test_picker below.)
+	 */
 
 	/* Round 4: a save category longer than the sixteen rows: the window slides, through the mailbox. */
 	{
@@ -2983,10 +2995,42 @@ static void test_picker(void)
 	worlds_where("DreadZone after mission 37", 1, 1, -1, planets_row);
 
 	/*
+	 * Revision 1.34, the Planets page combo: the root on PLANETS, then Worlds
+	 * on qwark's request (MBOX_REQ_PICKER) at the list's next frame. Worlds'
+	 * Triangle is the game's own pop back to screen 36, which the shim does
+	 * not see, so the core closes the menu at screen 36's first frame after
+	 * it (ST_CLOSE_NOW): back to play, not to the root.
+	 */
+	poke32(DL_LEVEL, 5);
+	W.mission = -1;
+	config_set_combo(COMBO_PAGE_PLANETS, PAD_SELECT | PAD_R3 | PAD_DOWN);
+	tick(2);
+	press(PAD_SELECT | PAD_R3 | PAD_DOWN);
+	game_hud_frame();
+	tick(4);
+	check(peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_PICKER && G.screen == MH_SCREEN_ID && G.cursor == planets_row &&
+	      !W.up, "Planets' combo: the root up, the cursor on PLANETS, the picker asked for");
+	n = W.starts;
+	game_frame(0);
+	check(G.screen == DL_SCREEN_WORLDS && W.up && W.starts == n + 1 && mh_picker_by_request() &&
+	      peek8(mb + MBOX_OFF_REQUEST) == MBOX_REQ_NONE,
+	      "the list's next frame pushes Worlds for the request, marked as qwark's, the request taken");
+	worlds_press(DL_CMD_TRIANGLE);
+	check(G.screen == MH_SCREEN_ID && !mh_picker_up() && r8(MH_STATE + ST_CLOSE_NOW) == 1,
+	      "Triangle: the game's pop back to screen 36, the close due at its first frame");
+	game_frame(0);
+	for (i = 0; i < 12 && G.paused; i++) game_frame(0);
+	tick(4);
+	check(G.screen == 0 && !G.paused && peek8(mb + MBOX_OFF_HSTATE) == MBOX_HSTATE_CLOSED && menu_model_depth() == 1 &&
+	      r8(MH_STATE + ST_CLOSE_NOW) == 0, "which closes the menu: back to play, qwark's root for the next open");
+	config_set_combo(COMBO_PAGE_PLANETS, 0);
+	tick(4);
+
+	/*
 	 * The one refusal left: a page that is not MAIN. Only the root's Planets
 	 * row carries the PICKER flag and the root is a MAIN page, so nothing reaches
-	 * it, but the push is written for the list screen: the shim answers 0 (the
-	 * core would fall back to qwark's own Planets page) and pushes nothing.
+	 * it, but the push is written for the list screen: the shim answers 0 (qwark
+	 * would answer the row "busy") and pushes nothing.
 	 */
 	poke32(DL_LEVEL, 5);
 	W.mission = -1;

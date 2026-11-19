@@ -392,7 +392,7 @@ static void fit_row(u32 k)
  */
 R1_FN u32 r1_arrive(void)
 {
-	u32 page = r32(R1_MENU_PAGE), was = r32(SH(SH_AT_PAGE)), type;
+	u32 page = r32(R1_MENU_PAGE), was = r32(SH(SH_AT_PAGE)), type, opening;
 	u32 where = page == PAGE_LIST ? AT_LIST : (page == PAGE_CONF(0) || page == PAGE_CONF(1)) ? AT_CONF : AT_NONE;
 
 	/*
@@ -402,6 +402,17 @@ R1_FN u32 r1_arrive(void)
 	 */
 	if (page == was && !(where == AT_LIST && r8(SH(SH_GONE)) != 0 && r32(R1_MENU_NEXT) == 0)) return where;
 	w32(SH(SH_AT_PAGE), page);
+	/*
+	 * Revision 1.34: the open's all-seven-panes-in (SH_OPENING) is the open's
+	 * first arrival's alone, whatever page qwark posted. An open on a CONFIG
+	 * page (a page combo) goes straight on to it from the MAIN page, and until
+	 * build 59's first console test left the flag set: the next arrival on
+	 * the MAIN page took it, sent only the spare panes away and never flew the
+	 * page's own in, so the root's rows stayed on the CONFIG page's poses,
+	 * large boxes in Goodies' layout.
+	 */
+	opening = r8(SH(SH_OPENING));
+	w8(SH(SH_OPENING), 0);
 	w8(SH(SH_GONE), 0);
 	if (where == AT_NONE) return where;
 
@@ -419,9 +430,8 @@ R1_FN u32 r1_arrive(void)
 		main_start();
 		if (r1_pick_returned(r8(SH(SH_NROWS)))) {
 			/* Back from the planet picker: its transition flew the panes in. */
-		} else if (r8(SH(SH_OPENING)) != 0) {
+		} else if (opening) {
 			/* The open brought all seven panes in: the ones this page does not use go. */
-			w8(SH(SH_OPENING), 0);
 			mh_count(ST_OPENS);
 			panes(PH_IN, r8(SH(SH_NROWS)), MAIN_PANES, MOVE_OUT);
 		} else {

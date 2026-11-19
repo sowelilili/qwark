@@ -20,7 +20,9 @@
  *   back    Triangle: the map's panes fly out, then the game's transition back
  *           to the MAIN page as the map page's parent, on the main page's
  *           poses backwards, so the MAIN panes fly in; the page and the row
- *           the picker came from are back;
+ *           the picker came from are back. Revision 1.34: from a picker
+ *           qwark's request opened (the Planets page combo), the pause
+ *           closes instead, as Start closes it;
  *   pick    the cross: mh_core_pick hands the planet to qwark (the mailbox's
  *           pick fields) and the pause closes; qwark loads the planet once
  *           the game is back in play;
@@ -101,7 +103,9 @@ R1_FN void r1_pick_setup(void)
  * The core's call for the Planets row (MROWF_PICKER): the picker opens when
  * the MAIN page is up and still, its panes flying out first (mh_rac1.c's
  * moves, then r1_pick_open), and the core plays the forward sound. Answers 0
- * anywhere else, and qwark shows its Planets page.
+ * anywhere else (qwark answers the row "busy"; revision 1.34: it has no
+ * Planets page any more). Also qwark's request (the Planets page combo), at
+ * the MAIN page's first still frame.
  */
 MH_API u32 shim_picker(int p)
 {
@@ -208,6 +212,11 @@ MH_API int mh_pick_update(u32 item)
 		return 1;
 	}
 	if ((e & PADB_TRIANGLE) != 0) {
+		/* Revision 1.34: a picker qwark asked for (the Planets page combo): back to play, as Start. */
+		if (mh_picker_by_request()) {
+			mh_core_picker_gone(0);
+			return 1;
+		}
 		r1_sound(SND_PAGE, moby);
 		w8(SH(SH_PICK), PK_RETURN);
 		r1_panes(PH_OUT, 0, R1_MAP_PANES, MOVE_OUT, R1_MAP_POSE0);
