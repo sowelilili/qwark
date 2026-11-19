@@ -806,7 +806,7 @@ static const struct feature_desc rac1_features[] = {
 	/* Protocol 1.2: the pair a client's save-file manager drives. */
 	{ F_LOAD_SETASIDE,   FEATURE_ACTION, G_SAVEFILE, 0, LA, NO, 0, 0, "Load set-aside file" },
 	{ F_SET_ASIDE_FILE,  FEATURE_ACTION, G_SAVEFILE, 0, SA, NO, 0, 0, "Set aside file" },
-	{ F_FORCE_AUTOSAVE,  FEATURE_ACTION, G_SAVEFILE, 0, 0,  NO, 0, 0, "Force autosave" },
+	/* Build 59: 20, Force autosave, is retired (rac1.h), the user's call. */
 
 	{ F_JANK_BOLTS,      FEATURE_VALUE,  G_JANKPOT,  0, 0,  RAC1_RO_JANK_BOLTS, 0, 0, "Jankpot bolts" },
 	{ F_JANK_TIMER,      FEATURE_VALUE,  G_JANKPOT,  0, 0,  RAC1_RO_JANK_TIMER, 0, 0, "Jankpot timer (frames)" },
@@ -1123,7 +1123,8 @@ static const struct game_manips rac1_manips = {
  * Revision 1.22: the console menu's pages for RaC1 (src/core/menu.c), after
  * rewrite/docs/console-ui-framework.md and the client's gamelayout.json for "rac1",
  * as UYA's are. Game is the quick block of the client's Game panel and its
- * savefile tab (Force autosave beside the two set-aside buttons); Cheats the
+ * savefile tab (the two set-aside buttons; build 59 retired Force autosave
+ * after them); Cheats the
  * four cheats every game has. Round 5 (the user's hardware notes): Die is left
  * to the combos, and Bolts is a button at the end of Cheats, Max bolts. Round
  * 6: Game has no spacer; the other games put Challenge mode in its place, and
@@ -1142,7 +1143,7 @@ static const struct game_manips rac1_manips = {
 static const u8 rac1_menu_game[] = {
 	MENU_ITEM_SLOT, MENU_ITEM_POS_SAVE, MENU_ITEM_POS_LOAD,
 	F_GOODIES,
-	F_SET_ASIDE_FILE, F_LOAD_SETASIDE, F_FORCE_AUTOSAVE
+	F_SET_ASIDE_FILE, F_LOAD_SETASIDE
 };
 
 static const u8 rac1_menu_cheats[] = {

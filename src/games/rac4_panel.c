@@ -388,6 +388,13 @@ int rac4_unlock_set(u8 id, u8 field, u32 value)
  * never puts there. Both also pass over anything the player has not got: a
  * locked entry reads -1, and writing a level or a magazine over that would be
  * handing out the weapon. Giving one is the Owned checkbox's job.
+ *
+ * Max goes to V99 whatever the playthrough (the user's call, build 59), the
+ * game's own cap for every weapon: GadgetBox_UpgradeGadget's top is 98 in
+ * challenge mode and the gadget's own last XP step, at most 9 (V10), outside
+ * it. A V99 weapon outside challenge mode stays V99: GadgetBox_AddXp gives no
+ * XP to a weapon at 98 (or 9) in either mode, so it never levels past it, and
+ * its magazine (GetGadgetMaxAmmo) does not depend on the level.
  */
 static int rac4_all_max_levels(void)
 {

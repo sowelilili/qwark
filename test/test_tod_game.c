@@ -4886,16 +4886,20 @@ static void test_tod_weapon_actions(void)
 {
 	u8 before[TOD_NWEAPONS * TOD_WEAPON_STRIDE], after[TOD_NWEAPONS * TOD_WEAPON_STRIDE];
 	u8 around[2][0x40], w;
-	u32 k, changed;
+	u32 k, changed, pass;
 	int others;
 
-	group("ToD: Max all weapon levels, each weapon to the game's own top (build 59)");
+	for (pass = 0; pass < 2; pass++) {
+	group(pass == 0 ? "ToD: Max all weapon levels, each weapon to the game's own top, out of challenge mode (build 59)"
+	                : "ToD: Max all weapon levels, the same top in challenge mode");
 	/*
-	 * Combuster (1): ten levels, owned at V2. Shock Ravager (3): five levels,
-	 * owned at V1. Buzz Blades (5): three levels. Predator Launcher (6): its def
-	 * says it cannot level. Alpha Disruptor (7): ten levels, not owned. Pyro
-	 * Blaster (8): owned, no def loaded. Negotiator (11): Omega already, V8.
-	 * Every other weapon: ten levels, not owned.
+	 * Combuster (1): ten levels, owned at V2, below the old cap of V5. Shock
+	 * Ravager (3): five levels, owned at V1. Buzz Blades (5): three levels.
+	 * Predator Launcher (6): its def says it cannot level. Alpha Disruptor (7):
+	 * ten levels, not owned. Pyro Blaster (8): owned, no def loaded. Shard
+	 * Reaper (10): ten levels, at V5, the old cap. Negotiator (11): Omega
+	 * already, V8, above it. Nano-Swarmers (12): at V10, the top. Every other
+	 * weapon: ten levels, not owned. Challenge mode makes no difference.
 	 */
 	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) {
 		tw_def(w, 0, w < TOD_WPN_DEVICES ? 10 : 0);
@@ -4910,21 +4914,27 @@ static void test_tod_weapon_actions(void)
 	tw_hold(5, 1, 0, 0.0f, 3.0f);
 	tw_hold(6, 1, 0, 0.0f, 3.0f);
 	tw_hold(8, 1, 2, 2200.0f, 3.0f);
+	tw_hold(10, 1, 4, 10736.0f, 3.0f);
 	tw_hold(11, 1, 7, 90000.0f, 3.0f);
-	wr32(TOD_CHALLENGE, 0);
+	tw_hold(12, 1, 9, 91520.0f, 3.0f);
+	wr32(TOD_CHALLENGE, pass);
 	host_peek(TOD_WEAPONS - 0x40u, around[0], 0x40);
 	host_peek(TOD_WEAPONS + sizeof(before), around[1], 0x40);
 	host_peek(TOD_WEAPONS, before, sizeof(before));
 
 	check(features_trigger(TF_MAX_LEVELS) == ST_OK, "Max all weapon levels runs");
-	check(tw_level(1) == 4 && rdf(tw_slot(1) + TOD_WS_XP) == (f32)tod_weapon_xp(1, 4),
-	      "a first playthrough: the Combuster to V5, the top without Omega, with V5's XP");
-	check(tw_level(3) == 4, "the Shock Ravager's five levels: V5");
-	check(tw_level(5) == 3, "the Buzz Blades' three: V4, min(numLevels, 4) as WeaponSlot_getMaxLevel has it");
+	check(tw_level(1) == 9 && rdf(tw_slot(1) + TOD_WS_XP) == (f32)tod_weapon_xp(1, 9),
+	      "the Combuster, below the old cap, to V10 with V10's XP");
+	check(tw_level(10) == 9 && rdf(tw_slot(10) + TOD_WS_XP) == (f32)tod_weapon_xp(10, 9),
+	      "the Shard Reaper, at the old cap of V5, to V10 with its XP");
+	check(tw_level(11) == 9 && rdf(tw_slot(11) + TOD_WS_XP) == (f32)tod_weapon_xp(11, 9),
+	      "the Negotiator, above the old cap at V8, to V10");
+	check(tw_level(12) == 9 && rdf(tw_slot(12) + TOD_WS_XP) == 91520.0f, "the Nano-Swarmers, at V10 already, left as they are");
+	check(tw_level(3) == 5, "the Shock Ravager's five levels: index 5, min(numLevels, 9) as an Omega slot's WeaponSlot_getMaxLevel has it");
+	check(tw_level(5) == 3, "the Buzz Blades' three: V4, min(numLevels, 9)");
 	check(tw_level(6) == 0 && rdf(tw_slot(6) + TOD_WS_XP) == 0.0f, "the Predator Launcher, which cannot level, is left alone");
 	check(tw_level(7) == 0, "the Alpha Disruptor, not owned, is passed over");
 	check(tw_level(8) == 2, "the Pyro Blaster, whose def the game has not loaded, is left as it is");
-	check(tw_level(11) == 7, "the Negotiator, Omega already at V8, is never taken down");
 	host_peek(TOD_WEAPONS, after, sizeof(after));
 	changed = 0;
 	others = 1;
@@ -4932,24 +4942,21 @@ static void test_tod_weapon_actions(void)
 		u32 slotw = k / TOD_WEAPON_STRIDE, off = k % TOD_WEAPON_STRIDE;
 		if (after[k] == before[k]) continue;
 		changed++;
-		if ((slotw != 1 && slotw != 3 && slotw != 5) || !(off == TOD_WS_LEVEL || (off >= TOD_WS_XP && off < TOD_WS_XP + 4)))
+		if ((slotw != 1 && slotw != 3 && slotw != 5 && slotw != 10 && slotw != 11) ||
+		    !(off == TOD_WS_LEVEL || (off >= TOD_WS_XP && off < TOD_WS_XP + 4)))
 			others = 0;
 	}
-	check(others && changed > 0, "only the three weapons' level bytes and XP changed");
+	check(others && changed > 0, "only the raised weapons' level bytes and XP changed");
 	{
 		u8 now[2][0x40];
 		host_peek(TOD_WEAPONS - 0x40u, now[0], 0x40);
 		host_peek(TOD_WEAPONS + sizeof(before), now[1], 0x40);
 		check(memcmp(now, around, sizeof(now)) == 0, "and nothing either side of the weapon slots");
 	}
-
-	group("ToD: in challenge mode Omega is the game's, to V10");
-	wr32(TOD_CHALLENGE, 1);
-	check(features_trigger(TF_MAX_LEVELS) == ST_OK, "Max all weapon levels in challenge mode");
-	check(tw_level(1) == 9 && rdf(tw_slot(1) + TOD_WS_XP) == (f32)tod_weapon_xp(1, 9), "the Combuster to V10 with its XP");
-	check(tw_level(11) == 9, "the Negotiator from V8 to V10");
-	check(tw_level(3) == 4, "the Shock Ravager's five levels sell no Omega: V5 still (Vendor_canBuyOmegaUpgrade wants more than five)");
-	check(tw_level(5) == 3 && tw_level(6) == 0 && tw_level(7) == 0, "and the rest as before");
+	check(features_trigger(TF_MAX_AMMO) == ST_OK && rdf(tw_slot(1) + TOD_WS_AMMO) == 101.0f &&
+	      rdf(tw_slot(11) + TOD_WS_AMMO) == 111.0f, "Max all weapon ammo after it fills to V10's magazine");
+	check(features_trigger(TF_MAX_LEVELS) == ST_OK && tw_level(1) == 9 && tw_level(3) == 5, "a second Max changes nothing");
+	}
 
 	group("ToD: Reset all weapon levels");
 	check(features_trigger(TF_RESET_LEVELS) == ST_OK, "Reset all weapon levels runs");

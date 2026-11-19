@@ -525,10 +525,11 @@ static void test_model_rac1(void)
 	 * Round 5: no Die, Bolts a button on Cheats; Auto-reset alone, no
 	 * Remember. Round 6: no spacer on Game, and the Goodies menu in the place
 	 * the other games give Challenge mode (RaC1 has none; the user: the
-	 * goodies menu is its equivalent), off Cheats.
+	 * goodies menu is its equivalent), off Cheats. Build 59: no Force
+	 * autosave, retired.
 	 */
 	static const char * const game[] = { "Position slot", "Save position", "Load position", "Goodies menu",
-	                                     "Set aside file", "Load set-aside file", "Force autosave" };
+	                                     "Set aside file", "Load set-aside file" };
 	static const char * const cheats[] = { "Fast loads", "Ghost Ratchet", "Infinite ammo", "Freeze health",
 	                                       "Max bolts" };
 	static const char * const manips[] = { "Category", "Auto-reset", "Apply now" };
@@ -549,10 +550,10 @@ static void test_model_rac1(void)
 	      "files, the main page's seven panes");
 
 	act(&v, MBOX_EV_ACTIVATE, "Game");
-	check(labels_are(&v, game, 7) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
-	      view_row(&v, "Challenge mode") == NULL,
+	check(labels_are(&v, game, 6) && v.ptype == MBOX_PTYPE_CONFIG && view_row(&v, "") == NULL &&
+	      view_row(&v, "Challenge mode") == NULL && view_row(&v, "Force autosave") == NULL,
 	      "round 6, Game: the slot and the positions, the Goodies menu (in Challenge mode's place), the "
-	      "save-file buttons and Force autosave, no blank row (the jankpot and debug rows left out)");
+	      "save-file buttons, no blank row (the jankpot and debug rows left out); build 59: no Force autosave");
 	r = view_row(&v, "Goodies menu");
 	check(r != NULL && r->kind == MROW_TOGGLE && strcmp(r->value, "Off") == 0,
 	      "the Goodies menu, a LIVE toggle, is Off or On");
@@ -1118,7 +1119,7 @@ static void test_renderer_rac1(void)
 	frames(7);
 	frames(12);
 	frame(0);
-	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 7 && G.ndraw == 14, "Game: seven rows, all on screen in a pane of 300");
+	check(r1_at() == AT_CONF && r8(MH_SHIM + SH_VIS) == 6 && G.ndraw == 12, "Game: six rows, all on screen in a pane of 300");
 	check(strcmp(conf_row(2, a, sizeof(a)), "Load Position=") == 0 &&
 	      strcmp(conf_row(3, b, sizeof(b)), "Goodies Menu=Off") == 0 &&
 	      strcmp(conf_row(4, b + 80, 80), "Set Aside File=") == 0,
@@ -1151,8 +1152,8 @@ static void test_renderer_rac1(void)
 	check(r8(MH_SHIM + SH_VIS) == 5 && G.ndraw == 10, "in a pane of 120, five on screen (rows of 20 at least)");
 	for (i = 0; i < 4; i++) step(PADB_DOWN);
 	frame(0);
-	check(r8(MH_SHIM + SH_CUR) == 6 && r8(MH_SHIM + SH_TOP) == 2 && strncmp(G.drawn[8], "Force Autosave", 14) == 0,
-	      "Down to Force Autosave, the last, scrolls the window: rows 2 to 6");
+	check(r8(MH_SHIM + SH_CUR) == 5 && r8(MH_SHIM + SH_TOP) == 1 && strncmp(G.drawn[8], "Load Set", 8) == 0,
+	      "Down to Load Set-aside File, the last (build 59: no Force Autosave), scrolls the window: rows 1 to 5");
 	for (i = 0; i < 10; i++) step(PADB_UP);
 	frame(0);
 	check(r8(MH_SHIM + SH_CUR) == 0 && r8(MH_SHIM + SH_TOP) == 0, "Up to the top: no wrap, the window back");

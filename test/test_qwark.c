@@ -1946,8 +1946,8 @@ static void test_describe(void)
 
 	check_eq_u64(ngroups, 7, "RaC1 declares seven groups (build 59: Collectables, the seventh)");
 	check_eq_u64(nreadouts, 12, "and twelve readouts");
-	check_eq_u64(nfeatures, 23,
-	             "and twenty-three features (build 53 retired six rows, Freeze health is id 2, build 59 added the gold pair)");
+	check_eq_u64(nfeatures, 22,
+	             "and twenty-two features (build 53 retired six rows, Freeze health is id 2, build 59 added the gold pair and retired Force autosave)");
 	check(ngroups <= QWARK_MAX_GROUPS && nreadouts <= QWARK_MAX_READOUTS &&
 	      nfeatures <= QWARK_MAX_FEATURES, "all three are inside the DESCRIBE caps");
 	check_eq_u64(len, off + (u32)nfeatures * FEATURE_WIRE_SIZE + 1 + DESCRIBE_EXT_LEN,
@@ -1992,6 +1992,12 @@ static void test_describe(void)
 	row = desc_feature(out, len, 22);
 	check(row != NULL && row[1] == FEATURE_VALUE && row[5] == 4,
 	      "the jankpot timer VALUE mirrors readout 4");
+
+	/* Build 59: id 20, Force autosave, is retired the same way. */
+	check(desc_feature(out, len, 20) == NULL && features_trigger(20) == ST_NOT_FOUND,
+	      "the retired id 20 is not described, and triggering it is NOT_FOUND");
+	check(desc_feature(out, len, 19) != NULL && desc_feature(out, len, 21) != NULL,
+	      "the ids either side of it kept their numbers");
 
 	/* Id 9, force okay load, is retired: gone from the table, never renumbered. */
 	check(desc_feature(out, len, 9) == NULL, "the retired id 9 is not described");
@@ -2455,9 +2461,11 @@ static void test_savefile_requests(void)
 	host_peek(A_SF_ASIDE, &b, 1);
 	check_eq_u64(b, 1, "set aside writes a 1");
 
-	check(features_trigger(20) == ST_OK, "force autosave goes through");
+	/* Build 59: Force autosave (20) is retired, the user's call. */
+	host_poke(A_SF_AUTO, (const u8 *)"\x00", 1);
+	check(features_trigger(20) == ST_NOT_FOUND, "the retired Force autosave, id 20, is NOT_FOUND");
 	host_peek(A_SF_AUTO, &b, 1);
-	check_eq_u64(b, 3, "force autosave writes a 3, not a 1");
+	check_eq_u64(b, 0, "and its byte, which the helper still serves, is left at 0");
 
 	check(session_load_setaside() == ST_OK, "and so does the combo action");
 
@@ -4317,6 +4325,34 @@ static void test_rac2(void)
 		check_eq_u64(v, 100, "the V2 magazine, not the V1 one");
 		mem_read_u32(R2_AMMO(BOUNCER_ITEM), &v);
 		check_eq_u64(v, 7, "and the unowned Bouncer was passed over again");
+	}
+
+	group("RaC2: Max all weapon levels is each weapon's last version in and out of challenge mode (build 59)");
+
+	{
+		u8 pass;
+
+		/*
+		 * g_weaponStats' chains: the Lancer's four versions, the Tesla Claw's
+		 * two, and no longer chain; every step is the item-array byte, so the
+		 * challenge mode byte changes nothing.
+		 */
+		for (pass = 0; pass < 2; pass++) {
+			host_poke(0x01329AA2u, &pass, 1);
+			host_poke(R2_OWNED(LANCER_ITEM), (const u8 *)"\x01", 1);
+			host_poke(R2_ITEM(LANCER_ITEM), (const u8 *)"\x1E", 1);   /* V1 */
+			host_poke(R2_OWNED(TESLA_ITEM), (const u8 *)"\x01", 1);
+			host_poke(R2_ITEM(TESLA_ITEM), (const u8 *)"\x72", 1);    /* V2, its last */
+			check(features_trigger(F2_MAX_LEVELS) == ST_OK, pass ? "Max in challenge mode" : "Max out of challenge mode");
+			host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+			check_eq_u64(b, LANCER_V4, "the Lancer from V1 to V4, its last version");
+			host_peek(R2_ITEM(TESLA_ITEM), &b, 1);
+			check_eq_u64(b, TESLA_V2, "the Tesla Claw at V2, its last, left there");
+			check(features_trigger(F2_MAX_LEVELS) == ST_OK, "Max again");
+			host_peek(R2_ITEM(LANCER_ITEM), &b, 1);
+			check_eq_u64(b, LANCER_V4, "the Lancer, at V4 now, stays at V4");
+		}
+		host_poke(0x01329AA2u, (const u8 *)"\x00", 1);
 	}
 
 	group("RaC2: level flags and planet load");
@@ -8084,6 +8120,35 @@ static void test_rac3(void)
 		}
 	}
 
+	group("RaC3: Max all weapon levels is each weapon's last version in and out of challenge mode (build 59)");
+
+	{
+		static const u8 from[3] = { 3, 5, 8 };
+		u8 pass, k;
+
+		/*
+		 * g_itemDefs' version chains: eight versions a weapon, five for the
+		 * R3YNO, none longer. Agents of Doom from V3, from V5 (a first
+		 * playthrough's top) and from V8; the R3YNO owned at V5, its last.
+		 */
+		for (pass = 0; pass < 2; pass++) {
+			host_poke(0x00C1E50Eu, &pass, 1);
+			for (k = 0; k < 3; k++) {
+				check(g->unlock_set(AOD_ID, 0, 1) == ST_OK && g->unlock_set(AOD_ID, 1, from[k]) == ST_OK &&
+				      g->unlock_set(RYNO_ID, 0, 1) == ST_OK && g->unlock_set(RYNO_ID, 1, 5) == ST_OK,
+				      "Agents of Doom and the R3YNO owned");
+				check(features_trigger(26) == ST_OK, pass ? "Max in challenge mode" : "Max out of challenge mode");
+				host_peek(AOD_ITEM, &b, 1);
+				check_eq_u64(b, 0x57u + 7u, "Agents of Doom ends at V8");
+				host_peek(RYNO_ITEM, &b, 1);
+				check_eq_u64(b, 0x97u + 4u, "the R3YNO at V5, its last");
+			}
+		}
+		host_poke(0x00C1E50Eu, (const u8 *)"\x00", 1);
+		check(g->unlock_set(AOD_ID, 1, 1) == ST_OK && g->unlock_set(RYNO_ID, 1, 1) == ST_OK &&
+		      g->unlock_set(RYNO_ID, 0, 0) == ST_OK, "both back to V1, the R3YNO not owned");
+	}
+
 	group("RaC3: level flags and planets");
 
 	{
@@ -9397,6 +9462,36 @@ static void test_rac4(void)
 		      "which wrote nothing");
 	}
 
+	group("Deadlocked: Max all weapon levels is V99 in and out of challenge mode (build 59)");
+
+	{
+		u32 g2  = R4_GADGETS + 2 * R4_GADGET_STEP;
+		u32 g3  = R4_GADGETS + 3 * R4_GADGET_STEP;
+		u32 g15 = R4_GADGETS + 15 * R4_GADGET_STEP;
+		u8 got[2], pass;
+
+		/*
+		 * GadgetBox_UpgradeGadget's top is 98 in challenge mode and at most 9
+		 * (V10) outside it; Max takes no account of which: V5, V10 (a first
+		 * playthrough's top) and V99 all end at V99.
+		 */
+		for (pass = 0; pass < 2; pass++) {
+			host_poke(0x009C330Eu, &pass, 1);
+			host_poke(g2,  (const u8 *)"\x00\x04", 2);   /* V5 */
+			host_poke(g3,  (const u8 *)"\x00\x09", 2);   /* V10 */
+			host_poke(g15, (const u8 *)"\x00\x62", 2);   /* V99 */
+			check(features_trigger(F4_MAX_LEVELS) == ST_OK, pass ? "Max in challenge mode" : "Max out of challenge mode");
+			host_peek(g2, got, 2);
+			check(be16_get(got) == 98, "V5, below a first playthrough's top, to V99");
+			host_peek(g3, got, 2);
+			check(be16_get(got) == 98, "V10, at it, to V99");
+			host_peek(g15, got, 2);
+			check(be16_get(got) == 98, "V99 stays V99, the game's cap for every weapon");
+		}
+		host_poke(0x009C330Eu, (const u8 *)"\x00", 1);
+		host_poke(g15, (const u8 *)"\xFF\xFF", 2);
+	}
+
 	group("Deadlocked: positions, skins and die");
 
 	host_poke(R4_COORDS, (const u8 *)"\x41\x20\x00\x00\x42\x48\x00\x00"
@@ -10330,6 +10425,7 @@ static void test_onboot_keys_b59(void)
 		check(quit_and_wait(), "quit");
 		for (n = 0; games[k].labels[n] != NULL; n++) config_set_feature_auto(games[k].title, games[k].labels[n], 1);
 		if (k == 3) config_set_feature_auto(games[k].title, "Unlock all planets", 1);
+		if (k == 0) config_set_feature_auto(games[k].title, "Force autosave", 1);
 		host_boot(games[k].title);
 		if (k == 3) { r4_fl_seed(); r4_planets_unlocked(); }
 		snprintf(what, sizeof(what), "%s boots with them", games[k].title);
@@ -10351,6 +10447,11 @@ static void test_onboot_keys_b59(void)
 		if (k == 3)
 			check((features_toggle_auto() & ((u64)1 << 11)) == 0 && features_trigger(11) == ST_NOT_FOUND,
 			      "Deadlocked: a key for retired Unlock all planets raises nothing, and its id is no row");
+		if (k == 0) {
+			check((features_toggle_auto() & ((u64)1 << 20)) == 0 && features_trigger(20) == ST_NOT_FOUND,
+			      "RaC1: a key for retired Force autosave raises nothing, and its id is no row");
+			config_set_feature_auto(games[k].title, "Force autosave", 0);
+		}
 		for (n = 0; games[k].labels[n] != NULL; n++) {
 			/* Put each back as it ships: the Fixes and Remove cutscenes are on by default. */
 			int dflt = (k == 3 && n < 2) || (k == 4 && n == 1);
@@ -12224,12 +12325,12 @@ static void test_savefile_rpcs3(void)
 		savefile_info(&sup, &ins, &run, &pend, &size);
 		check_eq_u64(ins, 1, "a cave byte changed mid-session is not looked at again");
 
-		/* Force autosave, RaC1's own byte, rides on the same install. */
+		/* Build 59: Force autosave is retired; the combo's load rides on the same install. */
 		host_write_log_reset();
-		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_OK, "RaC1's Force autosave works");
+		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_NOT_FOUND, "RaC1's retired Force autosave is NOT_FOUND");
 		host_peek(SF_RAC1_SAVEMODE, &b, 1);
-		check_eq_u64(b, 3, "and writes its autosave mode");
-		check(session_load_setaside() == ST_OK, "the combo's load works too");
+		check_eq_u64(b, 0, "and writes no autosave mode");
+		check(session_load_setaside() == ST_OK, "the combo's load works");
 		check(!sf_wrote_code(d), "with no code word written by qwark");
 		host_poke(d->api_load, (const u8 *)"\x00", 1);
 		pump(SAVEFILE_SETTLE_TICKS);
@@ -17026,13 +17127,12 @@ static void test_savefile_build53(void)
 		savefile_transfer(&done, &total, &error);
 		check_eq_u64(error, SAVEFILE_ERR_NO_SAVE, "which the helper can drop for no save too");
 
-		/* Force autosave keeps its own byte, at its new address. */
-		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_OK, "Force autosave fires");
+		/* Build 59: Force autosave is retired; neither its byte nor the bump arena's old one is written. */
+		check(features_trigger(F_FORCE_AUTOSAVE_ID) == ST_NOT_FOUND, "Force autosave, retired, is NOT_FOUND");
 		host_peek(0x01080003u, &b, 1);
-		check_eq_u64(b, 3, "writing its 3 at 0x1080003");
+		check_eq_u64(b, 0, "nothing at 0x1080003");
 		host_peek(0x00B00073u, &b, 1);
 		check_eq_u64(b, 0, "and nothing at the bump arena's 0xB00073");
-		host_poke(0x01080003u, (const u8 *)"\x00", 1);
 	}
 
 	/* ------------------------------------------------- the library, RaC1 */

@@ -226,7 +226,7 @@ int savefile_enabled(void);
 /*
  * Writes the caves and the hook words unless this process already has them.
  * ST_OK when qwark has installed it. Called by set-aside/load actions, valid
- * restores and RaC1's Force autosave. Status, metadata and raw buffer I/O never
+ * restores (and, until build 59, RaC1's Force autosave). Status, metadata and raw buffer I/O never
  * install code.
  *
  * Build 56: the bytes come out of ui.pak, the game's entry read whole and

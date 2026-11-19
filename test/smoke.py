@@ -4245,7 +4245,7 @@ def exercise_console_menu_rac1(c, sim):
     body = page[4] if page else b""
     check(page is not None and page[2] == "Game" and
           page[3] == ["Position slot", "Save position", "Load position", "Goodies menu", "Set aside file",
-                      "Load set-aside file", "Force autosave"] and page[5] == MBOX_PTYPE_CONFIG and
+                      "Load set-aside file"] and page[5] == MBOX_PTYPE_CONFIG and
           body[MBOX_OFF_ROWS + 3 * rs + MROW_OFF_KIND] == MROW_TOGGLE,
           "RaC1 menu: round 6's Game, the Goodies menu (a switch) fourth, no blank row", page[3] if page else None)
     mem_write(c, RAC1_GOODIES_MENU, b"\x00")
@@ -6289,18 +6289,18 @@ def smoke_tod_weapons_mobys(c, features):
     mem_write(c, slot(1) + 0x10, b"\x01\x00")
     mem_write(c, slot(1) + 4, struct.pack(">f", 0.0))
     mem_write(c, slot(2) + 0x10, b"\x00\x00")
-    mem_write(c, 0x1029C55C, struct.pack(">I", 0))   # not challenge mode
+    mem_write(c, 0x1029C55C, struct.pack(">I", 0))   # not challenge mode: the game's top all the same
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([27]))
-    check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 4 and mem_read_u8(c, slot(2) + 0x11) == 0,
-          "ToD: Max all weapon levels, the owned Combuster to V5 and the Fusion Grenade untouched", status)
+    check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 9 and mem_read_u8(c, slot(2) + 0x11) == 0,
+          "ToD: Max all weapon levels out of challenge mode, the owned Combuster to V10 and the Fusion Grenade untouched", status)
     status, body = c.call(OP_UNLOCK_LIST)
     if check(status == ST_OK, "ToD: UNLOCK_LIST after it", status):
         _cats, _fields, rows, _off = parse_unlocks(body)
         comb = [r for r in rows if r["name"] == "Combuster"]
-        check(len(comb) == 1 and comb[0]["values"][1] == 5, "ToD: and the Unlocks table reads V5", comb)
+        check(len(comb) == 1 and comb[0]["values"][1] == 10, "ToD: and the Unlocks table reads V10", comb)
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([29]))
-    check(status == ST_OK and struct.unpack(">f", mem_read(c, slot(1) + 8, 4))[0] == 20.0 + 2 * 4 + 1,
-          "ToD: Max all weapon ammo, the V5 magazine of the simulator's csv", status)
+    check(status == ST_OK and struct.unpack(">f", mem_read(c, slot(1) + 8, 4))[0] == 20.0 + 2 * 9 + 1,
+          "ToD: Max all weapon ammo, the V10 magazine of the simulator's csv", status)
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([28]))
     check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 0, "ToD: Reset all weapon levels, V1 again", status)
     mem_write(c, slot(1) + 0x10, b"\x00\x00")
@@ -8739,7 +8739,7 @@ def main():
             by_id = {f["id"]: f for f in features}
             check(consumed == len(body), "DESCRIBE parses exactly", (consumed, len(body)))
             check(game == 1, "DESCRIBE names RaC1")
-            check(len(features) == 23, "twenty-three features", len(features))
+            check(len(features) == 22, "twenty-two features (build 59 retired Force autosave)", len(features))
             # Build 59: the gold weapons' pair, RaC1's Max and Reset all weapon levels.
             check(by_id.get(29, {}).get("label") == "Upgrade all weapons to gold" and
                   by_id.get(30, {}).get("label") == "Reset all gold weapons" and
@@ -8768,6 +8768,10 @@ def main():
             # retired.
             check(17 not in by_id and 28 not in by_id,
                   "nor the retired ids 17 and 28", sorted(by_id))
+            # Build 59: Force autosave (20) is retired, the user's call.
+            status, _ = c.call(OP_FEATURE_TRIGGER, bytes([20]))
+            check(20 not in by_id and status == ST_NOT_FOUND and 19 in by_id and 21 in by_id,
+                  "nor the retired Force autosave, 20, which answers NOT_FOUND", status)
             fh = by_id.get(RAC1_FREEZE_HEALTH["id"], {})
             check(fh.get("kind") == FEATURE_TOGGLE and fh.get("label") == "Freeze health"
                   and groups[fh.get("group", 0)] == "Cheats"

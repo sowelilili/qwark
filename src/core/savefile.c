@@ -699,8 +699,7 @@ int savefile_info(u8 *supported, u8 *installed, u8 *running, u8 *pending, u32 *s
 
 	/*
 	 * The bytes are read here as well as on the tick, so a request something
-	 * other than qwark started - RaC1's Force autosave drives a byte of its own,
-	 * and Deadlocked's load parks a 2 in api_load for the length of its menu and
+	 * other than qwark started - Deadlocked's load parks a 2 in api_load for the length of its menu and
 	 * a 3 while a cancel settles - is reported outstanding too. What the settle window adds is the other
 	 * direction: a byte that reads 0 is not enough to say the work is done.
 	 */
@@ -1626,8 +1625,8 @@ static void put_name(u8 *dst, const char *src)
 
 /*
  * Whether anything already owns the aside buffer: a transfer of our own, or a
- * request the game has not answered yet, which is what a Force autosave or a
- * combo-driven load leaves outstanding.
+ * request the game has not answered yet, which is what a combo-driven load
+ * leaves outstanding.
  */
 static int buffer_busy(void)
 {

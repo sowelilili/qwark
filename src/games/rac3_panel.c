@@ -1773,7 +1773,13 @@ void rac3_trophy_tick(void)
  * weapon the player has not got, as RaC2's and Deadlocked's do (the unlock
  * byte, the Owned column): until then they wrote every weapon's version
  * byte, so a weapon bought later came at V8, and the Reset gave its XP back
- * to 0, on a weapon the player had never held.
+ * to 0, on a weapon the player had never held. Max takes each weapon to its
+ * own last version whatever the playthrough (the user's call): the version
+ * chains of g_itemDefs (0xC114E0, 0xF0 an item, +0x46 the next version's
+ * item id) give every levelled weapon eight and the R3YNO five, `levels`
+ * here, and no chain is longer. V6 is a vendor purchase (Weapon_buyV6Upgrade,
+ * which sets the sixth link for a weapon of more than five), and the chain
+ * goes on to V8, the game's top.
  */
 static int rac3_all_versions(int max)
 {

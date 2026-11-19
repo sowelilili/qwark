@@ -149,9 +149,15 @@ static const struct game_unlock rac2_unlocks[] = {
  * order. It calls them "V3", which is the list's naming and not the game's: they
  * are version 2 of a two-version weapon, so the rows below declare two levels
  * and the second one is placed through the same item-array byte every other
- * weapon uses. Those five ids are the list's; the ELF's own +0x46 halfwords
- * could not be read back through the tooling to check them, unlike the ordinary
- * chain above, which was. The Zodiac and the RYNO II have no second version.
+ * weapon uses. The Zodiac and the RYNO II have no second version.
+ *
+ * Build 59: every chain read out of the NPEA00386 ELF (g_weaponStats, +0x46
+ * the next version, +0x48 the one before): the sixteen run V1 to V4, the six
+ * stop at V2 (the five carry-overs' 114 to 118 as listed, the Clank Zapper's
+ * 73), and no weapon row's chain is longer. Every step is the same weapon's
+ * item-array byte (Weapon_setVersion, Weapon_upgradeToNextVersion), no
+ * ownership of its own, so `levels` is the game's top for the weapon, and Max
+ * all weapon levels goes there in any playthrough.
  */
 struct rac2_item {
 	u8 id;       /* the item id, and so the index into every array */

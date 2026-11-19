@@ -149,14 +149,15 @@
  * reads 1 as soon as the game has reached the hook once. The set-aside and load
  * bytes beside it are driven through the shared table in
  * src/games/sfhelper_bins.c; the two named here are the ones this game reads for
- * itself - the helper byte feeds the readout, and the autosave byte is RaC1's
- * alone.
+ * itself - the helper byte feeds the readout. RaC1's helper also serves a
+ * fourth byte, 0x1080003, a save_handler mode (sfhelper.c, SF_API_SAVEMODE):
+ * Force autosave wrote a 3 there until build 59 retired it, and nothing
+ * writes it now.
  *
  * Build 53: they were the mod's 0xB00070 and 0xB00073, inside the game's bump
  * arena; src/games/sfhelper/sf_rac1.h has the move.
  */
 #define RAC1_SAVEFILE_HELPER  0x1080000u
-#define RAC1_SAVEFILE_AUTO    0x1080003u  /* write 3, not 1: the autosave mode */
 
 /*
  * Build 53: what the savefile's readiness test reads (rac1_savefile_ready). The
@@ -258,7 +259,9 @@ extern const u8 rac1_fp_patched[4];
  * manip buttons the manip groups replaced (protocol 1.21): 7 (Drek skip),
  * 8 (Drek cutscene), 10 (reset shooting skill points), 11 (setup shooting skill
  * points) and 16 (any% all-missions reset); and 17 (max ammo, all weapons),
- * which infinite ammo covers, and 28 (below).
+ * which infinite ammo covers, and 28 (below); and since build 59 20 (Force
+ * autosave), a legacy button the user retired: saving in the game itself
+ * gives the set-aside and a STORE the save they need.
  *
  * Build 53: 2 was Infinite health, the code patch at RAC1_FP_ADDR, and is
  * Freeze health now, held at the game's maximum like the other three games'
@@ -284,7 +287,7 @@ extern const u8 rac1_fp_patched[4];
 /* 17 retired: max ammo, all weapons */
 #define F_LOAD_SETASIDE     18
 #define F_SET_ASIDE_FILE    19
-#define F_FORCE_AUTOSAVE    20
+/* 20 retired in build 59: Force autosave, a legacy button (the user's call) */
 #define F_JANK_BOLTS        21
 #define F_JANK_TIMER        22
 #define F_JANK_ACTIVATE     23

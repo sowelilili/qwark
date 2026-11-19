@@ -464,15 +464,16 @@ static int weapon_config(u8 wpn, u32 *cfg, u32 *levels)
 }
 
 /*
- * The top level index the game lets a weapon of `levels` levels reach:
- * WeaponSlot_getMaxLevel's min(numLevels, 4), or with Omega min(numLevels, 9),
- * which the vendor sells in challenge mode alone, and only past five levels.
+ * The top level index a weapon of `levels` levels has, whatever the
+ * playthrough (the user's call, build 59): WeaponSlot_getMaxLevel's cap for
+ * an Omega slot, min(numLevels, 9), V10 for a weapon of ten levels. The game
+ * itself stops a weapon at min(numLevels, 4), V5, until the vendor sells the
+ * Omega levels in challenge mode; past V5 the slot is Omega
+ * (WeaponSlot_isOmega), which is all the game keeps of that purchase.
  */
-static u8 weapon_top(u32 levels, int challenge)
+static u8 weapon_top(u32 levels)
 {
-	u32 cap = challenge && levels > TOD_OMEGA_MIN_LEVELS ? TOD_LEVEL_TOP_OMEGA : TOD_LEVEL_TOP;
-
-	return (u8)(levels < cap ? levels : cap);
+	return (u8)(levels < TOD_LEVEL_TOP_OMEGA ? levels : TOD_LEVEL_TOP_OMEGA);
 }
 
 /*
@@ -485,11 +486,9 @@ static u8 weapon_top(u32 levels, int challenge)
 static int weapon_levels_all(int max)
 {
 	u8 slots[TOD_WPN_DEVICES * TOD_WEAPON_STRIDE];
-	u32 challenge = 0;
 	u8 w, owned = 0, known = 0;
 	int rc = mem_read(TOD_WEAPONS, slots, sizeof(slots));
 
-	if (rc == ST_OK && max) rc = mem_read_u32(TOD_CHALLENGE, &challenge);
 	if (rc != ST_OK) return rc;
 
 	for (w = TOD_WPN_FIRST; w < TOD_WPN_DEVICES; w++) {
@@ -504,8 +503,8 @@ static int weapon_levels_all(int max)
 		if (levels == 0) continue;
 
 		if (max) {
-			top = weapon_top(levels, challenge != 0);
-			/* Never down: a weapon already past it (Omega bought) keeps its level. */
+			top = weapon_top(levels);
+			/* Never down: a weapon already at its top is left as it is. */
 			if (slot[TOD_WS_LEVEL] >= top) continue;
 			rc = set_level(w, (u32)top + 1u);
 		} else {

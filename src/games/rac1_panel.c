@@ -570,7 +570,8 @@ static int rac1_is_save(u32 addr)
  *
  * A set-aside needs a save in the game's save buffer, which there is not until
  * the game has saved in this process: a new game has none until its first
- * autosave, and Force autosave makes one. A load needs a game the helper can
+ * autosave, or a save the player makes in the game (Force autosave made one
+ * until build 59 retired it). A load needs a game the helper can
  * take into the start menu - any state the main loop runs but a movie, with no
  * planet load on its way - and a save to hand over: the aside buffer, or, when
  * nothing has been put there, the game's own save. A RESTORE needs only the
@@ -615,21 +616,6 @@ u8 rac1_savefile_ready(u8 what)
 	case 0:  return SAVEFILE_ERR_NO_SAVE;
 	default: return SAVEFILE_ERR_NOT_IDLE;
 	}
-}
-
-/*
- * Force autosave is RaC1's alone: a fourth request byte the helper reads as a
- * save_handler mode. It still needs the helper installed, so it asks for that
- * first and then writes the byte itself.
- */
-static int rac1_force_autosave(void)
-{
-	int rc = savefile_install();
-
-	if (rc != ST_OK) return rc;
-
-	/* Three, not one: RAC1Form's forceAutosave writes a 3, the autosave mode. */
-	return mem_write_u8(RAC1_SAVEFILE_AUTO, 3);
 }
 
 /* ---------------------------------------------------------------- jankpot */
@@ -722,9 +708,6 @@ int rac1_trigger(u8 id)
 
 	case F_SET_ASIDE_FILE:
 		return savefile_set_aside();
-
-	case F_FORCE_AUTOSAVE:
-		return rac1_force_autosave();
 
 	case F_JANK_ACTIVATE:
 		return mem_write(RAC1_JANKPOT_STATE, rac1_jankpot_on,

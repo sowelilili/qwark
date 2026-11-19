@@ -200,6 +200,9 @@
  * min(numLevels, 9) once the weapon is Omega (its level byte past 4), which
  * only Vendor_buyOmegaUpgrade makes it, and only in challenge mode, for an
  * owned weapon at V5 whose numLevels is above 5 (Vendor_canBuyOmegaUpgrade).
+ * Max all weapon levels ignores challenge mode (the user's call, build 59):
+ * it takes every owned weapon that levels to min(numLevels, 9), V10 for a
+ * weapon of ten levels, the game's own top for the weapon, in any playthrough.
  * WeaponDef_getMaxAmmo is maxAmmo[level] plus the ammo mods' additions,
  * times 1 plus their factors (WeaponDef_applyMods, stat 9.0 the ammo).
  */
@@ -213,9 +216,7 @@
 #define TOD_WC_NMODS_MAX     24u
 #define TOD_WC_NMODS         0x6A4u       /* u32 */
 #define TOD_MOD_STAT_AMMO    9.0f         /* WeaponDef_getMaxAmmo's stat */
-#define TOD_LEVEL_TOP        4u           /* V5, the top without Omega */
-#define TOD_LEVEL_TOP_OMEGA  9u           /* V10 */
-#define TOD_OMEGA_MIN_LEVELS 5u           /* Omega is sold for a weapon of more levels than this */
+#define TOD_LEVEL_TOP_OMEGA  9u           /* V10, the game's top level index */
 #define TOD_OBJECTS         0x1020C174u  /* s32[23] by OBJ_, a count; "has" = non-zero */
 #define TOD_NOBJ_OWNED       15u          /* OBJ_ 0..14 are owned flags; 15.. are counters */
 #define TOD_NOBJ_LISTED      12u          /* OBJ_ 0..11 on the Unlocks panel; 12..14 have no use there (tod_panel.c) */
@@ -802,8 +803,9 @@ struct tod_facts {
 /*
  * Build 59: 25 and 26 are the armour and skin pickers' round's. The weapon
  * bulk actions (tod_panel.c, TOD_WEAPON_DEFS), as RaC2's, UYA's and
- * Deadlocked's: each owned weapon to the top level the game allows it (V5,
- * V10 where challenge mode sells Omega), back to V1, or its magazine full.
+ * Deadlocked's: each owned weapon to the game's top level for it (V10 for a
+ * weapon of ten levels, in or out of challenge mode), back to V1, or its
+ * magazine full.
  */
 #define TF_MAX_LEVELS       27
 #define TF_RESET_LEVELS     28
