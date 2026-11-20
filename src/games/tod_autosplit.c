@@ -61,7 +61,9 @@
  *                       says so in its flags (AUTOSPLIT_EV_REVISIT).
  *   a hero switch       revision 1.34: g_heroList's current slot (tod.h,
  *                       TOD_HERO_LIST) becoming Clank's, 4, on Fastoon,
- *                       once an arrival: code 9, "Fastoon: Clank section".
+ *                       once an arrival: code 9, "Fastoon: Clank section";
+ *                       revision 1.35, the same on Kreeli Comet: code 10,
+ *                       "Kreeli: Clank section".
  *   the end of a run    code 7, "Tachyon defeated" (revision 1.29): the screen
  *                       black before l4b_s04_dimx_rt. TachyonEnding_update
  *                       queues that cinematic once Tachyon's death has played
@@ -345,8 +347,14 @@ static void ending_tick(struct tod_as_state *as)
  * Revision 1.34: the hero switch subsplits. One row each, off by default:
  * the moment the game puts the player in control of the entry's hero on the
  * entry's level, g_heroList's current slot becoming its slot (tod.h,
- * TOD_HERO_LIST). Only Fastoon (LEVEL_FASTOON, 3; Fastoon II is 18) has one
- * for now; another is a line here, a code and a row.
+ * TOD_HERO_LIST). Fastoon (LEVEL_FASTOON, 3; Fastoon II is 18) and, since
+ * revision 1.35, Kreeli Comet (LEVEL_IRIS, 11) have one; another is a line
+ * here, a code and a row. Kreeli's Clank section starts as Fastoon's does, at
+ * a Clank pad (C_Clank_Prompt, ClankPad_update, which words its prompt for
+ * level 11 itself), and the level's scripts only ever call switch_from_clank,
+ * at its end; every way in (the pad's Hero_swapToPartner, the Lua
+ * switch_to_clank's Hero_switchToSlot, a checkpoint's HeroMgr_setSpawnHeroes)
+ * goes through HeroMgr_setCurrentHero, so the slot is the one test.
  */
 struct tod_sub {
 	s32 level;
@@ -355,7 +363,8 @@ struct tod_sub {
 };
 
 static const struct tod_sub tod_subs[TOD_AS_NSUBS] = {
-	{ 3, TOD_HERO_SLOT_CLANK, TOD_AS_FASTOON_CLANK }   /* Fastoon: Clank section, at the Clank pad by the mine */
+	{ 3, TOD_HERO_SLOT_CLANK, TOD_AS_FASTOON_CLANK },  /* Fastoon: Clank section, at the Clank pad by the mine */
+	{ 11, TOD_HERO_SLOT_CLANK, TOD_AS_KREELI_CLANK }   /* Kreeli: Clank section, at IRIS's Clank pad (revision 1.35) */
 };
 
 /*
@@ -561,15 +570,17 @@ void tod_autosplit_tick(struct tod_as_state *as)
  * after Tachyon's last hit, is the community's end of a run, on by default.
  * Codes 2 (Tachyon's health reaching 0), 5 (the credits, g_gameState
  * becoming 11) and 8 (the ending FMV) were retired in revision 1.29 and are
- * never reused. Code 9, "Fastoon: Clank section" (revision 1.34), is a
- * subsplit, off by default and not the route's: a client takes it whatever
- * the planet route says.
+ * never reused. Code 9, "Fastoon: Clank section" (revision 1.34), and code
+ * 10, "Kreeli: Clank section" (revision 1.35), are subsplits, off by
+ * default and not the route's: a client takes them whatever the planet route
+ * says.
  */
 static const struct autosplit_desc tod_autosplits[] = {
 	{ TOD_AS_PLANET,   AUTOSPLIT_SPLIT,      DF | RT | RV, 0, "Planet entered" },
 	{ TOD_AS_END_FADE, AUTOSPLIT_SPLIT,      DF,      0, "Tachyon defeated" },
 	{ TOD_AS_MISSION,  AUTOSPLIT_SPLIT,      0,       0, "Mission completed" },
 	{ TOD_AS_FASTOON_CLANK, AUTOSPLIT_SPLIT, 0,       0, "Fastoon: Clank section" },   /* revision 1.34 */
+	{ TOD_AS_KREELI_CLANK, AUTOSPLIT_SPLIT,  0,       0, "Kreeli: Clank section" },   /* revision 1.35 */
 	{ TOD_AS_LOAD,     AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load" },
 	{ TOD_AS_QUIT,     AUTOSPLIT_PAUSE,      DF | NM, TOD_QUIT_PAUSE_US, "Quit to XMB" }
 };

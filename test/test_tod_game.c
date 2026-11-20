@@ -1849,6 +1849,77 @@ static void test_tod_autosplit_clank(void)
 	wr32(AS_SLOT, 0);
 }
 
+/*
+ * Revision 1.35: "Kreeli: Clank section", code 10, the same rule on Kreeli
+ * Comet (LEVEL_IRIS, 11), whose Clank section starts at a Clank pad as
+ * Fastoon's does: once an arrival, never again after a death as Clank, a
+ * switch back and forth or a reload, again only after leaving and coming
+ * back; and the two rows apart, each its own arrival and its own code.
+ */
+static void test_tod_autosplit_kreeli(void)
+{
+	u32 seq, arg = 0;
+
+	group("ToD: Kreeli: Clank section, code 10, once an arrival (rev 1.35)");
+	fl_world(10);
+	wr32(TOD_LUA_STATE, AS_STATE);
+	wr32(TOD_GAME_STATE, TOD_STATE_GAMEPLAY);
+	hero_slot(0);
+
+	/* Sargasso to Kreeli Comet, then the Clank pad. */
+	seq = autosplit_latest_seq();
+	planet_load(11, AS_STATE + 0x700);
+	hero_slot(0);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_PLANET, &arg) == 1 && arg == 11 &&
+	      as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, NULL) == 0, "Kreeli arrived at as Ratchet: no subsplit yet");
+	seq = autosplit_latest_seq();
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, &arg) == 1 && arg == 11 && as_all(seq) == 1,
+	      "the switch to Clank: one subsplit, code 10, arg Kreeli, and nothing else (no code 9)");
+
+	/* Dying as Clank, a switch back to Ratchet and to Clank again, a reload of Kreeli. */
+	seq = autosplit_latest_seq();
+	death_as(TOD_HERO_SLOT_CLANK, AS_STATE + 0x740);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	planet_load(11, AS_STATE + 0x780);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, NULL) == 0,
+	      "a death as Clank, a switch back and forth, Kreeli reloaded: no second subsplit");
+
+	/* Fastoon in between: its own row, its own code, and Kreeli's armed again by the trip. */
+	seq = autosplit_latest_seq();
+	planet_load(3, AS_STATE + 0x7C0);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, &arg) == 1 && arg == 3 &&
+	      as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, NULL) == 0,
+	      "on Fastoon after Kreeli's split: Fastoon's subsplit, code 9, and no code 10");
+	seq = autosplit_latest_seq();
+	planet_load(11, AS_STATE + 0x800);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, &arg) == 1 && arg == 11 &&
+	      as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0,
+	      "back on Kreeli: the switch splits again, code 10 alone");
+
+	/* Viceron and back: the same. */
+	seq = autosplit_latest_seq();
+	planet_load(12, AS_STATE + 0x840);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, NULL) == 0 &&
+	      as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_FASTOON_CLANK, NULL) == 0, "Viceron, the same slot: no subsplit");
+	planet_load(11, AS_STATE + 0x880);
+	hero_slot(0);
+	hero_slot(TOD_HERO_SLOT_CLANK);
+	check(as_count(seq, AUTOSPLIT_SPLIT, TOD_AS_KREELI_CLANK, NULL) == 1, "Viceron, then Kreeli: one more subsplit");
+	hero_slot(0);
+	planet_load(2, AS_STATE + 0x8C0);
+	wr32(AS_SLOT, 0);
+}
+
 static void test_tod_autosplit_rows(void)
 {
 	const struct game_api *g = session_game();
@@ -1859,8 +1930,8 @@ static void test_tod_autosplit_rows(void)
 	check(g != NULL && g->autosplit_describe != NULL, "ToD describes an autosplitter");
 	if (g == NULL || g->autosplit_describe == NULL) return;
 	d = g->autosplit_describe(&n);
-	check(n == 6, "six rows");
-	if (n != 6) return;
+	check(n == 7, "seven rows");
+	if (n != 7) return;
 	check(d[0].code == TOD_AS_PLANET && d[0].kind == AUTOSPLIT_SPLIT &&
 	      d[0].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_ROUTE | AUTOSPLIT_FLAG_REVISIT) &&
 	      qstreq(d[0].label, "Planet entered"),
@@ -1873,12 +1944,15 @@ static void test_tod_autosplit_rows(void)
 	check(d[3].code == 9 && TOD_AS_FASTOON_CLANK == 9 && d[3].kind == AUTOSPLIT_SPLIT && d[3].flags == 0 &&
 	      qstreq(d[3].label, "Fastoon: Clank section"),
 	      "code 9, the next free (2, 5 and 8 retired), Fastoon: Clank section, off and not the route's (rev 1.34)");
-	check(d[4].code == TOD_AS_LOAD && d[4].kind == AUTOSPLIT_LOAD_START &&
-	      d[4].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[4].param_us == 0 &&
-	      qstreq(d[4].label, "Long load"),
+	check(d[4].code == 10 && TOD_AS_KREELI_CLANK == 10 && d[4].kind == AUTOSPLIT_SPLIT && d[4].flags == 0 &&
+	      qstreq(d[4].label, "Kreeli: Clank section"),
+	      "code 10, the next free, Kreeli: Clank section, off and not the route's (rev 1.35)");
+	check(d[5].code == TOD_AS_LOAD && d[5].kind == AUTOSPLIT_LOAD_START &&
+	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_HOLD) && d[5].param_us == 0 &&
+	      qstreq(d[5].label, "Long load"),
 	      "the long load holds game time (HOLD, rev 1.29), no NORMALISE");
-	check(d[5].code == TOD_AS_QUIT && d[5].kind == AUTOSPLIT_PAUSE &&
-	      d[5].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[5].param_us == 16900000u,
+	check(d[6].code == TOD_AS_QUIT && d[6].kind == AUTOSPLIT_PAUSE &&
+	      d[6].flags == (AUTOSPLIT_FLAG_DEFAULT | AUTOSPLIT_FLAG_NORMALISE) && d[6].param_us == 16900000u,
 	      "the quit to the XMB costs 16.9 s");
 	for (i = 0; i < n; i++) check(strlen(d[i].label) <= AUTOSPLIT_LABEL_LEN, "a label fits the wire");
 }
@@ -5388,6 +5462,7 @@ void test_tod_game(void)
 	test_tod_cutscenes();
 	test_tod_autosplit_revisit();   /* rev 1.33 (pending): after the Fast loads and cutscene tests' helpers */
 	test_tod_autosplit_clank();     /* rev 1.34 */
+	test_tod_autosplit_kreeli();    /* rev 1.35 */
 	test_tod_cutscene_cache();
 	test_tod_on_boot();
 	test_tod_black_screens();

@@ -876,6 +876,7 @@ struct tod_facts {
 #define TOD_AS_END_FADE     7      /* SPLIT, "Tachyon defeated": the screen black before the ending cinematic (revision 1.29) */
 /* 8, the ending FMV, was retired in revision 1.29: never reuse it. */
 #define TOD_AS_FASTOON_CLANK 9     /* SPLIT, "Fastoon: Clank section" (revision 1.34): arg the level, 3 */
+#define TOD_AS_KREELI_CLANK 10     /* SPLIT, "Kreeli: Clank section" (revision 1.35): arg the level, 11 */
 #define TOD_QUIT_PAUSE_US   16900000u  /* a quit and reboot: 16.9 s of game time (the community's rule since 2026-11; the old script's was 19.95 s) */
 
 /*
@@ -898,7 +899,7 @@ struct tod_facts {
 #define TOD_HL_HANDLES      0x20u        /* u64 moby handle per slot; the low word is the moby's +0x64 (revision 1.34) */
 #define TOD_HL_NSLOTS       6u           /* slots 0..5 (HeroList_getCurrentOrAny 0x1F6A44 looks at six) */
 #define TOD_MOBY_OBJECT     0x40u        /* ToDMoby: the object, the hero for a hero's moby (HeroList_getHero) */
-#define TOD_AS_NSUBS       1u           /* the subsplits' table (tod_autosplit.c), at most 8 */
+#define TOD_AS_NSUBS       2u           /* the subsplits' table (tod_autosplit.c), at most 8: Fastoon, Kreeli Comet (revision 1.35) */
 
 /*
  * What the watcher keeps, a part of tod_game.c's state (the lent area in a

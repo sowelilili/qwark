@@ -69,7 +69,7 @@ PORT = free_port()
 
 # QWARK_BUILD in src/core/proto.h: the module build number, bumped whenever the
 # feature tables or any user-visible behaviour change.
-QWARK_BUILD = 59
+QWARK_BUILD = 60
 
 # QWARK_MAX_PAYLOAD, revision 1.11: one frame's payload, request or reply. A
 # frame announcing more than this closes the connection.
@@ -7289,6 +7289,7 @@ TOD_AS_ROWS = [
     (7, AUTOSPLIT_SPLIT, DF, 0, "Tachyon defeated"),
     (6, AUTOSPLIT_SPLIT, 0, 0, "Mission completed"),
     (9, AUTOSPLIT_SPLIT, 0, 0, "Fastoon: Clank section"),        # revision 1.34, a subsplit, off
+    (10, AUTOSPLIT_SPLIT, 0, 0, "Kreeli: Clank section"),        # revision 1.35, a subsplit, off
     (4, AUTOSPLIT_LOAD_START, DF | HD, 0, "Long load"),
     (3, AUTOSPLIT_PAUSE, DF | NM, 16900000, "Quit to XMB"),
 ]
@@ -7303,8 +7304,9 @@ def smoke_tod_autosplit(c, sim):
         rows, consumed = parse_autosplit_describe(body)
         got = [(r["code"], r["kind"], r["flags"], r["param_us"], r["label"]) for r in rows]
         check(consumed == len(body) and got == TOD_AS_ROWS,
-              "ToD: its six rows, code 7 \"Tachyon defeated\" the final split, 2, 5 and 8 retired, "
-              "the long load a HOLD, code 9 \"Fastoon: Clank section\" off", got)
+              "ToD: its seven rows, code 7 \"Tachyon defeated\" the final split, 2, 5 and 8 retired, "
+              "the long load a HOLD, code 9 \"Fastoon: Clank section\" and code 10 \"Kreeli: Clank section\" off",
+              got)
 
     one, zero, half = struct.pack(">f", 1.0), struct.pack(">f", 0.0), struct.pack(">f", 0.5)
     # A planet load begins: Level_Exit, the level's tiers out, the loader on state 3 (revision 1.29).
@@ -7445,6 +7447,25 @@ def smoke_tod_autosplit(c, sim):
         {"what": "and Clank's slot on Fastoon II is no subsplit",
          "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
          "absent": (AUTOSPLIT_SPLIT, 9)},
+        # Revision 1.35: Kreeli: Clank section, the same rule on Kreeli Comet (LEVEL_IRIS, 11), code 10.
+        {"what": "Fastoon II to Kreeli Comet splits as a planet",
+         "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 11)), (TOD_HERO_SLOT, bytes(4))],
+         "then": load_begins,
+         "expect": (AUTOSPLIT_SPLIT, 1), "arg": 11},
+        {"what": "Kreeli up with Ratchet in control is no subsplit",
+         "then": level_enters(lua_state) + [(TOD_HERO_SLOT, bytes(4))],
+         "absent": [(AUTOSPLIT_SPLIT, 9), (AUTOSPLIT_SPLIT, 10)]},
+        {"what": "the switch to Clank on Kreeli is the subsplit, code 10, arg Kreeli (revision 1.35)",
+         "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
+         "expect": (AUTOSPLIT_SPLIT, 10), "arg": 11},
+        {"what": "a death as Clank on Kreeli, the respawn's -1, then Ratchet's slot, is nothing",
+         "poke": [(TOD_LUA_STATE, bytes(4)), (TOD_HERO_SLOT, struct.pack(">i", -1)),
+                  (TOD_LOAD_JOB, struct.pack(">I", TOD_LOAD_JOB_LEVEL))],
+         "then": level_enters(lua_other) + [(TOD_HERO_SLOT, bytes(4))],
+         "absent": [(AUTOSPLIT_SPLIT, 9), (AUTOSPLIT_SPLIT, 10)]},
+        {"what": "and back in control of Clank on Kreeli is no second subsplit",
+         "then": [(TOD_HERO_SLOT, struct.pack(">I", 4))],
+         "absent": [(AUTOSPLIT_SPLIT, 9), (AUTOSPLIT_SPLIT, 10)]},
         {"what": "the ending cinematic fading out is not the end yet",
          "poke": [(TOD_CURRENT_LEVEL, struct.pack(">I", 18))] + load_begins + level_enters(lua_other) +
                  [(0x30400840, b"l4b_s04_dimx_rt\x00"), (0x304001FC, struct.pack(">I", 0x30400840)),
