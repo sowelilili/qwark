@@ -392,7 +392,6 @@ static const struct feature_desc tod_features[] = {
 
 	/* Build 59: the weapon bulk actions, labelled as RaC2's, UYA's and Deadlocked's. */
 	{ TF_MAX_LEVELS,    FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon levels" },
-	{ TF_RESET_LEVELS,  FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Reset all weapon levels" },
 	{ TF_MAX_AMMO,      FEATURE_ACTION, G_PROGRESS, 0, 0,  NO, 0, 0, "Max all weapon ammo" },
 
 	/* The savefile manager (tod_save.c): the game's own save system, data writes alone. */
@@ -549,7 +548,7 @@ static const struct menu_section tod_menu_sections[] = {
 
 static const u8 tod_menu_unlock_actions[] = {
 	TF_UNLOCK_SP, TF_RESET_SP, TF_UNLOCK_GB, TF_RESET_GB,
-	TF_MAX_LEVELS, TF_RESET_LEVELS, TF_MAX_AMMO   /* build 59 */
+	TF_MAX_LEVELS, TF_MAX_AMMO   /* build 59; 28, Reset all weapon levels, retired before release */
 };
 
 static const char * const tod_unlock_names[] = { "Locked", "Unlocked", "Max" };

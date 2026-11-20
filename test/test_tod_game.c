@@ -5148,11 +5148,17 @@ static void test_tod_weapon_actions(void)
 	check(features_trigger(TF_MAX_LEVELS) == ST_OK && tw_level(1) == 9 && tw_level(3) == 5, "a second Max changes nothing");
 	}
 
-	group("ToD: Reset all weapon levels");
-	check(features_trigger(TF_RESET_LEVELS) == ST_OK, "Reset all weapon levels runs");
-	check(tw_level(1) == 0 && rdf(tw_slot(1) + TOD_WS_XP) == 0.0f && tw_level(11) == 0 && tw_level(3) == 0 &&
-	      tw_level(5) == 0, "every owned weapon that levels back to V1, its XP 0");
-	check(tw_level(8) == 2 && rdf(tw_slot(8) + TOD_WS_XP) == 2200.0f, "but the Pyro Blaster, whose def is not there");
+	group("ToD: Reset all weapon levels is retired");
+	check(features_trigger(TF_RESET_LEVELS) == ST_NOT_FOUND, "id 28 answers NOT_FOUND");
+	/* What Reset used to do for the ammo checks below: every owned weapon that levels back to V1, its XP 0. */
+	{
+		static const u8 lv[] = { 1, 3, 5, 11 };
+		u32 i;
+		for (i = 0; i < sizeof(lv); i++) {
+			wr8(tw_slot(lv[i]) + TOD_WS_LEVEL, 0);
+			wrf(tw_slot(lv[i]) + TOD_WS_XP, 0.0f);
+		}
+	}
 	wr32(TOD_CHALLENGE, 0);
 
 	group("ToD: Max all weapon ammo, the game's WeaponDef_getMaxAmmo");
@@ -5191,8 +5197,8 @@ static void test_tod_weapon_actions(void)
 	group("ToD: with no def table the weapon actions are BUSY and write nothing");
 	for (w = 0; w < TOD_NWEAPONS; w++) wr32(TOD_WEAPON_DEFS + (u32)w * 4u, 0);
 	host_peek(TOD_WEAPONS, before, sizeof(before));
-	check(features_trigger(TF_MAX_LEVELS) == ST_BUSY && features_trigger(TF_RESET_LEVELS) == ST_BUSY &&
-	      features_trigger(TF_MAX_AMMO) == ST_BUSY, "all three BUSY");
+	check(features_trigger(TF_MAX_LEVELS) == ST_BUSY &&
+	      features_trigger(TF_MAX_AMMO) == ST_BUSY, "both BUSY");
 	host_peek(TOD_WEAPONS, after, sizeof(after));
 	check(memcmp(before, after, sizeof(after)) == 0, "and the slots as they were");
 	for (w = TOD_WPN_FIRST; w < TOD_WPN_GADGETS; w++) tw_hold(w, 0, 0, 0.0f, 0.0f);

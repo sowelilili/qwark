@@ -6490,11 +6490,11 @@ def smoke_tod_weapons_mobys(c, features):
         return body if status == ST_OK and len(body) == n else bytes(n)
 
     ids = dict((f["label"], f["id"]) for f in features)
-    check(ids.get("Max all weapon levels") == 27 and ids.get("Reset all weapon levels") == 28 and
+    check(ids.get("Max all weapon levels") == 27 and "Reset all weapon levels" not in ids and
           ids.get("Max all weapon ammo") == 29,
-          "ToD: DESCRIBE lists the three weapon bulk actions, ids 27 to 29", ids)
+          "ToD: DESCRIBE lists the weapon bulk actions 27 and 29, 28 retired", ids)
     acts = [f for f in features if f["id"] in (27, 28, 29)]
-    check(len(acts) == 3 and all(f["kind"] == FEATURE_ACTION and f["group"] == 2 for f in acts),
+    check(len(acts) == 2 and all(f["kind"] == FEATURE_ACTION and f["group"] == 2 for f in acts),
           "ToD: ACTIONs in Progress, as RaC2's, UYA's and Deadlocked's", acts)
     # The Combuster owned at V1, the Fusion Grenade not; the simulator's defs give ten levels each.
     slot = lambda w: TOD_WEAPONS + w * 0x14
@@ -6513,8 +6513,6 @@ def smoke_tod_weapons_mobys(c, features):
     status, _ = c.call(OP_FEATURE_TRIGGER, bytes([29]))
     check(status == ST_OK and struct.unpack(">f", mem_read(c, slot(1) + 8, 4))[0] == 20.0 + 2 * 9 + 1,
           "ToD: Max all weapon ammo, the V10 magazine of the simulator's csv", status)
-    status, _ = c.call(OP_FEATURE_TRIGGER, bytes([28]))
-    check(status == ST_OK and mem_read_u8(c, slot(1) + 0x11) == 0, "ToD: Reset all weapon levels, V1 again", status)
     mem_write(c, slot(1) + 0x10, b"\x00\x00")
 
     status, body = c.call(OP_MOBY_TABLE)

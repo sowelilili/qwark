@@ -845,7 +845,7 @@ struct tod_facts {
  * magazine full.
  */
 #define TF_MAX_LEVELS       27
-#define TF_RESET_LEVELS     28
+#define TF_RESET_LEVELS     28   /* retired in build 59 before release (the user: unnecessary and inconsistent); never reuse */
 #define TF_MAX_AMMO         29
 
 /* The savefile manager's round (docs/tod-savefile.md): ids 40..47. */
